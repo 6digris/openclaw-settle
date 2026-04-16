@@ -105,7 +105,7 @@ export function collectWhatsAppStatusIssues(
           channel: "whatsapp",
           accountId,
           kind: "runtime",
-          message: `Linked but stale${staleSuffix}${lastError ? `: ${lastError}` : "."}`,
+          message: `${linkedRuntimePrefix}stale${staleSuffix}${lastError ? `: ${lastError}` : "."}`,
           fix: `Run: ${formatCliCommand("openclaw doctor")} (or restart the gateway). If it persists, relink via channels login and check logs.`,
         });
         return;
@@ -126,7 +126,7 @@ export function collectWhatsAppStatusIssues(
           channel: "whatsapp",
           accountId,
           kind: "runtime",
-          message: `Linked but ${stateLabel}${reconnectAttempts != null ? ` (reconnectAttempts=${reconnectAttempts})` : ""}${lastError ? `: ${lastError}` : "."}`,
+          message: `${sessionRuntimePrefix}${stateLabel}${reconnectAttempts != null ? ` (reconnectAttempts=${reconnectAttempts})` : ""}${lastError ? `: ${lastError}` : "."}`,
           fix: `Run: ${formatCliCommand("openclaw doctor")} (or restart the gateway). If it persists, relink via channels login and check logs.`,
         });
         return;
@@ -155,7 +155,7 @@ export function collectWhatsAppStatusIssues(
           channel: "whatsapp",
           accountId,
           kind: "runtime",
-          message: `Linked but disconnected${reconnectAttempts != null ? ` (reconnectAttempts=${reconnectAttempts})` : ""}${lastError ? `: ${lastError}` : "."}`,
+          message: `${linkedRuntimePrefix}disconnected${reconnectAttempts != null ? ` (reconnectAttempts=${reconnectAttempts})` : ""}${lastError ? `: ${lastError}` : "."}`,
           fix: `Run: ${formatCliCommand("openclaw doctor")} (or restart the gateway). If it persists, relink via channels login and check logs.`,
         });
       }
