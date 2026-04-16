@@ -71,6 +71,14 @@ function waitForNextTask(): Promise<void> {
   });
 }
 
+type WebLoginStartParams = {
+  verbose?: boolean;
+  timeoutMs?: number;
+  force?: boolean;
+  accountId?: string;
+  runtime?: RuntimeEnv;
+};
+
 const ACTIVE_LOGIN_TTL_MS = 3 * 60_000;
 const MAX_QR_RENDER_CHASES = 10;
 const activeLogins = new Map<string, ActiveLogin>();
@@ -329,6 +337,10 @@ export async function startWebLoginWithQr(
     beforeCredentialPersistence?: () => Promise<void>;
   } = {},
 ): Promise<StartWebLoginWithQrResult> {
+  const preflight = await preflightWebLoginWithQrStart(opts);
+  if (preflight) {
+    return preflight;
+  }
   const runtime = opts.runtime ?? defaultRuntime;
   const cfg = getRuntimeConfig();
   const account = resolveWhatsAppAccount({ cfg, accountId: opts.accountId });
@@ -533,6 +545,28 @@ export async function startWebLoginWithQr(
     qrDataUrl,
     message: "Scan this QR in WhatsApp → Linked Devices.",
   };
+}
+
+export async function preflightWebLoginWithQrStart(
+  opts: WebLoginStartParams = {},
+): Promise<StartWebLoginWithQrResult | null> {
+  const cfg = loadConfig();
+  const account = resolveWhatsAppAccount({ cfg, accountId: opts.accountId });
+  const authState = await readWebAuthExistsForDecision(account.authDir);
+  if (authState.outcome === "unstable") {
+    return {
+      code: WHATSAPP_AUTH_UNSTABLE_CODE,
+      message: "WhatsApp auth state is still stabilizing. Retry login in a moment.",
+    };
+  }
+  if (authState.exists && !opts.force) {
+    const selfId = readWebSelfId(account.authDir);
+    const who = selfId.e164 ?? selfId.jid ?? "unknown";
+    return {
+      message: `WhatsApp is already linked (${who}). Say “relink” if you want a fresh QR.`,
+    };
+  }
+  return null;
 }
 
 export async function waitForWebLogin(
