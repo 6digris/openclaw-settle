@@ -21,18 +21,16 @@ import { formatWhatsAppConfigAllowFromEntries } from "./config-accessors.js";
 import { resolveWhatsAppMentionStripRegexes } from "./group-intro.js";
 import { checkWhatsAppHeartbeatReady } from "./heartbeat.js";
 import {
-  isWhatsAppGroupJid,
-  isWhatsAppNewsletterJid,
   looksLikeWhatsAppTargetId,
   normalizeWhatsAppAllowFromEntry,
   normalizeWhatsAppMessagingTarget,
-  normalizeWhatsAppTarget,
 } from "./normalize.js";
 import { getWhatsAppRuntime } from "./runtime.js";
 import { sendTypingWhatsApp } from "./send.js";
 import { resolveWhatsAppOutboundSessionRoute } from "./session-route.js";
 import { createWhatsAppPluginBase } from "./shared.js";
 import { collectWhatsAppStatusIssues } from "./status-issues.js";
+import { resolveWhatsAppTargetFacts } from "./target-facts.js";
 
 const loadWhatsAppDirectoryConfig = createLazyRuntimeModule(() => import("./directory-config.js"));
 const loadWhatsAppChannelReactAction = createLazyRuntimeModule(
@@ -44,13 +42,13 @@ function resolveWhatsAppTargetInfo(raw: string) {
   if (!normalized) {
     return null;
   }
+  const facts = resolution.facts;
+  const routeTarget = facts.wireDelivery.preserveJidAsAuthorizedTarget
+    ? facts.wireDelivery.jid
+    : facts.normalizedTarget;
   return {
-    to: normalized,
-    chatType: isWhatsAppGroupJid(normalized)
-      ? ("group" as const)
-      : isWhatsAppNewsletterJid(normalized)
-        ? ("channel" as const)
-        : ("direct" as const),
+    to: routeTarget,
+    chatType: facts.chatType,
   };
 }
 
@@ -115,7 +113,7 @@ export const whatsappPlugin: ChannelPlugin<ResolvedWhatsAppAccount> =
         resolveOutboundSessionRoute: (params) => resolveWhatsAppOutboundSessionRoute(params),
         inferTargetChatType: ({ to }) => resolveWhatsAppTargetInfo(to)?.chatType,
         targetResolver: {
-          looksLikeId: looksLikeWhatsAppTargetId,
+          looksLikeId: looksLikeWhatsAppMessagingTarget,
           hint: "<E.164|group JID|newsletter JID>",
         },
       },

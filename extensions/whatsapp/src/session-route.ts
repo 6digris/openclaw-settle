@@ -11,8 +11,8 @@ import {
 } from "./normalize.js";
 
 export function resolveWhatsAppOutboundSessionRoute(params: ChannelOutboundSessionRouteParams) {
-  const normalized = normalizeWhatsAppTarget(params.target);
-  if (!normalized) {
+  const resolution = resolveWhatsAppTargetFacts({ target: params.target });
+  if (!resolution.ok) {
     return null;
   }
   const isGroup = isWhatsAppGroupJid(normalized);

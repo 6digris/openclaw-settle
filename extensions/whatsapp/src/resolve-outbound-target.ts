@@ -9,20 +9,25 @@ import {
 
 type WhatsAppOutboundTargetResolution = { ok: true; to: string } | { ok: false; error: Error };
 
-function whatsappAllowFromPolicyError(target: string): Error {
-  return new Error(`Target "${target}" is not listed in the configured WhatsApp allowFrom policy.`);
-}
-
 export function resolveWhatsAppOutboundTarget(params: {
   to: string | null | undefined;
   allowFrom: Array<string | number> | null | undefined;
   mode: string | null | undefined;
 }): WhatsAppOutboundTargetResolution {
-  const trimmed = params.to?.trim() ?? "";
-  if (!trimmed) {
+  const resolution = resolveWhatsAppTargetFacts({
+    target: params.to,
+    allowFrom: params.allowFrom,
+  });
+  if (!resolution.ok) {
+    return { ok: false, error: resolution.error };
+  }
+  const facts = resolution.facts;
+  if (facts.authorization.allowed) {
     return {
-      ok: false,
-      error: missingTargetError("WhatsApp", "<E.164|group JID|newsletter JID>"),
+      ok: true,
+      to: facts.wireDelivery.preserveJidAsAuthorizedTarget
+        ? facts.wireDelivery.jid
+        : facts.normalizedTarget,
     };
   }
 
@@ -51,6 +56,6 @@ export function resolveWhatsAppOutboundTarget(params: {
   }
   return {
     ok: false,
-    error: whatsappAllowFromPolicyError(normalizedTo),
+    error: facts.authorization.error,
   };
 }
