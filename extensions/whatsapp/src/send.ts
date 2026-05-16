@@ -30,7 +30,6 @@ import {
   type WhatsAppSendResult,
 } from "./inbound/send-result.js";
 import type { ActiveWebListener, ActiveWebSendOptions } from "./inbound/types.js";
-import { isWhatsAppNewsletterJid } from "./normalize.js";
 import {
   normalizeWhatsAppPayloadText,
   prepareWhatsAppOutboundMedia,
@@ -417,7 +416,7 @@ export async function sendReactionWhatsApp(
     messageId,
   });
   try {
-    const jid = toWhatsappJid(chatJid);
+    const jid = requireWhatsAppTargetFacts({ target: chatJid }).wireDelivery.jid;
     const redactedJid = redactIdentifier(jid);
     outboundLog.info(`Sending reaction "${emoji}" -> message ${messageId}`);
     logger.info({ chatJid: redactedJid, messageId, emoji }, "sending reaction");
@@ -458,7 +457,7 @@ export async function sendPollWhatsApp(
     to: redactedTo,
   });
   try {
-    const jid = toWhatsappJid(to);
+    const jid = requireWhatsAppTargetFacts({ target: to }).wireDelivery.jid;
     const redactedJid = redactIdentifier(jid);
     const normalized = normalizePollInput(poll, { maxOptions: 12 });
     outboundLog.info(`Sending poll -> ${redactedJid}`);
