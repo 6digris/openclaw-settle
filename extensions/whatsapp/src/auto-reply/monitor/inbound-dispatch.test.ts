@@ -24,7 +24,10 @@ type CapturedDispatchParams = {
   dispatcherOptions?: {
     deliver?: (
       payload: CapturedReplyPayload,
-      info: { kind: "tool" | "block" | "final" },
+      info: {
+        kind: "tool" | "block" | "final";
+        startVisibleDeliveryTyping?: () => Promise<void>;
+      },
     ) => Promise<unknown>;
     onError?: (err: unknown, info: { kind: "tool" | "block" | "final" }) => Promise<void> | void;
     onSettled?: () => unknown;
@@ -33,6 +36,7 @@ type CapturedDispatchParams = {
     disableBlockStreaming?: boolean;
     sourceReplyDeliveryMode?: "automatic" | "message_tool_only";
     suppressTyping?: boolean;
+    typingStartPolicy?: "visible_delivery";
   };
 };
 
@@ -1444,6 +1448,50 @@ describe("whatsapp inbound dispatch", () => {
     expectRecordFields(durableParams, {
       replyToId: null,
     });
+  });
+
+  it("passes visible-delivery typing into durable final WhatsApp sends", async () => {
+    const startVisibleDeliveryTyping = vi.fn();
+    deliverInboundReplyWithMessageSendContextMock.mockResolvedValueOnce({
+      status: "handled_visible",
+      delivery: {
+        messageIds: ["wa-1"],
+        visibleReplySent: true,
+      },
+    });
+
+    await dispatchBufferedReply({
+      cfg: {
+        channels: { whatsapp: { blockStreaming: true } },
+        messages: { groupChat: { visibleReplies: "automatic" } },
+      } as never,
+      context: { Body: "incoming", ChatType: "group" },
+      msg: makeWhatsAppGroupMsg(),
+    });
+
+    const deliver = getCapturedDeliver();
+    await deliver?.(
+      { text: "final payload" },
+      {
+        kind: "final",
+        startVisibleDeliveryTyping,
+      },
+    );
+
+    const durableParams = requireMockArg(
+      deliverInboundReplyWithMessageSendContextMock,
+      0,
+      0,
+      "durable delivery params",
+    );
+    const start = durableParams.onVisibleDeliveryStart;
+    if (typeof start !== "function") {
+      throw new Error("expected durable visible delivery start hook");
+    }
+    expect(startVisibleDeliveryTyping).not.toHaveBeenCalled();
+    await start();
+
+    expect(startVisibleDeliveryTyping).toHaveBeenCalledTimes(1);
   });
 
   it("does not fall back when durable WhatsApp delivery suppresses a send", async () => {

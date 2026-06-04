@@ -949,6 +949,7 @@ describe("deliverOutboundPayloads", () => {
     expect(commitParams?.kind).toBe("text");
     expect(commitParams?.attemptToken).toBe("pending-1");
     expect(commitParams?.result?.messageId).toBe("message-adapter-1");
+    expect(onPlatformSendStart).toHaveBeenCalledTimes(1);
     expect(results[0]?.channel).toBe("matrix");
     expect(results[0]?.messageId).toBe("message-adapter-1");
   });

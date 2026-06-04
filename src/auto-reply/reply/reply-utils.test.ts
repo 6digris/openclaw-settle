@@ -533,6 +533,20 @@ describe("typing controller", () => {
     expect(onReplyStart).not.toHaveBeenCalled();
   });
 
+  it("allows visible-delivery typing during settled delivery before run completion", async () => {
+    vi.useFakeTimers();
+    const { typing, onReplyStart } = createTestTypingController();
+
+    typing.markDispatchIdle();
+    await typing.startTypingForVisibleDelivery();
+    expect(onReplyStart).toHaveBeenCalledTimes(1);
+
+    typing.markRunComplete();
+    await typing.startTypingForVisibleDelivery();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(onReplyStart).toHaveBeenCalledTimes(1);
+  });
+
   it("does not restart typing after it has stopped", async () => {
     vi.useFakeTimers();
     const { typing, onReplyStart } = createTestTypingController();
@@ -724,6 +738,17 @@ describe("resolveTypingMode", () => {
           wasMentioned: false,
           isHeartbeat: false,
           typingPolicy: "system_event" as const,
+        },
+        expected: "never",
+      },
+      {
+        name: "visible-delivery typing policy disables stream starts",
+        input: {
+          configured: "instant" as const,
+          isGroupChat: false,
+          wasMentioned: false,
+          isHeartbeat: false,
+          typingStartPolicy: "visible_delivery" as const,
         },
         expected: "never",
       },
@@ -1017,6 +1042,7 @@ describe("createTypingSignaler", () => {
 
       expect(typing.startTypingLoop, `mode=${params.mode}`).not.toHaveBeenCalled();
       expect(typing.startTypingOnText, `mode=${params.mode}`).not.toHaveBeenCalled();
+      expect(typing.refreshTypingTtl, `mode=${params.mode}`).not.toHaveBeenCalled();
     }
   });
 });

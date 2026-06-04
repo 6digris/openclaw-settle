@@ -587,6 +587,7 @@ describe("routeReply", () => {
   });
 
   it("returns routed reply hook suppression reasons from durable delivery", async () => {
+    const onVisibleDeliveryStart = vi.fn(async () => {});
     mocks.deliverOutboundPayloads.mockImplementationOnce(
       async ({
         onPayloadDeliveryOutcome,
@@ -623,6 +624,13 @@ describe("routeReply", () => {
         conversationId: "chat-1",
       },
     });
+    const onPlatformSendStart = lastDelivery().onPlatformSendStart as
+      | (() => Promise<void> | void)
+      | undefined;
+    expect(onPlatformSendStart).toEqual(expect.any(Function));
+    expect(onVisibleDeliveryStart).not.toHaveBeenCalled();
+    await onPlatformSendStart?.();
+    expect(onVisibleDeliveryStart).toHaveBeenCalledTimes(1);
   });
 
   it("suppresses routed delivery when reply payload hooks empty the payload", async () => {
