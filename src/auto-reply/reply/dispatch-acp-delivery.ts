@@ -159,18 +159,28 @@ export function createAcpDispatchDeliveryCoordinator(params: AcpDispatchDelivery
   };
 
   const startReplyLifecycleOnce = async () => {
+    // Suppressed generic lifecycle must not consume the visible-delivery start
+    // slot; routed delivery may still start typing at the exact send point.
+    if (params.suppressReplyLifecycle) {
+      return;
+    }
     if (state.startedReplyLifecycle) {
       return;
     }
     state.startedReplyLifecycle = true;
-    // Delivery and lifecycle suppression are separate: message-tool-only turns
-    // suppress automatic user delivery but still need typing/lifecycle signals.
-    if (params.suppressReplyLifecycle) {
-      return;
-    }
     void Promise.resolve(params.onReplyStart?.()).catch((error: unknown) => {
       logVerbose(`dispatch-acp: reply lifecycle start failed: ${formatErrorMessage(error)}`);
     });
+  };
+  const startVisibleDeliveryOnce = async () => {
+    if (!params.onVisibleDeliveryStart) {
+      return;
+    }
+    if (state.startedReplyLifecycle) {
+      return;
+    }
+    state.startedReplyLifecycle = true;
+    await params.onVisibleDeliveryStart();
   };
 
   const tryEditToolMessage = async (

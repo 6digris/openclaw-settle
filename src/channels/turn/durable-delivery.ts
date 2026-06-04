@@ -32,6 +32,7 @@ export type DurableInboundReplyDeliveryOptions = Pick<
 > & {
   to?: string | null;
   replyToId?: string | null;
+  onVisibleDeliveryStart?: () => Promise<void> | void;
   requiredCapabilities?: DurableFinalDeliveryRequirements;
 };
 

@@ -377,6 +377,7 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
       },
       replyToId: resolvedReplyToId ?? null,
       threadId: resolvedThreadId,
+      onPlatformSendStart: params.onVisibleDeliveryStart,
       session: outboundSession,
       signal: abortSignal,
       ...(params.deliveryIntentId
