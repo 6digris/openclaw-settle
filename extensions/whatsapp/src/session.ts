@@ -5,6 +5,7 @@ import type {
   GroupMetadata,
   SignalDataTypeMap,
   SignalKeyStore,
+  WABrowserDescription,
   WAMessageKey,
   proto,
 } from "baileys";
@@ -35,6 +36,7 @@ import { renderQrTerminal } from "./qr-terminal.js";
 import { getStatusCode } from "./session-errors.js";
 import {
   createBaileysSignalRepository,
+  Browsers,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
   makeWASocket,
@@ -210,6 +212,7 @@ export async function createWaSocket(
     getMessage?: (key: WAMessageKey) => Promise<proto.IMessage | undefined>;
     cachedGroupMetadata?: (jid: string) => Promise<GroupMetadata | undefined>;
     waWebSocketUrl?: string | URL;
+    browser?: WABrowserDescription;
   } & WhatsAppSocketTimingOptions = {},
 ): Promise<ReturnType<typeof makeWASocket>> {
   return await createWaSocketInternal(printQr, verbose, opts, "normal");
@@ -339,7 +342,7 @@ async function createWaSocketInternal(
     version,
     logger,
     printQRInTerminal: false,
-    browser: ["openclaw", "cli", VERSION],
+    browser: opts.browser ?? OPENCLAW_WHATSAPP_BROWSER,
     syncFullHistory: false,
     fireInitQueries: receiveMode !== "directory",
     markOnlineOnConnect: false,
