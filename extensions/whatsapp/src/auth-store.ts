@@ -90,7 +90,6 @@ function isValidJson(raw: string): boolean {
 
 export type WhatsAppWebCredsPayload = {
   account?: unknown;
-  registered?: unknown;
   pairingCode?: unknown;
   signalIdentities?: unknown;
   me?: {
@@ -135,7 +134,6 @@ function hasSuccessfulPhoneCodePairingMaterial(payload: WhatsAppWebCredsPayload)
 
 function isPartialPhoneCodePairingCredsPayload(payload: WhatsAppWebCredsPayload): boolean {
   return (
-    payload.registered === false &&
     typeof payload.pairingCode === "string" &&
     payload.pairingCode.trim().length > 0 &&
     hasUsableWebIdentity(payload) &&
@@ -319,6 +317,7 @@ export async function clearStalePhoneCodePairingAuthIfNeeded(params: {
   authDir: string;
   isLegacyAuthDir: boolean;
   runtime?: RuntimeEnv;
+  beforeCredentialPersistence?: () => Promise<void>;
 }): Promise<WhatsAppStalePhoneCodePairingAuthCleanupResult> {
   const resolvedAuthDir = resolveUserPath(params.authDir);
   const barrierResult = await waitForWebAuthBarrier(
@@ -340,6 +339,7 @@ export async function clearStalePhoneCodePairingAuthIfNeeded(params: {
       authDir: resolvedAuthDir,
       isLegacyAuthDir: params.isLegacyAuthDir,
       runtime: params.runtime ?? defaultRuntime,
+      beforeCredentialPersistence: params.beforeCredentialPersistence,
     });
     return cleared ? "cleared" : "stale-not-cleared";
   });
