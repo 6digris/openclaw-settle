@@ -305,7 +305,7 @@ export async function waitForWhatsAppLoginResult(params: {
   createSocket?: typeof createWaSocket;
   socketTiming?: WhatsAppSocketTimingOptions;
   onQr?: (qr: string) => void;
-  beforeCreateLoginSocket?: () => Promise<void> | void;
+  beforeCreateLoginSocket?: (context: { reason: LoginSocketPrepareReason }) => Promise<void> | void;
   prepareLoginSocket?: (
     sock: WaSocket,
     context: { reason: LoginSocketPrepareReason },
@@ -333,7 +333,7 @@ export async function waitForWhatsAppLoginResult(params: {
       closeWaSocket(currentSock);
     }
     try {
-      await params.beforeCreateLoginSocket?.();
+      await params.beforeCreateLoginSocket?.({ reason: prepareReason });
       currentSock = await createSocket(false, params.verbose, {
         authDir: params.authDir,
         ...params.socketTiming,
