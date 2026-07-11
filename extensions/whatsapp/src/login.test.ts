@@ -39,7 +39,6 @@ let loginWeb: typeof import("./login.js").loginWeb;
 let loginWebWithPhoneCode: typeof import("./login.js").loginWebWithPhoneCode;
 let normalizeWhatsAppPairingPhoneNumber: typeof import("./login.js").normalizeWhatsAppPairingPhoneNumber;
 let createWaSocket: typeof import("./session.js").createWaSocket;
-let WHATSAPP_PHONE_CODE_BROWSER: typeof import("./session.js").WHATSAPP_PHONE_CODE_BROWSER;
 let clearStalePhoneCodePairingAuthIfNeeded: typeof import("./auth-store.js").clearStalePhoneCodePairingAuthIfNeeded;
 let restoreCredsFromBackupIfNeeded: typeof import("./auth-store.js").restoreCredsFromBackupIfNeeded;
 
@@ -74,7 +73,7 @@ describe("web login", () => {
   beforeAll(async () => {
     ({ loginWeb, loginWebWithPhoneCode, normalizeWhatsAppPairingPhoneNumber } =
       await import("./login.js"));
-    ({ createWaSocket, WHATSAPP_PHONE_CODE_BROWSER } = await import("./session.js"));
+    ({ createWaSocket } = await import("./session.js"));
     ({ clearStalePhoneCodePairingAuthIfNeeded, restoreCredsFromBackupIfNeeded } =
       await import("./auth-store.js"));
   });
@@ -203,9 +202,6 @@ describe("web login", () => {
     await loginPromise;
 
     expect(sock.requestPairingCode).toHaveBeenCalledWith("15551234567");
-    expect(vi.mocked(createWaSocket).mock.calls[0]?.[2]).toEqual(
-      expect.objectContaining({ browser: WHATSAPP_PHONE_CODE_BROWSER }),
-    );
     expect(waiter).toHaveBeenCalled();
     expect(runtime.log).toHaveBeenCalledWith(success("WhatsApp pairing code: 1234 5678"));
     expect(runtime.log).toHaveBeenCalledWith(
@@ -327,12 +323,6 @@ describe("web login", () => {
 
     expect(firstSock.requestPairingCode).toHaveBeenCalledWith("15551234567");
     expect(secondSock.requestPairingCode).toHaveBeenCalledWith("15551234567");
-    expect(vi.mocked(createWaSocket).mock.calls[0]?.[2]).toEqual(
-      expect.objectContaining({ browser: WHATSAPP_PHONE_CODE_BROWSER }),
-    );
-    expect(vi.mocked(createWaSocket).mock.calls[1]?.[2]).toEqual(
-      expect.objectContaining({ browser: WHATSAPP_PHONE_CODE_BROWSER }),
-    );
     expect(clearStalePhoneCodePairingAuthIfNeeded).toHaveBeenCalledTimes(2);
     const cleanupBeforeReplacement = vi.mocked(clearStalePhoneCodePairingAuthIfNeeded).mock
       .invocationCallOrder[1];

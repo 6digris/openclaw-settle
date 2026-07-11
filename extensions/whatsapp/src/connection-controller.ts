@@ -305,7 +305,6 @@ export async function waitForWhatsAppLoginResult(params: {
   createSocket?: typeof createWaSocket;
   socketTiming?: WhatsAppSocketTimingOptions;
   onQr?: (qr: string) => void;
-  browser?: WABrowserDescription;
   beforeCreateLoginSocket?: () => Promise<void> | void;
   prepareLoginSocket?: (
     sock: WaSocket,
@@ -342,7 +341,6 @@ export async function waitForWhatsAppLoginResult(params: {
         beforeCredentialPersistence: params.beforeCredentialPersistence,
         onCredentialPersistenceError: params.onCredentialPersistenceError,
         onCredentialPersistenceTask: params.onCredentialPersistenceTask,
-        browser: params.browser,
       });
       params.onSocketReplaced?.(currentSock);
       return null;
