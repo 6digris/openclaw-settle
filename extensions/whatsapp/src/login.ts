@@ -6,8 +6,8 @@ import { getRuntimeConfig } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { danger, success, defaultRuntime, type RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { resolveWhatsAppAccount } from "./accounts.js";
 import {
-  clearStalePhoneCodePairingAuthIfNeeded,
   isLinkedWebCredsPayload,
+  prepareWebAuthForLogin,
   restoreCredsFromBackupIfNeeded,
   WhatsAppAuthUnstableError,
 } from "./auth-store.js";
@@ -144,17 +144,17 @@ function createWhatsAppPairingCodeReadySignal(timeoutMs: number): {
 
 type CredentialPersistenceFailure = { error: unknown };
 
-async function clearStalePhoneCodePairingAuthForLogin(params: {
+async function prepareWebAuthForLoginOrThrow(params: {
   authDir: string;
   isLegacyAuthDir: boolean;
   runtime: RuntimeEnv;
   beforeCredentialPersistence?: () => Promise<void>;
 }): Promise<void> {
-  const result = await clearStalePhoneCodePairingAuthIfNeeded(params);
+  const result = await prepareWebAuthForLogin({ ...params, mode: "preserve-linked" });
   if (result === "unstable") {
     throw new WhatsAppAuthUnstableError();
   }
-  if (result === "stale-not-cleared") {
+  if (result === "not-cleared") {
     throw new Error(STALE_PHONE_CODE_AUTH_NOT_CLEARED_MESSAGE);
   }
 }
@@ -220,20 +220,13 @@ async function runWebLogin(
       await Promise.allSettled(credentialPersistenceTasks);
     }
   };
-  const credentialPersistenceOptions = beforeCredentialPersistence
-    ? {
-        beforeCredentialPersistence: async () => {
-          try {
-            await beforeCredentialPersistence();
-          } catch (error) {
-            onCredentialPersistenceError(error);
-            throw error;
-          }
-        },
-        onCredentialPersistenceError,
-        onCredentialPersistenceTask,
-      }
-    : {};
+  // Persistence observation is part of login correctness for every mode.
+  // The setup authority guard is an independent, optional pre-write check.
+  const credentialPersistenceOptions = {
+    ...(beforeCredentialPersistence ? { beforeCredentialPersistence } : {}),
+    onCredentialPersistenceError,
+    onCredentialPersistenceTask,
+  };
 
   const phoneReadySignal = phoneMode
     ? createWhatsAppPairingCodeReadySignal(
@@ -273,7 +266,7 @@ async function runWebLogin(
       }
       phoneReadySignal.reset();
       if (context.reason === "timeout") {
-        await clearStalePhoneCodePairingAuthForLogin({
+        await prepareWebAuthForLoginOrThrow({
           authDir: account.authDir,
           isLegacyAuthDir: account.isLegacyAuthDir,
           runtime,
@@ -325,18 +318,14 @@ async function runWebLogin(
       onQr,
       ...phoneLoginHooks,
       ...credentialPersistenceOptions,
-      ...(beforeCredentialPersistence
-        ? {
-            credentialPersistenceFailure: credentialPersistenceFailurePromise,
-            getCredentialPersistenceFailure: () => credentialPersistenceState.failure,
-            waitForCredentialPersistence,
-          }
-        : {}),
+      credentialPersistenceFailure: credentialPersistenceFailurePromise,
+      getCredentialPersistenceFailure: () => credentialPersistenceState.failure,
+      waitForCredentialPersistence,
       onSocketReplaced: (replacementSock) => {
         sock = replacementSock;
       },
     });
-    if (qrMode && credentialPersistenceState.failure) {
+    if (credentialPersistenceState.failure) {
       throw credentialPersistenceState.failure.error;
     }
     if (result.outcome === "connected") {
@@ -376,9 +365,10 @@ async function runWebLogin(
     throw new Error(result.message, { cause: result.error });
   } catch (error) {
     if (phoneMode && !(error instanceof WhatsAppAuthUnstableError)) {
-      await clearStalePhoneCodePairingAuthIfNeeded({
+      await prepareWebAuthForLogin({
         authDir: account.authDir,
         isLegacyAuthDir: account.isLegacyAuthDir,
+        mode: "preserve-linked",
         runtime,
       });
     }
