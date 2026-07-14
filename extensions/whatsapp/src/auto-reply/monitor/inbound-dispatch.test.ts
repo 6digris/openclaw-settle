@@ -283,9 +283,6 @@ function groupAdmission(conversationId: string): TestAdmissionOverride {
       kind: "group",
       id: conversationId,
     },
-    senderAccess: {
-      reasonCode: "group_policy_allowed",
-    },
   };
 }
 
@@ -570,8 +567,6 @@ async function dispatchBufferedReply(overrides: BufferedReplyOverrides = {}) {
     connectionId: "conn",
     context: finalizedContext({ Body: "hi" }),
     deliverReply: async () => acceptedDeliveryResult(),
-    groupHistories: new Map(),
-    groupHistoryKey: "+1000",
     maxMediaBytes: 1,
     inbound: makePreparedInbound(msg),
     replyLogger: makeReplyLogger(),

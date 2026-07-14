@@ -10,27 +10,7 @@ type WhatsAppInboundIngressDecision = Pick<
   "admission" | "decision" | "decisiveGateId" | "reasonCode"
 >;
 
-type WhatsAppInboundSenderAccess = Pick<
-  ResolvedChannelMessageIngress["senderAccess"],
-  "allowed" | "decision" | "reasonCode" | "providerMissingFallbackApplied"
->;
-
-type WhatsAppInboundCommandAccess = Pick<
-  ResolvedChannelMessageIngress["commandAccess"],
-  "requested" | "authorized" | "shouldBlockControlCommand" | "reasonCode"
->;
-
-type WhatsAppInboundActivationAccess = Pick<
-  ResolvedChannelMessageIngress["activationAccess"],
-  "ran" | "allowed" | "shouldSkip" | "reasonCode"
->;
-
-type WhatsAppInboundAdmissionAccess = {
-  ingress: WhatsAppInboundIngressDecision;
-  senderAccess: WhatsAppInboundSenderAccess;
-  commandAccess: WhatsAppInboundCommandAccess;
-  activationAccess: WhatsAppInboundActivationAccess;
-};
+type WhatsAppInboundTurnAdmission = ReturnType<typeof mapChannelIngressDecisionToTurnAdmission>;
 
 type WhatsAppInboundAdmissionPolicy = {
   account: {
@@ -52,9 +32,9 @@ type WhatsAppInboundAdmissionCarrier = {
 /**
  * Public-safe accepted inbound facts resolved by access control.
  *
- * Keep this as an admission envelope around canonical channel ingress
- * projections. Later PRs can migrate consumers to these projections without
- * publishing raw allowlist material or session-dependent post-admission state.
+ * Keep this as an admission envelope around the canonical turn admission and
+ * redacted ingress decision. Never publish the resolved ingress graph because
+ * its sender-access projection contains effective allowlists.
  */
 export type WhatsAppInboundAdmission = {
   channelIngress?: ResolvedChannelMessageIngress;
@@ -78,9 +58,7 @@ export type WhatsAppInboundAdmission = {
     isSamePhone: boolean;
   };
   ingress: WhatsAppInboundIngressDecision;
-  senderAccess: WhatsAppInboundSenderAccess;
-  commandAccess: WhatsAppInboundCommandAccess;
-  activationAccess: WhatsAppInboundActivationAccess;
+  turnAdmission: WhatsAppInboundTurnAdmission;
 };
 
 type WhatsAppIngressResolver = (
@@ -132,29 +110,12 @@ export function buildWhatsAppInboundAdmission(params: {
       isSamePhone: params.policy.isSamePhone(params.senderId),
     },
     ingress: {
-      admission: params.access.ingress.admission,
-      decision: params.access.ingress.decision,
-      decisiveGateId: params.access.ingress.decisiveGateId,
-      reasonCode: params.access.ingress.reasonCode,
+      admission: params.ingress.admission,
+      decision: params.ingress.decision,
+      decisiveGateId: params.ingress.decisiveGateId,
+      reasonCode: params.ingress.reasonCode,
     },
-    senderAccess: {
-      allowed: params.access.senderAccess.allowed,
-      decision: params.access.senderAccess.decision,
-      reasonCode: params.access.senderAccess.reasonCode,
-      providerMissingFallbackApplied: params.access.senderAccess.providerMissingFallbackApplied,
-    },
-    commandAccess: {
-      requested: params.access.commandAccess.requested,
-      authorized: params.access.commandAccess.authorized,
-      shouldBlockControlCommand: params.access.commandAccess.shouldBlockControlCommand,
-      reasonCode: params.access.commandAccess.reasonCode,
-    },
-    activationAccess: {
-      ran: params.access.activationAccess.ran,
-      allowed: params.access.activationAccess.allowed,
-      shouldSkip: params.access.activationAccess.shouldSkip,
-      reasonCode: params.access.activationAccess.reasonCode,
-    },
+    turnAdmission: params.turnAdmission,
   };
   if (params.resolveChannelIngress) {
     ingressResolverByAdmission.set(admission, params.resolveChannelIngress);

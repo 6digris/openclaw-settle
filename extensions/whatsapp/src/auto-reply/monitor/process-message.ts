@@ -193,6 +193,7 @@ export async function processMessage(params: {
   msg: AdmittedWebInboundMessage;
   route: ReturnType<typeof resolveAgentRoute>;
   groupHistoryKey: string;
+  groupHistoryLimit: number;
   groupHistories: Map<string, GroupHistoryEntry[]>;
   groupMemberNames: Map<string, Map<string, string>>;
   connectionId: string;
@@ -218,7 +219,10 @@ export async function processMessage(params: {
   dispatchReplyFromConfig?: NonNullable<ChannelInboundTurnPlan["dispatchReplyFromConfig"]>;
 }) {
   const admission = requireWhatsAppInboundAdmission(params.msg);
-  if (admission.ingress.admission !== "dispatch" && admission.ingress.admission !== "observe") {
+  if (
+    admission.turnAdmission.kind !== "dispatch" &&
+    admission.turnAdmission.kind !== "observeOnly"
+  ) {
     return false;
   }
   const conversationId = admission.conversation.id;
@@ -319,7 +323,6 @@ export async function processMessage(params: {
     envelope: envelopeOptions,
     visibleReplyTo,
   });
-  let shouldClearGroupHistory = false;
   const visibleGroupHistory =
     conversationKind === "group"
       ? resolveVisibleWhatsAppGroupHistory({
@@ -359,7 +362,6 @@ export async function processMessage(params: {
         },
       });
     }
-    shouldClearGroupHistory = !(params.suppressGroupHistoryClear ?? false);
   }
 
   // When statusReactions.enabled, a StatusReactionController takes over lifecycle
@@ -561,8 +563,6 @@ export async function processMessage(params: {
           connectionId: params.connectionId,
           context: ctxPayload,
           deliverReply: deliverWebReply,
-          groupHistories: params.groupHistories,
-          groupHistoryKey: params.groupHistoryKey,
           maxMediaBytes: params.maxMediaBytes,
           maxMediaTextChunkLimit: params.maxMediaTextChunkLimit,
           inbound,
@@ -574,7 +574,6 @@ export async function processMessage(params: {
           },
           replyResolver: params.replyResolver,
           route: params.route,
-          shouldClearGroupHistory,
           statusReactionController,
           transport,
           turnAdoptionLifecycle,
@@ -602,6 +601,18 @@ export async function processMessage(params: {
               trackBackgroundTask(params.backgroundTasks, task);
             },
           },
+          ...(admission.turnAdmission.kind === "dispatch" &&
+          conversationKind === "group" &&
+          params.suppressGroupHistoryClear !== true
+            ? {
+                history: {
+                  isGroup: true,
+                  historyKey: params.groupHistoryKey,
+                  historyMap: params.groupHistories,
+                  limit: params.groupHistoryLimit,
+                },
+              }
+            : {}),
           ...replyPlan,
         };
       },

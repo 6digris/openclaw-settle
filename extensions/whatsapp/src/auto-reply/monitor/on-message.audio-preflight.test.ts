@@ -111,9 +111,6 @@ function makeGroupAudioMsg(): AdmittedWebInboundMessage {
         kind: "group",
         id: "1203630@g.us",
       },
-      senderAccess: {
-        reasonCode: "group_policy_allowed",
-      },
     },
     wasMentioned: false,
   });
@@ -125,16 +122,6 @@ function makeBlockedDirectAudioMsg(): AdmittedWebInboundMessage {
       ingress: {
         admission: "drop",
         decision: "block",
-        reasonCode: "dm_policy_not_allowlisted",
-      },
-      senderAccess: {
-        allowed: false,
-        decision: "block",
-        reasonCode: "dm_policy_not_allowlisted",
-      },
-      activationAccess: {
-        allowed: false,
-        shouldSkip: true,
         reasonCode: "dm_policy_not_allowlisted",
       },
     },

@@ -238,9 +238,6 @@ function makeBaseMsg(overrides: { body?: string; commandBody?: string } = {}) {
       sender: {
         id: "+15550002222",
       },
-      senderAccess: {
-        reasonCode: "group_policy_allowed",
-      },
     },
     group: {
       subject: "Test Group",
@@ -271,6 +268,7 @@ function callProcessMessage(
     msg: (overrides.msg ?? makeBaseMsg()) as never,
     route: baseRoute as never,
     groupHistoryKey: "whatsapp:default:group:123@g.us",
+    groupHistoryLimit: 20,
     groupHistories: (overrides.groupHistories ?? new Map()) as never,
     groupMemberNames: new Map(),
     connectionId: "conn-1",
@@ -632,16 +630,6 @@ describe("processMessage group system prompt wiring", () => {
           ingress: {
             admission: "drop",
             decision: "block",
-            reasonCode: "dm_policy_not_allowlisted",
-          },
-          senderAccess: {
-            allowed: false,
-            decision: "block",
-            reasonCode: "dm_policy_not_allowlisted",
-          },
-          activationAccess: {
-            allowed: false,
-            shouldSkip: true,
             reasonCode: "dm_policy_not_allowlisted",
           },
         },

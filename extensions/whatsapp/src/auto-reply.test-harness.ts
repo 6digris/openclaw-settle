@@ -429,9 +429,6 @@ export async function sendWebGroupInboundMessage(params: {
         sender: {
           id: params.senderE164,
         },
-        senderAccess: {
-          reasonCode: "group_policy_allowed",
-        },
       },
       group: params.mentionedJids?.length
         ? {
