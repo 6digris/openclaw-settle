@@ -1,3 +1,4 @@
+import { mapChannelIngressDecisionToTurnAdmission } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import type { WhatsAppInboundAdmission } from "./admission.js";
 import { resolveWhatsAppGroupConversationId } from "./group-conversation.js";
 import { createAcceptedWhatsAppSendResult } from "./send-result.test-helper.js";
@@ -55,15 +56,7 @@ function createTestWhatsAppInboundAdmission(
   };
   const turnAdmission: WhatsAppInboundAdmission["turnAdmission"] =
     overrides.turnAdmission ??
-    (ingress.admission === "dispatch"
-      ? { kind: "dispatch", reason: ingress.reasonCode }
-      : ingress.admission === "observe"
-        ? { kind: "observeOnly", reason: ingress.reasonCode }
-        : {
-            kind: "drop",
-            reason: ingress.reasonCode,
-            ...(ingress.admission === "skip" ? { recordHistory: false } : {}),
-          });
+    mapChannelIngressDecisionToTurnAdmission(ingress, { kind: "none" });
 
   return {
     channelIngress: overrides.channelIngress,
