@@ -283,6 +283,9 @@ function groupAdmission(conversationId: string): TestAdmissionOverride {
       kind: "group",
       id: conversationId,
     },
+    senderAccess: {
+      reasonCode: "group_policy_allowed",
+    },
   };
 }
 

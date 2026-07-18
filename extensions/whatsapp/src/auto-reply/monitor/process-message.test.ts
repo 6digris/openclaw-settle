@@ -68,10 +68,10 @@ vi.mock("./inbound-dispatch.js", async (importOriginal) => {
       void dispatchBufferedReplyMock(params);
       return {
         dispatcherOptions: {},
-        delivery: { deliver: async () => {} },
+        delivery: { deliver: deliverReplyMock },
         replyOptions: {},
         replyResolver: params.replyResolver,
-        finalize: () => true,
+        finalize: (result: { queuedFinal?: boolean }) => result.queuedFinal === true,
       };
     },
     resolveWhatsAppDmRouteTarget: () => null,
@@ -238,6 +238,9 @@ function makeBaseMsg(overrides: { body?: string; commandBody?: string } = {}) {
       sender: {
         id: "+15550002222",
       },
+      senderAccess: {
+        reasonCode: "group_policy_allowed",
+      },
     },
     group: {
       subject: "Test Group",
@@ -299,7 +302,9 @@ function mockCallArg(mockFn: ReturnType<typeof vi.fn>, label: string, callIndex 
 describe("processMessage group system prompt wiring", () => {
   beforeEach(() => {
     buildContextMock.mockReset();
-    dispatchBufferedReplyMock.mockClear();
+    deliverReplyMock.mockClear();
+    replyResolverMock.mockReset();
+    replyResolverMock.mockResolvedValue(undefined);
     isControlCommandMessageMock.mockReset();
     isControlCommandMessageMock.mockReturnValue(false);
     resolvePolicyMock.mockReset();
@@ -632,6 +637,16 @@ describe("processMessage group system prompt wiring", () => {
             decision: "block",
             reasonCode: "dm_policy_not_allowlisted",
           },
+          senderAccess: {
+            allowed: false,
+            decision: "block",
+            reasonCode: "dm_policy_not_allowlisted",
+          },
+          activationAccess: {
+            allowed: false,
+            shouldSkip: true,
+            reasonCode: "dm_policy_not_allowlisted",
+          },
         },
       }),
     });
@@ -639,7 +654,7 @@ describe("processMessage group system prompt wiring", () => {
     expect(result).toBe(false);
     expect(buildContextMock).not.toHaveBeenCalled();
     expect(trackBackgroundTaskMock).not.toHaveBeenCalled();
-    expect(dispatchBufferedReplyMock).not.toHaveBeenCalled();
+    expect(replyResolverMock).not.toHaveBeenCalled();
     expect(runMessageReceivedMock).not.toHaveBeenCalled();
   });
 });

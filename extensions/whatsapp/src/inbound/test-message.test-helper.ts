@@ -55,7 +55,7 @@ function createTestWhatsAppInboundAdmission(
     ...overrides.ingress,
   };
   const turnAdmission: WhatsAppInboundAdmission["turnAdmission"] =
-    overrides.turnAdmission ?? mapChannelIngressDecisionToTurnAdmission(ingress, { kind: "none" });
+    overrides.turnAdmission ?? mapChannelIngressDecisionToTurnAdmission(ingress);
 
   return {
     channelIngress: overrides.channelIngress,

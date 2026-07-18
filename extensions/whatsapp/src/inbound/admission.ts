@@ -156,7 +156,7 @@ export function buildWhatsAppInboundAdmission(params: {
       shouldSkip: params.access.activationAccess.shouldSkip,
       reasonCode: params.access.activationAccess.reasonCode,
     },
-    turnAdmission: params.turnAdmission,
+    turnAdmission: mapChannelIngressDecisionToTurnAdmission(params.access.ingress),
   };
   if (params.resolveChannelIngress) {
     ingressResolverByAdmission.set(admission, params.resolveChannelIngress);
