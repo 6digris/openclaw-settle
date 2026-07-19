@@ -27,10 +27,12 @@ type WhatsAppInboundActivationAccess = Pick<
   "ran" | "allowed" | "shouldSkip" | "reasonCode"
 >;
 
-type WhatsAppInboundAdmissionAccess = Pick<
-  ResolvedChannelMessageIngress,
-  "ingress" | "senderAccess" | "commandAccess" | "activationAccess"
->;
+type WhatsAppInboundAdmissionAccess = {
+  ingress: WhatsAppInboundIngressDecision;
+  senderAccess: WhatsAppInboundSenderAccess;
+  commandAccess: WhatsAppInboundCommandAccess;
+  activationAccess: WhatsAppInboundActivationAccess;
+};
 
 type WhatsAppInboundAdmissionPolicy = {
   account: {

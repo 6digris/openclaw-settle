@@ -221,6 +221,29 @@ describe("createWebOnMessageHandler audio preflight", () => {
     expect(processParams.ackReaction).toBe(ackReactionHandle);
   });
 
+  it.each([
+    ["dispatch", "activation_allowed", { kind: "dispatch", reason: "activation_allowed" }, true],
+    ["observe", "activation_allowed", { kind: "observeOnly", reason: "activation_allowed" }, true],
+    ["skip", "activation_skipped", { kind: "handled", reason: "activation_skipped" }, false],
+    [
+      "drop",
+      "route_blocked",
+      { kind: "drop", reason: "route_blocked", recordHistory: false },
+      false,
+    ],
+  ] as const)(
+    "normalizes shipped nested %s admission before gating the turn",
+    async (admission, reasonCode, expectedTurnAdmission, shouldProcess) => {
+      const msg = makeShippedNestedAudioMsg({ admission, reasonCode });
+      const handler = makeHandler();
+
+      await handler(msg);
+
+      expect(msg.admission).toMatchObject({ turnAdmission: expectedTurnAdmission });
+      expect(processMessageMock).toHaveBeenCalledTimes(shouldProcess ? 1 : 0);
+    },
+  );
+
   it("sends queued status reaction before audio preflight when status reactions are enabled", async () => {
     const handler = makeHandler({
       cfg: {
