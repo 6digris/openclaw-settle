@@ -56,18 +56,6 @@ const whatsappSetupWizardProxy = createWhatsAppSetupWizardProxy(
   async () => (await loadWhatsAppSetupSurface()).whatsappSetupWizard,
 );
 
-const whatsappConfigAdapter = createScopedChannelConfigAdapter<ResolvedWhatsAppAccount>({
-  sectionKey: WHATSAPP_CHANNEL,
-  listAccountIds: listWhatsAppAccountIds,
-  resolveAccount: adaptScopedAccountAccessor(resolveWhatsAppAccount),
-  defaultAccountId: resolveDefaultWhatsAppAccountId,
-  clearBaseFields: [],
-  allowTopLevel: false,
-  resolveAllowFrom: (account) => account.allowFrom,
-  formatAllowFrom: (allowFrom) => formatWhatsAppConfigAllowFromEntries(allowFrom),
-  resolveDefaultTo: (account) => account.defaultTo,
-});
-
 const whatsappResolveDmPolicy = createScopedDmSecurityResolver<ResolvedWhatsAppAccount>({
   channelKey: WHATSAPP_CHANNEL,
   resolvePolicy: (account) => account.dmPolicy,

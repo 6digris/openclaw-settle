@@ -17,7 +17,6 @@ import {
 import { whatsappChannelOutbound, whatsappMessageAdapter } from "./channel-outbound.js";
 import { loadWhatsAppChannelRuntime } from "./channel-runtime-loader.js";
 import { whatsappCommandPolicy } from "./command-policy.js";
-import { formatWhatsAppConfigAllowFromEntries } from "./config-accessors.js";
 import { resolveWhatsAppMentionStripRegexes } from "./group-intro.js";
 import { checkWhatsAppHeartbeatReady } from "./heartbeat.js";
 import {
