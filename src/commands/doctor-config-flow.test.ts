@@ -694,10 +694,8 @@ vi.mock("../channels/plugins/setup-promotion-helpers.js", () => {
 });
 
 vi.mock("./doctor/shared/channel-legacy-config-migrate.js", () => ({
-  applyChannelDoctorCompatibilityMigrations: (cfg: Record<string, unknown>) => ({
-    next: cfg,
-    changes: [],
-  }),
+  applyChannelDoctorCompatibilityMigrations: (cfg: Record<string, unknown>) =>
+    applyChannelDoctorCompatibilityMigrationsMock(cfg),
 }));
 
 vi.mock("./doctor/shared/legacy-config-migrate.js", () => ({
@@ -1544,6 +1542,29 @@ describe("doctor config flow", () => {
     collectImplicitFallbackClobberWarningsMock.mockReturnValue([]);
     noteImplicitFallbackClobberWarningsMock.mockClear();
     runDoctorConfigPreflightOptionsMock.mockClear();
+    applyChannelDoctorCompatibilityMigrationsMock.mockReset();
+    applyChannelDoctorCompatibilityMigrationsMock.mockImplementation((cfg) => ({
+      next: cfg,
+      changes: [],
+      warnings: [],
+    }));
+  });
+
+  it("shows exact WhatsApp compatibility warnings when no config can be migrated", async () => {
+    const warning =
+      'channels.whatsapp.allowFrom entry "15551239999@lid" was not migrated because no verified LID→PN mapping was found; replace it with the sender\'s E.164 number.';
+    applyChannelDoctorCompatibilityMigrationsMock.mockImplementationOnce((cfg) => ({
+      next: cfg,
+      changes: [],
+      warnings: [warning],
+    }));
+
+    await runDoctorConfigWithInput({
+      config: { channels: { whatsapp: { allowFrom: ["15551239999@lid"] } } },
+      run: loadAndMaybeMigrateDoctorConfig,
+    });
+
+    expect(terminalNoteMock).toHaveBeenCalledWith(warning, "Doctor warnings");
   });
 
   it("preserves invalid config for doctor repairs", async () => {

@@ -170,6 +170,7 @@ export function normalizeCompatibilityConfigValues(
     changes.push("Removed retired runtime tuning knobs; built-in defaults now apply.");
   }
   const channelMigrations = applyChannelDoctorCompatibilityMigrations(next);
+  warnings.push(...channelMigrations.warnings);
   if (channelMigrations.changes.length > 0) {
     next = channelMigrations.next;
     changes.push(...channelMigrations.changes);

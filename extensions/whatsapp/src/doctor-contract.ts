@@ -31,6 +31,7 @@ const hasAckReaction = (value: unknown): boolean =>
 
 export const legacyConfigRules: ChannelDoctorLegacyConfigRule[] = [
   ...streamingAliasMigration.legacyConfigRules,
+  ...whatsAppLidAllowlistLegacyRules,
   {
     path: ["channels", "whatsapp", "ackReaction"],
     message:

@@ -242,7 +242,11 @@ vi.mock("../plugins/doctor-contract-registry.js", () => ({
   collectDoctorConfigRepairPluginIds: () => [],
   collectRelevantDoctorPluginIds: () => [],
   listPluginDoctorLegacyConfigRules: () => [],
-  applyPluginDoctorCompatibilityMigrations: () => ({ next: null, changes: [] }),
+  applyPluginDoctorCompatibilityMigrations: (config: OpenClawConfig) => ({
+    config,
+    changes: [],
+    warnings: [],
+  }),
 }));
 
 vi.mock("../secrets/target-registry-data.js", () => ({
