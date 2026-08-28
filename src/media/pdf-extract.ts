@@ -33,8 +33,6 @@ export async function extractPdfContent(params: {
       "PDF extraction disabled or unavailable: enable the document-extract plugin to process application/pdf files.",
     );
   }
-  return {
-    text: extracted.text,
-    images: extracted.images,
-  };
+  const { extractor: _extractor, ...content } = extracted;
+  return content;
 }

@@ -13,6 +13,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { bindModelLlmRuntime } from "../../llm/model-runtime-binding.js";
 import { complete } from "../../llm/stream.js";
 import type { Context } from "../../llm/types.js";
+import { renderDocumentTruncationNotice } from "../../media/document-extraction-metadata.js";
 import {
   classifyMediaReferenceSource,
   normalizeMediaReferenceSource,
@@ -26,6 +27,7 @@ import {
   trackAsyncWork,
 } from "../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { wrapExternalContent } from "../../security/external-content.js";
 import { resolveUserPath } from "../../utils.js";
 import type { AuthProfileStore } from "../auth-profiles/types.js";
 import { resolveModelAsync } from "../embedded-agent-runner/model.js";
@@ -89,7 +91,7 @@ const PdfToolSchema = Type.Object({
   ),
   pages: Type.Optional(
     Type.String({
-      description: 'Pages, e.g. "1-5", "1,3,5-7"; default all.',
+      description: 'Pages, e.g. "1-5", "1,3,5-7"; default all, up to configured limit.',
     }),
   ),
   password: Type.Optional(Type.String({ description: "Password for encrypted PDFs." })),
@@ -114,6 +116,7 @@ const CODEX_PDF_INSTRUCTIONS =
 function buildPdfExtractionContext(
   prompt: string,
   extractions: PdfExtractedContent[],
+  explicitSelectionLimit?: number,
   model?: { api?: string },
 ): Context {
   const content: Array<
@@ -122,9 +125,16 @@ function buildPdfExtractionContext(
 
   // Add extracted text and images
   for (const [i, extraction] of extractions.entries()) {
-    if (extraction.text.trim()) {
+    const notice = renderDocumentTruncationNotice(extraction.metadata, explicitSelectionLimit);
+    if (extraction.text.trim() || notice) {
       const label = extractions.length > 1 ? `[PDF ${i + 1} text]\n` : "[PDF text]\n";
-      content.push({ type: "text", text: label + extraction.text });
+      const text = extraction.text.trim()
+        ? wrapExternalContent(extraction.text, { source: "unknown", includeWarning: false })
+        : undefined;
+      content.push({
+        type: "text",
+        text: label + [notice, text].filter(Boolean).join("\n"),
+      });
     }
     for (const img of extraction.images) {
       content.push({ type: "image", data: img.data, mimeType: img.mimeType });
@@ -141,6 +151,19 @@ function buildPdfExtractionContext(
     ...(systemPrompt ? { systemPrompt } : {}),
     messages: [{ role: "user", content, timestamp: Date.now() }],
   };
+}
+
+function collectPdfTruncationNotices(
+  extractions: PdfExtractedContent[],
+  explicitSelectionLimit?: number,
+): string[] {
+  return extractions.flatMap((extraction, index) => {
+    const notice = renderDocumentTruncationNotice(extraction.metadata, explicitSelectionLimit);
+    if (!notice) {
+      return [];
+    }
+    return extractions.length > 1 ? `PDF ${index + 1}: ${notice}` : notice;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +184,7 @@ async function runPdfPrompt(params: {
   pdfBuffers: Array<{ buffer: Buffer; filename: string }>;
   password?: string;
   pageNumbers?: number[];
+  explicitSelectionLimit?: number;
   getExtractions: () => Promise<PdfExtractedContent[]>;
   signal?: AbortSignal;
   work: AsyncWorkScope;
@@ -172,6 +196,7 @@ async function runPdfPrompt(params: {
   model: string;
   native: boolean;
   attempts: Array<{ provider: string; model: string; error: string }>;
+  truncationNotices: string[];
 }> {
   const requestedCfg = applyImageModelConfigDefaults(params.cfg, params.pdfModelConfig);
 
@@ -285,7 +310,7 @@ async function runPdfPrompt(params: {
             },
             signal: params.signal,
           });
-          return { text, provider, model: modelId, native: true };
+            return { text, provider, model: modelId, native: true, truncationNotices: [] };
         }
 
         if (provider === "google") {
@@ -301,7 +326,7 @@ async function runPdfPrompt(params: {
             },
             signal: params.signal,
           });
-          return { text, provider, model: modelId, native: true };
+            return { text, provider, model: modelId, native: true, truncationNotices: [] };
         }
       }
 
@@ -344,19 +369,47 @@ async function runPdfPrompt(params: {
           );
         }
         const textOnlyExtractions: PdfExtractedContent[] = extractions.map((e) => ({
-          text: e.text,
+            ...e,
           images: [],
         }));
-        const context = buildPdfExtractionContext(params.prompt, textOnlyExtractions, model);
+          const context = buildPdfExtractionContext(
+            params.prompt,
+            textOnlyExtractions,
+            params.explicitSelectionLimit,
+            model,
+          );
         const message = await completeExtraction(context);
         const text = coercePdfAssistantText({ message, provider, model: modelId });
-        return { text, provider, model: modelId, native: false };
+          return {
+            text,
+            provider,
+            model: modelId,
+            native: false,
+            truncationNotices: collectPdfTruncationNotices(
+              extractions,
+              params.explicitSelectionLimit,
+            ),
+          };
       }
 
-      const context = buildPdfExtractionContext(params.prompt, extractions, model);
+        const context = buildPdfExtractionContext(
+          params.prompt,
+          extractions,
+          params.explicitSelectionLimit,
+          model,
+        );
       const message = await completeExtraction(context);
       const text = coercePdfAssistantText({ message, provider, model: modelId });
-      return { text, provider, model: modelId, native: false };
+        return {
+          text,
+          provider,
+          model: modelId,
+          native: false,
+          truncationNotices: collectPdfTruncationNotices(
+            extractions,
+            params.explicitSelectionLimit,
+          ),
+        };
     },
   });
 
@@ -370,6 +423,7 @@ async function runPdfPrompt(params: {
       model: a.model,
       error: a.error,
     })),
+    truncationNotices: result.result.truncationNotices,
   };
 }
 
@@ -430,7 +484,7 @@ export function createPdfTool(options?: {
       : DEFAULT_MAX_PAGES;
 
   const description =
-    'Analyze PDF(s): Anthropic/Google native when supported, else text/image extraction. pdf one; pdfs max 10; prompt says inspection. `pages` selects a page range ("1-5", "1,3,5-7"); `password` opens encrypted PDFs (both non-native only).';
+    'Analyze PDF(s): Anthropic/Google native when supported, else text/image extraction. pdf one; pdfs max 10; prompt says inspection. `pages` selects up to the configured page limit from a range ("1-5", "1,3,5-7"); `password` opens encrypted PDFs (both non-native only).';
   const remoteMediaSsrfPolicy = resolveRemoteMediaSsrfPolicy(options?.config);
 
   const executePdf = async (
@@ -476,7 +530,8 @@ export function createPdfTool(options?: {
 
     // Parse page range
     const pagesRaw = normalizeOptionalString(record.pages);
-    const pageNumbers = pagesRaw ? parsePageRange(pagesRaw, configuredMaxPages) : undefined;
+      const pageSelection = pagesRaw ? parsePageRange(pagesRaw, configuredMaxPages) : undefined;
+      const pageNumbers = pageSelection?.pages;
     const password = typeof record.password === "string" ? record.password : undefined;
 
     const pdfModelConfig =
@@ -631,6 +686,7 @@ export function createPdfTool(options?: {
       pdfBuffers: loadedPdfs,
       ...(password ? { password } : {}),
       pageNumbers,
+        ...(pageSelection?.truncated ? { explicitSelectionLimit: pageSelection.pages.length } : {}),
       getExtractions,
     });
 
@@ -649,7 +705,8 @@ export function createPdfTool(options?: {
           ),
         };
 
-    return buildTextToolResult(result, { native: result.native, ...pdfDetails });
+    const text = [...result.truncationNotices, result.text].join("\n");
+    return buildTextToolResult({ ...result, text }, { native: result.native, ...pdfDetails });
   };
 
   return {
