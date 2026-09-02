@@ -8,6 +8,7 @@ import { parseDurationMs } from "../../cli/parse-duration.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import { resolveCronCreationDelivery } from "../../cron/delivery-context.js";
 import { assertCronDeliveryInputNonBlankFields } from "../../cron/delivery-target-validation.js";
+import { assertNoNewCronToolAllowlist } from "../../cron/normalize-payload.js";
 import { normalizeCronJobCreate, normalizeCronJobPatch } from "../../cron/normalize.js";
 import type { CronDelivery } from "../../cron/types.js";
 import { normalizeHttpWebhookUrl } from "../../cron/webhook-url.js";
@@ -379,6 +380,7 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
               canonicalizeCronToolObject(params.job as Record<string, unknown>),
             );
             assertNoCronShellExecution(canonicalJob);
+            assertNoNewCronToolAllowlist(canonicalJob);
             assertCronDeliveryInputNonBlankFields(canonicalJob.delivery);
             assertCronPacingInput(canonicalJob.pacing);
             if (
@@ -514,6 +516,7 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
             if (!managementAuthority) {
               assertNoCronShellExecution(canonicalPatch);
             }
+            assertNoNewCronToolAllowlist(canonicalPatch);
             assertCronDeliveryInputNonBlankFields(canonicalPatch.delivery);
             assertCronPacingInput(canonicalPatch.pacing);
             if (

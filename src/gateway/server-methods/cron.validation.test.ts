@@ -385,7 +385,7 @@ function createCronJob(overrides: Partial<CronJob> = {}): CronJob {
     schedule: { kind: "every", everyMs: 60_000 },
     sessionTarget: "isolated",
     wakeMode: "next-heartbeat",
-    payload: { kind: "agentTurn", message: "hello", toolsAllow: ["*"] },
+    payload: { kind: "agentTurn", message: "hello" },
     delivery: { mode: "none" },
     state: {},
     ...overrides,
@@ -540,7 +540,7 @@ function agentTurnCronParams(overrides: Record<string, unknown> = {}) {
     schedule: { kind: "every", everyMs: 60_000 },
     sessionTarget: "isolated",
     wakeMode: "next-heartbeat",
-    payload: { kind: "agentTurn", message: "hello", toolsAllow: ["*"] },
+    payload: { kind: "agentTurn", message: "hello" },
     ...overrides,
   };
 }
@@ -1384,6 +1384,27 @@ describe("cron method validation", () => {
     },
   );
 
+  it.each([{ toolsAllow: [] }, { toolsAllow: ["read"] }, { toolsAllow: ["*"] }])(
+    "rejects newly authored tool caps %j without mutating jobs",
+    async ({ toolsAllow }) => {
+      const added = await invokeCronAdd(
+        agentTurnCronParams({ payload: { kind: "agentTurn", message: "run", toolsAllow } }),
+      );
+      expectResponseError(added.respond, {
+        messageIncludes: "Per-job tool restrictions are no longer supported",
+      });
+      expect(added.context.cron.add).not.toHaveBeenCalled();
+      const updated = await invokeCronUpdate(
+        { id: "cron-1", patch: { payload: { kind: "agentTurn", toolsAllow } } },
+        createCronJob(),
+      );
+      expectResponseError(updated.respond, {
+        messageIncludes: "Per-job tool restrictions are no longer supported",
+      });
+      expect(updated.context.cron.updateWithPrecondition).not.toHaveBeenCalled();
+    },
+  );
+
   it("allows agent-runtime jobs without a tool snapshot and stamps their owner", async () => {
     const { context, respond } = await invokeCronAdd(
       agentTurnCronParams({
@@ -2200,7 +2221,6 @@ describe("cron method validation", () => {
           payload: {
             kind: "agentTurn",
             message: "replace creator prompt",
-            toolsAllow: ["*"],
           },
         },
       },
@@ -2727,12 +2747,12 @@ describe("cron method validation", () => {
     expectCronSuccess(respond);
   });
 
-  it("passes authenticated provenance for an explicit agent-runtime tool edit", async () => {
+  it("preserves authenticated owner policy when editing a legacy capped job", async () => {
     const { context, respond } = await invokeCronUpdate(
       {
         id: "cron-1",
         patch: {
-          payload: { kind: "agentTurn", message: "updated", toolsAllow: ["write"] },
+          payload: { kind: "agentTurn", message: "updated" },
         },
       },
       createCronJob({
