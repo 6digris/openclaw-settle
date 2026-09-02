@@ -387,17 +387,16 @@ export function startAgentRunExecution(params: {
               extraSystemPrompt: params.request.extraSystemPrompt,
               bootstrapContextMode: params.request.bootstrapContextMode,
               bootstrapContextRunKind: params.effectiveBootstrapContextRunKind,
-              toolsAllow: pluginSubagentToolsAllow ?? params.restoredCronContinuation?.toolsAllow,
+              // A delayed cron completion has the same current agent policy as
+              // the initial run; old continuation rows are not tool grants.
+              toolsAllow: pluginSubagentToolsAllow,
               runtimePluginToolGrant,
               trustedInternalHandoff: prepared.trustedInternalHandoff,
               pinnedWidgetAuthoring: restartRecoveryContext?.pinnedWidgetAuthoring,
-              toolsAllowIsDefault: params.restoredCronContinuation?.toolsAllowIsDefault,
               scheduledToolPolicy: params.restoredCronContinuation
                 ? resolveScheduledToolPolicyContext({
-                    toolsAllow: params.restoredCronContinuation.toolsAllow,
                     scheduledToolPolicy: params.restoredCronContinuation.scheduledToolPolicy,
                     callerOrigin: params.restoredCronContinuation.scheduledToolCallerOrigin,
-                    execTarget: params.restoredCronContinuation.toolsAllowExecTarget,
                   })
                 : undefined,
               requireExplicitMessageTarget:

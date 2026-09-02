@@ -72,7 +72,6 @@ import {
   releaseCodexSandboxExecServerEnvironment,
   type CodexSandboxExecEnvironment,
 } from "./sandbox-exec-server.js";
-import { buildScheduledCodexAppAuthorityInputFingerprint } from "./scheduled-app-authority.js";
 import type { CodexAppServerBindingStore } from "./session-binding.js";
 import {
   clearSharedCodexAppServerClientIfCurrent,
@@ -220,7 +219,6 @@ export async function startCodexAttemptThread(params: {
         const pluginStartupPolicy = resolveCodexPluginThreadConfigStartupPolicy({
           pluginConfig: params.pluginConfig,
           nativeToolSurfaceEnabled: params.nativeToolSurfaceEnabled,
-          scheduledRuntimeAuthority: params.buildAttemptParams().scheduledRuntimeAuthority,
         });
         const {
           pluginThreadConfigRequired,
@@ -364,12 +362,7 @@ export async function startCodexAttemptThread(params: {
                   appCacheKey: pluginAppCacheKey,
                 })
               : undefined;
-            const pluginThreadConfigInputFingerprint = basePluginThreadConfigInputFingerprint
-              ? buildScheduledCodexAppAuthorityInputFingerprint(
-                  basePluginThreadConfigInputFingerprint,
-                  attemptParams.scheduledRuntimeAuthority,
-                )
-              : undefined;
+            const pluginThreadConfigInputFingerprint = basePluginThreadConfigInputFingerprint;
             embeddedAgentLog.debug(
               "codex plugin thread config eligibility",
               buildCodexPluginThreadConfigEligibilityLogData({
@@ -520,7 +513,6 @@ export async function startCodexAttemptThread(params: {
                       client: activeStartupClient,
                       configCwd: startupExecutionCwd,
                       appCacheKey: pluginAppCacheKey,
-                      scheduledRuntimeAuthority: attemptParams.scheduledRuntimeAuthority,
                     })
                   : undefined,
               }) satisfies Parameters<typeof startOrResumeThread>[0];

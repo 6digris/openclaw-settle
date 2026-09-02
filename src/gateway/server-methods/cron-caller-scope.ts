@@ -2,6 +2,7 @@ import { resolveCronJobEffectiveAgentId } from "../../cron/agent-id.js";
 import {
   createAccountCronScheduledToolPolicy,
   createTrustedCronScheduledToolPolicy,
+  type CronScheduledToolCallerOrigin,
   type CronScheduledToolPolicy,
 } from "../../cron/scheduled-tool-policy.js";
 import type {
@@ -24,6 +25,7 @@ export type CronCallerScope = {
   sessionKey?: string;
   accountId: string;
   currentJobId?: string;
+  callerOrigin?: CronScheduledToolCallerOrigin;
   toolsAllowProvenance?: CronToolsAllowProvenance;
   /** Restrict-only exec policy carried by the signed creator-turn identity. */
   toolsAllowExecTarget?: CronToolsAllowExecTarget;
@@ -57,6 +59,7 @@ export function readCronCallerScope(
     accountId: normalizeAccountId(identity.turnSourceAccountId),
     currentJobId,
     manageAll,
+    callerOrigin,
     ...(!manageAll && identity.cronToolsAllowCapture === "final-executable-surface"
       ? {
           toolsAllowProvenance: {
@@ -91,6 +94,9 @@ export function resolveCronScheduledToolPolicyForCaller(
     ? createAccountCronScheduledToolPolicy({
         ownerSessionKey: callerScope.sessionKey,
         ownerAccountId: callerScope.accountId,
+        ...(callerScope.callerOrigin && callerScope.callerOrigin.kind !== "unknown"
+          ? { ownerOrigin: callerScope.callerOrigin }
+          : {}),
       })
     : undefined;
   if (!policy) {
