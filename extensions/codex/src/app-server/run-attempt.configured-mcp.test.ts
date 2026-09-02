@@ -358,11 +358,13 @@ describe("runCodexAppServerAttempt configured MCP ownership", () => {
     const params = createParams(sessionFile, path.join(tempDir, "workspace-" + trigger));
     configureFakeMcp(params);
     params.trigger = trigger;
-    if (trigger === "cron") params.scheduledToolPolicy = { version: 1, mode: "trusted" };
+    if (trigger === "cron") {
+      params.scheduledToolPolicy = { version: 1, mode: "trusted" };
+    }
     const harness = createStartedThreadHarness();
     const run = runCodexAppServerAttempt(params);
     await harness.waitForMethod("turn/start");
-    const request = harness.requests.find((request) => request.method === "thread/start");
+    const request = harness.requests.find((entry) => entry.method === "thread/start");
     const start = request?.params as
       | { config?: Record<string, unknown>; dynamicTools?: unknown }
       | undefined;
@@ -396,7 +398,7 @@ describe("runCodexAppServerAttempt configured MCP ownership", () => {
         throw new Error(`restricted turn finished before turn/start: ${JSON.stringify(result)}`);
       }),
     ]);
-    const request = harness.requests.find((request) => request.method === "thread/start");
+    const request = harness.requests.find((entry) => entry.method === "thread/start");
     expect((request?.params as { config?: unknown })?.config).toMatchObject({
       "features.shell_tool": false,
       mcp_servers: { fake: { enabled: false } },

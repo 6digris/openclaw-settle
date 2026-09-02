@@ -351,6 +351,7 @@ export async function add(
         nowMs: now,
         cronConfig: state.deps.cronConfig,
         scheduledToolPolicy: opts?.scheduledToolPolicy,
+        scheduledToolCallerOrigin: opts?.scheduledToolCallerOrigin,
         configuredChannels,
       });
       opts?.commitGuard?.();
@@ -390,6 +391,7 @@ export async function add(
     const snapshot = snapshotStoreForRollback(state);
     const job = createJob(state, creationInput, {
       scheduledToolPolicy: opts?.scheduledToolPolicy,
+      scheduledToolCallerOrigin: opts?.scheduledToolCallerOrigin,
       configuredChannels,
     });
     if (opts?.createdActor) {
@@ -486,6 +488,7 @@ async function updateLoadedJob(params: {
     scheduleValidationNowMs: now,
     cronConfig: state.deps.cronConfig,
     scheduledToolPolicy: opts?.scheduledToolPolicy,
+    scheduledToolCallerOrigin: opts?.scheduledToolCallerOrigin,
     configuredChannels,
   });
   if (patch.agentId !== undefined) {

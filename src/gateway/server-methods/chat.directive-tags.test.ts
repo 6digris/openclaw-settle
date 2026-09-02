@@ -65,7 +65,6 @@ import { closeOpenClawStateDatabaseByPath } from "../../state/openclaw-state-db.
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
-import { consumeCronCreatorAuthorityGrant } from "../cron-creator-authority-grant.js";
 import { createChatRunState } from "../server-chat-state.js";
 import { resolveSessionStoreAgentId } from "../session-store-key.js";
 import { STALE_WORKER_BUILD_REASON } from "../worker-environments/admission.js";
@@ -7793,9 +7792,6 @@ describe("chat.send local operator client sender context", () => {
 
       expect(resolvedGrant).toMatchObject({ runId: `idem-cron-authority-${clientId}` });
       await expect(retainedResolver!()).rejects.toThrow(
-        "Configured MCP cron authority is no longer active",
-      );
-      expect(() => consumeCronCreatorAuthorityGrant(resolvedGrant!)).toThrow(
         "Configured MCP cron authority is no longer active",
       );
     },

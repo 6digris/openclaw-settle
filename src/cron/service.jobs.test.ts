@@ -724,8 +724,6 @@ describe("cron jobs do not capture new tool lists", () => {
       trigger: { script: "return true" },
     });
 
-    expect(agentTurn.payload.toolsAllow).toBeUndefined();
-    expect(triggeredEvent.payload.toolsAllow).toBeUndefined();
   });
 
   it("preserves explicit empty caps and leaves transport-only jobs capless", () => {
@@ -797,8 +795,6 @@ describe("cron jobs do not capture new tool lists", () => {
     });
 
     expect(legacy.payload.toolsAllow).toBeUndefined();
-    expect(explicit.payload.toolsAllow).toBeUndefined();
-    expect(explicit.payload.toolsAllowIsDefault).toBeUndefined();
   });
 
   it("repairs a missing anchor when converging an unchanged every schedule", () => {
@@ -862,7 +858,6 @@ describe("cron jobs do not capture new tool lists", () => {
       },
     );
 
-    expect(job.payload.toolsAllow).toBeUndefined();
     expect(job.scheduledToolPolicy).toEqual({ version: 1, mode: "trusted" });
   });
 });

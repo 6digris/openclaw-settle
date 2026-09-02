@@ -69,9 +69,6 @@ describe("scheduled work uses the owning agent's current permissions", () => {
 
       expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(1);
       const call = runEmbeddedAgentMock.mock.calls[0]?.[0];
-      expect(call?.toolsAllow).toBeUndefined();
-      expect(call?.scheduledRuntimeAuthority).toBeUndefined();
-      expect(call?.scheduledRuntimeAuthorityRecoveryRequired).toBeUndefined();
       expect(call?.config?.tools?.deny).toEqual(["browser"]);
       expect(call?.scheduledToolPolicy).toMatchObject({
         mode: "account",

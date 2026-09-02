@@ -115,12 +115,12 @@ describe("Control UI admin automation management tool", () => {
         ).resolves.toMatchObject({ details: { id: "telegram-created-job" } });
         expect(resolveCreator).not.toHaveBeenCalled();
         expect(calls).toEqual([
-          ...(withTrigger ? [{ method: "cron.get", params: { id: "telegram-created-job" } }] : []),
+          { method: "cron.get", params: { id: "telegram-created-job" } },
           {
             method: "cron.update",
             params: {
               id: "telegram-created-job",
-              ...(withTrigger ? { expectedConfigRevision: "sha256:stored-job" } : {}),
+              expectedConfigRevision: "sha256:stored-job",
               patch: {
                 schedule: { kind: "every", everyMs: 60000 },
                 payload: { kind: "agentTurn", message: "Updated channel task" },
@@ -147,7 +147,15 @@ describe("Control UI admin automation management tool", () => {
         }),
       ).resolves.toBeDefined();
       expect(calls).toEqual([
-        { method: "cron.update", params: { id: "existing-command-job", patch } },
+        { method: "cron.get", params: { id: "existing-command-job" } },
+        {
+          method: "cron.update",
+          params: {
+            id: "existing-command-job",
+            expectedConfigRevision: "sha256:stored-job",
+            patch,
+          },
+        },
       ]);
       expect(resolveCreator).not.toHaveBeenCalled();
     });

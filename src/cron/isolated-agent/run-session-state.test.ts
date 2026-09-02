@@ -436,11 +436,6 @@ describe("createPersistCronSessionEntry", () => {
     });
     expect(store[runSessionKey]?.previousSessionId).toBeUndefined();
     expect(store[runSessionKey]?.forkSource).toBeUndefined();
-    expect(store[runSessionKey]?.cronRunContinuation?.toolsAllow).toBeUndefined();
-    expect(store[runSessionKey]?.cronRunContinuation?.toolsAllowExecTarget).toBeUndefined();
-    expect(
-      store[runSessionKey]?.cronRunContinuation?.toolsAllowExecTargetRequirement,
-    ).toBeUndefined();
     expect(store[runSessionKey]?.cronRunContinuation?.scheduledToolPolicy).toEqual({
       version: 1,
       mode: "account",

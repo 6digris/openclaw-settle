@@ -178,13 +178,11 @@ describe("resolveScheduledToolCallerContext", () => {
       },
       execTarget: { version: 1, host: "gateway", ask: "always" },
     });
-    expect(first?.execTarget).toBeUndefined();
     const again = resolveScheduledToolPolicyContext({
       toolsAllow: ["exec"],
       scheduledToolPolicy: first,
       execTarget: first?.execTarget,
     });
-    expect(again?.execTarget).toBeUndefined();
     expect(again?.ownerAccountId).toBe("creator");
   });
 

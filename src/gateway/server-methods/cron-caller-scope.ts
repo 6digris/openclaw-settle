@@ -94,9 +94,6 @@ export function resolveCronScheduledToolPolicyForCaller(
     ? createAccountCronScheduledToolPolicy({
         ownerSessionKey: callerScope.sessionKey,
         ownerAccountId: callerScope.accountId,
-        ...(callerScope.callerOrigin && callerScope.callerOrigin.kind !== "unknown"
-          ? { ownerOrigin: callerScope.callerOrigin }
-          : {}),
       })
     : undefined;
   if (!policy) {

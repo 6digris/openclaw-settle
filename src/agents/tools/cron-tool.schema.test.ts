@@ -345,7 +345,6 @@ describe("createCronToolSchema", () => {
         "text",
         "thinking",
         "toolBudget",
-        "toolsAllow",
         "timeoutSeconds",
       ].toSorted(),
     );
@@ -451,7 +450,7 @@ describe("createCronToolSchema", () => {
     expect(jobProps?.sessionKey?.description).toMatch(/null to clear it/i);
   });
 
-  it("job.payload.toolsAllow projects to plain array type for OpenAPI 3.0 compat", () => {
+  it("projects nullable model overrides for OpenAPI 3.0 compatibility", () => {
     const root = providerSchemaRecord.properties as
       | Record<string, { properties?: Record<string, unknown> }>
       | undefined;
@@ -459,10 +458,6 @@ describe("createCronToolSchema", () => {
       | Record<string, { properties?: Record<string, { type?: unknown; description?: string }> }>
       | undefined;
 
-    // Provider-facing schemas must be plain "array" rather than JSON Schema
-    // unions so OpenAPI 3.0 subset validators accept them.
-    expect(jobProps?.payload?.properties?.toolsAllow?.type).toBe("array");
-    expect(jobProps?.payload?.properties?.toolsAllow?.description).toMatch(/null to clear/i);
     expect(jobProps?.payload?.properties?.model?.type).toBe("string");
     expect(jobProps?.payload?.properties?.model?.description).toMatch(/null to clear/i);
   });
@@ -473,9 +468,6 @@ describe("createCronToolSchema", () => {
     });
     expect(propertyAt(jjccGeminiSchemaRecord, "job.sessionKey")).toMatchObject({
       type: "string",
-    });
-    expect(propertyAt(jjccGeminiSchemaRecord, "job.payload.toolsAllow")).toMatchObject({
-      type: "array",
     });
     expect(propertyAt(jjccGeminiSchemaRecord, "job.delivery.channel")).toMatchObject({
       type: "string",

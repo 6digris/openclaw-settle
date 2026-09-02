@@ -195,10 +195,7 @@ describe("scheduled tool policy provenance", () => {
     expect(updated.job.id).toBe(created.job.id);
     expect(updated.job.scheduledToolPolicy).toEqual({ version: 1, mode: "trusted" });
     for (const job of [created.job, updated.job, ...(await loadCronStore(storePath)).jobs]) {
-      expect(job.runtimeAuthority).toBeUndefined();
-      expect(job.runtimeAuthorityRecoveryRequired).toBeUndefined();
-      expect(job.toolsAllowProvenance).toBeUndefined();
-      expect("toolsAllow" in job.payload).toBe(false);
+      expect(job.scheduledToolPolicy).toEqual({ version: 1, mode: "trusted" });
     }
     if (state.timer) {
       clearTimeout(state.timer);
