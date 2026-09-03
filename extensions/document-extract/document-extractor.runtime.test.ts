@@ -236,9 +236,39 @@ describe("PDF document extractor", () => {
       .mockRejectedValueOnce(failure);
     const result = await extractPdfContent(request({ onImageExtractionError }));
 
-    expect(result).toMatchObject({ text: "short", images: [] });
+    expect(result).toMatchObject({
+      text: "short",
+      images: [],
+      metadata: { imagesTruncated: true },
+    });
     expect(onImageExtractionError).toHaveBeenCalledWith(failure);
     expect(pdfDocument.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("records when the aggregate pixel budget stops image rendering early", async () => {
+    pdfDocument.extract.mockResolvedValueOnce(extractionResult("short")).mockResolvedValueOnce({
+      text: "",
+      pagesProcessed: [1],
+      truncated: { text: false, images: false },
+      images: [
+        {
+          type: "image",
+          bytes: Uint8Array.from(Buffer.from("page-one")),
+          mimeType: "image/png",
+          page: 1,
+          width: 10,
+          height: 10,
+        },
+      ],
+    });
+
+    const result = await extractPdfContent(request());
+
+    expect(pdfDocument.extract).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({
+      images: [{ type: "image", data: "cGFnZS1vbmU=", mimeType: "image/png" }],
+      metadata: { imagesTruncated: true },
+    });
   });
 
   it.each([
