@@ -364,11 +364,7 @@ export function renderAppSidebarOnline(host: AppSidebarRenderHost) {
     () => host.dismissTransientMenus(),
   );
   return html`
-    <section
-      class="sidebar-online sidebar-recent-sessions"
-      aria-label=${label}
-      data-session-section=${sectionId}
-    >
+    <section class="sidebar-online" aria-label=${label} data-session-section=${sectionId}>
       ${renderSidebarSessionSectionHeader({
         sectionId,
         draggable: false,
