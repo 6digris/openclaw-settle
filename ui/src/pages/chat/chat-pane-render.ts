@@ -75,7 +75,7 @@ export class ChatPane extends ChatPaneLayoutRender {
   private readonly emptyTranscriptItems: [] = [];
 
   override render() {
-    const state = this.state;
+    const { state, startupPresentation, initialPresentationManaged } = this;
     if (!state) {
       return html`<main class="app-shell app-shell--booting" aria-busy="true"></main>`;
     }
@@ -150,6 +150,9 @@ export class ChatPane extends ChatPaneLayoutRender {
     });
     const placementStartup = this.context.placementStartup.get(state.sessionKey);
     const sendHoldReason = chatSendHoldReason(state, state.sessionKey, placementStartup !== null);
+    const initialPending = initialPresentationManaged && startupPresentation.stage === "pending";
+    const initialConnectionRecovery =
+      initialPending && state.connected && state.client && !state.client.recoveryScopeReady;
     const sessionParticipationBlocked = this.sessionParticipationTracker.resolve({
       catalog: catalogKey !== null,
       listLoading: state.sessionsLoading,
@@ -331,6 +334,7 @@ export class ChatPane extends ChatPaneLayoutRender {
     const initialHistoryUnavailable = !catalogKey && isInitialChatHistoryUnavailable(state);
     const composerAvailability = {
       canSend:
+        (startupPresentation.stage === "ready" || state.connected) &&
         sessionDisabledBanner?.kind !== "composer-replacement" &&
         (catalogKey
           ? this.catalogSession?.canContinue === true
@@ -348,7 +352,9 @@ export class ChatPane extends ChatPaneLayoutRender {
         (placementComposer.state.kind === "failed" && !placementComposer.state.recoveryAction
           ? placementComposer.failedUnavailableMessage
           : null) ??
-        (placementStartup || initialHistoryUnavailable ? null : sendHoldReason),
+        (placementStartup || initialHistoryUnavailable || initialConnectionRecovery
+          ? null
+          : sendHoldReason),
       disabledReasonTone:
         placementComposer.busyMessage || (sessionParticipationBlocked && !suggestionViewer)
           ? ("info" as const)
@@ -372,6 +378,7 @@ export class ChatPane extends ChatPaneLayoutRender {
       showThinking: state.settings.chatShowThinking,
       showToolCalls: state.settings.chatShowToolCalls,
       persistCommentary: state.settings.chatPersistCommentary !== false,
+      startupLoading: startupPresentation.stage !== "ready",
       loading: catalogKey ? this.catalogLoading : state.chatLoading,
       routeLoadingSkeleton: this.routeLoadingSkeleton && initialHistoryUnavailable,
       sending:
@@ -452,7 +459,10 @@ export class ChatPane extends ChatPaneLayoutRender {
       realtimeTalkVideoPending: state.realtimeTalkVideoPending,
       realtimeTalkCameraError: state.realtimeTalkCameraError,
       connected: state.connected,
-      offline: gatewaySnapshot.offlineStable,
+      initialMetadataPending: initialPending,
+      initialAssistantName: startupPresentation.initialAssistantName,
+      initialPresentationManaged,
+      offline: !initialPending && gatewaySnapshot.offlineStable,
       gatewayClient: state.client,
       composerHoldToRecord: state.settings.composerHoldToRecord,
       realtimeTalkInputDeviceId: state.settings.realtimeTalkInputDeviceId,

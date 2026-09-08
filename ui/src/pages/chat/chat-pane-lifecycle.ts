@@ -296,6 +296,7 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
     this.boardProviderLifecycleConnected = true;
     this.resumeStagedAttachments();
     super.connectedCallback();
+    this.initialPresentationManaged ||= this.startupPresentation.stage !== "ready";
     if (!this.presented) {
       this.minutePoll.stop();
     }

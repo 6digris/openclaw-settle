@@ -50,8 +50,8 @@ suite.define(() => {
         });
         await page.goto(`${suite.server.baseUrl}chat`);
         await gateway.waitForRequest("chat.startup");
-        const textarea = page.locator(".agent-chat__composer-combobox > textarea");
-        const send = page.getByRole("button", { name: "Send message", exact: true });
+        const textarea = page.locator("openclaw-chat-pane .agent-chat__composer-combobox > textarea");
+        const send = page.locator("openclaw-chat-pane").getByRole("button", { name: "Send message", exact: true });
         const draft = "Continue our conversation.";
         await expect.poll(() => textarea.isDisabled()).toBe(false);
         await textarea.fill(draft);
@@ -821,7 +821,7 @@ suite.define(() => {
         await page.goto(`${suite.server.baseUrl}chat`);
         await gateway.waitForRequest("chat.startup");
 
-        const textarea = page.locator(".agent-chat__composer-combobox > textarea");
+        const textarea = page.locator(".agent-chat__composer-combobox > textarea:visible");
         await textarea.fill("   ");
         await textarea.blur();
 
@@ -835,7 +835,7 @@ suite.define(() => {
           ? createControlUiE2eArtifactDir("chat-composer-catalog", artifactRoot)
           : undefined;
         if (artifactDir) {
-          await page.locator(".agent-chat__composer-shell").screenshot({
+          await page.locator(".agent-chat__composer-shell:visible").screenshot({
             animations: "disabled",
             path: `${artifactDir}/placeholder-${label}.png`,
           });

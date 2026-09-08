@@ -45,6 +45,7 @@ type ChatRefreshOptions = {
   scheduleScroll?: boolean;
   awaitHistory?: boolean;
   startup?: boolean;
+  onInitialModelCatalogSettled?: () => void;
 };
 
 type ChatStartupMetadataHandler = (
@@ -61,6 +62,7 @@ type ChatMetadataBinding = {
   sessionFactsRequest?: { version: number; promise: Promise<void> };
   refreshPending?: { refresh: ChatMetadataRefresh; promise: Promise<void> };
   catalogRequest?: { version: number; controller: AbortController; promise: Promise<boolean> };
+  onInitialModelCatalogSettled?: () => void;
   isCurrent: () => boolean;
   unsubscribe: () => void;
 };
@@ -283,6 +285,9 @@ export async function refreshChatMetadata(
       .finally(() => {
         if (binding.isCurrent() && binding.refreshPending?.refresh === refresh) {
           host.chatModelsLoading = false;
+          const onInitialModelCatalogSettled = binding.onInitialModelCatalogSettled;
+          binding.onInitialModelCatalogSettled = undefined;
+          onInitialModelCatalogSettled?.();
           host.requestUpdate?.();
         }
       });
@@ -456,6 +461,9 @@ async function loadChatModelCatalog(
       if (ownsRequest()) {
         binding.catalogRequest = undefined;
         host.chatModelsLoading = false;
+        const onInitialModelCatalogSettled = binding.onInitialModelCatalogSettled;
+        binding.onInitialModelCatalogSettled = undefined;
+        onInitialModelCatalogSettled?.();
         host.requestUpdate?.();
       }
     });
@@ -652,6 +660,7 @@ export function refreshPageChat(host: ChatPageHost, opts?: ChatRefreshOptions) {
     ? beginChatMetadataPublication(binding.client, binding.scope)
     : undefined;
   if (binding) {
+    binding.onInitialModelCatalogSettled ??= opts?.onInitialModelCatalogSettled;
     void refreshChatMetadata(host, { automatic: true, startup: true });
   }
   const refresh = refreshChat(host, {

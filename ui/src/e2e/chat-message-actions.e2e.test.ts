@@ -396,7 +396,7 @@ describeControlUiE2e("Control UI chat message actions", () => {
           .toBe(fileName);
         await screenshot(page, `${sourceId}-02-reply.png`);
         const text = "Please explain this file.";
-        await page.locator(".agent-chat__composer-combobox textarea").fill(text);
+        await page.getByRole("textbox", { name: "Chat composer", exact: true }).fill(text);
         await page.getByRole("button", { name: "Send message", exact: true }).click();
         const sent = await gateway.waitForRequest("chat.send");
         expect(sent.params).toMatchObject({ message: text, replyToId: sourceId });
@@ -404,12 +404,24 @@ describeControlUiE2e("Control UI chat message actions", () => {
         await expect
           .poll(() => sentPreview.locator(".chat-reply-preview__text").textContent())
           .toBe(fileName);
+        await page.emulateMedia({ reducedMotion: "reduce" });
         await sentPreview.click();
         await expect
           .poll(() =>
             bubble.evaluate((element) => element.classList.contains("chat-bubble--reply-target")),
           )
           .toBe(true);
+        expect(
+          await bubble.evaluate((element) => {
+            const highlight = getComputedStyle(element, "::after");
+            return {
+              opacity: highlight.opacity,
+              zIndex: highlight.zIndex,
+              backgroundImage: highlight.backgroundImage,
+              maskImage: highlight.maskImage,
+            };
+          }),
+        ).toEqual({ opacity: "0.6", zIndex: "-1", backgroundImage: "none", maskImage: "none" });
         expect(await gateway.getRequests("chat.message.get")).toHaveLength(0);
       } finally {
         await context.close();

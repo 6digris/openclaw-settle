@@ -1,4 +1,3 @@
-import "../../styles/chat/startup-layout.css";
 import {
   normalizeStringEntries,
   uniqueStrings,

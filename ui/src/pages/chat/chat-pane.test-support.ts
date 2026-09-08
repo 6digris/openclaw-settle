@@ -56,6 +56,7 @@ import type { SidebarLayout } from "./sidebar-layout.ts";
 
 export type TestChatPane = HTMLElement & {
   catalogMessages: unknown[];
+  transcriptReady: boolean;
   active: boolean;
   presented: boolean;
   presentationId: string;
