@@ -52,6 +52,17 @@ const MEDIA_CASES = {
 type MediaCaseID = keyof typeof MEDIA_CASES;
 type MediaSession = (typeof MEDIA_CASES)[MediaCaseID]["session"];
 type WireMedia = { sessionKey: string; artifactID: string };
+// Native initial acquisition cannot borrow the unbound hello capability.
+// Initial acquisition and recovery each need their own profile-bound refresh.
+const IOS_WIDGET_CASES = {
+  allowed: { allowed: true, requests: 2 },
+  retiredResult: { allowed: false, requests: 1 },
+  retiredLookup: { allowed: false, requests: 0 },
+  retiredControl: { allowed: true, requests: 1 },
+  profile: { allowed: false, requests: 1 },
+  controlProfile: { allowed: true, requests: 1 },
+} as const;
+type IOSWidgetCaseID = keyof typeof IOS_WIDGET_CASES;
 const CONTROL_ACTIONS = [
   "pair",
   "revoke-acl",
@@ -63,6 +74,8 @@ const CONTROL_ACTIONS = [
   "release-response",
   "media-start",
   "media-complete",
+  "widget-start",
+  "widget-complete",
 ] as const;
 type ControlProgress = {
   action: (typeof CONTROL_ACTIONS)[number] | "unknown";
@@ -109,6 +122,7 @@ export async function withNativeActionGateway(
 ) {
   let completedCases: CaseID[] = [];
   let completedMedia: MediaCaseID[] = [];
+  let completedWidgets: IOSWidgetCaseID[] = [];
   await runProfileWireProof(
     () => startQaMockOpenAiServer({ modelRefs: [MODEL_REF] }),
     async (fixture) => {
@@ -120,7 +134,7 @@ export async function withNativeActionGateway(
         repoRoot: process.cwd(),
         token: controlToken,
         recordPath: undefined,
-        observedMethods: ["artifacts.download"],
+        observedMethods: ["artifacts.download", "plugin.surface.refresh"],
         mediaPaths,
         upstreamHeaders: {
           "x-forwarded-user": SKILL_LIBRARY_ALICE,
@@ -134,6 +148,13 @@ export async function withNativeActionGateway(
       const completed = new Set<CaseID>();
       const mediaCompleted = new Set<MediaCaseID>();
       let mediaAttempt: { id: MediaCaseID; before: ReturnType<typeof proxy.snapshot> } | undefined;
+      const widgetsCompleted = new Map<
+        IOSWidgetCaseID,
+        ReturnType<typeof proxy.snapshot>["events"]
+      >();
+      let widgetAttempt:
+        | { id: IOSWidgetCaseID; before: ReturnType<typeof proxy.snapshot> }
+        | undefined;
       const png = Buffer.from(TINY_PNG_BASE64, "base64");
       const media = {
         pngBase64: TINY_PNG_BASE64,
@@ -234,6 +255,33 @@ export async function withNativeActionGateway(
           return await proxyControl(input);
         }
         switch (input.action) {
+          case "widget-start": {
+            assert(platform === "ios");
+            assert(typeof input.case === "string" && Object.hasOwn(IOS_WIDGET_CASES, input.case));
+            const id = input.case as IOSWidgetCaseID;
+            assert(
+              !widgetAttempt && !widgetsCompleted.has(id),
+              "overlapping or repeated widget case",
+            );
+            const before = proxy.snapshot();
+            const admission = before.events.findLast(
+              (event: { kind: string }) => event.kind === "connect-success",
+            );
+            assert(
+              typeof admission?.canvasOrigin === "string",
+              "native hello omitted canvas authority",
+            );
+            widgetAttempt = { id, before };
+            return { started: id, canvasOrigin: admission.canvasOrigin };
+          }
+          case "widget-complete": {
+            assert(widgetAttempt && widgetAttempt.id === input.case, "widget case was not started");
+            const { id, before } = widgetAttempt;
+            assert.equal(input.outcome, IOS_WIDGET_CASES[id].allowed ? "allowed" : "rejected");
+            widgetsCompleted.set(id, proxy.snapshot().events.slice(before.events.length));
+            widgetAttempt = undefined;
+            return { completed: id };
+          }
           case "media-start": {
             assert(typeof input.case === "string" && Object.hasOwn(MEDIA_CASES, input.case));
             const id = input.case as MediaCaseID;
@@ -478,6 +526,65 @@ export async function withNativeActionGateway(
           if (platform === "ios") {
             assert.deepEqual([...mediaCompleted].toSorted(), Object.keys(MEDIA_CASES).toSorted());
             assert(!mediaAttempt, "unfinished native media case");
+            assert.deepEqual(
+              [...widgetsCompleted.keys()].toSorted(),
+              Object.keys(IOS_WIDGET_CASES).toSorted(),
+            );
+            assert(!widgetAttempt, "unfinished native widget case");
+            for (const [id, events] of widgetsCompleted) {
+              const spec = IOS_WIDGET_CASES[id];
+              const requests = events.filter(
+                (event: { kind: string; method?: string }) =>
+                  event.kind === "rpc-request" && event.method === "plugin.surface.refresh",
+              );
+              const responses = events.filter(
+                (event: { kind: string; method?: string }) =>
+                  event.kind === "rpc-response" && event.method === "plugin.surface.refresh",
+              );
+              assert.equal(requests.length, spec.requests, `${id}: widget request count`);
+              assert.equal(responses.length, spec.requests, `${id}: widget response count`);
+              for (const [index, request] of requests.entries()) {
+                assert.equal(request.surface, "canvas");
+                assert.equal(request.expectedProfileId, id === "controlProfile" ? bobId : aliceId);
+                const response = responses[index]!;
+                assert.equal(response.requestId, request.requestId);
+                assert.equal(response.connection, request.connection);
+                assert.equal(response.ok, id !== "profile", `${id}: widget authorization`);
+                assert.equal(
+                  response.reason,
+                  id === "profile" ? "EXPECTED_PROFILE_MISMATCH" : undefined,
+                );
+              }
+              if (id === "retiredResult") {
+                const held = events.find(
+                  (event: { kind: string; method?: string }) =>
+                    event.kind === "response-held" && event.method === "plugin.surface.refresh",
+                );
+                const successor = events.find(
+                  (event: { kind: string }) => event.kind === "connect-success",
+                );
+                const released = events.find(
+                  (event: { kind: string; method?: string }) =>
+                    event.kind === "response-released" && event.method === "plugin.surface.refresh",
+                );
+                assert(
+                  held?.ok && successor && released,
+                  "missing held refresh retirement barrier",
+                );
+                assert.equal(held.connection, requests[0]!.connection);
+                assert.notEqual(successor.connection, held.connection);
+                assert(
+                  held.sequence < successor.sequence && successor.sequence < released.sequence,
+                );
+                assert.equal(released.delivered, false, "retired socket received held refresh");
+                assert(
+                  !requests.some(
+                    (request: { connection: number }) =>
+                      request.connection === successor.connection,
+                  ),
+                );
+              }
+            }
           }
           assert(pairedDevices.size > 0, "no real native device pairing was approved");
           for (const request of proxy
@@ -524,6 +631,7 @@ export async function withNativeActionGateway(
       );
       completedCases = [...completed];
       completedMedia = [...mediaCompleted];
+      completedWidgets = [...widgetsCompleted.keys()];
     },
   );
   console.log(
@@ -531,6 +639,7 @@ export async function withNativeActionGateway(
       platform,
       cases: completedCases,
       mediaCases: completedMedia,
+      widgetCases: completedWidgets,
       finalEffectsVerified: true,
     }),
   );

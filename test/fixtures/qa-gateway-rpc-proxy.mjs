@@ -113,7 +113,9 @@ export async function startQaGatewayRpcProxy({
           }
         } else if (action === "hold-response") {
           if (
-            !["users.self", "chat.send", "media.get"].includes(input.method) ||
+            !["users.self", "chat.send", "media.get", "plugin.surface.refresh"].includes(
+              input.method,
+            ) ||
             holdMethod ||
             heldResponse
           ) {
@@ -279,6 +281,9 @@ export async function startQaGatewayRpcProxy({
             connection: id,
             requestId: frame.id,
             method: frame.method,
+            ...(frame.method === "plugin.surface.refresh"
+              ? { expectedProfileId: frame.expectedProfileId, surface: frame.params?.surface }
+              : {}),
           });
         }
         if (frame.method === "connect") {
@@ -325,10 +330,24 @@ export async function startQaGatewayRpcProxy({
             requestId: frame.id,
             method,
             ok: frame.ok,
+            ...(method === "plugin.surface.refresh"
+              ? { reason: frame.error?.details?.reason }
+              : {}),
           });
         }
         if (method === "connect" && frame.ok) {
-          record("connect-success", { connection: id, scopes: frame.payload?.auth?.scopes });
+          const canvas = frame.payload?.pluginSurfaceUrls?.canvas;
+          // Keep only the advertised HTTP authority, never the capability token.
+          const canvasURL = typeof canvas === "string" ? URL.parse(canvas) : null;
+          const canvasOrigin =
+            canvasURL && ["http:", "https:"].includes(canvasURL.protocol)
+              ? canvasURL.origin
+              : undefined;
+          record("connect-success", {
+            connection: id,
+            scopes: frame.payload?.auth?.scopes,
+            canvasOrigin,
+          });
         }
         if (method === "chat.send") {
           record("send-response", {

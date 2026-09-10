@@ -68,6 +68,7 @@ struct NativeActionGatewayWireTests {
         }
 
         let heldResponse: HeldResponse?
+        let canvasOrigin: URL?
     }
 
     @MainActor
@@ -227,17 +228,118 @@ struct NativeActionGatewayWireTests {
             try await Self.retireMediaResult(presentation)
 
             try await Self.retireAcceptedSubmission(presentation)
+            let widget = try await Self.verifyWidgetRetirement(presentation)
             try await Self.rejectAcrossSuspension(
                 presentation, first: "profileSuspended", second: "profile", mutation: "merge-profile")
+            _ = try await Self.verifyWidget(
+                presentation,
+                id: "profile",
+                transport: widget.transport,
+                replacing: widget.resource,
+                allowed: false)
             let profileControl = try await presentation.prepare(
                 "controlProfile", profileID: fixture.bobProfileID).submit()
             try await fixture.verify("controlProfile", runID: profileControl.runID)
             try await Self.verifyMedia(presentation, id: "controlProfile", session: "controlProfile", allowed: true)
+            _ = try await Self.verifyWidget(
+                presentation,
+                id: "controlProfile",
+                transport: #require(presentation.transport),
+                allowed: true)
         } catch {
             await presentation.close()
             throw error
         }
         await presentation.close()
+    }
+
+    @MainActor
+    private static func verifyWidget(
+        _ presentation: Presentation,
+        id: String,
+        transport: IOSGatewayChatTransport,
+        replacing failed: OpenClawChatWidgetResource? = nil,
+        allowed: Bool,
+        recover: Bool = false) async throws -> OpenClawChatWidgetResource?
+    {
+        let fixture = presentation.fixture
+        let started = try await fixture.control("widget-start", fields: ["case": id])
+        let origin = try #require(started.canvasOrigin)
+        let resource = await transport.resolveInlineWidgetResource(
+            path: "/__openclaw__/canvas/documents/native.html", replacing: failed)
+        if allowed {
+            let resolved = try #require(resource, "The allowed native widget did not resolve.")
+            try self.requireWidgetAuthority(resolved, origin: origin)
+            if recover {
+                let replacement = try #require(await transport.resolveInlineWidgetResource(
+                    path: "/__openclaw__/canvas/documents/native.html", replacing: resolved))
+                try self.requireWidgetAuthority(replacement, origin: origin)
+                let rotated = replacement.url != resolved.url
+                try #require(rotated, "Widget recovery reused the failed capability.")
+            }
+        } else {
+            let rejected = resource == nil
+            try #require(rejected, "Retired native widget authority returned a resource.")
+        }
+        _ = try await fixture.control(
+            "widget-complete", fields: ["case": id, "outcome": allowed ? "allowed" : "rejected"])
+        return resource
+    }
+
+    private static func requireWidgetAuthority(_ resource: OpenClawChatWidgetResource, origin: URL) throws {
+        // Compare the independent hello advertisement, not the WebSocket proxy port.
+        try #require(resource.url.scheme == origin.scheme)
+        try #require(resource.url.host == origin.host)
+        try #require(resource.url.port == origin.port)
+        let matchesDocument = resource.url.path.hasPrefix("/__openclaw__/cap/") &&
+            resource.url.path.hasSuffix("/__openclaw__/canvas/documents/native.html")
+        try #require(matchesDocument)
+    }
+
+    @MainActor
+    private static func verifyWidgetRetirement(
+        _ presentation: Presentation) async throws
+        -> (transport: IOSGatewayChatTransport, resource: OpenClawChatWidgetResource)
+    {
+        let fixture = presentation.fixture
+        _ = try await presentation.prepare("controlACL")
+        let transport = try #require(presentation.transport)
+        _ = try await self.verifyWidget(
+            presentation, id: "allowed", transport: transport, allowed: true, recover: true)
+        let failed = try #require(await transport.resolveInlineWidgetResource(
+            path: "/__openclaw__/canvas/documents/native.html", replacing: nil))
+        _ = try await fixture.control("widget-start", fields: ["case": "retiredResult"])
+        _ = try await fixture.control("hold-response", fields: ["method": "plugin.surface.refresh"])
+        let loading = Task { @MainActor in
+            await transport.resolveInlineWidgetResource(
+                path: "/__openclaw__/canvas/documents/native.html", replacing: failed)
+        }
+        var holding = false
+        do {
+            let held = try #require(try await fixture.control("wait-held").heldResponse)
+            holding = true
+            try #require(held.method == "plugin.surface.refresh" && held.ok)
+            await presentation.disconnect()
+            try await presentation.connect()
+            _ = try await fixture.control("release-response")
+            holding = false
+            let rejected = await loading.value == nil
+            try #require(rejected, "A retired widget refresh returned a resource.")
+            _ = try await fixture.control(
+                "widget-complete", fields: ["case": "retiredResult", "outcome": "rejected"])
+        } catch {
+            if holding { _ = try? await fixture.control("release-response") }
+            loading.cancel()
+            _ = await loading.value
+            throw error
+        }
+        _ = try await self.verifyWidget(
+            presentation, id: "retiredLookup", transport: transport, allowed: false)
+        _ = try await presentation.prepare("controlACL")
+        let fresh = try #require(presentation.transport)
+        let resource = try #require(try await self.verifyWidget(
+            presentation, id: "retiredControl", transport: fresh, allowed: true))
+        return (fresh, resource)
     }
 
     @MainActor
