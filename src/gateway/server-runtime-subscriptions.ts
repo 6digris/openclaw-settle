@@ -91,6 +91,7 @@ export function startGatewayEventSubscriptions(params: {
   chatAbortControllers: Map<string, ChatAbortControllerEntry>;
   restartRecoveryCandidates: Map<string, RestartRecoveryCandidate>;
   terminalSessions: Pick<TerminalSessionManager, "closeTaskSessions">;
+  refreshConnectedUserProfiles: () => void;
 }) {
   // The worker always runs retention maintenance. audit.enabled only controls
   // producer subscriptions, so disabling collection cannot strand expired rows.
@@ -512,6 +513,7 @@ export function startGatewayEventSubscriptions(params: {
   });
 
   const unsubscribeProfileChanges = onUserProfilesChanged(() => {
+    params.refreshConnectedUserProfiles();
     params.broadcastToConnIds(
       "sessions.changed",
       { reason: "profile-identity" },
