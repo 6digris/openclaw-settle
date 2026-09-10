@@ -1,21 +1,6 @@
-import CryptoKit
 import Foundation
 import OpenClawProtocol
 import OSLog
-
-private struct NodeInvokeRequestPayload: Codable {
-    var id: String
-    var nodeId: String
-    var command: String
-    var paramsJSON: String?
-    var timeoutMs: Int?
-    var idempotencyKey: String?
-    var sessionKey: String?
-}
-
-private struct NodeInvokeCancelPayload: Codable {
-    var invokeId: String
-}
 
 /// Binds suspended work to one installed gateway channel generation.
 /// Callers use this lease so an actor hop cannot retarget a payload to a replacement gateway.
@@ -47,46 +32,6 @@ public struct GatewayServerEventSubscription: Sendable {
 public actor GatewayNodeSession {
     @TaskLocal private static var executingLifecycleCallbackID: UUID?
     private static let pluginSurfaceRefreshTimeoutMs = 8000.0
-
-    private static let staleRouteInvokeMessage = "UNAVAILABLE: node route changed before dispatch"
-    private enum ComputerInvokeReceiptState {
-        case inFlight(Task<BridgeInvokeResponse, Never>)
-        case completed(BridgeInvokeResponse)
-
-        var isCompleted: Bool {
-            if case .completed = self {
-                return true
-            }
-            return false
-        }
-    }
-
-    private struct ComputerInvokeReceipt {
-        let id: UUID
-        let fingerprint: String
-        var state: ComputerInvokeReceiptState
-        var operationSettled: Bool
-    }
-
-    private struct ConnectOptionsKey: Equatable {
-        let normalizedInputs: String
-        let deviceAuthGatewayIDBytes: [UInt8]?
-    }
-
-    private struct ComputerInvokeReceiptKey: Hashable {
-        let receiptScopeBytes: [UInt8]
-        let idempotencyKeyBytes: [UInt8]
-
-        init(receiptScope: String, idempotencyKey: String) {
-            self.receiptScopeBytes = Array(receiptScope.utf8)
-            self.idempotencyKeyBytes = Array(idempotencyKey.utf8)
-        }
-    }
-
-    private struct LifecycleCallbackBarrier {
-        let id: UUID
-        let task: Task<Void, Never>
-    }
 
     private let logger = Logger(subsystem: "ai.openclaw", category: "node.gateway")
     private let decoder = JSONDecoder()
@@ -136,103 +81,12 @@ public actor GatewayNodeSession {
     private var computerInvokeReceiptJoinCounts: [UUID: Int] = [:]
     #endif
 
-    private struct ServerEventSubscriber {
-        let continuation: AsyncStream<EventFrame>.Continuation
-        /// Filters before buffering so unrelated traffic cannot evict awaited events.
-        let matches: @Sendable (EventFrame) -> Bool
-    }
-
     private var serverEventSubscribers: [UUID: ServerEventSubscriber] = [:]
-    private struct PluginSurfaceOwner: Sendable, Equatable {
-        let route: GatewayNodeSessionRoute
-        let expectedProfileId: String?
-
-        static func == (lhs: Self, rhs: Self) -> Bool {
-            lhs.route == rhs.route &&
-                lhs.expectedProfileId.map { Array($0.utf8) } == rhs.expectedProfileId.map { Array($0.utf8) }
-        }
-    }
-
-    private struct PluginSurfaceWaiter {
-        let id: UUID
-        let owner: PluginSurfaceOwner
-        let observedURL: String?
-        let cancellation: GatewayRequestCancellationGate
-        let deadline: ContinuousClock.Instant?
-        let continuation: CheckedContinuation<GatewayCanvasHostRoute?, Never>
-
-        var isEligible: Bool {
-            !self.cancellation.isCancelled && self.deadline.map { ContinuousClock.now < $0 } != false
-        }
-    }
-
-    private struct PluginSurfaceRefresh {
-        let id: UUID
-        let owner: PluginSurfaceOwner
-        let task: Task<Void, Never>
-        var waiters: [PluginSurfaceWaiter]
-    }
-
-    private struct PluginSurfaceState {
-        var cached: (owner: PluginSurfaceOwner, route: GatewayCanvasHostRoute)?
-        var refresh: PluginSurfaceRefresh?
-        var pending: [PluginSurfaceWaiter] = []
-    }
-
     /// Each surface has one rotation owner. Other profiles queue without sharing
     /// that owner's capability; hello capabilities are explicitly unbound.
     private var pluginSurfaces: [String: PluginSurfaceState] = [:]
 
-    private struct PluginSurfaceRefreshResponse: Decodable {
-        let pluginSurfaceUrls: [String: AnyCodable]?
-    }
-
     public init() {}
-
-    private func connectOptionsKey(_ options: GatewayConnectOptions) -> ConnectOptionsKey {
-        func sorted(_ values: [String]) -> String {
-            values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-                .sorted()
-                .joined(separator: ",")
-        }
-        let role = options.role.trimmingCharacters(in: .whitespacesAndNewlines)
-        let scopes = sorted(options.scopes)
-        let caps = sorted(options.caps)
-        let commands = sorted(options.commands)
-        let pathEnv = options.pathEnv?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let clientId = options.clientId.trimmingCharacters(in: .whitespacesAndNewlines)
-        let clientMode = options.clientMode.trimmingCharacters(in: .whitespacesAndNewlines)
-        let clientDisplayName = (options.clientDisplayName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let deviceIdentityProfile = options.deviceIdentityProfile.rawValue
-        let includeDeviceIdentity = options.includeDeviceIdentity ? "1" : "0"
-        let allowStoredDeviceAuth = options.allowStoredDeviceAuth ? "1" : "0"
-        let permissions = options.permissions
-            .map { key, value in
-                let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-                return "\(trimmed)=\(value ? "1" : "0")"
-            }
-            .sorted()
-            .joined(separator: ",")
-
-        let normalizedInputs = [
-            role,
-            scopes,
-            caps,
-            commands,
-            pathEnv,
-            clientId,
-            clientMode,
-            clientDisplayName,
-            deviceIdentityProfile,
-            includeDeviceIdentity,
-            allowStoredDeviceAuth,
-            permissions,
-        ].joined(separator: "|")
-        return ConnectOptionsKey(
-            normalizedInputs: normalizedInputs,
-            deviceAuthGatewayIDBytes: options.deviceAuthGatewayID.map { Array($0.utf8) })
-    }
 
     public func connect(
         url: URL,
@@ -611,14 +465,19 @@ public actor GatewayNodeSession {
                 onTimeout: {
                     cancellation.cancel()
                     return NSError(
-                        domain: "Gateway", code: 8,
+                        domain: "Gateway",
+                        code: 8,
                         userInfo: [NSLocalizedDescriptionKey: "plugin surface refresh timed out"])
                 },
                 operation: {
                     await self.acquirePluginSurface(
-                        surface: trimmedSurface, observedURL: observedURL,
-                        expectedRoute: expectedRoute, expectedProfileId: expectedProfileId,
-                        waiterID: waiterID, cancellation: cancellation, deadline: deadline)
+                        surface: trimmedSurface,
+                        observedURL: observedURL,
+                        expectedRoute: expectedRoute,
+                        expectedProfileId: expectedProfileId,
+                        waiterID: waiterID,
+                        cancellation: cancellation,
+                        deadline: deadline)
                 })
         } onCancel: {
             cancellation.cancel()
@@ -674,8 +533,12 @@ public actor GatewayNodeSession {
         let owner = PluginSurfaceOwner(route: route, expectedProfileId: expectedProfileId)
         let value = await withCheckedContinuation { continuation in
             let waiter = PluginSurfaceWaiter(
-                id: waiterID, owner: owner, observedURL: observedURL,
-                cancellation: cancellation, deadline: deadline, continuation: continuation)
+                id: waiterID,
+                owner: owner,
+                observedURL: observedURL,
+                cancellation: cancellation,
+                deadline: deadline,
+                continuation: continuation)
             guard waiter.isEligible, self.isCurrentPluginSurfaceOwner(owner) else {
                 continuation.resume(returning: nil)
                 return
@@ -716,8 +579,10 @@ public actor GatewayNodeSession {
             let task = Task<Void, Never> { [weak self] in
                 guard let self else { return }
                 await self.requestPluginSurfaceRefresh(
-                    surface: surface, refreshID: id,
-                    owner: waiter.owner, observedURL: waiter.observedURL)
+                    surface: surface,
+                    refreshID: id,
+                    owner: waiter.owner,
+                    observedURL: waiter.observedURL)
             }
             state.refresh = PluginSurfaceRefresh(id: id, owner: waiter.owner, task: task, waiters: waiters)
             // A denial must leave no eligible capability for the resolver's final
@@ -1563,15 +1428,6 @@ extension GatewayNodeSession {
         }
     }
 
-    private static func staleRouteInvokeResponse(requestId: String) -> BridgeInvokeResponse {
-        BridgeInvokeResponse(
-            id: requestId,
-            ok: false,
-            error: OpenClawNodeError(
-                code: .unavailable,
-                message: self.staleRouteInvokeMessage))
-    }
-
     private func invokeWithComputerReceipt(
         requestPayload: NodeInvokeRequestPayload,
         request: BridgeInvokeRequest,
@@ -1725,32 +1581,6 @@ extension GatewayNodeSession {
         return "url:\(self.activeURL?.absoluteString ?? "unknown")"
     }
 
-    private static func computerInvokeFingerprint(_ request: NodeInvokeRequestPayload) -> String {
-        let value = [request.nodeId, request.command, request.paramsJSON ?? ""].joined(separator: "\u{0}")
-        return SHA256.hash(data: Data(value.utf8))
-            .map { String(format: "%02x", $0) }
-            .joined()
-    }
-
-    private static func rebindInvokeResponse(
-        _ response: BridgeInvokeResponse,
-        requestId: String) -> BridgeInvokeResponse
-    {
-        BridgeInvokeResponse(
-            type: response.type,
-            id: requestId,
-            ok: response.ok,
-            payload: response.payload,
-            payloadJSON: response.payloadJSON,
-            error: response.error)
-    }
-
-    private static func isStaleRouteInvokeResponse(_ response: BridgeInvokeResponse) -> Bool {
-        response.ok == false &&
-            response.error?.code == .unavailable &&
-            response.error?.message == self.staleRouteInvokeMessage
-    }
-
     private func discardRetryableComputerInvokeReceipt(
         key: ComputerInvokeReceiptKey,
         receiptID: UUID,
@@ -1849,18 +1679,6 @@ extension GatewayNodeSession {
                 error=\(error.localizedDescription, privacy: .public)
                 """)
         }
-    }
-
-    private func decodeParamsJSON(
-        _ paramsJSON: String?) throws -> [String: AnyCodable]?
-    {
-        guard let paramsJSON, !paramsJSON.isEmpty else { return nil }
-        guard let data = paramsJSON.data(using: .utf8) else {
-            throw NSError(domain: "Gateway", code: 12, userInfo: [
-                NSLocalizedDescriptionKey: "paramsJSON not UTF-8",
-            ])
-        }
-        return try JSONDecoder().decode([String: AnyCodable].self, from: data)
     }
 
     private func broadcastServerEvent(_ evt: EventFrame) {
