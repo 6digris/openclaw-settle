@@ -7,6 +7,13 @@ import { finished } from "node:stream/promises";
 import { pathToFileURL } from "node:url";
 
 /**
+ * @typedef {"front-open" | "upstream-open" | "challenge-received" |
+ *   "challenge-write-ok" | "challenge-write-error" | "challenge-forward-unavailable" |
+ *   "connect-received" | "front-close" | "upstream-close" | "front-error" |
+ *   "upstream-error"} FirstConnectionTag
+ */
+
+/**
  * @param {{
  *   backendPort: number,
  *   repoRoot: string,
@@ -42,8 +49,27 @@ export async function startQaGatewayRpcProxy({
   let heldResponse;
   let heldWaiter;
   let mediaTask;
+  /** @type {Array<{ tag: FirstConnectionTag, elapsedMs: number }>} */
+  const firstConnection = [];
+  let firstConnectionStartedAt = 0;
+  // Diagnostics must not throw through socket callbacks or consume the RPC evidence limit.
+  /** @param {number} id @param {FirstConnectionTag} tag */
+  const recordFirstConnection = (id, tag) => {
+    if (
+      id !== 1 ||
+      firstConnection.length >= 11 ||
+      firstConnection.some((entry) => entry.tag === tag)
+    ) {
+      return;
+    }
+    firstConnection.push({
+      tag,
+      elapsedMs: Math.max(0, Math.floor(performance.now() - firstConnectionStartedAt)),
+    });
+  };
   const snapshot = () => ({
     events: [...events],
+    firstConnection: firstConnection.map(({ tag, elapsedMs }) => ({ tag, elapsedMs })),
     media: { ...media },
     held: Boolean(held),
     heldResponse: heldResponse?.summary,
@@ -226,6 +252,11 @@ export async function startQaGatewayRpcProxy({
   const sockets = new WebSocketServer({ server });
   sockets.on("connection", (front) => {
     const id = ++connection;
+    if (id === 1) {
+      firstConnectionStartedAt = performance.now();
+    }
+    recordFirstConnection(id, "front-open");
+    let challengeReceived = false;
     // Native ws:// clients deliberately omit custom headers. This fixture acts
     // as their trusted proxy without changing signed client/device identity.
     const back = new WebSocket(`ws://127.0.0.1:${backendPort}`, {
@@ -251,6 +282,7 @@ export async function startQaGatewayRpcProxy({
           });
         }
         if (frame.method === "connect") {
+          recordFirstConnection(id, "connect-received");
           record("connect-request", {
             connection: id,
             clientId: frame.params?.client?.id,
@@ -268,12 +300,22 @@ export async function startQaGatewayRpcProxy({
       }
     });
     back.on("open", () => {
+      recordFirstConnection(id, "upstream-open");
       for (const raw of pending.splice(0)) {
         back.send(raw);
       }
     });
     back.on("message", (raw) => {
       const frame = JSON.parse(raw.toString());
+      const firstChallenge =
+        id === 1 &&
+        !challengeReceived &&
+        frame.type === "event" &&
+        frame.event === "connect.challenge";
+      if (firstChallenge) {
+        challengeReceived = true;
+        recordFirstConnection(id, "challenge-received");
+      }
       const method = methods.get(frame.id);
       if (frame.type === "res") {
         methods.delete(frame.id);
@@ -348,25 +390,44 @@ export async function startQaGatewayRpcProxy({
         record("hello-held", { connection: id });
         return;
       }
+      if (firstChallenge && (held?.front === front || front.readyState !== WebSocket.OPEN)) {
+        recordFirstConnection(id, "challenge-forward-unavailable");
+      }
       if (held?.front === front) {
         if (held.frames.length >= 128) {
           throw new Error("held frame limit exceeded");
         }
         held.frames.push(raw);
       } else if (front.readyState === WebSocket.OPEN) {
-        front.send(raw);
+        front.send(
+          raw,
+          firstChallenge
+            ? (error) =>
+                recordFirstConnection(id, error ? "challenge-write-error" : "challenge-write-ok")
+            : undefined,
+        );
       }
     });
     front.on("close", () => {
+      recordFirstConnection(id, "front-close");
       back.terminate();
       peers.delete(peer);
       if (held?.front === front) {
         held = undefined;
       }
     });
-    back.on("close", () => front.terminate());
-    front.on("error", () => back.terminate());
-    back.on("error", () => front.terminate());
+    back.on("close", () => {
+      recordFirstConnection(id, "upstream-close");
+      front.terminate();
+    });
+    front.on("error", () => {
+      recordFirstConnection(id, "front-error");
+      back.terminate();
+    });
+    back.on("error", () => {
+      recordFirstConnection(id, "upstream-error");
+      front.terminate();
+    });
   });
   let stopping;
   const stop = () =>

@@ -371,7 +371,11 @@ export async function withNativeActionGateway(
                 : error instanceof Error
                   ? "error"
                   : "non-error";
-            const message = `native fixture controls failed: action=${progress.action}; phase=${progress.phase}; reason=request-failed; category=${category}`;
+            const connectionTrace =
+              progress.action === "pair"
+                ? `; firstConnection=${JSON.stringify(proxy.snapshot().firstConnection)}`
+                : "";
+            const message = `native fixture controls failed: action=${progress.action}; phase=${progress.phase}; reason=request-failed; category=${category}${connectionTrace}`;
             // Raw assertions and stacks can contain fixture credentials and private paths.
             firstControlFailure = new Error(message);
             firstControlFailure.stack = message;
