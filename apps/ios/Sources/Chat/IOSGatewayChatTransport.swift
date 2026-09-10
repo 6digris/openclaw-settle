@@ -556,12 +556,37 @@ struct IOSGatewayChatTransport: OpenClawChatGatewayTransport {
     {
         let gateway = self.gateway
         let widgetGateway = self.widgetGateway
-        return await OpenClawChatWidgetURLResolver.resolveResource(
+        let nativeBinding = self.nativeBinding
+        if let nativeBinding {
+            do {
+                try await nativeBinding.requireAvailable()
+            } catch {
+                return nil
+            }
+        }
+        let refreshOperatorSurface: @Sendable (GatewayCanvasHostRoute?) async -> GatewayCanvasHostRoute? = { observed in
+            await gateway.refreshCanvasHostRoute(
+                replacing: observed?.url,
+                ifCurrentRoute: nativeBinding?.route,
+                expectedProfileId: nativeBinding?.expectedProfileId)
+        }
+        let resource = await OpenClawChatWidgetURLResolver.resolveResource(
             target: path,
             replacing: failedResource,
             currentSurfaceRoutes: {
                 let node = await widgetGateway?.currentCanvasHostRoute()
-                let operatorSurface = await gateway.currentCanvasHostRoute()
+                var operatorSurface = if let nativeBinding {
+                    await gateway.currentCanvasHostRoute(
+                        ifCurrentRoute: nativeBinding.route,
+                        expectedProfileId: nativeBinding.expectedProfileId)
+                } else {
+                    await gateway.currentCanvasHostRoute()
+                }
+                // Initial resolution only reads this callback. Acquire when its
+                // owner has no cache; recovery's final read must not retry a denial.
+                if failedResource == nil, node == nil, operatorSurface == nil {
+                    operatorSurface = await refreshOperatorSurface(nil)
+                }
                 return (node: node, operatorSurface: operatorSurface)
             },
             // Prefer the device's node route; operator rotation covers clients
@@ -569,9 +594,10 @@ struct IOSGatewayChatTransport: OpenClawChatGatewayTransport {
             refreshNodeSurfaceRoute: { observed in
                 await widgetGateway?.refreshCanvasHostRoute(replacing: observed?.url)
             },
-            refreshOperatorSurfaceRoute: { observed in
-                await gateway.refreshCanvasHostRoute(replacing: observed?.url)
-            })
+            refreshOperatorSurfaceRoute: refreshOperatorSurface)
+        guard !Task.isCancelled else { return nil }
+        if let nativeBinding, await !nativeBinding.isCurrent() { return nil }
+        return resource
     }
 
     func loadMediaArtifact(

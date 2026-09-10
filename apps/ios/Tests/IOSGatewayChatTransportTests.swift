@@ -908,6 +908,190 @@ struct IOSGatewayChatTransportTests {
 }
 
 extension IOSGatewayChatTransportTests {
+    private actor WidgetFixture {
+        var profileID: String
+        private var responseCount = 0
+        private var holdNext = false
+        private var held: (GatewayTestWebSocketTask, Data)?
+        private var heldWaiters: [CheckedContinuation<Void, Never>] = []
+
+        init(profileID: String) {
+            self.profileID = profileID
+        }
+
+        func setProfile(_ profileID: String) {
+            self.profileID = profileID
+        }
+
+        func holdNextRefresh() {
+            self.holdNext = true
+        }
+
+        func waitForHeldRefresh() async {
+            if self.held != nil { return }
+            await withCheckedContinuation { self.heldWaiters.append($0) }
+        }
+
+        func release() {
+            if let (socket, data) = self.held { socket.emitReceiveSuccess(.data(data)) }
+            self.held = nil
+            let waiters = self.heldWaiters
+            self.heldWaiters.removeAll()
+            for waiter in waiters {
+                waiter.resume()
+            }
+        }
+
+        func respond(_ socket: GatewayTestWebSocketTask, request: RecordedRequest) throws {
+            #expect(request.method == "plugin.surface.refresh")
+            self.responseCount += 1
+            let allowed = request.expectedProfileId.map { $0.utf8.elementsEqual(self.profileID.utf8) } ?? true
+            var frame: [String: Any] = ["type": "res", "id": request.id, "ok": allowed]
+            if allowed {
+                frame["payload"] = ["pluginSurfaceUrls": [
+                    "canvas": "http://widget-test.invalid:9443/__openclaw__/cap/refresh-\(self.responseCount)",
+                ]]
+            } else {
+                frame["error"] = [
+                    "code": "INVALID_REQUEST", "message": "Selected profile changed",
+                    "details": ["reason": "EXPECTED_PROFILE_MISMATCH"],
+                ]
+            }
+            let data = try JSONSerialization.data(withJSONObject: frame)
+            if self.holdNext {
+                self.holdNext = false
+                self.held = (socket, data)
+                let waiters = self.heldWaiters
+                self.heldWaiters.removeAll()
+                for waiter in waiters {
+                    waiter.resume()
+                }
+            } else {
+                socket.emitReceiveSuccess(.data(data))
+            }
+        }
+    }
+
+    private func connectWidgetTransport(
+        gateway: GatewayNodeSession, fixture: WidgetFixture, recorder: RequestRecorder, profileID: String)
+        async throws -> IOSGatewayChatTransport
+    {
+        let session = GatewayTestWebSocketSession(taskFactory: {
+            GatewayTestWebSocketTask(sendHook: { socket, message, index in
+                guard index > 0 else { return }
+                let data: Data = switch message {
+                case let .data(value): value
+                case let .string(value): Data(value.utf8)
+                @unknown default: throw URLError(.cannotParseResponse)
+                }
+                try await fixture.respond(socket, request: recorder.record(data))
+            }, receiveHook: { socket, index in
+                if index == 0 { return .data(GatewayWebSocketTestSupport.connectChallengeData()) }
+                return .data(GatewayWebSocketTestSupport.connectOkData(
+                    id: socket.snapshotConnectRequestID() ?? "connect",
+                    canvasPluginSurfaceURL: "http://widget-test.invalid:9443/__openclaw__/cap/hello",
+                    methods: ["plugin.surface.refresh"], capabilities: ["profile-binding-v1"]))
+            })
+        })
+        var options = GatewayWebSocketTestSupport.identityFreeOperatorConnectOptions
+        options.allowStoredDeviceAuth = false
+        options.deviceAuthGatewayID = "widget-gateway"
+        try await gateway.connect(
+            url: #require(URL(string: "ws://widget-test.invalid")),
+            credentials: .init(), connectOptions: options, sessionBox: WebSocketSessionBox(session: session),
+            onConnected: {}, onDisconnected: { _ in }, onInvoke: { .init(id: $0.id, ok: true) })
+        let binding = try IOSNativeActionBinding(
+            session: .init(
+                owner: .init(gatewayID: "widget-gateway", profileID: profileID),
+                agentID: "main", sessionKey: "agent:main:main"),
+            gateway: gateway, route: #require(await gateway.currentRoute()))
+        return IOSGatewayChatTransport(gateway: gateway, nativeBinding: binding)
+    }
+
+    private func withWidgetTransport(
+        profileID: String = "alice",
+        _ run: (IOSGatewayChatTransport, WidgetFixture, RequestRecorder) async throws -> Void) async throws
+    {
+        let gateway = GatewayNodeSession()
+        let fixture = WidgetFixture(profileID: profileID)
+        let recorder = RequestRecorder()
+        do {
+            let transport = try await self.connectWidgetTransport(
+                gateway: gateway, fixture: fixture, recorder: recorder, profileID: profileID)
+            try await run(transport, fixture, recorder)
+        } catch {
+            await fixture.release()
+            await gateway.disconnect()
+            throw error
+        }
+        await fixture.release()
+        await gateway.disconnect()
+    }
+
+    @Test(arguments: [" alice ", "profile-e\u{301}", "profile-\u{E9}"])
+    func `native widget acquisition and denial preserve exact owners before ordinary chat resumes`(
+        profileID: String) async throws
+    {
+        try await self.withWidgetTransport(profileID: profileID) { transport, fixture, recorder in
+            let path = "/__openclaw__/canvas/documents/test/index.html"
+            let initial = try #require(await transport.resolveInlineWidgetResource(path: path, replacing: nil))
+            #expect(initial.url.path.contains("/cap/refresh-1/"))
+            #expect(initial.url.scheme == "http")
+            #expect(initial.url.host == "widget-test.invalid")
+            #expect(initial.url.port == 9443)
+            let recovered = try #require(await transport.resolveInlineWidgetResource(path: path, replacing: initial))
+            #expect(recovered.url.path.contains("/cap/refresh-2/"))
+            // Clear the resolver's recovery-attempt history before the next failure.
+            let current = try #require(await transport.resolveInlineWidgetResource(path: path, replacing: nil))
+            await fixture.setProfile("bob")
+            #expect(await transport.resolveInlineWidgetResource(path: path, replacing: current) == nil)
+            let denied = await recorder.all()
+            #expect(denied.count == 3)
+            #expect(denied.allSatisfy { $0.expectedProfileId?.utf8.elementsEqual(profileID.utf8) == true })
+            #expect(denied.allSatisfy { $0.params["expectedProfileId"] == nil })
+            let binding = try #require(transport.nativeBinding)
+            #expect(await transport.gateway.currentCanvasHostRoute(
+                ifCurrentRoute: binding.route, expectedProfileId: profileID) == nil)
+            let bobBinding = IOSNativeActionBinding(
+                session: .init(
+                    owner: .init(gatewayID: "widget-gateway", profileID: "bob"),
+                    agentID: "main", sessionKey: "agent:main:main"),
+                gateway: transport.gateway, route: binding.route)
+            let bob = IOSGatewayChatTransport(gateway: transport.gateway, nativeBinding: bobBinding)
+            #expect(await bob.resolveInlineWidgetResource(path: path, replacing: nil) != nil)
+            let ordinary = IOSGatewayChatTransport(gateway: transport.gateway)
+            let unbound = try #require(await ordinary.resolveInlineWidgetResource(path: path, replacing: nil))
+            #expect(unbound.url.path.contains("/cap/refresh-5/"))
+            let requests = await recorder.all()
+            try #require(requests.count == 5)
+            #expect(requests[3].expectedProfileId == "bob")
+            #expect(requests[4].expectedProfileId == nil)
+        }
+    }
+
+    @Test func `retired widget lookup and held recovery cannot use a successor socket`() async throws {
+        try await self.withWidgetTransport { transport, fixture, recorder in
+            let path = "/__openclaw__/canvas/documents/test/index.html"
+            let initial = try #require(await transport.resolveInlineWidgetResource(path: path, replacing: nil))
+            await fixture.holdNextRefresh()
+            async let loading = transport.resolveInlineWidgetResource(path: path, replacing: initial)
+            try await AsyncTimeout.withTimeout(
+                seconds: 2, onTimeout: { URLError(.timedOut) },
+                operation: { await fixture.waitForHeldRefresh() })
+            await transport.gateway.disconnect()
+            let successorRecorder = RequestRecorder()
+            let successor = try await self.connectWidgetTransport(
+                gateway: transport.gateway, fixture: fixture, recorder: successorRecorder, profileID: "alice")
+            await fixture.release()
+            #expect(await loading == nil)
+            #expect(await transport.resolveInlineWidgetResource(path: path, replacing: nil) == nil)
+            #expect(await recorder.all().count == 2)
+            #expect(await successorRecorder.all().isEmpty)
+            #expect(await successor.resolveInlineWidgetResource(path: path, replacing: nil) != nil)
+            #expect(await successorRecorder.all().map(\.expectedProfileId) == ["alice"])
+        }
+    }
+
     @Test(arguments: [false, true])
     func `native send receipt crosses retired postresponse fences but malformed data does not`(
         malformed: Bool) async throws
