@@ -134,6 +134,7 @@ private final class FakeGatewayWebSocketTask: WebSocketTasking, @unchecked Senda
     private let helloMethods: [String]
     private let helloCapabilities: [String]
     private let helloSessionDefaults: [String: Any]?
+    private let helloSurfaceURLs: [String: String]
     private let helloDelayNanoseconds: UInt64
     private let challenge: (delayNanoseconds: UInt64, nonce: String)
     private let challengeCapabilities: [String]
@@ -154,6 +155,7 @@ private final class FakeGatewayWebSocketTask: WebSocketTasking, @unchecked Senda
         helloMethods: [String] = [],
         helloCapabilities: [String] = [],
         helloSessionDefaults: [String: Any]? = nil,
+        helloSurfaceURLs: [String: String] = [:],
         helloDelayNanoseconds: UInt64 = 0,
         challenge: (delayNanoseconds: UInt64, nonce: String) = (0, "nonce-1"),
         challengeCapabilities: [String] = [],
@@ -164,6 +166,7 @@ private final class FakeGatewayWebSocketTask: WebSocketTasking, @unchecked Senda
         self.helloMethods = helloMethods
         self.helloCapabilities = helloCapabilities
         self.helloSessionDefaults = helloSessionDefaults
+        self.helloSurfaceURLs = helloSurfaceURLs
         self.helloDelayNanoseconds = helloDelayNanoseconds
         self.challenge = challenge
         self.challengeCapabilities = challengeCapabilities
@@ -275,7 +278,8 @@ private final class FakeGatewayWebSocketTask: WebSocketTasking, @unchecked Senda
                     auth: self.helloAuth,
                     methods: self.helloMethods,
                     capabilities: self.helloCapabilities,
-                    sessionDefaults: self.helloSessionDefaults))
+                    sessionDefaults: self.helloSessionDefaults,
+                    surfaceURLs: self.helloSurfaceURLs))
             }
             try await Task.sleep(nanoseconds: 1_000_000)
         }
@@ -287,7 +291,8 @@ private final class FakeGatewayWebSocketTask: WebSocketTasking, @unchecked Senda
             auth: self.helloAuth,
             methods: self.helloMethods,
             capabilities: self.helloCapabilities,
-            sessionDefaults: self.helloSessionDefaults))
+            sessionDefaults: self.helloSessionDefaults,
+            surfaceURLs: self.helloSurfaceURLs))
     }
 
     func receive(
@@ -346,6 +351,12 @@ private final class FakeGatewayWebSocketTask: WebSocketTasking, @unchecked Senda
         self.emitInbound(.success(.data(data)))
     }
 
+    func emitSurfaceResponse(_ request: [String: Any], token: String) throws {
+        try self.emitResponse(
+            id: #require(request["id"] as? String),
+            payload: ["pluginSurfaceUrls": ["canvas": "https://gateway.example.invalid/__openclaw__/cap/\(token)"]])
+    }
+
     func emitInvokeCancel(id: String) {
         let frame: [String: Any] = [
             "type": "event",
@@ -388,7 +399,8 @@ private final class FakeGatewayWebSocketTask: WebSocketTasking, @unchecked Senda
         auth: [String: Any]? = nil,
         methods: [String] = [],
         capabilities: [String] = [],
-        sessionDefaults: [String: Any]? = nil) -> Data
+        sessionDefaults: [String: Any]? = nil,
+        surfaceURLs: [String: String] = [:]) -> Data
     {
         var payload: [String: Any] = [
             "type": "hello-ok",
@@ -417,6 +429,7 @@ private final class FakeGatewayWebSocketTask: WebSocketTasking, @unchecked Senda
                 "tickIntervalMs": 30000,
             ],
             "auth": [:],
+            "pluginSurfaceUrls": surfaceURLs,
         ]
         if let auth {
             payload["auth"] = auth
@@ -484,6 +497,7 @@ private final class FakeGatewayWebSocketSession: WebSocketSessioning, GatewayTLS
     private let helloMethods: [String]
     private let helloCapabilities: [String]
     private let helloSessionDefaults: [String: Any]?
+    private let helloSurfaceURLs: [String: String]
     private let helloDelayNanoseconds: UInt64
     private let challenge: (delayNanoseconds: UInt64, nonce: String)
     private let challengeCapabilities: [String]
@@ -499,6 +513,7 @@ private final class FakeGatewayWebSocketSession: WebSocketSessioning, GatewayTLS
         helloMethods: [String] = [],
         helloCapabilities: [String] = [],
         helloSessionDefaults: [String: Any]? = nil,
+        helloSurfaceURLs: [String: String] = [:],
         helloDelayNanoseconds: UInt64 = 0,
         challenge: (delayNanoseconds: UInt64, nonce: String) = (0, "nonce-1"),
         challengeCapabilities: [String] = [],
@@ -510,6 +525,7 @@ private final class FakeGatewayWebSocketSession: WebSocketSessioning, GatewayTLS
         self.helloMethods = helloMethods
         self.helloCapabilities = helloCapabilities
         self.helloSessionDefaults = helloSessionDefaults
+        self.helloSurfaceURLs = helloSurfaceURLs
         self.helloDelayNanoseconds = helloDelayNanoseconds
         self.challenge = challenge
         self.challengeCapabilities = challengeCapabilities
@@ -543,6 +559,7 @@ private final class FakeGatewayWebSocketSession: WebSocketSessioning, GatewayTLS
                 helloMethods: self.helloMethods,
                 helloCapabilities: self.helloCapabilities,
                 helloSessionDefaults: self.helloSessionDefaults,
+                helloSurfaceURLs: self.helloSurfaceURLs,
                 helloDelayNanoseconds: self.helloDelayNanoseconds,
                 challenge: self.challenge,
                 challengeCapabilities: self.challengeCapabilities,
@@ -1062,6 +1079,214 @@ struct GatewayNodeSessionTests {
         #expect(laggingURL == newURL)
         #expect(task.sentRequestCount(method: "node.pluginSurface.refresh") == 2)
         await gateway.disconnect()
+    }
+
+    private func withSurfaceGateway(
+        node: Bool = false,
+        _ run: (GatewayNodeSession, FakeGatewayWebSocketSession, GatewayNodeSessionRoute) async throws -> Void)
+        async throws
+    {
+        let gateway = GatewayNodeSession()
+        let session = FakeGatewayWebSocketSession(
+            helloSurfaceURLs: ["canvas": "https://gateway.example.invalid/__openclaw__/cap/hello"],
+            effectiveTLSFingerprintSHA256: String(repeating: "ab", count: 32))
+        do {
+            try await gateway.connectForTest(
+                testURL("wss://gateway.example.invalid"),
+                options: node ? nodeConnectOptions(caps: ["canvas"]) : operatorConnectOptions(),
+                session: session)
+            try await run(gateway, session, #require(await gateway.currentRoute()))
+        } catch {
+            await gateway.disconnect()
+            throw error
+        }
+        await gateway.disconnect()
+    }
+
+    private func surfaceRequest(
+        _ session: FakeGatewayWebSocketSession, at index: Int) async throws -> [String: Any]
+    {
+        try await waitUntil("surface request \(index)") {
+            (session.latestTask()?.sentRequestCount(method: "plugin.surface.refresh") ?? 0) > index
+        }
+        return try #require(session.latestTask()).sentRequests(method: "plugin.surface.refresh")[index]
+    }
+
+    @Test(arguments: ["node", "operator"])
+    func `ordinary surface refresh reconnects a closed socket while a native lease cannot`(role: String) async throws {
+        try await self.withSurfaceGateway(node: role == "node") { gateway, session, route in
+            let observed = try #require(await gateway.currentCanvasHostUrl())
+            let oldSocket = try #require(session.latestTask())
+            // Model URLSession publishing closure before its receive callback.
+            // No failure event or automatic reconnect can satisfy this acquisition.
+            oldSocket.state = .completed
+            #expect(await gateway.currentRoute() == nil)
+            #expect(await gateway.refreshCanvasHostRoute(
+                replacing: observed, ifCurrentRoute: route, expectedProfileId: "alice") == nil)
+            #expect(session.snapshotMakeCount() == 1)
+            let ordinary = Task { await gateway.refreshCanvasHostUrl(replacing: observed) }
+            let method = role == "node" ? "node.pluginSurface.refresh" : "plugin.surface.refresh"
+            try await waitUntil("ordinary refresh reconnects and dispatches") {
+                session.snapshotMakeCount() == 2 && session.latestTask()?.sentRequestCount(method: method) == 1
+            }
+            let socket = try #require(session.latestTask())
+            let request = try #require(socket.sentRequests(method: method).first)
+            #expect(request["expectedProfileId"] == nil)
+            try socket.emitSurfaceResponse(request, token: "reconnected")
+            #expect(await ordinary.value?.hasSuffix("/reconnected") == true)
+            #expect(await gateway.currentRoute() != route)
+            #expect(await gateway.currentCanvasHostRoute()?.tlsFingerprintSHA256 == String(repeating: "ab", count: 32))
+        }
+    }
+
+    @Test func `surface cache separates exact profiles and unbound hello authority`() async throws {
+        try await self.withSurfaceGateway { gateway, session, route in
+            #expect(await gateway.currentCanvasHostRoute()?.url.hasSuffix("/hello") == true)
+            let profiles: [String?] = ["alice", " bob ", "profile-e\u{301}", "profile-\u{E9}", nil]
+            for (index, profile) in profiles.enumerated() {
+                #expect(await gateway.currentCanvasHostRoute(
+                    ifCurrentRoute: route, expectedProfileId: profile) == nil)
+                let refresh = Task {
+                    await gateway.refreshCanvasHostRoute(
+                        replacing: nil, ifCurrentRoute: route, expectedProfileId: profile)
+                }
+                let request = try await self.surfaceRequest(session, at: index)
+                #expect((request["expectedProfileId"] as? String).map { Array($0.utf8) } ==
+                    profile.map { Array($0.utf8) })
+                #expect((request["params"] as? [String: Any])?["observedUrl"] == nil)
+                try #require(session.latestTask()).emitSurfaceResponse(request, token: "owner-\(index)")
+                let value = try #require(await refresh.value)
+                #expect(value.url.hasSuffix("/owner-\(index)"))
+                #expect(value.tlsFingerprintSHA256 == String(repeating: "ab", count: 32))
+                #expect(await gateway.currentCanvasHostRoute(
+                    ifCurrentRoute: route, expectedProfileId: profile) == value)
+                if profile != nil { #expect(await gateway.currentCanvasHostRoute() == nil) }
+            }
+        }
+    }
+
+    @Test func `profile refresh waiters share one rotation with independent deadlines`() async throws {
+        try await self.withSurfaceGateway { gateway, session, route in
+            let long = Task {
+                await gateway.refreshCanvasHostRoute(replacing: nil, ifCurrentRoute: route, expectedProfileId: "alice")
+            }
+            let request = try await self.surfaceRequest(session, at: 0)
+            let short = await gateway.refreshPluginSurfaceUrl(
+                surface: "canvas", timeoutSeconds: 1, ifCurrentRoute: route, expectedProfileId: "alice")
+            #expect(short == nil)
+            let cancelled = Task {
+                await gateway.refreshPluginSurfaceUrl(
+                    surface: "canvas", timeoutSeconds: 0, ifCurrentRoute: route, expectedProfileId: "alice")
+            }
+            cancelled.cancel()
+            #expect(await cancelled.value == nil)
+            let follower = Task {
+                await gateway.refreshCanvasHostRoute(replacing: nil, ifCurrentRoute: route, expectedProfileId: "alice")
+            }
+            try #require(session.latestTask()).emitSurfaceResponse(request, token: "shared")
+            let first = try #require(await long.value)
+            #expect(await follower.value == first)
+            #expect(session.latestTask()?.sentRequestCount(method: "plugin.surface.refresh") == 1)
+        }
+    }
+
+    @Test func `different surface owners isolate results and cancelled rotations`() async throws {
+        try await self.withSurfaceGateway { gateway, session, route in
+            async let alice = gateway.refreshCanvasHostRoute(
+                replacing: nil, ifCurrentRoute: route, expectedProfileId: "alice")
+            let request = try await self.surfaceRequest(session, at: 0)
+            let bob = Task {
+                await gateway.refreshPluginSurfaceUrl(
+                    surface: "canvas", timeoutSeconds: 0, ifCurrentRoute: route, expectedProfileId: "bob")
+            }
+            do {
+                try #require(session.latestTask()).emitSurfaceResponse(request, token: "alice")
+                #expect(await alice?.url.hasSuffix("/alice") == true)
+                let bobRequest = try await self.surfaceRequest(session, at: 1)
+                #expect(bobRequest["expectedProfileId"] as? String == "bob")
+                bob.cancel()
+                #expect(await bob.value == nil)
+                #expect(await gateway.currentCanvasHostRoute(ifCurrentRoute: route, expectedProfileId: "bob") == nil)
+                // A late completion after the last eligible waiter cannot publish.
+                try #require(session.latestTask()).emitSurfaceResponse(bobRequest, token: "cancelled-bob")
+                async let retry = gateway.refreshCanvasHostRoute(
+                    replacing: nil, ifCurrentRoute: route, expectedProfileId: "bob")
+                let retryRequest = try await self.surfaceRequest(session, at: 2)
+                try #require(session.latestTask()).emitSurfaceResponse(retryRequest, token: "fresh-bob")
+                #expect(await retry?.url.hasSuffix("/fresh-bob") == true)
+            } catch {
+                bob.cancel()
+                _ = await bob.value
+                throw error
+            }
+        }
+    }
+
+    @Test func `cancelled and expired surface contenders never dispatch after the active owner`() async throws {
+        try await self.withSurfaceGateway { gateway, session, route in
+            let alice = Task {
+                await gateway.refreshCanvasHostRoute(replacing: nil, ifCurrentRoute: route, expectedProfileId: "alice")
+            }
+            let request = try await self.surfaceRequest(session, at: 0)
+            let entered = AsyncGate()
+            let cancelled = Task {
+                await entered.release()
+                return await gateway.refreshPluginSurfaceUrl(
+                    surface: "canvas", timeoutSeconds: 0, ifCurrentRoute: route, expectedProfileId: "cancelled")
+            }
+            await entered.wait()
+            let expired = await gateway.refreshPluginSurfaceUrl(
+                surface: "canvas", timeoutSeconds: 1, ifCurrentRoute: route, expectedProfileId: "expired")
+            #expect(expired == nil)
+            cancelled.cancel()
+            #expect(await cancelled.value == nil)
+            try #require(session.latestTask()).emitSurfaceResponse(request, token: "alice")
+            #expect(await alice.value != nil)
+            let fresh = Task {
+                await gateway.refreshCanvasHostRoute(replacing: nil, ifCurrentRoute: route, expectedProfileId: "fresh")
+            }
+            let freshRequest = try await self.surfaceRequest(session, at: 1)
+            #expect(freshRequest["expectedProfileId"] as? String == "fresh")
+            try #require(session.latestTask()).emitSurfaceResponse(freshRequest, token: "fresh")
+            #expect(await fresh.value?.url.hasSuffix("/fresh") == true)
+            #expect(session.latestTask()?.sentRequestCount(method: "plugin.surface.refresh") == 2)
+        }
+    }
+
+    @Test func `reset retires surface cache waiters and late cleanup before a successor rotation`() async throws {
+        try await self.withSurfaceGateway { gateway, session, route in
+            let old = Task {
+                await gateway.refreshCanvasHostRoute(replacing: nil, ifCurrentRoute: route, expectedProfileId: "alice")
+            }
+            let oldRequest = try await self.surfaceRequest(session, at: 0)
+            let oldSocket = try #require(session.latestTask())
+            await gateway.disconnect()
+            #expect(await old.value == nil)
+            #expect(await gateway.currentCanvasHostRoute() == nil)
+            let successor = FakeGatewayWebSocketSession(
+                helloSurfaceURLs: ["canvas": "https://gateway.example.invalid/__openclaw__/cap/successor"],
+                effectiveTLSFingerprintSHA256: String(repeating: "cd", count: 32))
+            try await gateway.connectForTest(
+                testURL("wss://gateway.example.invalid"), options: operatorConnectOptions(), session: successor)
+            let freshRoute = try #require(await gateway.currentRoute())
+            #expect(freshRoute != route)
+            #expect(await gateway.currentCanvasHostRoute()?.url.hasSuffix("/successor") == true)
+            #expect(await gateway.currentCanvasHostRoute()?.tlsFingerprintSHA256 == String(repeating: "cd", count: 32))
+            #expect(await gateway.currentCanvasHostRoute(ifCurrentRoute: route, expectedProfileId: "alice") == nil)
+            #expect(await gateway.refreshCanvasHostRoute(
+                replacing: nil, ifCurrentRoute: route, expectedProfileId: "alice") == nil)
+            #expect(successor.latestTask()?.sentRequestCount(method: "plugin.surface.refresh") == 0)
+            let fresh = Task {
+                await gateway.refreshCanvasHostRoute(
+                    replacing: nil, ifCurrentRoute: freshRoute, expectedProfileId: "alice")
+            }
+            let freshRequest = try await self.surfaceRequest(successor, at: 0)
+            try oldSocket.emitSurfaceResponse(oldRequest, token: "retired")
+            try #require(successor.latestTask()).emitSurfaceResponse(freshRequest, token: "fresh")
+            let value = try #require(await fresh.value)
+            #expect(value.url.hasSuffix("/fresh"))
+            #expect(value.tlsFingerprintSHA256 == String(repeating: "cd", count: 32))
+        }
     }
 
     @Test func `node requests preserve numeric JSON params`() async throws {
