@@ -97,7 +97,7 @@ suite.define(() => {
       await expect.poll(() => cards.count()).toBe(count);
       expect(
         await page
-          .locator(".chat-group.user .chat-bubble")
+          .locator(".chat-pane-cache__pane--active .chat-group.user .chat-bubble")
           .evaluate((node) => getComputedStyle(node).backgroundColor),
       ).toBe("rgba(0, 0, 0, 0)");
       const reference = await gap(paragraphs.nth(0), paragraphs.nth(1));
@@ -111,7 +111,7 @@ suite.define(() => {
       ).toBeLessThanOrEqual(1);
       expect(
         await page
-          .locator(".chat-thread")
+          .locator(".chat-pane-cache__pane--active .chat-thread")
           .evaluate((element) => element.scrollWidth <= element.clientWidth),
       ).toBe(true);
     });
@@ -157,7 +157,7 @@ suite.define(() => {
         ],
       });
       await page.goto(`${suite.server.baseUrl}chat/main`);
-      const group = page.locator(".chat-group.user");
+      const group = page.locator(".chat-pane-cache__pane--active .chat-group.user");
       await group.locator(".chat-text").waitFor();
       await group
         .locator("img.chat-message-image")
@@ -252,7 +252,9 @@ suite.define(() => {
       const body = page.locator(".chat-tool-msg-body");
       const text = body.locator(":scope > .chat-text");
       await text.waitFor();
-      const paragraphs = page.locator(".chat-group.user .chat-text > p");
+      const paragraphs = page.locator(
+        ".chat-pane-cache__pane--active .chat-group.user .chat-text > p",
+      );
       await paragraphs.last().waitFor();
       const reference = await gap(paragraphs.nth(0), paragraphs.nth(1));
       const attachments = body.locator(":scope > .chat-assistant-attachments");
