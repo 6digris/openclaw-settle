@@ -776,17 +776,31 @@ export async function withNativeActionGateway(
           });
           const address = control.address();
           assert(address && typeof address !== "string");
-          await executeNative({
-            version: 1,
-            gatewayURL: proxy.url,
-            controlURL: `http://127.0.0.1:${address.port}/`,
-            controlToken,
-            gatewayID: `native-action-${randomUUID()}`,
-            aliceProfileID: aliceId,
-            bobProfileID: bobId,
-            cases,
-            media,
-          });
+          try {
+            await executeNative({
+              version: 1,
+              gatewayURL: proxy.url,
+              controlURL: `http://127.0.0.1:${address.port}/`,
+              controlToken,
+              gatewayID: `native-action-${randomUUID()}`,
+              aliceProfileID: aliceId,
+              bobProfileID: bobId,
+              cases,
+              media,
+            });
+          } catch (error) {
+            console.error(
+              JSON.stringify({
+                event: "native-child-failed",
+                platform,
+                completedCases: completed.size,
+                completedMedia: mediaCompleted.size,
+                completedWidgets: widgetsCompleted.size,
+                lastSignInCheckpoint: signInCheckpoints.at(-1) ?? "none",
+              }),
+            );
+            throw error;
+          }
           assert.deepEqual(
             [...completed].toSorted(),
             [...caseKeys].toSorted(),

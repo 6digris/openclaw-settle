@@ -172,14 +172,43 @@ struct NativeActionGatewayWireTests {
 
         func prepare(_ id: String, profileID: String? = nil) async throws -> OpenClawNativePreparedSend {
             let spec = try #require(self.fixture.cases[id])
-            return try await self.router.prepareSend(
-                to: OpenClawNativeSessionRef(
-                    owner: .init(
-                        gatewayID: self.fixture.gatewayID,
-                        profileID: profileID ?? self.fixture.aliceProfileID),
-                    agentID: "qa",
-                    sessionKey: spec.sessionKey),
-                message: spec.message)
+            let session = OpenClawNativeSessionRef(
+                owner: .init(
+                    gatewayID: self.fixture.gatewayID,
+                    profileID: profileID ?? self.fixture.aliceProfileID),
+                agentID: "qa",
+                sessionKey: spec.sessionKey)
+            do {
+                return try await self.router.prepareSend(to: session, message: spec.message)
+            } catch {
+                // Read public state before cleanup, without suspending or exposing identities.
+                // Missing owners leave their readiness and identity checks unknown.
+                let state: [(String, Bool?)] = [
+                    ("presentationPresent", self.presentationID != nil),
+                    ("chatPresent", self.chat != nil),
+                    ("transportPresent", self.transport != nil),
+                    ("bindingPresent", self.binding != nil),
+                    ("operatorConnected", self.model.isOperatorGatewayConnected),
+                    ("loading", self.chat?.isLoading),
+                    ("healthOK", self.chat?.healthOK),
+                    ("errorPresent", self.chat.map { $0.errorText != nil }),
+                    ("modelSessionMatches", self.model.chatSessionKey.utf8.elementsEqual(session.sessionKey.utf8)),
+                    ("chatSessionMatches", self.chat?.sessionKey.utf8.elementsEqual(session.sessionKey.utf8)),
+                    ("agentMatches", self.model.chatDeliveryAgentId?.utf8.elementsEqual(session.agentID.utf8)),
+                    (
+                        "gatewayMatches",
+                        self.model.chatTranscriptCacheGatewayID?.utf8
+                            .elementsEqual(session.owner.gatewayID.utf8)),
+                    ("bindingSessionMatches", self.binding.map { $0.session == session }),
+                    ("transportBindingMatches", self.binding.flatMap { self.transport?.nativeBinding?.matches($0) }),
+                ]
+                let fields = state.map { name, value in
+                    "\(name)=\(value.map { String($0) } ?? "unknown")"
+                }
+                let role = self.pairAction == "pair" ? "writer" : "sign-in"
+                print("native prepare failed: role=\(role); case=\(id); \(fields.joined(separator: "; "))")
+                throw error
+            }
         }
 
         func disconnect() async {
