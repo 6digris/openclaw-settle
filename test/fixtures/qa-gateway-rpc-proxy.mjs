@@ -7,10 +7,19 @@ import { finished } from "node:stream/promises";
 import { pathToFileURL } from "node:url";
 
 /**
- * @typedef {"front-open" | "upstream-open" | "challenge-received" |
+ * @typedef {"front-open" | "upstream-create-start" | "upstream-create-return" |
+ *   "upstream-upgrade" | "upstream-open" | "challenge-received" |
  *   "challenge-write-ok" | "challenge-write-error" | "challenge-forward-unavailable" |
  *   "connect-received" | "front-close" | "upstream-close" | "front-error" |
- *   "upstream-error"} FirstConnectionTag
+ *   "upstream-error" | "front-terminate" | "upstream-terminate"} FirstConnectionTag
+ * @typedef {"CONNECTING" | "OPEN" | "CLOSING" | "CLOSED" | "none" | "other"} SocketState
+ * @typedef {"none" | "hold-reconnect" | "request-limit" | "response-dropped" |
+ *   "front-close" | "upstream-close" | "front-error" | "upstream-error" |
+ *   "stop"} TerminationCause
+ * @typedef {"none" | "other" | "ECONNRESET" | "ECONNREFUSED" | "ETIMEDOUT" |
+ *   "EHOSTUNREACH" | "ENETUNREACH" | "EPIPE"} SocketErrorCode
+ * @typedef {{ state?: SocketState, localTermination?: TerminationCause,
+ *   errorCode?: SocketErrorCode }} FirstConnectionFacts
  */
 
 /**
@@ -49,15 +58,17 @@ export async function startQaGatewayRpcProxy({
   let heldResponse;
   let heldWaiter;
   let mediaTask;
-  /** @type {Array<{ tag: FirstConnectionTag, elapsedMs: number }>} */
+  /** @type {Array<{ tag: FirstConnectionTag, elapsedMs: number } & FirstConnectionFacts>} */
   const firstConnection = [];
+  /** @type {{ front: TerminationCause, upstream: TerminationCause }} */
+  const firstTerminations = { front: "none", upstream: "none" };
   let firstConnectionStartedAt = 0;
   // Diagnostics must not throw through socket callbacks or consume the RPC evidence limit.
-  /** @param {number} id @param {FirstConnectionTag} tag */
-  const recordFirstConnection = (id, tag) => {
+  /** @param {number} id @param {FirstConnectionTag} tag @param {FirstConnectionFacts} [facts] */
+  const recordFirstConnection = (id, tag, facts = {}) => {
     if (
       id !== 1 ||
-      firstConnection.length >= 11 ||
+      firstConnection.length >= 16 ||
       firstConnection.some((entry) => entry.tag === tag)
     ) {
       return;
@@ -65,11 +76,69 @@ export async function startQaGatewayRpcProxy({
     firstConnection.push({
       tag,
       elapsedMs: Math.max(0, Math.floor(performance.now() - firstConnectionStartedAt)),
+      ...facts,
+    });
+  };
+  /** @param {number | undefined} state @returns {SocketState} */
+  const socketState = (state) => {
+    switch (state) {
+      case WebSocket.CONNECTING:
+        return "CONNECTING";
+      case WebSocket.OPEN:
+        return "OPEN";
+      case WebSocket.CLOSING:
+        return "CLOSING";
+      case WebSocket.CLOSED:
+        return "CLOSED";
+      case undefined:
+        return "none";
+      default:
+        return "other";
+    }
+  };
+  /** @param {unknown} error @returns {SocketErrorCode} */
+  const socketErrorCode = (error) => {
+    const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+    switch (code) {
+      case undefined:
+        return "none";
+      case "ECONNRESET":
+      case "ECONNREFUSED":
+      case "ETIMEDOUT":
+      case "EHOSTUNREACH":
+      case "ENETUNREACH":
+      case "EPIPE":
+        return code;
+      default:
+        return "other";
+    }
+  };
+  /**
+   * @param {number} id @param {"front" | "upstream"} endpoint
+   * @param {import("ws").WebSocket} socket @param {TerminationCause} cause
+   */
+  const recordFirstTermination = (id, endpoint, socket, cause) => {
+    if (id !== 1 || firstTerminations[endpoint] !== "none") {
+      return;
+    }
+    // A later close/error cascade must not overwrite the initiating local action.
+    firstTerminations[endpoint] = cause;
+    recordFirstConnection(id, endpoint === "front" ? "front-terminate" : "upstream-terminate", {
+      state: socketState(socket.readyState),
+      localTermination: cause,
     });
   };
   const snapshot = () => ({
     events: [...events],
-    firstConnection: firstConnection.map(({ tag, elapsedMs }) => ({ tag, elapsedMs })),
+    firstConnection: firstConnection.map(
+      ({ tag, elapsedMs, state, localTermination, errorCode }) => ({
+        tag,
+        elapsedMs,
+        state,
+        localTermination,
+        errorCode,
+      }),
+    ),
     media: { ...media },
     held: Boolean(held),
     heldResponse: heldResponse?.summary,
@@ -156,7 +225,9 @@ export async function startQaGatewayRpcProxy({
         } else if (action === "hold-reconnect") {
           holdHello = true;
           for (const peer of peers) {
+            recordFirstTermination(peer.id, "front", peer.front, "hold-reconnect");
             peer.front.terminate();
+            recordFirstTermination(peer.id, "upstream", peer.back, "hold-reconnect");
             peer.back.terminate();
           }
         } else if (action === "release-hello") {
@@ -261,10 +332,12 @@ export async function startQaGatewayRpcProxy({
     let challengeReceived = false;
     // Native ws:// clients deliberately omit custom headers. This fixture acts
     // as their trusted proxy without changing signed client/device identity.
+    recordFirstConnection(id, "upstream-create-start");
     const back = new WebSocket(`ws://127.0.0.1:${backendPort}`, {
       headers: upstreamHeaders,
     });
-    const peer = { front, back };
+    recordFirstConnection(id, "upstream-create-return");
+    const peer = { id, front, back };
     peers.add(peer);
     const methods = new Map();
     const pending = [];
@@ -272,6 +345,7 @@ export async function startQaGatewayRpcProxy({
       const frame = JSON.parse(raw.toString());
       if (frame.type === "req") {
         if (methods.size >= 128 || pending.length >= 128) {
+          recordFirstTermination(id, "front", front, "request-limit");
           front.terminate();
           return;
         }
@@ -304,6 +378,8 @@ export async function startQaGatewayRpcProxy({
         pending.push(raw);
       }
     });
+    // ws emits upgrade before validation; open marks a validated WebSocket upgrade.
+    back.on("upgrade", () => recordFirstConnection(id, "upstream-upgrade"));
     back.on("open", () => {
       recordFirstConnection(id, "upstream-open");
       for (const raw of pending.splice(0)) {
@@ -398,7 +474,9 @@ export async function startQaGatewayRpcProxy({
             requestId: frame.id,
             key: frame.payload?.key,
           });
+          recordFirstTermination(id, "front", front, "response-dropped");
           front.terminate();
+          recordFirstTermination(id, "upstream", back, "response-dropped");
           back.terminate();
           return;
         }
@@ -429,6 +507,7 @@ export async function startQaGatewayRpcProxy({
     });
     front.on("close", () => {
       recordFirstConnection(id, "front-close");
+      recordFirstTermination(id, "upstream", back, "front-close");
       back.terminate();
       peers.delete(peer);
       if (held?.front === front) {
@@ -437,14 +516,25 @@ export async function startQaGatewayRpcProxy({
     });
     back.on("close", () => {
       recordFirstConnection(id, "upstream-close");
+      recordFirstTermination(id, "front", front, "upstream-close");
       front.terminate();
     });
-    front.on("error", () => {
-      recordFirstConnection(id, "front-error");
+    front.on("error", (error) => {
+      recordFirstConnection(id, "front-error", {
+        state: socketState(front.readyState),
+        localTermination: firstTerminations.front,
+        errorCode: socketErrorCode(error),
+      });
+      recordFirstTermination(id, "upstream", back, "front-error");
       back.terminate();
     });
-    back.on("error", () => {
-      recordFirstConnection(id, "upstream-error");
+    back.on("error", (error) => {
+      recordFirstConnection(id, "upstream-error", {
+        state: socketState(back.readyState),
+        localTermination: firstTerminations.upstream,
+        errorCode: socketErrorCode(error),
+      });
+      recordFirstTermination(id, "front", front, "upstream-error");
       front.terminate();
     });
   });
@@ -454,7 +544,9 @@ export async function startQaGatewayRpcProxy({
       heldWaiter?.(new Error("proxy stopped"));
       heldResponse = undefined;
       for (const peer of peers) {
+        recordFirstTermination(peer.id, "front", peer.front, "stop");
         peer.front.terminate();
+        recordFirstTermination(peer.id, "upstream", peer.back, "stop");
         peer.back.terminate();
       }
       for (const upstream of httpRequests) {
