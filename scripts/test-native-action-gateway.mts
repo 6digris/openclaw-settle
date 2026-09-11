@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   startQaMockOpenAiServer,
   TINY_PNG_BASE64,
@@ -22,6 +23,7 @@ import {
   SKILL_LIBRARY_WRITER_SCOPES,
 } from "../test/e2e/qa-lab/runtime/skill-library-wire-fixture.js";
 import { startQaGatewayRpcProxy } from "../test/fixtures/qa-gateway-rpc-proxy.mjs";
+import type { OpenClawTestInstance } from "../test/helpers/openclaw-test-instance.js";
 import { runQaGatewayFixture } from "../test/helpers/qa-gateway-cleanup.js";
 import { runManagedCommand } from "./lib/managed-child-process.mts";
 
@@ -63,6 +65,45 @@ const IOS_WIDGET_CASES = {
   controlProfile: { allowed: true, requests: 1 },
 } as const;
 type IOSWidgetCaseID = keyof typeof IOS_WIDGET_CASES;
+const SIGN_IN_SCOPES = [...SKILL_LIBRARY_WRITER_SCOPES, "operator.admin"];
+const SIGN_IN_METHODS = [
+  "models.authStatus",
+  "models.authLogin",
+  "wizard.next",
+  "wizard.cancel",
+  "wizard.status",
+];
+const SIGN_IN_START = [
+  ["models.authStatus", true],
+  ["models.authLogin", true],
+  ["wizard.next", true],
+  ["wizard.next", true],
+] as const;
+const SIGN_IN_CLOSE = [
+  ["wizard.cancel", true],
+  ["wizard.status", false],
+] as const;
+const SIGN_IN_CHECKPOINTS = {
+  admitted: { entered: 1, settled: 0, responses: SIGN_IN_START },
+  cleaned: { entered: 1, settled: 1, responses: SIGN_IN_CLOSE },
+  denied: {
+    entered: 1,
+    settled: 1,
+    responses: [
+      ["models.authLogin", false],
+      ["wizard.status", false],
+    ],
+  },
+  profile: { entered: 2, settled: 2, responses: [...SIGN_IN_START, ...SIGN_IN_CLOSE] },
+  replacement: { entered: 3, settled: 2, responses: SIGN_IN_START },
+  retired: { entered: 3, settled: 2, responses: [] },
+  complete: {
+    entered: 3,
+    settled: 3,
+    responses: [["wizard.status", true], ...SIGN_IN_CLOSE],
+  },
+} as const;
+type SignInCheckpoint = keyof typeof SIGN_IN_CHECKPOINTS;
 const CONTROL_ACTIONS = [
   "pair",
   "revoke-acl",
@@ -74,6 +115,9 @@ const CONTROL_ACTIONS = [
   "release-response",
   "media-start",
   "media-complete",
+  "pair-signin",
+  "signin-config",
+  "signin-checkpoint",
   "widget-start",
   "widget-complete",
 ] as const;
@@ -86,7 +130,12 @@ type ControlProgress = {
     | "identity"
     | "pending-list"
     | "pending-match"
-    | "approval";
+    | "approval"
+    | "signin-order"
+    | "signin-provider"
+    | "signin-wire"
+    | "signin-connection";
+  signInCheckpoint?: SignInCheckpoint;
 };
 export type NativeActionFixtureDescriptor = {
   version: 1;
@@ -115,6 +164,141 @@ async function readBody(request: AsyncIterable<Buffer | string>) {
   return input;
 }
 
+/** No credentials are produced: the real provider runner waits for wizard cancellation. */
+export async function startNativeActionProvider(includeSignIn = false) {
+  const provider = await startQaMockOpenAiServer({ modelRefs: [MODEL_REF] });
+  if (!includeSignIn) {
+    return { ...provider, signIn: undefined };
+  }
+  const counts = { entered: 0, settled: 0 };
+  let failed = false;
+  const observer = createServer((request, response) => {
+    request.resume();
+    const phase =
+      request.url === "/entered" ? "entered" : request.url === "/settled" ? "settled" : undefined;
+    if (
+      request.method !== "POST" ||
+      !phase ||
+      counts[phase] >= 8 ||
+      (phase === "entered"
+        ? counts.entered !== counts.settled
+        : counts.settled + 1 !== counts.entered)
+    ) {
+      failed = true;
+      response.writeHead(400).end();
+      return;
+    }
+    counts[phase] += 1;
+    response.writeHead(204).end();
+  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      observer.once("error", reject);
+      observer.listen(0, "127.0.0.1", resolve);
+    });
+  } catch (error) {
+    await provider.stop();
+    throw error;
+  }
+  const address = observer.address();
+  assert(address && typeof address !== "string");
+  const observerURL = `http://127.0.0.1:${address.port}`;
+  const pluginId = "native-signin-proof";
+  const signIn = {
+    authChoice: `${pluginId}/prompt`,
+    snapshot: () => {
+      assert(!failed, "native sign-in observer rejected a transition");
+      return { ...counts };
+    },
+    wait: async (phase: keyof typeof counts, count: number) => {
+      await waitFor(`native sign-in ${phase}`, () => {
+        assert(!failed && counts[phase] <= count, "unexpected native sign-in transition");
+        return counts[phase] === count ? true : undefined;
+      });
+    },
+    prepare: async (instance: OpenClawTestInstance, config: OpenClawConfig) => {
+      const pluginDir = path.join(instance.homeDir, "native-signin-plugin");
+      await fs.mkdir(pluginDir, { recursive: true });
+      await fs.writeFile(
+        path.join(pluginDir, "openclaw.plugin.json"),
+        JSON.stringify({
+          id: pluginId,
+          activation: { onStartup: true, onProviders: [pluginId] },
+          providers: [pluginId],
+          providerAuthChoices: [
+            {
+              provider: pluginId,
+              method: "prompt",
+              choiceId: "prompt",
+              choiceLabel: "Native sign-in proof",
+              credentialOnly: true,
+              appGuidedAuth: "device-code",
+            },
+          ],
+          configSchema: { type: "object", additionalProperties: false, properties: {} },
+        }),
+      );
+      await fs.writeFile(
+        path.join(pluginDir, "index.mjs"),
+        [
+          `const report = async (phase) => {`,
+          `  const response = await fetch(${JSON.stringify(observerURL)} + "/" + phase, {`,
+          '    method: "POST", signal: AbortSignal.timeout(5000),',
+          "  });",
+          '  if (!response.ok) throw new Error("Native sign-in observer rejected a transition.");',
+          "};",
+          "export default {",
+          `  id: ${JSON.stringify(pluginId)},`,
+          "  register(api) {",
+          "    api.registerProvider({",
+          `      id: ${JSON.stringify(pluginId)}, label: "Native sign-in proof",`,
+          "      auth: [{",
+          '        id: "prompt", label: "Native sign-in proof", kind: "device_code",',
+          "        async run(context) {",
+          '          await report("entered");',
+          "          try {",
+          '            await context.prompter.text({ message: "Native sign-in cancellation proof" });',
+          '            throw new Error("The native proof prompt must be cancelled.");',
+          "          } finally {",
+          '            await report("settled");',
+          "          }",
+          "        },",
+          "      }],",
+          "    });",
+          "  },",
+          "};",
+          "",
+        ].join("\n"),
+      );
+      config.plugins = {
+        ...config.plugins,
+        enabled: true,
+        allow: [...(config.plugins?.allow ?? []), pluginId],
+        load: {
+          ...config.plugins?.load,
+          paths: [...(config.plugins?.load?.paths ?? []), pluginDir],
+        },
+        entries: { ...config.plugins?.entries, [pluginId]: { enabled: true } },
+      };
+    },
+  };
+  return {
+    ...provider,
+    signIn,
+    // runProfileWireProof stops the provider after the Gateway and its owned runners.
+    stop: () =>
+      runQaGatewayFixture(
+        () => provider.stop(),
+        async () => {
+          await new Promise<void>((resolve, reject) => {
+            observer.close((error) => (error ? reject(error) : resolve()));
+            observer.closeAllConnections();
+          });
+        },
+      ),
+  };
+}
+
 /** Fixture lifecycle is reusable by native consumers without importing a test runner. */
 export async function withNativeActionGateway(
   platform: "ios" | "macos",
@@ -123,8 +307,10 @@ export async function withNativeActionGateway(
   let completedCases: CaseID[] = [];
   let completedMedia: MediaCaseID[] = [];
   let completedWidgets: IOSWidgetCaseID[] = [];
+  let signInSnapshot: (() => { entered: number; settled: number }) | undefined;
+  let signInVerified = false;
   await runProfileWireProof(
-    () => startQaMockOpenAiServer({ modelRefs: [MODEL_REF] }),
+    () => startNativeActionProvider(platform === "ios"),
     async (fixture) => {
       const { instance, provider, admin, alice, bob, aliceId, bobId } = fixture;
       const controlToken = randomUUID();
@@ -161,6 +347,10 @@ export async function withNativeActionGateway(
         sha256: createHash("sha256").update(png).digest("hex"),
         sessions: {} as Record<MediaSession, WireMedia>,
       };
+      let signInProxy: Awaited<ReturnType<typeof startQaGatewayRpcProxy>> | undefined;
+      const signInCheckpoints: SignInCheckpoint[] = [];
+      let signInEventIndex = 0;
+      let signInConnection: number | undefined;
       const pairedDevices = new Set<string>();
       const pending = new Set<Promise<void>>();
       let firstControlFailure: Error | undefined;
@@ -255,6 +445,57 @@ export async function withNativeActionGateway(
           return await proxyControl(input);
         }
         switch (input.action) {
+          case "signin-config":
+            assert(signInProxy && provider.signIn && signInCheckpoints.length === 0);
+            return {
+              signInGatewayURL: signInProxy.url,
+              signInAuthChoice: provider.signIn.authChoice,
+            };
+          case "signin-checkpoint": {
+            progress.phase = "signin-order";
+            assert(signInProxy && provider.signIn);
+            const checkpoint = Object.keys(SIGN_IN_CHECKPOINTS)[signInCheckpoints.length];
+            assert(checkpoint && input.checkpoint === checkpoint);
+            const id = checkpoint as SignInCheckpoint;
+            progress.signInCheckpoint = id;
+            const spec = SIGN_IN_CHECKPOINTS[id];
+            progress.phase = "signin-provider";
+            assert.deepEqual(provider.signIn.snapshot(), {
+              entered: spec.entered,
+              settled: spec.settled,
+            });
+            progress.phase = "signin-wire";
+            const snapshot = signInProxy.snapshot();
+            const events = snapshot.events.slice(signInEventIndex);
+            const requests = events.filter(
+              (event: { kind: string }) => event.kind === "rpc-request",
+            );
+            const responses = events.filter(
+              (event: { kind: string }) => event.kind === "rpc-response",
+            );
+            assert.deepEqual(
+              requests.map((event: { method: string }) => event.method),
+              spec.responses.map(([method]) => method),
+            );
+            assert.deepEqual(
+              responses.map((event: { method: string; ok: boolean }) => [event.method, event.ok]),
+              spec.responses,
+            );
+            progress.phase = "signin-connection";
+            if (id === "admitted" || id === "replacement") {
+              const connection = requests[0]!.connection;
+              assert.notEqual(connection, signInConnection);
+              signInConnection = connection;
+            }
+            for (const [index, request] of requests.entries()) {
+              assert.equal(request.connection, signInConnection);
+              assert.equal(responses[index]!.connection, signInConnection);
+              assert.equal(responses[index]!.requestId, request.requestId);
+            }
+            signInEventIndex = snapshot.events.length;
+            signInCheckpoints.push(id);
+            return { completed: id };
+          }
           case "widget-start": {
             assert(platform === "ios");
             assert(typeof input.case === "string" && Object.hasOwn(IOS_WIDGET_CASES, input.case));
@@ -336,9 +577,12 @@ export async function withNativeActionGateway(
             mediaAttempt = undefined;
             return { completed: id };
           }
-          case "pair": {
+          case "pair":
+          case "pair-signin": {
             progress.phase = "connect-record";
-            const connection = proxy
+            const pairingProxy = input.action === "pair" ? proxy : signInProxy;
+            assert(pairingProxy);
+            const connection = pairingProxy
               .snapshot()
               .events.findLast((event: { kind: string }) => event.kind === "connect-request");
             assert(connection, "native connect record was missing");
@@ -371,6 +615,10 @@ export async function withNativeActionGateway(
             return { revoked: true };
           }
           case "merge-profile":
+            if (platform === "ios") {
+              assert.deepEqual(signInCheckpoints, ["admitted"]);
+              assert.deepEqual(provider.signIn?.snapshot(), { entered: 1, settled: 0 });
+            }
             await admin.request("users.linkEmail", {
               email: SKILL_LIBRARY_ALICE,
               targetProfileId: bobId,
@@ -423,7 +671,10 @@ export async function withNativeActionGateway(
               progress.action === "pair"
                 ? `; firstConnection=${JSON.stringify(proxy.snapshot().firstConnection)}`
                 : "";
-            const message = `native fixture controls failed: action=${progress.action}; phase=${progress.phase}; reason=request-failed; category=${category}${connectionTrace}`;
+            const message =
+              `native fixture controls failed: action=${progress.action}; phase=${progress.phase}; reason=request-failed; category=${category}` +
+              (progress.signInCheckpoint ? `; signInCheckpoint=${progress.signInCheckpoint}` : "") +
+              connectionTrace;
             // Raw assertions and stacks can contain fixture credentials and private paths.
             firstControlFailure = new Error(message);
             firstControlFailure.stack = message;
@@ -501,6 +752,24 @@ export async function withNativeActionGateway(
             mediaPaths.add(new URL(download.url, "http://127.0.0.1").pathname);
             media.sessions[session] = { sessionKey, artifactID: artifact.id };
           }
+          if (platform === "ios") {
+            assert(provider.signIn);
+            signInSnapshot = provider.signIn.snapshot;
+            signInProxy = await startQaGatewayRpcProxy({
+              backendPort: instance.port,
+              repoRoot: process.cwd(),
+              token: controlToken,
+              recordPath: undefined,
+              observedMethods: SIGN_IN_METHODS,
+              upstreamHeaders: {
+                "x-forwarded-user": SKILL_LIBRARY_ALICE,
+                "x-forwarded-for": "198.51.100.40",
+                "x-forwarded-proto": "http",
+                "x-forwarded-host": `127.0.0.1:${instance.port}`,
+                "x-openclaw-scopes": SIGN_IN_SCOPES.join(","),
+              },
+            });
+          }
           await new Promise<void>((resolve, reject) => {
             control.once("error", reject);
             control.listen(0, "127.0.0.1", resolve);
@@ -523,6 +792,38 @@ export async function withNativeActionGateway(
             [...caseKeys].toSorted(),
             "missing native wire cases",
           );
+          if (platform === "ios") {
+            assert(signInProxy);
+            assert.deepEqual(signInCheckpoints, Object.keys(SIGN_IN_CHECKPOINTS));
+            assert.deepEqual(provider.signIn?.snapshot(), { entered: 3, settled: 3 });
+            const events = signInProxy.snapshot().events;
+            assert(
+              !events
+                .slice(signInEventIndex)
+                .some((event: { kind: string }) => event.kind.startsWith("rpc-")),
+              "native sign-in sent RPCs after completion",
+            );
+            const connections = events.filter(
+              (event: { kind: string }) => event.kind === "connect-request",
+            );
+            assert(connections.length >= 2);
+            const writer = proxy
+              .snapshot()
+              .events.find((event: { kind: string }) => event.kind === "connect-request");
+            for (const connection of connections) {
+              assert.equal(connection.clientId, "openclaw-ios");
+              assert.equal(connection.deviceId, writer?.deviceId);
+              assert(pairedDevices.has(connection.deviceId));
+            }
+            const admissions = events.filter(
+              (event: { kind: string }) => event.kind === "connect-success",
+            );
+            assert.equal(admissions.length, 2);
+            for (const admission of admissions) {
+              assert.deepEqual(admission.scopes.toSorted(), SIGN_IN_SCOPES.toSorted());
+            }
+            signInVerified = true;
+          }
           if (platform === "ios") {
             assert.deepEqual([...mediaCompleted].toSorted(), Object.keys(MEDIA_CASES).toSorted());
             assert(!mediaAttempt, "unfinished native media case");
@@ -611,6 +912,7 @@ export async function withNativeActionGateway(
             await verify(id, runId);
           }
         },
+        () => signInProxy?.stop(),
         () => proxy.stop(),
         async () => {
           control.closeAllConnections();
@@ -633,13 +935,23 @@ export async function withNativeActionGateway(
       completedMedia = [...mediaCompleted];
       completedWidgets = [...widgetsCompleted.keys()];
     },
+    async ({ instance, provider, config }) => {
+      await provider.signIn?.prepare(instance, config);
+    },
   );
+  if (platform === "ios") {
+    assert(signInVerified);
+    assert.deepEqual(signInSnapshot?.(), { entered: 3, settled: 3 });
+  }
   console.log(
     JSON.stringify({
       platform,
       cases: completedCases,
       mediaCases: completedMedia,
       widgetCases: completedWidgets,
+      ...(platform === "ios"
+        ? { signInCases: ["admittedCleanup", "retiredProfile", "retiredRoute"] }
+        : {}),
       finalEffectsVerified: true,
     }),
   );

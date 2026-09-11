@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import OpenClawChatUI
 import OpenClawKit
+import OpenClawProtocol
 import Testing
 @testable import OpenClaw
 
@@ -69,6 +70,8 @@ struct NativeActionGatewayWireTests {
 
         let heldResponse: HeldResponse?
         let canvasOrigin: URL?
+        let signInGatewayURL: URL?
+        let signInAuthChoice: String?
     }
 
     @MainActor
@@ -77,13 +80,19 @@ struct NativeActionGatewayWireTests {
         let model: NodeAppModel
         let controller: GatewayConnectionController
         let router: NativeActionRouter
+        let gatewayURL: URL
+        let scopes: [String]
+        let pairAction: String
         var presentationID: UUID?
         var binding: IOSNativeActionBinding?
         var chat: OpenClawChatViewModel?
         var transport: IOSGatewayChatTransport?
 
-        init(fixture: Fixture) {
+        init(fixture: Fixture, signInGatewayURL: URL? = nil) {
             self.fixture = fixture
+            self.gatewayURL = signInGatewayURL ?? fixture.gatewayURL
+            self.scopes = ["operator.read", "operator.write"] + (signInGatewayURL == nil ? [] : ["operator.admin"])
+            self.pairAction = signInGatewayURL == nil ? "pair" : "pair-signin"
             let model = NodeAppModel(audioAdmissionInitiallyAllowed: false)
             self.model = model
             let controller = GatewayConnectionController(appModel: model, startDiscovery: false)
@@ -117,7 +126,7 @@ struct NativeActionGatewayWireTests {
         func connect() async throws {
             let options = GatewayConnectOptions(
                 role: "operator",
-                scopes: ["operator.read", "operator.write"],
+                scopes: self.scopes,
                 scopesAreExplicit: true,
                 caps: [OpenClawGatewayClientCapability.agentKind, OpenClawGatewayClientCapability.inlineWidgets],
                 commands: [],
@@ -130,7 +139,7 @@ struct NativeActionGatewayWireTests {
                 deviceAuthGatewayID: self.fixture.gatewayID)
             let connect = {
                 try await self.model.operatorSession.connect(
-                    url: self.fixture.gatewayURL,
+                    url: self.gatewayURL,
                     credentials: .init(),
                     connectOptions: options,
                     sessionBox: nil,
@@ -143,11 +152,11 @@ struct NativeActionGatewayWireTests {
             } catch {
                 // The first signed native connection must enter real device pairing.
                 // The fixture fails if this was any other connect failure.
-                _ = try await self.fixture.control("pair")
+                _ = try await self.fixture.control(self.pairAction)
                 try await connect()
             }
             self.model.activeGatewayConnectConfig = GatewayConnectConfig(
-                url: self.fixture.gatewayURL,
+                url: self.gatewayURL,
                 stableID: self.fixture.gatewayID,
                 tls: nil,
                 token: nil,
@@ -158,7 +167,7 @@ struct NativeActionGatewayWireTests {
             self.model.setOperatorConnected(true)
             let route = try #require(await self.model.operatorSession.currentRoute(ifGatewayID: self.fixture.gatewayID))
             let scopes = await self.model.operatorSession.currentOperatorScopes(ifCurrentRoute: route)
-            try #require(scopes == Set(["operator.read", "operator.write"]))
+            try #require(scopes == Set(self.scopes))
         }
 
         func prepare(_ id: String, profileID: String? = nil) async throws -> OpenClawNativePreparedSend {
@@ -203,6 +212,11 @@ struct NativeActionGatewayWireTests {
         try #require(fixture.controlURL.scheme == "http" && fixture.controlURL.host == "127.0.0.1")
         try #require(!fixture.controlToken.isEmpty && fixture.aliceProfileID != fixture.bobProfileID)
         let presentation = Presentation(fixture: fixture)
+        let signInConfig = try await fixture.control("signin-config")
+        let signInURL = try #require(signInConfig.signInGatewayURL)
+        try #require(signInURL.scheme == "ws" && signInURL.host == "127.0.0.1")
+        let authChoice = try #require(signInConfig.signInAuthChoice)
+        let signIn = Presentation(fixture: fixture, signInGatewayURL: signInURL)
         do {
             try await presentation.connect()
             let prepared = try await presentation.prepare("allowed")
@@ -229,8 +243,13 @@ struct NativeActionGatewayWireTests {
 
             try await Self.retireAcceptedSubmission(presentation)
             let widget = try await Self.verifyWidgetRetirement(presentation)
+            try await signIn.connect()
+            _ = try await signIn.prepare("controlACL")
+            let aliceSignIn = try await Self.beginSignIn(signIn, authChoice: authChoice)
+            _ = try await fixture.control("signin-checkpoint", fields: ["checkpoint": "admitted"])
             try await Self.rejectAcrossSuspension(
                 presentation, first: "profileSuspended", second: "profile", mutation: "merge-profile")
+            try await Self.verifySignInRetirement(signIn, admitted: aliceSignIn)
             _ = try await Self.verifyWidget(
                 presentation,
                 id: "profile",
@@ -247,10 +266,145 @@ struct NativeActionGatewayWireTests {
                 transport: #require(presentation.transport),
                 allowed: true)
         } catch {
+            await signIn.close()
             await presentation.close()
             throw error
         }
+        await signIn.close()
         await presentation.close()
+    }
+
+    private struct SignInReply: Decodable {
+        struct Step: Decodable {
+            let id: String
+            let type: String
+            let title: String?
+        }
+
+        let sessionId: String?
+        let done: Bool?
+        let status: String?
+        let step: Step?
+    }
+
+    private struct SignInOptions: Decodable {
+        struct Capability: Decodable {
+            struct Option: Decodable { let id: String }
+            let loginOptions: [Option]?
+        }
+
+        let providerCapabilities: [Capability]?
+    }
+
+    private struct SignInAttempt {
+        let context: OpenClawChatModelSignInContext
+        let binding: IOSNativeActionBinding
+        let sessionID: String
+        let authChoice: String
+
+        func loginParams(sessionID: String) -> [String: OpenClawProtocol.AnyCodable] {
+            [
+                "sessionId": .init(sessionID),
+                "agentId": .init(self.context.agentID),
+                "authChoice": .init(self.authChoice),
+            ]
+        }
+    }
+
+    @MainActor
+    private static func beginSignIn(_ presentation: Presentation, authChoice: String) async throws -> SignInAttempt {
+        let transport = try #require(presentation.transport)
+        let context = try #require(await transport.acquireModelSignInContext(agentID: "qa"))
+        let binding = try #require(presentation.binding)
+        let attempt = SignInAttempt(
+            context: context,
+            binding: binding,
+            sessionID: UUID().uuidString,
+            authChoice: authChoice)
+        let status = try await context.request("models.authStatus", ["agentId": .init(context.agentID)])
+        let options = try JSONDecoder().decode(SignInOptions.self, from: status)
+        let available = (options.providerCapabilities ?? []).flatMap { $0.loginOptions ?? [] }
+        try #require(available.contains { $0.id == authChoice })
+        let data = try await context.request("models.authLogin", attempt.loginParams(sessionID: attempt.sessionID))
+        let started = try JSONDecoder().decode(SignInReply.self, from: data)
+        try #require(started.sessionId == attempt.sessionID && started.status == "running")
+        let noteData = try await context.request("wizard.next", ["sessionId": .init(attempt.sessionID)])
+        let note = try JSONDecoder().decode(SignInReply.self, from: noteData)
+        let step = try #require(note.step)
+        try #require(note.done == false && step.type == "note" && step.title == "Provider sign-in")
+        // Acknowledge the real scope notice, then leave the provider's input pending.
+        let promptData = try await context.request("wizard.next", [
+            "sessionId": .init(attempt.sessionID),
+            "answer": .init(["stepId": OpenClawProtocol.AnyCodable(step.id)]),
+        ])
+        let prompt = try JSONDecoder().decode(SignInReply.self, from: promptData)
+        try #require(prompt.done == false && prompt.step?.type == "text")
+        return attempt
+    }
+
+    @MainActor
+    private static func requireWizardAbsent(_ attempt: SignInAttempt, sessionID: String) async throws {
+        do {
+            // Untagged on the original physical owner: another client or a retired
+            // profile tag could hide a still-live wizard instead of proving cleanup.
+            _ = try await attempt.binding.gateway.request(
+                method: "wizard.status",
+                params: ["sessionId": .init(sessionID)],
+                ifCurrentRoute: attempt.binding.route)
+            throw OpenClawNativeActionError("The native sign-in wizard survived cleanup.")
+        } catch let error as GatewayResponseError {
+            try #require(error.details["code"]?.stringValue == "WIZARD_NOT_FOUND")
+        }
+    }
+
+    @MainActor
+    private static func closeSignIn(_ attempt: SignInAttempt) async throws {
+        let data = try await attempt.context.closeWizard(attempt.sessionID)
+        let terminal = try JSONDecoder().decode(SignInReply.self, from: data)
+        try #require(terminal.status == "error")
+        try await self.requireWizardAbsent(attempt, sessionID: attempt.sessionID)
+    }
+
+    @MainActor
+    private static func verifySignInRetirement(_ presentation: Presentation, admitted: SignInAttempt) async throws {
+        let fixture = presentation.fixture
+        try await self.closeSignIn(admitted)
+        _ = try await fixture.control("signin-checkpoint", fields: ["checkpoint": "cleaned"])
+        let deniedID = UUID().uuidString
+        do {
+            _ = try await admitted.context.request("models.authLogin", admitted.loginParams(sessionID: deniedID))
+            throw OpenClawNativeActionError("Retired native sign-in authority started a wizard.")
+        } catch let error as GatewayResponseError {
+            try #require(error.detailsReason == "EXPECTED_PROFILE_MISMATCH")
+            try #require(error.details["execution"]?.stringValue == "not_started")
+        }
+        try await self.requireWizardAbsent(admitted, sessionID: deniedID)
+        _ = try await fixture.control("signin-checkpoint", fields: ["checkpoint": "denied"])
+
+        _ = try await presentation.prepare("controlACL", profileID: fixture.bobProfileID)
+        let bob = try await self.beginSignIn(presentation, authChoice: admitted.authChoice)
+        try await self.closeSignIn(bob)
+        _ = try await fixture.control("signin-checkpoint", fields: ["checkpoint": "profile"])
+
+        await presentation.disconnect()
+        try await presentation.connect()
+        _ = try await presentation.prepare("controlACL", profileID: fixture.bobProfileID)
+        let successor = try await self.beginSignIn(presentation, authChoice: admitted.authChoice)
+        _ = try await fixture.control("signin-checkpoint", fields: ["checkpoint": "replacement"])
+        do {
+            _ = try await bob.context.request("models.authLogin", bob.loginParams(sessionID: UUID().uuidString))
+            throw OpenClawNativeActionError("A replaced sign-in route started a wizard.")
+        } catch GatewayNodeSessionRequestError.routeChangedBeforeDispatch {}
+        do {
+            _ = try await bob.context.closeWizard(successor.sessionID)
+            throw OpenClawNativeActionError("A replaced sign-in route closed the successor wizard.")
+        } catch is CancellationError {}
+        _ = try await fixture.control("signin-checkpoint", fields: ["checkpoint": "retired"])
+        let data = try await successor.context.request("wizard.status", ["sessionId": .init(successor.sessionID)])
+        let status = try JSONDecoder().decode(SignInReply.self, from: data)
+        try #require(status.status == "running")
+        try await self.closeSignIn(successor)
+        _ = try await fixture.control("signin-checkpoint", fields: ["checkpoint": "complete"])
     }
 
     @MainActor

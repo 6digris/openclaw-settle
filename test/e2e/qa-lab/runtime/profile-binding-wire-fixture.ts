@@ -34,6 +34,11 @@ export type ProfileWireFixture<P extends ProfileWireProvider> = {
 export async function runProfileWireProof<P extends ProfileWireProvider>(
   startProvider: () => Promise<P>,
   proof: (fixture: ProfileWireFixture<P>) => Promise<void>,
+  prepare?: (fixture: {
+    instance: OpenClawTestInstance;
+    provider: P;
+    config: OpenClawConfig;
+  }) => Promise<void>,
 ) {
   const instance = await createSkillLibraryWireInstance();
   let provider: P | undefined;
@@ -84,7 +89,7 @@ export async function runProfileWireProof<P extends ProfileWireProvider>(
         controlUiEnabled: false,
         enabledPluginIds: ["openai", "canvas"],
       });
-      await instance.state.writeConfig({
+      const gatewayConfig: OpenClawConfig = {
         ...config,
         // Preserve the proxy identity and scope caps, not just the auth-mode field.
         gateway: authConfig.gateway,
@@ -102,7 +107,9 @@ export async function runProfileWireProof<P extends ProfileWireProvider>(
           },
         },
         tools: { ...config.tools, codeMode: false, exec: { mode: "full" } },
-      });
+      };
+      await prepare?.({ instance, provider, config: gatewayConfig });
+      await instance.state.writeConfig(gatewayConfig);
       instance.env.OPENCLAW_SKIP_CANVAS_HOST = "0";
       await instance.startGateway();
       const connect = async (options?: Parameters<typeof SkillLibraryWireClient.connect>[1]) => {
