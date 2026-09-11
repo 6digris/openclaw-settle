@@ -352,14 +352,28 @@ struct IOSGatewayChatTransport: OpenClawChatGatewayTransport {
               let agentID = agentID ?? self.globalAgentId
         else { return nil }
         let gateway = self.gateway
+        let transport = self
         return OpenClawChatModelSignInContext(
             agentID: agentID,
             request: { method, params in
-                try await gateway.request(
+                try await transport.requestChatGateway(
                     OpenClawChatGatewayRequest(method: method, params: params, timeoutMs: 26 * 60 * 1000),
                     ifCurrentRoute: route)
             },
-            isCurrent: { await gateway.supportsServerMethod("models.authLogin", ifCurrentRoute: route) == true })
+            closeWizard: { sessionID in
+                // Closing an admitted wizard survives profile retirement, but
+                // must never reconnect or cross onto a replacement socket.
+                try await gateway.request(
+                    OpenClawChatGatewayRequest(
+                        method: "wizard.cancel",
+                        params: ["sessionId": AnyCodable(sessionID), "closeInput": AnyCodable(true)],
+                        timeoutMs: 26 * 60 * 1000),
+                    ifCurrentRoute: route)
+            },
+            isCurrent: {
+                guard await transport.currentSessionMutationRoute() == route else { return false }
+                return await gateway.supportsServerMethod("models.authLogin", ifCurrentRoute: route) == true
+            })
     }
 
     func loadModelCatalog(

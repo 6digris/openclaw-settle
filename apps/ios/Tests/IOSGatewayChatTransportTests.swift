@@ -165,7 +165,13 @@ struct IOSGatewayChatTransportTests {
                 if receiveIndex == 0 { return .data(GatewayWebSocketTestSupport.connectChallengeData()) }
                 let hello = GatewayWebSocketTestSupport.connectOkData(
                     id: socket.snapshotConnectRequestID() ?? "connect",
-                    methods: ["agents.list", "sessions.patch", "sessions.delete", "sessions.create"],
+                    methods: [
+                        "agents.list",
+                        "sessions.patch",
+                        "sessions.delete",
+                        "sessions.create",
+                        "models.authLogin",
+                    ],
                     capabilities: capabilities +
                         (unreadAckAdvertisement == true ? ["session-unread-ack-contract"] : []))
                 guard unreadAckAdvertisement == nil else { return .data(hello) }
@@ -908,6 +914,99 @@ struct IOSGatewayChatTransportTests {
 }
 
 extension IOSGatewayChatTransportTests {
+    @Test(arguments: [nil, " profile-a ", "profile-e\u{301}", "profile-\u{E9}"] as [String?])
+    func `sign-in requests preserve the captured native profile and ordinary requests stay unbound`(
+        profileID: String?) async throws
+    {
+        try await self.withSessionTransport(
+            gatewayID: "gateway-a",
+            capabilities: ["profile-binding-v1"],
+            nativeProfileID: profileID)
+        { transport, recorder in
+            let context = try #require(await transport.acquireModelSignInContext(agentID: "reviewer"))
+            #expect(await context.isCurrent())
+            let calls: [(String, [String: AnyCodable])] = [
+                ("models.authStatus", ["agentId": AnyCodable(context.agentID)]),
+                ("models.authLogin", [
+                    "agentId": AnyCodable(context.agentID), "sessionId": AnyCodable("fixture-login"),
+                    "authChoice": AnyCodable("fixture/device"),
+                ]),
+                ("wizard.next", ["sessionId": AnyCodable("fixture-login")]),
+            ]
+            for (method, params) in calls {
+                _ = try await context.request(method, params)
+            }
+            let requests = await recorder.all()
+            #expect(requests.map(\.method) == calls.map(\.0))
+            for request in requests {
+                #expect(request.expectedProfileId.map { Array($0.utf8) } == profileID.map { Array($0.utf8) })
+                #expect(request.params["expectedProfileId"] == nil)
+            }
+
+            _ = try await context.closeWizard("fixture-login")
+            let cleanup = try #require(await recorder.all().last)
+            #expect(cleanup.method == "wizard.cancel")
+            #expect(cleanup.expectedProfileId == nil)
+            #expect(Set(cleanup.params.keys) == ["sessionId", "closeInput"])
+            #expect(cleanup.params["sessionId"]?.stringValue == "fixture-login")
+            #expect(cleanup.params["closeInput"]?.value as? Bool == true)
+        }
+    }
+
+    @Test
+    func `sign-in cleanup cannot cross onto a replacement physical socket`() async throws {
+        try await self.withSessionTransport(
+            gatewayID: "gateway-a",
+            capabilities: ["profile-binding-v1"],
+            nativeProfileID: "profile-a")
+        { transport, recorder in
+            let context = try #require(await transport.acquireModelSignInContext(agentID: "reviewer"))
+            await transport.gateway.disconnect()
+            let socket = GatewayTestWebSocketTask(sendHook: { socket, message, index in
+                guard index > 0 else { return }
+                let id = try #require(GatewayWebSocketTestSupport.requestID(from: message))
+                socket.emitReceiveSuccess(.data(GatewayWebSocketTestSupport.okResponseData(id: id)))
+            }, receiveHook: { socket, index in
+                if index == 0 { return .data(GatewayWebSocketTestSupport.connectChallengeData()) }
+                return .data(GatewayWebSocketTestSupport.connectOkData(
+                    id: socket.snapshotConnectRequestID() ?? "connect",
+                    methods: ["models.authLogin"],
+                    capabilities: ["profile-binding-v1"]))
+            })
+            var options = GatewayWebSocketTestSupport.identityFreeOperatorConnectOptions
+            options.allowStoredDeviceAuth = false
+            options.deviceAuthGatewayID = "gateway-a"
+            try await transport.gateway.connect(
+                url: #require(URL(string: "ws://session-transport-test.invalid")),
+                credentials: .init(),
+                connectOptions: options,
+                sessionBox: WebSocketSessionBox(session: GatewayTestWebSocketSession(taskFactory: { socket })),
+                onConnected: {},
+                onDisconnected: { _ in },
+                onInvoke: { .init(id: $0.id, ok: true) })
+
+            #expect(await context.isCurrent() == false)
+            await #expect(throws: CancellationError.self) {
+                _ = try await context.closeWizard("original-login")
+            }
+            await #expect(throws: GatewayNodeSessionRequestError.self) {
+                _ = try await context.request("models.authLogin", [
+                    "agentId": AnyCodable("reviewer"),
+                    "sessionId": AnyCodable("stale-login"),
+                    "authChoice": AnyCodable("fixture/device"),
+                ])
+            }
+            #expect(await recorder.all().isEmpty)
+            #expect(socket.snapshotSendCount() == 1)
+
+            let fresh = IOSGatewayChatTransport(gateway: transport.gateway, globalAgentId: "reviewer")
+            let freshContext = try #require(await fresh.acquireModelSignInContext(agentID: "reviewer"))
+            #expect(await freshContext.isCurrent())
+            _ = try await freshContext.request("models.authStatus", ["agentId": AnyCodable("reviewer")])
+            #expect(socket.snapshotSendCount() == 2)
+        }
+    }
+
     private actor WidgetFixture {
         var profileID: String
         private var responseCount = 0
