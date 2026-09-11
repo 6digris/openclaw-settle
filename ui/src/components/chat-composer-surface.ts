@@ -95,19 +95,10 @@ export function renderPendingChatComposer(placeholder: string, reservedHeight?: 
     input: {
       reserveControls: true,
       editor: html`<textarea disabled placeholder=${placeholder} rows="1"></textarea>`,
-      lead: html`<wa-dropdown
-        class="agent-chat__attach-menu agent-chat__capability-menu"
-        placement="top-start"
-        .open=${false}
-        data-view="root"
-        ><button
-          slot="trigger"
-          type="button"
-          class="agent-chat__input-btn agent-chat__input-btn--attach"
-          disabled
-        >
+      lead: html`<span class="agent-chat__attach-menu agent-chat__capability-menu"
+        ><button type="button" class="agent-chat__input-btn agent-chat__input-btn--attach" disabled>
           ${icons.plus}
-        </button></wa-dropdown
+        </button></span
       >`,
       actions: html`<span class="chat-mobile-primary-action chat-desktop-primary-action">
         <button class="chat-send-btn chat-send-btn--send" disabled>

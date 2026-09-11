@@ -1,7 +1,7 @@
 import type { RouteLocation } from "@openclaw/uirouter";
 import { INTERNAL_SESSION_PATH_PARAM } from "../app-route-paths.ts";
 import { pathForSession } from "../app-session-path-builder.ts";
-import { sessionRefFromPath } from "../app-session-route-paths.ts";
+import { sessionRefFromPath, type SessionPathTarget } from "../app-session-route-paths.ts";
 import {
   buildCatalogSessionKey,
   catalogSessionKeyFromSearch,
@@ -29,6 +29,19 @@ export function initialSessionIdentity(
   };
   const mainKey = resolveUiConfiguredMainKey(defaults);
   const catalog = catalogSessionKeyFromSearch(location.search);
+  const identityForRef = (
+    ref: Exclude<SessionPathTarget, { kind: "short" }>,
+    agentId = ref.agentId,
+  ) =>
+    resolveUiConversationIdentity(
+      defaults,
+      ref.kind === "main"
+        ? catalog
+          ? buildCatalogSessionKey(catalog, ref.agentId)
+          : buildAgentMainSessionKey({ agentId: ref.agentId, mainKey })
+        : ref.sessionKey,
+      agentId,
+    );
   const released = releasedSessionQuery(location, basePath);
   if (released?.sessionKey) {
     const agentId =
@@ -39,17 +52,9 @@ export function initialSessionIdentity(
       mainKey,
     });
     const target = pathname ? sessionRefFromPath(pathname, basePath, mainKey) : null;
-    return resolveUiConversationIdentity(
-      defaults,
-      target?.kind === "main"
-        ? catalog
-          ? buildCatalogSessionKey(catalog, target.agentId)
-          : buildAgentMainSessionKey({ agentId: target.agentId, mainKey })
-        : target?.kind === "literal"
-          ? target.sessionKey
-          : released.sessionKey,
-      agentId,
-    );
+    return target && target.kind !== "short"
+      ? identityForRef(target, agentId)
+      : resolveUiConversationIdentity(defaults, released.sessionKey, agentId);
   }
   const ref =
     sessionRefFromPath(location.pathname, basePath, mainKey) ??
@@ -62,15 +67,7 @@ export function initialSessionIdentity(
     return { sessionKey: fallbackSessionKey };
   }
   if (ref.kind !== "short") {
-    return resolveUiConversationIdentity(
-      defaults,
-      ref.kind === "main"
-        ? catalog
-          ? buildCatalogSessionKey(catalog, ref.agentId)
-          : buildAgentMainSessionKey({ agentId: ref.agentId, mainKey })
-        : ref.sessionKey,
-      ref.agentId,
-    );
+    return identityForRef(ref);
   }
   // A saved selection belongs to this URL only when its canonical short id matches.
   const known = new Set(

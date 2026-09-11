@@ -3,17 +3,11 @@ import type { RouteId } from "../app-routes.ts";
 import type { AppSidebarSessionNavigationElement } from "../components/app-sidebar-session-navigation.ts";
 import type { OpenClawAssistantPanel } from "../components/assistant-panel.ts";
 import type { StartupChatPane as StartupPlaceholder } from "../components/startup-chat-skeleton.ts";
-import type { ChatPaneElement } from "../pages/chat/route-draft-focus-handoff.ts";
+import type { ChatPane } from "../pages/chat/chat-pane-render.ts";
 import { hasPresentedReplacement } from "../plugins/control-ui-view-presentation.ts";
 import type { ShellRouteState } from "./app-host-route-state.ts";
 import type { ApplicationContext } from "./context.ts";
 import type { StartupPresentationController } from "./startup-presentation.ts";
-
-type StartupChatPane = ChatPaneElement & {
-  compact?: boolean;
-  composerReady?: boolean;
-  transcriptPresentationReady?: boolean;
-};
 
 interface ShellStartupHost extends HTMLElement {
   readonly context: ApplicationContext<RouteId> | undefined;
@@ -40,7 +34,7 @@ export class ShellStartupOwner {
     if (!startup || !context || (startup.snapshot.stage === "ready" && !startup.retainSkeletons)) {
       return;
     }
-    const panes = [...host.querySelectorAll<StartupChatPane>("openclaw-chat-pane")].filter(
+    const panes = [...host.querySelectorAll<ChatPane>("openclaw-chat-pane")].filter(
       (candidate) => candidate.presented && candidate.visuallyPresented,
     );
     for (const placeholder of host.querySelectorAll<StartupPlaceholder>(
