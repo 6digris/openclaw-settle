@@ -498,17 +498,8 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
     snapshot: TranscriptRenderSnapshot<T>,
     capturePrepend: boolean,
   ): TemplateResult {
-    const {
-      rows,
-      renderRow,
-      announcement,
-      announce,
-      overlay,
-      header,
-      emptyContent,
-      messageRows,
-      renderKeyRows,
-    } = snapshot;
+    const { rows, renderRow, announcement, announce, overlay, header, messageRows, renderKeyRows } =
+      snapshot;
     const rowModelChanged =
       rows.length !== this.rowKeys.length ||
       rows.some((row, index) => row.key !== this.rowKeys[index]);
@@ -544,8 +535,8 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
           );
         }
         this.initialLayout.rendered();
-        if (emptyContent) {
-          return emptyContent;
+        if (snapshot.emptyContent) {
+          return snapshot.emptyContent;
         }
         this.announcement.sync(announcement, announce);
         return renderChatTranscriptLayout({

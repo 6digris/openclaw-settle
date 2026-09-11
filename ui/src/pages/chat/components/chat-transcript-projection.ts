@@ -61,11 +61,7 @@ import {
   guardChatRenderItems,
   trackTranscriptRenderDependencies,
 } from "./chat-transcript-render-guard.ts";
-import type {
-  ChatTranscriptProjection,
-  ChatTranscriptSession,
-  TranscriptHeader,
-} from "./chat-transcript-session.ts";
+import type { ChatTranscriptProjection, ChatTranscriptSession } from "./chat-transcript-session.ts";
 import { renderChatTypingIndicator } from "./chat-typing-indicator.ts";
 import { resolveAssistantDisplayAvatar } from "./chat-welcome.ts";
 import { renderTurnRecapRow } from "./chat-working-indicator.ts";
@@ -717,11 +713,7 @@ export function projectChatTranscript(
     isEmpty,
     showLoadingSkeleton,
     searchOpen: state.searchOpen,
-    renderRows: (
-      overlay: unknown = nothing,
-      header: TranscriptHeader | null = null,
-      emptyContent?: TemplateResult,
-    ) =>
+    renderRows: (overlay = nothing, header = null, emptyContent?: TemplateResult) =>
       transcript.render(
         emptyContent ? [] : transcriptRows,
         (row) => (row.kind === "item" ? renderItem(row.item) : row.content),

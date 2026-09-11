@@ -222,30 +222,27 @@ export function renderApplicationShell(host: ShellViewHost) {
     navDrawerOpen,
     mobileNavLayout,
   });
-  const floatingAttentionVisible =
-    !nativeEmbed &&
-    floatingSidebarAttentionVisible({
-      navigationSurfaceHidden,
-      mobileNavLayout,
-      onboarding,
-      compact: mergedChatChrome,
-    });
+  const floatingAttentionVisible = floatingSidebarAttentionVisible({
+    navigationSurfaceHidden,
+    mobileNavLayout,
+    onboarding,
+    compact: mergedChatChrome,
+  });
   if (!nativeEmbed && (onboarding || floatingAttentionVisible)) {
     lazyCustomElements.preload(SIDEBAR_ATTENTION_ELEMENT, { reportError: true });
   }
   const shellWidth = Math.max(globalThis.innerWidth || 0, NAV_WIDTH_MAX);
   // A route query is navigation input, not an owner record. Let it override the
   // live selection only after the roster proves that agent exists.
+  const { agentsList } = context.agents.state;
+  const { selectedId } = context.agentSelection.state;
   const requestedRouteAgentId = host.newSessionRouteAgentId();
   const routeAgentId = requestedRouteAgentId ? normalizeAgentId(requestedRouteAgentId) : null;
-  const routeAgentIsKnown =
+  const selectedAgentId =
     routeAgentId !== null &&
-    context.agents.state.agentsList?.agents.some(
-      (agent) => normalizeAgentId(agent.id) === routeAgentId,
-    ) === true;
-  const selectedAgentId = routeAgentIsKnown
-    ? routeAgentId
-    : normalizeAgentId(context.agentSelection.state.selectedId ?? gatewaySnapshot.assistantAgentId);
+    agentsList?.agents.some((agent) => normalizeAgentId(agent.id) === routeAgentId) === true
+      ? routeAgentId
+      : normalizeAgentId(selectedId ?? gatewaySnapshot.assistantAgentId);
   const newSessionAccess = readSessionMethodAccess(gatewaySnapshot, {
     method: "sessions.create",
     params: {},
@@ -724,9 +721,8 @@ export function renderApplicationShell(host: ShellViewHost) {
       sessionKey: host.activeSessionKey,
       agentId: resolveUiSelectedSessionAgentId(
         {
-          assistantAgentId:
-            context.agentSelection.state.selectedId ?? gatewaySnapshot.assistantAgentId,
-          agentsList: context.agents.state.agentsList,
+          assistantAgentId: selectedId ?? gatewaySnapshot.assistantAgentId,
+          agentsList,
           hello: gatewaySnapshot.hello,
         },
         host.activeSessionKey,

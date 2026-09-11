@@ -3,6 +3,10 @@ import { INTERNAL_SESSION_PATH_PARAM } from "../app-route-paths.ts";
 import { pathForSession } from "../app-session-path-builder.ts";
 import { sessionRefFromPath } from "../app-session-route-paths.ts";
 import {
+  buildCatalogSessionKey,
+  catalogSessionKeyFromSearch,
+} from "../lib/sessions/catalog-key.ts";
+import {
   buildAgentMainSessionKey,
   parseAgentSessionKey,
   resolveUiDefaultAgentId,
@@ -24,6 +28,7 @@ export function initialSessionIdentity(
     hello: context.gateway.snapshot.hello,
   };
   const mainKey = resolveUiConfiguredMainKey(defaults);
+  const catalog = catalogSessionKeyFromSearch(location.search);
   const released = releasedSessionQuery(location, basePath);
   if (released?.sessionKey) {
     const agentId =
@@ -37,7 +42,9 @@ export function initialSessionIdentity(
     return resolveUiConversationIdentity(
       defaults,
       target?.kind === "main"
-        ? buildAgentMainSessionKey({ agentId: target.agentId, mainKey })
+        ? catalog
+          ? buildCatalogSessionKey(catalog, target.agentId)
+          : buildAgentMainSessionKey({ agentId: target.agentId, mainKey })
         : target?.kind === "literal"
           ? target.sessionKey
           : released.sessionKey,
@@ -58,7 +65,9 @@ export function initialSessionIdentity(
     return resolveUiConversationIdentity(
       defaults,
       ref.kind === "main"
-        ? buildAgentMainSessionKey({ agentId: ref.agentId, mainKey })
+        ? catalog
+          ? buildCatalogSessionKey(catalog, ref.agentId)
+          : buildAgentMainSessionKey({ agentId: ref.agentId, mainKey })
         : ref.sessionKey,
       ref.agentId,
     );

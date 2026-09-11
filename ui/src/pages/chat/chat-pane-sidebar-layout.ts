@@ -196,7 +196,12 @@ export function renderSidebarRegion(params: {
           ></openclaw-chat-sidebar-region>`,
     runtime:
       regionError !== undefined
-        ? renderPendingSidebarRegion(params.layout, collapsed, regionError ?? regionLoading ?? null)
+        ? renderPendingSidebarRegion(
+            params.layout,
+            collapsed,
+            regionError ?? regionLoading ?? null,
+            regionError !== null,
+          )
         : null,
   });
 }

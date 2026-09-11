@@ -46,6 +46,7 @@ export function renderPendingSidebarRegion(
   layout: SidebarLayout,
   collapsed: boolean,
   content: TemplateResult | typeof nothing | null = nothing,
+  failed = false,
 ) {
   if (!layout.columns[0]) {
     return nothing;
@@ -55,6 +56,9 @@ export function renderPendingSidebarRegion(
     main && main.slot !== "conversation" && !(layout.expanded && layout.expandedSide)
       ? main
       : sidebarActivePanel(layout);
+  if (failed && panel?.slot === "conversation") {
+    return html`<div data-region-header="side">${content}</div>`;
+  }
   const promoted = panel !== undefined && panel.id === layout.mainPanelId;
   return html`
     ${!collapsed && layout.open && !layout.expanded ? html`<resizable-divider inert class="sidebar-column__divider" orientation=${sidebarDock(layout) === "bottom" ? "horizontal" : "vertical"}></resizable-divider>` : nothing}
