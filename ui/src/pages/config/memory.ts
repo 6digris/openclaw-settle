@@ -14,6 +14,7 @@ import {
   renderSettingsValue,
 } from "../../components/settings-ui.ts";
 import { t } from "../../i18n/index.ts";
+import { registerDreamingEnglish } from "../../i18n/locales/en-dreaming.ts";
 import { registerMemoryImportEnglish } from "../../i18n/locales/en-memory-import.ts";
 import { registerPluginManagementEnglish } from "../../i18n/locales/en-plugin-management.ts";
 import type { PluginCatalogItem } from "../../lib/plugins/index.ts";
@@ -25,6 +26,7 @@ import {
 } from "./memory-schema.ts";
 
 registerPluginManagementEnglish();
+registerDreamingEnglish();
 
 registerMemoryImportEnglish();
 
