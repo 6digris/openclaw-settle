@@ -102,10 +102,6 @@ struct IOSNativeActionBinding: Sendable {
             chat.canPreserveIdleTextDraft && !captureIsActive
     }
 
-    static func isProfileMismatch(_ error: Error) -> Bool {
-        (error as? GatewayResponseError)?.detailsReason == "EXPECTED_PROFILE_MISMATCH"
-    }
-
     func request(method: String, paramsJSON: String?, timeoutSeconds: Int) async throws -> Data {
         let params = try paramsJSON.map {
             try JSONDecoder().decode([String: OpenClawProtocol.AnyCodable].self, from: Data($0.utf8))
