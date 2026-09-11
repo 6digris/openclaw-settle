@@ -22,6 +22,7 @@ const suite = createControlUiE2eSuite({
 });
 
 const sessionKey = "agent:main:rail-tabs";
+const activePane = "openclaw-chat-pane.chat-pane-cache__pane--active";
 const proofDirParent = process.env.OPENCLAW_UI_RAIL_PROOF_DIR?.trim();
 let proofDir: string | undefined;
 beforeEach(() => {
@@ -334,7 +335,7 @@ suite.define(() => {
           await seedDockReservationRegression(page, dock);
           await installMockGateway(page, scenario());
           await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
-          await page.locator(".chat-group").first().waitFor();
+          await page.locator(`${activePane} .chat-group`).first().waitFor();
 
           await page.locator(".chat-browser-panel-toggle").click();
           await sidePanel(page).locator('[data-panel-slot="browser"]:not([hidden])').waitFor();
@@ -407,7 +408,7 @@ suite.define(() => {
           await seedSettings(page, themeMode);
           const gateway = await installMockGateway(page, scenario());
           await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
-          await page.locator(".chat-group").first().waitFor();
+          await page.locator(`${activePane} .chat-group`).first().waitFor();
 
           const topbarButtons = page.locator(".chat-pane__actions .chat-icon-btn");
           await expect.poll(() => topbarButtons.count()).toBe(5);
@@ -661,7 +662,9 @@ suite.define(() => {
           const panelWidth = await sidePanelBody(page).evaluate(
             (element) => element.getBoundingClientRect().width,
           );
-          const divider = page.locator(".sidebar-column__divider");
+          const divider = page.locator(
+            `${activePane} .sidebar-region__right-runtime .sidebar-column__divider`,
+          );
           const dividerBox = await divider.boundingBox();
           expect(dividerBox).not.toBeNull();
           await page.mouse.move(dividerBox!.x + 1, dividerBox!.y + dividerBox!.height / 2);
@@ -739,7 +742,7 @@ suite.define(() => {
             .toBeCloseTo(resizedHeight, 0);
 
           await page.reload();
-          await page.locator(".chat-group").first().waitFor();
+          await page.locator(`${activePane} .chat-group`).first().waitFor();
           await expect.poll(() => page.locator(".sidebar-region--bottom").count()).toBe(1);
           await expect
             .poll(() =>
@@ -794,7 +797,7 @@ suite.define(() => {
             .toBeCloseTo(resizedWidth, 0);
 
           await page.reload();
-          await page.locator(".chat-group").first().waitFor();
+          await page.locator(`${activePane} .chat-group`).first().waitFor();
           await sidePanel(page).locator('[data-region-header="side"]').waitFor();
           await expect
             .poll(() => tabLabels(page))
@@ -835,7 +838,7 @@ suite.define(() => {
             .poll(() => sidePanel(page).locator('[data-region-header="side"]').isVisible())
             .toBe(false);
           await page.reload();
-          await page.locator(".chat-group").first().waitFor();
+          await page.locator(`${activePane} .chat-group`).first().waitFor();
           await expect
             .poll(() => sidePanel(page).locator('[data-region-header="side"]').isVisible())
             .toBe(false);
@@ -866,7 +869,7 @@ suite.define(() => {
           await captureRichPanel(page, `rails-tabs-empty-resized-${themeMode}`);
 
           await page.reload();
-          await page.locator(".chat-group").first().waitFor();
+          await page.locator(`${activePane} .chat-group`).first().waitFor();
           await sidePanel(page).locator(".side-panel-empty--selector").waitFor();
           expect(await divider.boundingBox()).not.toBeNull();
           await expect
@@ -964,7 +967,7 @@ suite.define(() => {
         await seedSettings(page, "light");
         const gateway = await installMockGateway(page, scenario());
         await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
-        await page.locator(".chat-group").first().waitFor();
+        await page.locator(`${activePane} .chat-group`).first().waitFor();
         await activateChatHeaderPanelAction(page, "Show session files");
         await openFromPlus(page, "Terminal");
         await openFromPlus(page, "Side chat");

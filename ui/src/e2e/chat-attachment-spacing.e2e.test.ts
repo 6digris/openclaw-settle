@@ -107,7 +107,12 @@ suite.define(() => {
         ).toBeLessThanOrEqual(1);
       }
       expect(
-        Math.abs((await gap(cards.last(), page.locator(".chat-text"))) - reference),
+        Math.abs(
+          (await gap(
+            cards.last(),
+            page.locator("openclaw-chat-pane.chat-pane-cache__pane--active .chat-text"),
+          )) - reference,
+        ),
       ).toBeLessThanOrEqual(1);
       expect(
         await page
@@ -205,7 +210,7 @@ suite.define(() => {
         ],
       });
       await page.goto(`${suite.server.baseUrl}chat/main`);
-      const text = page.locator(".chat-text");
+      const text = page.locator("openclaw-chat-pane.chat-pane-cache__pane--active .chat-text");
       const nestedCode = text.locator("blockquote pre");
       await nestedCode.waitFor();
       const reference = await gap(

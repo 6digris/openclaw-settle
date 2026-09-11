@@ -535,6 +535,11 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
           );
         }
         this.initialLayout.rendered();
+        // An end request made with no rows targets offset zero. Rebind it after
+        // the rendered range has populated the new row measurements.
+        if (rowModelChanged && this.offsetState.scrollCommand?.target === "end") {
+          virtualizer.scrollToEnd({ behavior: this.offsetState.scrollCommand.behavior });
+        }
         if (snapshot.emptyContent) {
           return snapshot.emptyContent;
         }

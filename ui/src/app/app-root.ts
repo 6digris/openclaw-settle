@@ -444,6 +444,9 @@ export class OpenClawApp extends OpenClawLightDomElement {
         </section>
       </main>`;
     }
+    if (this.lazyCustomElements.visibleState?.element === DASHBOARD_DOCUMENT_ELEMENT) {
+      return this.renderLazyDocumentState(DASHBOARD_DOCUMENT_ELEMENT);
+    }
     return html`
       <openclaw-board-document
         .gatewaySnapshot=${gatewaySnapshot}
@@ -458,7 +461,6 @@ export class OpenClawApp extends OpenClawLightDomElement {
         }
       ></openclaw-board-document>
       ${!gatewayConnected && gatewaySnapshot.lastError === null ? renderLoadingState() : nothing}
-      ${gatewayConnected ? this.renderLazyDocumentState(DASHBOARD_DOCUMENT_ELEMENT) : nothing}
     `;
   }
 
