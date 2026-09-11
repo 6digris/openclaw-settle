@@ -56,6 +56,7 @@ export async function startQaGatewayRpcProxy({
   let held;
   let holdMethod;
   let heldResponse;
+  /** @type {((error?: Error) => void) | undefined} */
   let heldWaiter;
   let mediaTask;
   /** @type {Array<{ tag: FirstConnectionTag, elapsedMs: number } & FirstConnectionFacts>} */
@@ -259,7 +260,7 @@ export async function startQaGatewayRpcProxy({
       media.matched += 1;
     }
     const upstream = request(
-      { hostname: "127.0.0.1", port: Number(backendPort), path: req.url, method: req.method },
+      { hostname: "127.0.0.1", port: backendPort, path: req.url, method: req.method },
       (response) => {
         if (observedMedia) {
           response.once("end", () => {
