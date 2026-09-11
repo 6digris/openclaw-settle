@@ -1,4 +1,3 @@
-import type { ProgressCard } from "@openclaw/gateway-protocol";
 import { html, nothing } from "lit";
 import { findInlineApproval } from "../../app/approval-presentation.ts";
 import { hasOperatorAdminAccess, hasOperatorWriteAccess } from "../../app/operator-access.ts";
@@ -164,17 +163,16 @@ export class ChatPane extends ChatPaneLayoutRender {
       selectedSession,
       placementStartup !== null,
     );
-    const canDismissProgressCard =
+    const onDismissProgressCard: ChatProps["onDismissProgressCard"] =
       state.connected &&
       !sessionParticipationBlocked &&
-      hasOperatorWriteAccess(gatewaySnapshot.hello?.auth ?? null);
-    const onDismissProgressCard = canDismissProgressCard
-      ? (card: ProgressCard) => {
-          void this.progressCard
-            .dismiss(card)
-            .catch(() => showToast({ message: t("sessionProgressCard.dismissFailed") }));
-        }
-      : undefined;
+      hasOperatorWriteAccess(gatewaySnapshot.hello?.auth ?? null)
+        ? (card) => {
+            void this.progressCard
+              .dismiss(card)
+              .catch(() => showToast({ message: t("sessionProgressCard.dismissFailed") }));
+          }
+        : undefined;
     const restartRecoveryTombstoned = selectedSession?.restartRecoveryStatus === "tombstoned";
     const multiIdentity = this.hasMultipleIdentities();
     const suggestionViewer =
@@ -250,7 +248,7 @@ export class ChatPane extends ChatPaneLayoutRender {
       onFork: (entryId) => this.forkFromMessage(entryId),
       onReset: () => void clearChatHistory(state),
     });
-    const setReply: NonNullable<ChatProps["onSetReply"]> = (target) => {
+    const setReply = (target: NonNullable<ChatProps["replyTarget"]> | null) => {
       state.chatReplyTarget = target;
       state.requestUpdate?.();
     };
@@ -651,10 +649,7 @@ export class ChatPane extends ChatPaneLayoutRender {
           : (draft, submissionAction) => submitChatGoalDraft(state, draft, submissionAction),
       onCompanionPrefill: this.prefillSessionCompanionQuestion,
       replyTarget: state.chatReplyTarget ?? null,
-      onClearReply: () => {
-        state.chatReplyTarget = null;
-        state.requestUpdate?.();
-      },
+      onClearReply: () => setReply(null),
       onSetReply: sessionDisabledBanner ? undefined : setReply,
       replyMessageAccess: catalogKey || selectedSessionArchived ? undefined : replyMessageAccess,
       onRewindMessage: selectedSessionArchived ? undefined : sessionActionCallbacks.onRewindMessage,
