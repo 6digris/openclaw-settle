@@ -88,7 +88,7 @@ suite.define(() => {
               // Retain their clock before getAnimations() drops the finished effect.
               const observer = new MutationObserver(() => {
                 const skeleton = document.querySelector(
-                  ".chat-pane-cache__pane--visible .chat-thread openclaw-panel-loading-skeleton",
+                  ".chat-pane-cache__pane--visible .chat-thread .startup-transcript-skeleton",
                 );
                 revealAnimation ??= skeleton?.getAnimations()[0];
                 if (revealAnimation) {
