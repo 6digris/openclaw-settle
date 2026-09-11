@@ -447,6 +447,7 @@ suite.define(() => {
     const { page } = await openThemedChat("phosphor", "dark");
     await page.goto(`${suite.server.baseUrl}chat`);
     const identity = page.locator("openclaw-app-sidebar button.sidebar-identity-card");
+    await identity.waitFor();
     await identity.focus();
     await page.keyboard.press("Enter");
     const menu = page.locator("wa-dropdown.sidebar-identity-menu");

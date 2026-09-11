@@ -75,8 +75,8 @@ export class NewSessionCapabilityController {
   ): CapabilityMenuProps {
     this.skillCatalog.synchronize(gateway.client, gateway.connectionEpoch);
     const config = context.runtimeConfig.state;
-    const runtimeConfig = config.configSnapshot?.runtimeConfig ?? null;
     const gatewayAvailable = gateway.connected && Boolean(gateway.client);
+    const runtimeConfig = config.configSnapshot?.runtimeConfig ?? null;
     const access = readGatewayOperatorAccess(context.gateway.snapshot);
     const mutationBlockedReason = !gatewayAvailable
       ? t("chat.composer.menu.offlineBlocked")

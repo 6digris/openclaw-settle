@@ -468,7 +468,9 @@ export async function captureComposerProof(
 ) {
   const artifactDir = path.join(owner.artifactDir, "voice-controls");
   await page
-    .locator("openclaw-chat-pane.chat-pane-cache__pane--active .agent-chat__composer-shell:visible")
+    .locator(
+      ":is(openclaw-chat-pane.chat-pane-cache__pane--active, openclaw-new-session-page) .agent-chat__composer-shell:visible",
+    )
     .screenshot({ path: path.join(artifactDir, fileName) });
 }
 
