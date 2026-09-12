@@ -585,11 +585,20 @@ function assertConfigSurvived() {
     const discord = config.channels?.discord;
     assert(discord?.enabled === true, "discord enabled flag changed");
     const stage = process.env.OPENCLAW_UPGRADE_SURVIVOR_ASSERT_STAGE || "survival";
-    const discordAllowFrom =
-      stage === "baseline" ? (discord.allowFrom ?? discord.dm?.allowFrom) : discord.allowFrom;
-    const discordDmPolicy =
-      stage === "baseline" ? (discord.dmPolicy ?? discord.dm?.policy) : discord.dmPolicy;
-    if (stage !== "baseline") {
+    const discordDmOwner =
+      process.env.OPENCLAW_UPGRADE_SURVIVOR_DISCORD_DM_OWNER?.trim() || "canonical";
+    assert(
+      discordDmOwner === "canonical" || discordDmOwner === "legacy",
+      "unsupported Discord DM owner",
+    );
+    const allowLegacyDiscordDm = stage === "baseline" || discordDmOwner === "legacy";
+    const discordAllowFrom = allowLegacyDiscordDm
+      ? (discord.allowFrom ?? discord.dm?.allowFrom)
+      : discord.allowFrom;
+    const discordDmPolicy = allowLegacyDiscordDm
+      ? (discord.dmPolicy ?? discord.dm?.policy)
+      : discord.dmPolicy;
+    if (!allowLegacyDiscordDm) {
       assert(!Object.hasOwn(discord, "dm"), "legacy Discord DM config survived update");
     }
     assert(discordDmPolicy === "allowlist", "discord DM policy changed");
@@ -711,20 +720,33 @@ function assertStateSurvived() {
     assertAuthProfileMigrationSurvived(stateDir, stage);
   }
   const legacyRuntimeRoot = path.join(stateDir, "plugin-runtime-deps");
-  for (const plugin of ["discord", "telegram", "whatsapp"]) {
-    const sentinel = path.join(
-      legacyRuntimeRoot,
-      plugin,
-      ".openclaw-runtime-deps-copy-stale",
-      "node_modules",
-      "stale-sentinel",
-      "package.json",
+  const legacyRuntimeDepsOutcome =
+    process.env.OPENCLAW_UPGRADE_SURVIVOR_LEGACY_RUNTIME_DEPS_OUTCOME?.trim() || "preserved";
+  assert(
+    legacyRuntimeDepsOutcome === "preserved" || legacyRuntimeDepsOutcome === "removed",
+    "unsupported legacy runtime dependency outcome",
+  );
+  if (stage !== "baseline" && legacyRuntimeDepsOutcome === "removed") {
+    assert(
+      !fs.existsSync(legacyRuntimeRoot),
+      `legacy plugin runtime dependency state survived cleanup: ${legacyRuntimeRoot}`,
     );
-    assertStrict.deepEqual(
-      readJson(sentinel),
-      { name: "stale-sentinel", version: "0.0.0" },
-      `shared plugin runtime cache changed during update/doctor: ${sentinel}`,
-    );
+  } else {
+    for (const plugin of ["discord", "telegram", "whatsapp"]) {
+      const sentinel = path.join(
+        legacyRuntimeRoot,
+        plugin,
+        ".openclaw-runtime-deps-copy-stale",
+        "node_modules",
+        "stale-sentinel",
+        "package.json",
+      );
+      assertStrict.deepEqual(
+        readJson(sentinel),
+        { name: "stale-sentinel", version: "0.0.0" },
+        `shared plugin runtime cache changed during update/doctor: ${sentinel}`,
+      );
+    }
   }
   if (scenario === "bootstrap-persona") {
     for (const [fileName, contents] of PERSONA_FILES) {
@@ -739,7 +761,10 @@ function assertStateSurvived() {
       "source-only plugin shadow fixture missing",
     );
   }
-  if (scenario === "versioned-runtime-deps") {
+  if (
+    scenario === "versioned-runtime-deps" &&
+    (stage === "baseline" || legacyRuntimeDepsOutcome === "preserved")
+  ) {
     const version = process.env.OPENCLAW_UPGRADE_SURVIVOR_BASELINE_VERSION || "2026.4.24";
     for (const plugin of ["discord", "feishu", "telegram", "whatsapp"]) {
       const sentinel = path.join(
@@ -1084,7 +1109,16 @@ function assertSessionMetadataMigrated(stateDir, stage) {
     `legacy sessions.json survived migration: ${legacyStorePath}`,
   );
 
-  const { source, store } = readMigratedSessionStore(stateDir, targetStorePath);
+  const sessionMetadataOwner =
+    process.env.OPENCLAW_UPGRADE_SURVIVOR_SESSION_METADATA_OWNER?.trim() || "sqlite";
+  assert(
+    sessionMetadataOwner === "file" || sessionMetadataOwner === "sqlite",
+    "unsupported session metadata owner",
+  );
+  const { source, store } =
+    sessionMetadataOwner === "file"
+      ? { source: "file", store: readJson(targetStorePath) }
+      : readMigratedSessionStore(stateDir, targetStorePath);
   const main = store["agent:main:main"];
   const direct = store["agent:main:+15551234567"];
   const group = store["agent:main:slack:channel:cupgrade"];
@@ -1097,10 +1131,17 @@ function assertSessionMetadataMigrated(stateDir, stage) {
     [LEGACY_SESSION_GROUP_ID, group],
   ];
   for (const [sessionId, entry] of migratedSessions) {
-    assert(
-      !Object.hasOwn(entry ?? {}, "sessionFile"),
-      `legacy session row retained retired sessionFile metadata for ${sessionId}`,
-    );
+    if (sessionMetadataOwner === "file") {
+      assert(
+        entry?.sessionFile === path.join(agentSessionsDir, `${sessionId}.jsonl`),
+        `legacy session row changed sessionFile metadata for ${sessionId}`,
+      );
+    } else {
+      assert(
+        !Object.hasOwn(entry ?? {}, "sessionFile"),
+        `legacy session row retained retired sessionFile metadata for ${sessionId}`,
+      );
+    }
   }
   if (source !== "file") {
     const dbPath = path.join(stateDir, "agents", "main", "agent", "openclaw-agent.sqlite");
@@ -1370,7 +1411,16 @@ function assertNpmPluginInstall([
   const records = readInstalledPluginIndex().installRecords ?? {};
   const packageJson = assertExternalPluginInstall(records, pluginId, packageName);
   const record = records[pluginId];
-  assert(record.source === "npm", `${pluginId} plugin must be installed from npm`);
+  const expectedSource =
+    process.env.OPENCLAW_UPGRADE_SURVIVOR_PREPUBLISH_PLUGIN_SOURCE?.trim() || "npm";
+  assert(
+    expectedSource === "clawhub" || expectedSource === "npm",
+    "unsupported prepublish plugin source",
+  );
+  assert(
+    record.source === expectedSource,
+    `${pluginId} plugin must be installed from ${expectedSource}`,
+  );
   assertPluginArtifactConsent(
     record,
     pluginId,
@@ -1389,7 +1439,12 @@ function assertNpmPluginInstall([
   const artifact = manifest.packages.find((entry) => entry.name === packageName);
   const archive = fs.readFileSync(path.join(artifactDir, artifact.tarball));
   const integrity = `sha512-${createHash("sha512").update(archive).digest("base64")}`;
-  assert(record.integrity === integrity, `${pluginId} plugin registry artifact integrity changed`);
+  const recordedRegistryIntegrity =
+    expectedSource === "clawhub" ? record.npmIntegrity : record.integrity;
+  assert(
+    recordedRegistryIntegrity === integrity,
+    `${pluginId} plugin registry artifact integrity changed`,
+  );
   if (getScenario() === "msteams-polls" && pluginId === "msteams") {
     assertMSTeamsPluginFiles(
       resolveHomePath(record.installPath),
@@ -1419,6 +1474,38 @@ function assertCompanionPluginInstalls([expectedVersion, capabilityConsentSuppor
       packageJson,
       expectedVersion,
       capabilityConsentSupported,
+    );
+  }
+}
+
+function assertRestartPluginCohort([expectedVersion, capabilityConsentSupported, ...packageArgs]) {
+  assert(expectedVersion, "restart plugin cohort requires <expected-version>");
+  assert(
+    capabilityConsentSupported === "0" || capabilityConsentSupported === "1",
+    "restart plugin cohort requires candidate capability-consent support",
+  );
+  assert(
+    packageArgs.length > 0 && packageArgs.length % 3 === 0,
+    "restart plugin cohort requires plugin/package/tarball triples",
+  );
+  const records = readInstalledPluginIndex().installRecords ?? {};
+  for (let index = 0; index < packageArgs.length; index += 3) {
+    const [pluginId, packageName, tarball] = packageArgs.slice(index, index + 3);
+    const packageJson = assertExternalPluginInstall(records, pluginId, packageName);
+    const record = records[pluginId];
+    assertPluginArtifactConsent(
+      record,
+      pluginId,
+      packageJson,
+      expectedVersion,
+      capabilityConsentSupported,
+    );
+    const archive = fs.readFileSync(tarball);
+    const expectedIntegrity = `sha512-${createHash("sha512").update(archive).digest("base64")}`;
+    const installedIntegrity = record.source === "clawhub" ? record.npmIntegrity : record.integrity;
+    assert(
+      installedIntegrity === expectedIntegrity,
+      `${pluginId} restart cohort artifact integrity changed`,
     );
   }
 }
@@ -1957,6 +2044,8 @@ if (command === "list-scenarios") {
   assertNpmPluginInstall(process.argv.slice(3));
 } else if (command === "assert-companion-installs") {
   assertCompanionPluginInstalls(process.argv.slice(3));
+} else if (command === "assert-restart-plugin-cohort") {
+  assertRestartPluginCohort(process.argv.slice(3));
 } else if (command === "assert-recovered-plugin-installs") {
   assertRecoveredPluginInstalls(process.argv.slice(3));
 } else if (command === "assert-status-json") {

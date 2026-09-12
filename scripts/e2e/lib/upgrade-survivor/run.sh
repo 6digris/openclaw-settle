@@ -660,6 +660,20 @@ assert_prepublish_fixture_idle() {
     assert-no-requests "$OPENCLAW_CLAWHUB_URL"
 }
 
+assert_prepublish_fixture_install_requests() {
+  [ -n "${OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR:-}" ] || return 0
+  if [ "${OPENCLAW_UPGRADE_SURVIVOR_PREPUBLISH_PLUGIN_SOURCE:-npm}" = "clawhub" ]; then
+    local plugin_id="whatsapp"
+    [ "$SCENARIO" = "legacy-operator-state" ] && plugin_id="discord"
+    configured_plugin_installs_enabled && plugin_id="matrix"
+    node "${OPENCLAW_UPGRADE_SURVIVOR_CLAWHUB_FIXTURE_SERVER:-scripts/e2e/lib/clawhub-fixture-server.cjs}" \
+      assert-prepublish-requests "$OPENCLAW_CLAWHUB_URL" "@openclaw/$plugin_id" \
+      "$candidate_version" required
+    return
+  fi
+  assert_prepublish_fixture_idle
+}
+
 assert_prepublish_plugin_install() {
   local allow_pending="${1:-0}" plugin_id="whatsapp" help consent
   local consent_supported=0 pending_args=()
@@ -682,7 +696,21 @@ assert_prepublish_plugin_install() {
     assert-npm-plugin-install "$plugin_id" "@openclaw/$plugin_id" "$candidate_version" \
     "$consent_supported" ${pending_args[@]+"${pending_args[@]}"} || return "$?"
   [ "$SCENARIO" = "legacy-operator-state" ] && return 0
-  assert_prepublish_fixture_idle
+  assert_prepublish_fixture_install_requests
+}
+
+assert_restart_plugin_cohort() {
+  local help consent consent_supported=0 fixture_dir
+  help="$(openclaw_e2e_maybe_timeout "$COMMAND_TIMEOUT" openclaw plugins install --help)" || return "$?"
+  consent="$(printf '%s' "$help" | node scripts/e2e/lib/package-compat.mjs fixture-consent)" || return "$?"
+  [ -z "$consent" ] || consent_supported=1
+  fixture_dir="$(dirname "$restart_fixture_package")"
+  node scripts/e2e/lib/upgrade-survivor/assertions.mjs assert-restart-plugin-cohort \
+    "$restart_fixture_version" "$consent_supported" \
+    codex @openclaw/codex "$fixture_dir/codex.tgz" \
+    discord @openclaw/discord "$fixture_dir/discord.tgz" \
+    whatsapp @openclaw/whatsapp "$fixture_dir/whatsapp.tgz" || return "$?"
+  assert_prepublish_fixture_install_requests
 }
 
 configure_plugin_registry() {
@@ -1329,8 +1357,9 @@ NODE
 }
 
 candidate_update_spec() {
-  if [ "$OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL" = "extended-stable" ]; then
-    printf '%s\n' "$OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL"
+  local update_channel="${OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL:-stable}"
+  if [ "$update_channel" = "extended-stable" ]; then
+    printf '%s\n' "$update_channel"
     return
   fi
   if [ "$CANDIDATE_KIND" != "tarball" ]; then
@@ -1350,6 +1379,7 @@ candidate_update_spec() {
 update_candidate() {
   local after_repair="${1:-0}"
   local expected_version="${3:-$candidate_version}"
+  local update_channel="${OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL:-stable}"
   local update_json="$UPDATE_JSON" update_err="$UPDATE_ERR"
   local observation_root
   # The old parent need not join its child. A fresh directory keeps a late exit
@@ -1363,8 +1393,8 @@ update_candidate() {
     update_json="$ARTIFACT_ROOT/recovery-update.json"
     update_err="$ARTIFACT_ROOT/recovery-update.err"
   fi
-  local update_spec
-  update_spec="${2:-}"
+  local explicit_update_spec="${2:-}"
+  local update_spec="$explicit_update_spec"
   if [ -z "$update_spec" ]; then
     update_spec="$(candidate_update_spec)"
   fi
@@ -1381,7 +1411,7 @@ update_candidate() {
     previous_systemctl_lines="$(wc -l <"$SYSTEMCTL_SHIM_LOG")"
   fi
   local update_args=(update --tag "$update_spec" --yes --json)
-  if [ "$OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL" = "extended-stable" ]; then
+  if [ "$update_channel" = "extended-stable" ]; then
     update_args=(update --channel extended-stable --yes --json)
   fi
   local update_env=(
@@ -1400,7 +1430,7 @@ update_candidate() {
   if [ "$ROOT_MANAGED_VPS" != "1" ]; then
     update_env+=(OPENCLAW_ALLOW_ROOT=1)
   fi
-  if [ "$OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL" = "extended-stable" ]; then
+  if [ "$update_channel" = "extended-stable" ]; then
     update_env+=(OPENCLAW_UPDATE_PACKAGE_SPEC=openclaw)
   fi
   update_env+=(
@@ -1615,7 +1645,7 @@ prepare_restart_inference() {
 
 prepare_restart_fixture() {
   prepare_candidate_tarball || return "$?"
-  local fixture_dir fixture_package runtime_source
+  local fixture_dir fixture_package runtime_source discord_source whatsapp_source
   fixture_dir="$(mktemp -d "$RUNTIME_ROOT/restart-fixture.XXXXXX")" || return "$?"
   fixture_package="$fixture_dir/future.tgz"
   node scripts/e2e/lib/update-first-hop-package-fixtures.mjs future-tarball \
@@ -1624,39 +1654,73 @@ prepare_restart_fixture() {
   mv "$fixture_dir/receipt.json" "$ARTIFACT_ROOT/restart-fixture.json" || return "$?"
   restart_fixture_evidence="$ARTIFACT_ROOT/restart-fixture.json"
   restart_fixture_package="$fixture_package"
-  runtime_source="$(node - "${OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR:?managed restart requires the candidate plugin registry}" "$candidate_version" <<'NODE'
+  IFS=$'\t' read -r runtime_source discord_source whatsapp_source <<EOF
+$(node - "${OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR:?managed restart requires the candidate plugin registry}" "$candidate_version" <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const [root, version] = process.argv.slice(2);
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "prepublish-plugin-registry.json"), "utf8"));
-const entry = manifest.packages.find((item) => item.name === "@openclaw/codex" && item.version === version);
-if (!entry) throw new Error("Sealed candidate registry is missing its matching Codex runtime");
-const file = path.resolve(root, entry.tarball);
-if (crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex") !== entry.sha256) {
-  throw new Error("Candidate runtime artifact digest differs from the sealed registry");
-}
-process.stdout.write(file);
+const files = ["@openclaw/codex", "@openclaw/discord", "@openclaw/whatsapp"].map((name) => {
+  const entry = manifest.packages.find((item) => item.name === name && item.version === version);
+  if (!entry) throw new Error(`Sealed candidate registry is missing matching ${name}`);
+  const file = path.resolve(root, entry.tarball);
+  if (crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex") !== entry.sha256) {
+    throw new Error(`Candidate artifact digest differs from the sealed registry: ${name}`);
+  }
+  return file;
+});
+process.stdout.write(files.join("\t"));
 NODE
-  )" || return "$?"
+)
+EOF
+  [ -n "$runtime_source" ] && [ -n "$discord_source" ] && [ -n "$whatsapp_source" ] || {
+    echo "failed to resolve the sealed restart cohort" >&2
+    return 1
+  }
   node scripts/e2e/lib/update-first-hop-package-fixtures.mjs future-runtime-tarball \
     "$runtime_source" "$fixture_dir/codex.tgz" >"$fixture_dir/runtime-receipt.json" || return "$?"
+  node scripts/e2e/lib/update-first-hop-package-fixtures.mjs future-companion-tarball \
+    "$discord_source" "$fixture_dir/discord.tgz" >"$fixture_dir/discord-receipt.json" || return "$?"
+  node scripts/e2e/lib/update-first-hop-package-fixtures.mjs future-companion-tarball \
+    "$whatsapp_source" "$fixture_dir/whatsapp.tgz" >"$fixture_dir/whatsapp-receipt.json" || return "$?"
+  node - "$fixture_dir/runtime-receipt.json" "$fixture_dir/discord-receipt.json" "$fixture_dir/whatsapp-receipt.json" <<'NODE'
+const fs = require("node:fs");
+const receipts = process.argv.slice(2).map((file) => JSON.parse(fs.readFileSync(file, "utf8")));
+if (new Set(receipts.map((receipt) => receipt.targetVersion)).size !== 1) {
+  throw new Error("Synthetic restart cohort versions differ");
+}
+NODE
   mv "$fixture_dir/runtime-receipt.json" "$ARTIFACT_ROOT/restart-runtime-fixture.json" || return "$?"
+  mv "$fixture_dir/discord-receipt.json" "$ARTIFACT_ROOT/restart-discord-fixture.json" || return "$?"
+  mv "$fixture_dir/whatsapp-receipt.json" "$ARTIFACT_ROOT/restart-whatsapp-fixture.json" || return "$?"
   restart_runtime_evidence="$ARTIFACT_ROOT/restart-runtime-fixture.json"
   # The runtime is version-bound to its host. Serve the matching synthetic
   # cohort without changing the sealed candidate registry or its identity.
-  OPENCLAW_NPM_REGISTRY_UPSTREAM="$NPM_CONFIG_REGISTRY" \
+  local restart_registry_dist_tags="${OPENCLAW_NPM_REGISTRY_DIST_TAGS-}"
+  if [ "${OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL:-stable}" = "extended-stable" ]; then
+    restart_registry_dist_tags="extended-stable=$restart_fixture_version"
+  fi
+  OPENCLAW_NPM_REGISTRY_DIST_TAGS="$restart_registry_dist_tags" \
+    OPENCLAW_NPM_REGISTRY_UPSTREAM="$NPM_CONFIG_REGISTRY" \
     openclaw_prepublish_plugin_registry_start \
       "$OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR" \
       "${OPENCLAW_DOCKER_E2E_SELECTED_SHA:-}" "$candidate_version" \
       "${OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_MANIFEST_SHA256:-}" \
       "$fixture_dir/registry" restart_registry_pid \
-      "@openclaw/codex" "$restart_fixture_version" "$fixture_dir/codex.tgz" || return "$?"
+      openclaw "$restart_fixture_version" "$restart_fixture_package" \
+      "@openclaw/codex" "$restart_fixture_version" "$fixture_dir/codex.tgz" \
+      "@openclaw/discord" "$restart_fixture_version" "$fixture_dir/discord.tgz" \
+      "@openclaw/whatsapp" "$restart_fixture_version" "$fixture_dir/whatsapp.tgz" || return "$?"
 }
 
 repair_update_restart_auth() {
   [ "$SCENARIO" = "legacy-operator-state" ] && return 0
   if [ "$UPDATE_RESTART_MODE" = "auto-auth" ]; then
+    if [ "${OPENCLAW_UPGRADE_SURVIVOR_DOCTOR_REPAIRED_SERVICE:-0}" = "1" ]; then
+      phase verify-doctor-repaired-service \
+        verify_and_stop_doctor_repaired_gateway "$COMMAND_TIMEOUT" || return "$?"
+    fi
     # Historical preservation has already passed. This separate current-runtime
     # update needs a configured inference route for its real serving receipt.
     phase prepare-restart-inference prepare_restart_inference || return "$?"
@@ -1706,7 +1770,7 @@ repair_fixture_plugin_consent() {
   fi
   repair_update_restart_auth || return "$?"
   if [ -n "${OPENCLAW_CLAWHUB_URL:-}" ]; then
-    phase assert-prepublish-recovery-requests assert_prepublish_plugin_install
+    phase assert-prepublish-recovery-requests assert_restart_plugin_cohort
   fi
 }
 

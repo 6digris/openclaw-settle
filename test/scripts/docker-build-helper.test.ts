@@ -4532,6 +4532,7 @@ test -x "$npm_config_prefix/bin/busctl"
 const fs = require("node:fs");
 if (process.argv[2] !== "update") throw new Error("expected updater invocation");
 fs.writeFileSync(${JSON.stringify(invocation)}, "update\\n");
+fs.writeFileSync(${JSON.stringify(`${invocation}.contract`)}, JSON.stringify({argv:process.argv.slice(2), packageSpec:process.env.OPENCLAW_UPDATE_PACKAGE_SPEC ?? null}));
 if (["pid-only", "replaced"].includes(process.env.RESTART_TEST_MODE)) fs.writeFileSync(process.env.OPENCLAW_UPGRADE_SURVIVOR_SYSTEMCTL_SHIM_PID_FILE, "23456\\n");
 if (["request-only", "replaced"].includes(process.env.RESTART_TEST_MODE)) fs.appendFileSync(process.env.OPENCLAW_UPGRADE_SURVIVOR_SYSTEMCTL_SHIM_LOG, "--user restart openclaw-gateway.service\\n");
 console.log(JSON.stringify({status:"ok",after:{version:"2026.8.1"},steps:[{name:"global update",exitCode:0}]}));
@@ -4562,7 +4563,7 @@ baseline_spec=openclaw@2026.4.15
 candidate_version=2026.8.1
 CANDIDATE_KIND=tarball
 ${update}
-update_candidate 1
+update_candidate 1 file:/tmp/future-openclaw.tgz 2026.8.1
 `,
         {
           encoding: "utf8",
@@ -4572,11 +4573,16 @@ update_candidate 1
             RESTART_TEST_MODE: mode,
             OPENCLAW_UPGRADE_SURVIVOR_SYSTEMCTL_SHIM_PID_FILE: pidFile,
             OPENCLAW_UPGRADE_SURVIVOR_SYSTEMCTL_SHIM_LOG: logFile,
+            OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL: "extended-stable",
           },
         },
       );
       expect(result.status, result.stdout + result.stderr).toBe(mode === "replaced" ? 0 : 1);
       expect(readFileSync(invocation, "utf8")).toBe("update\n");
+      expect(JSON.parse(readFileSync(`${invocation}.contract`, "utf8"))).toEqual({
+        argv: ["update", "--tag", "file:/tmp/future-openclaw.tgz", "--yes", "--json"],
+        packageSpec: null,
+      });
     },
   );
 

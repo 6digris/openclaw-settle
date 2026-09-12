@@ -177,9 +177,19 @@ export function removeLegacyUpdateCompatChunks(packageRoot) {
     }),
   ]);
   const removed = [];
+  const allowMissingLegacyChunks =
+    process.env.OPENCLAW_UPDATE_FIXTURE_ALLOW_MISSING_LEGACY_COMPAT === "1";
   for (const name of chunks) {
     const relativePath = `dist/${name}`;
     const filePath = path.join(paths.root, relativePath);
+    if (
+      allowMissingLegacyChunks &&
+      LEGACY_UPDATE_COMPAT_CHUNKS.includes(name) &&
+      !fs.existsSync(filePath) &&
+      !inventory.includes(relativePath)
+    ) {
+      continue;
+    }
     if (!fs.existsSync(filePath) || !inventory.includes(relativePath)) {
       throw new Error(`package fixture is missing compatibility input: ${relativePath}`);
     }
@@ -350,6 +360,40 @@ function packFutureRuntimeFixture(candidateTarball, outputTarball, sequence = 0)
   };
 }
 
+function packFutureCompanionFixture(candidateTarball, outputTarball, sequence = 0) {
+  const version = futureFixtureVersion(sequence);
+  return {
+    method: "candidate-same-schema-companion-fixture",
+    ...packTransformedFixture(candidateTarball, outputTarball, (root) => {
+      const manifestPath = path.join(root, "package.json");
+      const manifest = readJson(manifestPath);
+      if (
+        typeof manifest.name !== "string" ||
+        !manifest.name.startsWith("@openclaw/") ||
+        manifest.name === "@openclaw/codex" ||
+        typeof manifest.version !== "string" ||
+        !/^\d{4}\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[a-z0-9]+(?:[.-][a-z0-9]+)*)?$/iu.test(
+          manifest.version,
+        )
+      ) {
+        throw new Error("future companion fixture requires a versioned @openclaw package");
+      }
+      const sourceVersion = manifest.version;
+      if (
+        typeof manifest.openclaw?.build?.openclawVersion === "string" &&
+        manifest.openclaw.build.openclawVersion !== sourceVersion
+      ) {
+        throw new Error("companion package version and OpenClaw build cohort must match");
+      }
+      manifest.version = version;
+      if (typeof manifest.openclaw?.build?.openclawVersion === "string") {
+        manifest.openclaw.build.openclawVersion = version;
+      }
+      writeJson(manifestPath, manifest);
+    }),
+  };
+}
+
 function main() {
   const [mode, packageRoot, outputTarball, sequence] = process.argv.slice(2);
   if (mode === "sources" && packageRoot) {
@@ -375,7 +419,8 @@ function main() {
     (mode === "first-hop-tarball" ||
       mode === "negative-tarball" ||
       mode === "future-tarball" ||
-      mode === "future-runtime-tarball") &&
+      mode === "future-runtime-tarball" ||
+      mode === "future-companion-tarball") &&
     packageRoot &&
     outputTarball
   ) {
@@ -384,6 +429,7 @@ function main() {
       "negative-tarball": packNegativeUpdateFixture,
       "future-tarball": packFutureUpdateFixture,
       "future-runtime-tarball": packFutureRuntimeFixture,
+      "future-companion-tarball": packFutureCompanionFixture,
     }[mode];
     process.stdout.write(
       `${JSON.stringify(pack(packageRoot, outputTarball, sequence === undefined ? 0 : Number(sequence)), null, 2)}\n`,
@@ -392,7 +438,7 @@ function main() {
   }
   if (!packageRoot || (mode !== "negative" && mode !== "future")) {
     throw new Error(
-      "usage: update-first-hop-package-fixtures.mjs <negative|future> <package-root> OR <first-hop-tarball|negative-tarball|future-tarball|future-runtime-tarball> <source.tgz> <new-output.tgz> [sequence0–9]",
+      "usage: update-first-hop-package-fixtures.mjs <negative|future> <package-root> OR <first-hop-tarball|negative-tarball|future-tarball|future-runtime-tarball|future-companion-tarball> <source.tgz> <new-output.tgz> [sequence0–9]",
     );
   }
   if (mode === "negative") {

@@ -122,6 +122,25 @@ openclaw_resolve_frozen_upgrade_survivor_capabilities() {
   fi
 }
 
+openclaw_apply_frozen_upgrade_survivor_contract() {
+  local target_version="${1:-}"
+
+  # These owners describe the exact state and fixture dialect shipped by the
+  # frozen 7.33 candidate. Current and future targets retain the trusted
+  # survivor defaults instead of inheriting historical expectations from the
+  # extended-stable lane name alone.
+  [ "$target_version" = "2026.7.33" ] || return 0
+
+  export OPENCLAW_UPGRADE_SURVIVOR_EXEC_APPROVAL_OWNER=json \
+    OPENCLAW_UPGRADE_SURVIVOR_DISCORD_DM_OWNER=legacy \
+    OPENCLAW_UPGRADE_SURVIVOR_SESSION_METADATA_OWNER=file \
+    OPENCLAW_UPGRADE_SURVIVOR_LEGACY_RUNTIME_DEPS_OUTCOME=removed \
+    OPENCLAW_UPGRADE_SURVIVOR_PREPUBLISH_PLUGIN_SOURCE=clawhub \
+    OPENCLAW_UPDATE_FIXTURE_ALLOW_MISSING_LEGACY_COMPAT=1 \
+    OPENCLAW_UPGRADE_SURVIVOR_DOCTOR_REPAIRED_SERVICE=1 \
+    OPENCLAW_UPGRADE_SURVIVOR_MOCK_CONFIG_DIALECT=legacy
+}
+
 openclaw_resolve_frozen_live_cli_backend_package_mode() {
   local source_root="${1:?missing selected source root}" authorization_status=0 has_resolver
 

@@ -540,11 +540,17 @@ function createMigratedSessionFileStore(
 
 function writeMigratedSessionFiles(
   stateDir: string,
-  options: { includePrompt?: boolean } = {},
+  options: { includePrompt?: boolean; includeSessionFile?: boolean } = {},
 ): void {
   const agentSessionsDir = join(stateDir, "agents", "main", "sessions");
   mkdirSync(agentSessionsDir, { recursive: true });
-  writeJson(join(agentSessionsDir, "sessions.json"), createMigratedSessionFileStore(options));
+  const store = createMigratedSessionFileStore(options);
+  if (options.includeSessionFile) {
+    for (const entry of Object.values(store)) {
+      entry.sessionFile = join(agentSessionsDir, `${String(entry.sessionId)}.jsonl`);
+    }
+  }
+  writeJson(join(agentSessionsDir, "sessions.json"), store);
   for (const sessionId of [
     "upgrade-main-session",
     "upgrade-direct-session",
@@ -728,6 +734,7 @@ function assertConfig(params: {
   scenario: string;
   stage?: "baseline" | "survival";
   updateChannel?: string;
+  discordDmOwner?: "canonical" | "legacy";
 }): void {
   const root = mkdtempSync(join(tmpdir(), "openclaw-upgrade-survivor-config-"));
   try {
@@ -747,6 +754,7 @@ function assertConfig(params: {
         OPENCLAW_UPGRADE_SURVIVOR_SCENARIO: params.scenario,
         OPENCLAW_UPGRADE_SURVIVOR_ASSERT_STAGE: params.stage ?? "survival",
         OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL: params.updateChannel ?? "",
+        OPENCLAW_UPGRADE_SURVIVOR_DISCORD_DM_OWNER: params.discordDmOwner ?? "",
       },
       stdio: "pipe",
     });
@@ -921,6 +929,66 @@ function assertCompanionPluginRecords(
         stdio: "pipe",
       },
     );
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+}
+
+function assertRestartPluginCohortRecords(mutateIntegrity = false): void {
+  const root = mkdtempSync(join(tmpdir(), "openclaw-upgrade-survivor-restart-cohort-"));
+  try {
+    const stateDir = join(root, "state");
+    const version = "2026.9.99-first-hop.0";
+    const records: Record<string, PluginInstallRecord> = {};
+    const args = [ASSERTIONS_PATH, "assert-restart-plugin-cohort", version, "0"];
+    for (const [pluginId, packageName, source] of [
+      ["codex", "@openclaw/codex", "npm"],
+      ["discord", "@openclaw/discord", "npm"],
+      ["whatsapp", "@openclaw/whatsapp", "clawhub"],
+    ] as const) {
+      const installPath =
+        source === "npm"
+          ? join(stateDir, "npm", "projects", pluginId, "node_modules", "@openclaw", pluginId)
+          : join(stateDir, "extensions", pluginId);
+      mkdirSync(installPath, { recursive: true });
+      writeJson(join(installPath, "package.json"), { name: packageName, version });
+      const archiveRoot = join(root, `archive-${pluginId}`);
+      mkdirSync(join(archiveRoot, "package"), { recursive: true });
+      writeJson(join(archiveRoot, "package", "package.json"), { name: packageName, version });
+      const tarball = join(root, `${pluginId}.tgz`);
+      execFileSync("tar", ["-czf", tarball, "-C", archiveRoot, "package"]);
+      const integrity = `sha512-${createHash("sha512").update(readFileSync(tarball)).digest("base64")}`;
+      records[pluginId] =
+        source === "npm"
+          ? {
+              source,
+              spec: `${packageName}@${version}`,
+              resolvedName: packageName,
+              resolvedVersion: version,
+              integrity: mutateIntegrity && pluginId === "discord" ? "sha512-wrong" : integrity,
+              installPath,
+            }
+          : {
+              source,
+              spec: `clawhub:${packageName}@${version}`,
+              version,
+              artifactKind: "npm-pack",
+              clawhubPackage: packageName,
+              clawhubChannel: "official",
+              npmIntegrity: integrity,
+              installPath,
+            };
+      args.push(pluginId, packageName, tarball);
+    }
+    mkdirSync(join(stateDir, "plugins"), { recursive: true });
+    writeJson(join(stateDir, "plugins", "installs.json"), { installRecords: records });
+    const result = spawnSync(testNodeExecPath, args, {
+      encoding: "utf8",
+      env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
+    });
+    if (result.status !== 0) {
+      throw new Error(result.stderr || result.stdout);
+    }
   } finally {
     rmSync(root, { force: true, recursive: true });
   }
@@ -1727,6 +1795,14 @@ process.stdout.write(sessionDir + "\\n");
         scenario: "base",
       }),
     ).toThrow(/legacy Discord DM config survived/);
+    expect(() =>
+      assertConfig({
+        acceptedIntents: ["discord-channel"],
+        config: legacyConfig,
+        scenario: "base",
+        discordDmOwner: "legacy",
+      }),
+    ).not.toThrow();
   });
 
   it("requires canonical Discord DM config after update", () => {
@@ -1898,6 +1974,13 @@ process.stdout.write(sessionDir + "\\n");
     }
   });
 
+  it("binds every synthetic restart plugin to its exact future artifact", () => {
+    expect(() => assertRestartPluginCohortRecords()).not.toThrow();
+    expect(() => assertRestartPluginCohortRecords(true)).toThrow(
+      /discord restart cohort artifact integrity changed/,
+    );
+  });
+
   it("checks configured plugin recovery without requiring an unconfigured companion", () => {
     expect(() =>
       assertCompanionPluginRecords(
@@ -2022,6 +2105,22 @@ process.stdout.write(sessionDir + "\\n");
     },
   );
 
+  it("requires legacy plugin runtime dependency cleanup for a frozen target", () => {
+    expect(() =>
+      runSessionStateAssertion((stateDir) => {
+        rmSync(join(stateDir, "plugin-runtime-deps"), { force: true, recursive: true });
+        writeMigratedSessionState(stateDir);
+        return { OPENCLAW_UPGRADE_SURVIVOR_LEGACY_RUNTIME_DEPS_OUTCOME: "removed" };
+      }),
+    ).not.toThrow();
+    expect(() =>
+      runSessionStateAssertion((stateDir) => {
+        writeMigratedSessionState(stateDir);
+        return { OPENCLAW_UPGRADE_SURVIVOR_LEGACY_RUNTIME_DEPS_OUTCOME: "removed" };
+      }),
+    ).toThrow(/survived cleanup/);
+  });
+
   it("prefers session_nodes over stale file and cache session stores", () => {
     expect(() =>
       runSessionStateAssertion((stateDir) => {
@@ -2092,6 +2191,15 @@ process.stdout.write(sessionDir + "\\n");
           db.close();
         }
         writeMigratedSessionFiles(stateDir);
+      }),
+    ).not.toThrow();
+  });
+
+  it("accepts the exact file-owned session metadata for a frozen target", () => {
+    expect(() =>
+      runSessionStateAssertion((stateDir) => {
+        writeMigratedSessionFiles(stateDir, { includeSessionFile: true });
+        return { OPENCLAW_UPGRADE_SURVIVOR_SESSION_METADATA_OWNER: "file" };
       }),
     ).not.toThrow();
   });

@@ -30,8 +30,9 @@ describe("upgrade survivor config parking", () => {
         "-c",
         `set -euo pipefail
 ${source.slice(start + 1, end)}
-openclaw_e2e_maybe_timeout() { shift; printf '%s\\n' "$*" >"$ARGS_LOG"; printf '{"status":"ok"}'; }
-read_installed_version() { printf '2026.7.33\\n'; }
+update_call_count=0
+openclaw_e2e_maybe_timeout() { update_call_count=$((update_call_count + 1)); shift; printf '%s\\n' "$*" >"$ARGS_LOG"; printf '{"status":"ok"}'; }
+read_installed_version() { [ "$update_call_count" -eq 2 ] && printf '2100.1.0\\n' || printf '2026.7.33\\n'; }
 node() { [ "$1" = "-e" ] && command node "$@" || return 0; }
 baseline_spec=openclaw@2026.6.35
 baseline_version=2026.6.35
@@ -53,6 +54,10 @@ update_candidate
 ! grep -q -- '--tag' "$ARGS_LOG"
 grep -q -- 'OPENCLAW_UPDATE_PACKAGE_SPEC=openclaw' "$ARGS_LOG"
 grep -q -- 'openclaw update --channel extended-stable --yes --json --no-restart' "$ARGS_LOG"
+update_candidate 1 file:/tmp/openclaw-future.tgz 2100.1.0
+! grep -q -- '--tag' "$ARGS_LOG"
+grep -q -- 'OPENCLAW_UPDATE_PACKAGE_SPEC=openclaw' "$ARGS_LOG"
+grep -q -- 'openclaw update --channel extended-stable --yes --json --no-restart' "$ARGS_LOG"
 OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL=stable
 update_candidate
 grep -q -- 'openclaw update --tag openclaw@extended-stable --yes --json --no-restart' "$ARGS_LOG"`,
@@ -60,6 +65,85 @@ grep -q -- 'openclaw update --tag openclaw@extended-stable --yes --json --no-res
       { env: { ...process.env, ARGS_LOG: argsLog } },
     );
     expect(result.status, result.stderr.toString()).toBe(0);
+  });
+
+  it("publishes the managed follow-up core under the stored extended-stable channel", () => {
+    const root = tempDirs.make("openclaw-update-follow-up-registry-");
+    const source = readFileSync(PUBLISHED_RUNNER_PATH, "utf8");
+    const start = source.indexOf("\nprepare_restart_fixture() {");
+    const end = source.indexOf("\nrepair_update_restart_auth()", start);
+    const argsLog = path.join(root, "registry-args.log");
+    const envLog = path.join(root, "registry-env.log");
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        `set -euo pipefail
+${source.slice(start + 1, end)}
+prepare_candidate_tarball() { candidate_tarball="$FIXTURE_ROOT/current.tgz"; : >"$candidate_tarball"; }
+node() {
+  if [ "$1" = scripts/e2e/lib/update-first-hop-package-fixtures.mjs ] && [ "$2" = future-tarball ]; then
+    : >"$4"
+    printf '{"targetVersion":"2100.1.0"}'
+  elif [ "$1" = -p ]; then
+    printf '2100.1.0\n'
+  elif [ "$1" = - ] && [ "$#" -eq 4 ]; then
+    :
+  elif [ "$1" = - ]; then
+    printf '%s\t%s\t%s\n' "$FIXTURE_ROOT/codex-current.tgz" "$FIXTURE_ROOT/discord-current.tgz" "$FIXTURE_ROOT/whatsapp-current.tgz"
+  elif [ "$1" = scripts/e2e/lib/update-first-hop-package-fixtures.mjs ] && [ "$2" = future-runtime-tarball ]; then
+    : >"$4"
+    printf '{}'
+  elif [ "$1" = scripts/e2e/lib/update-first-hop-package-fixtures.mjs ] && [ "$2" = future-companion-tarball ]; then
+    : >"$4"
+    printf '{}'
+  else
+    command node "$@"
+  fi
+}
+openclaw_prepublish_plugin_registry_start() {
+  printf '%s\n' "$OPENCLAW_NPM_REGISTRY_DIST_TAGS" >"$REGISTRY_ENV_LOG"
+  printf '%s\n' "$OPENCLAW_NPM_REGISTRY_UPSTREAM" >>"$REGISTRY_ENV_LOG"
+  printf '%s\n' "$@" >"$REGISTRY_ARGS_LOG"
+  printf -v "$6" '%s' 123
+}
+RUNTIME_ROOT="$FIXTURE_ROOT/runtime"
+mkdir -p "$RUNTIME_ROOT"
+ARTIFACT_ROOT="$FIXTURE_ROOT/artifacts"
+mkdir -p "$ARTIFACT_ROOT"
+OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR="$FIXTURE_ROOT/registry-source"
+OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_MANIFEST_SHA256=manifest-sha
+OPENCLAW_DOCKER_E2E_SELECTED_SHA=source-sha
+OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL=extended-stable
+NPM_CONFIG_REGISTRY=http://127.0.0.1:41000
+candidate_version=2026.9.9
+restart_fixture_package=
+restart_fixture_version=
+restart_registry_pid=
+prepare_restart_fixture
+grep -q '^extended-stable=2100.1.0$' "$REGISTRY_ENV_LOG"
+grep -q '^http://127.0.0.1:41000$' "$REGISTRY_ENV_LOG"
+grep -q '^openclaw$' "$REGISTRY_ARGS_LOG"
+grep -q '^2100.1.0$' "$REGISTRY_ARGS_LOG"
+grep -q '/future.tgz$' "$REGISTRY_ARGS_LOG"
+grep -q '^@openclaw/codex$' "$REGISTRY_ARGS_LOG"
+grep -q '/codex.tgz$' "$REGISTRY_ARGS_LOG"
+grep -q '^@openclaw/discord$' "$REGISTRY_ARGS_LOG"
+grep -q '/discord.tgz$' "$REGISTRY_ARGS_LOG"
+grep -q '^@openclaw/whatsapp$' "$REGISTRY_ARGS_LOG"
+grep -q '/whatsapp.tgz$' "$REGISTRY_ARGS_LOG"`,
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          FIXTURE_ROOT: root,
+          REGISTRY_ARGS_LOG: argsLog,
+          REGISTRY_ENV_LOG: envLog,
+        },
+      },
+    );
+    expect(result.status, result.stderr).toBe(0);
   });
 
   it.each([
