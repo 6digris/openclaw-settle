@@ -1162,6 +1162,8 @@ export const en: TranslationMap & {
     archivedOnlyTooltip: "Show only archived sessions.",
     minutesPlaceholder: "min",
     searchPlaceholder: "Filter by key, agent, label, kind…",
+    searchLabel: "Search sessions",
+    clearSearch: "Clear search",
     transcriptSearchTitle: "Search transcripts",
     transcriptSearchDescription:
       "Find exact words or phrases in user and assistant messages across the default agent's sessions.",
