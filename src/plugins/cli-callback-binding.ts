@@ -53,10 +53,90 @@ function bindParser(parser: Option | Argument): void {
   }
 }
 
-function bindPluginCliEvents(program: EventEmitter): void {
+function bindStoredCallbackCollection(
+  target: object,
+  key: string,
+  bind: (value: unknown) => unknown = bindCallback,
+): void {
+  const descriptor = Object.getOwnPropertyDescriptor(target, key);
+  const stored: unknown = descriptor?.value;
+  if (!descriptor || !stored || typeof stored !== "object" || Array.isArray(stored)) {
+    throw new Error(`Unsupported native CLI callback collection: ${key}`);
+  }
+  const callbacks = Object.create(Object.getPrototypeOf(stored));
+  for (const name of Reflect.ownKeys(stored)) {
+    const entry = Object.getOwnPropertyDescriptor(stored, name)!;
+    if ("value" in entry) {
+      if (Array.isArray(entry.value)) {
+        const values: unknown[] = entry.value;
+        const descriptors = Object.getOwnPropertyDescriptors(values);
+        for (let index = 0; index < values.length; index++) {
+          const value = descriptors[index];
+          if (value && "value" in value) {
+            value.value = bind(value.value);
+          }
+        }
+        // Node retains dispatch/copy-on-write metadata on listener arrays.
+        // Keep every own descriptor, including symbols, on a real native array.
+        const rebound: unknown[] = [];
+        Object.setPrototypeOf(rebound, Object.getPrototypeOf(values));
+        entry.value = Object.defineProperties(rebound, descriptors);
+      } else {
+        entry.value = bind(entry.value);
+      }
+    }
+    Object.defineProperty(callbacks, name, entry);
+  }
+  Object.defineProperty(target, key, { ...descriptor, value: callbacks });
+}
+
+function bindPreparedCommandCallbacks(program: Command): void {
+  // Commander 15 exposes setters but no getters for these retained callbacks.
+  // Adopt only the named slots of a tree explicitly registered by this plugin,
+  // never callbacks already present on the shared host command tree.
+  for (const key of ["_actionHandler", "_exitCallback"] as const) {
+    const descriptor = Object.getOwnPropertyDescriptor(program, key);
+    if (!descriptor || !("value" in descriptor)) {
+      throw new Error(`Unsupported native Commander callback slot: ${key}`);
+    }
+    Object.defineProperty(program, key, {
+      ...descriptor,
+      value: bindCallback(descriptor.value),
+    });
+  }
+  bindStoredCallbackCollection(program, "_lifeCycleHooks");
+  program.configureHelp(bindConfiguration(program.configureHelp()));
+  program.configureOutput(bindConfiguration(program.configureOutput()));
+  for (const parser of [...program.options, ...program.registeredArguments]) {
+    bindParser(parser);
+  }
+}
+
+function bindPluginCliEvents(program: EventEmitter, adoptPrepared: boolean): void {
   // EventEmitter's once/prependOnceListener use these public listener methods.
   // Preserve listener/removal identity, including once's own removal callback.
   const listenerOrigins = new WeakMap<Function, Function>();
+  const wrapListener = (listener: Function, managed: Function) => {
+    const bound = function (this: EventEmitter, ...args: unknown[]) {
+      return Reflect.apply(managed, this, args);
+    };
+    Object.defineProperty(bound, "listener", {
+      value: Reflect.get(listener, "listener") ?? listener,
+    });
+    listenerOrigins.set(bound, listener);
+    return bound;
+  };
+  if (adoptPrepared) {
+    // Preserve Node's native listener order/once wrappers without invoking
+    // newListener/removeListener callbacks during ownership adoption.
+    bindStoredCallbackCollection(program, "_events", (listener) => {
+      if (typeof listener !== "function") {
+        return listener;
+      }
+      const managed = bindCallback(listener);
+      return managed === listener ? listener : wrapListener(listener, managed);
+    });
+  }
   for (const name of ["on", "addListener", "prependListener"] as const) {
     const method = program[name];
     program[name] = function (event, listener) {
@@ -64,37 +144,41 @@ function bindPluginCliEvents(program: EventEmitter): void {
       if (managed === listener) {
         return method.call(this, event, listener);
       }
-      const bound = function (this: EventEmitter, ...args: unknown[]) {
-        return Reflect.apply(managed, this, args);
-      };
-      Object.defineProperty(bound, "listener", {
-        value: Reflect.get(listener, "listener") ?? listener,
-      });
-      listenerOrigins.set(bound, listener);
-      return method.call(this, event, bound);
+      return method.call(this, event, wrapListener(listener, managed));
     };
   }
   for (const name of ["removeListener", "off"] as const) {
     const method = program[name];
     program[name] = function (event, listener) {
       const registered = this.rawListeners(event).findLast(
-        (candidate) => listenerOrigins.get(candidate) === listener,
+        (candidate) =>
+          candidate === listener ||
+          Reflect.get(candidate, "listener") === listener ||
+          listenerOrigins.get(candidate) === listener,
       );
-      return method.call(this, event, registered ?? listener);
+      // Prefer native matching (and its removeListener argument) when possible;
+      // only translate the hidden once wrapper's self-removal identity.
+      const needsOrigin =
+        registered && registered !== listener && Reflect.get(registered, "listener") !== listener;
+      return method.call(this, event, needsOrigin ? registered : listener);
     };
   }
 }
 
 /**
- * Bind registrations made through the host's native CLI surface. Already prepared
- * Command callbacks remain caller-owned; Commander exposes no public getter for
- * them, and inspecting private storage would also adopt unrelated host callbacks.
+ * Bind registrations made through the host's native CLI surface. Existing host
+ * callbacks remain caller-owned; newly created or explicitly added command trees
+ * also transfer their preconfigured callbacks to the active adding instance.
  */
-export function bindPluginCliProgram(program: Command): void {
+export function bindPluginCliProgram(program: Command, adoptPrepared = false): void {
   if (commands.has(program)) {
     return;
   }
   commands.add(program);
+  const adopt = adoptPrepared && pluginInstanceInvocation.getStore()?.instance !== undefined;
+  if (adopt) {
+    bindPreparedCommandCallbacks(program);
+  }
 
   // Commander 15 invokes these callbacks later, after the registrar has returned.
   // Retain each supported method's native receiver, overloads and fluent return.
@@ -129,18 +213,20 @@ export function bindPluginCliProgram(program: Command): void {
   }
 
   if (program instanceof EventEmitter) {
-    bindPluginCliEvents(program);
+    bindPluginCliEvents(program, adopt);
   }
 
   const createCommand = program.createCommand.bind(program);
   program.createCommand = function (name) {
     const command = createCommand.call(this, name);
-    bindPluginCliProgram(command);
+    bindPluginCliProgram(command, true);
     return command;
   };
   const addCommand = program.addCommand.bind(program);
   program.addCommand = function (command, options) {
-    bindPluginCliProgram(command);
+    // Native validation can throw after attaching the child to the host tree.
+    // Bind before insertion so a caught registration error cannot leave an escape.
+    bindPluginCliProgram(command, true);
     return addCommand.call(this, command, options);
   };
   const createOption = program.createOption.bind(program);
@@ -168,6 +254,6 @@ export function bindPluginCliProgram(program: Command): void {
     return addArgument.call(this, argument);
   };
   for (const command of program.commands) {
-    bindPluginCliProgram(command);
+    bindPluginCliProgram(command, adopt);
   }
 }

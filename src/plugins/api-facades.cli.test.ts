@@ -186,40 +186,47 @@ describe("managed CLI callbacks", () => {
     expect(runtime.tryGetRuntime()).toBeNull();
   });
 
-  it("drains an admitted async action and rejects a new parse while retiring", async () => {
-    const owner = fixture();
-    const started = createDeferredCore();
-    const finish = createDeferredCore();
-    const first = new Command();
-    const second = new Command();
-    const register: OpenClawPluginCliRegistrar = ({ program }) => {
-      program.command("run").action(async () => {
-        started.resolve();
-        await finish.promise;
-        expect(current()).toBe("alpha");
+  it.each([false, true])(
+    "drains an admitted async action and rejects a new parse while retiring (prepared: %s)",
+    async (prepared) => {
+      const owner = fixture();
+      const started = createDeferredCore();
+      const finish = createDeferredCore();
+      const first = new Command();
+      const second = new Command();
+      const register: OpenClawPluginCliRegistrar = ({ program }) => {
+        const command = prepared ? new Command("run") : program.command("run");
+        command.action(async () => {
+          started.resolve();
+          await finish.promise;
+          expect(current()).toBe("alpha");
+        });
+        if (prepared) {
+          program.addCommand(command);
+        }
+      };
+      await owner.register(first, register);
+      await owner.register(second, register);
+      const running = first.parseAsync(["run"], { from: "user" });
+      await started.promise;
+      let disposed = false;
+      const disposal = owner.instance.dispose().then(() => {
+        disposed = true;
       });
-    };
-    await owner.register(first, register);
-    await owner.register(second, register);
-    const running = first.parseAsync(["run"], { from: "user" });
-    await started.promise;
-    let disposed = false;
-    const disposal = owner.instance.dispose().then(() => {
-      disposed = true;
-    });
-    try {
-      const next = second.parseAsync(["run"], { from: "user" });
-      const rejected = expect(next).rejects.toThrow("reloaded or disabled");
-      expect(disposed).toBe(false);
-      finish.resolve();
-      await rejected;
-    } finally {
-      finish.resolve();
-      await running;
-      await disposal;
-    }
-    expect(disposed).toBe(true);
-  });
+      try {
+        const next = second.parseAsync(["run"], { from: "user" });
+        const rejected = expect(next).rejects.toThrow("reloaded or disabled");
+        expect(disposed).toBe(false);
+        finish.resolve();
+        await rejected;
+      } finally {
+        finish.resolve();
+        await running;
+        await disposal;
+      }
+      expect(disposed).toBe(true);
+    },
+  );
 
   it("preserves EventEmitter once/removal/listener identity while binding delayed option events", async () => {
     const owner = fixture();
@@ -367,6 +374,168 @@ describe("managed CLI callbacks", () => {
     await host.parseAsync(["data"], { from: "user" });
     await host.parseAsync(["data", "input", "--transform", "input"], { from: "user" });
     expect(action).toHaveBeenCalledTimes(2);
+  });
+
+  it("adopts preconfigured command callbacks when the registrar adds their native tree", async () => {
+    const owner = fixture();
+    const host = new Command();
+    const events: string[] = [];
+    let child!: Command;
+    const option = new Option("--account <id>").argParser((value) => `${current()}:${value}`);
+    const argument = new Argument("<value>").argParser((value) => `${current()}:${value}`);
+    await owner.register(host, ({ program }) => {
+      child = new Command("prepared");
+      child.addOption(option).addArgument(argument);
+      child.hook("preAction", (command) => {
+        expect(command).toBe(child);
+        events.push(`pre:${current()}`);
+      });
+      child.action(async function (value, options, command) {
+        expect(this).toBe(child);
+        expect(command).toBe(child);
+        expect(value).toBe("alpha:input");
+        expect(options.account).toBe("alpha:target");
+        await Promise.resolve();
+        events.push(`action:${current()}`);
+      });
+      child.hook("postAction", () => events.push(`post:${current()}`));
+      expect(program.addCommand(child)).toBe(program);
+    });
+    expect(host.commands[0]).toBe(child);
+    expect(child.options[0]).toBe(option);
+    expect(child.registeredArguments[0]).toBe(argument);
+    expect(runtime.tryGetRuntime()).toBeNull();
+    await host.parseAsync(["prepared", "input", "--account", "target"], { from: "user" });
+    expect(events).toEqual(["pre:alpha", "action:alpha", "post:alpha"]);
+    expect(runtime.tryGetRuntime()).toBeNull();
+    await owner.instance.dispose();
+    await expect(
+      host.parseAsync(["prepared", "input", "--account", "target"], { from: "user" }),
+    ).rejects.toThrow("reloaded or disabled");
+  });
+
+  it("adopts prepared descendant help and listeners without replaying listener meta-events", async () => {
+    const owner = fixture();
+    const host = new Command();
+    const branch = new Command("prepared");
+    const leaf = new Command("leaf");
+    const output: string[] = [];
+    const seen: string[] = [];
+    const listener = function (this: Command) {
+      expect(this).toBe(leaf);
+      seen.push(current());
+    };
+    const newListener = vi.fn();
+    const removedListener = vi.fn();
+    leaf.on("newListener", newListener).on("removeListener", removedListener);
+    leaf.on("custom", listener).once("custom", listener);
+    leaf.configureHelp({ commandDescription: () => current() });
+    leaf.configureOutput({ writeOut: (text) => output.push(`${current()}:${text}`) });
+    leaf.addHelpText("after", () => `help:${current()}`);
+    leaf.action(() => seen.push(`action:${current()}`));
+    branch.addCommand(leaf);
+    const addedBefore = newListener.mock.calls.length;
+    const removedBefore = removedListener.mock.calls.length;
+    await owner.register(host, ({ program }) => {
+      program.addCommand(branch);
+    });
+    expect(newListener.mock.calls).toHaveLength(addedBefore);
+    expect(removedListener.mock.calls).toHaveLength(removedBefore);
+    expect(host.commands[0]).toBe(branch);
+    expect(branch.commands[0]).toBe(leaf);
+    expect(leaf.listeners("custom")).toEqual([listener, listener]);
+    leaf.emit("custom");
+    leaf.off("custom", listener);
+    leaf.emit("custom");
+    expect(seen).toEqual(["alpha", "alpha"]);
+    expect(leaf.listenerCount("custom")).toBe(0);
+    leaf.outputHelp();
+    expect(output.join("")).toContain("help:alpha");
+    await host.parseAsync(["prepared", "leaf"], { from: "user" });
+    expect(seen).toEqual(["alpha", "alpha", "action:alpha"]);
+    await owner.instance.dispose();
+    expect(() => leaf.outputHelp()).toThrow("reloaded or disabled");
+    await expect(host.parseAsync(["prepared", "leaf"], { from: "user" })).rejects.toThrow(
+      "reloaded or disabled",
+    );
+  });
+
+  it("removes the latest matching prepared on/once registration before emission", async () => {
+    const owner = fixture();
+    const host = new Command();
+    const child = new Command("prepared");
+    const seen: string[] = [];
+    const listener = () => seen.push(current());
+    child.on("custom", listener).once("custom", listener);
+    await owner.register(host, ({ program }) => {
+      program.addCommand(child);
+    });
+    child.off("custom", listener);
+    child.emit("custom");
+    child.emit("custom");
+    expect(seen).toEqual(["alpha", "alpha"]);
+    expect(child.listenerCount("custom")).toBe(1);
+    child.off("custom", listener);
+    await owner.instance.dispose();
+    expect(child.emit("custom")).toBe(false);
+  });
+
+  it.each(["add", "remove"] as const)(
+    "preserves native in-flight listener snapshots when prepared listeners %s during emission",
+    async (mutation) => {
+      const run = async (managed: boolean) => {
+        const command = new Command("prepared");
+        const seen: string[] = [];
+        let changed = false;
+        const second = () => seen.push("second");
+        const added = () => seen.push("added");
+        command.on("custom", () => {
+          if (managed) {
+            expect(current()).toBe("alpha");
+          }
+          seen.push("first");
+          if (!changed) {
+            changed = true;
+            if (mutation === "add") {
+              command.on("custom", added);
+            } else {
+              command.off("custom", second);
+            }
+          }
+        });
+        command.on("custom", second);
+        if (managed) {
+          const owner = fixture();
+          await owner.register(new Command(), ({ program }) => {
+            program.addCommand(command);
+          });
+        }
+        command.emit("custom");
+        const firstEmission = [...seen];
+        command.emit("custom");
+        return { firstEmission, seen };
+      };
+      const native = await run(false);
+      expect(native.firstEmission).toEqual(["first", "second"]);
+      expect(await run(true)).toEqual(native);
+    },
+  );
+
+  it("keeps callbacks owned when native addCommand attaches and then throws", async () => {
+    const owner = fixture();
+    const host = new Command();
+    const seen: string[] = [];
+    let child!: Command;
+    await owner.register(host, ({ program }) => {
+      child = new Command("partial").passThroughOptions().action(() => seen.push(current()));
+      expect(() => program.addCommand(child)).toThrow("enablePositionalOptions");
+    });
+    expect(host.commands).toContain(child);
+    expect(child.parent).toBe(host);
+    await child.parseAsync([], { from: "user" });
+    expect(seen).toEqual(["alpha"]);
+    await owner.instance.dispose();
+    await expect(child.parseAsync([], { from: "user" })).rejects.toThrow("reloaded or disabled");
   });
 
   it("does not adopt preexisting host callbacks or change a caller-owned command's identity", async () => {
