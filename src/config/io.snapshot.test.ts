@@ -75,6 +75,7 @@ describe("config snapshot plugin metadata", () => {
       fs.writeFileSync(
         context.configPath,
         JSON.stringify({
+          gateway: { auth: { token: "${PLUGIN_TOKEN}" } },
           plugins: { $include: "plugins.json" },
           ...(invalid ? { nodeHost: { browserProxy: { enabled: "invalid" } } } : {}),
         }),
@@ -87,6 +88,8 @@ describe("config snapshot plugin metadata", () => {
 
       expect(snapshot.valid).toBe(!invalid);
       expect(snapshot.authoredConfig?.plugins).toEqual(plugins);
+      expect(snapshot.authoredConfig?.gateway?.auth?.token).toBe("${PLUGIN_TOKEN}");
+      expect(snapshot.sourceConfigBeforeMigrations?.gateway?.auth?.token).toBe("read-time-token");
       expect(snapshot.sourceConfigBeforeMigrations?.plugins?.entries?.retired?.config).toEqual({
         token: "read-time-token",
       });

@@ -697,7 +697,7 @@ export function restoreEnvVarRefs(
 }
 
 /** Restore only references owned by the matching authored/resolved planning read. */
-export function restoreEnvVarRefsFromResolved(
+function restoreEnvVarRefsFromResolved(
   incoming: unknown,
   parsed: unknown,
   resolved: unknown,

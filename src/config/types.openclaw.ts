@@ -306,7 +306,7 @@ export type ConfigFileSnapshot = {
   raw: string | null;
   /** Parsed JSON/JSONC/YAML value before schema normalization. */
   parsed: unknown;
-  /** Include-expanded authored values paired with sourceConfigBeforeMigrations. */
+  /** Internal include-expanded authored values paired with sourceConfigBeforeMigrations. */
   authoredConfig?: OpenClawConfig;
   /** Include/env-resolved source before raw compatibility migrations. */
   sourceConfigBeforeMigrations?: ResolvedSourceConfig;

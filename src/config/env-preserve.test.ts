@@ -1,10 +1,6 @@
 // Covers preserved environment-variable config normalization.
 import { describe, it, expect } from "vitest";
-import {
-  EnvRefArrayMutationError,
-  restoreEnvVarRefs,
-  restoreEnvVarRefsFromResolved,
-} from "./env-preserve.js";
+import { EnvRefArrayMutationError, restoreEnvVarRefs } from "./env-preserve.js";
 
 describe("restoreEnvVarRefs", () => {
   const env = {
@@ -835,21 +831,22 @@ describe("restoreEnvVarRefs", () => {
   });
 });
 
-describe("restoreEnvVarRefsFromResolved", () => {
+describe("restoreEnvVarRefs with edited arrays", () => {
   it("keeps same-valued references attached to their stable array identities after edits", () => {
     const parsed = [
       { id: "first", token: "${FIRST_TOKEN}", obsolete: true },
       { id: "second", token: "${SECOND_TOKEN}", nullable: null },
     ];
-    const resolved = [
-      { id: "first", token: "shared-read-token", obsolete: true },
-      { id: "second", token: "shared-read-token", nullable: null },
-    ];
     const incoming = [
       { id: "second", token: "shared-read-token", nullable: null, label: "edited" },
       { id: "first", token: "shared-read-token" },
     ];
-    expect(restoreEnvVarRefsFromResolved(incoming, parsed, resolved)).toEqual([
+    expect(
+      restoreEnvVarRefs(incoming, parsed, {
+        FIRST_TOKEN: "shared-read-token",
+        SECOND_TOKEN: "shared-read-token",
+      }),
+    ).toEqual([
       { id: "second", token: "${SECOND_TOKEN}", nullable: null, label: "edited" },
       { id: "first", token: "${FIRST_TOKEN}" },
     ]);
@@ -858,33 +855,30 @@ describe("restoreEnvVarRefsFromResolved", () => {
 
   it("restores a retained reference after an array deletion", () => {
     expect(
-      restoreEnvVarRefsFromResolved(
+      restoreEnvVarRefs(
         [{ id: "keep", token: "read-token" }],
         [{ id: "remove" }, { id: "keep", token: "${PLUGIN_TOKEN}" }],
-        [{ id: "remove" }, { id: "keep", token: "read-token" }],
+        { PLUGIN_TOKEN: "read-token" },
       ),
     ).toEqual([{ id: "keep", token: "${PLUGIN_TOKEN}" }]);
   });
 
   it("rejects ambiguous array identities instead of matching equal secret values", () => {
     expect(() =>
-      restoreEnvVarRefsFromResolved(
+      restoreEnvVarRefs(
         [{ id: "duplicate", token: "same" }],
         [
           { id: "duplicate", token: "${FIRST_TOKEN}" },
           { id: "duplicate", token: "${SECOND_TOKEN}" },
         ],
-        [
-          { id: "duplicate", token: "same" },
-          { id: "duplicate", token: "same" },
-        ],
+        { FIRST_TOKEN: "same", SECOND_TOKEN: "same" },
       ),
     ).toThrow(EnvRefArrayMutationError);
   });
 
   it("does not activate an escaped reference moved onto an active-reference owner", () => {
     expect(() =>
-      restoreEnvVarRefsFromResolved(
+      restoreEnvVarRefs(
         [
           { id: "literal", token: "read-token" },
           { id: "active", token: "${TOKEN}" },
@@ -893,10 +887,7 @@ describe("restoreEnvVarRefsFromResolved", () => {
           { id: "literal", token: "$${TOKEN}" },
           { id: "active", token: "${TOKEN}" },
         ],
-        [
-          { id: "literal", token: "${TOKEN}" },
-          { id: "active", token: "read-token" },
-        ],
+        { TOKEN: "read-token" },
       ),
     ).toThrow(EnvRefArrayMutationError);
   });
@@ -904,10 +895,10 @@ describe("restoreEnvVarRefsFromResolved", () => {
   it("keeps explicit changes without restoring a same-valued sibling literal", () => {
     const incoming = { token: "replacement", sibling: "read-token", added: null };
     expect(
-      restoreEnvVarRefsFromResolved(
+      restoreEnvVarRefs(
         incoming,
         { token: "${TOKEN}", sibling: "read-token", removed: "${OLD_TOKEN}" },
-        { token: "read-token", sibling: "read-token", removed: "old-token" },
+        { TOKEN: "read-token", OLD_TOKEN: "old-token" },
       ),
     ).toEqual(incoming);
   });

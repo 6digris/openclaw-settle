@@ -1,5 +1,4 @@
 import path from "node:path";
-import { restoreEnvVarRefsFromResolved } from "../config/env-preserve.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
 import { resolveUserPath } from "../utils.js";
@@ -339,67 +338,6 @@ export function migratePluginConfigId(
   }
 
   return nextPlugins === plugins ? cfg : { ...cfg, plugins: nextPlugins };
-}
-
-export function applyPluginInstallOwnerMigrations(
-  config: OpenClawConfig,
-  migrations: Readonly<Record<string, string>> | undefined,
-): { config: OpenClawConfig; changes: string[] } {
-  const changes: string[] = [];
-  for (const [fromId, toId] of Object.entries(migrations ?? {})) {
-    const next = migratePluginConfigId(config, fromId, toId);
-    if (next !== config) {
-      changes.push(`Migrated plugin config from "${fromId}" to "${toId}".`);
-      config = next;
-    }
-  }
-  return { config, changes };
-}
-
-export type PluginConfigMigrationReferenceSource = {
-  migrations: Readonly<Record<string, string>>;
-  authoredConfig: OpenClawConfig;
-  resolvedConfig: OpenClawConfig;
-};
-
-/** Carry config references with their committed owner, using the same planning read. */
-export function restorePluginConfigMigrationReferences(
-  candidate: OpenClawConfig,
-  source: PluginConfigMigrationReferenceSource,
-): OpenClawConfig {
-  const authored = applyPluginInstallOwnerMigrations(
-    source.authoredConfig,
-    source.migrations,
-  ).config;
-  const resolved = applyPluginInstallOwnerMigrations(
-    source.resolvedConfig,
-    source.migrations,
-  ).config;
-  let entries = candidate.plugins?.entries;
-  for (const pluginId of new Set(Object.values(source.migrations))) {
-    const entry = entries?.[pluginId];
-    const authoredEntry = authored.plugins?.entries?.[pluginId];
-    const resolvedEntry = resolved.plugins?.entries?.[pluginId];
-    if (!entry || !authoredEntry || !resolvedEntry || !Object.hasOwn(entry, "config")) {
-      continue;
-    }
-    // Policy ids stay canonical; only plugin-owned values retain authored references.
-    // Comparing against the planning read avoids materializing secrets after env rotation.
-    entries = {
-      ...entries,
-      [pluginId]: {
-        ...entry,
-        config: restoreEnvVarRefsFromResolved(
-          entry.config,
-          authoredEntry.config,
-          resolvedEntry.config,
-        ) as typeof entry.config,
-      },
-    };
-  }
-  return entries === candidate.plugins?.entries
-    ? candidate
-    : { ...candidate, plugins: { ...candidate.plugins, entries } };
 }
 
 export function disablePluginAfterUpdateFailure(
