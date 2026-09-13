@@ -3449,7 +3449,7 @@ describe("resolveConfigIncludeWriteBoundary", () => {
       }),
     ).toEqual({
       boundaryPath: ["agents", "entries", "alpha"],
-      includePath: "/cfg/config/agent-alpha.json5",
+      includePath: path.normalize("/cfg/config/agent-alpha.json5"),
     });
   });
 
