@@ -43,7 +43,10 @@ import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { PollController } from "../../lit/poll-controller.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
 import { ChatComposerCapabilityHost } from "./chat-composer-capability-host.ts";
-import { CHAT_PANE_LIFECYCLE_CHANGED_EVENT } from "./chat-history-events.ts";
+import {
+  CHAT_PANE_LIFECYCLE_CHANGED_EVENT,
+  CHAT_TRANSCRIPT_LOADING_CHANGED_EVENT,
+} from "./chat-history-events.ts";
 import { getAcceptedChatHistorySession, getChatHistoryLoadState } from "./chat-history-state.ts";
 import { sendSessionObserverVisibility } from "./chat-observer.ts";
 import type {
@@ -68,6 +71,7 @@ import { ChatTranscriptController } from "./components/chat-transcript-controlle
 import type { SessionDiscussionPanelConfig } from "./components/session-discussion-panel.ts";
 import { handleChatScrollTakeover } from "./scroll.ts";
 import type { ChatMessageCache } from "./session-message-cache.ts";
+import { resolveChatSnapshotKey } from "./session-snapshot-key.ts";
 import type { SessionSnapshotStore } from "./session-snapshot-store.ts";
 import type { SidebarLayout } from "./sidebar-layout-types.ts";
 import {
@@ -76,6 +80,7 @@ import {
   openSlot,
   promoteSidebarPanel,
   setSidebarOpen,
+  sidebarMainPanel,
 } from "./sidebar-layout.ts";
 
 export abstract class ChatPaneBase extends OpenClawLightDomElement {
@@ -107,6 +112,10 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
     this.paneLifecycleRoot = this.closest("openclaw-app-shell") ?? this.parentElement;
     document.addEventListener("visibilitychange", this.handleVisibilityChange);
     super.connectedCallback();
+    this.addEventListener(
+      CHAT_TRANSCRIPT_LOADING_CHANGED_EVENT,
+      this.synchronizeForegroundTranscript,
+    );
     this.paneLifecycleRoot?.dispatchEvent(new Event(CHAT_PANE_LIFECYCLE_CHANGED_EVENT));
   }
   protected override async scheduleUpdate() {
@@ -119,6 +128,11 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
   }
 
   override disconnectedCallback() {
+    this.removeEventListener(
+      CHAT_TRANSCRIPT_LOADING_CHANGED_EVENT,
+      this.synchronizeForegroundTranscript,
+    );
+    this.context?.connectionBootstrap.setForegroundPane(this, null);
     this.hiddenUpdateResume?.();
     document.removeEventListener("visibilitychange", this.handleVisibilityChange);
     super.disconnectedCallback();
@@ -199,6 +213,7 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
     this.requestUpdate("presented", previous);
     this.presentedChanged(value);
     this.notifyConversationPresentation(wasConversationPresented);
+    this.synchronizeForegroundTranscript();
   }
   protected presentedChanged(_presented: boolean): void {}
   /** True while the authoritative transcript for this pane is still being fetched. */
@@ -208,9 +223,29 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
   }
   /** The initial authoritative transcript has a visible result, including errors. */
   get transcriptReady(): boolean {
+    if (!this.state?.connected || this.state.client !== this.context?.gateway.snapshot.client) {
+      return false;
+    }
     const phase = this.state ? getChatHistoryLoadState(this.state).phase : "idle";
     return phase === "committed" || phase === "failed";
   }
+  protected readonly synchronizeForegroundTranscript = () => {
+    this.context?.connectionBootstrap.setForegroundPane(
+      this,
+      this.state &&
+        this.isConnected &&
+        this.selected &&
+        this.presented &&
+        this.inputRegion === "page"
+        ? {
+            sessionKey: resolveChatSnapshotKey(this.state, { sessionKey: this.state.sessionKey }),
+            client: this.state.client,
+            // Established history stays authoritative during live-event reconciliation.
+            ready: this.transcriptReady || getAcceptedChatHistorySession(this.state) !== undefined,
+          }
+        : null,
+    );
+  };
   protected get headerOutcomeOwner(): string {
     return `${this.connectionGeneration}:${this.headerPresentationGeneration}`;
   }
@@ -235,6 +270,7 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
     this.activeValue = value;
     this.requestUpdate("active", previous);
     this.activeChanged(this.active);
+    this.synchronizeForegroundTranscript();
   }
   protected activeChanged(_active: boolean): void {}
   // Call wherever connectionGeneration itself advances (reconnect, capability
@@ -401,7 +437,12 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
     if (renderedLayout.columns[0]?.panels.some((panel) => panel.slot === "companion")) {
       this.setSessionObserverVisibility(isSidebarSlotVisible(nextLayout, "companion"));
     }
-    this.commitSidebarLayout(nextLayout);
+    this.commitSidebarLayout(
+      nextLayout,
+      sidebarMainPanel(renderedLayout)?.slot === "dashboard"
+        ? { dashboardPresentation: "personal" }
+        : undefined,
+    );
   }
 
   protected requestSessionRail(intent: "open" | "toggle"): void {
@@ -476,7 +517,12 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
       }
     | undefined;
   protected readonly observedBoardPresence = new Map<string, boolean>();
-  protected dashboardExpandedRouteKey = "";
+  protected dashboardPresentationActivation?: {
+    client: ChatPageHost["client"];
+    key: string;
+    expanded: boolean;
+    pendingRoute?: boolean;
+  };
   protected swarmHydrator: SwarmRosterHydrator | null = null;
   protected readonly sessionDiscussionStates = new Map<string, SessionDiscussionState>();
   protected readonly sessionDiscussionOpenUrls = new Map<string, string | null>();
@@ -614,7 +660,10 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
   }
 
   protected abstract refreshSessionPullRequests(options?: { refresh?: boolean }): boolean;
-  protected abstract commitSidebarLayout(layout: SidebarLayout): void;
+  protected abstract commitSidebarLayout(
+    layout: SidebarLayout,
+    options?: Parameters<ChatPageHost["updateSidebarLayout"]>[1],
+  ): void;
   protected abstract refreshSwarmRoster(): void;
   protected abstract resolveBoardProvider(): BoardProvider;
   protected abstract handleBoardCommand(event: BoardCommandEvent): void;

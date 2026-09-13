@@ -5,8 +5,10 @@ import {
   GATEWAY_PROFILE_CHANNEL,
   GATEWAY_CPU_SAMPLE_INTERVAL_MICROS,
   GATEWAY_HEAP_SAMPLE_INTERVAL,
+  type GatewayBenchCommand,
   type GatewayProfileCommand,
 } from "./gateway-bench-profile.ts";
+import { GatewayBenchWorkerProfiler } from "./gateway-bench-worker-profile.ts";
 
 // Only the benchmark child gets this preload and IPC descriptor. No inspector
 // listener or profiler control is exposed through the Gateway protocol.
@@ -15,11 +17,26 @@ if (isMainThread) {
     throw new Error("Gateway profiling requires the benchmark IPC channel");
   }
   const inspector = new Session();
-  inspector.connect();
+  const workers = new GatewayBenchWorkerProfiler(inspector);
+  let inspectorConnected = false;
   const active = new Set<GatewayProfileCommand["kind"]>();
   let busy = false;
-  process.on("message", (message: GatewayProfileCommand) => {
+  process.on("message", (message: GatewayBenchCommand) => {
     if (message?.channel !== GATEWAY_PROFILE_CHANNEL) {
+      return;
+    }
+    if (message.kind === "cpu-usage" && message.action === "sample") {
+      process.send?.({
+        channel: GATEWAY_PROFILE_CHANNEL,
+        kind: message.kind,
+        action: message.action,
+        cpuUsage: {
+          pid: process.pid,
+          atMonotonicMicros: Number(process.hrtime.bigint() / 1_000n),
+          process: process.cpuUsage(),
+          mainThread: process.threadCpuUsage(),
+        },
+      });
       return;
     }
     const reply = (error?: string) => {
@@ -38,6 +55,10 @@ if (isMainThread) {
     void (async () => {
       if (message.kind !== "cpu" && message.kind !== "heap") {
         throw new Error("Unknown Gateway profile kind");
+      }
+      if (!inspectorConnected) {
+        inspector.connect();
+        inspectorConnected = true;
       }
       if (message.action === "start") {
         if (active.has(message.kind)) {
@@ -60,16 +81,23 @@ if (isMainThread) {
           await inspector.post("HeapProfiler.startSampling", options);
         }
         active.add(message.kind);
+        if (message.includeWorkers) {
+          await workers.start(message.kind, message.profilePath);
+        }
       } else if (message.action === "stop") {
         if (!active.has(message.kind)) {
           throw new Error(`Gateway ${message.kind} profile has not started`);
         }
-        const { profile } =
-          message.kind === "cpu"
-            ? await inspector.post("Profiler.stop")
-            : await inspector.post("HeapProfiler.stopSampling");
-        active.delete(message.kind);
-        writeFileSync(message.profilePath, JSON.stringify(profile), { mode: 0o600 });
+        try {
+          const { profile } =
+            message.kind === "cpu"
+              ? await inspector.post("Profiler.stop")
+              : await inspector.post("HeapProfiler.stopSampling");
+          active.delete(message.kind);
+          writeFileSync(message.profilePath, JSON.stringify(profile), { mode: 0o600 });
+        } finally {
+          await workers.stop(message.kind);
+        }
       } else {
         throw new Error("Unknown Gateway profile command");
       }
@@ -84,6 +112,10 @@ if (isMainThread) {
       },
     );
   });
-  process.once("disconnect", () => inspector.disconnect());
+  process.once("disconnect", () => {
+    if (inspectorConnected) {
+      inspector.disconnect();
+    }
+  });
   process.channel?.unref();
 }

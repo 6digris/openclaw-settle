@@ -196,6 +196,12 @@ Code Mode, and do not send completion notifications.
 loops over `subagents`, `sessions_list`, `sessions_history`, shell
 `sleep`, or process polling just to detect child completion.
 
+When an earlier async tool call in the same model response has results the model
+has not received yet, OpenClaw defers `sessions_yield` and keeps the turn active.
+Finish the model response so the next request can deliver those results, then
+yield only if external work still requires waiting. This applies even when the
+tool has already finished and its result appears in the transcript.
+
 Use the optional `message` field for private context that the resumed turn
 should receive. Use `acknowledgment` for a waiting reply when an interactive
 parent turn would otherwise end silently. The acknowledgment is not sent from
@@ -223,10 +229,14 @@ starting a sibling. The requester is announced once such a follow-up finishes
 normally; a follow-up that yields again leaves the run paused and the requester
 waiting.
 
+An operator can also resume the existing child with the `sessions.send` Gateway
+method and its paused session key. This preserves the original task, requester,
+and parent completion batch, so the parent continues when the child finishes.
+
 The registry also continues a yielded sub-agent when its announced children
 settle, including an orchestrator spawned by cron. That internal settlement
 wake preserves the original requester and delivers the orchestrator's completion
-there. Ordinary follow-ups through routes not tracked as sub-agent runs neither
+there. Other follow-ups through routes not tracked as sub-agent runs neither
 continue the paused run nor announce its requester. See
 [Subagent yield handoff](/concepts/subagent-yield-handoff) for lifecycle ownership
 and the remaining boundary for channel progress after yield.
@@ -243,6 +253,17 @@ the current child sessions, run ids, statuses, labels, tasks, and
 `taskName` aliases without polling. The task and label fields in that
 block are quoted as data, not instructions, because they can originate
 from user/model-provided spawn arguments.
+
+Later turns also include `Recently Completed Subagents`, capped at the eight
+newest children that ended in the last 30 minutes. This lists execution metadata,
+not an acknowledgment of result delivery.
+
+`Child results awaiting delivery` carries retained completion obligations for
+the requester or controller session, even when the child ended more than 30
+minutes ago, a newer execution exists, or the current turn cannot spawn. It
+includes at most eight results, oldest first, with each result limited to 2,000
+characters. Omitted entries and truncated results are marked. Result text is
+quoted as data. Reading this context does not acknowledge or retry delivery.
 
 ## Tool: `subagents`
 

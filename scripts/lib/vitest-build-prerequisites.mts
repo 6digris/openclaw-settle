@@ -49,12 +49,14 @@ const runtimeConsumers = [
     mode: "runtime" as const,
     dir: "extensions",
   })),
-  {
-    file: "src/node-host/linux-node-plugin.integration.test.ts",
-    configs: ["test/vitest/vitest.unit.config.ts", "test/vitest/vitest.unit-src.config.ts"],
-    mode: "runtime",
-    dir: "",
-  },
+  ...["src/node-host/linux-node-plugin.integration.test.ts", "src/entry.memory-json.test.ts"].map(
+    (file) => ({
+      file,
+      configs: ["test/vitest/vitest.unit.config.ts", "test/vitest/vitest.unit-src.config.ts"],
+      mode: "runtime" as const,
+      dir: "",
+    }),
+  ),
   ...[
     "test/openai-model-discovery-auth-order.test.ts",
     "test/plugin-npm-runtime-build.test.ts",
@@ -108,15 +110,18 @@ const runtimeConsumers = [
     mode: "runtime",
     dir: "src/plugins",
   },
-  {
-    file: "test/plugins/codex-model-catalog.gateway.test.ts",
+  ...[
+    "test/plugins/codex-model-catalog.gateway.test.ts",
+    "src/gateway/server-methods/models-list.freshness.integration.test.ts",
+  ].map((file) => ({
+    file,
     configs: [
       "test/vitest/vitest.gateway-methods.config.ts",
       "test/vitest/vitest.gateway.config.ts",
     ],
-    mode: "runtime",
+    mode: "runtime" as const,
     dir: "",
-  },
+  })),
   ...["src/config/config-startup-corpus.test.ts", "src/config/state-startup-corpus.test.ts"].map(
     (file) => ({
       file,
@@ -137,13 +142,30 @@ const runtimeConsumers = [
     mode: "private-qa",
     dir: "extensions",
   },
-  // Sticker selection loads real provider registrations; only image description is mocked.
-  {
-    file: "extensions/telegram/src/sticker-cache.selection.test.ts",
-    configs: ["test/vitest/vitest.extension-telegram.config.ts"],
-    mode: "runtime",
+  // Native Codex transcript evidence runs in the packaged history Worker.
+  ...[
+    "extensions/codex/src/app-server/event-projector.verbose-hooks.test.ts",
+    "extensions/codex/src/app-server/session-history.test.ts",
+    "extensions/codex/src/app-server/settled-turn-finalizer.native.test.ts",
+    "extensions/codex/src/app-server/transcript-mirror.admission.test.ts",
+    "extensions/codex/src/app-server/transcript-mirror.test.ts",
+  ].map((file) => ({
+    file,
+    configs: ["test/vitest/vitest.extension-codex-app-server-support.config.ts"],
+    mode: "runtime" as const,
     dir: "extensions",
-  },
+  })),
+  // These Telegram tests consume real built runtime sidecars. Sticker selection
+  // loads provider registrations; polling launches the production ingress Worker.
+  ...[
+    "extensions/telegram/src/polling-session.test.ts",
+    "extensions/telegram/src/sticker-cache.selection.test.ts",
+  ].map((file) => ({
+    file,
+    configs: ["test/vitest/vitest.extension-telegram.config.ts"],
+    mode: "runtime" as const,
+    dir: "extensions",
+  })),
   ...[
     "src/cli/acp-cli-exit.process.test.ts",
     "src/cli/update-dry-run-state.process.test.ts",
@@ -189,6 +211,12 @@ const runtimeConsumers = [
     configs: ["test/vitest/vitest.tooling.config.ts"],
     mode: "runtime",
     dir: "",
+  },
+  {
+    file: "src/config/sessions/session-accessor.sqlite-reclamation-memory.test.ts",
+    configs: ["test/vitest/vitest.runtime-config.config.ts"],
+    mode: "runtime",
+    dir: "src",
   },
   {
     file: "src/gateway/server.chat-cli-auth.test.ts",

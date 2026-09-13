@@ -11,9 +11,10 @@ import {
 } from "../../app/gateway-store.test-support.ts";
 import { createAgentCapability } from "../../lib/agents/index.ts";
 import { setAvatarGatewayOrigin } from "../../lib/identity-avatar-context.ts";
+import { peekModelCatalog } from "../../lib/model-catalog-store.ts";
 import { page, type ModelProvidersRouteData } from "./route.ts";
 
-const modelMethods = ["models.authStatus", "models.list", "config.get"];
+const modelMethods = ["models.authStatus", "models.list"];
 const roster = {
   defaultId: "main",
   mainKey: "main",
@@ -30,8 +31,6 @@ function responseFor(method: string): unknown {
       return { ts: 1, providers: [{ provider: "openai", status: "ok", profiles: [] }] };
     case "models.list":
       return { models: [{ id: "fixture", provider: "openai", name: "Fixture" }] };
-    case "config.get":
-      return { config: {}, hash: "fixture" };
     default:
       return {};
   }
@@ -138,11 +137,13 @@ describe("Models route admission", () => {
         agentId: selection.state.selectedId,
         data: {
           authStatus: responseFor("models.authStatus"),
-          models: [{ id: "fixture", provider: "openai", name: "Fixture" }],
           error: null,
           updatedAt: expect.any(Number),
         },
       });
+      expect(
+        peekModelCatalog(gateway.snapshot.client!, { agentId: selection.state.selectedId! }),
+      ).toEqual(responseFor("models.list"));
     },
   );
 
@@ -235,7 +236,7 @@ describe("Models route admission", () => {
   });
 
   it.each(["navigation", "preload"] as const)(
-    "keeps %s cancellation ownership through every Models request",
+    "keeps %s cancellation ownership through auth and catalog reads",
     async (kind) => {
       const harness = createModelsRouter();
       const started = createDeferred();
@@ -260,15 +261,24 @@ describe("Models route admission", () => {
       response.resolve();
       await loading;
       for (const [method, , options] of calls) {
-        // Catalog coalescing has its own controller, but must retire with its last subscriber.
-        expect(options?.signal, method).toBeDefined();
-        expect(options?.signal?.aborted, method).toBe(kind === "navigation");
+        if (method !== "models.list") {
+          expect(options?.signal, method).toBeDefined();
+          expect(options?.signal?.aborted, method).toBe(kind === "navigation");
+        }
       }
+      expect(peekModelCatalog(harness.gateway.snapshot.client!, { agentId: "main" })).toEqual(
+        kind === "preload" ? responseFor("models.list") : undefined,
+      );
+      await harness.router.navigate("model-providers", harness.context);
       if (kind === "preload") {
-        await harness.router.navigate("model-providers", harness.context);
         expect(harness.modelCalls()).toHaveLength(modelMethods.length);
         expect(harness.router.getState().matches[0]?.data?.data.authStatus).toEqual(
           responseFor("models.authStatus"),
+        );
+      } else {
+        expect(harness.modelCalls()).toHaveLength(modelMethods.length * 2);
+        expect(peekModelCatalog(harness.gateway.snapshot.client!, { agentId: "main" })).toEqual(
+          responseFor("models.list"),
         );
       }
     },

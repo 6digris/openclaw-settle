@@ -20,6 +20,11 @@ import { sha256HexPrefixCore } from "./crypto-digest.js";
 import { hasErrnoCode } from "./errno.js";
 import { createFileLockManager } from "./file-lock-manager.js";
 import {
+  acquireGatewayOwnerLease,
+  type GatewayOwnerLease,
+  type GatewayOwnerSupervisor,
+} from "./gateway-owner-lease.js";
+import {
   isGatewayArgv,
   isOpenClawArgv,
   isOpenClawCommandArgv,
@@ -32,7 +37,6 @@ import {
   StateDatabaseCoordinatorContentionError,
 } from "./state-database-coordinator.js";
 import { readWindowsProcessArgsSync } from "./windows-port-pids.js";
-import { readWindowsProcessStartTimeSync } from "./windows-process-start.js";
 
 const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_POLL_INTERVAL_MS = 100;
@@ -114,6 +118,8 @@ export type GatewayLockOptions = {
   sleep?: (ms: number) => Promise<void>;
   lockDir?: string;
   role?: GatewayLockRole;
+  listenerMode?: "foreground" | "supervised";
+  supervisor?: GatewayOwnerSupervisor | null;
   /** Override process command-line reader (testing seam). */
   readProcessCmdline?: (pid: number) => string[] | null;
   /** Override process start-identity reader (testing seam). */
@@ -185,9 +191,7 @@ function readProcessStartTime(pid: number, platform: NodeJS.Platform): number | 
   if (platform !== process.platform) {
     return null;
   }
-  return platform === "win32"
-    ? readWindowsProcessStartTimeSync(pid, CMDLINE_EXEC_TIMEOUT_MS)
-    : getFileLockProcessStartTime(pid);
+  return getFileLockProcessStartTime(pid, process.env, CMDLINE_EXEC_TIMEOUT_MS);
 }
 
 function defaultReadProcessCmdline(pid: number, platform: NodeJS.Platform): string[] | null {
@@ -452,8 +456,19 @@ export async function acquireGatewayLock(
       `gateway-lifecycle ownership acquired after ${((now() - startedAt) / 1000).toFixed(1)} s`,
     );
   }
+  let ownerLease: GatewayOwnerLease | undefined;
   let stateLock: Awaited<ReturnType<typeof acquireLockFile>>;
   try {
+    if (role === "gateway" && opts.listenerMode && opts.port) {
+      ownerLease = acquireGatewayOwnerLease({
+        env,
+        port: opts.port,
+        mode: opts.listenerMode,
+        supervisor: opts.supervisor ?? null,
+        owner: ownerId,
+      });
+      await ownerLease.ready;
+    }
     stateLock = await acquireLockFile({
       ...opts,
       configPath: paths.configPath,
@@ -464,6 +479,7 @@ export async function acquireGatewayLock(
       ownerId,
     });
   } catch (error) {
+    await ownerLease?.release();
     stateLifecycle.release();
     throw error;
   }
@@ -483,6 +499,8 @@ export async function acquireGatewayLock(
       stateLockPath: stateLock.lockPath,
       releaseInTree,
       release: async () => {
+        // Join the writer and remove its identity before relinquishing physical custody.
+        await ownerLease?.release();
         let releaseError: unknown;
         await releaseInTree().catch((error: unknown) => {
           releaseError = error;
@@ -542,6 +560,7 @@ export async function acquireGatewayLock(
       stateLockPath: stateLock.lockPath,
       releaseInTree,
       release: async () => {
+        await ownerLease?.release();
         let releaseError: Error | undefined;
         try {
           await releaseInTree();
@@ -566,6 +585,7 @@ export async function acquireGatewayLock(
     };
   } catch (error) {
     await stateLock.release().catch(() => undefined);
+    await ownerLease?.release();
     try {
       stateLifecycle.release();
     } catch {

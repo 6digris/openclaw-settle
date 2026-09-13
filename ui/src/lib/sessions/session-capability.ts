@@ -206,7 +206,10 @@ export type SessionCapability = {
   reconcile: (
     row: GatewaySessionRow | undefined,
     defaults?: SessionsListResult["defaults"],
-    options?: SessionReconcileOptions & { sourceCanonicalListRevision?: number },
+    options?: SessionReconcileOptions & {
+      sourceCanonicalListRevision?: number;
+      sourceListScope?: SessionListScope;
+    },
   ) => boolean;
   /** Captures request ordering before a supplemental row read begins. */
   captureReconcile: () => SessionCapability["reconcile"];
@@ -215,7 +218,7 @@ export type SessionCapability = {
     target: SessionRowTarget,
     listener: (row: GatewaySessionRow | null) => void,
     /** Matching events can omit descriptor-only fields; re-read those without watching roster revisions. */
-    options?: { onInvalidate?: () => void },
+    options?: { onInvalidate?: (reason?: string) => void },
   ) => SessionRowObservation;
   /** Preserve an existing row observation through a local presentation copy. */
   inheritRow: (
@@ -228,6 +231,8 @@ export type SessionCapability = {
   reconcileChanged: (payload: unknown, options?: SessionReconcileOptions) => SessionChangedResult;
   reconcileRunTerminal: (terminal: SessionRunTerminal) => boolean;
   refresh: (options?: SessionRefreshOptions) => Promise<void>;
+  /** Schedules background list refreshes without replacing queued foreground queries. */
+  invalidate: () => void;
   /** Forces the remembered roster query; null means the attempt retired or failed. */
   refreshReplacement: (agentId?: string | null) => Promise<SessionsListResult | null>;
   createResult: (

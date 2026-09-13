@@ -366,6 +366,8 @@ export function createGatewayBroadcaster(params: {
     let lastFrame: string | undefined;
     let frameBase: FrameBase | undefined = retained?.base;
     let frameFields: Omit<FrameBase, "payloadFragment"> | undefined;
+    // Private coalescers preserve inputs; identical pending histories can share this merge.
+    let mergedFrames: Map<unknown, { payload: unknown; base: FrameBase }> | undefined;
     const frameBaseFor = (value: unknown): FrameBase => {
       frameFields ??= {
         eventJSON: JSON.stringify(event),
@@ -406,13 +408,6 @@ export function createGatewayBroadcaster(params: {
       if (!hasEventScope(c, event, explicitPluginScope)) {
         continue;
       }
-      if (
-        sessionKeys.length > 0 &&
-        params.canReceiveSessionEvent &&
-        !params.canReceiveSessionEvent(c, sessionKeys, agentId, event, payload)
-      ) {
-        continue;
-      }
       const requiresSessionSubscription =
         event === "session.typing" ||
         sessionSubscriptionVerified ||
@@ -445,6 +440,13 @@ export function createGatewayBroadcaster(params: {
           // The registry is authoritative; for cap-gated events, unscoped Control UI clients keep full fanout.
           continue;
         }
+      }
+      if (
+        sessionKeys.length > 0 &&
+        params.canReceiveSessionEvent &&
+        !params.canReceiveSessionEvent(c, sessionKeys, agentId, event, payload)
+      ) {
+        continue;
       }
       // Retirement releases progress without suppressing its captured abort terminal.
       if ((retained && !isCurrent(live?.isCurrent)) || (live?.coalesce && live.group.aborted)) {
@@ -513,8 +515,17 @@ export function createGatewayBroadcaster(params: {
           previous = undefined;
         }
         try {
-          const nextPayload = previous ? live.coalesce.merge(previous.payload, payload) : payload;
-          const base = previous ? frameBaseFor(nextPayload) : getFrameBase();
+          const cached = previous ? mergedFrames?.get(previous.payload) : undefined;
+          const nextPayload = cached
+            ? cached.payload
+            : previous
+              ? live.coalesce.merge(previous.payload, payload)
+              : payload;
+          const base =
+            cached?.base ?? (nextPayload === payload ? getFrameBase() : frameBaseFor(nextPayload));
+          if (previous && !cached && nextPayload !== payload) {
+            (mergedFrames ??= new Map()).set(previous.payload, { payload: nextPayload, base });
+          }
           // Reserve the complete frame and maximum sequence width once per serialized base;
           // unrelated sends can advance the sequence while this entry is waiting to drain.
           const bytes = (base.reservedBytes ??=

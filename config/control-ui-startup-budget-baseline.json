@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 354540,
-  "reason": "Main crossed the startup enforcement limit after concurrent landings (main alone 354388 B vs 354270 B limit); this PR adds 119 B for provider auth markers in the model picker; measured 354540 B on the rebased tree. Fixed 358400 B cap retained.",
-  "updatedAt": "2026-09-11"
+  "startupJsGzipBytes": 355740,
+  "reason": "Current main measures 355740 B gzip after integrated UI changes; main CI fails the previous 355719 B enforcement limit. The spacing-only candidate measures 355769 B with identical raw startup JavaScript bytes, within the existing 64 B build-variance allowance of main. The 358400 B cap and existing 512 B growth and 64 B variance allowances remain unchanged.",
+  "updatedAt": "2026-09-13"
 }

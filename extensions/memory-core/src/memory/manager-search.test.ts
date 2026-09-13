@@ -525,7 +525,7 @@ describe("searchPathKeyword", () => {
               source: index % 2 === 0 ? "memory" : "sessions",
               startLine: chunk * 5 + 1,
               endLine: chunk * 5 + 4,
-              text: `body ${index}/${chunk}`,
+              text: `body ${index}/${chunk} ` + "x".repeat(8_000),
             });
           }
         }
@@ -541,6 +541,23 @@ describe("searchPathKeyword", () => {
                    end_line, text FROM observed_chunks;
         `);
 
+        let fetchedTextBytes = 0;
+        const prepare = db.prepare.bind(db);
+        const prepareSpy = vi.spyOn(db, "prepare").mockImplementation((sql) => {
+          const statement = prepare(sql);
+          statement.all = new Proxy(statement.all.bind(statement), {
+            apply(all, _receiver, values) {
+              const rows = all(...values);
+              for (const row of rows) {
+                if (typeof row.text === "string") {
+                  fetchedTextBytes += Buffer.byteLength(row.text);
+                }
+              }
+              return rows;
+            },
+          });
+          return statement;
+        });
         const results = await searchPathKeywordFixture(db, query, {
           ftsTokenizer,
           limit: 2,
@@ -550,12 +567,14 @@ describe("searchPathKeyword", () => {
           },
         });
 
+        prepareSpy.mockRestore();
         expect(results.map(({ id, snippet }) => ({ id, snippet }))).toEqual([
-          { id: "path-0-chunk-0", snippet: "body 0/0" },
-          { id: "path-2-chunk-0", snippet: "body 2/0" },
+          { id: "path-0-chunk-0", snippet: "body 0/0 " + "x".repeat(191) },
+          { id: "path-2-chunk-0", snippet: "body 2/0 " + "x".repeat(191) },
         ]);
         expect(examinedChunkLines).toBeGreaterThan(0);
         expect(examinedChunkLines).toBeLessThanOrEqual(16);
+        expect(fetchedTextBytes).toBeLessThanOrEqual(4 * 200 * 4);
       } finally {
         db.close();
       }
@@ -1569,9 +1588,13 @@ describe("searchVector sqlite-vec KNN", () => {
     }
   });
 
-  it.each(["UTF-8", "UTF-16le", "UTF-16be"])(
-    "bounds KNN body fetches while preserving snippets in a %s database",
-    async (encoding) => {
+  it.each(
+    ["UTF-8", "UTF-16le", "UTF-16be"].flatMap((encoding) =>
+      ["KNN", "fallback"].map((mode) => ({ encoding, mode })),
+    ),
+  )(
+    "bounds $mode body fetches while preserving snippets in a $encoding database",
+    async ({ encoding, mode }) => {
       const db = new DatabaseSync(":memory:", { allowExtension: true });
       try {
         db.exec(`PRAGMA encoding = '${encoding}'`);
@@ -1608,6 +1631,15 @@ describe("searchVector sqlite-vec KNN", () => {
         const prepare = db.prepare.bind(db);
         const prepareSpy = vi.spyOn(db, "prepare").mockImplementation((sql) => {
           const statement = prepare(sql);
+          statement.get = new Proxy(statement.get.bind(statement), {
+            apply(get, _receiver, values) {
+              const row = get(...values);
+              if (typeof row?.text === "string") {
+                fetchedBytes += Buffer.byteLength(row.text);
+              }
+              return row;
+            },
+          });
           statement.all = new Proxy(statement.all.bind(statement), {
             apply(all, _receiver, values) {
               const rows = all(...values);
@@ -1627,7 +1659,7 @@ describe("searchVector sqlite-vec KNN", () => {
             const results = await searchVectorFixture(db, {
               limit: texts.length,
               snippetMaxChars,
-              ensureVectorReady: async () => true,
+              ensureVectorReady: async () => mode === "KNN",
             });
             expect(results.map(({ id, snippet }) => ({ id, snippet }))).toEqual(
               stored.map(({ id, text }) => ({
@@ -1639,6 +1671,28 @@ describe("searchVector sqlite-vec KNN", () => {
           // Allow encoding expansion without materializing complete chunk bodies.
           const totalSnippetLimit = snippetLimits.reduce((sum, limit) => sum + limit, 0);
           expect(fetchedBytes).toBeLessThanOrEqual(texts.length * totalSnippetLimit * 8);
+          if (mode === "fallback") {
+            for (const snippetMaxChars of [
+              0,
+              -1,
+              1.5,
+              Number.NaN,
+              Infinity,
+              Number.MAX_SAFE_INTEGER,
+              Number.MAX_SAFE_INTEGER + 1,
+            ]) {
+              const results = await searchVectorFixture(db, {
+                limit: texts.length,
+                snippetMaxChars,
+              });
+              expect(results.map(({ id, snippet }) => ({ id, snippet }))).toEqual(
+                stored.map(({ id, text }) => ({
+                  id,
+                  snippet: truncateUtf16Safe(String(text), snippetMaxChars),
+                })),
+              );
+            }
+          }
         } finally {
           prepareSpy.mockRestore();
         }

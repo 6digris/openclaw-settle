@@ -173,7 +173,6 @@ export function createGatewayTool(options?: {
             sessionKey: caller?.sessionKey,
             deliveryContext,
             note: readToolStringParam(params, "note"),
-            timeoutMs: DEFAULT_UPDATE_TIMEOUT_MS,
           },
           {
             // An explicit binding prevents the standalone client's remote fallback.
@@ -188,19 +187,8 @@ export function createGatewayTool(options?: {
         throw new ToolInputError(`Action not available: ${action}`);
       }
       const gatewayOpts = readGatewayCallOptions(params);
-      const resolveGatewayContext = getGatewayToolCallerIdentity()?.gatewayContextResolver;
       const callConfigGateway = (method: string, requestParams: Record<string, unknown>) =>
-        resolveGatewayContext &&
-        !gatewayOpts.gatewayUrl?.trim() &&
-        !gatewayOpts.gatewayToken?.trim() &&
-        // Retired Gateway bindings must reject locally instead of falling back to a socket.
-        resolveGatewayContext()?.localEmbedded !== true
-          ? callInProcessGatewayTool(method, requestParams, {
-              resolveGatewayContext,
-              timeoutMs: gatewayOpts.timeoutMs ?? 30_000,
-              signal,
-            })
-          : callGatewayTool(method, gatewayOpts, requestParams, { signal });
+        callGatewayTool(method, gatewayOpts, requestParams, { signal });
 
       if (action === "config.get") {
         const path = readToolStringParam(params, "path");

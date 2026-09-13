@@ -8,7 +8,7 @@ import * as bundledHealthChecks from "../flows/bundled-health-checks.js";
 import { CORE_HEALTH_CHECKS } from "../flows/doctor-core-checks.js";
 import { clearHealthChecksForTest, registerHealthCheck } from "../flows/health-check-registry.js";
 import { clearLoadInstalledPluginIndexInstallRecordsCache } from "../plugins/installed-plugin-index-record-cache.js";
-import { writePersistedInstalledPluginIndexInstallRecords } from "../plugins/installed-plugin-index-records.js";
+import { seedInstalledPluginIndex } from "../plugins/test-helpers/installed-plugin-index.js";
 import { closeOpenClawStateDatabaseByPath } from "../state/openclaw-state-db-cache.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { runDoctorLintCli } from "./doctor-lint.js";
@@ -599,10 +599,7 @@ describe("runDoctorLintCli", () => {
       OPENCLAW_CONFIG_PATH: configPath,
       OPENCLAW_STATE_DIR: stateDir,
     };
-    await writePersistedInstalledPluginIndexInstallRecords(
-      {},
-      { config, env, stateDir, workspaceDir: rootDir },
-    );
+    await seedInstalledPluginIndex({}, { config, env, stateDir, workspaceDir: rootDir });
     const databasePath = resolveOpenClawStateSqlitePath(env);
     closeOpenClawStateDatabaseByPath(databasePath);
     const before = snapshotDoctorLintSqliteFamily(databasePath);
@@ -680,10 +677,7 @@ describe("runDoctorLintCli", () => {
       OPENCLAW_CONFIG_PATH: configPath,
       OPENCLAW_STATE_DIR: stateDir,
     };
-    await writePersistedInstalledPluginIndexInstallRecords(
-      {},
-      { config, env, stateDir, workspaceDir: rootDir },
-    );
+    await seedInstalledPluginIndex({}, { config, env, stateDir, workspaceDir: rootDir });
     const databasePath = resolveOpenClawStateSqlitePath(env);
     closeOpenClawStateDatabaseByPath(databasePath);
     const before = snapshotDoctorLintSqliteFamily(databasePath);
@@ -743,10 +737,7 @@ describe("runDoctorLintCli", () => {
       OPENCLAW_CONFIG_PATH: configPath,
       OPENCLAW_STATE_DIR: stateDir,
     };
-    await writePersistedInstalledPluginIndexInstallRecords(
-      {},
-      { config, env, stateDir, workspaceDir: rootDir },
-    );
+    await seedInstalledPluginIndex({}, { config, env, stateDir, workspaceDir: rootDir });
     const databasePath = resolveOpenClawStateSqlitePath(env);
     closeOpenClawStateDatabaseByPath(databasePath);
     clearLoadInstalledPluginIndexInstallRecordsCache();
@@ -793,6 +784,9 @@ describe("runDoctorLintCli", () => {
           },
         ],
       });
+      expect(
+        mocks.prepareSqliteReadOnlyLocationSync.mock.calls.map(([pathname]) => pathname),
+      ).toEqual([databasePath]);
       expect(sourceOpenStacks).toEqual([]);
       expect(snapshotDoctorLintSqliteFamily(databasePath)).toEqual(before);
     } finally {
@@ -818,10 +812,7 @@ describe("runDoctorLintCli", () => {
       OPENCLAW_CONFIG_PATH: configPath,
       OPENCLAW_STATE_DIR: stateDir,
     };
-    await writePersistedInstalledPluginIndexInstallRecords(
-      {},
-      { config, env, stateDir, workspaceDir: rootDir },
-    );
+    await seedInstalledPluginIndex({}, { config, env, stateDir, workspaceDir: rootDir });
     const pluginDatabasePath = resolveOpenClawStateSqlitePath(env);
     closeOpenClawStateDatabaseByPath(pluginDatabasePath);
     createDoctorLintSemanticIndex(stateDir);
@@ -890,10 +881,7 @@ describe("runDoctorLintCli", () => {
       OPENCLAW_CONFIG_PATH: configPath,
       OPENCLAW_STATE_DIR: stateDir,
     };
-    await writePersistedInstalledPluginIndexInstallRecords(
-      {},
-      { config, env, stateDir, workspaceDir: rootDir },
-    );
+    await seedInstalledPluginIndex({}, { config, env, stateDir, workspaceDir: rootDir });
     const pluginDatabasePath = resolveOpenClawStateSqlitePath(env);
     closeOpenClawStateDatabaseByPath(pluginDatabasePath);
     createDoctorLintSemanticIndex(stateDir);
@@ -915,8 +903,8 @@ describe("runDoctorLintCli", () => {
       }
       return {
         ...prepared,
-        cleanup() {
-          prepared.cleanup();
+        async cleanupAsync() {
+          await prepared.cleanupAsync();
           return false;
         },
       };

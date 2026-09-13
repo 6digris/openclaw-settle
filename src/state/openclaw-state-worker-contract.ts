@@ -1,7 +1,19 @@
 import type { SqliteFileGeneration } from "../infra/sqlite-file-generation.js";
 import type { TaskFlowView } from "../plugins/runtime/task-domain-types.js";
+import type { ManagedTaskInFlowInput } from "../tasks/task-flow-managed-run-task.kernel.js";
+import type { RunTaskInFlowResult } from "../tasks/task-flow-managed-run-task.types.js";
+import type {
+  TaskFlowRegistryUpdate,
+  TaskFlowRegistryUpdateResult,
+} from "../tasks/task-flow-registry.store.types.js";
 import type { TaskFlowRecord } from "../tasks/task-flow-registry.types.js";
+import type { TaskRegistryStatusSnapshot } from "../tasks/task-registry.store.status.js";
+import type {
+  TaskRegistryMutationScope,
+  TaskRegistryStoreSnapshot,
+} from "../tasks/task-registry.store.types.js";
 import type { TaskRecord, TaskRegistrySummary } from "../tasks/task-registry.types.js";
+import type { UserPreferenceWorkerOperations } from "./user-preferences.types.js";
 
 type TaskLookupRecords = {
   direct?: TaskRecord;
@@ -21,7 +33,27 @@ type TaskFlowReadQuery = {
 };
 
 /** Commands share one physical shared-state actor; bindings belong to commands, not open input. */
-export type OpenClawStateWorkerOperations = {
+export type OpenClawStateWorkerOperations = UserPreferenceWorkerOperations & {
+  "tasks.statusSummary": {
+    input: { now: number; preserveSourceArtifacts: boolean };
+    output: TaskRegistryStatusSnapshot | undefined;
+  };
+  "flows.runTask": { input: ManagedTaskInFlowInput; output: RunTaskInFlowResult };
+  "tasks.mutationSnapshot": { input: TaskRegistryMutationScope; output: TaskRegistryStoreSnapshot };
+  "flows.createManaged": {
+    input: { flow: TaskFlowRecord };
+    output: TaskFlowRecord;
+  };
+  "flows.updateManaged": {
+    input: TaskFlowRegistryUpdate & {
+      ownerKey: string;
+    };
+    output:
+      | TaskFlowRegistryUpdateResult
+      | { applied: false; reason: "not_managed"; current: TaskFlowRecord }
+      | { applied: false; reason: "persist_failed"; current?: TaskFlowRecord };
+  };
+  "flows.current": { input: { flowId: string }; output: TaskFlowRecord | undefined };
   "tasks.get": { input: { taskId: string }; output: TaskRecord | undefined };
   "tasks.list": { input: { ownerKey: string }; output: TaskRecord[] };
   "tasks.resolve": {

@@ -426,6 +426,59 @@ function registerBrowserToolAfterEachReset() {
   });
 }
 
+describe("dashboard Gateway lifetime owner", () => {
+  registerBrowserToolAfterEachReset();
+
+  it.each(["open", "close", "snapshot"] as const)(
+    "routes %s through the Gateway owner with the caller's cancellation",
+    async (action) => {
+      const signal = new AbortController().signal;
+      const dashboard = {
+        sessionKey: "agent:main:dashboard-test",
+        name: "service",
+        instanceId: "widget-one",
+        revision: 1,
+        paused: action !== "open",
+        stopping: false,
+        url: "http://service.example/",
+        ...(action === "open"
+          ? { browserTab: { target: "host", profile: "openclaw", targetId: "GATEWAY-TAB" } }
+          : {}),
+      };
+      gatewayMocks.callGatewayTool.mockResolvedValueOnce(dashboard);
+      const tool = createBrowserTool({ agentSessionKey: dashboard.sessionKey, agentId: "main" });
+      const result = tool.execute(
+        "dashboard-call",
+        { action, dashboard: "service", timeoutMs: 45_000 },
+        signal,
+      );
+      if (action === "snapshot") {
+        await expect(result).rejects.toThrow(/paused/);
+      } else {
+        expect((await result).details).toEqual({ browserDashboard: dashboard });
+      }
+      expect(gatewayMocks.callGatewayTool).toHaveBeenCalledWith(
+        "browser.request",
+        { timeoutMs: 45_000 },
+        {
+          target: "host",
+          method: action === "close" ? "DELETE" : "POST",
+          path: "/dashboard",
+          body: {
+            sessionKey: dashboard.sessionKey,
+            agentId: "main",
+            name: "service",
+            ...(action === "open" ? { resume: true } : {}),
+          },
+        },
+        { scopes: ["operator.admin"], signal },
+      );
+      expect(browserClientMocks.browserOpenTab).not.toHaveBeenCalled();
+      expect(browserClientMocks.browserCloseTab).not.toHaveBeenCalled();
+    },
+  );
+});
+
 async function runSnapshotToolCall(params: {
   snapshotFormat?: "ai" | "aria";
   refs?: "aria" | "dom";
@@ -3480,7 +3533,7 @@ describe("browser tool act compatibility", () => {
       targetId: "tab-after-nav",
       results: [{ ok: true, navigated: true, url: "https://example.com/next" }],
     });
-    const tool = createBrowserTool();
+    const tool = createBrowserTool({ agentSessionKey: "agent:main:main" });
 
     const result = await tool.execute?.("call-1", {
       action: "act",
@@ -3492,6 +3545,19 @@ describe("browser tool act compatibility", () => {
       1,
     );
     expect(snapshotOpts.targetId).toBe("tab-after-nav");
+    expect(sessionTabRegistryMocks.touchSessionBrowserTab).toHaveBeenCalledWith({
+      sessionKey: "agent:main:main",
+      targetId: "tab-after-nav",
+      route: { kind: "browser-control" },
+      profile: "openclaw",
+    });
+    const ownershipCall =
+      sessionTabRegistryMocks.touchSessionBrowserTab.mock.invocationCallOrder[0];
+    const snapshotCall = browserClientMocks.browserSnapshot.mock.invocationCallOrder[0];
+    if (ownershipCall === undefined || snapshotCall === undefined) {
+      throw new Error("Expected ownership and snapshot callbacks to run");
+    }
+    expect(ownershipCall).toBeLessThan(snapshotCall);
     expect(result?.details).toMatchObject({ pageState: { ok: true, format: "ai" } });
   });
 
@@ -4346,7 +4412,7 @@ describe("browser tool act stale target recovery", () => {
       tabs: [{ targetId: "only-tab" }],
     });
 
-    const tool = createBrowserTool();
+    const tool = createBrowserTool({ agentSessionKey: "agent:main:main" });
     const result = await tool.execute?.("call-1", {
       action: "act",
       profile: "user",
@@ -4382,6 +4448,15 @@ describe("browser tool act stale target recovery", () => {
     const secondOptions = mockCallArg<{ profile?: string }>(browserActionsMocks.browserAct, 1, 2);
     expect(secondOptions.profile).toBe("user");
     expect((result?.details as { ok?: unknown } | undefined)?.ok).toBe(true);
+    expect(sessionTabRegistryMocks.touchSessionBrowserTab).toHaveBeenCalledExactlyOnceWith({
+      sessionKey: "agent:main:main",
+      targetId: "only-tab",
+      route: { kind: "browser-control" },
+      profile: "user",
+    });
+    expect(result?.details).toMatchObject({
+      browserTab: { targetId: "only-tab", target: "host", profile: "user" },
+    });
   });
 
   it("recovers a stale target through the default existing-session profile", async () => {
@@ -4531,6 +4606,38 @@ describe("browser tool act stale target recovery", () => {
     expect(result?.details).toMatchObject({ ok: true, targetId: "only-tab" });
   });
 
+  it("preserves the second node act failure after a successful target refresh", async () => {
+    const retryError = new Error("node retry failed");
+    mockSingleBrowserProxyNode();
+    gatewayMocks.callGatewayTool
+      .mockResolvedValueOnce({
+        payload: {
+          route: { status: "resolved", profile: "user", driver: "existing-session" },
+          error: { status: 404, body: { error: "tab not found" } },
+        },
+      })
+      .mockResolvedValueOnce({
+        payload: {
+          route: { status: "resolved", profile: "user", driver: "existing-session" },
+          result: { running: true, tabs: [{ targetId: "only-tab" }] },
+        },
+      })
+      .mockRejectedValueOnce(retryError);
+
+    await expect(
+      createBrowserTool().execute?.("call-1", {
+        action: "act",
+        target: "node",
+        request: { kind: "wait", targetId: "stale-tab", timeMs: 1 },
+      }),
+    ).rejects.toBe(retryError);
+    expect(gatewayMocks.callGatewayTool).toHaveBeenCalledTimes(3);
+    expect(nodeInvokeCall(2).request.params).toMatchObject({
+      path: "/act",
+      body: { kind: "wait", targetId: "only-tab", timeMs: 1 },
+    });
+  });
+
   it("uses node-owned existing-session metadata for omitted-profile stale recovery", async () => {
     mockSingleBrowserProxyNode();
     gatewayMocks.callGatewayTool
@@ -4636,7 +4743,7 @@ describe("browser tool act stale target recovery", () => {
     ).rejects.toBe(abortError);
   });
 
-  it("does not retry mutating user-browser act requests without targetId", async () => {
+  it("does not retry mutating user-browser act requests after a stale target", async () => {
     browserActionsMocks.browserAct.mockRejectedValueOnce(new Error("404: tab not found"));
     browserClientMocks.browserTabs.mockResolvedValueOnce({
       running: true,

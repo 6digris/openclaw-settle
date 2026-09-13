@@ -53,7 +53,8 @@ export type WorkboardCardStatsAggregate = {
 
 export type WorkboardOwnerClaimResult = "updated" | "conflict" | "owner_busy";
 
-export type WorkboardCardStore = WorkboardKeyedStore & {
+export type WorkboardCardStore = Omit<WorkboardKeyedStore, "entries"> & {
+  entries(boardId?: string): Promise<Array<{ key: string; value: PersistedWorkboardCard }>>;
   registerIfAbsent(key: string, value: PersistedWorkboardCard): Promise<boolean>;
   registerIfUpdatedAt(
     key: string,
@@ -68,6 +69,7 @@ export type WorkboardCardStore = WorkboardKeyedStore & {
     ownerId: string,
     now: number,
   ): Promise<WorkboardOwnerClaimResult>;
+  listCardStatuses(ids: readonly string[]): Promise<Array<{ id: string; status: string }>>;
   listBoardAggregates(): Promise<WorkboardBoardCardAggregate[]>;
   listStatsAggregates(boardId?: string): Promise<WorkboardCardStatsAggregate[]>;
   hasCards(boardId: string): Promise<boolean>;

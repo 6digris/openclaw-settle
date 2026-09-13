@@ -1,5 +1,8 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
+import { withAgentRosterFactsBatch } from "./agent-scope-config.js";
 import { listConfiguredOwnerInputs } from "./prepared-model-runtime.configured.js";
+import { PreparedModelRuntimePublicationSupersededError } from "./prepared-model-runtime.errors.js";
 import {
   advancePreparedModelRuntimeOwnerConfig,
   normalizePreparedModelRuntimeInput,
@@ -12,6 +15,23 @@ import type {
   PreparedModelRuntimeOwner,
   PreparedModelRuntimeRefreshOptions,
 } from "./prepared-model-runtime.types.js";
+
+const log = createSubsystemLogger("agents/prepared-model-runtime");
+
+export function refreshCommittedProviderCatalogs(
+  owners: Iterable<PreparedModelRuntimeOwner>,
+): void {
+  for (const owner of owners) {
+    if (owner.provenance !== "configured" || owner.pending || owner.needsRefresh) {
+      continue;
+    }
+    void owner.snapshot?.loadFullModelCatalog?.({ changedOnly: true }).catch((error: unknown) => {
+      if (!(error instanceof PreparedModelRuntimePublicationSupersededError)) {
+        log.warn(`provider catalog refresh failed: ${String(error)}`);
+      }
+    });
+  }
+}
 
 /** Retains provider inventory across runtime selection; rebuilds check its source and auth. */
 export function collectPreparedModelRuntimeInventories(
@@ -71,27 +91,29 @@ export function listConfiguredRefreshInputs(
       workspacesByDir.set(agentDir, workspaceDir);
     }
   }
-  const inputs: PreparedModelRuntimeInput[] = [];
-  for (const rawInput of listConfiguredOwnerInputs(
-    config,
-    options.defaultWorkspaceDir,
-    options.allowGatewaySubagentBinding,
-  )) {
-    const input = normalizePreparedModelRuntimeInput(rawInput);
-    const preservedWorkspaceDir = input.agentId
-      ? preservedWorkspaceByAgentDir.get(input.agentId)?.get(input.agentDir)
-      : undefined;
-    inputs.push(
-      preservedWorkspaceDir
-        ? {
-            ...input,
-            workspaceDir: preservedWorkspaceDir,
-            preserveWorkspaceDirOnRefresh: true,
-          }
-        : input,
-    );
-  }
-  return inputs;
+  return withAgentRosterFactsBatch(config, () => {
+    const inputs: PreparedModelRuntimeInput[] = [];
+    for (const rawInput of listConfiguredOwnerInputs(
+      config,
+      options.defaultWorkspaceDir,
+      options.allowGatewaySubagentBinding,
+    )) {
+      const input = normalizePreparedModelRuntimeInput(rawInput);
+      const preservedWorkspaceDir = input.agentId
+        ? preservedWorkspaceByAgentDir.get(input.agentId)?.get(input.agentDir)
+        : undefined;
+      inputs.push(
+        preservedWorkspaceDir
+          ? {
+              ...input,
+              workspaceDir: preservedWorkspaceDir,
+              preserveWorkspaceDirOnRefresh: true,
+            }
+          : input,
+      );
+    }
+    return inputs;
+  });
 }
 
 /** Invalidates scoped owners and optionally advances retained owners to a new config stamp. */

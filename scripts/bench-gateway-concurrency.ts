@@ -26,13 +26,22 @@ import {
   type BrowserSessionTarget,
 } from "./lib/gateway-bench-browser.ts";
 import { delay, stopChild } from "./lib/gateway-bench-child.ts";
-import { getFreePort, readProcessRssMb } from "./lib/gateway-bench-probes.ts";
+import {
+  type GatewayMemorySample,
+  type GatewayRpc,
+  getFreePort,
+  readGatewayMemory,
+  readProcessRssMb,
+} from "./lib/gateway-bench-probes.ts";
 import {
   controlGatewayProfile,
+  measureGatewayCpuUsage,
   readGatewayCpuProfile,
+  readGatewayCpuUsage,
   readGatewayHeapProfile,
   type GatewayHeapProfile,
   type GatewayCpuProfile,
+  type GatewayCpuUsage,
 } from "./lib/gateway-bench-profile.ts";
 import {
   BASE_GATEWAY_BENCH_CONFIG,
@@ -99,15 +108,6 @@ type FreshConnectionProbe = {
   ok: boolean;
 };
 
-type GatewayRpc = <T>(method: string, params: unknown, timeoutMs?: number) => Promise<T>;
-
-type GatewayMemorySample = {
-  atMs: number;
-  heapTotalMb: number;
-  heapUsedMb: number;
-  rssMb: number;
-};
-
 type GatewayChildExit = {
   atMonotonicMicros: number;
   exitCode: number | null;
@@ -131,6 +131,7 @@ type BenchmarkRun = {
   loadCpuProfile?: GatewayCpuProfile;
   controlPlane: Array<TimedProbe & { method: string }>;
   controlUi: ControlUiProbe[];
+  cpuUsage: GatewayCpuUsage;
   durationMs: number;
   freshConnection: FreshConnectionProbe;
   gatewayExit?: Awaited<ReturnType<typeof stopChild>>;
@@ -883,29 +884,6 @@ async function connectGateway(
   };
 }
 
-async function readGatewayMemory(
-  rpc: GatewayRpc,
-  runStartedAt: number,
-): Promise<GatewayMemorySample> {
-  const result = await rpc<{
-    processMemory?: { heapTotalBytes?: number; heapUsedBytes?: number; rssBytes?: number };
-  }>("status", { includeChannelSummary: false });
-  const memory = result.processMemory;
-  const heapTotalBytes = asFiniteNumber(memory?.heapTotalBytes);
-  const heapUsedBytes = asFiniteNumber(memory?.heapUsedBytes);
-  const rssBytes = asFiniteNumber(memory?.rssBytes);
-  if (heapTotalBytes === undefined || heapUsedBytes === undefined || rssBytes === undefined) {
-    throw new Error("Gateway status did not report process memory");
-  }
-  const toMb = (bytes: number) => bytes / 1024 / 1024;
-  return {
-    atMs: performance.now() - runStartedAt,
-    heapTotalMb: toMb(heapTotalBytes),
-    heapUsedMb: toMb(heapUsedBytes),
-    rssMb: toMb(rssBytes),
-  };
-}
-
 function readGatewayProcessRssMb(pid: number | undefined): number | null {
   if (!pid) {
     return null;
@@ -1270,16 +1248,16 @@ async function runGatewaySample(options: {
         mkdirSync(options.cpuProfDir, { recursive: true });
       }
       const gatewayArgs = buildGatewayBenchChildArgs(options.entry, port);
+      gatewayArgs.unshift(
+        "--import",
+        new URL("./lib/gateway-bench-profile-preload.ts", import.meta.url).href,
+      );
       if (heapProfilePath || loadCpuProfilePath) {
         for (const profilePath of [heapProfilePath, loadCpuProfilePath]) {
           if (profilePath) {
             mkdirSync(path.dirname(profilePath), { recursive: true });
           }
         }
-        gatewayArgs.unshift(
-          "--import",
-          new URL("./lib/gateway-bench-profile-preload.ts", import.meta.url).href,
-        );
       }
       gateway = spawn(
         process.execPath,
@@ -1289,10 +1267,7 @@ async function runGatewaySample(options: {
         {
           cwd: process.cwd(),
           detached: process.platform !== "win32",
-          stdio:
-            heapProfilePath || loadCpuProfilePath
-              ? ["pipe", "pipe", "pipe", "ipc"]
-              : ["pipe", "pipe", "pipe"],
+          stdio: ["pipe", "pipe", "pipe", "ipc"],
           env: {
             ...createGatewayBenchEnv(root, configPath, {
               caseEnv: {
@@ -1539,6 +1514,7 @@ async function runGatewaySample(options: {
       const allTurnsStarted = new Promise<void>((resolve) => {
         resolveAllTurnsStarted = resolve;
       });
+      const cpuBefore = await readGatewayCpuUsage(gateway);
       const turnsStartedAt = performance.now();
       // Keep the live artifact intact: buffered setup writes can arrive after this boundary.
       // Inclusive millisecond timestamps conservatively include events on the boundary.
@@ -1714,6 +1690,7 @@ async function runGatewaySample(options: {
         historyLoad,
         sessionUpdateLoad,
       ]);
+      const cpuAfter = await readGatewayCpuUsage(gateway);
       const loadEndMonotonicMicros = Number(process.hrtime.bigint() / 1_000n);
       const turnsDurationMs = performance.now() - turnsStartedAt;
       const memoryAfter = await readGatewayMemory(rpc, runStartedAt);
@@ -1753,6 +1730,7 @@ async function runGatewaySample(options: {
         ...(loadCpuProfile ? { loadCpuProfile } : {}),
         controlPlane,
         controlUi,
+        cpuUsage: measureGatewayCpuUsage(cpuBefore, cpuAfter),
         durationMs: performance.now() - runStartedAt,
         freshConnection: freshConnectionResult,
         history,
@@ -1922,6 +1900,14 @@ function summarizeRuns(
         }
       : {}),
     budgetViolations,
+    gatewayProcessCpuMs: summarizeNumbers(runs.map((run) => run.cpuUsage.process.totalMs)),
+    gatewayProcessCpuMsPerTurn: summarizeNumbers(
+      runs.map((run) => run.cpuUsage.process.totalMs / run.turnCount),
+    ),
+    gatewayMainThreadCpuMs: summarizeNumbers(runs.map((run) => run.cpuUsage.mainThread.totalMs)),
+    gatewayProcessCpuCoreRatio: summarizeNumbers(
+      runs.map((run) => run.cpuUsage.process.totalMs / run.cpuUsage.wallMs),
+    ),
     gatewaySampledAllocatedBytes: summarizeNumbers(
       runs.flatMap((run) => (run.heapProfile ? [run.heapProfile.sampledAllocatedBytes] : [])),
     ),
@@ -1960,6 +1946,30 @@ function summarizeRuns(
       (run) =>
         run.gatewayExit && (run.gatewayExit.exitCode !== 0 || run.gatewayExit.signal !== null),
     ).length,
+    gatewayExternalGrowthMb: summarizeNumbers(
+      runs.flatMap((run) => {
+        const before = run.memory.before.externalMb;
+        const after = run.memory.after.externalMb;
+        return before === undefined || after === undefined ? [] : [after - before];
+      }),
+    ),
+    gatewayExternalMb: summarizeNumbers(
+      runs.flatMap((run) =>
+        run.memory.after.externalMb === undefined ? [] : [run.memory.after.externalMb],
+      ),
+    ),
+    gatewayArrayBuffersGrowthMb: summarizeNumbers(
+      runs.flatMap((run) => {
+        const before = run.memory.before.arrayBuffersMb;
+        const after = run.memory.after.arrayBuffersMb;
+        return before === undefined || after === undefined ? [] : [after - before];
+      }),
+    ),
+    gatewayArrayBuffersMb: summarizeNumbers(
+      runs.flatMap((run) =>
+        run.memory.after.arrayBuffersMb === undefined ? [] : [run.memory.after.arrayBuffersMb],
+      ),
+    ),
     gatewayHeapGrowthMb: summarizeNumbers(
       runs.map((run) => run.memory.after.heapUsedMb - run.memory.before.heapUsedMb),
     ),

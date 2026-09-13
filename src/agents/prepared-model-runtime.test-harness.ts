@@ -138,6 +138,8 @@ vi.mock("./prepared-model-catalog-worker.js", () => ({
         return {
           modelCatalog: catalog,
           runtimeModels: new Map(),
+          providerExpiries: new Map(),
+          configuredProviderModelIds: new Map(),
           configuredRuntimeModels: factoryArgs[0].agentFacts.configuredRuntimeModels,
         };
       },
@@ -385,6 +387,7 @@ vi.mock("../logging/subsystem.js", () => ({
   createSubsystemLogger: () => {
     const logger = {
       child: () => logger,
+      isEnabled: () => false,
       debug: vi.fn(),
       error: vi.fn(),
       info: vi.fn(),

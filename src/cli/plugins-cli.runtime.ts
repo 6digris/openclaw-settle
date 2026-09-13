@@ -448,11 +448,10 @@ export async function runPluginsDoctorCommand(opts: PluginDoctorOptions = {}): P
               error: shortenHomeInString(entry.error ?? "failed to load"),
               source: shortenHomeInString(entry.source),
             })),
-            diagnostics: diags.map((entry) => ({
-              level: entry.level,
-              ...(entry.pluginId ? { pluginId: entry.pluginId } : {}),
-              message: shortenHomeInString(entry.message),
-              ...(entry.source ? { source: shortenHomeInString(entry.source) } : {}),
+            diagnostics: diags.map(({ message, source, ...diagnostic }) => ({
+              ...diagnostic,
+              message: shortenHomeInString(message),
+              ...(source ? { source: shortenHomeInString(source) } : {}),
             })),
             sourceShadowing: shadowed.map((entry) => {
               const active = report.plugins.find((plugin) => plugin.id === entry.pluginId);
@@ -474,7 +473,7 @@ export async function runPluginsDoctorCommand(opts: PluginDoctorOptions = {}): P
                   `openclaw plugins inspect ${entry.pluginId ?? "<plugin-id>"}`,
                   "edit or remove the config-selected plugin source",
                   "openclaw plugins registry --refresh",
-                  "openclaw gateway restart --force",
+                  `openclaw plugins reload ${entry.pluginId ?? "<plugin-id>"}`,
                 ],
               };
             }),
@@ -536,7 +535,7 @@ export async function runPluginsDoctorCommand(opts: PluginDoctorOptions = {}): P
           lines.push("    openclaw plugins inspect " + (diag.pluginId ?? "<plugin-id>"));
           lines.push("    edit or remove the config-selected plugin source");
           lines.push("    openclaw plugins registry --refresh");
-          lines.push("    openclaw gateway restart --force");
+          lines.push("    openclaw plugins reload " + (diag.pluginId ?? "<plugin-id>"));
         }
       }
       if (compatibility.length > 0) {

@@ -57,6 +57,7 @@ import { captureEnv, withEnvAsync } from "../test-utils/env.js";
 import { getFreePort } from "../test-utils/ports.js";
 import type { TempHomeEnv } from "../test-utils/temp-home.js";
 import { VERSION } from "../version.js";
+import { quoteCliArg } from "./quote-cli-arg.js";
 import { createCliRuntimeCapture, getMockCallOutput } from "./test-runtime-capture.js";
 
 const commandTransport = vi.hoisted(() => ({
@@ -135,7 +136,6 @@ const readPersistedInstalledPluginIndex = vi.fn(async () => null);
 const restorePersistedInstalledPluginIndexIfCurrent = vi.fn<
   typeof import("../plugins/installed-plugin-index-store-write.js").restorePersistedInstalledPluginIndexIfCurrent
 >(async () => true);
-const writePersistedInstalledPluginIndexInstallRecords = vi.fn(async () => undefined);
 const writePersistedInstalledPluginIndexInstallRecordsWithLease = vi.fn(async () => ({
   previous: null,
   revision: 1,
@@ -191,7 +191,8 @@ vi.mock("@clack/prompts", () => ({
   note: vi.fn(),
 }));
 
-vi.mock("../infra/update-managed-service-handoff.js", () => ({
+vi.mock("../infra/update-managed-service-handoff.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../infra/update-managed-service-handoff.js")>()),
   startManagedServiceUpdateHandoff: managedUpdateHandoff.start,
   transferManagedServiceUpdateHandoff: managedUpdateHandoff.transfer,
   cancelManagedServiceUpdateHandoff: managedUpdateHandoff.cancel,
@@ -403,14 +404,32 @@ vi.mock("node:child_process", async () => {
   };
 });
 
-vi.mock("../process/exec.js", async () => {
-  const { spawn: spawnChild } =
+vi.mock("../process/exec.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../process/exec.js")>();
+  const { spawn: spawnChild, spawnSync: spawnMetadata } =
     await vi.importActual<typeof import("node:child_process")>("node:child_process");
   return {
     // The real snapshot worker has separate WAL/source-inode boundary coverage.
     // Retain real rehearsal config projection and drift checks in this CLI fixture.
-    runCommandBuffered: async (_argv: string[], options: { input: string }) => {
+    runCommandBuffered: async (argv: string[], options: { input: string; timeoutMs?: number }) => {
       const input: unknown = JSON.parse(options.input);
+      if (isRecord(input) && input.mode === undefined && Array.isArray(input.files)) {
+        // Keep budget metadata real; only snapshot mutation is simulated below.
+        const metadata = spawnMetadata(
+          expectDefined(argv[0], "metadata executable"),
+          argv.slice(1),
+          {
+            input: options.input,
+            timeout: options.timeoutMs,
+            cwd: commandTransport.hostCwd,
+            env: commandTransport.hostEnv,
+          },
+        );
+        if (metadata.error) {
+          throw metadata.error;
+        }
+        return { code: metadata.status, stdout: metadata.stdout, stderr: metadata.stderr };
+      }
       const mode = isRecord(input) ? input.mode : undefined;
       if (mode !== "inventory" && mode !== "snapshot") {
         throw new Error("Unexpected update state worker mode");
@@ -462,7 +481,7 @@ vi.mock("../process/exec.js", async () => {
         expect(code).toBe(0);
       }
     },
-    runUtf8CommandWithTimeout: vi.fn(),
+    runUtf8CommandWithTimeout: vi.fn(actual.runUtf8CommandWithTimeout),
     runExec: vi.fn(async () => ({
       stdout: new Date(Date.now() - 1000).toString(),
       stderr: "",
@@ -518,7 +537,6 @@ vi.mock("../plugins/installed-plugin-index-records.js", async (importOriginal) =
   return {
     ...actual,
     loadInstalledPluginIndexInstallRecords,
-    writePersistedInstalledPluginIndexInstallRecords,
     writePersistedInstalledPluginIndexInstallRecordsWithLease,
   };
 });
@@ -1726,10 +1744,21 @@ describe("update-cli", () => {
   }) => {
     const nodeModules = path.join(params.prefix, "lib", "node_modules");
     const root = path.join(nodeModules, "openclaw");
-    const serviceNode = path.join(params.prefix, "bin", "node");
+    const serviceNode = path.join(
+      params.prefix,
+      "bin",
+      sqliteHostPlatform === "win32" ? "node.exe" : "node",
+    );
     const serviceNpm = path.join(params.prefix, "bin", "npm");
     await fs.mkdir(path.dirname(serviceNode), { recursive: true });
-    await fs.writeFile(serviceNode, "#!/bin/sh\n", { encoding: "utf-8", mode: 0o755 });
+    // Metadata sizing executes the selected path outside the CLI transport mock.
+    if (sqliteHostPlatform === "win32") {
+      await fs.copyFile(process.execPath, serviceNode);
+    } else {
+      await fs.writeFile(serviceNode, `#!/bin/sh\nexec ${quoteCliArg(process.execPath)} "$@"\n`, {
+        mode: 0o755,
+      });
+    }
     const serviceNpmReal =
       params.withNpm === false
         ? undefined
@@ -2162,7 +2191,6 @@ describe("update-cli", () => {
     updateFailureActionMocks.runInteractiveUpdateFailureAction.mockResolvedValue("triage");
     readPersistedInstalledPluginIndex.mockResolvedValue(null);
     restorePersistedInstalledPluginIndexIfCurrent.mockResolvedValue(true);
-    writePersistedInstalledPluginIndexInstallRecords.mockResolvedValue(undefined);
     writePersistedInstalledPluginIndexInstallRecordsWithLease.mockResolvedValue({
       previous: null,
       revision: 1,
@@ -3258,7 +3286,14 @@ describe("update-cli", () => {
     await updateCommand({ json: true, restart: false });
 
     const call = spawnCall();
-    expect(call?.[1]).toEqual([entrypoints[0], "update", "--json", "--no-restart"]);
+    expect(call?.[1]).toEqual([
+      entrypoints[0],
+      "update",
+      "--json",
+      "--no-restart",
+      "--timeout",
+      "1800",
+    ]);
     expect(call?.[2]?.stdio).toBe("pipe");
     expect(stdoutPipe).toHaveBeenCalledWith(process.stderr);
     expect(stdoutPipe).not.toHaveBeenCalledWith(process.stdout);
@@ -3891,7 +3926,14 @@ describe("update-cli", () => {
 
     const call = spawnCall();
     expect(call?.[0]).toMatch(/node/);
-    expect(call?.[1]).toEqual([entrypoints[0], "update", "--no-restart", "--yes"]);
+    expect(call?.[1]).toEqual([
+      entrypoints[0],
+      "update",
+      "--no-restart",
+      "--yes",
+      "--timeout",
+      "1800",
+    ]);
     expect(call?.[2]?.stdio).toBe("inherit");
     expect(call?.[2]?.env?.OPENCLAW_UPDATE_POST_CORE).toBe("1");
     expect(call?.[2]?.env?.OPENCLAW_UPDATE_POST_CORE_CHANNEL).toBe("dev");
@@ -3922,6 +3964,8 @@ describe("update-cli", () => {
       "--no-restart",
       "--yes",
       "--accept-capabilities",
+      "--timeout",
+      "1800",
     ]);
   });
 
@@ -3966,6 +4010,8 @@ describe("update-cli", () => {
           "update",
           "--no-restart",
           ...(acceptCapabilities ? ["--accept-capabilities"] : []),
+          "--timeout",
+          "30",
         ]);
       } else {
         expect(spawn).not.toHaveBeenCalled();
@@ -7332,6 +7378,90 @@ describe("update-cli", () => {
     },
   );
 
+  it.each([
+    {
+      packageInstallSpec: "file:/owned/candidate.tgz",
+      channel: "stable" as const,
+      expectedTag: "file:/owned/candidate.tgz",
+    },
+    {
+      packageInstallSpec: "https://example.invalid/candidate.tgz",
+      channel: "stable" as const,
+      expectedTag: "https://example.invalid/candidate.tgz",
+    },
+    {
+      packageInstallSpec: `openclaw@${VERSION}`,
+      channel: "stable" as const,
+      expectedTag: VERSION,
+    },
+    {
+      packageInstallSpec: `openclaw@${VERSION}`,
+      channel: "extended-stable" as const,
+      expectedTag: undefined,
+    },
+  ])(
+    "keeps the selected target through already-current managed handoff ($packageInstallSpec, $channel)",
+    async ({ packageInstallSpec, channel, expectedTag }) => {
+      const { finishAlreadyCurrentUpdate } = await import("./update-cli/update-command-noop.js");
+      vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+      const { pkgRoot: root, entryPath } = await setupInstalledPackageRoot(
+        createCaseDir("current-artifact-handoff"),
+        VERSION,
+      );
+      mockFileBackedPathExists();
+      vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValue(entryPath);
+      mockRunningManagedGateway([process.execPath, entryPath, "gateway", "run"]);
+      managedUpdateHandoff.start.mockResolvedValue({
+        status: "started",
+        handoffId: "current-artifact-handoff",
+        installRoot: root,
+        logPath: "/tmp/current-artifact-handoff.log",
+        command: "openclaw update --yes",
+        pid: 12345,
+      });
+      managedUpdateHandoff.transfer.mockResolvedValue(true);
+      const refuseUpdate = vi.fn();
+
+      await withEnvAsync({ INVOCATION_ID: "current-artifact-invocation" }, () =>
+        finishAlreadyCurrentUpdate({
+          root,
+          packageInstallSpec,
+          opts: { yes: true, json: true },
+          result: {
+            status: "skipped",
+            mode: "npm",
+            root,
+            reason: "already-current",
+            before: { version: VERSION },
+            after: { version: VERSION },
+            steps: [],
+            durationMs: 1,
+          },
+          requestedChannel: null,
+          storedChannel: channel,
+          channel,
+          shouldRestart: true,
+          updateStepTimeoutMs: 1000,
+          invocationCwd: process.cwd(),
+          startedAt: Date.now(),
+          controlPlaneUpdateSentinelMeta: null,
+          managedServiceRootRedirect: null,
+          stop: vi.fn(),
+          refuseUpdate,
+        }),
+      );
+
+      expect(refuseUpdate).not.toHaveBeenCalled();
+      expect(
+        managedUpdateHandoff.start.mock.calls.map(([params]) => ({
+          root: params.root,
+          tag: params.tag,
+        })),
+      ).toEqual([{ root, tag: expectedTag }]);
+      expectNoSideEffects(serviceStop, serviceRestart, updateNpmInstalledPlugins);
+    },
+  );
+
   it.each(["unavailable plugin", "changed service owner"])(
     "handles %s before already-current convergence",
     async (failure) => {
@@ -8664,7 +8794,15 @@ describe("update-cli", () => {
       ).toBe("1");
       const postCoreCall = spawnCall();
       expect(postCoreCall?.[0]).toMatch(/node/);
-      expect(postCoreCall?.[1]).toEqual([entryPath, "update", "--json", "--no-restart", "--yes"]);
+      expect(postCoreCall?.[1]).toEqual([
+        entryPath,
+        "update",
+        "--json",
+        "--no-restart",
+        "--yes",
+        "--timeout",
+        "1800",
+      ]);
       expect(postCoreCall?.[2]?.env?.OPENCLAW_UPDATE_POST_CORE).toBe("1");
       expect(updateNpmInstalledPlugins).not.toHaveBeenCalled();
       expect(defaultRuntime.exit).not.toHaveBeenCalledWith(1);
@@ -13328,7 +13466,7 @@ describe("update-cli", () => {
       "run",
     ]);
     expect(installCall?.[1].cwd).toBe(updatedRoot);
-    expect(installCall?.[1].timeoutMs).toBe(60_000);
+    expect(installCall?.[1].timeoutMs).toBe(30 * 60_000);
     expect(gatewayCommandCall(updatedEntrypoint, "restart")).toBeUndefined();
     expect(runRestartScript).not.toHaveBeenCalled();
     expect(gatewayHealthCall()).toMatchObject({ method: "health", scopes: ["operator.read"] });
@@ -13730,7 +13868,7 @@ describe("update-cli", () => {
       "run",
     ]);
     expect(installCall?.[1].cwd).toBe(String(root));
-    expect(installCall?.[1].timeoutMs).toBe(60_000);
+    expect(installCall?.[1].timeoutMs).toBe(30 * 60_000);
     const expectedEnv =
       "expectedEnv" in testCase && testCase.expectedEnv ? testCase.expectedEnv() : {};
     for (const [key, value] of Object.entries(expectedEnv)) {
@@ -14365,6 +14503,8 @@ describe("update-cli", () => {
           "update",
           "--no-restart",
           "--accept-capabilities",
+          "--timeout",
+          "1800",
         ]);
         expectNoSideEffects(syncPluginsForUpdateChannel, updateNpmInstalledPlugins);
         expect(defaultRuntime.exit).not.toHaveBeenCalledWith(1);
