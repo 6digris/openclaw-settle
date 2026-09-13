@@ -41,7 +41,7 @@ const suite = createControlUiE2eSuite({
 let catalogInstance: OpenClawTestInstance;
 let inventoryModel = "inventory-before";
 let catalogObserver: GatewayClient | undefined;
-let catalogChanged = createDeferred<void>();
+let catalogChanged = createDeferred();
 const inventoryRequests: string[] = [];
 const refreshInventoryArgs = [
   "gateway",
@@ -106,7 +106,7 @@ function containsPublishedInventory(payload: unknown, id: string): boolean {
 }
 
 it("catalog refresh helper separates foreground completion from held publication", async () => {
-  const publication = createDeferred<void>();
+  const publication = createDeferred();
   const heldResponse = createDeferred<ModelCatalogResult>();
   const held: ModelCatalogResult = {
     models: [{ provider: "ollama", id: "inventory-held", name: "Held" }],
@@ -255,7 +255,7 @@ const catalogSuite = createControlUiE2eSuite({
           onEvent: ({ event }) => {
             if (event === "chat.metadata.changed") {
               catalogChanged.resolve();
-              catalogChanged = createDeferred<void>();
+              catalogChanged = createDeferred();
             }
           },
         },
@@ -264,10 +264,6 @@ const catalogSuite = createControlUiE2eSuite({
           timeoutMessage: "Catalog observer connection timed out",
           closeMessage: "Catalog observer closed",
         },
-      );
-      const initialInventory = await awaitInventoryPublication(await beginInventoryRefresh());
-      expect(initialInventory.catalog.models).toContainEqual(
-        expect.objectContaining({ provider: "ollama", id: "inventory-before" }),
       );
       return {
         baseUrl: `http://127.0.0.1:${catalogInstance.port}/`,
@@ -319,9 +315,11 @@ catalogSuite.define(() => {
       expect(result.code, result.stderr).toBe(0);
     };
     try {
-      const initialInventory = await refreshInventory();
-      expect(initialInventory.code, initialInventory.stderr).toBe(0);
-      expect(initialInventory.stdout).toContain("inventory-before");
+      const initialInventory = await awaitInventoryPublication(await beginInventoryRefresh());
+      commands.push({ args: refreshInventoryArgs, ...initialInventory });
+      expect(initialInventory.catalog.models).toContainEqual(
+        expect.objectContaining({ provider: "ollama", id: "inventory-before" }),
+      );
       await catalogSuite.withPage(
         {
           locale: "en-US",

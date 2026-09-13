@@ -17,7 +17,7 @@ import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts"
 
 let instance: OpenClawTestInstance;
 let catalogObserver: GatewayClient | undefined;
-let catalogChanged = createDeferred<void>();
+let catalogChanged = createDeferred();
 let providerRequestsPath: string;
 const tempDirs = createTempDirTracker();
 const suite = createControlUiE2eSuite({
@@ -76,7 +76,7 @@ const suite = createControlUiE2eSuite({
           onEvent: ({ event }) => {
             if (event === "chat.metadata.changed") {
               catalogChanged.resolve();
-              catalogChanged = createDeferred<void>();
+              catalogChanged = createDeferred();
             }
           },
         },
@@ -195,6 +195,11 @@ suite.define(() => {
           await model.click();
           // A failed background refresh must not add chrome above a usable list.
           await composer.locator('[data-chat-model-option="openai/gpt-5.4"]').waitFor();
+          // The observer's publication does not hydrate this browser. A known model
+          // option can render before its scoped catalog and agent defaults arrive.
+          await composer
+            .locator('.chat-controls__model-menu > [data-chat-model-catalog-state="loading"]')
+            .waitFor({ state: "detached" });
           // CLI discovery starts with agent hydration and can outlive model loading.
           await composer
             .locator(

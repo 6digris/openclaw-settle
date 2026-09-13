@@ -314,13 +314,14 @@ describe("captured startup inventory refresh", () => {
         reachedCheckpoint = true;
         checkpoint.resolve();
       };
-      using failureObserver = {
-        [Symbol.dispose]: registerPreparedModelRuntimePublicationListener((event) => {
+      using failureObserver = new DisposableStack();
+      failureObserver.defer(
+        registerPreparedModelRuntimePublicationListener((event) => {
           if (event.phase === "catalog-failed") {
             markCheckpoint();
           }
         }),
-      };
+      );
       let captured: HeldCatalogFixture<ModelCatalogSnapshot> | undefined;
       let publication: FixturePublication | undefined;
       let serverClosed = false;
