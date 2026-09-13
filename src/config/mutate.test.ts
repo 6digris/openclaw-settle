@@ -1056,7 +1056,7 @@ describe("config mutate helpers", () => {
     });
   });
 
-  it("refuses guarded include publication before changing config or backups", async () => {
+  it("runs an include commit callback once after preparation and before publication", async () => {
     const home = await suiteRootTracker.make("guarded-include");
     const { configPath, pluginsPath } = await createPluginIncludeFixture(home);
     const plugins = { entries: { demo: { enabled: false } } };
@@ -1069,31 +1069,36 @@ describe("config mutate helpers", () => {
       parsed: { plugins: { $include: "./config/plugins.json5" } },
       sourceConfig: { plugins },
     });
-    const beforeCommit = vi.fn();
+    const beforeCommit = vi.fn(async () => {
+      expect(backupMocks.prepareConfigFileWrite).toHaveBeenCalledOnce();
+      expect(await fs.readFile(pluginsPath, "utf-8")).toBe(includedRaw);
+      await expect(fs.stat(`${pluginsPath}.bak`)).rejects.toMatchObject({ code: "ENOENT" });
+    });
 
-    await expect(
-      replaceConfigFile({
-        baseHash: snapshot.hash,
-        snapshot,
-        writeOptions: {
-          expectedConfigPath: configPath,
-          assertConfigPathForWrite: allowConfigPathWrite,
-          includeFileTargetsForWrite: { [pluginsPath]: await resolveIncludeTarget(pluginsPath) },
-          beforeCommit,
-        },
-        nextConfig: { plugins: { entries: { demo: { enabled: true } } } },
-      }),
-    ).rejects.toThrow("cannot update include-owned configuration. Use a trusted shell");
+    await replaceConfigFile({
+      baseHash: snapshot.hash,
+      snapshot,
+      writeOptions: {
+        expectedConfigPath: configPath,
+        assertConfigPathForWrite: allowConfigPathWrite,
+        includeFileTargetsForWrite: { [pluginsPath]: await resolveIncludeTarget(pluginsPath) },
+        beforeCommit,
+        skipRuntimeSnapshotRefresh: true,
+      },
+      nextConfig: { plugins: { entries: { demo: { enabled: true } } } },
+    });
 
-    expect(beforeCommit).not.toHaveBeenCalled();
-    expect(backupMocks.prepareConfigFileWrite).not.toHaveBeenCalled();
+    expect(beforeCommit).toHaveBeenCalledOnce();
     expect(ioMocks.writeConfigFile).not.toHaveBeenCalled();
     expect(await fs.readFile(configPath, "utf-8")).toBe(rootRaw);
-    expect(await fs.readFile(pluginsPath, "utf-8")).toBe(includedRaw);
+    expect(JSON.parse(await fs.readFile(pluginsPath, "utf-8"))).toEqual({
+      entries: { demo: { enabled: true } },
+    });
+    expect(await fs.readFile(`${pluginsPath}.bak`, "utf-8")).toBe(includedRaw);
   });
 
   it.each([false, true])(
-    "refuses custom-IO include authority before effects (revoked: %s)",
+    "retains custom-IO include authority after an asynchronous transform (revoked: %s)",
     async (revoke) => {
       const home = await suiteRootTracker.make("custom-include-authority");
       const { configPath, pluginsPath } = await createPluginIncludeFixture(home);
@@ -1118,29 +1123,37 @@ describe("config mutate helpers", () => {
             throw refusal;
           }
         });
-        await expect(
-          mutateConfigFile({
-            io: { ...io, writeConfigFile: fallbackWrite },
-            writeOptions: {
-              assertCurrent,
-              observe: false,
-              skipPluginValidation: true,
-              skipRuntimeSnapshotRefresh: true,
-            },
-            mutate: async (draft) => {
-              await Promise.resolve();
-              current = !revoke;
-              draft.plugins = { entries: { demo: { enabled: true } } };
-            },
-          }),
-        ).rejects.toThrow("cannot update include-owned configuration. Use a trusted shell");
-        expect(assertCurrent).toHaveBeenCalledOnce();
+        const mutation = mutateConfigFile({
+          io: { ...io, writeConfigFile: fallbackWrite },
+          writeOptions: {
+            assertCurrent,
+            observe: false,
+            skipPluginValidation: true,
+            skipRuntimeSnapshotRefresh: true,
+          },
+          mutate: async (draft) => {
+            await Promise.resolve();
+            current = !revoke;
+            draft.plugins = { entries: { demo: { enabled: true } } };
+          },
+        });
+        if (revoke) {
+          await expect(mutation).rejects.toBe(refusal);
+          expect(backupMocks.prepareConfigFileWrite).not.toHaveBeenCalled();
+          expect(await fs.readFile(pluginsPath, "utf8")).toBe(includedRaw);
+          expect(await fs.readFile(`${pluginsPath}.bak`, "utf8")).toBe(backupRaw);
+          await expect(fs.stat(`${pluginsPath}.bak.1`)).rejects.toMatchObject({ code: "ENOENT" });
+        } else {
+          await mutation;
+          expect(JSON.parse(await fs.readFile(pluginsPath, "utf8"))).toEqual({
+            entries: { demo: { enabled: true } },
+          });
+          expect(await fs.readFile(`${pluginsPath}.bak`, "utf8")).toBe(includedRaw);
+          expect(await fs.readFile(`${pluginsPath}.bak.1`, "utf8")).toBe(backupRaw);
+        }
+        expect(assertCurrent.mock.calls.length).toBeGreaterThan(1);
         expect(fallbackWrite).not.toHaveBeenCalled();
-        expect(backupMocks.prepareConfigFileWrite).not.toHaveBeenCalled();
         expect(await fs.readFile(configPath, "utf8")).toBe(rootRaw);
-        expect(await fs.readFile(pluginsPath, "utf8")).toBe(includedRaw);
-        expect(await fs.readFile(`${pluginsPath}.bak`, "utf8")).toBe(backupRaw);
-        await expect(fs.stat(`${pluginsPath}.bak.1`)).rejects.toMatchObject({ code: "ENOENT" });
         await expect(fs.stat(path.dirname(selectedPath))).rejects.toMatchObject({ code: "ENOENT" });
       });
     },
@@ -3098,27 +3111,29 @@ describe("config mutate helpers", () => {
     const snapshot = createSnapshot({
       hash: "hash-include-refresh-rollback",
       path: configPath,
-      parsed: { plugins: { $include: "./config/plugins.json5" } },
-      sourceConfig: { plugins: { entries: {} } },
+      parsed: {
+        plugins: { $include: "./config/plugins.json5" },
+        env: { vars: { [envKey]: "written-env-value" } },
+      },
+      sourceConfig: {
+        plugins: { entries: {} },
+        env: { vars: { [envKey]: "written-env-value" } },
+      },
     });
+    await fs.writeFile(configPath, snapshot.raw!, "utf-8");
     const nextConfig = {
+      env: { vars: { [envKey]: "written-env-value" } },
       plugins: {
         entries: {
           demo: { enabled: true },
         },
       },
     };
-    ioMocks.readConfigFileSnapshotForWrite.mockImplementation(async () => {
-      env[envKey] = "written-env-value";
-      return {
-        snapshot: createSnapshot({
-          hash: "hash-include-refresh-written",
-          path: configPath,
-          parsed: { plugins: { $include: "./config/plugins.json5" } },
-          sourceConfig: nextConfig,
-        }),
-        writeOptions: { expectedConfigPath: configPath },
-      };
+    const io = createActualConfigIO({
+      configPath,
+      env,
+      observe: false,
+      pluginValidation: "skip",
     });
     const refreshError = new Error("lost include secret");
 
@@ -3134,7 +3149,7 @@ describe("config mutate helpers", () => {
       const operation = replaceConfigFile({
         baseHash: snapshot.hash,
         snapshot,
-        io: { ...ioMocks, env },
+        io,
         writeOptions: {
           expectedConfigPath: snapshot.path,
           assertConfigPathForWrite: allowConfigPathWrite,

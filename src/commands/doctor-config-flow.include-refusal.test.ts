@@ -2,16 +2,26 @@
 // root-owned repair must not print "Doctor changes" and then crash on the root
 // writer's include guard. The writer refuses, Doctor records the refusal, and
 // every file stays byte-identical with the included file named for manual repair.
+import syncFs from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createModelVisibilityPolicy } from "../agents/model-visibility-policy.js";
+import {
+  releaseUpdateCommandPreflightForHandoff,
+  withUpdateCommandExecutor,
+} from "../cli/update-cli/update-command-executor.js";
+import * as backupRotation from "../config/backup-rotation.js";
 import { readConfigFileSnapshot, transformConfigFile } from "../config/config.js";
 import { hashConfigRaw } from "../config/io.read-helpers.js";
 import { ConfigMutationConflictError } from "../config/mutation-conflict.js";
 import { writeOpenClawConfig } from "../config/test-helpers.js";
 import { runWriteConfigHealth } from "../flows/doctor-health-contribution-runners.config.js";
 import { captureUpdateDoctorConfigWrites } from "../infra/update-doctor-result.js";
+import {
+  captureManagedUpdateLeaseDatabaseIdentity,
+  createManagedHandoffLeaseDatabase,
+} from "../infra/update-managed-service-handoff-database.js";
 import { UpdateRequesterRevokedError } from "../infra/update-requester-authority.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { withEnvAsync } from "../test-utils/env.js";
@@ -24,10 +34,34 @@ vi.mock("../../packages/terminal-core/src/note.js", () => ({
   note: noteMock,
 }));
 
+async function withDoctorExecutor(
+  home: string,
+  operation: (assertCurrent: () => void, revoke: () => void) => Promise<void>,
+) {
+  const root = path.join(await fs.realpath(home), "package");
+  await fs.mkdir(root);
+  const databasePath = path.join(home, "control", "managed-update-handoffs.sqlite");
+  createManagedHandoffLeaseDatabase(databasePath)(true, () => undefined);
+  await withUpdateCommandExecutor(
+    "doctor-include-fence",
+    async (executor) => {
+      const fence = await executor.enter(root, { preflight: true });
+      await operation(fence.assertCurrent, () => releaseUpdateCommandPreflightForHandoff(fence));
+    },
+    {
+      existingAuthority: {
+        ...captureManagedUpdateLeaseDatabaseIdentity(databasePath),
+        installKey: root,
+      },
+    },
+  );
+}
+
 describe("doctor --fix include write ownership", () => {
   afterEach(() => {
     noteMock.mockClear();
     closeOpenClawStateDatabaseForTest();
+    vi.restoreAllMocks();
   });
 
   it.each([
@@ -172,6 +206,11 @@ describe("doctor --fix include write ownership", () => {
     { authority: true, refusal: "requester-revoked" },
     { authority: true, refusal: "config-input-changed" },
     { authority: true, refusal: "include-input-changed" },
+    { authority: true, refusal: "revoked-after-prepare" },
+    { authority: true, refusal: "revoked-after-fsync" },
+    { authority: true, refusal: "root-changed-after-prepare" },
+    { authority: true, refusal: "ancestor-changed-after-prepare" },
+    { authority: true, refusal: "include-changed-after-prepare" },
   ] as const)(
     "writes a nested agent repair to its fragment and preserves both ancestor files (authority=$authority, refusal=$refusal)",
     async ({ authority, refusal }) => {
@@ -194,43 +233,120 @@ describe("doctor --fix include write ownership", () => {
           const ctx = await prepareDoctorContext(configPath);
           expect(ctx.configResult.shouldWriteConfig).toBe(true);
           expect(ctx.configResult.skipWizardMetadataForIncludeWrite).toBe(true);
+          const late = refusal?.includes("-after-") === true;
+          const publicPaths = [configPath, parentPath, fragmentPath];
+          if (late) {
+            for (const target of [...publicPaths]) {
+              for (const suffix of [".bak", ".bak.1", ".bak.2", ".bak.3", ".bak.4"]) {
+                const backupPath = `${target}${suffix}`;
+                await fs.writeFile(backupPath, `retained ${path.basename(backupPath)}\n`);
+                publicPaths.push(backupPath);
+              }
+            }
+          }
+          const captureFiles = () =>
+            publicPaths.map((target) => {
+              const stat = syncFs.lstatSync(target, { bigint: true });
+              return {
+                bytes: syncFs.readFileSync(target),
+                ino: stat.ino,
+                mode: stat.mode,
+                mtimeNs: stat.mtimeNs,
+                ctimeNs: stat.ctimeNs,
+              };
+            });
+          let retainedRootRaw = rootRaw;
+          let retainedParentRaw = parentRaw;
           const retainedFragmentRaw =
-            refusal === "include-input-changed"
+            refusal === "include-input-changed" || refusal === "include-changed-after-prepare"
               ? JSON.stringify({ sandbox: { perSession: true }, name: "Operator edit" })
               : fragmentRaw;
           if (refusal === "include-input-changed") {
             await fs.writeFile(fragmentPath, retainedFragmentRaw);
           }
-          const writing = captureUpdateDoctorConfigWrites(
-            configPath,
-            () => runWriteConfigHealth(ctx, { runPostWriteRepairs: false }),
-            authority
-              ? {
-                  inputHash: hashConfigRaw(refusal === "config-input-changed" ? "{}" : rootRaw),
-                  assertCurrent: () => {
-                    if (refusal === "requester-revoked") {
-                      throw new UpdateRequesterRevokedError();
-                    }
-                  },
+          let retainedFiles = captureFiles();
+          let reachedPreparation = false;
+          let fsyncArmed = false;
+          let fsyncBoundaryFired = false;
+          const write = (assertCurrent?: () => void, revoke?: () => void) => {
+            if (refusal === "revoked-after-fsync") {
+              // The guarded writer must capture the spy before preparation;
+              // arming afterward isolates the candidate publication boundary.
+              const fsync = syncFs.fsyncSync;
+              vi.spyOn(syncFs, "fsyncSync").mockImplementation((fd) => {
+                fsync(fd);
+                if (fsyncArmed) {
+                  fsyncArmed = false;
+                  fsyncBoundaryFired = true;
+                  revoke!();
                 }
-              : undefined,
-          );
+              });
+            }
+            if (late) {
+              const prepare = backupRotation.prepareConfigFileWrite;
+              vi.spyOn(backupRotation, "prepareConfigFileWrite").mockImplementationOnce(
+                async (params) => {
+                  const prepared = await prepare(params);
+                  reachedPreparation = true;
+                  if (refusal === "revoked-after-prepare") {
+                    revoke!();
+                  } else if (refusal === "revoked-after-fsync") {
+                    fsyncArmed = true;
+                  } else if (refusal === "root-changed-after-prepare") {
+                    retainedRootRaw = `${rootRaw}\n`;
+                    await fs.writeFile(configPath, retainedRootRaw);
+                  } else if (refusal === "ancestor-changed-after-prepare") {
+                    retainedParentRaw = `${parentRaw}\n`;
+                    await fs.writeFile(parentPath, retainedParentRaw);
+                  } else if (refusal === "include-changed-after-prepare") {
+                    await fs.writeFile(fragmentPath, retainedFragmentRaw);
+                  }
+                  retainedFiles = captureFiles();
+                  return prepared;
+                },
+              );
+            }
+            return captureUpdateDoctorConfigWrites(
+              configPath,
+              () => runWriteConfigHealth(ctx, { runPostWriteRepairs: false }),
+              assertCurrent
+                ? {
+                    inputHash: hashConfigRaw(refusal === "config-input-changed" ? "{}" : rootRaw),
+                    assertCurrent: () => {
+                      assertCurrent();
+                      if (refusal === "requester-revoked") {
+                        throw new UpdateRequesterRevokedError();
+                      }
+                    },
+                  }
+                : undefined,
+            );
+          };
+          const writing = authority ? withDoctorExecutor(home, write) : write();
           if (refusal === "requester-revoked") {
             await expect(writing).rejects.toBeInstanceOf(UpdateRequesterRevokedError);
-          } else if (refusal === "config-input-changed" || refusal === "include-input-changed") {
+          } else if (refusal?.startsWith("revoked-after-")) {
+            await expect(writing).rejects.toThrow(/executor ownership|source ownership/);
+          } else if (refusal) {
             await expect(writing).rejects.toBeInstanceOf(ConfigMutationConflictError);
           } else {
             await writing;
           }
           if (refusal) {
             expect(ctx.configResultWriteCommitted).not.toBe(true);
-            await expect(fs.readFile(configPath, "utf-8")).resolves.toBe(rootRaw);
-            await expect(fs.readFile(parentPath, "utf-8")).resolves.toBe(parentRaw);
+            await expect(fs.readFile(configPath, "utf-8")).resolves.toBe(retainedRootRaw);
+            await expect(fs.readFile(parentPath, "utf-8")).resolves.toBe(retainedParentRaw);
             await expect(fs.readFile(fragmentPath, "utf-8")).resolves.toBe(retainedFragmentRaw);
-            expect((await fs.readdir(fragmentDir)).toSorted()).toEqual([
-              "main-parent.json5",
-              "main.json5",
-            ]);
+            if (late) {
+              expect(reachedPreparation).toBe(true);
+              expect(fsyncBoundaryFired).toBe(refusal === "revoked-after-fsync");
+              expect(captureFiles()).toEqual(retainedFiles);
+            } else {
+              expect((await fs.readdir(fragmentDir)).toSorted()).toEqual([
+                "main-parent.json5",
+                "main.json5",
+              ]);
+            }
             return;
           }
 

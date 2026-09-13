@@ -12,6 +12,7 @@ import {
 } from "../state/openclaw-state-db.js";
 import { createConfigIO } from "./io.factory.js";
 import type { ConfigIoFactoryOptions } from "./io.types.js";
+import { withConfigWriteLock } from "./write-lock.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => {
@@ -69,6 +70,68 @@ async function prepare(io: ReturnType<typeof createConfigIO>) {
 }
 
 describe("prepared config recovery", () => {
+  it.each([false, true])(
+    "checks reader authority before restoring env after awaited recovery (revoked=%s)",
+    async (revoked) => {
+      const refusal = new Error("snapshot source owner changed after recovery");
+      let current = true;
+      let reachedBoundary = false;
+      let valueAtBoundary: string | undefined;
+      const { root, configPath, backup, io } = fixture({
+        observe: true,
+        pluginValidation: "core-only",
+        measure: async (name, run) => {
+          const result = await run();
+          if (name === "config.snapshot.read.recover-suspicious") {
+            reachedBoundary = true;
+            valueAtBoundary = io.env.RECOVERY_TRANSIENT;
+            io.env.RECOVERY_FOREIGN_ADDED = "new-owner";
+            delete io.env.RECOVERY_FOREIGN_DELETED;
+            if (revoked) {
+              io.env.RECOVERY_TRANSIENT = "replacement-owner";
+              current = false;
+            }
+          }
+          return result;
+        },
+      });
+      io.env.RECOVERY_FOREIGN_DELETED = "previous-owner";
+      const clobbered = JSON.stringify({
+        update: { channel: "beta" },
+        env: { vars: { RECOVERY_TRANSIENT: "clobbered" } },
+      });
+      fs.writeFileSync(configPath, clobbered);
+      const read = withConfigWriteLock(
+        configPath,
+        () => io.readConfigFileSnapshot({ recoverSuspicious: true }),
+        io.env,
+        () => {
+          if (!current) {
+            throw refusal;
+          }
+        },
+      );
+      if (revoked) {
+        await expect(read).rejects.toBe(refusal);
+      } else {
+        await expect(read).resolves.toMatchObject({ valid: true, raw: backup });
+      }
+      expect(reachedBoundary).toBe(true);
+      expect(valueAtBoundary).toBe("clobbered");
+      expect(io.env.RECOVERY_TRANSIENT).toBe(revoked ? "replacement-owner" : undefined);
+      expect(io.env.RECOVERY_MARKER).toBe(revoked ? undefined : "backup");
+      expect(io.env.RECOVERY_FOREIGN_ADDED).toBe("new-owner");
+      expect(io.env.RECOVERY_FOREIGN_DELETED).toBeUndefined();
+      expect(fs.readFileSync(configPath, "utf8")).toBe(backup);
+      expect(fs.readFileSync(`${configPath}.bak`, "utf8")).toBe(backup);
+      const archives = fs
+        .readdirSync(root)
+        .filter((name) => name.startsWith("openclaw.json.clobbered."));
+      expect(archives).toHaveLength(1);
+      expect(fs.readFileSync(path.join(root, archives[0]!), "utf8")).toBe(clobbered);
+    },
+  );
+
   it.each(["OPENCLAW_CONFIG_READONLY", "OPENCLAW_NIX_MODE"])(
     "%s does not prepare a recovery that would replace externally owned config",
     async (mode) => {

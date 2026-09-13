@@ -189,6 +189,18 @@ export function createGuardedConfigFileSystem(
       }
       return fsModule.openSync(filePath, flags, mode);
     },
+    // Fence new content effects after fallback changes its own bytes. fs-safe
+    // permits owned cleanup and durability to finish after authority expires.
+    ftruncateSync: (fd, length) => {
+      assertCurrent?.();
+      return fsModule.ftruncateSync(fd, length);
+    },
+    writeSync: new Proxy(fsModule.writeSync, {
+      apply(target, thisArg, args) {
+        assertCurrent?.();
+        return Reflect.apply(target, thisArg, args);
+      },
+    }),
   };
 }
 

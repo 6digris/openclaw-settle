@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   expandEnvNormalizationKeys,
   normalizeZaiEnv,
@@ -122,6 +123,102 @@ function replaceEnvSnapshotEntry(
   }
   if (next?.value !== undefined) {
     env[next.key] = next.value;
+  }
+}
+
+type ConfigReadEnvChanges = {
+  env: NodeJS.ProcessEnv;
+  receipts: Array<() => void>;
+  active: boolean;
+};
+
+const configReadEnvChanges = new AsyncLocalStorage<ConfigReadEnvChanges>();
+
+/** Retains reader-owned changes when an awaited read rejects before returning its result. */
+export async function withConfigReadEnvChanges<T>(
+  env: NodeJS.ProcessEnv,
+  run: (restore: () => void) => Promise<T>,
+): Promise<T> {
+  const scope: ConfigReadEnvChanges = { env, receipts: [], active: true };
+  try {
+    return await configReadEnvChanges.run(scope, () =>
+      run(() => {
+        for (const restore of scope.receipts.toReversed()) {
+          restore();
+        }
+      }),
+    );
+  } finally {
+    scope.active = false;
+  }
+}
+
+/** Captures only one synchronous producer, never changes made across a reader's await. */
+export function captureConfigReadEnvMutation<T>(
+  env: NodeJS.ProcessEnv,
+  run: () => T,
+  retainRestore?: (restore: () => void) => void,
+): T {
+  const snapshot = () =>
+    new Map(Object.entries(env).map(([key, value]) => [key, { key, value }] as const));
+  const before = snapshot();
+  const scope = configReadEnvChanges.getStore();
+  try {
+    return run();
+  } finally {
+    const after = snapshot();
+    const changes = [...new Set([...before.keys(), ...after.keys()])]
+      .filter((key) => !envSnapshotEntriesEqual(before.get(key), after.get(key)))
+      .map((key) => ({ key, before: before.get(key), after: after.get(key) }));
+    const pairedDestinations = new Set<string>();
+    for (const change of changes) {
+      const previous = change.before;
+      if (!previous || change.after || !Object.hasOwn(env, previous.key)) {
+        continue;
+      }
+      const destinations = changes.filter(
+        (candidate) =>
+          !candidate.before &&
+          candidate.after &&
+          !pairedDestinations.has(candidate.key) &&
+          candidate.key.toUpperCase() === previous.key.toUpperCase() &&
+          env[previous.key] === candidate.after.value,
+      );
+      if (destinations.length !== 1) {
+        continue;
+      }
+      const destination = destinations[0]!;
+      // Pair only aliases resolved by this environment. OS-backed and cloned Windows
+      // environments can rename one slot; plain objects and Worker copies retain distinct keys.
+      change.after = destination.after;
+      pairedDestinations.add(destination.key);
+    }
+    let active = true;
+    const restore = () => {
+      if (!active) {
+        return;
+      }
+      active = false;
+      for (const change of changes) {
+        if (pairedDestinations.has(change.key)) {
+          continue;
+        }
+        const key = change.after?.key ?? change.before!.key;
+        const current = snapshot().get(key);
+        const unchanged = change.after
+          ? envSnapshotEntriesEqual(current, change.after)
+          : !Object.hasOwn(env, key);
+        if (unchanged) {
+          replaceEnvSnapshotEntry(env, current, change.before);
+        }
+      }
+    };
+    // The snapshot and include compensation share this receipt. Consuming it once
+    // prevents recovery from undoing the same write after another owner takes over.
+    retainRestore?.(restore);
+    if (scope?.active && scope.env === env) {
+      scope.receipts.push(restore);
+    }
   }
 }
 

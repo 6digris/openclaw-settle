@@ -7,7 +7,7 @@ import {
   includeContributionOwnsAgentRoster,
   includeContributionOwnsBindings,
 } from "./agent-roster-provenance.js";
-import { cloneEnvWithPlatformSemantics } from "./config-env-vars.js";
+import { captureConfigReadEnvMutation, cloneEnvWithPlatformSemantics } from "./config-env-vars.js";
 import { resolveManagedUnsetPathsForWrite } from "./config-path-mutation.js";
 import { ConfigIncludeError } from "./includes.js";
 import { createConfigIoContext, type ConfigIoContext } from "./io.context.js";
@@ -50,6 +50,7 @@ import { materializeRuntimeConfig } from "./materialize.js";
 import { ConfigMutationConflictError } from "./mutation-conflict.js";
 import type { ConfigFileSnapshot, LegacyConfigIssue, OpenClawConfig } from "./types.js";
 import { validateConfigObjectWithPlugins } from "./validation.js";
+import { captureConfigWriteLockGuard } from "./write-lock.js";
 
 type InternalReadOptions = {
   allowCurrentPluginMetadata?: boolean;
@@ -83,8 +84,24 @@ export async function readConfigFileSnapshotInternal(
   sourceRaw?: string,
 ): Promise<ReadConfigFileSnapshotInternalResult> {
   const { deps, configPath, pathResolution } = context;
-  maybeLoadDotEnvForConfig(deps.env);
-  const envBeforeRead = snapshotEnv(deps.env);
+  const sourceGuard = captureConfigWriteLockGuard(configPath);
+  const authority: { refusal?: { error: unknown } } = {};
+  const assertReadCurrent = () => {
+    if (authority.refusal) {
+      throw authority.refusal.error;
+    }
+    try {
+      sourceGuard?.();
+    } catch (error) {
+      // Reader errors become snapshots; an authority refusal must retain its
+      // original identity even if a measurement wrapper replaces the error.
+      authority.refusal = { error };
+      throw error;
+    }
+  };
+  assertReadCurrent();
+  captureConfigReadEnvMutation(deps.env, () => maybeLoadDotEnvForConfig(deps.env));
+  let restoreReadEnv: (() => void) | undefined;
   if (sourceRaw === undefined && !deps.fs.existsSync(configPath)) {
     const migrated = migratePersistedImplicitMainRoster({});
     const config = coerceConfig(migrated.config);
@@ -209,9 +226,16 @@ export async function readConfigFileSnapshotInternal(
       });
     }
 
-    const readResolution = await deps.measure("config.snapshot.read.env", () =>
-      resolveConfigForRead(resolved, deps.env, deps.lowerPrecedenceEnv),
-    );
+    const readResolution = await deps.measure("config.snapshot.read.env", () => {
+      assertReadCurrent();
+      return captureConfigReadEnvMutation(
+        deps.env,
+        () => resolveConfigForRead(resolved, deps.env, deps.lowerPrecedenceEnv),
+        (restore) => {
+          restoreReadEnv = restore;
+        },
+      );
+    });
     fallbackEnvSnapshotForRestore = readResolution.envSnapshotForRestore;
     const envVarWarnings = readResolution.envWarnings.map((warning) => ({
       path: warning.configPath,
@@ -270,11 +294,8 @@ export async function readConfigFileSnapshotInternal(
           : collect(),
       );
       // Invalid snapshots stay inspectable, but rejected env.vars must not become runtime state.
-      restoreEnvChangesIfUnchanged({
-        env: deps.env,
-        before: envBeforeRead,
-        after: snapshotEnv(deps.env),
-      });
+      assertReadCurrent();
+      restoreReadEnv?.();
       return await finalizeReadConfigSnapshotInternalResult(deps, {
         snapshot: createConfigFileSnapshot({
           path: configPath,
@@ -337,11 +358,8 @@ export async function readConfigFileSnapshotInternal(
         }),
       );
       if (recovery.raw !== raw) {
-        restoreEnvChangesIfUnchanged({
-          env: deps.env,
-          before: envBeforeRead,
-          after: snapshotEnv(deps.env),
-        });
+        assertReadCurrent();
+        restoreReadEnv?.();
         return await readConfigFileSnapshotInternal(context, {
           allowCurrentPluginMetadata: options.allowCurrentPluginMetadata,
           recoverSuspicious: options.recoverSuspicious,
@@ -389,6 +407,9 @@ export async function readConfigFileSnapshotInternal(
       ),
     );
   } catch (error) {
+    if (authority.refusal) {
+      throw authority.refusal.error;
+    }
     if (findStartupMaintenanceRequiredError(error)) {
       throw error;
     }
