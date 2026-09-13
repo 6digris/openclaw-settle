@@ -19,9 +19,11 @@ const elements = {
   editConnection: document.querySelector("#edit-connection"),
   installButton: document.querySelector("#install-button"),
   installControls: document.querySelector("#install-controls"),
+  installHint: document.querySelector("#install-hint"),
   installLog: document.querySelector("#install-log"),
   logStatus: document.querySelector("#log-status"),
   logWrap: document.querySelector("#log-wrap"),
+  localSubtitle: document.querySelector("#local-subtitle"),
   primaryAction: document.querySelector("#primary-action"),
   remoteAuth: document.querySelector(".remote-auth"),
   remoteConnect: document.querySelector("#remote-connect"),
@@ -84,6 +86,9 @@ function render({
   if (activity) {
     elements.activityLabel.textContent = activity;
   }
+  elements.installHint.textContent = firstRunBuild?.platform === "freebsd"
+    ? "Installs the CLI in ~/.openclaw using your system Node.js and npm."
+    : "Installs the CLI and managed Node runtime in ~/.openclaw.";
   show(elements.installControls, showInstall);
   show(elements.actionControls, false);
   show(elements.editConnection, false);
@@ -308,9 +313,14 @@ function renderWelcome() {
 }
 
 function renderConnectionChoices() {
+  const freebsd = firstRunBuild?.platform === "freebsd";
+  elements.localSubtitle.textContent = freebsd
+    ? "Connect to a Gateway you start with the FreeBSD service or in a terminal."
+    : "Private to this computer. Installs and starts automatically.";
   render({
-    description:
-      "Most people choose this computer. OpenClaw installs everything and keeps your assistant running in the background.",
+    description: freebsd
+      ? "On FreeBSD, install the CLI if needed, then start your Gateway with the openclaw package service or run openclaw gateway run in a terminal. Connect here using the same account you used for onboarding."
+      : "Most people choose this computer. OpenClaw installs everything and keeps your assistant running in the background.",
     dot: "idle",
     eyebrow: "CHOOSE YOUR GATEWAY",
     title: "Where should your assistant live?",
@@ -352,7 +362,9 @@ function selectRemoteTransport(transport) {
 async function continueLocalSetup() {
   if (firstRunPhase === "unconfigured") {
     render({
-      activity: "Starting your local Gateway…",
+      activity: firstRunBuild?.platform === "freebsd"
+        ? "Connecting to your local Gateway…"
+        : "Starting your local Gateway…",
       description: "OpenClaw is preparing your assistant on this computer.",
       eyebrow: "FIRST-RUN SETUP",
       title: "Preparing your companion",
@@ -366,8 +378,9 @@ async function continueLocalSetup() {
   }
   if (firstRunBuild?.releaseBuild === false) {
     render({
-      description:
-        "This development build works best with a matching OpenClaw release channel.",
+      description: firstRunBuild?.platform === "freebsd"
+        ? "Install a compatible system Node.js and npm before installing the CLI. Then start your Gateway with the package service or openclaw gateway run."
+        : "This development build works best with a matching OpenClaw release channel.",
       eyebrow: "FIRST-RUN SETUP",
       showInstall: true,
       title: "Choose a release channel",
@@ -541,7 +554,9 @@ async function install() {
   show(elements.logWrap, true);
   render({
     activity: "Installing OpenClaw…",
-    description: "A managed CLI and Node runtime are being installed in your home directory.",
+    description: firstRunBuild?.platform === "freebsd"
+      ? "Installing the CLI requires a compatible system Node.js and npm. Start the Gateway with the package service or in a terminal after installation."
+      : "A managed CLI and Node runtime are being installed in your home directory.",
     eyebrow: "INSTALLING",
     title: "Preparing your companion",
   });
@@ -701,6 +716,7 @@ if (mode === "connectionSettings") {
 } else if (mode === "remoteError") {
   renderRemoteRetry();
 } else if (mode === "missingCli") {
+  firstRunBuild = await invoke("build_info").catch(() => null);
   render({
     description: "Install the OpenClaw CLI to connect to a local Gateway.",
     dot: "idle",

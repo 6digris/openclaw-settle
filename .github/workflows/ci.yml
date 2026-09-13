@@ -2853,9 +2853,15 @@ jobs:
             fi
             config=test/vitest/vitest.ui-e2e.config.ts
           fi
+          # Frozen targets retain their own reporter implementation and defaults.
+          reporter_args=()
+          if [[ "$FROZEN_TARGET" != "true" ]]; then
+            reporter_args=(--reporter verbose --reporter github-actions --reporter default --reporter ./scripts/lib/vitest-resource-reporter.mts)
+          fi
           node scripts/run-vitest.mjs run \
             --config "$config" \
             --configLoader runner \
+            "${reporter_args[@]}" \
             ui/src/e2e/mcp-app-conformance.e2e.test.ts \
             ui/src/e2e/control-ui-auth-transports.e2e.test.ts \
             ui/src/e2e/usage-sessions-owner-attribution.e2e.test.ts \
@@ -3118,7 +3124,12 @@ jobs:
         # Main owns full coverage. PRs need an exact-tree coverage receipt from
         # their admitted Node plan; release gates retain their separate merge tree.
         if: matrix.task == 'baseline-ratchets' && !(github.repository == 'openclaw/openclaw' && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.preflight.outputs.run_check == 'true') && !(github.repository == 'openclaw/openclaw' && github.event_name == 'pull_request' && needs.preflight.outputs.startup_corpus_node_revision && needs.preflight.outputs.startup_corpus_node_revision == needs.preflight.outputs.checkout_revision)
-        run: node scripts/run-vitest.mjs run --config test/vitest/vitest.runtime-config.config.ts src/config/config-startup-corpus.test.ts src/config/state-startup-corpus.test.ts
+        run: |
+          reporter_args=()
+          if [[ "${{ needs.preflight.outputs.frozen_target }}" != "true" ]]; then
+            reporter_args=(--reporter verbose --reporter github-actions --reporter ./scripts/lib/vitest-resource-reporter.mts)
+          fi
+          node scripts/run-vitest.mjs run --config test/vitest/vitest.runtime-config.config.ts "${reporter_args[@]}" src/config/config-startup-corpus.test.ts src/config/state-startup-corpus.test.ts
 
   qa-smoke-ci-profile:
     permissions:

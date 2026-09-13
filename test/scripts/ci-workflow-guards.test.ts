@@ -12190,13 +12190,13 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
   });
 
   it.each([
-    { eventName: "pull_request", runCheck: true },
+    { eventName: "pull_request", runCheck: true, frozenTarget: false },
     { eventName: "pull_request", runCheck: false },
     { eventName: "push", runCheck: false },
     { eventName: "push", ref: "refs/heads/release" },
     { eventName: "push", repository: "fixture/openclaw" },
     { eventName: "workflow_dispatch", releaseGate: false },
-    { eventName: "workflow_dispatch", releaseGate: true },
+    { eventName: "workflow_dispatch", releaseGate: true, frozenTarget: true },
   ] as const)("retains the startup corpus outside full canonical main: %j", (scenario) => {
     const steps: WorkflowStep[] = readCiWorkflow().jobs["checks-fast-core"].steps;
     const selected = steps.filter(
@@ -12212,6 +12212,54 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     );
     expect(selected).toHaveLength(1);
     expect(selected[0]?.run).toContain("src/config/config-startup-corpus.test.ts");
+    if ("frozenTarget" in scenario) {
+      const directory = tempDirs.make("startup-corpus-command-");
+      const bin = path.join(directory, "bin");
+      const argsPath = path.join(directory, "args");
+      mkdirSync(bin);
+      writeExecutable(path.join(bin, "node"), [
+        "#!/bin/sh",
+        'printf "%s\\n" "$@" > "$STARTUP_CORPUS_ARGS"',
+      ]);
+      const script = expectDefined(selected[0]?.run, "startup corpus command").replace(
+        /\$\{\{[\s\S]*?\}\}/gu,
+        (expression) =>
+          String(
+            evaluateWorkflowExpression(expression, {
+              repository: "openclaw/openclaw",
+              runAttempt: 1,
+              ...scenario,
+            }),
+          ),
+      );
+      const result = runWorkflowShellScript(script, {
+        cwd: directory,
+        env: {
+          ...process.env,
+          PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
+          STARTUP_CORPUS_ARGS: argsPath,
+        },
+      });
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(readFileSync(argsPath, "utf8").trim().split("\n")).toEqual([
+        "scripts/run-vitest.mjs",
+        "run",
+        "--config",
+        "test/vitest/vitest.runtime-config.config.ts",
+        ...(scenario.frozenTarget
+          ? []
+          : [
+              "--reporter",
+              "verbose",
+              "--reporter",
+              "github-actions",
+              "--reporter",
+              "./scripts/lib/vitest-resource-reporter.mts",
+            ]),
+        "src/config/config-startup-corpus.test.ts",
+        "src/config/state-startup-corpus.test.ts",
+      ]);
+    }
   });
 
   it("runs all baseline ratchets against the exact tested tree", () => {
@@ -14491,7 +14539,20 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
         "--configLoader",
         "runner",
       ]);
-      expect(args.slice(6).toSorted()).toEqual(
+      const reporterArgs = frozen
+        ? []
+        : [
+            "--reporter",
+            "verbose",
+            "--reporter",
+            "github-actions",
+            "--reporter",
+            "default",
+            "--reporter",
+            "./scripts/lib/vitest-resource-reporter.mts",
+          ];
+      expect(args.slice(6, 6 + reporterArgs.length)).toEqual(reporterArgs);
+      expect(args.slice(6 + reporterArgs.length).toSorted()).toEqual(
         uiE2eRealGatewayTestFiles
           .filter((file) => file !== "ui/src/e2e/desktop-resize.real-gateway.e2e.test.ts")
           .toSorted(),
@@ -17039,6 +17100,9 @@ fi
     expect(aggregateStep.run).toContain("Timed-out QA shard cannot contribute partial evidence");
     expect(aggregateStep.run).toContain("-mindepth 2 -maxdepth 2");
     expect(aggregateStep.run).toContain("aggregateQaProfileEvidenceShards");
+    expect(aggregateStep.run).toContain(
+      `jq -s --argjson exitCode "$qa_exit_code" 'map(.shard + {})' "\${status_paths[@]}" >/dev/null`,
+    );
     expect(aggregateStep.run).toContain("if jq -e '.timedOut == true'");
     expect(aggregateStep.env?.OUTPUT_DIR).toContain(
       "${{ github.workspace }}/selected/.artifacts/qa-e2e/",
@@ -17047,6 +17111,48 @@ fi
       (step: WorkflowStep) => step.name === "Upload QA profile evidence",
     );
     expect(aggregateUploadStep.with?.path).toBe("${{ steps.aggregate.outputs.output_dir }}");
+
+    const diagnosticStep = qaAggregateJob.steps.find(
+      (step: WorkflowStep) => step.name === "Collect QA profile diagnostics",
+    );
+    expect(diagnosticStep.if).toBe("always()");
+    expect(diagnosticStep["continue-on-error"]).toBe(true);
+    expect(diagnosticStep).not.toHaveProperty("working-directory");
+    expect(diagnosticStep.run).toContain('test "$(git rev-parse HEAD)" = "$EXPECTED_WORKFLOW_SHA"');
+    expect(diagnosticStep.run).toContain("node scripts/qa/qa-profile-run-status.mjs");
+    expect(diagnosticStep.env.EXPECTED_WORKFLOW_SHA).toBe(
+      "${{ needs.validate_selected_ref.outputs.workflow_sha }}",
+    );
+    expect(diagnosticStep.env.PLAN_MATRIX_JSON).toBe("${{ needs.plan_qa_profile.outputs.matrix }}");
+    expect(diagnosticStep.env.QA_EXIT_CODE).toBe("${{ steps.aggregate.outputs.qa_exit_code }}");
+    expect(diagnosticStep.env.FINALIZE_OUTCOME).toBe("${{ steps.evidence.outcome }}");
+    const diagnosticUpload = qaAggregateJob.steps.find(
+      (step: WorkflowStep) => step.name === "Upload QA profile diagnostics",
+    );
+    expect(diagnosticUpload.if).toBe("always()");
+    expect(diagnosticUpload["continue-on-error"]).toBe(true);
+    expect(diagnosticUpload.with.name).toBe(
+      "qa-profile-diagnostics-${{ needs.plan_qa_profile.outputs.profile }}-${{ needs.validate_selected_ref.outputs.selected_revision }}-${{ github.run_id }}-${{ github.run_attempt }}",
+    );
+    expect(diagnosticUpload.with.name).not.toMatch(/^qa-profile-evidence-/u);
+    expect(diagnosticUpload.with.path).toBe(
+      `${diagnosticStep.env.OUTPUT_DIR}/qa-profile-run-status.json`,
+    );
+    expect(diagnosticUpload.with["if-no-files-found"]).toBe("warn");
+    const finalizerIndex = qaAggregateJob.steps.findIndex(
+      (step: WorkflowStep) => step.name === "Finalize QA profile evidence",
+    );
+    expect(qaAggregateJob.steps.indexOf(diagnosticStep)).toBeGreaterThan(finalizerIndex);
+    expect(qaAggregateJob.steps.indexOf(diagnosticUpload)).toBeLessThan(
+      qaAggregateJob.steps.indexOf(aggregateUploadStep),
+    );
+    expect(JSON.stringify(qaAggregateJob.outputs)).not.toContain("diagnostics");
+    const diagnosticWarning = qaAggregateJob.steps.find(
+      (step: WorkflowStep) => step.name === "Warn if QA profile diagnostics were not retained",
+    );
+    expect(diagnosticWarning.if).toBe(
+      "always() && (steps.collect_diagnostics.outcome == 'failure' || steps.upload_diagnostics.outcome == 'failure')",
+    );
 
     const failProfileStep = qaAggregateJob.steps.find(
       (step: WorkflowStep) => step.name === "Fail if QA profile failed",

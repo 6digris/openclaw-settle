@@ -16440,6 +16440,7 @@ public struct SessionsListParams: Codable, Sendable {
     public let sortby: AnyCodable?
     public let includeglobal: Bool?
     public let includeunknown: Bool?
+    public let excludesubagents: Bool?
     public let configuredagentsonly: Bool?
     public let includederivedtitles: Bool?
     public let includelastmessage: Bool?
@@ -16466,6 +16467,7 @@ public struct SessionsListParams: Codable, Sendable {
         sortby: AnyCodable? = nil,
         includeglobal: Bool? = nil,
         includeunknown: Bool? = nil,
+        excludesubagents: Bool? = nil,
         configuredagentsonly: Bool? = nil,
         includederivedtitles: Bool? = nil,
         includelastmessage: Bool? = nil,
@@ -16491,6 +16493,7 @@ public struct SessionsListParams: Codable, Sendable {
         self.sortby = sortby
         self.includeglobal = includeglobal
         self.includeunknown = includeunknown
+        self.excludesubagents = excludesubagents
         self.configuredagentsonly = configuredagentsonly
         self.includederivedtitles = includederivedtitles
         self.includelastmessage = includelastmessage
@@ -16518,6 +16521,7 @@ public struct SessionsListParams: Codable, Sendable {
         case sortby = "sortBy"
         case includeglobal = "includeGlobal"
         case includeunknown = "includeUnknown"
+        case excludesubagents = "excludeSubagents"
         case configuredagentsonly = "configuredAgentsOnly"
         case includederivedtitles = "includeDerivedTitles"
         case includelastmessage = "includeLastMessage"

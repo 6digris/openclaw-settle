@@ -2138,7 +2138,7 @@ src/channels/plugins/bundled-setup-policy.ts	2
 src/channels/plugins/bundled.ts	4
 src/channels/plugins/chat-target-prefixes.ts	2
 src/channels/plugins/config-helpers.ts	7
-src/channels/plugins/config-schema.ts	12
+src/channels/plugins/config-schema.ts	11
 src/channels/plugins/config-write-policy-shared.ts	1
 src/channels/plugins/config-writes.ts	1
 src/channels/plugins/configured-binding-match.ts	1
@@ -2443,7 +2443,6 @@ src/commands/sessions-lifecycle.ts	3
 src/commands/setup.ts	1
 src/commands/status-all/channels.ts	2
 src/commands/status-all/gateway.ts	1
-src/commands/status.command.ts	1
 src/commands/status.scan.bootstrap-shared.ts	1
 src/commands/status.scan.shared.ts	1
 src/commands/system-agent-with-inference.ts	2
@@ -3239,7 +3238,7 @@ src/plugins/cli-gateway-nodes-runtime.ts	2
 src/plugins/command-registration.ts	3
 src/plugins/computer-use-contract.ts	3
 src/plugins/config-normalization-shared.ts	1
-src/plugins/config-schema.ts	6
+src/plugins/config-schema.ts	5
 src/plugins/contracts/inventory/bundled-capability-metadata.ts	3
 src/plugins/contracts/registry.ts	1
 src/plugins/contracts/tts-contract-suites.ts	19

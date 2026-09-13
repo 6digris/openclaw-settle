@@ -148,6 +148,7 @@ fn is_active_onboarding_url(url: &Url) -> bool {
 struct BuildInfo {
     version: String,
     release_build: bool,
+    platform: &'static str,
 }
 
 fn is_release_version(version: &str) -> bool {
@@ -2718,6 +2719,7 @@ fn build_info(app: AppHandle) -> BuildInfo {
     BuildInfo {
         release_build: is_release_version(&version),
         version,
+        platform: std::env::consts::OS,
     }
 }
 
