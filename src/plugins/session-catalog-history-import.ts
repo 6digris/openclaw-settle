@@ -1,4 +1,5 @@
 import { parseDateStringTimestampMs } from "@openclaw/normalization-core/number-coercion";
+import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import type {
   SessionCatalogTranscriptItem,
   SessionsCatalogReadResult,
@@ -32,19 +33,44 @@ function importedSessionCatalogMessage(params: {
       __openclaw: { mirrorOrigin: `${params.catalogId}-catalog-import` },
     } as AgentMessage;
   }
+  // A harness that reports tool identity gets native blocks: Control UI builds
+  // its tool cards, call/result pairing, and reasoning disclosures from message
+  // and block shape, so labelled prose renders as an unreadable wall of text.
+  // Adapters without that identity keep the labelled form.
+  if (params.item.type === "toolResult" && params.item.toolName && params.item.toolCallId) {
+    return {
+      role: "toolResult",
+      toolCallId: params.item.toolCallId,
+      toolName: params.item.toolName,
+      content: [{ type: "text", text }],
+      isError: params.item.isError === true,
+      timestamp,
+    };
+  }
   const prefix =
+    params.item.type === "toolCall" && !params.item.toolName
+      ? "Tool call\n\n"
+      : params.item.type === "toolResult"
+        ? "Tool result\n\n"
+        : params.item.type === "other"
+          ? "Other\n\n"
+          : "";
+  const content =
     params.item.type === "reasoning"
-      ? "Thinking\n\n"
-      : params.item.type === "toolCall"
-        ? "Tool call\n\n"
-        : params.item.type === "toolResult"
-          ? "Tool result\n\n"
-          : params.item.type === "other"
-            ? "Other\n\n"
-            : "";
+      ? [{ type: "thinking" as const, thinking: text }]
+      : params.item.type === "toolCall" && params.item.toolName
+        ? [
+            {
+              type: "toolCall" as const,
+              id: params.item.toolCallId ?? `${params.catalogId}:${params.item.id ?? timestamp}`,
+              name: params.item.toolName,
+              arguments: asNullableRecord(params.item.toolInput) ?? {},
+            },
+          ]
+        : [{ type: "text" as const, text: `${prefix}${text}` }];
   return {
     role: "assistant",
-    content: [{ type: "text", text: `${prefix}${text}` }],
+    content,
     timestamp,
     api: "openai-responses",
     provider: params.catalogId,

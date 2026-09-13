@@ -42,6 +42,48 @@ export function toGenericTranscriptItem(item: CodexThreadItem): SessionCatalogTr
     id: item.id,
     type,
     ...(text ? { text } : {}),
+    ...(type === "toolCall" || type === "toolResult" ? toolIdentity(item, type) : {}),
     raw: item as SessionCatalogTranscriptItem["raw"],
   };
+}
+
+/** Codex splits a tool into a call and a result that share one item id, so that
+    id pairs them into a single native card. Failure is a non-zero exit code or
+    an explicit error. */
+function toolIdentity(
+  item: CodexThreadItem,
+  type: "toolCall" | "toolResult",
+): Partial<SessionCatalogTranscriptItem> {
+  const toolName =
+    item.type === "commandExecution"
+      ? "shell"
+      : item.type === "fileChange"
+        ? "apply_patch"
+        : (item.tool ?? item.name ?? item.type);
+  const failed =
+    item.error !== undefined ||
+    (typeof item.exitCode === "number" && item.exitCode !== 0) ||
+    item.status === "failed";
+  return {
+    toolName,
+    toolCallId: item.id,
+    ...(type === "toolCall" ? { toolInput: toolInputOf(item) } : {}),
+    ...(type === "toolResult" && typeof item.exitCode === "number"
+      ? { exitCode: item.exitCode }
+      : {}),
+    ...(type === "toolResult" && failed ? { isError: true } : {}),
+  };
+}
+
+function toolInputOf(item: CodexThreadItem): SessionCatalogTranscriptItem["toolInput"] {
+  if (item.type === "commandExecution") {
+    return {
+      command: item.command ?? "",
+      ...(item.cwd ? { cwd: item.cwd } : {}),
+    };
+  }
+  if (item.type === "fileChange") {
+    return { changes: Array.isArray(item.changes) ? item.changes : [] };
+  }
+  return item.arguments ?? {};
 }

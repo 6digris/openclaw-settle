@@ -175,7 +175,7 @@ describe("importSessionCatalogHistory", () => {
       "repeat me",
       "numeric year",
       "numeric zero",
-      "Thinking\n\ncareful",
+      undefined,
       "answer",
       "Tool call\n\nbash",
       "Other\n\ncheckpoint",
@@ -183,6 +183,7 @@ describe("importSessionCatalogHistory", () => {
     expect(transcript.messages[0]?.["__openclaw"]).toEqual({
       mirrorOrigin: "pi-catalog-import",
     });
+    expect(transcript.messages[3]?.content).toEqual([{ type: "thinking", thinking: "careful" }]);
     expect(transcript.messages[0]?.timestamp).toBe(Date.parse("2026-07-25T12:00:00.000Z"));
     expect(transcript.messages[1]?.timestamp).toBe(Date.parse("2026"));
     expect(transcript.messages[2]?.timestamp).toBe(Date.parse("0"));
@@ -197,6 +198,43 @@ describe("importSessionCatalogHistory", () => {
       "pi-catalog:thread-1:t-1",
       "pi-catalog:thread-1:o-1",
     ]);
+  });
+
+  it("renders a reported tool call and result as native blocks", async () => {
+    const { result } = importHistory([
+      {
+        id: "t-1",
+        type: "toolCall",
+        text: '{"command":"ls"}',
+        toolName: "shell",
+        toolCallId: "call-1",
+        toolInput: { command: "ls" },
+      },
+      {
+        id: "t-1:result",
+        type: "toolResult",
+        text: "file.txt",
+        toolName: "shell",
+        toolCallId: "call-1",
+        isError: true,
+        exitCode: 2,
+      },
+      { id: "t-2", type: "toolCall", text: "unidentified" },
+    ]);
+    await result;
+
+    expect(transcript.messages[0]?.content).toEqual([
+      { type: "toolCall", id: "call-1", name: "shell", arguments: { command: "ls" } },
+    ]);
+    expect(transcript.messages[1]).toMatchObject({
+      role: "toolResult",
+      toolCallId: "call-1",
+      toolName: "shell",
+      isError: true,
+      content: [{ type: "text", text: "file.txt" }],
+    });
+    // An adapter reporting no identity keeps its labelled text form.
+    expect(messageText(transcript.messages[2] ?? {})).toBe("Tool call\n\nunidentified");
   });
 
   it("deduplicates a recovered import by scanning item idempotency keys", async () => {

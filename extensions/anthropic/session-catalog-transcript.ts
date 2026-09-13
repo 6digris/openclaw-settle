@@ -13,7 +13,46 @@ export type ClaudeTranscriptItem = {
   uuid?: string;
   resumeCursor?: string;
   truncated?: true;
+  /** Tool identity lifted out of the native blocks so an imported call renders
+      as a native tool card; a call and its result share `toolCallId`. */
+  toolName?: string;
+  toolCallId?: string;
+  toolInput?: unknown;
+  isError?: boolean;
 };
+
+/** Claude reports a turn's calls and results as content blocks; the first block
+    of each kind owns the identity the import pairs a card on. */
+function toolIdentity(type: string, content: unknown): Partial<ClaudeTranscriptItem> {
+  if (!Array.isArray(content)) {
+    return {};
+  }
+  if (type === "toolCall") {
+    const block = content.find((entry) => isRecord(entry) && entry.type === "tool_use");
+    if (!isRecord(block) || typeof block.name !== "string") {
+      return {};
+    }
+    return {
+      toolName: block.name,
+      ...(typeof block.id === "string" ? { toolCallId: block.id } : {}),
+      ...(block.input !== undefined ? { toolInput: block.input } : {}),
+    };
+  }
+  if (type === "toolResult") {
+    const block = content.find((entry) => isRecord(entry) && entry.type === "tool_result");
+    if (!isRecord(block)) {
+      return {};
+    }
+    return {
+      toolName: "tool",
+      ...(typeof block.tool_use_id === "string" ? { toolCallId: block.tool_use_id } : {}),
+      ...(content.some((entry) => isRecord(entry) && entry.is_error === true)
+        ? { isError: true }
+        : {}),
+    };
+  }
+  return {};
+}
 
 function transcriptItemType(role: string, content: unknown): string {
   if (!Array.isArray(content)) {
@@ -81,9 +120,11 @@ export function parseTranscriptLine(
   const fragments: string[] = [];
   collectTranscriptText(content, fragments);
   const text = [...new Set(fragments)].join("\n\n");
+  const itemType = transcriptItemType(role, content);
   const item: ClaudeTranscriptItem = {
-    type: transcriptItemType(role, content),
+    type: itemType,
     ...(text ? { text } : {}),
+    ...toolIdentity(itemType, content),
     content,
     ...(optionalString(raw.timestamp, 128)
       ? { timestamp: optionalString(raw.timestamp, 128) }

@@ -2,6 +2,7 @@ import type { AgentMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { parseDateStringTimestampMs } from "openclaw/plugin-sdk/number-runtime";
 import { withSessionTranscriptWriteLock } from "openclaw/plugin-sdk/session-transcript-runtime";
+import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { CLAUDE_CLI_BACKEND_ID } from "./cli-constants.js";
 import type { ClaudeTranscriptItem } from "./session-catalog-transcript.js";
 
@@ -25,17 +26,41 @@ function importedClaudeMessage(
       __openclaw: { mirrorOrigin: "claude-catalog-import" },
     } as AgentMessage;
   }
+  // Native blocks, not labelled prose: Control UI builds tool cards, call/result
+  // pairing, and reasoning disclosures from message and block shape. Rows whose
+  // native identity could not be read keep the labelled form.
+  if (item.type === "toolResult" && item.toolCallId) {
+    return {
+      role: "toolResult",
+      toolCallId: item.toolCallId,
+      toolName: item.toolName ?? "tool",
+      content: [{ type: "text", text }],
+      isError: item.isError === true,
+      timestamp,
+    };
+  }
   const prefix =
+    item.type === "toolCall" && !item.toolName
+      ? "Tool call\n\n"
+      : item.type === "toolResult"
+        ? "Tool result\n\n"
+        : "";
+  const content =
     item.type === "reasoning"
-      ? "Thinking\n\n"
-      : item.type === "toolCall"
-        ? "Tool call\n\n"
-        : item.type === "toolResult"
-          ? "Tool result\n\n"
-          : "";
+      ? [{ type: "thinking" as const, thinking: text }]
+      : item.type === "toolCall" && item.toolName
+        ? [
+            {
+              type: "toolCall" as const,
+              id: item.toolCallId ?? `claude:${item.uuid ?? timestamp}`,
+              name: item.toolName,
+              arguments: isRecord(item.toolInput) ? item.toolInput : {},
+            },
+          ]
+        : [{ type: "text" as const, text: `${prefix}${text}` }];
   return {
     role: "assistant",
-    content: [{ type: "text", text: `${prefix}${text}` }],
+    content,
     timestamp,
     api: "anthropic-messages",
     provider: CLAUDE_CLI_BACKEND_ID,

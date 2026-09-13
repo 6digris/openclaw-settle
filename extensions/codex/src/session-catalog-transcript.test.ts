@@ -67,7 +67,48 @@ describe("Codex catalog transcript", () => {
       id: "tool-1",
       type: "toolResult",
       text: output,
+      toolName: "shell",
+      toolCallId: "tool-1",
+      exitCode: 0,
       raw: source,
+    });
+  });
+
+  it("reports the identity a native tool card needs, including failure", () => {
+    const call = catalogThreadItem("tool-2", {
+      type: "commandExecution",
+      command: "rg pattern",
+      cwd: "/repo",
+    });
+    expect(toGenericTranscriptItem(call)).toMatchObject({
+      type: "toolCall",
+      toolName: "shell",
+      toolCallId: "tool-2",
+      toolInput: { command: "rg pattern", cwd: "/repo" },
+    });
+
+    const failed = catalogThreadItem("tool-3", {
+      type: "commandExecution",
+      command: "false",
+      aggregatedOutput: "boom",
+      exitCode: 1,
+    });
+    // Call and result share the item id, which is what pairs them into one card.
+    expect(toGenericTranscriptItem(failed)).toMatchObject({
+      type: "toolResult",
+      toolCallId: "tool-3",
+      exitCode: 1,
+      isError: true,
+    });
+
+    const patch = catalogThreadItem("tool-4", {
+      type: "fileChange",
+      changes: [{ path: "a.ts", kind: "modified" }],
+    });
+    expect(toGenericTranscriptItem(patch)).toMatchObject({
+      type: "toolCall",
+      toolName: "apply_patch",
+      toolInput: { changes: [{ path: "a.ts", kind: "modified" }] },
     });
   });
 
