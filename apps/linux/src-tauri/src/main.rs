@@ -2801,7 +2801,7 @@ async fn gateway_action(
 
 fn main() {
     // AppIndicator uses the GTK application name for the tray menu heading.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     gtk::glib::set_application_name("OpenClaw");
 
     let global_shortcuts_supported = tray::global_shortcuts_supported();
@@ -2976,7 +2976,9 @@ fn main() {
                 match event {
                     tauri::WindowEvent::Focused(false) => {
                         // GTK queues focus events; a stale blur must not hide a refocused window.
-                        if cfg!(target_os = "linux") && window.is_focused().unwrap_or(false) {
+                        if cfg!(any(target_os = "linux", target_os = "freebsd"))
+                            && window.is_focused().unwrap_or(false)
+                        {
                             return;
                         }
                         quickchat::request_hide(window.app_handle());

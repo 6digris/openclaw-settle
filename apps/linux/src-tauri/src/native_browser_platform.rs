@@ -38,7 +38,7 @@ pub async fn configure_browser(
                 .incognito(true)
                 .with_environment(platform.environment()))
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         {
             Ok(builder.incognito(true).with_related_view(platform.inner()))
         }
@@ -107,7 +107,7 @@ pub async fn navigation_state(webview: &Webview) -> Result<(String, String, bool
                 .map_err(|e| e.to_string())?;
             Ok((url, title, back.as_bool(), forward.as_bool()))
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         {
             use webkit2gtk::WebViewExt;
             let browser = platform.inner();
@@ -188,7 +188,7 @@ pub async fn observe_navigation(
                 )
                 .map_err(|e| e.to_string())?;
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         {
             use gtk::prelude::*;
             use webkit2gtk::WebViewExt;
@@ -275,7 +275,7 @@ pub async fn observe_navigation_failure(
                 )
                 .map_err(|e| e.to_string())?;
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         {
             use webkit2gtk::WebViewExt;
             platform.inner().connect_load_failed(move |_, _, _, error| {
@@ -317,7 +317,7 @@ async fn navigate(webview: &Webview, action: Navigation) -> Result<(), String> {
             }
             .map_err(|e| e.to_string())
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         {
             use webkit2gtk::WebViewExt;
             let browser = platform.inner();
@@ -451,7 +451,7 @@ async fn snapshot_png(webview: &Webview) -> Result<String, String> {
     response(receiver).await
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 async fn snapshot_png(webview: &Webview) -> Result<String, String> {
     use base64::Engine;
     use webkit2gtk::WebViewExt;
@@ -1165,7 +1165,7 @@ mod windows_download {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 pub async fn download(webview: &Webview, generation: u64) -> Result<Value, String> {
     use gtk::prelude::*;
     use webkit2gtk::{DownloadExt, URIResponseExt, WebViewExt};
@@ -1563,7 +1563,7 @@ pub async fn release(webview: &Webview) -> Result<(), String> {
             let _ = platform;
             windows_download::cancel(&label);
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         {
             let _ = (platform, label);
         }
@@ -1851,14 +1851,14 @@ mod mac_download {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 const BROWSER_OVERLAY_NAME: &str = "openclaw-dashboard-browser-overlay";
 
 /// Queue teardown before replacing the dashboard WebView. Native window children
 /// outlive an individual WebView, so leaving this wrapper behind would give the
 /// replacement dashboard a second expanding row in the GTK window.
 pub fn detach_surface(webview: &Webview) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     return webview
         .with_webview(|platform| {
             use gtk::prelude::*;
@@ -1894,7 +1894,7 @@ pub fn detach_surface(webview: &Webview) -> Result<(), String> {
             vbox.remove(&overlay);
         })
         .map_err(|error| format!("Could not detach the native browser surface: {error}"));
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
     {
         let _ = webview;
         Ok(())
@@ -1902,7 +1902,7 @@ pub fn detach_surface(webview: &Webview) -> Result<(), String> {
 }
 
 pub async fn prepare_surface(webview: &Webview) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     return native(webview, |platform| {
         use gtk::prelude::*;
         let primary = platform.inner();
@@ -1930,7 +1930,7 @@ pub async fn prepare_surface(webview: &Webview) -> Result<(), String> {
         Ok(())
     })
     .await;
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
     {
         let _ = webview;
         Ok(())
@@ -1942,7 +1942,7 @@ pub async fn set_bounds(
     position: LogicalPosition<f64>,
     size: LogicalSize<f64>,
 ) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     return native(webview, move |platform| {
         use gtk::prelude::*;
         let widget = platform.inner();
@@ -1978,7 +1978,7 @@ pub async fn set_bounds(
         Ok(())
     })
     .await;
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
     {
         webview.set_position(position).map_err(|e| e.to_string())?;
         webview.set_size(size).map_err(|e| e.to_string())

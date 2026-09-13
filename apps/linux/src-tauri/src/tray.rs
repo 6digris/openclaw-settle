@@ -49,8 +49,8 @@ struct StatusLine {
     stopped: bool,
 }
 
-#[cfg(any(target_os = "linux", test))]
-fn linux_global_shortcuts_supported(
+#[cfg(any(target_os = "linux", target_os = "freebsd", test))]
+fn x11_global_shortcuts_supported(
     session_type: Option<&str>,
     wayland_display: Option<&str>,
     display: Option<&str>,
@@ -60,18 +60,18 @@ fn linux_global_shortcuts_supported(
 }
 
 pub fn global_shortcuts_supported() -> bool {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     {
         let session_type = std::env::var("XDG_SESSION_TYPE").ok();
         let wayland_display = std::env::var("WAYLAND_DISPLAY").ok();
         let display = std::env::var("DISPLAY").ok();
-        linux_global_shortcuts_supported(
+        x11_global_shortcuts_supported(
             session_type.as_deref(),
             wayland_display.as_deref(),
             display.as_deref(),
         )
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
     {
         true
     }
@@ -587,24 +587,24 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn linux_shortcut_support_follows_x11_session_facts() {
-        assert!(linux_global_shortcuts_supported(
+    fn shortcut_support_follows_x11_session_facts() {
+        assert!(x11_global_shortcuts_supported(
             Some("x11"),
             Some("wayland-0"),
             Some(":0"),
         ));
-        assert!(linux_global_shortcuts_supported(None, None, Some(":0")));
-        assert!(!linux_global_shortcuts_supported(
+        assert!(x11_global_shortcuts_supported(None, None, Some(":0")));
+        assert!(!x11_global_shortcuts_supported(
             Some("wayland"),
             Some("wayland-0"),
             Some(":0"),
         ));
-        assert!(!linux_global_shortcuts_supported(
+        assert!(!x11_global_shortcuts_supported(
             None,
             Some("wayland-0"),
             Some(":0"),
         ));
-        assert!(!linux_global_shortcuts_supported(None, None, None));
+        assert!(!x11_global_shortcuts_supported(None, None, None));
     }
 
     #[test]
