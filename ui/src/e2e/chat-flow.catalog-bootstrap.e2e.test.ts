@@ -11,6 +11,7 @@ import {
 } from "../../../src/gateway/test-helpers.e2e.js";
 import { createOpenClawTestState } from "../../../src/test-utils/openclaw-test-state.js";
 import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
+import { waitForControlUiGatewayReady } from "../test-helpers/control-ui-e2e-readiness.ts";
 import { createChatFlowE2eSuite, installMockGateway } from "./chat-flow.test-support.ts";
 import { createControlUiE2eContextOptions } from "./control-ui-e2e-suite.test-support.ts";
 
@@ -65,7 +66,7 @@ suite.define(() => {
         agentModel: "fixture/session-current",
         sessionInfo: { model: current.id, modelProvider: current.provider },
         models: [older],
-        heldMethods: ["models.list"],
+        heldMethods: ["models.list", "chat.startup"],
         presenceUsers: [{ id: "fixture-person", name: "Fixture Person", self: true }],
         methodResponses: {
           "sessions.list": {
@@ -97,8 +98,6 @@ suite.define(() => {
         await expect
           .poll(async () => (await gateway.getRequests("models.list", scope)).length)
           .toBe(1);
-        // The chat's delayed child roster request is startup work, independent of the picker.
-        await gateway.waitForRequest("sessions.list", { match: { spawnedBy: sessionKey } });
         for (const otherScope of [
           { agentId: "alpha" },
           { agentId: "alpha", sessionKey: "agent:alpha:other" },
@@ -130,6 +129,18 @@ suite.define(() => {
         );
         const trigger = picker.locator("[data-chat-model-select]");
         const currentRow = picker.locator('[data-chat-model-option="fixture/session-current"]');
+        await gateway.waitForRequest("chat.startup");
+        await waitForControlUiGatewayReady(page);
+        await expect.poll(() => trigger.getAttribute("aria-busy")).toBe("false");
+        await expect.poll(() => trigger.getAttribute("aria-disabled")).toBe("true");
+        expect(await currentRow.count()).toBe(1);
+        // A usable catalog can arrive before chat startup enables the picker.
+        await trigger.click();
+        expect(await currentRow.isVisible()).toBe(false);
+        await gateway.resolveDeferred("chat.startup");
+        await expect.poll(() => trigger.getAttribute("aria-disabled")).toBe("false");
+        // The delayed child roster belongs to startup; keep it outside picker request counts.
+        await gateway.waitForRequest("sessions.list", { match: { spawnedBy: sessionKey } });
         const requestsBeforeOpen = (await gateway.getRequests("models.list")).length;
         const sessionRequestsBeforeOpen = (await gateway.getRequests("sessions.list")).length;
         await trigger.click();
