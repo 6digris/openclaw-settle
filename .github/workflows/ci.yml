@@ -5112,10 +5112,12 @@ jobs:
           fi
 
       - name: Build iOS app
+        id: ios_build
         if: matrix.phase == 'smoke' || matrix.phase == 'tests'
         run: pnpm ios:build
 
       - name: Prove native iOS actions against a real Gateway
+        id: ios_native_wire
         if: (matrix.phase == 'smoke' || matrix.phase == 'tests') && needs.preflight.outputs.compatibility_target != 'true'
         env:
           OPENCLAW_BUILD_PRIVATE_QA: "1"
@@ -5145,7 +5147,7 @@ jobs:
       # lifecycles. Exercise both owners on the already provisioned simulator.
       - name: Run focused iOS lifecycle simulator tests
         id: ios_lifecycle_tests
-        if: matrix.phase == 'tests' && needs.preflight.outputs.compatibility_target != 'true'
+        if: matrix.phase == 'tests' && needs.preflight.outputs.compatibility_target != 'true' && !cancelled() && steps.ios_build.outcome == 'success'
         run: |
           set -euo pipefail
           simulator_id="$(

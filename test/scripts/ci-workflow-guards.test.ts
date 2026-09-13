@@ -2649,6 +2649,7 @@ NODE
           run_openclawkit_tests: "true",
           release_scope: "full",
         },
+        steps: { ios_build: { outputs: {}, outcome: "success" as const } },
       };
       const matrixPhases = job.strategy.matrix.phase;
       expect(
@@ -2736,6 +2737,117 @@ NODE
           runCiGateFixture(`preflight=success|true\n${jobName}=${conclusion}|true`).status,
         ).toBe(1);
       }
+    },
+  );
+
+  it.each([
+    {
+      phase: "tests",
+      build: "success",
+      wire: "failure",
+      cancelled: false,
+      historical: false,
+      expected: true,
+    },
+    {
+      phase: "tests",
+      build: "success",
+      wire: "success",
+      cancelled: false,
+      historical: false,
+      expected: true,
+    },
+    {
+      phase: "tests",
+      build: "failure",
+      wire: "skipped",
+      cancelled: false,
+      historical: false,
+      expected: false,
+    },
+    {
+      phase: "tests",
+      build: "skipped",
+      wire: "skipped",
+      cancelled: false,
+      historical: false,
+      expected: false,
+    },
+    {
+      phase: "tests",
+      build: "success",
+      wire: "cancelled",
+      cancelled: true,
+      historical: false,
+      expected: false,
+    },
+    {
+      phase: "smoke",
+      build: "success",
+      wire: "failure",
+      cancelled: false,
+      historical: false,
+      expected: false,
+    },
+    {
+      phase: "release",
+      build: "skipped",
+      wire: "skipped",
+      cancelled: false,
+      historical: false,
+      expected: false,
+    },
+    {
+      phase: "tests",
+      build: "success",
+      wire: "skipped",
+      cancelled: false,
+      historical: true,
+      expected: false,
+    },
+  ] as const)(
+    "runs iOS lifecycle proof independently after native wire failure: %j",
+    (scenario) => {
+      const workflow = readCiWorkflow();
+      const steps: WorkflowStep[] = workflow.jobs["ios-build"].steps;
+      const build = expectDefined(
+        steps.find((step) => step.name === "Build iOS app"),
+        "iOS build",
+      );
+      const wire = expectDefined(
+        steps.find((step) => step.name === "Prove native iOS actions against a real Gateway"),
+        "native wire proof",
+      );
+      const lifecycle = expectDefined(
+        steps.find((step) => step.name === "Run focused iOS lifecycle simulator tests"),
+        "iOS lifecycle proof",
+      );
+      expect(build.id).toBe("ios_build");
+      expect(wire.id).toBe("ios_native_wire");
+      expect(steps.indexOf(build)).toBeLessThan(steps.indexOf(wire));
+      expect(steps.indexOf(wire)).toBeLessThan(steps.indexOf(lifecycle));
+      expect(lifecycle.if).toContain("!cancelled()");
+      expect(lifecycle.if).toContain("steps.ios_build.outcome == 'success'");
+      expect(lifecycle.run).toContain("-only-testing:OpenClawTests/IOSGatewayChatTransportTests");
+      for (const step of [build, wire, lifecycle]) {
+        expect(step["continue-on-error"]).not.toBe(true);
+      }
+      expect(
+        evaluateWorkflowExpression(`\${{ ${lifecycle.if} }}`, {
+          eventName: "workflow_dispatch",
+          repository: "openclaw/openclaw",
+          runAttempt: 1,
+          matrix: { phase: scenario.phase },
+          preflightOutputs: { compatibility_target: String(scenario.historical) },
+          failed: scenario.wire === "failure" || scenario.build === "failure",
+          cancelled: scenario.cancelled,
+          steps: {
+            ios_build: { outputs: {}, outcome: scenario.build },
+            ios_native_wire: { outputs: {}, outcome: scenario.wire },
+          },
+        }),
+      ).toBe(scenario.expected);
+      expect(runCiGateFixture("preflight=success|true\nios-build=failure|true").status).toBe(1);
     },
   );
 
