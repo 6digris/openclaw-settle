@@ -10,6 +10,7 @@ import {
 } from "../agents/agent-run-result.js";
 import { resolveCliBackendConfig, type ResolvedCliBackend } from "../agents/cli-backends.js";
 import { normalizeCliModel } from "../agents/cli-runner/helpers.js";
+import { bindExtraSystemPromptContext } from "../agents/extra-system-prompt-context.js";
 import { SessionManager } from "../agents/sessions/index.js";
 import { resolveAgentTimeoutMs } from "../agents/timeout.js";
 import { resolveStateDir } from "../config/paths.js";
@@ -336,7 +337,12 @@ async function runSystemAgentTurnWithDeps(
     messageChannel: "openclaw",
     messageProvider: "openclaw",
     disableTrajectory: true,
+    extraSystemPrompt: SYSTEM_AGENT_SYSTEM_PROMPT,
   };
+  bindExtraSystemPromptContext(shared, {
+    text: SYSTEM_AGENT_SYSTEM_PROMPT,
+    reducibleRanges: [],
+  });
   // Directives are per-turn: the tool records at most one interactive handoff
   // and the engine executes it after the reply.
   const directiveRef: { current?: SystemAgentTurnDirective } = {};
@@ -375,7 +381,6 @@ async function runSystemAgentTurnWithDeps(
           model: plan.model,
           agentDir: plan.agentDir,
           ...(plan.authProfileId ? { authProfileId: plan.authProfileId } : {}),
-          extraSystemPrompt: SYSTEM_AGENT_SYSTEM_PROMPT,
           extraSystemPromptStatic: SYSTEM_AGENT_SYSTEM_PROMPT,
           systemAgentTool,
           ...(cliToolAvailability ? { cliToolAvailability } : {}),
@@ -408,7 +413,6 @@ async function runSystemAgentTurnWithDeps(
         ...shared,
         lane: CommandLane.SystemAgentInference,
         preparedRunAdmission,
-        extraSystemPrompt: SYSTEM_AGENT_SYSTEM_PROMPT,
         toolsAllow: ["openclaw"],
         // The helper cannot read workspace skills; skip their discovery and environment setup.
         toolExecutionAllow: ["openclaw"],

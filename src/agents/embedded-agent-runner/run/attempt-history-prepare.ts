@@ -10,9 +10,14 @@ import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../../context-engine/h
 import type { AssembleResult } from "../../../context-engine/types.js";
 import { resolveHeartbeatSummaryForAgent } from "../../../infra/heartbeat-summary.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../defaults.js";
+import {
+  prepareExtraSystemPrompt,
+  resolveExtraSystemPromptSource,
+} from "../../extra-system-prompt.js";
 import { assembleHarnessContextEngine } from "../../harness/context-engine-lifecycle.js";
 import type { AgentMessage } from "../../runtime/index.js";
 import { sanitizeToolUseResultPairingForModel } from "../../session-transcript-repair.js";
+import { isToolExecutionAllowed } from "../../tool-policy-shared.js";
 import { getHistoryLimitFromSessionKey, limitHistoryTurns } from "../history.js";
 import { log } from "../logger.js";
 import { sanitizeSessionHistory, validateReplayTurns } from "../replay-history.js";
@@ -236,14 +241,43 @@ export async function prepareEmbeddedAttemptHistory(
         unwindowedContextEngineMessagesForPrecheck = preassemblyMessages;
       }
       if (assembled.systemPromptAddition) {
+        const addition = await prepareExtraSystemPrompt(
+          { extraSystemPrompt: assembled.systemPromptAddition },
+          {
+            contextTokenBudget: attempt.contextTokenBudget,
+            ...resolveExtraSystemPromptSource({
+              agentId: sessionAgentId,
+              agentDir: input.agentDir,
+              sessionId: attempt.sessionId,
+              sessionKey: attempt.sessionKey,
+              storePath: attempt.sessionTarget?.storePath ?? attempt.sessionFile,
+            }),
+            readAvailable:
+              capabilityToolNames.has("read") &&
+              (!attempt.toolExecutionAllow ||
+                isToolExecutionAllowed(attempt.toolExecutionAllow, "read")) &&
+              !input.setup.effectiveFsWorkspaceOnly &&
+              (!attempt.permissionMode || attempt.permissionMode === "full") &&
+              !sandboxed,
+          },
+        );
         setSystemPrompt(
           prependSystemPromptAddition({
             systemPrompt: systemPromptText,
-            systemPromptAddition: assembled.systemPromptAddition,
+            systemPromptAddition: addition.text,
           }),
         );
+        const report = input.prepared.systemPrompt.systemPromptReport;
+        if (report) {
+          const existing = report.extraSystemPrompt;
+          report.extraSystemPrompt = {
+            rawChars: (existing?.rawChars ?? 0) + addition.rawChars,
+            injectedChars: (existing?.injectedChars ?? 0) + addition.injectedChars,
+            truncated: existing?.truncated === true || addition.truncated,
+          };
+        }
         log.debug(
-          `context engine: prepended system prompt addition (${assembled.systemPromptAddition.length} chars)`,
+          `context engine: prepended system prompt addition (${addition.rawChars} raw chars, ${addition.injectedChars} injected chars)`,
         );
       }
     } catch (error) {

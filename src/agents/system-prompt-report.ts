@@ -117,6 +117,7 @@ export function buildSystemPromptReport(params: {
   bootstrapTruncation?: SessionSystemPromptReport["bootstrapTruncation"];
   sandbox?: SessionSystemPromptReport["sandbox"];
   systemPrompt: string;
+  extraSystemPrompt?: SessionSystemPromptReport["extraSystemPrompt"];
   injectedWorkspaceFiles: BootstrapInjectionStat[];
   skillsPrompt: string;
   tools: AgentTool[];
@@ -146,6 +147,15 @@ export function buildSystemPromptReport(params: {
       projectContextChars,
       nonProjectContextChars: Math.max(0, systemPromptChars - projectContextChars),
     },
+    ...(params.extraSystemPrompt?.rawChars
+      ? {
+          extraSystemPrompt: {
+            rawChars: params.extraSystemPrompt.rawChars,
+            injectedChars: params.extraSystemPrompt.injectedChars,
+            truncated: params.extraSystemPrompt.truncated,
+          },
+        }
+      : {}),
     ...(params.currentTurn ? { currentTurn: params.currentTurn } : {}),
     injectedWorkspaceFiles: params.injectedWorkspaceFiles,
     skills: {

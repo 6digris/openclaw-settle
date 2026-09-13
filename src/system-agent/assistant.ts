@@ -5,6 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { prepareSystemAgentRunAdmission } from "../agents/admitted-run-context.js";
 import { extractAgentRunTerminalError, extractAgentRunText } from "../agents/agent-run-result.js";
+import {
+  bindExtraSystemPromptContext,
+  type ExtraSystemPromptContext,
+} from "../agents/extra-system-prompt-context.js";
 import { SessionManager } from "../agents/sessions/session-manager.js";
 import { CommandLane } from "../process/lanes.js";
 import {
@@ -95,7 +99,7 @@ export async function planSystemAgentCommandWithConfiguredModel(params: {
   });
   const result = await runConfiguredSystemAgentText({
     prompt,
-    systemPrompt: SYSTEM_AGENT_ASSISTANT_SYSTEM_PROMPT,
+    systemPromptContext: { text: SYSTEM_AGENT_ASSISTANT_SYSTEM_PROMPT, reducibleRanges: [] },
     runIdPrefix: "openclaw-planner",
     verifiedInference: params.verifiedInference,
     deps: params.deps,
@@ -115,7 +119,7 @@ export async function planSystemAgentGreetingWithConfiguredModel(params: {
 }): Promise<SystemAgentGreetingPlan | null> {
   const result = await runConfiguredSystemAgentText({
     prompt: buildSystemAgentGreetingUserPrompt(params),
-    systemPrompt: SYSTEM_AGENT_GREETING_SYSTEM_PROMPT,
+    systemPromptContext: { text: SYSTEM_AGENT_GREETING_SYSTEM_PROMPT, reducibleRanges: [] },
     runIdPrefix: "openclaw-greeting",
     verifiedInference: params.verifiedInference,
     deps: params.deps,
@@ -126,7 +130,7 @@ export async function planSystemAgentGreetingWithConfiguredModel(params: {
 
 async function runConfiguredSystemAgentText(params: {
   prompt: string;
-  systemPrompt: string;
+  systemPromptContext: ExtraSystemPromptContext;
   runIdPrefix: string;
   readonly verifiedInference: SystemAgentVerifiedInferenceBinding;
   deps?: SystemAgentConfiguredModelPlannerDeps;
@@ -178,8 +182,9 @@ async function runConfiguredSystemAgentText(params: {
       timeoutMs,
       thinkLevel: "off" as const,
       runId,
-      extraSystemPrompt: params.systemPrompt,
-      extraSystemPromptStatic: params.systemPrompt,
+      extraSystemPrompt: params.systemPromptContext.text,
+      extraSystemPromptStatic: params.systemPromptContext.text,
+      ...bindExtraSystemPromptContext({}, params.systemPromptContext),
       messageChannel: "openclaw",
       messageProvider: "openclaw",
       disableTools: true,

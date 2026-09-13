@@ -26,6 +26,7 @@ import {
 import { OPENCLAW_AGENT_RUNTIME_ID } from "../agent-runtime-id.js";
 import { isHeartbeatLifecycleRunKind } from "../bootstrap-mode.js";
 import type { AcceptedCompactionSuccessor } from "../embedded-agent-runner/compaction-successor.js";
+import { copyExtraSystemPromptContext } from "../extra-system-prompt-context.js";
 import { buildMainSessionRecoveryClearPatch } from "../main-session-recovery/main-session-recovery-clear.js";
 import { persistPendingFinalDeliveryMarker } from "../pending-final-delivery-marker.js";
 import type { AgentRunSessionTarget } from "../run-session-target.js";
@@ -467,6 +468,7 @@ export async function finalizeEmbeddedAgentCommand(params: {
               senderIsOwner: params.opts.senderIsOwner,
               thinkLevel: effectiveTurnThinkLevel,
               extraSystemPrompt: params.opts.extraSystemPrompt,
+              ...copyExtraSystemPromptContext(params.opts, {}),
               pluginGeneration: params.prepared.commandRuntimeContext?.pluginGeneration,
               abortSignal: maintenance.signal,
             },

@@ -27,6 +27,11 @@ import type {
   EmbeddedRunAttemptResult,
 } from "../embedded-agent-runner/run/types.js";
 import {
+  appendExtraSystemPromptContext,
+  copyExtraSystemPromptContext,
+  replaceExtraSystemPromptContextRange,
+} from "../extra-system-prompt-context.js";
+import {
   unwrapModelHeaderSentinelsForProviderEgress,
   unwrapSecretSentinelsForProviderEgress,
 } from "../provider-secret-egress.js";
@@ -635,11 +640,23 @@ function applyPluginHarnessDenyAllToolPolicy(
   if (!prompt) {
     return params;
   }
-  return {
+  const prepared = copyExtraSystemPromptContext(params, {
     ...params,
     toolsAllow: [],
-    extraSystemPrompt: appendPluginHarnessToolPolicyPrompt(params.extraSystemPrompt, prompt),
-  };
+    extraSystemPrompt: params.extraSystemPrompt?.trim() || undefined,
+  });
+  const offset = prepared.extraSystemPrompt?.indexOf(prompt) ?? -1;
+  if (offset >= 0) {
+    replaceExtraSystemPromptContextRange(prepared, {
+      start: offset,
+      end: offset + prompt.length,
+      text: prompt,
+      reducible: false,
+    });
+  } else {
+    appendExtraSystemPromptContext(prepared, prompt, { reducible: false });
+  }
+  return prepared;
 }
 
 export function resolvePluginHarnessPolicyToolsAllow(
@@ -862,14 +879,6 @@ function hasSenderIdentity(params: PluginHarnessToolPolicyContext): boolean {
     params.senderUsername?.trim() ||
     params.senderE164?.trim(),
   );
-}
-
-function appendPluginHarnessToolPolicyPrompt(existing: string | undefined, prompt: string): string {
-  const trimmed = existing?.trim();
-  if (!trimmed) {
-    return prompt;
-  }
-  return trimmed.includes(prompt) ? trimmed : `${trimmed}\n\n${prompt}`;
 }
 
 function policyDeniesAllTools(policy?: { deny?: string[] }): boolean {

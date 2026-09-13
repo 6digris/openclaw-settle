@@ -17,6 +17,7 @@ import { onAgentEventForRun } from "../../infra/agent-events.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { resolvePreparedRunAdmission } from "../admitted-run-context.js";
 import { stripOpenClawMcpToolPrefix } from "../cli-runner/tool-policy.js";
+import { copyExtraSystemPromptContext } from "../extra-system-prompt-context.js";
 import { normalizeToolPolicyName } from "../tool-policy.js";
 import { isToolResultError } from "../tool-result-error.js";
 import { resolveEmbeddedCliBackendDispatchEligibility } from "./cli-backend-dispatch-eligibility.js";
@@ -208,7 +209,7 @@ async function runEmbeddedAgentViaCliBackend(
   );
   let finalAssistantText: string | undefined;
   try {
-    const result = await runCliAgent({
+    const cliParams: Parameters<typeof runCliAgent>[0] = {
       admittedRunContext,
       sessionManager: params.sessionManager,
       sessionId: params.sessionId,
@@ -259,7 +260,8 @@ async function runEmbeddedAgentViaCliBackend(
       cleanupCliLiveSessionOnRunEnd: true,
       requireExplicitMessageTarget: true,
       cleanupBundleMcpOnRunEnd: params.cleanupBundleMcpOnRunEnd,
-    });
+    };
+    const result = await runCliAgent(copyExtraSystemPromptContext(params, cliParams));
     finalAssistantText = result.payloads?.find(
       (payload) => payload.isReasoning !== true && typeof payload.text === "string",
     )?.text;

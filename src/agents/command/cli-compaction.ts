@@ -46,6 +46,7 @@ import { runContextEngineMaintenance as runContextEngineMaintenanceImpl } from "
 import { shouldPreemptivelyCompactBeforePrompt as shouldPreemptivelyCompactBeforePromptImpl } from "../embedded-agent-runner/run/preemptive-compaction.js";
 import { resolveLiveToolResultMaxChars as resolveLiveToolResultMaxCharsImpl } from "../embedded-agent-runner/tool-result-truncation.js";
 import type { EmbeddedAgentCompactResult } from "../embedded-agent-runner/types.js";
+import { copyExtraSystemPromptContext } from "../extra-system-prompt-context.js";
 import { isRecoverableNativeHarnessBindingFailure } from "../harness/compaction-recovery.js";
 import { maybeCompactAgentHarnessSession as maybeCompactAgentHarnessSessionImpl } from "../harness/compaction.js";
 import { ensureSelectedAgentHarnessPlugin as ensureSelectedAgentHarnessPluginImpl } from "../harness/runtime-plugin.js";
@@ -237,6 +238,7 @@ function buildCliCompactionRuntimeContext(params: CliCompactionRuntimeContextPar
       modelSelectionLocked: params.modelSelectionLocked,
       thinkLevel: params.thinkLevel,
       extraSystemPrompt: params.extraSystemPrompt,
+      ...copyExtraSystemPromptContext(params, {}),
     }),
     currentTokenCount: params.currentTokenCount,
     tokenBudget: params.contextTokenBudget,
@@ -292,6 +294,7 @@ async function compactCliTranscript(params: {
     modelSelectionLocked: params.modelSelectionLocked,
     thinkLevel: params.thinkLevel,
     extraSystemPrompt: params.extraSystemPrompt,
+    ...copyExtraSystemPromptContext(params, {}),
     currentTokenCount: params.currentTokenCount,
     contextTokenBudget: params.contextTokenBudget,
     trigger: "cli_budget",
@@ -498,6 +501,7 @@ async function compactNativeHarnessCliTranscript(params: {
           senderIsOwner: params.senderIsOwner,
           thinkLevel: params.thinkLevel,
           extraSystemPrompt: params.extraSystemPrompt,
+          ...copyExtraSystemPromptContext(params, {}),
           modelSelectionLocked,
           allowGatewaySubagentBinding: true,
           ...(params.contextEngine
@@ -520,6 +524,7 @@ async function compactNativeHarnessCliTranscript(params: {
                   modelSelectionLocked,
                   thinkLevel: params.thinkLevel,
                   extraSystemPrompt: params.extraSystemPrompt,
+                  ...copyExtraSystemPromptContext(params, {}),
                   currentTokenCount: params.currentTokenCount,
                   contextTokenBudget: params.contextTokenBudget,
                   trigger: "cli_native_budget",
@@ -739,6 +744,7 @@ export async function runCliTurnCompactionLifecycle(
           senderIsOwner: params.senderIsOwner,
           thinkLevel: params.thinkLevel,
           extraSystemPrompt: params.extraSystemPrompt,
+          ...copyExtraSystemPromptContext(params, {}),
           pluginGeneration: params.pluginGeneration,
           abortSignal: params.abortSignal,
           assertActive,
@@ -794,6 +800,7 @@ export async function runCliTurnCompactionLifecycle(
           senderIsOwner: params.senderIsOwner,
           thinkLevel: params.thinkLevel,
           extraSystemPrompt: params.extraSystemPrompt,
+          ...copyExtraSystemPromptContext(params, {}),
           bestEffortMaintenance: nativeFallbackToContextEngine,
           expectedEntry,
           assertActive,

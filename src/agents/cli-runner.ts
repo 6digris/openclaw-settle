@@ -76,6 +76,7 @@ import {
 import type { PreparedCliRunContext, RunCliAgentParams } from "./cli-runner/types.js";
 import { claudeCliSessionTranscriptHasContent as claudeCliSessionTranscriptHasContentImpl } from "./command/attempt-execution.helpers.js";
 import type { EmbeddedAgentRunResult } from "./embedded-agent-runner.js";
+import { withExtraSystemPromptScope } from "./extra-system-prompt.js";
 import { bootstrapHarnessContextEngine } from "./harness/context-engine-lifecycle.js";
 import { buildAgentHookContext } from "./harness/hook-context.js";
 import { buildAgentHookConversationMessages } from "./harness/hook-history.js";
@@ -138,20 +139,21 @@ export async function isCliBindingFlushed(
 export function runCliAgent(paramsInput: RunCliAgentParams): Promise<EmbeddedAgentRunResult> {
   const lifecycleGeneration =
     paramsInput.lifecycleGeneration ?? captureAgentRunLifecycleGeneration(paramsInput.runId);
-  const params = {
-    ...paramsInput,
-    lifecycleGeneration,
-  };
+  const params = { ...paramsInput, lifecycleGeneration };
   // Observability services register before turns and keep subscriptions process-stable.
   // Snapshot listener presence here so disabled installs pay no synthetic trace cost.
-  return withAgentRunLifecycleGeneration(lifecycleGeneration, () =>
-    isClaudeCliBackend(params.provider) &&
-    areDiagnosticsEnabledForProcess() &&
-    hasInternalDiagnosticEventListeners()
-      ? runClaudeCliAgentTurnWithDiagnostics(params, (diagnosticLifecycle) =>
-          runCliAgentInternal(params, diagnosticLifecycle),
-        )
-      : runCliAgentInternal(params),
+  return withExtraSystemPromptScope(
+    () =>
+      withAgentRunLifecycleGeneration(lifecycleGeneration, () =>
+        isClaudeCliBackend(params.provider) &&
+        areDiagnosticsEnabledForProcess() &&
+        hasInternalDiagnosticEventListeners()
+          ? runClaudeCliAgentTurnWithDiagnostics(params, (diagnosticLifecycle) =>
+              runCliAgentInternal(params, diagnosticLifecycle),
+            )
+          : runCliAgentInternal(params),
+      ),
+    params.runId,
   );
 }
 

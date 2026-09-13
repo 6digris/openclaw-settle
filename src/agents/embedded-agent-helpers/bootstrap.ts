@@ -182,6 +182,7 @@ function normalizePolicyDigestLine(line: string): string {
 function buildAgentsPolicyDigest(
   candidates: readonly PolicyDigestCandidate[],
   budget: number,
+  measure: (text: string) => number = (text) => text.length,
 ): PolicyDigest {
   if (budget <= 0) {
     return { text: "", omittedLines: 0 };
@@ -191,11 +192,12 @@ function buildAgentsPolicyDigest(
   let used = 0;
   const trySelect = (candidate: PolicyDigestCandidate) => {
     const separatorChars = selected.size > 0 ? 1 : 0;
-    if (used + separatorChars + candidate.text.length > budget) {
+    const cost = measure(candidate.text);
+    if (used + separatorChars + cost > budget) {
       return;
     }
     selected.add(candidate);
-    used += separatorChars + candidate.text.length;
+    used += separatorChars + cost;
   };
 
   for (const candidate of candidates) {
@@ -218,7 +220,27 @@ function buildAgentsPolicyDigest(
   };
 }
 
-function trimAgentsBootstrapContent(trimmed: string, maxChars: number): TrimBootstrapResult {
+export function buildPolicyContextExcerpt(
+  trimmed: string,
+  maxChars: number,
+  source: {
+    name: string;
+    omissionNotice: string;
+    budget?: {
+      measure: (text: string) => number;
+      head: (text: string, maxChars: number) => string;
+      tail: (text: string, maxChars: number) => string;
+    };
+  } = {
+    name: AGENTS_BOOTSTRAP_FILENAME,
+    omissionNotice: `[...truncated, read ${AGENTS_BOOTSTRAP_FILENAME} for full content...]`,
+  },
+): TrimBootstrapResult {
+  const measure = source.budget?.measure ?? ((text: string) => text.length);
+  const sliceHead =
+    source.budget?.head ?? ((text: string, size: number) => sliceUtf16Safe(text, 0, size));
+  const sliceTail =
+    source.budget?.tail ?? ((text: string, size: number) => sliceUtf16Safe(text, -size));
   let headChars = Math.floor(maxChars * AGENTS_POLICY_HEAD_RATIO);
   let tailChars = Math.floor(maxChars * AGENTS_POLICY_TAIL_RATIO);
   let digestBudget = Math.floor(maxChars * AGENTS_POLICY_DIGEST_RATIO);
@@ -247,36 +269,39 @@ function trimAgentsBootstrapContent(trimmed: string, maxChars: number): TrimBoot
       }
     }
   }
-  let digest = buildAgentsPolicyDigest(candidates, digestBudget);
-  const render = () =>
-    [
-      sliceUtf16Safe(trimmed, 0, headChars),
-      `[...truncated, read ${AGENTS_BOOTSTRAP_FILENAME} for full content...]`,
-      digest.text ? "[Policy digest from AGENTS.md]" : "",
+  let digest = buildAgentsPolicyDigest(candidates, digestBudget, measure);
+  const render = () => {
+    const head = sliceHead(trimmed, headChars);
+    const tail = tailChars > 0 ? sliceTail(trimmed, tailChars) : "";
+    return [
+      head,
+      source.omissionNotice,
+      digest.text ? `[Policy digest from ${source.name}]` : "",
       digest.text,
       digest.omittedLines > 0 ? `[...${digest.omittedLines} more policy lines omitted...]` : "",
-      `…(truncated ${AGENTS_BOOTSTRAP_FILENAME}: kept ${headChars}+policy ${digest.text.length}+${tailChars} chars of ${trimmed.length})…`,
-      tailChars > 0 ? sliceUtf16Safe(trimmed, -tailChars) : "",
+      `…(truncated ${source.name}: kept ${source.budget ? head.length : headChars}+policy ${digest.text.length}+${source.budget ? tail.length : tailChars} chars of ${trimmed.length})…`,
+      tail,
     ]
       .filter((part) => part.length > 0)
       .join("\n");
+  };
 
   let rendered = render();
-  while (rendered.length > maxChars && (tailChars > 0 || headChars > 1 || digestBudget > 0)) {
-    const overflow = rendered.length - maxChars;
+  while (measure(rendered) > maxChars && (tailChars > 0 || headChars > 1 || digestBudget > 0)) {
+    const overflow = measure(rendered) - maxChars;
     if (tailChars > 0) {
       tailChars = Math.max(0, tailChars - overflow);
     } else if (headChars > 1) {
       headChars = Math.max(1, headChars - overflow);
     } else {
       digestBudget = Math.max(0, digestBudget - overflow);
-      digest = buildAgentsPolicyDigest(candidates, digestBudget);
+      digest = buildAgentsPolicyDigest(candidates, digestBudget, measure);
     }
     rendered = render();
   }
 
   return {
-    content: rendered.length > maxChars ? truncateUtf16Safe(rendered, maxChars) : rendered,
+    content: measure(rendered) > maxChars ? sliceHead(rendered, maxChars) : rendered,
     truncated: true,
     maxChars,
     originalLength: trimmed.length,
@@ -298,7 +323,7 @@ function trimBootstrapContent(
     };
   }
   if (isAgentsBootstrapFile(fileName)) {
-    return trimAgentsBootstrapContent(trimmed, maxChars);
+    return buildPolicyContextExcerpt(trimmed, maxChars);
   }
 
   const markerTemplate = (headChars: number, tailChars: number) =>

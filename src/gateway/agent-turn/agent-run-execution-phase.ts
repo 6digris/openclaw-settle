@@ -8,6 +8,7 @@ import {
   buildAgentRunTerminalOutcome,
   type AgentRunTerminalOutcome,
 } from "../../agents/agent-run-terminal-outcome.js";
+import { bindExtraSystemPromptContext } from "../../agents/extra-system-prompt-context.js";
 import { repairMainSessionRecoveryMutation } from "../../agents/main-session-recovery/main-session-recovery-lifecycle.js";
 import { scheduleMainSessionRecoveryPendingTarget } from "../../agents/main-session-recovery/main-session-recovery-owner-release.js";
 import {
@@ -17,6 +18,7 @@ import {
 } from "../../agents/main-session-recovery/main-session-recovery-store.js";
 import { withPreparedModelRuntimePluginGenerationScope } from "../../agents/prepared-model-runtime-generation-scope.js";
 import { resolveScheduledToolPolicyContext } from "../../agents/scheduled-tool-policy.js";
+import { resolveSubagentSystemPromptContext } from "../../agents/subagents/spawn/subagent-system-prompt.js";
 import { isExecutionIdentityCollectionEnabled } from "../../audit/audit-config.js";
 import {
   setChannelSourceTurnId,
@@ -29,6 +31,7 @@ import type { MediaFact } from "../../media/media-facts.js";
 import type { PromptImageOrderEntry } from "../../media/prompt-image-order.js";
 import { bindGatewayContextResolver } from "../../plugins/runtime/gateway-request-scope.js";
 import { retainGatewayRootWorkAdmissionContinuation } from "../../process/gateway-work-admission.js";
+import { isSubagentSessionKey } from "../../routing/session-key.js";
 import {
   annotateInterSessionPromptText,
   type InputProvenance,
@@ -323,6 +326,10 @@ export async function startAgentRunExecution(params: {
           sessionEntry: params.sessionEntry,
         });
         const restartRecoveryChannelContext = restartRecoveryContext?.channel;
+        const extraSystemPromptContext =
+          params.sessionEntry?.spawnedBy && isSubagentSessionKey(params.resolvedSessionKey)
+            ? resolveSubagentSystemPromptContext(params.request.extraSystemPrompt)
+            : undefined;
         const runContext = {
           messageChannel:
             restartRecoveryContext?.messageChannel ?? params.delivery.originMessageChannel,
@@ -427,6 +434,7 @@ export async function startAgentRunExecution(params: {
                 modelRun: params.request.modelRun === true,
                 promptMode: params.request.promptMode,
                 extraSystemPrompt: params.request.extraSystemPrompt,
+                ...bindExtraSystemPromptContext({}, extraSystemPromptContext),
                 bootstrapContextMode: params.request.bootstrapContextMode,
                 bootstrapContextRunKind: params.effectiveBootstrapContextRunKind,
                 toolsAllow: pluginSubagentToolsAllow ?? params.restoredCronContinuation?.toolsAllow,

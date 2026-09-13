@@ -1,6 +1,10 @@
 import type { OperationalRunInstanceRef } from "../agents/admitted-run-context.js";
 import type { EmbeddedRunCompletionRegistration } from "../agents/embedded-agent-runner/run-state.js";
 import { prepareEmbeddedAgentRunCompletionClaim } from "../agents/embedded-agent-runner/runs.js";
+import {
+  appendExtraSystemPromptContext,
+  copyExtraSystemPromptContext,
+} from "../agents/extra-system-prompt-context.js";
 import { registerRequesterFinalAttachment } from "../agents/subagents/requester-final-attachment.js";
 import { resolveCommandAuthorization } from "../auto-reply/command-auth.js";
 import { resolveInboundReplyToolAuthorityOverlay } from "../auto-reply/reply/reply-tool-authority.js";
@@ -112,11 +116,15 @@ function createTalkClientAgentRuntime(params: {
       // Provider-owned work can outlive or replace its audio transport. Unlike
       // chat-backed Talk, it has no independent Chat terminal delivery; hiding
       // its final transcript would lose the answer when no spoken replacement arrives.
+      const promptContext = copyExtraSystemPromptContext(runParams, {
+        extraSystemPrompt: runParams.extraSystemPrompt || "",
+      });
+      appendExtraSystemPromptContext(promptContext, params.getAdditionalSystemPrompt?.(), {
+        reducible: false,
+      });
       return await execution.runEmbeddedAgent({
         ...runParams,
-        extraSystemPrompt: [runParams.extraSystemPrompt, params.getAdditionalSystemPrompt?.()]
-          .filter(Boolean)
-          .join("\n\n"),
+        ...promptContext,
         preparedRunAdmission,
         // Speech is mirrored separately. Keep generated input in current-turn custody,
         // but never display it or replay it as a later user request.

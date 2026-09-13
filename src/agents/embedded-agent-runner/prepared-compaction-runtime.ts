@@ -42,6 +42,7 @@ import {
 import { resolveConversationCapabilityProfile } from "../conversation-capability-profile.js";
 import { formatDateStamp, resolveUserTimezone } from "../date-time.js";
 import { resolveOpenClawReferencePaths } from "../docs-path.js";
+import { prepareExtraSystemPrompt } from "../extra-system-prompt.js";
 import { prepareAgentMemoryPrompt } from "../memory-prompt-prepare.js";
 import {
   applyAuthHeaderOverride,
@@ -539,6 +540,7 @@ export async function buildPreparedCompactionRuntime(
       capabilityToolNames: promptAllowedToolNames,
     });
     const activeProjectKeys = params.preparedModelRuntime?.activeProjectKeys ?? [];
+    const extraSystemPrompt = await prepareExtraSystemPrompt(params, { contextTokenBudget });
     const buildSystemPromptText = () => {
       const builtSystemPrompt = buildEmbeddedSystemPrompt({
         config: params.config,
@@ -546,7 +548,7 @@ export async function buildPreparedCompactionRuntime(
         workspaceDir: effectiveWorkspace,
         runtimeCwd: effectiveCwd,
         reasoningLevel: params.reasoningLevel ?? "off",
-        extraSystemPrompt: params.extraSystemPrompt,
+        extraSystemPrompt: extraSystemPrompt.text,
         ownerNumbers: params.ownerNumbers,
         reasoningTagHint,
         skillsPrompt: promptPolicyRestricted ? undefined : skillsPrompt,

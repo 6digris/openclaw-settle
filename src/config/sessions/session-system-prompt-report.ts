@@ -28,6 +28,12 @@ export type SessionSystemPromptReport = {
     nonProjectContextChars: number;
     hash?: string;
   };
+  /** Supplemental context sizes only; originals and their locators are run-private. */
+  extraSystemPrompt?: {
+    rawChars: number;
+    injectedChars: number;
+    truncated: boolean;
+  };
   currentTurn?: {
     kind?: "user_request" | "room_event";
     promptChars: number;

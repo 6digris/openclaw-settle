@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { resolveAgentRunContext } from "../../agents/command/run-context.js";
+import { prepareExtraSystemPrompt } from "../../agents/extra-system-prompt.js";
 import {
   getPreparedModelRuntimeBorrowedSnapshot,
   getPreparedModelRuntimePluginGeneration,
 } from "../../agents/prepared-model-runtime-generation-scope.js";
+import { buildSubagentSpawnEnvelope } from "../../agents/subagents/spawn/subagent-system-prompt.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { isWebchatClient } from "../../utils/message-channel.js";
 import { resolveAgentDeliveryPhase } from "./agent-delivery-phase.js";
@@ -295,4 +297,68 @@ describe("startAgentRunExecution Gateway ownership", () => {
     expect(execution.gatewayRelease).toHaveBeenCalledOnce();
     expect(execution.runtimeRelease).toHaveBeenCalledOnce();
   });
+
+  it.each([
+    { kind: "stored child", sessionKey: "agent:main:subagent:child", spawnedBy: "agent:main:main" },
+    { kind: "ordinary session", sessionKey: "agent:main:main", spawnedBy: undefined },
+  ])(
+    "carries only the $kind source policy into command execution",
+    async ({ sessionKey, spawnedBy }) => {
+      const execution = createExecution();
+      const source = buildSubagentSpawnEnvelope({
+        completionMode: "announce",
+        completionTarget: "parent",
+        spawnMode: "run",
+        childSessionKey: "agent:main:subagent:child",
+        task: "Summarize the supplied material.",
+        nativeCommandGuidanceLines: ["CALLER_CONTEXT_".repeat(12_000)],
+        acpEnabled: true,
+      }).systemPrompt;
+      const wireRequest = JSON.stringify({
+        message: "Summarize the supplied material.",
+        idempotencyKey: "source-policy-ingress",
+        extraSystemPrompt: source,
+      });
+      execution.params.request = JSON.parse(wireRequest);
+      execution.params.resolvedSessionKey = sessionKey;
+      execution.params.isRawModelRun = false;
+      execution.params.isOneShotModelRun = false;
+      execution.params.sessionEntry = {
+        sessionId: "stored-session",
+        updatedAt: 1,
+        ...(spawnedBy ? { spawnedBy } : {}),
+      };
+      type Dispatch = Parameters<
+        typeof import("./agent-run-dispatch.js").dispatchAgentRunFromGateway
+      >[0];
+      let commandOptions: Dispatch["ingressOpts"] | undefined;
+      dispatchAgentRunFromGateway.mockImplementationOnce(async (dispatch: Dispatch) => {
+        commandOptions = dispatch.ingressOpts;
+        dispatch.cleanupAbortController();
+      });
+
+      await startAgentRunExecution(execution.params);
+
+      expect(dispatchAgentRunFromGateway).toHaveBeenCalledOnce();
+      expect(commandOptions).toBeDefined();
+      const prepared = await prepareExtraSystemPrompt(commandOptions!, {
+        contextTokenBudget: 4_000,
+      });
+      expect(commandOptions?.extraSystemPrompt).toBe(source);
+      expect(prepared.rawChars).toBe(source.length);
+      expect(prepared.truncated).toBe(true);
+      if (spawnedBy) {
+        expect(prepared.text).toContain("- No automations/persistent state.");
+        expect(prepared.text).toContain(
+          "The result returns privately to the requester. No result is automatically sent to a channel",
+        );
+        expect(prepared.text).toContain("Codex only explicit ACP/acpx.");
+        expect(prepared.injectedChars).toBeGreaterThan(4_000);
+        expect(prepared.injectedChars).toBeLessThan(8_000);
+      } else {
+        expect(prepared.injectedChars).toBeLessThanOrEqual(4_000);
+      }
+      expect(execution.runtimeRelease).toHaveBeenCalledOnce();
+    },
+  );
 });

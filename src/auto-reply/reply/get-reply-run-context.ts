@@ -1,6 +1,7 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveAgentConfig } from "../../agents/agent-scope.js";
 import { resolveEmbeddedFullAccessState } from "../../agents/embedded-agent-runner/sandbox-info.js";
+import { composeExtraSystemPromptContext } from "../../agents/extra-system-prompt-context.js";
 import { resolveIngressWorkspaceOverrideForSessionRun } from "../../agents/spawned-context.js";
 import type { SilentReplyPromptMode } from "../../agents/system-prompt.types.js";
 import { resolveEffectiveAgentRuntime } from "../../agents/thinking-runtime.js";
@@ -239,13 +240,13 @@ export async function prepareReplyRunContext(params: RunPreparedReplyParams) {
     fullAccessAvailable: fullAccessState.available,
     fullAccessBlockedReason: fullAccessState.blockedReason,
   });
-  const extraSystemPromptParts = [
-    inboundMetaPrompt,
-    sessionStableConversationContext,
-    groupIntro,
-    groupSystemPrompt,
-    execOverridePromptHint,
-  ].filter(Boolean);
+  const extraSystemPromptContext = composeExtraSystemPromptContext([
+    { text: inboundMetaPrompt, reducible: false },
+    { text: sessionStableConversationContext, reducible: false },
+    { text: groupIntro, reducible: false },
+    { text: groupSystemPrompt, reducible: true },
+    { text: execOverridePromptHint, reducible: false },
+  ]);
   const sourceConversationContextPromptOffset = sessionStableConversationContext
     ? inboundMetaPrompt
       ? inboundMetaPrompt.length + 2
@@ -442,7 +443,7 @@ export async function prepareReplyRunContext(params: RunPreparedReplyParams) {
     thinkingRuntime,
     fullAccessState,
     isFirstTurnInSession,
-    extraSystemPromptParts,
+    extraSystemPromptContext,
     sourceConversationContextByMode,
     sourceConversationContextPromptOffset,
     extraSystemPromptStatic,

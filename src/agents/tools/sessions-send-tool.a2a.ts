@@ -9,6 +9,7 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { splitMediaFromOutput } from "../../media/parse.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
+import { bindExtraSystemPromptContext } from "../extra-system-prompt-context.js";
 import { resolveNestedAgentLaneForSession } from "../lanes.js";
 import { type AgentWaitResult, waitForAgentRunReply } from "../run-wait.js";
 import { runAgentStep } from "./agent-step.js";
@@ -247,19 +248,24 @@ export async function runSessionsSendA2AFlow(params: {
       roundOneReply: primaryReply,
       latestReply,
     });
-    const announceReply = await runAgentStep({
-      agentId: params.targetAgentId,
-      sessionKey: params.targetSessionKey,
-      message: "Agent-to-agent announce step.",
-      extraSystemPrompt: announcePrompt,
-      timeoutMs: params.announceTimeoutMs,
-      lane: resolveNestedAgentLaneForSession(params.targetSessionKey),
-      transcriptMessage: "",
-      sourceSessionKey: params.requesterSessionKey,
-      sourceChannel: params.requesterChannel,
-      sourceTool: "sessions_send",
-      callGateway: gatewayCall,
-    });
+    const announceReply = await runAgentStep(
+      bindExtraSystemPromptContext(
+        {
+          agentId: params.targetAgentId,
+          sessionKey: params.targetSessionKey,
+          message: "Agent-to-agent announce step.",
+          extraSystemPrompt: announcePrompt.text,
+          timeoutMs: params.announceTimeoutMs,
+          lane: resolveNestedAgentLaneForSession(params.targetSessionKey),
+          transcriptMessage: "",
+          sourceSessionKey: params.requesterSessionKey,
+          sourceChannel: params.requesterChannel,
+          sourceTool: "sessions_send",
+          callGateway: gatewayCall,
+        },
+        announcePrompt,
+      ),
+    );
     if (
       announceTarget &&
       announceReply &&

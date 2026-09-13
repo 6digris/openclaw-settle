@@ -1,17 +1,24 @@
 // Coverage for assembling provider-transformed embedded attempt system prompts.
+import fs from "node:fs/promises";
+import { streamOpenAIResponses } from "@openclaw/ai/internal/openai";
 import {
   prependSystemPromptAdditionAfterCacheBoundary,
   splitSystemPromptRelocatableBoundary,
   stripSystemPromptCacheBoundary,
 } from "@openclaw/ai/internal/shared";
 import { Type } from "typebox";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.js";
+import * as scratchDirectories from "../../../infra/tmp-openclaw-dir.js";
 import { addSession, deleteSession } from "../../bash-process-registry.js";
 import { createProcessSessionFixture } from "../../bash-process-registry.test-helpers.js";
 import { buildBootstrapBudgetState } from "../../bootstrap-budget.js";
+import { withExtraSystemPromptScope } from "../../extra-system-prompt.js";
+import { buildModelToolsUnavailablePrompt } from "../../model-tool-support.js";
 import type { AgentTool } from "../../runtime/index.js";
+import { createSandboxTestContext } from "../../sandbox/test-fixtures.js";
 import { makeProviderModelFixture } from "../../test-helpers/provider-model-fixture.js";
+import type { EmbeddedAttemptSetup } from "./attempt-setup.js";
 import { createAttemptSetupFixture } from "./attempt-setup.test-support.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
 
@@ -64,6 +71,11 @@ async function preparePermissionPrompt(
   thinkLevel?: EmbeddedRunAttemptParams["thinkLevel"],
   requireExplicitMessageTarget?: boolean,
   session?: Pick<EmbeddedRunAttemptParams, "sessionKey" | "sandboxSessionKey">,
+  options: {
+    attempt?: Partial<EmbeddedRunAttemptParams>;
+    setup?: Partial<EmbeddedAttemptSetup>;
+    modelToolsEnabled?: boolean;
+  } = {},
 ) {
   const tool = (name: string): AgentTool => ({
     name,
@@ -75,13 +87,16 @@ async function preparePermissionPrompt(
   const read = tool("read");
   const write = tool("write");
   const exec = tool("exec");
-  const tools = [
-    read,
-    write,
-    exec,
-    ...(session ? [tool("process")] : []),
-    ...(requireExplicitMessageTarget === undefined ? [] : [tool("message")]),
-  ];
+  const modelToolsEnabled = options.modelToolsEnabled ?? true;
+  const tools = modelToolsEnabled
+    ? [
+        read,
+        write,
+        exec,
+        ...(session ? [tool("process")] : []),
+        ...(requireExplicitMessageTarget === undefined ? [] : [tool("message")]),
+      ]
+    : [];
   const attempt = {
     provider: "openai",
     modelId: "gpt-5.6-luna",
@@ -94,6 +109,7 @@ async function preparePermissionPrompt(
     permissionMode: "full",
     promptMode: "full",
     sessionId: "permission-prompt",
+    sessionFile: "/tmp/openclaw/permission-prompt.sqlite",
     sessionKey: "agent:main:permission-prompt",
     ...session,
     workspaceDir: "/tmp/openclaw",
@@ -101,9 +117,11 @@ async function preparePermissionPrompt(
     thinkLevel,
     sourceReplyDeliveryMode:
       requireExplicitMessageTarget === undefined ? undefined : "message_tool_only",
+    ...options.attempt,
   } as EmbeddedRunAttemptParams;
   const capabilityToolNames = new Set(tools.map(({ name }) => name));
   const prepared = await prepareEmbeddedAttemptSystemPrompt({
+    agentDir: "/tmp/openclaw/test-agent",
     attempt,
     activeContextEngine: undefined,
     bootstrap: {
@@ -126,9 +144,10 @@ async function preparePermissionPrompt(
         prepared: true,
       }),
       sandboxSessionKey: attempt.sandboxSessionKey ?? attempt.sessionKey ?? attempt.sessionId,
+      ...options.setup,
     }),
     isRawModelRun,
-    modelToolsEnabled: true,
+    modelToolsEnabled,
     skillsPrompt: "",
     toolSearchDirectoryEnabled: false,
     toolSearchRuntimeConfig: attempt.config,
@@ -206,6 +225,7 @@ describe("buildAttemptSystemPrompt", () => {
         config,
         agentId: "marketing",
         sessionId: "global-system-prompt",
+        sessionFile: `${workspaceDir}/global-system-prompt.sqlite`,
         sessionKey: "global",
         provider: "openai",
         modelId: "gpt-5.5",
@@ -213,6 +233,7 @@ describe("buildAttemptSystemPrompt", () => {
         workspaceDir,
       };
       const result = await prepareEmbeddedAttemptSystemPrompt({
+        agentDir: "/tmp/openclaw/test-agent",
         attempt: attempt as never,
         bootstrap: {
           ...buildBootstrapBudgetState({ config, agentId: "marketing", files: [] }),
@@ -334,6 +355,7 @@ describe("buildAttemptSystemPrompt", () => {
     const setup = createAttemptSetupFixture({ getProviderRuntimeHandle });
     setup.prepStages.mark = markStage;
     const result = await prepareEmbeddedAttemptSystemPrompt({
+      agentDir: "/tmp/openclaw/test-agent",
       attempt: { operation: "settled-tool-finalization" },
       setup,
     } as never);
@@ -562,4 +584,143 @@ describe("embedded prepared message-target guidance", () => {
       );
     },
   );
+});
+
+describe("embedded supplemental context preparation", () => {
+  const sentinel = "EXTRA_CONTEXT_129206";
+  const oversized = `${sentinel}\n${"x".repeat(2_097_174 - sentinel.length - 1)}`;
+
+  beforeEach(() => {
+    vi.spyOn(scratchDirectories, "resolvePreferredOpenClawTmpDir").mockReturnValue(
+      tempDirs.make("openclaw-attempt-extra-context-"),
+    );
+  });
+
+  async function captureProviderPayload(
+    fixture: Awaited<ReturnType<typeof preparePermissionPrompt>>,
+  ): Promise<string> {
+    let serialized: string | undefined;
+    const stream = streamOpenAIResponses(
+      { ...fixture.attempt.model, api: "openai-responses" },
+      {
+        systemPrompt: fixture.prepared.systemPromptText,
+        messages: [{ role: "user", content: "Answer from the supplied context.", timestamp: 1 }],
+      },
+      {
+        apiKey: ["fixture", "transport", "value"].join("-"),
+        cacheRetention: "none",
+        onPayload(payload) {
+          serialized = JSON.stringify(payload);
+          throw new Error("stop after payload capture");
+        },
+      },
+    );
+    expect((await stream.result()).stopReason).toBe("error");
+    if (serialized === undefined) {
+      throw new Error("Expected provider payload capture before transport");
+    }
+    return serialized;
+  }
+
+  it.each([
+    { name: "ordinary", text: `${sentinel}: keep this qualification exactly.`, reduced: false },
+    { name: "2 MiB", text: oversized, reduced: true },
+  ])(
+    "submits $name supplemental context through the real prepared provider payload",
+    async ({ text, reduced }) => {
+      await withExtraSystemPromptScope(async () => {
+        const fixture = await preparePermissionPrompt(false, undefined, true, undefined, {
+          attempt: { extraSystemPrompt: text, contextTokenBudget: 4_096 },
+        });
+        const payload = await captureProviderPayload(fixture);
+        expect(payload).toContain(sentinel);
+        expect(payload).toContain("target required this turn");
+        expect(fixture.attempt.extraSystemPrompt).toBe(text);
+        expect(fixture.prepared.systemPromptReport?.extraSystemPrompt).toMatchObject({
+          rawChars: text.length,
+          truncated: reduced,
+        });
+        expect(JSON.stringify(fixture.prepared.systemPromptReport)).not.toContain(sentinel);
+        if (reduced) {
+          expect(payload).toContain("Partial supplemental context");
+          expect(payload).not.toContain(text);
+          expect(payload.length).toBeLessThan(text.length / 20);
+          expect(
+            fixture.prepared.systemPromptReport?.extraSystemPrompt?.injectedChars,
+          ).toBeLessThanOrEqual(4_096);
+        } else {
+          expect(payload).toContain(text);
+          expect(payload).not.toContain("Partial supplemental context");
+        }
+        const retry = await preparePermissionPrompt(false, undefined, true, undefined, {
+          attempt: { extraSystemPrompt: text, contextTokenBudget: 4_096 },
+        });
+        expect(retry.prepared.systemPromptText).toBe(fixture.prepared.systemPromptText);
+      }, "embedded-payload");
+    },
+  );
+
+  it.each([
+    { name: "tools disabled", modelToolsEnabled: false },
+    { name: "schema-only reader", toolExecutionAllow: ["skill_workshop"] },
+    { name: "sandboxed", setup: { sandbox: createSandboxTestContext() } },
+    { name: "workspace-only reads", setup: { effectiveFsWorkspaceOnly: true } },
+    { name: "incognito", sessionKey: "agent:main:dashboard:incognito-extra" },
+  ])(
+    "keeps a compact inline view without advertising a private source when $name",
+    async (variant) => {
+      await withExtraSystemPromptScope(async () => {
+        const fixture = await preparePermissionPrompt(false, undefined, undefined, undefined, {
+          attempt: {
+            extraSystemPrompt: oversized,
+            contextTokenBudget: 4_096,
+            ...(variant.sessionKey ? { sessionKey: variant.sessionKey } : {}),
+            ...(variant.toolExecutionAllow
+              ? { toolExecutionAllow: variant.toolExecutionAllow }
+              : {}),
+          },
+          setup: variant.setup,
+          modelToolsEnabled: variant.modelToolsEnabled,
+        });
+        const prompt = fixture.prepared.systemPromptText;
+        expect(prompt).toContain("Partial supplemental context");
+        expect(prompt).toContain("No retrievable original");
+        expect(prompt).not.toContain("available only during this run");
+        expect(prompt.length).toBeLessThan(oversized.length / 20);
+        if (variant.modelToolsEnabled === false) {
+          expect(prompt).toContain(buildModelToolsUnavailablePrompt(false));
+          expect(fixture.capabilityToolNames.size).toBe(0);
+        }
+      }, "restricted-extra-context");
+    },
+  );
+
+  it("refreshes partial-context guidance when permission changes remove read access", async () => {
+    await withExtraSystemPromptScope(async () => {
+      const fixture = await preparePermissionPrompt(false, undefined, undefined, undefined, {
+        attempt: { extraSystemPrompt: oversized, contextTokenBudget: 4_096 },
+      });
+      expect(fixture.prepared.systemPromptText).toContain("available only during this run");
+      fixture.attempt.permissionMode = "read-only";
+      fixture.capabilityToolNames.clear();
+      const refreshed = await fixture.refreshSystemPrompt(fixture.prepared.systemPromptText, []);
+
+      expect(refreshed).toContain("No retrievable original");
+      expect(refreshed).not.toContain("available only during this run");
+      expect(refreshed).toContain("Partial supplemental context");
+      expect(refreshed.length).toBeLessThan(oversized.length / 20);
+      expect(fixture.attempt.extraSystemPrompt).toBe(oversized);
+    }, "permission-changed-context");
+  });
+
+  it("does not retain or report injected supplemental context for raw model probes", async () => {
+    await withExtraSystemPromptScope(async () => {
+      const fixture = await preparePermissionPrompt(true, undefined, undefined, undefined, {
+        attempt: { extraSystemPrompt: oversized, contextTokenBudget: 4_096 },
+      });
+      expect(fixture.prepared.systemPromptText).toBe("");
+      expect(fixture.prepared.systemPromptReport?.extraSystemPrompt).toBeUndefined();
+      expect(await fs.readdir(scratchDirectories.resolvePreferredOpenClawTmpDir())).toEqual([]);
+    }, "raw-model-context");
+  });
 });

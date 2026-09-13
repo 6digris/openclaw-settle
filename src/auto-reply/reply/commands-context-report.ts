@@ -382,6 +382,11 @@ export async function buildContextReply(params: HandleCommandsParams): Promise<R
     `Bootstrap max/total: ${bootstrapTotalLabel}`,
     sandboxLine,
     systemPromptLine,
+    ...(report.extraSystemPrompt
+      ? [
+          `Extra context: ${formatInt(report.extraSystemPrompt.rawChars)} raw chars -> ${formatInt(report.extraSystemPrompt.injectedChars)} injected chars${report.extraSystemPrompt.truncated ? " (partial excerpt)" : " (unchanged)"}.`,
+        ]
+      : []),
     ...(bootstrapWarningLines.length ? ["", ...bootstrapWarningLines] : []),
     ...(nativeUnverifiedWarningLines.length ? ["", ...nativeUnverifiedWarningLines] : []),
     "",

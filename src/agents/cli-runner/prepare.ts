@@ -120,6 +120,10 @@ import {
   remapSkillReferencePaths,
   resolveSandboxSkillRuntimeInputs,
 } from "../embedded-agent-runner/sandbox-skills.js";
+import {
+  prepareExtraSystemPrompt,
+  resolveExtraSystemPromptSource,
+} from "../extra-system-prompt.js";
 import { selectContextEngineForTranscriptHost } from "../harness/context-engine-logical-turn.js";
 import { drainPendingContextEngineTurnsBeforeRun } from "../harness/context-engine-turn-attempt.js";
 import { createAgentQuestionAnswerAuthority } from "../harness/host-private-capabilities.js";
@@ -139,6 +143,7 @@ import { ensureSandboxWorkspaceForSession } from "../sandbox.js";
 import { resolveSandboxRuntimeStatus } from "../sandbox/runtime-status.js";
 import { buildSystemPromptReport } from "../system-prompt-report.js";
 import { appendModelIdentitySystemPrompt, buildModelIdentityPromptLine } from "../system-prompt.js";
+import { resolveEffectiveToolFsWorkspaceOnly } from "../tool-fs-policy.js";
 import { expandToolGroups, normalizeToolPolicyName } from "../tool-policy.js";
 import { resolveQuestionTimeoutMs } from "../tools/ask-user-tool-normalization.js";
 import { assertNativeCronCreatorCapabilities } from "../tools/cron-tool-creator-cap.js";
@@ -945,14 +950,14 @@ async function prepareCliRunContextWithinReadFence(
       }
     }
   }
-  const extraSystemPrompt = params.extraSystemPrompt?.trim() ?? "";
+  const rawExtraSystemPrompt = params.extraSystemPrompt?.trim() ?? "";
   const bindingFacts = params.cliSessionBindingFacts;
   const bindingExtraSystemPromptStatic =
     bindingFacts?.extraSystemPromptStatic ?? params.extraSystemPromptStatic;
   const baseExtraSystemPromptHash =
     bindingExtraSystemPromptStatic !== undefined
       ? hashCliSessionText(bindingExtraSystemPromptStatic.trim() || undefined)
-      : hashCliSessionText(extraSystemPrompt);
+      : hashCliSessionText(rawExtraSystemPrompt);
   const requireExplicitMessageTarget =
     params.requireExplicitMessageTarget ?? isSubagentSessionKey(params.sessionKey);
   const hasCliSessionBindingFacts = bindingFacts !== undefined;
@@ -1605,6 +1610,32 @@ async function prepareCliRunContextWithinReadFence(
       sessionKey: policySessionKey,
       agentId: policyAgentId,
     });
+    const sourceStorePath = params.sessionTarget?.storePath ?? params.storePath;
+    const preparedExtraSystemPrompt = await prepareExtraSystemPrompt(
+      isControlOperation ? {} : params,
+      {
+        contextTokenBudget: contextWindowInfo.tokens,
+        ...resolveExtraSystemPromptSource({
+          agentId: workspaceResolution.agentId,
+          agentDir,
+          sessionId: params.sessionId,
+          sessionKey: params.sessionKey,
+          storePath: sourceStorePath,
+        }),
+        // Only the resolved OpenClaw reader proves host-file access here. Native
+        // CLI tools and remote placements do not attest that capability at prepare time.
+        readAvailable:
+          Boolean(mcpClientGrant) &&
+          !nodeClaudePlacement &&
+          !rootedExecution &&
+          !sandboxStatus.sandboxed &&
+          !resolveEffectiveToolFsWorkspaceOnly({ cfg: runConfig, agentId: policyAgentId }) &&
+          promptTools.some((tool) => normalizeToolPolicyName(tool.name) === "read"),
+      },
+    );
+    params.assertCurrent?.();
+    params.abortSignal?.throwIfAborted();
+    const extraSystemPrompt = preparedExtraSystemPrompt.text?.trim() ?? "";
     const nativeMcpCapabilityProfile = resolveConversationCapabilityProfile({
       config: runConfig,
       sessionKey: policySessionKey,
@@ -1712,7 +1743,7 @@ async function prepareCliRunContextWithinReadFence(
           isolatedCompletionCwd: cwd,
           isolatedCompletionModelId: normalizedModel,
           isolatedCompletionPrompt: params.prompt,
-          isolatedCompletionSystemPrompt: params.extraSystemPrompt ?? "",
+          isolatedCompletionSystemPrompt: preparedExtraSystemPrompt.text ?? "",
         }
       : prepareExecutionContext;
     try {
@@ -2224,6 +2255,11 @@ async function prepareCliRunContextWithinReadFence(
         ? { mode: sandboxStatus.mode, sandboxed: Boolean(rootedExecution.sandbox) }
         : { mode: "off", sandboxed: false },
       systemPrompt,
+      extraSystemPrompt: {
+        rawChars: preparedExtraSystemPrompt.rawChars,
+        injectedChars: preparedExtraSystemPrompt.injectedChars,
+        truncated: preparedExtraSystemPrompt.truncated,
+      },
       injectedWorkspaceFiles: bootstrapInjectionStats,
       skillsPrompt: systemPromptSkillsPrompt,
       tools: promptTools,

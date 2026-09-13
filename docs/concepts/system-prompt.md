@@ -126,6 +126,41 @@ Under `promptMode=minimal`, extra injected prompts are labeled **Subagent Contex
 
 For channel auto-reply runs, OpenClaw omits the generic **Silent Replies** section when direct, group, or message-tool-only context already owns the visible-reply contract. Only legacy automatic group/channel mode shows `NO_REPLY`; direct chats and message-tool-only replies skip silent-token guidance.
 
+## Large supplemental context
+
+Extra system context, including API instructions and context-engine additions,
+passes through unchanged when it fits its allowance. Larger inputs become a
+deterministic excerpt: the beginning, selected instruction lines with their
+adjacent framing, and the end. The allowance is at most 5,000 estimated tokens
+and decreases for smaller effective context windows. It uses the same
+CJK-aware estimate as other context-reduction paths, with room for a partial-context
+notice. This is selective extraction, not a lossless summary or an exact
+provider-token guarantee. Caller context and later context-engine additions have
+separate allowances; required runtime instructions, conversation history, and
+tools still consume context outside them.
+
+OpenClaw keeps its own privacy, tool-permission, and reply/delivery requirements
+outside the material being shortened. Existing instruction roles and untrusted
+file wrappers remain in place. The model is told that omitted material may
+include qualifications.
+
+When the selected tools can read a private original on the execution host,
+OpenClaw supplies a real source path for bounded reads. Private copies belong to
+the active run and its retries. Normal completion, errors, and cancellation
+release them; cleanup failures warn without replacing the run's result. An abrupt
+process exit can leave a private temporary copy behind. Existing source files
+are unchanged. Incognito runs, tools-disabled runs, and execution paths
+without a reachable reader receive the compact inline context and an explicit
+notice that no original is available; the model can answer from that context
+or identify a missing detail. No tools or permissions are added for retrieval.
+
+Retries reuse the prepared excerpt while the source and relevant settings stay
+unchanged. Source identity includes omitted text, and native Codex keeps the
+prepared context in its canonical developer instructions across compaction.
+`/context list`, `/context detail`, and `/context json` report raw/injected sizes
+and whether extra context was reduced, without storing its contents in the
+diagnostic report.
+
 ## Prompt snapshots
 
 OpenClaw keeps committed prompt snapshots for the Codex runtime happy path under `test/fixtures/agents/prompt-snapshots/codex-runtime-happy-path/`. They render selected app-server thread/turn params plus a reconstructed model-bound prompt layer stack for Telegram direct, Discord group, and heartbeat turns: a pinned Codex `gpt-5.5` model prompt fixture, the Codex happy-path permission developer text, parent-local request instructions, OpenClaw developer instructions, native collaboration-mode instructions, user turn input, and references to dynamic tool specs.

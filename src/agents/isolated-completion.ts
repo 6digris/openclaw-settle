@@ -21,6 +21,7 @@ import { resolveCliBackendConfig, resolveCliRuntimeCanonicalProvider } from "./c
 import { normalizeCliModel } from "./cli-runner/helpers.js";
 import { resolveEmbeddedCliBackendDispatchEligibility } from "./embedded-agent-runner/cli-backend-dispatch-eligibility.js";
 import { resolveModelAsync } from "./embedded-agent-runner/model.js";
+import { prepareExtraSystemPrompt } from "./extra-system-prompt.js";
 import { getRegisteredAgentHarness } from "./harness/registry.js";
 import { ensureSelectedAgentHarnessPlugin } from "./harness/runtime-plugin.js";
 import type {
@@ -475,11 +476,14 @@ async function runIsolatedCompletionOwned(
           `Agent harness ${harness.id} does not support isolated completion.`,
         );
       }
+      const extraSystemPrompt = await prepareExtraSystemPrompt({
+        extraSystemPrompt: request.systemPrompt,
+      });
       const commonParams = {
         provider,
         modelId: request.model,
         ...context,
-        systemPrompt: request.systemPrompt,
+        systemPrompt: extraSystemPrompt.text ?? "",
         prompt: request.prompt,
         timeoutMs: request.timeoutMs,
         abortSignal: request.abortSignal,

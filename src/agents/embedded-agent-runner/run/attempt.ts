@@ -293,6 +293,7 @@ export async function runEmbeddedAttempt(
     toolSearchCatalogApplied = toolSearch.catalogRegistered;
     const preparedSystemPrompt = await prepare("attempt.system-prompt", () =>
       prepareEmbeddedAttemptSystemPrompt({
+        agentDir,
         activeContextEngine,
         attempt: params,
         setup,

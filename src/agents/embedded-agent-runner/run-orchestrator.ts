@@ -46,6 +46,7 @@ import {
 } from "../agent-scope.js";
 import { createAssistantErrorTranscript } from "../assistant-error-transcript.js";
 import { runBestEffortCallback } from "../embedded-agent-subscribe.callback.js";
+import { withExtraSystemPromptScope } from "../extra-system-prompt.js";
 import { resolveLegacyInheritedAuthDir } from "../legacy-inherited-auth-dir.js";
 import { resolveModelCandidateChain } from "../model-fallback-candidates.js";
 import {
@@ -124,13 +125,17 @@ export function runEmbeddedAgent(
     (internalParamsInput.preparedModelRuntimeMode === "isolated-read-only"
       ? undefined
       : getPreparedModelRuntimePluginGeneration());
-  return withAgentRunLifecycleGeneration(lifecycleGeneration, () =>
-    runEmbeddedAgentInternal({
-      ...internalParamsInput,
-      config,
-      lifecycleGeneration,
-      ...(pluginGeneration ? { pluginGeneration } : {}),
-    }),
+  return withExtraSystemPromptScope(
+    () =>
+      withAgentRunLifecycleGeneration(lifecycleGeneration, () =>
+        runEmbeddedAgentInternal({
+          ...internalParamsInput,
+          config,
+          lifecycleGeneration,
+          ...(pluginGeneration ? { pluginGeneration } : {}),
+        }),
+      ),
+    internalParamsInput.runId,
   );
 }
 

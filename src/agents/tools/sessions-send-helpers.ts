@@ -10,6 +10,7 @@ import {
 import { resolveSessionConversationRef } from "../../channels/plugins/session-conversation.js";
 import { normalizeChatChannelId } from "../../channels/registry.js";
 import { parseSessionDeliveryRoute } from "../../sessions/session-key-utils.js";
+import { composeExtraSystemPromptContext } from "../extra-system-prompt-context.js";
 import { ANNOUNCE_SKIP_TOKEN, REPLY_SKIP_TOKEN } from "./sessions-send-tokens.js";
 export {
   isAnnounceSkip,
@@ -139,19 +140,36 @@ export function buildAgentToAgentAnnounceContext(params: {
   roundOneReply?: string;
   latestReply?: string;
 }) {
-  const lines = [
-    "Agent-to-agent announce step:",
-    ...buildAgentSessionLines(params),
-    `Original request: ${params.originalMessage}`,
-    params.roundOneReply
-      ? `Round 1 reply: ${params.roundOneReply}`
-      : "Round 1 reply: (not available).",
-    params.latestReply ? `Latest reply: ${params.latestReply}` : "Latest reply: (not available).",
-    `If you want to remain silent, reply exactly "${ANNOUNCE_SKIP_TOKEN}".`,
-    "Any other reply will be posted to the target channel.",
-    "After this reply, the agent-to-agent conversation is over.",
-  ].filter(Boolean);
-  return lines.join("\n");
+  return composeExtraSystemPromptContext(
+    [
+      {
+        text: ["Agent-to-agent announce step:", ...buildAgentSessionLines(params)].join("\n"),
+        reducible: false,
+      },
+      { text: `Original request: ${params.originalMessage}`, reducible: true },
+      {
+        text: params.roundOneReply
+          ? `Round 1 reply: ${params.roundOneReply}`
+          : "Round 1 reply: (not available).",
+        reducible: true,
+      },
+      {
+        text: params.latestReply
+          ? `Latest reply: ${params.latestReply}`
+          : "Latest reply: (not available).",
+        reducible: true,
+      },
+      {
+        text: [
+          `If you want to remain silent, reply exactly "${ANNOUNCE_SKIP_TOKEN}".`,
+          "Any other reply will be posted to the target channel.",
+          "After this reply, the agent-to-agent conversation is over.",
+        ].join("\n"),
+        reducible: false,
+      },
+    ],
+    "\n",
+  );
 }
 
 /** Resolves the fixed A2A ping-pong turn limit with a hard runtime cap. */

@@ -3,6 +3,7 @@ import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { SKILL_RESOURCE_PROTOCOL_FEATURE } from "../../../packages/gateway-protocol/src/schema/skill-resources.js";
 import { WORKER_SKILL_WORKSHOP_FEATURE } from "../../../packages/gateway-protocol/src/schema/worker-skill-workshop.js";
 import { mapThinkingLevelForProvider } from "../../agents/embedded-agent-runner/utils.js";
+import { prepareExtraSystemPrompt } from "../../agents/extra-system-prompt.js";
 import { convertToLlm } from "../../agents/sessions/messages.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
 import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
@@ -316,6 +317,11 @@ export async function executeWorkerTurn(
     if (!tunnel.launchTurn) {
       throw new Error("Worker tunnel does not support worker turns");
     }
+    // Consume in-process provenance before the existing string-only wire
+    // projection. A worker cannot read this Gateway's private scratch files.
+    const extraSystemPrompt = await prepareExtraSystemPrompt(turn, {
+      contextTokenBudget: turn.contextTokenBudget,
+    });
     const launchPlan = await fitLaunchDescriptorWithRuntimeIdentity({
       runtimeIdentity,
       measure: (plan) => tunnel.measureLaunchTurn(plan, params.turnClaim),
@@ -356,9 +362,9 @@ export async function executeWorkerTurn(
               : {}),
             modelRef,
             inferenceOptions: reasoning ? { reasoning } : {},
-            ...(turn.extraSystemPrompt === undefined
+            ...(extraSystemPrompt.text === undefined
               ? {}
-              : { systemPrompt: turn.extraSystemPrompt }),
+              : { systemPrompt: extraSystemPrompt.text }),
             initialMessages: windowedMessages,
             transcript: {
               baseLeafId,

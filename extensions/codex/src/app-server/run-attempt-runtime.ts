@@ -114,7 +114,6 @@ export async function prepareCodexAttemptRuntime(connection: CodexAttemptConnect
     contextWindow: undefined,
     maxTokens: undefined,
   } as unknown as EmbeddedRunAttemptParams["model"];
-  const legacyScheduledAppRecoveryPrompt = buildLegacyScheduledCodexAppRecoveryPrompt(params);
   const runtimeParams: EmbeddedRunAttemptParams = usesSupervisionConnection
     ? {
         ...paramsWithoutOuterNativeOwnership,
@@ -129,13 +128,6 @@ export async function prepareCodexAttemptRuntime(connection: CodexAttemptConnect
         ...params,
         authProfileStore: attemptAuthProfileStore,
         sessionKey: contextSessionKey,
-        ...(legacyScheduledAppRecoveryPrompt
-          ? {
-              extraSystemPrompt: [params.extraSystemPrompt, legacyScheduledAppRecoveryPrompt]
-                .filter((value): value is string => Boolean(value?.trim()))
-                .join("\n\n"),
-            }
-          : {}),
         ...(startupAuthProfileId ? { authProfileId: startupAuthProfileId } : {}),
       };
   const activeSessionId = params.sessionId;
@@ -286,6 +278,9 @@ export async function prepareCodexAttemptRuntime(connection: CodexAttemptConnect
     effectiveContextTokenBudget,
     effectiveRuntimeProviderId,
     effectiveRuntimeModelId,
+    legacyScheduledAppRecoveryPrompt: usesSupervisionConnection
+      ? undefined
+      : buildLegacyScheduledCodexAppRecoveryPrompt(params),
     startupAuthAccountCacheKey,
     startupEnvApiKeyCacheKey,
     bundleMcpThreadConfig,

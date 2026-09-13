@@ -65,7 +65,10 @@ import { resolveSubagentSpawnRequest } from "./subagent-spawn-request.js";
 import { createInitialSubagentSession } from "./subagent-spawn-session-patch.js";
 import { bindThreadForSubagentSpawn } from "./subagent-spawn-thread-binding.js";
 import { emitSessionLifecycleEvent, mergeDeliveryContext } from "./subagent-spawn.runtime.js";
-import { buildSubagentSpawnEnvelope } from "./subagent-system-prompt.js";
+import {
+  buildSubagentSpawnEnvelope,
+  SUBAGENT_STRUCTURED_OUTPUT_PROMPT,
+} from "./subagent-system-prompt.js";
 
 export { SUBAGENT_SPAWN_CONTEXT_MODES, SUBAGENT_SPAWN_MODES } from "./subagent-spawn.types.js";
 
@@ -283,10 +286,7 @@ export async function spawnSubagentDirect(
       requesterOrigin: childSessionOrigin,
       childSessionKey,
       label: label || undefined,
-      acpEnabled: isAcpRuntimeSpawnAvailable({
-        config: cfg,
-        sandboxed: childRuntimeSandboxed,
-      }),
+      acpEnabled: isAcpRuntimeSpawnAvailable({ config: cfg, sandboxed: childRuntimeSandboxed }),
       nativeCommandGuidanceLines: listRegisteredPluginAgentPromptGuidance({
         surface: "subagent",
       }),
@@ -295,7 +295,7 @@ export async function spawnSubagentDirect(
     });
     let childSystemPrompt = envelope.systemPrompt;
     if (params.outputSchema) {
-      childSystemPrompt = `${childSystemPrompt}\n\nCall structured_output with {"result": <your final result>} until one payload is accepted, with at most one retry after a rejected attempt. The result value must match the requested JSON Schema. Do not call structured_output again after acceptance.`;
+      childSystemPrompt = `${childSystemPrompt}\n\n${SUBAGENT_STRUCTURED_OUTPUT_PROMPT}`;
     }
 
     let retainOnSessionKeep = false;

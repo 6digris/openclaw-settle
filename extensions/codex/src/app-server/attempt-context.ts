@@ -338,6 +338,7 @@ export function buildCodexSystemPromptReport(params: {
   sessionKey: string;
   workspaceDir: string;
   developerInstructions: string;
+  extraSystemPrompt?: CodexSystemPromptReport["extraSystemPrompt"];
   workspaceBootstrapContext: CodexWorkspaceBootstrapContext;
   omitWorkspaceReferences?: boolean;
   skillsPrompt: string;
@@ -368,6 +369,15 @@ export function buildCodexSystemPromptReport(params: {
       nonProjectContextChars: params.developerInstructions.length,
       hash: sha256Text(params.developerInstructions),
     },
+    ...(params.extraSystemPrompt?.rawChars
+      ? {
+          extraSystemPrompt: {
+            rawChars: params.extraSystemPrompt.rawChars,
+            injectedChars: params.extraSystemPrompt.injectedChars,
+            truncated: params.extraSystemPrompt.truncated,
+          },
+        }
+      : {}),
     injectedWorkspaceFiles: buildCodexBootstrapInjectionStats({
       bootstrapFiles: params.workspaceBootstrapContext.bootstrapFiles,
       injectedFiles: params.workspaceBootstrapContext.promptContextFiles ?? [],

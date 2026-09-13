@@ -53,6 +53,8 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
     workspaceBootstrapContext,
     buildActiveContextEngineRuntimeContext,
     baseDeveloperInstructions,
+    preparedExtraSystemPrompt,
+    prepareSupplementalContext,
     buildOpenClawPromptContext,
     skillsCollaborationInstructions,
     promptState,
@@ -187,11 +189,15 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
           legacyDynamicToolsFingerprint: codexLegacyDynamicToolsFingerprint(toolBridge.specs),
         })
       : { project: true, reason: "per-turn-projection" };
+    const preparedAddition = await prepareSupplementalContext({
+      extraSystemPrompt: assembled.systemPromptAddition,
+    });
+    assertProjectionCurrent();
     const projection = await projectContextEngineAssemblyForCodex({
       assembledMessages: assembled.messages,
       originalHistoryMessages: historyState.messages,
       prompt: params.prompt,
-      systemPromptAddition: assembled.systemPromptAddition,
+      systemPromptAddition: preparedAddition.text,
       maxRenderedContextChars: codexContextProjectionMaxChars,
       toolPayloadMode:
         contextEngineProjection || params.pluginRuntimeRefreshMessages ? "preserve" : "elide",
@@ -228,6 +234,11 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
       baseDeveloperInstructions,
       projection.developerInstructionAddition,
     );
+    promptState.extraSystemPrompt = {
+      rawChars: preparedExtraSystemPrompt.rawChars + preparedAddition.rawChars,
+      injectedChars: preparedExtraSystemPrompt.injectedChars + preparedAddition.injectedChars,
+      truncated: preparedExtraSystemPrompt.truncated || preparedAddition.truncated,
+    };
     promptState.prePromptMessageCount = projection.prePromptMessageCount;
   };
   if (activeContextEngine) {
@@ -583,6 +594,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
       sessionKey: contextSessionKey,
       workspaceDir: effectiveWorkspace,
       developerInstructions: buildRenderedCodexDeveloperInstructions(),
+      extraSystemPrompt: promptState.extraSystemPrompt,
       workspaceBootstrapContext,
       omitWorkspaceReferences,
       skillsPrompt: skillsCollaborationInstructions ? (params.skillsSnapshot?.prompt ?? "") : "",

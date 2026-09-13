@@ -1,3 +1,4 @@
+import { replaceExtraSystemPromptContextRange } from "../../agents/extra-system-prompt-context.js";
 import type { SourceReplyDeliveryMode } from "../get-reply-options.types.js";
 
 type SourceReplyDeliveryModeOrigin = "stable_policy" | "runtime_default";
@@ -71,8 +72,12 @@ export function createSourceReplyDeliveryRuntime(params: {
       // Replace only the delivery-owned prompt component. Later context additions
       // must survive prepared harness selection instead of restoring a stale prompt.
       if (currentComponent && currentComponent !== nextComponent && offset >= 0) {
-        projection.extraSystemPrompt =
-          prompt.slice(0, offset) + nextComponent + prompt.slice(offset + currentComponent.length);
+        replaceExtraSystemPromptContextRange(projection, {
+          start: offset,
+          end: offset + currentComponent.length,
+          text: nextComponent,
+          reducible: false,
+        });
       }
     }
     params.onModeResolved?.(mode);

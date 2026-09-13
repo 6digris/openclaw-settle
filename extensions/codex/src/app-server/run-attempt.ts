@@ -1,4 +1,5 @@
 import type { EmbeddedRunAttemptParamsV2 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { withCodexExtraSystemPromptScope } from "openclaw/plugin-sdk/codex-mcp-projection";
 import { createCodexAttemptPreparationTiming } from "./attempt-preparation-timing.js";
 import { attemptTerminal, type EmbeddedRunAttemptResult } from "./attempt-terminal.js";
 import { activateCodexAttemptTurn } from "./run-attempt-active-turn.js";
@@ -21,6 +22,16 @@ import { createCodexAttemptTurnState } from "./run-attempt-turn-state.js";
 import type { CodexRunAttemptOptions } from "./run-attempt-types.js";
 
 export async function runCodexAppServerAttempt(
+  params: EmbeddedRunAttemptParamsV2,
+  options: CodexRunAttemptOptions,
+): Promise<EmbeddedRunAttemptResult> {
+  return await withCodexExtraSystemPromptScope(
+    () => runCodexAttemptWithinContextScope(params, options),
+    params.runId,
+  );
+}
+
+async function runCodexAttemptWithinContextScope(
   params: EmbeddedRunAttemptParamsV2,
   options: CodexRunAttemptOptions,
 ): Promise<EmbeddedRunAttemptResult> {

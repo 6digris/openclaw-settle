@@ -9,6 +9,7 @@ import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { annotateInterSessionPromptText } from "../../sessions/input-provenance.js";
 import { recordSessionParticipantBestEffort } from "../../sessions/session-participant-recording.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../../utils/message-channel.js";
+import { copyExtraSystemPromptContext } from "../extra-system-prompt-context.js";
 import { resolveNestedAgentLaneForSession } from "../lanes.js";
 import { waitForAgentRunReply } from "../run-wait.js";
 import {
@@ -87,6 +88,7 @@ export async function runAgentStep(params: {
       lane,
       runId: stepIdem,
       extraSystemPrompt: params.extraSystemPrompt,
+      ...copyExtraSystemPromptContext(params, {}),
       inputProvenance,
       allowModelOverride: false,
     });

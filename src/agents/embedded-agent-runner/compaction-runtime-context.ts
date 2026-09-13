@@ -12,6 +12,7 @@ import {
 } from "../bash-process-references.js";
 import { resolveContextWindowInfo } from "../context-window-guard.js";
 import { DEFAULT_CONTEXT_TOKENS, DEFAULT_PROVIDER } from "../defaults.js";
+import { copyExtraSystemPromptContext } from "../extra-system-prompt-context.js";
 import { splitTrailingAuthProfile } from "../model-ref-profile.js";
 import type { ModelManifestNormalizationContext } from "../model-ref-shared.js";
 import {
@@ -336,7 +337,7 @@ export function buildEmbeddedCompactionRuntimeContext(
     listActiveProcessSessionReferences({
       scopeKey: processScopeKey,
     });
-  return {
+  return copyExtraSystemPromptContext(params, {
     sessionKey: params.sessionKey ?? undefined,
     sandboxSessionKey: params.sandboxSessionKey,
     sandboxAgentId: params.sandboxAgentId,
@@ -380,5 +381,5 @@ export function buildEmbeddedCompactionRuntimeContext(
     sourceReplyDeliveryMode: params.sourceReplyDeliveryMode,
     ownerNumbers: params.ownerNumbers,
     ...(activeProcessSessions.length > 0 ? { activeProcessSessions } : {}),
-  };
+  });
 }

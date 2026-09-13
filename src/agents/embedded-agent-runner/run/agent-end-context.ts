@@ -2,6 +2,7 @@ import {
   buildAgentHookContextChannelFields,
   buildAgentHookContextIdentityFields,
 } from "../../../plugins/hook-agent-context.js";
+import { copyExtraSystemPromptContext } from "../../extra-system-prompt-context.js";
 import type { runAgentEndSideEffects } from "../../harness/agent-end-side-effects.js";
 import type { EmbeddedForegroundPromptContext } from "./params.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
@@ -25,7 +26,7 @@ export function buildEmbeddedForegroundPromptContext(
   const callerOrigin = run.cronCreatorAuthorityCapability?.callerOrigin;
   const sessionKey = run.sessionKey?.trim() || run.sessionId;
   const sandboxSessionKey = run.sandboxSessionKey?.trim() || sessionKey;
-  return {
+  return copyExtraSystemPromptContext(run, {
     agentId: run.agentId,
     agentDir,
     workspaceDir: run.workspaceDir,
@@ -100,7 +101,7 @@ export function buildEmbeddedForegroundPromptContext(
     ...(callerOrigin && callerOrigin.kind !== "unknown"
       ? { cronCreatorCallerOrigin: callerOrigin }
       : {}),
-  };
+  });
 }
 
 export function buildEmbeddedAgentEndContext(params: {

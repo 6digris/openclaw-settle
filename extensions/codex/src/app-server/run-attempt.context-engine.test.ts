@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { AgentMessage } from "openclaw/plugin-sdk/agent-core";
@@ -472,17 +473,20 @@ describe("runCodexAppServerAttempt context-engine lifecycle", () => {
     const sessionFile = path.join(tempDir, "session.jsonl");
     const workspaceDir = path.join(tempDir, "workspace");
     const longContext = `large LCM context start ${"x".repeat(30_000)} LARGE_CONTEXT_END`;
+    const baseSupplement = "Keep the base supplemental instructions.";
+    const systemPromptAddition = `context-engine system ${"y".repeat(100_000)} ENGINE_CONTEXT_END`;
     const contextEngine = createContextEngine({
       assemble: vi.fn(async () => ({
         messages: [assistantMessage(longContext, 10)],
         estimatedTokens: 10_000,
-        systemPromptAddition: "context-engine system",
+        systemPromptAddition,
       })),
     });
     const harness = createStartedThreadHarness();
     const params = createParams(sessionFile, workspaceDir);
     params.contextEngine = contextEngine;
     params.contextTokenBudget = 80_000;
+    params.extraSystemPrompt = baseSupplement;
 
     const run = runCodexAppServerAttempt(params);
     await harness.waitForMethod("turn/start");
@@ -491,9 +495,26 @@ describe("runCodexAppServerAttempt context-engine lifecycle", () => {
     expect(inputText.length).toBeGreaterThan(30_000);
     expect(inputText).toContain("LARGE_CONTEXT_END");
     expect(inputText).not.toContain("[truncated ");
+    const nativeInstructions =
+      readStringValue(requireRequestParams(harness, "thread/start").developerInstructions) ?? "";
+    expect(nativeInstructions).toContain(baseSupplement);
+    expect(nativeInstructions).toContain("ENGINE_CONTEXT_END");
+    expect(nativeInstructions).toContain("Partial supplemental context");
+    expect(nativeInstructions).toContain(
+      createHash("sha256").update(systemPromptAddition).digest("hex"),
+    );
+    expect(nativeInstructions.length).toBeLessThan(25_000);
 
     await harness.completeTurn();
-    await run;
+    const result = await run;
+    expect(result.systemPromptReport?.extraSystemPrompt).toEqual({
+      rawChars: baseSupplement.length + systemPromptAddition.length,
+      injectedChars: expect.any(Number),
+      truncated: true,
+    });
+    expect(result.systemPromptReport!.extraSystemPrompt!.injectedChars).toBeLessThanOrEqual(
+      20_000 + baseSupplement.length,
+    );
   });
 
   it("bounds active context-engine projections when prompt hooks append context", async () => {

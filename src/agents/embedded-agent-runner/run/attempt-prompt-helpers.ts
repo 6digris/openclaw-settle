@@ -23,6 +23,7 @@ import { joinPresentTextSegments } from "../../../shared/text/join-segments.js";
 import { truncateUtf16Safe } from "../../../utils.js";
 import { listActiveProcessSessionReferences } from "../../bash-process-references.js";
 import { resolveProcessToolScopeKey } from "../../bash-process-scope.js";
+import { copyExtraSystemPromptContext } from "../../extra-system-prompt-context.js";
 import { wrapPluginSystemContextSection } from "../../hook-system-context-boundary.js";
 import { resolveEffectiveToolFsWorkspaceOnly } from "../../tool-fs-policy.js";
 import { deriveContextPromptTokens, type NormalizedUsage } from "../../usage.js";
@@ -520,7 +521,7 @@ export function buildAfterTurnRuntimeContext(params: {
     attempt: params.attempt,
     activeAgentId: params.activeAgentId,
   });
-  return {
+  return copyExtraSystemPromptContext(params.attempt, {
     ...buildEmbeddedCompactionRuntimeContext({
       sessionKey: params.attempt.sessionKey,
       sandboxSessionKey: params.attempt.sandboxSessionKey,
@@ -579,7 +580,7 @@ export function buildAfterTurnRuntimeContext(params: {
     ...(params.promptCache ? { promptCache: params.promptCache } : {}),
     transcriptStorage: { kind: "sqlite" },
     ...(sessionTarget ? { sessionTarget } : {}),
-  };
+  });
 }
 
 export function buildAfterTurnRuntimeContextFromUsage(

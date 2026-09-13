@@ -10,13 +10,12 @@ import { createTrajectoryRuntimeRecorder } from "../../../trajectory/runtime.js"
 import { resolveAdmittedRunActiveAssertion } from "../../admitted-run-context.js";
 import type { ToolOutcomeObserver } from "../../agent-tools.before-tool-call.js";
 import { resolveDelegationCapability } from "../../delegation-capability.js";
+import { copyExtraSystemPromptContext } from "../../extra-system-prompt-context.js";
 import { resolveSessionGitCoauthorPrompt } from "../../git-coauthor-prompt.js";
 import { agentHarnessBuildsOpenClawTools } from "../../harness/selection.js";
-import { appendIncognitoSystemPrompt } from "../../incognito-system-prompt.js";
 import { applyAuthHeaderOverride, applyLocalNoAuthHeaderOverride } from "../../model-auth.js";
 import { recordAdmittedModelRoutingDecision } from "../../model-routing-decision.js";
 import { captureAgentPluginRuntimeRefresh } from "../../plugin-runtime-refresh.js";
-import { appendProgressCardSystemPrompt } from "../../progress-card-system-prompt.js";
 import { buildAgentRuntimePlan } from "../../runtime-plan/build.js";
 import { resolveSessionPermissionExecMode } from "../../session-permission-exec-mode.js";
 import { resolveSessionPlacementSandbox } from "../../session-placement-admission.js";
@@ -32,6 +31,7 @@ import { remapSkillReferencePaths } from "../sandbox-skills.js";
 import { prepareEmbeddedSkills } from "../skill-runtime.js";
 import { mapThinkingLevelForProvider } from "../utils.js";
 import { prepareExecApprovalContinuationForAttempt } from "./attempt-exec-approval-continuation.js";
+import { prepareRunExtraSystemPrompt } from "./attempt-extra-system-prompt.js";
 import { applyResolvedToolPromptFinalizer } from "./attempt-prompt-support.js";
 import { EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE } from "./attempt-stage-timing.js";
 import { resolveAttemptDispatchApiKey } from "./auth-store.js";
@@ -323,22 +323,18 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
     params.execOverrides ??= {};
     params.execOverrides.mode = resolveSessionPermissionExecMode({ mode: params.permissionMode });
   }
-  const incognitoSystemPrompt = appendIncognitoSystemPrompt({
-    agentId: workspaceResolution.agentId,
-    extraSystemPrompt: params.extraSystemPrompt,
-    sessionKey: params.sessionKey,
-    storePath: params.sessionTarget?.storePath,
-  });
-  const extraSystemPrompt = await appendProgressCardSystemPrompt({
-    agentId: workspaceResolution.agentId,
-    authProfileId: runtime.lastProfileId,
-    config: params.config,
-    extraSystemPrompt: incognitoSystemPrompt,
-    modelId,
-    provider,
-    sessionKey: params.sessionKey,
-    toolsAllow: params.toolsAllow,
-  });
+  // The bundled Codex adapter prepares after it selects its actual native read
+  // surface. Other harnesses cannot attest a host-file reader here.
+  const { extraPromptOwner, preparedExtraSystemPrompt, extraSystemPrompt } =
+    await prepareRunExtraSystemPrompt(params, {
+      agentId: workspaceResolution.agentId,
+      authProfileId: runtime.lastProfileId,
+      modelId,
+      provider,
+      contextTokenBudget: runtime.contextTokenBudget,
+      prepareAtDispatch:
+        runtime.pluginHarnessOwnsTransport && runtime.agentHarness.id !== CODEX_HARNESS_ID,
+    });
   const gitCoauthorPrompt = resolveSessionGitCoauthorPrompt({
     config: params.config,
     agentId: workspaceResolution.agentId,
@@ -672,6 +668,9 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
     },
     prepareAssistantTranscriptMessage: params.prepareAssistantTranscriptMessage,
   };
+  if (!preparedExtraSystemPrompt) {
+    copyExtraSystemPromptContext(extraPromptOwner, attemptParams);
+  }
   const callerIdentity = createAdmittedGatewayToolCallerIdentity({
     admittedRunContext: attemptParams.admittedRunContext,
     agentId: workspaceResolution.agentId,
@@ -697,6 +696,10 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
       attemptControls.close();
       input.clearPostCompactionAbortController(attemptAbortController);
     });
+  if (preparedExtraSystemPrompt?.rawChars && rawAttempt.systemPromptReport) {
+    const { rawChars, injectedChars, truncated } = preparedExtraSystemPrompt;
+    rawAttempt.systemPromptReport.extraSystemPrompt = { rawChars, injectedChars, truncated };
+  }
 
   const postCompactionAbortError = input.getPostCompactionAbortError();
   if (postCompactionAbortError) {

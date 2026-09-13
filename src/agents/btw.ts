@@ -41,6 +41,7 @@ import { EmbeddedBlockChunker, type BlockReplyChunking } from "./embedded-agent-
 import { resolveModelAsync } from "./embedded-agent-runner/model.js";
 import { getActiveEmbeddedRunSnapshot } from "./embedded-agent-runner/runs.js";
 import { resolveEmbeddedAgentStream } from "./embedded-agent-runner/stream-resolution.js";
+import { bindExtraSystemPromptContext } from "./extra-system-prompt-context.js";
 import { createAgentHarnessHostCapabilities } from "./harness/host-capability.js";
 import { resolveAgentHarnessOwnerPluginId } from "./harness/registry.js";
 import { ensureSelectedAgentHarnessPlugin } from "./harness/runtime-plugin.js";
@@ -676,6 +677,7 @@ async function runCliBtwSideQuestion(params: {
   );
   let prepared: Awaited<ReturnType<typeof prepareCliRunContext>> | undefined;
   try {
+    const systemPrompt = buildBtwSystemPrompt();
     prepared = await prepareCliRunContext({
       preparedRunAdmission,
       sessionId: params.sessionId,
@@ -691,7 +693,8 @@ async function runCliBtwSideQuestion(params: {
         question: params.question,
         inFlightPrompt: params.inFlightPrompt,
       }),
-      extraSystemPrompt: buildBtwSystemPrompt(),
+      extraSystemPrompt: systemPrompt,
+      ...bindExtraSystemPromptContext({}, { text: systemPrompt, reducibleRanges: [] }),
       executionMode: "side-question",
       provider: params.cliProvider,
       model: params.model,

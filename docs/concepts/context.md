@@ -133,6 +133,13 @@ Large files are truncated per-file using `agents.defaults.bootstrapMaxChars` (de
 
 When truncation occurs, the runtime injects a concise in-prompt notice under Project Context saying some bootstrap files were truncated; per-file names and sizes stay in `/context` and other diagnostics. This notice is built in and not configurable.
 
+Large supplemental system context is also reduced to a bounded, explicitly
+partial excerpt. `/context` reports its raw and injected sizes separately.
+OpenClaw's runtime rules and file trust wrappers remain intact. A permitted
+reader can retrieve private originals during the active run when available;
+tools-disabled and unreachable-reader paths use the inline excerpt and can ask
+for a missing detail. See [Large supplemental context](/concepts/system-prompt#large-supplemental-context).
+
 ## Skills: injected vs loaded on-demand
 
 The system prompt includes a compact **skills list** (name + description + location). This list has real overhead.

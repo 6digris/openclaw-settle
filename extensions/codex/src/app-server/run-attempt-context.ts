@@ -9,6 +9,7 @@ import {
   resolveContextEngineOwnerPluginId,
   runHarnessContextEngineMaintenance,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { prepareCodexExtraSystemPrompt } from "openclaw/plugin-sdk/codex-mcp-projection";
 import {
   buildCodexOpenClawPromptContext,
   buildCodexWatchedSessionsContext,
@@ -17,6 +18,7 @@ import {
   readMirroredSessionHistoryMessages,
   renderCodexSkillsCollaborationInstructions,
 } from "./attempt-context.js";
+import { isCodexRemoteExecPlacementSandbox } from "./config.js";
 import {
   resolveCodexContextEngineProjectionMaxChars,
   resolveCodexContextEngineProjectionReserveTokens,
@@ -46,6 +48,7 @@ export async function prepareCodexAttemptContext(
     effectiveContextTokenBudget,
     effectiveRuntimeProviderId,
     effectiveRuntimeModelId,
+    legacyScheduledAppRecoveryPrompt,
     hookChannelId,
   } = runtime;
   const {
@@ -63,6 +66,49 @@ export async function prepareCodexAttemptContext(
     sandbox,
   } = connection;
   const { toolBridge } = attemptTools;
+  const hostFilesystem = !sandbox?.enabled && !isCodexRemoteExecPlacementSandbox(sandbox);
+  const nativeReadAvailable =
+    hostFilesystem &&
+    connection.appServer.connectionClass === "local-loopback" &&
+    !connection.appServer.remoteWorkspaceRoot &&
+    !usesSupervisionConnection &&
+    runtime.nativeToolSurfaceEnabled &&
+    connection.appServer.start.transport === "stdio" &&
+    connection.appServer.start.commandSource === "managed" &&
+    (!connection.sessionPermissionPolicy || connection.sessionPermissionPolicy.mode === "full") &&
+    !connection.appServer.networkProxy;
+  const mediatedReadAvailable =
+    hostFilesystem &&
+    toolBridge.availableTools.some((tool) => tool.name === "read") &&
+    (!connection.sessionPermissionPolicy || connection.sessionPermissionPolicy.mode === "full");
+  const supplementalContextOptions = {
+    contextTokenBudget: effectiveContextTokenBudget,
+    source: {
+      agentId: sessionAgentId,
+      agentDir,
+      sessionId: activeSessionId,
+      sessionKey: contextSessionKey,
+      storePath: params.sessionTarget?.storePath ?? activeSessionFile,
+    },
+    policyAgentId: connection.policyAgentId,
+    // Native shell policy is revalidated before thread startup can reach inference.
+    // A remote/sandbox filesystem cannot use the host's private temporary file.
+    readAvailable:
+      runtimeParams.disableTools !== true && (nativeReadAvailable || mediatedReadAvailable),
+  };
+  const prepareSupplementalContext = (owner: { extraSystemPrompt?: string }) =>
+    prepareCodexExtraSystemPrompt(
+      {
+        ...owner,
+        hostCapabilities: runtimeParams.hostCapabilities,
+        config: runtimeParams.config,
+        agentId: runtimeParams.agentId,
+      },
+      supplementalContextOptions,
+    );
+  const preparedExtraSystemPrompt = await prepareSupplementalContext(runtimeParams);
+  connection.assertCurrent();
+  connection.runAbortController.signal.throwIfAborted();
   const activeTranscriptTarget = {
     agentId: sessionAgentId,
     sessionFile: activeSessionFile,
@@ -183,9 +229,17 @@ export async function prepareCodexAttemptContext(
       workspaceBootstrapContext.threadDeveloperInstructions)
     : undefined;
   const baseDeveloperInstructions = joinPresentSections(
-    buildDeveloperInstructions(runtimeParams, {
-      dynamicTools: toolBridge.availableSpecs,
-    }),
+    buildDeveloperInstructions(
+      {
+        ...runtimeParams,
+        extraSystemPrompt: [preparedExtraSystemPrompt.text, legacyScheduledAppRecoveryPrompt]
+          .filter((value): value is string => Boolean(value?.trim()))
+          .join("\n\n"),
+      },
+      {
+        dynamicTools: toolBridge.availableSpecs,
+      },
+    ),
     agentWorkspaceDeveloperInstructions,
   );
   const watchedSessionsContext = buildCodexWatchedSessionsContext({
@@ -210,6 +264,11 @@ export async function prepareCodexAttemptContext(
     promptText: params.prompt,
     promptContextRange: undefined as CodexProjectedContextRange | undefined,
     developerInstructions: baseDeveloperInstructions,
+    extraSystemPrompt: {
+      rawChars: preparedExtraSystemPrompt.rawChars,
+      injectedChars: preparedExtraSystemPrompt.injectedChars,
+      truncated: preparedExtraSystemPrompt.truncated,
+    },
     prePromptMessageCount: historyState.messages.length,
     contextEngineProjection: undefined as CodexContextEngineThreadBootstrapProjection | undefined,
     precomputedStaleBindingContinuityProjectionApplied: false,
@@ -239,6 +298,8 @@ export async function prepareCodexAttemptContext(
     hookRunner,
     buildActiveContextEngineRuntimeContext,
     workspaceBootstrapContext,
+    preparedExtraSystemPrompt,
+    prepareSupplementalContext,
     agentWorkspaceDeveloperInstructions,
     baseDeveloperInstructions,
     buildOpenClawPromptContext,

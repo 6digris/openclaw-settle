@@ -17,6 +17,7 @@ import { resolveAdmittedRunActiveAssertion } from "../../admitted-run-context.js
 import { retireSessionMcpRuntime } from "../../agent-bundle-mcp-manager-api.js";
 import { listActiveProcessSessionReferences } from "../../bash-process-references.js";
 import { resolveProcessToolScopeKey } from "../../bash-process-scope.js";
+import { copyExtraSystemPromptContext } from "../../extra-system-prompt-context.js";
 import { SessionManager } from "../../sessions/session-manager.js";
 import { buildEmbeddedCompactionRuntimeContext } from "../compaction-runtime-context.js";
 import {
@@ -186,6 +187,7 @@ export async function compactEmbeddedRunForRecovery(
     attempt: recovery.attempt,
     maxAttempts: recovery.maxAttempts,
   };
+  copyExtraSystemPromptContext(runParams, runtimeContext);
   let observedCompactions = 0;
   const runtimeSettings = input.buildRuntimeSettings({
     tokenBudget: recovery.tokenBudget,

@@ -15,6 +15,10 @@ import type { AdmittedRunContext } from "../agents/admitted-run-context.js";
 import { isClientToolNameConflictError } from "../agents/agent-tool-definition-adapter.js";
 import type { AgentStreamParams, ClientToolDefinition } from "../agents/command/shared-types.js";
 import type { ImageContent } from "../agents/command/types.js";
+import {
+  bindExtraSystemPromptContext,
+  composeExtraSystemPromptContext,
+} from "../agents/extra-system-prompt-context.js";
 import { toOpenAiChatCompletionsUsage, type OpenAiChatCompletionsUsage } from "../agents/usage.js";
 import { readAgentRunTerminalOutcome } from "../channels/turn/agent-run-terminal-outcome.js";
 import { createDefaultDeps } from "../cli/deps.js";
@@ -998,13 +1002,14 @@ export async function handleOpenAiHttpRequest(
   const created = Math.floor(Date.now() / 1000);
   const streamIdentity = { runId, model, created };
   const deps = createDefaultDeps();
-  const mergedExtraSystemPrompt = [prompt.extraSystemPrompt, toolChoicePrompt]
-    .filter((part): part is string => Boolean(part))
-    .join("\n\n");
+  const extraSystemPromptContext = composeExtraSystemPromptContext([
+    { text: prompt.extraSystemPrompt, reducible: true },
+    { text: toolChoicePrompt, reducible: false },
+  ]);
   const commandInput = buildAgentCommandInput({
     prompt: {
       message: prompt.message,
-      extraSystemPrompt: mergedExtraSystemPrompt || undefined,
+      extraSystemPrompt: extraSystemPromptContext.text || undefined,
       images: images.length > 0 ? images : undefined,
     },
     clientTools: resolvedClientTools.length > 0 ? resolvedClientTools : undefined,
@@ -1016,6 +1021,7 @@ export async function handleOpenAiHttpRequest(
     abortSignal: abortController.signal,
     streamParams,
   });
+  bindExtraSystemPromptContext(commandInput, extraSystemPromptContext);
   const gatewayCommandInput = opts.resolveGatewayContext
     ? {
         ...commandInput,

@@ -10,6 +10,7 @@ import {
   runWithCronCreatorAuthorityCapability,
   shouldAdmitFreshChannelOwnerCronAuthority,
 } from "../../agents/cron-creator-authority-context.js";
+import { bindExtraSystemPromptContext } from "../../agents/extra-system-prompt-context.js";
 import { resolveFastModeState } from "../../agents/fast-mode.js";
 import { runAgentHarnessBeforeMessageWriteHook } from "../../agents/harness/hook-helpers.js";
 import { resolveOwnerPromptNumbers } from "../../agents/owner-display.js";
@@ -97,7 +98,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
     silentReplyPromptMode,
     useFastReplyRuntime,
     fullAccessState,
-    extraSystemPromptParts,
+    extraSystemPromptContext,
     sourceConversationContextByMode,
     sourceConversationContextPromptOffset,
     extraSystemPromptStatic,
@@ -526,7 +527,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
       ...(opts?.suppressNextUserMessagePersistence
         ? { suppressNextUserMessagePersistence: true }
         : {}),
-      extraSystemPrompt: extraSystemPromptParts.join("\n\n") || undefined,
+      extraSystemPrompt: extraSystemPromptContext.text || undefined,
       sourceReplyDeliveryMode,
       taskSuggestionDeliveryMode: opts?.taskSuggestionDeliveryMode,
       silentReplyPromptMode,
@@ -548,6 +549,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
         : {}),
     },
   };
+  bindExtraSystemPromptContext(followupRun.run, extraSystemPromptContext);
   const sourceReplyDeliveryRuntimeOptions = opts as SourceReplyDeliveryRuntimeOptions | undefined;
   if (sourceReplyDeliveryRuntimeOptions?.sourceReplyDeliveryModeOrigin) {
     const sourceReplyDeliveryRuntime = createSourceReplyDeliveryRuntime({

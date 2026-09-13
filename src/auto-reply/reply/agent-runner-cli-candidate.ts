@@ -15,6 +15,7 @@ import {
 } from "../../agents/cli-session.js";
 import { resolveDelegationCapability } from "../../agents/delegation-capability.js";
 import type { EmbeddedAgentRunResult } from "../../agents/embedded-agent-runner/types.js";
+import { copyExtraSystemPromptContext } from "../../agents/extra-system-prompt-context.js";
 import { findModelInCatalog } from "../../agents/model-catalog-lookup.js";
 import type { ModelFallbackResultClassification } from "../../agents/model-fallback-attempt.js";
 import { createAgentRunSupersededAbortError } from "../../agents/run-termination.js";
@@ -396,6 +397,7 @@ export async function runCliFallbackCandidate(
             runId: params.runId,
             lane: params.runLane,
             extraSystemPrompt: turn.followupRun.run.extraSystemPrompt,
+            ...copyExtraSystemPromptContext(turn.followupRun.run, {}),
             sourceReplyDeliveryMode: turn.followupRun.run.sourceReplyDeliveryMode,
             taskSuggestionDeliveryMode: turn.followupRun.run.taskSuggestionDeliveryMode,
             // Heartbeat ambient routes are never implicit message recipients.

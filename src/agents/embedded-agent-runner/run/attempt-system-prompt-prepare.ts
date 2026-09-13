@@ -10,6 +10,10 @@ import {
   buildBootstrapTruncationReportMeta,
 } from "../../bootstrap-budget.js";
 import { resolveOpenClawReferencePaths } from "../../docs-path.js";
+import {
+  prepareExtraSystemPrompt,
+  resolveExtraSystemPromptSource,
+} from "../../extra-system-prompt.js";
 import { prepareAgentMemoryPrompt } from "../../memory-prompt-prepare.js";
 import { buildModelToolsUnavailablePrompt } from "../../model-tool-support.js";
 import {
@@ -20,6 +24,7 @@ import { resolveAgentPromptSurfaceForSessionKey } from "../../prompt-surface.js"
 import { resolveAgentRuntimePrompt } from "../../runtime-prompt.js";
 import { resolveSandboxRuntimeStatus } from "../../sandbox/runtime-status.js";
 import { buildSystemPromptReport } from "../../system-prompt-report.js";
+import { isToolExecutionAllowed } from "../../tool-policy-shared.js";
 import { toolPolicyRestrictsTools } from "../../tool-policy.js";
 import type { ToolSearchCatalogRef } from "../../tool-search.js";
 import { buildToolSchemaDirectoryPrompt } from "../../tool-search.js";
@@ -36,6 +41,7 @@ type PreparedBootstrap = Awaited<ReturnType<typeof prepareEmbeddedAttemptBootstr
 type PromptTools = Parameters<typeof buildEmbeddedSystemPrompt>[0]["tools"];
 
 export async function prepareEmbeddedAttemptSystemPrompt(params: {
+  agentDir: string;
   activeContextEngine: EmbeddedRunAttemptParams["contextEngine"];
   attempt: EmbeddedRunAttemptParams;
   setup: EmbeddedAttemptSetup;
@@ -209,14 +215,39 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
   const projectMemoryWriteInstruction = buildProjectMemoryWriteInstruction(
     attempt.preparedModelRuntime?.projectKey,
   );
-  const extraSystemPrompt =
+  const prepareExtraPrompt = (capabilities: Iterable<string>, sandboxed: boolean) =>
+    prepareExtraSystemPrompt(attempt, {
+      contextTokenBudget: attempt.contextTokenBudget,
+      ...resolveExtraSystemPromptSource({
+        agentId: params.setup.sessionAgentId,
+        agentDir: params.agentDir,
+        sessionId: attempt.sessionId,
+        sessionKey: attempt.sessionKey,
+        storePath: attempt.sessionTarget?.storePath ?? attempt.sessionFile,
+      }),
+      readAvailable:
+        !params.isRawModelRun &&
+        params.modelToolsEnabled &&
+        new Set(capabilities).has("read") &&
+        (!attempt.toolExecutionAllow ||
+          isToolExecutionAllowed(attempt.toolExecutionAllow, "read")) &&
+        !params.setup.effectiveFsWorkspaceOnly &&
+        (!attempt.permissionMode || attempt.permissionMode === "full") &&
+        !sandboxed,
+    });
+  const withRuntimeRequirements = (extra: string | undefined) =>
     [
-      attempt.extraSystemPrompt,
+      extra,
       projectMemoryWriteInstruction,
       buildModelToolsUnavailablePrompt(params.modelToolsEnabled),
     ]
       .filter((value): value is string => Boolean(value))
       .join("\n\n") || undefined;
+  const preparedExtraSystemPrompt = await prepareExtraPrompt(
+    params.capabilityToolNames,
+    sandboxInfo?.enabled === true,
+  );
+  const extraSystemPrompt = withRuntimeRequirements(preparedExtraSystemPrompt.text);
 
   const promptInputs: Parameters<typeof buildAttemptSystemPrompt>[0] = {
     isRawModelRun: params.isRawModelRun,
@@ -321,6 +352,9 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
       return { mode: runtime.mode, sandboxed: runtime.sandboxed };
     })(),
     systemPrompt: attemptSystemPrompt.systemPrompt,
+    ...(preparedExtraSystemPrompt.rawChars && !params.isRawModelRun
+      ? { extraSystemPrompt: preparedExtraSystemPrompt }
+      : {}),
     injectedWorkspaceFiles: params.bootstrap.bootstrapInjectionStats,
     skillsPrompt: params.skillsPrompt,
     tools: params.effectiveTools,
@@ -368,6 +402,11 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
         sandboxInfo: refreshedSandboxInfo,
       };
       const promise = (async () => {
+        const refreshedExtraPrompt = await prepareExtraPrompt(
+          capabilities,
+          refreshedSandboxInfo?.enabled === true,
+        );
+        embeddedSystemPrompt.extraSystemPrompt = withRuntimeRequirements(refreshedExtraPrompt.text);
         Object.assign(
           embeddedSystemPrompt,
           await prepareToolContextSections(
@@ -393,6 +432,7 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
             systemPromptReport,
             buildSystemPromptReport({
               ...reportInputs,
+              extraSystemPrompt: params.isRawModelRun ? undefined : refreshedExtraPrompt,
               generatedAt: Date.now(),
               systemPrompt,
               tools,

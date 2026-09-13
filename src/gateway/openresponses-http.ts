@@ -13,6 +13,11 @@ import type { AdmittedRunContext } from "../agents/admitted-run-context.js";
 import { isClientToolNameConflictError } from "../agents/agent-tool-definition-adapter.js";
 import type { ImageContent } from "../agents/command/types.js";
 import type { ClientToolDefinition } from "../agents/embedded-agent-runner/run/params.js";
+import {
+  bindExtraSystemPromptContext,
+  composeExtraSystemPromptContext,
+  type ExtraSystemPromptContext,
+} from "../agents/extra-system-prompt-context.js";
 import { toOpenAiResponsesUsage } from "../agents/usage.js";
 import { readAgentRunTerminalOutcome } from "../channels/turn/agent-run-terminal-outcome.js";
 import { createDefaultDeps } from "../cli/deps.js";
@@ -94,7 +99,7 @@ import {
   resolveUnsatisfiedToolChoiceMessage,
   type ToolChoiceConstraint,
 } from "./openai-tool-choice.js";
-import { wrapUntrustedFileContent } from "./openresponses-file-content.js";
+import { renderUntrustedFileContext } from "./openresponses-file-content.js";
 import { buildAgentPrompt } from "./openresponses-prompt.js";
 import { createAssistantOutputItem, createFunctionCallOutputItem } from "./openresponses-shape.js";
 import { authorizeGatewaySessionCreation } from "./operator-role-policy.js";
@@ -233,7 +238,6 @@ export const testing = {
   resetResponseSessionState() {
     responseSessionMap.clear();
   },
-  wrapUntrustedFileContent,
   storeResponseSessionAt(
     responseId: string,
     sessionKey: string,
@@ -381,6 +385,7 @@ async function runResponsesAgentCommand(params: {
   images: ImageContent[];
   clientTools: ClientToolDefinition[];
   extraSystemPrompt: string;
+  extraSystemPromptContext: ExtraSystemPromptContext;
   modelOverride?: string;
   streamParams: { maxTokens?: number; temperature?: number; topP?: number } | undefined;
   sessionKey: string;
@@ -392,28 +397,31 @@ async function runResponsesAgentCommand(params: {
   abortSignal?: AbortSignal;
 }) {
   return agentCommandFromGatewayIngress(
-    {
-      message: params.message,
-      images: params.images.length > 0 ? params.images : undefined,
-      clientTools: params.clientTools.length > 0 ? params.clientTools : undefined,
-      extraSystemPrompt: params.extraSystemPrompt || undefined,
-      model: params.modelOverride,
-      streamParams: params.streamParams ?? undefined,
-      sessionKey: params.sessionKey,
-      runId: params.runId,
-      deliver: false,
-      messageChannel: params.messageChannel,
-      senderIsOwner: params.senderIsOwner,
-      bestEffortDeliver: false,
-      allowModelOverride: params.modelOverride !== undefined,
-      abortSignal: params.abortSignal,
-      ...(params.resolveGatewayContext
-        ? {
-            onAdmittedRunContext: (context: AdmittedRunContext) =>
-              bindGatewayContextResolver(context, params.resolveGatewayContext),
-          }
-        : {}),
-    },
+    bindExtraSystemPromptContext(
+      {
+        message: params.message,
+        images: params.images.length > 0 ? params.images : undefined,
+        clientTools: params.clientTools.length > 0 ? params.clientTools : undefined,
+        extraSystemPrompt: params.extraSystemPrompt || undefined,
+        model: params.modelOverride,
+        streamParams: params.streamParams ?? undefined,
+        sessionKey: params.sessionKey,
+        runId: params.runId,
+        deliver: false,
+        messageChannel: params.messageChannel,
+        senderIsOwner: params.senderIsOwner,
+        bestEffortDeliver: false,
+        allowModelOverride: params.modelOverride !== undefined,
+        abortSignal: params.abortSignal,
+        ...(params.resolveGatewayContext
+          ? {
+              onAdmittedRunContext: (context: AdmittedRunContext) =>
+                bindGatewayContextResolver(context, params.resolveGatewayContext),
+            }
+          : {}),
+      },
+      params.extraSystemPromptContext,
+    ),
     defaultRuntime,
     params.deps,
     {},
@@ -505,7 +513,7 @@ export async function handleOpenResponsesHttpRequest(
 
   // Count URL sources request-wide, but replay media only from the current user turn.
   let images: ImageContent[] = [];
-  const fileContexts: string[] = [];
+  const fileContexts: ExtraSystemPromptContext[] = [];
   let urlParts = 0;
   const markUrlPart = () => {
     urlParts += 1;
@@ -566,27 +574,29 @@ export async function handleOpenResponsesHttpRequest(
             const rawText = file.text;
             if (rawText?.trim()) {
               fileContexts.push(
-                renderFileContextBlock({
+                renderUntrustedFileContext({
                   filename: file.filename,
-                  content: wrapUntrustedFileContent(rawText),
+                  content: rawText,
                 }),
               );
             } else if (file.images && file.images.length > 0) {
-              fileContexts.push(
-                renderFileContextBlock({
+              fileContexts.push({
+                text: renderFileContextBlock({
                   filename: file.filename,
                   content: "[PDF content rendered to images]",
                   surroundContentWithNewlines: false,
                 }),
-              );
+                reducibleRanges: [],
+              });
             } else {
-              fileContexts.push(
-                renderFileContextBlock({
+              fileContexts.push({
+                text: renderFileContextBlock({
                   filename: file.filename,
                   content: "[No extractable text]",
                   surroundContentWithNewlines: false,
                 }),
-              );
+                reducibleRanges: [],
+              });
             }
             if (file.images && file.images.length > 0) {
               images = images.concat(file.images);
@@ -665,18 +675,16 @@ export async function handleOpenResponsesHttpRequest(
     return true;
   }
 
-  const fileContext = fileContexts.length > 0 ? fileContexts.join("\n\n") : undefined;
   const toolChoiceContext = toolChoicePrompt?.trim();
 
   // Handle instructions + file context as extra system prompt
-  const extraSystemPrompt = [
-    payload.instructions,
-    prompt.extraSystemPrompt,
-    toolChoiceContext,
-    fileContext,
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  const extraSystemPromptContext = composeExtraSystemPromptContext([
+    { text: payload.instructions, reducible: true },
+    { text: prompt.extraSystemPrompt, reducible: true },
+    { text: toolChoiceContext, reducible: false },
+    ...fileContexts,
+  ]);
+  const extraSystemPrompt = extraSystemPromptContext.text;
 
   if (!prompt.message) {
     sendInvalidRequest(res, "Missing user message in `input`.");
@@ -722,6 +730,7 @@ export async function handleOpenResponsesHttpRequest(
         images,
         clientTools: resolvedClientTools,
         extraSystemPrompt,
+        extraSystemPromptContext,
         modelOverride,
         streamParams,
         sessionKey,
@@ -1167,6 +1176,7 @@ export async function handleOpenResponsesHttpRequest(
         images,
         clientTools: resolvedClientTools,
         extraSystemPrompt,
+        extraSystemPromptContext,
         modelOverride,
         streamParams,
         sessionKey,
