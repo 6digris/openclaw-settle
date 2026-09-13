@@ -602,15 +602,6 @@ export function createPackageActivationJournal(
       if (!fs.lstatSync(control, { throwIfNoEntry: false })) {
         verifyPrivate();
         onCustody?.(false);
-      } else {
-        const published = openPackageActivationJournal(anchor).read();
-        if (
-          published.descriptor.journalParentIdentity !== descriptor.journalParentIdentity ||
-          published.descriptor.journalIdentity !== journalIdentity ||
-          descriptorJson(published.descriptor) !== initial.descriptor_json
-        ) {
-          throw new Error("Package control publication is uncertain.");
-        }
       }
     } catch {
       // Unknown evidence is never permission for stage cleanup.

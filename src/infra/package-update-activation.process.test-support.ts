@@ -24,9 +24,12 @@ const isPrivateJournal = (file: string) =>
 const open = fs.openSync.bind(fs);
 fs.openSync = (file, flags, mode) => {
   const fd = open(file, flags, mode);
-  if (cut === "created" && flags === "wx" && isPrivateJournal(String(file))) interrupt();
+  if (cut === "created" && flags === "wx" && isPrivateJournal(String(file))) {
+    interrupt();
+  }
   return fd;
 };
+// oxlint-disable-next-line typescript/unbound-method -- called below with the intercepted database receiver.
 const prepare = DatabaseSync.prototype.prepare;
 DatabaseSync.prototype.prepare = function (sql) {
   const statement = prepare.call(this, sql);
@@ -48,9 +51,13 @@ const rename = fs.renameSync.bind(fs);
 fs.renameSync = (from, to) => {
   const publish =
     String(from).includes(`${path.sep}.activation-control-`) && String(to).endsWith(".control");
-  if (publish && cut === "before-publication") interrupt();
+  if (publish && cut === "before-publication") {
+    interrupt();
+  }
   rename(from, to);
-  if (publish && cut === "after-publication") interrupt();
+  if (publish && cut === "after-publication") {
+    interrupt();
+  }
 };
 
 const { withUpdateCommandExecutor } = await import("../cli/update-cli/update-command-executor.js");

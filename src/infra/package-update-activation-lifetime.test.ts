@@ -245,16 +245,18 @@ describe("package activation custody and surviving completion", () => {
         return fd;
       });
       const fstatSpy = vi.spyOn(fs, "fstatSync").mockImplementation((...args) => {
-        if (cut === "fstat" && args[0] === descriptor && !closed)
+        if (cut === "fstat" && args[0] === descriptor && !closed) {
           throw new Error("private fstat refused");
+        }
         return fstat(...args);
       });
       const closeSpy = vi.spyOn(fs, "closeSync").mockImplementation((fd) => {
         close(fd);
         if (fd === descriptor && !closed) {
           closed = true;
-          if (cut === "foreign-entry")
+          if (cut === "foreign-entry") {
             fs.writeFileSync(path.join(path.dirname(privateFile), "foreign"), "retain");
+          }
         }
       });
       try {
@@ -268,10 +270,11 @@ describe("package activation custody and surviving completion", () => {
         expect(() => fstat(descriptor!)).toThrow();
         expect(custody).not.toHaveBeenCalled();
         expect(fs.existsSync(resolvePackageActivationControl(anchor))).toBe(false);
-        if (cut === "foreign-entry")
+        if (cut === "foreign-entry") {
           expect(fs.readFileSync(path.join(path.dirname(privateFile), "foreign"), "utf8")).toBe(
             "retain",
           );
+        }
       } finally {
         closeSpy.mockRestore();
         fstatSpy.mockRestore();
@@ -289,7 +292,9 @@ describe("package activation custody and surviving completion", () => {
           anchor = value;
         },
         (retained) => {
-          if (!retained) return;
+          if (!retained) {
+            return;
+          }
           const live = path.join(path.dirname(anchor), "openclaw");
           fs.renameSync(live, `${live}.original`);
           fs.mkdirSync(live, { mode: 0o700 });
