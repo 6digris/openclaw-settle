@@ -44,7 +44,7 @@ const refreshInventoryArgs = [
   "--params",
   JSON.stringify({ agentId: "main", view: "all", refresh: true }),
 ];
-const refreshInventory = async (owner: OpenClawTestInstance, commands: unknown[]) => {
+const refreshInventoryForOwner = async (owner: OpenClawTestInstance, commands: unknown[]) => {
   let result = await owner.cli(refreshInventoryArgs);
   commands.push({ args: refreshInventoryArgs, ...result });
   expect(result.code, result.stderr).toBe(0);
@@ -164,6 +164,7 @@ catalogSuite.define(() => {
     url.hash = new URL(browserUrl).hash;
     const frames: unknown[] = [];
     const commands: unknown[] = [];
+    const refreshInventory = () => refreshInventoryForOwner(owner, commands);
     const catalogRequests = new Set<string>();
     const mutations: string[] = [];
     let rejectCatalog = false;
@@ -183,7 +184,7 @@ catalogSuite.define(() => {
       expect(result.code, result.stderr).toBe(0);
     };
     try {
-      const initialInventory = await refreshInventory(owner, commands);
+      const initialInventory = await refreshInventory();
       expect(initialInventory.stdout).toContain("inventory-before");
       await catalogSuite.withPage(
         {
@@ -288,7 +289,7 @@ catalogSuite.define(() => {
           }
 
           inventoryModel = "inventory-after";
-          const refreshed = await refreshInventory(owner, commands);
+          const refreshed = await refreshInventory();
           expect(refreshed.stdout).toContain("inventory-after");
           await expect
             .poll(() =>
@@ -301,11 +302,11 @@ catalogSuite.define(() => {
 
           holdCatalog = true;
           inventoryModel = "inventory-held";
-          await refreshInventory(owner, commands);
+          commands.push(await refreshInventory());
           await expect.poll(() => heldCatalogs.length).toBeGreaterThan(0);
           holdCatalog = false;
           inventoryModel = "inventory-latest";
-          await refreshInventory(owner, commands);
+          commands.push(await refreshInventory());
           await expect
             .poll(() =>
               picker.locator('[role="option"][data-value="ollama/inventory-latest"]').count(),
