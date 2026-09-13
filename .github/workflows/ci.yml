@@ -5143,6 +5143,12 @@ jobs:
               process.stdout.write(simulator.udid);
             '
           )"
+          if [[ -x ./scripts/install-simslim.sh && -x ./scripts/ios-simulator-prepare.sh ]]; then
+            simslim_dir="$RUNNER_TEMP/openclaw-simslim"
+            ./scripts/install-simslim.sh "$simslim_dir"
+            OPENCLAW_CI_SIMSLIM_BINARY="$simslim_dir/simslim" \
+              ./scripts/ios-simulator-prepare.sh "$simulator_id"
+          fi
           result_bundle="apps/ios/build/LifecycleTestResults/OpenClawLifecycleTests.xcresult"
           mkdir -p "apps/ios/build/LifecycleTestResults"
           xcodebuild \
@@ -5318,11 +5324,23 @@ jobs:
 
       - *install_watch_rust_toolchain
 
+      - name: Install iOS simulator tooling
+        id: ios_simslim
+        run: |
+          set -euo pipefail
+          # Frozen targets without their own helpers retain stock simulators.
+          if [[ -x ./scripts/install-simslim.sh && -x ./scripts/ios-simulator-prepare.sh ]]; then
+            simslim_dir="$RUNNER_TEMP/openclaw-simslim"
+            ./scripts/install-simslim.sh "$simslim_dir"
+            echo "binary=$simslim_dir/simslim" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Capture iOS device screenshot shard
         id: device_screenshots
         env:
           OPENCLAW_SNAPSHOT_DEVICE_FAMILY: ${{ matrix.device_family }}
           OPENCLAW_SNAPSHOT_SKIP_WATCH: ${{ matrix.device_family == 'iphone' && '1' || '0' }}
+          OPENCLAW_CI_SIMSLIM_BINARY: ${{ steps.ios_simslim.outputs.binary }}
         run: pnpm ios:screenshots
 
       - name: Package iOS screenshot shard evidence

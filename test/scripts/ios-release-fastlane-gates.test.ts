@@ -12,7 +12,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 const fastfilePath = path.join(process.cwd(), "apps", "ios", "fastlane", "Fastfile");
 const packageJsonPath = path.join(process.cwd(), "package.json");
@@ -823,6 +826,9 @@ end
     expect(screenshots).toContain("RELEASE_IOS_SCREENSHOT_TESTS.each");
     expect(screenshots).toContain("capture_release_ios_screenshot!(");
     expect(capture).toContain("1.upto(2)");
+    const prepare = capture.indexOf('"ios-simulator-prepare.sh"');
+    expect(prepare).toBeGreaterThan(capture.indexOf("1.upto(2)"));
+    expect(prepare).toBeLessThan(capture.indexOf("\n    begin\n"));
     expect(screenshots).toContain(
       "result_bundle_archive_directory: result_bundle_archive_directory",
     );
@@ -857,6 +863,138 @@ end
     expect(verifier).toContain('"xcresulttool"');
     expect(verifier).toContain('summary.fetch("failedTests")');
     expect(verifier).toContain("UI.test_failure!");
+  });
+
+  it("prepares each slim screenshot attempt with its resolved runtime without changing stock captures", () => {
+    const root = tempDirs.make("openclaw-simslim-fastlane-");
+    const capture = functionDefinition(readFastfile(), "capture_release_ios_screenshot!");
+    const source = `
+require "json"
+require "fileutils"
+require "shellwords"
+$LOADED_FEATURES << "snapshot/test_command_generator.rb"
+SNAPSHOT_STATUS_BAR_ARGUMENTS = "fixture"
+IOS_SCREENSHOT_XCARGS = "fixture"
+Device = Struct.new(:udid, :os_version, :os_type)
+module UI
+  def self.user_error!(message); raise message; end
+  def self.important(message); end
+end
+module Snapshot
+  class TestCommandGenerator
+    def self.find_device(name, os_version)
+      $events << { type: "resolve", name: name, requestedVersion: os_version }
+      $device
+    end
+  end
+end
+def repo_root; ARGV.fetch(0); end
+def shell_join(args); Shellwords.join(args); end
+def sh(command)
+  $events << { type: "prepare", args: Shellwords.split(command) }
+  raise "preparation failed" if @scenario == "prepare-failed"
+end
+def capture_ios_screenshots(**options)
+  $events << {
+    type: "capture", devices: options.fetch(:devices),
+    iosVersion: options[:ios_version],
+    erased: options.fetch(:erase_simulator) { ENV["SNAPSHOT_ERASE_SIMULATOR"] == "true" }
+  }
+  if @scenario == "capture-retry" && $events.count { |event| event[:type] == "capture" } == 1
+    raise "capture failed"
+  end
+end
+def verify_snapshot_test_result!(*); end
+def archive_snapshot_test_result!(**); end
+def record_release_ios_screenshot_attempt!(**options)
+  @attempts << [options.fetch(:attempt), options.fetch(:capture_outcome)]
+end
+${capture}
+ENV["SNAPSHOT_ERASE_SIMULATOR"] = "true"
+results = %w[stock iphone ipad capture-retry prepare-failed missing non-ios].map do |scenario|
+  @scenario, @attempts, $events = scenario, [], []
+  $device = scenario == "missing" ? nil : Device.new("selected-udid", "26.6", scenario == "non-ios" ? "watchOS" : "iOS")
+  ENV["OPENCLAW_CI_SIMSLIM_BINARY"] = scenario == "stock" ? "" : File.join(repo_root, "bin", "simslim")
+  device = scenario == "ipad" ? "iPad Pro 13-inch" : "iPhone Pro Max"
+  error = nil
+  begin
+    capture_release_ios_screenshot!(
+      project: "fixture.xcodeproj", device: device,
+      screenshot: { test: "testRelease", name: "01-control" },
+      output_directory: repo_root, result_bundle_path: File.join(repo_root, "result.xcresult"),
+      result_bundle_archive_directory: repo_root, capture_attempts: [],
+      capture_attempts_path: File.join(repo_root, "attempts.json"),
+      derived_data_path: repo_root, clear_previous_screenshots: true
+    )
+  rescue => failure
+    error = failure.message
+  end
+  { scenario: scenario, events: $events, attempts: @attempts, error: error }
+end
+puts JSON.generate(results)
+`;
+    const result = spawnSync("ruby", ["-e", source, root], { encoding: "utf8" });
+    expect(result.status, result.error?.message ?? result.stderr).toBe(0);
+    const rows = JSON.parse(result.stdout) as {
+      scenario: string;
+      events: {
+        type: string;
+        name?: string;
+        requestedVersion?: string | null;
+        args?: string[];
+        devices?: string[];
+        iosVersion?: string | null;
+        erased?: boolean;
+      }[];
+      attempts: [number, string][];
+      error: string | null;
+    }[];
+    for (const row of rows) {
+      const captures = row.events.filter(({ type }) => type === "capture");
+      if (row.scenario === "stock") {
+        expect(row.events).toEqual([
+          { type: "capture", devices: ["iPhone Pro Max"], iosVersion: null, erased: true },
+        ]);
+      } else if (["missing", "non-ios", "prepare-failed"].includes(row.scenario)) {
+        expect(captures).toEqual([]);
+        expect(row.error).toContain(
+          row.scenario === "prepare-failed" ? "preparation failed" : "No iOS simulator found",
+        );
+        expect(row.attempts).toEqual([]);
+        expect(row.events.map(({ type }) => type)).toEqual(
+          row.scenario === "prepare-failed" ? ["resolve", "prepare"] : ["resolve"],
+        );
+      } else {
+        const attempts = row.scenario === "capture-retry" ? 2 : 1;
+        const device = row.scenario === "ipad" ? "iPad Pro 13-inch" : "iPhone Pro Max";
+        expect(row.error).toBeNull();
+        expect(row.events).toEqual(
+          Array.from({ length: attempts }, () => [
+            { type: "resolve", name: device, requestedVersion: null },
+            {
+              type: "prepare",
+              args: [
+                "/bin/bash",
+                path.join(root, "scripts", "ios-simulator-prepare.sh"),
+                "selected-udid",
+              ],
+            },
+            { type: "capture", devices: [device], iosVersion: "26.6", erased: false },
+          ]).flat(),
+        );
+        expect(row.attempts).toEqual(
+          attempts === 2
+            ? [
+                [1, "failed"],
+                [2, "succeeded"],
+              ]
+            : [[1, "succeeded"]],
+        );
+      }
+    }
+    expect(functionBody(readFastfile(), "capture_watch_screenshot")).not.toMatch(
+      /simslim|ios-simulator-prepare|erase_simulator|Snapshot::TestCommandGenerator/,
+    );
   });
 
   it("captures each release screen from an independent direct launch", () => {

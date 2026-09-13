@@ -1855,6 +1855,22 @@ def capture_release_ios_screenshot!(
   1.upto(2) do |attempt|
     FileUtils.rm_f(expected_screenshot_path)
     FileUtils.rm_rf(result_bundle_path)
+    simulator_options = {}
+    unless ENV.fetch("OPENCLAW_CI_SIMSLIM_BINARY", "").empty?
+      require "snapshot/test_command_generator"
+      # Snapshot.config is not populated before the first capture action.
+      simulator = Snapshot::TestCommandGenerator.find_device(device, nil)
+      unless simulator && simulator.os_type == "iOS"
+        UI.user_error!("No iOS simulator found for screenshot device #{device}.")
+      end
+      sh(shell_join([
+        "/bin/bash",
+        File.join(repo_root, "scripts", "ios-simulator-prepare.sh"),
+        simulator.udid
+      ]))
+      # Bind capture to the prepared runtime and prevent an inherited erase flag.
+      simulator_options = { ios_version: simulator.os_version, erase_simulator: false }
+    end
     begin
       # OpenClaw owns retries of the whole capture action; Fastlane may still
       # retry simulator launch internally. Each action call creates a new
@@ -1879,7 +1895,8 @@ def capture_release_ios_screenshot!(
         override_status_bar: true,
         override_status_bar_arguments: SNAPSHOT_STATUS_BAR_ARGUMENTS,
         skip_open_summary: true,
-        xcargs: IOS_SCREENSHOT_XCARGS
+        xcargs: IOS_SCREENSHOT_XCARGS,
+        **simulator_options
       )
       verify_snapshot_test_result!(result_bundle_path, "#{device} #{screenshot_name} attempt #{attempt}")
     rescue StandardError => error

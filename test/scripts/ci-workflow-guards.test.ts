@@ -10435,6 +10435,43 @@ server.listen(0, "127.0.0.1", () => {
     }
   });
 
+  it("keeps simslim target-owned and scoped to iOS simulator steps", () => {
+    const workflow = readCiWorkflow();
+    const lifecycle = workflow.jobs["ios-build"].steps.find(
+      (step: WorkflowStep) => step.name === "Run focused iOS lifecycle simulator tests",
+    );
+    expect(lifecycle.if).toBe(
+      "matrix.phase == 'tests' && needs.preflight.outputs.compatibility_target != 'true'",
+    );
+    const shard = workflow.jobs["ios-screenshot-shard"];
+    const install = shard.steps.find(
+      (step: WorkflowStep) => step.name === "Install iOS simulator tooling",
+    );
+    const capture = shard.steps.find(
+      (step: WorkflowStep) => step.name === "Capture iOS device screenshot shard",
+    );
+    expect(capture.env.OPENCLAW_CI_SIMSLIM_BINARY).toBe("${{ steps.ios_simslim.outputs.binary }}");
+    expect(shard.steps.indexOf(install)).toBeLessThan(shard.steps.indexOf(capture));
+    for (const step of [lifecycle, install]) {
+      expect(step.run).toContain(
+        "if [[ -x ./scripts/install-simslim.sh && -x ./scripts/ios-simulator-prepare.sh ]]; then",
+      );
+      expect(step.run).not.toContain(".ci-harness/");
+      expect(step.run).not.toContain("GITHUB_ENV");
+      expect(step.run).not.toContain("GITHUB_PATH");
+    }
+    expect(workflow.env).not.toHaveProperty("OPENCLAW_CI_SIMSLIM_BINARY");
+    for (const job of Object.values(workflow.jobs)) {
+      expect(job.env ?? {}).not.toHaveProperty("OPENCLAW_CI_SIMSLIM_BINARY");
+      for (const step of job.steps ?? []) {
+        if (step === lifecycle || step === install || step === capture) {
+          continue;
+        }
+        expect(JSON.stringify(step)).not.toMatch(/simslim|ios-simulator-prepare/);
+      }
+    }
+  });
+
   it("retries macOS release builds only when Sparkle metadata is incomplete", () => {
     const workflow = readCiWorkflow();
     const macosInstallStep = workflow.jobs["macos-swift"].steps.find(
