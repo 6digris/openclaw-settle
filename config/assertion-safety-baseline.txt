@@ -970,7 +970,6 @@ extensions/qa-lab/src/live-transports/shared/live-transport-rtt.ts	1
 extensions/qa-lab/src/live-transports/slack/adapter.runtime.ts	3
 extensions/qa-lab/src/live-transports/slack/scenario-environment.ts	5
 extensions/qa-lab/src/live-transports/slack/slack-live.approval-checkpoint.ts	2
-extensions/qa-lab/src/live-transports/slack/slack-live.capture.ts	1
 extensions/qa-lab/src/live-transports/slack/slack-live.codex-approval.ts	2
 extensions/qa-lab/src/live-transports/slack/slack-live.config.ts	2
 extensions/qa-lab/src/live-transports/slack/slack-live.message-observations.ts	1
