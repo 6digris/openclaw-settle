@@ -9,7 +9,7 @@ on:
       timeout_minutes:
         type: number
         description: "Maximum GitHub job runtime for long Testbox commands"
-        default: 360
+        default: 480
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
     paths:
