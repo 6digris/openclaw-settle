@@ -8,7 +8,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createModelVisibilityPolicy } from "../agents/model-visibility-policy.js";
 import { readConfigFileSnapshot, transformConfigFile } from "../config/config.js";
 import { hashConfigRaw } from "../config/io.read-helpers.js";
-import { ConfigMutationConflictError } from "../config/mutation-conflict.js";
 import { writeOpenClawConfig } from "../config/test-helpers.js";
 import { runWriteConfigHealth } from "../flows/doctor-health-contribution-runners.config.js";
 import { captureUpdateDoctorConfigWrites } from "../infra/update-doctor-result.js";
@@ -218,7 +217,8 @@ describe("doctor --fix include write ownership", () => {
           if (refusal === "requester-revoked") {
             await expect(writing).rejects.toBeInstanceOf(UpdateRequesterRevokedError);
           } else if (refusal === "config-input-changed" || refusal === "include-input-changed") {
-            await expect(writing).rejects.toBeInstanceOf(ConfigMutationConflictError);
+            await expect(writing).resolves.toBe(false);
+            expect(ctx.configWriteRefusal).toBe("config-conflict");
           } else {
             await writing;
           }
@@ -246,10 +246,106 @@ describe("doctor --fix include write ownership", () => {
               "Doctor include-owned keys agents: promotion unavailable for include-owned configuration.",
             );
           }
+          const firstSnapshot = await readConfigFileSnapshot();
+          const firstFragmentRaw = await fs.readFile(fragmentPath, "utf8");
+          expect(ctx.configResult.confirmedConfigSource).toEqual({
+            path: configPath,
+            hash: firstSnapshot.hash,
+          });
+          expect(firstSnapshot.hash).not.toBe(hashConfigRaw(rootRaw));
+          ctx.cfg = {
+            ...ctx.cfg,
+            agents: {
+              ...ctx.cfg.agents,
+              entries: {
+                ...ctx.cfg.agents?.entries,
+                main: { ...ctx.cfg.agents?.entries?.main, name: "Second repair" },
+              },
+            },
+          };
+          await expect(
+            captureUpdateDoctorConfigWrites(
+              configPath,
+              () => runWriteConfigHealth(ctx, { runPostWriteRepairs: false }),
+              authority
+                ? { inputHash: hashConfigRaw(rootRaw), assertCurrent: () => {} }
+                : undefined,
+            ),
+          ).resolves.toBe(true);
+          const secondSnapshot = await readConfigFileSnapshot();
+          expect(ctx.configResult.confirmedConfigSource).toEqual({
+            path: configPath,
+            hash: secondSnapshot.hash,
+          });
+          expect(secondSnapshot.hash).not.toBe(firstSnapshot.hash);
+          expect(secondSnapshot.hash).not.toBe(hashConfigRaw(rootRaw));
+          expect(JSON.parse(await fs.readFile(fragmentPath, "utf8"))).toEqual({
+            sandbox: { scope: "session" },
+            name: "Second repair",
+          });
+          await expect(fs.readFile(`${fragmentPath}.bak`, "utf8")).resolves.toBe(firstFragmentRaw);
+          await expect(fs.readFile(configPath, "utf8")).resolves.toBe(rootRaw);
+          await expect(fs.readFile(parentPath, "utf8")).resolves.toBe(parentRaw);
         });
       });
     },
   );
+
+  it("refuses a different active config path even when its bytes match", async () => {
+    await withDoctorConfigPreflightHome(async (home) => {
+      await withEnvAsync({ OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1" }, async () => {
+        const configPath = await writeOpenClawConfig(home, {
+          gateway: { mode: "local" },
+          plugins: { enabled: false },
+        });
+        const ctx = await prepareDoctorContext(configPath);
+        const originalBytes = await fs.readFile(configPath, "utf8");
+        const otherPath = path.join(path.dirname(configPath), "other-openclaw.json");
+        await fs.writeFile(otherPath, originalBytes);
+        const files = (await fs.readdir(path.dirname(configPath))).toSorted();
+        const receipt = ctx.configResult.confirmedConfigSource;
+        const baseline = ctx.cfgForPersistence;
+        ctx.cfg = { ...ctx.cfg, gateway: { ...ctx.cfg.gateway, port: 19090 } };
+
+        await withEnvAsync({ OPENCLAW_CONFIG_PATH: otherPath }, async () => {
+          const otherSnapshot = await readConfigFileSnapshot();
+          expect(otherSnapshot.path).toBe(otherPath);
+          expect(otherSnapshot.hash).toBe(receipt?.hash);
+          expect(await runWriteConfigHealth(ctx)).toBe(false);
+        });
+
+        expect(ctx.configWriteRefusal).toBe("config-conflict");
+        expect(ctx.configResult.confirmedConfigSource).toBe(receipt);
+        expect(ctx.cfgForPersistence).toBe(baseline);
+        await expect(fs.readFile(configPath, "utf8")).resolves.toBe(originalBytes);
+        await expect(fs.readFile(otherPath, "utf8")).resolves.toBe(originalBytes);
+        expect((await fs.readdir(path.dirname(configPath))).toSorted()).toEqual(files);
+      });
+    });
+  });
+
+  it("creates a missing config using its recorded missing-file revision", async () => {
+    await withDoctorConfigPreflightHome(async (home) => {
+      await withEnvAsync({ OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1" }, async () => {
+        const configPath = await writeOpenClawConfig(home, {});
+        await fs.unlink(configPath);
+        const ctx = await prepareDoctorContext(configPath);
+        expect(ctx.configResult.confirmedConfigSource).toEqual({
+          path: configPath,
+          hash: hashConfigRaw(null),
+        });
+        ctx.cfg = { gateway: { mode: "local" }, plugins: { enabled: false } };
+        expect(await runWriteConfigHealth(ctx, { runPostWriteRepairs: false })).toBe(true);
+        const snapshot = await readConfigFileSnapshot();
+        expect(snapshot.exists).toBe(true);
+        expect(snapshot.valid).toBe(true);
+        expect(ctx.configResult.confirmedConfigSource).toEqual({
+          path: configPath,
+          hash: snapshot.hash,
+        });
+      });
+    });
+  });
 
   it("records the refusal and leaves the root and the included file untouched", async () => {
     await withDoctorConfigPreflightHome(async (home) => {
