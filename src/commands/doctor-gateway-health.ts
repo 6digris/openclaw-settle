@@ -156,6 +156,9 @@ export async function checkGatewayHealth(params: {
     if (status.startupMigrationWarning) {
       note(sanitizeTerminalText(status.startupMigrationWarning), "Startup migration warnings");
     }
+    if (status.startupRecoveryWarning) {
+      note(sanitizeTerminalText(status.startupRecoveryWarning), "Startup session recovery");
+    }
     const secretDegradations = projectDoctorSecretRuntimeDegradations(status);
     if (secretDegradations.length > 0) {
       note(

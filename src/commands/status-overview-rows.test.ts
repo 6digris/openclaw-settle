@@ -218,9 +218,14 @@ describe("status-overview-rows", () => {
     expect(findRowValue(rows, "Degraded plugins")).toBe("warn(1 configured-unavailable · discord)");
   });
 
-  it.each(["default", "all"])("surfaces startup migration warnings in %s output", (mode) => {
+  it.each([
+    ["default", "startupMigrationWarning", "Startup migrations"],
+    ["all", "startupMigrationWarning", "Startup migrations"],
+    ["default", "startupRecoveryWarning", "Session recovery"],
+    ["all", "startupRecoveryWarning", "Session recovery"],
+  ] as const)("surfaces %s %s output", (mode, field, label) => {
     const params = createStatusCommandOverviewRowsParams();
-    params.summary.startupMigrationWarning = "Retained legacy state. Run openclaw doctor --fix.";
+    params.summary[field] = "Inspect the affected state. Run openclaw doctor.";
     const rows =
       mode === "default"
         ? buildStatusCommandOverviewRows(params)
@@ -229,9 +234,7 @@ describe("status-overview-rows", () => {
             configPath: "/tmp/openclaw.json",
             secretDiagnosticsCount: 0,
           });
-    expect(findRowValue(rows, "Startup migrations")).toContain(
-      params.summary.startupMigrationWarning,
-    );
+    expect(findRowValue(rows, label)).toContain(params.summary[field]);
   });
 
   it("builds status-all overview rows from the shared surface", () => {
