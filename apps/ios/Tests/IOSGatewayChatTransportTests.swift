@@ -124,6 +124,7 @@ struct IOSGatewayChatTransportTests {
     }
 
     private func withSessionTransport(
+        gateway: GatewayNodeSession = GatewayNodeSession(),
         unreadAckAdvertisement: Bool? = true,
         gatewayID: String? = nil,
         capabilities: [String] = [],
@@ -133,7 +134,6 @@ struct IOSGatewayChatTransportTests {
         _ run: (IOSGatewayChatTransport, RequestRecorder) async throws -> Void) async throws
     {
         let recorder = RequestRecorder()
-        let gateway = GatewayNodeSession()
         let session = GatewayTestWebSocketSession(taskFactory: {
             GatewayTestWebSocketTask(sendHook: { socket, message, sendIndex in
                 guard sendIndex > 0 else { return }
@@ -145,6 +145,7 @@ struct IOSGatewayChatTransportTests {
                 let request = try await recorder.record(data)
                 let payload = switch request.method {
                 case "agents.list": GatewayWebSocketTestSupport.agentCatalogPayload
+                case "sessions.list": #"{"sessions":[{"key":"global"},{"key":"agent:reviewer:main"}]}"#
                 case "sessions.create": #"{"key":"forked"}"#
                 case "health": #"{"ok":true}"#
                 case "chat.history":
@@ -167,6 +168,7 @@ struct IOSGatewayChatTransportTests {
                     id: socket.snapshotConnectRequestID() ?? "connect",
                     methods: [
                         "agents.list",
+                        "sessions.list",
                         "sessions.patch",
                         "sessions.delete",
                         "sessions.create",
@@ -1221,18 +1223,24 @@ extension IOSGatewayChatTransportTests {
         }
     }
 
-    @Test(arguments: [nil, "profile-e\u{301}", "profile-\u{E9}"] as [String?])
+    @Test(arguments: [nil, "profile-e\u{301}", "profile-\u{E9}"] as [String?], [false, true])
     func `native chat forwards one exact profile through reads subscriptions and the existing send lease`(
-        profileID: String?) async throws
+        profileID: String?, scoped: Bool) async throws
     {
         try await self.withSessionTransport(
             gatewayID: "gateway-a",
             capabilities: ["profile-binding-v1", "chat-send-routing-contract"],
             nativeProfileID: profileID)
-        { transport, recorder in
+        { original, recorder in
+            let selected = scoped ? original.scoped(toAgentID: "reviewer") as? IOSGatewayChatTransport : original
+            let transport = try #require(selected)
             let history = try await transport.requestHistory(sessionKey: "agent:reviewer:main")
             #expect(history.sessionInfo?.key == "agent:reviewer:main")
             #expect(try await transport.requestHealth(timeoutMs: 250))
+            let sessions = try await transport.listSessions(
+                limit: 10, search: nil, archived: false, agentID: "research")
+            #expect(sessions.sessions.map(\.key) == ["global", "agent:reviewer:main"])
+            #expect(sessions.sessions.map(\.agentId) == ["research", "reviewer"])
             try await transport.setActiveSessionKey("agent:reviewer:main")
             guard case let .available(lease) = await transport.acquireOutboxRouteLease() else {
                 Issue.record("Expected the current transport's canonical send lease")
@@ -1248,8 +1256,10 @@ extension IOSGatewayChatTransportTests {
             #expect(sent.runId == "submitted-run")
             let requests = await recorder.all()
             #expect(requests.map(\.method) == [
-                "chat.history", "health", "sessions.messages.subscribe", "agents.list", "chat.send",
+                "chat.history", "health", "sessions.list", "sessions.messages.subscribe", "agents.list", "chat.send",
             ])
+            let list = try #require(requests.first { $0.method == "sessions.list" })
+            #expect(list.params["agentId"]?.stringValue == "research")
             for request in requests {
                 #expect(request.expectedProfileId.map { Array($0.utf8) } == profileID.map { Array($0.utf8) })
                 #expect(request.params["expectedProfileId"] == nil)
@@ -1259,6 +1269,53 @@ extension IOSGatewayChatTransportTests {
                 _ = try await transport.requestHistory(sessionKey: "agent:reviewer:main")
             }
             #expect(await recorder.all().count == requests.count)
+            try await self.withSessionTransport(
+                gateway: original.gateway,
+                gatewayID: "gateway-a",
+                capabilities: ["profile-binding-v1"])
+            { _, replacementRecorder in
+                if profileID == nil {
+                    _ = try await transport.requestHistory(sessionKey: "agent:reviewer:main")
+                } else {
+                    await #expect(throws: GatewayNodeSessionRequestError.self) {
+                        _ = try await transport.requestHistory(sessionKey: "agent:reviewer:main")
+                    }
+                }
+                #expect(await replacementRecorder.all().map(\.method) == (profileID == nil ? ["chat.history"] : []))
+                #expect(await recorder.all().count == requests.count)
+            }
+        }
+    }
+
+    @Test(arguments: ["ops", " Reviewer "])
+    func `native chat refuses a different exact agent without dispatch`(agentID: String) async throws {
+        try await self.withSessionTransport(
+            gatewayID: "gateway-a",
+            capabilities: ["profile-binding-v1"],
+            nativeProfileID: "profile-a")
+        { transport, recorder in
+            let scoped = transport.scoped(toAgentID: agentID)
+            #expect(scoped == nil)
+            if let scoped {
+                _ = try await scoped.requestHealth(timeoutMs: 250)
+            }
+            #expect(await recorder.all().isEmpty)
+        }
+    }
+
+    @Test func `ordinary agent scoping preserves independent session list owners`() async throws {
+        try await self.withSessionTransport { original, recorder in
+            let selected = original.scoped(toAgentID: " Ops ") as? IOSGatewayChatTransport
+            let scoped = try #require(selected)
+            let sessions = try await scoped.listSessions(limit: nil, search: nil, archived: false)
+            let originalSessions = try await original.listSessions(limit: nil, search: nil, archived: false)
+            #expect(sessions.sessions.map(\.key) == ["global", "agent:reviewer:main"])
+            #expect(sessions.sessions.map(\.agentId) == ["ops", "reviewer"])
+            #expect(originalSessions.sessions.map(\.agentId) == ["reviewer", "reviewer"])
+            let requests = await recorder.all()
+            #expect(requests.map(\.method) == ["sessions.list", "sessions.list"])
+            #expect(requests.map { $0.params["agentId"]?.stringValue } == ["ops", "reviewer"])
+            #expect(requests.allSatisfy { $0.expectedProfileId == nil && $0.params["expectedProfileId"] == nil })
         }
     }
 
