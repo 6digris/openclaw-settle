@@ -289,7 +289,7 @@ describe("retained npm package integrity", () => {
           ["build-info.json", JSON.stringify({ commit: sha, buildId: "original-build" })],
           [".buildstamp", JSON.stringify({ head: sha })],
           [".runtime-postbuildstamp", JSON.stringify({ head: sha })],
-        ]) {
+        ] as const) {
           await fs.writeFile(path.join(dist, name), contents);
         }
         const transaction = await retain(fixture.params);
