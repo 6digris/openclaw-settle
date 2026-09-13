@@ -286,6 +286,54 @@ describe("doctor --fix include write ownership", () => {
           await expect(fs.readFile(`${fragmentPath}.bak`, "utf8")).resolves.toBe(firstFragmentRaw);
           await expect(fs.readFile(configPath, "utf8")).resolves.toBe(rootRaw);
           await expect(fs.readFile(parentPath, "utf8")).resolves.toBe(parentRaw);
+
+          const receipt = ctx.configResult.confirmedConfigSource;
+          const baseline = ctx.cfgForPersistence;
+          const committedState = structuredClone({ receipt, baseline });
+          // Only fragment bytes change: resolved values and both ancestor files still match.
+          await fs.appendFile(fragmentPath, "\n");
+          const driftedSnapshot = await readConfigFileSnapshot();
+          expect(driftedSnapshot.sourceConfig).toEqual(secondSnapshot.sourceConfig);
+          expect(driftedSnapshot.hash).not.toBe(secondSnapshot.hash);
+          const rootFiles = (await fs.readdir(path.dirname(configPath))).toSorted();
+          const fragmentFiles = (await fs.readdir(fragmentDir)).toSorted();
+          const retainedPaths = [
+            configPath,
+            ...fragmentFiles.map((file) => path.join(fragmentDir, file)),
+          ];
+          const retainedBytes = await Promise.all(
+            retainedPaths.map((file) => fs.readFile(file, "utf8")),
+          );
+          ctx.cfg = {
+            ...ctx.cfg,
+            agents: {
+              ...ctx.cfg.agents,
+              entries: {
+                ...ctx.cfg.agents?.entries,
+                main: { ...ctx.cfg.agents?.entries?.main, name: "Third repair" },
+              },
+            },
+          };
+          await expect(
+            captureUpdateDoctorConfigWrites(
+              configPath,
+              () => runWriteConfigHealth(ctx, { runPostWriteRepairs: false }),
+              authority
+                ? { inputHash: hashConfigRaw(rootRaw), assertCurrent: () => {} }
+                : undefined,
+            ),
+          ).resolves.toBe(false);
+          expect(ctx.configWriteRefusal).toBe("config-conflict");
+          expect(ctx.configResultWriteCommitted).toBe(true);
+          expect(ctx.configResult.confirmedConfigSource).toBe(receipt);
+          expect(ctx.cfgForPersistence).toBe(baseline);
+          expect(ctx.configResult.confirmedConfigSource).toStrictEqual(committedState.receipt);
+          expect(ctx.cfgForPersistence).toStrictEqual(committedState.baseline);
+          expect(await Promise.all(retainedPaths.map((file) => fs.readFile(file, "utf8")))).toEqual(
+            retainedBytes,
+          );
+          expect((await fs.readdir(path.dirname(configPath))).toSorted()).toEqual(rootFiles);
+          expect((await fs.readdir(fragmentDir)).toSorted()).toEqual(fragmentFiles);
         });
       });
     },
@@ -343,6 +391,36 @@ describe("doctor --fix include write ownership", () => {
           path: configPath,
           hash: snapshot.hash,
         });
+        const firstBytes = await fs.readFile(configPath, "utf8");
+        ctx.cfg = { ...ctx.cfg, gateway: { ...ctx.cfg.gateway, port: 19090 } };
+        expect(await runWriteConfigHealth(ctx, { runPostWriteRepairs: false })).toBe(true);
+        const secondSnapshot = await readConfigFileSnapshot();
+        expect(secondSnapshot.valid).toBe(true);
+        expect(secondSnapshot.sourceConfig.gateway?.port).toBe(19090);
+        expect(secondSnapshot.hash).not.toBe(snapshot.hash);
+        expect(ctx.configResult.confirmedConfigSource).toEqual({
+          path: configPath,
+          hash: secondSnapshot.hash,
+        });
+        await expect(fs.readFile(`${configPath}.bak`, "utf8")).resolves.toBe(firstBytes);
+        const receipt = ctx.configResult.confirmedConfigSource;
+        const baseline = ctx.cfgForPersistence;
+        const committedState = structuredClone({ receipt, baseline });
+        const retainedBytes = `${await fs.readFile(configPath, "utf8")}\n`;
+        await fs.writeFile(configPath, retainedBytes);
+        const files = (await fs.readdir(path.dirname(configPath))).toSorted();
+        ctx.cfg = { ...ctx.cfg, gateway: { ...ctx.cfg.gateway, port: 19091 } };
+
+        expect(await runWriteConfigHealth(ctx, { runPostWriteRepairs: false })).toBe(false);
+
+        expect(ctx.configWriteRefusal).toBe("config-conflict");
+        expect(ctx.configResult.confirmedConfigSource).toBe(receipt);
+        expect(ctx.cfgForPersistence).toBe(baseline);
+        expect(ctx.configResult.confirmedConfigSource).toStrictEqual(committedState.receipt);
+        expect(ctx.cfgForPersistence).toStrictEqual(committedState.baseline);
+        await expect(fs.readFile(configPath, "utf8")).resolves.toBe(retainedBytes);
+        await expect(fs.readFile(`${configPath}.bak`, "utf8")).resolves.toBe(firstBytes);
+        expect((await fs.readdir(path.dirname(configPath))).toSorted()).toEqual(files);
       });
     });
   });
