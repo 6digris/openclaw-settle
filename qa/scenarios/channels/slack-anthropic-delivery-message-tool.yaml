@@ -1,0 +1,22 @@
+title: Slack Anthropic delivery message-tool
+scenario:
+  id: slack-anthropic-delivery-message-tool
+  surface: channels
+  coverage:
+    primary: [agent-runtime.streaming-replies]
+  execution:
+    kind: flow
+    channel: slack
+    timeoutMs: 90000
+    retryCount: 0
+    suiteIsolation: isolated
+    config:
+      requiredModel: claude-opus-4-8
+      requiredProvider: anthropic
+      requiredProviderMode: live-frontier
+flow:
+  module: ./live-transports/slack/slack-live.delivery-proof.js
+  call: runSlackDeliveryProof
+  args:
+    - expr: slackScenarioContext
+    - message-tool

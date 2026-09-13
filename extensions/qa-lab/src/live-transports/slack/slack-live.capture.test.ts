@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { getSlackQaMessageWriteCursor, readSlackQaMessageWrites } from "./slack-live.capture.js";
+import {
+  getSlackQaMessageWriteCursor,
+  readSlackQaMessageWrites,
+  readSlackQaWriteTrace,
+} from "./slack-live.capture.js";
 
 function buildMessageRequest(params: {
   channel?: string;
@@ -144,4 +148,179 @@ describe("Slack QA debug capture", () => {
       }),
     ).resolves.toEqual([expect.objectContaining({ text: "NEXT" })]);
   });
+});
+
+describe("Slack QA complete write trace", () => {
+  function trace(events: Array<Record<string, unknown>>) {
+    return readSlackQaWriteTrace({
+      afterRequestEventId: 0,
+      sessionId: "qa-slack",
+      settleTimeoutMs: 0,
+      store: { getSessionEvents: () => events, readBlob: () => null },
+    });
+  }
+
+  it("captures buffered stop content and every native chunk text surface", async () => {
+    const events = ["chat.startStream", "chat.appendStream", "chat.stopStream"]
+      .flatMap((method, index) => {
+        const flowId = String(index);
+        return [
+          buildResponse(flowId, true),
+          {
+            id: index + 1,
+            ...buildMessageRequest({ flowId, method, text: "" }),
+            dataText: JSON.stringify({
+              channel: "C123",
+              ts: "2.000000",
+              ...(index === 0 ? { markdown_text: "PREAMBLE" } : {}),
+              ...(index === 1
+                ? {
+                    chunks: [
+                      { type: "plan_update", title: "PLAN" },
+                      {
+                        type: "task_update",
+                        title: "TASK",
+                        details: "DETAIL",
+                        output: "OUTPUT",
+                        sources: [{ text: "SOURCE" }],
+                      },
+                    ],
+                  }
+                : {}),
+              ...(index === 2
+                ? {
+                    chunks: [
+                      { type: "markdown_text", text: "BUFFERED-FINAL" },
+                      {
+                        type: "blocks",
+                        blocks: [
+                          { type: "section", text: { type: "mrkdwn", text: "CHUNK-BLOCK" } },
+                        ],
+                      },
+                    ],
+                    blocks: [{ type: "section", text: { type: "mrkdwn", text: "STOP-BLOCK" } }],
+                  }
+                : {}),
+            }),
+          },
+        ];
+      })
+      .toReversed();
+    const result = await trace(events);
+    expect(result.complete).toBe(true);
+    expect(result.order).toBe("response-observation");
+    expect(result.writes.map((write) => write.method)).toEqual([
+      "chat.startStream",
+      "chat.appendStream",
+      "chat.stopStream",
+    ]);
+    expect(result.writes.map((write) => write.content)).toEqual([
+      ["PREAMBLE"],
+      ["PLAN", "TASK", "DETAIL", "OUTPUT", "SOURCE"],
+      ["BUFFERED-FINAL", "CHUNK-BLOCK", "STOP-BLOCK"],
+    ]);
+  });
+
+  it("classifies pre-turn titles separately and retains unknown method inventory", async () => {
+    const events = [
+      "agents.sessions.setStatus",
+      "agents.sessions.rename",
+      "chat.postEphemeral",
+    ].flatMap((method, index) => [
+      buildResponse(String(index), true),
+      { id: index + 1, ...buildMessageRequest({ flowId: String(index), method, text: "TITLE" }) },
+    ]);
+    const result = await trace(events);
+    expect(result.writes.map((write) => write.classification)).toEqual([
+      "metadata",
+      "metadata",
+      "other",
+    ]);
+    expect(result.writes.every((write) => write.content.includes("TITLE"))).toBe(true);
+  });
+
+  it("does not convert transport errors without request rows into absence", async () => {
+    const event = {
+      id: 7,
+      kind: "error",
+      method: "POST",
+      host: "slack.com",
+      path: "/api/chat.postMessage",
+    };
+    const result = await trace([event]);
+    expect(result.complete).toBe(false);
+    expect(result.issues).toContain("7:transport-error");
+    expect(result.writes).toEqual([expect.objectContaining({ eventId: 7, status: "unconfirmed" })]);
+    expect(
+      getSlackQaMessageWriteCursor({
+        sessionId: "qa-slack",
+        store: { getSessionEvents: () => [event], readBlob: () => null },
+      }),
+    ).toBe(7);
+  });
+
+  it.each<Array<{ name: string; response?: Record<string, unknown>; metaJson?: string }>[number]>([
+    { name: "missing acknowledgement", response: undefined },
+    { name: "rejected write", response: buildResponse("f", false) },
+    {
+      name: "unavailable body",
+      response: buildResponse("f", true, {}),
+      metaJson: JSON.stringify({ bodyCapture: "unavailable" }),
+    },
+    {
+      name: "truncated capture",
+      response: buildResponse("f", true, {}),
+      metaJson: JSON.stringify({ captureTruncated: true }),
+    },
+    {
+      name: "missing response blob",
+      response: { ...buildResponse("f", true), dataBlobId: "absent" },
+    },
+  ])("marks $name inconclusive", async ({ response, metaJson }) => {
+    const request = { id: 1, ...buildMessageRequest({ flowId: "f", text: "CONTENT" }) };
+    const result = await trace(
+      response ? [{ ...response, ...(metaJson ? { metaJson } : {}) }, request] : [request],
+    );
+    expect(result.complete).toBe(false);
+    expect(result.issues.length).toBeGreaterThan(0);
+  });
+
+  it("retains full text and refuses a full event window or malformed content", async () => {
+    const text = "a".repeat(2048) + "TAIL-LEAK";
+    const request = { id: 1, ...buildMessageRequest({ flowId: "f", text }) };
+    expect((await trace([buildResponse("f", true), request])).writes[0]?.content).toEqual([text]);
+    expect((await trace(Array.from({ length: 5000 }, () => request))).issues).toContain(
+      "capture-window-limit",
+    );
+    const malformed = {
+      ...request,
+      dataText: new URLSearchParams({ channel: "C123", chunks: "[broken" }).toString(),
+    };
+    expect((await trace([buildResponse("f", true), malformed])).issues).toContain(
+      "1:invalid-chunks",
+    );
+  });
+});
+
+it("reads native chunks from the SDK URL-encoded request body", async () => {
+  const request = {
+    id: 1,
+    ...buildMessageRequest({ flowId: "f", method: "chat.stopStream", text: "" }),
+    dataText: new URLSearchParams({
+      channel: "C123",
+      ts: "2.000000",
+      chunks: JSON.stringify([{ type: "markdown_text", text: "BUFFERED" }]),
+    }).toString(),
+  };
+  const result = await readSlackQaWriteTrace({
+    afterRequestEventId: 0,
+    sessionId: "qa-slack",
+    settleTimeoutMs: 0,
+    store: {
+      getSessionEvents: () => [buildResponse("f", true), request],
+      readBlob: () => null,
+    },
+  });
+  expect(result.complete).toBe(true);
+  expect(result.writes[0]?.content).toEqual(["BUFFERED"]);
 });

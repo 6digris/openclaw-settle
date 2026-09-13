@@ -188,6 +188,7 @@ type SlackQaBeforeRunResult =
     };
 
 export type SlackQaConfigOverrides = {
+  delivery?: "final-only" | "progress" | "message-tool";
   allowFrom?: string[];
   channelEnabled?: boolean;
   groupDmEnabled?: boolean;
