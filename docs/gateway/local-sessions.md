@@ -86,7 +86,7 @@ and install the lifecycle hooks the plugin ships (`extensions/anthropic/claude-c
 ## What teammates see
 
 - The session appears in the sidebar under the enrolled agent with a source badge and the owner. It is owned by the sharing person; teammates who send become participants.
-- The transcript shows user turns, assistant text, and tool calls and results (collapsed). Earlier history that stayed on the laptop is marked as such.
+- The transcript shows user turns, assistant text, reasoning, and tool calls and results. Mirrored calls render as ordinary tool cards: a call and its result share one collapsed row with the tool's name, arguments, output, exit code, and failure state, grouped under the turn's activity disclosure like any other session. Earlier history that stayed on the laptop is marked as such.
 - The composer is enabled while the device and source are connected and the harness accepts input. Every message ends in a visible receipt: accepted, submitted, committed, or rejected with the reason.
 - When the laptop goes offline the row shows **device is offline** and new messages are rejected rather than queued. Nothing already accepted by the local harness is resent.
 

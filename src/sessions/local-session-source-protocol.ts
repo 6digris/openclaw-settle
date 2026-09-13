@@ -37,6 +37,16 @@ const localSessionRecordSchema = z
     /** Correlates a native user item back to the Gateway input that produced it. */
     clientId: nonEmpty.optional(),
     toolName: nonEmpty.optional(),
+    /** Native call identity. Pairs a toolCall with its toolResult so the team
+        sees one tool card instead of two unrelated blobs of text. */
+    toolCallId: nonEmpty.optional(),
+    /** Structured tool input. Control UI resolves the tool kind, target paths,
+        and previews from it; sources omit it when it exceeds their clip bound. */
+    toolInput: z.unknown().optional(),
+    /** Result-reported failure, rendered as the card's error state. */
+    isError: z.boolean().optional(),
+    /** Process exit code when the harness reports one. */
+    exitCode: z.number().int().optional(),
     truncated: z.boolean().optional(),
   })
   .strict();

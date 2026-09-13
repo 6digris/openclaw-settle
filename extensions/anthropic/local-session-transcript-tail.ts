@@ -48,12 +48,27 @@ function readToolUse(content: unknown): ToolUseBlock | undefined {
   return undefined;
 }
 
-function isToolResult(content: unknown): boolean {
-  return (
-    Array.isArray(content) &&
-    content.length > 0 &&
-    content.every((block) => isRecord(block) && block.type === "tool_result")
-  );
+type ToolResultIdentity = { toolCallId?: string; isError?: boolean };
+
+/** Claude packs one turn's tool results into a single user record. The first
+    block owns the call identity the Gateway pairs against; any failing block
+    makes the whole record an error, matching how Claude ends that turn. */
+function readToolResult(content: unknown): ToolResultIdentity | undefined {
+  if (
+    !Array.isArray(content) ||
+    content.length === 0 ||
+    !content.every((block) => isRecord(block) && block.type === "tool_result")
+  ) {
+    return undefined;
+  }
+  const first = content[0];
+  const toolCallId =
+    isRecord(first) && typeof first.tool_use_id === "string" ? first.tool_use_id : undefined;
+  const isError = content.some((block) => isRecord(block) && block.is_error === true);
+  return {
+    ...(toolCallId ? { toolCallId } : {}),
+    ...(isError ? { isError } : {}),
+  };
 }
 
 function isReasoning(content: unknown): boolean {
@@ -62,6 +77,22 @@ function isReasoning(content: unknown): boolean {
     content.length > 0 &&
     content.every((block) => isRecord(block) && block.type === "thinking")
   );
+}
+
+/** The structured input rides beside the formatted text so the Control UI can
+    resolve tool kind and target paths. Oversized inputs keep the clipped text
+    form only: the wire record must stay bounded. */
+function boundedToolInput(input: unknown): { toolInput?: unknown } {
+  if (input === undefined) {
+    return {};
+  }
+  let json: string;
+  try {
+    json = JSON.stringify(input) ?? "";
+  } catch {
+    return {};
+  }
+  return json.length > TOOL_INPUT_MAX_CHARS ? {} : { toolInput: input };
 }
 
 function formatToolInput(input: unknown): string {
@@ -118,8 +149,9 @@ function convertClaudeTranscriptLine(
   }
   const base = { id, seq, ts };
   if (role === "user") {
-    if (isToolResult(content)) {
-      return { ...base, kind: "toolResult", ...clipLocalSessionRecordText(text) };
+    const toolResult = readToolResult(content);
+    if (toolResult) {
+      return { ...base, kind: "toolResult", ...toolResult, ...clipLocalSessionRecordText(text) };
     }
     if (!text) {
       return undefined;
@@ -139,6 +171,8 @@ function convertClaudeTranscriptLine(
       ...base,
       kind: "toolCall",
       toolName: toolUse.name.slice(0, 256),
+      ...(toolUse.id ? { toolCallId: toolUse.id } : {}),
+      ...boundedToolInput(toolUse.input),
       ...clipLocalSessionRecordText(formatToolInput(toolUse.input)),
     };
   }

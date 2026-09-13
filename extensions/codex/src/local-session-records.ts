@@ -54,7 +54,15 @@ function record(
   id: string,
   kind: LocalSessionRecord["kind"],
   rawText: string,
-  extra: { toolName?: string; clientId?: string } = {},
+  extra: {
+    toolName?: string;
+    clientId?: string;
+    /** Shared by a call and its `<id>:result` so the Control UI pairs them into one card. */
+    toolCallId?: string;
+    toolInput?: unknown;
+    isError?: boolean;
+    exitCode?: number;
+  } = {},
 ): CodexProjectedRecord {
   const { text, truncated } = clipLocalSessionRecordText(rawText);
   return {
@@ -63,8 +71,21 @@ function record(
     text,
     ...(extra.toolName ? { toolName: extra.toolName } : {}),
     ...(extra.clientId ? { clientId: extra.clientId } : {}),
+    ...(extra.toolCallId ? { toolCallId: extra.toolCallId } : {}),
+    ...(extra.toolInput !== undefined ? { toolInput: extra.toolInput } : {}),
+    ...(extra.isError ? { isError: extra.isError } : {}),
+    ...(extra.exitCode !== undefined ? { exitCode: extra.exitCode } : {}),
     ...(truncated ? { truncated } : {}),
   };
+}
+
+/** Codex reports failure through a non-zero exit code or an explicit error. */
+function failed(item: CodexThreadItem): boolean {
+  return (
+    item.error !== undefined ||
+    (typeof item.exitCode === "number" && item.exitCode !== 0) ||
+    item.status === "failed"
+  );
 }
 
 /**
@@ -90,10 +111,24 @@ export function projectCodexThreadItem(item: CodexThreadItem): CodexProjectedRec
       return text ? [record(id, "reasoning", text)] : [];
     }
     case "commandExecution": {
-      const records = [record(id, "toolCall", item.command ?? "", { toolName: "shell" })];
+      const records = [
+        record(id, "toolCall", item.command ?? "", {
+          toolName: "shell",
+          toolCallId: id,
+          toolInput: {
+            command: item.command ?? "",
+            ...(item.cwd ? { cwd: item.cwd } : {}),
+          },
+        }),
+      ];
       if (item.aggregatedOutput) {
         records.push(
-          record(`${id}:result`, "toolResult", item.aggregatedOutput, { toolName: "shell" }),
+          record(`${id}:result`, "toolResult", item.aggregatedOutput, {
+            toolName: "shell",
+            toolCallId: id,
+            ...(typeof item.exitCode === "number" ? { exitCode: item.exitCode } : {}),
+            ...(failed(item) ? { isError: true } : {}),
+          }),
         );
       }
       return records;
@@ -102,23 +137,53 @@ export function projectCodexThreadItem(item: CodexThreadItem): CodexProjectedRec
       const summary = (Array.isArray(item.changes) ? item.changes : [])
         .map((change) => `${change.kind} ${change.path}`)
         .join("\n");
-      return [record(id, "toolCall", summary, { toolName: "apply_patch" })];
+      return [
+        record(id, "toolCall", summary, {
+          toolName: "apply_patch",
+          toolCallId: id,
+          toolInput: { changes: Array.isArray(item.changes) ? item.changes : [] },
+        }),
+      ];
     }
     case "mcpToolCall": {
       const toolName = `${item.server ?? "mcp"}/${item.tool ?? "tool"}`;
-      const records = [record(id, "toolCall", boundedJson(item.arguments ?? {}), { toolName })];
+      const records = [
+        record(id, "toolCall", boundedJson(item.arguments ?? {}), {
+          toolName,
+          toolCallId: id,
+          toolInput: item.arguments ?? {},
+        }),
+      ];
       const outcome = item.error ?? item.result;
       if (outcome !== undefined && outcome !== null) {
-        records.push(record(`${id}:result`, "toolResult", boundedJson(outcome), { toolName }));
+        records.push(
+          record(`${id}:result`, "toolResult", boundedJson(outcome), {
+            toolName,
+            toolCallId: id,
+            ...(item.error !== undefined ? { isError: true } : {}),
+          }),
+        );
       }
       return records;
     }
     case "dynamicToolCall": {
       const toolName = item.tool ?? "tool";
-      const records = [record(id, "toolCall", boundedJson(item.arguments ?? {}), { toolName })];
+      const records = [
+        record(id, "toolCall", boundedJson(item.arguments ?? {}), {
+          toolName,
+          toolCallId: id,
+          toolInput: item.arguments ?? {},
+        }),
+      ];
       const output = textOfContentItems(item.contentItems);
       if (output) {
-        records.push(record(`${id}:result`, "toolResult", output, { toolName }));
+        records.push(
+          record(`${id}:result`, "toolResult", output, {
+            toolName,
+            toolCallId: id,
+            ...(failed(item) ? { isError: true } : {}),
+          }),
+        );
       }
       return records;
     }

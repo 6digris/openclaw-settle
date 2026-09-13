@@ -63,12 +63,23 @@ describe("transcript line conversion", () => {
     [
       "tool call with bounded JSON input",
       assistantLine("a3", [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }]),
-      { kind: "toolCall", toolName: "Bash", text: '{\n "command": "ls"\n}' },
+      {
+        kind: "toolCall",
+        toolName: "Bash",
+        text: '{\n "command": "ls"\n}',
+        toolCallId: "t1",
+        toolInput: { command: "ls" },
+      },
     ],
     [
       "tool result",
       userLine("u3", [{ type: "tool_result", tool_use_id: "t1", content: "file.txt" }]),
-      { kind: "toolResult", text: "file.txt" },
+      { kind: "toolResult", text: "file.txt", toolCallId: "t1" },
+    ],
+    [
+      "failed tool result",
+      userLine("u5", [{ type: "tool_result", tool_use_id: "t2", content: "boom", is_error: true }]),
+      { kind: "toolResult", text: "boom", toolCallId: "t2", isError: true },
     ],
     [
       "channel echo carries the input id",

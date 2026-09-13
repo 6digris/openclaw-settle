@@ -51,6 +51,41 @@ export function buildLocalSessionKey(params: {
   return `agent:${agentId}:local:${sourceId}:${deviceId}:${ownerProfileId}:${threadId}`;
 }
 
+/** Native content blocks, never prefixed prose. Control UI builds tool cards,
+    call/result pairing, and reasoning disclosures from block shape, so a mirrored
+    Claude or Codex call has to arrive in the same shape a local provider turn
+    would. Flattening these to text is what made shared sessions unreadable. */
+function recordContent(record: LocalSessionRecord) {
+  if (record.kind === "toolCall") {
+    return [
+      {
+        type: "tool_use" as const,
+        ...(record.toolCallId ? { id: record.toolCallId } : {}),
+        name: record.toolName ?? "tool",
+        // Sources drop oversized structured input; the formatted text keeps the
+        // card populated instead of rendering an empty argument list.
+        input: record.toolInput ?? record.text,
+      },
+    ];
+  }
+  if (record.kind === "toolResult") {
+    return [
+      {
+        type: "tool_result" as const,
+        ...(record.toolCallId ? { tool_use_id: record.toolCallId } : {}),
+        ...(record.toolName ? { name: record.toolName } : {}),
+        content: record.text,
+        ...(record.isError ? { is_error: true } : {}),
+        ...(record.exitCode !== undefined ? { exitCode: record.exitCode } : {}),
+      },
+    ];
+  }
+  if (record.kind === "reasoning") {
+    return [{ type: "thinking" as const, thinking: record.text }];
+  }
+  return [{ type: "text" as const, text: record.text }];
+}
+
 function recordToMessage(record: LocalSessionRecord, source: SessionLocalSource) {
   const idempotencyKey = `local:${source.sourceId}:${source.threadId}:${record.id}`;
   if (record.kind === "user") {
@@ -65,17 +100,9 @@ function recordToMessage(record: LocalSessionRecord, source: SessionLocalSource)
       },
     };
   }
-  const prefix =
-    record.kind === "reasoning"
-      ? "Thinking\n\n"
-      : record.kind === "toolCall"
-        ? `Tool call${record.toolName ? ` · ${record.toolName}` : ""}\n\n`
-        : record.kind === "toolResult"
-          ? `Tool result${record.toolName ? ` · ${record.toolName}` : ""}\n\n`
-          : "";
   return {
     role: "assistant" as const,
-    content: [{ type: "text" as const, text: `${prefix}${record.text}` }],
+    content: recordContent(record),
     timestamp: record.ts,
     api: "openclaw-local-session",
     provider: source.pluginId,
