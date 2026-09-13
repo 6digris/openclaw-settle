@@ -59,6 +59,7 @@ pub(crate) enum UpdateAction {
 #[allow(dead_code)]
 enum Platform {
     Linux,
+    Freebsd,
     Macos,
     Windows,
 }
@@ -320,6 +321,12 @@ async fn run_check(app: AppHandle, manual: bool) {
     let manual_requested = || manual_pending.load(Ordering::Acquire);
     #[cfg(target_os = "linux")]
     let updater = app.updater();
+    #[cfg(target_os = "freebsd")]
+    // Package-owned FreeBSD releases need their own manifest entry; never select a Linux artifact.
+    let updater = app
+        .updater_builder()
+        .target(format!("freebsd-{}", std::env::consts::ARCH))
+        .build();
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let updater = app
         .updater_builder()
@@ -504,6 +511,8 @@ fn begin_check(app: &AppHandle) -> Option<CheckGuard> {
 fn install_kind() -> InstallKind {
     #[cfg(target_os = "linux")]
     let platform = Platform::Linux;
+    #[cfg(target_os = "freebsd")]
+    let platform = Platform::Freebsd;
     #[cfg(target_os = "macos")]
     let platform = Platform::Macos;
     #[cfg(target_os = "windows")]
@@ -515,8 +524,8 @@ fn install_kind() -> InstallKind {
 fn install_kind_from_appimage_env(appimage: Option<OsString>, platform: Platform) -> InstallKind {
     match platform {
         Platform::Linux if appimage.is_some() => InstallKind::SelfInstall,
-        Platform::Linux => {
-            // Package managers own deb/rpm files, so replacing them would corrupt their contract.
+        Platform::Linux | Platform::Freebsd => {
+            // Package managers own deb/rpm/pkg files, so replacing them would corrupt their contract.
             InstallKind::NotifyOnly
         }
         Platform::Macos => {
@@ -631,6 +640,16 @@ fn manual_notification_body(version: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn freebsd_updates_never_replace_package_owned_files() {
+        for appimage in [None, Some(OsString::from("/tmp/OpenClaw.AppImage"))] {
+            assert_eq!(
+                install_kind_from_appimage_env(appimage, Platform::Freebsd),
+                InstallKind::NotifyOnly
+            );
+        }
+    }
 
     #[test]
     fn install_kind_covers_every_platform_path() {
