@@ -314,9 +314,11 @@ describe("captured startup inventory refresh", () => {
         reachedCheckpoint = true;
         checkpoint.resolve();
       };
-      using _failureObserver = {
+      using failureObserver = {
         [Symbol.dispose]: registerPreparedModelRuntimePublicationListener((event) => {
-          if (event.phase === "catalog-failed") markCheckpoint();
+          if (event.phase === "catalog-failed") {
+            markCheckpoint();
+          }
         }),
       };
       let captured: HeldCatalogFixture<ModelCatalogSnapshot> | undefined;
@@ -344,10 +346,13 @@ describe("captured startup inventory refresh", () => {
             expect((await refresh).pendingProviders).toEqual(["custom"]);
           }
           fixture.reject();
-          if (timing === "before-foreground") return await refresh;
+          if (timing === "before-foreground") {
+            return await refresh;
+          }
           const outcome = await fixture.publication;
-          if (outcome.phase !== "catalog-failed")
+          if (outcome.phase !== "catalog-failed") {
             throw new Error("Expected failed catalog publication");
+          }
           throw outcome.error;
         },
       );
@@ -359,12 +364,16 @@ describe("captured startup inventory refresh", () => {
         await Promise.race([
           checkpoint.promise,
           completion.then(({ error }) => {
-            if (!reachedCheckpoint) throw error;
+            if (!reachedCheckpoint) {
+              throw error;
+            }
           }),
         ]);
         // Fence continuations of the actual failure, without waiting for a success-only observer.
         await nextTurn();
-        if (!captured) throw new Error("Failure fixture was not created");
+        if (!captured) {
+          throw new Error("Failure fixture was not created");
+        }
         const beforeProbe = captured.events.length;
         const serverListening = captured.provider.listening;
         notifyPreparedModelRuntimePublication({
@@ -383,8 +392,11 @@ describe("captured startup inventory refresh", () => {
           publicationPhase: timing === "before-refresh" ? "cancelled" : "catalog-failed",
         });
         const result = await completion;
-        if (timing === "before-refresh") expect(result.error).toBe(bodyFailure);
-        else expect(result.error).toMatchObject({ message: "Fixture catalog refresh rejected" });
+        if (timing === "before-refresh") {
+          expect(result.error).toBe(bodyFailure);
+        } else {
+          expect(result.error).toMatchObject({ message: "Fixture catalog refresh rejected" });
+        }
         expect(serverClosed).toBe(true);
         expect(captured.provider.address()).toBeNull();
         expect(captured.requests()).toBe(timing === "before-refresh" ? 0 : 1);

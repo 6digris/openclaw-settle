@@ -132,18 +132,18 @@ export function bindPluginCliProgram(program: Command): void {
     bindPluginCliEvents(program);
   }
 
-  const createCommand = program.createCommand;
+  const createCommand = program.createCommand.bind(program);
   program.createCommand = function (name) {
     const command = createCommand.call(this, name);
     bindPluginCliProgram(command);
     return command;
   };
-  const addCommand = program.addCommand;
+  const addCommand = program.addCommand.bind(program);
   program.addCommand = function (command, options) {
     bindPluginCliProgram(command);
     return addCommand.call(this, command, options);
   };
-  const createOption = program.createOption;
+  const createOption = program.createOption.bind(program);
   program.createOption = function (flags, description) {
     const option = createOption.call(this, flags, description);
     bindParser(option);
@@ -156,13 +156,13 @@ export function bindPluginCliProgram(program: Command): void {
       return method.call(this, option);
     };
   }
-  const createArgument = program.createArgument;
+  const createArgument = program.createArgument.bind(program);
   program.createArgument = function (name, description) {
     const argument = createArgument.call(this, name, description);
     bindParser(argument);
     return argument;
   };
-  const addArgument = program.addArgument;
+  const addArgument = program.addArgument.bind(program);
   program.addArgument = function (argument) {
     bindParser(argument);
     return addArgument.call(this, argument);

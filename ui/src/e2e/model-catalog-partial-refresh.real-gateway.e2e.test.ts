@@ -47,6 +47,7 @@ const suite = createControlUiE2eSuite({
     );
     instance = await createOpenClawTestInstance({
       name: "partial-refresh",
+      gatewayToken: config.gateway.auth.token,
       env: {
         OPENCLAW_TEST_MINIMAL_GATEWAY: undefined,
         VITEST: undefined,
