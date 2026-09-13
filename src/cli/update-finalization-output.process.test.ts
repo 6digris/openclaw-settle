@@ -50,15 +50,25 @@ const finalizeScenarios = [
 // Windows offline proof uses its native numeric task cache; the service adapter
 // process fixture covers POSIX while native-owner tests cover that sibling.
 describe.skipIf(process.platform === "win32")("update repair service admission", () => {
-  it.each(["online", "late-online"] as const)(
-    "%s preserves the real config/ledger boundary and never changes service state",
+  it.each(["online", "late-online", "owning-continuation"] as const)(
+    "%s preserves the real config/ledger boundary and service ownership",
     async (scenario) => {
       const home = tempDirs.make("openclaw-repair-admission-");
       const state = path.join(home, ".openclaw");
       const configPath = path.join(state, "openclaw.json");
+      const server = net.createServer();
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", resolve);
+      });
+      const address = server.address();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      if (!address || typeof address === "string") {
+        throw new Error("Missing isolated service port");
+      }
       await fs.mkdir(state);
       const configBefore = `${JSON.stringify({
-        gateway: { mode: "local" },
+        gateway: { mode: "local", port: address.port },
         plugins: { enabled: false, allow: [] },
         update: { channel: "stable" },
         logging: { file: path.join(home, "openclaw.log") },
@@ -120,6 +130,86 @@ await runRepairServicePreflightFixture(${JSON.stringify({ entrypoints: runtimePr
         .filter((line) => line.startsWith("repair-fixture "))
         .map((line) => JSON.parse(line.slice("repair-fixture ".length)));
       expect(events, failure).toContainEqual({ event: "eligible-selection", role: "parent" });
+      const runs = listUpdateRuns({}, { env: { HOME: home, OPENCLAW_STATE_DIR: state } });
+      if (scenario === "owning-continuation") {
+        const owner = events.find((event) => event.event === "owning-run");
+        expect(owner, failure).toMatchObject({
+          runId: expect.any(String),
+          pid: expect.any(Number),
+        });
+        expect(events, failure).toContainEqual({
+          event: "doctor-entry",
+          role: "doctor",
+          runs: 1,
+          channel: "dev",
+        });
+        expect(
+          events.filter((event) => event.event.startsWith("mutation:")),
+          failure,
+        ).toEqual([
+          { event: "mutation:stop", role: "doctor", asserted: true },
+          {
+            event: "mutation:restart",
+            role: "doctor",
+            asserted: true,
+            preserveDefinition: true,
+          },
+        ]);
+        const observations = events.filter((event) => event.event === "continuation-state");
+        expect(observations.length, failure).toBeGreaterThan(0);
+        for (const observation of observations) {
+          expect(observation, failure).toMatchObject({
+            runId: owner.runId,
+            status: "running",
+            recorded: true,
+            ownerAlive: "alive",
+            // Baseline main has no early inventory. Any parent inventory must
+            // observe the public continuation before adoption or config writes.
+            adopted: observation.role === "doctor",
+            channel: observation.role === "doctor" ? "dev" : "stable",
+          });
+        }
+        const exited = events.find((event) => event.event === "doctor-exit");
+        expect(exited, failure).toMatchObject({
+          role: "doctor",
+          code: 1,
+          pid: expect.any(Number),
+          parentPid: owner.pid,
+          ownerAlive: "alive",
+        });
+        expect(isPidAlive(exited.pid), failure).toBe(false);
+        const errorIndex = events.findIndex((event) => event.event === "repair-error");
+        expect(errorIndex, failure).toBeGreaterThan(events.indexOf(exited));
+        expect(events[errorIndex], failure).toMatchObject({ role: "parent", pid: owner.pid });
+        expect(result.stderr, failure).toContain(
+          "Doctor repaired state, but could not restore the managed Gateway: Error: Fixture service manager refused restoration",
+        );
+        expect(result.stderr, failure).not.toContain(activationRefusal);
+        expect(runs, failure).toHaveLength(1);
+        expect(runs[0], failure).toMatchObject({
+          runId: owner.runId,
+          status: "running",
+          finishedAtMs: null,
+          origin: { driver: { pid: owner.pid } },
+          steps: expect.arrayContaining([
+            expect.objectContaining({ step: "finalize:repair-continuation", status: "completed" }),
+            expect.objectContaining({ step: "driver:adopted", status: "completed" }),
+            expect.objectContaining({ step: "finalize:doctor", status: "failed" }),
+          ]),
+        });
+        expect(
+          runs[0].steps.filter((step) => step.step === "finalize:repair-continuation"),
+          failure,
+        ).toHaveLength(1);
+        expect(
+          runs[0].steps.some((step) => step.step === "finalize:repair-takeover"),
+          failure,
+        ).toBe(false);
+        expect(JSON.parse(await fs.readFile(configPath, "utf8")).update.channel, failure).toBe(
+          "dev",
+        );
+        return;
+      }
       expect(
         events.filter((event) => event.event === "service-command"),
         failure,
@@ -140,7 +230,6 @@ await runRepairServicePreflightFixture(${JSON.stringify({ entrypoints: runtimePr
         events.filter((event) => event.event.startsWith("mutation:")),
         failure,
       ).toEqual([]);
-      const runs = listUpdateRuns({}, { env: { HOME: home, OPENCLAW_STATE_DIR: state } });
       if (scenario === "online") {
         expect(
           events.filter((event) => event.role === "doctor"),
@@ -151,9 +240,16 @@ await runRepairServicePreflightFixture(${JSON.stringify({ entrypoints: runtimePr
         await expect(fs.stat(`${configPath}.pre-update`)).rejects.toMatchObject({ code: "ENOENT" });
         expect(result.stderr, failure).not.toContain("Preparing triage diagnostics");
       } else {
-        // JSON carries the bounded child failure; its full diagnostics preserve
-        // the maintenance refusal even when it falls outside that excerpt.
-        expect(result.stderr, failure).toContain(activationRefusal);
+        // The standalone run is live but not an inherited repair continuation.
+        // Full stderr retains its current driver refusal beyond bounded JSON.
+        expect(runs, failure).toHaveLength(1);
+        expect(result.stderr, failure).toContain(
+          `Update ${runs[0].runId} is still in progress (requested); driver PID ${runs[0].origin.driver?.pid}`,
+        );
+        expect(result.stderr, failure).toContain("liveness: alive");
+        expect(result.stderr, failure).toContain(
+          "Wait for that update, or stop that driver through its owning host or supervisor and re-run `openclaw update repair`.",
+        );
         expect(events, failure).toContainEqual({ event: "eligible-selection", role: "doctor" });
         expect(events, failure).toContainEqual({
           event: "doctor-entry",
@@ -168,7 +264,6 @@ await runRepairServicePreflightFixture(${JSON.stringify({ entrypoints: runtimePr
           { event: "service-runtime", role: "parent", status: "stopped" },
           { event: "service-runtime", role: "doctor", status: "running" },
         ]);
-        expect(runs, failure).toHaveLength(1);
         expect(runs[0], failure).toMatchObject({
           status: "failed",
           steps: expect.arrayContaining([
@@ -464,6 +559,7 @@ describe.each(["repair", "finalize"])("update %s process output", (command) => {
       // Parse the whole pipe: accepting a suffix would hide Clack's direct stdout writes.
       const output = JSON.parse(result.stdout);
       if (scenario.endsWith("error")) {
+        expect(result.stderr, failure).not.toContain("Process still alive after terminal output");
         expect(result.stderr, failure).toContain(triageNotice);
         expect(result.stderr, failure).toContain('"promptPath":');
         expect(result.stderr, failure).toContain("triage-fixture-prompt.md");

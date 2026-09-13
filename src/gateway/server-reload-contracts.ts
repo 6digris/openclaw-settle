@@ -162,6 +162,7 @@ export type GatewayReloadHandlerParams = {
     nextConfig: OpenClawConfig;
     sourceConfig: OpenClawConfig;
     changedPaths: readonly string[];
+    reloadPluginIds?: ReadonlySet<string>;
     pluginLifecycle?: GatewayReloadPlan["pluginLifecycle"];
     /** Validate remaining config effects before the prepared plugin owner starts drainage. */
     prepareConfigEffects: (replacement: {
@@ -201,6 +202,7 @@ export type ManagedGatewayConfigReloaderParams = Omit<
 > & {
   configRevisionProjector: import("./config-revision-token.js").GatewayConfigRevisionProjector;
   minimalTestGateway: boolean;
+  onReloadEnabledChange?: (enabled: boolean) => void;
   initialConfig: OpenClawConfig;
   initialPluginInstallRecords?: Record<string, PluginInstallRecord>;
   initialCompareConfig?: OpenClawConfig;

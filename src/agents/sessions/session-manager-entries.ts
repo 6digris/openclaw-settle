@@ -1,5 +1,6 @@
 import {
   readActiveTranscriptEntryAnchor,
+  readTranscriptEventAtSeqSync,
   readTranscriptMutationAtSync,
   validatePreparedAssistantAppendSync,
   type TranscriptEntryAnchor,
@@ -226,16 +227,25 @@ export class SessionManagerEntries extends SessionManagerPersistence {
     return error;
   }
 
-  resolveCurrentTurnEntryId(isInterruptedTail?: (entry: SessionEntry) => boolean): string | null {
+  resolveCurrentTurnEntryId(
+    isInterruptedTail?: (entry: SessionEntry) => boolean,
+    options?: { includeOmittedCustomMessages?: boolean },
+  ): string | null {
+    const includeOmitted = options?.includeOmittedCustomMessages === true;
     let parentId = this.appendParentId;
-    let remainingAncestors = this.byId.size;
+    let remainingAncestors = includeOmitted
+      ? (this.boundedContextLimits?.maxEvents ?? this.byId.size + this.opaqueParentsById.size)
+      : this.byId.size;
     // Compaction rewrites context without consuming the current user turn.
     // Walk physical parents: opaque/context-excluded users still close older
-    // turns. Replay may recognize its interrupted tail, never skip missing rows.
+    // turns. Replay may read its omitted activity, never skip unidentified rows.
     while (parentId && remainingAncestors-- > 0) {
-      const parent = this.byId.get(parentId);
+      const parent =
+        this.byId.get(parentId) ??
+        (includeOmitted ? this.readOmittedCustomMessage(parentId) : undefined);
       if (
         !parent ||
+        parent.id !== parentId ||
         (!isSessionContextMetadataEntry(parent) &&
           parent.type !== "compaction" &&
           !isInterruptedTail?.(parent))
@@ -245,6 +255,24 @@ export class SessionManagerEntries extends SessionManagerPersistence {
       parentId = parent.parentId;
     }
     return parentId;
+  }
+
+  private readOmittedCustomMessage(entryId: string): SessionMessageEntry | undefined {
+    if (!this.persistenceTarget) {
+      return undefined;
+    }
+    const anchor = readActiveTranscriptEntryAnchor({ ...this.persistenceTarget, entryId });
+    if (!anchor) {
+      return undefined;
+    }
+    const event = readTranscriptEventAtSeqSync(this.persistenceTarget, anchor.rawSeq)?.event;
+    return isIndexedSessionEntry(event) &&
+      event.type === "message" &&
+      event.message.role === "custom" &&
+      event.id === anchor.entryId &&
+      event.parentId === anchor.effectiveParentId
+      ? event
+      : undefined;
   }
 
   appendMessage(

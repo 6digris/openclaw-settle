@@ -100,7 +100,7 @@ function registerUpdateFinalizationCommand(update: Command, name: string, hidden
     .option("--timeout <seconds>", "Override per-phase repair deadlines in seconds")
     .option("--yes", "Skip confirmation prompts (non-interactive)", false)
     .option("--accept-capabilities", "Accept widened plugin capabilities", false)
-    .option("--no-restart", "Accepted for update command parity; repair never restarts")
+    .option("--no-restart", "Accepted for parity; repair does not request update activation")
     .addHelpText(
       "after",
       () =>
@@ -114,7 +114,7 @@ function registerUpdateFinalizationCommand(update: Command, name: string, hidden
           ["openclaw update repair --json", "JSON output for automation."],
         ])}\n\n${theme.heading("Notes:")}\n${theme.muted(
           "- Reconciles abandoned runs when the Gateway is healthy; otherwise repairs post-update state",
-        )}\n${theme.muted("- Stop a running managed Gateway through its service owner before full repair")}\n${theme.muted("- Repair never stops or restarts the Gateway; healthy ledger-only reconciliation can run online")}\n\n${theme.muted(
+        )}\n${theme.muted("- Before standalone full repair, stop a running managed Gateway through its service owner")}\n${theme.muted("- Verified owning-run repair can stop and restore its Gateway; healthy ledger-only reconciliation can run online")}\n\n${theme.muted(
           "Docs:",
         )} ${formatDocsLink("/cli/update", "docs.openclaw.ai/cli/update")}`,
     )

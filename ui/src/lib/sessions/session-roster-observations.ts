@@ -1,4 +1,5 @@
 import type { GatewaySessionRow, SessionsListResult } from "../../api/types.ts";
+import { projectSessionResultRows } from "./reconcile.ts";
 import type {
   SessionConnectionOwner,
   SessionConnectionScope,
@@ -11,6 +12,7 @@ import {
 } from "./session-key.ts";
 import type { ObservedSessionList } from "./session-list-query.ts";
 import { createSessionRowProvenance } from "./session-row-provenance.ts";
+import { isOlderSessionSnapshot } from "./session-row-reconcile.ts";
 import {
   createSessionRunTerminalReconciler,
   type SessionRunTerminal,
@@ -32,6 +34,7 @@ type RegisteredSessionRow = {
     retired: boolean;
   };
   listener: (row: GatewaySessionRow | null) => void;
+  onInvalidate?: () => void;
   isValid: (sessionId: string) => boolean;
   decorate: (row: GatewaySessionRow) => GatewaySessionRow | null;
 };
@@ -135,20 +138,33 @@ export function createSessionRosterObservations(
     rows: readonly GatewaySessionRow[],
     agentId?: string | null,
     sourceAgentId?: string | null,
+    incomingRows?: ReadonlyMap<string, GatewaySessionRow>,
   ) => {
     if (!result || rows.length === 0) {
       return result;
     }
     const offered = indexRows(rows, sourceAgentId);
-    let changed = false;
     const sessions = result.sessions.map((current) => {
       const key = identity(current, agentId);
-      const row = key ? offered.get(key) : undefined;
-      const next = row ? mergeRow(current, row, agentId) : current;
-      changed ||= next !== current;
-      return next;
+      const row = key && offered.get(key);
+      if (!row) {
+        return current;
+      }
+      const incoming = key && incomingRows?.get(key);
+      // A held descriptor rejects older full rows before they can donate
+      // previously unseen presentation fields. List-to-list merges retain
+      // their independent field observations.
+      const rejectedRead =
+        incoming &&
+        (rowRevision(row) > rowRevision(incoming) || isOlderSessionSnapshot(incoming, row));
+      const held = rejectedRead && projectFields(row, sourceAgentId);
+      return held
+        ? held.key === current.key
+          ? held
+          : inheritRow({ ...held, key: current.key }, held)
+        : mergeRow(current, row, agentId);
     });
-    return changed ? { ...result, sessions } : result;
+    return projectSessionResultRows(result, sessions);
   };
   const captureHeldRows = () => {
     const state = host.readState();
@@ -253,12 +269,14 @@ export function createSessionRosterObservations(
       const row =
         projected.row &&
         (held !== null || admitRead) &&
-        acceptsRow(
-          entry,
-          projected.row,
-          projected.readRevision ?? rowRevision(projected.row),
-          admitRead,
-        )
+        // Invalidation fences incoming reads; unrelated passes retain the already-held facts.
+        (projected.row === held ||
+          acceptsRow(
+            entry,
+            projected.row,
+            projected.readRevision ?? rowRevision(projected.row),
+            admitRead,
+          ))
           ? projected.row
           : null;
       const decorated = row ? entry.decorate(row) : null;
@@ -269,9 +287,10 @@ export function createSessionRosterObservations(
         identity(decorated, entry.target.agentId) === identity(row, entry.target.agentId)
           ? inheritRow(decorated, row)
           : null;
-      const invalidatedRevision = !previous.row
-        ? Math.max(previous.invalidatedRevision, projected.invalidateRevision ?? 0)
-        : previous.invalidatedRevision;
+      const invalidatedRevision =
+        !previous.row || entry.onInvalidate
+          ? Math.max(previous.invalidatedRevision, projected.invalidateRevision ?? 0)
+          : previous.invalidatedRevision;
       if (
         row !== previous.row ||
         visible !== previous.visible ||
@@ -335,7 +354,7 @@ export function createSessionRosterObservations(
           listener(snapshot);
         }
       }
-      for (const { entry, snapshot } of rowChanges) {
+      for (const { entry, previous, snapshot } of rowChanges) {
         if (!host.connection.isCurrent(scope)) {
           return;
         }
@@ -345,6 +364,13 @@ export function createSessionRosterObservations(
           entry.snapshot === snapshot
         ) {
           entry.listener(snapshot.visible);
+          if (
+            registrationIsCurrent(entry) &&
+            entry.snapshot === snapshot &&
+            snapshot.invalidatedRevision > previous.invalidatedRevision
+          ) {
+            entry.onInvalidate?.();
+          }
         }
       }
     };
@@ -397,7 +423,7 @@ export function createSessionRosterObservations(
       this: void,
       target: SessionRowTarget,
       listener: (row: GatewaySessionRow | null) => void,
-      options: Pick<RegisteredSessionRow, "isValid" | "decorate">,
+      options: Pick<RegisteredSessionRow, "isValid" | "decorate" | "onInvalidate">,
     ) {
       const entry: RegisteredSessionRow = {
         target: Object.freeze({ ...target }),
@@ -504,10 +530,7 @@ export function createSessionRosterObservations(
         if (!result) {
           return result;
         }
-        const sessions = result.sessions.map(reconcileRow(agentId));
-        return sessions.some((row, index) => row !== result.sessions[index])
-          ? { ...result, sessions }
-          : result;
+        return projectSessionResultRows(result, result.sessions.map(reconcileRow(agentId)));
       };
       const state = host.readState();
       const result = reconcile(state.result, state.agentId);
@@ -558,6 +581,7 @@ export function createSessionRosterObservations(
       previousAgentId = agentId,
       primaryAgentId = host.readState().agentId,
     ) {
+      const incomingRows = indexRows(result?.sessions ?? [], agentId);
       let accepted = merge(
         merge(result, previous?.sessions ?? [], agentId, previousAgentId),
         primary?.sessions ?? [],
@@ -578,7 +602,7 @@ export function createSessionRosterObservations(
       for (const entry of registeredRows) {
         const row = registeredRow(entry);
         if (row) {
-          accepted = merge(accepted, [row], agentId, entry.target.agentId);
+          accepted = merge(accepted, [row], agentId, entry.target.agentId, incomingRows);
         }
       }
       return accepted;

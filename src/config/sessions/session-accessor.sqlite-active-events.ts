@@ -8,7 +8,6 @@ import {
 import {
   getActiveTranscriptKysely,
   parseActiveTranscriptMessageRow,
-  readTranscriptProjectionGeneration,
   withCurrentProjectionSnapshot,
   type SessionTranscriptMessageEvent,
 } from "./session-accessor.sqlite-active-projection.js";
@@ -257,7 +256,7 @@ export function readSessionTranscriptVisibleMessageDeltaCore(
       database: projection.database,
       ...projection.resolved,
     });
-    const generation = readTranscriptProjectionGeneration(projection);
+    const generation = projection.generation;
     if (!generation) {
       return { kind: "missing" };
     }
@@ -389,14 +388,12 @@ export function readSessionTranscriptVisibleMessageDeltaCore(
               .where("active.message_position", "<=", lastMessagePosition)
               .orderBy("active.message_position", "asc"),
           ).rows.map((row) => {
-            if (row.message_position === null) {
-              throw new Error("Active transcript message row is missing its message position");
-            }
+            const { event, eventSeq, seq } = parseActiveTranscriptMessageRow(row);
             return {
-              event: JSON.parse(row.event_json) as TranscriptEvent,
-              eventSeq: row.event_seq,
+              event,
+              eventSeq,
               parentId: row.parent_id,
-              seq: row.message_position + 1,
+              seq,
             };
           });
     const requiredBytes =
@@ -496,7 +493,7 @@ export function readSessionTranscriptBoundedMessageTailPage(
   return withCurrentProjectionSnapshot(scope, (projection) => {
     const visible = resolveVisibleMessagePositions(projection);
     const snapshot = {
-      generation: readTranscriptProjectionGeneration(projection),
+      generation: projection.generation,
       indexedSeq: projection.state.indexedSeq,
     };
     const totalMessages = visible.total;

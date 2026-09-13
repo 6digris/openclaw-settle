@@ -1,11 +1,11 @@
 // Memory Core plugin module implements manager search behavior.
 import type { DatabaseSync } from "node:sqlite";
-import { truncateUtf16Safe } from "openclaw/plugin-sdk/memory-core-host-engine-foundation";
 import {
   cosineSimilarity,
   parseEmbedding,
-  type MemorySource,
-} from "openclaw/plugin-sdk/memory-core-host-engine-storage";
+  truncateUtf16Safe,
+} from "openclaw/plugin-sdk/memory-core-host-engine-knn";
+import type { MemorySource } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import {
   normalizeStringEntries,
   normalizeStringEntriesLower,
@@ -350,6 +350,7 @@ export async function searchVector(params: {
   signal?: AbortSignal;
   ensureVectorReady: (dimensions: number) => Promise<boolean>;
   runVectorKnn?: (request: VectorKnnRequest, signal?: AbortSignal) => Promise<VectorKnnResponse>;
+  runFallback?: () => Promise<SearchRowResult[]>;
   sourceFilterVec: { sql: string; params: SearchSource[] };
   sourceFilterChunks: { sql: string; params: SearchSource[] };
 }): Promise<SearchRowResult[]> {
@@ -358,17 +359,19 @@ export async function searchVector(params: {
   }
   params.signal?.throwIfAborted();
   const providerModels = resolveProviderModels(params.providerModel, params.providerModelAliases);
-  const searchFallback = () =>
-    searchChunksByEmbedding({
-      db: params.db,
-      providerModel: params.providerModel,
-      providerModelAliases: params.providerModelAliases,
-      sourceFilter: params.sourceFilterChunks,
-      queryVec: params.queryVec,
-      limit: params.limit,
-      snippetMaxChars: params.snippetMaxChars,
-      signal: params.signal,
-    });
+  const searchFallback =
+    params.runFallback ??
+    (() =>
+      searchChunksByEmbedding({
+        db: params.db,
+        providerModel: params.providerModel,
+        providerModelAliases: params.providerModelAliases,
+        sourceFilter: params.sourceFilterChunks,
+        queryVec: params.queryVec,
+        limit: params.limit,
+        snippetMaxChars: params.snippetMaxChars,
+        signal: params.signal,
+      }));
   const vectorReady = await params.ensureVectorReady(params.queryVec.length);
   params.signal?.throwIfAborted();
   if (vectorReady) {
@@ -403,7 +406,7 @@ export async function searchVector(params: {
   return await searchFallback();
 }
 
-async function searchChunksByEmbedding(params: {
+export async function searchChunksByEmbedding(params: {
   db: DatabaseSync;
   providerModel: string;
   providerModelAliases?: string[];
@@ -432,8 +435,20 @@ async function searchChunksByEmbedding(params: {
     rowid: number | bigint;
     embedding: string;
   };
+  const snippetByteLimit =
+    Number.isSafeInteger(params.snippetMaxChars) && params.snippetMaxChars > 0
+      ? params.snippetMaxChars * 4
+      : undefined;
+  // Byte prefixes preserve NUL in UTF-8 and UTF-16 databases. Four bytes per
+  // UTF-16 unit leave final truncation to truncateUtf16Safe. SQLite returns
+  // NULL for an empty BLOB substring, so retain the original empty text.
+  const snippetSql =
+    snippetByteLimit === undefined
+      ? "text"
+      : "COALESCE(CAST(substr(CAST(text AS BLOB), 1, ?) AS TEXT), text)";
+  const snippetParams = snippetByteLimit === undefined ? [] : [snippetByteLimit];
   const payloadStmt = params.db.prepare(
-    `SELECT id, path, start_line, end_line, text, source FROM memory_index_chunks WHERE rowid = ?`,
+    `SELECT id, path, start_line, end_line, ${snippetSql} AS text, source FROM memory_index_chunks WHERE rowid = ?`,
   );
   type ChunkPayload = {
     id: string;
@@ -466,7 +481,7 @@ async function searchChunksByEmbedding(params: {
         // Hydrate contenders before yielding so an old score cannot acquire a
         // replacement chunk's payload.
         // SAFETY: these schema-defined columns belong to this rowid in the active read snapshot.
-        const payload = payloadStmt.get(row.rowid) as ChunkPayload;
+        const payload = payloadStmt.get(...snippetParams, row.rowid) as ChunkPayload;
         const result: SearchRowResult = {
           id: payload.id,
           path: payload.path,

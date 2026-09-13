@@ -137,6 +137,8 @@ function buildVoiceTestHarness() {
     realtimeSessionMock.setMediaTimestamp.mockClear();
     realtimeSessionMock.submitToolResult.mockClear();
     realtimeSessionMock.bridge.supportsToolResultSuppression = true;
+    realtimeSessionMock.bridge.pacesInputAudio = false;
+    realtimeSessionMock.bridge.outputAudioMode = "response";
     createRealtimeVoiceBridgeSessionMock.mockReset();
     createRealtimeVoiceBridgeSessionMock.mockImplementation(() =>
       createRealtimeVoiceBridgeSessionMock.mock.calls.length === 1
@@ -158,7 +160,8 @@ function buildVoiceTestHarness() {
     });
     resolveConfiguredRealtimeVoiceProviderMock.mockClear();
     resolveConfiguredRealtimeVoiceProviderMock.mockReturnValue({
-      provider: { id: "openai", capabilities: { supportsActivationNameGating: true } },
+      provider: { id: "openai" },
+      capabilities: { supportsActivationNameGating: true },
       providerConfig: { model: "gpt-realtime-2", voice: "cedar" },
     });
     decodeOpusStreamChunksMock.mockReset();

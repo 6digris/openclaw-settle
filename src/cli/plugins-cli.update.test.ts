@@ -528,16 +528,25 @@ describe("plugins cli update", () => {
   });
 
   it.each([
+    { failure: "plugin install", settlement: "rollback" },
+    { failure: "plugin install and rollback", settlement: "rollback" },
     { failure: "later hook install", settlement: "rollback" },
     { failure: "config write", settlement: "rollback" },
     { failure: "backup cleanup", settlement: "commit" },
-  ])("settles hook updates when $failure fails", async ({ failure, settlement }) => {
+  ])("settles package updates when $failure fails", async ({ failure, settlement }) => {
     primeUpdateConfigSnapshot({ config: {} });
-    setHookInstallRecords({
-      "demo-hooks": { source: "npm", spec: "@acme/demo-hooks@1.0.0" },
-    });
+    const pluginInstall = failure.startsWith("plugin install");
+    if (pluginInstall) {
+      setInstalledPluginIndexInstallRecords({
+        alpha: { source: "npm", spec: "@acme/alpha@1.0.0", installPath: "/tmp/alpha" },
+      });
+    } else {
+      setHookInstallRecords({
+        "demo-hooks": { source: "npm", spec: "@acme/demo-hooks@1.0.0" },
+      });
+    }
     const events: string[] = [];
-    updateNpmInstalledHookPacksMock.mockImplementation(async (params) => {
+    const install = async (params: { config: OpenClawConfig }) => {
       resolvePluginInstallTransactionRequest(params)?.transactionSink?.push({
         commit: async () => {
           events.push("commit");
@@ -547,18 +556,26 @@ describe("plugins cli update", () => {
         },
         rollback: async () => {
           events.push("rollback");
+          if (failure === "plugin install and rollback") {
+            throw new Error("backup restore failed");
+          }
         },
       });
-      if (failure === "later hook install") {
+      if (pluginInstall || failure === "later hook install") {
         throw new Error(failure);
       }
       return { config: params.config, changed: true, outcomes: [] };
-    });
+    };
+    if (pluginInstall) {
+      updateNpmInstalledPluginsMock.mockImplementation(install);
+    } else {
+      updateNpmInstalledHookPacksMock.mockImplementation(install);
+    }
     if (failure === "config write") {
       replaceConfigFileMock.mockRejectedValueOnce(new Error(failure));
     }
 
-    const update = runPluginsCommand(["plugins", "update", "demo-hooks"]);
+    const update = runPluginsCommand(["plugins", "update", pluginInstall ? "alpha" : "demo-hooks"]);
     if (settlement === "commit") {
       await update;
       expectOfflineNoticeLogged();
@@ -969,93 +986,111 @@ describe("plugins cli update", () => {
     });
   });
 
-  it("rolls back persisted install records when source config changes during a records-only update", async () => {
-    const cfg = {
-      gateway: {
-        mode: "local",
-        port: 18889,
-      },
-      plugins: {
-        entries: {
-          brave: { enabled: true },
+  it.each([false, true])(
+    "keeps records-only errors (rollback fails: %s)",
+    async (rollbackFails) => {
+      const cfg = {
+        gateway: {
+          mode: "local",
+          port: 18889,
         },
-      },
-    } as OpenClawConfig;
-    const changedCfg = {
-      ...cfg,
-      gateway: {
-        ...cfg.gateway,
-        port: 18890,
-      },
-    } as OpenClawConfig;
-    const initialSnapshot = primeUpdateConfigSnapshot({ config: cfg });
-    const changedSnapshot = {
-      ...initialSnapshot,
-      snapshot: {
-        ...initialSnapshot.snapshot,
-        raw: JSON.stringify(changedCfg),
-        parsed: changedCfg as Record<string, unknown>,
-        resolved: changedCfg,
-        sourceConfig: changedCfg,
-        runtimeConfig: changedCfg,
-        config: changedCfg,
-        hash: "changed-config",
-      },
-    };
-    readConfigFileSnapshotForWriteMock
-      .mockResolvedValueOnce(initialSnapshot)
-      .mockResolvedValueOnce(changedSnapshot);
-    const { previousRecords, nextRecords } = primeBravePluginRecordUpdate(cfg);
-    const rollback = vi.fn(async () => undefined);
-    const commit = vi.fn(async () => undefined);
-    primePluginUpdate(
-      { ...cfg, plugins: { ...cfg.plugins, installs: nextRecords } },
-      [{ pluginId: "brave", status: "updated", message: "Updated brave." }],
-      true,
-      [{ rollback, commit }],
-    );
-    const previousPersistedIndex = createTestInstalledPluginIndex({
-      policyHash: "previous-policy",
-      installRecords: previousRecords,
-      plugins: [
-        recordInstalledPluginIndexInstallOwner(
-          {
-            pluginId: "brave",
-            manifestPath: "/tmp/brave-beta/openclaw.plugin.json",
-            manifestHash: "brave-v1",
-            source: "/tmp/brave-beta/index.js",
-            rootDir: "/tmp/brave-beta",
-            origin: "global",
-            enabled: true,
-            startup: { sidecar: false, memory: false, agentHarnesses: [] },
-            compat: [],
+        plugins: {
+          entries: {
+            brave: { enabled: true },
           },
-          "brave",
-        ),
-      ],
-    });
-    readPersistedInstalledPluginIndexMock.mockResolvedValue(previousPersistedIndex);
+        },
+      } as OpenClawConfig;
+      const changedCfg = {
+        ...cfg,
+        gateway: {
+          ...cfg.gateway,
+          port: 18890,
+        },
+      } as OpenClawConfig;
+      const initialSnapshot = primeUpdateConfigSnapshot({ config: cfg });
+      const changedSnapshot = {
+        ...initialSnapshot,
+        snapshot: {
+          ...initialSnapshot.snapshot,
+          raw: JSON.stringify(changedCfg),
+          parsed: changedCfg as Record<string, unknown>,
+          resolved: changedCfg,
+          sourceConfig: changedCfg,
+          runtimeConfig: changedCfg,
+          config: changedCfg,
+          hash: "changed-config",
+        },
+      };
+      readConfigFileSnapshotForWriteMock
+        .mockResolvedValueOnce(initialSnapshot)
+        .mockResolvedValueOnce(changedSnapshot);
+      const { previousRecords, nextRecords } = primeBravePluginRecordUpdate(cfg);
+      const rollback = vi.fn(async () => undefined);
+      const commit = vi.fn(async () => undefined);
+      primePluginUpdate(
+        { ...cfg, plugins: { ...cfg.plugins, installs: nextRecords } },
+        [{ pluginId: "brave", status: "updated", message: "Updated brave." }],
+        true,
+        [{ rollback, commit }],
+      );
+      const previousPersistedIndex = createTestInstalledPluginIndex({
+        policyHash: "previous-policy",
+        installRecords: previousRecords,
+        plugins: [
+          recordInstalledPluginIndexInstallOwner(
+            {
+              pluginId: "brave",
+              manifestPath: "/tmp/brave-beta/openclaw.plugin.json",
+              manifestHash: "brave-v1",
+              source: "/tmp/brave-beta/index.js",
+              rootDir: "/tmp/brave-beta",
+              origin: "global",
+              enabled: true,
+              startup: { sidecar: false, memory: false, agentHarnesses: [] },
+              compat: [],
+            },
+            "brave",
+          ),
+        ],
+      });
+      readPersistedInstalledPluginIndexMock.mockResolvedValue(previousPersistedIndex);
+      const rollbackFailure = new Error("plugin index rollback failed");
+      if (rollbackFails) {
+        restorePersistedInstalledPluginIndexIfCurrentMock.mockRejectedValueOnce(rollbackFailure);
+      }
 
-    await expect(runPluginsCommand(["plugins", "update", "brave"])).rejects.toThrow(
-      "config changed since last load",
-    );
+      const failure = await runPluginsCommand(["plugins", "update", "brave"]).catch(
+        (error: unknown) => error,
+      );
+      expect(String(failure)).toContain("config changed since last load");
+      if (failure instanceof AggregateError) {
+        expect(rollbackFails).toBe(true);
+        expect(failure.cause).toBe(failure.errors[0]);
+        expect(failure.errors).toEqual([
+          expect.objectContaining({ message: "config changed since last load" }),
+          rollbackFailure,
+        ]);
+      } else {
+        expect(rollbackFails).toBe(false);
+      }
 
-    expectInstallRecordsWrittenWithLease(nextRecords, cfg);
-    expect(restorePersistedInstalledPluginIndexIfCurrentMock).toHaveBeenCalledWith(
-      previousPersistedIndex,
-      expect.any(Number),
-      expect.objectContaining({
-        filePath: expect.any(String),
-        lease: expect.anything(),
-      }),
-    );
-    expect(configWriteMock).not.toHaveBeenCalled();
-    expect(replaceConfigFileMock).not.toHaveBeenCalled();
-    expect(refreshPluginRegistryMock).not.toHaveBeenCalled();
-    expect(rollback).toHaveBeenCalledTimes(1);
-    expect(commit).not.toHaveBeenCalled();
-    expect(pluginsCliRuntimeLogs.join("\n")).not.toContain("Updated");
-  });
+      expectInstallRecordsWrittenWithLease(nextRecords, cfg);
+      expect(restorePersistedInstalledPluginIndexIfCurrentMock).toHaveBeenCalledWith(
+        previousPersistedIndex,
+        expect.any(Number),
+        expect.objectContaining({
+          filePath: expect.any(String),
+          lease: expect.anything(),
+        }),
+      );
+      expect(configWriteMock).not.toHaveBeenCalled();
+      expect(replaceConfigFileMock).not.toHaveBeenCalled();
+      expect(refreshPluginRegistryMock).not.toHaveBeenCalled();
+      expect(rollback).toHaveBeenCalledTimes(1);
+      expect(commit).not.toHaveBeenCalled();
+      expect(pluginsCliRuntimeLogs.join("\n")).not.toContain("Updated");
+    },
+  );
 
   it("rolls back persisted install records when included config changes during a records-only update", async () => {
     const includePath = "/tmp/plugins.json5";

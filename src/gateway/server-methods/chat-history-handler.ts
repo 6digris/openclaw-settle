@@ -396,7 +396,6 @@ async function handleChatHistoryRequest({
     ? loadGatewaySessionEntryReadOnly(sessionKey, {
         agentId: sessionAgentId,
         clone: false,
-        includeStoreChildEntries: true,
         projection: "list",
       })
     : null;
@@ -626,6 +625,7 @@ async function handleChatHistoryRequest({
   const boundedInFlightRun = boundInFlightRunSnapshotForChatHistory({
     snapshot: inFlightRun,
     messages: capped,
+    getMessagesBytes: () => byteCounter.messagesBytes(capped),
     maxBytes: responseHistoryBytes,
   });
   const payload = {

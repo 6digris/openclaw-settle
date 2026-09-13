@@ -99,6 +99,7 @@ import {
   trimTranscriptForManualCompact,
 } from "./session-accessor.sqlite-transcript-write.js";
 import { resolveSqliteTargetFromSessionStorePath } from "./session-sqlite-target.js";
+import { transcriptMessage } from "./transcript-message.test-support.js";
 import {
   SessionTranscriptWriterClaimReboundError,
   withOwnedSessionTranscriptWrites,
@@ -3732,6 +3733,13 @@ describe("session accessor seam", () => {
         },
       ]);
 
+      const trailingMessages = Array.from({ length: 64 }, (_, index) => ({
+        message: {
+          role: "user",
+          content: `batch continuation ${index}`,
+          timestamp: index + 4,
+        },
+      }));
       const updates: Array<{
         target: unknown;
         message?: unknown;
@@ -3770,6 +3778,7 @@ describe("session accessor seam", () => {
                 timestamp: 3,
               },
             },
+            ...trailingMessages,
           ],
           updateMode: "inline",
         });
@@ -3778,7 +3787,7 @@ describe("session accessor seam", () => {
         unsubscribeInternal();
       }
 
-      expect(result.appendedCount).toBe(2);
+      expect(result.appendedCount).toBe(66);
       expect(updates).toEqual([
         {
           target: {
@@ -3818,9 +3827,22 @@ describe("session accessor seam", () => {
           messageSeq: 3,
           runId: "run-ordered-turn",
         },
+        ...trailingMessages.map(({ message }, index) => ({
+          target: {
+            agentId: scope.agentId,
+            sessionId: scope.sessionId,
+            sessionKey: scope.sessionKey,
+          },
+          sessionKey: scope.sessionKey,
+          agentId: scope.agentId,
+          sessionId: scope.sessionId,
+          message,
+          messageId: result.messages[index + 2]?.messageId,
+          messageSeq: index + 4,
+        })),
       ]);
-      expect(internalUpdates).toEqual([
-        {
+      expect(internalUpdates).toEqual(
+        Array.from({ length: 66 }, () => ({
           lifecycleRevision: "ordered-turn-revision",
           target: {
             agentId: scope.agentId,
@@ -3828,17 +3850,8 @@ describe("session accessor seam", () => {
             sessionKey: scope.sessionKey,
             storePath,
           },
-        },
-        {
-          lifecycleRevision: "ordered-turn-revision",
-          target: {
-            agentId: scope.agentId,
-            sessionId: scope.sessionId,
-            sessionKey: scope.sessionKey,
-            storePath,
-          },
-        },
-      ]);
+        })),
+      );
     },
   );
 
@@ -3856,11 +3869,10 @@ describe("session accessor seam", () => {
     });
     await persistSessionTranscriptTurn(scope, {
       messages: [
-        {
-          eventId: "legacy-unsequenced-root",
-          parentId: null,
-          message: { role: "user", content: "canonical root" },
-        },
+        transcriptMessage("legacy-unsequenced-root", null, {
+          role: "user",
+          content: "canonical root",
+        }),
       ],
       updateMode: "none",
     });
@@ -3963,11 +3975,10 @@ describe("session accessor seam", () => {
     await persistSessionTranscriptTurn(scope, {
       ...expectedSession,
       messages: [
-        {
-          eventId: "diverging-turn-root",
-          parentId: null,
-          message: { role: "user", content: "common branch root" },
-        },
+        transcriptMessage("diverging-turn-root", null, {
+          role: "user",
+          content: "common branch root",
+        }),
       ],
       updateMode: "none",
     });
@@ -3984,24 +3995,16 @@ describe("session accessor seam", () => {
       result = await persistSessionTranscriptTurn(scope, {
         ...expectedSession,
         messages: [
-          {
-            eventId: "diverging-turn-abandoned",
-            parentId: "diverging-turn-root",
-            message: {
-              role: "assistant",
-              content: "abandoned branch",
-              idempotencyKey: "diverging-turn-abandoned",
-            },
-          },
-          {
-            eventId: "diverging-turn-active",
-            parentId: "diverging-turn-root",
-            message: {
-              role: "assistant",
-              content: "final active branch",
-              idempotencyKey: "diverging-turn-active",
-            },
-          },
+          transcriptMessage("diverging-turn-abandoned", "diverging-turn-root", {
+            role: "assistant",
+            content: "abandoned branch",
+            idempotencyKey: "diverging-turn-abandoned",
+          }),
+          transcriptMessage("diverging-turn-active", "diverging-turn-root", {
+            role: "assistant",
+            content: "final active branch",
+            idempotencyKey: "diverging-turn-active",
+          }),
         ],
         updateMode: "inline",
       });

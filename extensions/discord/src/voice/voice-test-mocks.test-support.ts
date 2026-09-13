@@ -110,8 +110,12 @@ const {
 
   const getVoiceConnectionMockLocal = vi.fn((): MockConnection | undefined => undefined);
 
-  const createRealtimeSessionMockLocal = () => ({
+  const createRealtimeSessionMockLocal = (
+    outputAudioMode: "response" | "continuous" = "response",
+  ) => ({
     bridge: {
+      outputAudioMode,
+      pacesInputAudio: false,
       supportsToolResultContinuation: true,
       supportsToolResultSuppression: true as boolean | undefined,
       handleBargeIn: vi.fn() as Mock | undefined,
@@ -187,12 +191,13 @@ const {
       }) => {
         provider: {
           id: string;
-          capabilities?: { supportsActivationNameGating?: boolean };
         };
+        capabilities?: { supportsActivationNameGating?: boolean; handlesAgentConsult?: boolean };
         providerConfig: Record<string, unknown>;
       }
     >(() => ({
-      provider: { id: "openai", capabilities: { supportsActivationNameGating: true } },
+      provider: { id: "openai" },
+      capabilities: { supportsActivationNameGating: true },
       providerConfig: { model: "gpt-realtime-2", voice: "cedar" },
     })),
     createRealtimeVoiceBridgeSessionMock: vi.fn((_params?: unknown) => realtimeSessionMockLocal),
@@ -379,9 +384,12 @@ vi.mock("openclaw/plugin-sdk/realtime-voice", async () => {
                   onResponseDone: request.onResponseDone,
                   onToolCall: bridgeParams.onToolCall,
                   onTranscript: request.onTranscript,
+                  runAgentConsult: request.runAgentConsult,
                 });
                 providerSession = session;
                 return {
+                  outputAudioMode: session.bridge.outputAudioMode,
+                  pacesInputAudio: session.bridge.pacesInputAudio,
                   supportsToolResultContinuation: session.bridge.supportsToolResultContinuation,
                   supportsToolResultSuppression: session.bridge.supportsToolResultSuppression,
                   acknowledgeMark: session.acknowledgeMark,

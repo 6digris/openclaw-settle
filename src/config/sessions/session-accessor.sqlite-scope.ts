@@ -59,6 +59,7 @@ type SessionSqliteDatabase = Pick<
   | "session_progress_cards"
   | "session_suggestions"
   | "session_transcript_archives"
+  | "session_transcript_cold_archives"
   | "session_transcript_active_events"
   | "session_transcript_index_state"
   | "session_windows"

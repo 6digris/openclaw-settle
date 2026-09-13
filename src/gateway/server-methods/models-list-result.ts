@@ -344,7 +344,10 @@ export async function prepareModelsListResult(
   const preparedPluginRegistry = preparedProjectionOwner?.pluginRegistry;
   const preparedOwnerIsCurrent = preparedProjectionOwner?.isCurrent;
   // Native readiness belongs to the prepared generation, even across config publication.
-  const isCurrent = () => currentConfig() === requestConfig && preparedOwnerIsCurrent?.() === true;
+  const isCurrent = () =>
+    currentConfig() === requestConfig &&
+    preparedOwnerIsCurrent?.() === true &&
+    scope?.isCurrent?.() !== false;
   if (!metadataSnapshot || !preparedAuthStore) {
     throw new Error("Gateway model catalog owner omitted prepared metadata or auth state");
   }
@@ -456,7 +459,8 @@ export async function prepareModelsListResult(
   draft?.assertCurrent();
   const outcomeProjection = {
     ...(pendingProviders?.length ? { pendingProviders } : {}),
-    ...(params.params.includeDefaultModels
+    ...((params.params.includeDefaultModels ??
+    (view === "configured" && !params.params.sessionKey && !params.params.authProfileId))
       ? {
           defaultModels: {
             automaticUtilityModel:

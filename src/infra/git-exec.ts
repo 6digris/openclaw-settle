@@ -6,7 +6,13 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
 import { KeyedAsyncQueue } from "../plugin-sdk/keyed-async-queue.js";
 import { createCommandError } from "../process/command-error.js";
 import type { SpawnResult } from "../process/exec-result.js";
-import { runCommandBuffered, runCommandWithTimeout, type CommandOptions } from "../process/exec.js";
+import { runCommandBuffersWithTimeout, type BufferSpawnResult } from "../process/exec-runner.js";
+import {
+  runCommandWithTimeout,
+  type BufferedCommandResult,
+  type CommandOptions,
+} from "../process/exec.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { areDiagnosticsEnabledForProcess } from "./diagnostic-events.js";
 import {
@@ -99,28 +105,49 @@ export async function enqueueGitRefMutation<T>(
   cwd: string,
   commonDirectory: string,
   run: () => Promise<T>,
+  signal?: AbortSignal,
 ): Promise<T> {
   const timing = startRefMutationTiming();
   let outcome: "returned" | "threw" = "threw";
+  const admitted = { run, signal, timing, completion: createDeferredCore<T>() };
+  let waiting: typeof admitted | undefined = admitted;
+  const abort = () => {
+    const cancelled = waiting;
+    waiting = undefined;
+    cancelled?.completion.reject(cancelled.signal?.reason);
+  };
   try {
+    signal?.throwIfAborted();
     const commonPath = normalizeGitPathForFilesystem(commonDirectory);
     const commonDir = await fs.realpath(path.resolve(cwd, commonPath));
+    signal?.throwIfAborted();
     const key = process.platform === "win32" ? commonDir.toLowerCase() : commonDir;
     // Even deleting a loose ref locks shared packed-refs. Queue every ref owner
     // across linked worktrees; external contention retains its native error.
     timing?.enqueue();
-    const result = await gitRefMutations.enqueue(
-      key,
-      timing
-        ? () => {
-            timing.enter();
-            return run();
-          }
-        : run,
-    );
+    signal?.addEventListener("abort", abort, { once: true });
+    const queued = gitRefMutations.enqueue(key, async () => {
+      // Cancellation drops the entire caller, including its rejected promise and reason.
+      // Once started, the process owner must finish cleanup before we settle.
+      const active = waiting;
+      waiting = undefined;
+      if (!active) {
+        return;
+      }
+      try {
+        active.signal?.removeEventListener("abort", abort);
+        active.timing?.enter();
+        active.completion.resolve(await active.run());
+      } catch (error) {
+        active.completion.reject(error);
+      }
+    });
+    void queued.catch((error: unknown) => waiting?.completion.reject(error));
+    const result = await admitted.completion.promise;
     outcome = "returned";
     return result;
   } finally {
+    signal?.removeEventListener("abort", abort);
     timing?.finish(outcome);
   }
 }
@@ -151,13 +178,23 @@ export function withForegroundGitMaintenance(argv: string[]): string[] {
     : argv;
 }
 
+export type GitCommandOptions = Pick<
+  CommandOptions,
+  | "baseEnv"
+  | "env"
+  | "input"
+  | "timeoutMs"
+  | "signal"
+  | "killProcessTree"
+  | "maxOutputBytes"
+  | "terminateOnOutputLimit"
+>;
+export type GitCommandBytesResult = BufferSpawnResult & { timeoutMs: number };
+
 export async function executeGitCommand(
   cwd: string,
   args: string[],
-  options: Pick<
-    CommandOptions,
-    "baseEnv" | "env" | "input" | "timeoutMs" | "signal" | "killProcessTree" | "maxOutputBytes"
-  > = {},
+  options: GitCommandOptions = {},
 ): Promise<GitCommandResult> {
   const timeoutMs = options.timeoutMs ?? GIT_TIMEOUT_MS;
   const argv = ["git", "-C", cwd, ...args];
@@ -168,9 +205,24 @@ export async function executeGitCommand(
   return { ...result, timeoutMs };
 }
 
+/** The same command/timeout contract, with output bytes owned by a worker consumer. */
+export async function executeGitCommandBytes(
+  cwd: string,
+  args: string[],
+  options: GitCommandOptions = {},
+): Promise<GitCommandBytesResult> {
+  const timeoutMs = options.timeoutMs ?? GIT_TIMEOUT_MS;
+  const argv = ["git", "-C", cwd, ...args];
+  const result = await runCommandBuffersWithTimeout(
+    options.killProcessTree ? withForegroundGitMaintenance(argv) : argv,
+    { ...options, timeoutMs },
+  );
+  return { ...result, timeoutMs };
+}
+
 export function createGitCommandError(
   command: string,
-  result: (SpawnResult | Awaited<ReturnType<typeof runCommandBuffered>>) & { timeoutMs?: number },
+  result: (SpawnResult | BufferedCommandResult) & { timeoutMs?: number },
 ): Error {
   // Buffered Git uses the fixed default; text results carry their applied budget.
   const timeoutMs = result.timeoutMs ?? GIT_TIMEOUT_MS;
@@ -188,18 +240,10 @@ export async function requireGitCommand(
   args: string[],
   options: { env?: NodeJS.ProcessEnv; input?: string | Uint8Array; timeoutMs?: number } = {},
 ): Promise<string> {
-  return (await requireGitCommandRaw(cwd, args, options)).trim();
-}
-
-export async function requireGitCommandRaw(
-  cwd: string,
-  args: string[],
-  options: Parameters<typeof requireGitCommand>[2] = {},
-): Promise<string> {
   return requireGitCommandOutput(
     `git ${args.join(" ")}`,
     await executeGitCommand(cwd, args, options),
-  );
+  ).trim();
 }
 
 export function requireGitCommandOutput(
@@ -213,23 +257,6 @@ export function requireGitCommandOutput(
   // Required stdout is data, not a diagnostic tail; a clean exit cannot make it complete.
   if (result.stdoutTruncatedBytes) {
     throw createError(command, { ...result, code: null, outputLimitExceeded: true });
-  }
-  return result.stdout;
-}
-
-export async function requireGitCommandBuffer(
-  cwd: string,
-  args: string[],
-  options: { env?: NodeJS.ProcessEnv; input?: Uint8Array; maxOutputBytes?: number } = {},
-): Promise<Buffer> {
-  const result = await runCommandBuffered(["git", "-C", cwd, ...args], {
-    timeoutMs: GIT_TIMEOUT_MS,
-    env: options.env,
-    input: options.input,
-    ...(options.maxOutputBytes !== undefined ? { maxOutputBytes: options.maxOutputBytes } : {}),
-  });
-  if (result.termination !== "exit" || result.code !== 0) {
-    throw createGitCommandError(`git ${args.join(" ")}`, result);
   }
   return result.stdout;
 }

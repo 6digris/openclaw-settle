@@ -11,8 +11,9 @@ import {
   type CompactNodeTestShard,
   createNodeTestShardBundles,
   createNodeTestShards,
-  createToolingNodeTestShardBundles,
+  createSelectedNodeTestShardBundles,
   createVitestCacheWarmGroups,
+  hasCompleteStartupCorpusCoverage,
   isExclusiveCompactShardName,
   isPolicyTestOwnedPath,
   packNodeTestGroups,
@@ -38,6 +39,7 @@ import { createGatewayClientVitestConfig } from "../vitest/vitest.gateway-client
 import { createGatewayCoreVitestConfig } from "../vitest/vitest.gateway-core.config.ts";
 import { createGatewayMethodsIsolatedVitestConfig } from "../vitest/vitest.gateway-methods-isolated.config.ts";
 import { createGatewayMethodsVitestConfig } from "../vitest/vitest.gateway-methods.config.ts";
+import { createGatewayServerIsolatedVitestConfig } from "../vitest/vitest.gateway-server-isolated.config.ts";
 import { isGatewayServerTestFile } from "../vitest/vitest.gateway-server-paths.mjs";
 import { createGatewayServerVitestConfig } from "../vitest/vitest.gateway-server.config.ts";
 import { createMediaUnderstandingVitestConfig } from "../vitest/vitest.media-understanding.config.ts";
@@ -56,6 +58,52 @@ import { createUnitVitestConfigWithOptions } from "../vitest/vitest.unit.config.
 import { createWizardVitestConfig } from "../vitest/vitest.wizard.config.ts";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+
+describe("startup corpus coverage", () => {
+  const files = [
+    "src/config/config-startup-corpus.test.ts",
+    "src/config/state-startup-corpus.test.ts",
+  ];
+  const group = {
+    shard_name: "core-runtime-config",
+    configs: ["test/vitest/vitest.runtime-config.config.ts"],
+    requiresDist: false,
+    runner: "ubuntu-24.04",
+    includePatterns: files,
+    env: { OPENCLAW_VITEST_MAX_WORKERS: "2" },
+  };
+  it("retains complete ownership across separate file groups", () => {
+    const groups = files.map((file) => ({ ...group, includePatterns: [file] }));
+    expect(hasCompleteStartupCorpusCoverage([{ requiresDist: false, groups }])).toBe(true);
+    expect(listMatchedTestFiles(createRuntimeConfigVitestConfig({}))).toEqual(
+      expect.arrayContaining(files),
+    );
+  });
+  it.each<
+    { label: string } & Partial<Parameters<typeof hasCompleteStartupCorpusCoverage>[0][number]>
+  >([
+    { label: "partial file list", groups: [{ ...group, includePatterns: files.slice(0, 1) }] },
+    { label: "unknown full config", groups: [{ ...group, includePatterns: undefined }] },
+    {
+      label: "glob instead of complete files",
+      groups: [{ ...group, includePatterns: ["src/config/**"] }],
+    },
+    { label: "different config", groups: [{ ...group, configs: ["vitest.config.ts"] }] },
+    {
+      label: "native shard",
+      groups: [{ ...group, env: { OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: '["--shard=1/2"]' } }],
+    },
+    {
+      label: "name filter",
+      groups: [{ ...group, env: { OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: '["-t","one"]' } }],
+    },
+    { label: "target precedence", groups: [group], targets: files.slice(0, 1) },
+    { label: "non-admitted dist row", groups: [group], requiresDist: true },
+    { label: "no groups", groups: [] },
+  ])("does not certify $label", ({ label: _label, ...shard }) => {
+    expect(hasCompleteStartupCorpusCoverage([{ requiresDist: false, ...shard }])).toBe(false);
+  });
+});
 
 type VitestTestConfig = {
   dir?: string;
@@ -1481,6 +1529,9 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       ...listMatchedTestFiles(createGatewayMethodsVitestConfig({})),
       ...listMatchedTestFiles(createGatewayMethodsIsolatedVitestConfig({})),
     ];
+    const gatewayServerIsolatedOwnerFiles = listMatchedTestFiles(
+      createGatewayServerIsolatedVitestConfig({}),
+    );
     const compactGroups = compact.flatMap((shard) => shard.groups);
     const pullRequestCompactGroups = pullRequestCompact.flatMap((shard) => shard.groups);
     const expectedGroupNames = base.flatMap((shard) =>
@@ -1563,6 +1614,8 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           );
         } else if (owner.shardName === "agentic-gateway-methods") {
           expect(actual.toSorted()).toEqual(gatewayMethodsOwnerFiles.toSorted());
+        } else if (owner.shardName === "agentic-gateway-server-isolated") {
+          expect(actual.toSorted()).toEqual(gatewayServerIsolatedOwnerFiles.toSorted());
         }
       }
     }
@@ -1579,6 +1632,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         .concat(
           embeddedBaseOwnerFiles,
           gatewayMethodsOwnerFiles,
+          gatewayServerIsolatedOwnerFiles,
           listMatchedTestFiles(createCliProcessVitestConfig({})),
           listMatchedTestFiles(createPluginSdkVitestConfig({})),
           listMatchedTestFiles(createPluginSdkLightVitestConfig({})),
@@ -1596,6 +1650,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         .concat(
           embeddedBaseOwnerFiles,
           gatewayMethodsOwnerFiles,
+          gatewayServerIsolatedOwnerFiles,
           listMatchedTestFiles(createCliProcessVitestConfig({})),
           listMatchedTestFiles(createPluginSdkVitestConfig({})),
           listMatchedTestFiles(createPluginSdkLightVitestConfig({})),
@@ -2214,7 +2269,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       expect(owner?.runner, runnerBackend).toBe(
         runnerBackend === "blacksmith" ? EXTRA_LARGE_NODE_TEST_RUNNER : DEFAULT_NODE_TEST_RUNNER,
       );
-      const precise = createToolingNodeTestShardBundles([compilerFixture], { runnerBackend });
+      const precise = createSelectedNodeTestShardBundles([compilerFixture], { runnerBackend });
       const preciseOwner = precise?.find((job) =>
         job.groups.some((group) => group.includePatterns?.includes(compilerFixture)),
       );
@@ -2360,13 +2415,13 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     );
     // Every selected file is now indivisible above the admission cap. Overflow
     // must retain these 96 files plus two dist owners, never resurrect the full suite.
-    expect(() => createToolingNodeTestShardBundles(selected, { runnerBackend: "github" })).toThrow(
+    expect(() => createSelectedNodeTestShardBundles(selected, { runnerBackend: "github" })).toThrow(
       "exceeds 80 jobs (98 planned)",
     );
   });
 
   it("keeps the private runtime prerequisite on precise tooling readers", () => {
-    const shards = createToolingNodeTestShardBundles([PRIVATE_QA_TOOLING_TEST]);
+    const shards = createSelectedNodeTestShardBundles([PRIVATE_QA_TOOLING_TEST]);
     expect(shards).not.toBeNull();
     const readers = shards?.filter((shard) => !shard.requiresDist) ?? [];
     expect(readers).toHaveLength(1);
@@ -2387,7 +2442,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       vi.spyOn(testTimings, "readCompactGroupTimings").mockReturnValue(
         Object.fromEntries(defaultShards.map((shard) => [shard.shardName, 1])),
       );
-      const plan = createToolingNodeTestShardBundles(targets, { runnerBackend });
+      const plan = createSelectedNodeTestShardBundles(targets, { runnerBackend });
       expect(plan).not.toBeNull();
       const readers = plan!.filter((shard) => !shard.requiresDist);
       expect(readers).toHaveLength(1);

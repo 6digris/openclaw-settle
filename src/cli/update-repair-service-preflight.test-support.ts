@@ -8,7 +8,7 @@ import type { runtimeProcessEntrypoints } from "../infra/runtime-process-entrypo
 
 type FixtureParams = {
   entrypoints: typeof runtimeProcessEntrypoints;
-  scenario: "online" | "late-online";
+  scenario: "online" | "late-online" | "owning-continuation";
   doctor?: boolean;
 };
 
@@ -18,6 +18,7 @@ export async function runRepairServicePreflightFixture(params: FixtureParams): P
   const role = params.doctor ? "doctor" : "parent";
   const entry = path.join(root, "dist", "index.js");
   const configPath = path.join(home, ".openclaw", "openclaw.json");
+  const config = JSON.parse(await fs.readFile(configPath, "utf8"));
   const account = os.userInfo();
   Object.defineProperty(os, "homedir", { value: () => home });
   Object.defineProperty(os, "userInfo", { value: () => ({ ...account, homedir: home }) });
@@ -28,21 +29,51 @@ const event = (event, facts = {}) => process.stderr.write('repair-fixture ' + JS
 `;
   const serviceUrl = sourceUrl("../daemon/service.ts");
   const systemdUrl = sourceUrl("../daemon/systemd.ts");
-  const running = params.scenario === "online" || params.doctor === true;
+  const continuation = params.scenario === "owning-continuation";
+  const running = params.scenario !== "late-online" || params.doctor === true;
   const replacements = new Map([
     [
       serviceUrl,
       `export * from ${JSON.stringify(`${serviceUrl}?fixture-original`)};
+import { readFileSync } from 'node:fs';
+import { getUpdateRun } from ${JSON.stringify(sourceUrl("../infra/update-run-ledger.ts"))};
+import { inspectUpdateRunDriver } from ${JSON.stringify(sourceUrl("../infra/update-run-driver.ts"))};
 ${eventSource}
 const forbidden = (name) => async () => { event('mutation:' + name); throw new Error('Unexpected native service mutation: ' + name); };
+let running = ${JSON.stringify(running)};
+const observeContinuation = () => {
+  if (!${JSON.stringify(continuation)}) return;
+  const run = getUpdateRun(process.env.OPENCLAW_UPDATE_RUN_ID);
+  event('continuation-state', {
+    runId: run?.runId, status: run?.status,
+    recorded: run?.steps.some((step) => step.step === 'finalize:repair-continuation'),
+    adopted: run?.steps.some((step) => step.step === 'driver:adopted'),
+    ownerAlive: run?.origin.driver && inspectUpdateRunDriver(run.origin.driver),
+    channel: JSON.parse(readFileSync(${JSON.stringify(configPath)}, 'utf8')).update?.channel,
+  });
+};
 const service = {
   label: 'fixture', loadedText: 'loaded', notLoadedText: 'not loaded',
   stage: forbidden('stage'), install: forbidden('install'), uninstall: forbidden('uninstall'),
-  start: forbidden('start'), stop: forbidden('stop'), restart: forbidden('restart'),
+  start: forbidden('start'),
+  stop: ${JSON.stringify(continuation && params.doctor === true)} ? async (params) => {
+    if (typeof params.assertCurrent !== 'function') throw new Error('Missing native stop assertion');
+    params.assertCurrent();
+    event('mutation:stop', {asserted: true});
+    running = false;
+  } : forbidden('stop'),
+  restart: ${JSON.stringify(continuation && params.doctor === true)} ? async (params) => {
+    if (typeof params.assertCurrent !== 'function') throw new Error('Missing native restart assertion');
+    params.assertCurrent();
+    observeContinuation();
+    event('mutation:restart', {asserted: true, preserveDefinition: params.preserveDefinition});
+    throw new Error('Fixture service manager refused restoration');
+  } : forbidden('restart'),
   isLoaded: async () => true,
   isEnabled: async () => false,
   readDefinitionMutationCapability: async () => ({kind: 'writable'}),
   readCommand: async (env) => {
+    observeContinuation();
     event('service-command', {
       activation: env.OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION,
       serviceRepair: env.OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_SERVICE_REPAIR,
@@ -52,11 +83,11 @@ const service = {
       kind: env.OPENCLAW_SERVICE_KIND ?? null,
       runtimePid: env.OPENCLAW_GATEWAY_SERVICE_PID ?? null,
     });
-    return {programArguments: [process.execPath, ${JSON.stringify(entry)}, 'gateway'], environment: {HOME: ${JSON.stringify(home)}}};
+    return {programArguments: [process.execPath, ${JSON.stringify(entry)}, 'gateway', '--port', ${JSON.stringify(String(config.gateway.port))}], environment: {HOME: ${JSON.stringify(home)}}};
   },
   readRuntime: async () => {
-    event('service-runtime', {status: ${JSON.stringify(running ? "running" : "stopped")}});
-    return {status: ${JSON.stringify(running ? "running" : "stopped")}, systemd: {managerUid: ${account.uid}}};
+    event('service-runtime', {status: running ? 'running' : 'stopped'});
+    return {status: running ? 'running' : 'stopped', systemd: {managerUid: ${account.uid}}};
   },
 };
 export const resolveGatewayService = () => service;`,
@@ -94,17 +125,39 @@ export const SQLITE_READONLY_CHILD_ARG = '--openclaw-sqlite-readonly-child';`,
 
   const { defaultRuntime } = await import("../runtime.js");
   if (params.doctor) {
-    const { listUpdateRuns } = await import("../infra/update-run-ledger.js");
-    const config = JSON.parse(await fs.readFile(configPath, "utf8"));
+    const { getUpdateRun, listUpdateRuns } = await import("../infra/update-run-ledger.js");
     event("doctor-entry", { runs: listUpdateRuns().length, channel: config.update?.channel });
-    // The installed fixture ends at the real maintenance guard. It does not
-    // replace that owner or simulate a successful Doctor/convergence result.
+    if (continuation) {
+      const { inspectUpdateRunDriver } = await import("../infra/update-run-driver.js");
+      const run = getUpdateRun(process.env.OPENCLAW_UPDATE_RUN_ID!);
+      const owner = run?.origin.driver;
+      if (!owner || inspectUpdateRunDriver(owner) !== "alive" || owner.pid !== process.ppid) {
+        throw new Error("Fixture must retain its real owning parent through Doctor maintenance");
+      }
+      process.once("exit", (code) =>
+        event("doctor-exit", {
+          code,
+          pid: process.pid,
+          parentPid: owner.pid,
+          ownerAlive: inspectUpdateRunDriver(owner),
+        }),
+      );
+    }
+    // The installed fixture reaches real maintenance and, for continuation,
+    // its restoration failure. It never simulates successful convergence.
     const { beginDoctorMaintenance } = await import("../commands/doctor-maintenance.js");
     const maintenance = await beginDoctorMaintenance({
       options: { repair: true, nonInteractive: true, yes: true },
       root,
       runtime: defaultRuntime,
     });
+    if (continuation) {
+      if (!maintenance) {
+        throw new Error("Fixture expected owning-run Doctor maintenance");
+      }
+      await maintenance.finish(config);
+      throw new Error("Fixture expected the native restoration failure");
+    }
     await maintenance?.release();
     throw new Error("Fixture expected the real Doctor maintenance refusal");
   }
@@ -133,6 +186,17 @@ try {
   const { withCliProcessScope } = await import("./runtime-cleanup-scope.js");
   const { enableConsoleCapture } = await import("../logging/console.js");
   const { withConsoleLogsRoutedToStderrForJson } = await import("./json-output-mode.js");
+  if (continuation) {
+    const { readUpdateRunDriver } = await import("../infra/update-run-driver.js");
+    const { createUpdateRun } = await import("../infra/update-run-ledger.js");
+    const driver = readUpdateRunDriver();
+    if (!driver) {
+      throw new Error("Fixture requires the real update driver identity");
+    }
+    const run = createUpdateRun({ trigger: "cli", origin: { driver } });
+    process.env.OPENCLAW_UPDATE_RUN_ID = run.runId;
+    event("owning-run", { runId: run.runId, pid: driver.pid });
+  }
   process.argv = [
     process.execPath,
     path.join(root, "openclaw.mjs"),
@@ -158,6 +222,7 @@ try {
         ),
       ),
     onError: (error) => {
+      event("repair-error", { pid: process.pid });
       defaultRuntime.writeJson(formatCliJsonFailure(error));
       process.exitCode = 1;
     },
