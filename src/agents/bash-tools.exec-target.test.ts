@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { requireValidExecTarget } from "../infra/exec-approvals.js";
-import { resolveExecTarget } from "./bash-tools.exec-runtime.js";
+import { resolveExecTarget } from "./bash-tools.exec-target.js";
 import { consumeTrustedToolNoStartError } from "./tool-result-error.js";
 
 function expectExecTarget(

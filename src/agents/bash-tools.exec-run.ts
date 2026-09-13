@@ -49,7 +49,6 @@ import {
   type ExecProcessHandle,
   type ExecProcessOutcome,
   normalizePathPrepend,
-  resolveExecTarget,
   resolveApprovalRunningNoticeMs,
   buildExecRuntimeErrorOutcome,
   runExecProcess,
@@ -66,6 +65,7 @@ import {
   resolveExecElevatedMode,
   resolveExecReviewerDefaults,
 } from "./bash-tools.exec-support.js";
+import { resolveExecTarget } from "./bash-tools.exec-target.js";
 import {
   type BackgroundExecTaskHandle,
   createBackgroundExecTask,

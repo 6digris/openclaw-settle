@@ -1,6 +1,6 @@
 /** Applies directive-only command state changes without running the agent. */
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
-import { renderExecTargetLabel } from "../../agents/bash-tools.exec-runtime.js";
+import { renderExecTargetLabel } from "../../agents/bash-tools.exec-target.js";
 import { resolveExecDefaults } from "../../agents/exec-defaults.js";
 import {
   formatFastModeCommandOptions,
