@@ -2,7 +2,7 @@
 import type { Static } from "typebox";
 import { Type } from "typebox";
 import { closedObject } from "./closed-object.js";
-import { GatewayEventLoopHealthSchema } from "./diagnostics.js";
+import { GatewayEventLoopHealthSchema } from "./event-loop-health.js";
 import { NonEmptyString, SecretInputSchema } from "./primitives.js";
 
 /**
