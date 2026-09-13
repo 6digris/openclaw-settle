@@ -105,6 +105,7 @@ it.each([
         chatAbortControllers: context.chatAbortControllers,
         restartRecoveryCandidates: new Map(),
         terminalSessions: { closeTaskSessions: vi.fn() },
+        refreshConnectedUserProfiles: vi.fn(),
       });
       const writerEntered = createDeferred();
       const releaseWriter = createDeferred();
