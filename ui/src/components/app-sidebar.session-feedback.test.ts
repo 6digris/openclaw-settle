@@ -8,7 +8,12 @@ import {
   mountRoster,
   selectFilter,
 } from "../test-helpers/app-sidebar-cases/roster.test-support.ts";
-import { createGateway, createSessionsHarness, mountSidebar } from "../test-helpers/app-sidebar.ts";
+import {
+  catalogPage,
+  createGateway,
+  createSessionsHarness,
+  mountSidebar,
+} from "../test-helpers/app-sidebar.ts";
 import { SIDEBAR_SESSION_PAGE_SIZE } from "./app-sidebar-session-types.ts";
 import "../test-helpers/app-sidebar-suite.ts";
 import "./app-sidebar.ts";
@@ -91,7 +96,13 @@ describe("sidebar session feedback", () => {
     );
     await sidebar.updateComplete;
     expect(sidebar.textContent).not.toContain(hint);
-    pending.resolve({ catalogs: [] });
+    const initialScan = pending;
+    pending = createDeferred<SessionsCatalogListResult>();
+    initialScan.resolve(catalogPage([], "fixture-next"));
+    await vi.waitFor(() => expect(sidebar.sessionData.loadingMoreSessionCatalogIds.size).toBe(1));
+    await sidebar.updateComplete;
+    expect(sidebar.textContent).not.toContain(hint);
+    pending.resolve(catalogPage([]));
     await vi.waitFor(() => expect(sidebar.textContent).toContain(hint));
     pending = createDeferred<SessionsCatalogListResult>();
     const refresh = sidebar.sessionData.refreshSessionCatalogs();
