@@ -6,6 +6,7 @@ import { resetLogger } from "../logging/logger.js";
 import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-lifecycle.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { getFreePort } from "../test-utils/ports.js";
+import { invalidateConfigGetResponseCache } from "./config-get-response.js";
 import { startGatewayServerCore as startGatewayServer } from "./server-start.js";
 import { connectGatewayClient, disconnectGatewayClient } from "./test-helpers.e2e.js";
 
@@ -75,7 +76,7 @@ describe("config security policy", () => {
     expect(grantedScopes).toEqual(["operator.read"]);
 
     // Keep one admitted reader while the on-disk snapshot becomes invalid.
-    // Disabled hot reload makes config.get read each fixture without a cached projection.
+    // Direct fixture writes must invalidate cached config.get responses.
     for (const useInclude of [false, true]) {
       for (const valid of [true, false]) {
         await state.writeConfig({
@@ -83,6 +84,7 @@ describe("config security policy", () => {
           models: useInclude ? { $include: "models.json" } : models,
           ...(valid ? {} : { nodeHost: { browserProxy: { enabled: "invalid" } } }),
         });
+        invalidateConfigGetResponseCache();
         const snapshot = await readConfigFileSnapshot({ observe: false });
         expect(snapshot.valid).toBe(valid);
         expect(snapshot.authoredConfig?.models).toEqual(models);
@@ -90,7 +92,7 @@ describe("config security policy", () => {
           envKey,
         );
         const before = structuredClone(snapshot);
-        const response = await client.request<Record<string, unknown>>("config.get", {});
+        const response = await client.request("config.get", {});
         const serialized = JSON.stringify(response);
 
         expect(response.valid).toBe(valid);
