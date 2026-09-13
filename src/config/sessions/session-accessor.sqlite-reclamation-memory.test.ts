@@ -16,6 +16,7 @@ import {
 } from "../../plugins/memory-runtime.js";
 import { resetStandaloneMemoryRegistrySlot } from "../../plugins/memory-runtime.test-support.js";
 import {
+  closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
@@ -32,27 +33,26 @@ const checkpoint = vi.hoisted(() => ({
   authorizations: [] as Promise<void>[],
 }));
 
-vi.mock("./session-accessor.sqlite-archive.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./session-accessor.sqlite-archive.js")>();
+vi.mock("./session-accessor.sqlite-worker-request.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("./session-accessor.sqlite-worker-request.js")>();
   return {
     ...actual,
-    runSqliteTranscriptArchiveWorkerOperation: (
-      params: Parameters<typeof actual.runSqliteTranscriptArchiveWorkerOperation>[0],
+    runSqliteMutationWorkerRequest: (
+      params: Parameters<typeof actual.runSqliteMutationWorkerRequest>[0],
     ) =>
-      actual.runSqliteTranscriptArchiveWorkerOperation({
+      actual.runSqliteMutationWorkerRequest({
         ...params,
-        onCommitRequest: params.onCommitRequest
-          ? () => {
-              checkpoint.startForeground?.();
-              // Let prepared foreground continuations run before the queued parent
-              // authorizer, while the actual reclamation Worker holds its writer lock.
-              const authorization = setImmediate().then(() => {
-                params.onCommitRequest?.();
-              });
-              checkpoint.authorizations.push(authorization);
-              void authorization.catch(() => {});
-            }
-          : undefined,
+        onCommitRequest: () => {
+          checkpoint.startForeground?.();
+          // Let prepared foreground continuations run before the queued parent
+          // authorizer, while the actual reclamation Worker holds its writer lock.
+          const authorization = setImmediate().then(() => {
+            params.onCommitRequest();
+          });
+          checkpoint.authorizations.push(authorization);
+          void authorization.catch(() => {});
+        },
       }),
   };
 });
@@ -86,6 +86,7 @@ describe("reclamation with the public memory runtime", () => {
     await closeActiveMemorySearchManagersCore();
     resetStandaloneMemoryRegistrySlot();
     clearPluginLoaderCache();
+    await closeOpenClawAgentDatabasesAsync();
     closeOpenClawAgentDatabasesForTest();
     resetPluginStateStoreForTests();
     closeOpenClawStateDatabaseForTest();
