@@ -604,7 +604,7 @@ describe("Slack live QA runtime helpers", () => {
         {
           agents: {
             defaults: { verboseDefault: "off" },
-            list: [{ id: "qa", identity: { name: "C-3PO QA" } }],
+            entries: { qa: { identity: { name: "C-3PO QA" } } },
           },
         },
         {
@@ -652,9 +652,9 @@ describe("Slack live QA runtime helpers", () => {
       buildScenarioConfig("slack-progress-commentary-verbose-full").agents?.defaults
         ?.verboseDefault,
     ).toBe("full");
-    expect(buildScenarioConfig("slack-progress-commentary-true").agents?.list?.[0]?.identity).toBe(
-      undefined,
-    );
+    expect(
+      buildScenarioConfig("slack-progress-commentary-true").agents?.entries?.qa?.identity,
+    ).toBe(undefined);
   });
 
   it("verifies progress commentary from history or successful captured message writes", () => {
