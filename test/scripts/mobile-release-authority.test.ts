@@ -2984,7 +2984,7 @@ fi
           {
             environment?: string;
             if?: unknown;
-            needs?: string;
+            needs?: string | string[];
             "runs-on"?: string;
             steps: Array<{
               "continue-on-error"?: unknown;
@@ -3002,12 +3002,16 @@ fi
       };
       expect(workflow.name).toBe(name);
       expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"]);
-      expect(Object.keys(workflow.jobs)).toEqual(["authorize", "release", "recover-record"]);
+      expect(Object.keys(workflow.jobs)).toEqual(
+        platform === "ios"
+          ? ["authorize", "qualify", "release", "recover-record"]
+          : ["authorize", "release", "recover-record"],
+      );
       expect(workflow.jobs.authorize?.environment).toBeUndefined();
       expect(workflow.jobs.release?.environment).toBe(environment);
       expect(workflow.jobs["recover-record"]?.environment).toBe(environment);
       const authorityCheckouts = Object.values(workflow.jobs).flatMap((job) =>
-        job.steps.filter(
+        (job.steps ?? []).filter(
           (step) =>
             typeof step.with?.["sparse-checkout"] === "string" &&
             step.with["sparse-checkout"].includes(".github/actions/mobile-release-authority"),
@@ -3029,7 +3033,7 @@ fi
       if (!release) {
         throw new Error(`${file}: missing release job`);
       }
-      expect(release.needs).toBe("authorize");
+      expect(release.needs).toEqual(platform === "ios" ? ["authorize", "qualify"] : "authorize");
       expect(release["runs-on"]).toBe(releaseRunner);
       expect(release.if).toBe(
         "inputs.operation == 'upload-and-record' && needs.authorize.outputs.approved == 'true'",
@@ -3228,7 +3232,7 @@ fi
       }
 
       const secretPlacements = Object.entries(workflow.jobs).flatMap(([jobName, job]) =>
-        job.steps.flatMap((step) => {
+        (job.steps ?? []).flatMap((step) => {
           const serialized = JSON.stringify(step);
           return ["GH_APP_PRIVATE_KEY", "MATCH_PASSWORD"]
             .filter((secret) => serialized.includes(`secrets.${secret}`))

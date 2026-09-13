@@ -5250,6 +5250,18 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  # Current-target manual qualification, not a universal pinned-target FRV gate.
+  # Beta qualification independently requires its exact approved target and harness.
+  ios-release-e2e:
+    needs: [preflight]
+    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.release_gate && needs.preflight.outputs.release_scope == 'full' && needs.preflight.outputs.compatibility_target != 'true' }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ios-release-e2e.yml
+    with:
+      target_sha: ${{ needs.preflight.outputs.checkout_revision }}
+      mode: stock
+
   ios-screenshot-shard:
     permissions:
       contents: read
@@ -5805,6 +5817,7 @@ jobs:
       - macos-node
       - macos-swift
       - ios-build
+      - ios-release-e2e
       - ios-screenshot-shard
       - ios-screenshot-evidence
       - android
@@ -5846,6 +5859,7 @@ jobs:
             macos-node=${{ needs.macos-node.result }}|${{ needs.preflight.outputs.run_macos_node }}
             macos-swift=${{ needs.macos-swift.result }}|${{ needs.preflight.outputs.run_macos_swift }}
             ios-build=${{ needs.ios-build.result }}|${{ needs.preflight.outputs.run_ios_build }}
+            ios-release-e2e=${{ needs.ios-release-e2e.result }}|${{ github.event_name == 'workflow_dispatch' && !inputs.release_gate && needs.preflight.outputs.release_scope == 'full' && needs.preflight.outputs.compatibility_target != 'true' }}
             ios-screenshot-shard=${{ needs.ios-screenshot-shard.result }}|${{ github.event_name == 'workflow_dispatch' && !inputs.release_gate && needs.preflight.outputs.release_scope == 'full' && needs.preflight.outputs.compatibility_target != 'true' }}
             ios-screenshot-evidence=${{ needs.ios-screenshot-evidence.result }}|${{ github.event_name == 'workflow_dispatch' && !inputs.release_gate && needs.preflight.outputs.release_scope == 'full' && needs.preflight.outputs.compatibility_target != 'true' }}
             android=${{ needs.android.result }}|${{ needs.preflight.outputs.run_android_job }}

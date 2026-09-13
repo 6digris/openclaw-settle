@@ -142,6 +142,51 @@ Direct Fastlane upload is disabled. Use the package script so the release
 wrapper, App Store push mode, and exported-IPA validation gate all run in the
 same path.
 
+## Native release qualification
+
+On an Apple Silicon Mac with Xcode 26.6, the iOS 26.6 runtime, iPhone 17 Pro
+device type, and the repository's pinned native tools installed:
+
+```bash
+node --import ./scripts/tsx.mjs scripts/ios-release-e2e.ts \
+  --mode stock --target-sha "$(git rev-parse HEAD)" --output /tmp/ios-e2e-stock.json
+
+./scripts/install-simslim.sh /tmp/ios-e2e-tools
+OPENCLAW_CI_SIMSLIM_BINARY=/tmp/ios-e2e-tools/simslim \
+  node --import ./scripts/tsx.mjs scripts/ios-release-e2e.ts \
+  --mode compare --target-sha "$(git rev-parse HEAD)" --output /tmp/ios-e2e-compare.json
+```
+
+The gate requires a clean tracked and untracked source tree at the exact SHA;
+gitignored build outputs are allowed. It builds the Gateway runtime and unsigned Debug `OpenClawUITests` products
+once. Each of the two live Gateway UI tests gets a new simulator, isolated real
+Gateway, and fresh setup code. Chat uses the deterministic local
+`openai/ios-e2e` provider fixture. Native Overview runs with Control UI disabled;
+this is not screenshot mode or a substitute for external-provider validation.
+
+The stock gate is required between beta authorization and release. It checks out
+the exact approved SHA, even when that differs from the workflow SHA, and fails
+if that target lacks the harness. Current-target full-manual CI also requires
+the stock gate. Existing compatibility admission still excludes historical and
+pinned-target CI paths; this does not claim universal pinned-target FRV coverage.
+Local direct upload behavior is unchanged.
+
+Compare runs four serial matched pairs in stock/slim, slim/stock, stock/slim,
+slim/stock order, with both tests fresh in every arm. SimSlim keeps the existing
+conservative search/family-only profile. Neither failures nor skipped tests are
+retried or dropped. JSON reports preparation, test, arm, build, and overall
+durations; the workflow additionally records shared toolchain installation time.
+
+Both comparison arms sample `simslim measure --json` every second after boot and
+preparation, through the test window only. The peak is the largest sampled
+simulator-process-tree `phys_footprint`, not RSS, whole-host memory, a continuous
+peak, or reboot-preparation memory. Missing/invalid samples or gaps over three
+seconds fail measurement. A stock gate without the meter requires no measurements.
+Raw XCTest bundles and fixture logs stay private and are cleaned with owned
+resources. If owned cleanup cannot be confirmed, the working root is retained.
+Only sanitized JSON proof is uploaded, including on failure, with fixed operation
+labels and bounded exit/error diagnostics rather than raw logs or setup codes.
+
 ## Protected beta CI
 
 `iOS Beta Release` is a separate, manual workflow. Dispatch it from trusted

@@ -15822,6 +15822,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       "macos-node",
       "macos-swift",
       "ios-build",
+      "ios-release-e2e",
       "ios-screenshot-shard",
       "ios-screenshot-evidence",
       "android",
