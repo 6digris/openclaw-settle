@@ -155,6 +155,8 @@ export const SessionCatalogTranscriptItemSchema = closedObject({
       supply these leave them unset and the import falls back to plain text. */
   toolName: Type.Optional(Type.String()),
   toolCallId: Type.Optional(Type.String()),
+  /** On a result, input represents a complete native invocation; import emits
+      its call and result together. Separate result rows omit this field. */
   toolInput: Type.Optional(PluginJsonValueSchema),
   isError: Type.Optional(Type.Boolean()),
   exitCode: Type.Optional(Type.Integer()),

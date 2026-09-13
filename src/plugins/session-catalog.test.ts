@@ -220,6 +220,7 @@ describe("importSessionCatalogHistory", () => {
         exitCode: 2,
       },
       { id: "t-2", type: "toolCall", text: "unidentified" },
+      { id: "t-3", type: "toolResult", text: "unidentified result" },
     ]);
     await result;
 
@@ -231,10 +232,52 @@ describe("importSessionCatalogHistory", () => {
       toolCallId: "call-1",
       toolName: "shell",
       isError: true,
+      details: { exitCode: 2 },
       content: [{ type: "text", text: "file.txt" }],
     });
     // An adapter reporting no identity keeps its labelled text form.
     expect(messageText(transcript.messages[2] ?? {})).toBe("Tool call\n\nunidentified");
+    expect(transcript.messages[3]?.idempotencyKey).toBe("pi-catalog:thread-1:t-3");
+    expect(messageText(transcript.messages[3] ?? {})).toBe("Tool result\n\nunidentified result");
+  });
+
+  it("imports both sides of a completed native tool item once, including an empty result", async () => {
+    const items: TranscriptItem[] = [
+      {
+        id: "completed-1",
+        type: "toolResult",
+        text: "",
+        toolName: "shell",
+        toolCallId: "call-1",
+        toolInput: { command: "false", cwd: "/repo" },
+        isError: true,
+        exitCode: 1,
+      },
+    ];
+    const commitGuard = vi.fn();
+    await importHistory(items, { commitGuard }).result;
+    await importHistory(items, { commitGuard }).result;
+    expect(transcript.messages).toHaveLength(2);
+    expect(transcript.messages[0]).toMatchObject({
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "call-1",
+          name: "shell",
+          arguments: { command: "false", cwd: "/repo" },
+        },
+      ],
+    });
+    expect(transcript.messages[1]).toMatchObject({
+      role: "toolResult",
+      toolCallId: "call-1",
+      toolName: "shell",
+      content: [{ type: "text", text: "" }],
+      isError: true,
+      details: { exitCode: 1 },
+    });
+    expect(commitGuard).toHaveBeenCalledTimes(4);
   });
 
   it("deduplicates a recovered import by scanning item idempotency keys", async () => {
@@ -249,6 +292,29 @@ describe("importSessionCatalogHistory", () => {
     expect(transcript.lockCalls).toBe(2);
     expect(transcript.messages).toHaveLength(2);
   });
+
+  it.each([{ input: ["x"] }, { input: "query" }, { input: 0 }, { input: null }])(
+    "preserves non-object tool input $input in standalone and completed calls",
+    async ({ input }) => {
+      await importHistory([
+        { id: "call", type: "toolCall", toolName: "custom", toolCallId: "call", toolInput: input },
+        {
+          id: "completed",
+          type: "toolResult",
+          toolName: "custom",
+          toolCallId: "completed",
+          toolInput: input,
+          text: "done",
+        },
+      ]).result;
+      expect(transcript.messages.map(messageText)).toEqual([
+        `Tool call\n\ncustom\n\n${JSON.stringify(input, null, 2)}`,
+        `Tool call\n\ncustom\n\n${JSON.stringify(input, null, 2)}`,
+        "done",
+      ]);
+      expect(transcript.messages[2]).toMatchObject({ role: "toolResult", toolCallId: "completed" });
+    },
+  );
 
   it("keeps only the most recent 200 items and returns them oldest-first", async () => {
     const items: TranscriptItem[] = Array.from({ length: 205 }, (_, index) => ({
@@ -301,6 +367,23 @@ describe("importSessionCatalogHistory", () => {
     ]).result;
 
     expect(transcript.messages.map(messageText)).toEqual(["visible answer"]);
+  });
+
+  it("retains a visible truncation notice when tool input alone exceeds the import budget", async () => {
+    await importHistory([
+      {
+        id: "large-input",
+        type: "toolResult",
+        toolName: "apply_patch",
+        toolCallId: "large-input",
+        toolInput: { patch: "x".repeat(600 * 1024) },
+        text: "Updated a.ts",
+        isError: false,
+      },
+    ]).result;
+    expect(transcript.messages).toHaveLength(1);
+    expect(messageText(transcript.messages[0]!)).toContain("Updated a.ts");
+    expect(messageText(transcript.messages[0]!)).toContain("[Oversized tool input omitted]");
   });
 
   it("does not open the transcript write lock when a paged read fails", async () => {

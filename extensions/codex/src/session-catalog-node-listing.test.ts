@@ -636,6 +636,9 @@ describe("Codex supervision catalog", () => {
         {
           id: "tool-1",
           type: "toolResult",
+          toolName: "shell",
+          toolCallId: "tool-1",
+          toolInput: { command: "" },
           text: `${output.slice(0, 512 * 1024 - 3)}…`,
           raw: source,
           truncated: true,
