@@ -4499,10 +4499,10 @@ describe("doctor health contributions", () => {
     };
     mocks.maybeRepairGatewayServiceConfig.mockImplementationOnce(
       async (
-        ...[, , , , options]: Parameters<
+        ...args: Parameters<
           typeof import("../commands/doctor-gateway-services.js").maybeRepairGatewayServiceConfig
         >
-      ) => options.writeConfig(repairedCfg),
+      ) => args[4].writeConfig(repairedCfg),
     );
 
     const ctx = createDoctorContext({
