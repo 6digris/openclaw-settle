@@ -243,7 +243,7 @@ export async function startGatewayCoreRuntime(input: {
         restartRecoveryCandidates,
         terminalSessions,
         refreshConnectedUserProfiles: () =>
-          resolvePluginGatewayContext()?.refreshConnectedUserProfile?.(),
+          runtime.resolvePluginGatewayContext()?.refreshConnectedUserProfile?.(),
       }),
     );
   Object.assign(runtimeState, runtimeSubscriptionUnsubs);
