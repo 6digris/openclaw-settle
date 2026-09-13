@@ -313,7 +313,7 @@ mod native_browser_tests {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 struct RemoteDashboardPresentation {
     webview: tauri::Webview,
     target: Url,
@@ -341,7 +341,7 @@ struct NavigationState {
     onboarding_pending: bool,
     remote_snapshot: Option<GatewaySnapshot>,
     settings_return: Option<SettingsReturn>,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     remote_presentation: Option<RemoteDashboardPresentation>,
 }
 
@@ -510,7 +510,7 @@ impl NavigationState {
             }
             // A failed replacement is not health evidence for the committed page.
             // Once publication changes its generation, the old handle cannot mask errors.
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
             if self.remote_dashboard
                 && self
                     .remote_presentation
@@ -643,7 +643,7 @@ impl DesktopState {
         self.with_tray(|tray| tray.refresh_update_action(app));
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     pub(crate) fn present_remote_dashboard(&self) -> Result<bool, String> {
         let navigation = self.inner.navigation.lock().expect("navigation");
         if self.is_quitting() {
@@ -1084,7 +1084,7 @@ impl DesktopState {
                 );
             }
         };
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         {
             if !self.is_quitting()
                 && navigation.remote_dashboard
@@ -1097,7 +1097,7 @@ impl DesktopState {
                 });
             }
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
         drop(remote_webview);
         tray::show_window(app);
         Ok(())
@@ -1146,7 +1146,7 @@ impl DesktopState {
         let target = if let Some(previous) = &navigation.settings_return {
             previous.target.clone()
         } else {
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
             let remote_url = navigation
                 .remote_presentation
                 .as_ref()
@@ -1159,7 +1159,7 @@ impl DesktopState {
                     })
                 })
                 .transpose()?;
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
             let remote_url: Option<Url> = None;
             if let Some(url) = remote_url {
                 SettingsReturnTarget::Remote(url)
@@ -1214,7 +1214,7 @@ impl DesktopState {
                     .navigate(url)
                     .map_err(|_| "Could not return to the dashboard. Try again.".to_string())?;
             }
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
             SettingsReturnTarget::Remote(url) => {
                 let presentation = navigation
                     .remote_presentation
@@ -1232,7 +1232,7 @@ impl DesktopState {
                     .navigate(url)
                     .map_err(|_| "Could not return to the dashboard. Try again.".to_string())?;
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
             SettingsReturnTarget::Remote(_) => {
                 return Err("The previous dashboard is unavailable.".to_string());
             }
@@ -1650,7 +1650,7 @@ impl DesktopState {
             }
             return Err(error);
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         if !navigation.remote_dashboard {
             navigation.remote_presentation = None;
         }
@@ -2676,9 +2676,9 @@ fn replace_main_webview(
                     }
                 };
                 // Wry can invoke this while the caller still holds navigation guards.
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "freebsd"))]
                 gtk::glib::idle_add_once(on_load);
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
                 let _ = app.run_on_main_thread(on_load);
             }
         })

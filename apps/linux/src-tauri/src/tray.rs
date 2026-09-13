@@ -361,7 +361,7 @@ pub fn show_window(app: &AppHandle) {
 }
 
 pub fn open_dashboard(app: &AppHandle) {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     {
         let current_app = app.clone();
         if let Err(error) = app.run_on_main_thread(move || {
@@ -393,7 +393,7 @@ pub fn open_dashboard(app: &AppHandle) {
             eprintln!("Could not open the dashboard: {error}");
         }
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
     {
         show_window(app);
         app.state::<GatewayOperationQueue>().submit_connect();
