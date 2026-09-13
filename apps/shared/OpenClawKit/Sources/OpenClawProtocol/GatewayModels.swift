@@ -14322,6 +14322,66 @@ public struct SessionSharingIdentity: Codable, Sendable {
     }
 }
 
+public struct SessionStatusMatchedRun: Codable, Sendable {
+    public let runid: String
+    public let status: AnyCodable
+    public let endedat: Double?
+
+    public init(
+        runid: String,
+        status: AnyCodable,
+        endedat: Double? = nil)
+    {
+        self.runid = runid
+        self.status = status
+        self.endedat = endedat
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case runid = "runId"
+        case status
+        case endedat = "endedAt"
+    }
+}
+
+public struct SessionStatus: Codable, Sendable {
+    public let key: String
+    public let agentid: String
+    public let sessionid: String
+    public let status: AnyCodable?
+    public let hasactiverun: Bool
+    public let updatedat: Double?
+    public let matchedrun: AnyCodable
+
+    public init(
+        key: String,
+        agentid: String,
+        sessionid: String,
+        status: AnyCodable? = nil,
+        hasactiverun: Bool,
+        updatedat: Double? = nil,
+        matchedrun: AnyCodable)
+    {
+        self.key = key
+        self.agentid = agentid
+        self.sessionid = sessionid
+        self.status = status
+        self.hasactiverun = hasactiverun
+        self.updatedat = updatedat
+        self.matchedrun = matchedrun
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case key
+        case agentid = "agentId"
+        case sessionid = "sessionId"
+        case status
+        case hasactiverun = "hasActiveRun"
+        case updatedat = "updatedAt"
+        case matchedrun = "matchedRun"
+    }
+}
+
 public struct SessionSuggestionEvent: Codable, Sendable {
     public let action: SessionSuggestionAction
     public let suggestion: SessionSuggestion
@@ -17006,6 +17066,50 @@ public struct SessionsSendParams: Codable, Sendable {
         case attachments
         case timeoutms = "timeoutMs"
         case idempotencykey = "idempotencyKey"
+    }
+}
+
+public struct SessionsStatusParams: Codable, Sendable {
+    public let key: String
+    public let agentid: String?
+    public let sessionid: String?
+    public let expectedrunid: String?
+
+    public init(
+        key: String,
+        agentid: String? = nil,
+        sessionid: String? = nil,
+        expectedrunid: String? = nil)
+    {
+        self.key = key
+        self.agentid = agentid
+        self.sessionid = sessionid
+        self.expectedrunid = expectedrunid
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case key
+        case agentid = "agentId"
+        case sessionid = "sessionId"
+        case expectedrunid = "expectedRunId"
+    }
+}
+
+public struct SessionsStatusResult: Codable, Sendable {
+    public let observedat: Double
+    public let session: AnyCodable
+
+    public init(
+        observedat: Double,
+        session: AnyCodable)
+    {
+        self.observedat = observedat
+        self.session = session
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case observedat = "observedAt"
+        case session
     }
 }
 
