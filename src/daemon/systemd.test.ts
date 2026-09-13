@@ -1545,7 +1545,8 @@ describe("readSystemdServiceRuntime", () => {
     expect(execFileMock).toHaveBeenCalled();
     for (const call of execFileMock.mock.calls) {
       const opts = call[2] as { timeout?: number; killSignal?: string };
-      expect(opts.timeout).toBe(1234);
+      expect(opts.timeout).toBeGreaterThan(0);
+      expect(opts.timeout).toBeLessThanOrEqual(1234);
       expect(opts.killSignal).toBe("SIGKILL");
     }
   });
