@@ -104,7 +104,12 @@ export async function updateFinalizeCommand(
         withUpdateInProgressEnv(invocationCwd, async () => {
           try {
             const prepared = await lifecycle.run("targetConfigValidation", () =>
-              prepareUpdateFinalization(opts, root, requestedChannel),
+              prepareUpdateFinalization(
+                opts,
+                root,
+                requestedChannel,
+                lifecycle.budget("targetConfigValidation"),
+              ),
             );
             await updateFinalizeCommandInternal(opts, prepared, lifecycle, recoveryRunIds);
           } catch (error) {
@@ -130,6 +135,7 @@ async function prepareUpdateFinalization(
   opts: UpdateFinalizeOptions,
   root: string,
   requestedChannel: UpdateChannel | null,
+  timeoutMs: number,
 ) {
   await assertOpenClawStateWriteAllowedAtPath({
     databasePath: resolveOpenClawStateSqlitePath(process.env),
@@ -149,7 +155,7 @@ async function prepareUpdateFinalization(
         }
       : undefined);
   if (requestedChannel === "extended-stable") {
-    const installKind = await resolveUpdateInstallKind(root);
+    const installKind = await resolveUpdateInstallKind(root, { timeoutMs });
     if (installKind === "git") {
       await reportPreMutationUpdateResult({
         root,
@@ -205,7 +211,9 @@ async function updateFinalizeCommandInternal(
     lifecycle.recordWarnings(doctorWarnings);
   };
 
-  if ((await resolveUpdateInstallKind(root)) === "git") {
+  if (
+    (await resolveUpdateInstallKind(root, { timeoutMs: lifecycle.budget("plugins") })) === "git"
+  ) {
     await withPluginLifecycleLease({}, async (lease) => {
       await completeSourceUpdateRuntime({ root, timeoutMs: lifecycle.budget("plugins"), lease });
     });

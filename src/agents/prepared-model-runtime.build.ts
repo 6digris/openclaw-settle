@@ -19,10 +19,10 @@ import {
   PreparedModelRuntimePublicationSupersededError,
 } from "./prepared-model-runtime.errors.js";
 import {
+  fingerprintPreparedRuntimeFacts,
   prepareConfiguredRuntimeFactsBatch,
   prepareWorkspaceBuildGroup,
 } from "./prepared-model-runtime.facts.js";
-import { fingerprintPreparedRuntimeFacts } from "./prepared-model-runtime.fingerprint.js";
 import {
   createPreparedModelRuntimeSnapshot,
   prepareFullCatalogFacts,

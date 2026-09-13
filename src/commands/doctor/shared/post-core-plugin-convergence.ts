@@ -76,7 +76,7 @@ function smokeFailureGuidance(failure: PluginPayloadSmokeFailure): string[] {
 async function repairInstalledNpmOpenClawHostLinks(params: {
   env: NodeJS.ProcessEnv;
   installRecords: Record<string, PluginInstallRecord>;
-  beforePersistentEffect?: () => void | Promise<void>;
+  beforePersistentEffect?: (destination?: string) => void | Promise<void>;
 }): Promise<{
   changes: string[];
   warnings: PostCoreConvergenceWarning[];
@@ -85,12 +85,12 @@ async function repairInstalledNpmOpenClawHostLinks(params: {
   const packageReadFailures: Array<{ error: unknown; packageDir: string }> = [];
   let effectFailure: { error: unknown } | undefined;
   const beforePersistentEffect = params.beforePersistentEffect
-    ? async () => {
+    ? async (destination?: string) => {
         if (effectFailure) {
           throw effectFailure.error;
         }
         try {
-          await params.beforePersistentEffect?.();
+          await params.beforePersistentEffect?.(destination);
         } catch (error) {
           effectFailure ??= { error };
           throw effectFailure.error;
@@ -198,7 +198,7 @@ export async function runPostCorePluginConvergence(params: {
    */
   baselineInstallRecords?: Record<string, PluginInstallRecord>;
   onCapabilityConsent?: PluginCapabilityConsentHandler;
-  beforePersistentEffect?: () => void | Promise<void>;
+  beforePersistentEffect?: (destination?: string) => void | Promise<void>;
 }): Promise<PostCoreConvergenceResult> {
   const env: NodeJS.ProcessEnv = {
     ...params.env,

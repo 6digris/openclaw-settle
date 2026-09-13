@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
-import { fingerprintPreparedModelWorkerRequest } from "./prepared-model-catalog-worker-contract.js";
-import { createPreparedModelCatalogWorkerInput } from "./prepared-model-catalog-worker.js";
+import {
+  createPreparedModelCatalogWorkerInput,
+  fingerprintPreparedModelWorkerRequest,
+} from "./prepared-model-catalog-worker.js";
 import type { PreparedModelRuntimeAgentFacts } from "./prepared-model-runtime.catalog-contract.js";
 
 describe("prepared model catalog worker input", () => {

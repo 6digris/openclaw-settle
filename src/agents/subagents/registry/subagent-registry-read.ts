@@ -131,7 +131,7 @@ export function resolveRequesterForChildSession(childSessionKey: string): {
   requesterOrigin?: DeliveryContext;
 } | null {
   const resolved = resolveRequesterForChildSessionFromRuns(
-    getSubagentRunsSnapshotForRead(subagentRuns),
+    getSubagentRunsSnapshotForChildSession(subagentRuns, childSessionKey),
     childSessionKey,
   );
   if (!resolved) {
@@ -147,7 +147,7 @@ export function resolveRequesterForChildSession(childSessionKey: string): {
 /** True when post-completion announce should be skipped for a child session. */
 export function shouldIgnorePostCompletionAnnounceForSession(childSessionKey: string): boolean {
   return shouldIgnorePostCompletionAnnounceForSessionFromRuns(
-    getSubagentRunsSnapshotForRead(subagentRuns),
+    getSubagentRunsSnapshotForChildSession(subagentRuns, childSessionKey),
     childSessionKey,
   );
 }
@@ -210,29 +210,6 @@ export function isSubagentRunQueued(entry: SubagentRunReadRecord | null | undefi
     current.collect &&
     current.execution.status === "queued" &&
     ownsSwarmRunReservation(current.schedulerSlotId ?? current.runId, current),
-  );
-}
-
-/** Returns the run to display for a child session, using live memory before snapshot state. */
-export function getSessionDisplaySubagentRunByChildSessionKey(
-  childSessionKey: string,
-): SubagentRunRecord | null {
-  const key = childSessionKey.trim();
-  if (!key) {
-    return null;
-  }
-
-  const latestInMemory = getLatestSubagentRunByChildSessionKeyFromRuns(
-    getSubagentRunsForChildSession(key),
-    key,
-  );
-  // Fresh in-memory terminal state is more accurate than an older active snapshot row.
-  return (
-    latestInMemory ??
-    getSubagentRunByChildSessionKeyFromRuns(
-      getSubagentRunsSnapshotForChildSession(subagentRuns, key),
-      key,
-    )
   );
 }
 

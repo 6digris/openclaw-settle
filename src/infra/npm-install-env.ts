@@ -4,6 +4,11 @@ import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
+import { UPDATE_NETWORK_TIMEOUT_MS } from "./update-network-budget.js";
+import {
+  isUpdateRehearsalReadOnlyPath,
+  resolveUpdateRehearsalRoot,
+} from "./update-rehearsal-paths.js";
 
 /** Options that scope npm config and cache paths for project-local installs. */
 export type NpmProjectInstallEnvOptions = {
@@ -11,6 +16,21 @@ export type NpmProjectInstallEnvOptions = {
   npmConfigCwd?: string;
   npmConfigPrefix?: string | null;
 };
+
+/** Pin real npm children to the complete released driver's private namespace. */
+export function resolveUpdateRehearsalNpmCacheEnv(): NodeJS.ProcessEnv {
+  // The command runner inherits process.env, not a convergence caller's derived env.
+  // Recognize the original complete contract at this shared npm environment owner.
+  const root = resolveUpdateRehearsalRoot(process.env);
+  if (!root) {
+    return {};
+  }
+  const cacheDir = path.join(root, "cache", "npm");
+  if (isUpdateRehearsalReadOnlyPath(cacheDir, process.env)) {
+    throw new Error(`npm cache escapes the update rehearsal: ${cacheDir}`);
+  }
+  return { npm_config_cache: cacheDir, NPM_CONFIG_CACHE: cacheDir };
+}
 
 const NPM_CONFIG_SCRIPT_SHELL_KEYS = ["NPM_CONFIG_SCRIPT_SHELL", "npm_config_script_shell"];
 
@@ -312,12 +332,13 @@ export function createNpmProjectInstallEnv(
     npm_config_fetch_retries: nextEnv.npm_config_fetch_retries ?? "5",
     npm_config_fetch_retry_maxtimeout: nextEnv.npm_config_fetch_retry_maxtimeout ?? "120000",
     npm_config_fetch_retry_mintimeout: nextEnv.npm_config_fetch_retry_mintimeout ?? "10000",
-    npm_config_fetch_timeout: nextEnv.npm_config_fetch_timeout ?? "300000",
+    npm_config_fetch_timeout: nextEnv.npm_config_fetch_timeout ?? String(UPDATE_NETWORK_TIMEOUT_MS),
     npm_config_global: "false",
     npm_config_location: "project",
     npm_config_package_lock: "false",
     npm_config_save: "false",
     ...(options.cacheDir ? { npm_config_cache: options.cacheDir } : {}),
+    ...resolveUpdateRehearsalNpmCacheEnv(),
   };
   applyNpmFreshnessBypassEnv(installEnv, now, options);
   applyPosixNpmScriptShellEnv(installEnv);

@@ -3,8 +3,10 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { parseModelCatalogRef } from "@openclaw/model-catalog-core/model-catalog-refs";
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
+import { stableStringify } from "@openclaw/normalization-core";
 import type { Result } from "@openclaw/normalization-core/result";
 import { projectConfigOntoRuntimeSourceSnapshot } from "../config/runtime-source-projection.js";
+import { sha256Base64Url } from "../infra/crypto-digest.js";
 import { prepareMediaCapabilityProviders } from "../plugins/capability-provider-runtime.js";
 import { normalizePluginsConfig } from "../plugins/config-state.js";
 import { getPluginMetadataSnapshotCache, retainPluginCache } from "../plugins/plugin-cache.js";
@@ -36,6 +38,7 @@ import {
   loadBundledProviderStaticCatalogContextModels,
 } from "./embedded-agent-runner/model.static-catalog.js";
 import { createStaticModelIdMatcher } from "./embedded-agent-runner/model.static-id.js";
+import type { RuntimePluginLoadPurpose } from "./harness/runtime-plugin-load-plan.js";
 import { modelCatalogRowToEntry } from "./model-catalog-entry.js";
 import {
   buildConfiguredModelCatalog,
@@ -62,7 +65,6 @@ import {
   prepareConfiguredRuntimeModels,
   prepareRuntimeCapabilityModels,
 } from "./prepared-model-runtime.configured.js";
-import { fingerprintPreparedRuntimeFacts } from "./prepared-model-runtime.fingerprint.js";
 import {
   prepareWorkspacePluginRegistries,
   type PreparedInboundRegistryLoader,
@@ -162,6 +164,7 @@ export async function prepareWorkspaceBuildGroup(
     basePluginIds?: readonly string[];
     onStage?: (stage: string) => void;
     registryResources?: PreparedModelRuntimeBuildResources;
+    purpose?: RuntimePluginLoadPurpose;
   } = {},
   loadInboundPluginRegistry?: PreparedInboundRegistryLoader,
   reusablePluginGeneration?: PreparedModelRuntimePluginGeneration,
@@ -214,6 +217,7 @@ export async function prepareWorkspaceBuildGroup(
     options.getConfiguredHarnessRuntimes,
     options.basePluginIds,
     options.registryResources,
+    options.purpose,
   );
   const { inboundPluginRegistry, runtimePluginRegistry, primaryRegistry } =
     preparingRegistries instanceof Promise ? await preparingRegistries : preparingRegistries;
@@ -572,6 +576,8 @@ export function captureModelsJsonContents(agentDir: string): string | null {
     throw error;
   }
 }
+export const fingerprintPreparedRuntimeFacts = (value: unknown): string =>
+  sha256Base64Url(stableStringify(value));
 
 /** Record discovery scope before config projection or auth-owner publication can replace it. */
 export function preparedModelInventoryKey(input: PreparedModelRuntimeInput): string {

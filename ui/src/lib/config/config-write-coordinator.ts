@@ -163,6 +163,7 @@ export function createConfigWriteCoordinator({
   // Stale bases and previous connections require explicit recovery, including teardown.
   const canAutoSaveDraft = () =>
     state.configAutoSaveStatus !== "conflict" &&
+    state.configRecoveryError === null &&
     !autoSaveRequiresExplicitSubmit &&
     autoSaveDraftConnection !== null &&
     autoSaveDraftConnection.client === state.client &&
@@ -321,8 +322,7 @@ export function createConfigWriteCoordinator({
       }
     }
   };
-  // Discard barrier shared by discardDraft and refresh({discardPendingChanges}):
-  // settle pending writes with trailing saves suppressed so a late completion
+  // Settle pending writes with trailing saves suppressed so a late completion
   // cannot trail the just-discarded bytes back to disk.
   const drainWritesForDiscard = async (): Promise<void> => {
     cancelScheduledAutoSave();
@@ -342,11 +342,11 @@ export function createConfigWriteCoordinator({
   let explicitOpQueue: Promise<unknown> | null = null;
   const afterPendingWritesSettled = <T>(
     task: (onSubmitted: ConfigSubmissionObserver) => Promise<T>,
-    unavailable: T,
+    unavailable: (recoveryError?: string) => T,
     options: { flushScheduledDraft?: boolean; canDispatch?: () => boolean } = {},
   ): Promise<T> => {
     if (writesSuspended && !refreshWriteAdmission) {
-      return Promise.resolve(unavailable);
+      return Promise.resolve(unavailable());
     }
     const client = state.client;
     const connectionEpoch = currentConfigConnectionEpoch(state);
@@ -377,16 +377,14 @@ export function createConfigWriteCoordinator({
         }
         // The updater may have started while we drained; suspension must be a
         // real barrier or an apply could restart the gateway mid-update.
-        if (writesSuspended || isDisposed()) {
-          return unavailable;
-        }
-        if (!client || !isCurrentConfigConnection(state, client, connectionEpoch)) {
-          return unavailable;
+        const connected = client && isCurrentConfigConnection(state, client, connectionEpoch);
+        if (writesSuspended || isDisposed() || !connected) {
+          return unavailable();
         }
         // Hello method/scope metadata can change while the client and
         // connection epoch stay stable. Recheck at the dispatch boundary.
-        if (options.canDispatch && !options.canDispatch()) {
-          return unavailable;
+        if (state.configRecoveryError !== null || options.canDispatch?.() === false) {
+          return unavailable(state.configRecoveryError ?? undefined);
         }
         return await trackWrite(task);
       });
@@ -523,7 +521,7 @@ export function createConfigWriteCoordinator({
     state,
     reconcileDraft: reconcileAutoSaveDraftConnection,
     dispatch: (task) =>
-      afterPendingWritesSettled(task, false, {
+      afterPendingWritesSettled(task, () => false, {
         flushScheduledDraft: true,
         canDispatch: () => canDispatchConfigMutation("config.patch"),
       }),
@@ -537,18 +535,10 @@ export function createConfigWriteCoordinator({
     scheduleAutoSave();
   };
   const writes: ConfigWriteCoordinator = {
-    prepareDiscard: drainWritesForDiscard,
     patchForm: (path, value) => mutateDraft(() => updateConfigFormValue(state, path, value)),
     removeFormValue: (path) => mutateDraft(() => removeConfigFormValue(state, path)),
     setRaw: (value) => mutateDraft(() => updateConfigRawValue(state, value)),
-    resetDraft: () => {
-      patches.clear();
-      cancelScheduledAutoSave();
-      mutate(() => resetConfigPendingChanges(state));
-      clearAutoSaveDraftConnection();
-      reconcileAppliedRefresh();
-    },
-    discardDraft: async () => {
+    discardDraft: async (options) => {
       // Settle pending writes first (with trailing saves suppressed — the
       // draft is being thrown away, not re-written) so a late ack cannot
       // re-dirty or trail-write over the discard.
@@ -556,14 +546,17 @@ export function createConfigWriteCoordinator({
       if (state.connected && state.client) {
         cancelAppliedRefresh();
         try {
-          await trackLoad(
-            "config",
-            run(() => loadConfig(state, { discardPendingChanges: true })),
-          );
-          clearAutoSaveDraftConnection();
+          const loaded = run(() => loadConfig(state, { discardPendingChanges: true }));
+          await trackLoad("config", loaded);
+          if (await loaded) {
+            clearAutoSaveDraftConnection();
+          }
         } finally {
           reconcileAppliedRefresh();
         }
+        return;
+      }
+      if (options?.reloadOnly || state.configRecoveryError !== null) {
         return;
       }
       // Offline: a network refresh would silently no-op and strand the
@@ -633,7 +626,7 @@ export function createConfigWriteCoordinator({
                 reconcileAppliedRefresh();
               }
             },
-            false,
+            () => false,
             { canDispatch },
           );
     },
@@ -669,7 +662,7 @@ export function createConfigWriteCoordinator({
                 reconcileAppliedRefresh();
               }
             },
-            false,
+            () => false,
             { canDispatch: () => canDispatchConfigMutation("config.apply") },
           ),
     stageDefaultAgent: (agentId) => {
@@ -713,13 +706,6 @@ export function createConfigWriteCoordinator({
             await writesResumedPromise;
           }
         }
-        const unavailable: RuntimeConfigExternalMutationResult<T> = {
-          ok: false,
-          reason: writesSuspended ? "suspended" : "unavailable",
-          error: writesSuspended
-            ? "Configuration writes are temporarily suspended."
-            : "Configuration is unavailable; reconnect and try again.",
-        };
         if (
           !mutationClient ||
           !isCurrentConfigConnection(state, mutationClient, mutationConnectionEpoch)
@@ -745,7 +731,15 @@ export function createConfigWriteCoordinator({
               },
               onSubmitted,
             ),
-          unavailable,
+          (recoveryError) => ({
+            ok: false,
+            reason: writesSuspended ? "suspended" : "unavailable",
+            error:
+              recoveryError ??
+              (writesSuspended
+                ? "Configuration writes are temporarily suspended."
+                : "Configuration is unavailable; reconnect and try again."),
+          }),
           { flushScheduledDraft: true },
         );
         if (

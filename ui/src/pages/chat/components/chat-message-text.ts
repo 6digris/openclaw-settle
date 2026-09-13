@@ -119,12 +119,11 @@ function userMessageOverflowRef(expanded: boolean) {
       if (!disclosure || !toggle) {
         return;
       }
-      const overflowing = expanded || element.scrollHeight > element.clientHeight + 1;
-      disclosure.classList.toggle("has-overflow", overflowing);
-      toggle.hidden = !overflowing;
+      toggle.hidden = !expanded && element.scrollHeight <= element.clientHeight + 1;
     };
     // Lit resolves refs while siblings are still committing. Measure after the
-    // toggle exists so wrapped text can reveal its own disclosure control.
+    // toggle exists; it renders visible so collapsing never shifts row height,
+    // and only content that fits the clamp hides it.
     queueMicrotask(update);
     if (typeof ResizeObserver === "function") {
       resizeObserver = new ResizeObserver(update);
@@ -186,19 +185,18 @@ export function renderMessageMarkdown(
   const disclosureId = `user-message:${messageKey}`;
   const expanded = opts.isUserMessageExpanded?.(disclosureId) ?? false;
   return html`
-    <div class="chat-message-disclosure ${expanded ? "is-expanded has-overflow" : ""}">
+    <div class="chat-message-disclosure ${expanded ? "is-expanded" : ""}">
       <div class="chat-message-disclosure__content" ${ref(userMessageOverflowRef(expanded))}>
         ${text}
       </div>
       <button
         class="chat-message-disclosure__toggle"
         type="button"
-        ?hidden=${!expanded}
-        aria-label=${t(expanded ? "chat.messages.showLess" : "chat.messages.showMore")}
         aria-expanded=${String(expanded)}
         @click=${() => opts.onToggleUserMessageExpanded?.(disclosureId)}
       >
-        ${expanded ? icons.chevronDown : icons.chevronRight}
+        ${t(expanded ? "chat.messages.showLess" : "chat.messages.showMore")}
+        ${expanded ? icons.chevronUp : icons.chevronDown}
       </button>
     </div>
   `;

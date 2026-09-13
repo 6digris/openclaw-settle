@@ -352,17 +352,18 @@ export async function renderPluginSdkApiBaseline(params?: {
     }),
   );
 
-  const uniqueSections = new Map<string, PluginSdkApiDeclarationSection>();
-  // Do not retain a flattened array of every repeated closure key. Many public
-  // exports share large declarations; deduplicate each section as it is visited.
-  for (const moduleSurface of modules) {
-    for (const exportSurface of moduleSurface.exports) {
-      for (const section of exportSurface.closureSections ?? []) {
-        uniqueSections.set(`${section.name}\0${section.text}`, section);
-      }
-    }
-  }
-  const declarationSections = [...uniqueSections.values()].toSorted(
+  const declarationSections = [
+    ...new Map(
+      modules.flatMap((moduleSurface) =>
+        moduleSurface.exports.flatMap((exportSurface) =>
+          (exportSurface.closureSections ?? []).map((section) => [
+            `${section.name}\0${section.text}`,
+            section,
+          ]),
+        ),
+      ),
+    ).values(),
+  ].toSorted(
     (left, right) => compareText(left.name, right.name) || compareText(left.text, right.text),
   );
   const sectionIds = new Map(

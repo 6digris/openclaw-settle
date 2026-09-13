@@ -22,6 +22,7 @@ import {
   createUpdateFailureFact,
   normalizeUpdateFailureFacts,
 } from "../infra/update-failure-facts.js";
+import { resolveUpdateRehearsalRoot } from "../infra/update-rehearsal-paths.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
@@ -126,9 +127,10 @@ async function runDoctorHealthFlowWithResult(
   let exitCode: number | undefined;
   let doctorResult: UpdatePostInstallDoctorResult = { status: "error" };
   try {
-    if (shouldDeferConfiguredPluginInstallRepair(process.env)) {
-      // Shipped parents use these same flags for private rehearsal. Pure config
-      // aliases can be repaired there, but plugin/state inputs must survive.
+    const rehearsalRoot = resolveUpdateRehearsalRoot(process.env);
+    if (shouldDeferConfiguredPluginInstallRepair(process.env) && !rehearsalRoot) {
+      // Live shipped parents resume with old in-memory plugin records. Only
+      // independent aliases may change before their post-core handoff.
       if (options.repair === true || options.yes === true) {
         const { repairDoctorConfigBeforePluginConvergence } =
           await import("../commands/doctor/shared/automatic-startup-config-repair.js");
@@ -145,6 +147,11 @@ async function runDoctorHealthFlowWithResult(
         exitCode = UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE;
       }
       return;
+    }
+    if (rehearsalRoot) {
+      const { createDoctorRehearsalWriteGuard } =
+        await import("../commands/doctor/shared/rehearsal-write-scope.js");
+      createDoctorRehearsalWriteGuard(process.env)?.();
     }
     const { beginDoctorMaintenance } = await import("../commands/doctor-maintenance.js");
     maintenance = await beginDoctorMaintenance({ options, root, runtime: effectiveRuntime });
@@ -294,7 +301,11 @@ async function runDoctorHealthFlowWithResult(
     await maintenance?.finish(ctx.cfg);
     const warnings = normalizeUpdatePostInstallDoctorWarnings([
       ...(ctx.configResult.stateMigrationStepReceipts ?? []).flatMap((receipt) =>
-        receipt.outcome === "warning" || receipt.outcome === "skipped" ? receipt.warnings : [],
+        receipt.outcome === "warning" ||
+        receipt.outcome === "skipped" ||
+        receipt.outcome === "deferred"
+          ? receipt.warnings
+          : [],
       ),
       ...(ctx.postInstallDoctorResult?.warnings ?? []),
       ...(ctx.updateWarnings ?? []),

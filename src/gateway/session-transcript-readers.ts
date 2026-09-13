@@ -6,7 +6,6 @@ import {
   readRecentSessionTranscriptMessageEvents,
   readSessionTranscriptMessageEvents,
   resolveConcreteSessionStorePath,
-  resolveSessionTranscriptReadTarget,
   waitForSessionTranscriptProjection,
   type SessionTranscriptMessageEvent,
   type SessionTranscriptReadScope,
@@ -20,11 +19,22 @@ import {
   readSessionTranscriptHistoryEventLookup,
   readSessionTranscriptHistoryEventPage,
   readSessionTranscriptHistoryEvents,
+  type SessionTranscriptMessageByIdOptions,
 } from "../config/sessions/session-accessor.sqlite-history-events.js";
 import { readRestoredSessionTranscript } from "../config/sessions/session-cold-storage-read.js";
 import { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
+import type { TranscriptRecentReadLimits } from "../sessions/transcript-anchor-page.js";
+import type {
+  TranscriptReadWindow,
+  TranscriptReadWindowOptions,
+} from "../sessions/transcript-read-window.js";
 import { aggregateSessionTranscriptUsage } from "./session-transcript-derived-readers.js";
 import { projectTranscriptEntryMessage } from "./session-transcript-message.js";
+import {
+  resolveTranscriptReadTarget,
+  toTranscriptReadScope,
+  type ResolvedTranscriptReadTarget,
+} from "./session-transcript-read-target.js";
 import type {
   ReadRecentSessionMessagesOptions,
   ReadSessionMessagesAsyncOptions,
@@ -50,6 +60,7 @@ export type ReadRecentSessionMessagesResult = {
   activeLeafEntryId?: string | null;
   deltaCursor?: string;
   displaySource?: string;
+  readWindow?: TranscriptReadWindow;
   messages: unknown[];
   transcriptEvents?: TranscriptEvent[];
   transcriptPath?: string;
@@ -67,39 +78,8 @@ type ReadSessionMessageByIdResult = {
   seq?: number;
   oversized: boolean;
   found: boolean;
+  serializedBytes?: number;
 };
-
-export type ResolvedTranscriptReadTarget = {
-  agentId?: string;
-  sessionFile: string;
-  sessionId: string;
-  sessionKey?: string;
-  storePath?: string;
-};
-
-export function resolveTranscriptReadTarget(
-  scope: SessionTranscriptReadScope,
-): ResolvedTranscriptReadTarget {
-  const target = resolveSessionTranscriptReadTarget(scope);
-  return {
-    agentId: target.agentId,
-    sessionFile: target.sessionKey ?? target.sessionId,
-    sessionId: target.sessionId,
-    ...(target.sessionKey ? { sessionKey: target.sessionKey } : {}),
-    storePath: target.storePath,
-  };
-}
-
-export function toTranscriptReadScope(
-  target: ResolvedTranscriptReadTarget,
-): SessionTranscriptReadScope {
-  return {
-    ...(target.agentId ? { agentId: target.agentId } : {}),
-    sessionId: target.sessionId,
-    ...(target.sessionKey ? { sessionKey: target.sessionKey } : {}),
-    ...(target.storePath ? { storePath: target.storePath } : {}),
-  };
-}
 
 function archivedTranscriptReader(target: ResolvedTranscriptReadTarget): ArchivedTranscriptReader {
   return new ArchivedTranscriptReader({
@@ -114,13 +94,19 @@ function extractMessagePayloads(entries: readonly SessionTranscriptMessageEvent[
 }
 
 function projectSqliteHistoryEvents(entries: readonly SessionTranscriptMessageEvent[]): unknown[] {
-  return entries.flatMap((entry) => {
+  const messages: unknown[] = [];
+  for (const entry of entries) {
     const message = projectTranscriptEntryMessage(entry.event, entry.seq, entry.displayPosition);
-    return message ? [message] : [];
-  });
+    if (message) {
+      messages.push(message);
+    }
+  }
+  return messages;
 }
 
-function normalizeRecentSqliteReadOptions(opts?: Partial<ReadRecentSessionMessagesOptions>) {
+function normalizeRecentSqliteReadOptions(
+  opts?: Partial<ReadRecentSessionMessagesOptions> & TranscriptReadWindowOptions,
+) {
   const maxMessages = Math.max(0, Math.floor(opts?.maxMessages ?? 0));
   const maxBytes =
     typeof opts?.maxBytes === "number" && Number.isFinite(opts.maxBytes)
@@ -131,16 +117,23 @@ function normalizeRecentSqliteReadOptions(opts?: Partial<ReadRecentSessionMessag
     typeof opts?.maxLines === "number" && Number.isFinite(opts.maxLines)
       ? Math.max(maxMessages, Math.floor(opts.maxLines))
       : defaultMaxLines;
-  return { maxMessages, maxBytes, maxLines };
+  return {
+    maxMessages,
+    maxBytes,
+    maxLines,
+    captureReadWindow: opts?.captureReadWindow,
+    expectedReadWindow: opts?.expectedReadWindow,
+  };
 }
 
 function readRecentSqliteMessageRecords(
   target: ResolvedTranscriptReadTarget,
-  opts?: Partial<ReadRecentSessionMessagesOptions>,
+  opts?: Partial<ReadRecentSessionMessagesOptions> & TranscriptReadWindowOptions,
 ): {
   activeLeafEntryId?: string | null;
   deltaCursor?: string;
   displaySource?: string;
+  readWindow?: TranscriptReadWindow;
   messages: unknown[];
   totalMessages: number;
 } {
@@ -152,15 +145,10 @@ function readRecentSqliteMessageRecords(
       : {}),
     ...(page.deltaCursor ? { deltaCursor: page.deltaCursor } : {}),
     displaySource: page.displaySource,
+    ...(page.readWindow ? { readWindow: page.readWindow } : {}),
     messages: projectSqliteHistoryEvents(page.events),
     totalMessages: page.totalMessages,
   };
-}
-
-export function sqliteMessageEventWithSeq(
-  entry: Pick<SessionTranscriptMessageEvent, "event" | "seq" | "displayPosition">,
-): unknown {
-  return projectTranscriptEntryMessage(entry.event, entry.seq, entry.displayPosition);
 }
 
 function buildSqlitePreviewItems(
@@ -254,11 +242,11 @@ export async function readSessionMessagesWithSourceAsync(
 export async function readSessionMessageByIdAsync(
   scope: SessionTranscriptReadScope,
   messageId: string,
-  opts?: { allowResetArchiveFallback?: boolean },
+  opts?: SessionTranscriptMessageByIdOptions & { allowResetArchiveFallback?: boolean },
 ): Promise<ReadSessionMessageByIdResult> {
   const target = resolveTranscriptReadTarget(scope);
   const foundEvent = await readRestoredSessionTranscript(toTranscriptReadScope(target), () =>
-    readSessionTranscriptHistoryEventById(toTranscriptReadScope(target), messageId),
+    readSessionTranscriptHistoryEventById(toTranscriptReadScope(target), messageId, opts),
   );
   if (foundEvent) {
     return {
@@ -270,9 +258,12 @@ export async function readSessionMessageByIdAsync(
       ),
       oversized: false,
       seq: foundEvent.seq,
+      ...(foundEvent.serializedBytes !== undefined
+        ? { serializedBytes: foundEvent.serializedBytes }
+        : {}),
     };
   }
-  if (opts?.allowResetArchiveFallback === true) {
+  if (opts?.allowResetArchiveFallback === true && !opts.currentOnly) {
     return await archivedTranscriptReader(target).readById(messageId, {
       ...opts,
       resetArchiveOnly: true,
@@ -346,10 +337,10 @@ export async function readSessionMessageCountAsync(
 /** Reads recent messages with total-count metadata asynchronously through the reader seam. */
 export async function readRecentSessionMessagesWithStatsAsync(
   scope: SessionTranscriptReadScope,
-  opts: ReadRecentSessionMessagesOptions,
+  opts: ReadRecentSessionMessagesOptions & TranscriptReadWindowOptions,
 ): Promise<ReadRecentSessionMessagesResult> {
   const target = resolveTranscriptReadTarget(scope);
-  const { activeLeafEntryId, deltaCursor, displaySource, messages, totalMessages } =
+  const { activeLeafEntryId, deltaCursor, displaySource, readWindow, messages, totalMessages } =
     await readRestoredSessionTranscript(toTranscriptReadScope(target), () =>
       readRecentSqliteMessageRecords(target, opts),
     );
@@ -363,6 +354,7 @@ export async function readRecentSessionMessagesWithStatsAsync(
     ...(activeLeafEntryId !== undefined ? { activeLeafEntryId } : {}),
     ...(deltaCursor ? { deltaCursor } : {}),
     displaySource,
+    ...(readWindow ? { readWindow } : {}),
     messages,
     totalMessages,
     transcriptPath: target.sessionFile,
@@ -373,9 +365,11 @@ export async function readRecentSessionMessagesWithStatsAsync(
 /** Reads one offset page with total-count metadata through the reader seam. */
 export async function readSessionMessagesPageWithStatsAsync(
   scope: SessionTranscriptReadScope,
-  opts: {
+  opts: TranscriptReadWindowOptions & {
     offset: number;
     maxMessages: number;
+    beforeSeq?: number;
+    recentAtHead?: TranscriptRecentReadLimits;
     maxBytes?: number;
     allowResetArchiveFallback?: boolean;
   },
@@ -392,9 +386,11 @@ export async function readSessionMessagesPageWithStatsAsync(
       ? { activeLeafEntryId: page.activeLeafEntryId }
       : {}),
     ...(page.olderOffset !== undefined ? { olderOffset: page.olderOffset } : {}),
+    ...(page.deltaCursor ? { deltaCursor: page.deltaCursor } : {}),
     ...(page.omittedOversized ? { omittedOversized: true } : {}),
     messages: projectSqliteHistoryEvents(page.events),
     displaySource: page.displaySource,
+    ...(page.readWindow ? { readWindow: page.readWindow } : {}),
     totalMessages: page.totalMessages,
     transcriptPath: target.sessionFile,
     transcriptSource: "active",

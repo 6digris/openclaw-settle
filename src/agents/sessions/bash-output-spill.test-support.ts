@@ -1,4 +1,4 @@
-import { appendFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, vi } from "vitest";
@@ -60,23 +60,15 @@ import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
-const { root, tracePath, entrypoint, scenario, toolUrl, operationsUrl, executorUrl } = fixture;
+const { root, tracePath, entrypoint, scenario, toolUrl, executorUrl } = fixture;
 let traceCount = 0;
 function trace(phase, fields = {}) {
   const line = JSON.stringify({ actor: "runner", phase, at: Date.now(), ...fields }) + "\n";
   assert(++traceCount <= 32 && Buffer.byteLength(line) <= 512, "runner trace exceeded bound");
   fs.appendFileSync(tracePath, line);
 }
-trace("entry", { pid: process.pid, ppid: process.ppid });
-trace("operations-import-started");
-const { createLocalBashOperations } = await import(operationsUrl);
-trace("operations-import-completed");
-trace("tool-import-started", { required: entrypoint === "tool" });
-const { createBashTool } = entrypoint === "tool" ? await import(toolUrl) : {};
-trace("tool-import-completed");
-trace("executor-import-started");
+const { createBashTool, createLocalBashOperations } = await import(toolUrl);
 const { executeBashWithOperations } = await import(executorUrl);
-trace("executor-import-completed");
 trace("imports-ready");
 assert.equal(process.listenerCount("uncaughtException"), 0);
 assert.equal(process.listenerCount("unhandledRejection"), 0);
@@ -233,19 +225,9 @@ export async function expectNativeBashSpill(
       tracePath,
       entrypoint,
       scenario,
-      operationsUrl: new URL("./tools/bash-operations.ts", import.meta.url).href,
       toolUrl: new URL("./tools/bash.ts", import.meta.url).href,
       executorUrl: new URL("./bash-executor.ts", import.meta.url).href,
     };
-    await appendFile(
-      tracePath,
-      JSON.stringify({
-        actor: "parent",
-        phase: "spawn-started",
-        at: Date.now(),
-        pid: process.pid,
-      }) + "\n",
-    );
     const result = spawnNodeEvalSync(`const fixture = ${JSON.stringify(fixture)};\n${caseSource}`, {
       imports: ["tsx"],
       timeout: 20_000,
@@ -264,18 +246,6 @@ export async function expectNativeBashSpill(
       },
     });
     childResult = result;
-    await appendFile(
-      tracePath,
-      JSON.stringify({
-        actor: "parent",
-        phase: "child-exited",
-        at: Date.now(),
-        pid: result.pid,
-        status: result.status,
-        signal: result.signal,
-        error: result.error?.message.slice(0, 160),
-      }) + "\n",
-    );
     // The observed child is closed; release a surviving command before joining it.
     try {
       await writeFile(join(root, "release"), "release", { flag: "wx", mode: 0o600 });

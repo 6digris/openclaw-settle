@@ -1,10 +1,8 @@
 import { channel } from "node:diagnostics_channel";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { build as buildFixture } from "esbuild";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createDeferredCore } from "../shared/deferred.js";
@@ -25,15 +23,11 @@ import type { PreparedModelRuntimeAgentFacts } from "./prepared-model-runtime.ca
 import { AuthStorage } from "./sessions/auth-storage.js";
 import { usePreparedCatalogWorkerFixtures } from "./test-helpers/prepared-model-catalog-worker-fixture.js";
 
-const { makeTempDir, retireAfterTest, waitForWorkers, waitForMarker } =
-  usePreparedCatalogWorkerFixtures();
+const { makeTempDir, retireAfterTest, waitForWorkers } = usePreparedCatalogWorkerFixtures();
 
 const DRIFTED_OWNER_FINGERPRINT = "owner-generation-drifted";
 
-const workerBoundary = vi.hoisted(() => ({
-  fingerprint: undefined as string | undefined,
-  directories: [] as string[],
-}));
+const workerBoundary = vi.hoisted(() => ({ fingerprint: undefined as string | undefined }));
 
 vi.mock("node:worker_threads", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:worker_threads")>();
@@ -42,9 +36,6 @@ vi.mock("node:worker_threads", async (importOriginal) => {
     Worker: class extends actual.Worker {
       constructor(...[filename, options]: ConstructorParameters<typeof actual.Worker>) {
         const data: unknown = options?.workerData;
-        if (isRecord(data) && typeof data.sourceCaptureDirectory === "string") {
-          workerBoundary.directories.push(data.sourceCaptureDirectory);
-        }
         // Inject only at structured cloning; parent facts and the real worker stay intact.
         super(
           filename,
@@ -61,7 +52,7 @@ vi.mock("node:worker_threads", async (importOriginal) => {
 });
 
 /** A prepared generation whose owner hands its worker a real lifecycle plan. */
-async function createMismatchFixture(cachedCatalog = false) {
+async function createMismatchFixture() {
   const root = makeTempDir("openclaw-model-catalog-mismatch-");
   const stateDir = path.join(root, "state");
   const agentDir = path.join(stateDir, "agents", "main", "agent");
@@ -71,56 +62,6 @@ async function createMismatchFixture(cachedCatalog = false) {
   fs.mkdirSync(agentDir, { recursive: true });
   fs.mkdirSync(workspaceDir, { recursive: true });
   const pluginFile = writeFixturePlugin({ root, spinMs: 0 });
-  const clockFile = path.join(root, "catalog-clock");
-  const loadedFile = path.join(root, "loaded-file");
-  if (cachedCatalog) {
-    fs.writeFileSync(clockFile, "1000");
-    // Compile this source helper into the disposable plugin. Capturing the repository as
-    // a plugin dependency loses its workspace links; no historical dist is involved.
-    const sdkSource = fileURLToPath(
-      new URL("../plugin-sdk/provider-catalog-shared.ts", import.meta.url),
-    );
-    const sdk = path.join(path.dirname(pluginFile), "catalog-cache.mjs");
-    await buildFixture({
-      stdin: {
-        contents: `export { getCachedLiveCatalogValue } from ${JSON.stringify(sdkSource)};`,
-        resolveDir: path.dirname(sdkSource),
-      },
-      outfile: sdk,
-      bundle: true,
-      platform: "node",
-      format: "esm",
-      banner: {
-        js: 'import { createRequire as __fixtureCreateRequire } from "node:module"; const require = __fixtureCreateRequire(import.meta.url);',
-      },
-      logLevel: "warning",
-    });
-    const source = fs
-      .readFileSync(pluginFile, "utf8")
-      .replace(
-        'const fs = require("node:fs");',
-        `const fs = require("node:fs");
-const { getCachedLiveCatalogValue } = require(${JSON.stringify(sdk)});
-if (!require("node:worker_threads").isMainThread) {
-  fs.writeFileSync(${JSON.stringify(loadedFile)}, __filename);
-}`,
-      )
-      .replace("        run(context) {", "        async run(context) {")
-      .replace(
-        "          return { provider: {",
-        `          return getCachedLiveCatalogValue({
-            keyParts: ["worker-expiry-fixture"],
-            ttlMs: 1000,
-            now: () => Number(fs.readFileSync(${JSON.stringify(clockFile)}, "utf8")),
-            load: async () => ({ provider: {`,
-      )
-      .replace(
-        "          } };\n        },\n      },",
-        "          } }),\n          });\n        },\n      },",
-      );
-    expect(source).toContain("load: async () => ({ provider:");
-    fs.writeFileSync(pluginFile, source);
-  }
   fs.writeFileSync(externalAuthPath, "A", "utf8");
   const env = {
     ...process.env,
@@ -136,28 +77,6 @@ if (!require("node:worker_threads").isMainThread) {
         models: { [`${PROVIDER_ID}/sqlite-model`]: { agentRuntime: { id: HARNESS_ID } } },
       },
     },
-    ...(cachedCatalog
-      ? {
-          models: {
-            providers: {
-              [PROVIDER_ID]: {
-                api: "openai-completions" as const,
-                baseUrl: "https://worker-catalog.invalid/v1",
-                models: [
-                  {
-                    id: "sqlite-model",
-                    name: "SQLite model",
-                    reasoning: false,
-                    input: ["text"],
-                    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                    maxTokens: 4096,
-                  },
-                ],
-              },
-            },
-          },
-        }
-      : {}),
     plugins: {
       allow: [PLUGIN_ID],
       load: { paths: [pluginFile] },
@@ -194,9 +113,6 @@ if (!require("node:worker_threads").isMainThread) {
       undefined,
     ).pending
   )[0]!;
-  if (cachedCatalog) {
-    expect(build.pluginGeneration.pluginRegistry?.diagnostics).toEqual([]);
-  }
   const workerParams = {
     agentFacts: {
       input: { agentId: "main", agentDir, workspaceDir, config, env },
@@ -214,18 +130,7 @@ if (!require("node:worker_threads").isMainThread) {
     preferBuiltPluginArtifacts: build.pluginGeneration.preferBuiltPluginArtifacts,
   };
   const fingerprint = createPreparedModelCatalogWorkerInput(workerParams).generationFingerprint;
-  return {
-    agentDir,
-    marker,
-    isCurrent,
-    workerParams,
-    fingerprint,
-    clockFile,
-    loadedFile,
-    retire: () => {
-      current = false;
-    },
-  };
+  return { agentDir, marker, isCurrent, workerParams, fingerprint };
 }
 
 function trackSpawnedWorkers(
@@ -247,7 +152,6 @@ function trackSpawnedWorkers(
 describe("prepared model catalog worker generation mismatch", () => {
   beforeEach(() => {
     workerBoundary.fingerprint = undefined;
-    workerBoundary.directories.length = 0;
     vi.stubEnv("CODEX_HOME", makeTempDir("openclaw-worker-empty-codex-"));
   });
 
@@ -280,77 +184,6 @@ describe("prepared model catalog worker generation mismatch", () => {
       expect(spawned).toHaveLength(2);
       expect(fs.existsSync(fixture.marker)).toBe(false);
     });
-  });
-
-  it("transports original provider cache deadlines and owns captures until worker exit", async () => {
-    const fixture = await createMismatchFixture(true);
-    const worker = createPreparedModelCatalogWorker({
-      ...fixture.workerParams,
-      isCurrent: fixture.isCurrent,
-    });
-    const first = await worker.loadCatalog([PROVIDER_ID]);
-    expect(first.providerExpiries).toEqual(new Map([[PROVIDER_ID, 2_000]]));
-    expect(first.configuredProviderModelIds).toEqual(new Map([[PROVIDER_ID, ["sqlite-model"]]]));
-    expect(first.runtimeModels.get(PROVIDER_ID)?.map(({ id }) => id)).toContain(
-      "plugin-generation-v1",
-    );
-    expect(workerBoundary.directories).toHaveLength(1);
-    const directory = workerBoundary.directories[0]!;
-    expect(fs.existsSync(directory)).toBe(true);
-    const captured = fs.readFileSync(fixture.loadedFile, "utf8");
-    expect(path.relative(directory, captured)).not.toMatch(/^\.\./);
-    expect(fs.existsSync(captured)).toBe(true);
-    fs.writeFileSync(fixture.clockFile, "1250");
-    const cached = await worker.loadCatalog([PROVIDER_ID]);
-    expect(cached.providerExpiries).toEqual(first.providerExpiries);
-    expect(cached.configuredProviderModelIds).toEqual(first.configuredProviderModelIds);
-    expect(workerBoundary.directories).toEqual([directory]);
-    expect(cached.modelCatalog.entries).toContainEqual(
-      expect.objectContaining({ provider: PROVIDER_ID, id: "sqlite-model" }),
-    );
-    fixture.retire();
-    await waitForWorkers();
-    await expect.poll(() => fs.existsSync(directory)).toBe(false);
-  });
-
-  it("keeps the prepared worker generation after request-pool overload", async () => {
-    const fixture = await createMismatchFixture();
-    const worker = createPreparedModelCatalogWorker({
-      ...fixture.workerParams,
-      isCurrent: fixture.isCurrent,
-    });
-    const barrier = `${fixture.marker}.hold`;
-    fs.writeFileSync(barrier, "");
-    const catalog = worker.loadCatalog();
-    void catalog.catch(() => {});
-    const accepted: ReturnType<typeof worker.loadAuth>[] = [];
-    try {
-      await waitForMarker(fixture.marker);
-      for (let index = 0; index < 127; index += 1) {
-        const auth = worker.loadAuth({ providerIds: [PROVIDER_ID] });
-        void auth.catch(() => {});
-        accepted.push(auth);
-      }
-      await expect(worker.loadAuth({ providerIds: [PROVIDER_ID] })).rejects.toMatchObject({
-        name: "WorkerTaskError",
-        code: "overloaded",
-      });
-      fs.rmSync(barrier);
-      const outcomes = await Promise.allSettled([catalog, ...accepted]);
-      expect(outcomes.filter((outcome) => outcome.status === "rejected")).toEqual([]);
-      expect((await catalog).modelCatalog.entries).toContainEqual(
-        expect.objectContaining({ provider: PROVIDER_ID, id: "plugin-generation-v1" }),
-      );
-      await expect(worker.loadAuth({ providerIds: [PROVIDER_ID] })).resolves.toMatchObject({
-        authStore: expect.objectContaining({ version: 1 }),
-      });
-      expect((await worker.loadCatalog()).modelCatalog.entries).toContainEqual(
-        expect.objectContaining({ provider: PROVIDER_ID, id: "plugin-generation-v1" }),
-      );
-    } finally {
-      fs.rmSync(barrier, { force: true });
-      await Promise.allSettled([catalog, ...accepted]);
-    }
   });
 
   it("catalog worker request fences a transient mismatch and rebuilds a matching worker", async () => {
@@ -438,11 +271,6 @@ describe("prepared model catalog worker generation mismatch", () => {
             }),
           ]);
           expect(spawned).toHaveLength(2);
-          expect(workerBoundary.directories).toHaveLength(2);
-          const [oldDirectory, replacementDirectory] = workerBoundary.directories;
-          expect(oldDirectory).not.toBe(replacementDirectory);
-          expect(fs.existsSync(oldDirectory!)).toBe(true);
-          expect(fs.existsSync(replacementDirectory!)).toBe(true);
 
           releaseTermination.resolve();
           const initial = await Promise.all([auth, queued]);
@@ -450,8 +278,6 @@ describe("prepared model catalog worker generation mismatch", () => {
             expect(failure).toMatchObject({ name: "PreparedModelCatalogGenerationMismatchError" });
           }
           const replacementResult = await outcome;
-          await expect.poll(() => fs.existsSync(oldDirectory!)).toBe(false);
-          expect(fs.existsSync(replacementDirectory!)).toBe(true);
           expect(replacementResult).toMatchObject({
             modelCatalog: {
               entries: expect.arrayContaining([

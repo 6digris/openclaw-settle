@@ -2,6 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MentionInboxItem } from "../../../packages/gateway-protocol/src/index.js";
+import { createDeferred as deferred } from "../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
 import type { CronJob, CronJobsListResult, ModelAuthStatusResult } from "../api/types.ts";
 import type { ApplicationContext, ApplicationGateway } from "../app/context.ts";
@@ -33,16 +34,6 @@ import { buildSidebarAttentionEntries } from "./sidebar-attention-items.ts";
 import { SidebarAttentionStoreController } from "./sidebar-attention-store.ts";
 import { resolveSidebarUpdateAttention } from "./sidebar-attention-update.ts";
 import "./sidebar-attention.ts";
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((next, fail) => {
-    resolve = next;
-    reject = fail;
-  });
-  return { promise, reject, resolve };
-}
 
 function cronJob(id: string): CronJob {
   return {
@@ -227,9 +218,6 @@ describe("sidebar attention refresh ownership", () => {
   it("keeps the plain attention panel inside its top-layer menu surface", async () => {
     const { element, trigger } = await mountAttention();
     trigger.click();
-    // Opening imports the real panel lazily. Join that boundary before polling
-    // its DOM; the top-layer assertion is not a module transformation deadline.
-    await import("./sidebar-attention-panel.runtime.ts");
 
     await waitForFast(() => expect(element.querySelector(".sidebar-issues-panel")).not.toBeNull());
     const panel = element.querySelector(".sidebar-issues-panel");

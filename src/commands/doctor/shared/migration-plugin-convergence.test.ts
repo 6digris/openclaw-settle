@@ -2,11 +2,19 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginInstallRecord } from "../../../config/types.plugins.js";
+import { resolveUpdateCandidatePluginPath } from "../../../infra/update-candidate-paths.js";
+import { buildUpdateRehearsalPathEnv } from "../../../infra/update-rehearsal-paths.js";
 import type { PluginCapabilityConsentHandler } from "../../../plugins/capability-consent.js";
 import { buildPluginCapabilityConsentReview } from "../../../plugins/capability-summary.js";
 import { commitPluginInstallRecordsOnly } from "../../../plugins/install-record-commit.js";
+import {
+  resolvePluginInstallRoots,
+  withPluginInstallRoots,
+} from "../../../plugins/install-root-context.js";
 import { readPersistedInstalledPluginIndexInstallRecords } from "../../../plugins/installed-plugin-index-records.js";
 import { openOpenClawStateDatabase } from "../../../state/openclaw-state-db.js";
+import { resolveOpenClawStateSqlitePath } from "../../../state/openclaw-state-db.paths.js";
+import { withEnvAsync } from "../../../test-utils/env.js";
 import {
   withOpenClawTestState,
   type OpenClawTestState,
@@ -137,6 +145,141 @@ describe("Doctor migration plugin generation", () => {
       });
     },
   );
+
+  it("completes copied plugin dependencies before convergence inspects them", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const fixture = await seedLegacyPluginConfig(state);
+      const original = state.path("original-plugins", "demo");
+      const shared = state.path("original-plugins", "shared");
+      fs.mkdirSync(path.dirname(original), { recursive: true });
+      fs.cpSync(fixture.record.installPath!, original, { recursive: true });
+      fs.mkdirSync(shared);
+      const entry = 'module.exports = require("../shared/value.cjs");';
+      fs.writeFileSync(path.join(original, "index.js"), entry);
+      fs.writeFileSync(path.join(shared, "package.json"), '{"name":"fixture-shared"}');
+      fs.writeFileSync(path.join(shared, "value.cjs"), 'module.exports = "copied-ready";');
+      const copied = resolveUpdateCandidatePluginPath(
+        state.path("serving-state"),
+        state.stateDir,
+        original,
+      );
+      const copiedShared = resolveUpdateCandidatePluginPath(
+        state.path("serving-state"),
+        state.stateDir,
+        shared,
+      );
+      fs.mkdirSync(path.dirname(copied), { recursive: true });
+      fs.cpSync(original, copied, { recursive: true });
+      fixture.record.installPath = copied;
+      await state.writeConfig(fixture.config);
+      const before = fs.readFileSync(state.configPath);
+      const env = {
+        ...state.env,
+        ...buildUpdateRehearsalPathEnv(state.stateDir),
+        OPENCLAW_UPDATE_IN_PROGRESS: "1",
+        OPENCLAW_UPDATE_DEFER_CONFIGURED_PLUGIN_INSTALL_REPAIR: "1",
+        OPENCLAW_UPDATE_PARENT_SUPPORTS_DOCTOR_CONFIG_WRITE: "1",
+        OPENCLAW_SERVICE_REPAIR_POLICY: "external",
+        OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_SERVICE_REPAIR: "0",
+        OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION: "0",
+        OPENCLAW_COMPATIBILITY_HOST_VERSION: undefined,
+      };
+      expect(fs.existsSync(copiedShared)).toBe(false);
+      mocks.converge.mockImplementation(async () => {
+        expect(fs.readFileSync(path.join(copiedShared, "value.cjs"), "utf8")).toBe(
+          'module.exports = "copied-ready";',
+        );
+        expect(fs.readFileSync(path.join(copied, "index.js"), "utf8")).toBe(entry);
+        return { blockingDiagnostic: null, quarantinedPlugins: [] };
+      });
+      await withEnvAsync(env, async () => {
+        await expect(convergeDoctorMigrationPlugins({ env: process.env })).resolves.toBe(true);
+      });
+      expect(mocks.converge).toHaveBeenCalledOnce();
+      expect(fs.readFileSync(path.join(original, "index.js"), "utf8")).toBe(entry);
+      expect(fs.readFileSync(state.configPath)).toEqual(before);
+      expect(fs.readFileSync(fixture.legacyStorePath)).toEqual(fixture.legacyBefore);
+      expect(fs.existsSync(fixture.runtimeMarker)).toBe(false);
+    });
+  });
+
+  it.each([
+    "private",
+    "pinned-outside",
+    "symlink",
+    "database-symlink",
+    "env-only",
+    "cache-symlink",
+  ] as const)("keeps rehearsal convergence on its actual private roots (%s)", async (kind) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const fixture = await seedLegacyPluginConfig(state);
+      const outside = state.path("serving-plugin-root");
+      fs.mkdirSync(outside);
+      const marker = path.join(outside, "preserved");
+      fs.writeFileSync(marker, "original plugin root");
+      const env = {
+        ...state.env,
+        ...buildUpdateRehearsalPathEnv(state.stateDir),
+        OPENCLAW_UPDATE_IN_PROGRESS: "1",
+        OPENCLAW_UPDATE_DEFER_CONFIGURED_PLUGIN_INSTALL_REPAIR: "1",
+        OPENCLAW_UPDATE_PARENT_SUPPORTS_DOCTOR_CONFIG_WRITE: "1",
+        OPENCLAW_SERVICE_REPAIR_POLICY: "external",
+        OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_SERVICE_REPAIR: "0",
+        OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION: "0",
+        OPENCLAW_COMPATIBILITY_HOST_VERSION: undefined,
+        npm_config_cache: state.path("parent-cache"),
+      };
+      const roots = resolvePluginInstallRoots(env);
+      if (kind === "symlink") {
+        fs.symlinkSync(outside, roots.npmDir, "junction");
+      }
+      if (kind === "database-symlink") {
+        fs.mkdirSync(path.dirname(resolveOpenClawStateSqlitePath(env)), { recursive: true });
+        fs.symlinkSync(marker, resolveOpenClawStateSqlitePath(env));
+      }
+      if (kind === "cache-symlink") {
+        fs.mkdirSync(path.join(state.stateDir, "cache"), { recursive: true });
+        fs.symlinkSync(outside, path.join(state.stateDir, "cache", "npm"), "junction");
+      }
+      const selected = kind === "pinned-outside" ? { ...roots, npmDir: outside } : roots;
+      mocks.converge.mockImplementation(async ({ env: derived, beforePersistentEffect }) => {
+        expect(derived.npm_config_cache).toBe(env.npm_config_cache);
+        expect(process.env.npm_config_cache).toBe(env.npm_config_cache);
+        expect(beforePersistentEffect).toBeTypeOf("function");
+        await beforePersistentEffect?.();
+        // A context change while convergence waits must not authorize a write there.
+        await withPluginInstallRoots({ ...roots, extensionsDir: outside }, async () => {
+          expect(() => beforePersistentEffect?.()).toThrow("escapes the update rehearsal");
+        });
+        return { blockingDiagnostic: null, quarantinedPlugins: [] };
+      });
+      await withEnvAsync(kind === "env-only" ? {} : env, async () => {
+        await withPluginInstallRoots(selected, async () => {
+          const outcome = convergeDoctorMigrationPlugins({
+            env: kind === "env-only" ? env : process.env,
+          });
+          if (kind === "private") {
+            await expect(outcome).resolves.toBe(true);
+            expect(mocks.converge).toHaveBeenCalledOnce();
+          } else {
+            await expect(outcome).rejects.toThrow(
+              kind === "env-only" ? "authority changed" : "escapes the update rehearsal",
+            );
+            expect(mocks.converge).not.toHaveBeenCalled();
+            if (kind !== "database-symlink") {
+              expect(
+                readPersistedInstalledPluginIndexInstallRecords({ env: process.env }),
+              ).toBeNull();
+            }
+          }
+        });
+      });
+      expect(fs.readFileSync(marker, "utf8")).toBe("original plugin root");
+      expect(fs.readFileSync(state.configPath)).toEqual(fixture.configBefore);
+      expect(fs.readFileSync(fixture.legacyStorePath)).toEqual(fixture.legacyBefore);
+      expect(fs.existsSync(fixture.runtimeMarker)).toBe(false);
+    });
+  });
 
   it("imports retired package records before repair without consuming legacy migration inputs", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {

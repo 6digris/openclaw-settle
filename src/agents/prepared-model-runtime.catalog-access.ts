@@ -25,8 +25,10 @@ import {
   assertPreparedModelRuntimeInputCurrent,
   PreparedModelRuntimePublicationSupersededError,
 } from "./prepared-model-runtime.errors.js";
-import { preparedModelInventoryKey } from "./prepared-model-runtime.facts.js";
-import { fingerprintPreparedRuntimeFacts } from "./prepared-model-runtime.fingerprint.js";
+import {
+  fingerprintPreparedRuntimeFacts,
+  preparedModelInventoryKey,
+} from "./prepared-model-runtime.facts.js";
 import {
   type PreparedModelRuntimeCatalogAccess,
   filterPreparedProviderCatalog,

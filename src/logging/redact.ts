@@ -19,9 +19,9 @@ import { isFullContextToolPayloadRedaction } from "./redact-internal.js";
 import {
   redactJsonRecord,
   getPatternRedactionEdits,
-  type RedactionField,
   type RedactionMessage,
   type RedactionTarget,
+  type RedactionField,
   type RedactionOrigins,
 } from "./redact-json.js";
 import {
@@ -53,7 +53,12 @@ import {
   TOOL_PAYLOAD_AMBIGUOUS_ASSIGNMENT_PATTERNS,
   TOOL_PAYLOAD_REDACT_PATTERNS,
 } from "./redact-patterns.js";
-import { redactRegisteredSecretValues } from "./secret-redaction-registry.js";
+import { PEM_REDACT_MATCHER, PEM_REDACT_PATTERN_SOURCE } from "./redact-pem.js";
+import {
+  captureSecretRedactionRegistrySnapshot,
+  createSecretValueRedactor,
+  redactRegisteredSecretValues,
+} from "./secret-redaction-registry.js";
 import { shouldRedactStructuredAuthorizationCode } from "./structured-authorization-code.js";
 
 type RedactSensitiveMode = "off" | "tools";
@@ -176,6 +181,9 @@ function normalizeMode(value?: string): RedactSensitiveMode {
 }
 
 function parsePattern(raw: RedactPattern): ResolvedRedactPattern | null {
+  if (raw === PEM_REDACT_PATTERN_SOURCE) {
+    return PEM_REDACT_MATCHER;
+  }
   if (typeof raw !== "string" && !(raw instanceof RegExp)) {
     return raw;
   }
@@ -878,7 +886,32 @@ export function redactSensitiveText(text: string, options?: RedactOptions): stri
     return text;
   }
   const exactRedacted = redactRegisteredSecretValues(text, maskToken);
-  const resolvedOptions = options ?? resolveConfigRedaction();
+  return redactSensitiveTextWithOptions(exactRedacted, options ?? resolveConfigRedaction());
+}
+
+export type SensitiveTextRedactionSnapshot = {
+  readonly registryRevision: number;
+  readonly registeredSecretValues: readonly string[];
+};
+
+/** Captures the built-in tools-mode policy used by session preparation. Never log this snapshot. */
+export function captureSensitiveTextRedactionSnapshot(): SensitiveTextRedactionSnapshot {
+  const { revision, values } = captureSecretRedactionRegistrySnapshot();
+  return { registryRevision: revision, registeredSecretValues: values };
+}
+
+export function createSensitiveTextRedactor(
+  snapshot: SensitiveTextRedactionSnapshot,
+): (text: string) => string {
+  const redactExactValues = createSecretValueRedactor(snapshot.registeredSecretValues);
+  const options: RedactOptions = { mode: "tools" };
+  return (text) => redactSensitiveTextWithOptions(redactExactValues(text, maskToken), options);
+}
+
+function redactSensitiveTextWithOptions(
+  exactRedacted: string,
+  resolvedOptions: RedactOptions,
+): string {
   if (normalizeMode(resolvedOptions.mode) === "off") {
     return exactRedacted;
   }
@@ -1570,15 +1603,28 @@ export function getDefaultRedactPatterns(): string[] {
   return [...DEFAULT_REDACT_STRING_PATTERNS];
 }
 
-// Applies already-resolved redaction to a batch of lines without re-resolving options.
-// Lines are joined before redacting so multiline patterns (e.g. PEM blocks) can match across
-// line boundaries, then split back. Use this instead of mapping redactSensitiveText when
-// options are resolved once per request.
-export function redactSensitiveLines(lines: string[], resolved: ResolvedRedactOptions): string[] {
+// Match the complete batch, preserving JSON syntax through the transport's scalar editor.
+export function redactSensitiveLines(
+  lines: string[],
+  resolved: ResolvedRedactOptions,
+  selectedLines?: readonly boolean[],
+): string[] {
   if (lines.length === 0 || resolved.mode === "off") {
-    return lines;
+    return selectedLines ? lines.filter((_, index) => selectedLines[index]) : lines;
   }
-  const exactRedactedLines = lines.map((line) => redactRegisteredSecretValues(line, maskToken));
-  return redactText(exactRedactedLines.join("\n"), resolved.patterns).split("\n");
+  return redactJsonRecord(
+    lines.join("\n"),
+    { value: { structured: false, primitiveMask: false }, children: new Map() },
+    [[], [...preparationPatterns, ...resolved.patterns]],
+    (match, pattern, project) => getRedactionEdit(match, pattern, undefined, project),
+    () => [],
+    () => [],
+    () => [],
+    () => true,
+    undefined,
+    { preserveLines: selectedLines !== undefined },
+  )
+    .split("\n")
+    .filter((_, index) => selectedLines === undefined || selectedLines[index]);
 }
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

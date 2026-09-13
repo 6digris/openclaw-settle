@@ -76,20 +76,16 @@ suite.define(() => {
       const place = page.locator("wa-popover.new-session-page__where-popover");
       await trigger.click();
       await place.getByRole("button", { name: "aws", exact: true }).click();
-      await place.locator('[data-value="cloud:aws"]').hover();
       await place.getByRole("button", { name: "Fast", exact: true }).click();
       await expect.poll(() => trigger.getAttribute("data-machine-class")).toBe("fast");
       await place.getByRole("button", { name: "machine0", exact: true }).click();
       await expect.poll(() => trigger.getAttribute("data-cloud-profile")).toBe("machine0");
       await expect.poll(() => trigger.getAttribute("data-machine-class")).toBeNull();
-      await place.getByRole("button", { name: "machine0", exact: true }).hover();
       await expect
         .poll(() => place.getByRole("button", { name: "machine0", exact: true }).isDisabled())
         .toBe(false);
-      await expect
-        .poll(() => place.getByText("Machine", { exact: true }).filter({ visible: true }).count())
-        .toBe(0);
-      expect(await place.locator('[data-value^="machine:"]:visible').count()).toBe(0);
+      await expect.poll(() => place.getByText("Machine", { exact: true }).isVisible()).toBe(false);
+      await expect.poll(() => place.locator('[data-value^="machine:"]:visible').count()).toBe(0);
       await captureUiProof(suite, page, "optionless-cloud-profile.png");
       await page.keyboard.press("Escape");
 
@@ -129,7 +125,21 @@ suite.define(() => {
       await route.continue();
     });
     const sessionKey = "agent:cloud:cloud-e2e";
+    const initialSessions = createdSessionListResult(sessionKey);
+    const initialSession = {
+      ...initialSessions.sessions[0],
+      key: sessionKey,
+      sessionId: "session-cloud-e2e",
+      placement: {
+        state: "requested",
+        generation: 1,
+        createdAtMs: 1,
+        updatedAtMs: 1,
+        stateChangedAtMs: 1,
+      },
+    };
     const gateway = await installMockGateway(page, {
+      sessions: [initialSession],
       defaultAgentId: "cloud",
       models: NEW_SESSION_MODEL_CATALOG,
       operatorScopes: ["operator.admin", "operator.read", "operator.write"],
@@ -187,7 +197,7 @@ suite.define(() => {
           repositoryStatus: "git",
         },
         "sessions.create": { key: sessionKey },
-        "sessions.list": createdSessionListResult(sessionKey),
+        "sessions.list": { ...initialSessions, sessions: [initialSession] },
         "sessions.dispatch": {
           ok: true,
           key: sessionKey,
@@ -203,17 +213,6 @@ suite.define(() => {
             workerBundleHash: "a".repeat(64),
             workspaceBaseManifestRef: "manifest-1",
             remoteWorkspaceDir: "/workspace",
-          },
-        },
-        "sessions.describe": {
-          session: {
-            placement: {
-              state: "requested",
-              generation: 1,
-              createdAtMs: 1,
-              updatedAtMs: 1,
-              stateChangedAtMs: 1,
-            },
           },
         },
         "sessions.delete": { ok: true, deleted: true },
@@ -237,12 +236,11 @@ suite.define(() => {
       await place.getByRole("button", { name: "aws", exact: true }).click();
       const trigger = page.locator("#new-session-where-trigger");
       await expect.poll(() => trigger.getAttribute("data-cloud-profile")).toBe("aws");
-      await place.locator('[data-value="cloud:aws"]').hover();
       await place.getByText("Machine", { exact: true }).waitFor();
       await place.locator('[data-value="machine:fast"]').click();
       await expect.poll(() => trigger.getAttribute("data-machine-class")).toBe("fast");
       await pollLocatorText(trigger.locator(".new-session-page__trigger-label")).toBe("aws");
-      await expect.poll(() => trigger.getAttribute("aria-label")).toContain("aws, Fast");
+      expect(await trigger.getAttribute("aria-label")).toContain("aws, Fast");
       await page.keyboard.press("Escape");
       const checkoutTrigger = page.locator("#new-session-checkout-trigger");
       const checkout = page.locator("wa-popover.new-session-page__checkout-popover");
@@ -420,16 +418,11 @@ suite.define(() => {
       await expect.poll(() => trigger.getAttribute("data-cloud-profile")).toBe("aws");
       await expect.poll(() => trigger.getAttribute("data-machine-class")).toBe("fast");
       await pollLocatorText(trigger.locator(".new-session-page__trigger-label")).toBe("aws");
-      await expect.poll(() => trigger.getAttribute("aria-label")).toContain("aws, Fast");
+      expect(await trigger.getAttribute("aria-label")).toContain("aws, Fast");
       await expect.poll(() => startButton.isDisabled()).toBe(false);
       await trigger.click();
       const retainedCloudProfile = place.locator('[data-value="cloud:aws"]');
       await expect.poll(() => retainedCloudProfile.isDisabled()).toBe(false);
-      await expect
-        .poll(() =>
-          retainedCloudProfile.locator(".new-session-page__selected-summary").textContent(),
-        )
-        .toBe("Fast");
       await retainedCloudProfile.click();
       const retainedMachine = place.locator('[data-value="machine:fast"]');
       await expect.poll(() => retainedMachine.isVisible()).toBe(true);

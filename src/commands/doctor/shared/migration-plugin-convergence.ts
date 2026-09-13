@@ -14,6 +14,7 @@ import {
   runStartupUpgradeConvergence,
 } from "../../doctor-config-preflight-plugin-verification.js";
 import { importShippedPluginInstallConfigForDoctor } from "./plugin-registry-migration.js";
+import { createDoctorRehearsalWriteGuard } from "./rehearsal-write-scope.js";
 import { shouldSkipLegacyUpdateDoctorConfigWrite } from "./update-phase.js";
 
 /** Repair the migration contract generation without retiring its config inputs. */
@@ -27,6 +28,8 @@ export async function convergeDoctorMigrationPlugins(params: {
     return false;
   }
   assertConfigWriteAllowedInCurrentMode({ env: params.env });
+  const assertRehearsalWrites = createDoctorRehearsalWriteGuard(params.env);
+  assertRehearsalWrites?.();
   const readAdmittedSnapshot = async () => {
     const snapshot = await createConfigIO({
       env: params.env,
@@ -49,12 +52,39 @@ export async function convergeDoctorMigrationPlugins(params: {
     const snapshot = await readAdmittedSnapshot();
     // Old configs keep the only package locator in plugins.installs. Import
     // records only; the later migration still needs the original source config.
+    assertRehearsalWrites?.();
     await importShippedPluginInstallConfigForDoctor(snapshot);
+    if (assertRehearsalWrites) {
+      const { completeUpdateCandidatePluginRehearsal } =
+        await import("../../../infra/update-candidate-plugin-repair.js");
+      const { loadInstalledPluginIndexInstallRecordsSync } =
+        await import("../../../plugins/installed-plugin-index-records.js");
+      const prepared = await completeUpdateCandidatePluginRehearsal({
+        config: snapshot.sourceConfig,
+        env: params.env,
+        installRecords: loadInstalledPluginIndexInstallRecordsSync({ env: params.env }),
+      });
+      if (prepared.copiedFiles > 0 || prepared.warnings.length > 0) {
+        const report =
+          params.onNote ?? (await import("../../../../packages/terminal-core/src/note.js")).note;
+        report(
+          [
+            ...(prepared.copiedFiles > 0
+              ? [`Copied ${prepared.copiedFiles} missing plugin dependency files.`]
+              : []),
+            ...prepared.warnings,
+          ].join("\n"),
+          "Update rehearsal",
+        );
+      }
+      assertRehearsalWrites();
+    }
     const convergence = await runStartupUpgradeConvergence({
       cfg: snapshot.sourceConfig,
       env: params.env,
       onCapabilityConsent: params.onCapabilityConsent,
       onNote: params.onNote,
+      beforePersistentEffect: assertRehearsalWrites,
     });
     if (convergence.blockingDiagnostic) {
       throw new Error(formatStartupPluginVerificationFailure(convergence.blockingDiagnostic));

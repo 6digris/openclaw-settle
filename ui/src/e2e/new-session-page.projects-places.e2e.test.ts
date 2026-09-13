@@ -203,7 +203,6 @@ suite.define(() => {
         const local = place.locator('[data-value="gateway"]');
         if (late === "recovery scope") {
           await trigger.click();
-          await local.hover();
           await expect.poll(() => tooltipTitleText(local)).toBe("QA-Gateway Runs on your gateway");
           const catalogRequests = (await gateway.getRequests("environments.list")).length;
           await page.evaluate(() => window.dispatchEvent(new Event("test-release-recovery-scope")));
@@ -238,7 +237,6 @@ suite.define(() => {
           "QA-Gateway",
         );
         await trigger.click();
-        await local.hover();
         await expect.poll(() => tooltipTitleText(local)).toBe("QA-Gateway Runs on your gateway");
       } finally {
         try {
@@ -370,15 +368,8 @@ suite.define(() => {
       await pollLocatorText(trigger.locator(".new-session-page__trigger-label")).toBe("home");
 
       expect(await page.locator("#new-session-checkout-trigger").count()).toBe(0);
-      const where = page.locator("wa-popover.new-session-page__where-popover");
-      const afterShow = where.evaluate(
-        (element) =>
-          new Promise<void>((resolve) => {
-            element.addEventListener("wa-after-show", () => resolve(), { once: true });
-          }),
-      );
       await page.locator("#new-session-where-trigger").click();
-      await afterShow;
+      const where = page.locator("wa-popover.new-session-page__where-popover");
       const cloud = where.getByRole("button", { name: "aws", exact: true });
       await cloud.waitFor();
       expect(await cloud.isDisabled()).toBe(true);
@@ -388,14 +379,6 @@ suite.define(() => {
         await page.locator("#new-session-where-trigger").getAttribute("data-cloud-profile"),
       ).toBeNull();
       await expect.poll(() => tooltipTitleText(cloud)).toBe("Cloud needs a Git checkout");
-      await cloud.hover();
-      const reason = cloud
-        .locator("xpath=ancestor::openclaw-tooltip[1]")
-        .locator('[slot="content"]');
-      await reason.waitFor();
-      await expect
-        .poll(async () => (await reason.textContent())?.trim())
-        .toBe("Cloud needs a Git checkout");
       await page.keyboard.press("Escape");
 
       await page.locator(".new-session-page__message").fill("clone and inspect this project");

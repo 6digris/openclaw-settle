@@ -1125,7 +1125,7 @@ describe("grouped chat rendering", () => {
     expect(collapsedText.textContent).toContain(expandedTail);
     expect(collapsedFileLink.dataset.filePath).toBe("AGENTS.md");
     expect(collapsedFileLink.dataset.fileLine).toBe("188");
-    expect(toggle.getAttribute("aria-label")).toBe("Show more");
+    expect(toggle.textContent?.trim()).toBe("Show more");
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
 
     toggle.click();
@@ -1148,7 +1148,7 @@ describe("grouped chat rendering", () => {
     expect(expandedText.textContent).toContain(expandedTail);
     expect(expandedFileLink.dataset.filePath).toBe("AGENTS.md");
     expect(expandedFileLink.dataset.fileLine).toBe("188");
-    expect(collapseToggle.getAttribute("aria-label")).toBe("Show less");
+    expect(collapseToggle.textContent?.trim()).toBe("Show less");
     expect(collapseToggle.getAttribute("aria-expanded")).toBe("true");
   });
 
@@ -1839,6 +1839,7 @@ describe("grouped chat rendering", () => {
     ["preparing_workspace", "Preparing workspace…"],
     ["provisioning_environment", "Provisioning environment…"],
     ["preparing_context", "Preparing this turn…"],
+    ["memory_flushing", "Saving conversation memory…"],
     ["starting_model", "Waiting for a response…"],
   ] as const)("renders the %s startup phase with elapsed time", (startupPhase, label) => {
     const container = document.createElement("div");
@@ -2618,6 +2619,7 @@ describe("grouped chat rendering", () => {
         expect(image?.getAttribute("alt")).toBe("Research Agent");
       }
       if (expected === "face") {
+        await vi.dynamicImportSettled();
         await vi.waitFor(() =>
           expect(container.querySelector(".identity-avatar__agent-face")).not.toBeNull(),
         );

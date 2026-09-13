@@ -14,6 +14,7 @@ import {
   detectLegacyWorkspaceState,
   migrateLegacyWorkspaceState,
 } from "../infra/state-migrations.workspace-setup.js";
+import { buildUpdateRehearsalPathEnv } from "../infra/update-rehearsal-paths.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { withEnvAsync } from "../test-utils/env.js";
@@ -193,6 +194,76 @@ describe("Doctor health during configured-plugin repair deferral", () => {
         expect(runtime.log).toHaveBeenCalledWith(
           expect.stringContaining("deferred until post-core"),
         );
+      });
+    },
+  );
+
+  it.each([true, false])(
+    "migrates copied state only with the complete private rehearsal contract (complete=%s)",
+    async (complete) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+        const workspaceDir = state.statePath("workspace");
+        fs.mkdirSync(workspaceDir, { recursive: true });
+        const cfg: OpenClawConfig = {
+          agents: { ownership: "explicit", entries: { main: { workspace: workspaceDir } } },
+          plugins: { enabled: false },
+        };
+        await state.writeConfig(cfg);
+        const sourcePath = path.join(workspaceDir, "openclaw-workspace-state.json");
+        const completedAt = "2026-07-15T00:00:00.000Z";
+        fs.writeFileSync(sourcePath, JSON.stringify({ version: 1, setupCompletedAt: completedAt }));
+        const before = fs.readFileSync(sourcePath);
+        const env = {
+          ...state.env,
+          ...buildUpdateRehearsalPathEnv(state.stateDir),
+          OPENCLAW_UPDATE_IN_PROGRESS: "1",
+          OPENCLAW_UPDATE_DEFER_CONFIGURED_PLUGIN_INSTALL_REPAIR: "1",
+          OPENCLAW_UPDATE_PARENT_SUPPORTS_DOCTOR_CONFIG_WRITE: "1",
+          OPENCLAW_SERVICE_REPAIR_POLICY: "external",
+          OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_SERVICE_REPAIR: complete ? "0" : "1",
+          OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION: "0",
+          OPENCLAW_COMPATIBILITY_HOST_VERSION: undefined,
+        };
+        await withEnvAsync(env, async () => {
+          mocks.config.mockReturnValue(cfg);
+          mocks.runContributions.mockImplementation(async (ctx) => {
+            const result = await migrateLegacyWorkspaceState({
+              stateDir: state.stateDir,
+              env,
+              detected: await detectLegacyWorkspaceState({
+                cfg: ctx.cfg,
+                stateDir: state.stateDir,
+                env,
+                homedir: () => state.stateDir,
+                doctorOnlyStateMigrations: true,
+              }),
+            });
+            expect(result.warnings).toEqual([]);
+          });
+          const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
+          await runDoctorHealthFlow(runtime, { repair: true, nonInteractive: true });
+          if (complete) {
+            expect(mocks.config).toHaveBeenCalledOnce();
+            expect(mocks.runContributions).toHaveBeenCalledOnce();
+            expect((await readWorkspaceStateSnapshot(workspaceDir)).setup.setupCompletedAt).toBe(
+              completedAt,
+            );
+            expect(fs.existsSync(sourcePath)).toBe(false);
+            expect(
+              openOpenClawStateDatabase({ env })
+                .db.prepare("SELECT removed_source FROM migration_sources WHERE source_path = ?")
+                .get(sourcePath),
+            ).toEqual({ removed_source: 1 });
+            expect(mocks.outro).toHaveBeenCalledWith("Doctor complete.");
+          } else {
+            expect(mocks.config).not.toHaveBeenCalled();
+            expect(mocks.runContributions).not.toHaveBeenCalled();
+            expect(fs.readFileSync(sourcePath)).toEqual(before);
+            expect(mocks.outro).not.toHaveBeenCalledWith("Doctor complete.");
+          }
+          expect(mocks.service).not.toHaveBeenCalled();
+          expect(runtime.exit).not.toHaveBeenCalled();
+        });
       });
     },
   );
