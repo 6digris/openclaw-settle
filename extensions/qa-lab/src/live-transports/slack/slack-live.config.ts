@@ -175,7 +175,9 @@ export function buildSlackQaConfig(
     progressOverrides || delivery
       ? Object.fromEntries(
           Object.entries(baseCfg.agents?.entries ?? {}).map(([id, agent]) => {
-            if (id !== "qa") return [id, agent];
+            if (id !== "qa") {
+              return [id, agent];
+            }
             // Slack draft edits cannot preserve custom authorship. Remove the
             // synthetic QA identity so progress scenarios reach the draft path.
             const qaAgent = { ...agent };

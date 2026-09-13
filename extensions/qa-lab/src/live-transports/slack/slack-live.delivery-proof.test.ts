@@ -89,14 +89,24 @@ describe("Slack Anthropic delivery proof", () => {
     "does not qualify %s as the requested provider sequence",
     (fault) => {
       const observed = fixture();
-      if (fault === "reversed-blocks") observed.messages[0]!.blocks.reverse();
+      if (fault === "reversed-blocks") {
+        observed.messages[0]!.blocks.reverse();
+      }
       if (fault === "wrong-command") {
         const tool = observed.messages[0]!.blocks[1]!;
-        if (tool.type === "tool_use") tool.input.command = "different-command";
+        if (tool.type === "tool_use") {
+          tool.input.command = "different-command";
+        }
       }
-      if (fault === "wrong-result-id") observed.messages[1]!.toolResults[0]!.id = "unknown";
-      if (fault === "failed-result") observed.messages[1]!.toolResults[0]!.isError = true;
-      if (fault === "wrong-output") observed.messages[1]!.toolResults[0]!.text = "failure";
+      if (fault === "wrong-result-id") {
+        observed.messages[1]!.toolResults[0]!.id = "unknown";
+      }
+      if (fault === "failed-result") {
+        observed.messages[1]!.toolResults[0]!.isError = true;
+      }
+      if (fault === "wrong-output") {
+        observed.messages[1]!.toolResults[0]!.text = "failure";
+      }
       expect(() => verifySlackDeliveryObservations(observed)).toThrow(
         "provider sequence unexercised",
       );
@@ -149,6 +159,40 @@ describe("Slack Anthropic delivery proof", () => {
     );
   });
 
+  it("joins only one native message's markdown and rejects split private output", () => {
+    const observed = fixture();
+    observed.retainedMessages[0]!.text = "PREAMBLE\nFINAL";
+    observed.trace.writes = ["PRE", "AMBLE\nFI", "NAL"].map((text, index) => ({
+      eventId: index + 1,
+      method: ["chat.startStream", "chat.appendStream", "chat.stopStream"][index]!,
+      classification: "reply",
+      status: "acknowledged",
+      content: [text],
+      nativeMarkdown: text,
+      message: { channelId: "C123", ts: "2.000000", text: "" },
+    }));
+    const verify = () => verifySlackDeliveryObservations({ ...observed, mode: "progress" });
+    expect(JSON.parse(verify()).nativeMessages).toEqual([
+      { preamble: true, final: true, privateFinal: false, textChars: 14 },
+    ]);
+    const last = observed.trace.writes[2]!;
+    last.message!.ts = "3.000000";
+    expect(verify).toThrow("inconclusive: capture incomplete");
+    last.message!.ts = "2.000000";
+    last.message!.channelId = "OTHER";
+    expect(verify).toThrow("inconclusive: capture incomplete");
+    last.message!.channelId = "C123";
+    last.nativeMarkdown = "";
+    expect(verify).toThrow("inconclusive: capture incomplete");
+    last.nativeMarkdown = "NAL";
+    last.method = "chat.update";
+    expect(verify).toThrow("inconclusive: capture incomplete");
+    last.method = "chat.stopStream";
+    observed.trace.writes[1]!.nativeMarkdown = "AMBLE\nFINAL\nPRI";
+    last.nativeMarkdown = "VATE";
+    expect(verify).toThrow("failed: visible final policy");
+  });
+
   it("requires explicit-send success with the subsequent ordinary answer hidden", () => {
     const observed = fixture();
     observed.messages[2] = {
@@ -183,7 +227,9 @@ describe("Slack Anthropic delivery proof", () => {
         .providerShapeExercised,
     ).toBe(true);
     const send = observed.messages[2]!.blocks[0]!;
-    if (send.type !== "tool_use") throw new Error("missing fixture send");
+    if (send.type !== "tool_use") {
+      throw new Error("missing fixture send");
+    }
     send.input.target = "channel:OTHER";
     expect(() => verifySlackDeliveryObservations({ ...observed, mode: "message-tool" })).toThrow(
       "provider sequence unexercised",

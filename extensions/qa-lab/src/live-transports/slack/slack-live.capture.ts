@@ -25,13 +25,14 @@ const CONTENT_FIELDS = new Set([
 ]);
 
 type CaptureEvent = Record<string, unknown>;
-export type SlackQaWriteObservation = {
+type SlackQaWriteObservation = {
   eventId: number;
   flowId?: string;
   method: string;
   classification: "reply" | "metadata" | "other";
   status: "acknowledged" | "rejected" | "unconfirmed";
   content: string[];
+  nativeMarkdown?: string;
   message?: SlackObservedMessage;
 };
 export type SlackQaWriteTrace = {
@@ -92,6 +93,7 @@ export function getSlackQaMessageWriteCursor(params: {
 
 function readContent(request: Record<string, unknown>, issues: string[], eventId: number) {
   const content: string[] = [];
+  let nativeMarkdown = typeof request.markdown_text === "string" ? request.markdown_text : "";
   function visit(value: unknown, key?: string) {
     if (typeof value === "string") {
       if (key && CONTENT_FIELDS.has(key) && value.length > 0) {
@@ -108,17 +110,24 @@ function readContent(request: Record<string, unknown>, issues: string[], eventId
     }
   }
   for (const [key, value] of Object.entries(request)) {
+    let parsed = value;
     if (["blocks", "attachments", "chunks"].includes(key) && typeof value === "string") {
       try {
-        visit(JSON.parse(value));
+        parsed = JSON.parse(value);
       } catch {
         issues.push(`${eventId}:invalid-${key}`);
       }
-    } else {
-      visit(value, key);
+    }
+    visit(parsed, key);
+    if (key === "chunks" && Array.isArray(parsed)) {
+      for (const chunk of parsed) {
+        if (isRecord(chunk) && chunk.type === "markdown_text" && typeof chunk.text === "string") {
+          nativeMarkdown += chunk.text;
+        }
+      }
     }
   }
-  return content;
+  return { content, nativeMarkdown };
 }
 
 function incompletePayload(event: CaptureEvent): boolean {
@@ -192,7 +201,9 @@ function collectTrace(params: {
     if (status !== "acknowledged") {
       issues.push(`${eventId}:${status}`);
     }
-    const content = request ? readContent(request, issues, eventId) : [];
+    const { content, nativeMarkdown } = request
+      ? readContent(request, issues, eventId)
+      : { content: [], nativeMarkdown: "" };
     const channelId = response?.channel ?? request?.channel;
     const ts = response?.ts ?? request?.ts;
     const text = typeof request?.text === "string" ? request.text : "";
@@ -205,7 +216,7 @@ function collectTrace(params: {
             channelId,
             text,
             ts,
-            ...(content.filter((value) => value !== text).length > 0
+            ...(content.some((value) => value !== text)
               ? { blockText: content.filter((value) => value !== text) }
               : {}),
             ...(typeof request?.thread_ts === "string" ? { threadTs: request.thread_ts } : {}),
@@ -218,6 +229,7 @@ function collectTrace(params: {
       classification,
       status,
       content,
+      ...(classification === "reply" && method.endsWith("Stream") ? { nativeMarkdown } : {}),
       ...(message ? { message } : {}),
     });
   }

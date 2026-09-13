@@ -154,8 +154,9 @@ export function readSlackDeliveryProviderMessages(params: {
           }
           const block = blocks[openIndex]!;
           if (frame.type === "content_block_stop") {
-            if (block.type === "tool_use" && partialInput)
+            if (block.type === "tool_use" && partialInput) {
               block.input = object(JSON.parse(partialInput));
+            }
             openIndex = undefined;
           } else {
             const delta = object(frame.delta);
@@ -177,8 +178,9 @@ export function readSlackDeliveryProviderMessages(params: {
           }
         }
       }
-      if (openIndex !== undefined)
+      if (openIndex !== undefined) {
         throw new Error("Slack delivery proof provider block did not complete");
+      }
       const text = blocks.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("");
       const terminal = frames.findLast((event) => event.type === "message_delta");
       const stopReason = object(terminal?.delta).stop_reason;
@@ -191,8 +193,9 @@ export function readSlackDeliveryProviderMessages(params: {
         .filter((value) => object(value).type === "tool_result")
         .map((value) => {
           const result = object(value);
-          if (typeof result.tool_use_id !== "string")
+          if (typeof result.tool_use_id !== "string") {
             throw new Error("Slack delivery proof tool result identity is missing");
+          }
           const content =
             typeof result.content === "string"
               ? result.content
@@ -200,8 +203,9 @@ export function readSlackDeliveryProviderMessages(params: {
                 ? result.content
                     .map((part) => {
                       const block = object(part);
-                      if (block.type !== "text" || typeof block.text !== "string")
+                      if (block.type !== "text" || typeof block.text !== "string") {
                         throw new Error("Slack delivery proof tool result is not text");
+                      }
                       return block.text;
                     })
                     .join("\n")
@@ -318,6 +322,21 @@ export function verifySlackDeliveryObservations(params: {
   );
   const replies = trace.writes.filter((write) => write.classification === "reply");
   const content = replies.flatMap((write) => write.content);
+  const nativeText = new Map<string, string>();
+  for (const write of replies) {
+    if (
+      write.status === "acknowledged" &&
+      write.message &&
+      ["chat.startStream", "chat.appendStream", "chat.stopStream"].includes(write.method)
+    ) {
+      const key = `${write.message.channelId}/${write.message.ts}`;
+      // Native appends are serialized for one message. Status/block fields and
+      // independent messages are not fragments of that message's markdown.
+      const prior = write.method === "chat.startStream" ? "" : (nativeText.get(key) ?? "");
+      nativeText.set(key, prior + (write.nativeMarkdown ?? ""));
+    }
+  }
+  const visibleContent = [...content, ...nativeText.values()];
   const facts = {
     mode: params.mode,
     model: MODEL,
@@ -352,6 +371,12 @@ export function verifySlackDeliveryObservations(params: {
       privateFinal: write.content.some((text) => text.includes(params.privateFinal)),
       contentChars: write.content.map((text) => text.length),
     })),
+    nativeMessages: [...nativeText.values()].map((text) => ({
+      preamble: text.includes(params.preamble),
+      final: text.includes(params.final),
+      privateFinal: text.includes(params.privateFinal),
+      textChars: text.length,
+    })),
     metadataWrites: trace.writes.filter((write) => write.classification === "metadata").length,
   };
   const details = JSON.stringify(facts);
@@ -363,7 +388,8 @@ export function verifySlackDeliveryObservations(params: {
       write.status === "acknowledged" &&
       write.message?.channelId === params.channelId &&
       write.message.ts === params.finalMessageId &&
-      write.content.some((text) => text.includes(params.final)),
+      (write.content.some((text) => text.includes(params.final)) ||
+        nativeText.get(`${params.channelId}/${params.finalMessageId}`)?.includes(params.final)),
   );
   if (!trace.complete || unexpected.length > 0 || !matchedFinal) {
     throw new Error(`Slack delivery proof inconclusive: capture incomplete; ${details}`);
@@ -376,8 +402,8 @@ export function verifySlackDeliveryObservations(params: {
     params.retainedMessages.some((message) => message.text.includes(params.privateFinal)) ||
     (params.mode !== "progress" &&
       (params.retainedMessages.length !== 1 || retainedFinal.text !== params.final)) ||
-    !content.some((text) => text.includes(params.final)) ||
-    content.some((text) => text.includes(params.privateFinal))
+    !visibleContent.some((text) => text.includes(params.final)) ||
+    visibleContent.some((text) => text.includes(params.privateFinal))
   ) {
     throw new Error(`Slack delivery proof failed: visible final policy; ${details}`);
   }
@@ -390,7 +416,7 @@ export function verifySlackDeliveryObservations(params: {
   // Progress is an intentional status mode, not a claim that narration was never visible.
   if (
     params.mode === "progress" &&
-    (!content.some((text) => text.includes(params.preamble)) ||
+    (!visibleContent.some((text) => text.includes(params.preamble)) ||
       !replies.some((write) => write.method === "chat.startStream") ||
       !replies.some((write) => write.method === "chat.stopStream"))
   ) {
@@ -417,6 +443,8 @@ async function tail(environment: SlackQaScenarioEnvironment, cursor?: number): P
   ) {
     throw new Error("Slack delivery proof completion log is unavailable");
   }
+  // The logs.tail owner always returns loss flags in its LogTailPayload.
+  // SAFETY: Guards above validate its variable file, cursor, and text-array fields.
   return value as LogTail;
 }
 
@@ -462,9 +490,9 @@ export async function runSlackDeliveryProof(
   const final = `SLACK-DELIVERY-FINAL-${suffix}`;
   const privateFinal = `SLACK-DELIVERY-PRIVATE-${suffix}`;
   const outputs: [string, string] = [`FIRST-${suffix}`, `SECOND-${suffix}`];
-  const commands: [string, string] = outputs.map((output) => `sleep 2; printf '${output}\\n'`) as [
-    string,
-    string,
+  const commands: [string, string] = [
+    `sleep 2; printf '${outputs[0]}\\n'`,
+    `sleep 2; printf '${outputs[1]}\\n'`,
   ];
   const sessionId = environment.context.gateway.runtimeEnv.OPENCLAW_DEBUG_PROXY_SESSION_ID;
   if (!sessionId) {
@@ -549,7 +577,7 @@ export async function runSlackDeliveryProof(
           limit: 50,
         });
         if (
-          history.ok !== true ||
+          !history.ok ||
           history.has_more ||
           history.response_metadata?.next_cursor ||
           !Array.isArray(history.messages)
@@ -559,8 +587,9 @@ export async function runSlackDeliveryProof(
         const retainedMessages = history.messages
           .filter((message) => message.user === environment.sutIdentity.userId)
           .map((message) => {
-            if (typeof message.ts !== "string" || typeof message.text !== "string")
+            if (typeof message.ts !== "string" || typeof message.text !== "string") {
               throw new Error("Slack delivery proof final message identity is missing");
+            }
             return { ts: message.ts, text: message.text };
           });
         const trace = await readSlackQaWriteTrace({

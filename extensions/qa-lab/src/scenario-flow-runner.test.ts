@@ -861,11 +861,18 @@ describe("scenario-flow-runner", () => {
                 value: { expr: 'await qaImport("./gateway-log-redaction.js")' },
               },
               {
+                set: "slackDelivery",
+                value: {
+                  expr: 'await qaImport("./live-transports/slack/slack-live.delivery-proof.js")',
+                },
+              },
+              {
                 assert: {
                   expr:
                     'typeof plugin.evaluateCodexPluginLifecycle === "function" && ' +
                     'typeof artifacts.publishQaSuiteArtifactFiles === "function" && ' +
-                    'typeof redaction.redactQaGatewayDebugText === "function"',
+                    'typeof redaction.redactQaGatewayDebugText === "function" && ' +
+                    'typeof slackDelivery.runSlackDeliveryProof === "function"',
                 },
               },
             ],

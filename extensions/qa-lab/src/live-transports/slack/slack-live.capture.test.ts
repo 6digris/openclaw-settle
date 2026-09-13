@@ -219,6 +219,11 @@ describe("Slack QA complete write trace", () => {
       ["PLAN", "TASK", "DETAIL", "OUTPUT", "SOURCE"],
       ["BUFFERED-FINAL", "CHUNK-BLOCK", "STOP-BLOCK"],
     ]);
+    expect(result.writes.map((write) => write.nativeMarkdown)).toEqual([
+      "PREAMBLE",
+      "",
+      "BUFFERED-FINAL",
+    ]);
   });
 
   it("classifies pre-turn titles separately and retains unknown method inventory", async () => {
@@ -309,7 +314,11 @@ it("reads native chunks from the SDK URL-encoded request body", async () => {
     dataText: new URLSearchParams({
       channel: "C123",
       ts: "2.000000",
-      chunks: JSON.stringify([{ type: "markdown_text", text: "BUFFERED" }]),
+      chunks: JSON.stringify([
+        { type: "markdown_text", text: "BUF" },
+        { type: "task_update", title: "STATUS" },
+        { type: "markdown_text", text: "FERED" },
+      ]),
     }).toString(),
   };
   const result = await readSlackQaWriteTrace({
@@ -322,5 +331,6 @@ it("reads native chunks from the SDK URL-encoded request body", async () => {
     },
   });
   expect(result.complete).toBe(true);
-  expect(result.writes[0]?.content).toEqual(["BUFFERED"]);
+  expect(result.writes[0]?.content).toEqual(["BUF", "STATUS", "FERED"]);
+  expect(result.writes[0]?.nativeMarkdown).toBe("BUFFERED");
 });
