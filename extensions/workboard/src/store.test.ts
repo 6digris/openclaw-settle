@@ -4503,7 +4503,7 @@ describe("WorkboardStore", () => {
     } finally {
       resume?.();
       await deletion?.catch(() => undefined);
-      harness.close();
+      await harness.close();
     }
   });
 
