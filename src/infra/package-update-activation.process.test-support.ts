@@ -38,12 +38,14 @@ DatabaseSync.prototype.prepare = function (sql) {
     ((cut === "schema" && /^create table "package_activation"/iu.test(sql)) ||
       (cut === "inserted" && /^insert into "package_activation"/iu.test(sql)))
   ) {
-    const run = statement.run.bind(statement);
-    statement.run = (...args) => {
-      const result = run(...args);
-      interrupt();
-      return result;
-    };
+    // oxlint-disable-next-line typescript/unbound-method -- the proxy preserves overloads and forwards the original receiver.
+    statement.run = new Proxy(statement.run, {
+      apply(run, receiver: unknown, args: unknown[]) {
+        const result: unknown = Reflect.apply(run, receiver, args);
+        interrupt();
+        return result;
+      },
+    });
   }
   return statement;
 };
