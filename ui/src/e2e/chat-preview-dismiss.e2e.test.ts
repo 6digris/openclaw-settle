@@ -114,6 +114,11 @@ suite.define(() => {
           await expect
             .poll(() => cancel.evaluate((element) => element === document.activeElement))
             .toBe(true);
+          // Reduced motion still transitions the outline for 0.01 ms; focus can
+          // arrive before that transition is painted. Await its actual completion.
+          await cancel.evaluate(async (element) => {
+            await Promise.all(element.getAnimations().map((animation) => animation.finished));
+          });
           expect(
             await cancel.evaluate((element) => {
               const style = getComputedStyle(element);
