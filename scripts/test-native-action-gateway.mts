@@ -527,6 +527,9 @@ export async function withNativeActionGateway(
             assert(typeof input.case === "string" && Object.hasOwn(MEDIA_CASES, input.case));
             const id = input.case as MediaCaseID;
             assert(!mediaAttempt && !mediaCompleted.has(id), "overlapping or repeated media case");
+            if (platform === "ios" && id === "retiredControl") {
+              proxy.freezeReadinessDiagnostics();
+            }
             mediaAttempt = { id, before: proxy.snapshot() };
             return { started: id };
           }
@@ -575,6 +578,9 @@ export async function withNativeActionGateway(
             assert.equal(input.sha256, allowed ? media.sha256 : undefined);
             mediaCompleted.add(id);
             mediaAttempt = undefined;
+            if (platform === "ios" && id === "retiredResult") {
+              proxy.startReadinessDiagnostics();
+            }
             return { completed: id };
           }
           case "pair":
@@ -797,6 +803,10 @@ export async function withNativeActionGateway(
                 completedMedia: mediaCompleted.size,
                 completedWidgets: widgetsCompleted.size,
                 lastSignInCheckpoint: signInCheckpoints.at(-1) ?? "none",
+                readiness: {
+                  captured: "after-native-exit",
+                  snapshot: proxy.snapshot().readiness,
+                },
               }),
             );
             throw error;

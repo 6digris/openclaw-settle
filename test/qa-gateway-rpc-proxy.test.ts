@@ -22,6 +22,7 @@ async function withProxy(
     front: WebSocket;
     upstream: Promise<WebSocket>;
     upgrade: Promise<Duplex>;
+    backend: WebSocketServer;
   }) => Promise<void>,
 ) {
   const server = createServer();
@@ -43,6 +44,7 @@ async function withProxy(
       backend.handleUpgrade(request, socket, head, (ws) => {
         peers.add(ws);
         ws.once("close", () => peers.delete(ws));
+        backend.emit("connection", ws, request);
         upstream.resolve(ws);
       });
     }
@@ -61,7 +63,7 @@ async function withProxy(
       });
       front = new WebSocket(proxy.url);
       await acquireGatewayTestWebSocket(front, 5000);
-      await body({ proxy, front, upstream: upstream.promise, upgrade: upgrade.promise });
+      await body({ proxy, front, upstream: upstream.promise, upgrade: upgrade.promise, backend });
     },
     async () => {
       if (front) {
@@ -209,6 +211,164 @@ describe("QA Gateway proxy first-connection diagnostics", () => {
       }
       const evidence = JSON.stringify(trace);
       expect(evidence).not.toMatch(/private-|127\.0\.0\.1|socket hang up|Error:/);
+    });
+  });
+});
+
+describe("QA Gateway proxy readiness diagnostics", () => {
+  it("relays allowlisted requests unchanged and exposes only bounded public facts", async () => {
+    await withProxy(false, async ({ proxy, front, upstream }) => {
+      const back = await upstream;
+      const methods = [
+        "users.self",
+        "agents.list",
+        "sessions.messages.subscribe",
+        "chat.history",
+        "sessions.branches.list",
+        "health",
+        "sessions.list",
+        "sessions.patch",
+        "models.list",
+      ];
+      expect(proxy.snapshot().readiness).toBeUndefined();
+      proxy.startReadinessDiagnostics();
+      for (const [index, method] of [...methods, "private-method-marker"].entries()) {
+        const request = Buffer.from(
+          JSON.stringify({
+            type: "req",
+            id: `private-id-${index}`,
+            method,
+            params: { value: "private-payload-marker" },
+          }),
+        );
+        const requestReceived = once(back, "message");
+        front.send(request);
+        expect((await requestReceived)[0]).toEqual(request);
+        const response = Buffer.from(
+          JSON.stringify({
+            type: "res",
+            id: `private-id-${index}`,
+            ok: index % 2 === 0,
+            payload: { value: "private-response-marker" },
+            error: { message: "private-error-marker" },
+          }),
+        );
+        const responseReceived = once(front, "message");
+        back.send(response);
+        expect((await responseReceived)[0]).toEqual(response);
+      }
+      const snapshot = proxy.snapshot();
+      expect(snapshot.events).toEqual([]);
+      expect(snapshot.readiness).toEqual({
+        connectionOrdinal: 1,
+        replacements: 0,
+        frontClosed: false,
+        upstreamClosed: false,
+        frozen: false,
+        requestsSeen: 9,
+        responsesRecorded: 9,
+        truncated: false,
+        requests: methods.map((method, index) => ({
+          ordinal: index + 1,
+          method,
+          requestedAtMs: expect.any(Number),
+          respondedAtMs: expect.any(Number),
+          ok: index % 2 === 0,
+        })),
+      });
+      const requests = snapshot.readiness!.requests;
+      for (const [index, request] of requests.entries()) {
+        expect(request.requestedAtMs).toBeGreaterThanOrEqual(
+          requests[index - 1]?.requestedAtMs ?? 0,
+        );
+        expect(request.respondedAtMs).toBeGreaterThanOrEqual(request.requestedAtMs);
+      }
+      expect(JSON.stringify(snapshot.readiness)).not.toMatch(/private-|127\.0\.0\.1|Error:/);
+    });
+  });
+
+  it("caps records without stopping relay and freezes late responses outside the window", async () => {
+    await withProxy(false, async ({ proxy, front, upstream }) => {
+      const back = await upstream;
+      proxy.startReadinessDiagnostics();
+      for (let index = 0; index < 35; index += 1) {
+        const received = once(back, "message");
+        front.send(JSON.stringify({ type: "req", id: `request-${index}`, method: "health" }));
+        await received;
+      }
+      for (const id of ["request-34", "request-0"]) {
+        const received = once(front, "message");
+        back.send(JSON.stringify({ type: "res", id, ok: true }));
+        await received;
+      }
+      const before = proxy.snapshot();
+      expect(before.events).toEqual([]);
+      expect(before.readiness).toMatchObject({
+        requestsSeen: 35,
+        responsesRecorded: 1,
+        truncated: true,
+        frozen: false,
+      });
+      expect(before.readiness!.requests).toHaveLength(32);
+      expect(before.readiness!.requests[0]).toMatchObject({ ordinal: 1, ok: true });
+      expect(before.readiness!.requests[1]).not.toHaveProperty("ok");
+      proxy.freezeReadinessDiagnostics();
+      const frozen = proxy.snapshot().readiness;
+      expect(frozen!.frozen).toBe(true);
+      const late = once(front, "message");
+      back.send(JSON.stringify({ type: "res", id: "request-1", ok: false }));
+      await late;
+      expect(proxy.snapshot().readiness).toEqual(frozen);
+      expect(before.readiness!.frozen).toBe(false);
+      await closeGatewayTestWebSocket(front);
+      await proxy.stop();
+      expect(proxy.snapshot().readiness).toEqual(frozen);
+    });
+  });
+
+  it("replaces the connection snapshot without mixing old responses or close state", async () => {
+    await withProxy(false, async ({ proxy, front, upstream, backend }) => {
+      const back = await upstream;
+      proxy.startReadinessDiagnostics();
+      const original = once(back, "message");
+      front.send(JSON.stringify({ type: "req", id: "same-id", method: "chat.history" }));
+      await original;
+      const first = proxy.snapshot().readiness;
+      const next = once(backend, "connection");
+      const replacement = new WebSocket(proxy.url);
+      try {
+        await acquireGatewayTestWebSocket(replacement, 5000);
+        const [replacementBack] = (await next) as [WebSocket];
+        const received = once(replacementBack, "message");
+        replacement.send(JSON.stringify({ type: "req", id: "same-id", method: "health" }));
+        await received;
+        const oldResponse = once(front, "message");
+        back.send(JSON.stringify({ type: "res", id: "same-id", ok: false }));
+        await oldResponse;
+        await closeGatewayTestWebSocket(front);
+        expect(proxy.snapshot().readiness).toMatchObject({
+          connectionOrdinal: 2,
+          replacements: 1,
+          frontClosed: false,
+          upstreamClosed: false,
+          requestsSeen: 1,
+          responsesRecorded: 0,
+          requests: [{ ordinal: 1, method: "health", requestedAtMs: expect.any(Number) }],
+        });
+        const response = once(replacement, "message");
+        replacementBack.send(JSON.stringify({ type: "res", id: "same-id", ok: true }));
+        await response;
+        expect(proxy.snapshot().readiness!.requests[0]).toMatchObject({ ok: true });
+        expect(first!.requests[0]).not.toHaveProperty("ok");
+        await closeGatewayTestWebSocket(replacement);
+        await proxy.stop();
+        expect(proxy.snapshot().readiness).toMatchObject({
+          frontClosed: true,
+          upstreamClosed: true,
+        });
+      } finally {
+        await closeGatewayTestWebSocket(replacement);
+      }
     });
   });
 });

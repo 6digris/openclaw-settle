@@ -20,7 +20,21 @@ import { pathToFileURL } from "node:url";
  *   "EHOSTUNREACH" | "ENETUNREACH" | "EPIPE"} SocketErrorCode
  * @typedef {{ state?: SocketState, localTermination?: TerminationCause,
  *   errorCode?: SocketErrorCode }} FirstConnectionFacts
+ * @typedef {{ ordinal: number, method: string, requestedAtMs: number,
+ *   respondedAtMs?: number, ok?: boolean }} ReadinessRequest
  */
+
+const READINESS_METHODS = new Set([
+  "users.self",
+  "agents.list",
+  "sessions.messages.subscribe",
+  "chat.history",
+  "sessions.branches.list",
+  "health",
+  "sessions.list",
+  "sessions.patch",
+  "models.list",
+]);
 
 /**
  * @param {{
@@ -59,6 +73,71 @@ export async function startQaGatewayRpcProxy({
   /** @type {((error?: Error) => void) | undefined} */
   let heldWaiter;
   let mediaTask;
+  /** @type {{ connection: number, startedAt: number, connectionOrdinal: number,
+   * replacements: number, frontClosed?: boolean, upstreamClosed?: boolean,
+   * frozen: boolean, requestsSeen: number, responsesRecorded: number, truncated: boolean,
+   * requests: ReadinessRequest[], pending: Map<string, ReadinessRequest> } | undefined} */
+  let readiness;
+  const startReadinessDiagnostics = () => {
+    const peer = [...peers].find((candidate) => candidate.id === connection);
+    readiness = {
+      connection,
+      startedAt: performance.now(),
+      connectionOrdinal: connection > 0 ? 1 : 0,
+      replacements: 0,
+      frontClosed: peer ? peer.front.readyState === WebSocket.CLOSED : undefined,
+      upstreamClosed: peer ? peer.back.readyState === WebSocket.CLOSED : undefined,
+      frozen: false,
+      requestsSeen: 0,
+      responsesRecorded: 0,
+      truncated: false,
+      requests: [],
+      pending: new Map(),
+    };
+  };
+  const freezeReadinessDiagnostics = () => {
+    if (readiness) {
+      readiness.frozen = true;
+      readiness.pending.clear();
+    }
+  };
+  // A separate bounded diagnostic window never spends or throws through the proof journal.
+  /** @param {number} id @param {string} requestId @param {string} method */
+  const recordReadinessRequest = (id, requestId, method) => {
+    if (
+      !readiness ||
+      readiness.frozen ||
+      readiness.connection !== id ||
+      !READINESS_METHODS.has(method)
+    ) {
+      return;
+    }
+    readiness.requestsSeen += 1;
+    if (readiness.requests.length >= 32) {
+      readiness.truncated = true;
+      return;
+    }
+    const entry = {
+      ordinal: readiness.requestsSeen,
+      method,
+      requestedAtMs: Math.max(0, Math.floor(performance.now() - readiness.startedAt)),
+    };
+    readiness.requests.push(entry);
+    readiness.pending.set(requestId, entry);
+  };
+  /** @param {number} id @param {string} requestId @param {unknown} ok */
+  const recordReadinessResponse = (id, requestId, ok) => {
+    if (!readiness || readiness.frozen || readiness.connection !== id) {
+      return;
+    }
+    const entry = readiness.pending.get(requestId);
+    if (entry) {
+      readiness.pending.delete(requestId);
+      entry.respondedAtMs = Math.max(0, Math.floor(performance.now() - readiness.startedAt));
+      entry.ok = typeof ok === "boolean" ? ok : undefined;
+      readiness.responsesRecorded += 1;
+    }
+  };
   /** @type {Array<{ tag: FirstConnectionTag, elapsedMs: number } & FirstConnectionFacts>} */
   const firstConnection = [];
   /** @type {{ front: TerminationCause, upstream: TerminationCause }} */
@@ -141,6 +220,17 @@ export async function startQaGatewayRpcProxy({
       }),
     ),
     media: { ...media },
+    readiness: readiness && {
+      connectionOrdinal: readiness.connectionOrdinal,
+      replacements: readiness.replacements,
+      frontClosed: readiness.frontClosed,
+      upstreamClosed: readiness.upstreamClosed,
+      frozen: readiness.frozen,
+      requestsSeen: readiness.requestsSeen,
+      responsesRecorded: readiness.responsesRecorded,
+      truncated: readiness.truncated,
+      requests: readiness.requests.map((entry) => ({ ...entry })),
+    },
     held: Boolean(held),
     heldResponse: heldResponse?.summary,
     pid: process.pid,
@@ -326,6 +416,22 @@ export async function startQaGatewayRpcProxy({
   const sockets = new WebSocketServer({ server });
   sockets.on("connection", (front) => {
     const id = ++connection;
+    if (readiness && !readiness.frozen) {
+      // Older sockets may still reply or close; neither may update their replacement's trace.
+      readiness = {
+        ...readiness,
+        connection: id,
+        connectionOrdinal: readiness.connectionOrdinal + 1,
+        replacements: readiness.replacements + (readiness.connection > 0 ? 1 : 0),
+        frontClosed: false,
+        upstreamClosed: false,
+        requestsSeen: 0,
+        responsesRecorded: 0,
+        truncated: false,
+        requests: [],
+        pending: new Map(),
+      };
+    }
     if (id === 1) {
       firstConnectionStartedAt = performance.now();
     }
@@ -351,6 +457,7 @@ export async function startQaGatewayRpcProxy({
           return;
         }
         methods.set(frame.id, frame.method);
+        recordReadinessRequest(id, frame.id, frame.method);
         if (observedMethods.includes(frame.method)) {
           record("rpc-request", {
             connection: id,
@@ -400,6 +507,7 @@ export async function startQaGatewayRpcProxy({
       }
       const method = methods.get(frame.id);
       if (frame.type === "res") {
+        recordReadinessResponse(id, frame.id, frame.ok);
         methods.delete(frame.id);
         if (observedMethods.includes(method)) {
           record("rpc-response", {
@@ -507,6 +615,9 @@ export async function startQaGatewayRpcProxy({
       }
     });
     front.on("close", () => {
+      if (readiness?.connection === id && !readiness.frozen) {
+        readiness.frontClosed = true;
+      }
       recordFirstConnection(id, "front-close");
       recordFirstTermination(id, "upstream", back, "front-close");
       back.terminate();
@@ -516,6 +627,9 @@ export async function startQaGatewayRpcProxy({
       }
     });
     back.on("close", () => {
+      if (readiness?.connection === id && !readiness.frozen) {
+        readiness.upstreamClosed = true;
+      }
       recordFirstConnection(id, "upstream-close");
       recordFirstTermination(id, "front", front, "upstream-close");
       front.terminate();
@@ -572,6 +686,8 @@ export async function startQaGatewayRpcProxy({
     url: `ws://127.0.0.1:${address.port}`,
     controlUrl: `http://127.0.0.1:${address.port}/__fixture`,
     snapshot,
+    startReadinessDiagnostics,
+    freezeReadinessDiagnostics,
     stop,
   };
 }
