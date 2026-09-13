@@ -192,6 +192,10 @@ inter-session user turns that only have provenance metadata.
 - OpenAI Responses-family replay preserves canonical `call_*|fc_*`
   same-model reasoning pairs, but deterministically normalizes malformed or
   overlong `call_id`/function-call item ids before pi-ai payload conversion.
+- Historical function names outside the Responses name format are encoded as
+  bounded, deterministic wire names with a hash of the original name. This lets
+  qualified MCP calls replay without changing stored history, valid function
+  names, or call/result pairing. The encoding does not advertise unavailable tools.
 - Tool result pairing repair may move real matched outputs and synthesize
   Codex-style `aborted` outputs for missing tool calls.
 - No turn validation or reordering; no thought signature stripping.

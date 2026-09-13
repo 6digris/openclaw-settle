@@ -148,6 +148,18 @@ function normalizeResponsesReplayItemId(
   return `${prefix}_${shortHash(id)}`;
 }
 
+function normalizeResponsesReplayToolName(name: string): string {
+  if (/^[a-zA-Z0-9_-]+$/.test(name)) {
+    return name;
+  }
+  // Foreign history can contain qualified MCP names. Encode only the wire copy;
+  // hashing the original avoids collapsing punctuation variants, and keeps the
+  // replay prefix stable when the current tool catalog or history window changes.
+  const suffix = `_${shortHash(name)}`;
+  const prefix = name.replace(/[^a-zA-Z0-9_-]/g, "_") || "tool";
+  return `${prefix.slice(0, 64 - suffix.length)}${suffix}`;
+}
+
 export function encodeTextSignatureV1(id: string, phase?: "commentary" | "final_answer"): string {
   return JSON.stringify({ v: 1, id, ...(phase ? { phase } : {}) });
 }
@@ -516,7 +528,7 @@ function convertResponsesMessagesWithStyle(
             type: "function_call",
             ...(itemId ? { id: itemId } : {}),
             call_id: callId,
-            name: block.name,
+            name: normalizeResponsesReplayToolName(block.name),
             ...(block.async ? { async: true } : {}),
             arguments: providerStyle
               ? JSON.stringify(block.arguments)
