@@ -663,6 +663,53 @@ class WearChatEventFlowTest {
     }
 
   @Test
+  fun identifiedTerminalCompletionUsesRewrittenCanonicalHistory() {
+    for (terminalState in listOf("error", "final", "aborted")) {
+      for (canonicalText in listOf("Canonical rewritten reply", "X")) {
+        withFlow { flow ->
+          flow.send()
+          flow.observeReplyCompletion()
+          flow.historyMessages = """[{"id":"owned-event","role":"assistant","content":"Original event reply"}]"""
+          flow.historyRun =
+            buildJsonObject {
+              put("runId", "foreign-live")
+              put("text", "Foreign live text")
+            }
+          flow.emit(
+            terminalState,
+            message =
+              buildJsonObject {
+                put("id", "owned-event")
+                put("role", "assistant")
+                put("content", "Original event reply")
+              },
+          )
+          // Error events do not accept an assistant-message payload as ownership evidence.
+          assertEquals(terminalState != "error", flow.state.replyCompletion?.message != null)
+          assertEquals("foreign-live", flow.state.activeRunId)
+          assertTrue("Completion must wait while the canonical snapshot is active", flow.completedReplies.isEmpty())
+
+          flow.historyMessages = """[{"id":"owned-event","role":"assistant","content":"$canonicalText"},{"id":"foreign-tail","role":"assistant","content":"Foreign canonical tail"}]"""
+          flow.historyRun = null
+          flow.emit("final", eventRunId = "foreign-live")
+
+          assertEquals(
+            canonicalText,
+            flow.state.messages
+              .first { it.id == "owned-event" }
+              .text,
+          )
+          assertEquals(
+            "$terminalState/$canonicalText: only accepted terminal-message IDs select canonical text, never the foreign tail",
+            listOf(canonicalText.takeUnless { terminalState == "error" }),
+            flow.completedReplies.map { it?.text },
+          )
+        }
+      }
+    }
+  }
+
+  @Test
   fun ownedCanonicalHistoryBeforeForeignTailSettlesAMissedTerminal() =
     withFlow { flow ->
       flow.send()

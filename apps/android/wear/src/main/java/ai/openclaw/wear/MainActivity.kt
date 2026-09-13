@@ -703,13 +703,17 @@ internal fun WearReplyCompletionEffect(
       return@LaunchedEffect
     }
     val confirmationRunId = awaitingReplyRunId ?: terminal?.runId
+    val terminalMessage = terminal?.message?.takeIf { it.role == "assistant" }
     val ownedMessage =
       if (terminal == null && confirmationRunId == null) {
         snapshot.latestAssistantMessage()
       } else {
         confirmationRunId?.let { runId ->
           snapshot.messages.lastOrNull { it.replyOutcomeForRun(runId) != null }
-        } ?: terminal?.message?.takeIf { it.role == "assistant" }
+        } ?: terminalMessage?.id?.let { id ->
+          // An ID-correlated canonical record may have replaced the terminal payload.
+          snapshot.messages.lastOrNull { it.role == "assistant" && it.id == id }
+        } ?: terminalMessage
       }
     val reply =
       newAssistantReplyForSession(
