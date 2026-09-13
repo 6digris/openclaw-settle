@@ -253,6 +253,7 @@ describe("readConfigFileSnapshot env restoration", () => {
           env,
           () => {
             if (!current) {
+              // oxlint-disable-next-line typescript/only-throw-error -- Authority callbacks may throw non-Error values; preserve the exact synchronous refusal.
               throw refusal;
             }
           },

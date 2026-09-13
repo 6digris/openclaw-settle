@@ -234,9 +234,10 @@ describe("doctor --fix include write ownership", () => {
           expect(ctx.configResult.shouldWriteConfig).toBe(true);
           expect(ctx.configResult.skipWizardMetadataForIncludeWrite).toBe(true);
           const late = refusal?.includes("-after-") === true;
-          const publicPaths = [configPath, parentPath, fragmentPath];
+          const configFiles = [configPath, parentPath, fragmentPath];
+          const publicPaths = [...configFiles];
           if (late) {
-            for (const target of [...publicPaths]) {
+            for (const target of configFiles) {
               for (const suffix of [".bak", ".bak.1", ".bak.2", ".bak.3", ".bak.4"]) {
                 const backupPath = `${target}${suffix}`;
                 await fs.writeFile(backupPath, `retained ${path.basename(backupPath)}\n`);
