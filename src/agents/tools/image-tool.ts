@@ -712,6 +712,8 @@ export function createImageTool(options?: {
   agentDir?: string;
   authProfileStore?: AuthProfileStore;
   workspaceDir?: string;
+  /** Admitted task directory for local image paths, separate from provider context. */
+  cwd?: string;
   preparedModelRuntime?: PreparedModelRuntimeSnapshot;
   sandbox?: ImageSandboxConfig;
   fsPolicy?: ToolFsPolicy;
@@ -727,6 +729,7 @@ export function createImageTool(options?: {
   deferAutoModelResolution?: boolean;
 }): AnyAgentTool | null {
   const agentDir = options?.agentDir?.trim();
+  const mediaWorkspaceDir = options?.cwd ?? options?.workspaceDir;
   const modelHasVision = options?.modelHasVision === true;
   const explicit = coerceImageModelConfig(options?.config);
   if (!agentDir) {
@@ -928,9 +931,7 @@ export function createImageTool(options?: {
           if (normalizedRef.startsWith("~")) {
             return resolveUserPath(normalizedRef);
           }
-          // Resolve relative paths against workspaceDir so agents can reference
-          // workspace-relative paths (e.g. "inbox/photo.png") without needing to
-          // know the absolute workspace location — matching the read tool behaviour.
+          // Match coding-tool paths while retaining the canonical provider workspace.
           if (
             !isDataUrl &&
             !isFileUrl &&
@@ -938,9 +939,9 @@ export function createImageTool(options?: {
             !isMediaStoreUrl &&
             !refInfo.looksLikeWindowsDrivePath &&
             !isAbsolute(normalizedRef) &&
-            options?.workspaceDir
+            mediaWorkspaceDir
           ) {
-            return resolve(options.workspaceDir, normalizedRef);
+            return resolve(mediaWorkspaceDir, normalizedRef);
           }
           return normalizedRef;
         })();
@@ -951,7 +952,7 @@ export function createImageTool(options?: {
         } = await resolveMediaToolReferenceAccess({
           input: resolvedImage,
           isDataUrl,
-          workspaceDir: options?.workspaceDir,
+          workspaceDir: mediaWorkspaceDir,
           sandbox: sandboxConfig,
           rootOptions: {
             workspaceOnly: options?.fsPolicy?.workspaceOnly === true,
