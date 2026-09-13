@@ -137,7 +137,8 @@ vi.mock("./update-command-config.js", async (importOriginal) => ({
   }),
 }));
 
-vi.mock("./update-command-fresh-doctor.js", () => ({
+vi.mock("./update-command-fresh-doctor.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./update-command-fresh-doctor.js")>()),
   completePostCorePluginUpdate: vi.fn(async () => {
     record("complete");
     return {
@@ -212,6 +213,9 @@ describe("update plugin lifecycle lease boundaries", () => {
     mocks.databasePath = path.join(dirs.make("update-lease-order-"), "state", "openclaw.sqlite");
     vi.clearAllMocks();
     vi.unstubAllEnvs();
+    // This lease-only fixture never selects a host's native service. The process
+    // admission fixture separately exercises canonical selection and real inventory.
+    vi.stubEnv("OPENCLAW_HOME", path.dirname(mocks.databasePath));
     mocks.events = [];
     mocks.leaseActive = false;
     mocks.doctorWarnings = [];

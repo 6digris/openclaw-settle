@@ -124,11 +124,14 @@ export async function withUpdateInProgressEnv<T>(
 }
 
 export function stripGatewayServiceMarkerEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const resolvedEnv = { ...env };
-  delete resolvedEnv.OPENCLAW_SERVICE_MARKER;
-  delete resolvedEnv.OPENCLAW_SERVICE_KIND;
-  delete resolvedEnv[GATEWAY_SERVICE_RUNTIME_PID_ENV];
-  return resolvedEnv;
+  return mergeProcessEnv([
+    env,
+    {
+      OPENCLAW_SERVICE_MARKER: undefined,
+      OPENCLAW_SERVICE_KIND: undefined,
+      [GATEWAY_SERVICE_RUNTIME_PID_ENV]: undefined,
+    },
+  ]);
 }
 
 export function disableUpdatedPackageCompileCacheEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {

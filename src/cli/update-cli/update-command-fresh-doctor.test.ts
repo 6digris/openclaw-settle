@@ -6,6 +6,8 @@ import { withTempHome } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { createConfigIO } from "../../config/io.js";
+import { GATEWAY_SERVICE_RUNTIME_PID_ENV } from "../../daemon/constants.js";
+import { mergeProcessEnv } from "../../infra/process-env.js";
 import {
   consumeUpdatePostInstallDoctorResult,
   createDeferredConfiguredPluginRepairDoctorResult,
@@ -52,8 +54,10 @@ vi.mock("./shared.js", async (importOriginal) => ({
 
 import {
   completePostCorePluginUpdate,
+  resolveUpdateFinalizationDoctorEnv,
   runUpdateFinalizationDoctorInFreshProcess,
 } from "./update-command-fresh-doctor.js";
+import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
 
 const pluginUpdate: PostCorePluginUpdateResult = {
   status: "ok",
@@ -95,6 +99,7 @@ const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 afterEach(() => {
   closeOpenClawStateDatabaseForTest();
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
 });
 
@@ -121,6 +126,81 @@ describe("post-plugin update readiness", () => {
       expect.arrayContaining(["doctor", "--repair"]),
       expect.objectContaining({ timeoutMs }),
     );
+  });
+
+  it.each(["pre-plugin", "post-plugin"] as const)(
+    "shares the effective %s environment between admission and the fresh child",
+    async (phase) => {
+      vi.stubEnv("OPENCLAW_SERVICE_REPAIR_POLICY", "external");
+      vi.stubEnv("OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION", "1");
+      vi.stubEnv("OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_SERVICE_REPAIR", "1");
+      vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_CONVERGENCE", "inherited");
+      vi.stubEnv("OPENCLAW_SERVICE_MARKER", "openclaw");
+      vi.stubEnv("OPENCLAW_SERVICE_KIND", "gateway");
+      vi.stubEnv(GATEWAY_SERVICE_RUNTIME_PID_ENV, "1234");
+      const before = { ...process.env };
+      const env = resolveUpdateFinalizationDoctorEnv(phase);
+      expect(env).toMatchObject({
+        OPENCLAW_UPDATE_IN_PROGRESS: "1",
+        OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION: "0",
+        OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_SERVICE_REPAIR: "0",
+        OPENCLAW_UPDATE_PARENT_SUPPORTS_DOCTOR_CONFIG_WRITE: "1",
+        OPENCLAW_UPDATE_DEFER_CONFIGURED_PLUGIN_INSTALL_REPAIR: "1",
+        NODE_DISABLE_COMPILE_CACHE: "1",
+      });
+      for (const key of [
+        "OPENCLAW_SERVICE_REPAIR_POLICY",
+        "OPENCLAW_SERVICE_MARKER",
+        "OPENCLAW_SERVICE_KIND",
+        GATEWAY_SERVICE_RUNTIME_PID_ENV,
+      ]) {
+        expect(Object.hasOwn(env, key), key).toBe(false);
+      }
+      expect(env.OPENCLAW_UPDATE_POST_CORE_CONVERGENCE).toBe(
+        phase === "post-plugin" ? "1" : undefined,
+      );
+      await expect(
+        withOwnedManagedUpdateEnv(env, async () => {
+          expect({ ...process.env }).toEqual(env);
+          throw new Error("admission refused");
+        }),
+      ).rejects.toThrow("admission refused");
+      expect({ ...process.env }).toEqual(before);
+
+      await runUpdateFinalizationDoctorInFreshProcess({ ...updateOptions, phase });
+      const options = mocks.runExec.mock.calls[0]?.[2];
+      const effective = mergeProcessEnv([options.baseEnv, options.env]);
+      delete effective[UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV];
+      expect(effective).toEqual(env);
+      expect({ ...process.env }).toEqual(before);
+    },
+  );
+
+  it("clears inherited Windows policy and service markers using spawn's case rules", () => {
+    vi.stubEnv("OPENCLAW_SERVICE_REPAIR_POLICY", undefined);
+    vi.stubEnv("openclaw_service_repair_policy", "external");
+    vi.stubEnv("OPENCLAW_SERVICE_MARKER", undefined);
+    vi.stubEnv("openclaw_service_marker", "openclaw");
+    vi.stubEnv("OPENCLAW_SERVICE_KIND", undefined);
+    vi.stubEnv("openclaw_service_kind", "gateway");
+    vi.stubEnv(GATEWAY_SERVICE_RUNTIME_PID_ENV, undefined);
+    vi.stubEnv(GATEWAY_SERVICE_RUNTIME_PID_ENV.toLowerCase(), "1234");
+    vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_CONVERGENCE", undefined);
+    vi.stubEnv("openclaw_update_post_core_convergence", "1");
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+
+    const env = resolveUpdateFinalizationDoctorEnv("pre-plugin");
+    const keys = Object.keys(env).map((key) => key.toUpperCase());
+    for (const key of [
+      "OPENCLAW_SERVICE_REPAIR_POLICY",
+      "OPENCLAW_SERVICE_MARKER",
+      "OPENCLAW_SERVICE_KIND",
+      GATEWAY_SERVICE_RUNTIME_PID_ENV,
+      "OPENCLAW_UPDATE_POST_CORE_CONVERGENCE",
+    ]) {
+      expect(keys, key).not.toContain(key);
+    }
+    expect(env.OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION).toBe("0");
   });
 
   it.each([undefined, 5_000])(
@@ -198,7 +278,7 @@ describe("post-plugin update readiness", () => {
         "--yes",
       ]);
       expect(mocks.runExec.mock.calls[0]?.[2]).toMatchObject({
-        env: { OPENCLAW_UPDATE_POST_CORE_CONVERGENCE: "1" },
+        baseEnv: { OPENCLAW_UPDATE_POST_CORE_CONVERGENCE: "1" },
       });
     });
   });

@@ -114,7 +114,7 @@ function registerUpdateFinalizationCommand(update: Command, name: string, hidden
           ["openclaw update repair --json", "JSON output for automation."],
         ])}\n\n${theme.heading("Notes:")}\n${theme.muted(
           "- Reconciles abandoned runs when the Gateway is healthy; otherwise repairs post-update state",
-        )}\n${theme.muted("- Runs doctor repair and plugin convergence, but never restarts the Gateway")}\n\n${theme.muted(
+        )}\n${theme.muted("- Stop a running managed Gateway through its service owner before full repair")}\n${theme.muted("- Repair never stops or restarts the Gateway; healthy ledger-only reconciliation can run online")}\n\n${theme.muted(
           "Docs:",
         )} ${formatDocsLink("/cli/update", "docs.openclaw.ai/cli/update")}`,
     )

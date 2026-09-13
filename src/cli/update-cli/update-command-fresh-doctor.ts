@@ -9,6 +9,7 @@ import { readConfigFileSnapshot } from "../../config/config.js";
 import { resolveStateDir } from "../../config/paths.js";
 import type { ConfigFileSnapshot } from "../../config/types.openclaw.js";
 import { resolveGatewayInstallEntrypoint } from "../../daemon/gateway-entrypoint.js";
+import { mergeProcessEnv } from "../../infra/process-env.js";
 import { hasDeferredUpdateModelRetirement } from "../../infra/update-deferred-model-retirement.js";
 import {
   consumeUpdatePostInstallDoctorResult,
@@ -44,6 +45,22 @@ import { captureUpdateFinalizationDoctorOutput } from "./update-finalization-out
 type UpdateDoctorPhase = "pre-plugin" | "post-plugin";
 // These checks remain bounded even when repair Doctor has no automatic deadline.
 const POST_PLUGIN_CHECK_TIMEOUT_MS = 180_000;
+
+/** Admission and the fresh child must inspect the same installation and service policy. */
+export function resolveUpdateFinalizationDoctorEnv(phase: UpdateDoctorPhase): NodeJS.ProcessEnv {
+  return mergeProcessEnv([
+    stripGatewayServiceMarkerEnv(disableUpdatedPackageCompileCacheEnv(process.env)),
+    {
+      // The updater owns activation; inherited phase policy cannot grant Doctor service repair.
+      ...buildUpdateDoctorEnv({
+        allowGatewayServiceRepair: false,
+        allowGatewayActivation: false,
+        deferConfiguredPluginInstallRepair: true,
+      }),
+      [UPDATE_POST_CORE_CONVERGENCE_ENV]: phase === "post-plugin" ? "1" : undefined,
+    },
+  ]);
+}
 
 export async function withPrePluginUpdateDoctorEnv<T>(run: () => Promise<T>): Promise<T> {
   const previousValues = [
@@ -127,8 +144,7 @@ export async function runUpdateFinalizationDoctorInFreshProcess(params: {
     ...(params.workspaceSuggestions ? [] : ["--no-workspace-suggestions"]),
     ...(params.yes ? ["--yes"] : []),
   ];
-  const baseEnv = stripGatewayServiceMarkerEnv(disableUpdatedPackageCompileCacheEnv(process.env));
-  delete baseEnv[UPDATE_POST_CORE_CONVERGENCE_ENV];
+  const baseEnv = resolveUpdateFinalizationDoctorEnv(params.phase);
   const doctorResultPath = createUpdatePostInstallDoctorResultPath();
   let doctorResult: UpdatePostInstallDoctorResult | null = null;
   let result: { stdout?: unknown; stderr?: unknown } | undefined;
@@ -142,14 +158,6 @@ export async function runUpdateFinalizationDoctorInFreshProcess(params: {
       baseEnv,
       env: {
         [UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV]: doctorResultPath,
-        // The outer updater owns service refresh and activation after every
-        // migration finishes; a fresh Doctor must not resume its parked service.
-        ...buildUpdateDoctorEnv({
-          allowGatewayServiceRepair: false,
-          allowGatewayActivation: false,
-          deferConfiguredPluginInstallRepair: true,
-        }),
-        ...(params.phase === "post-plugin" ? { [UPDATE_POST_CORE_CONVERGENCE_ENV]: "1" } : {}),
       },
     });
   } catch (error) {

@@ -66,8 +66,12 @@ succeeds.
 
 Dry runs and commands rejected by the initial argument, external-supervisor,
 state-store ownership, handoff identity, or immutable-config checks do not
-collect diagnostics or start an agent. Once those checks pass, failed metadata,
-schema, runtime, and managed-service checks use the failure actions above even
+collect diagnostics or start an agent. When Doctor manages the selected Gateway
+service, full `update repair` checks that service before admission: a running
+service or unverifiable ownership produces a refusal without creating a new run
+or starting triage.
+Healthy ledger-only reconciliation can still run online. Once admission passes,
+failed metadata, schema, runtime, and managed-service checks use the failure actions above even
 when installation is blocked. This includes an update that cannot safely stop
 its parent Gateway process. Diagnosis preserves that refusal: it does not stop the
 Gateway, retry the update, or bypass safety checks. See
@@ -127,6 +131,9 @@ incomplete, repair also uses full finalization. If that
 work needs maintenance while the managed service is
 running, stop the service through its owner before retrying. Doctor cannot stop
 or restart the service on the update parent's behalf.
+Full repair checks this managed-service prerequisite before recording a new run.
+Doctor checks again when maintenance begins; a managed service that starts after
+admission can still cause a recorded repair failure.
 Successful full finalization then reconciles the selected stale rows before
 reporting completion. Failed convergence leaves the selected rows intact. If any
 selected run resumes before reconciliation, the whole selection is preserved.

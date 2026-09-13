@@ -44,6 +44,7 @@ import {
 } from "./update-command-config.js";
 import {
   completePostCorePluginUpdate,
+  resolveUpdateFinalizationDoctorEnv,
   runUpdateFinalizationDoctorInFreshProcess,
   withPrePluginUpdateDoctorEnv,
 } from "./update-command-fresh-doctor.js";
@@ -54,7 +55,11 @@ import {
 } from "./update-command-plugins.js";
 import { UpdateCommandFailure } from "./update-command-result.js";
 import { completeSourceUpdateRuntime } from "./update-command-runtime.js";
-import { resolveServiceRefreshEnv, withUpdateInProgressEnv } from "./update-command-service-env.js";
+import {
+  resolveServiceRefreshEnv,
+  withOwnedManagedUpdateEnv,
+  withUpdateInProgressEnv,
+} from "./update-command-service-env.js";
 import { reportPreMutationUpdateResult } from "./update-command-terminal.js";
 import { withUpdateFailureTriage } from "./update-command-triage.js";
 import { UpdateFinalizationLifecycle } from "./update-finalization-lifecycle.js";
@@ -93,8 +98,18 @@ export async function updateFinalizeCommand(
             recoverOrphanedSidecars: false,
           });
           await retainCliProcessJobUntilExit();
+          const root = await resolveUpdateRoot();
+          const { inspectDoctorMaintenanceService } =
+            await import("../../commands/doctor-maintenance.js");
+          await withOwnedManagedUpdateEnv(resolveUpdateFinalizationDoctorEnv("pre-plugin"), () =>
+            inspectDoctorMaintenanceService({
+              root,
+              parentActivation: false,
+              timeoutMs: lifecycle.budget("preflight"),
+            }),
+          );
           lifecycle.attachLedger();
-          return await resolveUpdateRoot();
+          return root;
         }),
       );
       lifecycle.root = root;

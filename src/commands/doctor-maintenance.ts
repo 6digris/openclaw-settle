@@ -55,6 +55,47 @@ function assertDoctorMaintenanceInspection(
   );
 }
 
+/** Inventory is a prerequisite, never a lease: Doctor rechecks before taking maintenance. */
+export async function inspectDoctorMaintenanceService(params: {
+  root: string | null;
+  parentActivation: boolean | undefined;
+  timeoutMs?: number;
+}): Promise<PreManagedServiceStop | undefined> {
+  const env = { ...process.env };
+  if (
+    !params.root ||
+    !isDefaultInstallIdentity(env) ||
+    isServiceRepairExternallyManaged() ||
+    !(await shouldManageGatewayService(env))
+  ) {
+    return undefined;
+  }
+  const { maybeStopManagedServiceBeforeMutableUpdate } =
+    await import("../cli/update-cli/update-command-service-maintenance.js");
+  const inspection = await maybeStopManagedServiceBeforeMutableUpdate({
+    updateInstallKind: "package",
+    root: params.root,
+    shouldRestart: true,
+    jsonMode: true,
+    phase: "inspect",
+    timeoutMs: params.timeoutMs,
+  });
+  assertDoctorMaintenanceInspection(inspection, env);
+  if (
+    params.parentActivation !== undefined &&
+    inspection.serviceUpdateVerdict?.kind !== "absent" &&
+    inspection.offline !== true
+  ) {
+    throw new Error(
+      "The update parent owns Gateway activation. Stop the service through its owner before retrying the update; Doctor will not stop or restart it.",
+    );
+  }
+  if (inspection.serviceUpdateVerdict?.kind === "owned" && inspection.serviceEnv) {
+    assertDoctorServiceSelection(env, inspection.serviceEnv);
+  }
+  return inspection;
+}
+
 export async function beginDoctorMaintenance(params: {
   options: DoctorOptions;
   root: string | null;
@@ -99,35 +140,14 @@ export async function beginDoctorMaintenance(params: {
     }
   };
   try {
-    if (
-      params.root &&
-      isDefaultInstallIdentity(env) &&
-      !isServiceRepairExternallyManaged() &&
-      (await shouldManageGatewayService(env))
-    ) {
+    const inspection = await inspectDoctorMaintenanceService({
+      root: params.root,
+      parentActivation,
+    });
+    if (inspection && params.root) {
       serviceMaintenance = await import("../cli/update-cli/update-command-service-maintenance.js");
       const { maybeStopManagedServiceBeforeMutableUpdate } = serviceMaintenance;
-      const inspection = await maybeStopManagedServiceBeforeMutableUpdate({
-        updateInstallKind: "package",
-        root: params.root,
-        shouldRestart: true,
-        jsonMode: true,
-        phase: "inspect",
-      });
-      assertDoctorMaintenanceInspection(inspection, env);
-      if (
-        parentActivation !== undefined &&
-        inspection.serviceUpdateVerdict?.kind !== "absent" &&
-        inspection.offline !== true
-      ) {
-        throw new Error(
-          "The update parent owns Gateway activation. Stop the service through its owner before retrying the update; Doctor will not stop or restart it.",
-        );
-      }
       if (inspection.serviceUpdateVerdict?.kind === "owned") {
-        if (inspection.serviceEnv) {
-          assertDoctorServiceSelection(env, inspection.serviceEnv);
-        }
         // An explicit update policy leaves activation with the parent. Ordinary
         // Doctor pins and restores the same launcher; neither path rewrites it.
         if (parentActivation === undefined) {

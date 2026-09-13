@@ -47,6 +47,151 @@ const finalizeScenarios = [
   "borrowed-output",
 ];
 
+// Windows offline proof uses its native numeric task cache; the service adapter
+// process fixture covers POSIX while native-owner tests cover that sibling.
+describe.skipIf(process.platform === "win32")("update repair service admission", () => {
+  it.each(["online", "late-online"] as const)(
+    "%s preserves the real config/ledger boundary and never changes service state",
+    async (scenario) => {
+      const home = tempDirs.make("openclaw-repair-admission-");
+      const state = path.join(home, ".openclaw");
+      const configPath = path.join(state, "openclaw.json");
+      await fs.mkdir(state);
+      const configBefore = `${JSON.stringify({
+        gateway: { mode: "local" },
+        plugins: { enabled: false, allow: [] },
+        update: { channel: "stable" },
+        logging: { file: path.join(home, "openclaw.log") },
+      })}\n`;
+      await fs.writeFile(configPath, configBefore);
+      const fixtureUrl = new URL(
+        "./update-repair-service-preflight.test-support.ts",
+        import.meta.url,
+      );
+      const result = await runCliProcessChild({
+        nodeArgs: [
+          "--import",
+          "tsx",
+          "--input-type=module",
+          "-e",
+          `import { runRepairServicePreflightFixture } from ${JSON.stringify(fixtureUrl.href)};
+await runRepairServicePreflightFixture(${JSON.stringify({ entrypoints: runtimeProcessEntrypoints, scenario })});`,
+        ],
+        env: {
+          ESBUILD_WORKER_THREADS: "0",
+          PATH: path.dirname(process.execPath),
+          HOME: home,
+          USERPROFILE: home,
+          OPENCLAW_STATE_DIR: state,
+          OPENCLAW_CONFIG_PATH: configPath,
+          // Fresh Doctor clears this inherited policy; admission must do the same.
+          OPENCLAW_SERVICE_REPAIR_POLICY: "external",
+          XDG_CONFIG_HOME: path.join(home, "xdg-config"),
+          XDG_DATA_HOME: path.join(home, "xdg-data"),
+          XDG_CACHE_HOME: path.join(home, "xdg-cache"),
+          XDG_STATE_HOME: path.join(home, "xdg-state"),
+          XDG_RUNTIME_DIR: path.join(home, "xdg-runtime"),
+          TMPDIR: childTempDir,
+          NODE_DISABLE_COMPILE_CACHE: "1",
+          NO_COLOR: "1",
+          TERM: "dumb",
+        },
+      });
+      const failure = formatCliProcessFailure({
+        reason: `service admission ${scenario}`,
+        ...result,
+      });
+      expect(result.signal, failure).toBeNull();
+      expect(result.code, failure).toBe(1);
+      const activationRefusal =
+        "The update parent owns Gateway activation. Stop the service through its owner before retrying the update; Doctor will not stop or restart it.";
+      const output = JSON.parse(result.stdout);
+      expect(output, failure).toMatchObject({
+        ok: false,
+        error: {
+          type: "cli_error",
+          message: expect.stringContaining(
+            scenario === "online" ? activationRefusal : "Updated pre-plugin Doctor failed:",
+          ),
+        },
+      });
+      const events = result.stderr
+        .split("\n")
+        .filter((line) => line.startsWith("repair-fixture "))
+        .map((line) => JSON.parse(line.slice("repair-fixture ".length)));
+      expect(events, failure).toContainEqual({ event: "eligible-selection", role: "parent" });
+      expect(
+        events.filter((event) => event.event === "service-command"),
+        failure,
+      ).toEqual(
+        (scenario === "online" ? ["parent"] : ["parent", "doctor"]).map((role) => ({
+          event: "service-command",
+          role,
+          activation: "0",
+          serviceRepair: "0",
+          external: null,
+          postCore: null,
+          marker: null,
+          kind: null,
+          runtimePid: null,
+        })),
+      );
+      expect(
+        events.filter((event) => event.event.startsWith("mutation:")),
+        failure,
+      ).toEqual([]);
+      const runs = listUpdateRuns({}, { env: { HOME: home, OPENCLAW_STATE_DIR: state } });
+      if (scenario === "online") {
+        expect(
+          events.filter((event) => event.role === "doctor"),
+          failure,
+        ).toEqual([]);
+        expect(runs, failure).toEqual([]);
+        expect(await fs.readFile(configPath, "utf8"), failure).toBe(configBefore);
+        await expect(fs.stat(`${configPath}.pre-update`)).rejects.toMatchObject({ code: "ENOENT" });
+        expect(result.stderr, failure).not.toContain("Preparing triage diagnostics");
+      } else {
+        // JSON carries the bounded child failure; its full diagnostics preserve
+        // the maintenance refusal even when it falls outside that excerpt.
+        expect(result.stderr, failure).toContain(activationRefusal);
+        expect(events, failure).toContainEqual({ event: "eligible-selection", role: "doctor" });
+        expect(events, failure).toContainEqual({
+          event: "doctor-entry",
+          role: "doctor",
+          runs: 1,
+          channel: "dev",
+        });
+        expect(
+          events.filter((event) => event.event === "service-runtime"),
+          failure,
+        ).toEqual([
+          { event: "service-runtime", role: "parent", status: "stopped" },
+          { event: "service-runtime", role: "doctor", status: "running" },
+        ]);
+        expect(runs, failure).toHaveLength(1);
+        expect(runs[0], failure).toMatchObject({
+          status: "failed",
+          steps: expect.arrayContaining([
+            expect.objectContaining({ step: "finalize:preflight", status: "completed" }),
+            expect.objectContaining({
+              step: "finalize:targetConfigValidation",
+              status: "completed",
+            }),
+            expect.objectContaining({ step: "finalize:doctor", status: "failed" }),
+          ]),
+        });
+        expect(JSON.parse(await fs.readFile(configPath, "utf8")).update.channel, failure).toBe(
+          "dev",
+        );
+        expect(
+          JSON.parse(await fs.readFile(`${configPath}.pre-update`, "utf8")).update.channel,
+          failure,
+        ).toBe("dev");
+      }
+    },
+  );
+});
+
 describe.each(["repair", "finalize"])("update %s process output", (command) => {
   // Both spellings share the finalization action; one matrix covers its output modes.
   it.each(command === "repair" ? scenarios : finalizeScenarios)(
