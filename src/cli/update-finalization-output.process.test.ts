@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, assert, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { runtimeProcessEntrypoints } from "../infra/runtime-process-entrypoints.js";
 import { listUpdateRuns } from "../infra/update-run-ledger.js";
@@ -186,7 +186,9 @@ await runRepairServicePreflightFixture(${JSON.stringify({ entrypoints: runtimePr
         );
         expect(result.stderr, failure).not.toContain(activationRefusal);
         expect(runs, failure).toHaveLength(1);
-        expect(runs[0], failure).toMatchObject({
+        const [run] = runs;
+        assert(run, failure);
+        expect(run, failure).toMatchObject({
           runId: owner.runId,
           status: "running",
           finishedAtMs: null,
@@ -198,11 +200,11 @@ await runRepairServicePreflightFixture(${JSON.stringify({ entrypoints: runtimePr
           ]),
         });
         expect(
-          runs[0].steps.filter((step) => step.step === "finalize:repair-continuation"),
+          run.steps.filter((step) => step.step === "finalize:repair-continuation"),
           failure,
         ).toHaveLength(1);
         expect(
-          runs[0].steps.some((step) => step.step === "finalize:repair-takeover"),
+          run.steps.some((step) => step.step === "finalize:repair-takeover"),
           failure,
         ).toBe(false);
         expect(JSON.parse(await fs.readFile(configPath, "utf8")).update.channel, failure).toBe(
@@ -243,8 +245,10 @@ await runRepairServicePreflightFixture(${JSON.stringify({ entrypoints: runtimePr
         // The standalone run is live but not an inherited repair continuation.
         // Full stderr retains its current driver refusal beyond bounded JSON.
         expect(runs, failure).toHaveLength(1);
+        const [run] = runs;
+        assert(run, failure);
         expect(result.stderr, failure).toContain(
-          `Update ${runs[0].runId} is still in progress (requested); driver PID ${runs[0].origin.driver?.pid}`,
+          `Update ${run.runId} is still in progress (requested); driver PID ${run.origin.driver?.pid}`,
         );
         expect(result.stderr, failure).toContain("liveness: alive");
         expect(result.stderr, failure).toContain(
@@ -264,7 +268,7 @@ await runRepairServicePreflightFixture(${JSON.stringify({ entrypoints: runtimePr
           { event: "service-runtime", role: "parent", status: "stopped" },
           { event: "service-runtime", role: "doctor", status: "running" },
         ]);
-        expect(runs[0], failure).toMatchObject({
+        expect(run, failure).toMatchObject({
           status: "failed",
           steps: expect.arrayContaining([
             expect.objectContaining({ step: "finalize:preflight", status: "completed" }),
