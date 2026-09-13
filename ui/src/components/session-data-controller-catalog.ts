@@ -265,6 +265,8 @@ export async function refreshSessionCatalogs(owner: SessionCatalogDataOwner): Pr
   }
   const generation = owner.sessionScopeGeneration;
   const revision = owner.sessionCatalogRevision;
+  // Publish the existing request lifecycle to settled-empty presentation too.
+  owner.requestSessionDataUpdate();
   await refreshSessionCatalogsLive({
     live: owner.sessionCatalogLive,
     client,
@@ -300,6 +302,7 @@ export async function refreshSessionCatalogs(owner: SessionCatalogDataOwner): Pr
     },
     refresh: () => refreshSessionCatalogsInBackground(owner),
   });
+  owner.requestSessionDataUpdate();
 }
 
 function hiddenSessionCatalogPages(owner: SessionCatalogDataOwner) {
