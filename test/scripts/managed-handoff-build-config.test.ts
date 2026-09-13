@@ -261,7 +261,12 @@ it.each(
         expect(stale.error).toBeUndefined();
         expect(stale.status).toBe(1);
         expect(stale.stderr).toContain("different operation");
-        expect(snapshot()).toEqual(before);
+        const after = snapshot();
+        expect(after).toHaveLength(before.length);
+        for (const [index, original] of before.entries()) {
+          expect(after[index]!.ino).toBe(original.ino);
+          expect(after[index]!.bytes.equals(original.bytes)).toBe(true);
+        }
       }
       // The replacement's temporary command is deliberately one-phase, never
       // another locator for the next operation after its helper has moved.
