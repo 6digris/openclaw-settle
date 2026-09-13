@@ -49,7 +49,7 @@ import {
   resolveSessionVisibility,
 } from "../session-sharing.js";
 import { resolveSessionStoreAgentId } from "../session-store-key.js";
-import { readSessionPreviewItemsFromTranscript } from "../session-transcript-readers.js";
+import { readSessionPreviewItemsFromTranscript } from "../session-transcript-preview.js";
 import type { SessionListActiveRunProjector } from "../session-utils-contracts.js";
 import { projectGatewaySessionActiveRun } from "../session-utils-display.js";
 import {

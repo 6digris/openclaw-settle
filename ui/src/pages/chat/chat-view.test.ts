@@ -43,7 +43,7 @@ import {
 } from "./attachment-payload-store.ts";
 import { makeChatHost } from "./chat-host.test-support.ts";
 import { createChatModelSetupBanner } from "./chat-model-setup.ts";
-import { applyChatPendingInputs } from "./chat-pending-inputs.ts";
+import { applyChatPendingInputs, getChatPendingInputs } from "./chat-pending-inputs.ts";
 import * as chatProgress from "./chat-progress.ts";
 import { switchChatFastMode, switchChatModel, switchChatThinkingLevel } from "./chat-session.ts";
 import { groupMessages } from "./chat-thread-grouping.ts";
@@ -66,6 +66,10 @@ import {
   resetTranscriptSession,
   toggleTranscriptSearch,
 } from "./components/chat-thread-interactions.ts";
+import {
+  installTranscriptDomMocks,
+  resetTranscriptTestDom,
+} from "./components/chat-transcript.test-support.ts";
 import { renderWelcomeState } from "./components/chat-welcome.ts";
 import { RealtimeTalkLevelSignal } from "./realtime-talk-level.ts";
 import {
@@ -96,6 +100,14 @@ function visibleContentForMessages(messages: unknown[]): MessageGroup["visibleCo
   return groups.some((group) => group.kind === "group" && group.visibleContent === "text")
     ? "text"
     : "none";
+}
+
+function createMessageEntry(key: string, message: unknown): MessageGroup["messages"][number] {
+  const [group] = groupMessages([{ kind: "message", key, message }]);
+  if (group?.kind !== "group") {
+    throw new Error("expected a prepared message group");
+  }
+  return expectDefined(group.messages[0], "Prepared message entry");
 }
 
 const buildChatItemsMock = vi.fn(
@@ -160,7 +172,7 @@ const buildChatItemsMock = vi.fn(
               kind: "group",
               key: `group:${key}`,
               role: testMessage.testVirtualRole ?? (index % 2 === 0 ? "user" : "assistant"),
-              messages: [{ key: `message:${key}`, message }],
+              messages: [createMessageEntry(`message:${key}`, message)],
               visibleContent: visibleContentForMessages([message]),
               timestamp: index + 1,
               isStreaming: false,
@@ -173,10 +185,9 @@ const buildChatItemsMock = vi.fn(
           key: "group:assistant:test",
           role: "assistant",
           runId: (props.messages.at(-1) as { runId?: string } | undefined)?.runId,
-          messages: props.messages.map((message, index) => ({
-            key: `message:${index}`,
-            message,
-          })),
+          messages: props.messages.map((message, index) =>
+            createMessageEntry(`message:${index}`, message),
+          ),
           visibleContent: visibleContentForMessages(props.messages),
           timestamp: 1,
           isStreaming: false,
@@ -319,6 +330,7 @@ function renderWorkGroupSummaryMock(
 }
 
 beforeEach(() => {
+  installTranscriptDomMocks();
   vi.spyOn(chatThread, "buildCachedChatItems").mockImplementation(buildChatItemsMock);
   vi.spyOn(chatThread, "getExpandedToolCards").mockReturnValue(new Map<string, boolean>());
   vi.spyOn(chatThread, "getExpandedUserMessages").mockReturnValue(new Map<string, boolean>());
@@ -1651,6 +1663,57 @@ describe("chat history pagination", () => {
 });
 
 describe("retained input navigation", () => {
+  it("keeps an empty filtered page navigable without blocking an independent send", async () => {
+    const sessionKey = "agent:main:hidden-page";
+    const sessionId = "hidden-page-session";
+    const olderPage = {
+      total: 21,
+      items: [
+        {
+          id: "older-visible",
+          acceptedAt: 1,
+          state: "interrupted" as const,
+          message: { role: "user", content: "Older visible input" },
+        },
+      ],
+    };
+    const historyState = makeChatHost({
+      sessionKey,
+      currentSessionId: sessionId,
+      requestHandlers: { "chat.history": () => ({ sessionId, pendingInputs: olderPage }) },
+    });
+    applyChatPendingInputs(historyState, { total: 21, items: [], nextBefore: 2 });
+    const onSend = vi.fn();
+    const container = renderChatView({
+      historyState,
+      sessionKey,
+      draft: "Independent work",
+      getDraft: () => "Independent work",
+      onSend,
+    });
+    const earlier = expectDefined(
+      [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+        button.textContent?.includes(t("chat.pendingInputs.earlier")),
+      ),
+      "earlier pending-input navigation",
+    );
+    expect(earlier.disabled).toBe(false);
+    const send = expectDefined(
+      container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]'),
+      "send button",
+    );
+    expect(send.disabled).toBe(false);
+    send.click();
+    expect(onSend).toHaveBeenCalledOnce();
+    earlier.click();
+    await vi.waitFor(() => expect(getChatPendingInputs(historyState)?.page).toEqual(olderPage));
+    expect(historyState.request).toHaveBeenCalledWith(
+      "chat.history",
+      expect.objectContaining({ pendingBefore: 2 }),
+    );
+    expect(historyState.chatMessages).toEqual([]);
+  });
+
   it.each(["pending custody", "transcript"] as const)(
     "hides the retained queue copy represented by %s without hiding an identical new send",
     (source) => {
@@ -1763,9 +1826,9 @@ describe("direct thread avatar mode", () => {
   ) => ({ props: { sessionKey, messages: message, ...overrides }, direct });
 
   it.each([
-    {
-      name: "classifies by canonical session kind even when DM rows carry sender labels",
-      cases: [
+    [
+      "classifies by canonical session kind even when DM rows carry sender labels",
+      [
         avatarCase("kind-direct", true, {
           sessions: sessionsListWithKind("kind-direct", "direct"),
           messages: labeledHistory,
@@ -1774,53 +1837,53 @@ describe("direct thread avatar mode", () => {
           sessions: sessionsListWithKind("kind-group", "group"),
         }),
       ],
-    },
-    {
-      name: "keeps avatars in global sessions, which can aggregate group senders",
-      cases: [avatarCase("global", false)],
-    },
-    {
-      name: "matches session metadata across equivalent alias keys",
-      cases: [
+    ],
+    [
+      "keeps avatars in global sessions, which can aggregate group senders",
+      [avatarCase("global", false)],
+    ],
+    [
+      "matches session metadata across equivalent alias keys",
+      [
         avatarCase("main", true, {
           sessions: sessionsListWithKind("agent:main:main", "direct"),
           messages: labeledHistory,
         }),
       ],
-    },
-    {
-      name: "keeps avatars in direct sessions when the gateway attributes identities",
-      cases: [
+    ],
+    [
+      "keeps avatars in direct sessions when the gateway attributes identities",
+      [
         avatarCase("kind-direct", false, {
           sessions: sessionsListWithKind("kind-direct", "direct"),
           messages: labeledHistory,
           userId: "profile-1",
         }),
       ],
-    },
-    {
-      name: "falls back to session-key shape when session metadata is missing",
-      cases: [
+    ],
+    [
+      "falls back to session-key shape when session metadata is missing",
+      [
         avatarCase("agent:main:telegram:direct:2", true, { messages: labeledHistory }),
         avatarCase("agent:main:telegram:group:42", false),
       ],
-    },
-    {
-      name: "keeps avatars when a main alias selects the canonical global row",
-      cases: [
+    ],
+    [
+      "keeps avatars when a main alias selects the canonical global row",
+      [
         avatarCase("agent:work:main", false, {
           sessions: sessionsListWithKind("global", "global"),
           sessionHost: globalHost,
         }),
       ],
-    },
-    {
-      name: "classifies global-scope main aliases without a listed global row",
-      cases: [avatarCase("agent:work:main", false, { sessionHost: globalHost })],
-    },
-    {
-      name: "ignores stray global rows for main aliases outside global scope",
-      cases: [
+    ],
+    [
+      "classifies global-scope main aliases without a listed global row",
+      [avatarCase("agent:work:main", false, { sessionHost: globalHost })],
+    ],
+    [
+      "ignores stray global rows for main aliases outside global scope",
+      [
         avatarCase("agent:work:main", true, {
           sessions: sessionsListWithKind("global", "global"),
           sessionHost: {
@@ -1829,10 +1892,10 @@ describe("direct thread avatar mode", () => {
           },
         }),
       ],
-    },
-    {
-      name: "prefers the equivalent direct row over a global row for main aliases",
-      cases: [
+    ],
+    [
+      "prefers the equivalent direct row over a global row for main aliases",
+      [
         avatarCase("agent:work:main", true, {
           sessions: createSessionsResultFromRows([
             { key: "global", kind: "global", updatedAt: 2 },
@@ -1841,14 +1904,14 @@ describe("direct thread avatar mode", () => {
           sessionHost: globalHost,
         }),
       ],
-    },
-    {
-      name: "treats explicit agent global keys as global even without a session row",
-      cases: [avatarCase("agent:work:global", false)],
-    },
-    {
-      name: "keeps avatars when a forwarded cross-session message joins a direct thread",
-      cases: [
+    ],
+    [
+      "treats explicit agent global keys as global even without a session row",
+      [avatarCase("agent:work:global", false)],
+    ],
+    [
+      "keeps avatars when a forwarded cross-session message joins a direct thread",
+      [
         avatarCase("kind-direct", false, {
           sessions: sessionsListWithKind("kind-direct", "direct"),
           messages: [
@@ -1868,8 +1931,8 @@ describe("direct thread avatar mode", () => {
           ],
         }),
       ],
-    },
-  ])("$name", ({ cases }) => {
+    ],
+  ])("%s", (_name, cases) => {
     for (const { props, direct } of cases) {
       const container = renderChatView(props);
       expect(
@@ -1921,7 +1984,7 @@ describe("chat transcript rendering", () => {
         key: "group:assistant:reply-callback-cache",
         role: "assistant",
         visibleContent: "text",
-        messages: [{ key: "message:reply-callback-cache", message }],
+        messages: [createMessageEntry("message:reply-callback-cache", message)],
         timestamp: 1,
         isStreaming: false,
       },
@@ -2120,17 +2183,14 @@ describe("chat transcript rendering", () => {
         role: "user" as const,
         visibleContent: "text" as const,
         messages: [
-          {
-            key: "user:attachment-run",
-            message: {
-              role: "user",
-              content: "Send the attachment",
-              __openclaw: {
-                id: "user:attachment-run",
-                idempotencyKey: "attachment-run:user",
-              },
+          createMessageEntry("user:attachment-run", {
+            role: "user",
+            content: "Send the attachment",
+            __openclaw: {
+              id: "user:attachment-run",
+              idempotencyKey: "attachment-run:user",
             },
-          },
+          }),
         ],
         timestamp: 1,
         isStreaming: false,
@@ -2141,14 +2201,11 @@ describe("chat transcript rendering", () => {
         role: "assistant" as const,
         visibleContent: "non-text" as const,
         messages: [
-          {
-            key: "assistant:attachment-run",
-            message: {
-              role: "assistant",
-              content: attachmentOnly.content,
-              runId: "attachment-run",
-            },
-          },
+          createMessageEntry("assistant:attachment-run", {
+            role: "assistant",
+            content: attachmentOnly.content,
+            runId: "attachment-run",
+          }),
         ],
         timestamp: 2,
         isStreaming: false,
@@ -2178,7 +2235,7 @@ describe("chat transcript rendering", () => {
         const reply = {
           ...completedFailure,
           key: `group:assistant:long-${index}`,
-          messages: [{ key: `assistant:long-${index}`, message }],
+          messages: [createMessageEntry(`assistant:long-${index}`, message)],
           isStreaming: flow === "active",
         };
         const items = flow === "ordinary" ? [reply] : [runBoundary, reply];
@@ -2197,7 +2254,7 @@ describe("chat transcript rendering", () => {
 
         vi.mocked(chatThread.buildCachedChatItems).mockReturnValue([
           ...items.slice(0, -1),
-          { ...reply, messages: [{ key: `assistant:long-${index}`, message: mixed }] },
+          { ...reply, messages: [createMessageEntry(`assistant:long-${index}`, mixed)] },
         ]);
         renderChatInto(container, { transcript, messages: [mixed] });
         expect(container.querySelector(".chat-transcript-announcement")?.textContent).toBe(
@@ -2732,8 +2789,7 @@ afterEach(() => {
   chatMediaRenderVersionMock.value = 0;
   resetChatViewState();
   replaceSlashCommands(buildFallbackSlashCommands());
-  vi.unstubAllGlobals();
-  vi.restoreAllMocks();
+  resetTranscriptTestDom();
 });
 
 describe("per-pane chat presentation state", () => {
@@ -2910,7 +2966,7 @@ describe("chat transcript rendering cache", () => {
         key: "group:user:test",
         role: "user",
         visibleContent: "text",
-        messages: [{ key: "message:user:test", message: messages[0] }],
+        messages: [createMessageEntry("message:user:test", messages[0])],
         timestamp: 1,
         isStreaming: false,
       },
@@ -3259,10 +3315,11 @@ describe("chat loading skeleton", () => {
         role: "assistant",
         visibleContent: "text",
         messages: [
-          {
-            key: "message:assistant:test",
-            message: { role: "assistant", content: "Interim answer", timestamp: 1 },
-          },
+          createMessageEntry("message:assistant:test", {
+            role: "assistant",
+            content: "Interim answer",
+            timestamp: 1,
+          }),
         ],
         timestamp: 1,
         isStreaming: false,
@@ -3273,10 +3330,11 @@ describe("chat loading skeleton", () => {
         role: "tool",
         visibleContent: "text",
         messages: [
-          {
-            key: "message:tool:test",
-            message: { role: "tool", content: "Later tool result", timestamp: 2 },
-          },
+          createMessageEntry("message:tool:test", {
+            role: "tool",
+            content: "Later tool result",
+            timestamp: 2,
+          }),
         ],
         timestamp: 2,
         isStreaming: false,
@@ -3715,9 +3773,9 @@ describe("chat loading skeleton", () => {
   });
 
   it.each([
-    {
-      name: "does not announce progress for another session send",
-      props: {
+    [
+      "does not announce progress for another session send",
+      {
         sessionKey: "session-b",
         sending: true,
         queue: [
@@ -3729,22 +3787,22 @@ describe("chat loading skeleton", () => {
           }),
         ],
       },
-      announcement: "",
-      exact: true,
-      spark: false,
-    },
-    {
-      name: "shows the working spark while the current session send waits for model switching",
-      props: {
+      "",
+      true,
+      false,
+    ],
+    [
+      "shows the working spark while the current session send waits for model switching",
+      {
         queue: [createPendingSend({ sendState: "waiting-model" })],
       },
-      announcement: "Preparing model",
-      exact: false,
-      spark: true,
-    },
-    {
-      name: "shows active model-switch progress over the previous run's terminal status",
-      props: {
+      "Preparing model",
+      false,
+      true,
+    ],
+    [
+      "shows active model-switch progress over the previous run's terminal status",
+      {
         runStatus: {
           phase: "done" as const,
           runId: "run-previous",
@@ -3753,13 +3811,13 @@ describe("chat loading skeleton", () => {
         },
         queue: [createPendingSend({ createdAt: 999, sendState: "waiting-model" })],
       },
-      announcement: "Preparing model",
-      exact: false,
-      spark: true,
-    },
-    {
-      name: "keeps terminal status for the submitted run while its acknowledgement is pending",
-      props: {
+      "Preparing model",
+      false,
+      true,
+    ],
+    [
+      "keeps terminal status for the submitted run while its acknowledgement is pending",
+      {
         runStatus: {
           phase: "done" as const,
           runId: "run-main",
@@ -3768,20 +3826,20 @@ describe("chat loading skeleton", () => {
         },
         queue: [createPendingSend({ createdAt: 999 })],
       },
-      announcement: "Done",
-      exact: true,
-      spark: false,
-    },
-    {
-      name: "does not announce progress for reconnect-waiting sends",
-      props: {
+      "Done",
+      true,
+      false,
+    ],
+    [
+      "does not announce progress for reconnect-waiting sends",
+      {
         queue: [createPendingSend({ sendState: "waiting-reconnect" })],
       },
-      announcement: "",
-      exact: true,
-      spark: false,
-    },
-  ])("$name", ({ props, announcement, exact, spark }) => {
+      "",
+      true,
+      false,
+    ],
+  ])("%s", (_name, props, announcement, exact, spark) => {
     const container = renderChatView(props);
     const announcementElement = container.querySelector(".agent-chat__run-status-announcement");
     expect(announcementElement).not.toBeNull();
@@ -7213,37 +7271,17 @@ describe("chat model controls", () => {
   );
 
   it.each([
-    {
-      kind: "personal",
-      selected: "openai:work",
-      order: ["openai:personal"],
-      expected: "Subscription · work@example.com",
-    },
-    {
-      kind: "shared",
-      selected: "openai:personal",
-      order: ["openai:work"],
-      expected: "Subscription · peter@steipete.me",
-    },
-    {
-      kind: "automatic",
-      selected: undefined,
-      order: ["openai:personal"],
-      expected: "Subscription",
-    },
-    {
-      kind: "personal",
-      selected: "anthropic:personal",
-      order: ["openai:personal"],
-      expected: "Subscription",
-    },
-    { kind: "personal", selected: undefined, order: undefined, expected: "Subscription" },
-    { kind: undefined, selected: undefined, order: ["openai:personal"], expected: "Subscription" },
-    { kind: "personal", selected: "openai:key", order: ["openai:personal"], expected: "API" },
-    { kind: "automatic", selected: undefined, order: ["openai:key"], expected: "Subscription" },
+    ["personal", "openai:work", ["openai:personal"], "Subscription · work@example.com"],
+    ["shared", "openai:personal", ["openai:work"], "Subscription · peter@steipete.me"],
+    ["automatic", undefined, ["openai:personal"], "Subscription"],
+    ["personal", "anthropic:personal", ["openai:personal"], "Subscription"],
+    ["personal", undefined, undefined, "Subscription"],
+    [undefined, undefined, ["openai:personal"], "Subscription"],
+    ["personal", "openai:key", ["openai:personal"], "API"],
+    ["automatic", undefined, ["openai:key"], "Subscription"],
   ] as const)(
-    "derives $kind identity from $selected without borrowing the provider plan or order $order",
-    ({ kind, selected, order, expected }) => {
+    "derives %s identity from %s without borrowing the provider plan or order %s",
+    (kind, selected, order, expected) => {
       const { state } = createChatHeaderState({
         models: [{ id: "gpt-5.5", name: "GPT-5.5", provider: "openai" }],
       });
@@ -7579,14 +7617,10 @@ describe("chat model controls", () => {
   });
 
   it.each([
-    { name: "session selection", overrides: {}, expected: "openai/gpt-5.6-sol" },
-    {
-      name: "pending local selection",
-      overrides: { main: "openai/gpt-5.6-luna" },
-      expected: "openai/gpt-5.6-luna",
-    },
-    { name: "explicit default reset", overrides: { main: null }, expected: "gpt-5 · openai" },
-  ])("keeps the $name visible while its catalog loads", ({ overrides, expected }) => {
+    ["session selection", {}, "openai/gpt-5.6-sol"],
+    ["pending local selection", { main: "openai/gpt-5.6-luna" }, "openai/gpt-5.6-luna"],
+    ["explicit default reset", { main: null }, "gpt-5 · openai"],
+  ])("keeps the %s visible while its catalog loads", (_name, overrides, expected) => {
     const { state } = createChatHeaderState({ model: "gpt-5.6-sol", models: [] });
     const container = renderModelControls(state, {
       modelCatalogState: { hasSnapshot: false, status: "loading" },
@@ -8275,49 +8309,13 @@ describe("chat model controls", () => {
     "locked model labels with runtime %s",
     (runtimeId) => {
       it.each([
-        {
-          name: "catalog label",
-          model: "gpt-5.6-sol",
-          catalog: "known",
-          loading: false,
-          expected: "GPT-5.6 Sol",
-        },
-        {
-          name: "missing catalog entry",
-          model: "gpt-5.6-sol",
-          catalog: "other",
-          loading: false,
-          expected: "openai/gpt-5.6-sol",
-        },
-        {
-          name: "empty catalog",
-          model: "gpt-5.6-sol",
-          catalog: "empty",
-          loading: false,
-          expected: "openai/gpt-5.6-sol",
-        },
-        {
-          name: "refreshing catalog",
-          model: "gpt-5.6-sol",
-          catalog: "known",
-          loading: true,
-          expected: "GPT-5.6 Sol",
-        },
-        {
-          name: "loading catalog without a snapshot",
-          model: "gpt-5.6-sol",
-          catalog: "empty",
-          loading: true,
-          expected: "openai/gpt-5.6-sol",
-        },
-        {
-          name: "no current model despite an unrelated default",
-          model: null,
-          catalog: "other",
-          loading: false,
-          expected: "Session model",
-        },
-      ])("preserves the $name", ({ model, catalog, loading, expected }) => {
+        ["catalog label", "gpt-5.6-sol", "known", false, "GPT-5.6 Sol"],
+        ["missing catalog entry", "gpt-5.6-sol", "other", false, "openai/gpt-5.6-sol"],
+        ["empty catalog", "gpt-5.6-sol", "empty", false, "openai/gpt-5.6-sol"],
+        ["refreshing catalog", "gpt-5.6-sol", "known", true, "GPT-5.6 Sol"],
+        ["loading catalog without a snapshot", "gpt-5.6-sol", "empty", true, "openai/gpt-5.6-sol"],
+        ["no current model despite an unrelated default", null, "other", false, "Session model"],
+      ])("preserves the %s", (_name, model, catalog, loading, expected) => {
         const { state } = createChatHeaderState({
           model,
           modelProvider: model ? "openai" : null,
@@ -8793,33 +8791,13 @@ describe("chat model controls", () => {
   });
 
   it.each([
-    {
-      name: "a pending same-model switch",
-      modelSwitching: true,
-      sessionRuntimeId: "codex",
-      optionRuntimeId: "codex",
-    },
-    {
-      name: "a different session runtime",
-      modelSwitching: false,
-      sessionRuntimeId: "openclaw",
-      optionRuntimeId: "codex",
-    },
-    {
-      name: "missing session runtime provenance",
-      modelSwitching: false,
-      sessionRuntimeId: undefined,
-      optionRuntimeId: "codex",
-    },
-    {
-      name: "missing catalog runtime provenance",
-      modelSwitching: false,
-      sessionRuntimeId: "codex",
-      optionRuntimeId: undefined,
-    },
+    ["a pending same-model switch", true, "codex", "codex"],
+    ["a different session runtime", false, "openclaw", "codex"],
+    ["missing session runtime provenance", false, undefined, "codex"],
+    ["missing catalog runtime provenance", false, "codex", undefined],
   ])(
-    "does not pair a stale session budget with $name",
-    ({ modelSwitching, optionRuntimeId, sessionRuntimeId }) => {
+    "does not pair a stale session budget with %s",
+    (_name, modelSwitching, sessionRuntimeId, optionRuntimeId) => {
       const { state } = createChatHeaderState({
         model: "gpt-5.6-sol",
         modelProvider: "openai",
@@ -9553,12 +9531,12 @@ describe("chat model controls", () => {
   });
 
   it.each([
-    { sessionKey: "global", mainKey: "main" },
-    { sessionKey: "agent:work:main", mainKey: "main" },
-    { sessionKey: "agent:work:home", mainKey: "home" },
+    ["global", "main"],
+    ["agent:work:main", "main"],
+    ["agent:work:home", "home"],
   ])(
-    "does not report a failed selected-global model switch after the selected agent changes for $sessionKey",
-    async ({ sessionKey, mainKey }) => {
+    "does not report a failed selected-global model switch after the selected agent changes for %s",
+    async (sessionKey, mainKey) => {
       const modelPatch = createDeferred<unknown>();
       const modelOverrides: Record<string, string | null> = {
         [sessionKey]: "openai/gpt-agent-a-old",
