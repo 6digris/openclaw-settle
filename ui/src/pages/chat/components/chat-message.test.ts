@@ -1839,6 +1839,7 @@ describe("grouped chat rendering", () => {
     ["preparing_workspace", "Preparing workspace…"],
     ["provisioning_environment", "Provisioning environment…"],
     ["preparing_context", "Preparing this turn…"],
+    ["memory_flushing", "Saving conversation memory…"],
     ["starting_model", "Waiting for a response…"],
   ] as const)("renders the %s startup phase with elapsed time", (startupPhase, label) => {
     const container = document.createElement("div");
@@ -2618,6 +2619,7 @@ describe("grouped chat rendering", () => {
         expect(image?.getAttribute("alt")).toBe("Research Agent");
       }
       if (expected === "face") {
+        await vi.dynamicImportSettled();
         await vi.waitFor(() =>
           expect(container.querySelector(".identity-avatar__agent-face")).not.toBeNull(),
         );

@@ -14,6 +14,11 @@ export const runtimeProcessEntrypoints = {
     sourceWorkerName: "git-operation.worker",
     distWorkerPath: "infra/git-operation.worker.js",
   },
+  fsSafeCopy: {
+    currentModuleUrl,
+    sourceWorkerName: "fs-safe-copy.worker",
+    distWorkerPath: "infra/fs-safe-copy.worker.js",
+  },
   sharedStateStore: {
     currentModuleUrl,
     sourceWorkerName: "../state/openclaw-state.worker",
@@ -23,6 +28,11 @@ export const runtimeProcessEntrypoints = {
     currentModuleUrl,
     sourceWorkerName: "sqlite-store.worker",
     distWorkerPath: "infra/sqlite-store.worker.js",
+  },
+  agentSchemaInspection: {
+    currentModuleUrl,
+    sourceWorkerName: "../state/openclaw-agent-schema-inspection.worker",
+    distWorkerPath: "state/openclaw-agent-schema-inspection.worker.js",
   },
   stateMigrationSnapshot: {
     currentModuleUrl,

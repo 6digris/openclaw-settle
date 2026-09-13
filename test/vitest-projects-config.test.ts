@@ -64,6 +64,7 @@ const scopedGatewayMethodsIsolatedTestFiles = [
   "server-methods/agent.test.ts",
   "server-methods/board.runtime-boundaries.test.ts",
   "server-methods/chat.reset-visible-yield.test.ts",
+  "server-methods/health.owner-routing.test.ts",
   "server-methods/system-agent-setup-control-ui.test.ts",
   "server-methods/users-preferences.test.ts",
   "server-methods/usage.test.ts",
@@ -130,7 +131,7 @@ describe("projects vitest config", () => {
     expect(agentConfigs.size).toBe(agentVitestProjectConfigs.length);
   });
 
-  it("keeps module-mocking Gateway tests isolated in every aggregate", () => {
+  it("keeps Gateway tests needing native process state or module isolation in every aggregate", () => {
     const methodsIsolatedProject = "test/vitest/vitest.gateway-methods-isolated.config.ts";
     const serverIsolatedProject = "test/vitest/vitest.gateway-server-isolated.config.ts";
     const agenticShard = fullSuiteVitestShards.find((shard) => shard.name === "agentic");
@@ -145,6 +146,7 @@ describe("projects vitest config", () => {
     expect(agenticShard?.projects).toContain(methodsIsolatedProject);
     expect(agenticShard?.projects).toContain(serverIsolatedProject);
     expect(methodsIsolatedConfig.isolate).toBe(true);
+    expect(methodsIsolatedConfig.pool).toBe("forks");
     expect(normalizeConfigPath(methodsIsolatedConfig.runner)).toBe("test/non-isolated-runner.ts");
     expect(methodsIsolatedConfig.include).toEqual(scopedGatewayMethodsIsolatedTestFiles);
     expect(serverConfig.pool).toBe("forks");
@@ -159,6 +161,9 @@ describe("projects vitest config", () => {
     expect(gatewayFallback.exclude).toContain(overrideFixture);
     expect(methodsConfig.exclude).toContain("src/gateway/server-methods/agent.test.ts");
     expect(methodsConfig.exclude).toContain(
+      "src/gateway/server-methods/health.owner-routing.test.ts",
+    );
+    expect(methodsConfig.exclude).toContain(
       "src/gateway/server-methods/board.runtime-boundaries.test.ts",
     );
     expect(methodsConfig.exclude).toContain(
@@ -168,6 +173,9 @@ describe("projects vitest config", () => {
       "src/gateway/server-methods/system-agent-setup-control-ui.test.ts",
     );
     expect(gatewayFallback.exclude).toContain("src/gateway/server-methods/agent.test.ts");
+    expect(gatewayFallback.exclude).toContain(
+      "src/gateway/server-methods/health.owner-routing.test.ts",
+    );
     expect(gatewayFallback.exclude).toContain(
       "src/gateway/server-methods/board.runtime-boundaries.test.ts",
     );
@@ -416,6 +424,68 @@ describe("projects vitest config", () => {
     expect(testConfig.pool).toBe("threads");
     expect(testConfig.isolate).toBe(false);
     expect(normalizeConfigPath(testConfig.runner)).toBe("test/non-isolated-runner.ts");
+    const session = requireTestConfig(contractChannelSessionConfig);
+    expect(session.pool).toBe("forks");
+    expect(session.isolate).toBe(testConfig.isolate);
+    expect(session.runner).toBe(testConfig.runner);
+    expect(session.setupFiles).toEqual(testConfig.setupFiles);
+    expect(session.maxWorkers).toBe(testConfig.maxWorkers);
+  });
+
+  it.each([
+    undefined,
+    "src/channels/plugins/contracts/session-binding.registry-backed.contract.test.ts",
+    "src/channels/plugins/contracts/session-key-artifact.contract.test.ts",
+    "src/tasks/task-registry.test.ts",
+  ])("preserves public channel contract command coverage with include filter %s", (filter) => {
+    const includeFile = filter
+      ? patternFiles.writePatternFile("command-include.json", [filter])
+      : undefined;
+    const result = spawnNodeEvalSync(
+      `
+        import assert from "node:assert/strict";
+        import { globSync, readFileSync } from "node:fs";
+        import path from "node:path";
+        import { parseCLI, resolveConfig } from "vitest/node";
+        import { createVitestRunSpecs } from "./scripts/test-projects.test-support.mts";
+        const command = JSON.parse(readFileSync("package.json", "utf8")).scripts["test:contracts:channels"];
+        const argv = command.split(/\\s+/u);
+        const wrapper = argv.indexOf("scripts/test-projects.mts");
+        assert.notEqual(wrapper, -1);
+        const specs = createVitestRunSpecs(argv.slice(wrapper + 1));
+        const matches = [];
+        for (const spec of specs) {
+          assert.equal(spec.includeFilePath, null);
+          const { options } = parseCLI(["vitest", ...spec.pnpmArgs.slice(spec.pnpmArgs.indexOf("run"))]);
+          const resolved = await resolveConfig(options);
+          for (const { projectConfig } of resolved.test.resolvedProjects) {
+            for (const file of globSync(projectConfig.include, { cwd: projectConfig.dir, exclude: projectConfig.exclude })) {
+              const relative = path.relative(process.cwd(), path.resolve(projectConfig.dir, file)).replaceAll("\\\\", "/");
+              matches.push(relative);
+              if (relative.endsWith("/session-binding.registry-backed.contract.test.ts")) {
+                assert.equal(projectConfig.pool, "forks");
+                assert.equal(projectConfig.maxWorkers, 1);
+              }
+            }
+          }
+        }
+        const includeFile = process.env.OPENCLAW_VITEST_INCLUDE_FILE;
+        const filters = includeFile ? JSON.parse(readFileSync(includeFile, "utf8")) : null;
+        const expected = globSync("src/channels/plugins/contracts/**/*.test.ts")
+          .map(file => file.replaceAll("\\\\", "/"))
+          .filter(file => !filters || filters.some(filter => path.matchesGlob(file, filter)));
+        assert.deepEqual(matches.toSorted(), expected.toSorted());
+        assert.equal(new Set(matches).size, matches.length);
+      `,
+      {
+        imports: ["tsx"],
+        env: { ...process.env, GITHUB_ACTIONS: "true", OPENCLAW_VITEST_INCLUDE_FILE: includeFile },
+        timeout: DEFAULT_VITEST_TEST_TIMEOUT_MS,
+      },
+    );
+    expect(result.error, result.stderr).toBeUndefined();
+    expect(result.signal, result.stderr).toBeNull();
+    expect(result.status, result.stderr).toBe(0);
   });
 
   it("gives contract project configs unique names", () => {
@@ -518,7 +588,7 @@ describe("projects vitest config", () => {
     expect(testConfig.sequence).toMatchObject({ groupOrder: 1 });
   });
 
-  it.each(["logbook", "team-reports"])(
+  it.each(["logbook", "team-reports", "workboard"])(
     "runs %s database owners in main-thread hosts across focused and full suites",
     (pluginId) => {
       const project = "test/vitest/vitest.extension-database-workers.config.ts";
@@ -538,6 +608,7 @@ describe("projects vitest config", () => {
       expect(testConfig.include).toEqual([
         "logbook/**/*.test.ts",
         "team-reports/**/*.test.ts",
+        "workboard/**/*.test.ts",
         "imessage/src/approval-reactions.persistence.test.ts",
       ]);
       expect(requireTestConfig(createExtensionsVitestConfig({})).exclude).toContain(

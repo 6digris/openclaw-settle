@@ -6181,6 +6181,10 @@ describe("chat attachment picker", () => {
 
       expect(readers).toHaveLength(1);
       expect(reads.pendingReads).toBe(1);
+      const status = container.querySelector(".chat-attachments-status");
+      expect(status?.textContent).toContain("Preparing attachments");
+      expect(status?.getAttribute("role")).toBe("status");
+      expect(status?.classList.contains("sr-only")).toBe(false);
       expect(getComposerTextarea(container).disabled).toBe(false);
       const send = requireElement(
         container,
@@ -6188,6 +6192,8 @@ describe("chat attachment picker", () => {
         "send button",
       ) as HTMLButtonElement;
       expect(send.disabled).toBe(true);
+      expect(send.getAttribute("aria-busy")).toBe("true");
+      expect(send.closest("openclaw-tooltip")?.content).toBe("Preparing attachments…");
       getComposerTextarea(container).dispatchEvent(
         new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" }),
       );
@@ -6210,6 +6216,8 @@ describe("chat attachment picker", () => {
         "ready send button",
       ) as HTMLButtonElement;
       expect(readySend.disabled).toBe(false);
+      expect(readySend.getAttribute("aria-busy")).toBe("false");
+      expect(container.querySelector(".chat-attachments-status")?.textContent?.trim()).toBe("");
       readySend.click();
       expect(onSend).toHaveBeenCalledOnce();
     },
@@ -6652,7 +6660,7 @@ describe("chat attachment picker", () => {
     const container = renderChatView({ attachments: [attachment], onAttachmentsChange });
     const removeButton = requireElement(
       container,
-      '[aria-label="Remove attachment"]',
+      '[aria-label="Remove pasted-image.png"]',
       "remove attachment button",
     ) as HTMLButtonElement;
 
@@ -6780,7 +6788,7 @@ describe("chat attachment picker", () => {
 
     requireElement(
       container,
-      '[aria-label="Remove attachment"]',
+      '[aria-label="Remove ordinary.png"]',
       "ordinary attachment remove button",
     ).dispatchEvent(new MouseEvent("click", { bubbles: true }));
 
@@ -9992,7 +10000,7 @@ describe("right-click Reply", () => {
     const labels = [...document.querySelectorAll(".chat-reply-context-menu button")].map((button) =>
       button.textContent?.trim(),
     );
-    expect(labels).toEqual(["Reply", "Rewind to here", "Fork from here"]);
+    expect(labels).toEqual(["Reply", "Rewind to here", "Copy as markdown", "Fork from here"]);
     getContextMenuAction("Fork from here").click();
     expect(onForkMessage).toHaveBeenCalledWith("persisted-user");
 
@@ -10021,7 +10029,9 @@ describe("right-click Reply", () => {
     expect(onCopy).toHaveBeenCalledOnce();
   });
 
-  it("offers Reply only for the bubble that owns the frame actions", () => {
+  it("copies commentary without offering Reply for another bubble's frame actions", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
     const onSetReply = vi.fn();
     const { bubble, group } = renderChatBubble(
       { onSetReply },
@@ -10034,8 +10044,15 @@ describe("right-click Reply", () => {
 
     const event = dispatchContextMenu(bubble);
 
-    expect(event.defaultPrevented).toBe(false);
-    expect(document.querySelector(".chat-reply-context-menu")).toBeNull();
+    expect(event.defaultPrevented).toBe(true);
+    expect(
+      [...document.querySelectorAll(".chat-reply-context-menu button")].map((button) =>
+        button.textContent?.trim(),
+      ),
+    ).toEqual(["Copy as markdown"]);
+    getContextMenuAction("Copy as markdown").click();
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("Intermediate commentary"));
+    expect(onSetReply).not.toHaveBeenCalled();
   });
 
   it("dismisses an inline confirmation before opening the reply context menu", () => {
@@ -10366,7 +10383,7 @@ describe("right-click Reply", () => {
       [...document.querySelectorAll(".chat-reply-context-menu button")].map((button) =>
         button.textContent?.trim(),
       ),
-    ).toEqual(["Copy", "Reply"]);
+    ).toEqual(["Copy", "Reply", "Copy as markdown"]);
     getContextMenuAction("Copy").click();
     await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("selectable"));
 
@@ -10379,7 +10396,7 @@ describe("right-click Reply", () => {
       [...document.querySelectorAll(".chat-reply-context-menu button")].map((button) =>
         button.textContent?.trim(),
       ),
-    ).toEqual(["Reply"]);
+    ).toEqual(["Reply", "Copy as markdown"]);
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

@@ -3,14 +3,16 @@ import hljs from "highlight.js/lib/core";
 import { render, type LitElement } from "lit";
 import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
 import { flattenTranslations } from "../../../../scripts/lib/control-ui-i18n-sync-plan.ts";
+import { createDeferred as deferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { ApplicationContext, ApplicationGatewaySnapshot } from "../../app/context.ts";
+import type { SparklineSample } from "../../components/sparkline-tile.ts";
 import { i18n } from "../../i18n/index.ts";
 import { zh_CN } from "../../i18n/locales/zh-CN.ts";
-import { createStorageMock } from "../../test-helpers/storage.ts";
 import "./debug-overlay.ts";
 import "./debug-page.ts";
-import type { SparklineSample } from "./sparkline-tile.ts";
+import { createApplicationGateway } from "../../test-helpers/application-context.ts";
+import { createStorageMock } from "../../test-helpers/storage.ts";
 import { renderDebug } from "./view.ts";
 
 type DebugProps = Parameters<typeof renderDebug>[0];
@@ -25,6 +27,7 @@ type DiagnosticMethod = (typeof DIAGNOSTIC_METHODS)[number];
 
 type TestDebugPage = HTMLElement & {
   readonly updateComplete: Promise<boolean>;
+  requestUpdate: () => void;
   callDebugMethod: () => Promise<void>;
   context: ApplicationContext;
   debugCallError: string | null;
@@ -48,19 +51,9 @@ type TestSparkline = LitElement & { samples: readonly SparklineSample[] };
 
 async function updateOverlayVitals(overlay: TestDebugOverlay): Promise<void> {
   await overlay.updateComplete;
-  for (const tile of overlay.querySelectorAll<TestSparkline>("openclaw-debug-sparkline")) {
+  for (const tile of overlay.querySelectorAll<TestSparkline>("openclaw-sparkline")) {
     await tile.updateComplete;
   }
-}
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((nextResolve, nextReject) => {
-    resolve = nextResolve;
-    reject = nextReject;
-  });
-  return { promise, resolve, reject };
 }
 
 function createDebugApplicationContext(
@@ -367,6 +360,121 @@ describe("renderDebug", () => {
 });
 
 describe("DebugPage", () => {
+  it.each(["reconnect", "source", "agent"] as const)(
+    "retires a pending live poll and refreshes snapshots after a %s change",
+    async (change) => {
+      vi.useFakeTimers();
+      const pending = deferred();
+      let marker = "initial";
+      let holdLive = false;
+      const request = vi.fn(
+        async (method: string, _params?: unknown, _options?: { signal?: AbortSignal }) => {
+          if (holdLive && (method === "last-heartbeat" || method === "diagnostics.lanes")) {
+            await pending.promise;
+            return diagnosticResponse(method, "stale");
+          }
+          return diagnosticResponse(method, marker);
+        },
+      );
+      const context = createDebugApplicationContext(request);
+      const source = createApplicationGateway(context.gateway.snapshot);
+      Object.assign(source.gateway, { eventLog: [], subscribeEventLog: () => () => undefined });
+      type SelectionListener = Parameters<ApplicationContext["agentSelection"]["subscribe"]>[0];
+      const listeners = new Set<SelectionListener>();
+      const selection = {
+        ...context.agentSelection,
+        state: { ...context.agentSelection.state },
+        subscribe: (listener: SelectionListener) => {
+          listeners.add(listener);
+          return () => {
+            listeners.delete(listener);
+          };
+        },
+      };
+      const page = document.createElement("openclaw-debug-page") as TestDebugPage;
+      page.context = { ...context, gateway: source.gateway, agentSelection: selection };
+      document.body.append(page);
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        expectSnapshots(page, "initial");
+        holdLive = true;
+        await vi.advanceTimersByTimeAsync(3_000);
+        const heldCalls = request.mock.calls.slice(-2);
+        const heldCount = request.mock.calls.length;
+        await vi.advanceTimersByTimeAsync(6_000);
+        expect(request).toHaveBeenCalledTimes(heldCount);
+        marker = "current";
+        holdLive = false;
+        if (change === "reconnect") {
+          source.publish({ ...source.gateway.snapshot, phase: "reconnecting" });
+          source.publish({ ...source.gateway.snapshot, phase: "connected" });
+        } else if (change === "source") {
+          const replacement = createApplicationGateway(source.gateway.snapshot);
+          Object.assign(replacement.gateway, {
+            eventLog: [],
+            subscribeEventLog: () => () => undefined,
+          });
+          page.context = { ...page.context, gateway: replacement.gateway };
+          page.requestUpdate();
+        } else {
+          selection.state.selectedId = "worker";
+          for (const listener of listeners) {
+            listener(selection.state);
+          }
+        }
+        await vi.advanceTimersByTimeAsync(0);
+        expectSnapshots(page, "current");
+        for (const call of heldCalls) {
+          expect(call[2]?.signal?.aborted).toBe(true);
+        }
+        pending.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+        expectSnapshots(page, "current");
+        expect(request.mock.calls.filter(([method]) => method === "status")).toHaveLength(2);
+        const count = request.mock.calls.length;
+        page.remove();
+        await vi.advanceTimersByTimeAsync(6_000);
+        expect(request).toHaveBeenCalledTimes(count);
+      } finally {
+        pending.resolve();
+        page.remove();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("polls live lanes and heartbeat while full snapshots change only on Refresh", async () => {
+    vi.useFakeTimers();
+    let marker = "initial";
+    const request = vi.fn(async (method: string) => diagnosticResponse(method, marker));
+    const page = await mountDebugPage(request);
+    try {
+      marker = "live";
+      await vi.advanceTimersByTimeAsync(9_000);
+      await page.updateComplete;
+      for (const method of ["status", "health", "models.list"]) {
+        expect(request.mock.calls.filter(([called]) => called === method)).toHaveLength(1);
+      }
+      expect(page.debugStatus).toEqual({ version: "initial" });
+      expect(page.debugHealth).toEqual({ marker: "initial", ok: true });
+      expect(page.debugModels).toEqual([{ id: "initial" }]);
+      expect(page.debugHeartbeat).toEqual({ source: "live" });
+      expect(page.debugLanes).toEqual([expect.objectContaining({ lane: "live" })]);
+      expect(normalizedText(page.querySelector(".command-lane-row"))).toContain("live");
+      marker = "manual";
+      page.querySelector<HTMLButtonElement>(".settings-section button")!.click();
+      await vi.advanceTimersByTimeAsync(0);
+      await page.updateComplete;
+      expectSnapshots(page, "manual");
+      for (const method of ["status", "health", "models.list"]) {
+        expect(request.mock.calls.filter(([called]) => called === method)).toHaveLength(2);
+      }
+    } finally {
+      page.remove();
+      vi.useRealTimers();
+    }
+  });
+
   it("does not report a transient Gateway reconnect as offline", async () => {
     const request = vi.fn(async (method: string) => diagnosticResponse(method));
     const page = document.createElement("openclaw-debug-page") as TestDebugPage;
@@ -480,12 +588,13 @@ describe("DebugOverlay", () => {
   it("graphs bounded status samples without clamping CPU and resets history on reopen", async () => {
     vi.useFakeTimers();
     let sampleCount = 0;
+    let uptimeMs = 60_000;
     let diskResponse: "available" | "single" | "empty" | "legacy" | "missing" | "rejected" =
       "available";
     const request = vi.fn(async (method: string) => {
-      if (method === "status") {
+      if (method === "system.info") {
         sampleCount += 1;
-        return {
+        const vitals = {
           eventLoop: {
             utilization: 0.42,
             cpuCoreRatio: 1 + sampleCount / 10,
@@ -498,16 +607,14 @@ describe("DebugOverlay", () => {
             heapTotalBytes: 200 * 1_048_576,
           },
         };
-      }
-      if (method === "system.info") {
         if (diskResponse === "rejected") {
           throw new Error("system info unavailable");
         }
         if (diskResponse === "legacy") {
-          return { diskAvailableBytes: 500, diskTotalBytes: 1000, diskPath: "/legacy" };
+          return { ...vitals, diskAvailableBytes: 500, diskTotalBytes: 1000, diskPath: "/legacy" };
         }
         if (diskResponse === "missing") {
-          return {};
+          return vitals;
         }
         const disks = [
           {
@@ -526,7 +633,7 @@ describe("DebugOverlay", () => {
         } else if (diskResponse === "empty") {
           disks.length = 0;
         }
-        return { disks: sampleCount % 2 ? disks : disks.toReversed() };
+        return { ...vitals, uptimeMs, disks: sampleCount % 2 ? disks : disks.toReversed() };
       }
       if (method === "sessions.list") {
         return { sessions: [] };
@@ -544,39 +651,39 @@ describe("DebugOverlay", () => {
 
       const vitalUpdated = () => updateOverlayVitals(overlay);
       await vitalUpdated();
+      expect(
+        request.mock.calls
+          .filter(([method]) => method === "status" || method === "system.info")
+          .map(([method]) => method),
+      ).toEqual(["system.info"]);
       const diskTile = (mountPath: string) =>
-        overlay.querySelector<TestSparkline>(`.debug-overlay__vital--disk[title="${mountPath}"]`);
+        overlay.querySelector<TestSparkline>(`.gateway-vital--disk[title="${mountPath}"]`);
       const rootDisk = diskTile("/");
       const archiveDisk = diskTile("/Volumes/Archive");
 
       // One sample: tiles show current values, charts wait for a second point.
-      expect(overlay.querySelectorAll(".debug-overlay__vital")).toHaveLength(5);
-      expect(normalizedText(overlay.querySelector(".debug-overlay__vital--cpu"))).toContain(
-        "loop 42%",
+      expect(overlay.querySelectorAll(".gateway-vital")).toHaveLength(5);
+      expect(normalizedText(overlay.querySelector(".gateway-vital--cpu"))).toContain("loop 42%");
+      expect(overlay.querySelector(".sparkline-tile__chart")).toBeNull();
+      expect(normalizedText(overlay.querySelector(".debug-overlay__vitals-footer"))).toBe(
+        "Uptime 1m",
       );
-      expect(overlay.querySelector(".debug-vital__chart")).toBeNull();
 
       await vi.advanceTimersByTimeAsync(2_000);
       await vitalUpdated();
 
-      expect(normalizedText(overlay.querySelector(".debug-overlay__vital--cpu"))).toContain("120%");
-      expect(normalizedText(overlay.querySelector(".debug-overlay__vital--memory"))).toContain(
-        "402 MB",
-      );
-      expect(normalizedText(overlay.querySelector(".debug-overlay__vital--memory"))).toContain(
+      expect(normalizedText(overlay.querySelector(".gateway-vital--cpu"))).toContain("120%");
+      expect(normalizedText(overlay.querySelector(".gateway-vital--memory"))).toContain("402 MB");
+      expect(normalizedText(overlay.querySelector(".gateway-vital--memory"))).toContain(
         "heap 100 MB",
       );
-      expect(normalizedText(overlay.querySelector(".debug-overlay__vital--delay"))).toContain(
-        "12ms",
-      );
-      expect(normalizedText(overlay.querySelector(".debug-overlay__vital--delay"))).toContain(
-        "max 87ms",
-      );
+      expect(normalizedText(overlay.querySelector(".gateway-vital--delay"))).toContain("12ms");
+      expect(normalizedText(overlay.querySelector(".gateway-vital--delay"))).toContain("max 87ms");
       expect(normalizedText(diskTile("/"))).toContain("698 GB free");
       expect(normalizedText(diskTile("/"))).toContain("1000 GB total");
-      expect(normalizedText(diskTile("/")?.querySelector(".debug-vital__label"))).toBe("Disk /");
+      expect(normalizedText(diskTile("/")?.querySelector(".sparkline-tile__label"))).toBe("Disk /");
       expect(
-        normalizedText(diskTile("/Volumes/Archive")?.querySelector(".debug-vital__label")),
+        normalizedText(diskTile("/Volumes/Archive")?.querySelector(".sparkline-tile__label")),
       ).toBe("Disk /Volumes/Archive");
       expect(normalizedText(diskTile("/Volumes/Archive"))).toContain("296 GB free");
       expect(normalizedText(diskTile("/Volumes/Archive"))).toContain("500 GB total");
@@ -586,31 +693,35 @@ describe("DebugOverlay", () => {
       expect(archiveDisk?.samples.map((sample) => sample.value / 1_073_741_824)).toEqual([
         298, 296,
       ]);
-      expect(overlay.querySelectorAll(".debug-vital__chart")).toHaveLength(5);
+      expect(overlay.querySelectorAll(".sparkline-tile__chart")).toHaveLength(5);
       // Healthy event loop: no tile carries the degraded tint.
-      expect(overlay.querySelector(".debug-overlay__vital[data-degraded]")).toBeNull();
+      expect(overlay.querySelector(".gateway-vital[data-degraded]")).toBeNull();
 
       await vi.advanceTimersByTimeAsync(180_000);
       await vitalUpdated();
 
       const points = overlay
-        .querySelector(".debug-overlay__vital--cpu polyline")
+        .querySelector(".gateway-vital--cpu polyline")
         ?.getAttribute("points")
         ?.split(" ");
       expect(points).toHaveLength(90);
 
+      uptimeMs = 0;
       overlay.toggle();
       overlay.toggle();
       await vi.advanceTimersByTimeAsync(0);
       await vitalUpdated();
 
-      expect(overlay.querySelectorAll(".debug-overlay__vital")).toHaveLength(5);
-      expect(overlay.querySelector(".debug-vital__chart")).toBeNull();
+      expect(overlay.querySelectorAll(".gateway-vital")).toHaveLength(5);
+      expect(overlay.querySelector(".sparkline-tile__chart")).toBeNull();
+      expect(normalizedText(overlay.querySelector(".debug-overlay__vitals-footer"))).toBe(
+        "Uptime 0ms",
+      );
 
       diskResponse = "single";
       await vi.advanceTimersByTimeAsync(2_000);
       await vitalUpdated();
-      expect(overlay.querySelectorAll(".debug-overlay__vital--disk")).toHaveLength(1);
+      expect(overlay.querySelectorAll(".gateway-vital--disk")).toHaveLength(1);
       expect(diskTile("/")?.samples).toHaveLength(2);
       diskResponse = "available";
       await vi.advanceTimersByTimeAsync(2_000);
@@ -618,17 +729,30 @@ describe("DebugOverlay", () => {
       expect(diskTile("/")?.samples).toHaveLength(3);
       expect(diskTile("/Volumes/Archive")?.samples).toHaveLength(1);
 
-      for (const response of ["empty", "legacy", "missing", "rejected"] as const) {
+      for (const response of ["empty", "legacy", "missing"] as const) {
         diskResponse = response;
         await vi.advanceTimersByTimeAsync(2_000);
         await vitalUpdated();
 
-        expect(overlay.querySelectorAll(".debug-overlay__vital")).toHaveLength(3);
-        expect(overlay.querySelector(".debug-overlay__vital--disk")).toBeNull();
+        expect(overlay.querySelectorAll(".gateway-vital")).toHaveLength(3);
+        expect(overlay.querySelector(".gateway-vital--disk")).toBeNull();
+        expect(normalizedText(overlay.querySelector(".debug-overlay__vitals-footer"))).toBe(
+          response === "empty" ? "Uptime 0ms" : undefined,
+        );
         for (const vital of ["cpu", "memory", "delay"]) {
-          expect(overlay.querySelector(`.debug-overlay__vital--${vital}`)).not.toBeNull();
+          expect(overlay.querySelector(`.gateway-vital--${vital}`)).not.toBeNull();
         }
       }
+      diskResponse = "rejected";
+      await vi.advanceTimersByTimeAsync(2_000);
+      await vitalUpdated();
+      expect(overlay.querySelectorAll(".gateway-vital")).toHaveLength(0);
+      expect(normalizedText(overlay)).toContain("Unavailable");
+      diskResponse = "available";
+      await vi.advanceTimersByTimeAsync(2_000);
+      await vitalUpdated();
+      expect(overlay.querySelectorAll(".gateway-vital")).toHaveLength(5);
+      expect(request.mock.calls.some(([method]) => method === "status")).toBe(false);
     } finally {
       overlay.remove();
       vi.useRealTimers();
@@ -686,9 +810,9 @@ describe("DebugOverlay", () => {
         overlay.toggle();
         await vi.advanceTimersByTimeAsync(2_000);
         await updateOverlayVitals(overlay);
-        expect(
-          overlay.querySelector<TestSparkline>(".debug-overlay__vital--disk")?.samples,
-        ).toHaveLength(2);
+        expect(overlay.querySelector<TestSparkline>(".gateway-vital--disk")?.samples).toHaveLength(
+          2,
+        );
 
         infoResponse = pending.promise;
         await vi.advanceTimersByTimeAsync(2_000);
@@ -704,7 +828,7 @@ describe("DebugOverlay", () => {
         if (transition === "same-client reconnect") {
           publishSnapshot({ ...snapshot, phase: "reconnecting" });
           await overlay.updateComplete;
-          expect(overlay.querySelector(".debug-overlay__vital--disk")).toBeNull();
+          expect(overlay.querySelector(".gateway-vital--disk")).toBeNull();
           publishSnapshot({ ...snapshot, phase: "connected" });
         } else if (transition === "client replacement") {
           publishSnapshot({
@@ -724,7 +848,7 @@ describe("DebugOverlay", () => {
         pending.resolve(firstInfo);
         await vi.advanceTimersByTimeAsync(0);
         await updateOverlayVitals(overlay);
-        const disk = overlay.querySelector<TestSparkline>(".debug-overlay__vital--disk");
+        const disk = overlay.querySelector<TestSparkline>(".gateway-vital--disk");
         expect(normalizedText(disk)).toContain("200 GB free");
         expect(disk?.samples.map((sample) => sample.value / 1_073_741_824)).toEqual([200]);
         expect(disk?.querySelector("polyline")).toBeNull();

@@ -61,6 +61,7 @@ import {
   startAgentDatabaseOpenTiming,
   closeCachedOpenClawAgentDatabase,
   closeOpenClawAgentDatabaseByPath,
+  closeOpenClawAgentDatabaseByPathAsync,
   closeOpenClawAgentDatabases,
   evictLruAgentDatabaseHandles,
   retainAgentDatabase,
@@ -109,8 +110,6 @@ export {
   OPENCLAW_AGENT_SCHEMA_VERSION,
   type OpenClawAgentDatabase,
   type OpenClawAgentDatabaseOptions,
-  type OpenClawAgentDatabaseOwnerInspection,
-  type OpenClawRegisteredAgentDatabase,
 } from "./openclaw-agent-db-contract.js";
 export {
   assertOpenClawAgentDatabaseForMaintenance,
@@ -128,7 +127,7 @@ export {
   resolveOpenClawAgentSqlitePath,
 } from "./openclaw-agent-db.paths.js";
 
-export class IncognitoAgentDatabasePathCollisionError extends Error {
+class IncognitoAgentDatabasePathCollisionError extends Error {
   readonly path: string;
 
   constructor(pathname: string) {
@@ -141,11 +140,11 @@ export class IncognitoAgentDatabasePathCollisionError extends Error {
 }
 
 /** Reconfirm an advisory worker failure on the live owner connection. */
-export function confirmOpenClawAgentDatabaseIntegrity(
+export async function confirmOpenClawAgentDatabaseIntegrity(
   pathname: string,
-): SqliteIntegrityConfirmation {
+): Promise<SqliteIntegrityConfirmation> {
   const resolvedPath = path.resolve(pathname);
-  closeOpenClawAgentDatabaseByPath(resolvedPath);
+  await closeOpenClawAgentDatabaseByPathAsync(resolvedPath);
   // Closing breaks process ownership of the pathname. A replacement must
   // revalidate and claim its schema before the path can become trusted again.
   invalidateOpenClawAgentDatabaseValidation(resolvedPath);
@@ -653,8 +652,8 @@ export function closeOpenClawAgentDatabasesForTest(rootPath?: string): void {
 }
 
 export {
-  OPENCLAW_AGENT_DB_OPEN_HANDLE_CAP,
   closeOpenClawAgentDatabaseByPath,
+  closeOpenClawAgentDatabaseByPathAsync,
   closeOpenClawAgentDatabases,
   closeOpenClawAgentDatabasesAsync,
   inspectOpenClawAgentDatabaseOwner,

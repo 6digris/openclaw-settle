@@ -106,11 +106,12 @@ export class WorkboardCoreStore extends WorkboardStoreRuntime {
       boards: WorkboardKeyedStore<PersistedWorkboardBoard>;
       subscriptions: WorkboardKeyedStore<PersistedWorkboardNotificationSubscription>;
       attachments: WorkboardKeyedStore<PersistedWorkboardAttachment>;
-      dataVersion?: () => number;
-      close?: () => void;
+      ready?: Promise<number>;
+      dataVersion?: () => number | Promise<number>;
+      close?: () => void | Promise<void>;
     },
   ) {
-    super(stores.dataVersion, stores.close);
+    super(stores.dataVersion, stores.close, stores.ready);
     this.store = this.trackCardStore(store);
     this.boardStore = this.track(stores.boards);
     this.subscriptionStore = this.track(stores.subscriptions, { notifyChanges: false });
@@ -289,14 +290,13 @@ export class WorkboardCoreStore extends WorkboardStoreRuntime {
 
   async list(options: WorkboardListOptions = {}): Promise<WorkboardCard[]> {
     const boardId = normalizeBoardId(options.boardId);
-    const entries = await this.store.entries();
+    const entries = await this.store.entries(boardId);
     return entries
       .map((entry) => entry.value)
       .filter(
         (entry): entry is PersistedWorkboardCard => entry?.version === 1 && Boolean(entry.card?.id),
       )
       .map((entry) => entry.card)
-      .filter((card) => !boardId || cardBoardId(card) === boardId)
       .toSorted(compareCards);
   }
 
@@ -875,13 +875,13 @@ export class WorkboardCoreStore extends WorkboardStoreRuntime {
       return;
     }
     const parents = cardParentIds(next);
-    const cards =
-      parents.length > 0 ? new Map((await this.list()).map((card) => [card.id, card])) : undefined;
-    if (
-      parents.length > 0 &&
-      !parents.every((parentId) => cards?.get(parentId)?.status === "done")
-    ) {
-      throw new Error("card dependencies are not done.");
+    if (parents.length > 0) {
+      const cards = new Map(
+        (await this.store.listCardStatuses(parents)).map((card) => [card.id, card]),
+      );
+      if (!parents.every((parentId) => cards.get(parentId)?.status === "done")) {
+        throw new Error("card dependencies are not done.");
+      }
     }
     if (next.status === "done") {
       return;
@@ -905,11 +905,6 @@ export class WorkboardCoreStore extends WorkboardStoreRuntime {
     for (const entry of await this.subscriptionStore.entries()) {
       if (entry.value?.version === 1 && entry.value.subscription?.cardId === cardId) {
         await this.subscriptionStore.delete(entry.key);
-      }
-    }
-    for (const entry of await this.attachmentStore.entries()) {
-      if (entry.value?.version === 1 && entry.value.attachment?.cardId === cardId) {
-        await this.attachmentStore.delete(entry.key);
       }
     }
     await this.removeReferencesToCard(cardId);
@@ -995,9 +990,11 @@ export class WorkboardCoreStore extends WorkboardStoreRuntime {
     assertCanMutateClaimedCard(parent, options.scope);
     assertCanMutateClaimedCard(child, options.scope);
     if (child.status === "done" || child.status === "blocked") {
-      const cardsById = new Map((await this.list()).map((card) => [card.id, card]));
       const parentIds = [...cardParentIds(child), parent.id].filter(
         (id, index, ids) => ids.indexOf(id) === index,
+      );
+      const cardsById = new Map(
+        (await this.store.listCardStatuses(parentIds)).map((card) => [card.id, card]),
       );
       if (parentIds.some((id) => cardsById.get(id)?.status !== "done")) {
         throw new Error("terminal child cards cannot gain incomplete parent dependencies.");
@@ -1058,8 +1055,11 @@ export class WorkboardCoreStore extends WorkboardStoreRuntime {
       }
       return card.status === "scheduled" ? "ready" : card.status;
     }
-    const parentCards = await Promise.all(parents.map((parentId) => this.get(parentId)));
-    const parentsDone = parentCards.every((parent) => parent?.status === "done");
+    const parentIds = parents.map((parentId) => parentId.trim());
+    const parentCards = new Map(
+      (await this.store.listCardStatuses(parentIds)).map((parent) => [parent.id, parent]),
+    );
+    const parentsDone = parentIds.every((id) => parentCards.get(id)?.status === "done");
     if (
       !parentsDone &&
       scheduledAt &&
