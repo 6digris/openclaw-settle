@@ -1049,6 +1049,7 @@ describe("scripts/test-projects changed-target routing", () => {
         "test/scripts/ci-platform-checkout.test.ts",
         "src/scripts/ci-changed-scope.git-owner.test.ts",
         "test/scripts/ci-workflow-guards.test.ts",
+        "test/scripts/qa-profile-run-status.test.ts",
       ],
     });
     for (const target of ["ci-git-owner", "ci-linux-git", "ci-platform-checkout"]) {
