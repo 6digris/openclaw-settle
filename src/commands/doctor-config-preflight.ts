@@ -548,9 +548,7 @@ export async function runDoctorConfigPreflight(
           noteStartupStateMigrationResult(cronResult);
           if (options.repairPrefixedConfig === true) {
             const cronCodexPlan = await measurePreflightStep("cron-policy-scan", () =>
-              collectCronCodexRuntimePolicyTargetsReadOnly({
-                cfg: migrationConfig,
-              }),
+              collectCronCodexRuntimePolicyTargetsReadOnly({ cfg: migrationConfig }),
             );
             cronCodexRuntimePolicyTargets.push(...cronCodexPlan.targets);
             noteStartupStateMigrationResult({ changes: [], warnings: cronCodexPlan.warnings });

@@ -39,9 +39,9 @@ it("restores the admitted backup after database readiness exceeds the lease TTL"
       async (params) => {
         const lease = await acquire(params);
         const heartbeat = lease.heartbeat;
-        vi.spyOn(lease, "heartbeat").mockImplementation((params) => {
+        vi.spyOn(lease, "heartbeat").mockImplementation((heartbeatParams) => {
           heartbeats++;
-          heartbeat(params);
+          heartbeat(heartbeatParams);
         });
         acquired = true;
         return lease;
