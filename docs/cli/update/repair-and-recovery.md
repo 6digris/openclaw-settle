@@ -214,10 +214,12 @@ step fails. Codex runtime readiness remains owned by its plugin after restart.
 
 Finalization (including the supervisor-facing `update finalize` command) records
 phase starts and finishes immediately on stderr and in the update run ledger.
-The defaults are 30 seconds for preflight admission, config validation, config backup, and completion
-cache work; 120 seconds for Doctor migrations; 600 seconds for plugin registry
-and installation work; and 180 seconds for post-plugin Doctor and validation.
-`--timeout` overrides each phase budget.
+The defaults are 30 seconds for preflight admission, config validation, config
+backup, and completion cache work; and 600 seconds for plugin registry and
+installation work. Doctor migrations and the enclosing post-plugin convergence
+phase have no automatic deadline. Post-plugin config validation and readiness
+commands retain 180-second deadlines. `--timeout` overrides each phase budget,
+including Doctor.
 
 A phase deadline produces exit code 1 and JSON with `status: "failed"`,
 `stuckPhase`, `elapsedMs`, `error`, and the existing `phaseTimings` array. The

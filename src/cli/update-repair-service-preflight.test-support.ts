@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import { registerHooks, syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { runtimeProcessEntrypoints } from "../infra/runtime-process-entrypoints.js";
 
 type FixtureParams = {
@@ -168,10 +169,12 @@ export const SQLITE_READONLY_CHILD_ARG = '--openclaw-sqlite-readonly-child';`,
     JSON.stringify({ name: "openclaw", type: "module" }),
   );
   await fs.writeFile(path.join(root, "openclaw.mjs"), "// Fixture invocation shim.\n");
+  // This installed-entry fixture loads source from another cwd. Bind its workspace
+  // aliases to the same source tree instead of discovering them from the install root.
   await fs.writeFile(
     entry,
     `import { register } from ${JSON.stringify(import.meta.resolve("tsx/esm/api"))};
-register();
+register({ tsconfig: ${JSON.stringify(fileURLToPath(new URL("../../tsconfig.json", import.meta.url)))} });
 try {
   if (process.argv[2] !== 'doctor') throw new Error('This fixture only executes Doctor maintenance');
   const { runRepairServicePreflightFixture } = await import(${JSON.stringify(import.meta.url)});
