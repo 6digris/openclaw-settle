@@ -140,9 +140,7 @@ extension OpenClawChatComposer {
             self.cleanContextUsageMenu
             // Camera switching only displaces settings in the compact iOS footer.
             #if os(macOS)
-            if self.viewModel.showsModelPicker {
-                self.cleanInlineModelPicker(compact: compactModel)
-            }
+            self.cleanInlineModelPicker(compact: compactModel)
             self.cleanInlineEffortMenu
             #else
             if !self.cleanShowsCameraFlip {
@@ -163,15 +161,10 @@ extension OpenClawChatComposer {
                     .accessibilityIdentifier("chat-composer-model-selection-target")
                 Divider()
             }
-            Picker(
-                "Model",
-                selection: Binding(
-                    get: { self.viewModel.canonicalModelSelectionID },
-                    set: { self.viewModel.selectModel($0) }))
-            {
-                Text(self.viewModel.defaultModelLabel)
-                    .font(OpenClawChatTypography.captionSemiBold)
-                    .tag(OpenClawChatViewModel.defaultModelSelectionID)
+            Group {
+                self.modelMenuOption(
+                    self.viewModel.defaultModelLabel,
+                    selectionID: OpenClawChatViewModel.defaultModelSelectionID)
                 if !sections.pinned.isEmpty {
                     Section("Pinned") {
                         self.cleanInlineModelOptions(sections.pinned)
@@ -188,10 +181,6 @@ extension OpenClawChatComposer {
                     }
                 }
             }
-            .labelsHidden()
-            #if os(macOS)
-            .pickerStyle(.inline)
-            #endif
             .disabled(
                 !self.viewModel.composerModelMutationAvailable ||
                     self.viewModel.isUpdatingSessionSettings)
@@ -205,6 +194,10 @@ extension OpenClawChatComposer {
                         self.viewModel.isSelectedModelPinned ? "Unpin model" : "Pin model",
                         systemImage: self.viewModel.isSelectedModelPinned ? "star.slash" : "star")
                 }
+            }
+            if self.usesDesktopModelMenu {
+                Divider()
+                self.modelSignInButton
             }
             #endif
         } label: {
@@ -273,9 +266,10 @@ extension OpenClawChatComposer {
     private func cleanInlineModelOptions(_ models: [OpenClawChatModelChoice]) -> some View {
         ForEach(models) { model in
             let unavailable = self.viewModel.modelUnavailableDescription(model)
-            Text(verbatim: [model.displayLabel, unavailable].compactMap(\.self).joined(separator: " — "))
-                .font(OpenClawChatTypography.captionSemiBold)
-                .tag(model.selectionID)
+            self.modelMenuOption(
+                [model.displayLabel, model.capabilityDescription, unavailable].compactMap(\.self)
+                    .filter { !$0.isEmpty }.joined(separator: " — "),
+                selectionID: model.selectionID)
                 .disabled(unavailable != nil)
                 .accessibilityHint(unavailable ?? "")
         }
@@ -286,7 +280,7 @@ extension OpenClawChatComposer {
             if self.viewModel.showsThinkingPicker {
                 self.thinkingPicker
             }
-            if self.viewModel.selectedModelSupportsFastMode {
+            if self.viewModel.showsFastModeControls {
                 self.fastModeToggle
             }
         } label: {
@@ -303,7 +297,7 @@ extension OpenClawChatComposer {
                         .rotationEffect(.degrees(self.viewModel.composerInlineEffortAngle))
                 }
                 .frame(width: 18, height: 18)
-                if self.viewModel.fastModeSelectionID == "on" {
+                if self.viewModel.fastModeIsEnabled {
                     Image(systemName: "bolt.fill")
                         .font(OpenClawChatTypography.caption)
                         .foregroundStyle(OpenClawChatTheme.accent)

@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { html, nothing, render } from "lit";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestTranscript } from "../chat-view.test-helpers.ts";
 import { getTranscriptState } from "./chat-thread-interactions.ts";
 import { renderChatThread } from "./chat-thread.ts";
@@ -30,6 +30,111 @@ describe("conversation position rail", () => {
   beforeEach(installTranscriptDomMocks);
   afterEach(resetTranscriptTestDom);
 
+  it("keeps stream edits off target scans while reconciling bubble mounts and identities", async () => {
+    const observed = new Set<Element>();
+    vi.stubGlobal(
+      "IntersectionObserver",
+      class {
+        observe = (element: Element) => observed.add(element);
+        unobserve = (element: Element) => observed.delete(element);
+        disconnect = () => observed.clear();
+      },
+    );
+    const props = {
+      ...threadProps("rail-mutations", "agent:main:rail-mutations", [
+        message("question", "user", "Earlier question", 1),
+        message("answer", "assistant", "Earlier answer", 2),
+      ]),
+      runActive: true,
+      stream: "Live **start**",
+      streamStartedAt: 3_000,
+    };
+    const transcript = createTestTranscript();
+    const container = document.body.appendChild(document.createElement("div"));
+    const rerender = () => {
+      render(renderChatThread(props, transcript), container);
+      transcript.hostUpdated();
+    };
+    const settleFrames = () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
+    props.onRequestUpdate = rerender;
+    try {
+      rerender();
+      transcript.hostConnected();
+      const root = container.querySelector<HTMLElement>(".chat-thread");
+      const marks = container.querySelector<HTMLElement>(".chat-position-rail__marks");
+      const original = container.querySelector<HTMLElement>(
+        '.chat-bubble[data-entry-id="question"]',
+      );
+      assert(root && marks && original);
+      Object.defineProperty(marks, "clientHeight", { configurable: true, value: 600 });
+      await settleFrames();
+      expect(observed.has(original)).toBe(true);
+      const query = vi.spyOn(root, "querySelectorAll");
+      const targetScans = () =>
+        query.mock.calls.filter(([selector]) => selector === ".chat-bubble[data-entry-id]").length;
+
+      for (const word of ["one", "two", "three"]) {
+        props.stream = `Live **${word}**`;
+        rerender();
+        await settleFrames();
+        expect(container.querySelector(".chat-bubble strong")?.textContent).toBe(word);
+        expect(container.querySelector('.chat-bubble[data-entry-id="question"]')).toBe(original);
+      }
+      expect(targetScans()).toBe(0);
+
+      original.remove();
+      await settleFrames();
+      expect(targetScans()).toBeGreaterThan(0);
+      expect(observed.has(original)).toBe(false);
+      query.mockClear();
+
+      const replacement = original.cloneNode(true) as HTMLElement;
+      root.append(replacement);
+      await settleFrames();
+      expect(targetScans()).toBeGreaterThan(0);
+      expect(observed.has(replacement)).toBe(true);
+      query.mockClear();
+      replacement.remove();
+      await settleFrames();
+      expect(targetScans()).toBeGreaterThan(0);
+      expect(observed.has(replacement)).toBe(false);
+      query.mockClear();
+
+      const wrapper = document.createElement("section");
+      wrapper.append(replacement);
+      root.append(wrapper);
+      await settleFrames();
+      expect(targetScans()).toBeGreaterThan(0);
+      expect(observed.has(replacement)).toBe(true);
+      query.mockClear();
+      wrapper.remove();
+      await settleFrames();
+      expect(targetScans()).toBeGreaterThan(0);
+      expect(observed.has(replacement)).toBe(false);
+      query.mockClear();
+
+      replacement.removeAttribute("data-entry-id");
+      root.append(replacement);
+      await settleFrames();
+      expect(targetScans()).toBe(0);
+      replacement.dataset.entryId = "question";
+      await settleFrames();
+      expect(targetScans()).toBeGreaterThan(0);
+      expect(observed.has(replacement)).toBe(true);
+      query.mockClear();
+      replacement.removeAttribute("data-entry-id");
+      await settleFrames();
+      expect(targetScans()).toBeGreaterThan(0);
+      expect(observed.has(replacement)).toBe(false);
+    } finally {
+      render(nothing, container);
+      transcript.hostDisconnected();
+    }
+  });
+
   it("publishes consecutive reader offsets even when the virtual row range is unchanged", async () => {
     transcriptDomState.measuredRowHeight = 120;
     const requestUpdate = vi.fn();
@@ -44,7 +149,11 @@ describe("conversation position rail", () => {
       key: `row-${index}`,
       content: html`<div>${index}</div>`,
     }));
-    const { container, session } = await mountTestTranscript("rail-notification", rows, transcript);
+    const { container, session, renderRows } = await mountTestTranscript(
+      "rail-notification",
+      rows,
+      transcript,
+    );
     try {
       Object.defineProperties(container, {
         clientHeight: { configurable: true, value: 600 },
@@ -54,7 +163,11 @@ describe("conversation position rail", () => {
         observer.emitTarget(container, 800, 600);
       }
       const ids = rows.map((row) => row.key);
-      session.syncMessageRows(new Map(ids.map((id) => [id, id])));
+      session.syncMessageRows(
+        new Map(ids.map((id) => [id, id])),
+        new Map(ids.map((id) => [id, id])),
+      );
+      renderRows(rows);
       const currentId = () => session.activeMessageId(["row-2", "row-3"]);
       container.scrollTop = 50;
       container.dispatchEvent(new Event("scroll"));
@@ -99,7 +212,10 @@ describe("conversation position rail", () => {
       key: `row-${index}`,
       content: html`<div>${index}</div>`,
     }));
-    const { container, transcript, session } = await mountTestTranscript("rail-offset", rows);
+    const { container, transcript, session, renderRows } = await mountTestTranscript(
+      "rail-offset",
+      rows,
+    );
     try {
       Object.defineProperties(container, {
         clientHeight: { configurable: true, value: 600 },
@@ -110,7 +226,11 @@ describe("conversation position rail", () => {
         observer.emitTarget(container, 800, 600);
       }
       const ids = rows.map((row) => row.key);
-      session.syncMessageRows(new Map(ids.map((id) => [id, id])));
+      session.syncMessageRows(
+        new Map(ids.map((id) => [id, id])),
+        new Map(ids.map((id) => [id, id])),
+      );
+      renderRows(rows);
       // No scroll event or render between these queries: mounted rows are stale.
       container.scrollTop = 100;
       expect(session.activeMessageId(ids)).toBe("row-2");
@@ -308,7 +428,7 @@ describe("conversation position rail", () => {
     transcript.hostDisconnected();
   });
 
-  it("does not target a final-answer action owner folded behind dashboard work", () => {
+  it("targets the visible final answer before later dashboard commentary and tools", () => {
     const messages = [
       message("question", "user", "Inspect the design", 1),
       { ...message("final", "assistant", "Design ready", 2, "run-1"), phase: "final_answer" },
@@ -339,7 +459,7 @@ describe("conversation position rail", () => {
       landmarks = projectChatTranscript(props, session).positionMessages;
       return html``;
     });
-    expect(landmarks).toEqual([messages[0], messages[3]]);
+    expect(landmarks).toEqual([messages[0], messages[1]]);
     transcript.hostDisconnected();
   });
 });

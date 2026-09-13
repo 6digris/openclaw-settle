@@ -3,7 +3,6 @@ import { sleepWithAbort } from "openclaw/plugin-sdk/runtime-env";
 import { describe, expect, it, vi } from "vitest";
 import {
   buildMemoryEmbeddingBatches,
-  filterNonEmptyMemoryChunks,
   isSplittableMemoryEmbeddingBatchError,
   runMemoryEmbeddingBatchRetryWithSplit,
   runMemoryEmbeddingRetryLoop,
@@ -95,12 +94,6 @@ describe("memory embedding policy", () => {
       1, 1,
     ]);
     expect(buildMemoryEmbeddingBatches(structuredChunks, 11)).toEqual([structuredChunks]);
-  });
-
-  it("filters empty chunks before embedding", () => {
-    const chunks = filterNonEmptyMemoryChunks([chunk("\n\n"), chunk("hello"), chunk("   ")]);
-
-    expect(chunks.map((entry) => entry.text)).toEqual(["hello"]);
   });
 
   it("retries transient rate limit and 5xx errors", async () => {
@@ -464,6 +457,7 @@ describe("memory embedding policy", () => {
   });
 
   it("splits OpenAI 431 oversized embedding batches without retrying the same request", async () => {
+    const completed: string[][] = [];
     const run = vi.fn(async (items: string[]) => {
       if (items.length > 1) {
         throw new Error(
@@ -477,11 +471,15 @@ describe("memory embedding policy", () => {
       profile: "index",
       items: ["a", "b", "c", "d"],
       run,
+      onSuccess: (items) => {
+        completed.push(items);
+      },
       isSplittable: isSplittableMemoryEmbeddingBatchError,
       waitForRetry: async () => {},
     });
 
     expect(result).toEqual([[97], [98], [99], [100]]);
+    expect(completed).toEqual([["a"], ["b"], ["c"], ["d"]]);
     expect(run.mock.calls.map(([items]) => items.length)).toEqual([4, 2, 1, 1, 2, 1, 1]);
     expect(isSplittableMemoryEmbeddingBatchError("431 request_headers_too_large")).toBe(true);
     expect(isSplittableMemoryEmbeddingBatchError("embedding validation failed at item 4312")).toBe(

@@ -19,8 +19,10 @@ Beam ships with OpenClaw but is disabled by default. When enabled, it registers:
 
 ```bash
 openclaw plugins enable beam
-openclaw gateway restart
 ```
+
+Enablement applies to a running Gateway automatically. If it is offline, start
+it to use Beam. See [Apply changes and inspect](/plugins/manage-plugins#apply-changes-and-inspect).
 
 Equivalent config:
 
@@ -38,7 +40,6 @@ Disable the plugin when the ingest route is not needed:
 
 ```bash
 openclaw plugins disable beam
-openclaw gateway restart
 ```
 
 ## Authentication
@@ -110,7 +111,7 @@ accepts them.
 
 Uploading the same `beamId` updates the existing catalog row when its `updatedAt` is newer. Equal-timestamp uploads may refresh the same state or mark a live row completed, but cannot regress a completed row to live. Older uploads and equal-timestamp completion regressions still return the normal `200` success response, but OpenClaw ignores them. Only accepted updates refresh retention and uploader attribution.
 
-`sourceModel` is optional. Current automatic mirrors include the latest model reported by the source catalog. Older clients and snapshots remain valid without it.
+`sourceModel` is optional. Automatic mirrors include the latest model reported by the source catalog. Older clients and snapshots remain valid without it.
 
 ## Continue on the Team Gateway
 
@@ -190,29 +191,17 @@ When browsing Claude sessions on paired nodes, update those nodes alongside the 
 
 ## Troubleshooting
 
-`404 Not Found`
+**`404 Not Found`** The Beam plugin is disabled, runtime application failed, or the request is reaching another Gateway. Check the enablement result and [inspect the plugin](/plugins/manage-plugins#apply-changes-and-inspect).
 
-: The Beam plugin is disabled, the Gateway has not reloaded it since enablement, or the request is reaching another Gateway.
+**`401 Unauthorized`** The request did not satisfy Gateway HTTP auth. Check the bearer credential or trusted-proxy/Access session.
 
-`401 Unauthorized`
+**`405 Method Not Allowed`** The receiver accepts only `POST`.
 
-: The request did not satisfy Gateway HTTP auth. Check the bearer credential or trusted-proxy/Access session.
+**`413 Payload Too Large`** The serialized request exceeded 56 KiB. The official skill drops older sanitized messages until the snapshot fits.
 
-`405 Method Not Allowed`
+**`429 Too Many Requests`** The authenticated client exceeded the bounded request or concurrency limit. Retry after the current minute window.
 
-: The receiver accepts only `POST`.
-
-`413 Payload Too Large`
-
-: The serialized request exceeded 56 KiB. The official skill drops older sanitized messages until the snapshot fits.
-
-`429 Too Many Requests`
-
-: The authenticated client exceeded the bounded request or concurrency limit. Retry after the current minute window.
-
-`beam mirror upload blocked ... receiver returned redirect`
-
-: The configured mirror endpoint returned a redirect. Beam does not follow redirects and suppresses repeated attempts for the current service instance; set `mirror.endpoint` to the final receiver URL. A Gateway restart probes the configured endpoint once again.
+**`beam mirror upload blocked ... receiver returned redirect`** The configured mirror endpoint returned a redirect. Beam does not follow redirects and suppresses repeated attempts for the current service instance; set `mirror.endpoint` to the final receiver URL. A Gateway restart probes the configured endpoint once again.
 
 ## Related
 

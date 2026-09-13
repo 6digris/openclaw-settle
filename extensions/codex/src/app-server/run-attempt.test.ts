@@ -2943,6 +2943,34 @@ describe("runCodexAppServerAttempt", () => {
       ],
     });
 
+    const noteResponse = await harness.handleServerRequest({
+      id: "request-plan-note",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "call-plan-note",
+        namespace: null,
+        tool: "progress_card",
+        arguments: {
+          markdown:
+            '<progress aria-label="private" value="1" max="2"></progress>\n\n**Working** [results](https://example.com "<script>").',
+        },
+      },
+    });
+    expect(noteResponse).toMatchObject({ success: true });
+    expect(onAgentEvent).toHaveBeenCalledWith({
+      stream: "plan",
+      data: {
+        phase: "update",
+        title: "Plan updated",
+        source: "openclaw",
+        explanation: "Working results.",
+        explanationFormat: "plain",
+        steps: [],
+      },
+    });
+
     const clearResponse = await harness.handleServerRequest({
       id: "request-plan-clear",
       method: "item/tool/call",
@@ -2956,7 +2984,7 @@ describe("runCodexAppServerAttempt", () => {
       },
     });
     expect(clearResponse).toMatchObject({ success: true });
-    expect(executeProgressCard).toHaveBeenCalledTimes(3);
+    expect(executeProgressCard).toHaveBeenCalledTimes(4);
     expect(onAgentEvent).toHaveBeenCalledWith({
       stream: "plan",
       data: {
@@ -3200,47 +3228,6 @@ describe("runCodexAppServerAttempt", () => {
     expect(closeAndWait).not.toHaveBeenCalled();
   });
 
-  it("projects dynamic progress cards through the shared safe status contract", async () => {
-    const params = createRunParams();
-    const onAgentEvent = vi.fn();
-    params.onAgentEvent = onAgentEvent;
-    const projector = new CodexAppServerEventProjector(params, "thread-1", "turn-1");
-
-    await projector.recordDynamicProgressCardUpdate({
-      markdown: '<progress aria-label="private" value="1" max="2"></progress>',
-      plan: [{ step: "Ship", status: "completed" }],
-    });
-    await projector.recordDynamicProgressCardUpdate({ markdown: "Working" });
-    await projector.recordDynamicProgressCardUpdate({});
-
-    expect(onAgentEvent).toHaveBeenNthCalledWith(1, {
-      stream: "plan",
-      data: {
-        phase: "update",
-        title: "Plan updated",
-        source: "openclaw",
-        explanation: "1/1 complete",
-        steps: [{ step: "Ship", status: "completed" }],
-      },
-    });
-    expect(onAgentEvent).toHaveBeenNthCalledWith(2, {
-      stream: "plan",
-      data: {
-        phase: "update",
-        title: "Plan updated",
-        source: "openclaw",
-        explanation: "Progress updated",
-        steps: [],
-      },
-    });
-    expect(onAgentEvent).toHaveBeenNthCalledWith(3, {
-      stream: "plan",
-      data: { phase: "update", title: "Plan updated", source: "openclaw", steps: [] },
-    });
-    expect(JSON.stringify(onAgentEvent.mock.calls)).not.toContain("<progress");
-    expect(JSON.stringify(onAgentEvent.mock.calls)).not.toContain("private");
-  });
-
   it("keeps searchable Codex dynamic tools canonical in mirrored transcript snapshots", async () => {
     const params = createRunParams();
     const projector = new CodexAppServerEventProjector(params, "thread-1", "turn-1");
@@ -3414,6 +3401,7 @@ describe("runCodexAppServerAttempt", () => {
     sessionManager.appendMessage(assistantMessage("previous turn", Date.now()));
     const harness = createStartedThreadHarness();
     const params = createParams(sessionFile, workspaceDir, { provider: "openai" });
+    params.inputProvenance = { kind: "inter_session", sourceTool: "sessions_send" };
     params.config = {
       ...params.config,
       agents: { defaults: { model: { primary: "openai/gpt-5.5" } } },
@@ -3445,6 +3433,7 @@ describe("runCodexAppServerAttempt", () => {
     expect(hookContext).toMatchObject({
       modelProviderId: params.provider,
       modelId: params.modelId,
+      inputProvenance: { kind: "inter_session", sourceTool: "sessions_send" },
     });
     const threadStart = harness.requests.find((request) => request.method === "thread/start");
     const threadStartParams = threadStart?.params as { developerInstructions?: string } | undefined;
@@ -5428,6 +5417,7 @@ describe("runCodexAppServerAttempt", () => {
         { onStart, ...(preserveNativeModel ? { persistedThreads: ["thread-1"] } : {}) },
       );
       const params = createParams(sessionFile, workspaceDir);
+      params.registerPluginRuntimeRefreshConsumer = vi.fn();
       params.modelId = "synthetic-outer-model";
       params.authProfileStore = {
         version: 1,
@@ -5500,6 +5490,7 @@ describe("runCodexAppServerAttempt", () => {
       const selectedProfile = preserveNativeModel ? "openai:binding" : "openai:ordered";
       expect(onStart).toHaveBeenCalledWith(selectedProfile, expect.anything(), expect.anything());
       if (preserveNativeModel) {
+        expect(params.registerPluginRuntimeRefreshConsumer).not.toHaveBeenCalled();
         expectResumeRequest(harness.requests, { threadId: "thread-1" });
         const resume = harness.requests.find((request) => request.method === "thread/resume");
         expect(resume?.params).not.toHaveProperty("model");
@@ -8022,6 +8013,7 @@ describe("runCodexAppServerAttempt", () => {
       agentHarnessRuntimeMocks.forceModelToolsUnsupported = true;
       agentHarnessRuntimeMocks.skipRequesterScopedMcpMaterialization = true;
       const params = createParams(sessionFile, workspaceDir);
+      params.registerPluginRuntimeRefreshConsumer = vi.fn();
       params.agentDir = agentDir;
       params.provider = "anthropic";
       params.modelId = "claude-opus-4-6";
@@ -8095,6 +8087,7 @@ describe("runCodexAppServerAttempt", () => {
         });
         const result = await run;
         expect(result.terminal).toEqual({ kind: "ok" });
+        expect(params.registerPluginRuntimeRefreshConsumer).not.toHaveBeenCalled();
         expect(beforePromptBuild).toHaveBeenCalled();
         for (let index = 0; index < beforePromptBuild.mock.calls.length; index += 1) {
           const context = mockCall(beforePromptBuild, "before_prompt_build", index)[1];

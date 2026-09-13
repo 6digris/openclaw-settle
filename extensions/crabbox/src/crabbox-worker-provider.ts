@@ -8,6 +8,7 @@ import {
 } from "openclaw/plugin-sdk/plugin-entry";
 import { runCommandWithTimeout } from "openclaw/plugin-sdk/process-runtime";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { resolveCrabboxBinary } from "./crabbox-binary.js";
 import { ensureManagedCrabboxBinary } from "./crabbox-managed-binary.js";
 import { crabboxCommandError } from "./crabbox-worker-command-error.js";
 import {
@@ -34,7 +35,6 @@ import {
   operationSlug,
   parseCrabboxOperatingSystem,
   parseCrabboxProfile,
-  resolveCrabboxBinary,
   resolveCrabboxProvisionProfile,
   resolveCrabboxWarmImageProfile,
 } from "./crabbox-worker-profile.js";
@@ -52,6 +52,11 @@ import {
   type LeaseCommandContext,
 } from "./crabbox-worker-provision-commands.js";
 import {
+  createCrabboxSnapshotActions,
+  resolveCrabboxCheckpointBinaries,
+  type CrabboxSnapshotActions,
+} from "./crabbox-worker-snapshot-actions.js";
+import {
   countCrabboxProvisionSetupPhases,
   CRABBOX_COMMAND_SETTLEMENT_TIMEOUT_MS,
   CRABBOX_DESKTOP_WARMUP_TIMEOUT_MS,
@@ -66,6 +71,7 @@ import {
   resolveCrabboxWarmImageCaptureTimeoutMs,
 } from "./crabbox-worker-timeouts.js";
 import { loadCrabboxWorkerWallpaperBase64 } from "./crabbox-worker-wallpaper.js";
+import type { CrabboxWarmImagePolicy } from "./crabbox-worker-warm-image-policy.js";
 import { createCrabboxWarmImageManager } from "./crabbox-worker-warm-image.js";
 
 export { resolveOpenClawRoot } from "./crabbox-worker-profile.js";
@@ -95,6 +101,7 @@ type CrabboxWorkerProviderDependencies = {
   sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
   wallpaperPath: string;
   warn?: (message: string) => void;
+  warmImagePolicy?: CrabboxWarmImagePolicy;
 };
 
 async function loadCrabboxConfigShow(params: {
@@ -153,7 +160,7 @@ async function assertHetznerDesktopHasManagedCoordinator(params: {
 
 export function createCrabboxWorkerProvider(
   dependencies: CrabboxWorkerProviderDependencies,
-): WorkerProvider & { dispose: () => Promise<void> } {
+): WorkerProvider & { dispose: () => Promise<void>; images: CrabboxSnapshotActions } {
   const wallpaperBase64 = loadCrabboxWorkerWallpaperBase64(dependencies.wallpaperPath);
   const runCommand = dependencies.runCommand ?? runCommandWithTimeout;
   const warn = dependencies.warn ?? (() => {});
@@ -197,7 +204,7 @@ export function createCrabboxWorkerProvider(
     if (existing) {
       return existing;
     }
-    const binary = await ensureManagedCrabboxBinary({ binary: candidate, runCommand, signal });
+    const { binary } = await ensureManagedCrabboxBinary({ binary: candidate, runCommand, signal });
     binaries.set(candidate, binary);
     return binary;
   };
@@ -206,9 +213,23 @@ export function createCrabboxWorkerProvider(
     runCommand,
     warn,
   });
-  const warmImages = createCrabboxWarmImageManager({ runCommand, runArgs: leaseRunArgs, warn });
+  const warmImages = createCrabboxWarmImageManager({
+    runCommand,
+    runArgs: leaseRunArgs,
+    warn,
+    policy: dependencies.warmImagePolicy,
+  });
   const maintenanceAbort = new AbortController();
   let maintenanceInFlight: Promise<void> | undefined;
+  const resolveMaintenanceBinaries = (
+    profiles: readonly Parameters<typeof parseCrabboxProfile>[0][],
+    signal: AbortSignal,
+  ) => resolveCrabboxCheckpointBinaries({ profiles, signal, resolveBinary, warn });
+  const snapshots = createCrabboxSnapshotActions({
+    manager: warmImages,
+    signal: maintenanceAbort.signal,
+    resolveBinaries: resolveMaintenanceBinaries,
+  });
   const stopLease = async (context: LeaseCommandContext): Promise<void> => {
     await heartbeats.stop(context.id);
     // Cleanup has its own deadline. Only confirmed stop releases allocation/image ownership.
@@ -310,7 +331,9 @@ export function createCrabboxWorkerProvider(
         profile: parsed,
         profileId: options?.profileId,
         nodeRuntimeIdentity,
-        ...(project ? { projectKey: project.key, projectLabel: project.label } : {}),
+        ...(project
+          ? { projectKey: project.key, projectLabel: project.label, projectRoot: project.root }
+          : {}),
         ...(project?.preparation ? { preparation: project.preparation } : {}),
         ...(project ? { assertCurrent: project.assertCurrent } : {}),
         signal: preparationSignal,
@@ -560,10 +583,18 @@ export function createCrabboxWorkerProvider(
 
   return {
     id: CRABBOX_WORKER_PROVIDER_ID,
+    // Desktop provisioning requires a dedicated Linux XFCE display. Older fixed-size
+    // images are still safe to request: noVNC negotiates actual resize support.
+    allowsDesktopResize: true,
     async dispose() {
       maintenanceAbort.abort();
-      await Promise.all([heartbeats.dispose(), maintenanceInFlight?.catch(() => {})]);
+      await Promise.all([
+        heartbeats.dispose(),
+        maintenanceInFlight?.catch(() => {}),
+        snapshots.settle(),
+      ]);
     },
+    images: snapshots.images,
     maintain(context) {
       context.assertCurrent();
       maintenanceAbort.signal.throwIfAborted();
@@ -577,29 +608,10 @@ export function createCrabboxWorkerProvider(
           assertCurrent();
           // Records have no binary owner: try sorted executables until deletion or all report absent.
           // Crabbox prints `checkpoint absent id=<id>` with exit 0 (internal/cli/checkpoint.go).
-          const resolutions = await Promise.allSettled(
-            context.profiles.map((profile) =>
-              resolveBinary(parseCrabboxProfile(profile).binary, signal),
-            ),
-          );
+          const resolvedBinaries = await resolveMaintenanceBinaries(context.profiles, signal);
           assertCurrent();
-          const resolvedBinaries: string[] = [];
-          const failures: unknown[] = [];
-          for (const resolution of resolutions) {
-            if (resolution.status === "fulfilled") {
-              resolvedBinaries.push(resolution.value);
-            } else {
-              failures.push(resolution.reason);
-              warn(
-                `Crabbox maintenance binary unavailable: ${coerceErrorMessage(resolution.reason)}`,
-              );
-            }
-          }
-          if (failures.length > 0 && resolvedBinaries.length === 0) {
-            throw new AggregateError(failures, "Crabbox maintenance has no supported executable");
-          }
           await warmImages.maintain({
-            binaries: [...new Set(resolvedBinaries)],
+            binaries: resolvedBinaries,
             signal,
             assertCurrent,
           });

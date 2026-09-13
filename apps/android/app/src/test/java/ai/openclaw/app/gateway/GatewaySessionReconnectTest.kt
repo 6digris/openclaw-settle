@@ -966,6 +966,35 @@ class GatewaySessionReconnectTest {
     }
 
   @Test
+  fun unknownChallengeCapabilitiesPreserveNativeConnectWithoutCatalogOptIn() =
+    runBlocking {
+      val hello = CompletableDeferred<GatewayHelloSummary>()
+      val server =
+        startGatewayServer(
+          json = Json { ignoreUnknownKeys = true },
+          challengeFrame =
+            """{"type":"event","event":"connect.challenge","payload":{"nonce":"android-test-nonce","ts":1700000000123,"capabilities":["model-catalog-snapshot","future-capability"]}}""",
+        ) { webSocket, id, method ->
+          if (method == "connect") webSocket.send(connectResponseFrame(id))
+        }
+      val harness = createReconnectHarness(onHello = hello::complete)
+
+      try {
+        connectNodeSession(harness.session, server.port)
+        withTimeout(LIFECYCLE_TEST_TIMEOUT_MS) { hello.await() }
+        val params =
+          server.requestFrames
+            .single { it["method"]?.jsonPrimitive?.content == "connect" }
+            .getValue("params")
+            .jsonObject
+        assertNull(params["modelCatalog"])
+        assertNull(params["caps"])
+      } finally {
+        shutdownReconnectHarness(harness, server)
+      }
+    }
+
+  @Test
   fun connectedHelloPublishesServerCapabilities() =
     runBlocking {
       val json = Json { ignoreUnknownKeys = true }
@@ -2035,6 +2064,7 @@ class GatewaySessionReconnectTest {
   private fun startGatewayServer(
     json: Json,
     onClosed: () -> Unit = {},
+    challengeFrame: String = LIFECYCLE_CONNECT_CHALLENGE_FRAME,
     onRequestFrame: (webSocket: WebSocket, id: String, method: String) -> Unit,
   ): ReconnectServer {
     val sockets = ConcurrentLinkedQueue<WebSocket>()
@@ -2051,7 +2081,7 @@ class GatewaySessionReconnectTest {
                     response: Response,
                   ) {
                     sockets += webSocket
-                    webSocket.send(LIFECYCLE_CONNECT_CHALLENGE_FRAME)
+                    webSocket.send(challengeFrame)
                   }
 
                   override fun onMessage(

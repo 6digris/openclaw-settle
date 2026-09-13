@@ -751,6 +751,8 @@ class GatewaySession(
     try {
       val res = conn.request(GatewayMethod.NodeEvent.rawValue, params, timeoutMs = timeoutMs)
       return RpcResult(ok = res.ok, payloadJson = res.payloadJson, error = res.error)
+    } catch (err: CancellationException) {
+      throw err
     } catch (err: Throwable) {
       Log.w("OpenClawGateway", "node.event failed: ${err::class.java.simpleName}")
       return RpcResult(
@@ -1143,6 +1145,8 @@ class GatewaySession(
         sendJson(buildRequestFrame(id = id, method = method, params = params), withEnqueue)
         return withTimeout(timeoutMs) { deferred.await() }
       } catch (err: TimeoutCancellationException) {
+        // Caller deadlines must propagate; only RPC-owned timeouts become request failures.
+        currentCoroutineContext().ensureActive()
         if (method == GatewayMethod.Connect.rawValue) {
           throw GatewayConnectFailure(gatewayNetworkConnectError(timedOut = true))
         }

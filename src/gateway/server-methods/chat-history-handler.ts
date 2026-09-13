@@ -8,10 +8,6 @@ import {
 } from "../../../packages/gateway-protocol/src/index.js";
 import { CHAT_HISTORY_MAX_ENTRIES } from "../../../packages/gateway-protocol/src/schema/chat-history-constants.js";
 import { resolveAgentConfig } from "../../agents/agent-scope.js";
-import {
-  resolveActiveEmbeddedRunOwner,
-  resolveActiveEmbeddedRunHandleSessionId,
-} from "../../agents/embedded-agent-runner/runs.js";
 import { findModelCatalogEntry } from "../../agents/model-catalog.js";
 import { resolveConfiguredThinkingDefault } from "../../agents/model-thinking-default.js";
 import { composeTranscriptDisplay } from "../../chat/transcript-display-position.js";
@@ -20,6 +16,7 @@ import {
   listSessionPendingInputReceipts,
   resolveTranscriptSessionKeyBySessionId,
 } from "../../config/sessions/session-accessor.js";
+import { readRestoredSessionTranscript } from "../../config/sessions/session-cold-storage-read.js";
 import {
   measureDiagnosticsTimelineSpan,
   measureDiagnosticsTimelineSpanSync,
@@ -28,12 +25,10 @@ import { formatErrorMessage } from "../../infra/errors.js";
 import { scopeLegacySessionKeyToAgent } from "../../routing/session-key.js";
 import {
   boundInFlightRunSnapshotForChatHistory,
-  projectInFlightRunSnapshot,
   resolveInFlightRunSnapshot,
 } from "../chat-abort.js";
 import { resolveEffectiveChatHistoryMaxChars } from "../chat-display-projection.js";
 import { resolveClaudeCliBindingSessionId } from "../cli-session-history.js";
-import type { ChatRunState } from "../server-chat-state.js";
 import { getMaxChatHistoryMessagesBytes } from "../server-constants.js";
 import { buildGatewaySessionSnapshot } from "../session-event-payload.js";
 import {
@@ -57,6 +52,7 @@ import {
   createChatHistoryByteCounter,
   replaceOversizedChatHistoryMessages,
   reportOmittedChatHistory,
+  trimChatHistoryActivity,
 } from "./chat-history-budget.js";
 import { readChatHistoryDelta } from "./chat-history-delta.js";
 import {
@@ -66,6 +62,7 @@ import {
   resolveChatHistoryNextOffset,
   shouldReplayOldestChatHistoryRecord,
 } from "./chat-history-pages.js";
+import { resolveEmbeddedAgentRunRecoverySnapshot } from "./chat-history-recovery.js";
 import { handleChatMetadataRequest } from "./chat-metadata-handler.js";
 import { validateChatSelectedAgent } from "./chat-origin-routing.js";
 import { readChatPendingInputs } from "./chat-pending-inputs.js";
@@ -95,31 +92,6 @@ function respondChatHistoryUnavailable(
   );
 }
 
-function resolveEmbeddedAgentRunRecoverySnapshot(params: {
-  chatRunState: Pick<ChatRunState, "resolveBuffer" | "runs">;
-  requestedSessionKey: string;
-  canonicalSessionKey: string;
-  sessionId?: string;
-}) {
-  const sessionId =
-    params.sessionId ??
-    resolveActiveEmbeddedRunHandleSessionId(params.canonicalSessionKey) ??
-    resolveActiveEmbeddedRunHandleSessionId(params.requestedSessionKey);
-  if (!sessionId) {
-    return undefined;
-  }
-  const owner = resolveActiveEmbeddedRunOwner(sessionId);
-  if (!owner) {
-    return undefined;
-  }
-  return projectInFlightRunSnapshot({
-    chatRunState: params.chatRunState,
-    runId: owner.runId,
-    startedAtMs: owner.startedAtMs,
-    sessionAbortable: true,
-  });
-}
-
 async function handleChatHistoryRequest({
   params,
   respond,
@@ -143,19 +115,7 @@ async function handleChatHistoryRequest({
     maxBytes,
     pendingBefore,
     inputRunIds,
-  } = params as {
-    sessionKey: string;
-    agentId?: string;
-    limit?: number;
-    offset?: number;
-    cursor?: string;
-    messageId?: string;
-    sessionId?: string;
-    maxChars?: number;
-    maxBytes?: number;
-    pendingBefore?: number;
-    inputRunIds?: string[];
-  };
+  } = params;
   if (offset !== undefined && messageId !== undefined) {
     respond(
       false,
@@ -355,25 +315,34 @@ async function handleChatHistoryRequest({
     : maxHistoryBytes;
   // A smaller page budget must not replace otherwise readable messages. The
   // tail cap keeps one whole message; the server's single-message cap still applies.
-  const perMessageHardCap = Math.min(
-    CHAT_HISTORY_MAX_SINGLE_MESSAGE_BYTES,
-    getMaxChatHistoryMessagesBytes(),
-  );
   const byteCounter = createChatHistoryByteCounter();
   const replaced = replaceOversizedChatHistoryMessages({
     byteCounter,
     messages: normalized,
-    maxSingleMessageBytes: perMessageHardCap,
+    maxSingleMessageBytes: Math.min(
+      CHAT_HISTORY_MAX_SINGLE_MESSAGE_BYTES,
+      getMaxChatHistoryMessagesBytes(),
+    ),
   });
+  // Terminal imports have no older-page cursor. Anchored reads retain their
+  // existing neighborhood selector instead of changing which groups surround the anchor.
+  const prioritized =
+    historyPage.completeCliImport && !messageId
+      ? trimChatHistoryActivity({
+          messages: replaced.messages,
+          maxBytes: responseHistoryBytes,
+          byteCounter,
+        })
+      : replaced.messages;
   const capped = messageId
     ? capChatHistoryAroundMessage({
-        messages: replaced.messages,
+        messages: prioritized,
         messageId,
         // A nonempty JSON array costs one framing byte plus each message and its separator.
         maxCost: responseHistoryBytes - 1,
         messageCost: (message) => byteCounter.messageBytes(message) + 1,
       })
-    : capArrayByJsonBytes(replaced.messages, responseHistoryBytes, byteCounter.messageBytes).items;
+    : capArrayByJsonBytes(prioritized, responseHistoryBytes, byteCounter.messageBytes).items;
   const historyBudgetPreserved =
     replaced.replacedCount === 0 &&
     capped.length === normalized.length &&
@@ -396,7 +365,6 @@ async function handleChatHistoryRequest({
     pagination !== undefined && candidateNextOffset !== undefined
       ? pagination.exhausted !== true && candidateNextOffset < pagination.totalMessages
       : undefined;
-  const nextOffset = hasMore ? candidateNextOffset : undefined;
   reportOmittedChatHistory({
     originalMessages: normalized,
     finalMessages: capped,
@@ -416,7 +384,6 @@ async function handleChatHistoryRequest({
     ? loadGatewaySessionEntryReadOnly(sessionKey, {
         agentId: sessionAgentId,
         clone: false,
-        includeStoreChildEntries: true,
         projection: "list",
       })
     : null;
@@ -597,20 +564,23 @@ async function handleChatHistoryRequest({
     });
     let delta: ReturnType<typeof readChatHistoryDelta>;
     try {
-      delta = readChatHistoryDelta({
+      const scope = {
         agentId: sessionAgentId,
-        cursor,
-        maxBytes: maxHistoryBytes,
-        scope: {
-          agentId: sessionAgentId,
-          sessionEntry: entry,
-          sessionId,
-          sessionKey: canonicalKey,
-          storePath,
-        },
+        sessionEntry: entry,
+        sessionId,
         sessionKey: canonicalKey,
-        sessionSnapshot,
-      });
+        storePath,
+      };
+      delta = await readRestoredSessionTranscript(scope, () =>
+        readChatHistoryDelta({
+          agentId: sessionAgentId,
+          cursor,
+          maxBytes: maxHistoryBytes,
+          scope,
+          sessionKey: canonicalKey,
+          sessionSnapshot,
+        }),
+      );
     } catch (error) {
       if (!isSessionTranscriptProjectionUnavailableError(error)) {
         throw error;
@@ -643,6 +613,7 @@ async function handleChatHistoryRequest({
   const boundedInFlightRun = boundInFlightRunSnapshotForChatHistory({
     snapshot: inFlightRun,
     messages: capped,
+    getMessagesBytes: () => byteCounter.messagesBytes(capped),
     maxBytes: responseHistoryBytes,
   });
   const payload = {
@@ -653,7 +624,7 @@ async function handleChatHistoryRequest({
     ...(inputReceipts ? { inputReceipts, inputConsumptions } : {}),
     ...(historyPage.deltaCursor ? { deltaCursor: historyPage.deltaCursor } : {}),
     ...(historyPage.responseOffset !== undefined ? { offset: historyPage.responseOffset } : {}),
-    ...(hasMore ? { nextOffset } : {}),
+    ...(hasMore ? { nextOffset: candidateNextOffset } : {}),
     ...(hasMore !== undefined ? { hasMore } : {}),
     ...(pagination !== undefined ? { totalMessages: pagination.totalMessages } : {}),
     ...(historyPage.completeCliImport && !hasMore && historyBudgetPreserved

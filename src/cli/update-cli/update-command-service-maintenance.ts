@@ -5,11 +5,12 @@ import { theme } from "../../../packages/terminal-core/src/theme.js";
 import { isGatewayServiceEnv, resolveGatewayProfileSuffix } from "../../daemon/constants.js";
 import { resolveLaunchAgentLabel } from "../../daemon/launchd-label.js";
 import { resolveTaskName } from "../../daemon/schtasks-layout.js";
-import {
-  isScheduledTaskDefinitelyNotRunning,
-  readWindowsStartupFallbackRuntimeForUpdate,
-} from "../../daemon/schtasks-runtime.js";
 import { ScheduledTaskAutoStartRecoveryError } from "../../daemon/schtasks-update-recovery.js";
+import {
+  formatServiceInspectionReason,
+  ServiceInspectionError,
+  type ServiceInspectionReason,
+} from "../../daemon/service-inspection-error.js";
 import { withGatewayServiceOperationLock } from "../../daemon/service-operation-lock.js";
 import {
   resolveManagedGatewayServiceCommand,
@@ -26,7 +27,6 @@ import { defaultRuntime } from "../../runtime.js";
 import { UpdatePreMutationError, type UpdateCommandOptions } from "./shared.js";
 import { gatewayMaintenanceBlockMessage } from "./update-command-handoff.js";
 import { UpdateCommandRecoveryPendingError } from "./update-command-recovery.js";
-import { runUpdatedInstallGatewayCommand } from "./update-command-service-command.js";
 import type { PreManagedServiceStop } from "./update-command-service-context-types.js";
 import {
   assertGatewayServiceAdmissionUnchanged,
@@ -39,11 +39,16 @@ import {
   type ManagedGatewayUpdateVerdict,
 } from "./update-command-service-plan.js";
 import {
+  isManagedGatewayServiceOffline,
+  observedSystemdManagerUid,
+} from "./update-command-service-publication.js";
+import {
   createWindowsTaskAutoStartRecovery,
   UpdateCommandAbort,
   type WindowsTaskAutoStartRecovery,
 } from "./update-command-windows-task.js";
 
+export { withGatewayRuntimeArtifactPublication } from "./update-command-service-publication.js";
 export type { PreManagedServiceStop } from "./update-command-service-context-types.js";
 export { UpdateCommandAbort } from "./update-command-windows-task.js";
 
@@ -56,6 +61,21 @@ const JSON_MODE_SERVICE_STDOUT = new Writable({
 });
 
 function serviceInspectionBlockMessage(state: GatewayServiceState): string {
+  if (state.inspectionReason) {
+    return formatServiceInspectionReason(state.inspectionReason);
+  }
+  const runtime = state.runtime;
+  const tasksCurrent = runtime?.systemd?.tasksCurrent;
+  if (
+    process.platform === "linux" &&
+    runtime?.status === "unknown" &&
+    (runtime.state === "inactive" || runtime.state === "failed") &&
+    !runtime.pid &&
+    tasksCurrent !== undefined &&
+    tasksCurrent > 0
+  ) {
+    return `The Gateway main process has stopped, but processes remain in its systemd service cgroup (${tasksCurrent} tasks). Inspect the unit with systemctl --user status and its journal, then have the process owner stop the remaining children before retrying Doctor or the update.`;
+  }
   const timeoutMs = state.runtime?.inspectionFailure?.timeoutMs;
   return timeoutMs === undefined
     ? GATEWAY_SERVICE_INSPECTION_BLOCK_MESSAGE
@@ -75,13 +95,6 @@ export function resolvePreparedGatewayUpdatePolicy(
   };
 }
 
-function observedSystemdManagerUid(state: GatewayServiceState): number | undefined {
-  const uid = state.runtime?.systemd?.managerUid;
-  return typeof uid === "number" && Number.isInteger(uid) && uid >= 0 && uid < 0xffffffff
-    ? uid
-    : undefined;
-}
-
 async function inspectManagedGatewayServiceBeforeUpdate(params: {
   root: string;
   state: GatewayServiceState;
@@ -91,6 +104,7 @@ async function inspectManagedGatewayServiceBeforeUpdate(params: {
   const unavailable = (): ManagedGatewayUpdateVerdict => ({
     kind: "unavailable",
     message: serviceInspectionBlockMessage(state),
+    ...(state.inspectionReason ? { inspectionReason: state.inspectionReason } : {}),
   });
   if (!command) {
     return !state.installed &&
@@ -215,6 +229,7 @@ export async function revalidateManagedGatewayServiceAfterUpdate(params: {
         ? inspection.message
         : "Gateway service ownership or manager identity changed; inspect it before restarting manually.",
       undefined,
+      inspection.kind === "unavailable" ? inspection.inspectionReason : undefined,
     );
   }
   return inspection.kind === "owned" && verdict?.kind === "owned" && !verdict.refreshDefinition
@@ -333,8 +348,9 @@ type ManagedServiceStopParams = {
     PreManagedServiceStop,
     "serviceEnv" | "serviceUpdateVerdict" | "serviceManagerUid"
   >;
-  activatedInstall?: { packageUpdateNodeRunner?: string; invocationCwd?: string };
+  allowInstallRootChange?: boolean;
   onStopped?: (state: PreManagedServiceStop) => void;
+  assertCurrent?: () => void;
   timeoutMs?: number;
 };
 
@@ -369,18 +385,40 @@ async function stopManagedServiceBeforeMutableUpdate(
     executorFence?.assertCurrent();
   };
   const assertCurrent = () => {
+    params.assertCurrent?.();
     assertNative?.();
     assertExecutor();
+  };
+  // A Linux systemd scope changes cgroup ownership, not Unix ancestry. Reprove
+  // the exact current handoff lease at each boundary that can stop its ancestor.
+  const resolveAncestryBlock = async (state: GatewayServiceState) => {
+    const blockMessage = gatewayMaintenanceBlockMessage(state, params.root);
+    if (
+      !blockMessage ||
+      ((params.phase === "inspect" || process.platform === "linux") &&
+        (await isCurrentManagedServiceUpdateHandoffProcess({
+          root: params.root,
+          runId: params.updateRun?.runId,
+        })))
+    ) {
+      return undefined;
+    }
+    return blockMessage;
   };
   assertCurrent();
   const uninspected = { stopped: false, inspected: false, runtimeInspected: false, running: false };
   const markInspectionUnavailable = (
     base: PreManagedServiceStop,
     message: string,
+    inspectionReason?: ServiceInspectionReason,
   ): PreManagedServiceStop => ({
     ...base,
     serviceMutationAllowed: false,
-    serviceUpdateVerdict: { kind: "unavailable", message },
+    serviceUpdateVerdict: {
+      kind: "unavailable",
+      message,
+      ...(inspectionReason ? { inspectionReason } : {}),
+    },
     blockMessage: message,
   });
   const serviceMutationSkipMessage = resolveGatewayServiceManagementBlockMessageForUpdate(
@@ -417,13 +455,20 @@ async function stopManagedServiceBeforeMutableUpdate(
     if (err instanceof GatewayServiceUpdateOwnershipError) {
       return { ...uninspected, serviceMutationAllowed: false, blockMessage: err.message };
     }
-    return markInspectionUnavailable(uninspected, GATEWAY_SERVICE_INSPECTION_BLOCK_MESSAGE);
+    return markInspectionUnavailable(
+      uninspected,
+      err instanceof ServiceInspectionError
+        ? err.message
+        : GATEWAY_SERVICE_INSPECTION_BLOCK_MESSAGE,
+      err instanceof ServiceInspectionError ? err.reason : undefined,
+    );
   }
   assertCurrent();
   const serviceUpdateVerdict = await revalidateManagedGatewayServiceAfterUpdate({
     root: params.root,
     state: serviceState,
     preManagedServiceStop: params.expectedService,
+    allowInstallRootChange: params.allowInstallRootChange,
   });
   assertCurrent();
   if (params.phase) {
@@ -435,21 +480,7 @@ async function stopManagedServiceBeforeMutableUpdate(
     inspected: true,
     runtimeInspected: ["running", "stopped"].includes(serviceState.runtime?.status ?? ""),
     running: serviceState.running,
-    // Enabled systemd units may be manually stopped; loaded LaunchAgents can
-    // respawn. Windows needs the live numeric task state, not its last result.
-    offline:
-      serviceState.runtime?.status === "stopped" &&
-      (process.platform === "darwin"
-        ? serviceState.loadState.status === "not-loaded" ||
-          (serviceState.loadState.status === "loaded" &&
-            (await service
-              .isEnabled?.({ env: serviceState.env, timeoutMs: params.timeoutMs })
-              .catch(() => undefined)) === false)
-        : process.platform === "win32"
-          ? isScheduledTaskDefinitelyNotRunning(resolveTaskName(serviceState.env)) ||
-            (await readWindowsStartupFallbackRuntimeForUpdate(serviceState.env).catch(() => null))
-              ?.status === "stopped"
-          : process.platform === "linux"),
+    offline: await isManagedGatewayServiceOffline(service, serviceState, params.timeoutMs),
     serviceEnv: serviceState.env,
     serviceDefinitionEnv:
       resolveManagedGatewayServiceCommand(serviceState.command)?.environment ?? {},
@@ -461,7 +492,11 @@ async function stopManagedServiceBeforeMutableUpdate(
   };
   assertCurrent();
   if (serviceUpdateVerdict.kind === "unavailable") {
-    return markInspectionUnavailable(inspected, serviceUpdateVerdict.message);
+    return markInspectionUnavailable(
+      inspected,
+      serviceUpdateVerdict.message,
+      serviceUpdateVerdict.inspectionReason,
+    );
   }
   if (serviceUpdateVerdict.kind === "foreign") {
     return {
@@ -492,17 +527,8 @@ async function stopManagedServiceBeforeMutableUpdate(
   }
   if (params.phase === "inspect") {
     const blockMessage = params.handoffFromGateway
-      ? gatewayMaintenanceBlockMessage(serviceState, params.root)
+      ? await resolveAncestryBlock(serviceState)
       : undefined;
-    if (
-      blockMessage &&
-      (await isCurrentManagedServiceUpdateHandoffProcess({
-        root: params.root,
-        runId: params.updateRun?.runId,
-      }))
-    ) {
-      return inspected;
-    }
     return blockMessage ? { ...inspected, blockMessage } : inspected;
   }
   const suspendTask = async () => {
@@ -514,16 +540,17 @@ async function stopManagedServiceBeforeMutableUpdate(
         before: inspected,
         timeoutMs: params.timeoutMs,
       }),
-      assertCurrent: updateRun
-        ? () => {
-            // Recovery outlives this preparation callback. Its later task
-            // operations acquire their own native lock, but retain this executor.
-            assertExecutor();
-            if (getUpdateRun(updateRun.runId, { env: updateRun.env })?.status !== "running") {
-              throw new Error("Update run no longer owns Windows task activation.");
-            }
-          }
-        : undefined,
+      assertCurrent: () => {
+        // Recovery reacquires its native lock, but retains the caller's authority.
+        params.assertCurrent?.();
+        assertExecutor();
+        if (
+          updateRun &&
+          getUpdateRun(updateRun.runId, { env: updateRun.env })?.status !== "running"
+        ) {
+          throw new Error("Update run no longer owns Windows task activation.");
+        }
+      },
     });
   };
   // A loaded LaunchAgent can be between KeepAlive respawns. Other supervisors
@@ -547,7 +574,7 @@ async function stopManagedServiceBeforeMutableUpdate(
       ...(windowsTaskAutoStartRecovery ? { windowsTaskAutoStartRecovery } : {}),
     };
   }
-  const blockMessage = gatewayMaintenanceBlockMessage(serviceState, params.root);
+  const blockMessage = await resolveAncestryBlock(serviceState);
   if (blockMessage) {
     return { ...inspected, blockMessage };
   }
@@ -568,20 +595,15 @@ async function stopManagedServiceBeforeMutableUpdate(
       validateEnvBeforeStatusRead: assertGatewayServiceManagementAllowedForUpdate,
       timeoutMs: params.timeoutMs,
     });
-    await revalidateManagedGatewayServiceAfterUpdate({
+    const currentVerdict = await revalidateManagedGatewayServiceAfterUpdate({
       state: currentState,
       root: params.root,
-      preManagedServiceStop: {
-        serviceManagerUid: inspected.serviceManagerUid,
-        serviceEnv: serviceState.env,
-        serviceUpdateVerdict:
-          serviceUpdateVerdict.kind === "owned"
-            ? { ...serviceUpdateVerdict, refreshDefinition: false }
-            : serviceUpdateVerdict,
-      },
+      preManagedServiceStop: inspected,
+      allowInstallRootChange: params.allowInstallRootChange,
     });
+    assertGatewayServiceAdmissionUnchanged(inspected, currentVerdict);
     assertCurrent();
-    const currentBlockMessage = gatewayMaintenanceBlockMessage(currentState, params.root);
+    const currentBlockMessage = await resolveAncestryBlock(currentState);
     if (currentBlockMessage) {
       throw new UpdatePreMutationError("managed-service-preflight", currentBlockMessage);
     }
@@ -591,39 +613,13 @@ async function stopManagedServiceBeforeMutableUpdate(
         env: params.updateRun.env,
       });
     }
-    const stop = async (assertStopCurrent: () => void) => {
-      if (params.activatedInstall) {
-        // Activation Doctor may have stamped newer config. Keep its service stop
-        // in that runtime too; the old parent's destructive-action guard is valid.
-        const stopped = await runUpdatedInstallGatewayCommand(
-          {
-            result: { root: params.root },
-            opts: { json: params.jsonMode },
-            invocationEnv: process.env,
-            serviceEnv: currentState.env,
-            timeoutMs: params.timeoutMs,
-            nodeRunner: params.activatedInstall.packageUpdateNodeRunner,
-            invocationCwd: params.activatedInstall.invocationCwd,
-            assertCurrent: assertStopCurrent,
-          },
-          "stop",
-        );
-        if (stopped !== "accepted") {
-          throw new Error(
-            "Updated Gateway CLI did not confirm the service stopped for plugin maintenance.",
-          );
-        }
-      } else {
-        await service.stop({
-          env: currentState.env,
-          stdout: params.jsonMode ? JSON_MODE_SERVICE_STDOUT : process.stdout,
-          assertCurrent: assertStopCurrent,
-          // Native stop may unload the service before a later port check fails.
-          onMutation: () => params.onStopped?.({ ...inspected, stopped: true, stoppedAtMs }),
-        });
-      }
-    };
-    await stop(assertCurrent);
+    await service.stop({
+      env: currentState.env,
+      stdout: params.jsonMode ? JSON_MODE_SERVICE_STDOUT : process.stdout,
+      assertCurrent,
+      // Native stop may unload the service before a later port check fails.
+      onMutation: () => params.onStopped?.({ ...inspected, stopped: true, stoppedAtMs }),
+    });
     assertCurrent();
     if (windowsTaskAutoStartRecovery) {
       await abortWindowsTaskUpdateIfInterrupted(windowsTaskAutoStartRecovery);

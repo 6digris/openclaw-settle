@@ -46,6 +46,7 @@ export type BuildPreparedModelCatalogParams = {
   modelRegistry: ModelRegistry;
   readOnly?: boolean;
   includeProviderPluginAugmentation?: boolean;
+  providerIds?: readonly string[];
   metadataSnapshot: PluginMetadataSnapshot;
   providerOutcomes?: ModelCatalogSnapshot["providerOutcomes"];
   workspaceDir?: string;
@@ -181,6 +182,9 @@ export function loadManifestModelCatalog(params: {
   fallbackToMetadataScan?: boolean;
   metadataSnapshot?: PluginMetadataSnapshot;
 }): ModelCatalogEntry[] {
+  if (params.config.models?.mode === "replace") {
+    return [];
+  }
   const resolvedSnapshot =
     params.metadataSnapshot ??
     (params.fallbackToMetadataScan === false
@@ -196,18 +200,29 @@ export function loadManifestModelCatalog(params: {
           env: params.env ?? process.env,
           allowWorkspaceScopedCurrent: params.workspaceDir === undefined,
         }));
-  if (!resolvedSnapshot) {
+  return resolvedSnapshot ? loadManifestModelCatalogRows(params.config, resolvedSnapshot) : [];
+}
+
+function loadManifestModelCatalogRows(
+  config: OpenClawConfig,
+  snapshot: PluginMetadataSnapshot,
+  preparedPlan?: ReturnType<typeof planEffectiveModelCatalogRows>,
+): ModelCatalogEntry[] {
+  // Prepared builds also enter here directly; replace must precede cached-row publication.
+  if (config.models?.mode === "replace") {
     return [];
   }
-  const cached = manifestModelCatalogCache.get(params.config);
-  if (cached?.snapshot === resolvedSnapshot) {
+  const cached = manifestModelCatalogCache.get(config);
+  if (cached?.snapshot === snapshot) {
     return cached.rows;
   }
-  const plugins = resolveEligibleManifestCatalogPlugins(resolvedSnapshot, params.config);
-  const plan = planEffectiveModelCatalogRows({
-    registry: { plugins },
-    config: params.config,
-  });
+  const plugins = resolveEligibleManifestCatalogPlugins(snapshot, config);
+  const plan =
+    preparedPlan ??
+    planEffectiveModelCatalogRows({
+      registry: { plugins },
+      config,
+    });
   const providerOrderByKey = new Map<string, number>();
   for (const plugin of plugins) {
     for (const [provider, providerCatalog] of Object.entries(
@@ -229,7 +244,7 @@ export function loadManifestModelCatalog(params: {
     }
     return entry;
   });
-  manifestModelCatalogCache.set(params.config, { snapshot: resolvedSnapshot, rows });
+  manifestModelCatalogCache.set(config, { snapshot, rows });
   return rows;
 }
 
@@ -271,19 +286,27 @@ export async function buildPreparedModelCatalogSnapshot(
     const { buildShouldSuppressBuiltInModelCore } = await loadModelSuppression();
     logStage("catalog-deps-ready");
     const entries = params.modelRegistry.getAll();
-    const declaredManifestModels = loadManifestModelCatalog({
+    const manifestPlan = planEffectiveModelCatalogRows({
+      registry: {
+        plugins: resolveEligibleManifestCatalogPlugins(manifestMetadataSnapshot, cfg),
+      },
       config: cfg,
-      env,
-      metadataSnapshot: manifestMetadataSnapshot,
     });
+    const declaredManifestModels = loadManifestModelCatalogRows(
+      cfg,
+      manifestMetadataSnapshot,
+      manifestPlan,
+    );
     logStage("registry-read", `entries=${entries.length}`);
 
     const shouldSuppressBuiltInModel = buildShouldSuppressBuiltInModelCore({ config: cfg });
     logStage("suppress-resolver-ready");
 
     for (const entry of entries) {
-      const rawId = entry.id.trim();
-      if (!rawId) {
+      // Registry IDs name executable models. Reinterpreting them as input
+      // aliases would move their capabilities onto another model.
+      const id = entry.id.trim();
+      if (!id) {
         continue;
       }
       const rawProvider = entry.provider.trim();
@@ -291,7 +314,6 @@ export async function buildPreparedModelCatalogSnapshot(
         continue;
       }
       const provider = normalizeProvider(rawProvider);
-      const id = normalizeModelId(provider, rawId);
       const baseUrl = entry.baseUrl?.trim();
       if (shouldSuppressBuiltInModel({ provider, id, baseUrl })) {
         continue;
@@ -313,22 +335,19 @@ export async function buildPreparedModelCatalogSnapshot(
     });
     models.splice(0, models.length, ...orderedRegistryModels);
     mergeCatalogRouteVariants(routeVariants, orderedRegistryModels);
-    const supplementalManifestPlan = planEffectiveModelCatalogRows({
-      registry: {
-        plugins: resolveEligibleManifestCatalogPlugins(manifestMetadataSnapshot, cfg),
-      },
-      config: cfg,
-      selection: "supplemental",
-    });
-    const supplementalManifestKeys = new Set(
-      supplementalManifestPlan.rows.map((entry) =>
-        buildModelCatalogMergeKey(entry.provider, entry.id),
+    const dynamicManifestKeys = new Set(
+      manifestPlan.entries.flatMap((entry) =>
+        entry.discovery === "runtime" || entry.discovery === "refreshable"
+          ? entry.rows.map((row) => buildModelCatalogMergeKey(row.provider, row.id))
+          : [],
       ),
     );
     const runtimeDiscoveryProviders = new Set([
       ...observedProviders,
-      ...supplementalManifestPlan.entries.flatMap((entry) =>
-        entry.discovery === "runtime" ? [normalizeProviderId(entry.provider)] : [],
+      ...manifestPlan.entries.flatMap((entry) =>
+        entry.discovery === "runtime" || entry.discovery === "refreshable"
+          ? [normalizeProviderId(entry.provider)]
+          : [],
       ),
     ]);
     // Runtime declarations describe possible models, not account entitlement.
@@ -336,7 +355,8 @@ export async function buildPreparedModelCatalogSnapshot(
     const discoveredKeys = new Set(models.map(resolveModelCatalogIdentityKey));
     const manifestModels = declaredManifestModels.filter(
       (entry) =>
-        supplementalManifestKeys.has(buildModelCatalogMergeKey(entry.provider, entry.id)) &&
+        (params.includeProviderPluginAugmentation === false ||
+          !dynamicManifestKeys.has(buildModelCatalogMergeKey(entry.provider, entry.id))) &&
         (!observedProviders.has(entry.provider) ||
           discoveredKeys.has(resolveModelCatalogIdentityKey(entry))),
     );
@@ -351,7 +371,11 @@ export async function buildPreparedModelCatalogSnapshot(
     const configuredModels = buildConfiguredModelCatalog(configuredCatalogParams);
     logStage("configured-models-prepared", `entries=${models.length}`);
 
-    if (!params.readOnly && params.includeProviderPluginAugmentation !== false) {
+    if (
+      cfg.models?.mode !== "replace" &&
+      !params.readOnly &&
+      params.includeProviderPluginAugmentation !== false
+    ) {
       const augmentEntries = [...models];
       if (configuredModels.length > 0) {
         mergeCatalogEntries(augmentEntries, configuredModels, {
@@ -372,6 +396,7 @@ export async function buildPreparedModelCatalogSnapshot(
           ? resolveProviderApiKeyForProvider(providerId)
           : { apiKey: undefined, discoveryApiKey: undefined };
       const supplemental = await augmentModelCatalogWithProviderPlugins({
+        providerIds: params.providerIds,
         config: cfg,
         workspaceDir,
         env,
@@ -387,14 +412,9 @@ export async function buildPreparedModelCatalogSnapshot(
       });
       if (supplemental.length > 0) {
         // Explicitly configured rows are user-authorized even when live
-        // discovery omits them; normalize both sets to preserve their routes.
+        // discovery omits them; compare emitted identities to preserve their routes.
         const accountVisibleModelKeys = new Set(
-          [...models, ...configuredModels].map((entry) =>
-            resolveModelCatalogIdentityKey({
-              provider: entry.provider,
-              id: normalizeModelId(entry.provider, entry.id),
-            }),
-          ),
+          [...models, ...configuredModels].map(resolveModelCatalogIdentityKey),
         );
         const normalizedSupplemental: ModelCatalogEntry[] = [];
         for (const entry of supplemental) {
@@ -476,11 +496,4 @@ export async function buildPreparedModelCatalogSnapshot(
  */
 export function modelSupportsVision(entry: ModelCatalogEntry | undefined): boolean {
   return modelCatalogEntrySupportsInput(entry, "image");
-}
-
-/**
- * Check if a model supports native document/PDF input based on its catalog entry.
- */
-export function modelSupportsDocument(entry: ModelCatalogEntry | undefined): boolean {
-  return modelCatalogEntrySupportsInput(entry, "document");
 }

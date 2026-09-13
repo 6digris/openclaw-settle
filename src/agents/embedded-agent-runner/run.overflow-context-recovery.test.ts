@@ -6,6 +6,7 @@ import type { AssistantMessage } from "../../llm/types.js";
 import { buildAssistantFailoverSignal } from "../embedded-agent-helpers/assistant-message-failures.js";
 import { classifyFailoverSignal } from "../failover/classify.js";
 import { SessionManager } from "../sessions/session-manager.js";
+import { createZeroUsageFixture } from "../test-helpers/usage-fixtures.js";
 import { makeAttemptResult } from "./run.overflow-compaction.fixture.js";
 import { createEmbeddedRunContextRecoveryState } from "./run/context-recovery-state.js";
 import { recoverEmbeddedRunOverflow } from "./run/overflow-context-recovery.js";
@@ -96,14 +97,7 @@ function makeAssistantMessage(
     api: "openai-responses",
     provider: "openai",
     model: "gpt-5.6-luna",
-    usage: input.usage ?? {
-      input: 1,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 1,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-    },
+    usage: input.usage ?? { ...createZeroUsageFixture(), input: 1, totalTokens: 1 },
     stopReason: input.stopReason,
     errorMessage: input.errorMessage,
     timestamp: 1,
@@ -211,18 +205,16 @@ function makeInput(overrides: RecoveryInputOverrides = {}): RecoveryInput {
     sessionAgentId: "main",
     agentDir: "/tmp/agent",
     workspaceDir: "/tmp/workspace",
-    provider: "openai",
-    modelId: "gpt-5.6-luna",
+    modelSelection: { provider: "openai", model: "gpt-5.6-luna", authProfileIdSource: "auto" },
     harnessRuntime: "embedded",
     thinkLevel: "off",
-    authProfileIdSource: "auto",
     resolveContextEnginePluginId: () => undefined,
     buildRuntimeSettings: ({ tokenBudget, degradedReason }) =>
       buildContextEngineRuntimeSettings({
         contextEngineHost: OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST,
-        provider: input.provider,
-        requestedModel: input.modelId,
-        resolvedModel: input.modelId,
+        provider: input.modelSelection.provider,
+        requestedModel: input.modelSelection.model,
+        resolvedModel: input.modelSelection.model,
         promptTokenBudget: tokenBudget,
         degradedReason,
       }),
@@ -349,14 +341,7 @@ describe("recoverEmbeddedRunOverflow", () => {
   it("recovers a canonical zero-output length overflow", async () => {
     const assistantOverflowCandidate = makeAssistantMessage({
       stopReason: "length",
-      usage: {
-        input: 199_000,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        totalTokens: 199_000,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-      },
+      usage: { ...createZeroUsageFixture(), input: 199_000, totalTokens: 199_000 },
     });
     const result = await recoverEmbeddedRunOverflow(
       makeInput({ promptError: null, assistantOverflowCandidate }),
