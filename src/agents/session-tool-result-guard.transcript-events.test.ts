@@ -5,7 +5,7 @@ import type { AgentMessage } from "openclaw/plugin-sdk/agent-core";
 import { SessionManager } from "openclaw/plugin-sdk/agent-sessions";
 import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { closeOpenClawAgentDatabasesForTest } from "openclaw/plugin-sdk/sqlite-runtime-testing";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, assert, describe, expect, it, vi } from "vitest";
 import { transformMessages } from "../../packages/ai/src/transcript-transform.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { makeTextToolResult } from "../../test/helpers/text-tool-result.js";
@@ -255,6 +255,7 @@ describe("guardSessionManager transcript updates", () => {
       assertOriginalInputCommit,
     });
     const admitted = vi.fn();
+    assert(recorder.setAdmissionHandler);
     recorder.setAdmissionHandler(admitted);
     const guarded = guardSessionManager(sessionManager, {
       agentId: target.agentId,
