@@ -50,6 +50,8 @@ Newly imported Codex history renders tool inputs and results as paired tool
 cards, including command exit codes and failures. Reasoning appears as thinking
 activity. Existing imported transcripts keep their previous representation.
 Tool inputs that are not JSON objects remain visible as labelled JSON text.
+Paired nodes and their Gateway can be updated in either order; the existing
+node transcript format remains compatible with released Gateways.
 
 On the Gateway computer, stored and idle rows can start a distinct model-locked
 Chat branch. Either can be archived only after the operator confirms that no
