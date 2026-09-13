@@ -4,6 +4,7 @@
 
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { validateDiagnosticsVitalsResult } from "../../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import {
   emitDiagnosticEvent,
@@ -23,6 +24,21 @@ import {
 } from "../../process/command-queue.js";
 import { CommandLane } from "../../process/lanes.js";
 import { diagnosticsHandlers } from "./diagnostics.js";
+import type { GatewayRequestContext } from "./types.js";
+
+// Vitals must remain available even when comprehensive status or task inspection fails.
+const heavyReads = vi.hoisted(() => ({
+  getStatusSummary: vi.fn(() => {
+    throw new Error("vitals must not collect full status");
+  }),
+  inspectTasksReadOnly: vi.fn(() => {
+    throw new Error("vitals must not inspect task history");
+  }),
+}));
+vi.mock("../../status/summary.js", () => ({ getStatusSummary: heavyReads.getStatusSummary }));
+vi.mock("../../tasks/task-registry.maintenance.js", () => ({
+  inspectTasksReadOnly: heavyReads.inspectTasksReadOnly,
+}));
 
 type LaneDiagnosticsPayload = {
   ts: number;
@@ -57,6 +73,83 @@ describe("diagnostics gateway methods", () => {
     resetDiagnosticStabilityRecorderForTest();
     resetDiagnosticEventsForTest();
     vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it.each(["ready", "warming", "unavailable"] as const)(
+    "returns only process-local vitals when the sampler is %s",
+    async (samplerState) => {
+      const eventLoop = {
+        degraded: true,
+        degradedSinceMs: 1000,
+        reasons: ["cpu" as const],
+        intervalMs: 1000.25,
+        delayP99Ms: 25,
+        delayMaxMs: 80,
+        utilization: 0.6,
+        cpuCoreRatio: 1.5,
+      };
+      const getEventLoopHealth = vi.fn(() => (samplerState === "ready" ? eventLoop : undefined));
+      vi.spyOn(process, "memoryUsage").mockReturnValue({
+        rss: 5120,
+        heapUsed: 3072,
+        heapTotal: 4096,
+        external: 2048,
+        arrayBuffers: 1024,
+      });
+      const context: Pick<GatewayRequestContext, "getEventLoopHealth"> =
+        samplerState === "unavailable" ? {} : { getEventLoopHealth };
+      const respond = vi.fn();
+      await expectDefined(
+        diagnosticsHandlers["diagnostics.vitals"],
+        "vitals handler",
+      )({
+        req: { type: "req", id: "vitals", method: "diagnostics.vitals", params: {} },
+        params: {},
+        client: null,
+        isWebchatConnect: () => false,
+        // Only the optional sampler exists: runtime/config/health inventories are not needed.
+        context: context as GatewayRequestContext,
+        respond,
+      });
+      const expected = {
+        ...(samplerState === "ready" ? { eventLoop } : {}),
+        processMemory: { rssBytes: 5120, heapUsedBytes: 3072, heapTotalBytes: 4096 },
+      };
+      expect(respond.mock.calls).toEqual([[true, expected, undefined]]);
+      expect(validateDiagnosticsVitalsResult(respond.mock.calls[0]?.[1])).toBe(true);
+      expect(heavyReads.getStatusSummary).not.toHaveBeenCalled();
+      expect(heavyReads.inspectTasksReadOnly).not.toHaveBeenCalled();
+      expect(getEventLoopHealth).toHaveBeenCalledTimes(samplerState === "unavailable" ? 0 : 1);
+    },
+  );
+
+  it("rejects vitals summary options before sampling", async () => {
+    const getEventLoopHealth = vi.fn(() => undefined);
+    const context: Pick<GatewayRequestContext, "getEventLoopHealth"> = { getEventLoopHealth };
+    const memoryUsage = vi.spyOn(process, "memoryUsage");
+    const respond = vi.fn();
+    const params = { includeChannelSummary: false };
+    await expectDefined(
+      diagnosticsHandlers["diagnostics.vitals"],
+      "vitals handler",
+    )({
+      req: { type: "req", id: "vitals", method: "diagnostics.vitals", params },
+      params,
+      client: null,
+      isWebchatConnect: () => false,
+      context: context as GatewayRequestContext,
+      respond,
+    });
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({
+        code: "INVALID_REQUEST",
+      }),
+    );
+    expect(getEventLoopHealth).not.toHaveBeenCalled();
+    expect(memoryUsage).not.toHaveBeenCalled();
   });
 
   it("returns a filtered stability snapshot", async () => {

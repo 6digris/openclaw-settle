@@ -2,6 +2,7 @@
 import type { Static } from "typebox";
 import { Type } from "typebox";
 import { closedObject } from "./closed-object.js";
+import { GatewayEventLoopHealthSchema } from "./diagnostics.js";
 import { NonEmptyString, SecretInputSchema } from "./primitives.js";
 
 /**
@@ -675,24 +676,6 @@ const ChannelUiMetaSchema = closedObject({
   systemImage: Type.Optional(Type.String()),
 });
 
-/** Event-loop health snapshot included with channel status responses. */
-const ChannelEventLoopHealthSchema = closedObject({
-  degraded: Type.Boolean(),
-  degradedSinceMs: Type.Optional(Type.Union([Type.Integer({ minimum: 0 }), Type.Null()])),
-  reasons: Type.Array(
-    Type.Union([
-      Type.Literal("event_loop_delay"),
-      Type.Literal("event_loop_utilization"),
-      Type.Literal("cpu"),
-    ]),
-  ),
-  intervalMs: Type.Integer({ minimum: 0 }),
-  delayP99Ms: Type.Number({ minimum: 0 }),
-  delayMaxMs: Type.Number({ minimum: 0 }),
-  utilization: Type.Number({ minimum: 0 }),
-  cpuCoreRatio: Type.Number({ minimum: 0 }),
-});
-
 /** Full channel status result for dashboard and operator diagnostics. */
 export const ChannelsStatusResultSchema = closedObject({
   ts: Type.Integer({ minimum: 0 }),
@@ -704,7 +687,7 @@ export const ChannelsStatusResultSchema = closedObject({
   channels: Type.Record(NonEmptyString, Type.Unknown()),
   channelAccounts: Type.Record(NonEmptyString, Type.Array(ChannelAccountSnapshotSchema)),
   channelDefaultAccountId: Type.Record(NonEmptyString, NonEmptyString),
-  eventLoop: Type.Optional(ChannelEventLoopHealthSchema),
+  eventLoop: Type.Optional(GatewayEventLoopHealthSchema),
   partial: Type.Optional(Type.Boolean()),
   warnings: Type.Optional(Type.Array(Type.String())),
   statusIssues: Type.Optional(

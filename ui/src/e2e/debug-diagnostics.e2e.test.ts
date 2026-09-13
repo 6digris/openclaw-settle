@@ -21,6 +21,59 @@ beforeEach(() => {
 });
 
 suite.define(() => {
+  it("polls process vitals without requesting full status outside the Debug page", async () => {
+    await suite.withPage(
+      { locale: "en-US", serviceWorkers: "block", viewport: { height: 1000, width: 1280 } },
+      async ({ page }) => {
+        const gateway = await installMockGateway(page, {
+          methodResponses: {
+            "diagnostics.vitals": {
+              eventLoop: {
+                degraded: false,
+                degradedSinceMs: null,
+                reasons: [],
+                intervalMs: 1000,
+                utilization: 0.42,
+                cpuCoreRatio: 1.2,
+                delayP99Ms: 12,
+                delayMaxMs: 87,
+              },
+              processMemory: {
+                rssBytes: 402 * 1_048_576,
+                heapUsedBytes: 100 * 1_048_576,
+                heapTotalBytes: 200 * 1_048_576,
+              },
+            },
+            "diagnostics.lanes": { lanes: [], dynamic: null },
+            "system.info": { uptimeMs: 60_000, disks: [] },
+          },
+        });
+        await page.goto(`${suite.server.baseUrl}new`);
+        await page.locator(".new-session-page__message").waitFor();
+        await page.evaluate(() => {
+          window.dispatchEvent(new CustomEvent("openclaw:debug-overlay-request"));
+        });
+        const overlay = page.getByRole("complementary", { name: "System busyness" });
+        await overlay.waitFor();
+        await gateway.waitForRequest("diagnostics.vitals", { after: 1 });
+        await expect
+          .poll(() => overlay.locator(".gateway-vital--cpu").textContent())
+          .toContain("120%");
+        expect(await overlay.locator(".gateway-vital--memory").textContent()).toContain("402 MB");
+        expect(await overlay.locator(".gateway-vital--delay").textContent()).toContain("12ms");
+        expect(await overlay.locator(".debug-overlay__vitals-footer").textContent()).toContain(
+          "1m",
+        );
+        expect(await gateway.getRequests("status")).toHaveLength(0);
+        expect(await gateway.getRequests("diagnostics.vitals")).toEqual(
+          expect.arrayContaining([expect.objectContaining({ params: {} })]),
+        );
+        await page.keyboard.press("Escape");
+        await expect.poll(() => overlay.count()).toBe(0);
+      },
+    );
+  });
+
   it("renders Gateway diagnostics and current work independently of session history", async () => {
     if (captureUiProof) {
       await mkdir(path.join(proofDir, "video"), { recursive: true });

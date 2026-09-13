@@ -942,6 +942,7 @@ enum class GatewayMethod(
   PluginsReload("plugins.reload"),
   ClawsPackagesRemove("claws.packages.remove"),
   CanvasDocumentPreview("canvas.document.preview"),
+  DiagnosticsVitals("diagnostics.vitals"),
 }
 
 enum class GatewayEvent(

@@ -57,6 +57,7 @@ const EXCLUDED_SCHEMA_EXPORTS = [
   "CronScratchSchema",
   "GatewayClientIdSchema",
   "GatewayClientModeSchema",
+  "GatewayEventLoopHealthSchema",
   "GitHubPublicationBodySchema",
   "GitHubPublicationPublisherSchema",
   "GitHubPublicationSelectionSchema",

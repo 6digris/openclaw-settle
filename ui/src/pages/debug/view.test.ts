@@ -468,14 +468,18 @@ describe("DebugPage", () => {
 });
 
 describe("DebugOverlay", () => {
-  it("graphs bounded status samples without clamping CPU and resets history on reopen", async () => {
+  it("polls lightweight vitals, graphs bounded samples, and resets history on reopen", async () => {
     vi.useFakeTimers();
     let sampleCount = 0;
+    let vitalsUnavailable = false;
     let uptimeMs = 60_000;
     let diskResponse: "available" | "single" | "empty" | "legacy" | "missing" | "rejected" =
       "available";
     const request = vi.fn(async (method: string) => {
-      if (method === "status") {
+      if (method === "diagnostics.vitals") {
+        if (vitalsUnavailable) {
+          throw new Error("vitals unavailable");
+        }
         sampleCount += 1;
         return {
           eventLoop: {
@@ -542,6 +546,12 @@ describe("DebugOverlay", () => {
       const archiveDisk = diskTile("/Volumes/Archive");
 
       // One sample: tiles show current values, charts wait for a second point.
+      expect(request.mock.calls.map(([method]) => method)).not.toContain("status");
+      expect(request).toHaveBeenCalledWith(
+        "diagnostics.vitals",
+        {},
+        { signal: expect.any(AbortSignal) },
+      );
       expect(overlay.querySelectorAll(".gateway-vital")).toHaveLength(5);
       expect(normalizedText(overlay.querySelector(".gateway-vital--cpu"))).toContain("loop 42%");
       expect(overlay.querySelector(".sparkline-tile__chart")).toBeNull();
@@ -585,6 +595,7 @@ describe("DebugOverlay", () => {
         ?.getAttribute("points")
         ?.split(" ");
       expect(points).toHaveLength(90);
+      expect(request.mock.calls.map(([method]) => method)).not.toContain("status");
 
       uptimeMs = 0;
       overlay.toggle();
@@ -623,6 +634,17 @@ describe("DebugOverlay", () => {
           expect(overlay.querySelector(`.gateway-vital--${vital}`)).not.toBeNull();
         }
       }
+
+      vitalsUnavailable = true;
+      await vi.advanceTimersByTimeAsync(2_000);
+      await vitalUpdated();
+      expect(overlay.querySelector(".gateway-vital--cpu")).toBeNull();
+      expect(request.mock.calls.map(([method]) => method)).not.toContain("status");
+
+      overlay.toggle();
+      const closedCallCount = request.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(request).toHaveBeenCalledTimes(closedCallCount);
     } finally {
       overlay.remove();
       vi.useRealTimers();
@@ -650,6 +672,9 @@ describe("DebugOverlay", () => {
         }
         if (method === "sessions.list") {
           return { sessions: [] };
+        }
+        if (method === "diagnostics.vitals") {
+          return {};
         }
         return diagnosticResponse(method);
       });

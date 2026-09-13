@@ -2,7 +2,10 @@ import { formatByteSize } from "@openclaw/normalization-core";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { html, nothing, type TemplateResult } from "lit";
 import { repeat } from "lit/directives/repeat.js";
-import type { SystemInfoResult } from "../../../../packages/gateway-protocol/src/index.js";
+import type {
+  DiagnosticsVitalsResult,
+  SystemInfoResult,
+} from "../../../../packages/gateway-protocol/src/index.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { SessionsListResult } from "../../api/types.ts";
 import type { ApplicationGateway } from "../../app/gateway.ts";
@@ -171,7 +174,7 @@ export const DEBUG_OVERLAY_SECTIONS: readonly DebugOverlaySectionDescriptor[] = 
     titleKey: "debug.overlay.status",
     load: async (context, signal) => {
       const [value, systemInfo] = await Promise.all([
-        context.client.request<DebugOverlayStatusSnapshot>("status", {}, { signal }),
+        context.client.request<DiagnosticsVitalsResult>("diagnostics.vitals", {}, { signal }),
         context.client.request<SystemInfoResult>("system.info", {}, { signal }).catch(() => null),
       ]);
       return {

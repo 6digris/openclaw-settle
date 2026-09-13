@@ -139,6 +139,7 @@ describe("method scope resolution", () => {
     ["environments.status", ["operator.read"]],
     ["diagnostics.stability", ["operator.read"]],
     ["diagnostics.lanes", ["operator.read"]],
+    ["diagnostics.vitals", ["operator.read"]],
     ["gateway.restart.preflight", ["operator.read"]],
     ["skills.curator.status", ["operator.read"]],
     ["hooks.status", ["operator.read"]],

@@ -1,15 +1,40 @@
 // Diagnostics gateway methods expose bounded stability snapshots while keeping
 // malformed queries out of logging internals.
-import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
+import {
+  ErrorCodes,
+  errorShape,
+  type DiagnosticsVitalsResult,
+  validateDiagnosticsVitalsParams,
+} from "../../../packages/gateway-protocol/src/index.js";
 import {
   getDiagnosticStabilitySnapshot,
   normalizeDiagnosticStabilityQuery,
 } from "../../logging/diagnostic-stability.js";
 import { getCommandLaneDiagnostics } from "../../process/command-lane-diagnostics.js";
 import type { GatewayRequestHandlers } from "./types.js";
+import { assertValidParams } from "./validation.js";
 
-/** Gateway handler for payload-free stability diagnostics. */
+/** Gateway handlers for bounded, process-local diagnostics. */
 export const diagnosticsHandlers: GatewayRequestHandlers = {
+  "diagnostics.vitals": ({ params, context, respond }) => {
+    if (
+      !assertValidParams(params, validateDiagnosticsVitalsParams, "diagnostics.vitals", respond)
+    ) {
+      return;
+    }
+    // Read the sampler without resetting its window or aggregating full status.
+    const eventLoop = context.getEventLoopHealth?.();
+    const memory = process.memoryUsage();
+    const vitals: DiagnosticsVitalsResult = {
+      ...(eventLoop ? { eventLoop } : {}),
+      processMemory: {
+        rssBytes: memory.rss,
+        heapUsedBytes: memory.heapUsed,
+        heapTotalBytes: memory.heapTotal,
+      },
+    };
+    respond(true, vitals, undefined);
+  },
   "diagnostics.lanes": ({ respond }) => {
     respond(true, { ts: Date.now(), ...getCommandLaneDiagnostics() }, undefined);
   },

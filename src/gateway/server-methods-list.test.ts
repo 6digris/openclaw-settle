@@ -206,6 +206,7 @@ describe("listGatewayMethods", () => {
       "plugins.reload",
       "claws.packages.remove",
       "canvas.document.preview",
+      "diagnostics.vitals",
     ];
     expect(listGatewayMethods().slice(-expectedSuffix.length)).toEqual(expectedSuffix);
     const methods = listGatewayMethods();
@@ -239,6 +240,7 @@ describe("listGatewayMethods", () => {
       "plugins.reload",
       "claws.packages.remove",
       "canvas.document.preview",
+      "diagnostics.vitals",
     ]);
   });
 
@@ -399,6 +401,7 @@ describe("listGatewayMethods", () => {
       "plugins.reload",
       "claws.packages.remove",
       "canvas.document.preview",
+      "diagnostics.vitals",
     ];
     expect(coreMethods.slice(-expectedCoreSuffix.length)).toEqual(expectedCoreSuffix);
     expect(methods.indexOf("approval.get")).toBeGreaterThan(methods.indexOf("tts.speak"));
@@ -450,6 +453,16 @@ describe("listGatewayMethods", () => {
     expect(methods.indexOf("plugins.catalog.get")).toBe(
       methods.indexOf("plugins.catalog.categories") + 1,
     );
+  });
+
+  it("advertises process vitals as a profile-independent read", () => {
+    expect(listGatewayMethods()).toContain("diagnostics.vitals");
+    expect(coreGatewayHandlers["diagnostics.vitals"]).toBeTypeOf("function");
+    expect(
+      createCoreGatewayMethodDescriptors(coreGatewayHandlers).find(
+        (descriptor) => descriptor.name === "diagnostics.vitals",
+      ),
+    ).toMatchObject({ scope: "operator.read", profileAccess: "independent", since: "2026.9" });
   });
 
   it("advertises API-key saving as an administrator control-plane write", () => {

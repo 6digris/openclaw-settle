@@ -86,7 +86,9 @@ parallel work can produce values above `1`. It is not a percentage of the host's
 total CPU capacity.
 
 The Control UI's **System busyness** overlay reads the same sampler through
-`status.eventLoop` on both Node and Bun. Its CPU percentage uses `100%` for one
+`diagnostics.vitals` on both Node and Bun. This read-scoped RPC returns only the
+latest event-loop snapshot and process memory, without collecting full status or
+scanning session and task history. Its CPU percentage uses `100%` for one
 fully occupied core. CPU and delay show a dash until the first sample completes;
 a persistent dash means the telemetry is unavailable, not zero CPU usage.
 

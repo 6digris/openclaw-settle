@@ -6342,6 +6342,26 @@ public struct DeviceTokenRotateResult: Codable, Sendable {
     }
 }
 
+public struct DiagnosticsVitalsParams: Codable, Sendable {}
+
+public struct DiagnosticsVitalsResult: Codable, Sendable {
+    public let eventloop: [String: AnyCodable]?
+    public let processmemory: [String: AnyCodable]
+
+    public init(
+        eventloop: [String: AnyCodable]? = nil,
+        processmemory: [String: AnyCodable])
+    {
+        self.eventloop = eventloop
+        self.processmemory = processmemory
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case eventloop = "eventLoop"
+        case processmemory = "processMemory"
+    }
+}
+
 public struct EnvironmentSummary: Codable, Sendable {
     public let id: String
     public let type: String

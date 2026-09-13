@@ -14,6 +14,7 @@ RPC method families for gateway status and identity, models and usage, channels 
 ## System and identity
 
 - `health` returns the cached or freshly probed gateway health snapshot.
+- `diagnostics.vitals` returns the latest event-loop sample and process memory without collecting status summaries or scanning task/session history. It accepts `{}` and requires `operator.read`.
 - `diagnostics.stability` returns the recent bounded diagnostic stability recorder: event names, counts, byte sizes, memory readings, queue/session state, channel/plugin names, session ids. No chat text, webhook bodies, tool outputs, raw request/response bodies, tokens, cookies, or secrets. Requires `operator.read`.
 - `status` returns the `/status`-style gateway summary; sensitive fields only for admin-scoped operator clients.
 - `gateway.identity.get` returns the gateway device identity used by relay and pairing flows.

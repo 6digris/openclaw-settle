@@ -1,4 +1,8 @@
 // Explicit schema exports keep public protocol changes reviewable.
+export {
+  DiagnosticsVitalsParamsSchema,
+  DiagnosticsVitalsResultSchema,
+} from "./schema/diagnostics.js";
 export * from "./schema/sessions-goal.js";
 export * from "./schema/human-mentions.js";
 export * from "./public-schema-push.js";

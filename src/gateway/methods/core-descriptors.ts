@@ -11,7 +11,6 @@ import {
 
 type CoreGatewayMethodSpec = {
   name: string;
-  family?: string;
   scope: GatewayMethodScope;
   since?: string;
   advertise?: false;
@@ -674,19 +673,19 @@ const CORE_GATEWAY_METHOD_SPECS = [
   ["plugins.reload", "plugins-mutations", "operator.admin", "2026.9", CONTROL_PLANE_WRITE],
   ["claws.packages.remove", "claws-packages", "operator.admin", "2026.9", CONTROL_PLANE_WRITE],
   ["canvas.document.preview", "canvas", "operator.read", "2026.9"],
+  ["diagnostics.vitals", "diagnostics", "operator.read", "2026.9"],
 ] as const satisfies readonly CoreGatewayMethodSpecRow[];
 
 export type CoreGatewayHandlerFamily = Exclude<(typeof CORE_GATEWAY_METHOD_SPECS)[number][1], null>;
 
 // Rows are `as const`, so a present policy flag is already the exact literal the spec allows.
 const CORE_GATEWAY_METHOD_SPEC_LIST: readonly CoreGatewayMethodSpec[] =
-  CORE_GATEWAY_METHOD_SPECS.map(([name, family, scope, since, policy]) => {
-    const spec: CoreGatewayMethodSpec = { name, scope, since };
-    if (family) {
-      spec.family = family;
-    }
-    return Object.assign(spec, policy);
-  });
+  CORE_GATEWAY_METHOD_SPECS.map(([name, , scope, since, policy]) => ({
+    name,
+    scope,
+    since,
+    ...policy,
+  }));
 
 const CORE_GATEWAY_METHOD_SPEC_BY_NAME: ReadonlyMap<string, CoreGatewayMethodSpec> = new Map(
   CORE_GATEWAY_METHOD_SPEC_LIST.map((spec) => [spec.name, spec]),
