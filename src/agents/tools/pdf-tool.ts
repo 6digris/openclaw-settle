@@ -21,13 +21,13 @@ import {
 import { extractPdfContent, type PdfExtractedContent } from "../../media/pdf-extract.js";
 import { loadWebMediaRaw } from "../../media/web-media.js";
 import { withPluginRuntimeGenerationScope } from "../../plugins/runtime/generation-scope.js";
+import { wrapExternalContent } from "../../security/external-content.js";
 import {
   AsyncWorkScope,
   getAsyncWorkSignal,
   trackAsyncWork,
 } from "../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import { wrapExternalContent } from "../../security/external-content.js";
 import { resolveUserPath } from "../../utils.js";
 import type { AuthProfileStore } from "../auth-profiles/types.js";
 import { resolveModelAsync } from "../embedded-agent-runner/model.js";
@@ -302,7 +302,7 @@ async function runPdfPrompt(params: {
             },
             signal: params.signal,
           });
-            return { text, provider, model: modelId, native: true };
+          return { text, provider, model: modelId, native: true };
         }
 
         if (provider === "google") {
@@ -318,7 +318,7 @@ async function runPdfPrompt(params: {
             },
             signal: params.signal,
           });
-            return { text, provider, model: modelId, native: true };
+          return { text, provider, model: modelId, native: true };
         }
       }
 
@@ -335,7 +335,7 @@ async function runPdfPrompt(params: {
         }),
       );
 
-        const extractions = await params.getExtractions();
+      const extractions = await params.getExtractions();
       const completeExtraction = async (context: Context) => {
         // A run cancelled mid-dispatch must not buy another provider call.
         params.signal?.throwIfAborted();
@@ -361,29 +361,29 @@ async function runPdfPrompt(params: {
           );
         }
         const textOnlyExtractions: PdfExtractedContent[] = extractions.map((e) => ({
-            ...e,
+          ...e,
           images: [],
         }));
-          const context = buildPdfExtractionContext(
-            params.prompt,
-            textOnlyExtractions,
-            params.explicitSelectionLimit,
-            model,
-          );
-        const message = await completeExtraction(context);
-        const text = coercePdfAssistantText({ message, provider, model: modelId });
-          return { text, provider, model: modelId, native: false };
-      }
-
         const context = buildPdfExtractionContext(
           params.prompt,
-          extractions,
+          textOnlyExtractions,
           params.explicitSelectionLimit,
           model,
         );
+        const message = await completeExtraction(context);
+        const text = coercePdfAssistantText({ message, provider, model: modelId });
+        return { text, provider, model: modelId, native: false };
+      }
+
+      const context = buildPdfExtractionContext(
+        params.prompt,
+        extractions,
+        params.explicitSelectionLimit,
+        model,
+      );
       const message = await completeExtraction(context);
       const text = coercePdfAssistantText({ message, provider, model: modelId });
-        return { text, provider, model: modelId, native: false };
+      return { text, provider, model: modelId, native: false };
     },
   });
 
@@ -503,8 +503,8 @@ export function createPdfTool(options?: {
 
     // Parse page range
     const pagesRaw = normalizeOptionalString(record.pages);
-      const pageSelection = pagesRaw ? parsePageRange(pagesRaw, configuredMaxPages) : undefined;
-      const pageNumbers = pageSelection?.pages;
+    const pageSelection = pagesRaw ? parsePageRange(pagesRaw, configuredMaxPages) : undefined;
+    const pageNumbers = pageSelection?.pages;
     const password = typeof record.password === "string" ? record.password : undefined;
 
     const pdfModelConfig =
@@ -618,7 +618,7 @@ export function createPdfTool(options?: {
       });
     }
 
-      const extractLoadedPdfs = async (): Promise<PdfExtractedContent[]> => {
+    const extractLoadedPdfs = async (): Promise<PdfExtractedContent[]> => {
       const extractedAll: PdfExtractedContent[] = [];
       for (const pdf of loadedPdfs) {
         // Extraction is sequential and can be CPU-heavy. Do not start the next
@@ -638,10 +638,10 @@ export function createPdfTool(options?: {
       }
       return extractedAll;
     };
-      // Native providers remain extraction-free; fallback candidates share one extraction
-      // so provider retries cannot repeat CPU work or observe different document prefixes.
-      let extractionPromise: Promise<PdfExtractedContent[]> | undefined;
-      const getExtractions = () => (extractionPromise ??= extractLoadedPdfs());
+    // Native providers remain extraction-free; fallback candidates share one extraction
+    // so provider retries cannot repeat CPU work or observe different document prefixes.
+    let extractionPromise: Promise<PdfExtractedContent[]> | undefined;
+    const getExtractions = () => (extractionPromise ??= extractLoadedPdfs());
 
     // Do not issue a paid PDF-model call for an already-aborted run.
     signal?.throwIfAborted();
@@ -663,7 +663,7 @@ export function createPdfTool(options?: {
       pdfBuffers: loadedPdfs,
       ...(password ? { password } : {}),
       pageNumbers,
-        ...(pageSelection?.truncated ? { explicitSelectionLimit: pageSelection.pages.length } : {}),
+      ...(pageSelection?.truncated ? { explicitSelectionLimit: pageSelection.pages.length } : {}),
       getExtractions,
     });
 
