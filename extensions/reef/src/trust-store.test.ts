@@ -8,7 +8,7 @@ import {
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { generateIdentity } from "../protocol/index.js";
 import { ReefChannelConfigSchema } from "./config-schema.js";
 import { reefPeerIdentity } from "./friend-types.js";
@@ -243,6 +243,10 @@ describe("ReefTrustStore", () => {
   it.each(["overdue", "rejections"] as const)(
     "bounds repeated peer reads in %s scans and refreshes between scans",
     (kind) => {
+      // Keep delivery creation order distinct from SQLite's key tie-breaker.
+      let now = 1_752_537_600_000;
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => now++);
+      onTestFinished(() => clock.mockRestore());
       const store = openReefTrustStore(runtime(), config());
       const trust = peerTrust();
       const recipient = reefPeerIdentity(trust);
