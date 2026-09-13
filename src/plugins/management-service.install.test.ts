@@ -127,6 +127,8 @@ describe("managed plugin installation", () => {
   const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
   beforeEach(() => {
+    vi.stubEnv("OPENCLAW_CLAWHUB_URL", undefined);
+    vi.stubEnv("CLAWHUB_URL", undefined);
     // Explicit empty env fixtures must never acquire a lease in the operator's home.
     vi.spyOn(os, "homedir").mockReturnValue(tempDirs.make("openclaw-managed-install-home-"));
     clearManagedPluginCatalogCache();
@@ -145,7 +147,10 @@ describe("managed plugin installation", () => {
     mockHostedOfficialCatalog([]);
   });
 
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
 
   it("refuses managed installs in Nix mode before config or artifact work", async () => {
     mocks.readConfig.mockResolvedValue(configSnapshot());
@@ -185,6 +190,117 @@ describe("managed plugin installation", () => {
       }),
     );
     expect(mocks.persistInstall).not.toHaveBeenCalled();
+  });
+
+  it.each(["OPENCLAW_CLAWHUB_URL", "CLAWHUB_URL"])(
+    "keeps custom ClawHub requests independent of the public catalog via %s",
+    async (registryEnv) => {
+      vi.stubEnv(registryEnv, "https://registry.example.test/");
+      mocks.readConfig.mockResolvedValue(configSnapshot());
+      mockHostedOfficialCatalog([hostedFeedDiffsEntry]);
+      mockClawHubInstall("private-diffs", "@openclaw/diffs");
+      mocks.persistInstall.mockResolvedValue({});
+      mocks.metadata.mockReturnValue(
+        metadataSnapshot({ enabled: true, id: "private-diffs", origin: "global" }),
+      );
+
+      const callerIntegrity = `sha256-${Buffer.from("b".repeat(64), "hex").toString("base64")}`;
+      for (const constraints of [
+        {},
+        {
+          version: "2026.6.11",
+          expectedPluginId: "private-diffs",
+          expectedIntegrity: callerIntegrity,
+        },
+      ]) {
+        const result = await installManagedPlugin({
+          request: {
+            source: "clawhub",
+            packageName: "@openclaw/diffs",
+            ...constraints,
+            acknowledgeCapabilities: emptyArtifactAcknowledgment,
+          },
+          env: {},
+        });
+
+        expect(mocks.clawhubInstall).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            spec: `clawhub:@openclaw/diffs${constraints.version ? `@${constraints.version}` : ""}`,
+          }),
+        );
+        expect(mocks.clawhubInstall.mock.lastCall?.[0].expectedPluginId).toBe(
+          constraints.expectedPluginId,
+        );
+        expect(mocks.clawhubInstall.mock.lastCall?.[0].expectedIntegrity).toBe(
+          constraints.expectedIntegrity,
+        );
+        expect(result.plugin.id).toBe("private-diffs");
+      }
+    },
+  );
+
+  it.each(
+    (["beta", "extended-stable"] as const).flatMap((channel) =>
+      ["@openclaw/diffs", "@openclaw/brave-plugin"].map((packageName) => ({
+        channel,
+        packageName,
+      })),
+    ),
+  )(
+    "does not infer the public $channel cohort from custom registry $packageName",
+    async ({ channel, packageName }) => {
+      vi.stubEnv("OPENCLAW_CLAWHUB_URL", "https://registry.example.test");
+      mocks.readConfig.mockResolvedValue(configSnapshot({ update: { channel } }));
+      mockClawHubInstall("diffs", packageName);
+      mocks.persistInstall.mockResolvedValue({});
+      mocks.metadata.mockReturnValue(
+        metadataSnapshot({ enabled: true, id: "diffs", origin: "global" }),
+      );
+
+      await installManagedPlugin({
+        request: {
+          source: "clawhub",
+          packageName,
+          acknowledgeCapabilities: emptyArtifactAcknowledgment,
+        },
+        env: {},
+      });
+
+      expect(mocks.clawhubInstall).toHaveBeenCalledWith(
+        expect.objectContaining({ spec: `clawhub:${packageName}` }),
+      );
+      expect(mocks.clawhubInstall.mock.lastCall?.[0].expectedPluginId).toBeUndefined();
+      expect(mocks.clawhubInstall.mock.lastCall?.[0].expectedIntegrity).toBeUndefined();
+    },
+  );
+
+  it("retains explicit official catalog cohort intent with a custom ClawHub registry", async () => {
+    vi.stubEnv("OPENCLAW_CLAWHUB_URL", "https://registry.example.test");
+    mocks.readConfig.mockResolvedValue(configSnapshot({ update: { channel: "beta" } }));
+    mockHostedOfficialCatalog([
+      {
+        ...hostedFeedDiffsEntry,
+        install: { candidates: [{ sourceRef: "public-clawhub", package: "@openclaw/diffs" }] },
+      },
+    ]);
+    mockClawHubInstall("diffs", "@openclaw/diffs");
+    mocks.persistInstall.mockResolvedValue({});
+    mocks.metadata.mockReturnValue(
+      metadataSnapshot({ enabled: true, id: "diffs", origin: "global" }),
+    );
+
+    await installManagedPlugin({
+      request: {
+        source: "official",
+        pluginId: "diffs",
+        acknowledgeCapabilities: emptyArtifactAcknowledgment,
+      },
+      env: {},
+    });
+
+    expect(mocks.clawhubInstall).toHaveBeenCalledWith(
+      expect.objectContaining({ spec: "clawhub:@openclaw/diffs@beta", expectedPluginId: "diffs" }),
+    );
   });
 
   it.each([false, true])(
@@ -445,32 +561,36 @@ describe("managed plugin installation", () => {
     );
   });
 
-  it("threads hosted ClawHub candidate integrity into official installs", async () => {
-    mocks.readConfig.mockResolvedValue(configSnapshot());
-    mockHostedOfficialCatalog([hostedFeedDiffsEntry]);
-    mockClawHubInstall("diffs", "@openclaw/diffs");
-    mocks.persistInstall.mockResolvedValue({});
-    mocks.metadata.mockReturnValue(
-      metadataSnapshot({ enabled: true, id: "diffs", name: "Diffs", origin: "global" }),
-    );
+  it.each([undefined, "https://registry.example.test"])(
+    "threads hosted ClawHub candidate integrity into official installs (%s)",
+    async (registryUrl) => {
+      vi.stubEnv("OPENCLAW_CLAWHUB_URL", registryUrl);
+      mocks.readConfig.mockResolvedValue(configSnapshot());
+      mockHostedOfficialCatalog([hostedFeedDiffsEntry]);
+      mockClawHubInstall("diffs", "@openclaw/diffs");
+      mocks.persistInstall.mockResolvedValue({});
+      mocks.metadata.mockReturnValue(
+        metadataSnapshot({ enabled: true, id: "diffs", name: "Diffs", origin: "global" }),
+      );
 
-    await installManagedPlugin({
-      request: {
-        source: "official",
-        pluginId: "diffs",
-        acknowledgeCapabilities: emptyArtifactAcknowledgment,
-      },
-      env: {},
-    });
+      await installManagedPlugin({
+        request: {
+          source: "official",
+          pluginId: "diffs",
+          acknowledgeCapabilities: emptyArtifactAcknowledgment,
+        },
+        env: {},
+      });
 
-    expect(mocks.clawhubInstall).toHaveBeenCalledWith(
-      expect.objectContaining({
-        spec: "clawhub:@openclaw/diffs@2026.6.11",
-        expectedPluginId: "diffs",
-        expectedIntegrity: `sha256-${Buffer.from("a".repeat(64), "hex").toString("base64")}`,
-      }),
-    );
-  });
+      expect(mocks.clawhubInstall).toHaveBeenCalledWith(
+        expect.objectContaining({
+          spec: "clawhub:@openclaw/diffs@2026.6.11",
+          expectedPluginId: "diffs",
+          expectedIntegrity: `sha256-${Buffer.from("a".repeat(64), "hex").toString("base64")}`,
+        }),
+      );
+    },
+  );
 
   it("approves every install-policy warning in an acknowledged Gateway install", async () => {
     mocks.readConfig.mockResolvedValue(configSnapshot());

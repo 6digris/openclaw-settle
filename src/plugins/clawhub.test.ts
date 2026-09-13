@@ -1061,41 +1061,55 @@ describe("installPluginFromClawHub", () => {
     expect(downloadClawHubPackageArchiveMock).not.toHaveBeenCalled();
   });
 
-  it("bypasses ClawHub trust checks for official packages", async () => {
-    fetchClawHubPackageDetailMock.mockResolvedValueOnce({
-      package: {
-        name: "demo",
-        displayName: "Demo",
-        family: "code-plugin",
-        channel: "official",
-        isOfficial: true,
-        createdAt: 0,
-        updatedAt: 0,
-        verification: {
-          tier: "source-linked",
-          sourceRepo: "openclaw/openclaw",
+  it.each([
+    { baseUrl: "https://clawhub.ai", trusted: true },
+    { baseUrl: "https://registry.example.test", trusted: false },
+  ])(
+    "binds source-linked official trust to the registry at $baseUrl",
+    async ({ baseUrl, trusted }) => {
+      fetchClawHubPackageDetailMock.mockResolvedValueOnce({
+        package: {
+          name: "demo",
+          displayName: "Demo",
+          family: "code-plugin",
+          channel: "official",
+          isOfficial: true,
+          createdAt: 0,
+          updatedAt: 0,
+          verification: {
+            tier: "source-linked",
+            sourceRepo: "openclaw/openclaw",
+          },
         },
-      },
-    });
-    fetchClawHubPackageSecurityMock.mockRejectedValueOnce(new Error("should not be called"));
+      });
+      if (trusted) {
+        fetchClawHubPackageSecurityMock.mockRejectedValueOnce(new Error("should not be called"));
+      }
 
-    const result = await installPluginFromClawHub({
-      spec: "clawhub:demo",
-      baseUrl: "https://clawhub.ai",
-    });
+      const result = await installPluginFromClawHub({
+        spec: "clawhub:demo",
+        baseUrl,
+        expectedPluginId: "demo",
+        expectedIntegrity: `sha256:${DEMO_ARCHIVE_SHA256}`,
+      });
 
-    const success = expectInstallSuccess(result);
-    expect(success.clawhub?.clawhubTrustDisposition).toBeUndefined();
-    expect(success.clawhub?.clawhubTrustScanStatus).toBeUndefined();
-    expect(fetchClawHubPackageSecurityMock).not.toHaveBeenCalled();
-    expect(archiveInstallCall().trustedSourceLinkedOfficialInstall).toBe(true);
-    expect(archiveInstallCall().installPolicyRequest?.source).toEqual({
-      kind: "clawhub",
-      authority: "official",
-      mutable: false,
-      network: true,
-    });
-  });
+      const success = expectInstallSuccess(result);
+      if (trusted) {
+        expect(success.clawhub?.clawhubTrustDisposition).toBeUndefined();
+        expect(success.clawhub?.clawhubTrustScanStatus).toBeUndefined();
+      }
+      expect(success.clawhub?.integrity).toBe(DEMO_ARCHIVE_INTEGRITY);
+      expect(fetchClawHubPackageSecurityMock).toHaveBeenCalledTimes(trusted ? 0 : 1);
+      expect(archiveInstallCall().expectedPluginId).toBe("demo");
+      expect(archiveInstallCall().trustedSourceLinkedOfficialInstall).toBe(trusted);
+      expect(archiveInstallCall().installPolicyRequest?.source).toEqual({
+        kind: "clawhub",
+        authority: trusted ? "official" : "third-party",
+        mutable: false,
+        network: true,
+      });
+    },
+  );
 
   it("resolves explicit ClawHub dist tags before fetching version metadata", async () => {
     parseClawHubPluginSpecMock.mockReturnValueOnce({ name: "demo", version: "latest" });

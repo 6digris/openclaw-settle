@@ -52,7 +52,6 @@ import {
 } from "./install.js";
 import type { PluginLifecycleRuntimeApply } from "./lifecycle.js";
 import { installPluginFromMarketplace } from "./marketplace.js";
-import { getOfficialExternalPluginCatalogEntryForPackage } from "./official-external-plugin-catalog.js";
 import { withPluginLifecycleLease } from "./plugin-lifecycle-lease.js";
 
 export type ManagedPluginSourceInstallRequest =
@@ -178,8 +177,8 @@ async function resolveOfficialManagedInstallSpec(params: {
   config: OpenClawConfig;
 }): Promise<string | null> {
   const { request } = params;
-  const trustedSourceLinkedOfficialInstall = request.trustedSourceLinkedOfficialInstall === true;
-  if (request.source === "npm" && !trustedSourceLinkedOfficialInstall) {
+  // The planner owns source authority; a matching package name cannot restore official trust.
+  if (!request.trustedSourceLinkedOfficialInstall) {
     return null;
   }
   // An integrity pin identifies one exact artifact, so it outranks the channel.
@@ -190,11 +189,7 @@ async function resolveOfficialManagedInstallSpec(params: {
     request.source === "clawhub"
       ? parseClawHubPluginSpec(request.spec)?.name
       : parseRegistryNpmSpec(request.spec)?.name;
-  if (
-    !packageName ||
-    (!trustedSourceLinkedOfficialInstall &&
-      !getOfficialExternalPluginCatalogEntryForPackage(packageName))
-  ) {
+  if (!packageName) {
     return null;
   }
   const updateChannel = resolveRegistryUpdateChannel({

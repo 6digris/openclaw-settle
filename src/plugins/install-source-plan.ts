@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { PluginsInstallParams } from "../../packages/gateway-protocol/src/schema/plugins.js";
 import { resolveArchiveKind } from "../infra/archive.js";
+import { isDefaultClawHubBaseUrl } from "../infra/clawhub-client.js";
 import { normalizeClawHubSha256Integrity } from "../infra/clawhub-integrity.js";
 import { parseClawHubPluginSpec } from "../infra/clawhub-spec.js";
 import { looksLikeLocalInstallSpec } from "../infra/install-spec.js";
@@ -34,6 +35,7 @@ import {
   resolveOfficialInstallSources,
 } from "./official-external-install-trust.js";
 import {
+  getOfficialExternalPluginCatalogEntryForPackage,
   getOfficialExternalPluginCatalogManifest,
   listOfficialExternalPluginCatalogEntries,
   resolveOfficialExternalPluginId,
@@ -355,15 +357,25 @@ export function resolveManagedPluginInstallRequest(
     }
     case "clawhub": {
       const packageName = request.packageName.trim();
-      // Local identities remain the trust anchor; hosted entries supply artifact versions only.
-      const official = resolveOfficialEntryByClawHubPackage(
-        [...listOfficialExternalPluginCatalogEntries(), ...officialEntries],
-        packageName,
-      );
+      // Public catalog identity and artifact pins do not describe another registry's package.
+      const useOfficialCatalog = isDefaultClawHubBaseUrl();
+      const official = useOfficialCatalog
+        ? resolveOfficialEntryByClawHubPackage(
+            [...listOfficialExternalPluginCatalogEntries(), ...officialEntries],
+            packageName,
+          )
+        : undefined;
+      // Public package-name entries retain cohort intent even without a declared
+      // ClawHub source; only a declared source supplies runtime identity or pins.
+      const officialCohort =
+        useOfficialCatalog &&
+        (official || getOfficialExternalPluginCatalogEntryForPackage(packageName));
       // Pin the runtime id only when the catalog entry declares one; the entry-id
       // fallback is just the package name and would reject legitimate installs.
       const expectedPluginId = official ? resolveDeclaredOfficialPluginId(official) : undefined;
-      const hostedOfficial = resolveOfficialEntryByClawHubPackage(officialEntries, packageName);
+      const hostedOfficial = useOfficialCatalog
+        ? resolveOfficialEntryByClawHubPackage(officialEntries, packageName)
+        : undefined;
       const hostedSource = hostedOfficial
         ? resolveOfficialExternalPluginInstallSources(hostedOfficial).find(
             (source) => source.source === "clawhub",
@@ -404,7 +416,7 @@ export function resolveManagedPluginInstallRequest(
         source: "clawhub",
         spec: `clawhub:${packageName}${version ? `@${version}` : ""}`,
         mode,
-        ...(official ? { trustedSourceLinkedOfficialInstall: true } : {}),
+        ...(officialCohort ? { trustedSourceLinkedOfficialInstall: true } : {}),
         expectedPluginId: expectedPluginId ?? request.expectedPluginId,
         expectedIntegrity: expectedIntegrity ?? request.expectedIntegrity,
       };

@@ -100,6 +100,43 @@ describe("install security scan official bypass", () => {
     expectOnlyOperatorPolicyRan();
   });
 
+  it.each(["official", "third-party"] as const)(
+    "runs operator policy and honors ClawHub %s hook authority",
+    async (authority) => {
+      const runBeforeInstall = vi.fn().mockResolvedValue({
+        block: true,
+        blockReason: "blocked by installed scanner",
+      });
+      getGlobalHookRunnerMock.mockReturnValue({
+        hasHooks: (name: string) => name === "before_install",
+        runBeforeInstall,
+      });
+
+      const result = await scanPackageInstallSourceRuntime({
+        extensions: ["index.js"],
+        logger: {},
+        packageDir: makeTempDir(),
+        pluginId: "demo",
+        requestKind: "plugin-archive",
+        requestedSpecifier: "clawhub:demo",
+        source: { kind: "clawhub", authority, mutable: false, network: true },
+        trustedSourceLinkedOfficialInstall: authority === "official",
+      });
+
+      expect(runInstallPolicyMock).toHaveBeenCalledTimes(1);
+      if (authority === "official") {
+        expect(result).toBeUndefined();
+        expect(runBeforeInstall).not.toHaveBeenCalled();
+      } else {
+        expect(runBeforeInstall).toHaveBeenCalledTimes(1);
+        expect(result?.blocked).toEqual({
+          code: "security_scan_blocked",
+          reason: "blocked by installed scanner",
+        });
+      }
+    },
+  );
+
   it("bypasses skill install friction for bundled OpenClaw sources", async () => {
     const result = await evaluateSkillInstallPolicyRuntime({
       installId: "node",
