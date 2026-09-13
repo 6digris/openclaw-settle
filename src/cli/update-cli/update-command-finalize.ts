@@ -98,18 +98,18 @@ export async function updateFinalizeCommand(
             recoverOrphanedSidecars: false,
           });
           await retainCliProcessJobUntilExit();
-          const root = await resolveUpdateRoot();
+          const resolvedRoot = await resolveUpdateRoot();
           const { inspectDoctorMaintenanceService } =
             await import("../../commands/doctor-maintenance.js");
           await withOwnedManagedUpdateEnv(resolveUpdateFinalizationDoctorEnv("pre-plugin"), () =>
             inspectDoctorMaintenanceService({
-              root,
+              root: resolvedRoot,
               parentActivation: false,
               timeoutMs: lifecycle.budget("preflight"),
             }),
           );
           lifecycle.attachLedger();
-          return root;
+          return resolvedRoot;
         }),
       );
       lifecycle.root = root;

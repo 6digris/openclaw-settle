@@ -116,8 +116,10 @@ export const SQLITE_READONLY_CHILD_ARG = '--openclaw-sqlite-readonly-child';`,
       return nextResolve(specifier, context);
     },
   });
-  const event = (event: string, facts: Record<string, unknown> = {}) =>
-    process.stderr.write(`repair-fixture ${JSON.stringify({ event, role, ...facts })}\n`);
+  const event = (eventName: string, facts: Record<string, unknown> = {}) =>
+    process.stderr.write(
+      `repair-fixture ${JSON.stringify({ event: eventName, role, ...facts })}\n`,
+    );
   const { isDefaultInstallIdentity } = await import("../config/paths.js");
   if (!isDefaultInstallIdentity(process.env)) {
     throw new Error("Fixture must select the real canonical default installation");
