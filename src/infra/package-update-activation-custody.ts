@@ -51,7 +51,19 @@ export function inspectPackageActivationCustody(anchor: string, record: PackageA
     }
     const source = identityOrAbsent(entry.source, entry.name !== "helper");
     const target = identityOrAbsent(destination, entry.name !== "helper");
-    const moved = source === null && target === entry.identity;
+    // First use publishes the complete control directory in one rename; its
+    // helper is already resident, unlike every later journal-owned transfer.
+    const resident = entry.name === "helper" && entry.source === destination;
+    if (
+      resident &&
+      (entry.sourceParentIdentity !== descriptor.journalParentIdentity ||
+        !intent.completed.includes("helper") ||
+        intent.moving === "helper" ||
+        source !== entry.identity)
+    ) {
+      throw new Error("Resident package helper custody is invalid.");
+    }
+    const moved = resident || (source === null && target === entry.identity);
     if (moved) {
       if (!intent.completed.includes(entry.name) && intent.moving !== entry.name) {
         throw new Error("Package preparation transfer has no recorded intent.");
@@ -78,12 +90,19 @@ export async function completePackageActivationCustody(
   anchor: string,
   journal: PackageActivationJournal,
   assertCurrent: () => void,
+  onHelperReady?: () => void,
 ) {
   let record = journal.read();
   if (record.phase !== "preparing") {
     return;
   }
-  for (const entry of inspectPackageActivationCustody(anchor, record)) {
+  const entries = inspectPackageActivationCustody(anchor, record);
+  if (record.intent?.kind === "prepare" && record.intent.completed.includes("helper")) {
+    assertCurrent();
+    journal.assertCurrent(record);
+    onHelperReady?.();
+  }
+  for (const entry of entries) {
     if (record.intent?.kind !== "prepare") {
       throw new Error("Preparation intent changed.");
     }
@@ -129,6 +148,9 @@ export async function completePackageActivationCustody(
       },
       assertCurrent,
     );
+    if (entry.name === "helper") {
+      onHelperReady?.();
+    }
   }
   journal.transition(record, "prepared", null, assertCurrent);
 }

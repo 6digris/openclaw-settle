@@ -10,7 +10,8 @@ import {
   createPackageActivationJournal,
   openPackageActivationJournal,
   isPackageActivationComplete,
-  resolvePackageActivationJournalPath,
+  assertPackageActivationLayout,
+  resolvePackageActivationControl,
   resolvePackageActivationHelper,
   packageActivationIdentity,
   resolvePackageActivationAnchor,
@@ -48,6 +49,16 @@ function readPackageActivationRuntime(): Buffer {
     throw new Error("Package publication recovery requires its built sealed helper.");
   }
   return fs.readFileSync(source);
+}
+
+export function packageActivationRecoveryCommand(
+  node: string,
+  anchor: string,
+  operationId: string,
+  helper = resolvePackageActivationHelper(anchor),
+): string {
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  return `${quote(node)} ${quote(helper)} --anchor ${quote(anchor)} --operation ${quote(operationId)}`;
 }
 
 export async function preparePackageActivationJournal(params: PackageActivationPreparation) {
@@ -100,7 +111,8 @@ export async function preparePackageActivationJournal(params: PackageActivationP
   }
   // A completed receipt may be replaced only by this new, genuinely admitted
   // operation in the same original store. Legacy/incomplete artifacts refuse.
-  const priorJournal = fs.lstatSync(resolvePackageActivationJournalPath(anchor), {
+  assertPackageActivationLayout(anchor);
+  const priorJournal = fs.lstatSync(resolvePackageActivationControl(anchor), {
     throwIfNoEntry: false,
   })
     ? openPackageActivationJournal(anchor)
@@ -141,7 +153,12 @@ export async function preparePackageActivationJournal(params: PackageActivationP
     path.join(path.dirname(params.stageRoot), ".activation-anchor-"),
   );
   const anchorIdentity = packageActivationIdentity(stagedAnchor, true);
-  const stagedHelper = `${stagedAnchor}.recovery.mjs`;
+  const stagedControl = prior
+    ? undefined
+    : await fsp.mkdtemp(path.join(path.dirname(params.stageRoot), ".activation-control-"));
+  const stagedHelper = stagedControl
+    ? path.join(stagedControl, "recovery.mjs")
+    : `${stagedAnchor}.recovery.mjs`;
   assertCurrent();
   fs.writeFileSync(stagedHelper, helperBytes, { flag: "wx", mode: 0o600 });
   const helperIdentity = packageActivationIdentity(stagedHelper, false);
@@ -155,7 +172,7 @@ export async function preparePackageActivationJournal(params: PackageActivationP
     },
     {
       name: "helper",
-      source: stagedHelper,
+      source: stagedControl ? resolvePackageActivationHelper(anchor) : stagedHelper,
       identity: helperIdentity,
       sourceParentIdentity: packageActivationIdentity(path.dirname(stagedHelper), true),
     },
@@ -167,6 +184,10 @@ export async function preparePackageActivationJournal(params: PackageActivationP
     authority,
     anchorIdentity,
     parentIdentity,
+    journalParentIdentity: packageActivationIdentity(
+      stagedControl ?? resolvePackageActivationControl(anchor),
+      true,
+    ),
     binDir: params.binDir,
     binIdentity,
     originalStageRoot: params.stageRoot,
@@ -181,11 +202,19 @@ export async function preparePackageActivationJournal(params: PackageActivationP
     preparation,
     launchers,
   };
-  // Notify the existing cleanup owner before a journal write can lose its
-  // acknowledgement. Conservatively retain the original stage on write failure.
-  params.onCustody?.(true);
-  const journal = priorJournal ?? createPackageActivationJournal(anchor, descriptor, assertCurrent);
+  const journal =
+    priorJournal ??
+    createPackageActivationJournal(
+      anchor,
+      descriptor,
+      stagedControl!,
+      assertCurrent,
+      params.onCustody,
+    );
   if (priorJournal && prior) {
+    // A reused slot owns the stage as soon as its CAS can commit, even if the
+    // acknowledgement is lost. First use latches only at control publication.
+    params.onCustody?.(true);
     try {
       priorJournal.replaceCompleted(prior, descriptor, assertCurrent);
     } catch (error) {
@@ -203,15 +232,17 @@ export async function preparePackageActivationJournal(params: PackageActivationP
       throw error;
     }
   }
-  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-  const command = `${quote(node)} ${quote(resolvePackageActivationHelper(anchor))}`;
+  const command = packageActivationRecoveryCommand(node, anchor, descriptor.operationId);
   assertCurrent();
-  // Print both exact locations before transfer: one helper inode moves between
-  // them. The explicit anchor selects the same original journal, not authority.
-  params.options.onPrepared(
-    `${quote(node)} ${quote(stagedHelper)} --anchor ${quote(anchor)} status`,
+  // A replacement's bootstrap command is valid only while that recorded helper
+  // remains staged. Never advertise the stable name before its inode is present.
+  if (prior) {
+    params.options.onPrepared(
+      `${packageActivationRecoveryCommand(node, anchor, descriptor.operationId, stagedHelper)} status`,
+    );
+  }
+  await completePackageActivationCustody(anchor, journal, assertCurrent, () =>
+    params.options.onPrepared(`${command} status`),
   );
-  params.options.onPrepared(`${command} status`);
-  await completePackageActivationCustody(anchor, journal, assertCurrent);
   return { anchor, journal, command };
 }

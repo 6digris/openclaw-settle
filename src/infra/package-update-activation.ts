@@ -14,6 +14,8 @@ import {
 } from "./package-update-activation-custody.js";
 import {
   openPackageActivationJournal,
+  assertPackageActivationLayout,
+  resolvePackageActivationControl,
   packageActivationIdentity,
   resolvePackageActivationJournalPath,
   resolvePackageActivationHelper,
@@ -26,6 +28,7 @@ import {
 } from "./package-update-activation-journal.js";
 import {
   preparePackageActivationJournal,
+  packageActivationRecoveryCommand,
   type PackageActivationPreparation,
 } from "./package-update-activation-prepare.js";
 import {
@@ -63,11 +66,12 @@ const status = (record: PackageActivationRecord): PackageActivationStatus => ({
 /** Read-only correlation; callers still need a privately registered live fence. */
 function readPackageActivationContinuation(installKey: string) {
   const anchor = resolvePackageActivationAnchor(installKey);
+  assertPackageActivationLayout(anchor);
   const journalPath = resolvePackageActivationJournalPath(anchor);
   if (!fs.lstatSync(journalPath, { throwIfNoEntry: false })) {
     if (
       fs.lstatSync(anchor, { throwIfNoEntry: false }) ||
-      fs.lstatSync(resolvePackageActivationHelper(anchor), { throwIfNoEntry: false })
+      fs.lstatSync(resolvePackageActivationControl(anchor), { throwIfNoEntry: false })
     ) {
       throw new Error(
         `Incomplete or legacy recovery artifacts require their original owner: ${anchor}. The next mutable update is blocked.`,
@@ -104,8 +108,9 @@ export function assertNoPendingPackageActivation(
     return;
   }
   const anchor = resolvePackageActivationAnchor(installKey);
+  const operationId = openPackageActivationJournal(anchor).read().descriptor.operationId;
   throw new Error(
-    `Package publication recovery is pending. Run an external Node with ${resolvePackageActivationHelper(anchor)} status, then repair or retire; keep other package managers stopped.`,
+    `Package publication recovery is pending. With an external Node, run ${packageActivationRecoveryCommand("node", anchor, operationId)} status, then repair or retire; keep other package managers stopped.`,
   );
 }
 
@@ -113,8 +118,9 @@ function createPublicationOwner(
   anchor: string,
   journal: PackageActivationJournal,
   assertion: () => void,
+  initial = journal.read(),
 ) {
-  let record = journal.read();
+  let record = initial;
   const descriptor = record.descriptor;
   let retirementSelected: "previous" | "candidate" | undefined;
   const live = descriptor.authority.installKey;
@@ -313,14 +319,9 @@ function createPublicationOwner(
     }
     if (
       action === "retire" &&
-      ![
-        "publication-complete",
-        "rolled-back",
-        "aborted",
-        "retiring",
-        "retired",
-        "anchor-retired",
-      ].includes(record.phase)
+      !["publication-complete", "rolled-back", "aborted", "retiring", "anchor-retired"].includes(
+        record.phase,
+      )
     ) {
       throw new Error(`Package evidence cannot be retired (${record.phase}).`);
     }
@@ -445,14 +446,9 @@ function createPublicationOwner(
   const retire = async () => {
     await verifyClosure();
     if (
-      ![
-        "publication-complete",
-        "rolled-back",
-        "aborted",
-        "retiring",
-        "retired",
-        "anchor-retired",
-      ].includes(record.phase)
+      !["publication-complete", "rolled-back", "aborted", "retiring", "anchor-retired"].includes(
+        record.phase,
+      )
     ) {
       throw new Error(`Package evidence cannot be retired (${record.phase}).`);
     }
@@ -475,7 +471,7 @@ function createPublicationOwner(
     }
     retirementSelected = selected;
     assertCurrent();
-    if (!["retiring", "retired", "anchor-retired"].includes(record.phase)) {
+    if (!["retiring", "anchor-retired"].includes(record.phase)) {
       for (const name of ["previous", "candidate", "previous.candidate"] as const) {
         await matches(
           root(name),
@@ -530,7 +526,7 @@ function createPublicationOwner(
     }
     if (record.phase !== "anchor-retired") {
       if (record.intent?.kind !== "remove-anchor") {
-        transition("retired", {
+        transition("retiring", {
           kind: "remove-anchor",
           identity: descriptor.anchorIdentity,
           selected,
@@ -657,34 +653,49 @@ export function readPackageActivationReceipt(
 }
 export async function readPackageActivationStatus(
   anchor: string,
+  operationId: string,
 ): Promise<PackageActivationStatus> {
   const record = openPackageActivationJournal(anchor).read();
+  assertOperation(record, operationId);
   assertManagedUpdateLeaseDatabaseIdentity(record.descriptor.authority);
   return status(record);
 }
 export async function runPackageActivationRecovery(
   anchor: string,
   action: "repair" | "retire",
+  operationId: string,
 ): Promise<PackageActivationStatus> {
   const journal = openPackageActivationJournal(anchor);
   const initial = journal.read();
+  assertOperation(initial, operationId);
   if (isPackageActivationComplete(anchor, initial)) {
     assertManagedUpdateLeaseDatabaseIdentity(initial.descriptor.authority);
     return status(initial);
   }
   // Reject malformed/foreign/disarmed recovery before acquiring a new writer.
   // Admission is still followed by the same observations under the fresh fence.
-  await createPublicationOwner(anchor, journal, () => {
-    assertManagedUpdateLeaseDatabaseIdentity(initial.descriptor.authority);
-  }).preflight(action);
+  await createPublicationOwner(
+    anchor,
+    journal,
+    () => {
+      assertManagedUpdateLeaseDatabaseIdentity(initial.descriptor.authority);
+    },
+    initial,
+  ).preflight(action);
   return withUpdateCommandExecutor(
     randomUUID(),
     async (executor) => {
       const fence = await executor.enter(initial.descriptor.authority.installKey);
       journal.assertCurrent(initial);
-      const owner = createPublicationOwner(anchor, journal, fence.assertCurrent);
+      const owner = createPublicationOwner(anchor, journal, fence.assertCurrent, initial);
       return action === "repair" ? owner.publish(true) : owner.retire();
     },
     { existingAuthority: initial.descriptor.authority },
   );
+}
+
+function assertOperation(record: PackageActivationRecord, operationId: string): void {
+  if (record.descriptor.operationId !== operationId) {
+    throw new Error("Package recovery command belongs to a different operation.");
+  }
 }

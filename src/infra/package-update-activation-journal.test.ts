@@ -16,6 +16,7 @@ import {
   openPackageActivationJournal,
   resolvePackageActivationJournalPath,
   resolvePackageActivationHelper,
+  resolvePackageActivationControl,
   packageActivationIdentity,
   resolvePackageActivationAnchor,
   type PackageActivationDescriptor,
@@ -52,6 +53,8 @@ async function fixture() {
   const launcherRoot = path.join(stagedAnchor, "launchers");
   fs.mkdirSync(stagedAnchor, { mode: 0o700 });
   fs.mkdirSync(launcherRoot, { mode: 0o700 });
+  const stagedControl = resolvePackageActivationControl(stagedAnchor);
+  fs.mkdirSync(stagedControl, { mode: 0o700 });
   const helperBytes = Buffer.from("// sealed helper fixture\n");
   fs.writeFileSync(resolvePackageActivationHelper(stagedAnchor), helperBytes, { mode: 0o600 });
   const initial = await withUpdateCommandExecutor(randomUUID(), async (executor) => {
@@ -73,8 +76,8 @@ async function fixture() {
         },
         {
           name: "helper",
-          source: resolvePackageActivationHelper(stagedAnchor),
-          sourceParentIdentity: packageActivationIdentity(path.dirname(stagedAnchor), true),
+          source: resolvePackageActivationHelper(anchor),
+          sourceParentIdentity: packageActivationIdentity(stagedControl, true),
           identity: packageActivationIdentity(resolvePackageActivationHelper(stagedAnchor), false),
         },
         {
@@ -100,6 +103,7 @@ async function fixture() {
       authority,
       anchorIdentity: packageActivationIdentity(stagedAnchor, true),
       parentIdentity: packageActivationIdentity(path.dirname(anchor), true),
+      journalParentIdentity: packageActivationIdentity(stagedControl, true),
       binDir: path.dirname(packages.launcher),
       binIdentity: packageActivationIdentity(path.dirname(packages.launcher), true),
       originalStageRoot: packages.params.stage.packageRoot,
@@ -129,12 +133,13 @@ async function fixture() {
         },
       ],
     };
-    const journal = createPackageActivationJournal(anchor, descriptor, fence.assertCurrent);
-    fs.renameSync(stagedAnchor, anchor);
-    fs.renameSync(
-      resolvePackageActivationHelper(stagedAnchor),
-      resolvePackageActivationHelper(anchor),
+    const journal = createPackageActivationJournal(
+      anchor,
+      descriptor,
+      stagedControl,
+      fence.assertCurrent,
     );
+    fs.renameSync(stagedAnchor, anchor);
     return {
       authority,
       journal,
@@ -160,11 +165,10 @@ async function fixture() {
 
 function journalFiles(anchor: string) {
   return fs
-    .readdirSync(path.dirname(anchor))
-    .filter((name) => name.startsWith(path.basename(anchor)))
+    .readdirSync(resolvePackageActivationControl(anchor))
     .toSorted()
     .map((name) => {
-      const file = path.join(path.dirname(anchor), name);
+      const file = path.join(resolvePackageActivationControl(anchor), name);
       const stat = fs.lstatSync(file);
       return {
         name,
@@ -253,7 +257,9 @@ describe.skipIf(process.platform === "win32")("package activation journal", () =
     } finally {
       readOnly.close();
     }
-    await expect(readPackageActivationStatus(f.anchor)).rejects.toThrow();
+    await expect(
+      readPackageActivationStatus(f.anchor, f.record.descriptor.operationId),
+    ).rejects.toThrow();
     expect(journalFiles(f.anchor)).toEqual(before);
     expect(fs.existsSync(`${f.journalPath}-wal`)).toBe(false);
     expect(fs.existsSync(`${f.journalPath}-shm`)).toBe(false);
@@ -276,7 +282,9 @@ describe.skipIf(process.platform === "win32")("package activation journal", () =
         expect(fs.existsSync(`${f.journalPath}-wal`)).toBe(liveWriter);
         expect(fs.existsSync(`${f.journalPath}-shm`)).toBe(liveWriter);
         const before = journalFiles(f.anchor);
-        await expect(readPackageActivationStatus(f.anchor)).rejects.toThrow();
+        await expect(
+          readPackageActivationStatus(f.anchor, f.record.descriptor.operationId),
+        ).rejects.toThrow();
         expect(journalFiles(f.anchor)).toEqual(before);
       } finally {
         if (database.isOpen) {
@@ -425,20 +433,22 @@ describe.skipIf(process.platform === "win32")("package activation journal", () =
     });
   });
 
-  it.each(["rollback-in-progress", "rolled-back", "aborted", "retiring", "retired"] as const)(
+  it.each(["rollback-in-progress", "rolled-back", "aborted", "retiring"] as const)(
     "refuses forward repair after %s is durable",
     async (phase) => {
       const f = await fixture();
       const disarmed = await f.transition(f.record, phase, null);
       const before = journalFiles(f.anchor);
-      await expect(readPackageActivationStatus(f.anchor)).resolves.toEqual({
+      await expect(
+        readPackageActivationStatus(f.anchor, f.record.descriptor.operationId),
+      ).resolves.toEqual({
         phase,
         operationId: disarmed.descriptor.operationId,
         installKey: f.packageRoot,
       });
-      await expect(runPackageActivationRecovery(f.anchor, "repair")).rejects.toThrow(
-        `Forward publication is disarmed (${phase})`,
-      );
+      await expect(
+        runPackageActivationRecovery(f.anchor, "repair", f.record.descriptor.operationId),
+      ).rejects.toThrow(`Forward publication is disarmed (${phase})`);
       expect(journalFiles(f.anchor)).toEqual(before);
       expect(fs.existsSync(f.params.stage.packageRoot)).toBe(true);
       expect(fs.readFileSync(f.launcher, "utf8")).toBe("old launcher\n");
@@ -509,6 +519,7 @@ const jsonColumns = ["descriptor_json", "intent_json", "publications_json"] as c
 function byteBoundsFixture(oversized?: (typeof jsonColumns)[number]) {
   const anchor = path.join(dirs.make("package-journal-byte-bound-"), "anchor");
   fs.mkdirSync(anchor, { mode: 0o700 });
+  fs.mkdirSync(resolvePackageActivationControl(anchor), { mode: 0o700 });
   const file = resolvePackageActivationJournalPath(anchor);
   const db = new DatabaseSync(file);
   try {

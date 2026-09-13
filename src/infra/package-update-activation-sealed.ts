@@ -23,23 +23,29 @@ try {
   ) {
     throw new Error("Package publication recovery requires supported external Node on POSIX.");
   }
-  const explicitAnchor = process.argv[2] === "--anchor" ? process.argv[3] : undefined;
-  const action = process.argv[explicitAnchor ? 4 : 2];
+  const anchor = process.argv[3];
+  const operationId = process.argv[5];
+  const action = process.argv[6];
   if (
-    process.argv.length !== (explicitAnchor ? 5 : 3) ||
+    process.argv.length !== 7 ||
+    process.argv[2] !== "--anchor" ||
+    process.argv[4] !== "--operation" ||
+    !anchor ||
+    !operationId ||
     (action !== "status" && action !== "repair" && action !== "retire")
   ) {
-    throw new Error("Usage: node recovery.mjs [--anchor absolute-path] status|repair|retire");
+    throw new Error(
+      "Usage: node recovery.mjs --anchor absolute-path --operation operation-id status|repair|retire",
+    );
   }
   const helper = fileURLToPath(import.meta.url);
-  if (!helper.endsWith(".recovery.mjs")) {
-    throw new Error("Unrecognized package recovery helper location.");
-  }
-  const anchor = explicitAnchor ?? helper.slice(0, -".recovery.mjs".length);
   if (path.resolve(anchor) !== anchor) {
     throw new Error("Package recovery anchor must be an absolute canonical path.");
   }
   const record = openPackageActivationJournal(anchor).read();
+  if (record.descriptor.operationId !== operationId) {
+    throw new Error("Package recovery command belongs to a different operation.");
+  }
   const stagedHelper = record.descriptor.preparation.find(
     (entry) => entry.name === "helper",
   )?.source;
@@ -58,8 +64,8 @@ try {
   }
   const result =
     action === "status"
-      ? await readPackageActivationStatus(anchor)
-      : await runPackageActivationRecovery(anchor, action);
+      ? await readPackageActivationStatus(anchor, operationId)
+      : await runPackageActivationRecovery(anchor, action, operationId);
   console.log(JSON.stringify(result));
 } catch (error) {
   console.error(`Package publication recovery refused: ${formatErrorMessage(error)}`);
