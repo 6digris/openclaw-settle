@@ -251,15 +251,23 @@ describe("ReefTrustStore", () => {
       store.set("other", trust);
       const peers = ["clawd", "clawd", "other", "stranger", "clawd", "other", "stranger"];
       const ids = peers.map((_, index) => String(index + 1).padStart(26, "0"));
-      for (const [index, peer] of peers.entries()) {
-        const id = ids[index];
-        if (!id) {
-          throw new Error("Missing fixture delivery id");
+      const firstSentAt = Date.now();
+      const now = vi.spyOn(Date, "now");
+      try {
+        for (const [index, peer] of peers.entries()) {
+          // Distinct creation times keep interleaved peer keys in delivery order.
+          now.mockReturnValue(firstSentAt + index);
+          const id = ids[index];
+          if (!id) {
+            throw new Error("Missing fixture delivery id");
+          }
+          store.recordOutboundDelivery(peer, id, binding);
+          if (kind === "rejections") {
+            store.recordOutboundRejection(peer, id, binding, "guard_deny");
+          }
         }
-        store.recordOutboundDelivery(peer, id, binding);
-        if (kind === "rejections") {
-          store.recordOutboundRejection(peer, id, binding, "guard_deny");
-        }
+      } finally {
+        now.mockRestore();
       }
       const scan = () =>
         kind === "overdue"
