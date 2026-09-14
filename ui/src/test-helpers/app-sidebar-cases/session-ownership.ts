@@ -9,11 +9,11 @@ import {
   type SidebarLifecycleState,
 } from "../app-sidebar.ts";
 import { waitForFast } from "../wait-for.ts";
+import { openSessionMenu, selectSessionMenuValue } from "./session-menu.ts";
 import {
   registerSessionOwnershipAvatarTests,
   setEffectiveOwner,
 } from "./session-ownership-avatars.ts";
-import { openSessionMenu, selectSessionMenuValue } from "./session-menu.ts";
 import "../../components/app-sidebar.ts";
 
 async function expectSort(sidebar: SidebarLifecycleState, mode: string, keys: string[]) {
