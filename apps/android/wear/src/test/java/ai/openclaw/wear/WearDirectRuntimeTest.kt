@@ -2,6 +2,8 @@ package ai.openclaw.wear
 
 import ai.openclaw.app.gateway.DeviceIdentityStore
 import ai.openclaw.app.gateway.GatewayEndpoint
+import ai.openclaw.app.gateway.GatewayRegistryEntry
+import ai.openclaw.app.gateway.GatewayRegistryEntryKind
 import ai.openclaw.app.gateway.GatewayRegistryStore
 import android.content.Context
 import android.content.SharedPreferences
@@ -37,6 +39,7 @@ import okhttp3.mockwebserver.RecordedRequest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -197,6 +200,79 @@ class WearDirectRuntimeTest {
         scope.cancel()
       }
     }
+
+  @Test
+  fun failedGatewaySelectionFromPhoneProxyRequiresRecovery() = verifyConnectionMutationFailure(previousDirect = false, mutation = "gateway")
+
+  @Test
+  fun failedGatewaySelectionFromDirectRequiresRecovery() = verifyConnectionMutationFailure(previousDirect = true, mutation = "gateway")
+
+  @Test
+  fun failedPhoneProxySelectionFromPhoneProxyRequiresRecovery() = verifyConnectionMutationFailure(previousDirect = false, mutation = "phone")
+
+  @Test
+  fun failedPhoneProxySelectionFromDirectRequiresRecovery() = verifyConnectionMutationFailure(previousDirect = true, mutation = "phone")
+
+  @Test
+  fun failedSetupCommitFromPhoneProxyRequiresRecovery() = verifyConnectionMutationFailure(previousDirect = false, mutation = "setup")
+
+  @Test
+  fun failedSetupCommitFromDirectRequiresRecovery() = verifyConnectionMutationFailure(previousDirect = true, mutation = "setup")
+
+  @Test
+  fun failedActiveForgetRequiresRecovery() = verifyConnectionMutationFailure(previousDirect = true, mutation = "forget")
+
+  private fun verifyConnectionMutationFailure(
+    previousDirect: Boolean,
+    mutation: String,
+  ) = runBlocking {
+    val previous = WearGatewaySetup(GatewayEndpoint.manual("saved.example", 443, true), "saved-bootstrap")
+    val fixture = Conversation(previous.takeIf { previousDirect })
+    try {
+      with(fixture) {
+        val target = GatewayEndpoint.manual("127.0.0.1", gateway.server.port, false)
+        store.registry.upsert(GatewayRegistryEntry(target.stableId, GatewayRegistryEntryKind.MANUAL, "Saved Gateway", target.host, target.port, false))
+        val persisted = store.getString(GatewayRegistryStore.STORAGE_KEY)
+        val selected = store.registry.activeStableId.value
+        failRegistryCommit = true
+        finish(
+          operation {
+            when (mutation) {
+              "gateway" -> runtime.selectGateway(target.stableId)
+              "phone" -> runtime.selectPhoneProxy()
+              "setup" -> runtime.setup(gateway.setupCode())
+              "forget" -> runtime.forget(checkNotNull(selected))
+              else -> error("Unknown fixture mutation")
+            }
+          },
+        )
+        await { runtime.state.value.takeIf { !it.busy } }
+
+        assertEquals(1, rejectedRegistryCommits)
+        assertEquals(persisted, store.getString(GatewayRegistryStore.STORAGE_KEY))
+        assertEquals(selected, store.registry.storedActiveStableId())
+        assertEquals(
+          selected,
+          runtime.state.value.selected
+            ?.stableId,
+        )
+        assertNotNull(runtime.state.value.error)
+        assertTrue("Failed $mutation must require visible recovery", runtime.state.value.connectionManagementRequired)
+        var enqueued = false
+        assertThrows(WearProxyException::class.java) { runtime.capturePhoneProxy().invoke { enqueued = true } }
+        assertFalse(enqueued)
+
+        failRegistryCommit = false
+        finish(operation { runtime.cancelSetup() })
+        await { runtime.state.value.takeIf { !it.busy } }
+        assertFalse(runtime.state.value.connectionManagementRequired)
+        assertEquals(null, runtime.state.value.error)
+        assertEquals(selected, store.registry.storedActiveStableId())
+      }
+    } finally {
+      fixture.close()
+    }
+  }
 
   @Test
   fun bootstrapConnectsWithoutPhoneAndLoadsCanonicalSessionApprovalUnion() =
@@ -1631,6 +1707,8 @@ class WearDirectRuntimeTest {
     private val scheduler = TestCoroutineScheduler()
     private val context = RuntimeEnvironment.getApplication()
     var failRegistryCommit = false
+    var rejectedRegistryCommits = 0
+      private set
     private val backing = context.getSharedPreferences("conversation-${UUID.randomUUID()}", Context.MODE_PRIVATE)
     val store =
       WearGatewayStore(
@@ -1650,7 +1728,11 @@ class WearDirectRuntimeTest {
 
               override fun commit(): Boolean {
                 val committed = edit.commit()
-                return committed && !(failRegistryCommit && writesRegistry)
+                if (failRegistryCommit && writesRegistry) {
+                  rejectedRegistryCommits += 1
+                  return false
+                }
+                return committed
               }
             }
           }

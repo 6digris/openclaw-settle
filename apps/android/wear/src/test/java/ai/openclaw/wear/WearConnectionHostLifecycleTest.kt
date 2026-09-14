@@ -3,6 +3,7 @@ package ai.openclaw.wear
 import ai.openclaw.app.gateway.GatewayEndpoint
 import ai.openclaw.app.gateway.GatewayRegistryEntry
 import ai.openclaw.app.gateway.GatewayRegistryEntryKind
+import ai.openclaw.app.gateway.GatewayRegistryStore
 import ai.openclaw.wear.shared.WearDecodeResult
 import ai.openclaw.wear.shared.WearMessage
 import ai.openclaw.wear.shared.WearProtocol
@@ -12,6 +13,7 @@ import android.app.Activity
 import android.app.RemoteInput
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.os.Bundle
 import android.os.Looper
 import android.view.View
@@ -45,6 +47,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -140,6 +143,59 @@ class WearConnectionHostLifecycleTest {
       assertEquals(1, host.sends.size)
     }
 
+  @Test
+  fun failedSavedSelectionRetainsPhoneSendAndRecoveryActions() =
+    withHost { host ->
+      val send = host.submit()
+      host.openConnectionSettings()
+      host.failSavedSelection(send)
+    }
+
+  @Test
+  fun failedSavedSelectionCanRetryWithoutResubmittingPhoneSend() =
+    withHost { host ->
+      val send = host.submit()
+      host.openConnectionSettings()
+      host.failSavedSelection(send)
+
+      host.failRegistryCommit = false
+      host.click("Saved Gateway")
+      host.awaitConnectionIdle()
+
+      assertEquals(host.gateway.stableId, host.store.registry.storedActiveStableId())
+      assertEquals(
+        host.gateway.stableId,
+        host.runtime.state.value.selected
+          ?.stableId,
+      )
+      assertFalse(host.runtime.state.value.connectionManagementRequired)
+      assertFalse(send.job.isActive)
+      assertTrue(send.job.isCompleted)
+      assertEquals("Successful retry cannot resubmit the old Phone Proxy send", 1, host.sends.size)
+    }
+
+  @Test
+  fun failedSavedSelectionCanGoBackWithoutRetiringPhoneSend() =
+    withHost { host ->
+      val send = host.submit()
+      host.openConnectionSettings()
+      host.failSavedSelection(send)
+
+      host.controller
+        .get()
+        .onBackPressedDispatcher
+        .onBackPressed()
+      host.awaitPhoneProxy()
+
+      assertEquals(null, host.store.registry.storedActiveStableId())
+      assertEquals(null, host.runtime.state.value.error)
+      var enqueued = false
+      host.runtime.capturePhoneProxy().invoke { enqueued = true }
+      assertTrue("Explicit cancellation restores Phone Proxy admission", enqueued)
+      host.assertPending(send)
+      host.release(send)
+    }
+
   private fun withHost(test: (Host) -> Unit) {
     val host = Host()
     try {
@@ -183,6 +239,8 @@ class WearConnectionHostLifecycleTest {
     private var finished = false
     private var historyMessages = "[]"
     private lateinit var client: WearProxyClient
+    var failRegistryCommit = false
+    private var rejectedRegistryCommits = 0
 
     fun start() {
       // Robolectric replaces Application between cases; AndroidX's process singleton does not.
@@ -198,7 +256,35 @@ class WearConnectionHostLifecycleTest {
       server = MockWebServer()
       server.start()
       gateway = GatewayEndpoint.manual("127.0.0.1", server.port, false)
-      store = WearGatewayStore(app.getSharedPreferences("host-${UUID.randomUUID()}", Context.MODE_PRIVATE))
+      val backing = app.getSharedPreferences("host-${UUID.randomUUID()}", Context.MODE_PRIVATE)
+      store =
+        WearGatewayStore(
+          object : SharedPreferences by backing {
+            override fun edit(): SharedPreferences.Editor {
+              val edit = backing.edit()
+              var writesRegistry = false
+              return object : SharedPreferences.Editor by edit {
+                override fun putString(
+                  key: String?,
+                  value: String?,
+                ): SharedPreferences.Editor {
+                  writesRegistry = writesRegistry || key == GatewayRegistryStore.STORAGE_KEY
+                  edit.putString(key, value)
+                  return this
+                }
+
+                override fun commit(): Boolean {
+                  val committed = edit.commit()
+                  if (failRegistryCommit && writesRegistry) {
+                    rejectedRegistryCommits += 1
+                    return false
+                  }
+                  return committed
+                }
+              }
+            }
+          },
+        )
       client =
         WearProxyClient.createForTests(
           nodeResolver = WearNodeResolver { "phone-a" },
@@ -234,6 +320,39 @@ class WearConnectionHostLifecycleTest {
         }
       }
 
+    fun awaitConnectionIdle() =
+      runBlocking {
+        withTimeout(8_000) {
+          while (runtime.state.value.busy) {
+            idle()
+            yield()
+          }
+          idle()
+        }
+      }
+
+    fun failSavedSelection(send: HeldSend) {
+      val persisted = store.getString(GatewayRegistryStore.STORAGE_KEY)
+      val originalKey = send.key
+      failRegistryCommit = true
+      click("Saved Gateway")
+      awaitConnectionIdle()
+
+      assertEquals("The real registry commit must reach the failing storage owner", 1, rejectedRegistryCommits)
+      assertEquals(persisted, store.getString(GatewayRegistryStore.STORAGE_KEY))
+      assertEquals(null, store.registry.storedActiveStableId())
+      assertEquals(null, runtime.state.value.selected)
+      assertRetainedSend(send)
+      assertEquals(originalKey, send.key)
+      assertTrue("Failed selection must keep its recovery error visible", hasText(checkNotNull(runtime.state.value.error)))
+      assertTrue("Saved Gateway retry must remain enabled", hasEnabledAction("Saved Gateway"))
+      assertTrue("Setup recovery must remain enabled", hasEnabledAction(app.getString(R.string.watch_setup_code)))
+      assertTrue(runtime.state.value.connectionManagementRequired)
+      var enqueued = false
+      assertThrows(WearProxyException::class.java) { runtime.capturePhoneProxy().invoke { enqueued = true } }
+      assertFalse("Recovery management must block new Phone Proxy enqueues", enqueued)
+    }
+
     fun submit(): HeldSend {
       val before = sends.size
       click("Type")
@@ -252,7 +371,14 @@ class WearConnectionHostLifecycleTest {
 
     fun assertPending(send: HeldSend) {
       idle()
+      assertRetainedSend(send)
+      assertTrue("Pending UI remains rendered", hasText("Sending"))
+      assertTrue(hasAction("Abort run"))
+    }
+
+    private fun assertRetainedSend(send: HeldSend) {
       assertTrue("Original send remains in flight", send.job.isActive)
+      assertSame(send, sends[send.ordinal - 1])
       assertEquals("No second send with any request key", send.ordinal, sends.size)
       assertEquals(1, sends.count { it.key == send.key })
       assertEquals(
@@ -261,8 +387,6 @@ class WearConnectionHostLifecycleTest {
           .getValue("sessionKey")
           .jsonPrimitive.content,
       )
-      assertTrue("Pending UI remains rendered", hasText("Sending"))
-      assertTrue(hasAction("Abort run"))
     }
 
     fun release(send: HeldSend) {
@@ -305,6 +429,13 @@ class WearConnectionHostLifecycleTest {
     private fun hasAction(label: String): Boolean =
       nodes().any {
         SemanticsActions.OnClick in it.config &&
+          it.config.getOrNull(SemanticsProperties.Text)?.any { value -> value.text == label } == true
+      }
+
+    private fun hasEnabledAction(label: String): Boolean =
+      nodes().any {
+        SemanticsActions.OnClick in it.config &&
+          SemanticsProperties.Disabled !in it.config &&
           it.config.getOrNull(SemanticsProperties.Text)?.any { value -> value.text == label } == true
       }
 

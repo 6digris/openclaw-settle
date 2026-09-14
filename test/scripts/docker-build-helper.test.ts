@@ -3204,6 +3204,9 @@ docker_e2e_docker_run_cmd run demo
       '-v "$ONBOARD_ASSERTIONS:/app/scripts/e2e/lib/release-scenarios/assertions.mjs:ro"',
     );
     expect(runner).toContain(
+      '-v "$ONBOARD_ASSERTION_FILES:/app/scripts/e2e/lib/release-assertion-files.mjs:ro"',
+    );
+    expect(runner).toContain(
       '-v "$ONBOARD_MOCK_OPENAI_CONFIG:/app/scripts/e2e/lib/fixtures/mock-openai-config.mjs:ro"',
     );
   });
@@ -6630,6 +6633,13 @@ source "$ROOT_DIR/scripts/lib/docker-e2e-logs.sh"
     expect(dockerfile).toContain("procps");
   });
 
+  it("normalizes shared Docker E2E harness file permissions", () => {
+    const dockerfile = readFileSync("scripts/e2e/Dockerfile", "utf8");
+    expect(dockerfile).toContain(
+      "COPY --chmod=0644 scripts/prepublish-plugin-registry-artifact.mjs /opt/openclaw-e2e/scripts/",
+    );
+  });
+
   it("copies the pnpm lockfile into the runtime image before normalizing its permissions", () => {
     const dockerfile = readFileSync("Dockerfile", "utf8");
     const copy = "COPY --from=runtime-assets --chown=node:node /app/pnpm-lock.yaml .";
@@ -8870,8 +8880,6 @@ bash "$ROOT_DIR/scripts/e2e/doctor-install-switch-docker.sh"
       'node "$OPENCLAW_ENTRY" plugins install "$plugin_id"',
       'node "$OPENCLAW_ENTRY" plugins uninstall "$plugin_id" --force',
       "now_ms()",
-      "lifecycle_trace_enabled()",
-      "if lifecycle_trace_enabled; then",
       "install_ms=",
       "runtime_ms=",
       "uninstall_ms=",
@@ -9143,7 +9151,6 @@ bash "$ROOT_DIR/scripts/e2e/doctor-install-switch-docker.sh"
       'OPENCLAW_PLUGINS_CLI_TIMEOUT="${OPENCLAW_PLUGINS_CLI_TIMEOUT:-180s}"',
       "run_plugins_openclaw_capture()",
       'openclaw_e2e_maybe_timeout "$OPENCLAW_PLUGINS_CLI_TIMEOUT" node "$OPENCLAW_ENTRY" "$@" >"$output_file"',
-      "plugins_lifecycle_trace_enabled()",
       "print_plugins_stderr_log()",
       "Plugin sweep command timed out after %s: %s",
       "Plugin sweep command failed with status %s: %s",
@@ -9195,7 +9202,7 @@ bash "$ROOT_DIR/scripts/e2e/doctor-install-switch-docker.sh"
       'plugins install "$CLAWHUB_PLUGIN_SPEC"',
       'plugins update "$CLAWHUB_PLUGIN_ID"',
       'openclaw_e2e_maybe_timeout "$OPENCLAW_PLUGINS_CLI_TIMEOUT"',
-      "clawhub:@openclaw/kitchen-sink",
+      'CLAWHUB_PLUGIN_SPEC="${OPENCLAW_PLUGINS_E2E_CLAWHUB_SPEC:-',
     ]);
   });
 });

@@ -323,7 +323,8 @@ internal class WearDirectRuntime(
         } catch (error: CancellationException) {
           throw error
         } catch (_: Exception) {
-          publish(intent) { copy(error = "Could not update the watch connection. Retry or enter a new limited setup code.") }
+          // A failed route change must retain recovery UI even when Phone Proxy was selected.
+          publish(intent) { copy(connectionManagementRequired = true, error = "Could not update the watch connection. Retry or enter a new limited setup code.") }
         } finally {
           publish(intent) { copy(busy = false) }
         }

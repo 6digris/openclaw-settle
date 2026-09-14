@@ -17,6 +17,8 @@ import androidx.test.uiautomator.By
 import androidx.test.uiautomator.BySelector
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.UiObject2
+import androidx.test.uiautomator.Until
+import androidx.test.uiautomator.waitForStable
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
@@ -101,12 +103,99 @@ class WearDirectGatewayFlowTest {
         var preTap: JsonObject? = null
         var navigationStage = "connection-lookup"
         try {
-          val connection = findText(app.getString(R.string.watch_connection))
-          preTap = runCatching { navigationSnapshot(activity, runtime) }.getOrNull()
-          navigationStage = "connection-click"
-          connection.click()
+          val label = app.getString(R.string.watch_connection)
+          findText(label).recycle()
+          val width = device.displayWidth
+          val height = device.displayHeight
+          val root = requireNotNull(instrumentation.uiAutomation.rootInActiveWindow)
+          var connections = emptyList<UiObject2>()
+          var parent: AccessibilityNodeInfo? = null
+          try {
+            assertTrue("active root belongs to the application", root.packageName?.toString() == app.packageName)
+            val window = requireNotNull(root.window)
+            try {
+              val bounds = android.graphics.Rect()
+              window.getBoundsInScreen(bounds)
+              val rootBounds = android.graphics.Rect()
+              root.getBoundsInScreen(rootBounds)
+              assertTrue(
+                "stability root covers the active default-display application window",
+                window.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION &&
+                  window.isActive && window.isFocused && window.displayId == android.view.Display.DEFAULT_DISPLAY &&
+                  window.id == root.windowId && rootBounds == bounds &&
+                  bounds.left >= 0 && bounds.top >= 0 && bounds.right <= width && bounds.bottom <= height &&
+                  bounds.width() > 0 && bounds.height() > 0,
+              )
+              // Stabilize the exposed window before resolving a fresh physical click target.
+              val stable =
+                root.waitForStable(
+                  requireStableScreenshot = true,
+                  stableTimeoutMs = 3_000,
+                  stableIntervalMs = 500,
+                  stablePollIntervalMs = 50,
+                )
+              try {
+                val bitmap = stable.screenshot
+                val stableBounds = android.graphics.Rect()
+                stable.node.getBoundsInScreen(stableBounds)
+                assertTrue("application window became stable", !stable.isTimeout)
+                assertTrue(
+                  "stability screenshot covers the full application window",
+                  bitmap != null && stable.node.packageName?.toString() == app.packageName &&
+                    stable.node.windowId == window.id && stableBounds == bounds &&
+                    bitmap.width == bounds.width() && bitmap.height == bounds.height(),
+                )
+              } finally {
+                stable.screenshot?.recycle()
+              }
+            } finally {
+              @Suppress("DEPRECATION")
+              window.recycle()
+            }
+            connections = device.findObjects(By.pkg(app.packageName).text(label))
+            assertTrue("one exact Connection child", connections.size == 1)
+            val connection = connections.single()
+            val child = connection.accessibilityNodeInfo
+            assertTrue(
+              "Connection child belongs to the active application window",
+              child.packageName?.toString() == app.packageName && child.text?.toString() == label &&
+                child.windowId == root.windowId && child.isEnabled && child.isVisibleToUser,
+            )
+            val owner = requireNotNull(child.getParent(0))
+            parent = owner
+            assertTrue(
+              "Connection has an enabled immediate parent action owner",
+              owner.packageName?.toString() == app.packageName && owner.windowId == root.windowId &&
+                owner.isEnabled && owner.isVisibleToUser && owner.isClickable &&
+                owner.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK },
+            )
+            val point = connection.visibleCenter
+            assertTrue("Connection is on the default display", connection.displayId == android.view.Display.DEFAULT_DISPLAY)
+            assertTrue("Connection click is inside the display", point.x in 0 until width && point.y in 0 until height)
+            preTap = runCatching { navigationSnapshot(activity, runtime) }.getOrNull()
+            navigationStage = "connection-click"
+            assertTrue("stock Connection click was accepted", device.click(point.x, point.y))
+          } finally {
+            @Suppress("DEPRECATION")
+            parent?.recycle()
+            connections.forEach { it.recycle() }
+            @Suppress("DEPRECATION")
+            root.recycle()
+          }
           navigationStage = "setup-lookup"
-          val setup = findText(app.getString(R.string.watch_setup_code))
+          val setupSelector = By.pkg(app.packageName).text(app.getString(R.string.watch_setup_code)).enabled(true)
+          val deadline = SystemClock.elapsedRealtime() + 3_000
+          var setupPresent = device.hasObject(setupSelector)
+          if (!setupPresent) {
+            val remaining = deadline - SystemClock.elapsedRealtime()
+            if (remaining > 0) setupPresent = device.wait(Until.hasObject(setupSelector), remaining)
+          }
+          // Until may return after its budget; late presence is not a successful transition.
+          assertTrue(
+            "enabled Setup appears without post-click scrolling within 3000ms",
+            setupPresent && SystemClock.elapsedRealtime() <= deadline,
+          )
+          val setup = requireNotNull(device.findObject(setupSelector))
           navigationStage = "setup-click"
           setup.click()
         } catch (error: Throwable) {
