@@ -77,6 +77,63 @@ offsets for `isInsideCode`. Regions returned by `findCodeRegions` additionally
 include parser-owned `block` metadata; callers supplying their own ranges do not
 need to provide it.
 
+### Gateway node transport SDK V2
+
+OpenClaw 2026.9.5 introduces the **in-process Gateway SDK V2** node-session
+contract. This is not a node wire-protocol version change. The existing
+`GatewayRequestHandlerOptions` imports from `core` and `gateway-runtime` now
+explicitly name `GatewayRequestHandlerOptionsV2`; `registerGatewayMethod` uses
+that same contract. The existing `NodeSession` export from `gateway-runtime`
+selects `NodeSessionV2`. No separate registrar, registry, or SDK subpath is needed.
+
+This is an explicit source migration, not a transparent compatibility adapter.
+The old unconditional `node.client.socket: WebSocket` declaration was already
+false for supported watchOS HTTP polling nodes. Keeping that declaration would
+promise methods those nodes cannot provide. Filtering polling nodes out would
+also be incorrect: every registry enumeration, registration, lookup,
+pairing-current lookup, policy refresh, activity update, and surface update
+continues to return the actual supported nodes.
+
+V2 exposes producer-owned capabilities:
+
+| Capability         | Physical WebSocket              | Generic framed connection | HTTP polling |
+| ------------------ | ------------------------------- | ------------------------- | ------------ |
+| `client.socket`    | Ordered-frame transport         | Ordered-frame transport   | Absent       |
+| `client.webSocket` | Full, original WebSocket object | Absent                    | Absent       |
+
+Use the explicit physical capability before a WebSocket-only operation:
+
+```ts
+import type { GatewayRequestHandlerOptions } from "openclaw/plugin-sdk/core";
+
+function inspectNodes({ context }: GatewayRequestHandlerOptions) {
+  for (const node of context.nodeRegistry.listConnected()) {
+    const socket = node.client.webSocket;
+    if (socket) {
+      socket.ping();
+    }
+  }
+}
+```
+
+The same consumer works with the `gateway-runtime` import. Replace old
+unconditional `node.client.socket.ping()` calls with this narrowing; do not cast
+a polling or framed transport to `WebSocket`. `webSocket` is a fact supplied by
+physical ingress, not a runtime guess based on a method name. Narrow
+`client.socket` separately when a framed operation is genuinely required.
+
+Prefer the existing registry operations or `api.runtime.nodes` for ordinary
+inventory and invocation across transports. `api.runtime.nodes` does not replace
+every arbitrary WebSocket API. Node commands, pairing authorization, cancellation,
+HTTP polling recovery, and serialized wire payloads keep their existing contracts.
+
+A session or socket reference is not authorization or a new revocable plugin
+capability. Native socket identity is preserved. Revalidate the exact current
+node connection and applicable plugin/host lifetime after awaited work and before
+effects; never treat a retained session as authority over its replacement.
+This specifically approved V2 migration does not shorten other SDK compatibility
+windows or acknowledge unrelated SDK changes.
+
 ### Gateway plugin metadata notification
 
 `GatewayRequestHandlerOptions.context.notifyPluginMetadataChanged(): void`,

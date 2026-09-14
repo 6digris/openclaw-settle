@@ -69,19 +69,19 @@ import { isNodeWorkerHostClientId } from "./node-runner-inventory-runtime.js";
 import { normalizeNodeSkillDescriptors } from "./node-skill-descriptors.js";
 import { MAX_BUFFERED_BYTES, WEBSOCKET_OPEN_READY_STATE } from "./server-constants.js";
 import { closeGatewayTransportWithGrace } from "./server/connection-transport-close.js";
-import type { GatewayWsClient } from "./server/ws-types.js";
+import type { GatewayNodeClientV2, GatewayWsClient } from "./server/ws-types.js";
 
 export type { NodeInvokeResult } from "./node-invoke.types.js";
 
-/** Connected node session advertised over Gateway websocket. */
-export type NodeSession = {
+/** SDK V2 connected node session across physical WS, generic frames, and HTTP polling. */
+export type NodeSessionV2 = {
   nodeId: string;
   connId: string;
   /** Persistent device key and node-token identity authenticated for this connection. */
   pairingIdentity?: string;
   /** Persistent pairing generation authenticated before this session was registered. */
   pairingGeneration?: string;
-  client: GatewayWsClient;
+  client: GatewayNodeClientV2;
   clientId?: string;
   clientMode?: string;
   displayName?: string;
@@ -113,7 +113,10 @@ export type NodeSession = {
   desktopAvailability?: DesktopAvailability;
 };
 
-type PairingBoundNodeSession = NodeSession & { pairingIdentity: string };
+/** Existing internal import spelling; this is V2, not the old unconditional WebSocket contract. */
+export type NodeSession = NodeSessionV2;
+
+type PairingBoundNodeSession = NodeSessionV2 & { pairingIdentity: string };
 export type NodeSessionConnectParams = GatewayWsClient["connect"] &
   Partial<
     Pick<
@@ -522,14 +525,14 @@ export class NodeRegistry {
     return nodes;
   }
 
-  /** Register a websocket client as the current connection for its node id. */
+  /** Register a framed client as the current connection for its node id. */
   register(client: GatewayWsClient, opts: NodeSessionRegistrationOptions) {
     return this.registerSession(client, opts);
   }
 
-  /** Register a node whose events are delivered by an HTTP polling transport. */
+  /** Register event delivery independently of a node's optional framed capabilities. */
   registerTransport(
-    client: GatewayWsClient,
+    client: GatewayNodeClientV2,
     opts: NodeSessionRegistrationOptions,
     transport: NodeEventTransport,
   ) {
@@ -537,7 +540,7 @@ export class NodeRegistry {
   }
 
   private registerSession(
-    client: GatewayWsClient,
+    client: GatewayNodeClientV2,
     opts: NodeSessionRegistrationOptions,
     transport?: NodeEventTransport,
   ) {
@@ -875,7 +878,7 @@ export class NodeRegistry {
     if (
       !node ||
       node.connId !== params.connId ||
-      node.client.socket.readyState !== WEBSOCKET_OPEN_READY_STATE
+      node.client.socket?.readyState !== WEBSOCKET_OPEN_READY_STATE
     ) {
       return null;
     }
@@ -1021,7 +1024,7 @@ export class NodeRegistry {
       return currentConnectionResult(result);
     }
     const socket = node.client.webSocket;
-    if (!this.isNodeWebSocketOpen(node)) {
+    if (node.client.socket?.readyState !== WEBSOCKET_OPEN_READY_STATE) {
       return {
         ok: false,
         error: { code: "NOT_CONNECTED", message: "node socket not open" },
@@ -1513,7 +1516,7 @@ export class NodeRegistry {
     if (eventTransport) {
       return eventTransport.send(event, payload);
     }
-    if (!this.isNodeWebSocketOpen(node)) {
+    if (node.client.socket?.readyState !== WEBSOCKET_OPEN_READY_STATE) {
       return false;
     }
     if (this.rejectSlowNodeSocket(node)) {
@@ -1546,7 +1549,7 @@ export class NodeRegistry {
     if (eventTransport) {
       return eventTransport.sendRaw(event, payloadJSON);
     }
-    if (!this.isNodeWebSocketOpen(node)) {
+    if (node.client.socket?.readyState !== WEBSOCKET_OPEN_READY_STATE) {
       return false;
     }
     if (this.rejectSlowNodeSocket(node)) {
@@ -1580,15 +1583,9 @@ export class NodeRegistry {
     return sent;
   }
 
-  private isNodeWebSocketOpen(node: NodeSession): boolean {
-    // ws.send() does not throw after entering CLOSING; it only accounts the
-    // unsent bytes. Keep the synchronous send-admission result truthful.
-    return node.client.socket.readyState === WEBSOCKET_OPEN_READY_STATE;
-  }
-
   private rejectSlowNodeSocket(node: NodeSession): boolean {
     const socket = node.client.socket;
-    if (!(socket.bufferedAmount > MAX_BUFFERED_BYTES)) {
+    if (!socket || !(socket.bufferedAmount > MAX_BUFFERED_BYTES)) {
       return false;
     }
     logRejectedLargePayload({

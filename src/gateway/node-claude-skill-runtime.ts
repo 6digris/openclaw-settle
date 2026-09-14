@@ -133,7 +133,7 @@ export async function prepareNodeClaudeSkillRuntime(
       gateway.nodeRegistry.get(node.nodeId) !== node ||
       node.connId !== connectionId ||
       node.pairingGeneration !== pairingGeneration ||
-      node.client.socket.readyState !== 1 ||
+      node.client.socket?.readyState !== 1 ||
       !node.caps.includes(NODE_CLAUDE_SKILLS_CAPABILITY) ||
       !isNodeCommandAllowed({
         command: NODE_AGENT_CLI_CLAUDE_RUN_COMMAND,

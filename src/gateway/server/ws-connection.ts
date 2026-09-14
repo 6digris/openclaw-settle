@@ -76,6 +76,8 @@ export function attachGatewayWsConnectionHandler(params: AttachGatewayWsConnecti
       originCheckMetrics,
       prepareAuthenticatedReceive: (role) => prepareGatewayReceiverHandoff(socket, role),
       onAuthenticated: (client, onHeartbeatTimeout) => {
+        // Publish the physical capability before the shared owner returns from
+        // setClient and the authenticated node enters NodeRegistry.
         client.webSocket = socket;
         return startWebSocketKeepalive(socket, onHeartbeatTimeout, upgradeReq.socket);
       },

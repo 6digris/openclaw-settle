@@ -411,7 +411,7 @@ type GatewayResidentBridgeContext = {
 
 /** Complete runtime context available to gateway request handlers. */
 export type GatewayContextResolver = () => GatewayRequestContext | undefined;
-export type GatewayRequestContext = GatewayKernelContext &
+export type GatewayRequestContextV2 = GatewayKernelContext &
   GatewayTransportContext &
   GatewayResidentBridgeContext & {
     /** Retains original execution while callers may receive an early response. */
@@ -427,6 +427,9 @@ export type GatewayRequestContext = GatewayKernelContext &
       "enter" | "signal"
     >;
   };
+
+/** Existing spelling denotes the transport-aware in-process V2 contract. */
+export type GatewayRequestContext = GatewayRequestContextV2;
 
 /** Full dispatch context for raw request frames before params are normalized. */
 export type GatewayRequestOptions = {
@@ -460,14 +463,14 @@ export type SessionMutationAuthorization = {
   }) => void;
 };
 
-/** Normalized method invocation options passed to registered handlers. */
-export type GatewayRequestHandlerOptions = {
+/** SDK V2 registered-handler options; node socket access requires capability narrowing. */
+export type GatewayRequestHandlerOptionsV2 = {
   req: RequestFrame;
   params: Record<string, unknown>;
   client: GatewayClient | null;
   isWebchatConnect: (params: ConnectParams | null | undefined) => boolean;
   respond: RespondFn;
-  context: GatewayRequestContext;
+  context: GatewayRequestContextV2;
   sessionMutationCommitGuard?: () => void;
   sessionMutationAuthorization?: SessionMutationAuthorization;
   /** In-process caller lifetime; absent for ordinary transport requests. */
@@ -476,8 +479,12 @@ export type GatewayRequestHandlerOptions = {
   hasCurrentClientAuthority?: () => boolean;
 };
 
-/** Single gateway method implementation. */
-export type GatewayRequestHandler = (opts: GatewayRequestHandlerOptions) => Promise<void> | void;
+/** Existing import names select V2; no universal-WebSocket legacy adapter is served. */
+export type GatewayRequestHandlerOptions = GatewayRequestHandlerOptionsV2;
+export type GatewayRequestHandlerV2 = (
+  opts: GatewayRequestHandlerOptionsV2,
+) => Promise<void> | void;
+export type GatewayRequestHandler = GatewayRequestHandlerV2;
 
 /** Registry fragment keyed by gateway protocol method name. */
 export type GatewayRequestHandlers = Record<string, GatewayRequestHandler>;
