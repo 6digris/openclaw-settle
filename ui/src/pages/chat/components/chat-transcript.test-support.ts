@@ -1,3 +1,4 @@
+import { expectDefined } from "@openclaw/normalization-core";
 import { nothing, render } from "lit";
 import { vi } from "vitest";
 import { resetChatThreadState } from "../chat-thread.ts";
@@ -91,6 +92,21 @@ export function threadProps(
     onDraftChange: () => {},
     onSend: () => {},
   };
+}
+
+export function stubMcpAppLifecycle(
+  container: ParentNode,
+  teardown: () => Promise<void> = () => Promise.resolve(),
+) {
+  const app = expectDefined(
+    container.querySelector<HTMLElement>("mcp-app-view"),
+    "mounted MCP app",
+  );
+  const lifecycle = {
+    restartAfterTeardown: vi.fn(),
+    teardown: vi.fn(teardown),
+  };
+  return { app: Object.assign(app, lifecycle), ...lifecycle };
 }
 
 export function transcriptRows(container: HTMLElement): HTMLElement[] {
