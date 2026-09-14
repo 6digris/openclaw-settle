@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import { markdownToIR } from "./ir.js";
 
 describe("markdownToIR raw HTML", () => {
+  it("keeps bare domains linkified", () => {
+    const ir = markdownToIR("See example.com/docs");
+
+    expect(ir.links.map((link) => link.href)).toEqual(["http://example.com/docs"]);
+  });
+
   it("does not linkify URLs inside raw HTML tag attributes", () => {
     const ir = markdownToIR(
       '<img src="https://example.com/diagram.png" alt="Diagram"> https://example.com/page',

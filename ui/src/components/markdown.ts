@@ -25,6 +25,11 @@ import { copyToClipboard } from "../lib/clipboard.ts";
 import { truncateText } from "../lib/format.ts";
 import { normalizeLowercaseStringOrEmpty } from "../lib/string-coerce.ts";
 
+function tokenAttrString(token: { attrGet(name: string): string | number | null }, name: string) {
+  const value = token.attrGet(name);
+  return value === null ? "" : String(value);
+}
+
 const allowedTags = [
   "a",
   "b",
@@ -1116,7 +1121,7 @@ md.core.ruler.after("linkify", "linkify-cjk-trim", (state) => {
       const cjkTail = displayText.slice(cjkIdx);
       // Rebuild href by preserving the scheme prefix that linkify added but
       // display text omits (e.g. "mailto:" for emails, "http://" for www links).
-      const href = token.attrGet("href") ?? "";
+      const href = tokenAttrString(token, "href");
       const prefixLen = href.indexOf(displayText);
       const hrefPrefix = prefixLen > 0 ? href.slice(0, prefixLen) : "";
       token.attrSet("href", hrefPrefix + trimmedDisplay);
@@ -1158,7 +1163,7 @@ md.core.ruler.after("linkify", "file-links", (state) => {
     for (let index = 0; index < children.length; index += 1) {
       const token = children[index];
       if (token.type === "link_open") {
-        const href = token.attrGet("href");
+        const href = tokenAttrString(token, "href");
         if (href) {
           let decodedHref = href;
           try {
@@ -1265,7 +1270,7 @@ md.core.ruler.after("github-task-lists", "task-list-allowlist", (state) => {
       continue;
     }
     const listItem = tokens[i - 2];
-    const cls = listItem.attrGet("class") ?? "";
+    const cls = tokenAttrString(listItem, "class");
     if (!cls.includes("task-list-item")) {
       continue;
     }
@@ -1310,7 +1315,7 @@ md.renderer.rules.code_inline = (tokens, idx, options, env, self) => {
 // Override image to only allow base64 data URIs (#15437)
 md.renderer.rules.image = (tokens, idx) => {
   const token = tokens[idx];
-  const src = token.attrGet("src")?.trim() ?? "";
+  const src = tokenAttrString(token, "src").trim();
   // Use token.content which preserves raw markdown formatting (e.g. **bold**)
   // to match original marked.js behavior.
   const alt = normalizeMarkdownImageLabel(token.content);

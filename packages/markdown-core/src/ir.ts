@@ -1,5 +1,8 @@
 // Markdown Core module implements ir behavior.
-import MarkdownIt from "markdown-it";
+import MarkdownIt, {
+  type Env as MarkdownItEnv,
+  type MarkdownIt as MarkdownItParser,
+} from "markdown-it";
 import markdownItCjkFriendly from "markdown-it-cjk-friendly";
 import { chunkText } from "./chunk-text.js";
 import type { MarkdownTableMode } from "./types.js";
@@ -17,7 +20,7 @@ type LinkState = {
 
 const OPEN_MARKDOWN_HTML_TAG_PATTERN = /<\/?[a-zA-Z][a-zA-Z0-9-]*\b[^<>]*$/;
 
-type RenderEnv = {
+type RenderEnv = MarkdownItEnv & {
   listStack: ListState[];
 };
 
@@ -144,13 +147,14 @@ export type MarkdownParseOptions = {
   tableMode?: MarkdownTableMode;
 };
 
-function createMarkdownIt(options: MarkdownParseOptions): MarkdownIt {
+function createMarkdownIt(options: MarkdownParseOptions): MarkdownItParser {
   const md = new MarkdownIt({
     html: false,
     linkify: options.linkify ?? true,
     breaks: false,
     typographer: false,
   });
+  md.linkify.set({ fuzzyLink: true });
   md.use(markdownItCjkFriendly);
   md.enable("strikethrough");
   if (options.tableMode && options.tableMode !== "off") {
@@ -1069,7 +1073,7 @@ export function markdownToIRWithMeta(
 ): { ir: MarkdownIR; hasTables: boolean; tables: MarkdownTableMeta[] } {
   const env: RenderEnv = { listStack: [] };
   const md = createMarkdownIt(options);
-  const tokens = md.parse(markdown ?? "", env as unknown as object);
+  const tokens = md.parse(markdown ?? "", env);
   if (options.enableSpoilers) {
     applySpoilerTokens(tokens as MarkdownToken[]);
   }

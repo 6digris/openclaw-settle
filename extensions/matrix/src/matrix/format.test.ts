@@ -19,6 +19,11 @@ describe("markdownToMatrixHtml", () => {
     expect(html).toBe('<p>see <a href="https://example.com">docs</a></p>');
   });
 
+  it("keeps bare domains linked", () => {
+    const html = markdownToMatrixHtml("See example.com/docs");
+    expect(html).toBe('<p>See <a href="http://example.com/docs">example.com/docs</a></p>');
+  });
+
   it("does not auto-link bare file references into external urls", () => {
     const html = markdownToMatrixHtml("Check README.md and backup.sh");
     expect(html).toBe("<p>Check README.md and backup.sh</p>");
