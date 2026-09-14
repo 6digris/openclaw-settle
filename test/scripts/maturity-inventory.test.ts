@@ -51,6 +51,7 @@ describe("maturity inventory", () => {
       JSON.stringify({
         entries: [
           { openclaw: { plugin: { id: "brave", label: "Brave Search" } } },
+          { openclaw: { plugin: { id: "tokenjuice", label: "Tokenjuice" } } },
           { openclaw: { plugin: { id: "unmapped-tool", label: "Unmapped Tool" } } },
         ],
       }),
@@ -60,6 +61,9 @@ describe("maturity inventory", () => {
 
     expect(projection.membersBySurface.get("web-search")?.map((member) => member.id)).toEqual([
       "brave",
+    ]);
+    expect(projection.membersBySurface.get("tools")?.map((member) => member.id)).toEqual([
+      "tokenjuice",
     ]);
     expect(projection.unmapped.map((member) => member.id)).toEqual(["unmapped-tool"]);
   });

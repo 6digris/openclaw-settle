@@ -225,7 +225,7 @@ const PLUGIN_SURFACE_BY_ID = new Map([
   ["tavily", "web-search"],
   ["team-reports", "automation"],
   ["teams-meetings", "voice"],
-  ["tokenjuice", "web-search"],
+  ["tokenjuice", "tools"],
   ["voice-call", "voice-call"],
   ["zoom-meetings", "voice"],
 ]);
