@@ -10,6 +10,7 @@ import type {
 import type {
   ControlUiSessionBranch,
   ControlUiSessionPullRequest,
+  ControlUiSessionPullRequestSnapshot,
 } from "../../../../src/gateway/control-ui-contract.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { GatewaySessionRow } from "../../api/types.ts";
@@ -80,6 +81,7 @@ import {
   openSlot,
   promoteSidebarPanel,
   setSidebarOpen,
+  sidebarMainPanel,
 } from "./sidebar-layout.ts";
 
 export abstract class ChatPaneBase extends OpenClawLightDomElement {
@@ -317,7 +319,8 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
   );
   protected readonly transcript = new ChatTranscriptController(this, {
     onViewportResize: () => this.chatState.handleTranscriptResize(),
-    onReaderScroll: () => this.state && handleChatScrollTakeover(this.state),
+    canFollowEnd: () => this.state !== undefined && !this.state.chatFollowLocked,
+    onReaderScroll: (towardEnd) => this.state && handleChatScrollTakeover(this.state, towardEnd),
   });
   protected readonly progressCard = new SessionProgressCardController(this, {
     gateway: () => this.context?.gateway,
@@ -436,7 +439,12 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
     if (renderedLayout.columns[0]?.panels.some((panel) => panel.slot === "companion")) {
       this.setSessionObserverVisibility(isSidebarSlotVisible(nextLayout, "companion"));
     }
-    this.commitSidebarLayout(nextLayout);
+    this.commitSidebarLayout(
+      nextLayout,
+      sidebarMainPanel(renderedLayout)?.slot === "dashboard"
+        ? { dashboardPresentation: "personal" }
+        : undefined,
+    );
   }
 
   protected requestSessionRail(intent: "open" | "toggle"): void {
@@ -511,7 +519,12 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
       }
     | undefined;
   protected readonly observedBoardPresence = new Map<string, boolean>();
-  protected dashboardExpandedRouteKey = "";
+  protected dashboardPresentationActivation?: {
+    client: ChatPageHost["client"];
+    key: string;
+    expanded: boolean;
+    pendingRoute?: boolean;
+  };
   protected swarmHydrator: SwarmRosterHydrator | null = null;
   protected readonly sessionDiscussionStates = new Map<string, SessionDiscussionState>();
   protected readonly sessionDiscussionOpenUrls = new Map<string, string | null>();
@@ -567,7 +580,7 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
   protected sessionPullRequests: ControlUiSessionPullRequest[] = [];
   protected sessionPullRequestsBranch: ControlUiSessionBranch | undefined;
   protected githubRepo: MarkdownRenderOptions["githubRepo"] = null;
-  protected sessionPullRequestsRateLimited = false;
+  protected sessionPullRequestsStatus: ControlUiSessionPullRequestSnapshot["status"] = "ready";
   protected sessionPullRequestsExpanded = false;
   protected githubPublication: GitHubPublicationBinding | null = null;
   protected dismissedSessionPullRequestIds: ReadonlySet<string> = new Set();
@@ -649,7 +662,10 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
   }
 
   protected abstract refreshSessionPullRequests(options?: { refresh?: boolean }): boolean;
-  protected abstract commitSidebarLayout(layout: SidebarLayout): void;
+  protected abstract commitSidebarLayout(
+    layout: SidebarLayout,
+    options?: Parameters<ChatPageHost["updateSidebarLayout"]>[1],
+  ): void;
   protected abstract refreshSwarmRoster(): void;
   protected abstract resolveBoardProvider(): BoardProvider;
   protected abstract handleBoardCommand(event: BoardCommandEvent): void;

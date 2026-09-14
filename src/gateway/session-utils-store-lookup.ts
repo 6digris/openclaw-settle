@@ -2,7 +2,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { listAgentIds } from "../agents/agent-scope.js";
-import { listSubagentRunsForController } from "../agents/subagents/registry/subagent-registry-read.js";
+import { listSubagentSessionListRunsForControllers } from "../agents/subagents/registry/subagent-registry-read.js";
 import {
   isConfiguredSessionStoreAgentId,
   resolveAgentMainSessionKey,
@@ -589,9 +589,9 @@ function includeDirectChildEntries(
       })) {
         target.store[sessionKey] = entry;
       }
-      for (const { childSessionKey } of listSubagentRunsForController(parentKey)) {
-        childKeys.add(childSessionKey);
-      }
+    }
+    for (const { childSessionKey } of listSubagentSessionListRunsForControllers([...parentKeys])) {
+      childKeys.add(childSessionKey);
     }
     // Retained runs are discovery hints, not existence: deduplicate and batch exact reads.
     const targets = [...childKeys].filter((key) => !target.store[key]).map((key) => ({ key }));

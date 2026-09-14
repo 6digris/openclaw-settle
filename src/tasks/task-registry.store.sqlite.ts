@@ -13,12 +13,12 @@ import {
   type OpenClawStateDatabase,
   type OpenClawStateDatabaseOptions,
 } from "../state/openclaw-state-db.js";
+import { matchesTaskIdentityInDatabase } from "./task-registry.store.identity.js";
 import {
   bindTaskRunExecutionInDatabase,
   deleteTaskRowsWithDeliveryState,
   listTaskRecordsByOwnerKeyInDatabase,
   listTaskRecordsByRuntimeSourceIdInDatabase,
-  matchesTaskIdentityInDatabase,
   readTaskRegistrySnapshot,
   readTaskRegistryMutationSnapshotInDatabase,
   readTaskRegistrySnapshotIfReady,

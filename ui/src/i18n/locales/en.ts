@@ -5,20 +5,41 @@ import * as agentEn from "./en-agents.ts";
 
 export const en: TranslationMap & {
   board: TranslationMap & { widget: TranslationMap };
+  chat: TranslationMap & { backgroundTasks: TranslationMap };
   browser: TranslationMap & { errors: TranslationMap };
   configPage: TranslationMap;
   connection: TranslationMap;
   configView: TranslationMap;
-  debug: TranslationMap & { overlay: TranslationMap };
+  debug: TranslationMap & {
+    lanes: TranslationMap & Record<"lane" | "active" | "queued" | "blocked", string>;
+    overlay: TranslationMap &
+      Record<
+        | "title"
+        | "eyebrow"
+        | "minimize"
+        | "expand"
+        | "lanes"
+        | "status"
+        | "activeRuns"
+        | "events"
+        | "cpu"
+        | "memory"
+        | "delayP99",
+        string
+      >;
+  };
   // Lazy en-devices.ts assigns into this namespace.
   devices: TranslationMap;
   desktop: TranslationMap &
-    Record<"title" | "openWindow" | "unavailable" | "toggle" | "reconnect", string>;
+    Record<"title" | "openWindow" | "unavailable" | "toggle" | "reconnect" | "connecting", string>;
   updates: TranslationMap;
   login: TranslationMap;
   skillWorkshop: TranslationMap;
 } = {
   pluginUi: {
+    sessionRecentMessages: "Recent messages",
+    sessionHistoryUnavailable: "Session history could not be loaded. Try again.",
+    sessionHistoryEmpty: "No recent messages.",
     customize: "Customize UI",
     selectionScope: "Choose views for this browser window. Built-in views are always available.",
     builtin: "Built-in view",
@@ -1018,6 +1039,10 @@ export const en: TranslationMap & {
     browserLoadFailed: "Couldn't list that folder.",
     hiddenFolder: "Hidden folder",
     worktree: "Worktree",
+    newWorkspace: "New workspace",
+    newWorkspaceDescription: "Start in an empty folder for this session.",
+    remoteSourceUnavailable:
+      "This folder cannot provide a Git checkout. Select New workspace to start empty, or choose a repository.",
     checkingGit: "Checking Git availability…",
     gitCheckUnavailable: "Couldn't verify Git for this folder. Choose it again to retry.",
     worktreeUnavailable: "Selected folder is not a Git checkout",
@@ -1151,6 +1176,7 @@ export const en: TranslationMap & {
     sessionState: "Session state",
     all: "All",
     sessionArchived: "Session archived",
+    archiving: "Archiving…",
     sessionsArchived: "Archived {count} sessions",
     deleteAllArchived: "Delete all archived…",
     deleteAllArchivedConfirm:
@@ -1305,11 +1331,17 @@ export const en: TranslationMap & {
     },
     iconEmojiSection: "Emoji",
     iconGlyphSection: "Icons",
+    noIcon: "No icon",
+    noColor: "No color",
     customEmojiCell: "Custom emoji…",
     customEmojiTitle: "Custom emoji",
     customEmojiSet: "Set",
     customEmojiHint: "Any emoji works. Press {shortcut} for the system emoji picker.",
     customEmojiHintNoShortcut: "Any emoji works.",
+    customIconCell: "Custom icon…",
+    customIconTitle: "Custom icon",
+    customIconHint: "Paste an emoji or SVG. Press {shortcut} for the system emoji picker.",
+    customIconHintNoShortcut: "Paste an emoji or SVG.",
     removeIcon: "Remove icon",
     pinSession: "Pin session",
     pinRootSessionsOnly: "Only root sessions can be pinned; pin the parent session instead.",
@@ -1378,6 +1410,10 @@ export const en: TranslationMap & {
     groupByPerson: "Person",
     showSessionPreview: "Show message preview",
     hideEmptyGroups: "Hide empty groups",
+    hideEmptyGroupsSelected: "Hide empty groups: {mode}",
+    emptyGroupsWhenFiltering: "When filtering",
+    emptyGroupsAlways: "Always",
+    emptyGroupsNever: "Never",
     showCronSessions: "Show automation sessions",
     showSystemSessions: "Show system sessions",
     groupByChannel: "Channel",
@@ -1611,8 +1647,24 @@ export const en: TranslationMap & {
     },
   },
   debug: {
+    lanes: {
+      lane: "Lane",
+      active: "Active",
+      queued: "Queued",
+      blocked: "Blocked",
+    },
     overlay: {
       title: "System busyness",
+      eyebrow: "Live diagnostics",
+      minimize: "Minimize system busyness",
+      expand: "Expand system busyness",
+      lanes: "Lanes",
+      status: "Event loop / status",
+      activeRuns: "Active runs",
+      events: "Events",
+      cpu: "CPU",
+      memory: "Memory",
+      delayP99: "Delay p99",
     },
   },
   configForm: {
@@ -1886,6 +1938,12 @@ export const en: TranslationMap & {
     autoSavePaused: "Autosave paused after reconnect",
     saveNow: "Save",
     autoSaveFailed: "Save failed",
+    recoveryNotRestored:
+      "Settings could not be restored. Your draft is kept. Check {path} before saving again.",
+    recoveryUnknown:
+      "Settings restoration could not be confirmed. Your draft is kept. Check {path} before saving again.",
+    recoveryBackup: "Inspect the recovery backup at {path}.",
+    recoveryReload: "Discard draft and reload",
     autoSaveConflict: "Settings changed elsewhere",
     retry: "Retry",
     applyChanges: "Apply changes",
@@ -2370,6 +2428,7 @@ export const en: TranslationMap & {
     unavailable: "Desktop viewing is unavailable for this connection.",
     toggle: "Toggle desktop panel",
     reconnect: "Reconnect",
+    connecting: "Connecting to desktop…",
   },
   routeTitles: {
     modelProviders: "Models",
@@ -2839,229 +2898,7 @@ export const en: TranslationMap & {
       ready: "Ready",
     },
   },
-  memoryPage: {
-    intro: "Choose how OpenClaw stores, searches, and maintains agent memory.",
-    tablistLabel: "Memory sections",
-    tabs: {
-      overview: "Overview",
-      memories: "Memories",
-      dreams: "Dreams",
-      settings: "Settings",
-    },
-    overview: {
-      hero: {
-        awake: "Memory is awake",
-        waking: "Waking memory…",
-        hibernating: "Memory is hibernating",
-        needsAttention: "Memory needs attention",
-        activeDescription: "{engine} · {mode}",
-        loadingDescription: "Checking this agent's memory engine and dream cycle.",
-        offDescription: "Choose a memory engine in Settings to wake it up.",
-        disabledDescription: "The selected memory engine is disabled. Re-enable it in Settings.",
-        gatewayOffline: "The gateway is offline, so memory status is unavailable.",
-        hybridSearch: "hybrid search",
-        keywordSearch: "keyword search (no embeddings)",
-        openSettings: "Open Settings",
-        retry: "Retry",
-        refresh: "Refresh status",
-      },
-      schedule: {
-        title: "Sleep schedule",
-        lightDescription:
-          "Sorts fresh short-term notes and stages promising candidates without changing long-term memory.",
-        remDescription:
-          "Reflects on themes and recurring ideas across recent activity to strengthen ranking without changing long-term memory.",
-        deepDescription:
-          "Scores staged candidates, promotes the keepers into long-term memory (MEMORY.md), and writes the dream diary.",
-        nextRun: "next {time}",
-        lastRun: "last {time}",
-        notScheduled: "Not scheduled",
-        learnMore: "How dreaming works",
-        openDocs: "Open dreaming guide",
-      },
-      activity: {
-        title: "Activity",
-        promotedToday: "Promoted today",
-        promotedTotal: "Promoted total",
-        shortTermCount: "Pending short-term entries",
-        phaseHitCount: "Phase signals",
-        lightPhaseHitCount: "Light-phase hits",
-        remPhaseHitCount: "REM-phase hits",
-      },
-      health: {
-        title: "Engine health",
-        provider: "Provider",
-        embeddings: "Embeddings",
-        runtime: "Embedding runtime",
-        healthy: "Ready",
-        unavailable: "Unavailable",
-        notChecked: "Not checked",
-        notCheckedDescription: "Embedding readiness has not been checked yet.",
-        checking: "Checking…",
-        test: "Test",
-        testing: "Testing…",
-      },
-      shortcuts: {
-        title: "Explore memory",
-        memories: "Search memories",
-        diary: "Read the dream diary",
-        settings: "Configure memory",
-      },
-    },
-    memories: {
-      searchLabel: "Search memories",
-      searchPlaceholder: "Search this agent's memories",
-      searchButton: "Search",
-      idle: "Search for a person, project, decision, or anything else this agent remembers.",
-      searching: "Searching memories…",
-      results: "{count} results",
-      empty: "No memories matched “{query}”.",
-      error: "Memory search failed: {message}",
-      retry: "Retry",
-      gatewayUpdateRequired: "Update the gateway to search memories from the Control UI.",
-      hybridSearch: "hybrid search",
-      keywordSearch: "keyword search",
-      lineRange: "lines {start}–{end}",
-      score: "score {score}",
-      sourceMemory: "memory",
-      sourceSessions: "sessions",
-      fileLoading: "Loading the full memory file…",
-      fileError: "Could not load this memory file: {message}",
-      fileUnsupported: "This memory file cannot be shown as text.",
-    },
-    engine: {
-      title: "Engine",
-      description:
-        "Exactly one memory plugin owns the memory slot. Selecting an engine enables it and disables the others.",
-      rowTitle: "Memory engine",
-      openClawMemory: "OpenClaw Memory",
-      off: "Off",
-      unavailable: "Unavailable",
-      autoHint: "No engine is pinned in config, so the slot falls back to its default owner.",
-      explicitHint: "This engine is pinned in config under plugins.slots.memory.",
-      offHint: "Memory is switched off in config: plugins.slots.memory is set to none.",
-      catalogUnavailable: "Connect to the gateway to change the memory engine.",
-      changeFailed: "Could not change the memory engine",
-      disabledTitle: "This engine is disabled",
-      disabledHint:
-        "The memory slot points at this plugin, but the plugin itself is disabled, so memory is not running.",
-      enable: "Enable",
-    },
-    addons: {
-      title: "Add-ons",
-      description:
-        "These plugins layer on top of the engine instead of competing for the slot, so any combination can run at once.",
-      activeMemory: {
-        title: "Active memory",
-      },
-      memoryWiki: {
-        title: "Memory wiki",
-      },
-      toggleAriaLabel: "Enable or disable {plugin}",
-      changeFailed: "Could not update {plugin}",
-      stateUnknown: "Unknown",
-      manage: "Enable or disable add-ons",
-      manageLink: "Open Plugins",
-    },
-    import: {
-      title: "Import",
-      description: "Bring existing memory from other assistants into an agent workspace.",
-      link: "Open Memory Import",
-    },
-    search: {
-      intro: "Embedding and retrieval defaults shared by every agent that has no memory override.",
-    },
-    dreaming: {
-      intro:
-        "Dreaming runs as one managed automation across every agent workspace, so these settings are global. They are owned by the {plugin} plugin.",
-      schedule: {
-        title: "Schedule",
-        description: "When the full sweep runs and which model narrates it.",
-      },
-      frequency: {
-        label: "Dreaming frequency",
-        help: "Cron cadence for the full dreaming sweep (light, REM, then deep). Leave empty for the plugin default.",
-        placeholder: "0 3 * * *",
-      },
-      timezone: {
-        label: "Timezone",
-        help: "IANA timezone used to interpret the cron cadence.",
-        placeholder: "Europe/Vienna",
-        default: "Gateway local timezone",
-      },
-      model: {
-        label: "Dreaming model",
-        help: "Provider/model override for dream diary narration. Requires subagent model overrides to be allowed.",
-        placeholder: "anthropic/claude-sonnet-4-6",
-        default: "Agent model",
-      },
-      verboseLogging: {
-        label: "Verbose logging",
-        help: "Log each dreaming phase in detail. Useful when tuning thresholds.",
-      },
-      storage: {
-        title: "Storage",
-        description: "Where promoted memories and dreaming reports are written.",
-        modeLabel: "Storage mode",
-        modeHelp: "Inline writes into the memory file; separate keeps a dedicated report file.",
-        modes: {
-          inline: "Inline",
-          separate: "Separate",
-          both: "Both",
-        },
-        separateReportsLabel: "Separate reports",
-        separateReportsHelp: "Keep dreaming reports out of the main memory file.",
-      },
-      phases: {
-        light: {
-          title: "Light phase",
-          description: "Cheap recent-activity pass that stages replay candidates.",
-        },
-        deep: {
-          title: "Deep phase",
-          description: "Scored promotion pass that graduates short-term entries into memory.",
-        },
-        rem: {
-          title: "REM phase",
-          description: "Pattern pass that looks for recurring themes across the lookback window.",
-        },
-      },
-      phaseFields: {
-        enabled: "Enabled",
-        enabledHelp: "Run this phase during the sweep.",
-        lookbackDays: "Lookback days",
-        lookbackDaysHelp: "How far back this phase reads. Leave empty for the plugin default.",
-        limit: "Limit",
-        limitHelp: "Maximum entries this phase processes per run.",
-        dedupeSimilarity: "Dedupe similarity",
-        dedupeSimilarityHelp: "Similarity above which two candidates are treated as duplicates.",
-        minScore: "Minimum score",
-        minScoreHelp: "Promotion score an entry must reach.",
-        minRecallCount: "Minimum recalls",
-        minRecallCountHelp: "How often an entry must be recalled before it can be promoted.",
-        minUniqueQueries: "Minimum unique queries",
-        minUniqueQueriesHelp: "How many distinct queries must have surfaced the entry.",
-        recencyHalfLifeDays: "Recency half-life (days)",
-        recencyHalfLifeDaysHelp: "How quickly older recall signals lose weight.",
-        maxAgeDays: "Maximum age (days)",
-        maxAgeDaysHelp: "Ignore short-term entries older than this.",
-        maxPromotedSnippetTokens: "Max promoted snippet tokens",
-        maxPromotedSnippetTokensHelp:
-          "Token budget for each promoted snippet. Provenance stays attached.",
-        minPatternStrength: "Minimum pattern strength",
-        minPatternStrengthHelp: "Strength a recurring pattern must reach to be reported.",
-      },
-      agentScope: {
-        rowTitle: "Agent",
-      },
-      unsupported: {
-        title: "Dreaming settings",
-        rowTitle: "Not available for this engine",
-        description:
-          "The {plugin} plugin owns the memory slot and its config schema has no dreaming section, so these settings cannot be stored. Switch the engine above to edit them.",
-      },
-    },
-  },
+  memoryPage: {},
   sessionsPage: {
     hubTablistLabel: "Session sections",
   },
@@ -3148,69 +2985,7 @@ export const en: TranslationMap & {
     gatewayVersionHint:
       "Reported by the active Gateway connection; separate from this Control UI build.",
   },
-  appsPage: {
-    heroTitle: "Take OpenClaw everywhere",
-    heroTagline:
-      "Companion apps for your phone, watch, desktop, and browser — plus plugins to extend what your agent can do.",
-    sectionMobile: "On your phone",
-    havePhone: "Already have the app?",
-    pairDevice: "Pair your device",
-    sectionWatch: "On your wrist",
-    sectionDesktop: "On your desktop",
-    sectionBrowser: "In your browser",
-    sectionCommunity: "Community",
-    badgeBundledIos: "Included with the iOS app",
-    badgeBundledAndroid: "Included with the Android app",
-    ctaAppStore: "App Store",
-    ctaPlayStore: "Google Play",
-    ctaDownload: "Download",
-    ctaOpenMac: "Open in Mac app",
-    ctaDocs: "Docs",
-    ctaSetupGuide: "Setup guide",
-    ctaChromeWebStore: "Chrome Web Store",
-    ctaOpenPlugins: "Open Plugins",
-    ctaBrowseClawHub: "Browse ClawHub",
-    linkDiscord: "Discord community",
-    linkDocs: "Docs",
-    cards: {
-      ios: {
-        title: "iPhone",
-        desc: "Chat, talk, approve actions, and share into OpenClaw from iOS.",
-      },
-      android: {
-        title: "Android",
-        desc: "Your Android phone as a full OpenClaw device — chat, camera, and Canvas.",
-      },
-      appleWatch: {
-        title: "Apple Watch",
-        desc: "Glanceable chats and quick replies from your wrist.",
-      },
-      wearOs: {
-        title: "Wear OS",
-        desc: "The Android companion extends OpenClaw to your watch.",
-      },
-      macos: {
-        title: "macOS",
-        desc: "Menu bar companion for your Gateway — notifications, approvals, quick chat.",
-      },
-      windows: {
-        title: "Windows",
-        desc: "The Windows companion connects your PC as an OpenClaw device.",
-      },
-      linux: {
-        title: "Linux",
-        desc: "Native desktop app — .deb and AppImage builds.",
-      },
-      chrome: {
-        title: "Chrome extension",
-        desc: "Let OpenClaw drive your existing Chrome — tabs, pages, and forms.",
-      },
-      plugins: {
-        title: "Plugins & ClawHub",
-        desc: "Extend OpenClaw with channels, tools, and skills from the community.",
-      },
-    },
-  },
+  appsPage: {},
   presence: {
     sharedOwner: {
       name: "Shared owner",
@@ -3266,6 +3041,13 @@ export const en: TranslationMap & {
     automationGroup: "{count} automation sessions",
     automation: "Automation",
     inspectRun: "Inspect run",
+    recap: "Session recap",
+    recapMissing: "No recap yet",
+    recapUpdating: "Updating recap…",
+    recapStale: "New activity since this recap",
+    recapUnavailable: "Recap unavailable",
+    recapRetry: "Retry recap",
+    recapUpdated: "Recap updated {time}",
     backToSessions: "Back to sessions",
     channelLabel: "Channel: {value}",
     agentLabel: "Agent: {value}",
@@ -3773,6 +3555,8 @@ export const en: TranslationMap & {
   palette: {
     placeholder: "Search chats and commands…",
     noResults: "No results",
+    searchingSessions: "Searching sessions…",
+    searchingCommands: "Searching commands…",
     searchFailed: "Chat search failed — check the gateway logs and retry",
     modelSearchFailed: "Model search unavailable. Change your search to retry.",
     searchPartial: "Transcript search unavailable — showing chat titles and metadata",
@@ -4384,6 +4168,7 @@ export const en: TranslationMap & {
       runningSetup: "Running setup…",
       provisioningEnvironment: "Provisioning environment…",
       preparingContext: "Preparing this turn…",
+      memoryFlushing: "Saving conversation memory…",
       startingModel: "Waiting for a response…",
     },
     archivedSessionDisabled: "This session is archived. Unarchive it to continue the conversation.",
@@ -4546,6 +4331,7 @@ export const en: TranslationMap & {
       dismiss: "Dismiss {author}'s suggestion",
       typing: "{name} is typing…",
       typingMany: "{names} are typing…",
+      typingDraftState: "Typing · not sent",
       state: {
         pending: "Pending",
         accepted: "Accepted",
@@ -4664,6 +4450,8 @@ export const en: TranslationMap & {
       showMore: "Show {count} more",
       rateLimited:
         "GitHub API rate limit reached. Pull request status may be out of date until the limit resets.",
+      unavailable:
+        "GitHub status could not be refreshed. Showing the last known state; check GitHub for the latest.",
     },
     usageRemaining: "Usage Remaining",
     view: {
@@ -4803,6 +4591,9 @@ export const en: TranslationMap & {
       cliHarnessContext: {
         label: "System · injected context",
       },
+      claudeCliTaskNotification: {
+        label: "System · background task",
+      },
       showContent: "Show content",
     },
     progressLabels: {
@@ -4917,6 +4708,11 @@ export const en: TranslationMap & {
     },
     queue: {
       connectionPending: "Finishing connection recovery. Try sending again when it is ready.",
+      editSourceChanged:
+        "This queued message changed while you were editing. Your edit is still here. Copy it, cancel the edit, and review the queue before trying again.",
+      editStorageFailed:
+        "Your edit could not be saved in this browser. Keep this tab open and copy your edit before freeing browser storage, then try again.",
+      full: "The message queue is full. Wait for a queued message to send or remove one, then try again.",
       initialTurnPending:
         "The initial message is unresolved. Reconnect if needed, then review it before sending another message.",
       notSent: "Not sent",
@@ -5221,6 +5017,12 @@ export const en: TranslationMap & {
       expand: "Focus",
       expandPanel: "Expand {panel}",
       restore: "Restore split",
+      useViewAsDefault: "Use current view as default",
+      savingDefault: "Saving default…",
+      defaultSaved: "Dashboard default saved for future opens.",
+      defaultSaveFailed:
+        "Could not save the dashboard default. Check the connection and try again.",
+      defaultSaveError: "Could not save the dashboard default: {error}",
       swap: "Swap {main} and {side}",
       layout: "Layout",
       dockLeft: "Move side panel left",
@@ -5314,7 +5116,9 @@ export const en: TranslationMap & {
       browserAnnotationRemoved: "Browser annotation removed.",
       browserAnnotationUndoUnavailable:
         "Undo is unavailable because the browser annotation limit has been reached.",
+      preparingAttachments: "Preparing attachments…",
       removeAttachment: "Remove attachment",
+      removeNamedAttachment: "Remove {name}",
       removeBrowserAnnotation: "Remove browser annotation: {name}",
       addAttachment: "Add attachment",
       attachPhoto: "Photo",
@@ -5369,7 +5173,7 @@ export const en: TranslationMap & {
         open: "Open context usage details",
         summary: "Session context usage: {used} of {limit} ({pct}%)",
         contextWindow: "Context window",
-        promptBudget: "Prompt budget (last run)",
+        promptBudget: "Prompt budget",
         latestRunTokens: "Latest run tokens",
         estimatedCost: "Est. cost",
         planUsage: "Plan usage",
@@ -5588,46 +5392,7 @@ export const en: TranslationMap & {
       workedFor: "Worked for {duration}",
       worked: "Worked",
     },
-    backgroundTasks: {
-      label: "Background tasks",
-      title: "Background tasks",
-      show: "Show background tasks",
-      collapse: "Collapse background tasks",
-      refresh: "Refresh background tasks",
-      loading: "Loading background tasks…",
-      running: "Running ({count})",
-      finished: "Finished ({count})",
-      statusRunningOne: "1 running task",
-      statusRunningMany: "{count} running tasks",
-      statusPreviewMore: "+{count} more",
-      stopTask: "Stop {title}",
-      now: "Now",
-      toolCallsOne: "1 tool call",
-      toolCallsMany: "{count} tool calls",
-      toolUseOne: "1 tool use",
-      toolUseMany: "{count} tool uses",
-      detailLoading: "Loading task details…",
-      detailFailed: "Could not load task details.",
-      detailRetry: "Try again",
-      transcriptLoading: "Loading task transcript…",
-      transcriptEmpty: "No transcript messages yet.",
-      transcriptFailed: "Could not load task transcript.",
-      taskDetailTitle: "Task details",
-      taskUnavailable: "This task is no longer available.",
-      prompt: "Prompt",
-      output: "Output",
-      promptUnavailable: "Prompt unavailable.",
-      outputPending: "No output yet.",
-      subagentActivity: {
-        label: "Subagent activity",
-        running: "Subagent",
-        finished: "Subagent finished",
-        failed: "Subagent failed",
-        cancelled: "Subagent cancelled",
-        openDetails: "Open subagent details for {title}",
-        moreWorking: "+{count} more working",
-      },
-    },
+    backgroundTasks: {},
     sessionDiff: {
       title: "Changes",
       show: "Show session changes",
@@ -5798,26 +5563,7 @@ export const en: TranslationMap & {
       active: "Active",
       paused: "Paused",
     },
-    list: {
-      viewLabel: "Automation views",
-      searchPlaceholder: "Search automations",
-      newTask: "New automation",
-      filters: "Filters",
-      shownOf: "{shown} of {total}",
-      emptyTitle: "No automations yet",
-      emptyHint: "Describe what OpenClaw should do and when — it runs on schedule.",
-      noMatching: "No automations match the current filters.",
-      loadMore: "Load more",
-      loading: "Loading...",
-      schedulerOff: "Scheduler disabled",
-      refresh: "Refresh",
-      refreshing: "Refreshing...",
-      paused: "Paused",
-      autoDisabledRunFailures: "Auto-disabled · {count} run failures",
-      autoDisabledScheduleErrors: "Auto-disabled · {count} schedule errors",
-      tasksTab: "Automations",
-      activityTab: "Run history",
-    },
+    list: {},
     suggestions: {
       title: "Starter automations",
       schedules: {

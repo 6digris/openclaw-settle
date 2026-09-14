@@ -49,6 +49,7 @@ function timingFile(fileSeconds: Record<string, number>, perFileOverheadSeconds 
     source: "fixture measurements",
     uiE2e: { fileSeconds, perFileOverheadSeconds },
     compactGroupSeconds: { blacksmith: {}, github: {} },
+    runtimePlacementTimings: { blacksmith: [], github: [] },
     repoE2eFileSeconds: {},
   });
 }
@@ -551,23 +552,9 @@ describe("Control UI E2E resource ownership", () => {
           workers: 1,
           fileParallelism: false,
         },
-        {
-          file: "ui/src/e2e/model-api-keys.real-gateway.e2e.test.ts",
-          project: "ui-e2e-serial-standalone",
-          phase: 1,
-          workers: 1,
-          fileParallelism: false,
-        },
-        {
-          file: "ui/src/e2e/quota-reset-status.real-gateway.e2e.test.ts",
-          project: "ui-e2e-serial-standalone",
-          phase: 1,
-          workers: 1,
-          fileParallelism: false,
-        },
       ]);
       const parallel = result.files.filter((entry) => entry.phase === 2);
-      expect(parallel).toHaveLength(24);
+      expect(parallel).toHaveLength(26);
       expect(parallel.every((entry) => entry.fileParallelism)).toBe(true);
       expect(parallel.every((entry) => entry.workers === result.rootWorkers)).toBe(true);
       for (const entry of parallel) {

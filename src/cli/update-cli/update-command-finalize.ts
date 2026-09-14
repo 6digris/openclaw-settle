@@ -12,6 +12,7 @@ import {
   UPDATE_EFFECTIVE_CHANNEL_ENV,
 } from "../../infra/update-channels.js";
 import { resolveUpdateInstallKind } from "../../infra/update-check.js";
+import { UPDATE_RUN_ID_ENV } from "../../infra/update-control-plane-sentinel.js";
 import { normalizeUpdatePostInstallDoctorWarnings } from "../../infra/update-doctor-result.js";
 import { POST_CORE_UPDATE_SOURCE_CONFIG_PATH_ENV } from "../../infra/update-post-core-context.js";
 import {
@@ -61,7 +62,7 @@ import { UpdateFinalizationLifecycle } from "./update-finalization-lifecycle.js"
 
 export async function updateFinalizeCommand(
   opts: UpdateFinalizeOptions,
-  recoveryRunIds: readonly string[] = [],
+  recoveryRunIds?: readonly string[],
 ): Promise<void> {
   const invocationCwd = tryResolveInvocationCwd();
   suppressDeprecations();
@@ -81,7 +82,7 @@ export async function updateFinalizeCommand(
   await withCommandProcessScope(async (stopChildren) => {
     const lifecycle = new UpdateFinalizationLifecycle(Boolean(opts.json), timeoutMs, stopChildren);
     try {
-      const root = await withUpdateInProgressEnv(invocationCwd, () =>
+      const { root, installKind, runId } = await withUpdateInProgressEnv(invocationCwd, () =>
         lifecycle.run("preflight", async () => {
           // Refused invocations cannot create a ledger or write failure-triage artifacts.
           // A missing canonical path can be an interrupted publication, not a
@@ -93,26 +94,49 @@ export async function updateFinalizeCommand(
             recoverOrphanedSidecars: false,
           });
           await retainCliProcessJobUntilExit();
-          lifecycle.attachLedger();
-          return await resolveUpdateRoot();
+          // Public repair supplies a recovery selection, even when it is empty.
+          const admittedRunId = lifecycle.attachLedger(recoveryRunIds !== undefined);
+          const resolvedRoot = await resolveUpdateRoot();
+          const resolvedInstallKind = await resolveUpdateInstallKind(resolvedRoot, {
+            timeoutMs: lifecycle.budget("preflight"),
+          });
+          lifecycle.recordInstallKind(resolvedInstallKind);
+          return { root: resolvedRoot, installKind: resolvedInstallKind, runId: admittedRunId };
         }),
       );
       lifecycle.root = root;
-      const target = { root, env: resolveServiceRefreshEnv(process.env, invocationCwd) };
-      await withUpdateFailureTriage({ ...opts, invocationCwd }, target, () =>
-        withUpdateInProgressEnv(invocationCwd, async () => {
-          try {
-            const prepared = await lifecycle.run("targetConfigValidation", () =>
-              prepareUpdateFinalization(opts, root, requestedChannel),
-            );
-            await updateFinalizeCommandInternal(opts, prepared, lifecycle, recoveryRunIds);
-          } catch (error) {
-            if (error instanceof UpdateCommandFailure) {
-              lifecycle.complete(error.exitCode);
+      const target = {
+        root,
+        env: {
+          ...resolveServiceRefreshEnv(process.env, invocationCwd),
+          [UPDATE_RUN_ID_ENV]: runId,
+        },
+      };
+      await withUpdateFailureTriage(
+        { ...opts, invocationCwd, run: { runId, env: target.env } },
+        target,
+        () =>
+          withUpdateInProgressEnv(invocationCwd, async () => {
+            try {
+              const prepared = await lifecycle.run("targetConfigValidation", () =>
+                prepareUpdateFinalization(opts, root, installKind, requestedChannel),
+              );
+              await updateFinalizeCommandInternal(
+                opts,
+                prepared,
+                lifecycle,
+                recoveryRunIds ?? [],
+                runId,
+              );
+            } catch (error) {
+              if (error instanceof UpdateCommandFailure) {
+                lifecycle.complete(error.exitCode);
+              } else {
+                lifecycle.fail();
+              }
+              throw error;
             }
-            throw error;
-          }
-        }),
+          }),
       );
     } catch (error) {
       if (!lifecycle.completed) {
@@ -128,6 +152,7 @@ export async function updateFinalizeCommand(
 async function prepareUpdateFinalization(
   opts: UpdateFinalizeOptions,
   root: string,
+  installKind: "git" | "package" | "unknown",
   requestedChannel: UpdateChannel | null,
 ) {
   await assertOpenClawStateWriteAllowedAtPath({
@@ -147,17 +172,14 @@ async function prepareUpdateFinalization(
             : configSnapshot.sourceConfig,
         }
       : undefined);
-  if (requestedChannel === "extended-stable") {
-    const installKind = await resolveUpdateInstallKind(root);
-    if (installKind === "git") {
-      await reportPreMutationUpdateResult({
-        root,
-        installKind,
-        reason: "unsupported_git_channel",
-        opts,
-        controlPlaneUpdateSentinelMeta: null,
-      });
-    }
+  if (requestedChannel === "extended-stable" && installKind === "git") {
+    await reportPreMutationUpdateResult({
+      root,
+      installKind,
+      reason: "unsupported_git_channel",
+      opts,
+      controlPlaneUpdateSentinelMeta: null,
+    });
   }
   const storedChannel = configSnapshot.valid
     ? normalizeUpdateChannel(configSnapshot.config.update?.channel)
@@ -178,6 +200,7 @@ async function prepareUpdateFinalization(
   }
   return {
     root,
+    installKind,
     configSnapshot,
     preFinalizeConfig,
     requestedChannel,
@@ -192,6 +215,7 @@ async function updateFinalizeCommandInternal(
   prepared: Awaited<ReturnType<typeof prepareUpdateFinalization>>,
   lifecycle: UpdateFinalizationLifecycle,
   recoveryRunIds: readonly string[],
+  invokingRunId: string,
 ): Promise<void> {
   const { root, preFinalizeConfig, requestedChannel, storedChannel, effectiveChannel, channel } =
     prepared;
@@ -204,7 +228,7 @@ async function updateFinalizeCommandInternal(
     lifecycle.recordWarnings(doctorWarnings);
   };
 
-  if ((await resolveUpdateInstallKind(root)) === "git") {
+  if (prepared.installKind === "git") {
     await withPluginLifecycleLease({}, async (lease) => {
       await completeSourceUpdateRuntime({ root, timeoutMs: lifecycle.budget("plugins"), lease });
     });
@@ -215,6 +239,7 @@ async function updateFinalizeCommandInternal(
       runUpdateFinalizationDoctorInFreshProcess({
         phase: "pre-plugin",
         root,
+        runId: invokingRunId,
         yes: opts.yes === true,
         json: opts.json === true,
         workspaceSuggestions: true,
@@ -260,6 +285,7 @@ async function updateFinalizeCommandInternal(
     async () => {
       const result = await completePostCorePluginUpdate({
         root,
+        runId: invokingRunId,
         pluginUpdate: initialPluginUpdate,
         freshDoctorRequired: initialPluginUpdate.changed,
         yes: opts.yes === true,

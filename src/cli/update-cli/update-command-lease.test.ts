@@ -20,17 +20,17 @@ import {
 } from "../../infra/update-run-ledger.js";
 import type { UpdateRunRecord } from "../../infra/update-run-record.js";
 import { ABANDONED_UPDATE_RUN_MS } from "../../infra/update-run-timeouts.js";
-import {
-  loadInstalledPluginIndexInstallRecords,
-  writePersistedInstalledPluginIndexInstallRecords,
-} from "../../plugins/installed-plugin-index-records.js";
+import { loadInstalledPluginIndexInstallRecords } from "../../plugins/installed-plugin-index-records.js";
+import { seedInstalledPluginIndex } from "../../plugins/test-helpers/installed-plugin-index.js";
 import { runExec } from "../../process/exec.js";
 import { defaultRuntime } from "../../runtime.js";
+import { runRegisteredCli } from "../../test-utils/command-runner.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
 import { VERSION } from "../../version.js";
+import { registerUpdateCli } from "../update-cli.js";
 
 const mocks = vi.hoisted(() => ({
   entrypoint: vi.fn(),
@@ -223,6 +223,30 @@ async function invokeReportedFailure(
   );
   expect(defaultRuntime.exit).not.toHaveBeenCalled();
 }
+
+it("passes standalone repair ownership to both fresh Doctor phases through the public command", async () => {
+  await writeScenario("repair", { verifyRepairOwner: true });
+
+  await runRegisteredCli({
+    register: registerUpdateCli,
+    argv: ["update", "repair", "--yes", "--json", "--timeout", "15"],
+  });
+
+  expect(
+    defaultRuntime.exit,
+    vi.mocked(defaultRuntime.error).mock.calls.flat().join("\n"),
+  ).not.toHaveBeenCalledWith(1);
+  expectSuccess("repair");
+  expect(listUpdateRuns()).toEqual([
+    expect.objectContaining({
+      status: "succeeded",
+      steps: expect.arrayContaining([
+        expect.objectContaining({ step: "finalize:repair-continuation", status: "completed" }),
+      ]),
+    }),
+  ]);
+  expect(process.env.OPENCLAW_UPDATE_RUN_ID).toBeUndefined();
+});
 
 async function events(): Promise<string[]> {
   return (await fs.readFile(state.statePath("events.jsonl"), "utf8"))
@@ -538,7 +562,7 @@ describe("update orchestration lifecycle ownership", () => {
   it.each(["current-process", "repair"] as const)(
     "%s reloads config and records after a competing writer commits",
     async (lane) => {
-      await writePersistedInstalledPluginIndexInstallRecords({ old: { source: "path" } });
+      await seedInstalledPluginIndex({ old: { source: "path" } });
       expect(await loadInstalledPluginIndexInstallRecords()).toHaveProperty("old");
       const writerRecords: Record<string, PluginInstallRecord> = {
         current: { source: "path", sourcePath: state.path("current") },
@@ -624,7 +648,7 @@ describe("update orchestration lifecycle ownership", () => {
     "resume reads the parent migration owner's committed generation (empty=%s)",
     async (empty) => {
       const old = { old: { source: "path" as const } };
-      await writePersistedInstalledPluginIndexInstallRecords(old);
+      await seedInstalledPluginIndex(old);
       expect(await loadInstalledPluginIndexInstallRecords()).toEqual(old);
       const recordsPath = await state.writeJson("forwarded.json", old);
       vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_INSTALL_RECORDS_PATH", recordsPath);
@@ -633,7 +657,7 @@ describe("update orchestration lifecycle ownership", () => {
         ? {}
         : { current: { source: "path" } };
       await state.writeConfig({ plugins: { enabled: false }, gateway: { port: 19003 } });
-      await writePersistedInstalledPluginIndexInstallRecords(current);
+      await seedInstalledPluginIndex(current);
       await writeScenario("resume");
       await invoke("resume");
       expectSuccess("resume", false);

@@ -177,6 +177,7 @@ it("isolates supplied connections and rolls back compound task, flow, delivery, 
 
 it("compares raw triage identity on the supplied connection without normalizing or writing", async () => {
   const tasks = await import("./task-registry.store.kernel.js");
+  const { matchesTaskIdentityInDatabase } = await import("./task-registry.store.identity.js");
   const { OPENCLAW_STATE_SCHEMA_SQL } = await import("../state/openclaw-state-schema.js");
   const { OPENCLAW_STATE_SCHEMA_VERSION } = await import("../state/openclaw-state-db-contract.js");
   const db = new DatabaseSync(":memory:");
@@ -202,7 +203,7 @@ it("compares raw triage identity on the supplied connection without normalizing 
     tasks.upsertTaskWithDeliveryStateInDatabase({ db }, { task });
     db.exec("PRAGMA query_only = ON");
     const before = db.prepare("SELECT total_changes() AS n").get();
-    expect(tasks.matchesTaskIdentityInDatabase(db, task)).toBe(true);
+    expect(matchesTaskIdentityInDatabase(db, task)).toBe(true);
     for (const replacement of [
       { runId: "other" },
       { sourceId: "other" },
@@ -211,9 +212,9 @@ it("compares raw triage identity on the supplied connection without normalizing 
       { startedAt: 101 },
       { childSessionKey: "other" },
     ]) {
-      expect(tasks.matchesTaskIdentityInDatabase(db, { ...task, ...replacement })).toBe(false);
+      expect(matchesTaskIdentityInDatabase(db, { ...task, ...replacement })).toBe(false);
     }
-    expect(tasks.matchesTaskIdentityInDatabase(db, { ...task, taskId: "missing" })).toBeUndefined();
+    expect(matchesTaskIdentityInDatabase(db, { ...task, taskId: "missing" })).toBeUndefined();
     expect(db.prepare("SELECT total_changes() AS n").get()).toEqual(before);
   } finally {
     db.close();
@@ -223,7 +224,7 @@ it("compares raw triage identity on the supplied connection without normalizing 
 it.each(["older", "newer", "missing-columns"])(
   "does not repair %s schema to compare triage identity",
   async (shape) => {
-    const tasks = await import("./task-registry.store.kernel.js");
+    const { matchesTaskIdentityInDatabase } = await import("./task-registry.store.identity.js");
     const { OPENCLAW_STATE_SCHEMA_SQL } = await import("../state/openclaw-state-schema.js");
     const { OPENCLAW_STATE_SCHEMA_VERSION } =
       await import("../state/openclaw-state-db-contract.js");
@@ -251,7 +252,7 @@ it.each(["older", "newer", "missing-columns"])(
       db.exec(`PRAGMA user_version = ${version}`);
       db.exec("PRAGMA query_only = ON");
       const before = db.prepare("SELECT name, sql FROM sqlite_master ORDER BY name").all();
-      expect(tasks.matchesTaskIdentityInDatabase(db, task)).toBeUndefined();
+      expect(matchesTaskIdentityInDatabase(db, task)).toBeUndefined();
       expect(db.prepare("SELECT name, sql FROM sqlite_master ORDER BY name").all()).toEqual(before);
       expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: version });
     } finally {

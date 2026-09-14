@@ -415,26 +415,33 @@ export function normalizeSupportDiagnosticErrorCode(value: string | undefined): 
   return value && PUBLIC_ERROR_CODES.has(value) ? value : undefined;
 }
 
+/** Custom SemVer labels can contain private project or host names. */
+export function redactPublicSupportVersion(version: string): string {
+  return version === "unknown" ||
+    version === "unspecified" ||
+    (validVersion(version) &&
+      /^\d+\.\d+\.\d+(?:-(?:0|(?:alpha|beta|rc|dev)(?:\.\d{1,8})?))?$/u.test(version))
+    ? version
+    : "[redacted-version]";
+}
+
 /** Public diagnostics expose recognized causes, never arbitrary prose or executable arguments. */
 export function redactPublicSupportDiagnosticLine(
   value: string,
   context: SupportRedactionContext,
 ): string {
   const line = redactSupportDiagnosticLine(value, context);
+  const maintenance =
+    /^(?:Error: )?Doctor could not enter maintenance\.(?: Error: The update parent owns Gateway activation\.)?/u.exec(
+      line,
+    );
+  if (maintenance) {
+    return maintenance[0];
+  }
   const runtime =
     /^Target package: openclaw@(\S+); Minimum Node engine: (\S+); Running Node: (\S+)$/u.exec(line);
   if (runtime) {
-    // Custom SemVer labels can contain private project or host names.
-    const [target, minimum, running] = runtime
-      .slice(1)
-      .map((version) =>
-        version === "unknown" ||
-        version === "unspecified" ||
-        (validVersion(version) &&
-          /^\d+\.\d+\.\d+(?:-(?:0|(?:alpha|beta|rc|dev)(?:\.\d{1,8})?))?$/u.test(version))
-          ? version
-          : "[redacted-version]",
-      );
+    const [target, minimum, running] = runtime.slice(1).map(redactPublicSupportVersion);
     return truncateUtf16Safe(
       `Target package: openclaw@${target}; Minimum Node engine: ${minimum}; Running Node: ${running}`,
       200,

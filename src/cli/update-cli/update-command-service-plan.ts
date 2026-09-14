@@ -22,6 +22,7 @@ import {
   createUpdateFailureFact,
   type UpdateFailureFact,
 } from "../../infra/update-failure-facts.js";
+import { UPDATE_RUNNER_TIMEOUT_MS } from "../../infra/update-run-timeouts.js";
 import { CLI_NAME } from "../cli-name.js";
 import { resolveNodeRunner } from "./shared.js";
 
@@ -232,12 +233,15 @@ async function resolvePackageRuntimeForPreflight(params: {
   const nodeRunner = normalizeOptionalString(params.nodeRunner);
   if (!nodeRunner) {
     const version = process.versions.node ?? null;
-    return { version, failure: nodeRuntimeFailure(version, detectCurrentSqliteCapabilities()) };
+    return {
+      version,
+      failure: nodeRuntimeFailure(version, await detectCurrentSqliteCapabilities()),
+    };
   }
   const runtime = await resolveNodeRuntimeInfo(
     nodeRunner,
     process.env,
-    Math.min(params.timeoutMs ?? 10_000, 10_000),
+    params.timeoutMs ?? UPDATE_RUNNER_TIMEOUT_MS,
   );
   return {
     version: runtime.status === "probe-failed" ? null : runtime.version,

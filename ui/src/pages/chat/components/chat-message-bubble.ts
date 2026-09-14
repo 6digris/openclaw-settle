@@ -15,6 +15,7 @@ import type {
   NormalizedMessage,
   ToolCard,
 } from "../../../lib/chat/chat-types.ts";
+import { resolveMessageDisplayMarkdown } from "../../../lib/chat/message-display.ts";
 import { extractThinkingCached } from "../../../lib/chat/message-extract.ts";
 import {
   isStandaloneToolMessageForDisplay,
@@ -45,6 +46,8 @@ import type {
   ChatMessageRenderPreparation,
   MessageActionDetails,
 } from "./chat-message-markdown.ts";
+import { prepareChatMessageRender } from "./chat-message-markdown.ts";
+import { prepareMarkdownMedia } from "./chat-message-media-markdown.ts";
 import {
   projectMessageMedia,
   schedulePairingQrExpiryRefresh,
@@ -92,11 +95,15 @@ function renderInlineToolCards(
   opts: Omit<Parameters<typeof renderToolCard>[1], "expanded" | "onToggleExpanded"> & {
     isToolExpanded?: (toolCardId: string) => boolean;
     onToggleToolExpanded?: (toolCardId: string, expanded?: boolean) => void;
+    toolCardOverrides?: ReadonlyMap<ToolCard, unknown>;
   },
 ) {
   return html`
     <div class="chat-tools-inline">
       ${toolCards.map((card, index) => {
+        if (opts.toolCardOverrides?.has(card)) {
+          return opts.toolCardOverrides.get(card);
+        }
         const disclosureId = `${opts.messageKey}:toolcard:${index}`;
         const expanded = opts.isToolExpanded?.(disclosureId) ?? false;
         return renderToolCard(card, {
@@ -212,7 +219,7 @@ function renderPairingQrExpiryNotices(count: number) {
 }
 
 export function renderGroupedMessage(
-  { message, normalizedMessage, displayMarkdown }: ChatMessageRenderPreparation,
+  preparation: ChatMessageRenderPreparation,
   messageKey: string,
   opts: {
     isStreaming: boolean;
@@ -235,6 +242,7 @@ export function renderGroupedMessage(
     messageActions?: MessageActionDetails | null;
     isToolExpanded?: (toolCardId: string) => boolean;
     onToggleToolExpanded?: (toolCardId: string, expanded?: boolean) => void;
+    toolCardOverrides?: ReadonlyMap<ToolCard, unknown>;
     onRequestUpdate?: () => void;
     canvasPluginSurfaceUrl?: string | null;
     resourceBasePath?: string;
@@ -262,6 +270,11 @@ export function renderGroupedMessage(
   },
   onOpenSidebar?: (content: SidebarContent) => void,
 ) {
+  const disclosure = opts.assistantMessageDisclosure;
+  const { message, normalizedMessage, displayMarkdown } =
+    disclosure?.expanded && disclosure.message
+      ? prepareChatMessageRender(disclosure.message)
+      : preparation;
   const m = message as Record<string, unknown>;
   const role = typeof m.role === "string" ? m.role : "unknown";
   const sourceRole = normalizeRoleForGrouping(role);
@@ -281,6 +294,9 @@ export function renderGroupedMessage(
     attachments: visibleAttachments,
     expiredPairingQrCount,
     nextPairingQrExpiresAt,
+    orderedContent,
+    supplementalImages,
+    supplementalAttachments,
   } = projectMessageMedia(message, normalizedMessage.content);
   schedulePairingQrExpiryRefresh(messageKey, nextPairingQrExpiresAt, opts.onRequestUpdate);
   const hasImages = images.length > 0;
@@ -376,6 +392,12 @@ export function renderGroupedMessage(
     !hasImages &&
     singleToolCard?.outputText?.trim() === markdown?.trim();
   const bodyMarkdown = standaloneToolPayload ? null : markdown;
+  const renderInOrder =
+    normalizedRole === "assistant" &&
+    Boolean(markdown) &&
+    !asyncQuestions &&
+    (!disclosure?.expanded || Boolean(disclosure.message)) &&
+    orderedContent.some((item) => item.type !== "text");
   // One expanded card already closes with its own outcome line; every other
   // shape renders inline rows only, so the message body records the failure.
   const expandsSingleToolCard =
@@ -413,7 +435,10 @@ export function renderGroupedMessage(
     toolMessageLabel,
   );
   const toolMessageIcon = singleToolDisplay
-    ? renderToolIcon(singleToolDisplay.icon, opts.pluginToolIcons?.get(singleToolDisplay.name))
+    ? renderToolIcon(singleToolDisplay.icon, {
+        toolName: singleToolDisplay.name,
+        pluginToolIcons: opts.pluginToolIcons,
+      })
     : icons.zap;
   const assistantViewContent =
     sourceRole === "assistant" && assistantViewBlocks.length > 0
@@ -461,6 +486,10 @@ export function renderGroupedMessage(
     assistantViewBlocks.length === 0 &&
     !reasoningMarkdown;
 
+  if (onlyToolCards && toolCards.every((card) => opts.toolCardOverrides?.get(card) === nothing)) {
+    return nothing;
+  }
+
   const toolRenderOptions = { ...opts, messageKey, onOpenSidebar };
   const renderText = () =>
     asyncQuestions
@@ -482,6 +511,36 @@ export function renderGroupedMessage(
               duplicateSuffix,
             )
           : nothing;
+  const renderOrderedContent = () => {
+    const prepared = prepareMarkdownMedia(orderedContent, (item) => {
+      if (item.type === "image") {
+        return renderMessageImages([item.image], imageRenderOptions);
+      }
+      return renderAssistantAttachments(
+        [item],
+        imageRenderOptions,
+        onOpenSidebar,
+        opts.onAssistantAttachmentLoaded,
+      );
+    });
+    const text = resolveMessageDisplayMarkdown(message, {
+      ...normalizedMessage,
+      content: [{ type: "text", text: prepared.markdown }],
+    });
+    return renderMessageMarkdown(
+      text,
+      messageKey,
+      {
+        ...opts,
+        role: normalizedRole,
+        assistantMessageDisclosure: disclosure ? { ...disclosure, markdown: text } : undefined,
+      },
+      markdownRenderOptions,
+      markdown ? duplicateSuffix : undefined,
+      { ...prepared.media, text: bodyMarkdown ?? "" },
+    );
+  };
+  const renderMessageContent = () => (renderInOrder ? renderOrderedContent() : renderText());
   // Collapsed tool results must not load attachments or render hidden markdown.
   // Retained panes use opacity, so hidden transcripts must unmount video previews.
   const renderBody = () => html`
@@ -497,7 +556,7 @@ export function renderGroupedMessage(
     }
     ${renderPairingQrExpiryNotices(expiredPairingQrCount)}
     ${renderMessageImages(
-      images,
+      renderInOrder ? supplementalImages : images,
       imageRenderOptions,
       videoPreviews.map(
         (item) => html`
@@ -509,7 +568,7 @@ export function renderGroupedMessage(
     )}
     ${renderOmittedMedia(omittedMedia)}
     ${renderAssistantAttachments(
-      cardAttachments,
+      renderInOrder ? supplementalAttachments : cardAttachments,
       imageRenderOptions,
       onOpenSidebar,
       opts.onAssistantAttachmentLoaded,
@@ -530,8 +589,10 @@ export function renderGroupedMessage(
     ${isStandaloneToolMessage ? nothing : assistantViewContent}
     ${
       opts.avatar
-        ? html`<div class="chat-message-avatar-anchor">${renderText()}${opts.avatar}</div>`
-        : renderText()
+        ? html`<div class="chat-message-avatar-anchor">
+            ${renderMessageContent()}${opts.avatar}
+          </div>`
+        : renderMessageContent()
     }
     ${
       hasToolCards

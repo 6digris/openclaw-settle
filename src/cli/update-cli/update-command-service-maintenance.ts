@@ -64,6 +64,27 @@ function serviceInspectionBlockMessage(state: GatewayServiceState): string {
   if (state.inspectionReason) {
     return formatServiceInspectionReason(state.inspectionReason);
   }
+  if (process.platform === "freebsd") {
+    return (
+      "Gateway service inspection is not supported by this CLI on FreeBSD. " +
+      "Refusing maintenance because service-owned state directories cannot be verified. " +
+      "Have the installation owner manage Gateway shutdown and state maintenance. " +
+      "For updates, use the original package manager or installer; " +
+      "keep pkg-owned files under pkg management."
+    );
+  }
+  const runtime = state.runtime;
+  const tasksCurrent = runtime?.systemd?.tasksCurrent;
+  if (
+    process.platform === "linux" &&
+    runtime?.status === "unknown" &&
+    (runtime.state === "inactive" || runtime.state === "failed") &&
+    !runtime.pid &&
+    tasksCurrent !== undefined &&
+    tasksCurrent > 0
+  ) {
+    return `The Gateway main process has stopped, but processes remain in its systemd service cgroup (${tasksCurrent} tasks). Inspect the unit with systemctl --user status and its journal, then have the process owner stop the remaining children before retrying Doctor or the update.`;
+  }
   const timeoutMs = state.runtime?.inspectionFailure?.timeoutMs;
   return timeoutMs === undefined
     ? GATEWAY_SERVICE_INSPECTION_BLOCK_MESSAGE

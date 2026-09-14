@@ -8,6 +8,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { resolveVitestCliEntry } from "../../scripts/lib/vitest-build-prerequisites.mts";
 import { resolveVitestNodeArgs } from "../../scripts/lib/vitest-process-env.mts";
 import { withEnv } from "../../src/test-utils/env.js";
+import { gatewayDatabaseWorkerTestFiles } from "../vitest/vitest.gateway-server-paths.mjs";
 import { packageContractTestFiles } from "../vitest/vitest.package-contract-paths.mjs";
 
 const {
@@ -215,9 +216,9 @@ describe("test-projects args", () => {
       config: "test/vitest/vitest.unit-fast.config.ts",
     },
     {
-      title: "routes tasks targets to the tasks config",
+      title: "routes the worker-backed task registry to the infra config",
       target: "src/tasks/task-registry.test.ts",
-      config: "test/vitest/vitest.tasks.config.ts",
+      config: "test/vitest/vitest.infra.config.ts",
     },
     {
       title: "routes logging targets to the logging config",
@@ -386,7 +387,7 @@ describe("test-projects args", () => {
     },
     {
       title: "routes unclassified plugin targets to the catch-all owner",
-      target: "extensions/workboard/index.test.ts",
+      target: "extensions/example/index.test.ts",
       config: "test/vitest/vitest.extensions.config.ts",
     },
     {
@@ -678,9 +679,8 @@ describe("test-projects args", () => {
       expect(files).toEqual([...files].toSorted((left, right) => left.localeCompare(right)));
     }
 
-    // Mixed E2E runs coalesce package contracts with runtime readers. Other
-    // importer owners and every include-vs-forwarded shape must still match
-    // the standalone selection.
+    // Mixed selections coalesce package contracts and Gateway worker tests
+    // into their aggregate owners. Singleton selection retains each leaf owner.
     for (const plan of plans) {
       expect(plan.watchMode).toBe(false);
       for (const file of plan.includePatterns ?? plan.forwardedArgs) {
@@ -688,7 +688,10 @@ describe("test-projects args", () => {
           plan.config === "test/vitest/vitest.e2e.config.ts" &&
           packageContractTestFiles.includes(file)
             ? "test/vitest/vitest.package-contract.config.ts"
-            : plan.config;
+            : plan.config === "test/vitest/vitest.gateway.config.ts" &&
+                gatewayDatabaseWorkerTestFiles.includes(file)
+              ? "test/vitest/vitest.gateway-database-workers.config.ts"
+              : plan.config;
         expect(buildVitestRunPlans([file])).toEqual([
           {
             config,

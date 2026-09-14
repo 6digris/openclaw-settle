@@ -127,6 +127,7 @@ require_clawsweeper_review() {
 # The caller uses a conditional, so every fallible evidence operation is checked.
 mainline_drift_requires_sync() (
   set -o pipefail
+  export LC_ALL=C
   local mainline_base="$1"
   local prepared_head_sha="$2"
 
@@ -220,7 +221,7 @@ merge_verify() {
     echo "Note: docs/changelog-only follow-ups reuse prior gate results automatically."
 
     mark_pr_operation_side_effects_started
-    git fetch origin "pull/$pr/head" >/dev/null 2>&1 || true
+    fetch_pr_head "$pr" "$pr_head_sha" >/dev/null 2>&1 || true
     if GIT_NO_LAZY_FETCH=1 git cat-file -e "${PREP_HEAD_SHA}^{commit}" 2>/dev/null && GIT_NO_LAZY_FETCH=1 git cat-file -e "${pr_head_sha}^{commit}" 2>/dev/null; then
       echo "HEAD delta (expected...current):"
       git log --oneline --left-right "${PREP_HEAD_SHA}...${pr_head_sha}" | sed 's/^/  /' || true
@@ -315,7 +316,7 @@ merge_verify() {
   fi
 
   refresh_main_snapshot || return 1
-  git fetch origin "pull/$pr/head:pr-$pr" --force || return 1
+  fetch_pr_head "$pr" "$PREP_HEAD_SHA" "refs/heads/pr-$pr" || return 1
   if ! git merge-base --is-ancestor "$PR_MAIN_SHA" "refs/heads/pr-$pr"; then
     echo "PR branch is behind main."
     if mainline_drift_requires_sync \

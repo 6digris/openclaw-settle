@@ -3167,8 +3167,8 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     await send({
       idempotencyKey: "idem-tool-events-on",
       client: {
+        ...createScopedCliClient(undefined, {}, [GATEWAY_CLIENT_CAPS.TOOL_EVENTS]),
         connId: "conn-1",
-        connect: { caps: [GATEWAY_CLIENT_CAPS.TOOL_EVENTS] },
       },
       expectBroadcast: false,
     });
@@ -3206,8 +3206,8 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       sessionKey: "global",
       idempotencyKey: "idem-global-tool-events",
       client: {
+        ...createScopedCliClient(undefined, {}, [GATEWAY_CLIENT_CAPS.TOOL_EVENTS]),
         connId: "conn-global",
-        connect: { caps: [GATEWAY_CLIENT_CAPS.TOOL_EVENTS] },
       },
       expectBroadcast: false,
     });
@@ -3246,8 +3246,8 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       sessionKey: "agent:work:main",
       idempotencyKey: "idem-global-alias-tool-events",
       client: {
+        ...createScopedCliClient(undefined, {}, [GATEWAY_CLIENT_CAPS.TOOL_EVENTS]),
         connId: "conn-work",
-        connect: { caps: [GATEWAY_CLIENT_CAPS.TOOL_EVENTS] },
       },
       expectBroadcast: false,
     });
@@ -3422,14 +3422,15 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     await send({
       idempotencyKey: "idem-tool-events-off",
       client: {
+        ...createScopedCliClient(undefined, {}, []),
         connId: "conn-2",
-        connect: { caps: [] },
       },
       expectBroadcast: false,
     });
 
     const register = context.registerToolEventRecipient;
     expect(register).not.toHaveBeenCalled();
+    expect(mockState.lastDispatchCtx).toBeDefined();
   });
 
   it.each([false, true])(
@@ -5545,27 +5546,33 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     expect(extractFirstTextBlock(chatCall?.[1])).toBe("hello");
   });
 
-  it("chat.inject broadcasts and routes on the canonical session key", async () => {
-    await createTranscriptFixture("openclaw-chat-inject-canonical-key-");
-    mockState.sessionEntry = {
-      canonicalKey: "agent:main:canon",
-    };
-    const { context, respond, inject } = createChatRequestFixture();
+  it.each([false, true])(
+    "chat.inject broadcasts and routes on the canonical session key (explicit sole: %s)",
+    async (explicitOwnership) => {
+      await createTranscriptFixture("openclaw-chat-inject-canonical-key-");
+      if (explicitOwnership) {
+        mockState.config = { agents: { ownership: "explicit", entries: { main: {} } } };
+      }
+      mockState.sessionEntry = {
+        canonicalKey: "agent:main:canon",
+      };
+      const { context, respond, inject } = createChatRequestFixture();
 
-    await inject({
-      sessionKey: "legacy-key",
-      message: "hello",
-    });
+      await inject({
+        sessionKey: "legacy-key",
+        message: "hello",
+      });
 
-    const response = lastRespondCall(respond);
-    expect(response?.[0]).toBe(true);
-    expect(response?.[1]?.ok).toBe(true);
-    expect(lastBroadcastPayload(context)?.sessionKey).toBe("agent:main:canon");
-    const nodeSend = lastNodeSendCall(context);
-    expect(nodeSend?.[0]).toBe("agent:main:canon");
-    expect(nodeSend?.[1]).toBe("chat");
-    expect(nodeSend?.[2].sessionKey).toBe("agent:main:canon");
-  });
+      const response = lastRespondCall(respond);
+      expect(response?.[0]).toBe(true);
+      expect(response?.[1]?.ok).toBe(true);
+      expect(lastBroadcastPayload(context)?.sessionKey).toBe("agent:main:canon");
+      const nodeSend = lastNodeSendCall(context);
+      expect(nodeSend?.[0]).toBe("agent:main:canon");
+      expect(nodeSend?.[1]).toBe("chat");
+      expect(nodeSend?.[2].sessionKey).toBe("agent:main:canon");
+    },
+  );
 
   it("chat.inject advances the session registry marker after transcript append", async () => {
     await createTranscriptFixture("openclaw-chat-inject-registry-marker-");

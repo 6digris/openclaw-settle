@@ -87,7 +87,8 @@ function sameMessageGroup(previous: MessageGroup, next: MessageGroup): boolean {
         candidate !== undefined &&
         entry.key === candidate.key &&
         entry.message === candidate.message &&
-        entry.duplicateCount === candidate.duplicateCount
+        entry.duplicateCount === candidate.duplicateCount &&
+        entry.hasVisibleContent === candidate.hasVisibleContent
       );
     })
   );
@@ -387,7 +388,7 @@ export function getExpandedUserMessages(sessionKey: string): Map<string, boolean
 export type AssistantMessageExpansionState =
   | { status: "loading"; revision: number }
   | { status: "error"; revision: number }
-  | { status: "loaded"; markdown: string; revision: number };
+  | { status: "loaded"; markdown: string; message?: unknown; revision: number };
 
 export function syncToolCardExpansionState(
   sessionKey: string,
