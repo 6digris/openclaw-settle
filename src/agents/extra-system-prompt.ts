@@ -29,6 +29,8 @@ export type PreparedExtraSystemPrompt = {
   injectedChars: number;
   truncated: boolean;
   sourceHash?: string;
+  /** Reduction settings and the actual original reference, independent of caller text identity. */
+  reductionHash?: string;
 };
 
 export type ExtraSystemPromptSource = {
@@ -290,7 +292,16 @@ export async function prepareExtraSystemPrompt(
       : "No retrievable original is available in this run. Answer from the visible context, or explain which missing detail you need; do not assume omitted instructions or enable unavailable tools.";
     const notice = `[Partial supplemental context: excerpts omit content and may omit qualifications; they are not a complete summary. Original ${rawChars} chars; source SHA-256 ${sourceHash}. ${retrieval}]`;
     const text = renderExcerpt(context, maxChars, notice);
-    return { text, rawChars, injectedChars: text.length, truncated: true, sourceHash };
+    return {
+      text,
+      rawChars,
+      injectedChars: text.length,
+      truncated: true,
+      sourceHash,
+      // A permitted reader can still lose its original after a failed write.
+      // Retained runtimes must refresh when the resulting reference changes.
+      reductionHash: sha256Hex(JSON.stringify([maxChars, sourcePath ?? null])),
+    };
   };
   const prepared = prepare();
   if (scope && !scope.closed) {

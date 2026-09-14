@@ -9,6 +9,7 @@ import type { SessionEntry } from "../../config/sessions.js";
 import { persistSessionTranscriptTurn } from "../../config/sessions/session-accessor.js";
 import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
+import { handleContextCommand } from "./commands-context-command.js";
 import { buildContextReply } from "./commands-context-report.js";
 import { buildCommandContext } from "./commands-context.js";
 import type { HandleCommandsParams } from "./commands-types.js";
@@ -150,6 +151,58 @@ async function withTranscript(
 }
 
 describe("buildContextReply", () => {
+  it.each([
+    { name: "absent", extra: undefined, json: false, expectedLine: undefined },
+    {
+      name: "ordinary",
+      extra: { rawChars: 500, injectedChars: 500, truncated: false },
+      json: false,
+      expectedLine: "Extra context: 500 raw chars -> 500 injected chars (unchanged).",
+    },
+    {
+      name: "reduced",
+      extra: { rawChars: 32_000, injectedChars: 20_000, truncated: true },
+      json: false,
+      expectedLine: "Extra context: 32,000 raw chars -> 20,000 injected chars (partial excerpt).",
+    },
+    {
+      name: "JSON output",
+      extra: { rawChars: 32_000, injectedChars: 20_000, truncated: true },
+      json: true,
+      expectedLine: undefined,
+    },
+  ])(
+    "reports $name supplemental context through the command handler",
+    async ({ extra, json, expectedLine }) => {
+      const params = makeParams(json ? "/context json" : "/context list", false);
+      params.command.isAuthorizedSender = true;
+      const entry = params.sessionEntry;
+      if (!entry?.systemPromptReport) {
+        throw new Error("missing run report fixture");
+      }
+      entry.systemPromptReport = {
+        ...entry.systemPromptReport,
+        ...(extra ? { extraSystemPrompt: extra } : {}),
+      };
+      const result = await handleContextCommand(params, true);
+      expect(result?.shouldContinue).toBe(false);
+      const text = result?.reply?.text;
+      if (!text) {
+        throw new Error("missing context command reply");
+      }
+      if (json) {
+        const payload = JSON.parse(text);
+        expect(payload.report.source).toBe("run");
+        expect(payload.report.extraSystemPrompt).toEqual(extra);
+      } else {
+        expect(text).toContain("System prompt (run):");
+        expect(text.split("\n").filter((line) => line.startsWith("Extra context:"))).toEqual(
+          expectedLine ? [expectedLine] : [],
+        );
+      }
+    },
+  );
+
   it("describes compactable transcript counts in help output", async () => {
     const result = await buildContextReply(makeParams("/context", false));
     expect(result.text).toContain(

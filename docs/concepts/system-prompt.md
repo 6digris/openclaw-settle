@@ -157,6 +157,9 @@ or identify a missing detail. No tools or permissions are added for retrieval.
 Retries reuse the prepared excerpt while the source and relevant settings stay
 unchanged. Source identity includes omitted text, and native Codex keeps the
 prepared context in its canonical developer instructions across compaction.
+CLI backends that send system instructions only on the first turn refresh the
+same session when the excerpt allowance or temporary original changes, preserving
+the conversation history.
 `/context list`, `/context detail`, and `/context json` report raw/injected sizes
 and whether extra context was reduced, without storing its contents in the
 diagnostic report.

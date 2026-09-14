@@ -1455,7 +1455,7 @@ async function prepareCliRunContextWithinReadFence(
   // Bootstrap guidance and truncation notices change resumable system context.
   // Hash both so entering or leaving either state refreshes first-only CLI
   // system prompts.
-  const extraSystemPromptHash =
+  const bootstrapBoundExtraSystemPromptHash =
     bootstrapMode === "none" && bootstrapTruncationNotice === undefined
       ? toolBoundExtraSystemPromptHash
       : hashCliSessionText(
@@ -1636,6 +1636,14 @@ async function prepareCliRunContextWithinReadFence(
     params.assertCurrent?.();
     params.abortSignal?.throwIfAborted();
     const extraSystemPrompt = preparedExtraSystemPrompt.text?.trim() ?? "";
+    const extraSystemPromptHash = preparedExtraSystemPrompt.reductionHash
+      ? hashCliSessionText(
+          JSON.stringify([
+            bootstrapBoundExtraSystemPromptHash ?? null,
+            preparedExtraSystemPrompt.reductionHash,
+          ]),
+        )
+      : bootstrapBoundExtraSystemPromptHash;
     const nativeMcpCapabilityProfile = resolveConversationCapabilityProfile({
       config: runConfig,
       sessionKey: policySessionKey,
