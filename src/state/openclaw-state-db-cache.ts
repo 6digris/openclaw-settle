@@ -557,11 +557,7 @@ export function registerOpenClawStateDatabaseAsyncResource(
 }
 
 /** Capture the canonical read generation before any asynchronous worker admission. */
-export function captureOpenClawStateDatabaseReadAdmission(
-  pathname: string,
-): OpenClawStateDatabaseReadAdmission {
-  return asyncResources.capture(pathname);
-}
+export const captureOpenClawStateDatabaseReadAdmission = asyncResources.capture;
 
 /** Bind worker-created storage to its captured admission without publishing a native handle. */
 export function publishOpenClawStateDatabaseWorkerAdmission(
@@ -627,6 +623,7 @@ export const openClawStateDatabaseCache = {
   getCachedOpenClawStateDatabase,
   getOpenClawStateDatabaseRuntimeFailure,
   getOpenClawStateDatabaseIfOpenAtPath,
+  getKnownOpenClawStateDatabaseIdentity: asyncResources.knownIdentity,
   isOpenClawStateDatabaseOpen,
   publishOpenClawStateDatabase,
   recordOpenClawStateDatabaseOpenFailure,

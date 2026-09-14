@@ -7,6 +7,16 @@ import { applyTaskRecordPatch, normalizeTaskTimestamps } from "./task-registry-r
 import type { TaskRegistryStore, TaskRegistryStoreSnapshot } from "./task-registry.store.js";
 import type { TaskExecutionOwner, TaskRecord } from "./task-registry.types.js";
 
+type TaskExecutionRestoreStore = Pick<
+  TaskRegistryStore,
+  "loadSnapshot" | "withMutation" | "upsertTaskWithDeliveryState"
+>;
+
+export type TaskExecutionRestoreResult = {
+  snapshot: TaskRegistryStoreSnapshot;
+  settledTasks: TaskRecord[];
+};
+
 export function captureTaskExecutionOwner(pid = process.pid): TaskExecutionOwner | undefined {
   const startIdentity = getFileLockProcessStartTime(pid);
   return Number.isSafeInteger(pid) && pid > 0 && startIdentity !== null
@@ -53,7 +63,7 @@ function settleOrphanedTaskAtRestore(task: TaskRecord, now: number): TaskRecord 
   });
 }
 
-function readRestoreSnapshot(store: TaskRegistryStore): TaskRegistryStoreSnapshot {
+function readRestoreSnapshot(store: TaskExecutionRestoreStore): TaskRegistryStoreSnapshot {
   const snapshot = store.loadSnapshot();
   return {
     tasks: new Map([...snapshot.tasks].map(([id, task]) => [id, normalizeTaskTimestamps(task)])),
@@ -61,10 +71,9 @@ function readRestoreSnapshot(store: TaskRegistryStore): TaskRegistryStoreSnapsho
   };
 }
 
-export function restoreTaskExecutionSnapshot(store: TaskRegistryStore): {
-  snapshot: TaskRegistryStoreSnapshot;
-  settledTasks: TaskRecord[];
-} {
+export function restoreTaskExecutionSnapshot(
+  store: TaskExecutionRestoreStore,
+): TaskExecutionRestoreResult {
   const snapshot = readRestoreSnapshot(store);
   if (![...snapshot.tasks.values()].some(hasOrphanedExecution)) {
     return { snapshot, settledTasks: [] };

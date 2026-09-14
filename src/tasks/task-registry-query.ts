@@ -13,6 +13,7 @@ import {
   normalizeTaskTimestamps,
   compareTasksNewestFirst,
   pickPreferredRunIdTask,
+  snapshotTaskRecords,
 } from "./task-registry-records.js";
 import {
   TASK_REGISTRY_CONTROL_RUNTIME_OVERRIDE_KEY,
@@ -37,7 +38,6 @@ import {
   rebuildRunIdIndex,
   resetTaskRegistryListenerState,
   resetTaskRegistryRestoreState,
-  snapshotTaskRecords,
   taskDeliveryStates,
   taskIdsByOwnerKey,
   taskIdsByParentFlowId,

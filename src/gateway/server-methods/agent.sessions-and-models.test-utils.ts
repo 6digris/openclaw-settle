@@ -20,14 +20,15 @@ import {
   releaseAgentRunDelegatedAuthority,
 } from "../../infra/agent-run-registry.js";
 import { attachErrorDiagnostic } from "../../infra/error-diagnostics.js";
+import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { getDetachedTaskLifecycleRuntime } from "../../tasks/detached-task-runtime.js";
 import { cancelDetachedTaskRunById } from "../../tasks/task-executor.js";
+import { reloadTaskRegistryFromStoreAsync } from "../../tasks/task-registry-state.js";
 import {
   findTaskByRunId,
   createTaskRecord,
   listTaskRecords,
   markTaskTerminalById,
-  reloadTaskRegistryFromStore,
 } from "../../tasks/task-registry.js";
 import { setDetachedTaskLifecycleRuntime } from "../../tasks/task-runtime.test-helpers.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
@@ -1803,7 +1804,7 @@ describe("gateway agent handler", () => {
           { context, reqId: runId },
         );
         const task = requireValue(findTaskByRunId(runId), "tracked task missing");
-        reloadTaskRegistryFromStore();
+        await reloadTaskRegistryFromStoreAsync(captureOpenClawStateWorkerContext());
         const entry = requireValue(context.chatAbortControllers.get(runId), "run owner missing");
         const reason = "Stop this selected work.";
         const cancellation =

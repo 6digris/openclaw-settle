@@ -116,7 +116,7 @@ export function createOpenClawStateDatabaseAsyncLifecycle() {
     identity(pathname: string): DatabasePathIdentity | undefined {
       return resolveForNative(pathname)?.identity;
     },
-    knownIdentity(pathname: string): DatabasePathIdentity | undefined {
+    knownIdentity(this: void, pathname: string): DatabasePathIdentity | undefined {
       return known(pathname)?.identity;
     },
     publish(pathname: string): DatabasePathIdentity {
@@ -159,7 +159,7 @@ export function createOpenClawStateDatabaseAsyncLifecycle() {
         resources.delete(resource);
       };
     },
-    capture(pathname: string): OpenClawStateDatabaseReadAdmission {
+    capture(this: void, pathname: string): OpenClawStateDatabaseReadAdmission {
       const databasePath = path.resolve(pathname);
       const record = resolve(databasePath);
       assertOpen(record);

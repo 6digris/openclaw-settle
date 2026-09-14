@@ -105,3 +105,11 @@ export function getTaskRegistryProcessState(): TaskRegistryProcessState {
   };
   return globalState[TASK_REGISTRY_PROCESS_STATE_KEY];
 }
+
+export function clearTaskProgressBatches(): void {
+  const batches = getTaskRegistryProcessState().taskProgressBatches;
+  for (const batch of batches.values()) {
+    clearTimeout(batch.timer);
+  }
+  batches.clear();
+}

@@ -43,6 +43,7 @@ import {
 import type { ParsedAgentSessionKey } from "../routing/session-key.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
+import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { withTestDir } from "../test-helpers/temp-dir.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import {
@@ -57,14 +58,17 @@ import {
   createTaskFlowForTask as createTaskFlowForTaskOrNull,
   createManagedTaskFlow as createManagedTaskFlowOrNull,
   getTaskFlowById,
-  reloadTaskFlowRegistryFromStore,
+  reloadTaskFlowRegistryFromStoreAsync,
   requestFlowCancel,
   updateFlowRecordByIdExpectedRevision,
 } from "./task-flow-registry.js";
 import type { TaskFlowRecord } from "./task-flow-registry.types.js";
 import { getTaskActivitySnapshot } from "./task-registry-activity.js";
 import { updateTaskStateByRunId } from "./task-registry-record-api.js";
-import { readTaskRegistryRevision } from "./task-registry-state.js";
+import {
+  readTaskRegistryRevision,
+  reloadTaskRegistryFromStoreAsync,
+} from "./task-registry-state.js";
 import {
   cancelTaskById,
   deleteTaskRecordById,
@@ -81,7 +85,6 @@ import {
   markTaskRunningByRunId,
   markTaskTerminalById,
   recordTaskProgressByRunId,
-  reloadTaskRegistryFromStore,
   resolveTaskForLookupToken,
   updateTaskNotifyPolicyById,
 } from "./task-registry.js";
@@ -969,7 +972,7 @@ describe("task-registry", () => {
           });
 
           resetTaskRegistryForTests({ persist: false });
-          reloadTaskRegistryFromStore();
+          await reloadTaskRegistryFromStoreAsync(captureOpenClawStateWorkerContext());
           expectRecordFields(requireTaskByRunId(runId), {
             status: "succeeded",
             startedAt: expectedStartedAt,
@@ -1188,7 +1191,7 @@ describe("task-registry", () => {
         endedAt: 200,
         error: "setup failed",
       });
-      reloadTaskRegistryFromStore();
+      await reloadTaskRegistryFromStoreAsync(captureOpenClawStateWorkerContext());
 
       expect(requireTaskByRunId("cron:provisional:100").childSessionKey).toBeUndefined();
     });
@@ -1795,13 +1798,13 @@ describe("task-registry", () => {
       configureTaskFlowRegistryRuntime({
         store: {
           ...createInMemoryTaskFlowRegistryStore(),
-          loadSnapshot: () => {
+          withSnapshotAsync: async () => {
             throw new Error("SQLITE_CORRUPT: task-flow startup restore failed");
           },
         },
       });
 
-      expect(() => ensureTaskRuntimeStateReady()).toThrow(
+      await expect(ensureTaskRuntimeStateReady()).rejects.toThrow(
         "Task-flow registry restore failed: SQLITE_CORRUPT: task-flow startup restore failed",
       );
       expect(loadTaskSnapshot).not.toHaveBeenCalled();
@@ -1817,13 +1820,13 @@ describe("task-registry", () => {
       configureTaskRegistryRuntime({
         store: {
           ...createInMemoryTaskRegistryStore(),
-          loadSnapshot: () => {
+          withSnapshotAsync: async () => {
             throw new Error("SQLITE_IOERR: task startup restore failed");
           },
         },
       });
 
-      expect(() => ensureTaskRuntimeStateReady()).toThrow(
+      await expect(ensureTaskRuntimeStateReady()).rejects.toThrow(
         "Task registry restore failed: SQLITE_IOERR: task startup restore failed",
       );
     });
@@ -1868,8 +1871,8 @@ describe("task-registry", () => {
         // nullable columns omitted by SQLite must remain equivalent to undefined.
         resetTaskRegistryForTests({ persist: false });
         resetTaskFlowRegistryForTests({ persist: false });
-        reloadTaskFlowRegistryFromStore();
-        reloadTaskRegistryFromStore();
+        await reloadTaskFlowRegistryFromStoreAsync(captureOpenClawStateWorkerContext());
+        await reloadTaskRegistryFromStoreAsync(captureOpenClawStateWorkerContext());
         const store = getTaskRegistryStore();
         const upsertTask = vi.fn(store.upsertTaskWithDeliveryState);
         configureTaskRegistryRuntime({
@@ -1939,7 +1942,7 @@ describe("task-registry", () => {
         });
         expect(upsertTask).toHaveBeenCalledOnce();
         expect(readTaskRegistryRevision()).toBeGreaterThan(restoredTaskRevision);
-        reloadTaskRegistryFromStore();
+        await reloadTaskRegistryFromStoreAsync(captureOpenClawStateWorkerContext());
         expect(requireTaskById(task.taskId).progressSummary).toBe("corrected result");
       },
       { durableStore: true },
@@ -1950,7 +1953,11 @@ describe("task-registry", () => {
     await withTaskRegistryTempDir(async () => {
       vi.useFakeTimers();
       resetTaskFlowRegistryForTests({ persist: false });
-      configureInMemoryTaskStoresForTests();
+      const flowStore = createInMemoryTaskFlowRegistryStore();
+      configureTaskFlowRegistryRuntime({ store: flowStore });
+      configureTaskRegistryRuntime({
+        store: createInMemoryTaskRegistryStore(undefined, flowStore),
+      });
 
       const task = createTaskFixture("acp", {
         deliveryStatus: undefined,
@@ -1967,7 +1974,8 @@ describe("task-registry", () => {
 
       let remainingUpsertFailures = 2;
       const admittedRetryCounts: number[] = [];
-      const upsertFlow = vi.fn(() => {
+      const persistFlow = flowStore.upsertFlow;
+      const upsertFlow = vi.fn((next: TaskFlowRecord) => {
         if (upsertFlow.mock.calls.length > 1) {
           admittedRetryCounts.push(getActiveGatewayRootWorkCount());
         }
@@ -1975,16 +1983,9 @@ describe("task-registry", () => {
           remainingUpsertFailures -= 1;
           throw new Error("SQLITE_FULL: database or disk is full");
         }
+        persistFlow(next);
       });
-      configureTaskFlowRegistryRuntime({
-        store: {
-          ...createInMemoryTaskFlowRegistryStore(),
-          loadSnapshot: () => ({
-            flows: new Map(),
-          }),
-          upsertFlow,
-        },
-      });
+      flowStore.upsertFlow = upsertFlow;
 
       const updated = markTaskTerminalById({
         taskId: task.taskId,
@@ -1999,9 +2000,11 @@ describe("task-registry", () => {
       expect(getTaskFlowById(flow.flowId)?.status).toBe("running");
 
       await vi.advanceTimersByTimeAsync(1_000);
-      await flushAsyncWork();
+      await waitForFast(() => {
+        expect(upsertFlow).toHaveBeenCalledTimes(2);
+        expect(getActiveGatewayRootWorkCount()).toBe(0);
+      });
       expect(getTaskFlowById(flow.flowId)?.status).toBe("running");
-      expect(upsertFlow).toHaveBeenCalledTimes(2);
       expect(admittedRetryCounts).toEqual([1]);
 
       const suspension = tryBeginGatewaySuspendAdmission(() => {});
@@ -2014,9 +2017,10 @@ describe("task-registry", () => {
       expect(getActiveGatewayRootWorkCount()).toBe(0);
 
       expect(suspension?.release()).toBe(true);
-      await flushAsyncWork();
-
-      expect(upsertFlow).toHaveBeenCalledTimes(3);
+      await waitForFast(() => {
+        expect(upsertFlow).toHaveBeenCalledTimes(3);
+        expect(getActiveGatewayRootWorkCount()).toBe(0);
+      });
       expect(admittedRetryCounts).toEqual([1, 1]);
       const retriedFlow = getTaskFlowById(flow.flowId);
       expect(retriedFlow?.status).toBe("succeeded");
@@ -2028,7 +2032,11 @@ describe("task-registry", () => {
     await withTaskRegistryTempDir(async () => {
       vi.useFakeTimers();
       resetTaskFlowRegistryForTests({ persist: false });
-      configureInMemoryTaskStoresForTests();
+      const flowStore = createInMemoryTaskFlowRegistryStore();
+      configureTaskFlowRegistryRuntime({ store: flowStore });
+      configureTaskRegistryRuntime({
+        store: createInMemoryTaskRegistryStore(undefined, flowStore),
+      });
 
       const task = createTaskFixture("acp", {
         deliveryStatus: undefined,
@@ -2045,19 +2053,13 @@ describe("task-registry", () => {
       ).toBe(flow.flowId);
 
       let failUpsert = true;
-      configureTaskFlowRegistryRuntime({
-        store: {
-          ...createInMemoryTaskFlowRegistryStore(),
-          loadSnapshot: () => ({
-            flows: new Map(),
-          }),
-          upsertFlow: () => {
-            if (failUpsert) {
-              throw new Error("SQLITE_BUSY: database is locked");
-            }
-          },
-        },
-      });
+      const persistFlow = flowStore.upsertFlow;
+      flowStore.upsertFlow = (next) => {
+        if (failUpsert) {
+          throw new Error("SQLITE_BUSY: database is locked");
+        }
+        persistFlow(next);
+      };
 
       expect(
         markTaskTerminalById({
@@ -2081,7 +2083,7 @@ describe("task-registry", () => {
       expect(newerTask.parentFlowId).toBe(flow.flowId);
 
       await vi.advanceTimersByTimeAsync(1_000);
-      await flushAsyncWork();
+      await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
 
       const currentFlow = getTaskFlowById(flow.flowId);
       expect(currentFlow?.status).toBe("running");
@@ -2256,7 +2258,7 @@ describe("task-registry", () => {
         });
 
         resetSystemEventsForTest();
-        reloadTaskRegistryFromStore();
+        await reloadTaskRegistryFromStoreAsync(captureOpenClawStateWorkerContext());
         await maybeDeliverTaskTerminalUpdate(task.taskId);
 
         expectRecordFields(requireTaskById(task.taskId), {
@@ -4377,7 +4379,7 @@ describe("task-registry", () => {
         ],
       ]);
 
-      reloadTaskRegistryFromStore();
+      await reloadTaskRegistryFromStoreAsync(captureOpenClawStateWorkerContext());
 
       expect(findTaskByRunId("run-stale-memory")).toBeUndefined();
       expectRecordFields(requireTaskByRunId("run-durable"), {
@@ -4407,18 +4409,19 @@ describe("task-registry", () => {
         lastEventAt: 100,
       };
       let restoreShouldFail = true;
+      const loadSnapshot = () => {
+        if (restoreShouldFail) {
+          throw new Error("SQLITE_IOERR: initial task restore failed");
+        }
+        return {
+          tasks: new Map([[storedTask.taskId, storedTask]]),
+          deliveryStates: new Map(),
+        };
+      };
       configureTaskRegistryRuntime({
         store: {
           ...createInMemoryTaskRegistryStore(),
-          loadSnapshot: () => {
-            if (restoreShouldFail) {
-              throw new Error("SQLITE_IOERR: initial task restore failed");
-            }
-            return {
-              tasks: new Map([[storedTask.taskId, storedTask]]),
-              deliveryStates: new Map(),
-            };
-          },
+          loadSnapshot,
         },
       });
 
@@ -4426,7 +4429,7 @@ describe("task-registry", () => {
         "Task registry restore failed: SQLITE_IOERR: initial task restore failed",
       );
       restoreShouldFail = false;
-      reloadTaskRegistryFromStore();
+      await reloadTaskRegistryFromStoreAsync(captureOpenClawStateWorkerContext());
 
       emitAgentEvent({
         runId,
@@ -4462,18 +4465,19 @@ describe("task-registry", () => {
         lastEventAt: 200,
       };
       let restoreError: Error | null = null;
+      const loadSnapshot = () => {
+        if (restoreError) {
+          throw restoreError;
+        }
+        return {
+          tasks: new Map([[storedTask.taskId, storedTask]]),
+          deliveryStates: new Map(),
+        };
+      };
       configureTaskRegistryRuntime({
         store: {
           ...createInMemoryTaskRegistryStore(),
-          loadSnapshot: () => {
-            if (restoreError) {
-              throw restoreError;
-            }
-            return {
-              tasks: new Map([[storedTask.taskId, storedTask]]),
-              deliveryStates: new Map(),
-            };
-          },
+          loadSnapshot,
         },
       });
       expect(getTaskById(storedTask.taskId)?.taskId).toBe(storedTask.taskId);
@@ -4483,9 +4487,9 @@ describe("task-registry", () => {
       await Promise.resolve();
 
       restoreError = new Error("SQLITE_CORRUPT: task reload failed");
-      expect(() => reloadTaskRegistryFromStore()).toThrow(
-        "Task registry restore failed: SQLITE_CORRUPT: task reload failed",
-      );
+      await expect(
+        reloadTaskRegistryFromStoreAsync(captureOpenClawStateWorkerContext()),
+      ).rejects.toThrow("Task registry restore failed: SQLITE_CORRUPT: task reload failed");
       markGatewayRestartDraining();
 
       await expect(pendingDelivery).rejects.toThrow(

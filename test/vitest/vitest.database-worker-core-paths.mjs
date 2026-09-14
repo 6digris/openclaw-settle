@@ -1,5 +1,10 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
+  "src/tasks/task-registry.async-restore.test.ts",
+  "src/agents/subagents/registry/subagent-registry-recovery-acceptance.test.ts",
+  "src/agents/subagents/registry/subagent-registry-task-replacement.test.ts",
+  "src/tasks/task-registry-session-index.test.ts",
+  "src/tasks/task-registry.store.test.ts",
   "src/claws/provenance-runtime-read.async.test.ts",
   "src/auto-reply/reply/commands-plugins.install.test.ts",
   "src/auto-reply/reply/commands-plugins.install-clawhub-spec.test.ts",
