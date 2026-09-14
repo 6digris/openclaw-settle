@@ -20,15 +20,13 @@ import {
   isToolResultContentType,
   resolveToolBlockArgs,
 } from "../../../../src/chat/tool-content.js";
-import {
-  isRelativeAssistantMediaReference,
-  splitMediaFromOutput,
-} from "../../../../src/media/parse.js";
+import { splitMediaFromOutput } from "../../../../src/media/parse.js";
 import { readClawHubRecommendation } from "../../../../src/shared/clawhub-recommendations.js";
 import { getMediaFileExtension } from "../media-file-extension.ts";
 import type { NormalizedMessage, MessageContentItem } from "./chat-types.ts";
 import { projectImportedMessageForDisplay } from "./imported-message-display.ts";
 import { normalizeAttachmentContentBlock } from "./message-normalizer-attachments.ts";
+import { normalizeImageContentBlock } from "./message-normalizer-images.ts";
 import { formatSenderLabel, normalizeSenderIdentity, type SenderIdentity } from "./sender-label.ts";
 
 // Keep legacy labels readable without treating their UUID suffix as profile evidence.
@@ -404,10 +402,6 @@ function expandTextContent(
 
   for (const segment of segments) {
     if (segment.type === "media") {
-      if (isRelativeAssistantMediaReference(segment.url)) {
-        parts.push({ type: "text", text: `MEDIA:${segment.url}` });
-        continue;
-      }
       const inferred = inferAttachmentKind(segment.url);
       parts.push({
         type: "attachment",
@@ -452,13 +446,9 @@ function expandTextContent(
     content:
       content.length > 0
         ? content
-        : (parsed.mediaUrls ?? []).some(isRelativeAssistantMediaReference)
-          ? (parsed.mediaUrls ?? [])
-              .filter(isRelativeAssistantMediaReference)
-              .map((url) => ({ type: "text" as const, text: `MEDIA:${url}` }))
-          : replyTarget === null && !audioAsVoice && parsed.text.trim().length > 0
-            ? [{ type: "text", text: parsed.text }]
-            : [],
+        : replyTarget === null && !audioAsVoice && parsed.text.trim().length > 0
+          ? [{ type: "text", text: parsed.text }]
+          : [],
     audioAsVoice,
     replyTarget,
   };
@@ -504,6 +494,10 @@ export function normalizeMessage(message: unknown): NormalizedMessage {
       const omittedMedia = normalizeOmittedMediaContentBlock(item);
       if (omittedMedia) {
         return [omittedMedia];
+      }
+      const image = normalizeImageContentBlock(item);
+      if (image) {
+        return [image];
       }
       const type = item.type;
       if (type === "clawhub") {

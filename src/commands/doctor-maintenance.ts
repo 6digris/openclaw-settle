@@ -86,6 +86,7 @@ export async function beginDoctorMaintenance(params: {
   let repairStoresMayBeOpen = false;
   let inspectingActivation = false;
   let assertContinuationCurrent: (() => void) | undefined;
+  let assertUpdateAdmissionCurrent: (() => void) | undefined;
   const release = async () => {
     if (repairStoresMayBeOpen) {
       const [{ closeOpenClawAgentDatabasesAsync }, { closeOpenClawStateDatabaseByPathAsync }] =
@@ -129,11 +130,7 @@ export async function beginDoctorMaintenance(params: {
       });
       params.assertCurrent?.();
       assertDoctorMaintenanceInspection(inspection, env);
-      if (
-        parentActivation !== undefined &&
-        inspection.serviceUpdateVerdict?.kind !== "absent" &&
-        inspection.offline !== true
-      ) {
+      if (inspection.serviceUpdateVerdict?.kind !== "absent" && inspection.offline !== true) {
         const inheritedRunId = env[UPDATE_RUN_ID_ENV]?.trim();
         const readAdmission = () => {
           const runs = listUpdateRuns(
@@ -147,6 +144,9 @@ export async function beginDoctorMaintenance(params: {
           return admission;
         };
         const admission = readAdmission();
+        assertUpdateAdmissionCurrent = () => {
+          readAdmission();
+        };
         const continuation =
           admission.kind === "continuation"
             ? admission.run
@@ -156,6 +156,7 @@ export async function beginDoctorMaintenance(params: {
             readAdmission();
             recordUpdateRunRepairContinuation(continuation.runId, inheritedRunId, { env });
           };
+          assertUpdateAdmissionCurrent = assertContinuationCurrent;
         }
       }
       if (
@@ -186,9 +187,9 @@ export async function beginDoctorMaintenance(params: {
             assertCurrent: params.assertCurrent
               ? () => {
                   params.assertCurrent?.();
-                  assertContinuationCurrent?.();
+                  assertUpdateAdmissionCurrent?.();
                 }
-              : assertContinuationCurrent,
+              : assertUpdateAdmissionCurrent,
           });
           assertDoctorMaintenanceInspection(stopped, env);
           if (stopped.stopped) {
@@ -278,7 +279,7 @@ export async function beginDoctorMaintenance(params: {
         const state = await withGatewayServiceOperationLock(serviceEnv, async (assertCurrent) => {
           const assertMaintenanceCurrent = () => {
             assertCurrent();
-            assertContinuationCurrent?.();
+            assertUpdateAdmissionCurrent?.();
           };
           assertMaintenanceCurrent();
           const current = await readGatewayServiceState(service, {

@@ -957,6 +957,7 @@ describe("gateway server chat", () => {
       const handler = createAgentEventHandler({
         broadcast: context.broadcast,
         broadcastToConnIds: context.broadcastToConnIds,
+        nodeHasSessionSubscribers: () => false,
         nodeSendToSession: context.nodeSendToSession,
         agentRunSeq: context.agentRunSeq,
         chatRunState: context.chatRunState,
@@ -1199,6 +1200,7 @@ describe("gateway server chat", () => {
       const handler = createAgentEventHandler({
         broadcast: context.broadcast,
         broadcastToConnIds: context.broadcastToConnIds,
+        nodeHasSessionSubscribers: () => false,
         nodeSendToSession: context.nodeSendToSession,
         agentRunSeq: context.agentRunSeq,
         chatRunState: context.chatRunState,
@@ -2968,7 +2970,11 @@ describe("gateway server chat", () => {
         }),
         client: {
           connId: "conn-owner",
-          connect: { device: { id: "dev-owner" }, scopes: ["operator.write"] },
+          connect: {
+            ...makeGatewayWebchatClient(),
+            device: { id: "dev-owner" },
+            scopes: ["operator.write"],
+          },
         } as never,
         respond: ((ok, payload, error) => {
           responses.push({ ok, payload, error });
@@ -3021,7 +3027,16 @@ describe("gateway server chat", () => {
         }),
         client: {
           connId: "conn-owner",
-          connect: { device: { id: "dev-owner" }, scopes: ["operator.write"] },
+          connect: {
+            client: {
+              id: GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT,
+              mode: GATEWAY_CLIENT_MODES.BACKEND,
+              version: "1.0.0",
+              platform: "node",
+            },
+            device: { id: "dev-owner" },
+            scopes: ["operator.write"],
+          },
         } as never,
         respond: ((ok, payload, error) => {
           responses.push({ ok, payload, error });
