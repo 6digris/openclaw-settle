@@ -12,6 +12,7 @@ import {
   WINDOWS_TASK_SUPERVISOR_RESTART_EXIT_CODE_MAX,
   WINDOWS_TASK_SUPERVISOR_RESTART_EXIT_CODE_MIN,
 } from "./windows-task-supervisor-contract.js";
+import { resolveDiagnosticReplacements } from "./schtasks.integration-observation.test-support.js";
 
 const WAIT_INTERVAL_MS = 200;
 const WAIT_TIMEOUT_MS = 30_000;
@@ -122,6 +123,7 @@ export async function writeGatewayTaskSupervisorProbe(params: {
   activePidPath: string;
   eventsPath: string;
   probe: GatewayTaskSupervisorProbe;
+  stateDir: string;
 }): Promise<void> {
   const taskSupervisorModuleUrl = new URL("../cli/gateway-cli/task-supervisor.ts", import.meta.url)
     .href;
@@ -129,6 +131,23 @@ export async function writeGatewayTaskSupervisorProbe(params: {
     "./schtasks.hosted-stop.native-test-support.ts",
     import.meta.url,
   ).href;
+  const errorPathPattern = [
+    ...resolveDiagnosticReplacements({
+      rootDir: path.dirname(params.probe.probePath),
+      stateDir: params.stateDir,
+    }).map(([value]) => value),
+    process.cwd(),
+  ]
+    .filter(Boolean)
+    .flatMap((value) => [
+      value,
+      value.replaceAll("/", "\\"),
+      value.replaceAll("\\", "/"),
+      pathToFileURL(value).href,
+    ])
+    .toSorted((left, right) => right.length - left.length)
+    .map((value) => value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"))
+    .join("|");
   await fs.writeFile(
     params.probe.probePath,
     [
@@ -168,8 +187,28 @@ export async function writeGatewayTaskSupervisorProbe(params: {
       "const port = Number.parseInt(process.argv[portIndex + 1] ?? '', 10);",
       "if (!Number.isInteger(port) || port < 1) throw new Error('Missing gateway --port');",
       'appendEvent("started");',
-      `const { runHostedStopNativeProbe } = await import(${JSON.stringify(hostedProbeModuleUrl)});`,
-      "await runHostedStopNativeProbe({ port, activePidPath, childPidPath, appendEvent });",
+      "try {",
+      `  const { runHostedStopNativeProbe } = await import(${JSON.stringify(hostedProbeModuleUrl)});`,
+      "  await runHostedStopNativeProbe({ port, activePidPath, childPidPath, appendEvent });",
+      "} catch (error) {",
+      "  try {",
+      `    const paths = new RegExp(${JSON.stringify(errorPathPattern)}, "giu");`,
+      "    const sanitize = (value, max) => value.replace(paths, '<fixture>').slice(0, max);",
+      "    const stack = error instanceof Error ? error.stack : undefined;",
+      "    const stackFrames = typeof stack === 'string'",
+      "      ? sanitize(stack, 8192).split(/\\r?\\n/u)",
+      "          .filter((line) => /^\\s+at\\s/u.test(line) && !/\\b(?:data:|eval at\\b)/iu.test(line))",
+      "          .slice(0, 8).join('\\n').slice(0, 2048)",
+      "      : null;",
+      "    appendEvent('startup-failed', {",
+      "      errorName: sanitize(error instanceof Error ? error.name : 'NonError', 80),",
+      "      errorCode: typeof error?.code === 'string' ? sanitize(error.code, 80) : null,",
+      "      message: sanitize(error instanceof Error ? error.message : 'Non-error startup failure', 500),",
+      "      stack: stackFrames || null,",
+      "    });",
+      "  } catch {}",
+      "  throw error;",
+      "}",
       "}",
       "",
     ].join("\n"),

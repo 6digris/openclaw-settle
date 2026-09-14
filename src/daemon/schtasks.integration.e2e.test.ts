@@ -571,7 +571,7 @@ describe.runIf(nativeIntegrationEnabled)("schtasks Windows integration", () => {
 
     // Source workers resolve tsx from the task cwd; give the isolated fixture its dependencies.
     await fs.symlink(path.resolve("node_modules"), path.join(rootDir, "node_modules"), "junction");
-    await writeGatewayTaskSupervisorProbe({ activePidPath, eventsPath, probe });
+    await writeGatewayTaskSupervisorProbe({ activePidPath, eventsPath, probe, stateDir });
 
     let testFailed = false;
     let testError: unknown;
