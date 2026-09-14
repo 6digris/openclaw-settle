@@ -385,6 +385,16 @@ export async function runManagedCommand({
     releaseOwnership();
     throw error;
   }
+  // Socket.closed can precede its native close callback. Observe real pipe
+  // completion before onReady can cancel or otherwise reenter finalization.
+  const pendingOutputCloses = new Set([child.stdout, child.stderr].filter((pipe) => pipe !== null));
+  const removeOutputCloseListeners = [...pendingOutputCloses].map((pipe) => {
+    const onClose = () => {
+      pendingOutputCloses.delete(pipe);
+    };
+    pipe.once("close", onClose);
+    return () => pipe.off("close", onClose);
+  });
   let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
   let finalization: Promise<{ type: "failed"; error: unknown } | undefined> | undefined;
   let cancellation: ManagedCommandOutcome | undefined;
@@ -404,6 +414,7 @@ export async function runManagedCommand({
       runTaskkill,
       forceKillDelayMs,
       forceKillOnLeaderExit,
+      areOutputPipesClosed: () => pendingOutputCloses.size === 0,
       onTerminated: releaseOwnership,
     }).then(
       () => undefined,
@@ -502,6 +513,9 @@ export async function runManagedCommand({
     }
     return typeof outcome.exit === "string" ? signalExitCode(outcome.exit) : outcome.exit;
   } finally {
+    for (const removeListener of removeOutputCloseListeners) {
+      removeListener();
+    }
     clearTimeout(timeoutTimer);
     signal?.removeEventListener("abort", abort);
     managedChildren.delete(forwardSignal);
@@ -520,12 +534,14 @@ async function finalizeManagedChild(
     runTaskkill,
     forceKillDelayMs = FORCE_KILL_DELAY_MS,
     forceKillOnLeaderExit = false,
+    areOutputPipesClosed,
     onTerminated,
   }: {
     platform: NodeJS.Platform;
     runTaskkill: TaskkillRunner;
     forceKillDelayMs?: number;
     forceKillOnLeaderExit?: boolean;
+    areOutputPipesClosed: () => boolean;
     onTerminated: () => void;
   },
 ) {
@@ -574,8 +590,7 @@ async function finalizeManagedChild(
             errorPolicy: "indeterminate",
             platform,
           });
-    const pipesClosed = [child.stdout, child.stderr].every((pipe) => !pipe || pipe.closed);
-    if (groupState === "dead" && exited && pipesClosed) {
+    if (groupState === "dead" && exited && areOutputPipesClosed()) {
       onTerminated();
       // A missing group at signal time supersedes the earlier racy liveness probe.
       if (!signal && termination?.processTreeState !== "terminated") {
