@@ -346,6 +346,13 @@ type GatewayResidentBridgeContext = {
   sessionViewerPresence?: ReturnType<
     typeof import("../session-viewer-presence.js").createSessionViewerPresenceDeclarations
   >;
+  /**
+   * Queues ordinary metadata restart planning; honors reload mode and returns no receipt.
+   * @deprecated For explicit management, use the admin plugins.refresh/plugins.reload RPCs
+   * and await their runtime receipt. Retained for the 2026.9.4 SDK until a separately
+   * approved breaking boundary and verified external-plugin migration.
+   */
+  notifyPluginMetadataChanged: () => void;
   applyPluginLifecycleChange?: import("../../plugins/lifecycle.js").PluginLifecycleRuntimeApply;
   refreshHealthSnapshot: (opts?: {
     probe?: boolean;

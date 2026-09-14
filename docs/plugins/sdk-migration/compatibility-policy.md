@@ -77,6 +77,39 @@ offsets for `isInsideCode`. Regions returned by `findCodeRegions` additionally
 include parser-owned `block` metadata; callers supplying their own ranges do not
 need to provide it.
 
+### Gateway plugin metadata notification
+
+`GatewayRequestHandlerOptions.context.notifyPluginMetadataChanged(): void`,
+shipped in OpenClaw 2026.9.4 through `core` and `gateway-runtime`, remains
+available to registered Gateway handlers. It signals the existing config
+reloader, coalesces with watcher events, and requests ordinary Gateway restart
+planning even when config bytes and install records are unchanged. It leaves the
+running plugin inventory intact and honors `gateway.reload.mode: "off"` and
+config-writer intent. Calls during reloader preparation wait for readiness;
+calls after shutdown do nothing. Embedded contexts without a resident reloader
+retain the shipped inert callback.
+
+A callback captured by a registered handler belongs to that plugin instance.
+After the instance retires, new calls through retained copies fail; already
+admitted handlers can finish while disposal drains them. A notification accepted
+before retirement belongs to the reloader, so disposing the notifying plugin does
+not cancel it. Once accepted by the restart coordinator, its metadata restart
+requirement survives later config edits until restart emission; reload-off and
+writer-none candidates still pause that work.
+
+The callback is deprecated for explicit plugin management. Use the admin
+`plugins.refresh` or `plugins.reload` Gateway RPC and await its runtime receipt
+when the intended operation is to apply a plugin change now. These are not
+interchangeable operations: explicit application can run while automatic reload
+is off; a void notification neither confirms application nor authorizes that
+policy override. Do not replace a notification with a discarded application
+promise.
+
+The adapter remains through the next Plugin SDK major. Removal additionally
+requires verified migration of supported external-plugin readers and explicit
+SDK-breaking release approval. The TypeScript annotation and compatibility
+registry record the migration; no per-call runtime warning is emitted.
+
 ### Harness attempt result migration
 
 In OpenClaw 2026.8.1, `EmbeddedRunAttemptResult` from

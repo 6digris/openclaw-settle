@@ -1,12 +1,13 @@
 /**
  * Gateway request context construction tests.
  */
-import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   GATEWAY_CLIENT_CAPS,
   GATEWAY_CLIENT_IDS,
   GATEWAY_CLIENT_MODES,
 } from "../../packages/gateway-protocol/src/client-info.js";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { listSystemPresence } from "../infra/system-presence.js";
 import { trackAsyncWork } from "../shared/async-work-scope.js";
 import * as userProfiles from "../state/user-profiles.js";
@@ -27,9 +28,17 @@ import {
 import type { GatewayServerLiveState } from "./server-live-state.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import { createGatewayRequestContext } from "./server-request-context.js";
+import {
+  createGatewayNotifierFixture,
+  registerGatewayNotifierFixtureHandler,
+  verifyRetainedGatewayNotifier,
+  verifyInflightGatewayNotifier,
+} from "./server-request-context.test-support.js";
 import { startGatewayEventSubscriptions } from "./server-runtime-subscriptions.js";
 import { GatewayClientRegistry } from "./server/client-registry.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 type GatewayRequestContextParams = Parameters<typeof createGatewayRequestContext>[0];
 type TestCronState = GatewayServerLiveState["cronState"];
@@ -157,6 +166,7 @@ function makeContextParams(overrides: Partial<RequestRuntime> = {}): GatewayRequ
       broadcastVoiceWakeChanged: vi.fn(),
       broadcastVoiceWakeRoutingChanged: vi.fn(),
       kernel: {
+        notifyPluginMetadataChanged: vi.fn(),
         applyPluginLifecycleChange: vi.fn(async () => ({
           operationId: "fixture",
           generation: 1,
@@ -424,6 +434,42 @@ describe("createGatewayRequestContext", () => {
 
     params.runtime.lifecycle.closePreludeStarted = true;
     expect(context.getDeferredChannelReloads?.()).toEqual([]);
+  });
+
+  it("runs a shipped public Gateway handler notification through the real reloader", async () => {
+    const { reloader, onRestart, onHotReload, api, registry, instance } =
+      await createGatewayNotifierFixture(tempDirs.make("openclaw-sdk-notifier-"));
+    const params = makeContextParams();
+    params.runtime.kernel.notifyPluginMetadataChanged = reloader.notifyPluginMetadataChanged;
+    const context = createGatewayRequestContext(params);
+    const { handler, request } = registerGatewayNotifierFixtureHandler({ api, registry }, context);
+    await handler(request);
+    expect(request.respond).toHaveBeenCalledWith(true, { notified: true }, undefined, undefined);
+    await vi.waitFor(() => expect(onRestart).toHaveBeenCalledOnce());
+    expect(onHotReload).not.toHaveBeenCalled();
+    expect(params.runtime.kernel.applyPluginLifecycleChange).not.toHaveBeenCalled();
+    const notify = context.notifyPluginMetadataChanged;
+    await reloader.stop();
+    notify();
+    expect(onRestart).toHaveBeenCalledOnce();
+    await instance.dispose();
+    await expect(handler(request)).rejects.toThrow(/reloaded or disabled/i);
+  });
+
+  it("revokes a retained shipped notifier after plugin disposal while the Gateway stays live", async () => {
+    const fixture = await createGatewayNotifierFixture(tempDirs.make("openclaw-sdk-retained-"));
+    const params = makeContextParams();
+    params.runtime.kernel.notifyPluginMetadataChanged =
+      fixture.reloader.notifyPluginMetadataChanged;
+    await verifyRetainedGatewayNotifier(fixture, createGatewayRequestContext(params));
+  });
+
+  it("preserves an admitted shipped notifier call while plugin disposal drains the handler", async () => {
+    const fixture = await createGatewayNotifierFixture(tempDirs.make("openclaw-sdk-inflight-"));
+    const params = makeContextParams();
+    params.runtime.kernel.notifyPluginMetadataChanged =
+      fixture.reloader.notifyPluginMetadataChanged;
+    await verifyInflightGatewayNotifier(fixture, createGatewayRequestContext(params));
   });
 
   it("publishes worker services through the kernel bridge", () => {

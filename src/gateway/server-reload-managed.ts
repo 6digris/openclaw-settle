@@ -63,6 +63,7 @@ export function startManagedGatewayConfigReloader(
       stop: async () => {
         lifecycle.abort(new GatewayConfigReloadSupersededError());
       },
+      notifyPluginMetadataChanged: () => {},
       applyPluginLifecycleChange: async () => {
         throw new Error("Plugin lifecycle is unavailable in a minimal Gateway.");
       },
@@ -510,6 +511,7 @@ export function startManagedGatewayConfigReloader(
     },
     hotReloadStatus: configReloader.hotReloadStatus,
     getDeferredChannelReloads,
+    notifyPluginMetadataChanged: configReloader.notifyPluginMetadataChanged,
     applyPluginLifecycleChange: configReloader.applyPluginLifecycleChange,
     // Equal config revisions can still owe a plugin/runtime restart.
     isConfigReloadSettled: () =>
