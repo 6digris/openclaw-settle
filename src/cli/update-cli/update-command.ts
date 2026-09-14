@@ -1144,6 +1144,7 @@ async function maybeStopManagedServiceBeforeMutableUpdate(params: {
   root: string;
   shouldRestart: boolean;
   jsonMode: boolean;
+  onStopped?: (state: PreManagedServiceStop) => void;
 }): Promise<PreManagedServiceStop> {
   let service: ReturnType<typeof resolveGatewayService>;
   let serviceState: Awaited<ReturnType<typeof readGatewayServiceState>>;
@@ -1278,6 +1279,26 @@ async function maybeStopManagedServiceBeforeMutableUpdate(params: {
     await service.stop({
       env: serviceState.env,
       stdout: serviceControlStdoutForMode(params.jsonMode),
+      // launchd can unload the job before its port-release validation fails.
+      onMutation: () =>
+        params.onStopped?.({
+          stopped: true,
+          inspected: true,
+          runtimeInspected: true,
+          running: true,
+          ...serviceOwnership,
+          serviceEnv: serviceState.env,
+          ...(windowsTaskAutoStartRecovery ? { windowsTaskAutoStartRecovery } : {}),
+        }),
+    });
+    params.onStopped?.({
+      stopped: true,
+      inspected: true,
+      runtimeInspected: true,
+      running: true,
+      ...serviceOwnership,
+      serviceEnv: serviceState.env,
+      ...(windowsTaskAutoStartRecovery ? { windowsTaskAutoStartRecovery } : {}),
     });
     if (windowsTaskAutoStartRecovery) {
       await abortWindowsTaskUpdateIfInterrupted(windowsTaskAutoStartRecovery);
@@ -1301,6 +1322,17 @@ async function maybeStopManagedServiceBeforeMutableUpdate(params: {
       if (windowsTaskAutoStartRecovery.interrupted()) {
         throw new UpdateCommandAbort();
       }
+    }
+    const runtimeAfterFailure = await service.readRuntime(serviceState.env).catch(() => undefined);
+    if (runtimeAfterFailure?.status === "stopped") {
+      params.onStopped?.({
+        stopped: true,
+        inspected: true,
+        runtimeInspected: true,
+        running: true,
+        ...serviceOwnership,
+        serviceEnv: serviceState.env,
+      });
     }
     throw err;
   }
@@ -4181,6 +4213,9 @@ async function updateCommandInternal(
           root: mutationRoot,
           shouldRestart,
           jsonMode: Boolean(opts.json),
+          onStopped: (state) => {
+            preManagedServiceStop = state;
+          },
         });
         if (preManagedServiceStop.windowsTaskAutoStartRecovery) {
           recoveryState.windowsTaskAutoStartRecovery =
@@ -4198,6 +4233,10 @@ async function updateCommandInternal(
         }
       }
     } catch (err) {
+      await maybeRestartServiceAfterFailedMutableUpdate({
+        preManagedServiceStop,
+        jsonMode: Boolean(opts.json),
+      });
       if (err instanceof UpdateCommandAbort) {
         throw err;
       }
