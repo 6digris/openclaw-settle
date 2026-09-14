@@ -246,7 +246,7 @@ describe("Doctor migration plugin generation", () => {
         expect(derived.npm_config_cache).toBe(env.npm_config_cache);
         expect(process.env.npm_config_cache).toBe(env.npm_config_cache);
         expect(beforePersistentEffect).toBeTypeOf("function");
-        await beforePersistentEffect?.();
+        beforePersistentEffect?.();
         // A context change while convergence waits must not authorize a write there.
         await withPluginInstallRoots({ ...roots, extensionsDir: outside }, async () => {
           expect(() => beforePersistentEffect?.()).toThrow("escapes the update rehearsal");
