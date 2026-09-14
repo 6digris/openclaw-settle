@@ -377,7 +377,9 @@ describe("QA Gateway proxy readiness diagnostics", () => {
         await proxy.stop();
         const connection = proxy.readinessSnapshot().connections[0];
         assert(connection);
-        expect(connection.handshake.httpResponse).toEqual({
+        const httpResponse = connection.handshake.httpResponse;
+        assert(httpResponse);
+        expect(httpResponse).toEqual({
           elapsedMs: expect.any(Number),
           statusCode: 503,
         });
@@ -391,7 +393,7 @@ describe("QA Gateway proxy readiness diagnostics", () => {
           expect.arrayContaining([expect.objectContaining({ tag: "upstream-open" })]),
         );
         expect(JSON.stringify(connection)).not.toMatch(/private|127\.0\.0\.1|503 Service/);
-        connection.handshake.httpResponse.statusCode = 500;
+        httpResponse.statusCode = 500;
         expect(proxy.readinessSnapshot().connections[0]?.handshake.httpResponse?.statusCode).toBe(
           503,
         );
@@ -425,6 +427,8 @@ describe("QA Gateway proxy readiness diagnostics", () => {
         expect(snapshot.connections.map(({ connection }) => connection)).toEqual([1, 2]);
         const [firstConnection, secondConnection] = snapshot.connections;
         assert(firstConnection && secondConnection);
+        const socketAssigned = secondConnection.handshake.socketAssigned;
+        assert(socketAssigned);
         expect(firstConnection.requests[0]).toMatchObject({
           ordinal: 1,
           method: "connect",
@@ -458,7 +462,7 @@ describe("QA Gateway proxy readiness diagnostics", () => {
         );
         firstConnection.requests[0].response!.code = "none";
         secondConnection.lifecycle[0].elapsedMs = -1;
-        secondConnection.handshake.socketAssigned.elapsedMs = -1;
+        socketAssigned.elapsedMs = -1;
         expect(proxy.readinessSnapshot().connections[0]?.requests[0].response?.code).toBe("other");
         expect(
           proxy.readinessSnapshot().connections[1]?.lifecycle[0].elapsedMs,

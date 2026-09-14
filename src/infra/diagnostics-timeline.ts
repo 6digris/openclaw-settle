@@ -394,7 +394,9 @@ function observeSpanWorkerTasks(span: StartedDiagnosticsTimelineSpan): () => voi
       { config: span.config, env: span.env },
     );
   const recordInvalid = () => {
-    if (invalid) return;
+    if (invalid) {
+      return;
+    }
     invalid = true;
     emit({ status: "invalid" });
   };
@@ -402,20 +404,25 @@ function observeSpanWorkerTasks(span: StartedDiagnosticsTimelineSpan): () => voi
     try {
       // The pool restores the submitting context before publishing and settling.
       // Descendants and coalesced followers do not own this span's worker metrics.
-      if (getActiveDiagnosticsTimelineSpan()?.spanId !== span.spanId) return;
-      if (!isRecord(message)) return recordInvalid();
+      if (getActiveDiagnosticsTimelineSpan()?.spanId !== span.spanId) {
+        return;
+      }
+      if (!isRecord(message)) {
+        return recordInvalid();
+      }
       const { outcome, queueMs, preparationMs, runMs, transferMs } = message;
       if (
         (outcome !== "ok" && outcome !== "failed") ||
+        typeof queueMs !== "number" ||
+        typeof preparationMs !== "number" ||
+        typeof runMs !== "number" ||
+        typeof transferMs !== "number" ||
         ![queueMs, preparationMs, runMs, transferMs].every(
-          (value) =>
-            typeof value === "number" &&
-            Number.isFinite(value) &&
-            value >= 0 &&
-            value <= Number.MAX_SAFE_INTEGER,
+          (value) => Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER,
         )
-      )
+      ) {
         return recordInvalid();
+      }
       if (recorded === 4) {
         if (!truncated) {
           truncated = true;
@@ -431,7 +438,7 @@ function observeSpanWorkerTasks(span: StartedDiagnosticsTimelineSpan): () => voi
         preparationMs,
         runMs,
         transferMs,
-      } as DiagnosticsTimelineAttributes);
+      });
     } catch {
       // diagnostics_channel rethrows subscriber failures as uncaught exceptions.
       try {

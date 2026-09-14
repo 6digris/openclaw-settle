@@ -198,10 +198,14 @@ export async function readNativeHistoryDiagnostic(
     // One bounded framing pass; never parse oversized or partial lines.
     for (let offset = 0; offset < buffer.length;) {
       const end = buffer.indexOf(10, offset);
-      if (end < 0) break;
+      if (end < 0) {
+        break;
+      }
       const start = offset;
       offset = end + 1;
-      if (end === start) continue;
+      if (end === start) {
+        continue;
+      }
       if (end - start > MAX_LINE_BYTES) {
         result.malformedLine = result.truncated = true;
         continue;
@@ -222,7 +226,9 @@ export async function readNativeHistoryDiagnostic(
         result.malformedLine = true;
         continue;
       }
-      if (at < window.startedAtMs || at > failedAtMs) continue;
+      if (at < window.startedAtMs || at > failedAtMs) {
+        continue;
+      }
       if (event.type === "mark" && event.name === "worker.task") {
         const span = privateKey(event.parentSpanId) ? spans.get(event.parentSpanId) : undefined;
         if (!span?.workerTasks || span.startedMs === null || span.outcome !== "pending") {
@@ -312,7 +318,9 @@ export async function readNativeHistoryDiagnostic(
         (event.type === "span.start" && span.startedMs !== null)
       ) {
         result.malformedLine = true;
-        if (span.request) span.request = { status: "unknown" };
+        if (span.request) {
+          span.request = { status: "unknown" };
+        }
         continue;
       }
       if (event.type === "span.start") {
