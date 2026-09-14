@@ -1,4 +1,5 @@
 import { expect, it } from "vitest";
+import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import { controlUiSessionUrl, installMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiSessionRow } from "../test-helpers/control-ui-session-fixtures.ts";
 import { focusChatSidePanel } from "./chat-side-panel.test-support.ts";
@@ -41,9 +42,13 @@ const website = `<!doctype html><html lang="en"><meta name="viewport" content="w
 
 suite.define(() => {
   it("runs a website with its own storage and refresh, preserving it through dashboard focus", async () => {
+    let tracingStarted = false;
+    let bodyCompleted = false;
     await suite.withPage(
       { serviceWorkers: "block", viewport: { width: 1280, height: 900 } },
       async ({ page, context }) => {
+        await context.tracing.start({ screenshots: true, snapshots: true, sources: false });
+        tracingStarted = true;
         let requests = 0;
         await context.route("https://status.example/**", (route) => {
           const path = new URL(route.request().url()).pathname;
@@ -187,6 +192,20 @@ suite.define(() => {
         await expect.poll(viewportFits).toBe(true);
         expect(await page.locator("openclaw-app-shell").count()).toBe(0);
         await page.screenshot({ path: `${suite.artifactDir}/website-document.png` });
+        bodyCompleted = true;
+      },
+      async ({ context }) => {
+        if (tracingStarted) {
+          if (bodyCompleted) {
+            await context.tracing.stop();
+          } else {
+            const artifactDir = createControlUiE2eArtifactDir(
+              "website-dashboard-trace",
+              process.env.OPENCLAW_UI_E2E_DIAGNOSTIC_DIR?.trim() || undefined,
+            );
+            await context.tracing.stop({ path: `${artifactDir}/trace.zip` });
+          }
+        }
       },
     );
   });
