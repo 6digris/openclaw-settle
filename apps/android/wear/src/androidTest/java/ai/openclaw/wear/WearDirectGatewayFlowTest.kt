@@ -5,11 +5,15 @@ import ai.openclaw.app.gateway.DeviceIdentity
 import ai.openclaw.app.gateway.normalizeGatewayTlsFingerprintInput
 import android.app.KeyguardManager
 import android.content.Intent
+import android.graphics.Point
+import android.graphics.Rect
 import android.os.Bundle
 import android.os.PowerManager
 import android.os.Process
 import android.os.SystemClock
+import android.view.Display
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import androidx.lifecycle.Lifecycle
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -103,84 +107,9 @@ class WearDirectGatewayFlowTest {
         var preTap: JsonObject? = null
         var navigationStage = "connection-lookup"
         try {
-          val label = app.getString(R.string.watch_connection)
-          findText(label).recycle()
-          val width = device.displayWidth
-          val height = device.displayHeight
-          val root = requireNotNull(instrumentation.uiAutomation.rootInActiveWindow)
-          var connections = emptyList<UiObject2>()
-          var parent: AccessibilityNodeInfo? = null
-          try {
-            assertTrue("active root belongs to the application", root.packageName?.toString() == app.packageName)
-            val window = requireNotNull(root.window)
-            try {
-              val bounds = android.graphics.Rect()
-              window.getBoundsInScreen(bounds)
-              val rootBounds = android.graphics.Rect()
-              root.getBoundsInScreen(rootBounds)
-              assertTrue(
-                "stability root covers the active default-display application window",
-                window.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION &&
-                  window.isActive && window.isFocused && window.displayId == android.view.Display.DEFAULT_DISPLAY &&
-                  window.id == root.windowId && rootBounds == bounds &&
-                  bounds.left >= 0 && bounds.top >= 0 && bounds.right <= width && bounds.bottom <= height &&
-                  bounds.width() > 0 && bounds.height() > 0,
-              )
-              // Stabilize the exposed window before resolving a fresh physical click target.
-              val stable =
-                root.waitForStable(
-                  requireStableScreenshot = true,
-                  stableTimeoutMs = 3_000,
-                  stableIntervalMs = 500,
-                  stablePollIntervalMs = 50,
-                )
-              try {
-                val bitmap = stable.screenshot
-                val stableBounds = android.graphics.Rect()
-                stable.node.getBoundsInScreen(stableBounds)
-                assertTrue("application window became stable", !stable.isTimeout)
-                assertTrue(
-                  "stability screenshot covers the full application window",
-                  bitmap != null && stable.node.packageName?.toString() == app.packageName &&
-                    stable.node.windowId == window.id && stableBounds == bounds &&
-                    bitmap.width == bounds.width() && bitmap.height == bounds.height(),
-                )
-              } finally {
-                stable.screenshot?.recycle()
-              }
-            } finally {
-              @Suppress("DEPRECATION")
-              window.recycle()
-            }
-            connections = device.findObjects(By.pkg(app.packageName).text(label))
-            assertTrue("one exact Connection child", connections.size == 1)
-            val connection = connections.single()
-            val child = connection.accessibilityNodeInfo
-            assertTrue(
-              "Connection child belongs to the active application window",
-              child.packageName?.toString() == app.packageName && child.text?.toString() == label &&
-                child.windowId == root.windowId && child.isEnabled && child.isVisibleToUser,
-            )
-            val owner = requireNotNull(child.getParent(0))
-            parent = owner
-            assertTrue(
-              "Connection has an enabled immediate parent action owner",
-              owner.packageName?.toString() == app.packageName && owner.windowId == root.windowId &&
-                owner.isEnabled && owner.isVisibleToUser && owner.isClickable &&
-                owner.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK },
-            )
-            val point = connection.visibleCenter
-            assertTrue("Connection is on the default display", connection.displayId == android.view.Display.DEFAULT_DISPLAY)
-            assertTrue("Connection click is inside the display", point.x in 0 until width && point.y in 0 until height)
+          clickAction(activity, app.getString(R.string.watch_connection)) {
             preTap = runCatching { navigationSnapshot(activity, runtime) }.getOrNull()
             navigationStage = "connection-click"
-            assertTrue("stock Connection click was accepted", device.click(point.x, point.y))
-          } finally {
-            @Suppress("DEPRECATION")
-            parent?.recycle()
-            connections.forEach { it.recycle() }
-            @Suppress("DEPRECATION")
-            root.recycle()
           }
           navigationStage = "setup-lookup"
           val setupSelector = By.pkg(app.packageName).text(app.getString(R.string.watch_setup_code)).enabled(true)
@@ -195,9 +124,8 @@ class WearDirectGatewayFlowTest {
             "enabled Setup appears without post-click scrolling within 3000ms",
             setupPresent && SystemClock.elapsedRealtime() <= deadline,
           )
-          val setup = requireNotNull(device.findObject(setupSelector))
           navigationStage = "setup-click"
-          setup.click()
+          clickAction(activity, app.getString(R.string.watch_setup_code), allowScroll = false)
         } catch (error: Throwable) {
           // This bracket ends before credential entry. Diagnostics must neither expose
           // later screens nor replace the original failure or the outer cleanup.
@@ -230,7 +158,7 @@ class WearDirectGatewayFlowTest {
         val baseline = runCatching { certificateSnapshot(activity, runtime.state.value, gatewayId) }.getOrNull()
         try {
           setAccessibleText(uniqueEditor(password = true), requireNotNull(input.setupCode))
-          findText(app.getString(R.string.watch_connect)).click()
+          clickAction(activity, app.getString(R.string.watch_connect))
           awaitState("current certificate prompt") { runtime.state.value.trust != null }
         } catch (error: Throwable) {
           runCatching {
@@ -262,7 +190,7 @@ class WearDirectGatewayFlowTest {
             ?.stableId == gatewayId,
         )
         findText(app.getString(R.string.watch_certificate))
-        findText(app.getString(R.string.watch_trust_certificate)).click()
+        clickAction(activity, app.getString(R.string.watch_trust_certificate))
       }
       awaitState("saved limited credentials establish a direct operator connection") {
         val state = runtime.state.value
@@ -274,19 +202,19 @@ class WearDirectGatewayFlowTest {
       findText("Connected directly")
       capture(input.phase, "01-connected")
 
-      findText(app.getString(R.string.watch_sessions)).click()
+      clickAction(activity, app.getString(R.string.watch_sessions))
       awaitState("seeded session is listed") {
         runtime.state.value.sessions
           .any { it.key == input.sessionKey && it.title == input.sessionTitle }
       }
-      findText(input.sessionTitle).click()
+      clickAction(activity, input.sessionTitle)
       awaitState("selected session owns canonical history") {
         val state = runtime.state.value
         state.connected && state.sessionKey == input.sessionKey && state.messages.any { it.text.contains(input.historyMarker) }
       }
       findText(input.historyMarker, contains = true)
       capture(input.phase, "02-history")
-      if (previous == null) exerciseHelpAndDeny(runtime, input)
+      if (previous == null) exerciseHelpAndDeny(activity, runtime, input)
       assertTrue("native Home action succeeded", device.pressHome())
       awaitPaused(runtime, activity, finishing = false)
       assertTrue("Home preserves the application coroutine owner", processJob.isActive)
@@ -335,7 +263,7 @@ class WearDirectGatewayFlowTest {
       findText("Connected directly")
       findText(closure.freshHistoryMarker, contains = true)
       capture(input.phase, "05-resumed")
-      findText(app.getString(R.string.watch_disconnect)).click()
+      clickAction(activity, app.getString(R.string.watch_disconnect))
       awaitState("foreground Disconnect retires its connection before Activity finish") {
         val state = runtime.state.value
         !state.connected && !state.busy && state.status == "Disconnected" && state.error == null
@@ -431,6 +359,7 @@ class WearDirectGatewayFlowTest {
   }
 
   private fun exerciseHelpAndDeny(
+    activity: MainActivity,
     runtime: WearDirectRuntime,
     input: ProofInput,
   ) {
@@ -439,7 +368,7 @@ class WearDirectGatewayFlowTest {
       runtime.state.value.messages
         .none { it.text.contains(input.helpMarker) },
     )
-    findText(app.getString(R.string.message)).click()
+    clickAction(activity, app.getString(R.string.message))
     val message = uniqueEditor(password = false)
     setAccessibleText(message, "/help")
     assertTrue("real input submits help", message.accessibilityNodeInfo.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id))
@@ -454,7 +383,7 @@ class WearDirectGatewayFlowTest {
         runtime.state.value.pendingSend
           ?.message == "/help",
       )
-      findText(app.getString(R.string.retry)).click()
+      clickAction(activity, app.getString(R.string.retry))
     }
     awaitState("Gateway help response settles the real send") {
       val state = runtime.state.value
@@ -493,13 +422,13 @@ class WearDirectGatewayFlowTest {
       approval.sourceSessionKey == input.sessionKey && approval.status == "pending" && approval.title == input.approvalTitle &&
         approval.decisions == listOf("deny") && approval.reviewIssue == null && approval.canResolve("deny", System.currentTimeMillis()),
     )
-    findText(app.getString(R.string.watch_approvals)).click()
-    findText("${input.approvalTitle}: pending").click()
+    clickAction(activity, app.getString(R.string.watch_approvals))
+    clickAction(activity, "${input.approvalTitle}: pending")
     findText(input.sessionKey)
-    findText(app.getString(R.string.watch_deny)).click()
-    val confirmDeny = findText(app.getString(R.string.watch_confirm_decision, app.getString(R.string.watch_deny)))
+    clickAction(activity, app.getString(R.string.watch_deny))
+    findText(app.getString(R.string.watch_confirm_decision, app.getString(R.string.watch_deny))).recycle()
     capture(input.phase, "04-pending")
-    confirmDeny.click()
+    clickAction(activity, app.getString(R.string.watch_confirm_decision, app.getString(R.string.watch_deny)))
     awaitState("canonical deny acknowledgement is settled") {
       val state = runtime.state.value
       state.sessionKey == input.sessionKey && request.id !in state.resolving &&
@@ -774,6 +703,153 @@ class WearDirectGatewayFlowTest {
       put("trust", state.trust != null)
       put("managementRequired", state.connectionManagementRequired)
       put("composeManage", "UNKNOWN")
+    }
+  }
+
+  private fun clickAction(
+    activity: MainActivity,
+    label: String,
+    allowScroll: Boolean = true,
+    beforeClick: () -> Unit = {},
+  ) {
+    val display = Rect(0, 0, device.displayWidth, device.displayHeight)
+    val root = requireNotNull(instrumentation.uiAutomation.rootInActiveWindow)
+    try {
+      val window = requireNotNull(root.window)
+      try {
+        val windowBounds = Rect().also { window.getBoundsInScreen(it) }
+        val rootBounds = Rect().also { root.getBoundsInScreen(it) }
+        assertTrue(
+          "action belongs to the active default-display application window",
+          root.packageName?.toString() == app.packageName && window.id == root.windowId &&
+            window.type == AccessibilityWindowInfo.TYPE_APPLICATION && window.isActive && window.isFocused &&
+            window.displayId == Display.DEFAULT_DISPLAY && rootBounds == windowBounds &&
+            windowBounds.left == 0 && windowBounds.top == 0 && !windowBounds.isEmpty &&
+            display.contains(windowBounds),
+        )
+
+        fun actionPoint(): Point? {
+          val currentRoot = requireNotNull(instrumentation.uiAutomation.rootInActiveWindow)
+          val matches = mutableListOf<UiObject2>()
+          val acquired = mutableListOf<AccessibilityNodeInfo>()
+          try {
+            val currentWindow = requireNotNull(currentRoot.window)
+            try {
+              val currentBounds = Rect().also { currentWindow.getBoundsInScreen(it) }
+              val currentRootBounds = Rect().also { currentRoot.getBoundsInScreen(it) }
+              assertTrue(
+                "action lookup remains in the verified application window",
+                currentRoot.packageName?.toString() == app.packageName && currentRoot.windowId == window.id &&
+                  currentWindow.id == window.id && currentWindow.type == AccessibilityWindowInfo.TYPE_APPLICATION &&
+                  currentWindow.isActive && currentWindow.isFocused && currentWindow.displayId == Display.DEFAULT_DISPLAY &&
+                  currentBounds == windowBounds && currentRootBounds == windowBounds,
+              )
+            } finally {
+              @Suppress("DEPRECATION")
+              currentWindow.recycle()
+            }
+            matches.addAll(device.findObjects(By.pkg(app.packageName).text(label)))
+            val owners = linkedMapOf<AccessibilityNodeInfo, Rect>()
+            for (match in matches) {
+              val child = match.accessibilityNodeInfo
+              if (child.packageName?.toString() != app.packageName || child.text?.toString() != label ||
+                child.windowId != window.id || !child.isEnabled || !child.isVisibleToUser || child.isEditable || child.isPassword
+              ) {
+                continue
+              }
+              val owner = child.getParent(0)?.also { acquired.add(it) } ?: continue
+              if (owner.packageName?.toString() != app.packageName || owner.windowId != window.id ||
+                !owner.isEnabled || !owner.isVisibleToUser || !owner.isClickable || owner.isEditable || owner.isPassword ||
+                owner.actionList.none { it.id == AccessibilityNodeInfo.ACTION_CLICK }
+              ) {
+                continue
+              }
+              val hit = Rect().also { child.getBoundsInScreen(it) }
+              val ownerBounds = Rect().also { owner.getBoundsInScreen(it) }
+              if (!hit.intersect(ownerBounds) || !hit.intersect(windowBounds) || !hit.intersect(display)) continue
+              // Only the immediate parent can own the action. Ancestors merely clip the
+              // physical viewport; UiAutomator's visibleBounds ignores failed intersections.
+              var ancestor: AccessibilityNodeInfo? = owner
+              val seen = mutableSetOf<AccessibilityNodeInfo>()
+              var reachedRoot = false
+              while (ancestor != null) {
+                val current = ancestor
+                assertTrue("action viewport ancestry is acyclic", seen.add(current))
+                if (current.packageName?.toString() != app.packageName || current.windowId != window.id) break
+                if (current.isScrollable) {
+                  val viewport = Rect().also { current.getBoundsInScreen(it) }
+                  if (!hit.intersect(viewport)) break
+                }
+                if (current == currentRoot) {
+                  reachedRoot = true
+                  break
+                }
+                ancestor = current.getParent(0)?.also { acquired.add(it) }
+              }
+              if (reachedRoot && !hit.isEmpty) owners.putIfAbsent(owner, hit)
+            }
+            assertTrue("at most one distinct eligible native action owner", owners.size <= 1)
+            return owners.values.singleOrNull()?.let { Point(it.centerX(), it.centerY()) }
+          } finally {
+            @Suppress("DEPRECATION")
+            acquired.forEach { it.recycle() }
+            matches.forEach { it.recycle() }
+            @Suppress("DEPRECATION")
+            currentRoot.recycle()
+          }
+        }
+
+        var exposed = actionPoint() != null
+        if (!exposed && allowScroll) {
+          repeat(8) { scroll(down = false) }
+          repeat(20) {
+            if (!exposed) {
+              exposed = actionPoint() != null
+              if (!exposed) scroll(down = true)
+            }
+          }
+        }
+        assertTrue("one eligible native action is exposed", exposed)
+        assertTrue("application stability root is current", root.refresh())
+        // UiAutomator 2.4.0 crops Y to zero: use only a zero-origin full window.
+        // This is library visual stability, not Compose idle or a hard end-to-end deadline.
+        val stable =
+          root.waitForStable(
+            requireStableScreenshot = true,
+            stableTimeoutMs = 3_000,
+            stableIntervalMs = 500,
+            stablePollIntervalMs = 50,
+          )
+        try {
+          val bitmap = stable.screenshot
+          val stableBounds = Rect().also { stable.node.getBoundsInScreen(it) }
+          assertTrue(
+            "full application window became visually stable",
+            !stable.isTimeout && bitmap != null && stable.node.packageName?.toString() == app.packageName &&
+              stable.node.windowId == window.id && stableBounds == windowBounds &&
+              bitmap.width == windowBounds.width() && bitmap.height == windowBounds.height(),
+          )
+        } finally {
+          stable.screenshot?.recycle()
+        }
+        // No scrolling or retained UiObject2 after stability (including after proof capture).
+        val point = requireNotNull(actionPoint()) { "native action is no longer eligible after stability" }
+        beforeClick()
+        val resumed = activity.lifecycle.currentState == Lifecycle.State.RESUMED
+        val focused = activity.hasWindowFocus()
+        val interactive = app.getSystemService(PowerManager::class.java).isInteractive
+        val keyguard = app.getSystemService(KeyguardManager::class.java)
+        val showing = keyguard.isKeyguardLocked
+        val locked = keyguard.isDeviceLocked
+        assertTrue("native action requires resumed, focused, awake and unlocked application", resumed && focused && interactive && !showing && !locked)
+        assertTrue("stock native action click was accepted", device.click(point.x, point.y))
+      } finally {
+        @Suppress("DEPRECATION")
+        window.recycle()
+      }
+    } finally {
+      @Suppress("DEPRECATION")
+      root.recycle()
     }
   }
 
