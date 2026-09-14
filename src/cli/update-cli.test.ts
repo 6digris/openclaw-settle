@@ -72,6 +72,7 @@ const launchdUpdateCleanupMocks = vi.hoisted(() => ({
 }));
 const restartHealthTestControl = vi.hoisted(() => ({
   snapshot: undefined as unknown,
+  calls: [] as unknown[],
 }));
 const nodeVersionSatisfiesEngine = vi.fn();
 const execFile = vi.fn((...args: unknown[]) => {
@@ -359,14 +360,16 @@ vi.mock("./daemon-cli/restart-health.js", async (importOriginal) => {
     ...actual,
     waitForGatewayHealthyRestart: (
       ...args: Parameters<typeof actual.waitForGatewayHealthyRestart>
-    ) =>
-      restartHealthTestControl.snapshot === undefined
+    ) => {
+      restartHealthTestControl.calls.push(args[0]);
+      return restartHealthTestControl.snapshot === undefined
         ? actual.waitForGatewayHealthyRestart(...args)
         : Promise.resolve(
             restartHealthTestControl.snapshot as Awaited<
               ReturnType<typeof actual.waitForGatewayHealthyRestart>
             >,
-          ),
+          );
+    },
   };
 });
 
@@ -856,6 +859,7 @@ describe("update-cli", () => {
     delete process.env.OPENCLAW_SERVICE_KIND;
     delete process.env[GATEWAY_SERVICE_RUNTIME_PID_ENV];
     restartHealthTestControl.snapshot = undefined;
+    restartHealthTestControl.calls = [];
     vi.clearAllMocks();
     resetRuntimeCapture();
     spawn.mockImplementation(() => {
@@ -2713,7 +2717,7 @@ describe("update-cli", () => {
       reason: "selector_query_failed",
     });
 
-    await updateCommand({ yes: true });
+    await updateCommand({ yes: true, timeout: "123" });
 
     expect(packageInstallCommandCall()).toBeUndefined();
     expect(replaceConfigFile).not.toHaveBeenCalled();
@@ -6757,6 +6761,46 @@ describe("update-cli", () => {
     ).toContain("Gateway: restarted and verified.");
   });
 
+  it("uses the full migration-aware wait after refreshing a package service", async () => {
+    setupUpdatedRootRefresh({
+      gatewayUpdateImpl: async (updatedRoot) =>
+        makeOkUpdateResult({
+          mode: "npm",
+          root: updatedRoot,
+          before: { version: "2026.4.23" },
+          after: { version: "2026.4.24" },
+        }),
+    });
+    restartHealthTestControl.snapshot = {
+      runtime: { status: "running", pid: 4242, state: "running" },
+      portUsage: {
+        port: 18789,
+        status: "busy",
+        listeners: [{ pid: 4242, command: "openclaw-gateway" }],
+        hints: [],
+      },
+      healthy: true,
+      staleGatewayPids: [],
+      gatewayVersion: "2026.4.24",
+      waitOutcome: "healthy",
+      elapsedMs: 8_000,
+    };
+
+    await updateCommand({ yes: true, timeout: "123" });
+
+    const firstWait = restartHealthTestControl.calls[0] as
+      | { attempts?: number; delayMs?: number; expectedVersion?: string; timeoutMs?: number }
+      | undefined;
+    expect(firstWait).toEqual(
+      expect.objectContaining({
+        expectedVersion: "2026.4.24",
+      }),
+    );
+    expect(firstWait?.attempts).toBeUndefined();
+    expect(firstWait?.delayMs).toBeUndefined();
+    expect(firstWait?.timeoutMs).toBe(123_000);
+  });
+
   it("accepts same-version refresh failure recovery when the managed service restarts", async () => {
     const updatedRoot = createCaseDir("openclaw-updated-root");
     const updatedEntrypoint = path.join(updatedRoot, "dist", "entry.js");
@@ -6929,7 +6973,7 @@ describe("update-cli", () => {
       url: "ws://127.0.0.1:18789",
     });
 
-    await updateCommand({ yes: true, json: true });
+    await updateCommand({ yes: true, json: true, timeout: "123" });
 
     expect(runRestartScript).not.toHaveBeenCalled();
     expect(runDaemonRestart).not.toHaveBeenCalled();
@@ -6937,7 +6981,7 @@ describe("update-cli", () => {
     expect(restartCall?.[0][0]).toContain("node");
     expect(restartCall?.[0].slice(1)).toEqual([updatedEntrypoint, "gateway", "restart", "--json"]);
     expect(restartCall?.[1].cwd).toBe(updatedRoot);
-    expect(restartCall?.[1].timeoutMs).toBe(60_000);
+    expect(restartCall?.[1].timeoutMs).toBe(123_000);
     const probeCall = probeGatewayCall() as { includeDetails?: boolean } | undefined;
     expect(probeCall?.includeDetails).toBe(true);
     expect(defaultRuntime.exit).toHaveBeenCalledWith(1);

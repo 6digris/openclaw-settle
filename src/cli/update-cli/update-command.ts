@@ -193,8 +193,6 @@ import { suppressDeprecations } from "./suppress-deprecations.js";
 
 const CLI_NAME = resolveCliName();
 const SERVICE_REFRESH_TIMEOUT_MS = 60_000;
-const POST_REFRESH_ALREADY_HEALTHY_ATTEMPTS = 10;
-const POST_REFRESH_ALREADY_HEALTHY_DELAY_MS = 500;
 const DEFAULT_UPDATE_STEP_TIMEOUT_MS = 30 * 60_000;
 const POST_CORE_UPDATE_ENV = "OPENCLAW_UPDATE_POST_CORE";
 const POST_CORE_UPDATE_CHANNEL_ENV = "OPENCLAW_UPDATE_POST_CORE_CHANNEL";
@@ -1674,6 +1672,7 @@ async function runUpdatedInstallGatewayRestart(params: {
   invocationCwd?: string;
   env?: NodeJS.ProcessEnv;
   nodeRunner?: string;
+  timeoutMs: number;
 }): Promise<boolean> {
   const entrypoint = await resolveGatewayInstallEntrypoint(params.result.root);
   if (!entrypoint) {
@@ -1691,7 +1690,7 @@ async function runUpdatedInstallGatewayRestart(params: {
     {
       cwd: params.result.root,
       env: resolveUpdatedInstallCommandEnv(params.env ?? process.env, params.invocationCwd),
-      timeoutMs: SERVICE_REFRESH_TIMEOUT_MS,
+      timeoutMs: params.timeoutMs,
     },
   );
   if (res.code === 0) {
@@ -2570,6 +2569,7 @@ async function maybeRestartService(params: {
   nodeRunner?: string;
   skipLegacyServiceRestart?: boolean;
   requireRunningServiceAfterRestart?: boolean;
+  timeoutMs: number;
 }): Promise<boolean> {
   const verifyRestartedGateway = async (
     expectedGatewayVersion: string | undefined,
@@ -2583,6 +2583,7 @@ async function maybeRestartService(params: {
           invocationCwd: params.invocationCwd,
           env: params.serviceEnv,
           nodeRunner: params.nodeRunner,
+          timeoutMs: params.timeoutMs,
         });
         return;
       }
@@ -2597,6 +2598,7 @@ async function maybeRestartService(params: {
       expectedVersion: expectedGatewayVersion,
       env: params.serviceEnv,
       requireRunningService: opts.requireRunningService,
+      timeoutMs: params.timeoutMs,
     });
     if (!health.healthy && health.staleGatewayPids.length > 0) {
       if (!params.opts.json) {
@@ -2614,6 +2616,7 @@ async function maybeRestartService(params: {
         expectedVersion: expectedGatewayVersion,
         env: params.serviceEnv,
         requireRunningService: opts.requireRunningService,
+        timeoutMs: params.timeoutMs,
       });
     }
 
@@ -2716,8 +2719,7 @@ async function maybeRestartService(params: {
               port: params.gatewayPort,
               expectedVersion: expectedGatewayVersion,
               env: params.serviceEnv,
-              attempts: POST_REFRESH_ALREADY_HEALTHY_ATTEMPTS,
-              delayMs: POST_REFRESH_ALREADY_HEALTHY_DELAY_MS,
+              timeoutMs: params.timeoutMs,
             });
             refreshedGatewayAlreadyHealthy = health.healthy;
             if (refreshedGatewayAlreadyHealthy && !params.opts.json) {
@@ -2759,6 +2761,7 @@ async function maybeRestartService(params: {
           invocationCwd: params.invocationCwd,
           env: params.serviceEnv,
           nodeRunner: params.nodeRunner,
+          timeoutMs: params.timeoutMs,
         });
         if (
           updatedInstallRestartNeedsServiceRootProof &&
@@ -4626,6 +4629,7 @@ async function updateCommandInternal(
     skipLegacyServiceRestart,
     requireRunningServiceAfterRestart:
       resultWithPostUpdate.mode === "git" && preManagedServiceStop?.stopped === true,
+    timeoutMs: updateStepTimeoutMs,
   });
   if (!restartOk) {
     await markControlPlaneUpdateRestartSentinelFailureBestEffort({

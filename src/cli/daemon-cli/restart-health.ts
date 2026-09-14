@@ -16,10 +16,15 @@ import {
   inspectPortUsage,
   type PortUsage,
 } from "../../infra/ports.js";
+import {
+  hasActiveStartupMigrationLease,
+  STARTUP_MIGRATION_LEASE_TTL_MS,
+} from "../../infra/startup-migration-checkpoint.js";
 import { killProcessTree } from "../../process/kill-tree.js";
 import { sleep } from "../../utils.js";
 
 const DEFAULT_RESTART_HEALTH_TIMEOUT_MS = 60_000;
+const STARTUP_MIGRATION_ACTIVITY_POLL_MS = 5_000;
 export const DEFAULT_RESTART_HEALTH_DELAY_MS = 500;
 export const DEFAULT_RESTART_HEALTH_ATTEMPTS = Math.ceil(
   DEFAULT_RESTART_HEALTH_TIMEOUT_MS / DEFAULT_RESTART_HEALTH_DELAY_MS,
@@ -519,13 +524,17 @@ export async function waitForGatewayHealthyRestart(params: {
   port: number;
   attempts?: number;
   delayMs?: number;
+  timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
   expectedVersion?: string | null;
   includeUnknownListenersAsStale?: boolean;
   requireRunningService?: boolean;
+  isStartupMigrationActive?: typeof hasActiveStartupMigrationLease;
 }): Promise<GatewayRestartSnapshot> {
+  const startedAtMs = performance.now();
   const attempts = params.attempts ?? DEFAULT_RESTART_HEALTH_ATTEMPTS;
   const delayMs = params.delayMs ?? DEFAULT_RESTART_HEALTH_DELAY_MS;
+  const standardDeadlineMs = params.timeoutMs ?? attempts * delayMs;
 
   const probeAuth = await resolveGatewayRestartProbeAuth(params.env).catch(() => undefined);
   let snapshot = await inspectGatewayRestart({
@@ -543,32 +552,77 @@ export async function waitForGatewayHealthyRestart(params: {
     Math.ceil(stoppedFreeEarlyExitGraceMs() / delayMs),
     Math.floor(attempts / 2),
   );
+  let migrationDeadlineMs: number | undefined;
+  let postMigrationDeadlineMs: number | undefined;
+  let migrationActive = false;
+  let nextMigrationActivityPollMs = 0;
 
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
+  for (let attempt = 0; ; attempt += 1) {
+    // Health probes and state-DB reads are part of the operator-visible wait. A monotonic clock
+    // keeps both the normal deadline and migration watchdog bounded when those operations stall.
+    const elapsedMs = Math.max(0, performance.now() - startedAtMs);
     const healthy =
       snapshot.healthy && (!params.requireRunningService || snapshot.runtime.status === "running");
     if (healthy) {
-      return withWaitContext(snapshot, "healthy", attempt * delayMs);
+      return withWaitContext(snapshot, "healthy", elapsedMs);
     }
     if (snapshot.activatedPluginErrors?.length) {
-      return withWaitContext(snapshot, "plugin-errors", attempt * delayMs);
+      return withWaitContext(snapshot, "plugin-errors", elapsedMs);
     }
     if (snapshot.channelProbeErrors?.length) {
-      return withWaitContext(snapshot, "channel-errors", attempt * delayMs);
+      return withWaitContext(snapshot, "channel-errors", elapsedMs);
     }
     if (snapshot.versionMismatch) {
-      return withWaitContext(snapshot, "version-mismatch", attempt * delayMs);
+      return withWaitContext(snapshot, "version-mismatch", elapsedMs);
     }
     if (snapshot.staleGatewayPids.length > 0 && snapshot.runtime.status !== "running") {
-      return withWaitContext(snapshot, "stale-pids", attempt * delayMs);
+      return withWaitContext(snapshot, "stale-pids", elapsedMs);
     }
     if (shouldEarlyExitStoppedFree(snapshot, attempt, minAttemptForEarlyExit)) {
       consecutiveStoppedFreeCount += 1;
       if (consecutiveStoppedFreeCount >= STOPPED_FREE_THRESHOLD) {
-        return withWaitContext(snapshot, "stopped-free", attempt * delayMs);
+        return withWaitContext(snapshot, "stopped-free", elapsedMs);
       }
     } else if (snapshot.runtime.status !== "stopped" || snapshot.portUsage.status !== "free") {
       consecutiveStoppedFreeCount = 0;
+    }
+
+    if (snapshot.runtime.status !== "running") {
+      migrationActive = false;
+    } else if (elapsedMs >= nextMigrationActivityPollMs) {
+      migrationActive = (() => {
+        try {
+          return (params.isStartupMigrationActive ?? hasActiveStartupMigrationLease)({
+            env: params.env,
+          });
+        } catch {
+          return false;
+        }
+      })();
+      nextMigrationActivityPollMs = elapsedMs + STARTUP_MIGRATION_ACTIVITY_POLL_MS;
+      if (migrationActive && migrationDeadlineMs === undefined) {
+        // Startup owns migration truth through its renewable shared-state lease. Extend only
+        // while the supervisor still reports the process running, and cap the extension at one
+        // lease TTL so a wedged migration cannot hold restart/update callers indefinitely.
+        migrationDeadlineMs = elapsedMs + STARTUP_MIGRATION_LEASE_TTL_MS;
+      } else if (!migrationActive && migrationDeadlineMs !== undefined) {
+        postMigrationDeadlineMs ??= elapsedMs + standardDeadlineMs;
+      }
+    }
+
+    if (elapsedMs >= standardDeadlineMs || migrationDeadlineMs !== undefined) {
+      // Update callers already own a finite command budget. Keep their first service refresh
+      // alive for that full budget so a long startup migration is not killed by a redundant
+      // restart; standalone lifecycle callers retain the migration/post-migration windows.
+      const deadlineMs =
+        params.timeoutMs !== undefined
+          ? params.timeoutMs
+          : migrationActive
+            ? migrationDeadlineMs
+            : (postMigrationDeadlineMs ?? standardDeadlineMs);
+      if (deadlineMs === undefined || elapsedMs >= deadlineMs) {
+        return withWaitContext(snapshot, "timeout", elapsedMs);
+      }
     }
     await sleep(delayMs);
     snapshot = await inspectGatewayRestart({
@@ -580,8 +634,6 @@ export async function waitForGatewayHealthyRestart(params: {
       probeAuth,
     });
   }
-
-  return withWaitContext(snapshot, "timeout", attempts * delayMs);
 }
 
 export async function waitForGatewayHealthyListener(params: {
