@@ -6690,10 +6690,15 @@ test("sessions.create forks the parent transcript into the new session", async (
   const { dir, storePath } = await createSessionStoreDir();
   testState.sessionConfig = { scope: "per-sender" };
   const parent = await createCheckpointFixture(dir);
+  const projectRoot = path.join(dir, "qa-writer");
+  await fs.mkdir(projectRoot);
   await writeSessionStore({
     entries: {
       main: sessionStoreEntry(parent.sessionId, {
         sessionFile: parent.sessionFile,
+        projectId: "qa-writer",
+        spawnedCwd: projectRoot,
+        sessionRoot: projectRoot,
         totalTokens: 123,
         totalTokensFresh: true,
         totalTokensVersion: 1,
@@ -6772,6 +6777,9 @@ test("sessions.create forks the parent transcript into the new session", async (
 
   const key = requireNonEmptyString(created.payload?.key, "forked session key");
   expect(loadSessionEntry({ sessionKey: key, storePath })).toMatchObject({
+    projectId: "qa-writer",
+    spawnedCwd: projectRoot,
+    sessionRoot: projectRoot,
     sessionId: created.payload?.sessionId,
     forkSource: {
       sessionKey: "agent:main:main",

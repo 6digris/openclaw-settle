@@ -3,6 +3,7 @@ import {
   patchConfigHealthEntryInDatabase,
   readConfigHealthSnapshotInDatabase,
 } from "../config/io.health-state.kernel.js";
+import { loadMutableCronStoreInWorker } from "../cron/store/load.worker.js";
 import { executeSessionDeliveryCommand } from "../infra/session-delivery-queue.worker.js";
 import { createSqliteAuditRecordKernel } from "../infra/sqlite-audit-record.kernel.js";
 import {
@@ -276,6 +277,9 @@ function createSharedStateWorkerBackend(
         );
       }
       const database = open();
+      if (command.type === "cron.loadMutable") {
+        return loadMutableCronStoreInWorker(database, command.input.storeKey);
+      }
       if (command.type === "tasks.restore") {
         return restoreTaskRegistryInDatabase(database);
       }
