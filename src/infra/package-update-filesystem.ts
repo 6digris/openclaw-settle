@@ -46,12 +46,40 @@ export async function activateStagedNpmPackageRoot(
   source: string,
   destination: string,
   assertCurrent?: () => void,
+  onPublished?: (remove: (assertCurrent: () => void) => Promise<void>) => void,
 ): Promise<void> {
+  const published = (identity: { dev: bigint; ino: bigint }, linkTarget?: string) => {
+    onPublished?.(async (assertOwner) => {
+      const current = await fs.lstat(destination, { bigint: true });
+      if (
+        identity.ino === 0n ||
+        (process.platform === "win32" && identity.dev === 0n) ||
+        current.dev !== identity.dev ||
+        current.ino !== identity.ino ||
+        (linkTarget !== undefined &&
+          (!current.isSymbolicLink() || (await fs.realpath(destination)) !== linkTarget))
+      ) {
+        throw new Error(
+          "The installation changed while updating. Automatic rollback stopped to preserve it.",
+        );
+      }
+      assertOwner();
+      if (linkTarget !== undefined) {
+        await fs.unlink(destination);
+      } else {
+        await removePackagePath(destination, assertOwner);
+      }
+    });
+  };
   if (assertCurrent) {
     // A durable descriptor binds the staged inode. A copied replacement would
     // invalidate that evidence and cannot be silently admitted for recovery.
+    const identity = onPublished ? await fs.lstat(source, { bigint: true }) : undefined;
     assertCurrent();
     await fs.rename(source, destination);
+    if (identity) {
+      published(identity);
+    }
     return;
   }
   const stat = await fs.lstat(source);
@@ -60,6 +88,7 @@ export async function activateStagedNpmPackageRoot(
       from: source,
       sourceHardlinks: PACKAGE_MANAGER_SWAP_SOURCE_HARDLINKS,
       to: destination,
+      onDestinationPublished: onPublished ? published : undefined,
     });
     return;
   }
@@ -72,6 +101,9 @@ export async function activateStagedNpmPackageRoot(
     destination,
     process.platform === "win32" ? "junction" : undefined,
   );
+  if (onPublished) {
+    published(await fs.lstat(destination, { bigint: true }), canonicalSource);
+  }
 }
 
 export function removePackagePath(target: string, assertCurrent = () => {}): Promise<void> {
@@ -178,6 +210,23 @@ export async function discardPackageUpdateBackup(
       return `preserved ${label} at ${backupPath}; remove it manually after verifying the installation`;
     }
   }
+}
+
+export async function discardPackageUpdateBackups(
+  entries: ReadonlyArray<readonly [string | undefined, string]>,
+  globalRoot: string,
+  assertCurrent: () => void,
+): Promise<string[]> {
+  const messages: string[] = [];
+  for (const [root, label] of entries) {
+    if (root) {
+      const message = await discardPackageUpdateBackup(root, label, globalRoot, assertCurrent);
+      if (message) {
+        messages.push(message);
+      }
+    }
+  }
+  return messages;
 }
 
 export async function removePackageUpdatePath(targetPath: string): Promise<boolean> {

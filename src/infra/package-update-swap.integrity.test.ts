@@ -223,6 +223,67 @@ describe("retained npm package integrity", () => {
     },
   );
 
+  it.each(["collision", "replacement", "copy cleanup failure"] as const)(
+    "recovers only its publication at an absent package destination (%s)",
+    async (scenario) => {
+      await withTestDir({ prefix: "openclaw-package-publication-race-" }, async (base) => {
+        const { params, packageRoot, launcher } = await createPackageSwapFixture(base);
+        await fs.rm(packageRoot, { recursive: true });
+        if (scenario === "copy cleanup failure") {
+          const rename = fs.rename.bind(fs);
+          const stagedManifest = path.join(params.stage.packageRoot, "package.json");
+          vi.spyOn(fs, "rename").mockImplementation(async (...args) => {
+            if (String(args[0]) === params.stage.packageRoot && String(args[1]) === packageRoot) {
+              throw Object.assign(new Error("cross-device publication"), { code: "EXDEV" });
+            }
+            await rename(...args);
+            if (String(args[1]) === packageRoot) {
+              await fs.writeFile(stagedManifest, "concurrent source edit\n");
+            }
+          });
+          const result = await swapStagedPackageInstall(params);
+          expect(result.status).toBe("failed");
+          await expect(fs.lstat(packageRoot)).rejects.toMatchObject({ code: "ENOENT" });
+          await expect(fs.readFile(stagedManifest, "utf8")).resolves.toBe(
+            "concurrent source edit\n",
+          );
+          await expect(fs.readFile(launcher, "utf8")).resolves.toBe("old launcher\n");
+          return;
+        }
+        const checkout = path.join(base, "candidate-checkout");
+        await fs.rename(params.stage.packageRoot, checkout);
+        await fs.symlink(checkout, params.stage.packageRoot, "junction");
+        const sentinel = path.join(packageRoot, "operator.txt");
+        const publishForeign = async () => {
+          await fs.mkdir(packageRoot);
+          await fs.writeFile(sentinel, "another installation\n");
+        };
+        if (scenario === "collision") {
+          const symlink = fs.symlink.bind(fs);
+          vi.spyOn(fs, "symlink").mockImplementation(async (...args) => {
+            if (String(args[1]) === packageRoot) {
+              await publishForeign();
+            }
+            return await symlink(...args);
+          });
+          expect((await swapStagedPackageInstall(params)).status).toBe("failed");
+        } else {
+          const transaction = await retain(params);
+          await fs.unlink(packageRoot);
+          await publishForeign();
+          expect(await transaction.rollback(() => {})).toMatchObject({ exitCode: 1 });
+        }
+        await expect(fs.readFile(sentinel, "utf8")).resolves.toBe("another installation\n");
+        await expect(fs.readFile(path.join(checkout, "package.json"), "utf8")).resolves.toContain(
+          '"version":"2.0.0"',
+        );
+        await expect(fs.readFile(launcher, "utf8")).resolves.toBe(
+          scenario === "collision" ? "old launcher\n" : "candidate launcher\n",
+        );
+      });
+    },
+  );
+
   it.each([false, true])(
     "activates a package over an owned npm dev link (relative=%s)",
     async (relative) => {
