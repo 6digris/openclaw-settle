@@ -1,5 +1,6 @@
 import path from "node:path";
 import { expect, it } from "vitest";
+import type { ApplicationContext } from "../app/context.ts";
 import {
   captureUiProofEnabled,
   chatSessionListResponse,
@@ -14,12 +15,16 @@ const suite = createChatFlowE2eSuite();
 const sessionKey = "agent:main:cloud-reconciliation";
 const now = Date.now();
 
-function placement(state: "active" | "failed", workspaceResultReconciling = false) {
+function placement(
+  state: "active" | "failed",
+  updatedAt: number,
+  workspaceResultReconciling = false,
+) {
   const timing = {
     createdAtMs: now - 180_000,
     generation: state === "failed" ? 3 : 2,
     stateChangedAtMs: now - 138_000,
-    updatedAtMs: now,
+    updatedAtMs: updatedAt,
   };
   if (state === "failed") {
     return {
@@ -49,16 +54,18 @@ function session(
   workspaceResultReconciling = false,
   runId = "follow-up-run",
 ) {
+  // The mock run owner advances updatedAt on ACK/final; later states must stay current.
+  const updatedAt = Date.now();
   return {
     activeRunIds: queuedFollowUp ? [runId] : [],
     hasActiveRun: queuedFollowUp,
     key: sessionKey,
     kind: "direct",
     label: "Cloud reconciliation proof",
-    placement: placement(state, workspaceResultReconciling),
+    placement: placement(state, updatedAt, workspaceResultReconciling),
     sessionId: "cloud-reconciliation-session",
     status: queuedFollowUp ? "running" : "done",
-    updatedAt: now,
+    updatedAt,
   };
 }
 
@@ -177,7 +184,11 @@ suite.define(() => {
         };
         await gateway.setMethodResponse("chat.history", activeHistory);
         await gateway.setSessionsListResponse(chatSessionListResponse([active]));
-        await gateway.emitGatewayEvent("sessions.changed", { reason: "placement" });
+        await gateway.emitGatewayEvent("sessions.changed", {
+          agentId: "main",
+          reason: "placement",
+          sessionKey,
+        });
         await gateway.emitGatewayEvent("session.message", {
           activeRunIds: [],
           hasActiveRun: false,
@@ -207,10 +218,28 @@ suite.define(() => {
           });
         }
 
+        const completedUpdatedAt = await page.evaluate(async (key) => {
+          const app = document.querySelector("openclaw-app") as HTMLElement & {
+            runtime?: { context: ApplicationContext };
+          };
+          const sessions = app.runtime?.context.sessions;
+          if (!sessions) {
+            throw new Error("session capability unavailable");
+          }
+          await sessions.refresh({ agentId: "main", force: true });
+          return sessions.state.result?.sessions.find((row) => row.key === key)?.updatedAt;
+        }, sessionKey);
+        expect(completedUpdatedAt).toBeGreaterThan(active.updatedAt);
+
         const failed = session("failed");
+        expect(completedUpdatedAt).toBeLessThanOrEqual(failed.updatedAt);
         await gateway.setMethodResponse("chat.history", { ...activeHistory, sessionInfo: failed });
         await gateway.setSessionsListResponse(chatSessionListResponse([failed]));
-        await gateway.emitGatewayEvent("sessions.changed", { reason: "placement" });
+        await gateway.emitGatewayEvent("sessions.changed", {
+          agentId: "main",
+          reason: "placement",
+          sessionKey,
+        });
         await page.getByText("Runner failed", { exact: true }).waitFor();
         await page
           .getByText("Workspace reconciliation failed: local worktree is locked.", { exact: false })

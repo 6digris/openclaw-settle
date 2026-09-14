@@ -61,6 +61,7 @@ struct ChatProTab: View {
 
     @Environment(NodeAppModel.self) private var appModel
     @Environment(NativeActionRouter.self) private var nativeActions: NativeActionRouter?
+    @Environment(GatewayConnectionController.self) private var gatewayController
     @AppStorage("openclaw.webchat.showAssistantTrace")
     private var showsAssistantTrace = true
     @State private var viewModel: OpenClawChatViewModel?
@@ -108,6 +109,7 @@ struct ChatProTab: View {
 
     var body: some View {
         self.composerObservedContent
+            .disabled(self.isGatewayTransitionPending)
             .onChange(of: self.appModel.isAppleReviewDemoModeEnabled) { _, _ in
                 self.syncChatViewModel()
                 self.viewModel?.refresh()
@@ -132,6 +134,15 @@ struct ChatProTab: View {
                 self.nativeActions?.unregisterChat(
                     self.viewModel, presentationID: self.nativePresentationID)
             }
+    }
+
+    private var isGatewayTransitionPending: Bool {
+        self.appModel.isGatewayPickerRequestInFlight ||
+            self.gatewayController.hasPendingConnectionHandoff ||
+            // Route commitment precedes SwiftUI applying the new presentation.
+            // A deliberately pinned attachment owner keeps its existing controls
+            // so the user can remove/finish it rather than becoming stuck.
+            (!self.isAttachmentOwnerPinned && self.viewModelOwnerID != self.appModel.chatViewModelOwnerID)
     }
 
     private var content: some View {
@@ -459,6 +470,7 @@ struct ChatProTab: View {
     private func syncChatViewModel() {
         guard self.activation?.identity == self.activationIdentity else { return }
         defer {
+            self.appModel.presentedChatViewModel = self.viewModel
             if let viewModel {
                 self.nativeActions?.registerChat(
                     viewModel,

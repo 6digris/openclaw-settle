@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, vi } from "vitest";
 import type {
-  PreservedSessionWorktree,
   SessionCatalogPullRequestSummary,
   SessionsCatalogListResult,
   SessionsPatchManyParams,
@@ -264,11 +263,11 @@ export function createSessionsHarness(agentId: string, keys: string[]) {
   const deleteSession = vi.fn((): Promise<SessionDeleteResult> =>
     Promise.resolve({ deleted: false }),
   );
-  const deleteMany = vi.fn(() =>
+  const deleteMany = vi.fn<SessionCapability["deleteMany"]>(() =>
     Promise.resolve({
-      deleted: [] as string[],
-      errors: [] as string[],
-      preservedWorktrees: [] as PreservedSessionWorktree[],
+      deleted: [],
+      errors: [],
+      preservedWorktrees: [],
     }),
   );
   const refresh = vi.fn((_options?: Parameters<SessionCapability["refresh"]>[0]) =>

@@ -10,6 +10,7 @@ import { readConfigFileSnapshot } from "../../config/config.js";
 import { resolveFutureConfigActionBlock } from "../../config/future-version-guard.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../../config/types.plugins.js";
+import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
 import * as temporaryState from "../../infra/tmp-openclaw-dir.js";
 import {
   createUpdateRun,
@@ -24,11 +25,13 @@ import { loadInstalledPluginIndexInstallRecords } from "../../plugins/installed-
 import { seedInstalledPluginIndex } from "../../plugins/test-helpers/installed-plugin-index.js";
 import { runExec } from "../../process/exec.js";
 import { defaultRuntime } from "../../runtime.js";
+import { runRegisteredCli } from "../../test-utils/command-runner.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
 import { VERSION } from "../../version.js";
+import { registerUpdateCli } from "../update-cli.js";
 
 const mocks = vi.hoisted(() => ({
   entrypoint: vi.fn(),
@@ -75,6 +78,7 @@ vi.mock("../../infra/update-triage.js", () => ({
 }));
 
 import { convergeUpdatePlugins } from "./update-command-convergence.js";
+import { updateExecutorNativeEntrypoints } from "./update-command-executor-native-runtime.test-support.js";
 import { updateFinalizeCommand } from "./update-command-finalize.js";
 import type { LeaseScenario } from "./update-command-lease.test-support.js";
 import type { ProducedPluginUpdateResult } from "./update-command-plugins-internals.js";
@@ -89,6 +93,11 @@ const pluginResult: ProducedPluginUpdateResult = {
   npm: { changed: false, outcomes: [] },
   integrityDrifts: [],
 };
+const leaseFixtureUrl = resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.leaseFixture);
+const sealedRegistryUrl = resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.sealedRegistry);
+const failureOutputUrl = resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.failureOutput);
+const sourceFixture = leaseFixtureUrl.pathname.endsWith(".ts");
+
 type Lane = LeaseScenario["lane"];
 let state: OpenClawTestState;
 let entrypoint: string;
@@ -123,14 +132,28 @@ beforeEach(async () => {
   entrypoint = await state.writeText(
     "entry.mjs",
     `
-    import { register } from ${JSON.stringify(import.meta.resolve("tsx/esm/api"))};
     import * as json5 from ${JSON.stringify(import.meta.resolve("json5"))};
-    const loader = register({ namespace: "update-lease-fixture", tsconfig: ${JSON.stringify(path.resolve("tsconfig.json"))} });
-    const { registerSealedRuntime } = await loader.import(${JSON.stringify(new URL("../../infra/sealed-runtime-registry.ts", import.meta.url).href)}, import.meta.url);
+    ${
+      sourceFixture
+        ? `import { register } from ${JSON.stringify(import.meta.resolve("tsx/esm/api"))};
+    const loader = register({ namespace: "update-lease-fixture", tsconfig: ${JSON.stringify(path.resolve("tsconfig.json"))} });`
+        : ""
+    }
+    const loadModule = ${sourceFixture ? "(url) => loader.import(url, import.meta.url)" : "(url) => import(url)"};
+    const { registerSealedRuntime } = await loadModule(${JSON.stringify(sealedRegistryUrl.href)});
     registerSealedRuntime({ json5, resolveSecureTempRoot: () => ${JSON.stringify(control)} });
-    const { runUpdateLeaseChild } = await loader.import(${JSON.stringify(new URL("./update-command-lease.test-support.ts", import.meta.url).href)}, import.meta.url);
-    await runUpdateLeaseChild();
-    await loader.unregister();
+    const { runUpdateLeaseChild } = await loadModule(${JSON.stringify(leaseFixtureUrl.href)});
+    try {
+      await runUpdateLeaseChild();
+    } catch (error) {
+      const { formatCliFailureLines } = await loadModule(${JSON.stringify(failureOutputUrl.href)});
+      for (const line of formatCliFailureLines({ title: "The CLI command failed.", error, argv: process.argv })) {
+        console.error(line);
+      }
+      process.exitCode = 1;
+    } finally {
+      ${sourceFixture ? "await loader.unregister();" : ""}
+    }
   `,
   );
   mocks.entrypoint.mockResolvedValue(entrypoint);
@@ -221,6 +244,30 @@ async function invokeReportedFailure(
   );
   expect(defaultRuntime.exit).not.toHaveBeenCalled();
 }
+
+it("passes standalone repair ownership to both fresh Doctor phases through the public command", async () => {
+  await writeScenario("repair", { verifyRepairOwner: true });
+
+  await runRegisteredCli({
+    register: registerUpdateCli,
+    argv: ["update", "repair", "--yes", "--json", "--timeout", "15"],
+  });
+
+  expect(
+    defaultRuntime.exit,
+    vi.mocked(defaultRuntime.error).mock.calls.flat().join("\n"),
+  ).not.toHaveBeenCalledWith(1);
+  expectSuccess("repair");
+  expect(listUpdateRuns()).toEqual([
+    expect.objectContaining({
+      status: "succeeded",
+      steps: expect.arrayContaining([
+        expect.objectContaining({ step: "finalize:repair-continuation", status: "completed" }),
+      ]),
+    }),
+  ]);
+  expect(process.env.OPENCLAW_UPDATE_RUN_ID).toBeUndefined();
+});
 
 async function events(): Promise<string[]> {
   return (await fs.readFile(state.statePath("events.jsonl"), "utf8"))

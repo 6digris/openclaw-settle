@@ -191,7 +191,7 @@ export abstract class MemoryManagerSessionSyncOps extends MemoryManagerWatchOps 
     if (!this.sources.has("sessions") || this.closed) {
       return [];
     }
-    const corpusEntries = await this.listSessionCorpusEntries();
+    const corpusEntries = await this.listSessionCorpusEntries({ includeContentRevision: false });
     if (this.closed) {
       return [];
     }

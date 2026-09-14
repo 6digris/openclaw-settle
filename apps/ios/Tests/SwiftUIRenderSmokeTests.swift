@@ -419,6 +419,7 @@ struct SwiftUIRenderSmokeTests {
                 window = Self.host(
                     NativeChatHost(presentation: presentation, presentationID: isUnbound ? nil : presentationID)
                         .environment(appModel)
+                        .environment(gatewayController)
                         .environment(router))
                 let restoreDeadline = ContinuousClock.now + .seconds(2)
                 while releaseRestore == nil, ContinuousClock.now < restoreDeadline {

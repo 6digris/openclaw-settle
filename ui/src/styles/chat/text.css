@@ -17,20 +17,8 @@
   background: rgba(16, 24, 40, 0.04);
 }
 
-.chat-text {
-  font-family: var(--font-chat);
-  font-size: var(--chat-text-size);
-  line-height: 1.5;
-  color: var(--chat-text);
-  overflow-wrap: anywhere;
-  word-break: break-word;
-  /* Serif chat faces need macOS stem darkening to stay crisp at chat size:
-     the app-wide `antialiased` (base.css body) thins their hairlines into
-     gray smear. applyChatFontSmoothing (app/typography.ts) sets `auto` when
-     the resolved chat typeface is a serif; unset falls back to the inherited
-     app-wide smoothing. */
-  -webkit-font-smoothing: var(--chat-font-smoothing, inherit);
-  -moz-osx-font-smoothing: var(--chat-font-smoothing, inherit);
+.chat-message-disclosure {
+  position: relative;
 }
 
 .chat-message-disclosure:not(.is-expanded) .chat-message-disclosure__content {
@@ -557,13 +545,27 @@
   padding: 0.08em 0.45em 0.08em 0.4em;
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--accent-subtle) 72%, var(--bg-muted));
-  color: var(--link);
+  /* Unknown state must not imply an open pull request. */
+  color: var(--muted);
   font-weight: 600;
   line-height: 1.25;
   text-decoration: none;
   vertical-align: baseline;
   white-space: nowrap;
   line-break: auto;
+}
+
+.chat-text a.markdown-github-item[data-github-state="open"] {
+  color: var(--ok);
+}
+
+.chat-text a.markdown-github-item[data-github-kind="issue"][data-github-state="closed"],
+.chat-text a.markdown-github-item[data-github-state="merged"] {
+  color: var(--pr-merged);
+}
+
+.chat-text a.markdown-github-item[data-github-kind="pull"][data-github-state="closed"] {
+  color: var(--danger);
 }
 
 .chat-text a.markdown-github-item:hover,

@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { assert, beforeAll, describe, expect, it, vi } from "vitest";
 import { listExtensionTestFilesForRoots } from "../../scripts/lib/extension-test-plan.mts";
 import { readTestSelectorSourceFacts } from "../../scripts/lib/test-selector-source-facts.mts";
 import { resolveVitestPretestBuildMode } from "../../scripts/lib/vitest-build-prerequisites.mts";
@@ -44,6 +44,7 @@ import {
   channelSurfaceContractPatterns,
 } from "../vitest/vitest.contracts-shared.ts";
 import { databaseWorkerCoreTestFiles } from "../vitest/vitest.database-worker-core-paths.mjs";
+import { gatewayDatabaseWorkerTestFiles } from "../vitest/vitest.gateway-server-paths.mjs";
 
 const normalizeRepoPath = toRepoPath;
 const CODEX_TEST_PROCESS_FILE_LIMIT = 12;
@@ -1361,6 +1362,7 @@ describe("scripts/test-projects changed-target routing", () => {
         "test/scripts/clawhub-postpublish.test.ts",
         "test/scripts/frv.test.ts",
         "test/scripts/full-release-publication-admission.test.ts",
+        "test/scripts/linux-app-channel.test.ts",
         "test/scripts/linux-updater-manifest.test.ts",
         "test/scripts/openclaw-release-ready.test.ts",
         "test/scripts/plugin-npm-extended-stable-workflow.test.ts",
@@ -1499,6 +1501,7 @@ describe("scripts/test-projects changed-target routing", () => {
         [
           "test/scripts/ci-workflow-guards.test.ts",
           "test/scripts/package-acceptance-workflow.test.ts",
+          "test/scripts/crabbox-hydrate-dependencies.test.ts",
           "test/scripts/setup-pnpm-store-cache-image.test.ts",
         ],
       ],
@@ -2174,6 +2177,63 @@ describe("scripts/test-projects changed-target routing", () => {
       includePatterns: [testFile],
     });
   });
+
+  it.each(gatewayDatabaseWorkerTestFiles)(
+    "routes Gateway database consumer %s to its fork owner",
+    (testFile) => {
+      expectSingleVitestRunPlan(buildVitestRunPlans([testFile]), {
+        config: "test/vitest/vitest.gateway-database-workers.config.ts",
+        includePatterns: [testFile],
+      });
+    },
+  );
+
+  it.each(
+    ["src/gateway", "src/gateway/**/*.test.ts"].flatMap((target) =>
+      ["alone", "worker-first", "aggregate-first"].map((order) => ({ target, order })),
+    ),
+  )(
+    "keeps Gateway database consumers in the aggregate for $target ($order)",
+    ({ target, order }) => {
+      const [workerFile] = gatewayDatabaseWorkerTestFiles;
+      assert(workerFile);
+      const targets =
+        order === "alone"
+          ? [target]
+          : order === "worker-first"
+            ? [workerFile, target]
+            : [target, workerFile];
+      const forwardedArgs = ["--reporter=dot", "--coverage"];
+      expectSingleVitestRunPlan(buildVitestRunPlans([...targets, ...forwardedArgs]), {
+        config: "test/vitest/vitest.gateway.config.ts",
+        forwardedArgs,
+        includePatterns: targets.map((file) =>
+          file === "src/gateway" ? "src/gateway/**/*.test.ts" : file,
+        ),
+      });
+    },
+  );
+
+  it.each(
+    [
+      "test/vitest/vitest.gateway.config.ts",
+      "src/gateway/config-reload.telegram-policy.test.ts",
+    ].flatMap((target) => [true, false].map((workerFirst) => ({ target, workerFirst }))),
+  )(
+    "coalesces Gateway worker config with $target (worker first: $workerFirst)",
+    ({ target, workerFirst }) => {
+      const workerConfig = "test/vitest/vitest.gateway-database-workers.config.ts";
+      const targets = workerFirst ? [workerConfig, target] : [target, workerConfig];
+      expectSingleVitestRunPlan(buildVitestRunPlans(targets), {
+        config: "test/vitest/vitest.gateway.config.ts",
+        includePatterns: target.endsWith(".config.ts")
+          ? null
+          : workerFirst
+            ? [...gatewayDatabaseWorkerTestFiles, target]
+            : [target, ...gatewayDatabaseWorkerTestFiles],
+      });
+    },
+  );
 
   it.each(databaseWorkerCoreTestFiles)(
     "routes host-owned database consumer %s to the infra fork shard",
@@ -4002,6 +4062,7 @@ describe("scripts/test-projects changed-target routing", () => {
       "test/vitest/vitest.ui.config.ts",
       "test/vitest/vitest.ui-isolated.config.ts",
       "test/vitest/vitest.ui-browser.config.ts",
+      "test/vitest/vitest.ui-timing.config.ts",
     ]);
   });
 
@@ -4030,18 +4091,20 @@ describe("scripts/test-projects changed-target routing", () => {
     });
   });
 
-  it("adds the isolated and Chromium projects for broad ui targets", () => {
+  it("adds isolated and Chromium projects before timing budgets for broad ui targets", () => {
     const plans = buildVitestRunPlans(["ui/src"]);
 
     expect(plans.map((plan) => plan.config)).toEqual([
       "test/vitest/vitest.ui.config.ts",
       "test/vitest/vitest.ui-isolated.config.ts",
       "test/vitest/vitest.ui-browser.config.ts",
+      "test/vitest/vitest.ui-timing.config.ts",
     ]);
     expect(plans[1]?.includePatterns).toContain("ui/src/pages/chat/chat-pane.test.ts");
     expect(plans[2]?.includePatterns).toContain(
       "ui/src/components/markdown-mermaid.runtime.browser.test.ts",
     );
+    expect(plans[3]?.includePatterns).toEqual(["ui/src/components/markdown.progress.node.test.ts"]);
   });
 
   it.each([

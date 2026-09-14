@@ -31,6 +31,9 @@ Debian 12 meet that ABI floor. RHEL 9 and Rocky Linux 9 ship glibc 2.34, so
 they cannot run the published AppImage. Extraction does not bypass this
 requirement.
 
+See [Desktop compatibility](https://docs.openclaw.ai/platforms/linux#desktop-compatibility)
+for package updates, desktop limitations, and native-app distinctions.
+
 ## Omarchy
 
 The optional Omarchy 4 bar plugin provides agents, sessions, and quick prompts.
@@ -243,9 +246,17 @@ the previous published Linux updater manifest. Its original version, signature,
 and download URL stay intact. Successful Linux publication advances that
 manifest without letting an older build replace a newer available update.
 
+The shipped endpoint remains `releases/latest/download/latest.json`, and
+package-managed installs still link to the existing release page. The
+`linux-stable` publication channel does not change those client defaults.
+Changing them requires separate release-owner approval and signed
+installed-client migration proof.
+
 ## Quick Chat widgets
 
 Quick Chat advertises the Gateway `inline-widgets` capability and renders hosted `show_widget` results in isolated child WebViews. The parent Quick Chat WebView is the only one granted Tauri commands; widget WebViews match no capability and therefore have no IPC access. Quick Chat accepts only assistant-message widget previews under the capability-scoped `/__openclaw__/canvas/documents/` route, blocks navigation away from the original document, uses nonpersistent WebViews, and keeps stable widget instances while switching among multiple previews. Connections that require a custom Gateway TLS leaf pin remain text-only because the platform WebView cannot bind that pin. Like the other native clients, Quick Chat does not expose the Control UI `sendPrompt` bridge.
+
+Retrying an unchanged Quick Chat draft after a connection error reuses its original idempotency key while the Gateway and agent remain unchanged. If the Gateway confirms the turn already completed, Quick Chat attempts to recover the matching reply from bounded session history instead of resending it. Unavailable or incomplete history produces an error; further retries of that unchanged draft on the same configured Gateway only retry recovery. Widget previews can refresh access after reconnecting to the same configured Gateway, but switching Gateways prevents old previews from using the new connection's access, even after switching back to the original URL.
 
 ## Installer resource
 
@@ -343,6 +354,19 @@ and checksum set. Partial or mismatched existing assets require targeted
 publication recovery; the workflow does not rebuild or overwrite them. An
 optional desktop-test run also refuses to replace published Linux bytes, so
 recover missing desktop assets separately when Linux has already published.
+
+The publication helper records an immutable `OpenClaw-<version>-linux.json`
+beside the bundles, then advances the fixed `linux-stable` channel and mirrors
+it to the latest Gateway release. Reusing complete public bundles still runs
+unfinished channel publication; it does not rebuild or replace those bundles.
+The control release is prerelease/non-latest and requires explicit
+initialization by an authorized Linux publication, never by ordinary PR validation.
+
+Core finalization remains independent of Linux readiness. After finalization,
+a detached mirror-only request catches up the legacy endpoint. A dispatch is
+not a successful mirror: cancellation, queue overflow, timeout, or readback
+failure leaves a visible degraded result for reconciliation. See the
+[Linux publication contract](https://docs.openclaw.ai/reference/RELEASING#linux-companion-publication).
 
 The website selects desktop assets at build time. After publication, rebuild
 `openclaw.ai` through its existing deployment owner and verify the deployed Apps
