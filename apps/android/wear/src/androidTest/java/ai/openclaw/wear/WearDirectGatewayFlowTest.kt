@@ -226,9 +226,34 @@ class WearDirectGatewayFlowTest {
           }
           throw error
         }
-        setAccessibleText(uniqueEditor(password = true), requireNotNull(input.setupCode))
-        findText(app.getString(R.string.watch_connect)).click()
-        awaitState("current certificate prompt") { runtime.state.value.trust != null }
+        val baselineOwner = runCatching { runtime.inputOwner() }.getOrNull()
+        val baseline = runCatching { certificateSnapshot(activity, runtime.state.value, gatewayId) }.getOrNull()
+        try {
+          setAccessibleText(uniqueEditor(password = true), requireNotNull(input.setupCode))
+          findText(app.getString(R.string.watch_connect)).click()
+          awaitState("current certificate prompt") { runtime.state.value.trust != null }
+        } catch (error: Throwable) {
+          runCatching {
+            val failedOwner = runtime.inputOwner()
+            val failed = certificateSnapshot(activity, runtime.state.value, gatewayId)
+            val diagnostic =
+              buildJsonObject {
+                put("schema", "wear-certificate-boundary-v1")
+                put("inputOwnerChanged", baselineOwner?.let { failedOwner != it })
+                put("baseline", baseline ?: JsonNull)
+                put("failure", failed)
+              }
+            val encoded = Json.encodeToString(diagnostic)
+            check(encoded.toByteArray().size <= 4096)
+            // The runner retains suppressed messages in its existing failure stream.
+            error.addSuppressed(AssertionError("wear-certificate-boundary:$encoded").apply { stackTrace = emptyArray() })
+          }.onFailure {
+            error.addSuppressed(
+              AssertionError("wear-certificate-diagnostic-unavailable").apply { stackTrace = emptyArray() },
+            )
+          }
+          throw error
+        }
         val prompt = requireNotNull(runtime.state.value.trust)
         assertTrue("certificate belongs to the provisioned Gateway", normalizeGatewayTlsFingerprintInput(prompt.fingerprint) == fingerprint)
         assertTrue(
@@ -678,6 +703,51 @@ class WearDirectGatewayFlowTest {
     val arguments = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value) }
     assertTrue("native editor accepted input", editor.accessibilityNodeInfo.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments))
   }
+
+  private fun certificateSnapshot(
+    activity: MainActivity,
+    state: WearDirectState,
+    gatewayId: String,
+  ): JsonObject =
+    buildJsonObject {
+      // Owner, state, and Activity observations are non-atomic; busy=false is not completion.
+      put("selectedPresent", state.selected != null)
+      put("expectedEndpointMatch", state.selected?.stableId == gatewayId)
+      put("selectedTls", state.selected?.tls == true)
+      put("busy", state.busy)
+      put("trustPresent", state.trust != null)
+      put("connected", state.connected)
+      put("managementRequired", state.connectionManagementRequired)
+      put("activityLifecycle", activity.lifecycle.currentState.name)
+      put("activityFocused", activity.hasWindowFocus())
+      put(
+        "status",
+        when (state.status) {
+          "Disconnected" -> "DISCONNECTED"
+          "Paused" -> "PAUSED"
+          "Connecting" -> "CONNECTING"
+          "Verify Gateway certificate" -> "VERIFY_CERTIFICATE"
+          "Connected directly" -> "CONNECTED_DIRECTLY"
+          else -> "UNKNOWN"
+        },
+      )
+      put(
+        "error",
+        when (state.error) {
+          null -> "NONE"
+          "Setup code is too large." -> "SETUP_TOO_LARGE"
+          "Enter a limited Gateway setup code." -> "LIMITED_SETUP_REQUIRED"
+          "Use a limited setup code, not a phone token or password." -> "PHONE_CREDENTIALS_REJECTED"
+          "The setup code has an invalid or insecure Gateway URL." -> "SETUP_URL_INVALID_OR_INSECURE"
+          "Could not update the watch connection. Retry or enter a new limited setup code." -> "CONNECTION_UPDATE_FAILED"
+          "No certificate was received. Check the Gateway TLS endpoint." -> "NO_CERTIFICATE"
+          "Gateway TLS is unavailable. Check the endpoint and retry." -> "TLS_UNAVAILABLE"
+          "Full-access credentials are not accepted. Enter a new limited setup code." -> "FULL_ACCESS_REJECTED"
+          "Gateway connection failed. Check connectivity or enter a new limited setup code." -> "CONNECTION_FAILED"
+          else -> "UNKNOWN"
+        },
+      )
+    }
 
   private fun navigationSnapshot(
     activity: MainActivity?,
