@@ -19,7 +19,7 @@ describe("selected lineage after a full sessions.changed event", () => {
       const filtered = mode !== "unfiltered metadata";
       const managedMember = mode === "managed member";
       const reparent = mode !== "unfiltered metadata";
-      const key = "agent:main:event-selected";
+      const key = "agent:main:subagent:event-selected";
       const p1 = "agent:main:event-original-parent";
       const p2 = "agent:main:event-new-parent";
       const expectedParent = reparent ? p2 : p1;

@@ -22,7 +22,7 @@ describe("selected ancestry after an independent child-list admission", () => {
       const managedSuccessor = mode === "managed successor";
       const successor = mode !== "child metadata";
       const key = "agent:main:subagent:child-admission";
-      const p1 = "agent:main:child-controller";
+      const p1 = "agent:main:subagent:child-controller";
       const p2 = "agent:main:new-navigation-parent";
       const grandparentKey = "agent:main:old-grandparent";
       const expectedParent = successor ? p2 : p1;
@@ -158,6 +158,7 @@ describe("selected ancestry after an independent child-list admission", () => {
         await sidebar.updateComplete;
       };
       let originalLineage: Promise<void> | undefined;
+      let childLoad: Promise<void> | undefined;
       let primaryRefresh: ReturnType<typeof sessions.refresh> | undefined;
       try {
         sidebar.querySelector<HTMLButtonElement>(".sidebar-session-sort")!.click();
@@ -179,20 +180,17 @@ describe("selected ancestry after an independent child-list admission", () => {
         sidebar.sessionKey = key;
         await waitForFast(() => expect(grandparentReads).toBe(1));
         originalLineage = sidebar.sessionData.loadActiveSessionLineage(key);
-        await waitForFast(() => expect(row(p1)).not.toBeNull());
+        // The intermediate subagent cannot render as a root while its ancestor is unknown.
+        // Start the independent child query without manufacturing a persistent parent.
+        expect(row(p1)).toBeNull();
         if (!managedSuccessor) {
           expect(request).toHaveBeenCalledWith("sessions.describe", { key });
-          expect(sidebar.findSidebarSessionByKey(key)?.sessionId).toBe(child.sessionId);
-          expect(childReads).toBe(0);
-          const toggle = sidebar.querySelector<HTMLButtonElement>(
-            `[data-child-session-toggle="${p1}"][aria-expanded="false"]`,
+          expect(sidebar.sessionData.activeSessionLineageSelectedRow?.sessionId).toBe(
+            child.sessionId,
           );
-          expect(toggle).not.toBeNull();
-          toggle!.click();
-          await sidebar.updateComplete;
-        } else {
-          await expand(p1);
+          expect(childReads).toBe(0);
         }
+        childLoad = sidebar.sessionData.loadChildSessions(p1);
         await waitForFast(() => expect(childReads).toBe(1));
         if (managedSuccessor) {
           childReadFinished = true;
@@ -230,9 +228,10 @@ describe("selected ancestry after an independent child-list admission", () => {
           expect(sidebar.sessionData.sessionsResult?.sessions.map((entry) => entry.key)).toEqual(
             managedSuccessor ? [p1, key] : [p1],
           );
-          expect(sidebar.findSidebarSessionByKey(key)).toMatchObject({
+          expect(sidebar.sessionData.activeSessionLineageSelectedRow).toMatchObject({
             sessionId: current.sessionId,
             label: current.label,
+            parentSessionKey: expectedParent,
           });
           expect(sessions.state.result?.sessions.find((entry) => entry.key === key)).toMatchObject({
             sessionId: current.sessionId,
@@ -242,20 +241,29 @@ describe("selected ancestry after an independent child-list admission", () => {
         });
         expect(sessions.canonicalListRevision).toBe(originalRevision);
         await sidebar.updateComplete;
-        await waitForFast(() => expect(row(expectedParent)).not.toBeNull());
-        await expand(expectedParent);
-        await waitForFast(() => expect(directParent()).toBe(expectedParent));
-        expect(row(key)?.textContent).toContain(current.label);
+        if (successor) {
+          await waitForFast(() => expect(row(expectedParent)).not.toBeNull());
+          await expand(expectedParent);
+          await waitForFast(() => expect(directParent()).toBe(expectedParent));
+          expect(row(key)?.textContent).toContain(current.label);
+        }
         expect(grandparentReads).toBe(1);
         expect(newParentReads).toBe(successor ? 1 : 0);
         oldAncestor.resolve({ session: grandparent });
         await originalLineage;
         await sidebar.updateComplete;
-        expect(sidebar.findSidebarSessionByKey(key)?.sessionId).toBe(current.sessionId);
-        expect(directParent()).toBe(expectedParent);
-        if (successor) {
-          expect(sidebar.sessionData.activeSessionLineageRoot?.key).toBe(p2);
+        if (!successor) {
+          await waitForFast(() => expect(row(grandparentKey)).not.toBeNull());
+          await expand(grandparentKey);
+          await waitForFast(() => expect(row(expectedParent)).not.toBeNull());
+          await expand(expectedParent);
         }
+        await waitForFast(() => expect(directParent()).toBe(expectedParent));
+        expect(sidebar.findSidebarSessionByKey(key)?.sessionId).toBe(current.sessionId);
+        expect(row(key)?.textContent).toContain(current.label);
+        expect(sidebar.sessionData.activeSessionLineageRoot?.key).toBe(
+          successor ? p2 : grandparentKey,
+        );
         primaryReleased = true;
         primary.resolve(result([parent]));
         await primaryRefresh;
@@ -274,7 +282,7 @@ describe("selected ancestry after an independent child-list admission", () => {
         primary.resolve(result([parent]));
         provider.remove();
         sessions.dispose();
-        await Promise.all([originalLineage, primaryRefresh]);
+        await Promise.all([originalLineage, childLoad, primaryRefresh]);
       }
     },
   );

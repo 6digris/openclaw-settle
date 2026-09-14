@@ -274,11 +274,18 @@ export function projectSidebarAgentSessionRows({
   });
   if (
     selectedFallback &&
-    !isSubagentSessionKey(selectedFallback.key) &&
+    (!isSubagentSessionKey(selectedFallback.key) || lineageRoot === null) &&
     (!grouped || visibleRowsByKey.has(selectedFallback.key)) &&
     !someSidebarSessionInTree(projected, (row) => row.key === selectedFallback.key)
   ) {
-    projected.unshift(navigationState.toSidebarSession(selectedFallback));
+    // Keep the selected run reachable until its first lineage result, with subordinate
+    // controls. A resolved orphan must not become a permanent independent root.
+    projected.unshift(
+      navigationState.toSidebarSession(
+        selectedFallback,
+        isSubagentSessionKey(selectedFallback.key),
+      ),
+    );
   }
   return projected;
 }

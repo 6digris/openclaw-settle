@@ -17,7 +17,7 @@ import { waitForFast } from "../test-helpers/wait-for.ts";
 import "./app-sidebar.ts";
 
 const parentKey = "agent:main:parent";
-const childKey = "agent:worker:child";
+const childKey = "agent:worker:subagent:child";
 const child = {
   key: childKey,
   spawnedBy: parentKey,
@@ -62,7 +62,7 @@ describe("sidebar child snapshot freshness", () => {
   it("hydrates a connection replacement while an old child page is pending", async () => {
     const children = Array.from({ length: 101 }, (_, index) => ({
       ...child,
-      key: `agent:main:old-child-${index}`,
+      key: `agent:main:subagent:old-child-${index}`,
       sessionId: `old-child-${index}`,
       label: `Old child ${index}`,
     }));
@@ -156,11 +156,12 @@ describe("sidebar child snapshot freshness", () => {
   });
 
   it("follows an intermediate ancestor changed by a canonical publication", async () => {
+    const intermediateParentKey = "agent:main:subagent:intermediate-parent";
     const root = {
       key: "agent:main:old-root",
       sessionId: "old-root",
       kind: "direct" as const,
-      childSessions: [parentKey],
+      childSessions: [intermediateParentKey],
       label: "Old root",
     };
     const nextRoot = {
@@ -170,7 +171,7 @@ describe("sidebar child snapshot freshness", () => {
       label: "New root",
     };
     const parent = {
-      key: parentKey,
+      key: intermediateParentKey,
       sessionId: "parent-session",
       kind: "direct" as const,
       parentSessionKey: root.key,
@@ -179,9 +180,10 @@ describe("sidebar child snapshot freshness", () => {
     };
     const selected = {
       ...child,
-      key: "agent:main:lineage-child",
+      key: "agent:main:subagent:lineage-child",
       sessionId: "lineage-child",
-      parentSessionKey: parentKey,
+      spawnedBy: intermediateParentKey,
+      parentSessionKey: intermediateParentKey,
     };
     parent.childSessions = [selected.key];
     let rows: GatewaySessionRow[] = [root, parent, selected];
@@ -236,7 +238,7 @@ describe("sidebar child snapshot freshness", () => {
   ])(
     "keeps an expanded $childCount-child query across unrelated publications (selected: $selected)",
     async ({ childCount, selected }) => {
-      const queryChildKey = selected ? "agent:main:selected-child" : childKey;
+      const queryChildKey = selected ? "agent:main:subagent:selected-child" : childKey;
       const parent = {
         key: parentKey,
         sessionId: "parent-session",
@@ -251,7 +253,7 @@ describe("sidebar child snapshot freshness", () => {
       let runtimeSample = 0;
       const siblings = Array.from({ length: childCount - 1 }, (_, index) => ({
         ...child,
-        key: `agent:worker:sibling-${index}`,
+        key: `agent:worker:subagent:sibling-${index}`,
         sessionId: `sibling-session-${index}`,
         label: `Sibling ${index}`,
       }));
@@ -456,7 +458,7 @@ describe("sidebar child snapshot freshness", () => {
 
   it("keeps loaded children visible while a child event revalidates them", async () => {
     const { harness, sidebar, publishChildChanged, expand } = await mountParent();
-    const sibling = { ...child, key: "agent:worker:sibling", label: "Removed sibling" };
+    const sibling = { ...child, key: "agent:worker:subagent:sibling", label: "Removed sibling" };
     harness.list.mockResolvedValueOnce(result([child, sibling]));
     expand();
     await waitForFast(() =>

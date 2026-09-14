@@ -87,8 +87,8 @@ describe("AppSidebar automatic list scope replacement", () => {
       vi.useFakeTimers();
       const mainParent = "agent:main:parent";
       const researchParent = `agent:${nextAgent}:next-parent`;
-      const mainChild = "agent:main:child";
-      const researchChild = `agent:${nextAgent}:next-child`;
+      const mainChild = "agent:main:subagent:child";
+      const researchChild = `agent:${nextAgent}:subagent:next-child`;
       const rows: GatewaySessionRow[] = [
         { key: mainParent, kind: "direct", label: "Main parent", childSessions: [mainChild] },
         {

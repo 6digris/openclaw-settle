@@ -19,7 +19,10 @@ describe("sidebar routed-lineage freshness", () => {
     async (kind) => {
       const mainKey = "agent:main:main";
       const selected: GatewaySessionRow = {
-        key: "agent:main:selected-active",
+        key:
+          kind === "main child"
+            ? "agent:main:subagent:selected-active"
+            : "agent:main:selected-active",
         sessionId: "selected-active-session",
         agentId: "main",
         kind: "direct",
@@ -136,7 +139,7 @@ describe("sidebar routed-lineage freshness", () => {
   );
 
   it("retains a listed route across canonical omission while its cold parent lookup is pending", async () => {
-    const key = "agent:main:cold-child";
+    const key = "agent:main:subagent:cold-child";
     const parentKey = "agent:main:cold-parent";
     const child = {
       key,
@@ -176,9 +179,11 @@ describe("sidebar routed-lineage freshness", () => {
       await waitForFast(() =>
         expect(request).toHaveBeenCalledWith("sessions.describe", { key: parentKey }),
       );
-      expect(sidebar.querySelector(`[data-session-key="${key}"]`)?.textContent).toContain(
-        "Listed route",
-      );
+      const pendingRow = sidebar.querySelector(`[data-session-key="${key}"]`);
+      expect(pendingRow?.textContent).toContain("Listed route");
+      expect(pendingRow?.classList.contains("sidebar-recent-session--child")).toBe(true);
+      expect(pendingRow?.getAttribute("draggable")).toBe("false");
+      expect(pendingRow?.querySelector('[aria-label="Pin session"]')).toBeNull();
       rows = [];
       await sessions.refresh({ agentId: "main", force: true });
       await sidebar.updateComplete;
@@ -188,6 +193,14 @@ describe("sidebar routed-lineage freshness", () => {
           ?.textContent?.replace(/\s+/g, " ")
           .trim(),
       ).toContain("Listed route");
+      parentRead.resolve({ session: parent });
+      childRead.resolve({ session: child });
+      await waitForFast(() =>
+        expect(
+          sidebar.querySelector(`[data-session-tree="${parentKey}"] [data-session-key="${key}"]`),
+        ).not.toBeNull(),
+      );
+      expect(sidebar.querySelectorAll(`[data-session-key="${key}"]`)).toHaveLength(1);
     } finally {
       provider.remove();
       sessions.dispose();
@@ -206,8 +219,8 @@ describe("sidebar routed-lineage freshness", () => {
     "keeps the fresh selected child when $first finishes first (updatedAt: $updatedAt)",
     async ({ first, updatedAt }) => {
       const parentKey = "agent:main:parent";
-      const key = "agent:main:child";
-      const siblingKey = "agent:main:sibling";
+      const key = "agent:main:subagent:child";
+      const siblingKey = "agent:main:subagent:sibling";
       const parent = {
         key: parentKey,
         sessionId: "selected-parent-session",
@@ -310,8 +323,8 @@ describe("sidebar routed-lineage freshness", () => {
   it.each([4, null])(
     "retains the current selected descriptor after cached ancestry completes (updatedAt: %s)",
     async (updatedAt) => {
-      const key = "agent:main:cached-child";
-      const parentKey = "agent:main:cached-parent";
+      const key = "agent:main:subagent:cached-child";
+      const parentKey = "agent:main:subagent:cached-parent";
       const rootKey = "agent:main:cached-root";
       const owner = { type: "human" as const, id: "ada", label: "Ada" };
       const otherOwner = { type: "human" as const, id: "bob", label: "Bob" };
@@ -874,94 +887,112 @@ describe("sidebar routed-lineage freshness", () => {
     },
   );
 
-  it("refreshes canonical placement while retaining same-session presentation", async () => {
-    const parentKey = "agent:main:parent";
-    const key = "agent:main:device-child";
-    const parent = {
-      key: parentKey,
-      sessionId: "session-device-parent",
-      kind: "direct" as const,
-      updatedAt: 1,
-      childSessions: [key],
-    };
-    const available = {
-      key,
-      kind: "direct" as const,
-      sessionId: "session-device-child",
-      parentSessionKey: parentKey,
-      updatedAt: 2,
-      derivedTitle: "My device session",
-      lastMessagePreview: "Most recent message",
-      placement: {
-        state: "active" as const,
-        generation: 1,
-        createdAtMs: 1,
-        updatedAtMs: 1,
-        stateChangedAtMs: 1,
-        environmentId: "worker:device",
-        activeOwnerEpoch: 1,
-        workerBundleHash: "a".repeat(64),
-        workspaceBaseManifestRef: "manifest",
-        remoteWorkspaceDir: "/workspace",
-        runner: { kind: "device" as const, status: "available" as const },
-      },
-    };
-    const offline = {
-      ...available,
-      derivedTitle: undefined,
-      lastMessagePreview: undefined,
-      placement: {
-        ...available.placement,
-        runner: { kind: "device" as const, status: "offline" as const },
-      },
-    };
-    const result = (selected: typeof available | typeof offline): SessionsListResult => ({
-      ts: 2,
-      path: "",
-      count: 2,
-      defaults: { modelProvider: null, model: null, contextTokens: null },
-      sessions: [parent, selected],
-    });
-    let selected: typeof available | typeof offline = available;
-    const gateway = createGateway(
-      createTestGatewayClient(async (method, params) => {
-        if (method === "sessions.list") {
-          return (params as { spawnedBy?: string }).spawnedBy === parentKey
-            ? { ...result(selected), count: 1, sessions: [selected] }
-            : result(selected);
-        }
-        return {};
-      }),
-    );
-    const sessions = createTestSessionCapability(gateway);
-    await sessions.refresh({ agentId: "main", force: true });
-    const { sidebar, provider } = await mountSidebar(gateway, sessions);
-    try {
-      sidebar.activeRouteId = "chat";
-      sidebar.sessionKey = key;
-      await waitForFast(() =>
-        expect(sidebar.sessionData.activeSessionLineageSelectedRow?.placement).toMatchObject({
-          runner: { kind: "device", status: "available" },
-        }),
-      );
-      await waitForFast(() =>
-        expect(
-          sidebar.sessionData.childSessionRowsByParent[parentKey]?.[0]?.placement,
-        ).toMatchObject({
-          runner: { kind: "device", status: "available" },
-        }),
-      );
-      selected = offline;
-      await sessions.refresh({ agentId: "main", force: true });
-
-      expect(sidebar.sessionData.activeSessionLineageSelectedRow).toMatchObject({
-        placement: { runner: { kind: "device", status: "offline" } },
+  it.each(["subagent", "persistent session"] as const)(
+    "refreshes canonical placement while retaining same-session presentation for a %s",
+    async (kind) => {
+      const nested = kind === "subagent";
+      const parentKey = "agent:main:parent";
+      const key = nested ? "agent:main:subagent:device-child" : "agent:main:device-child";
+      const parent = {
+        key: parentKey,
+        sessionId: "session-device-parent",
+        kind: "direct" as const,
+        updatedAt: 1,
+        childSessions: [key],
+      };
+      const available = {
+        key,
+        kind: "direct" as const,
+        sessionId: "session-device-child",
+        parentSessionKey: parentKey,
+        updatedAt: 2,
         derivedTitle: "My device session",
         lastMessagePreview: "Most recent message",
+        placement: {
+          state: "active" as const,
+          generation: 1,
+          createdAtMs: 1,
+          updatedAtMs: 1,
+          stateChangedAtMs: 1,
+          environmentId: "worker:device",
+          activeOwnerEpoch: 1,
+          workerBundleHash: "a".repeat(64),
+          workspaceBaseManifestRef: "manifest",
+          remoteWorkspaceDir: "/workspace",
+          runner: { kind: "device" as const, status: "available" as const },
+        },
+      };
+      const offline = {
+        ...available,
+        derivedTitle: undefined,
+        lastMessagePreview: undefined,
+        placement: {
+          ...available.placement,
+          runner: { kind: "device" as const, status: "offline" as const },
+        },
+      };
+      const result = (selected: typeof available | typeof offline): SessionsListResult => ({
+        ts: 2,
+        path: "",
+        count: 2,
+        defaults: { modelProvider: null, model: null, contextTokens: null },
+        sessions: [parent, selected],
       });
-    } finally {
-      provider.remove();
-      sessions.dispose();
-    }
-  });
+      let selected: typeof available | typeof offline = available;
+      const gateway = createGateway(
+        createTestGatewayClient(async (method, params) => {
+          if (method === "sessions.list") {
+            return (params as { spawnedBy?: string }).spawnedBy === parentKey
+              ? { ...result(selected), count: 1, sessions: [selected] }
+              : result(selected);
+          }
+          return {};
+        }),
+      );
+      const sessions = createTestSessionCapability(gateway);
+      await sessions.refresh({ agentId: "main", force: true });
+      const { sidebar, provider } = await mountSidebar(gateway, sessions);
+      try {
+        sidebar.activeRouteId = "chat";
+        sidebar.sessionKey = key;
+        await waitForFast(() =>
+          expect(sidebar.sessionData.activeSessionLineageSelectedRow?.placement).toMatchObject({
+            runner: { kind: "device", status: "available" },
+          }),
+        );
+        if (nested) {
+          await waitForFast(() =>
+            expect(
+              sidebar.sessionData.childSessionRowsByParent[parentKey]?.[0]?.placement,
+            ).toMatchObject({
+              runner: { kind: "device", status: "available" },
+            }),
+          );
+        } else {
+          await waitForFast(() =>
+            expect(sidebar.sessionData.activeSessionLineageRoot?.key).toBe(key),
+          );
+          expect(sidebar.sessionData.childSessionRowsByParent).toEqual({});
+          expect(
+            sidebar
+              .querySelector(`[data-session-key="${key}"]`)
+              ?.closest(".sidebar-recent-session--child"),
+          ).toBeNull();
+        }
+        selected = offline;
+        await sessions.refresh({ agentId: "main", force: true });
+
+        expect(sidebar.sessionData.activeSessionLineageSelectedRow).toMatchObject({
+          placement: { runner: { kind: "device", status: "offline" } },
+          derivedTitle: "My device session",
+          lastMessagePreview: "Most recent message",
+        });
+        expect(sidebar.sessionKey).toBe(key);
+        expect(sidebar.sessionData.activeSessionLineageRoot?.key).toBe(nested ? parentKey : key);
+      } finally {
+        provider.remove();
+        sessions.dispose();
+      }
+    },
+  );
 });

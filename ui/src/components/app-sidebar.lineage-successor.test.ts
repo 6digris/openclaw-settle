@@ -21,7 +21,7 @@ describe("selected lineage after managed list admission", () => {
       const changesParent = kind === "successor" || kind === "known parent";
       const changesSessionId = kind === "successor" || pendingIncarnation;
       const knownParent = kind === "known parent";
-      const key = "agent:main:ordinary-child";
+      const key = "agent:main:subagent:selected-child";
       const p1 = "agent:main:original-parent";
       const p2 = "agent:main:successor-parent";
       const expectedParent = changesParent ? p2 : p1;
@@ -29,7 +29,7 @@ describe("selected lineage after managed list admission", () => {
       const bob = { type: "human" as const, id: "bob", label: "Bob" };
       const child: GatewaySessionRow = {
         key,
-        sessionId: "ordinary-child-original-session",
+        sessionId: "subagent-child-original-session",
         agentId: "main",
         kind: "direct",
         archived: false,
@@ -164,7 +164,7 @@ describe("selected lineage after managed list admission", () => {
         changed = true;
         current = {
           ...child,
-          sessionId: changesSessionId ? "ordinary-child-successor-session" : child.sessionId,
+          sessionId: changesSessionId ? "subagent-child-successor-session" : child.sessionId,
           parentSessionKey: expectedParent,
           label: "Current selected conversation",
           updatedAt: 30,

@@ -28,7 +28,7 @@ describe("sidebar routed-lineage freshness", () => {
       const reentrant = transition === "during publication";
       const parentKey = "agent:main:route-switch-parent";
       const first: GatewaySessionRow = {
-        key: "agent:main:route-switch-first",
+        key: "agent:main:subagent:route-switch-first",
         sessionId: "route-switch-first-session",
         agentId: "main",
         kind: "direct",
@@ -39,7 +39,7 @@ describe("sidebar routed-lineage freshness", () => {
       };
       const second: GatewaySessionRow = {
         ...first,
-        key: "agent:main:route-switch-second",
+        key: "agent:main:subagent:route-switch-second",
         sessionId: "route-switch-second-session",
         label: "New sibling from child list",
         updatedAt: 20,
@@ -194,7 +194,7 @@ describe("sidebar routed-lineage freshness", () => {
     async ({ firstPageLoaded, updatedAt }) => {
       const parentKey = "agent:main:managed-parent";
       const children = Array.from({ length: 101 }, (_, index) => ({
-        key: `agent:worker:managed-child-${index}`,
+        key: `agent:worker:subagent:managed-child-${index}`,
         sessionId: `managed-child-session-${index}`,
         kind: "direct" as const,
         spawnedBy: parentKey,
@@ -321,7 +321,7 @@ describe("sidebar routed-lineage freshness", () => {
     "orders child page $selectedPage against an intervening history read (updatedAt: $updatedAt)",
     async ({ selectedPage, updatedAt }) => {
       const parentKey = "agent:main:paged-parent";
-      const key = "agent:main:paged-child";
+      const key = "agent:main:subagent:paged-child";
       const placement = (status: "available" | "offline") => ({
         state: "active" as const,
         generation: 1,
@@ -347,7 +347,7 @@ describe("sidebar routed-lineage freshness", () => {
       };
       const siblings = Array.from({ length: 100 }, (_, index) => ({
         ...selected,
-        key: `agent:main:paged-sibling-${index}`,
+        key: `agent:main:subagent:paged-sibling-${index}`,
         sessionId: `paged-sibling-session-${index}`,
         label: `Sibling ${index}`,
       }));
@@ -460,7 +460,7 @@ describe("sidebar routed-lineage freshness", () => {
     "adopts accepted history after rejected child reads in a filtered view (retained: $retained, history first: $historyFirst)",
     async ({ retained, historyFirst }) => {
       const parentKey = "agent:main:rejected-parent";
-      const key = "agent:main:rejected-child";
+      const key = "agent:main:subagent:rejected-child";
       const owner = { type: "human" as const, id: "ada", label: "Ada" };
       const otherOwner = { type: "human" as const, id: "bob", label: "Bob" };
       const previous = {
@@ -482,7 +482,7 @@ describe("sidebar routed-lineage freshness", () => {
       const fresh = { ...previous, label: "Accepted history descriptor" };
       const sibling = {
         ...previous,
-        key: "agent:main:rejected-sibling",
+        key: "agent:main:subagent:rejected-sibling",
         sessionId: "rejected-sibling-session",
         label: "Loaded sibling",
       };
@@ -654,7 +654,7 @@ describe("sidebar routed-lineage freshness", () => {
   ])(
     "uses the later selected-row read while ancestry waits ($first issued first, updatedAt: $updatedAt, primary listed: $primaryListed, different parents: $differentParents)",
     async ({ first, updatedAt, primaryListed, differentParents }) => {
-      const key = "agent:main:observed-child";
+      const key = "agent:main:subagent:observed-child";
       const parentKey = "agent:main:observed-parent";
       const describedParentKey = differentParents ? "agent:main:described-parent" : parentKey;
       const owner = { type: "human" as const, id: "ada", label: "Ada" };
