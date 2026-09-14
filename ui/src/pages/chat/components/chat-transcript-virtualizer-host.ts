@@ -282,7 +282,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
             prependAnchor: this.prependAnchor,
             cancelScroll: () => this.cancelScroll(),
             requestUpdate: () => this.host.requestUpdate(),
-            onReaderScroll: () => this.callbacks.onReaderScroll?.(),
+            onReaderScroll: (towardEnd) => this.callbacks.onReaderScroll?.(towardEnd),
           },
           instance,
           callback,
@@ -668,7 +668,11 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
     const command = this.offsetState.scrollCommand;
     if (
       command?.target === "message" &&
-      this.messageReveal.reveal(this.threadInnerElement, command)
+      this.messageReveal.reveal(
+        this.threadInnerElement,
+        command,
+        this.virtualizerController.getVirtualizer(),
+      )
     ) {
       this.offsetState.scrollCommand = { behavior: command.behavior, target: "index" };
     }

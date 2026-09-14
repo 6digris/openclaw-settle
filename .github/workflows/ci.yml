@@ -1687,6 +1687,7 @@ jobs:
                   const patterns = plan.targets ?? plan.includePatterns;
                   if (patterns) {
                     return patterns.some((pattern) => [
+                      "src/agents/sessions/agent-session-runtime-projection.test.ts",
                       "src/agents/sessions/tools/index.test.ts",
                       "src/agents/sessions/tools/grep.byte-path.test.ts",
                       "src/agents/filesystem-tools-output-contract.test.ts",

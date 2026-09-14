@@ -1757,6 +1757,74 @@ fi
     },
   );
 
+  it.each(
+    ["command", "runtime"].flatMap((route) =>
+      ["empty", "trailing", "leading", "absolute first"].map((order) => ({ route, order })),
+    ),
+  )("preserves PATH lookup order for $route with $order entries", ({ route, order }) => {
+    const root = tempDirs.make("openclaw-install-cli-path-order-");
+    const current = join(root, "current");
+    const other = join(root, "other");
+    const prefix = join(root, "prefix");
+    for (const bin of [current, other]) {
+      mkdirSync(bin);
+      linkRequiredShellTools(bin);
+      if (bin === other && order === "trailing") {
+        continue;
+      }
+      symlinkSync(nodeExecutable, join(bin, "node"));
+      writeFileSync(
+        join(bin, "npm"),
+        `#!/bin/bash\nprintf '${bin === current ? "current" : "other"}-npm\\n'\n`,
+        { mode: 0o755 },
+      );
+    }
+    const search = order === "empty" ? "" : order === "leading" ? `:${other}` : `${other}:`;
+    const result = runInstallCliShell(
+      `
+      source ${SCRIPT_PATH}
+      PREFIX="$FIXTURE_PREFIX"
+      cd "$FIXTURE_CURRENT"
+      PATH="$FIXTURE_SEARCH"
+      export PATH
+      ${route === "command" ? 'selected="$(command_path_without_node_prefix npm)"' : 'try_link_usable_node_runtime_from_path; selected="$(npm_bin)"'}
+      "$selected" --version
+      `,
+      { FIXTURE_PREFIX: prefix, FIXTURE_CURRENT: current, FIXTURE_SEARCH: search },
+    );
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe(order === "absolute first" ? "other-npm" : "current-npm");
+  });
+
+  it.each(["excluded path", "empty managed cwd"])(
+    "does not invent a cwd search after filtering %s",
+    (entry) => {
+      const root = tempDirs.make("openclaw-install-cli-filtered-path-");
+      const prefix = join(root, "prefix");
+      const managed = join(prefix, "tools", "node-v24.19.0", "bin");
+      const current = entry === "empty managed cwd" ? managed : join(root, "current");
+      mkdirSync(managed, { recursive: true });
+      mkdirSync(current, { recursive: true });
+      writeFileSync(join(current, "npm"), "#!/bin/bash\nexit 0\n", { mode: 0o755 });
+      const result = runInstallCliShell(
+        `
+        source ${SCRIPT_PATH}
+        PREFIX="$FIXTURE_PREFIX"
+        cd "$FIXTURE_CURRENT"
+        PATH="$FIXTURE_SEARCH"
+        command_path_without_node_prefix npm ${entry === "empty managed cwd" ? "1" : "0"}
+        `,
+        {
+          FIXTURE_PREFIX: prefix,
+          FIXTURE_CURRENT: current,
+          FIXTURE_SEARCH: entry === "empty managed cwd" ? "" : managed,
+        },
+      );
+      expect(result.status, result.stdout + result.stderr).toBe(1);
+      expect(result.stdout).toBe("");
+    },
+  );
+
   it("rejects Alpine/musl Node packages below the requested runtime floor", () => {
     const tmp = mkdtempSync(join(tmpdir(), "openclaw-install-cli-alpine-old-node-"));
     const bin = join(tmp, "bin");

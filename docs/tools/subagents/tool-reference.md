@@ -132,6 +132,9 @@ In either mode, internal QA, research, coding, review, and test lanes use ordina
 <ParamField path="expectsCompletionMessage" type="boolean" default="true">
   Set `false` for fire-and-forget children. When the child finishes, OpenClaw skips the completion handoff to the requester (no announce or steer turn), records the delivery as not required, and still runs child cleanup. Inspect such children with `subagents` or `sessions_history`. `collect: true` always uses `false`.
 </ParamField>
+<ParamField path="completionTarget" type='"parent"'>
+  Return the result in a private requester turn with no automatic channel delivery. The parent may continue work or remain silent. Supported only for hidden native `mode: "run"` children; unavailable with ACP, `collect`, `visible`, `thread`, session mode, or `expectsCompletionMessage: false`. Omit to keep normal completion delivery. See [Private parent completion](/tools/subagents/announce#private-parent-completion).
+</ParamField>
 <ParamField path="sandbox" type='"inherit" | "require"' default="inherit">
   `require` rejects the spawn unless the target child runtime is sandboxed.
 </ParamField>
@@ -233,6 +236,16 @@ An operator can also resume the existing child with the `sessions.send` Gateway
 method and its paused session key. This preserves the original task, requester,
 and parent completion batch, so the parent continues when the child finishes.
 
+Collector runs are the exception, because their result is collected explicitly
+rather than announced. Where collector context reaches the tool factory, such as
+the embedded runner, the turn is not offered `sessions_yield`, and if an override
+ever reaches the tool, it returns an error explaining that collector results are
+collected explicitly. Other paths do not pass that context yet: a CLI-backed
+collector turn through the Gateway tool resolver can still be offered the tool
+and receive a successful `yielded` result. In every case a collector that yields
+is settled at its own terminal instead of pausing, so its waiter resolves rather
+than blocking for good.
+
 The registry also continues a yielded sub-agent when its announced children
 settle, including an orchestrator spawned by cron. That internal settlement
 wake preserves the original requester and delivers the orchestrator's completion
@@ -253,6 +266,17 @@ the current child sessions, run ids, statuses, labels, tasks, and
 `taskName` aliases without polling. The task and label fields in that
 block are quoted as data, not instructions, because they can originate
 from user/model-provided spawn arguments.
+
+Later turns also include `Recently Completed Subagents`, capped at the eight
+newest children that ended in the last 30 minutes. This lists execution metadata,
+not an acknowledgment of result delivery.
+
+`Child results awaiting delivery` carries retained completion obligations for
+the requester or controller session, even when the child ended more than 30
+minutes ago, a newer execution exists, or the current turn cannot spawn. It
+includes at most eight results, oldest first, with each result limited to 2,000
+characters. Omitted entries and truncated results are marked. Result text is
+quoted as data. Reading this context does not acknowledge or retry delivery.
 
 ## Tool: `subagents`
 

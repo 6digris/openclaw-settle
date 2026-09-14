@@ -565,7 +565,8 @@ command_path_without_node_prefix() {
   local -a path_entries=()
 
   prefix_bin="$(node_dir)/bin"
-  IFS=: read -r -a path_entries <<<"$PATH"
+  # The extra delimiter preserves a trailing (or sole) empty cwd entry.
+  IFS=: read -r -a path_entries <<<"${PATH}:"
   for path_entry in "${path_entries[@]}"; do
     if [[ "$path_entry" == "$prefix_bin" ]] ||
       { [[ "$exclude_active_runtime" == "1" ]] && is_installer_node_bin "${path_entry:-.}"; }; then
@@ -575,6 +576,7 @@ command_path_without_node_prefix() {
     separator=":"
   done
 
+  [[ -n "$separator" ]] || return 1
   PATH="$filtered_path" command -v "$name" 2>/dev/null
 }
 
@@ -796,7 +798,8 @@ try_link_usable_node_runtime_from_path() {
   local path_entry
   local -a path_entries=()
 
-  IFS=: read -r -a path_entries <<<"$PATH"
+  # The extra delimiter preserves a trailing (or sole) empty cwd entry.
+  IFS=: read -r -a path_entries <<<"${PATH}:"
   for path_entry in "${path_entries[@]}"; do
     if [[ -z "$path_entry" ]]; then
       path_entry="."

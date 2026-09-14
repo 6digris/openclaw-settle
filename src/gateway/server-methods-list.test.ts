@@ -206,6 +206,9 @@ describe("listGatewayMethods", () => {
       "plugins.reload",
       "claws.packages.remove",
       "canvas.document.preview",
+      "computer.status",
+      "computer.invoke",
+      "sessions.activitySummary.ensure",
     ];
     expect(listGatewayMethods().slice(-expectedSuffix.length)).toEqual(expectedSuffix);
     const methods = listGatewayMethods();
@@ -239,6 +242,9 @@ describe("listGatewayMethods", () => {
       "plugins.reload",
       "claws.packages.remove",
       "canvas.document.preview",
+      "computer.status",
+      "computer.invoke",
+      "sessions.activitySummary.ensure",
     ]);
   });
 
@@ -399,6 +405,9 @@ describe("listGatewayMethods", () => {
       "plugins.reload",
       "claws.packages.remove",
       "canvas.document.preview",
+      "computer.status",
+      "computer.invoke",
+      "sessions.activitySummary.ensure",
     ];
     expect(coreMethods.slice(-expectedCoreSuffix.length)).toEqual(expectedCoreSuffix);
     expect(methods.indexOf("approval.get")).toBeGreaterThan(methods.indexOf("tts.speak"));

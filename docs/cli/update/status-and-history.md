@@ -91,6 +91,18 @@ Human output, chat completion notices, the Control UI update view, and the
 `openclaw status` update line use the same report, including on success. The report shows recorded facts; an absent verification fact
 means that check has not been observed.
 
+An unsuccessful identity check is reported as a version or build mismatch only
+when the saved observed and expected values disagree. Missing identity evidence
+is reported as unavailable, including old runs whose updater saved only
+`versionMatch: false`.
+
+For failed runs, human status, completion notices, and reviewed failure reports
+also try a read-only health request to the recorded Gateway port. A response
+supersedes historical claims that the Gateway is stopped; it does not change the
+failed update outcome or verify rollback safety. Saved recovery advice is labeled
+historical, preserving config and migration constraints. If current health cannot
+be read, the report says so. JSON run records remain the original historical facts.
+
 Failed steps include bounded `failureFacts` when the updater observed a specific
 check, Doctor finding, package-manager error, service inspection reason, or plugin
 failure. Each fact names the check and reason code, with an optional affected
@@ -102,6 +114,13 @@ user text, and show config key families instead of operator-defined names. Only
 catalog-confirmed public check and plugin IDs are included; unknown IDs and codes
 remain complete locally and are redacted publicly. Older runs cannot recover facts that their updater did not record. Existing history
 and report size limits still apply.
+
+Failed finalization steps record their reason code before failure reporting starts.
+Standalone finalization also records the package or Git install kind. For package
+installs it records that package rollback is unnecessary because finalization does
+not replace the core package; this does not claim that Doctor left config or state
+unchanged, or that Gateway health was verified. Failure reports include the failing
+step's first recognized diagnostic line when no process exit code was recorded.
 
 Recoverable maintenance failures appear as recorded warnings even when the update
 succeeds. Each warning names the skipped work, the cause, and a repair command.

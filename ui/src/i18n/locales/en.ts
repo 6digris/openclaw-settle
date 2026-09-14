@@ -19,6 +19,9 @@ export const en: TranslationMap & {
   skillWorkshop: TranslationMap;
 } = {
   pluginUi: {
+    sessionRecentMessages: "Recent messages",
+    sessionHistoryUnavailable: "Session history could not be loaded. Try again.",
+    sessionHistoryEmpty: "No recent messages.",
     customize: "Customize UI",
     selectionScope: "Choose views for this browser window. Built-in views are always available.",
     builtin: "Built-in view",
@@ -1151,6 +1154,7 @@ export const en: TranslationMap & {
     sessionState: "Session state",
     all: "All",
     sessionArchived: "Session archived",
+    archiving: "Archiving…",
     sessionsArchived: "Archived {count} sessions",
     deleteAllArchived: "Delete all archived…",
     deleteAllArchivedConfirm:
@@ -1305,11 +1309,17 @@ export const en: TranslationMap & {
     },
     iconEmojiSection: "Emoji",
     iconGlyphSection: "Icons",
+    noIcon: "No icon",
+    noColor: "No color",
     customEmojiCell: "Custom emoji…",
     customEmojiTitle: "Custom emoji",
     customEmojiSet: "Set",
     customEmojiHint: "Any emoji works. Press {shortcut} for the system emoji picker.",
     customEmojiHintNoShortcut: "Any emoji works.",
+    customIconCell: "Custom icon…",
+    customIconTitle: "Custom icon",
+    customIconHint: "Paste an emoji or SVG. Press {shortcut} for the system emoji picker.",
+    customIconHintNoShortcut: "Paste an emoji or SVG.",
     removeIcon: "Remove icon",
     pinSession: "Pin session",
     pinRootSessionsOnly: "Only root sessions can be pinned; pin the parent session instead.",
@@ -1378,6 +1388,10 @@ export const en: TranslationMap & {
     groupByPerson: "Person",
     showSessionPreview: "Show message preview",
     hideEmptyGroups: "Hide empty groups",
+    hideEmptyGroupsSelected: "Hide empty groups: {mode}",
+    emptyGroupsWhenFiltering: "When filtering",
+    emptyGroupsAlways: "Always",
+    emptyGroupsNever: "Never",
     showCronSessions: "Show automation sessions",
     showSystemSessions: "Show system sessions",
     groupByChannel: "Channel",
@@ -3211,6 +3225,13 @@ export const en: TranslationMap & {
     automationGroup: "{count} automation sessions",
     automation: "Automation",
     inspectRun: "Inspect run",
+    recap: "Session recap",
+    recapMissing: "No recap yet",
+    recapUpdating: "Updating recap…",
+    recapStale: "New activity since this recap",
+    recapUnavailable: "Recap unavailable",
+    recapRetry: "Retry recap",
+    recapUpdated: "Recap updated {time}",
     backToSessions: "Back to sessions",
     channelLabel: "Channel: {value}",
     agentLabel: "Agent: {value}",
@@ -4751,6 +4772,9 @@ export const en: TranslationMap & {
       cliHarnessContext: {
         label: "System · injected context",
       },
+      claudeCliTaskNotification: {
+        label: "System · background task",
+      },
       showContent: "Show content",
     },
     progressLabels: {
@@ -4865,6 +4889,11 @@ export const en: TranslationMap & {
     },
     queue: {
       connectionPending: "Finishing connection recovery. Try sending again when it is ready.",
+      editSourceChanged:
+        "This queued message changed while you were editing. Your edit is still here. Copy it, cancel the edit, and review the queue before trying again.",
+      editStorageFailed:
+        "Your edit could not be saved in this browser. Keep this tab open and copy your edit before freeing browser storage, then try again.",
+      full: "The message queue is full. Wait for a queued message to send or remove one, then try again.",
       initialTurnPending:
         "The initial message is unresolved. Reconnect if needed, then review it before sending another message.",
       notSent: "Not sent",
@@ -5169,6 +5198,12 @@ export const en: TranslationMap & {
       expand: "Focus",
       expandPanel: "Expand {panel}",
       restore: "Restore split",
+      useViewAsDefault: "Use current view as default",
+      savingDefault: "Saving default…",
+      defaultSaved: "Dashboard default saved for future opens.",
+      defaultSaveFailed:
+        "Could not save the dashboard default. Check the connection and try again.",
+      defaultSaveError: "Could not save the dashboard default: {error}",
       swap: "Swap {main} and {side}",
       layout: "Layout",
       dockLeft: "Move side panel left",
