@@ -17,6 +17,7 @@ import {
   getSessionColdStorageStatus,
   runSessionColdStorageMaintenance,
 } from "../config/sessions/session-cold-storage.js";
+import { waitForSessionTranscriptIndexReconcile } from "../config/sessions/session-transcript-reconcile.js";
 import { normalizePersistedSessionEntryShape } from "../config/sessions/store-entry-shape.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { registerAgentRunContext, clearAgentRunContext } from "../infra/agent-run-registry.js";
@@ -316,6 +317,9 @@ describe("Activity recap lifecycle with the canonical session store", () => {
       completeModel: complete,
     });
     service.ensure(target);
+    // The leaf change reconciles in a real worker. Join it before timing
+    // the separately queued recap.
+    await waitForSessionTranscriptIndexReconcile({ agentId: scope.agentId });
     await vi.waitFor(() => expect(view()?.state).toBe("current"));
     expect(complete).toHaveBeenCalledTimes(2);
     expect(JSON.parse(complete.mock.calls[1]![0].prompt)).toMatchObject({
