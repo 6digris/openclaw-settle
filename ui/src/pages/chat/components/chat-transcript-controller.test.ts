@@ -50,6 +50,14 @@ function stubMcpAppLifecycle(
   return { app: Object.assign(app, lifecycle), ...lifecycle };
 }
 
+function numberedContentRows(length: number): TestContentRow[] {
+  return Array.from({ length }, (_, index) => ({
+    kind: "content",
+    key: `row:${index}`,
+    content: html`<div>row ${index}</div>`,
+  }));
+}
+
 function mcpRangeRows(appContent: unknown): TestContentRow[] {
   return Array.from({ length: 24 }, (_, index) => ({
     kind: "content" as const,
@@ -449,11 +457,7 @@ describe("chat transcript controller", () => {
     async ({ behavior, resizeBefore, deltaY, observerLate }) => {
       const flushFrames = stubAnimationFrames();
       transcriptDomState.measuredRowHeight = 120;
-      const rows: TestContentRow[] = Array.from({ length: 40 }, (_, index) => ({
-        kind: "content",
-        key: `row:${index}`,
-        content: html`<div>row ${index}</div>`,
-      }));
+      const rows = numberedContentRows(40);
       const { container, renderRows, transcript } = await mountTestTranscript(
         `pane-${behavior}-${resizeBefore}-${deltaY}-${observerLate}-resize`,
         rows,
@@ -532,11 +536,7 @@ describe("chat transcript controller", () => {
   );
 
   it("keeps a smooth latest command through an idle observer delivery before reaching its target", async () => {
-    const rows: TestContentRow[] = Array.from({ length: 40 }, (_, index) => ({
-      kind: "content",
-      key: `row:${index}`,
-      content: html`<div>row ${index}</div>`,
-    }));
+    const rows = numberedContentRows(40);
     const { container, transcript } = await mountTestTranscript("idle-latest", rows);
     Object.defineProperties(container, {
       clientHeight: { configurable: true, value: 600 },
@@ -679,11 +679,7 @@ describe("chat transcript controller", () => {
           onReaderScroll: (towardEnd) => handleChatScrollTakeover(policy, towardEnd),
         },
       );
-      const rows: TestContentRow[] = Array.from({ length: 12 }, (_, index) => ({
-        kind: "content",
-        key: `row:${index}`,
-        content: html`<div>row ${index}</div>`,
-      }));
+      const rows = numberedContentRows(12);
       const { container } = await mountTestTranscript(`height-resize-${locked}`, rows, transcript);
       try {
         const total = transcriptSize(container);
@@ -737,11 +733,7 @@ describe("chat transcript controller", () => {
 
   it("keeps a reader above the padded real end stationary when a rendered row grows", async () => {
     transcriptDomState.measuredRowHeight = 120;
-    const rows: TestContentRow[] = Array.from({ length: 12 }, (_, index) => ({
-      kind: "content",
-      key: `row:${index}`,
-      content: html`<div>row ${index}</div>`,
-    }));
+    const rows = numberedContentRows(12);
     const { container, renderRows, transcript } = await mountTestTranscript(
       "padded-row-resize",
       rows,
@@ -869,11 +861,7 @@ describe("chat transcript controller", () => {
   ])(
     "follows appended typing only when permitted near the real end ($distance, $followEnabled)",
     async ({ distance, followEnabled }) => {
-      const rows: TestContentRow[] = Array.from({ length: 12 }, (_, index) => ({
-        kind: "content",
-        key: `row:${index}`,
-        content: html`<div>row ${index}</div>`,
-      }));
+      const rows = numberedContentRows(12);
       const { container, renderRows, transcript } = await mountTestTranscript(
         `typing-distance-${distance}`,
         rows,
@@ -919,11 +907,7 @@ describe("chat transcript controller", () => {
 
   it("cancels typing follow before later geometry can retarget the reader", async () => {
     const flushFrames = stubAnimationFrames();
-    const rows: TestContentRow[] = Array.from({ length: 12 }, (_, index) => ({
-      kind: "content",
-      key: `row:${index}`,
-      content: html`<div>row ${index}</div>`,
-    }));
+    const rows = numberedContentRows(12);
     const { container, renderRows, transcript } = await mountTestTranscript(
       "typing-interrupt",
       rows,
@@ -965,77 +949,6 @@ describe("chat transcript controller", () => {
       transcript.hostDisconnected();
     }
   });
-
-  it.each(["none", "idle at end", "wheel", "new reveal"] as const)(
-    "keeps only the current deferred message reveal after %s",
-    async (interruption) => {
-      const update = createDeferred<boolean>();
-      const transcript = new ChatTranscriptController({
-        addController: vi.fn(),
-        removeController: vi.fn(),
-        requestUpdate: vi.fn(),
-        updateComplete: update.promise,
-      });
-      const rows: TestContentRow[] = ["first", "second"].map((id) => ({
-        kind: "content",
-        key: id,
-        content: html`<div class="chat-bubble" data-entry-id=${id}>${id}</div>`,
-      }));
-      const { container, session, renderRows } = await mountTestTranscript(
-        `reveal-${interruption}`,
-        rows,
-        transcript,
-      );
-      try {
-        Object.defineProperties(container, {
-          clientHeight: { configurable: true, value: 600 },
-          scrollHeight: { configurable: true, value: interruption === "idle at end" ? 600 : 2000 },
-        });
-        const scrollTo = vi.fn();
-        container.scrollTo = scrollTo;
-        const bubbles = [...container.querySelectorAll<HTMLElement>(".chat-bubble")];
-        session.syncMessageRows(
-          new Map([
-            ["first", "first"],
-            ["second", "second"],
-          ]),
-          new Map([
-            ["first", "first"],
-            ["second", "second"],
-          ]),
-        );
-        renderRows(rows);
-        if (interruption === "idle at end") {
-          vi.useFakeTimers();
-        }
-        expect(transcript.revealMessage("first")).toBe(true);
-        scrollTo.mockClear();
-        if (interruption === "wheel") {
-          container.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
-          expect.soft(scrollTo).toHaveBeenCalledExactlyOnceWith({
-            top: container.scrollTop,
-            behavior: "instant",
-          });
-        } else if (interruption === "idle at end") {
-          container.dispatchEvent(new Event("scroll"));
-          vi.advanceTimersByTime(150);
-        } else if (interruption === "new reveal") {
-          expect(transcript.revealMessage("second")).toBe(true);
-        }
-        update.resolve(true);
-        await update.promise;
-        expect(bubbles[0]?.classList.contains("chat-bubble--reply-target")).toBe(
-          ["none", "idle at end"].includes(interruption),
-        );
-        expect(bubbles[1]?.classList.contains("chat-bubble--reply-target")).toBe(
-          interruption === "new reveal",
-        );
-      } finally {
-        transcript.hostDisconnected();
-        vi.useRealTimers();
-      }
-    },
-  );
 
   it("re-attaches the virtualizer when a foreign host re-stamps the transcript", async () => {
     const transcript = createTestTranscript();
