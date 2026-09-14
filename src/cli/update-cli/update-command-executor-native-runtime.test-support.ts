@@ -42,6 +42,11 @@ export const updateExecutorNativeEntrypoints = {
     sourceWorkerName: "../../daemon/exec-file",
     distWorkerPath: "daemon/exec-file.js",
   },
+  handoffLease: {
+    currentModuleUrl,
+    sourceWorkerName: "../../infra/update-managed-service-handoff-lease",
+    distWorkerPath: "infra/update-managed-service-handoff-lease.js",
+  },
   serviceFiles: {
     currentModuleUrl,
     sourceWorkerName: "../../daemon/launchd-service-files",
