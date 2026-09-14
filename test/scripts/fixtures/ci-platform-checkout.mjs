@@ -1051,12 +1051,30 @@ async function supervise() {
   let shell;
   let stopping;
   let censusFailed = false;
+  let checkoutObservation;
+  try {
+    if (process.platform === "win32" && scenario === "harness-timeout") {
+      checkoutObservation = {
+        kind: "windows-checkout-exit-observation",
+        node: { executable: path.basename(process.execPath), version: process.versions.node },
+      };
+    }
+  } catch {
+    // Missing observations stay inconclusive; fixture ownership remains unchanged.
+  }
   const pendingChildren = new Set();
   const track = (child) => {
     pendingChildren.add(child);
     // Spawn errors precede close; only close releases a direct child's ownership.
     const closed = new Promise((resolve) => {
       child.once("close", (code) => {
+        try {
+          if (checkoutObservation && child === shell) {
+            checkoutObservation.shellCloseNs = process.hrtime.bigint().toString();
+          }
+        } catch {
+          // The creator's original close still releases this exact child.
+        }
         pendingChildren.delete(child);
         resolve(code);
       });
@@ -1388,7 +1406,36 @@ async function supervise() {
       if (fs.existsSync(path.join(root, file)) && fs.readFileSync(path.join(root, file), "utf8"))
         await boundary(name);
     }
-    await boundary("exit");
+    let exitBoundaryReturned = false;
+    try {
+      try {
+        if (checkoutObservation) {
+          checkoutObservation.exitBoundaryEntryNs = process.hrtime.bigint().toString();
+        }
+      } catch {
+        // Registry/native observation still runs once under its original deadline.
+      }
+      await boundary("exit");
+      exitBoundaryReturned = true;
+    } finally {
+      try {
+        if (checkoutObservation) {
+          // These bracket boundary(), not the sampler request or native API query.
+          checkoutObservation.exitBoundarySettledNs = process.hrtime.bigint().toString();
+          checkoutObservation.exitBoundaryReturned = exitBoundaryReturned;
+          const line = `${JSON.stringify(checkoutObservation)}\n`;
+          // The owner reserves 7 KiB; both records together stay within 8 KiB.
+          fs.writeSync(
+            output,
+            Buffer.byteLength(line) <= 1024
+              ? line
+              : '{"kind":"windows-checkout-exit-observation","error":"output-overflow"}\n',
+          );
+        }
+      } catch {
+        // Never replace a thrown boundary error or prevent the original stop().
+      }
+    }
     await stop();
   } catch (error) {
     await stop(error);

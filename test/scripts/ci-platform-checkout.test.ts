@@ -107,7 +107,10 @@ it.concurrent.each([
           // Slow child startup must not replace Git's injected exit with a fixture timeout.
           writeFileSync(path.join(root, "tree-start-delay-1.json"), "4100");
         }
-        const accelerated = renderGitTestClock(run, { realDrain: scenario.startsWith("cancel-") });
+        const accelerated = renderGitTestClock(run, {
+          realDrain: scenario.startsWith("cancel-"),
+          observeWindowsExit: process.platform === "win32" && scenario === "harness-timeout",
+        });
         expect(accelerated).not.toBe(run);
         // A broken preflight must never let these negative fixture tests run real Git.
         writeFileSync(
