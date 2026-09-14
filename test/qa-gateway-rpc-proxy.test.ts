@@ -276,6 +276,71 @@ describe("QA Gateway proxy readiness diagnostics", () => {
     expect((await returned)[0]).toEqual(response);
   }
 
+  it("freezes private history request owners without changing bytes or exposing IDs", async () => {
+    await withProxy(
+      false,
+      async ({ proxy, front, upstream, reconnect }) => {
+        const back = await upstream;
+        await exchange(front, back, 1, "connect", true);
+        await exchange(front, back, 2, "chat.history", true);
+        const frozen = proxy.captureHistoryRequestMatcher();
+        expect(frozen("private-request-2")).toEqual({
+          status: "matched",
+          connection: 1,
+          request: 2,
+        });
+        expect(frozen("absent")).toEqual({ status: "unknown" });
+        expect(frozen(undefined)).toEqual({ status: "unknown" });
+        expect(frozen("x".repeat(129))).toEqual({ status: "unknown" });
+        // A same-connection reuse and later reconnection must not mutate the old snapshot.
+        await exchange(front, back, 2, "chat.history", true);
+        expect(proxy.captureHistoryRequestMatcher()("private-request-2")).toEqual({
+          status: "unknown",
+        });
+        const second = await reconnect();
+        await exchange(second.front, await second.upstream, 3, "chat.history", true);
+        expect(proxy.captureHistoryRequestMatcher()("private-request-3")).toEqual({
+          status: "matched",
+          connection: 2,
+          request: 1,
+        });
+        expect(frozen("private-request-3")).toEqual({ status: "unknown" });
+        expect(frozen("private-request-2")).toEqual({
+          status: "matched",
+          connection: 1,
+          request: 2,
+        });
+        const third = await reconnect();
+        await exchange(third.front, await third.upstream, 3, "chat.history", true);
+        expect(proxy.captureHistoryRequestMatcher()("private-request-3")).toEqual({
+          status: "unknown",
+        });
+        expect(JSON.stringify(proxy.readinessSnapshot())).not.toMatch(
+          /private|requestId|127\.0\.0\.1|token|payload/,
+        );
+      },
+      true,
+    );
+  });
+
+  it("keeps malformed or missing history IDs unknown while forwarding the original bytes", async () => {
+    await withProxy(
+      false,
+      async ({ proxy, front, upstream }) => {
+        const back = await upstream;
+        for (const id of [undefined, 42, "", "x".repeat(129)]) {
+          const raw = Buffer.from(JSON.stringify({ type: "req", id, method: "chat.history" }));
+          const received = once(back, "message");
+          front.send(raw);
+          expect((await received)[0]).toEqual(raw);
+          expect(proxy.captureHistoryRequestMatcher()(id)).toEqual({ status: "unknown" });
+        }
+        expect(JSON.stringify(proxy.readinessSnapshot())).not.toContain("x".repeat(129));
+      },
+      true,
+    );
+  });
+
   it("distinguishes a locally written upgrade request from an upstream HTTP upgrade", async () => {
     await withProxy(
       true,
@@ -432,7 +497,13 @@ describe("QA Gateway proxy readiness diagnostics", () => {
         for (let connection = 1; connection <= 5; connection++) {
           const back = await pair.upstream;
           for (let request = 1; request <= 34; request++) {
-            await exchange(pair.front, back, request, "health", true);
+            await exchange(
+              pair.front,
+              back,
+              request,
+              connection === 1 && request === 1 ? "chat.history" : "health",
+              true,
+            );
           }
           if (connection < 5) pair = await reconnect();
         }
@@ -455,6 +526,9 @@ describe("QA Gateway proxy readiness diagnostics", () => {
         expect(Buffer.byteLength(JSON.stringify(snapshot))).toBeLessThan(64 * 1024);
         expect(proxy.snapshot().events).toEqual([]);
         expect(proxy.readinessSnapshot().truncated).toBe(true);
+        expect(proxy.captureHistoryRequestMatcher()("private-request-1")).toEqual({
+          status: "unknown",
+        });
       },
       true,
     );

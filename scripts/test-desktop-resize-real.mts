@@ -8,9 +8,12 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { getFreePort } from "../src/test-utils/ports.ts";
 import { assertPrebuiltUiE2eRuntime } from "../test/vitest/vitest.ui-e2e-prebuilt.global-setup.ts";
 import {
+  createDesktopProofOutputCapture,
   desktopProofCommit,
   desktopProofSource,
   desktopProofSshdFailure,
+  desktopRfbTermination,
+  desktopTerminationLimits,
   exportDesktopResizeProof,
   inspectDesktopSshdRuntimeDirectory,
   readDesktopProofPhase,
@@ -71,6 +74,7 @@ const receipt = {
     status: "pending" | "available" | "missing" | "invalid";
     report: Awaited<ReturnType<typeof readDesktopProofTestReport>> | null;
     checkpoint: Awaited<ReturnType<typeof readDesktopProofPhase>>;
+    rfbTermination: ReturnType<typeof desktopRfbTermination>;
   }>,
   cleanup: {
     joined: false,
@@ -85,6 +89,9 @@ let sshd:
   | { pid: number; config: string; stop: (before?: () => Promise<void>) => Promise<void> }
   | undefined;
 const daemons: Array<() => Promise<void>> = [];
+let rfbOutput:
+  | Partial<Record<"vnc-99" | "vnc-100", ReturnType<typeof createDesktopProofOutputCapture>>>
+  | undefined;
 const ports: number[] = [];
 const artifactBudget = { entries: 0, bytes: 0 };
 const saveReceipt = () =>
@@ -205,16 +212,23 @@ function daemon(label: string, bin: string, args: string[], env: NodeJS.ProcessE
         signal: stop.signal,
         requireProcessTreeExit: true,
         onReady(child) {
-          const append = (data: Buffer) => {
+          const append = (stream: "stdout" | "stderr", data: Buffer) => {
             bytes += data.length;
             if (bytes > 4 * 1024 ** 2) {
               lifetime.abort();
             } else {
               log.push(data);
             }
+            if (rfbOutput && (label === "vnc-99" || label === "vnc-100")) {
+              try {
+                rfbOutput[label]?.append(stream, data);
+              } catch {
+                delete rfbOutput[label];
+              }
+            }
           };
-          child.stdout!.on("data", append);
-          child.stderr!.on("data", append);
+          child.stdout!.on("data", (data: Buffer) => append("stdout", data));
+          child.stderr!.on("data", (data: Buffer) => append("stderr", data));
         },
       }).then(
         () => {
@@ -559,10 +573,20 @@ async function main() {
           lastObservedPhase: null,
           owners: null,
         },
+        rfbTermination: { status: "unavailable" },
       };
       receipt.testDiagnostics.push(diagnostic);
       receipt.cleanup.testOwnersClosed = false;
       await writeFile(fixtureFile, JSON.stringify({ ...fixture, carrier }), { mode: 0o600 });
+      // Each carrier starts a new bounded window on the already-owned daemon pipes.
+      try {
+        rfbOutput = {
+          "vnc-99": createDesktopProofOutputCapture(desktopTerminationLimits.rfb / 2),
+          "vnc-100": createDesktopProofOutputCapture(desktopTerminationLimits.rfb / 2),
+        };
+      } catch {
+        rfbOutput = undefined;
+      }
       await withDesktopProofCleanup(
         async () => {
           await run(
@@ -591,8 +615,22 @@ async function main() {
             },
           );
         },
-        () =>
-          withDesktopProofCleanup(
+        () => {
+          // Only the test process group has joined; detached scenario cleanup remains unverified.
+          // The owner checkpoint below proves that separately. Daemon cleanup has not begun.
+          try {
+            if (!receipt.cleanup.unjoinedWork) {
+              diagnostic.rfbTermination = desktopRfbTermination(
+                rfbOutput?.["vnc-99"]?.snapshot(),
+                rfbOutput?.["vnc-100"]?.snapshot(),
+              );
+            }
+          } catch {
+            diagnostic.rfbTermination = { status: "unavailable" };
+          } finally {
+            rfbOutput = undefined;
+          }
+          return withDesktopProofCleanup(
             async () => {
               // Terminal JSON may be absent after process termination; collect this independently.
               diagnostic.checkpoint = await readDesktopProofPhase(
@@ -643,7 +681,8 @@ async function main() {
               );
             },
             recordFailure,
-          ),
+          );
+        },
         recordFailure,
       );
       await sourceIdentity();

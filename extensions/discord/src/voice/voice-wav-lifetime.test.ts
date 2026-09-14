@@ -6,9 +6,18 @@ import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { afterEach, beforeEach, vi } from "vitest";
 import { defineDiscordVoiceTests } from "./voice-test-harness.test-support.js";
 
+type WorkspaceDisposal = {
+  settled: Promise<void>;
+  calls: number;
+  method: "none" | "async-dispose" | "cleanup";
+  outcome: "pending" | "fulfilled" | "rejected";
+  errorCategory: "none" | "filesystem" | "fs-safe" | "other";
+};
+
 const workspace = vi.hoisted(() => ({
   rootDir: "",
   afterWrite: undefined as (() => Promise<void>) | undefined,
+  disposals: [] as WorkspaceDisposal[],
 }));
 vi.mock("openclaw/plugin-sdk/temp-path", async (importOriginal) => {
   const actual = await importOriginal<typeof import("openclaw/plugin-sdk/temp-path")>();
@@ -18,8 +27,46 @@ vi.mock("openclaw/plugin-sdk/temp-path", async (importOriginal) => {
     // The receive owner must observe leave before its awaited WAV write returns.
     tempWorkspace: async (options: Parameters<typeof actual.tempWorkspace>[0]) => {
       const temporary = await actual.tempWorkspace(options);
+      const settled = createDeferred<void>();
+      const disposal: WorkspaceDisposal = {
+        settled: settled.promise,
+        calls: 0,
+        method: "none",
+        outcome: "pending",
+        errorCategory: "none",
+      };
+      // Register before handing the workspace to audio; a late export spy can miss
+      // the real cleanup while the conversation queue intentionally settles first.
+      workspace.disposals.push(disposal);
+      const observeDisposal = async <T>(
+        method: WorkspaceDisposal["method"],
+        run: () => Promise<T>,
+      ): Promise<T> => {
+        disposal.calls += 1;
+        disposal.method = method;
+        try {
+          const result = await run();
+          disposal.outcome = "fulfilled";
+          return result;
+        } catch (error) {
+          disposal.outcome = "rejected";
+          const code = error instanceof Error && "code" in error ? error.code : undefined;
+          disposal.errorCategory =
+            code === "EACCES" || code === "EPERM" || code === "ENOSPC" || code === "EIO"
+              ? "filesystem"
+              : error instanceof Error && error.name === "FsSafeError"
+                ? "fs-safe"
+                : "other";
+          throw error;
+        } finally {
+          settled.resolve();
+        }
+      };
       return {
         ...temporary,
+        cleanup: () => observeDisposal("cleanup", () => temporary.cleanup()),
+        [Symbol.asyncDispose]: () =>
+          observeDisposal("async-dispose", () => temporary[Symbol.asyncDispose]()),
         write: async (...args: Parameters<typeof temporary.write>) => {
           const filePath = await temporary.write(...args);
           await workspace.afterWrite?.();
@@ -47,6 +94,7 @@ defineDiscordVoiceTests(
   }) => {
     beforeEach(async () => {
       workspace.afterWrite = undefined;
+      workspace.disposals = [];
       workspace.rootDir = await fs.realpath(
         await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-voice-wav-lifetime-")),
       );
@@ -79,21 +127,6 @@ defineDiscordVoiceTests(
         return { text: "Meeting notes" };
       });
       const entry = getSessionEntry(manager);
-      const audio = await import("./audio.js");
-      const writeWav = audio.writeVoiceWavFile;
-      const cleanups: Promise<void>[] = [];
-      vi.spyOn(audio, "writeVoiceWavFile").mockImplementation(async (pcm) => {
-        const wav = await writeWav(pcm);
-        const released = createDeferred<void>();
-        cleanups.push(released.promise);
-        return {
-          ...wav,
-          cleanup: async () => {
-            await wav.cleanup();
-            released.resolve();
-          },
-        };
-      });
       const receive = async (pcm = Buffer.alloc(192_000)) => {
         const stream = new PassThrough({ objectMode: true });
         getSessionConnection(entry).receiver.subscribe.mockReturnValueOnce(stream);
@@ -101,7 +134,37 @@ defineDiscordVoiceTests(
         stream.end(pcm);
         await receiving;
       };
-      return { manager, entry, sink, receive, released: () => Promise.all(cleanups) };
+      return {
+        manager,
+        entry,
+        sink,
+        receive,
+        released: () => Promise.all(workspace.disposals.map(({ settled }) => settled)),
+      };
+    }
+
+    function expectReleased(expected = 1) {
+      // asyncDispose returns no cleanup result; only the directory assertion below
+      // proves removal. Keep failed-observation details bounded and path-free.
+      expect({
+        created: workspace.disposals.length,
+        disposals: workspace.disposals
+          .slice(0, 4)
+          .map(({ calls, method, outcome, errorCategory }) => ({
+            calls,
+            method,
+            outcome,
+            errorCategory,
+          })),
+      }).toEqual({
+        created: expected,
+        disposals: Array.from({ length: expected }, () => ({
+          calls: 1,
+          method: "async-dispose",
+          outcome: "fulfilled",
+          errorCategory: "none",
+        })),
+      });
     }
 
     it.each(["queued", "transcribing"] as const)(
@@ -134,6 +197,7 @@ defineDiscordVoiceTests(
           blocked.resolve();
           await f.entry.processingQueue;
           await f.released();
+          expectReleased();
           expect(f.sink).toHaveBeenCalledExactlyOnceWith(
             expect.objectContaining({ text: "Meeting notes" }),
           );
@@ -187,6 +251,7 @@ defineDiscordVoiceTests(
         }
         await f.entry.processingQueue;
         await f.released();
+        expectReleased(reason === "short audio" ? 0 : 1);
         expect(f.sink).not.toHaveBeenCalled();
         if (reason === "transcription failure") {
           expect(loggerWarnMock).toHaveBeenCalledWith(expect.stringContaining("STT unavailable"));

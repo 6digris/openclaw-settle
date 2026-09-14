@@ -93,6 +93,7 @@ function respondChatHistoryUnavailable(
 }
 
 export async function handleChatHistoryRequest({
+  req,
   params,
   respond,
   client,
@@ -300,10 +301,15 @@ export async function handleChatHistoryRequest({
           {
             config: cfg,
             phase: method,
+            workerTasks: true,
             attributes: {
               limit: max,
               hasMessageId: Boolean(messageId),
               hasOffset: offset !== undefined,
+              // Private timeline correlation only; public proof exposes proxy ordinals.
+              ...(typeof req?.id === "string" && req.id.length > 0 && req.id.length <= 128
+                ? { requestId: req.id }
+                : {}),
             },
           },
         );

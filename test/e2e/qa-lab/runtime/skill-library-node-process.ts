@@ -2,6 +2,11 @@
 // against the trusted-proxy Gateway's supported direct-local password boundary instead.
 import fs from "node:fs/promises";
 import path from "node:path";
+import {
+  createDesktopProofOutputCapture,
+  desktopProofDiagnosticLogging,
+  desktopTerminationLimits,
+} from "../../../../scripts/lib/desktop-resize-proof.mts";
 import { runManagedCommand } from "../../../../scripts/lib/managed-child-process.mts";
 import {
   createOpenClawTestInstance,
@@ -23,7 +28,16 @@ type ListedNode = {
 export async function startSkillLibraryNodeProcess(
   gateway: Pick<OpenClawTestInstance, "port" | "gatewayToken">,
   admin: SkillLibraryWireClient,
+  options: { desktopDiagnostics?: boolean } = {},
 ) {
+  const diagnostics = desktopProofDiagnosticLogging(options.desktopDiagnostics === true);
+  let output: ReturnType<typeof createDesktopProofOutputCapture> | undefined;
+  try {
+    if (options.desktopDiagnostics)
+      output = createDesktopProofOutputCapture(desktopTerminationLimits.node);
+  } catch {
+    /* Optional diagnostics must not change node startup. */
+  }
   const node = await createOpenClawTestInstance({
     name: "skill-library-node",
     env: {
@@ -39,6 +53,7 @@ export async function startSkillLibraryNodeProcess(
       CODEX_HOME: undefined,
       OPENAI_API_KEY: undefined,
       ANTHROPIC_API_KEY: undefined,
+      ...diagnostics.env,
     },
   });
   const abort = new AbortController();
@@ -58,7 +73,10 @@ export async function startSkillLibraryNodeProcess(
     // Worker state uses os.tmpdir(); own that root so location assertions cannot accept host-global state.
     const workerTmpDir = path.join(node.stateDir, "tmp");
     await fs.mkdir(workerTmpDir, { recursive: true, mode: 0o700 });
-    await node.state.writeConfig({ nodeHost: { workerRuns: { enabled: true } } });
+    await node.state.writeConfig({
+      nodeHost: { workerRuns: { enabled: true } },
+      ...(diagnostics.logging ? { logging: diagnostics.logging } : {}),
+    });
     const entrypoint = await node.entrypoint();
     completion = runManagedCommand({
       bin: process.execPath,
@@ -80,11 +98,16 @@ export async function startSkillLibraryNodeProcess(
       signal: abort.signal,
       requireProcessTreeExit: process.platform !== "win32",
       onReady: (child) => {
-        const append = (data: Buffer) => {
+        const append = (stream: "stdout" | "stderr", data: Buffer) => {
           logs = (logs + data.toString()).slice(-8_000);
+          try {
+            output?.append(stream, data);
+          } catch {
+            output = undefined;
+          }
         };
-        child.stdout?.on("data", append);
-        child.stderr?.on("data", append);
+        child.stdout?.on("data", (data: Buffer) => append("stdout", data));
+        child.stderr?.on("data", (data: Buffer) => append("stderr", data));
       },
     }).then(
       (code) => {
@@ -140,7 +163,12 @@ export async function startSkillLibraryNodeProcess(
         ? listed
         : undefined;
     });
-    return { nodeId: admission.nodeId, stateDir: node.stateDir, stop };
+    return {
+      nodeId: admission.nodeId,
+      stateDir: node.stateDir,
+      stop,
+      diagnosticOutput: () => output?.snapshot(),
+    };
   } catch (error) {
     try {
       await stop();

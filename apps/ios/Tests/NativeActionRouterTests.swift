@@ -32,6 +32,17 @@ struct NativeActionRouterTests {
         var requestsBeforeRejection = 0
         var widgetRefreshes = 0
         var rosterRequests = 0
+        var issuedRunIDs: Set<String> = []
+        var callbackViolations: [String] = []
+        var callbackViolationCount = 0
+
+        func observeCallback(_ condition: Bool, rule: String, method: String) {
+            guard !condition else { return }
+            self.callbackViolationCount += 1
+            if self.callbackViolations.count < 16 {
+                self.callbackViolations.append("method=\(method) rule=\(rule)")
+            }
+        }
 
         init() {
             let model = NodeAppModel(audioAdmissionInitiallyAllowed: false)
@@ -86,20 +97,57 @@ struct NativeActionRouterTests {
                 rpcHandler: { [weak self] request in
                     guard let self else { return .failure(code: "UNAVAILABLE", message: "Fixture closed") }
                     let params = request["params"] as? [String: Any] ?? [:]
+                    let methodLabel: String = switch request["method"] as? String {
+                    case let method? where [
+                        "users.self",
+                        "plugin.surface.refresh",
+                        "agents.list",
+                        "chat.history",
+                        "sessions.messages.subscribe",
+                        "health",
+                        "sessions.list",
+                        "chat.send",
+                        "agent.wait",
+                        "models.list",
+                        "commands.list",
+                        "chat.metadata",
+                        "tasks.list",
+                    ]
+                        .contains(method): method
+                    default: "unknown"
+                    }
                     if request["method"] as? String == "sessions.list", params["limit"] as? Int == 80 {
                         // Agent selection also refreshes the ordinary UI share route.
-                        #expect(request["expectedProfileId"] == nil)
-                        #expect(Set(params.keys) == ["limit", "includeGlobal", "includeUnknown", "agentId"])
-                        #expect(params["includeGlobal"] as? Bool == true)
-                        #expect(params["includeUnknown"] as? Bool == false)
-                        #expect(["main", "research"].contains(params["agentId"] as? String ?? ""))
+                        self.observeCallback(
+                            request["expectedProfileId"] == nil,
+                            rule: "share-profile",
+                            method: methodLabel)
+                        self.observeCallback(
+                            Set(params.keys) == ["limit", "includeGlobal", "includeUnknown", "agentId"],
+                            rule: "share-shape",
+                            method: methodLabel)
+                        self.observeCallback(
+                            params["includeGlobal"] as? Bool == true,
+                            rule: "share-global",
+                            method: methodLabel)
+                        self.observeCallback(
+                            params["includeUnknown"] as? Bool == false,
+                            rule: "share-unknown",
+                            method: methodLabel)
+                        self.observeCallback(
+                            ["main", "research"].contains(params["agentId"] as? String ?? ""),
+                            rule: "share-agent",
+                            method: methodLabel)
                     } else {
                         let isCatalog = self.catalogDiscovery && (
                             request["method"] as? String == "users.self" ||
                                 (request["method"] as? String == "sessions.list" && params["limit"] as? Int == 50))
                         let expected = isCatalog ? (request["method"] as? String == "users.self" ? nil : self.profileID)
                             : "alice"
-                        #expect(request["expectedProfileId"] as? String == expected)
+                        self.observeCallback(
+                            request["expectedProfileId"] as? String == expected,
+                            rule: "selected-profile",
+                            method: methodLabel)
                     }
                     if request["method"] as? String == "chat.send" { self.sent.append(params) }
                     if request["method"] as? String == self.rejectMethod {
@@ -153,14 +201,25 @@ struct NativeActionRouterTests {
                         let before = self.beforeSendReply
                         self.beforeSendReply = nil
                         before?()
-                        return .success(["runId": "run-\(self.sent.count)", "status": "ok"])
+                        let runID = "run-\(self.sent.count)"
+                        self.issuedRunIDs.insert(runID)
+                        return .success(["runId": runID, "status": "ok"])
+                    case "agent.wait":
+                        // An accepted send can arm its waiter before terminal-ACK reconciliation.
+                        // Only IDs actually issued by this fixture have a completed run to inspect.
+                        let valid = Set(params.keys) == ["runId", "timeoutMs"] &&
+                            self.issuedRunIDs.contains(params["runId"] as? String ?? "") &&
+                            (params["timeoutMs"] as? Int ?? 0) > 0
+                        self.observeCallback(valid, rule: "issued-run-wait", method: methodLabel)
+                        guard valid else { return .failure(code: "INVALID_REQUEST", message: "Invalid fixture wait") }
+                        return .success(["status": "ok"])
                     case "models.list", "commands.list": return .success([
                             request["method"] as? String == "models.list" ? "models" : "commands": [],
                         ])
                     case "chat.metadata": return .success(["swarmEnabled": false])
                     case "tasks.list": return .success(["tasks": []])
                     default:
-                        Issue.record("Unexpected native target fixture method: \(request["method"] ?? "missing")")
+                        self.observeCallback(false, rule: "unexpected-method", method: methodLabel)
                         return .failure(code: "INVALID_REQUEST", message: "Unexpected fixture method")
                     }
                 })
@@ -197,7 +256,7 @@ struct NativeActionRouterTests {
             if let presentationID { self.router.unregisterPresentation(presentationID) }
             self.chat?.detachTransport()
             await self.model.operatorSession.disconnect()
-            self.fixture?.stop()
+            await self.fixture?.stopAndWait()
             self.model.activeGatewayConnectConfig = nil
             self.model.voiceWake.stop()
             await self.model.purgeChatTranscriptCache(gatewayID: self.gatewayID)
@@ -209,14 +268,21 @@ struct NativeActionRouterTests {
             "talk.enabled": false, "talk.background.enabled": false, VoiceWakePreferences.enabledKey: false,
         ]) {
             let host = Host()
+            let outcome: Result<Void, Error>
             do {
                 try await host.connect()
                 try await run(host)
+                outcome = .success(())
             } catch {
-                await host.close()
-                throw error
+                outcome = .failure(error)
             }
             await host.close()
+            // NW callbacks do not carry Swift Testing's originating task context.
+            // Close admission and join their writers before reporting any violations here.
+            #expect(
+                host.callbackViolationCount == 0,
+                "count=\(host.callbackViolationCount) overflow=\(host.callbackViolationCount > 16) \(host.callbackViolations.joined(separator: " | "))")
+            try outcome.get()
         }
     }
 

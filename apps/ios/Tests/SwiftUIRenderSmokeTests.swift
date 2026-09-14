@@ -299,9 +299,46 @@ struct SwiftUIRenderSmokeTests {
             var createdKeys: [String] = []
             var beforeCreateResponse: (@MainActor () -> Void)?
             var sentParams: [[String: Any]] = []
+            var issuedRunIDs: Set<String> = []
             var routingReads = 0
             var rpcCount = 0
             var phase = "setup"
+            var callbackViolations: [String] = []
+            var callbackViolationCount = 0
+            weak var diagnosticAppModel: NodeAppModel?
+            weak var diagnosticCreatingModel: OpenClawChatViewModel?
+            var creatingAtResponse: Bool?
+            func modelFacts(_ model: OpenClawChatViewModel?) -> String {
+                "present=\(model != nil),detached=\(model?.isTransportDetached == true)," +
+                    "native=\((model?.transport as? IOSGatewayChatTransport)?.nativeBinding != nil)," +
+                    "original=\(model?.sessionKey == session.sessionKey)," +
+                    "created=\(model.map { createdKeys.contains($0.sessionKey) } == true)," +
+                    "agent=\(model?.activeAgentId == session.agentID)"
+            }
+            func observeCallback(
+                _ condition: Bool,
+                rule: String,
+                method: String,
+                profile: String? = nil,
+                params: [String: Any] = [:])
+            {
+                guard !condition else { return }
+                callbackViolationCount += 1
+                guard callbackViolations.count < 16 else { return }
+                let profileClass = profile == nil ? "nil" : (profile == expectedProfile ? "expected" : "other")
+                let published = diagnosticAppModel?.presentedChatViewModel
+                let same = diagnosticCreatingModel != nil && diagnosticCreatingModel === published
+                let commandsShape = Set(params.keys) == ["scope", "includeArgs", "agentId"]
+                let subscribeShape = Set(params.keys).isSubset(of: ["key", "agentId"]) && params["key"] is String
+                // Record only fixed scalar facts at the callback, never a model,
+                // request dictionary, raw key, profile ID, or a later-state closure.
+                callbackViolations.append(
+                    "action=\(action) method=\(method) phase=\(phase) rule=\(rule) profile=\(profileClass) " +
+                        "commandsShape=\(commandsShape) text=\(params["scope"] as? String == "text") args=\(params["includeArgs"] as? Bool == true) " +
+                        "subscribeShape=\(subscribeShape) keyOriginal=\(params["key"] as? String == session.sessionKey) " +
+                        "keyCreated=\((params["key"] as? String).map { createdKeys.contains($0) } == true) agent=\(params["agentId"] as? String == session.agentID) " +
+                        "sameModel=\(same) creating[\(modelFacts(diagnosticCreatingModel))] published[\(modelFacts(published))]")
+            }
             let fixture = try await NativeGatewayWebSocketFixture.start(
                 issuedDeviceTokens: [],
                 hello: .init(
@@ -315,7 +352,7 @@ struct SwiftUIRenderSmokeTests {
                 rpcHandler: { frame in
                     rpcCount += 1
                     guard let method = frame["method"] as? String else {
-                        Issue.record("Chat activation fixture received a request without a method")
+                        observeCallback(false, rule: "missing-method", method: "unknown")
                         return .failure(code: "INVALID_REQUEST", message: "Missing method")
                     }
                     let profile = frame["expectedProfileId"] as? String
@@ -323,20 +360,48 @@ struct SwiftUIRenderSmokeTests {
                     let methodLabel: String = switch method {
                     case "users.self", "agents.list", "chat.history", "sessions.messages.subscribe", "health",
                          "sessions.list", "chat.send", "models.list", "commands.list", "chat.metadata", "tasks.list",
-                         "sessions.create": method
+                         "sessions.create", "agent.wait": method
                     default: "unknown"
                     }
                     if method == "sessions.list", params["limit"] as? Int == 80 {
                         // This is the ordinary share-route refresh scheduled by agent selection.
-                        #expect(profile == nil, "action=\(action) method=\(methodLabel) phase=\(phase) oracle=share")
-                        #expect(Set(params.keys) == ["limit", "includeGlobal", "includeUnknown", "agentId"])
-                        #expect(params["includeGlobal"] as? Bool == true)
-                        #expect(params["includeUnknown"] as? Bool == false)
-                        #expect(params["agentId"] as? String == session.agentID)
+                        observeCallback(
+                            profile == nil,
+                            rule: "share-profile",
+                            method: methodLabel,
+                            profile: profile,
+                            params: params)
+                        observeCallback(
+                            Set(params.keys) == ["limit", "includeGlobal", "includeUnknown", "agentId"],
+                            rule: "share-shape",
+                            method: methodLabel,
+                            profile: profile,
+                            params: params)
+                        observeCallback(
+                            params["includeGlobal"] as? Bool == true,
+                            rule: "share-global",
+                            method: methodLabel,
+                            profile: profile,
+                            params: params)
+                        observeCallback(
+                            params["includeUnknown"] as? Bool == false,
+                            rule: "share-unknown",
+                            method: methodLabel,
+                            profile: profile,
+                            params: params)
+                        observeCallback(
+                            params["agentId"] as? String == session.agentID,
+                            rule: "share-agent",
+                            method: methodLabel,
+                            profile: profile,
+                            params: params)
                     } else {
-                        #expect(
+                        observeCallback(
                             profile == expectedProfile,
-                            "action=\(action) method=\(methodLabel) phase=\(phase) oracle=selected-profile")
+                            rule: "selected-profile",
+                            method: methodLabel,
+                            profile: profile,
+                            params: params)
                     }
                     switch method {
                     case "users.self":
@@ -349,7 +414,12 @@ struct SwiftUIRenderSmokeTests {
                         ])
                     case "chat.history":
                         guard let key = params["sessionKey"] as? String else {
-                            Issue.record("Chat history request is missing its selected key")
+                            observeCallback(
+                                false,
+                                rule: "missing-history-key",
+                                method: methodLabel,
+                                profile: profile,
+                                params: params)
                             return .failure(code: "INVALID_REQUEST", message: "Missing session key")
                         }
                         return .success([
@@ -361,7 +431,12 @@ struct SwiftUIRenderSmokeTests {
                         ])
                     case "sessions.messages.subscribe":
                         guard let key = params["key"] as? String else {
-                            Issue.record("Chat subscription is missing its selected key")
+                            observeCallback(
+                                false,
+                                rule: "missing-subscribe-key",
+                                method: methodLabel,
+                                profile: profile,
+                                params: params)
                             return .failure(code: "INVALID_REQUEST", message: "Missing session key")
                         }
                         return .success(["subscribed": true, "key": key])
@@ -374,7 +449,23 @@ struct SwiftUIRenderSmokeTests {
                         ]]])
                     case "chat.send":
                         sentParams.append(params)
-                        return .success(["runId": "native-run", "status": "ok"])
+                        let runID = "native-run"
+                        issuedRunIDs.insert(runID)
+                        return .success(["runId": runID, "status": "ok"])
+                    case "agent.wait":
+                        // Run adoption may start a waiter before terminal-ACK reconciliation.
+                        // Only this fixture's successfully issued runs have a completed result.
+                        let valid = Set(params.keys) == ["runId", "timeoutMs"] &&
+                            issuedRunIDs.contains(params["runId"] as? String ?? "") &&
+                            (params["timeoutMs"] as? Int ?? 0) > 0
+                        observeCallback(
+                            valid,
+                            rule: "issued-run-wait",
+                            method: methodLabel,
+                            profile: profile,
+                            params: params)
+                        guard valid else { return .failure(code: "INVALID_REQUEST", message: "Invalid fixture wait") }
+                        return .success(["status": "ok"])
                     case "models.list":
                         return .success(["models": []])
                     case "commands.list":
@@ -386,7 +477,12 @@ struct SwiftUIRenderSmokeTests {
                     case "sessions.create":
                         createdProfiles.append(profile)
                         guard let key = params["key"] as? String else {
-                            Issue.record("New chat request is missing its key")
+                            observeCallback(
+                                false,
+                                rule: "missing-create-key",
+                                method: methodLabel,
+                                profile: profile,
+                                params: params)
                             return .failure(code: "INVALID_REQUEST", message: "Missing session key")
                         }
                         createdKeys.append(key)
@@ -394,12 +490,17 @@ struct SwiftUIRenderSmokeTests {
                         beforeCreateResponse = nil
                         return .success(["ok": true, "key": key])
                     default:
-                        Issue.record("Unexpected chat activation fixture method: \(method)")
+                        observeCallback(
+                            false,
+                            rule: "unexpected-method",
+                            method: methodLabel,
+                            profile: profile,
+                            params: params)
                         return .failure(code: "INVALID_REQUEST", message: "Unexpected fixture method: \(method)")
                     }
                 })
-            defer { fixture.stop() }
             let appModel = NodeAppModel(audioAdmissionInitiallyAllowed: isDictation)
+            diagnosticAppModel = appModel
             let gateway = appModel.operatorSession
             let gatewayController = GatewayConnectionController(appModel: appModel, startDiscovery: false)
             let router = NativeActionRouter(appModel: appModel, gatewayController: gatewayController)
@@ -436,6 +537,7 @@ struct SwiftUIRenderSmokeTests {
                 window = nil
                 previousKeyWindow = nil
             }
+            let outcome: Result<Void, Error>
             do {
                 defer {
                     phase = "cleanup"
@@ -506,9 +608,10 @@ struct SwiftUIRenderSmokeTests {
                         nil
                     }
                     let creatingModel = try #require(appModel.presentedChatViewModel)
+                    diagnosticCreatingModel = creatingModel
                     if retiresDuringCreate {
                         beforeCreateResponse = {
-                            #expect(creatingModel.isCreatingSession)
+                            creatingAtResponse = creatingModel.isCreatingSession
                             phase = "retiring"
                             // Retire while sessions.create is in flight, before the fixture sends its reply.
                             router.unregisterPresentation(presentationID)
@@ -664,13 +767,20 @@ struct SwiftUIRenderSmokeTests {
                     #expect(sentParams.first?["expectedPermissionMode"] as? String == "guarded")
                     #expect(sentParams.first?["expectedToolOverrides"] as? [String: Bool] == [:])
                 }
+                outcome = .success(())
             } catch {
-                await gateway.disconnect()
-                await appModel.purgeChatTranscriptCache(gatewayID: session.owner.gatewayID)
-                throw error
+                outcome = .failure(error)
             }
             await gateway.disconnect()
+            await fixture.stopAndWait()
             await appModel.purgeChatTranscriptCache(gatewayID: session.owner.gatewayID)
+            // NW callbacks have no originating Swift Testing task. Assert after
+            // admission closes and all retained reply writers join, even on body failure.
+            #expect(
+                callbackViolationCount == 0,
+                "count=\(callbackViolationCount) overflow=\(callbackViolationCount > 16) \(callbackViolations.joined(separator: " | "))")
+            if let creatingAtResponse { #expect(creatingAtResponse) }
+            try outcome.get()
         }
         if action == "retired-new-chat" {
             // Hosting, registration, restore, and prepared-send references have left scope.

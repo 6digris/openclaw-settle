@@ -850,10 +850,17 @@ export async function withNativeActionGateway(
             // Capture owner facts before the diagnostic file read yields or fixture cleanup starts.
             const gatewayChildFailure = gatewayChildSnapshot("native-child-failure");
             const readiness = proxy.readinessSnapshot();
+            let matchRequest: ReturnType<typeof proxy.captureHistoryRequestMatcher> | undefined;
+            try {
+              matchRequest = proxy.captureHistoryRequestMatcher();
+            } catch {
+              // Correlation is optional; retain the original native error and phase evidence.
+            }
             const historyTimeline = await readNativeHistoryDiagnostic(
               historyTimelinePath,
               historyWindow,
               failedAtMs,
+              matchRequest,
             );
             console.error(
               JSON.stringify({

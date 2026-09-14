@@ -93,19 +93,83 @@ export async function startQaGatewayRpcProxy({
       connection,
       truncated,
       handshake: {
-        ...handshake,
-        socketAssigned: handshake.socketAssigned ? { ...handshake.socketAssigned } : undefined,
-        httpResponse: handshake.httpResponse ? { ...handshake.httpResponse } : undefined,
+        requestReadyMs: handshake.requestReadyMs,
+        tcpConnectedMs: handshake.tcpConnectedMs,
+        requestFinishedMs: handshake.requestFinishedMs,
+        socketAssigned: handshake.socketAssigned
+          ? {
+              elapsedMs: handshake.socketAssigned.elapsedMs,
+              connecting: handshake.socketAssigned.connecting,
+            }
+          : undefined,
+        httpResponse: handshake.httpResponse
+          ? {
+              elapsedMs: handshake.httpResponse.elapsedMs,
+              statusCode: handshake.httpResponse.statusCode,
+            }
+          : undefined,
       },
-      lifecycle: lifecycle.map((entry) => ({ ...entry })),
+      lifecycle: lifecycle.map(({ tag, elapsedMs, state, localTermination, errorCode }) => ({
+        tag,
+        elapsedMs,
+        state,
+        localTermination,
+        errorCode,
+      })),
       requests: requests.map((entry) => ({
-        ...entry,
-        upstreamWrite: entry.upstreamWrite ? { ...entry.upstreamWrite } : undefined,
-        response: entry.response ? { ...entry.response } : undefined,
-        frontWrite: entry.frontWrite ? { ...entry.frontWrite } : undefined,
+        ordinal: entry.ordinal,
+        method: entry.method,
+        observedMs: entry.observedMs,
+        queued: entry.queued,
+        upstreamStartedMs: entry.upstreamStartedMs,
+        upstreamWrite: entry.upstreamWrite
+          ? {
+              elapsedMs: entry.upstreamWrite.elapsedMs,
+              outcome: entry.upstreamWrite.outcome,
+            }
+          : undefined,
+        response: entry.response
+          ? {
+              elapsedMs: entry.response.elapsedMs,
+              outcome: entry.response.outcome,
+              code: entry.response.code,
+            }
+          : undefined,
+        frontWrite: entry.frontWrite
+          ? {
+              elapsedMs: entry.frontWrite.elapsedMs,
+              outcome: entry.frontWrite.outcome,
+            }
+          : undefined,
       })),
     })),
   });
+  // Freeze the existing 4 × 32 capture before an awaited private timeline read.
+  // Reused IDs and saturated captures cannot establish an exact request owner.
+  const captureHistoryRequestMatcher = () => {
+    const incomplete =
+      !captureReadiness || readinessTruncated || readiness.some((row) => row.truncated);
+    const requests = readiness.flatMap(({ connection, requests }) =>
+      requests
+        .filter((row) => row.method === "chat.history")
+        .map((row) => ({
+          id: row.privateRequestId,
+          connection,
+          request: row.ordinal,
+        })),
+    );
+    /** @param {unknown} id @returns {{ status: "matched", connection: number, request: number } | { status: "unknown" }} */
+    function matchHistoryRequest(id) {
+      if (incomplete || typeof id !== "string" || id.length === 0 || id.length > 128) {
+        return { status: "unknown" };
+      }
+      const matches = requests.filter((row) => row.id === id);
+      return matches.length === 1
+        ? { status: "matched", connection: matches[0].connection, request: matches[0].request }
+        : { status: "unknown" };
+    }
+    return matchHistoryRequest;
+  };
   /** @type {Array<{ tag: FirstConnectionTag, elapsedMs: number } & FirstConnectionFacts>} */
   const firstConnection = [];
   /** @type {{ front: TerminationCause, upstream: TerminationCause }} */
@@ -495,6 +559,10 @@ export async function startQaGatewayRpcProxy({
             trace = {
               ordinal: diagnostic.requests.length + 1,
               method: frame.method,
+              privateRequestId:
+                typeof frame.id === "string" && frame.id.length > 0 && frame.id.length <= 128
+                  ? frame.id
+                  : undefined,
               observedMs: readinessTime(),
               queued: back.readyState !== WebSocket.OPEN,
             };
@@ -761,6 +829,7 @@ export async function startQaGatewayRpcProxy({
     controlUrl: `http://127.0.0.1:${address.port}/__fixture`,
     snapshot,
     readinessSnapshot,
+    captureHistoryRequestMatcher,
     stop,
   };
 }

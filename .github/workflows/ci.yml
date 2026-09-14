@@ -5340,7 +5340,7 @@ jobs:
           PY
 
       - name: Upload native action visual proof
-        if: ${{ steps.native_action_visual_proof.outcome == 'success' }}
+        if: ${{ always() && steps.native_action_visual_proof.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ios-native-action-visual-proof-${{ needs.preflight.outputs.checkout_revision }}
