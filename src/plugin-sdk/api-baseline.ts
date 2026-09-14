@@ -352,18 +352,16 @@ export async function renderPluginSdkApiBaseline(params?: {
     }),
   );
 
-  const declarationSections = [
-    ...new Map(
-      modules.flatMap((moduleSurface) =>
-        moduleSurface.exports.flatMap((exportSurface) =>
-          (exportSurface.closureSections ?? []).map((section) => [
-            `${section.name}\0${section.text}`,
-            section,
-          ]),
-        ),
-      ),
-    ).values(),
-  ].toSorted(
+  const sectionsByKey = new Map<string, PluginSdkApiDeclarationSection>();
+  // Deduplicate while walking so shared closure keys are not retained once per export.
+  for (const moduleSurface of modules) {
+    for (const exportSurface of moduleSurface.exports) {
+      for (const section of exportSurface.closureSections ?? []) {
+        sectionsByKey.set(`${section.name}\0${section.text}`, section);
+      }
+    }
+  }
+  const declarationSections = [...sectionsByKey.values()].toSorted(
     (left, right) => compareText(left.name, right.name) || compareText(left.text, right.text),
   );
   const sectionIds = new Map(
