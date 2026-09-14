@@ -712,6 +712,23 @@ class WearDirectGatewayFlowTest {
     allowScroll: Boolean = true,
     beforeClick: () -> Unit = {},
   ) {
+    var firstMatch: JsonObject? = null
+    var terminal: JsonObject? = null
+    var queryIndex = 0
+    var scrollIndex = 0
+    var diagnosticIncomplete = false
+
+    fun flags(node: AccessibilityNodeInfo): JsonObject? =
+      runCatching {
+        // These getters read the acquired node's fields; never refresh for diagnostics.
+        buildJsonObject {
+          put("enabled", node.isEnabled)
+          put("visible", node.isVisibleToUser)
+          put("clickable", node.isClickable)
+          put("actionClick", node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK })
+        }
+      }.onFailure { diagnosticIncomplete = true }.getOrNull()
+
     val display = Rect(0, 0, device.displayWidth, device.displayHeight)
     val root = requireNotNull(instrumentation.uiAutomation.rootInActiveWindow)
     try {
@@ -729,6 +746,15 @@ class WearDirectGatewayFlowTest {
         )
 
         fun actionPoint(): Point? {
+          val lookupIndex = queryIndex++
+          val lookupScrollIndex = scrollIndex
+          var matchCount: Int? = null
+          var ownerCount: Int? = null
+          var selfFlags: JsonObject? = null
+          var parentFlags: JsonObject? = null
+          var boundsIntersected: Boolean? = null
+          var scrollViewportIntersected: Boolean? = null
+          var rootReached: Boolean? = null
           val currentRoot = requireNotNull(instrumentation.uiAutomation.rootInActiveWindow)
           val matches = mutableListOf<UiObject2>()
           val acquired = mutableListOf<AccessibilityNodeInfo>()
@@ -749,15 +775,18 @@ class WearDirectGatewayFlowTest {
               currentWindow.recycle()
             }
             matches.addAll(device.findObjects(By.pkg(app.packageName).text(label)))
+            matchCount = matches.size
             val owners = linkedMapOf<AccessibilityNodeInfo, Rect>()
-            for (match in matches) {
+            for ((matchIndex, match) in matches.withIndex()) {
               val child = match.accessibilityNodeInfo
+              if (matchIndex == 0) selfFlags = flags(child)
               if (child.packageName?.toString() != app.packageName || child.text?.toString() != label ||
                 child.windowId != window.id || !child.isEnabled || !child.isVisibleToUser || child.isEditable || child.isPassword
               ) {
                 continue
               }
               val owner = child.getParent(0)?.also { acquired.add(it) } ?: continue
+              if (matchIndex == 0) parentFlags = flags(owner)
               if (owner.packageName?.toString() != app.packageName || owner.windowId != window.id ||
                 !owner.isEnabled || !owner.isVisibleToUser || !owner.isClickable || owner.isEditable || owner.isPassword ||
                 owner.actionList.none { it.id == AccessibilityNodeInfo.ACTION_CLICK }
@@ -766,7 +795,9 @@ class WearDirectGatewayFlowTest {
               }
               val hit = Rect().also { child.getBoundsInScreen(it) }
               val ownerBounds = Rect().also { owner.getBoundsInScreen(it) }
-              if (!hit.intersect(ownerBounds) || !hit.intersect(windowBounds) || !hit.intersect(display)) continue
+              val intersects = hit.intersect(ownerBounds) && hit.intersect(windowBounds) && hit.intersect(display)
+              if (matchIndex == 0) boundsIntersected = intersects
+              if (!intersects) continue
               // Only the immediate parent can own the action. Ancestors merely clip the
               // physical viewport; UiAutomator's visibleBounds ignores failed intersections.
               var ancestor: AccessibilityNodeInfo? = owner
@@ -778,7 +809,9 @@ class WearDirectGatewayFlowTest {
                 if (current.packageName?.toString() != app.packageName || current.windowId != window.id) break
                 if (current.isScrollable) {
                   val viewport = Rect().also { current.getBoundsInScreen(it) }
-                  if (!hit.intersect(viewport)) break
+                  val viewportIntersects = hit.intersect(viewport)
+                  if (matchIndex == 0) scrollViewportIntersected = viewportIntersects
+                  if (!viewportIntersects) break
                 }
                 if (current == currentRoot) {
                   reachedRoot = true
@@ -786,11 +819,29 @@ class WearDirectGatewayFlowTest {
                 }
                 ancestor = current.getParent(0)?.also { acquired.add(it) }
               }
+              if (matchIndex == 0) rootReached = reachedRoot
               if (reachedRoot && !hit.isEmpty) owners.putIfAbsent(owner, hit)
             }
+            ownerCount = owners.size
             assertTrue("at most one distinct eligible native action owner", owners.size <= 1)
             return owners.values.singleOrNull()?.let { Point(it.centerX(), it.centerY()) }
           } finally {
+            runCatching {
+              val observation =
+                buildJsonObject {
+                  put("queryIndex", lookupIndex)
+                  put("scrollIndex", lookupScrollIndex)
+                  put("matchCount", matchCount)
+                  put("ownerCount", ownerCount)
+                  put("self", selfFlags ?: JsonNull)
+                  put("parent", parentFlags ?: JsonNull)
+                  put("boundsIntersected", boundsIntersected)
+                  put("scrollViewportIntersected", scrollViewportIntersected)
+                  put("rootReached", rootReached)
+                }
+              terminal = observation
+              if (firstMatch == null && (matchCount ?: 0) > 0) firstMatch = observation
+            }.onFailure { diagnosticIncomplete = true }
             @Suppress("DEPRECATION")
             acquired.forEach { it.recycle() }
             matches.forEach { it.recycle() }
@@ -801,11 +852,17 @@ class WearDirectGatewayFlowTest {
 
         var exposed = actionPoint() != null
         if (!exposed && allowScroll) {
-          repeat(8) { scroll(down = false) }
+          repeat(8) {
+            scroll(down = false)
+            scrollIndex++
+          }
           repeat(20) {
             if (!exposed) {
               exposed = actionPoint() != null
-              if (!exposed) scroll(down = true)
+              if (!exposed) {
+                scroll(down = true)
+                scrollIndex++
+              }
             }
           }
         }
@@ -847,6 +904,26 @@ class WearDirectGatewayFlowTest {
         @Suppress("DEPRECATION")
         window.recycle()
       }
+    } catch (error: Throwable) {
+      runCatching {
+        val failed = runCatching { navigationSnapshot(activity, app.directRuntime) }.getOrNull()
+        val diagnostic =
+          buildJsonObject {
+            put("schema", "wear-native-action-v1")
+            put("queryCount", queryIndex)
+            put("scrollCount", scrollIndex)
+            put("observationsIncomplete", diagnosticIncomplete)
+            put("firstMatch", firstMatch ?: JsonNull)
+            put("terminal", terminal ?: JsonNull)
+            put("failure", failed ?: JsonNull)
+          }
+        val encoded = Json.encodeToString(diagnostic)
+        check(encoded.toByteArray().size <= 4096)
+        error.addSuppressed(AssertionError("wear-native-action:$encoded").apply { stackTrace = emptyArray() })
+      }.onFailure {
+        error.addSuppressed(AssertionError("wear-native-action-diagnostic-unavailable").apply { stackTrace = emptyArray() })
+      }
+      throw error
     } finally {
       @Suppress("DEPRECATION")
       root.recycle()
