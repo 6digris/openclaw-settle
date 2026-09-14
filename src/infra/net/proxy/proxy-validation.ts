@@ -146,40 +146,22 @@ function resolveProxyValidationConfig(
   }
 
   const configUrl = normalizeProxyUrl(options.config?.proxyUrl);
-  if (configUrl) {
+  const proxyUrl = configUrl ?? normalizeProxyUrl(options.env?.OPENCLAW_PROXY_URL);
+  if (proxyUrl) {
     const proxyCaFile = resolveManagedProxyCaFileForUrl({
-      proxyUrl: configUrl,
+      proxyUrl,
       config: options.config,
       caFileOverride: options.proxyCaFileOverride,
     });
     return {
       enabled: options.config?.enabled !== false,
-      proxyUrl: configUrl,
+      proxyUrl,
       ...(proxyCaFile ? { proxyCaFile } : {}),
-      source: "config",
+      source: configUrl ? "config" : "env",
       errors:
         options.config?.enabled === false
           ? ["proxy validation is disabled by proxy.enabled=false"]
-          : validateProxyUrl(configUrl),
-    };
-  }
-
-  const envUrl = normalizeProxyUrl(options.env?.OPENCLAW_PROXY_URL);
-  if (envUrl) {
-    const proxyCaFile = resolveManagedProxyCaFileForUrl({
-      proxyUrl: envUrl,
-      config: options.config,
-      caFileOverride: options.proxyCaFileOverride,
-    });
-    return {
-      enabled: options.config?.enabled !== false,
-      proxyUrl: envUrl,
-      ...(proxyCaFile ? { proxyCaFile } : {}),
-      source: "env",
-      errors:
-        options.config?.enabled === false
-          ? ["proxy validation is disabled by proxy.enabled=false"]
-          : validateProxyUrl(envUrl),
+          : validateProxyUrl(proxyUrl),
     };
   }
 

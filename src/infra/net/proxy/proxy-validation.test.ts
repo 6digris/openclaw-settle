@@ -87,7 +87,9 @@ describe("proxy validation", () => {
         proxyUrl: "http://config-proxy.example:3128",
       },
       env: {
-        OPENCLAW_PROXY_URL: "http://env-proxy.example:3128",
+        get OPENCLAW_PROXY_URL(): string | undefined {
+          throw new Error("configured proxy must not read environment");
+        },
       },
       allowedUrls: ["https://example.com/"],
       deniedUrls: [],
@@ -107,27 +109,31 @@ describe("proxy validation", () => {
     });
   });
 
-  it("honors an explicit opt-out for an environment proxy URL", async () => {
-    const fetchCheck = vi.fn();
+  it.each(["config", "env"] as const)(
+    "honors an explicit opt-out for a %s proxy URL",
+    async (source) => {
+      const fetchCheck = vi.fn();
+      const proxyUrl = "http://proxy.example:3128";
 
-    const result = await runProxyValidation({
-      config: { enabled: false },
-      env: { OPENCLAW_PROXY_URL: "http://env-proxy.example:3128" },
-      fetchCheck,
-    });
+      const result = await runProxyValidation({
+        config: { enabled: false, ...(source === "config" ? { proxyUrl } : {}) },
+        env: { OPENCLAW_PROXY_URL: source === "env" ? proxyUrl : undefined },
+        fetchCheck,
+      });
 
-    expect(fetchCheck).not.toHaveBeenCalled();
-    expect(result).toEqual({
-      ok: false,
-      config: {
-        enabled: false,
-        proxyUrl: "http://env-proxy.example:3128",
-        source: "env",
-        errors: ["proxy validation is disabled by proxy.enabled=false"],
-      },
-      checks: [],
-    });
-  });
+      expect(fetchCheck).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        ok: false,
+        config: {
+          enabled: false,
+          proxyUrl,
+          source,
+          errors: ["proxy validation is disabled by proxy.enabled=false"],
+        },
+        checks: [],
+      });
+    },
+  );
 
   it("rejects unsupported proxy URL protocols before probing", async () => {
     const fetchCheck = vi.fn();
@@ -477,28 +483,32 @@ describe("proxy validation", () => {
     });
   });
 
-  it("uses configured proxy CA file contents when no CLI override is supplied", async () => {
-    const caFile = writeTempCa("config-proxy-ca");
-    const fetchCheck = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+  it.each(["config", "env"] as const)(
+    "uses configured proxy CA file contents for a %s proxy URL",
+    async (source) => {
+      const caFile = writeTempCa("config-proxy-ca");
+      const fetchCheck = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+      const proxyUrl = "https://proxy.example:8443";
 
-    await runProxyValidation({
-      config: {
+      await runProxyValidation({
+        config: {
+          ...(source === "config" ? { proxyUrl } : {}),
+          tls: { caFile },
+        },
+        env: { OPENCLAW_PROXY_URL: source === "env" ? proxyUrl : undefined },
+        allowedUrls: ["https://example.com/"],
+        deniedUrls: [],
+        fetchCheck,
+      });
+
+      expect(fetchCheck).toHaveBeenCalledWith({
         proxyUrl: "https://proxy.example:8443",
-        tls: { caFile },
-      },
-      env: {},
-      allowedUrls: ["https://example.com/"],
-      deniedUrls: [],
-      fetchCheck,
-    });
-
-    expect(fetchCheck).toHaveBeenCalledWith({
-      proxyUrl: "https://proxy.example:8443",
-      targetUrl: "https://example.com/",
-      timeoutMs: 5000,
-      proxyTls: { ca: "config-proxy-ca" },
-    });
-  });
+        targetUrl: "https://example.com/",
+        timeoutMs: 5000,
+        proxyTls: { ca: "config-proxy-ca" },
+      });
+    },
+  );
 
   it("fails closed before probing when proxy CA file cannot be loaded", async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "openclaw-proxy-validation-missing-ca-"));
