@@ -1,9 +1,7 @@
 import path from "node:path";
-import { theme } from "../../../packages/terminal-core/src/theme.js";
 import { hashConfigRaw } from "../../config/io.read-helpers.js";
 import { resolveConfigPath } from "../../config/paths.js";
 import { resolveGatewayInstallEntrypoint } from "../../daemon/gateway-entrypoint.js";
-import { createLowDiskSpaceWarning } from "../../infra/disk-space.js";
 import {
   markPackagePostInstallDoctorAdvisory,
   runGlobalPackageUpdateSteps,
@@ -38,7 +36,6 @@ import {
   type UpdateStepResult,
 } from "../../infra/update-runner.js";
 import { runCommandWithTimeout, runUtf8CommandWithTimeout } from "../../process/exec.js";
-import { defaultRuntime } from "../../runtime.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { CLI_NAME } from "../cli-name.js";
 import { createUpdateProgress } from "./progress.js";
@@ -342,7 +339,6 @@ export type PackageInstallUpdateParams = {
   timeoutMs: number;
   startedAt: number;
   progress: ReturnType<typeof createUpdateProgress>["progress"];
-  jsonMode: boolean;
   managedServiceEnv?: NodeJS.ProcessEnv;
   invocationCwd?: string;
   honorPackageRoot?: boolean;
@@ -462,18 +458,6 @@ export async function runPackageInstallUpdate(
     });
 
   const before = pkgRoot ? await readPackageUpdateIdentity(pkgRoot) : { version: null };
-
-  const diskWarning = createLowDiskSpaceWarning({
-    targetPath: pkgRoot ? path.dirname(pkgRoot) : params.root,
-    purpose: "global package update",
-  });
-  if (diskWarning) {
-    if (params.jsonMode) {
-      defaultRuntime.error(`Warning: ${diskWarning}`);
-    } else {
-      defaultRuntime.log(theme.warn(diskWarning));
-    }
-  }
 
   const packageUpdate = await runGlobalPackageUpdateSteps({
     localOverrides: {

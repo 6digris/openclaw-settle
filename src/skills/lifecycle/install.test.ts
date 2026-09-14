@@ -2,7 +2,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { formatSkillsCheck } from "../../cli/skills-cli.format.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { callGatewayHandler } from "../../gateway/server-methods/skills.test-helpers.js";
 import {
@@ -37,7 +36,6 @@ async function writeInstallableSkill(
     kind: "node",
     package: "example-package",
   },
-  requiredBins?: string[],
 ): Promise<string> {
   const skillDir = path.join(workspaceDir, "skills", name);
   await fs.mkdir(skillDir, { recursive: true });
@@ -46,7 +44,7 @@ async function writeInstallableSkill(
     `---
 name: ${name}
 description: test skill
-metadata: ${JSON.stringify({ openclaw: { install: Array.isArray(installSpec) ? installSpec : [installSpec], ...(requiredBins ? { requires: { bins: requiredBins } } : {}) } })}
+metadata: ${JSON.stringify({ openclaw: { install: Array.isArray(installSpec) ? installSpec : [installSpec] } })}
 ---
 
 # ${name}
@@ -184,19 +182,15 @@ describe("installSkill before_install hooks", () => {
     });
   });
 
-  it("reports FreeBSD manual recovery over RPC and detects the installed binary on skills check", async () => {
+  it("reports FreeBSD manual recovery over RPC without running an installer", async () => {
     const { skillsHandlers } = await import("../../gateway/server-methods/skills.js");
     await withWorkspaceCase(async ({ workspaceDir }) => {
       const skillName = "brew-manual-recovery";
-      const binary = "skill-manual-recovery-tool";
-      await writeInstallableSkill(
-        workspaceDir,
-        skillName,
-        { id: "brew", kind: "brew", formula: "vendor/tap/tool" },
-        [binary],
-      );
-      const binDir = path.join(workspaceDir, "bin");
-      await fs.mkdir(binDir);
+      await writeInstallableSkill(workspaceDir, skillName, {
+        id: "brew",
+        kind: "brew",
+        formula: "vendor/tap/tool",
+      });
       const config: OpenClawConfig = {
         agents: { ownership: "explicit", list: [{ id: "ops", workspace: workspaceDir }] },
       };
@@ -205,61 +199,31 @@ describe("installSkill before_install hooks", () => {
         hasBinary: () => false,
         resolveBrewExecutable: () => undefined,
       });
-      const envSnapshot = captureEnv(["PATH"]);
-      try {
-        process.env.PATH = binDir;
-        await withMockedPlatform("freebsd", async () => {
-          const result = await callGatewayHandler(
-            skillsHandlers,
-            "skills.install",
-            { agentId: "ops", name: skillName, installId: "brew" },
-            { context: { getRuntimeConfig: () => config } },
-          );
-          expect(result.ok).toBe(false);
-          expect(result.error).toMatchObject({
-            code: "UNAVAILABLE",
-            message: expect.stringContaining("Homebrew is not supported on FreeBSD"),
-          });
-          expect(result.response).toMatchObject({
-            ok: false,
-            message: expect.stringContaining("pkg or Ports"),
-            code: null,
-          });
-          const message = (result.error as { message: string }).message;
-          expect(message).toContain("Gateway host");
-          expect(message).toContain("openclaw skills check");
-          expect(message).toContain("--agent <id>");
-          expect(message).not.toContain("brew.sh");
-          expect(message).not.toContain("vendor/tap/tool");
-
-          const check = () =>
-            JSON.parse(
-              formatSkillsCheck(
-                buildWorkspaceSkillStatus(workspaceDir, {
-                  config,
-                  agentId: "ops",
-                  entries: loadTestWorkspaceSkillEntries(workspaceDir),
-                }),
-                { json: true },
-              ),
-            );
-          expect(check().missingRequirements).toEqual([
-            expect.objectContaining({
-              name: skillName,
-              missing: expect.objectContaining({ bins: [binary] }),
-            }),
-          ]);
-          await fs.writeFile(path.join(binDir, binary), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-          expect(check()).toMatchObject({
-            agentId: "ops",
-            eligible: [skillName],
-            missingRequirements: [],
-          });
-          expect(runCommandWithTimeoutMock).not.toHaveBeenCalled();
+      await withMockedPlatform("freebsd", async () => {
+        const result = await callGatewayHandler(
+          skillsHandlers,
+          "skills.install",
+          { agentId: "ops", name: skillName, installId: "brew" },
+          { context: { getRuntimeConfig: () => config } },
+        );
+        expect(result.ok).toBe(false);
+        expect(result.error).toMatchObject({
+          code: "UNAVAILABLE",
+          message: expect.stringContaining("Homebrew is not supported on FreeBSD"),
         });
-      } finally {
-        envSnapshot.restore();
-      }
+        expect(result.response).toMatchObject({
+          ok: false,
+          message: expect.stringContaining("pkg or Ports"),
+          code: null,
+        });
+        const message = (result.error as { message: string }).message;
+        expect(message).toContain("Gateway host");
+        expect(message).toContain("openclaw skills check");
+        expect(message).toContain("--agent <id>");
+        expect(message).not.toContain("brew.sh");
+        expect(message).not.toContain("vendor/tap/tool");
+        expect(runCommandWithTimeoutMock).not.toHaveBeenCalled();
+      });
     });
   });
 

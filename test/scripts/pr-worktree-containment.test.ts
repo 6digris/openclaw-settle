@@ -25,6 +25,8 @@ const commonScript = join(repoRoot, "scripts/pr-lib/common.sh");
 const worktreeScript = join(repoRoot, "scripts/pr-lib/worktree.sh");
 const reviewScript = join(repoRoot, "scripts/pr-lib/review.sh");
 const describePosix = process.platform === "win32" ? describe.skip : describe;
+// Directly sourced helpers need the same Darwin heredoc protection as scripts/pr.
+const bash = process.platform === "darwin" ? "/bin/bash" : "bash";
 
 type Fixture = {
   root: string;
@@ -136,7 +138,7 @@ function makeStaleWorktreeDir(fixture: Fixture) {
 
 function runShell(fixture: Fixture, commands: string[], env?: NodeJS.ProcessEnv) {
   return spawnSync(
-    "bash",
+    bash,
     [
       "-c",
       [
@@ -248,7 +250,7 @@ describePosix("scripts/pr worktree containment", () => {
           (pr) =>
             new Promise<{ code: number | null; output: string }>((resolve, reject) => {
               const child = spawn(
-                "bash",
+                bash,
                 [
                   "-c",
                   `set -euo pipefail\nsource "$1"\nsource "$2"\nsource "$3"\nscript_parent_dir="$4"\ngh_plain() { printf 'HTTP/2.0 200 OK\\n\\n{"data":{"viewer":{"login":"fixture-user"}}}\\n'; }\nmark_pr_operation_side_effects_started() { :; }\nreview_checkout_main "$5"`,

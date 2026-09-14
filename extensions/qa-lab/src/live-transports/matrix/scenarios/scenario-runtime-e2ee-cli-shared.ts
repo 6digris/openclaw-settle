@@ -1,6 +1,6 @@
 // Qa Matrix plugin module implements shared CLI scenario runtime E2EE behavior.
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { MatrixVerificationSummary } from "@openclaw/matrix/test-api.js";
 import { createMatrixQaClient } from "../substrate/client.js";
@@ -199,16 +199,6 @@ export async function writeMatrixQaCliOutputArtifacts(params: {
     writeFile(stderrPath, redactMatrixQaCliOutput(params.result.stderr), { mode: 0o600 }),
   ]);
   return { stderrPath, stdoutPath };
-}
-
-export async function assertMatrixQaPrivatePathMode(pathToCheck: string, label: string) {
-  if (process.platform === "win32") {
-    return;
-  }
-  const mode = (await stat(pathToCheck)).mode & 0o777;
-  if ((mode & 0o077) !== 0) {
-    throw new Error(`${label} permissions are too broad: ${mode.toString(8)}`);
-  }
 }
 
 export function assertMatrixQaCliSasMatches(params: {

@@ -8,8 +8,8 @@ import type { SessionsListResult } from "../../api/types.ts";
 import type { ApplicationGateway } from "../../app/gateway.ts";
 import {
   collectGatewayStatusSamples,
-  formatGatewayMemory,
   renderGatewayCpuVital,
+  renderGatewayMemoryVital,
   renderGatewayVitals,
   type GatewayStatusSample,
   type GatewayStatusSnapshot,
@@ -61,26 +61,25 @@ export type DebugOverlayStatusSnapshot = GatewayStatusSnapshot & {
 
 export type DebugOverlayStatusSample = GatewayStatusSample<DebugOverlayStatusSnapshot>;
 
+function formatPingMs(value: number): string {
+  return t("debug.overlay.pingMs", { value: String(Math.round(value)) });
+}
+
 export function renderDebugOverlayWidget(
   status: DebugOverlayStatusSnapshot,
   history: readonly DebugOverlayStatusSample[],
 ): TemplateResult {
   return html`<div class="debug-overlay__widget">
     ${renderGatewayCpuVital(status, history)}
-    <dl class="debug-overlay__metrics">
-      <div class="debug-overlay__ping" title=${t("debug.overlay.pingDescription")}>
-        <dt>${t("debug.overlay.ping")}</dt>
-        <dd class="mono">
-          ${t("debug.overlay.pingMs", { value: String(Math.round(status.pingMs)) })}
-        </dd>
-      </div>
-      <div class="debug-overlay__memory">
-        <dt>${t("debug.overlay.memory")}</dt>
-        <dd class="mono">
-          ${status.processMemory ? formatGatewayMemory(status.processMemory.rssBytes) : t("common.na")}
-        </dd>
-      </div>
-    </dl>
+    <openclaw-sparkline
+      class="gateway-vital gateway-vital--ping"
+      title=${t("debug.overlay.pingDescription")}
+      .label=${t("debug.overlay.ping")}
+      .samples=${collectGatewayStatusSamples(history, (sample) => sample.pingMs)}
+      .format=${formatPingMs}
+      .floorMax=${20}
+    ></openclaw-sparkline>
+    ${renderGatewayMemoryVital(status, history)}
   </div>`;
 }
 

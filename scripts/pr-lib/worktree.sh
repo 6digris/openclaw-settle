@@ -223,7 +223,8 @@ fetch_canonical_ref() {
   git_dir=$(git rev-parse --absolute-git-dir) || return 1
   # Resolve relative URLs at the canonical root; ignore worktree origin/refmaps.
   # Other PRs and ordinary fetches own shared refs and the root FETCH_HEAD.
-  git -C "$root" --git-dir="$git_dir" fetch --no-tags --refmap= "$@" "$source" "$refspec"
+  # Automatic maintenance can prune unrelated worktree metadata, even on fetch.
+  git -C "$root" --git-dir="$git_dir" fetch --no-auto-maintenance --no-tags --refmap= "$@" "$source" "$refspec"
 }
 
 fetch_canonical_main() {

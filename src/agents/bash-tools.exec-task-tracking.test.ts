@@ -65,7 +65,6 @@ describe("background exec task tracking", () => {
         deliveryStatus: "not_applicable",
         startedAt: 100,
         lastEventAt: 100,
-        progressSummary: "Command running",
       });
     },
   );

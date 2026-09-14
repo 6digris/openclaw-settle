@@ -50,7 +50,6 @@ export function createBackgroundExecTask(params: {
       deliveryStatus: "not_applicable",
       startedAt: params.startedAt,
       lastEventAt: params.startedAt,
-      progressSummary: "Command running",
     });
     if (!task) {
       return null;

@@ -102,13 +102,12 @@ const runningExec = {
   kind: "exec",
   runtime: "cli",
   status: "running",
-  title: "CLI command",
+  title: "pnpm run build",
   agentId: "main",
   ownerKey: chatSessionKey,
   createdAt: baseTime - 2_000,
   updatedAt: baseTime,
   startedAt: baseTime - 2_000,
-  progressSummary: "Command running",
 };
 
 suite.define(() => {
@@ -728,10 +727,8 @@ suite.define(() => {
           },
         });
 
-        await expect
-          .poll(() => firstRow.getAttribute("aria-label"))
-          .toContain("Cancelled — stopped before completion.");
-        await detailPanel.getByText("Failed").waitFor();
+        await expect.poll(() => firstRow.getAttribute("aria-label")).toContain("Cancelled");
+        await detailPanel.getByText("Cancelled").waitFor();
         expect(await firstRow.textContent()).not.toContain("Cross-checking requester ownership");
         expect(await activity.locator(".chat-diffstat").count()).toBe(0);
         expect(await detailPanel.locator(".chat-diffstat__add").textContent()).toBe("+14");
@@ -751,12 +748,12 @@ suite.define(() => {
         await detailPanel.waitFor({ state: "detached" });
 
         const states = [
-          ["queued", "Queued — waiting to start."],
-          ["running", "Running — working on this task."],
-          ["completed", "Completed — finished successfully."],
-          ["failed", "Failed — the task ended with an error."],
-          ["cancelled", "Cancelled — stopped before completion."],
-          ["timed_out", "Timed out — reached its time limit."],
+          ["queued", "Queued"],
+          ["running", "Running"],
+          ["completed", "Completed"],
+          ["failed", "Failed"],
+          ["cancelled", "Cancelled"],
+          ["timed_out", "Timed out"],
         ] as const;
         const claw = firstRow.locator(".chat-subagent-activity__claw > svg");
         const jaw = claw.locator(".claw-icon__jaw");
@@ -833,13 +830,14 @@ suite.define(() => {
         await page.keyboard.press("Tab");
         await firstRow.focus();
         await tooltip.waitFor({ state: "visible" });
-        expect(await tooltip.textContent()).toContain("Timed out — reached its time limit.");
+        expect(await tooltip.textContent()).toContain("Timed out");
         await page.keyboard.press("Escape");
       },
     );
   });
 
   it("shows one detached exec after the agent turn ends", async () => {
+    const proofDir = createControlUiE2eArtifactDir("chat-detached-exec");
     await suite.withPage(
       {
         locale: "en-US",
@@ -898,17 +896,20 @@ suite.define(() => {
         expect(Math.abs(previewCenter - linkCenter)).toBeLessThanOrEqual(2);
         expect(previewBox.y + previewBox.height).toBeLessThanOrEqual(linkBox.y);
         await page.screenshot({
-          path: path.join(artifactDir, "08-running-task-popover-centered.png"),
+          path: path.join(proofDir, "08-running-task-popover-centered.png"),
           fullPage: true,
         });
 
         await openChatSidePanelType(page, "Tasks");
         const row = page.locator('[data-task-id="task-exec"]');
         await row.waitFor({ state: "visible" });
-        expect(await row.textContent()).toContain("CLI command");
-        expect(await row.textContent()).toContain("Command running");
+        expect(await row.locator(".chat-tasks-rail__task-title").textContent()).toBe(
+          "pnpm run build",
+        );
+        expect(await row.locator(".chat-tasks-rail__task-status").textContent()).toBe("Running");
+        expect(await row.locator(".chat-tasks-rail__task-detail").count()).toBe(0);
         await page.screenshot({
-          path: path.join(artifactDir, "09-one-background-exec.png"),
+          path: path.join(proofDir, "09-one-background-exec.png"),
           fullPage: true,
         });
       },

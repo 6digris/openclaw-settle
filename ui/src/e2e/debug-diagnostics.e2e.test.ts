@@ -194,27 +194,44 @@ suite.define(() => {
           .toContain("25%");
         await expect.poll(() => overlay.locator(".gateway-vital--cpu polyline").count()).toBe(1);
         if (captureUiProof) {
-          await page.screenshot({ path: path.join(proofDir, "system-busyness-expanded.png") });
+          await page.screenshot({
+            animations: "disabled",
+            path: path.join(proofDir, "system-busyness-expanded.png"),
+          });
         }
         await overlay.getByRole("button", { name: "Minimize system busyness" }).click();
         const widget = page.locator("aside.debug-overlay--minimized");
         await widget.waitFor();
         expect(await widget.getByRole("heading", { name: "Lanes", exact: true }).count()).toBe(0);
-        expect(await widget.locator(".gateway-vital--cpu polyline").count()).toBe(1);
+        const metrics = ["cpu", "ping", "memory"];
+        for (const metric of metrics) {
+          const graph = widget.locator(`.gateway-vital--${metric} polyline`);
+          await expect.poll(() => graph.count()).toBe(1);
+          expect((await graph.getAttribute("points"))?.trim().split(/\s+/u).length).toBeGreaterThan(
+            1,
+          );
+        }
         await expect
-          .poll(() => widget.locator(".debug-overlay__ping").textContent())
+          .poll(() => widget.locator(".gateway-vital--ping").textContent())
           .toMatch(/\d+\s*ms/u);
         await expect
-          .poll(() => widget.locator(".debug-overlay__memory").textContent())
+          .poll(() => widget.locator(".gateway-vital--memory").textContent())
           .toContain("432 MB");
         const desktopWidget = await widget.boundingBox();
         expect(desktopWidget).not.toBeNull();
-        expect(desktopWidget!.width).toBeLessThanOrEqual(360);
-        expect(desktopWidget!.height).toBeLessThanOrEqual(240);
+        expect(desktopWidget!.width).toBeLessThanOrEqual(210);
+        expect(desktopWidget!.height).toBeLessThanOrEqual(100);
         expect(1280 - desktopWidget!.x - desktopWidget!.width).toBeGreaterThanOrEqual(0);
         expect(1280 - desktopWidget!.x - desktopWidget!.width).toBeLessThanOrEqual(32);
         expect(1000 - desktopWidget!.y - desktopWidget!.height).toBeGreaterThanOrEqual(0);
         expect(1000 - desktopWidget!.y - desktopWidget!.height).toBeLessThanOrEqual(32);
+        const initialPingMs = Number.parseInt(
+          (await widget.locator(".gateway-vital--ping .sparkline-tile__value").textContent()) ?? "",
+          10,
+        );
+        expect(Number.isFinite(initialPingMs)).toBe(true);
+        const nextSystemInfoCount = (await gateway.getRequests("system.info")).length;
+        await gateway.deferNext("system.info");
         await gateway.setMethodResponse("system.info", {
           ...deviceSystemInfo,
           eventLoop: {
@@ -232,26 +249,54 @@ suite.define(() => {
             heapTotalBytes: 384 * 1_048_576,
           },
         });
+        await gateway.waitForRequest("system.info", { after: nextSystemInfoCount });
+        // This delay is the simulated network latency the ping graph must measure.
+        await page.waitForTimeout(initialPingMs + 250);
+        await gateway.resolveDeferred("system.info");
         await expect
-          .poll(() => widget.locator(".debug-overlay__memory").textContent())
+          .poll(() => widget.locator(".gateway-vital--memory").textContent())
           .toContain("654 MB");
         await expect
           .poll(() => widget.locator(".gateway-vital--cpu").textContent())
           .toContain("75%");
+        await expect
+          .poll(async () =>
+            Number.parseInt(
+              (await widget.locator(".gateway-vital--ping .sparkline-tile__value").textContent()) ??
+                "",
+              10,
+            ),
+          )
+          .toBeGreaterThanOrEqual(initialPingMs + 200);
         await gateway.waitForRequest("system.info", { after: systemInfoCount + 2 });
-        expect(await widget.locator(".gateway-vital--cpu polyline").count()).toBe(1);
+        for (const metric of metrics) {
+          const points = await widget
+            .locator(`.gateway-vital--${metric} polyline`)
+            .getAttribute("points");
+          const plottedValues = points
+            ?.trim()
+            .split(/\s+/u)
+            .map((point) => point.split(",")[1]);
+          expect(new Set(plottedValues).size).toBeGreaterThan(1);
+        }
         if (captureUiProof) {
-          await page.screenshot({ path: path.join(proofDir, "system-busyness-minimized.png") });
+          await page.screenshot({
+            animations: "disabled",
+            path: path.join(proofDir, "system-busyness-minimized.png"),
+          });
         }
         await page.setViewportSize({ height: 844, width: 390 });
         const mobileWidget = await widget.boundingBox();
         expect(mobileWidget).not.toBeNull();
+        expect(mobileWidget!.width).toBeLessThanOrEqual(210);
+        expect(mobileWidget!.height).toBeLessThanOrEqual(100);
         expect(mobileWidget!.x).toBeGreaterThanOrEqual(0);
         expect(mobileWidget!.y).toBeGreaterThanOrEqual(0);
         expect(mobileWidget!.x + mobileWidget!.width).toBeLessThanOrEqual(390);
         expect(mobileWidget!.y + mobileWidget!.height).toBeLessThanOrEqual(844);
         if (captureUiProof) {
           await page.screenshot({
+            animations: "disabled",
             path: path.join(proofDir, "system-busyness-minimized-mobile.png"),
           });
         }

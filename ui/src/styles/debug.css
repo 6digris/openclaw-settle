@@ -118,29 +118,49 @@ openclaw-debug-overlay-content {
 }
 
 .debug-overlay--minimized {
-  width: min(284px, calc(100vw - 32px));
+  width: min(210px, calc(100vw - 32px));
   height: auto;
+  max-height: min(92px, calc(100dvh - 32px));
 
   .debug-overlay__header {
     gap: 6px;
-    padding: 6px 8px 6px 12px;
+    padding: 2px 4px 2px 8px;
   }
 
   .debug-overlay__header h2 {
-    font-size: 12px;
+    font-size: 11px;
   }
 
   .debug-overlay__control {
-    width: 26px;
-    height: 26px;
+    width: 24px;
+    height: 24px;
   }
 
   .debug-overlay__body {
-    padding: 8px;
+    padding: 4px;
   }
 
-  .gateway-vital--cpu {
-    min-height: 72px;
+  .gateway-vital {
+    min-height: 50px;
+    padding: 4px 5px 0;
+  }
+
+  .sparkline-tile__head {
+    display: flex;
+    line-height: 1;
+  }
+
+  .sparkline-tile__label {
+    font-size: 8.5px;
+    letter-spacing: 0.03em;
+  }
+
+  .sparkline-tile__value {
+    overflow: hidden;
+    margin: 2px 0 1px;
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .sparkline-tile__sub {
@@ -148,46 +168,23 @@ openclaw-debug-overlay-content {
   }
 
   .sparkline-tile__chart svg {
-    height: 26px;
+    height: 20px;
+  }
+
+  .sparkline-tile__chart {
+    margin-inline: -5px;
   }
 }
 
 .debug-overlay__widget {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr);
-  gap: 12px;
-}
-
-.debug-overlay__metrics {
-  display: grid;
-  align-content: center;
-  gap: 6px;
-  min-width: 0;
-  margin: 0;
-
-  > div {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 0 4px;
-  }
-
-  dt {
-    color: var(--muted);
-    font-size: 10px;
-  }
-
-  dd {
-    margin: 0;
-    font-size: 12px;
-    overflow-wrap: anywhere;
-  }
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
 }
 
 .debug-overlay__compact-loading {
   display: grid;
-  min-height: 72px;
+  min-height: 50px;
   place-items: center;
   color: var(--muted);
   font-size: 12px;
