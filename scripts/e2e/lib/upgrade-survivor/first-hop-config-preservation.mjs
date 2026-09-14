@@ -74,6 +74,20 @@ function sameFile(actual, expected, name) {
   requireProof(isDeepStrictEqual(actual, expected), `file changed: ${name}`);
 }
 
+function needsCanonicalRoster(config) {
+  if (!Object.hasOwn(config, "agents")) {
+    return true;
+  }
+  const agents = config.agents;
+  return (
+    agents &&
+    typeof agents === "object" &&
+    !Array.isArray(agents) &&
+    !["entries", "list", "$include"].some((key) => Object.hasOwn(agents, key)) &&
+    agents.ownership !== "explicit"
+  );
+}
+
 function assertRoot(raw, before, targetVersion) {
   let actual;
   try {
@@ -82,6 +96,11 @@ function assertRoot(raw, before, targetVersion) {
     throw new Error(`invalid JSON: ${ROOT}`);
   }
   const expected = JSON.parse(before.files[ROOT].raw);
+  // legacy.roster.ts persists only this implicit roster; existing defaults remain authored.
+  // Do not extend this exception to included, explicit or legacy rosters.
+  if (needsCanonicalRoster(expected) && isDeepStrictEqual(actual.agents?.entries, { main: {} })) {
+    expected.agents = { ...expected.agents, entries: { main: {} } };
+  }
   // setup_lane's selected mock model triggers this one auto-enable transition.
   // Match materialize.registerPluginEntry without masking any other plugin fields.
   if (before.activateOpenai && actual.plugins?.entries?.openai?.enabled === true) {
@@ -132,7 +151,7 @@ function assertRoot(raw, before, targetVersion) {
     isDeepStrictEqual(actual, expected),
     "root config changed outside permitted metadata",
   );
-  return actual.plugins?.entries?.openai?.enabled === true;
+  return actual;
 }
 
 function assertBackups(files, previous, before) {
@@ -197,6 +216,12 @@ function assertBackups(files, previous, before) {
   );
 }
 
+function assertHop(files, before) {
+  const config = assertRoot(files[ROOT].raw, before, before.targetVersion);
+  assertBackups(files, before.files, before);
+  return config;
+}
+
 try {
   requireProof(
     ["seed", "assert-hop", "assert-repair", "assert-doctor"].includes(command) &&
@@ -258,16 +283,26 @@ try {
     const before = readJson(artifacts, BEFORE);
     const files = capture(root);
     if (command === "assert-hop") {
-      const active = assertRoot(files[ROOT].raw, before, before.targetVersion);
-      assertBackups(files, before.files, before);
-      writeJson(artifacts, AFTER_HOP, {
-        files,
-        activationPhase: before.activateOpenai
-          ? active
-            ? "first-hop"
-            : "pending"
-          : "not-required",
-      });
+      // Retain rejected bytes too. An observation is not a passed preservation check.
+      let observationError;
+      try {
+        writeJson(artifacts, AFTER_HOP, { kind: "after-hop-observation", files });
+      } catch (error) {
+        observationError = new Error("first-hop config preservation: input read/write failed", {
+          cause: error,
+        });
+      }
+      try {
+        assertHop(files, before);
+      } catch (error) {
+        if (observationError) {
+          console.error("after-hop observation could not be saved");
+        }
+        throw error;
+      }
+      if (observationError) {
+        throw observationError;
+      }
     } else {
       const phase = command === "assert-repair" ? "repair" : "fresh";
       const output = ["stdout", "stderr"]
@@ -282,16 +317,33 @@ try {
       );
       if (command === "assert-repair") {
         const afterHop = readJson(artifacts, AFTER_HOP);
-        const active = assertRoot(files[ROOT].raw, before, before.targetVersion);
+        requireProof(afterHop.kind === "after-hop-observation", "missing after-hop observation");
+        // Revalidate against the original before trusting this as the next backup baseline.
+        const afterHopConfig = assertHop(afterHop.files, before);
+        const config = assertRoot(files[ROOT].raw, before, before.targetVersion);
         assertBackups(files, afterHop.files, before);
         requireProof(
-          !before.activateOpenai || active,
+          !before.activateOpenai || config.plugins?.entries?.openai?.enabled === true,
           "required fixture OpenAI activation missing",
         );
+        const rosterRequired = needsCanonicalRoster(JSON.parse(before.files[ROOT].raw));
+        requireProof(
+          !rosterRequired || isDeepStrictEqual(config.agents?.entries, { main: {} }),
+          "required canonical agent roster missing",
+        );
+        // These phases identify observed transitions; Doctor/update logs own write attribution.
         writeJson(artifacts, CONVERGED, {
           files,
-          activationPhase:
-            afterHop.activationPhase === "pending" ? "first-repair" : afterHop.activationPhase,
+          activationPhase: before.activateOpenai
+            ? afterHopConfig.plugins?.entries?.openai?.enabled === true
+              ? "first-hop"
+              : "first-repair"
+            : "not-required",
+          rosterPhase: rosterRequired
+            ? isDeepStrictEqual(afterHopConfig.agents?.entries, { main: {} })
+              ? "first-hop"
+              : "first-repair"
+            : "not-required",
         });
       } else {
         requireProof(
