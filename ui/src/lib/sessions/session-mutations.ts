@@ -279,6 +279,7 @@ export function createSessionMutations(host: SessionMutationsHost) {
     const pendingConversation =
       patchParams.pinned !== undefined ||
       patchParams.unread === false ||
+      patchParams.category !== undefined ||
       patchParams.boardPresentation !== undefined
         ? resolvePendingConversation(patchSnapshot, normalizedKey, options.agentId)
         : null;
@@ -451,6 +452,17 @@ export function createSessionMutations(host: SessionMutationsHost) {
           lastReadAt: entry.lastReadAt,
           markedUnreadAt: entry.markedUnreadAt,
         };
+        // A moved session may exist only in an expanded parent's detail list.
+        // Publish the receipt through the shared field owner before refreshing roots.
+        if (patchParams.category !== undefined) {
+          confirmFields({
+            key: pendingTarget.key,
+            agentId: pendingTarget.agentId,
+            sessionId: pendingTarget.sessionId,
+            updatedAt: entry.updatedAt ?? null,
+            fields: { category: entry.category },
+          });
+        }
         if (patchParams.boardPresentation !== undefined) {
           confirmFields({
             key: pendingTarget.key,

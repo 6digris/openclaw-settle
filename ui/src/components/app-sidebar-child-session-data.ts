@@ -8,6 +8,7 @@ import {
   areUiSessionKeysEquivalent,
   normalizeDefaultMainSessionAliasForUi,
   isUiGlobalSessionKey,
+  isSubagentSessionKey,
   normalizeAgentId,
   parseAgentSessionKey,
   resolveUiSessionNavigationParentKey,
@@ -128,7 +129,11 @@ export async function fetchSessionLineage(params: {
         params.knownRows.set(lineageRowCacheKey(row), row);
       }
       topmostRow = row;
-      const parentKey = resolveUiSessionNavigationParentKey(row);
+      // Persistent conversations are sidebar roots. Their creation lineage remains
+      // available on the row without reopening another conversation's tree.
+      const parentKey = isSubagentSessionKey(row.key)
+        ? resolveUiSessionNavigationParentKey(row)
+        : undefined;
       if (!parentKey) {
         break;
       }

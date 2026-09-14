@@ -212,8 +212,14 @@ describe("sidebar session live-run projection", () => {
       projectSidebarSession({
         lastMessagePreview: "The final reply is durable.",
         execNode: "build-mac",
+        spawnedBy: "agent:main:parent",
+        parentSessionKey: "agent:main:parent",
       }),
-    ).toMatchObject({ lastMessagePreview: "The final reply is durable.", execNode: "build-mac" });
+    ).toMatchObject({
+      lastMessagePreview: "The final reply is durable.",
+      execNode: "build-mac",
+      pinnable: true,
+    });
   });
 
   it.each([
@@ -426,13 +432,13 @@ describe("sidebar navigation lineage ownership", () => {
       updatedAt: 1,
     };
     const first: GatewaySessionRow = {
-      key: "agent:main:child",
+      key: "agent:main:subagent:child",
       kind: "direct",
       spawnedBy: parent.key,
       label: "Old child",
     };
-    const caseVariant = { ...first, key: "agent:main:Child", label: "Distinct child" };
-    const sibling = { ...first, key: "agent:main:sibling", label: "Sibling" };
+    const caseVariant = { ...first, key: "agent:main:subagent:Child", label: "Distinct child" };
+    const sibling = { ...first, key: "agent:main:subagent:sibling", label: "Sibling" };
     const current = { ...first, label: "Current child", hasActiveRun: true };
     const rowsByKey = collectSidebarSessionRowsByKey({
       rows: [parent, current],
@@ -460,48 +466,51 @@ describe("sidebar navigation lineage ownership", () => {
     expect(tree?.runningChildCount).toBe(1);
   });
 
-  it("promotes an explicitly categorized dashboard child to a sidebar section root", () => {
-    const categorizedChild = {
-      ...child,
-      key: "agent:main:dashboard:child",
-      category: "P1 issues from beta feedback",
-    };
-    const projected = projectSessionTree({
-      roots: [navigationParent, categorizedChild],
-      rowsByKey: collectSidebarSessionRowsByKey({
-        rows: [navigationParent, categorizedChild],
-        childRowsByParent: {},
-      }),
-      loadingChildKeys: new Set(),
-      knownSessionAttention: [],
-      toSidebarSession: (row, isChild) =>
-        ({
+  it.each([undefined, "Review"])(
+    "keeps a dashboard child at the sidebar root with category %s",
+    (category) => {
+      const categorizedChild = {
+        ...child,
+        key: "agent:main:dashboard:child",
+        category,
+      };
+      const projected = projectSessionTree({
+        roots: [navigationParent, categorizedChild],
+        rowsByKey: collectSidebarSessionRowsByKey({
+          rows: [navigationParent, categorizedChild],
+          childRowsByParent: {},
+        }),
+        loadingChildKeys: new Set(),
+        knownSessionAttention: [],
+        toSidebarSession: (row, isChild) =>
+          ({
+            key: row.key,
+            category: row.category,
+            isChild,
+            attention: { kind: "none" },
+            runningChildCount: 0,
+            failedChildCount: 0,
+          }) as SidebarRecentSession,
+      });
+
+      expect(
+        projected.map((row) => ({
           key: row.key,
           category: row.category,
-          isChild,
-          attention: { kind: "none" },
-          runningChildCount: 0,
-          failedChildCount: 0,
-        }) as SidebarRecentSession,
-    });
-
-    expect(
-      projected.map((row) => ({
-        key: row.key,
-        category: row.category,
-        isChild: row.isChild,
-        children: row.children.map((entry) => entry.key),
-      })),
-    ).toEqual([
-      { key: navigationParent.key, category: undefined, isChild: false, children: [] },
-      {
-        key: categorizedChild.key,
-        category: categorizedChild.category,
-        isChild: false,
-        children: [],
-      },
-    ]);
-  });
+          isChild: row.isChild,
+          children: row.children.map((entry) => entry.key),
+        })),
+      ).toEqual([
+        { key: navigationParent.key, category: undefined, isChild: false, children: [] },
+        {
+          key: categorizedChild.key,
+          category: categorizedChild.category,
+          isChild: false,
+          children: [],
+        },
+      ]);
+    },
+  );
 
   it.each([
     ["legacy active child", { status: "running" }, 1, 0],
@@ -545,22 +554,30 @@ describe("sidebar navigation lineage ownership", () => {
     const root: GatewaySessionRow = {
       key: "root",
       kind: "direct",
-      childSessions: ["alias", "root", "left", "right"],
+      childSessions: [
+        "agent:main:subagent:alias",
+        "root",
+        "agent:main:subagent:left",
+        "agent:main:subagent:right",
+      ],
     };
     const alias = { key: "root", kind: "direct", archived: true } satisfies GatewaySessionRow;
     const left = {
-      key: "left",
+      key: "agent:main:subagent:left",
       kind: "direct",
-      childSessions: ["shared"],
+      childSessions: ["agent:main:subagent:shared"],
     } satisfies GatewaySessionRow;
-    const right = { ...left, key: "right" };
-    const shared = { key: "shared", kind: "direct" } satisfies GatewaySessionRow;
+    const right = { ...left, key: "agent:main:subagent:right" };
+    const shared = {
+      key: "agent:main:subagent:shared",
+      kind: "direct",
+    } satisfies GatewaySessionRow;
     const rowsByKey = new Map<string, GatewaySessionRow>([
       ["root", root],
-      ["alias", alias],
-      ["left", left],
-      ["right", right],
-      ["shared", shared],
+      ["agent:main:subagent:alias", alias],
+      ["agent:main:subagent:left", left],
+      ["agent:main:subagent:right", right],
+      ["agent:main:subagent:shared", shared],
     ]);
     const calls: string[] = [];
     for (let iteration = 0; iteration < 2; iteration += 1) {
@@ -577,10 +594,10 @@ describe("sidebar navigation lineage ownership", () => {
       });
       expect(calls).toEqual([
         "root:true",
-        "shared:true",
-        "left:true",
-        "shared:true",
-        "right:true",
+        "agent:main:subagent:shared:true",
+        "agent:main:subagent:left:true",
+        "agent:main:subagent:shared:true",
+        "agent:main:subagent:right:true",
         "root:false",
       ]);
       expect(
@@ -590,8 +607,8 @@ describe("sidebar navigation lineage ownership", () => {
         ]),
       ).toStrictEqual([
         ["root", []],
-        ["left", ["shared"]],
-        ["right", ["shared"]],
+        ["agent:main:subagent:left", ["agent:main:subagent:shared"]],
+        ["agent:main:subagent:right", ["agent:main:subagent:shared"]],
       ]);
       expect(trees[0]).toHaveProperty("workspaceConflictCount", undefined);
       expect(trees[0]?.loadingChildren).toBe(true);
@@ -623,39 +640,53 @@ describe("sidebar navigation lineage ownership", () => {
       const root = {
         key: "root",
         kind: "direct",
-        childSessions: ["first", "second", "missing"],
+        childSessions: [
+          "agent:main:subagent:first",
+          "agent:main:subagent:second",
+          "agent:main:subagent:missing",
+        ],
       } satisfies GatewaySessionRow;
       const rows: GatewaySessionRow[] = [
         root,
-        { key: "first", kind: "direct", status: "failed", childSessions: ["grandchild"] },
-        { key: "second", kind: "direct", status: "timeout" },
-        { key: "grandchild", kind: "direct", status: "running", hasActiveRun: true },
+        {
+          key: "agent:main:subagent:first",
+          kind: "direct",
+          status: "failed",
+          childSessions: ["agent:main:subagent:grandchild"],
+        },
+        { key: "agent:main:subagent:second", kind: "direct", status: "timeout" },
+        {
+          key: "agent:main:subagent:grandchild",
+          kind: "direct",
+          status: "running",
+          hasActiveRun: true,
+        },
       ];
       const trees = projectSessionTree({
         roots: [root],
         rowsByKey: collectSidebarSessionRowsByKey({ rows, childRowsByParent: {} }),
         loadingChildKeys: new Set(),
         knownSessionAttention: known
-          ? [{ sessionKey: "missing", attention: { kind: "approval" } }]
+          ? [{ sessionKey: "agent:main:subagent:missing", attention: { kind: "approval" } }]
           : [],
         toSidebarSession: (row, isChild) => ({
           ...projectSidebarSession(row),
           isChild: isChild === true,
-          visuallyActive: row.key === "grandchild",
+          visuallyActive: row.key === "agent:main:subagent:grandchild",
           attention:
             row.key === "root"
               ? { kind: own }
-              : row.key === "first"
+              : row.key === "agent:main:subagent:first"
                 ? { kind: "question" }
-                : row.key === "second"
+                : row.key === "agent:main:subagent:second"
                   ? { kind: "approval" }
                   : { kind: "none" },
           workspaceConflictCount:
             row.key === "root"
               ? conflicts
-              : row.key === "first"
+              : row.key === "agent:main:subagent:first"
                 ? 4_503_599_627_370_496
-                : row.key === "second"
+                : row.key === "agent:main:subagent:second"
                   ? 0.5
                   : undefined,
         }),
@@ -667,15 +698,38 @@ describe("sidebar navigation lineage ownership", () => {
         containsActiveDescendant: true,
         workspaceConflictCount: expectedConflicts,
       });
-      expect(trees[0]?.childSessionKeys).toStrictEqual(["first", "second", "missing"]);
+      expect(trees[0]?.childSessionKeys).toStrictEqual([
+        "agent:main:subagent:first",
+        "agent:main:subagent:second",
+        "agent:main:subagent:missing",
+      ]);
       expect(
         trees[0]?.children.map((row) => [row.key, row.runningChildCount, row.failedChildCount]),
       ).toStrictEqual([
-        ["first", 1, 0],
-        ["second", 0, 0],
+        ["agent:main:subagent:first", 1, 0],
+        ["agent:main:subagent:second", 0, 0],
       ]);
     },
   );
+
+  it("opens a persistent spawned conversation without pulling its source into the sidebar", async () => {
+    const persistent = { ...child, key: "agent:main:dashboard:independent" };
+    const request = vi.fn();
+    const lineage = await fetchSessionLineage({
+      captureReconcile: () => vi.fn(),
+      client: createTestGatewayClient(request),
+      sessionKey: persistent.key,
+      knownRows: new Map([navigationParent, persistent].map((row) => [row.key, row])),
+      isCurrent: () => true,
+    });
+    expect(lineage).toMatchObject({
+      topmostRow: persistent,
+      rowsByParent: {},
+      lookupFailed: false,
+    });
+    expect(lineage?.topmostRow?.parentSessionKey).toBe(navigationParent.key);
+    expect(request).not.toHaveBeenCalled();
+  });
 
   it("walks a directly opened child through its navigation parent, not its controller", async () => {
     const knownRows = new Map(

@@ -504,10 +504,10 @@ describe("gateway sessions patch", () => {
   });
 
   test.each([
-    ["agent:main:dashboard:child", { spawnedBy: MAIN_SESSION_KEY }],
-    ["agent:main:dashboard:child", { parentSessionKey: MAIN_SESSION_KEY }],
     ["agent:main:subagent:child", {}],
-  ] as const)("rejects child pins on %s with %j", async (key, lineage) => {
+    ["agent:main:subagent:child", { spawnedBy: MAIN_SESSION_KEY }],
+    ["subagent:child", { parentSessionKey: MAIN_SESSION_KEY }],
+  ] as const)("rejects subagent pins on %s with %j", async (key, lineage) => {
     const original: SessionEntry = { sessionId: "child", updatedAt: 1, pinnedAt: 10, ...lineage };
     expectPatchError(
       await runPatch({
@@ -515,14 +515,14 @@ describe("gateway sessions patch", () => {
         store: { [key]: { ...original } },
         patch: { key, pinned: true },
       }),
-      "cannot pin a child session; pin its parent session instead",
+      "cannot pin a subagent session; pin its parent session instead",
     );
   });
 
   test.each([{ pinned: false }, { label: "Child task" }] as const)(
-    "clears stale child pins on a metadata or unpin patch: %j",
+    "clears stale subagent pins on a metadata or unpin patch: %j",
     async (patch) => {
-      const key = "agent:main:dashboard:child";
+      const key = "agent:main:subagent:child";
       const updated = expectPatchOk(
         await runPatch({
           storeKey: key,
@@ -537,6 +537,12 @@ describe("gateway sessions patch", () => {
   );
 
   test.each([
+    ["agent:main:dashboard:spawned", { spawnedBy: MAIN_SESSION_KEY }],
+    ["agent:main:dashboard:parented", { parentSessionKey: MAIN_SESSION_KEY }],
+    [
+      "agent:main:dashboard:lineage",
+      { spawnedBy: MAIN_SESSION_KEY, parentSessionKey: MAIN_SESSION_KEY },
+    ],
     ["agent:main:dashboard:root", { spawnedBy: "  ", parentSessionKey: "  " }],
     ["agent:main:acp:root", {}],
     ["agent:main:cron:root", {}],
@@ -544,16 +550,27 @@ describe("gateway sessions patch", () => {
       "agent:main:dashboard:fork",
       { forkSource: { sessionKey: MAIN_SESSION_KEY, sessionId: "parent" } },
     ],
-  ] as const)("allows root pins on %s", async (key, lineage) => {
-    const pinned = expectPatchOk(
-      await runPatch({
-        storeKey: key,
-        store: { [key]: { sessionId: "root", updatedAt: 1, ...lineage } },
-        patch: { key, pinned: true },
-      }),
-    );
-    expect(pinned.pinnedAt).toEqual(expect.any(Number));
-  });
+  ] as const)(
+    "allows persistent session pins on %s without changing ancestry",
+    async (key, lineage) => {
+      const pinned = expectPatchOk(
+        await runPatch({
+          storeKey: key,
+          store: { [key]: { sessionId: "root", updatedAt: 1, ...lineage } },
+          patch: { key, pinned: true },
+        }),
+      );
+      expect(pinned).toMatchObject({ ...lineage, pinnedAt: expect.any(Number) });
+      const updated = expectPatchOk(
+        await runPatch({
+          storeKey: key,
+          store: { [key]: pinned },
+          patch: { key, label: "Pinned conversation" },
+        }),
+      );
+      expect(updated).toMatchObject({ ...lineage, pinnedAt: pinned.pinnedAt });
+    },
+  );
 
   test("marks archived sessions unread and clears the marker when read", async () => {
     const store = mainStoreEntry({

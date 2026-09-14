@@ -146,17 +146,19 @@ describe("pruneStaleEntries", () => {
   });
 
   it.each([
-    ["agent:main:dashboard:child", { spawnedBy: "agent:main:main" }, "age-retention"],
-    ["agent:main:dashboard:child", { parentSessionKey: "agent:main:main" }, "age-retention"],
-    ["agent:main:subagent:child", {}, undefined],
-  ] as const)("drops a stale child pin on %s %j", (key, lineage, archiveReason) => {
-    const stale = { ...makeEntry(Date.now() - 31 * DAY_MS), pinnedAt: 1, ...lineage };
-    const store = makeStore([[key, stale]]);
-    pruneStaleEntries(store, 30 * DAY_MS);
-    expect(store[key]).toEqual(
-      archiveReason ? expect.objectContaining({ archiveReason }) : undefined,
-    );
-  });
+    ["agent:main:dashboard:child", { spawnedBy: "agent:main:main" }, true],
+    ["agent:main:dashboard:child", { parentSessionKey: "agent:main:main" }, true],
+    ["agent:main:subagent:child", {}, false],
+    ["agent:main:subagent:child", { spawnedBy: "agent:main:main" }, false],
+  ] as const)(
+    "preserves pinned conversations but not subagent runs: %s %j",
+    (key, lineage, pinnable) => {
+      const stale = { ...makeEntry(Date.now() - 31 * DAY_MS), pinnedAt: 1, ...lineage };
+      const store = makeStore([[key, { ...stale }]]);
+      pruneStaleEntries(store, 30 * DAY_MS);
+      expect(store[key]).toEqual(pinnable ? stale : undefined);
+    },
+  );
 
   it.each(["archivedAt", "pinnedAt"] as const)(
     "preserves %s until protection is removed, then archives the same identity",

@@ -15,8 +15,7 @@ import {
 import { projectSidebarArchiveVisibility } from "./app-sidebar-session-archive-visibility.ts";
 import { adoptedCatalogSessionKeys } from "./app-sidebar-session-catalogs.ts";
 import {
-  collectCategorizedChildRootRows,
-  collectPromotedMainChildRows,
+  collectIndependentChildRootRows,
   collectSidebarSessionRowsByKey,
   someSidebarSessionInTree,
   type SidebarSessionNavigationState,
@@ -164,10 +163,8 @@ export function projectSidebarAgentSessionRows({
       (!isMainSession(session.key) ||
         (grouped && navigationState.toSidebarSession(session).visuallyActive)),
   );
-  const mainSessionKeys = new Set(canonicalMainKeys);
   const scopedRootRows = rootRows.filter((row) => {
     if (isMainSession(row.key)) {
-      mainSessionKeys.add(row.key);
       return grouped || ownsSubagents(row);
     }
     return true;
@@ -255,32 +252,14 @@ export function projectSidebarAgentSessionRows({
     }
     return false;
   });
-  const categorizedChildRows = collectCategorizedChildRootRows({
+  const independentChildren = collectIndependentChildRootRows({
     rows: sessionCandidateRows,
     scopedRoots: scopedRootRows,
     visibilityOptions,
   });
-  scopedRootRows.push(...categorizedChildRows);
-  const scopedRootKeys = new Set(scopedRootRows.map((row) => row.key));
-  const promotedRows = grouped
-    ? []
-    : collectPromotedMainChildRows({
-        rows: sessionCandidateRows,
-        mainSessionKeys,
-        scopedRootKeys,
-        showCron: host.sessionsShowCron,
-        showSystem: host.sessionsShowSystem,
-      });
-  for (const row of promotedRows) {
-    if (!scopedRootKeys.has(row.key)) {
-      scopedRootKeys.add(row.key);
-      scopedRootRows.push(row);
-    }
-  }
+  scopedRootRows.push(...independentChildren);
   const orderedRootRows =
-    promotedRows.length > 0 || categorizedChildRows.length > 0
-      ? scopedRootRows.toSorted(compareSessions)
-      : scopedRootRows;
+    independentChildren.length > 0 ? scopedRootRows.toSorted(compareSessions) : scopedRootRows;
   // `adopted` holds only catalog-bound keys (adoptedCatalogSessionKeys), not
   // fetched child rows: a catalog-adopted promoted child intentionally
   // renders as its live row inside the Coding catalog, never as a thread.

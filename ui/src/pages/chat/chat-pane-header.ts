@@ -30,7 +30,7 @@ import {
   canDeleteSessionRows,
   isPinnableUiSessionRow,
   resolveUiConfiguredMainKey,
-  resolveUiSessionNavigationParentKey,
+  isSubagentSessionKey,
 } from "../../lib/sessions/session-key.ts";
 import {
   canCopySessionMarkdown,
@@ -617,7 +617,7 @@ export abstract class ChatPaneHeader extends ChatPaneDiscussion {
                   normalizeOptionalString(this.paneTitle) ??
                   row.key,
                 sessionId: row.sessionId ?? null,
-                isChild: Boolean(resolveUiSessionNavigationParentKey(row)),
+                isSubagent: isSubagentSessionKey(row.key),
                 pinned: row.pinned === true,
                 pinnable,
                 unread: row.unread === true,

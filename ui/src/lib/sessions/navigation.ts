@@ -171,7 +171,7 @@ type VisibleSessionRowOptions = {
  * reachable: the selected session always renders in the sidebar, the Sessions
  * page never applies this filter, and the sort-menu toggle reveals all rows.
  */
-export function isSystemCreatedSessionRow(row: GatewaySessionRow): boolean {
+function isSystemCreatedSessionRow(row: GatewaySessionRow): boolean {
   // Cron rows are owned by the automation toggle; cron creation stamps a
   // system actor, so classifying them here would demand both toggles at once.
   if (isCronSessionKey(row.key)) {
@@ -226,11 +226,7 @@ export function filterVisibleSessionRows(
     ) {
       return true;
     }
-    return (
-      sessionMatchesVisibleSessionScope(row, options) &&
-      !isSubagentSessionKey(row.key) &&
-      !row.spawnedBy
-    );
+    return sessionMatchesVisibleSessionScope(row, options) && !isSubagentSessionKey(row.key);
   });
 }
 

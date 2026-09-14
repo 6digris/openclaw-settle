@@ -785,12 +785,13 @@ describe("gateway session utils", () => {
   });
 
   test.each([
-    ["agent:main:dashboard:child", { spawnedBy: "agent:main:main" }],
-    ["agent:main:dashboard:child", { parentSessionKey: "agent:main:main" }],
-    ["agent:main:subagent:child", {}],
+    ["agent:main:dashboard:child", { spawnedBy: "agent:main:main" }, true],
+    ["agent:main:dashboard:child", { parentSessionKey: "agent:main:main" }, true],
+    ["agent:main:subagent:child", {}, false],
+    ["agent:main:subagent:child", { spawnedBy: "agent:main:main" }, false],
   ] as const)(
-    "ignores stale child pins in session list projection and ordering: %s %j",
-    async (key, lineage) => {
+    "projects and orders pins by session identity rather than ancestry: %s %j",
+    async (key, lineage, pinnable) => {
       const cfg = createModelDefaultsConfig({ primary: "openai/gpt-5.4" });
       const store: Record<string, SessionEntry> = {
         "agent:main:dashboard:root": { sessionId: "root", updatedAt: 30 },
@@ -799,9 +800,12 @@ describe("gateway session utils", () => {
       for (const limit of [2, 201]) {
         const listed = await listSessionFixture({ cfg, storePath: "", store, opts: { limit } });
         const child = listed.sessions.find((row) => row.key === key);
-        expect.soft(child?.pinned).toBe(false);
-        expect.soft(child?.pinnedAt).toBeUndefined();
-        expect(listed.sessions.map((row) => row.key)).toEqual(["agent:main:dashboard:root", key]);
+        expect.soft(child?.pinned).toBe(pinnable);
+        expect.soft(child?.pinnedAt).toBe(pinnable ? 40 : undefined);
+        expect(child).toMatchObject(lineage);
+        expect(listed.sessions.map((row) => row.key)).toEqual(
+          pinnable ? [key, "agent:main:dashboard:root"] : ["agent:main:dashboard:root", key],
+        );
       }
     },
   );

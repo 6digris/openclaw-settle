@@ -371,13 +371,13 @@ describe("AppSidebar session indicators", () => {
     },
   );
 
-  it("preserves child PR indicators and leads a pinned child like any other", async () => {
+  it("preserves subagent PR indicators beside an independently pinned conversation", async () => {
     const parentKey = "agent:main:parent";
     const pinnedKey = "agent:main:pinned-child";
-    const runningKey = "agent:main:running-child";
-    const queuedKey = "agent:main:queued-child";
-    const openPullRequestKey = "agent:main:open-pr-child";
-    const mergedPullRequestKey = "agent:main:merged-pr-child";
+    const runningKey = "agent:main:subagent:running-child";
+    const queuedKey = "agent:main:subagent:queued-child";
+    const openPullRequestKey = "agent:main:subagent:open-pr-child";
+    const mergedPullRequestKey = "agent:main:subagent:merged-pr-child";
     const sessions = createSessionsHarness("main", [parentKey]);
     sessions.list.mockResolvedValue({
       ts: 2,
@@ -474,10 +474,6 @@ describe("AppSidebar session indicators", () => {
     await waitForFast(() =>
       expect(sidebar.querySelectorAll(".sidebar-recent-session--child")).toHaveLength(4),
     );
-    sidebar.querySelector<HTMLButtonElement>("[data-show-more-children]")?.click();
-    await waitForFast(() =>
-      expect(sidebar.querySelectorAll(".sidebar-recent-session--child")).toHaveLength(5),
-    );
     sessions.sessions.setPullRequestSummary(openPullRequestKey, { numbers: [1], state: "open" });
     sessions.sessions.setPullRequestSummary(mergedPullRequestKey, {
       numbers: [2],
@@ -498,8 +494,8 @@ describe("AppSidebar session indicators", () => {
         ),
       ).not.toBeNull();
     });
-    // Pinning is not a status: a pinned child must lead exactly like an
-    // unpinned child in the same run/unread state.
+    // Pinning is not a run state: an independent pinned conversation and
+    // a subordinate run keep the same live indicator.
     const pinnedRow = sidebar.querySelector(`[data-session-key="${pinnedKey}"]`);
     const runningRow = sidebar.querySelector(`[data-session-key="${runningKey}"]`);
     const pinnedLead = pinnedRow?.querySelector(".sidebar-session-indicator");

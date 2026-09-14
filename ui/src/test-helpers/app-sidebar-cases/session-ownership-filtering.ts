@@ -453,9 +453,9 @@ describe("AppSidebar session ownership filtering", () => {
     expect(`${link.textContent} ${name} ${description}`.match(/Unread/g)).toHaveLength(1);
   });
 
-  it("keeps owner avatars off child rows", async () => {
+  it("keeps owner avatars off subagent rows", async () => {
     const parentKey = "agent:main:parent";
-    const childKey = "agent:main:child";
+    const childKey = "agent:main:subagent:child";
     const harness = createSessionsHarness("main", [parentKey]);
     const result = harness.sessions.state.result;
     if (!result) {

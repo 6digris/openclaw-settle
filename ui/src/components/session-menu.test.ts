@@ -266,9 +266,9 @@ describe("session menu", () => {
     }
   });
 
-  it("omits root placement actions for child sessions", async () => {
+  it("omits conversation placement actions for subagent runs", async () => {
     const menu = await mountMenu({
-      session: { isChild: true },
+      session: { isSubagent: true },
     });
 
     expect(menuItemLabels(menu)).toEqual([

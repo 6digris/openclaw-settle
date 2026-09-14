@@ -18,7 +18,7 @@ import "../styles/sidebar-menus.css";
 export type SessionMenuData = {
   label: string;
   sessionId: string | null;
-  isChild?: boolean;
+  isSubagent?: boolean;
   pinnable?: boolean;
   pinned: boolean;
   unread: boolean;
@@ -140,7 +140,9 @@ export class SessionMenuActions {
       case "copy-session-id":
         return batch || !session.sessionId;
       case "toggle-pin":
-        return batch || session.pinnable === false || session.isChild === true || session.archived;
+        return (
+          batch || session.pinnable === false || session.isSubagent === true || session.archived
+        );
       case "rename":
       case "set-icon":
       case "set-color":
@@ -150,7 +152,7 @@ export class SessionMenuActions {
         return batch || state.forkDisabled;
       case "move-to-group":
       case "new-group":
-        return session.isChild === true;
+        return session.isSubagent === true;
       case "toggle-archived":
         return !batch && !session.archived && !state.archiveAllowed;
       case "delete":
@@ -346,7 +348,7 @@ export class SessionMenuActions {
     const count = String(selectionCount);
     return html`
       ${
-        batch || session.pinnable === false || session.isChild
+        batch || session.pinnable === false || session.isSubagent
           ? nothing
           : this.renderItem(
               "toggle-pin",
@@ -447,7 +449,7 @@ export class SessionMenuActions {
     const state = this.readState();
     const batch = state.selectionCount > 1;
     const count = String(state.selectionCount);
-    if (state.session.isChild === true) {
+    if (state.session.isSubagent === true) {
       return nothing;
     }
     const label = batch

@@ -37,7 +37,8 @@ export type SessionPatchRowFact = {
     | SessionPinFields
     | SessionReadFields
     | (SessionPinFields & SessionReadFields)
-    | { boardPresentation: GatewaySessionRow["boardPresentation"] };
+    | { boardPresentation: GatewaySessionRow["boardPresentation"] }
+    | { category: GatewaySessionRow["category"] };
 };
 export type PendingRowTarget = Readonly<{
   identity: string;

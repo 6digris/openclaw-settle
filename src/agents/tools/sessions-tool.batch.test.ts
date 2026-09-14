@@ -191,28 +191,42 @@ describe("sessions tool batch patch", () => {
     });
   });
 
-  it("returns the child pin error while pinning a root in the same batch", async () => {
+  it("pins persistent spawned sessions while rejecting subagent runs in the same batch", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       await seedSessions();
-      const childKey = targetKeys[0]!;
+      const spawnedKey = targetKeys[0]!;
+      const subagentKey = "agent:main:subagent:pin-test";
+      const lineage = { spawnedBy: currentKey, parentSessionKey: currentKey };
+      await upsertSessionEntryCore({ agentId: "main", sessionKey: spawnedKey }, lineage);
       await upsertSessionEntryCore(
-        { agentId: "main", sessionKey: childKey },
-        { spawnedBy: currentKey },
+        { agentId: "main", sessionKey: subagentKey },
+        { sessionId: "subagent-session", updatedAt: 1, ...lineage },
       );
       const result = await createStoredSessionTool().execute("pin-selected", {
         action: "patch",
-        targets: [{ sessionKey: childKey }, { sessionKey: "current" }],
+        targets: [
+          { sessionKey: subagentKey },
+          { sessionKey: spawnedKey },
+          { sessionKey: "current" },
+        ],
         pinned: true,
       });
       expect(result.details).toMatchObject({
         status: "partial",
-        succeeded: [1],
+        succeeded: [1, 2],
         failed: [0],
         errors: [
-          { index: 0, message: "cannot pin a child session; pin its parent session instead" },
+          { index: 0, message: "cannot pin a subagent session; pin its parent session instead" },
         ],
       });
-      expect(loadSessionEntry({ agentId: "main", sessionKey: childKey })?.pinnedAt).toBeUndefined();
+      const subagent = loadSessionEntry({ agentId: "main", sessionKey: subagentKey });
+      expect(subagent).toMatchObject({ sessionId: "subagent-session", ...lineage });
+      expect(subagent?.pinnedAt).toBeUndefined();
+      expect(loadSessionEntry({ agentId: "main", sessionKey: spawnedKey })).toMatchObject({
+        sessionId: "target-1",
+        ...lineage,
+        pinnedAt: expect.any(Number),
+      });
       expect(loadSessionEntry({ agentId: "main", sessionKey: currentKey })?.pinnedAt).toEqual(
         expect.any(Number),
       );

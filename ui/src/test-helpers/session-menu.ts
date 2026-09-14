@@ -61,7 +61,7 @@ export async function mountMenu(
   const session: SessionMenuData = {
     label: "Test session",
     sessionId: "session-123",
-    isChild: false,
+    isSubagent: false,
     pinned: false,
     unread: false,
     archived: false,

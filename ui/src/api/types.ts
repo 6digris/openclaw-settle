@@ -286,6 +286,7 @@ export type SessionsPatchResult = SessionsPatchResultBase<{
   lastActivityAt?: number;
   lastInteractionAt?: number;
   permissionMode?: GatewaySessionRow["permissionMode"];
+  category?: GatewaySessionRow["category"];
   boardPresentation?: GatewaySessionRow["boardPresentation"];
   archivedAt?: number;
   archiveReason?: SessionEntryArchiveReason;

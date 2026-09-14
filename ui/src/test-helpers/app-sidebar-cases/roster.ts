@@ -436,9 +436,9 @@ describe("AppSidebar agent roster", () => {
     expect(agentIds(sidebar)).toEqual(["main", "recent", "working"]);
   });
 
-  it("filters archived children while keeping main-session children nested", async () => {
+  it("filters archived conversations while keeping main-session subagents nested", async () => {
     const { sidebar } = await mountRoster(roster, [
-      session("working", 10, { childSessions: ["agent:working:main-child"] }),
+      session("working", 10, { childSessions: ["agent:working:subagent:main-child"] }),
       session("working", 9, {
         key: "agent:working:parent",
         isMain: false,
@@ -452,7 +452,7 @@ describe("AppSidebar agent roster", () => {
         archived: true,
       }),
       session("working", 7, {
-        key: "agent:working:main-child",
+        key: "agent:working:subagent:main-child",
         isMain: false,
         spawnedBy: "agent:working:main",
       }),
@@ -465,7 +465,9 @@ describe("AppSidebar agent roster", () => {
     sidebar
       .querySelector<HTMLButtonElement>('[data-child-session-toggle="agent:working:main"]')
       ?.click();
-    await vi.waitFor(() => expect(sessionKeys(sidebar)).toContain("agent:working:main-child"));
+    await vi.waitFor(() =>
+      expect(sessionKeys(sidebar)).toContain("agent:working:subagent:main-child"),
+    );
     await selectFilter(sidebar, "status:archived");
     await vi.waitFor(() => expect(sessionKeys(sidebar)).toEqual(["agent:working:archived-child"]));
   });

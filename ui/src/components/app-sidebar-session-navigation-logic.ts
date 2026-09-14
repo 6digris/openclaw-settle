@@ -5,7 +5,6 @@ import type { RouteId } from "../app-route-paths.ts";
 import type { ApplicationContext } from "../app/context.ts";
 import { listSelectableAgents } from "../lib/agents/display.ts";
 import {
-  isCronSessionKey,
   resolveChannelSessionInfo,
   resolveSessionDisplayName,
   resolveSessionWorkContext,
@@ -17,7 +16,6 @@ import { collectKnownSessionGroups } from "../lib/sessions/grouping.ts";
 import {
   compareSessionRowsByUpdatedAt,
   filterVisibleSessionRows,
-  isSystemCreatedSessionRow,
   resolveSessionNavigation,
   sessionMatchesVisibleSessionScope,
 } from "../lib/sessions/index.ts";
@@ -441,33 +439,8 @@ export function collectSidebarSessionRowsByKey(input: {
   return rowsByKey;
 }
 
-/**
- * Promote the hidden main session's children to top-level threads, with the
- * same visibility rules as ordinary roots so archived, cron, or
- * system-created children cannot sneak in and pagination stays deterministic.
- */
-export function collectPromotedMainChildRows(input: {
-  rows: readonly GatewaySessionRow[];
-  mainSessionKeys: ReadonlySet<string>;
-  scopedRootKeys: ReadonlySet<string>;
-  showCron: boolean;
-  showSystem: boolean;
-}): GatewaySessionRow[] {
-  return input.rows.filter((row) => {
-    const parentKey = resolveUiSessionNavigationParentKey(row);
-    return (
-      parentKey != null &&
-      input.mainSessionKeys.has(parentKey) &&
-      !input.scopedRootKeys.has(row.key) &&
-      !isSubagentSessionKey(row.key) &&
-      !row.archived &&
-      (input.showCron || !isCronSessionKey(row.key)) &&
-      (input.showSystem || !isSystemCreatedSessionRow(row))
-    );
-  });
-}
-
-export function collectCategorizedChildRootRows(input: {
+/** Supplemental child reads must use the same scope as ordinary session roots. */
+export function collectIndependentChildRootRows(input: {
   rows: readonly GatewaySessionRow[];
   scopedRoots: readonly GatewaySessionRow[];
   visibilityOptions: Parameters<typeof filterVisibleSessionRows>[1];
@@ -477,7 +450,6 @@ export function collectCategorizedChildRootRows(input: {
     (row) =>
       !scopedRootKeys.has(row.key) &&
       !isSubagentSessionKey(row.key) &&
-      normalizeOptionalString(row.category) != null &&
       resolveUiSessionNavigationParentKey(row) != null &&
       sessionMatchesVisibleSessionScope(row, input.visibilityOptions),
   );
@@ -562,6 +534,7 @@ export function findProjectedSidebarSession(input: {
   sessionKey: string;
   navigationState: SidebarSessionNavigationState;
   sessionResultsByAgent: Readonly<Record<string, SessionsListResult>>;
+  childSessionRowsByParent: Readonly<Record<string, readonly GatewaySessionRow[]>>;
 }): SidebarRecentSession | undefined {
   const active = input.navigationState.visibleSessionRows.find(
     (candidate) => candidate.key === input.sessionKey,
@@ -569,8 +542,12 @@ export function findProjectedSidebarSession(input: {
   if (active) {
     return input.navigationState.toSidebarSession(active);
   }
-  for (const result of Object.values(input.sessionResultsByAgent)) {
-    const row = result.sessions.find((candidate) => candidate.key === input.sessionKey);
+  const cachedRows = [
+    ...Object.values(input.sessionResultsByAgent).map((result) => result.sessions),
+    ...Object.values(input.childSessionRowsByParent),
+  ];
+  for (const rows of cachedRows) {
+    const row = rows.find((candidate) => candidate.key === input.sessionKey);
     if (row) {
       return input.navigationState.toSidebarSession(row);
     }

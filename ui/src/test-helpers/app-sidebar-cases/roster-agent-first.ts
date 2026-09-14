@@ -34,7 +34,7 @@ describe("AppSidebar agent roster", () => {
           status: parentState === "idle" ? "done" : parentState,
         }),
         session("working", 2, {
-          key: "agent:working:queued-child",
+          key: "agent:working:subagent:queued-child",
           isMain: false,
           unread: true,
           spawnedBy: parent,
@@ -44,14 +44,14 @@ describe("AppSidebar agent roster", () => {
         ...(mixed
           ? [
               session("working", 3, {
-                key: "agent:working:running-child",
+                key: "agent:working:subagent:running-child",
                 isMain: false,
                 spawnedBy: parent,
                 status: "running",
                 hasActiveRun: true,
               }),
               session("working", 4, {
-                key: "agent:working:failed-child",
+                key: "agent:working:subagent:failed-child",
                 isMain: false,
                 spawnedBy: parent,
                 status: "failed",
@@ -78,14 +78,16 @@ describe("AppSidebar agent roster", () => {
         needsAttention ? 1 : 0,
       );
       sidebar.querySelector<HTMLButtonElement>(`[data-child-session-toggle="${parent}"]`)?.click();
-      await vi.waitFor(() => expect(sessionKeys(sidebar)).toContain("agent:working:queued-child"));
+      await vi.waitFor(() =>
+        expect(sessionKeys(sidebar)).toContain("agent:working:subagent:queued-child"),
+      );
       expect(row.querySelectorAll(".session-glyph__ring--queued")).toHaveLength(
         parentState === "queued" ? 1 : 0,
       );
       expect(row.querySelectorAll(runningSelector)).toHaveLength(parentState === "running" ? 1 : 0);
       expect(
         sidebar.querySelectorAll(
-          '[data-session-key="agent:working:queued-child"] .session-glyph__ring--queued',
+          '[data-session-key="agent:working:subagent:queued-child"] .session-glyph__ring--queued',
         ),
       ).toHaveLength(1);
       sidebar.querySelector<HTMLButtonElement>('[data-agent-collapse="working"]')?.click();
@@ -371,8 +373,8 @@ describe("AppSidebar agent roster", () => {
     "keeps descendant conflicts separate from the parent state (running=%s)",
     async (running) => {
       const parent = "agent:working:parent";
-      const branch = "agent:working:branch";
-      const key = (name: string) => `agent:working:${name}`;
+      const branch = "agent:working:subagent:branch";
+      const key = (name: string) => `agent:working:subagent:${name}`;
       const rows: GatewaySessionRow[] = [
         session("working", 20, {
           key: parent,

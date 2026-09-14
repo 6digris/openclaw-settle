@@ -89,38 +89,53 @@ describe("chat pane session menu boundary", () => {
   });
 
   it.each([
-    { key: "agent:main:fork", parentSessionKey: "agent:main:parent" },
-    { key: "agent:main:subagent:child" },
-  ])("hides pinning a lineage child $key in the header menu", async (lineage) => {
-    const { pane, state } = createTestChatPane({
-      client: createGatewayBrowserClientFixture(),
-      sessions: createSessionCapabilityFixture(),
-    });
-    state.settings = loadSettings();
-    const session = { ...lineage, kind: "direct", updatedAt: 0 } satisfies GatewaySessionRow;
-    const container = document.createElement("div");
-    document.body.append(container);
+    {
+      lineage: { key: "agent:main:fork", parentSessionKey: "agent:main:parent" },
+      organizable: true,
+    },
+    {
+      lineage: { key: "agent:main:dashboard:spawned", spawnedBy: "agent:main:parent" },
+      organizable: true,
+    },
+    {
+      lineage: { key: "agent:main:subagent:child", parentSessionKey: "agent:main:parent" },
+      organizable: false,
+    },
+    { lineage: { key: "agent:main:subagent:orphan" }, organizable: false },
+  ])(
+    "offers conversation placement only for ordinary sessions: $lineage.key",
+    async ({ lineage, organizable }) => {
+      const { pane, state } = createTestChatPane({
+        client: createGatewayBrowserClientFixture(),
+        sessions: createSessionCapabilityFixture(),
+      });
+      state.settings = loadSettings();
+      const session = { ...lineage, kind: "direct", updatedAt: 0 } satisfies GatewaySessionRow;
+      const container = document.createElement("div");
+      document.body.append(container);
 
-    render(
-      pane.renderPaneHeader(
-        createSessionWorkspaceProps(state),
-        createBackgroundTasksProps(state),
-        session,
-        false,
-        undefined,
-        false,
-        null,
-      ),
-      container,
-    );
+      render(
+        pane.renderPaneHeader(
+          createSessionWorkspaceProps(state),
+          createBackgroundTasksProps(state),
+          session,
+          false,
+          undefined,
+          false,
+          null,
+        ),
+        container,
+      );
 
-    const menu = container.querySelector<HTMLElement & { updateComplete: Promise<boolean> }>(
-      "openclaw-chat-header-session-menu",
-    );
-    expect(menu).not.toBeNull();
-    await menu?.updateComplete;
-    expect(menu?.querySelector('[value="toggle-pin"]')).toBeNull();
-  });
+      const menu = container.querySelector<HTMLElement & { updateComplete: Promise<boolean> }>(
+        "openclaw-chat-header-session-menu",
+      );
+      expect(menu).not.toBeNull();
+      await menu?.updateComplete;
+      expect(Boolean(menu?.querySelector('[value="toggle-pin"]'))).toBe(organizable);
+      expect(Boolean(menu?.querySelector('[value="new-group"]'))).toBe(organizable);
+    },
+  );
 
   it("uses the refreshed category when deciding whether a header group move is a no-op", async () => {
     const patch = vi.fn(async () => ({}));

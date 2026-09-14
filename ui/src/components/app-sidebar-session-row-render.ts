@@ -22,6 +22,7 @@ import { presenceMatchesProfile, projectPresencePayload } from "../lib/presence-
 import type { CatalogSessionKey } from "../lib/sessions/catalog-key.ts";
 import { writeSessionDragData } from "../lib/sessions/drag.ts";
 import type { SidebarSessionsGrouping } from "../lib/sessions/grouping.ts";
+import { isSubagentSessionKey } from "../lib/sessions/session-key.ts";
 import type { NewSessionTarget } from "../pages/new-session/location.ts";
 import type {
   CatalogBackingSessionDisplay,
@@ -393,7 +394,7 @@ export function renderRecentSession(params: {
     method: "sessions.groups.put",
     requiredScope: "operator.write",
   });
-  const rowDraggable = !session.isChild && groupWriteAccess.allowed;
+  const rowDraggable = !isSubagentSessionKey(session.key) && groupWriteAccess.allowed;
   const marqueeLabelTemplate = html`<span
     ${display ? ref(restartHoverMarqueeIfHovered) : nothing}
     class="sidebar-recent-session__name hover-marquee"
@@ -474,8 +475,8 @@ export function renderRecentSession(params: {
               aria-expanded=${String(childrenExpanded)}
               aria-label=${t(
                 childrenExpanded
-                  ? "sessionsView.hideChildSessions"
-                  : "sessionsView.showChildSessions",
+                  ? "sessionsView.hideSubagentRuns"
+                  : "sessionsView.showSubagentRuns",
                 { count: String(session.childSessionKeys.length), session: label },
               )}
               aria-description=${
@@ -583,12 +584,13 @@ export function renderSessionTree(params: {
     ${
       expanded
         ? html`<div class="sidebar-session-tree__children">
+            <span class="sidebar-session-tree__label">${t("sessionsView.subagentRuns")}</span>
             ${
               visibleChildren.length > 0
                 ? html`<div
                     class="sidebar-session-tree__list"
                     role=${ifDefined(listItem ? "list" : undefined)}
-                    aria-label=${ifDefined(listItem ? t("sessionsView.childSessions") : undefined)}
+                    aria-label=${ifDefined(listItem ? t("sessionsView.subagentRuns") : undefined)}
                   >
                     ${repeat(
                       visibleChildren,

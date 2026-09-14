@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { GatewaySessionRow, SessionsListResult } from "../../api/types.ts";
 import {
   compareSessionRowsByUpdatedAt,
-  isSystemCreatedSessionRow,
+  sessionMatchesVisibleSessionScope,
   resolveSessionNavigation,
   visibleSessionMatches,
 } from "./navigation.ts";
@@ -19,6 +19,29 @@ function sessionsResult(sessions: GatewaySessionRow[]): SessionsListResult {
 }
 
 describe("resolveSessionNavigation", () => {
+  it("lists persistent spawned sessions independently while keeping subagent runs out of roots", () => {
+    const parent: GatewaySessionRow = {
+      key: "agent:main:dashboard:parent",
+      kind: "direct",
+      updatedAt: 3,
+    };
+    const session: GatewaySessionRow = {
+      key: "agent:main:dashboard:child",
+      kind: "direct",
+      updatedAt: 2,
+      spawnedBy: parent.key,
+      parentSessionKey: parent.key,
+    };
+    const run: GatewaySessionRow = { ...session, key: "agent:main:subagent:worker", updatedAt: 1 };
+    const navigation = resolveSessionNavigation({
+      result: sessionsResult([parent, session, run]),
+      resultAgentId: "main",
+      sessionKey: parent.key,
+    });
+    expect(navigation.visibleSessions.map((row) => row.key)).toEqual([parent.key, session.key]);
+    expect(session).toMatchObject({ spawnedBy: parent.key, parentSessionKey: parent.key });
+  });
+
   it("keeps the selected session in its sorted slot instead of hoisting it", () => {
     const rows = Array.from({ length: 5 }, (_, index) => ({
       key: `agent:main:recent-${index}`,
@@ -410,7 +433,8 @@ describe("visibleSessionMatches", () => {
   });
 });
 
-describe("isSystemCreatedSessionRow", () => {
+describe("system-created session visibility", () => {
+  const scope = { agentId: "main", defaultAgentId: "main", showCron: true };
   const base = { key: "agent:main:explicit:probe", kind: "direct", updatedAt: 1 } as const;
   it("keeps a newly created operator-named CLI session visible", () => {
     const row: GatewaySessionRow = {
@@ -421,7 +445,7 @@ describe("isSystemCreatedSessionRow", () => {
       displayName: "incident-42",
     };
 
-    expect(isSystemCreatedSessionRow(row)).toBe(false);
+    expect(sessionMatchesVisibleSessionScope(row, scope)).toBe(true);
   });
 
   it.each([
@@ -442,7 +466,9 @@ describe("isSystemCreatedSessionRow", () => {
       false,
     ],
   ] as const)("%s", (_name, fields, expected) => {
-    expect(isSystemCreatedSessionRow({ ...base, ...fields } as GatewaySessionRow)).toBe(expected);
+    expect(
+      sessionMatchesVisibleSessionScope({ ...base, ...fields } as GatewaySessionRow, scope),
+    ).toBe(!expected);
   });
 });
 

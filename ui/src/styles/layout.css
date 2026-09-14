@@ -1884,6 +1884,12 @@ openclaw-settings-save-indicator:empty {
   min-height: 12px;
 }
 
+.sidebar-session-tree__label {
+  padding-inline: 12px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .sidebar-session-tree__children {
   margin-left: var(--sidebar-lead);
   background: linear-gradient(

@@ -37,7 +37,7 @@ describe("AppSidebar child-session load errors", () => {
     "surfaces $visibleError with an accessible retry action",
     async ({ failure, visibleError }) => {
       const parentKey = "agent:main:parent";
-      const childKey = "agent:worker:child";
+      const childKey = "agent:worker:subagent:child";
       const gateway = createGateway({} as GatewayBrowserClient);
       const harness = createSessionsHarness("main", [parentKey]);
       harness.list
@@ -90,14 +90,19 @@ describe("AppSidebar child-session load errors", () => {
         throw new Error(`${parentKey} temporarily unavailable`);
       }
       return sessionResult([
-        recoveredChild("agent:worker:first-child", firstParent, "Recovered first child"),
+        recoveredChild("agent:worker:subagent:first-child", firstParent, "Recovered first child"),
       ]);
     });
     const { sidebar } = await mountSidebar(gateway, harness.sessions);
     harness.publishList({
       result: sessionResult(
         [firstParent, secondParent].map((parentKey) =>
-          parentSession(parentKey, `${parentKey}:child`),
+          parentSession(
+            parentKey,
+            parentKey === firstParent
+              ? "agent:worker:subagent:first-child"
+              : "agent:worker:subagent:second-child",
+          ),
         ),
       ),
     });

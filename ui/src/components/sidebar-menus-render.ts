@@ -16,6 +16,7 @@ import { categoryClearReturnsToGroups } from "../lib/sessions/grouping.ts";
 import {
   canArchiveSessionRow,
   canDeleteSessionRows,
+  isSubagentSessionKey,
   resolveUiConfiguredMainKey,
 } from "../lib/sessions/session-key.ts";
 import {
@@ -268,7 +269,7 @@ export function renderSidebarSessionMenuForController(controller: SidebarMenusCo
         .session=${{
           label: session.label,
           sessionId: session.sessionId ?? null,
-          isChild: session.isChild,
+          isSubagent: isSubagentSessionKey(session.key),
           pinned: session.pinned,
           pinnable: session.pinnable,
           unread: batchRows ? allUnread : session.unread,

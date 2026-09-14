@@ -365,7 +365,7 @@ function* projectSessionPatchSteps(
     }
   }
 
-  const pinnable = isPinnableSessionEntry(storeKey, next);
+  const pinnable = isPinnableSessionEntry(storeKey);
   if (!pinnable) {
     delete next.pinnedAt;
   }
@@ -375,7 +375,7 @@ function* projectSessionPatchSteps(
         return invalid("cannot pin an archived session; restore it first");
       }
       if (!pinnable) {
-        return invalid("cannot pin a child session; pin its parent session instead");
+        return invalid("cannot pin a subagent session; pin its parent session instead");
       }
       next.pinnedAt ??= now;
     } else {

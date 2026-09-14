@@ -28,10 +28,6 @@ export function projectSessionTree(params: {
 }): SidebarRecentSession[] {
   const { roots, rowsByKey, loadingChildKeys, knownSessionAttention, toSidebarSession } = params;
   const childKeysByParent = new Map<string, string[]>();
-  const hasRootCategory = (row: GatewaySessionRow | undefined) =>
-    typeof row?.category === "string" &&
-    row.category.trim().length > 0 &&
-    !isSubagentSessionKey(row.key);
   const appendChild = (parentKey: string, childKey: string) => {
     const keys = childKeysByParent.get(parentKey) ?? [];
     if (!keys.includes(childKey)) {
@@ -41,12 +37,12 @@ export function projectSessionTree(params: {
   };
   for (const row of rowsByKey.values()) {
     for (const childKey of row.childSessions ?? []) {
-      const child = rowsByKey.get(childKey);
-      // Categories can place independent conversations at a section root;
-      // subagents always remain under their navigation parent.
-      if (hasRootCategory(child)) {
+      // Lineage describes origin and control, not user-owned sidebar placement.
+      // Only delegated runs belong beneath another conversation.
+      if (!isSubagentSessionKey(childKey)) {
         continue;
       }
+      const child = rowsByKey.get(childKey);
       const navigationParentKey = resolveUiSessionNavigationParentKey(child);
       // Runtime control and sidebar navigation can have different parents;
       // known children belong to their explicit navigation parent only.
@@ -57,7 +53,7 @@ export function projectSessionTree(params: {
   }
   for (const row of rowsByKey.values()) {
     const parentKey = resolveUiSessionNavigationParentKey(row);
-    if (parentKey && !hasRootCategory(row)) {
+    if (parentKey && isSubagentSessionKey(row.key)) {
       appendChild(parentKey, row.key);
     }
   }
@@ -170,17 +166,7 @@ export function projectSessionTree(params: {
     };
   };
 
-  const rootKeys = new Set(roots.map((row) => row.key));
   return roots
-    .filter((row) => {
-      if (isSubagentSessionKey(row.key)) {
-        return false;
-      }
-      if (hasRootCategory(row)) {
-        return true;
-      }
-      const parentKey = resolveUiSessionNavigationParentKey(row);
-      return !parentKey || !rootKeys.has(parentKey);
-    })
+    .filter((row) => !isSubagentSessionKey(row.key))
     .map((row) => build(row, false, new Set()));
 }

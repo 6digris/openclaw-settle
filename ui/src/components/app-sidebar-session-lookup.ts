@@ -1,6 +1,6 @@
 import type { SessionCatalog } from "../../../packages/gateway-protocol/src/index.ts";
 import type { GatewaySessionRow, SessionsListResult } from "../api/types.ts";
-import { uiConversationMatches } from "../lib/sessions/session-key.ts";
+import { isSubagentSessionKey, uiConversationMatches } from "../lib/sessions/session-key.ts";
 import { findCatalogSessionHovercardRow } from "./app-sidebar-session-catalogs.ts";
 import {
   findProjectedSidebarSession,
@@ -59,7 +59,9 @@ export function findSidebarHovercardRow(
       sessionKey,
       navigationState,
       sessionResultsByAgent: source.sessionData.sessionResultsByAgent,
-    }) ?? (child ? navigationState.toSidebarSession(child, true) : undefined);
+      childSessionRowsByParent: source.sessionData.childSessionRowsByParent,
+    }) ??
+    (child ? navigationState.toSidebarSession(child, isSubagentSessionKey(child.key)) : undefined);
   return findCatalogSessionHovercardRow({
     catalogs: source.visibleSessionCatalogs(),
     sessionKey,

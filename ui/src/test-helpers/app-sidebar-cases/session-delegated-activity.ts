@@ -20,7 +20,7 @@ describe("AppSidebar delegated activity", () => {
       } else if (appearance === "owner") {
         row.owner = { actor: { type: "human", id: "ada", label: "Ada" } };
       }
-      row.childSessions = ["agent:main:idle-parent-child"];
+      row.childSessions = ["agent:main:subagent:idle-parent-child"];
       const { sidebar } = await mountSidebar(
         createGatewayHarness({} as GatewayBrowserClient).gateway,
         sessions.sessions,
@@ -50,7 +50,7 @@ describe("AppSidebar delegated activity", () => {
 
   it("rings a queued parent and its idle child while a grandchild works", async () => {
     const parentKey = "agent:main:queued-parent";
-    const childKey = "agent:main:delegating-child";
+    const childKey = "agent:main:subagent:delegating-child";
     const sessions = createSessionsHarness("main", [parentKey]);
     const result = sessions.sessions.state.result!;
     Object.assign(result.sessions[0]!, {
@@ -70,7 +70,7 @@ describe("AppSidebar delegated activity", () => {
           status: "done",
           hasActiveRun: false,
           hasActiveSubagentRun: true,
-          childSessions: ["agent:main:grandchild"],
+          childSessions: ["agent:main:subagent:grandchild"],
         },
       ],
     });

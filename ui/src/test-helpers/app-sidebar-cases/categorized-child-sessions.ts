@@ -1,10 +1,64 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import { createGateway, createSessionsHarness, mountSidebar } from "../app-sidebar.ts";
 import { waitForFast } from "../wait-for.ts";
 import "../../components/app-sidebar.ts";
 
 describe("AppSidebar categorized child sessions", () => {
+  it("keeps a directly opened archived dashboard session as an independent active root", async () => {
+    const request = vi.fn(async (_method: string, params: { key: string }) => ({
+      session:
+        params.key === "agent:worker:dashboard:archived-child"
+          ? {
+              key: "agent:worker:dashboard:archived-child",
+              parentSessionKey: "agent:main:parent",
+              kind: "direct" as const,
+              label: "Selected archived session",
+              archived: true,
+              updatedAt: 2,
+            }
+          : {
+              key: "agent:main:parent",
+              kind: "direct" as const,
+              label: "Archived parent",
+              archived: true,
+              updatedAt: 1,
+              childSessions: ["agent:worker:dashboard:archived-child"],
+            },
+    }));
+    const gateway = createGateway({ request } as unknown as GatewayBrowserClient);
+    const harness = createSessionsHarness("worker", []);
+    const { sidebar } = await mountSidebar(gateway, harness.sessions);
+    sidebar.activeRouteId = "chat";
+    sidebar.sessionKey = "agent:worker:dashboard:archived-child";
+
+    await waitForFast(() => expect(request).toHaveBeenCalledOnce());
+    await waitForFast(() =>
+      expect(
+        sidebar.querySelector('[data-session-key="agent:worker:dashboard:archived-child"]'),
+      ).not.toBeNull(),
+    );
+    expect(request).toHaveBeenCalledWith("sessions.describe", {
+      key: "agent:worker:dashboard:archived-child",
+    });
+    expect(sidebar.querySelector('[data-session-key="agent:main:parent"]')).toBeNull();
+    expect(
+      sidebar
+        .querySelector('[data-session-key="agent:worker:dashboard:archived-child"]')
+        ?.classList.contains("sidebar-recent-session--child"),
+    ).toBe(false);
+    expect(
+      sidebar.querySelector(
+        '[data-session-key="agent:worker:dashboard:archived-child"] .sidebar-session__archive-glyph',
+      ),
+    ).not.toBeNull();
+    expect(
+      sidebar
+        .querySelector('[data-session-key="agent:worker:dashboard:archived-child"]')
+        ?.classList.contains("sidebar-recent-session--active"),
+    ).toBe(true);
+  });
+
   it("promotes a categorized child loaded through the expanded-parent cache", async () => {
     const parentKey = "agent:main:parent";
     const categorizedKey = "agent:main:cached-categorized-child";
@@ -87,7 +141,8 @@ describe("AppSidebar categorized child sessions", () => {
       const rows = sidebar.querySelectorAll(`[data-session-key="${categorizedKey}"]`);
       expect(rows).toHaveLength(1);
       expect(rows[0]?.textContent).toContain("Current ordinary child");
-      expect(rows[0]?.closest(`[data-session-tree="${parentKey}"]`)).not.toBeNull();
+      expect(rows[0]?.closest(`[data-session-tree="${parentKey}"]`)).toBeNull();
+      expect(rows[0]?.closest('[data-session-section="ungrouped"]')).not.toBeNull();
     });
     expect(sidebar.textContent).not.toContain("Cached categorized child");
     expect(

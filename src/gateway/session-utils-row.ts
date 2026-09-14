@@ -194,9 +194,7 @@ export function buildGatewaySessionRow(params: {
     })
   ).get(key);
   const pinnedAt =
-    entry?.pinnedAt !== undefined && isPinnableSessionEntry(key, entry)
-      ? entry.pinnedAt
-      : undefined;
+    entry?.pinnedAt !== undefined && isPinnableSessionEntry(key) ? entry.pinnedAt : undefined;
   const { compactionCheckpointCount, latestCompactionCheckpoint } =
     resolveSessionCompactionSummary(entry);
   const rowModelProvider = selectedModel.provider;

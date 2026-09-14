@@ -563,7 +563,7 @@ function shouldPreserveNonArchivedMaintenanceEntry(params: {
   preserveKeys?: ReadonlySet<string>;
   preserveRecentMs?: number | null;
 }): boolean {
-  if (params.entry?.pinnedAt !== undefined && isPinnableSessionEntry(params.key, params.entry)) {
+  if (params.entry?.pinnedAt !== undefined && isPinnableSessionEntry(params.key)) {
     return true;
   }
   // A model lock is durable harness ownership, not merely a UI restriction.

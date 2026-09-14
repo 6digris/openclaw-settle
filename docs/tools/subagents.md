@@ -36,9 +36,11 @@ A subagent run ends; a session does not. When you open a subagent run in the
 Control UI, its transcript is view-only. Use **Open parent session** in the
 composer area to continue the conversation with the parent. You can still use
 **Stop** when the Gateway reports an abortable run. Persistent sessions created
-with `visible: true` are ordinary sessions in the session tree: they keep their
-parent for navigation and completion announcements, and you can always type in
-them and steer them like any other session.
+with `visible: true` are ordinary, independent sidebar sessions: you can move
+them between groups, leave them ungrouped, pin them, and continue or steer them
+like any other conversation. Their parent link and completion announcements
+remain intact when you reorganize them. Only subagent runs appear beneath a
+parent in the sidebar's **Subagents** section.
 
 Use ordinary subagents for internal QA, research, coding, review, and test lanes,
 with results returning to the parent task. Create a persistent visible session

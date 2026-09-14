@@ -509,3 +509,49 @@ test("sessions.patch archives the expected session under its lifecycle lock", as
     archivedAt: expect.any(Number),
   });
 });
+
+test("sessions.patch persists spawned conversation pins but rejects subagent pins", async () => {
+  const { storePath } = await createSessionStoreDir();
+  const conversationKey = "agent:main:dashboard:spawned";
+  const subagentKey = "agent:main:subagent:pin-test";
+  const lineage = {
+    spawnedBy: "agent:main:main",
+    parentSessionKey: "agent:main:main",
+  };
+  await writeSessionStore({
+    entries: {
+      [conversationKey]: { sessionId: "conversation", updatedAt: Date.now(), ...lineage },
+      [subagentKey]: { sessionId: "subagent", updatedAt: Date.now(), ...lineage },
+    },
+  });
+
+  const pinned = await directSessionReq<{ ok: true; key: string; entry: Record<string, unknown> }>(
+    "sessions.patch",
+    {
+      key: conversationKey,
+      pinned: true,
+    },
+  );
+  expect(pinned.ok).toBe(true);
+  expect(pinned.payload?.entry).toMatchObject({ ...lineage, pinnedAt: expect.any(Number) });
+  expect(
+    loadSessionEntry({ agentId: "main", sessionKey: conversationKey, storePath }),
+  ).toMatchObject({
+    sessionId: "conversation",
+    ...lineage,
+    pinnedAt: pinned.payload?.entry.pinnedAt,
+  });
+
+  const refused = await directSessionReq("sessions.patch", {
+    key: subagentKey,
+    pinned: true,
+  });
+  expect(refused.ok).toBe(false);
+  expect(refused.error).toMatchObject({
+    code: "INVALID_REQUEST",
+    message: "cannot pin a subagent session; pin its parent session instead",
+  });
+  const subagent = loadSessionEntry({ agentId: "main", sessionKey: subagentKey, storePath });
+  expect(subagent).toMatchObject({ sessionId: "subagent", ...lineage });
+  expect(subagent?.pinnedAt).toBeUndefined();
+});

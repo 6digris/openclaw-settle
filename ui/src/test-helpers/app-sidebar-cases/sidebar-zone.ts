@@ -342,80 +342,65 @@ describe("AppSidebar interleaved zone", () => {
     expect(onUpdate).toHaveBeenCalledWith(["route:tasks", "route:usage", "route:plugins"]);
   });
 
-  it("pins and inserts a session dropped from Threads", async () => {
-    const { sidebar, sessions } = await mountZone();
-    sidebar.sidebarEntries = ["route:usage", "route:plugins"];
-    const onUpdate = vi.fn();
-    sidebar.onUpdateSidebarEntries = onUpdate;
-    await sidebar.updateComplete;
-    const source = sidebar.querySelector('[data-session-key="agent:main:alpha"]');
-    const target = zoneEntry(sidebar, "route:plugins");
-    if (!source) {
-      throw new Error("expected Alpha session row");
-    }
-    vi.spyOn(target, "getBoundingClientRect").mockReturnValue({
-      top: 10,
-      height: 20,
-    } as DOMRect);
-    const dataTransfer = createDataTransferStub();
+  it.each([false, true])(
+    "pins and inserts a session dropped from Threads (spawned=%s)",
+    async (spawned) => {
+      const { sidebar, sessions } = await mountZone();
+      if (spawned) {
+        const result = await sessions.list();
+        if (!result) {
+          throw new Error("expected session list");
+        }
+        sessions.publishList({
+          result: {
+            ...result,
+            sessions: result.sessions.map((row) =>
+              row.key === "agent:main:alpha"
+                ? Object.assign({}, row, {
+                    spawnedBy: "agent:main:main",
+                    parentSessionKey: "agent:main:main",
+                  })
+                : row,
+            ),
+          },
+        });
+      }
+      sidebar.sidebarEntries = ["route:usage", "route:plugins"];
+      const onUpdate = vi.fn();
+      sidebar.onUpdateSidebarEntries = onUpdate;
+      await sidebar.updateComplete;
+      const source = sidebar.querySelector('[data-session-key="agent:main:alpha"]');
+      const target = zoneEntry(sidebar, "route:plugins");
+      if (!source) {
+        throw new Error("expected Alpha session row");
+      }
+      vi.spyOn(target, "getBoundingClientRect").mockReturnValue({
+        top: 10,
+        height: 20,
+      } as DOMRect);
+      const dataTransfer = createDataTransferStub();
 
-    dispatchDragEvent(source, "dragstart", dataTransfer);
-    dispatchDragEvent(target, "dragover", dataTransfer, 11);
-    dispatchDragEvent(target, "drop", dataTransfer, 11);
+      dispatchDragEvent(source, "dragstart", dataTransfer);
+      dispatchDragEvent(target, "dragover", dataTransfer, 11);
+      dispatchDragEvent(target, "drop", dataTransfer, 11);
 
-    await waitForFast(() =>
-      expect(sessions.patch).toHaveBeenCalledWith(
-        "agent:main:alpha",
-        { pinned: true },
-        { agentId: "main", expectedSessionId: "session:agent:main:alpha" },
-      ),
-    );
-    // The slot write waits for the pin patch to land.
-    await waitForFast(() =>
-      expect(onUpdate).toHaveBeenCalledWith([
-        "route:usage",
-        "session:agent:main:alpha",
-        "route:plugins",
-      ]),
-    );
-  });
-
-  it("does not pin or insert a promoted child dropped from Threads", async () => {
-    const { sidebar, sessions } = await mountZone();
-    const result = await sessions.list();
-    if (!result) {
-      throw new Error("expected a session list result");
-    }
-    const alpha = result.sessions.find((row) => row.key === "agent:main:alpha");
-    if (!alpha) {
-      throw new Error("expected the alpha session row");
-    }
-    const promoted = { ...alpha, spawnedBy: "agent:main:main" };
-    sessions.publishList({
-      result: {
-        ...result,
-        sessions: result.sessions.map((row) => (row === alpha ? promoted : row)),
-      },
-    });
-    sidebar.sidebarEntries = ["route:usage", "route:plugins"];
-    const onUpdate = vi.fn();
-    sidebar.onUpdateSidebarEntries = onUpdate;
-    await sidebar.updateComplete;
-    const source = sidebar.querySelector('[data-session-key="agent:main:alpha"]');
-    if (!source) {
-      throw new Error("expected promoted child session row");
-    }
-    const target = zoneEntry(sidebar, "route:plugins");
-    const dataTransfer = createDataTransferStub();
-    dispatchDragEvent(source, "dragstart", dataTransfer);
-    dispatchDragEvent(target, "dragover", dataTransfer);
-    dispatchDragEvent(target, "drop", dataTransfer);
-    await sidebar.updateComplete;
-    await vi.dynamicImportSettled();
-    expect(sessions.patch).not.toHaveBeenCalled();
-    expect(onUpdate).not.toHaveBeenCalled();
-    expect(sidebar.sessionOrganizer.draggingSessionKey).toBeNull();
-  });
+      await waitForFast(() =>
+        expect(sessions.patch).toHaveBeenCalledWith(
+          "agent:main:alpha",
+          { pinned: true },
+          { agentId: "main", expectedSessionId: "session:agent:main:alpha" },
+        ),
+      );
+      // The slot write waits for the pin patch to land.
+      await waitForFast(() =>
+        expect(onUpdate).toHaveBeenCalledWith([
+          "route:usage",
+          "session:agent:main:alpha",
+          "route:plugins",
+        ]),
+      );
+    },
+  );
 
   it("hides a route dropped into the session-list region", async () => {
     const { sidebar } = await mountZone();
