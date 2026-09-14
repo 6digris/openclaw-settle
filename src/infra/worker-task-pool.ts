@@ -86,7 +86,7 @@ type Slot<Input, Output> = {
   temporaryDirectory?: string;
   task?: Task<Input, Output>;
   idleTimer?: NodeJS.Timeout;
-  retiring?: Promise<void>;
+  retiring?: { stopped: Deferred; pending?: Promise<void> };
 };
 
 export class WorkerTaskError extends Error {
@@ -138,6 +138,8 @@ export class WorkerTaskPool<Input, Output> {
       idleTimeoutMs?: number;
       restartOnError?: boolean;
       validateResult?: (value: Output) => void;
+      /** Reports failed stops synchronously; returned rejections never delay retirement. */
+      onRetirementFailure?: (error: unknown) => void | Promise<void>;
     },
   ) {
     this.maxWorkers = options.maxWorkers ?? availableParallelism();
@@ -473,7 +475,7 @@ export class WorkerTaskPool<Input, Output> {
       .then(async (response) => {
         if (task.done || slot.task !== task || slot.retiring) {
           // A slow host handler may settle after cancellation. Never feed a successor.
-          await slot.retiring;
+          await slot.retiring?.stopped.promise;
           response.onConsumed?.();
           return;
         }
@@ -518,11 +520,11 @@ export class WorkerTaskPool<Input, Output> {
       return;
     }
     if (this.options.restartOnError === false) {
-      void this.close(error);
+      void this.close(error).catch(() => undefined);
     } else if (slot.task) {
       this.finish(slot.task, error, undefined, true);
     } else {
-      void this.retire(slot);
+      void this.retire(slot).catch(() => undefined);
     }
   }
 
@@ -585,7 +587,8 @@ export class WorkerTaskPool<Input, Output> {
       slot.task = undefined;
       if (retire) {
         // Keep the slot reserved and the caller pending until its execution actually stops.
-        void this.retire(slot).then(complete);
+        void this.retire(slot).catch(() => undefined);
+        void slot.retiring?.stopped.promise.then(complete);
         return;
       }
     }
@@ -611,7 +614,7 @@ export class WorkerTaskPool<Input, Output> {
     const idleMs = this.options.idleTimeoutMs ?? 60_000;
     if (idleMs > 0) {
       slot.idleTimer = runInWorkerPoolContext(() =>
-        this.setTimeoutFn(() => void this.retire(slot), idleMs),
+        this.setTimeoutFn(() => void this.retire(slot).catch(() => undefined), idleMs),
       );
       slot.idleTimer.unref();
     }
@@ -621,8 +624,17 @@ export class WorkerTaskPool<Input, Output> {
     this.clearTimeoutFn(slot.idleTimer);
     // Retain error listeners until exit: termination can race a worker startup error.
     // Constructor observers can retire this slot before its Worker is assigned.
-    return (slot.retiring ??= Promise.resolve()
+    const retirement = (slot.retiring ??= { stopped: createDeferredCore() });
+    return (retirement.pending ??= Promise.resolve()
       .then(() => slot.worker?.terminate())
+      .catch((error: unknown) => {
+        try {
+          void Promise.resolve(this.options.onRetirementFailure?.(error)).catch(() => undefined);
+        } catch {
+          // Observer failures cannot replace the termination failure or its retained custody.
+        }
+        throw error;
+      })
       .then(() => {
         const directory = slot.temporaryDirectory;
         if (directory) {
@@ -644,7 +656,13 @@ export class WorkerTaskPool<Input, Output> {
         }
         slot.worker?.removeAllListeners();
         this.slots.delete(slot);
+        retirement.stopped.resolve();
         this.dispatch();
+      })
+      .catch((error: unknown) => {
+        // Keep the failed slot reserved; an explicit close retries the same native owner.
+        retirement.pending = undefined;
+        throw error;
       }));
   }
 }

@@ -37,7 +37,7 @@ import {
 } from "./openclaw-state-db-async-lifecycle.js";
 import {
   assertStateDatabaseBorrowersReleased,
-  retainStateDatabaseReference,
+  createStateDatabaseBorrowOwner,
   type StateDatabaseBorrowers,
 } from "./openclaw-state-db-borrow.js";
 import {
@@ -191,28 +191,17 @@ function retainStateDatabaseClose(database: StateDatabaseHandle): void {
   );
 }
 
-/** Retain one exact canonical native owner; only the final reference retires its handle. */
-export function retainOpenClawStateDatabase(database: OpenClawStateDatabase): { release(): void } {
-  assertOpenClawStateDatabaseOpenAllowed(database.path);
-  asyncResources.capture(database.path).assertCurrent();
-  if (cachedDatabases.get(database.path) !== database || !database.db.isOpen) {
-    throw new Error("OpenClaw state database borrow requires its current canonical handle");
-  }
-  const owner: StateDatabaseBorrowers = borrowers.get(database.db) ?? {
-    references: new Set<object>(),
-    retiring: false,
-    cleanupComplete: false,
-  };
-  if (owner.retiring) {
-    throw new Error("OpenClaw state database native owner is retiring");
-  }
-  borrowers.set(database.db, owner);
-  return retainStateDatabaseReference({
-    owner,
-    retire: () => retireOpenClawStateDatabaseHandle(database),
-    retainFailedClose: () => retainStateDatabaseClose(database),
-  });
-}
+export const {
+  retain: retainOpenClawStateDatabase,
+  borrowForRead: borrowOpenClawStateDatabaseForAsyncRead,
+} = createStateDatabaseBorrowOwner({
+  borrowers,
+  cachedDatabases,
+  assertOpenAllowed: assertOpenClawStateDatabaseOpenAllowed,
+  assertReadCurrent: (pathname) => asyncResources.capture(pathname).assertCurrent(),
+  retire: retireOpenClawStateDatabaseHandle,
+  retainFailedClose: retainStateDatabaseClose,
+});
 
 /** Close both physical-handle owners while retaining every cleanup failure. */
 function closeOpenClawStateDatabaseHandle(
