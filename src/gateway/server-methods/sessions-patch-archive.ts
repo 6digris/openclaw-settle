@@ -34,6 +34,7 @@ import {
 } from "../worker-environments/session-placement-lifecycle.js";
 import {
   prepareSessionLifecycleDrain,
+  SessionLifecycleWorkspaceRecoveryError,
   type SessionLifecycleDrain,
 } from "./sessions-lifecycle-drain.js";
 import {
@@ -274,6 +275,9 @@ export async function prepareSessionPatchArchive(params: {
       ...(fresh.entry ? { entry: fresh.entry } : {}),
     });
   } catch (error) {
+    if (error instanceof SessionLifecycleWorkspaceRecoveryError) {
+      return err(error.error);
+    }
     if (error instanceof WorkerInferenceSessionDrainBusyError) {
       return err(
         errorShape(

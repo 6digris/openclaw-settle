@@ -600,7 +600,11 @@ describe("projects vitest config", () => {
       rootVitestProjects,
       fullSuiteVitestShards.find((shard) => shard.name === "core-runtime")?.projects ?? [],
     ]) {
-      for (const config of ["vitest.ui.config.ts", "vitest.ui-isolated.config.ts"]) {
+      for (const config of [
+        "vitest.ui.config.ts",
+        "vitest.ui-isolated.config.ts",
+        "vitest.ui-timing.config.ts",
+      ]) {
         expect(projects.filter((project) => project === `test/vitest/${config}`)).toHaveLength(1);
       }
     }

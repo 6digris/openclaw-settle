@@ -288,7 +288,17 @@ describe("prepared model catalog worker plugin scope", () => {
           });
           const cancelled = path.join(root, "synthetic-auth-cancel.txt");
           await waitForMarker(cancelled);
-          await expect(observedRefresh).rejects.toThrow("superseded");
+          await observedRefresh;
+          expect(respond).toHaveBeenCalledExactlyOnceWith(
+            false,
+            undefined,
+            expect.objectContaining({
+              code: "UNAVAILABLE",
+              message: expect.stringContaining("superseded"),
+              retryable: true,
+              retryAfterMs: 0,
+            }),
+          );
           expect(settled).toBe(true);
           expect(fs.readFileSync(cancelled, "utf8")).toBe("abort\njoined\n");
           await waitForWorkers();
