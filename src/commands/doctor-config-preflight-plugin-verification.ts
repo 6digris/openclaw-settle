@@ -83,7 +83,7 @@ export async function runStartupUpgradeConvergence(params: {
   measure?: ConfigSnapshotReadMeasure;
   onCapabilityConsent?: PluginCapabilityConsentHandler;
   onNote?: typeof note;
-  beforePersistentEffect?: (destination?: string) => void | Promise<void>;
+  beforePersistentEffect?: (destination?: string) => void;
 }): Promise<StartupPluginConvergenceResult> {
   const plan = await planStartupPluginVerification(params);
   if (!plan.required) {
