@@ -70,6 +70,8 @@ export type OpenClawToolsOptions = {
   pinnedWidgetAuthoring?: boolean;
   pluginToolAllowlist?: string[];
   pluginToolDenylist?: string[];
+  /** Prepared profile authority for the gateway tool's configuration-read actions. */
+  gatewayConfigReadAllowed?: boolean;
   runtimeToolAllowlist?: string[];
   /** Host-prepared proof that this exact session can request Gateway publication. */
   githubPublicationAvailable?: boolean;
@@ -127,6 +129,12 @@ export type OpenClawToolsOptions = {
   disableMessageTool?: boolean;
   swarmCollector?: boolean;
   swarmOutputSchema?: Record<string, unknown>;
+  /**
+   * Re-checked immediately before a collector result is persisted. Supplied by
+   * callers whose collector authority can be revoked while a tool call is
+   * already in flight.
+   */
+  assertCollectorWriteAuthority?: () => void;
   /** If true, include the heartbeat response tool for structured heartbeat outcomes. */
   enableHeartbeatTool?: boolean;
   /** If true, skip plugin tool resolution and return only shipped core tools. */

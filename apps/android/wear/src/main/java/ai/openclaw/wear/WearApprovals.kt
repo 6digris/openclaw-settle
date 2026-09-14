@@ -285,6 +285,7 @@ internal class WearApprovalFeed {
   private var sessionKey: String? = null
   private var records = linkedMapOf<String, WearApprovalTransition>()
   private val duringReplay = mutableListOf<WearApprovalTransition>()
+  private var generation = 0L
   var ready = false
     private set
   private var replayTruncated = false
@@ -300,11 +301,15 @@ internal class WearApprovalFeed {
         .sortedWith(compareBy({ it.status != "pending" }, { it.expiresAtMs }))
         .take(MAX_APPROVALS)
 
-  fun begin() {
+  fun begin(): Long {
+    generation += 1
     ready = false
     overflow = false
     duringReplay.clear()
+    return generation
   }
+
+  fun isCurrent(replay: Long): Boolean = replay == generation
 
   fun accept(event: WearApprovalTransition) {
     if (!ready) {
@@ -333,7 +338,7 @@ internal class WearApprovalFeed {
 
   fun replace(approval: WearApproval) {
     val key = sessionKey ?: return
-    merge(WearApprovalTransition(key, Long.MAX_VALUE, approval))
+    accept(WearApprovalTransition(key, Long.MAX_VALUE, approval))
   }
 
   private fun merge(event: WearApprovalTransition) {

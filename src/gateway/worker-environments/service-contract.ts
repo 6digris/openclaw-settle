@@ -1,4 +1,8 @@
 import { createHash } from "node:crypto";
+import type {
+  SessionPlacementMachine,
+  SessionsReclaimParams,
+} from "../../../packages/gateway-protocol/src/index.js";
 import type { DevicePlacementRequirement } from "../../agents/harness/types.js";
 import type {
   WorkerDesktopApp,
@@ -49,6 +53,7 @@ export type WorkerEnvironmentServiceRecord = {
   desktopAvailable: boolean;
   desktopApps: readonly WorkerDesktopApp["id"][];
   tunnelStatus: WorkerTunnelStatus;
+  preparation?: { purpose: "reserve" | "build"; key: string } | null;
   error?: string;
 };
 
@@ -57,6 +62,8 @@ export type WorkerDesktopObserveResult = {
   wsPath: string;
   expiresAtMs: number;
   control: boolean;
+  /** Provider permission to request resizing, not negotiated RFB support. */
+  canResize?: boolean;
   vncPassword?: string;
 };
 
@@ -70,9 +77,15 @@ export type WorkerEnvironmentServiceContract = {
   list(): WorkerEnvironmentServiceRecord[];
   get(environmentId: string): WorkerEnvironmentServiceRecord | undefined;
   inventoryVersion(): number;
+  readMachineShape(environmentId: string): SessionPlacementMachine | undefined;
+  machineShapeVersion(): number;
   supportsExecutionMode(profileId: string, mode: WorkerPlacementExecutionMode): boolean;
   listMachineOptions(profileId: string): Promise<readonly WorkerMachineOption[] | undefined>;
   listOperatingSystems(profileId: string): Promise<readonly WorkerOperatingSystem[] | undefined>;
+  prepare(
+    request: { profileId: string; projectPath: string },
+    authorize?: () => void,
+  ): Promise<{ environmentId: string; preparationKey: string; reused: boolean }>;
   create(
     profileId: string,
     idempotencyKey: string,
@@ -121,6 +134,7 @@ export type WorkerPlacementDispatchAdmission = <T>(
   request: Pick<WorkerPlacementDispatchRequest, "sessionId" | "sessionKey" | "agentId">,
   run: (signal?: AbortSignal) => Promise<T>,
   authorize?: () => void,
+  signal?: AbortSignal,
 ) => Promise<T>;
 
 /** Canonical admission rejected the session owner, not a caller or process cancellation. */
@@ -143,9 +157,13 @@ export type WorkerPlacementReclaimRequest = {
   sessionId: string;
   sessionKey: string;
   agentId: string;
+  recoverToGateway?: SessionsReclaimParams["recoverToGateway"];
 };
 
-export type WorkerPlacementMoveRequest = WorkerPlacementReclaimRequest & {
+export type WorkerPlacementMoveRequest = Pick<
+  WorkerPlacementReclaimRequest,
+  "sessionId" | "sessionKey" | "agentId"
+> & {
   source: WorkerPlacementMoveSource;
   target: WorkerPlacementMoveTarget;
   abandonSource?: true;
@@ -153,6 +171,15 @@ export type WorkerPlacementMoveRequest = WorkerPlacementReclaimRequest & {
 
 /** Closure-bound request authority; in-process only and never part of durable placement intent. */
 export type WorkerPlacementAuthorization = () => void;
+
+export type WorkerPlacementCancellationTarget = Readonly<
+  Pick<WorkerSessionPlacementRecord, "state" | "generation" | "environmentId" | "activeOwnerEpoch">
+>;
+
+/** Exact source eligibility may follow only transitions published by captured predecessors. */
+export type WorkerPlacementReclaimSourceCheck = (
+  predecessor?: WorkerPlacementCancellationTarget,
+) => void;
 
 // Leaf dispatch contract: GatewayRequestContext must not import the dispatch
 // runtime (it reaches agents/plugins and closes an import cycle through core).
@@ -170,7 +197,7 @@ export type WorkerPlacementDispatchContract = {
   reclaim?(
     request: WorkerPlacementReclaimRequest,
     authorize?: WorkerPlacementAuthorization,
-    beforeDrain?: WorkerPlacementAuthorization,
+    beforeDrain?: WorkerPlacementReclaimSourceCheck,
   ): Promise<Extract<WorkerSessionPlacementRecord, { state: "local" | "reclaimed" }>>;
   forceDestroyEnvironment?(
     environmentId: string,

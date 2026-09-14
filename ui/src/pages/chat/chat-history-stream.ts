@@ -1,3 +1,5 @@
+import { readSessionMessageIdentity } from "@openclaw/gateway-client/browser";
+import { asNullableRecord, asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import type { GatewaySessionRow } from "../../api/types.ts";
 import { accumulatedStreamText, advanceAccumulatedStreamText } from "../../lib/chat/chat-types.ts";
 import { extractText } from "../../lib/chat/message-extract.ts";
@@ -103,6 +105,20 @@ function runProjectionsUnchanged(
   );
 }
 
+function hasExactHistoryTerminal(state: ChatState, runId: string): boolean {
+  return state.chatMessages.some((message) => {
+    const identity = readSessionMessageIdentity(message);
+    const metadata = asNullableRecord(asNullableRecord(message)?.["__openclaw"]);
+    return (
+      identity?.role === "assistant" &&
+      !identity.isImported &&
+      (identity.id !== null || identity.sequence !== null) &&
+      identity.runId === runId &&
+      metadata?.runTerminal === true
+    );
+  });
+}
+
 export function readRunProjections(state: ChatState, sessionKey: string, agentId?: string) {
   return getChatSessionProjection(
     state,
@@ -147,7 +163,13 @@ export function applyHistoryRun(params: {
   } = params;
   const inFlightRunId = run?.runId?.trim();
   if (!inFlightRunId || !run) {
-    const terminalRunId = sessionInfo?.lastRunId;
+    if (!sessionInfo) {
+      return;
+    }
+    const localRunId = state.chatRunId?.trim();
+    const terminalRunId =
+      sessionInfo.lastRunId ??
+      (localRunId && hasExactHistoryTerminal(state, localRunId) ? localRunId : undefined);
     const knownRun = terminalRunId ? currentRunProjections[terminalRunId] : undefined;
     if (
       terminalRunId &&
@@ -170,6 +192,13 @@ export function applyHistoryRun(params: {
       // A copied row cannot reclaim retired display ownership. The pane retains
       // its accepted owner past active cleanup; unseen runs recover through the
       // reducer, whose full diagnostic wins over the bounded history summary.
+      const failureNotice = getChatSessionProjection(state).entries.findLast(
+        (entry) =>
+          entry.identity?.runId === terminalRunId &&
+          !entry.identity.isImported &&
+          entry.identity.role === "custom" &&
+          asOptionalRecord(entry.message)?.customType === "run-failed-before-reply",
+      );
       const projection = reduceChatSessionProjection(state, {
         type: "runTerminal",
         runId: terminalRunId,
@@ -179,7 +208,10 @@ export function applyHistoryRun(params: {
             : sessionInfo.status === "timeout"
               ? "timeout"
               : "error",
-        errorMessage: sessionInfo.lastRunError,
+        errorMessage:
+          sessionInfo.status === "failed" || sessionInfo.status === "timeout"
+            ? (extractText(failureNotice?.message) ?? sessionInfo.lastRunError)
+            : sessionInfo.lastRunError,
       });
       setChatRunOwner(state, terminalRunId);
       const terminal = projection.runs[terminalRunId];
@@ -280,6 +312,7 @@ export function applyHistoryRun(params: {
     startupPhase === "running_setup" ||
     startupPhase === "provisioning_environment" ||
     startupPhase === "preparing_context" ||
+    startupPhase === "memory_flushing" ||
     startupPhase === "starting_model";
   if (
     run.text &&

@@ -4,7 +4,10 @@ import {
   supportsOpenAIReasoningEffort,
 } from "@openclaw/ai/internal/openai";
 import { defaultApiRegistry } from "@openclaw/ai/internal/runtime";
-import { prepareModelForSimpleCompletion } from "@openclaw/ai/transports";
+import {
+  prepareHeadersForSimpleCompletion,
+  prepareModelForSimpleCompletion,
+} from "@openclaw/ai/transports";
 import {
   resolveClaudeOpus5ModelIdentity,
   resolveClaudeSonnet5ModelIdentity,
@@ -22,14 +25,18 @@ import type {
   AssistantMessage,
   Model,
   ModelThinkingLevel,
+  SimpleStreamOptions,
   ThinkingLevel as SimpleCompletionThinkingLevel,
 } from "../llm/types.js";
 import type { ResolvedProviderAuth } from "./model-auth.js";
 import { isOpenAIProvider } from "./openai-routing.js";
 
 type SimpleCompletionModelOptions = {
+  headers?: Record<string, string>;
+  sessionId?: string;
   maxTokens?: number;
   temperature?: number;
+  serviceTier?: SimpleStreamOptions["serviceTier"];
   reasoning?: ThinkLevel | SimpleCompletionThinkingLevel;
   strictReasoningTags?: boolean;
   signal?: AbortSignal;
@@ -63,6 +70,10 @@ export async function completeWithPreparedSimpleCompletionModel(
 }
 
 async function completePreparedModel(params: PreparedCompletionParams): Promise<AssistantMessage> {
+  // Direct SDK calls prepare transport hooks before entering the stream facade.
+  await import("./ai-transport-runtime-host.js");
+  params.assertCurrent?.();
+  params.options?.signal?.throwIfAborted();
   const runtime = getModelLlmRuntime(params.model);
   let completionModel =
     getModelCompletionTransport(params.model) ??
@@ -78,10 +89,12 @@ async function completePreparedModel(params: PreparedCompletionParams): Promise<
   }
   const { reasoning: rawReasoning, strictReasoningTags, ...options } = params.options ?? {};
   const reasoning = normalizeSimpleCompletionReasoning(rawReasoning, completionModel);
+  const headers = prepareHeadersForSimpleCompletion(completionModel, options);
   const completionOptions = {
     ...options,
     ...(reasoning ? { reasoning } : {}),
     apiKey: params.auth.apiKey,
+    ...(headers ? { headers } : {}),
   };
   if (strictReasoningTags) {
     reasoningTagTextPolicy.markStrict(completionOptions);

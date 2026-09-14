@@ -2,7 +2,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { configureAiTransportHost } from "../host.js";
 import type { AssistantMessage, Context, Model, Tool } from "../types.js";
-import { SYSTEM_PROMPT_CACHE_BOUNDARY } from "../utils/system-prompt-cache-boundary.js";
+import {
+  SYSTEM_PROMPT_CACHE_BOUNDARY,
+  SYSTEM_PROMPT_RELOCATABLE_BOUNDARY,
+  SYSTEM_PROMPT_RELOCATABLE_BOUNDARY_END,
+} from "../utils/system-prompt-cache-boundary.js";
 
 const anthropicMockState = vi.hoisted(() => ({
   configs: [] as unknown[],
@@ -951,70 +955,79 @@ describe("Anthropic provider", () => {
     expect((capturedPayload as { max_tokens?: number }).max_tokens).toBe(model.maxTokens);
   });
 
-  it("clamps an excessive output request to the model limit", async () => {
-    const model = makeAnthropicModel({
-      id: "claude-opus-4-5",
-      name: "Claude Opus 4.5",
-      contextWindow: 4_000,
-      maxTokens: 512,
-    });
-    const { payload: capturedPayload } = await captureSimpleAnthropicPayload(
-      model,
-      { apiKey: "test-api-key", maxTokens: 5_000, reasoning: "off", stopBeforeNetwork: true },
-      {
-        messages: [
-          makeAnthropicAssistantMessage(
-            [
-              {
-                type: "thinking",
-                thinking: "private reasoning ".repeat(1_000),
-                thinkingSignature: "sig_old",
-              },
-              { type: "text", text: "Visible answer." },
-            ],
-            { model: model.id },
-          ),
-          { role: "user", content: "again", timestamp: 0 },
-        ],
-      },
-    );
+  it.each([
+    { modelMaxTokens: 512, expectedMaxTokens: 512 },
+    { modelMaxTokens: undefined, expectedMaxTokens: 5_000 },
+  ])(
+    "resolves explicit output requests with model limit $modelMaxTokens",
+    async ({ modelMaxTokens, expectedMaxTokens }) => {
+      const model = makeAnthropicModel({
+        id: "claude-opus-4-5",
+        name: "Claude Opus 4.5",
+        contextWindow: 4_000,
+        maxTokens: modelMaxTokens,
+      });
+      const { payload: capturedPayload } = await captureSimpleAnthropicPayload(
+        model,
+        { apiKey: "test-api-key", maxTokens: 5_000, reasoning: "off", stopBeforeNetwork: true },
+        {
+          messages: [
+            makeAnthropicAssistantMessage(
+              [
+                {
+                  type: "thinking",
+                  thinking: "private reasoning ".repeat(1_000),
+                  thinkingSignature: "sig_old",
+                },
+                { type: "text", text: "Visible answer." },
+              ],
+              { model: model.id },
+            ),
+            { role: "user", content: "again", timestamp: 0 },
+          ],
+        },
+      );
 
-    expect((capturedPayload as { max_tokens?: number }).max_tokens).toBe(model.maxTokens);
-  });
+      expect(capturedPayload.max_tokens).toBe(expectedMaxTokens);
+    },
+  );
 
-  it("restores the caller output cap when thinking cannot fit", async () => {
-    const model = makeAnthropicModel({
-      id: "claude-haiku-4-5",
-      name: "Claude Haiku 4.5",
-      contextWindow: 4_000,
-      maxTokens: 500,
-    });
-    const { payload: capturedPayload } = await captureSimpleAnthropicPayload(
-      model,
-      { apiKey: "test-api-key", maxTokens: 32, reasoning: "low", stopBeforeNetwork: true },
-      {
-        messages: [
-          makeAnthropicAssistantMessage(
-            [
-              {
-                type: "thinking",
-                thinking: "private reasoning ".repeat(1_000),
-                thinkingSignature: "sig_tool",
-              },
-              { type: "toolCall", id: "call_1", name: "lookup", arguments: {} },
-            ],
-            { model: model.id, stopReason: "toolUse" },
-          ),
-          makeTextToolResult("call_1", "lookup", "42", false, 0),
-        ],
-      },
-    );
+  it.each([500, undefined])(
+    "restores the caller output cap when thinking cannot fit with model limit %s",
+    async (maxTokens) => {
+      const model = makeAnthropicModel({
+        id: "claude-haiku-4-5",
+        name: "Claude Haiku 4.5",
+        contextWindow: 4_000,
+        maxTokens,
+      });
+      const { payload: capturedPayload } = await captureSimpleAnthropicPayload(
+        model,
+        { apiKey: "test-api-key", maxTokens: 32, reasoning: "low", stopBeforeNetwork: true },
+        {
+          messages: [
+            makeAnthropicAssistantMessage(
+              [
+                {
+                  type: "thinking",
+                  thinking: "private reasoning ".repeat(1_000),
+                  thinkingSignature: "sig_tool",
+                },
+                { type: "toolCall", id: "call_1", name: "lookup", arguments: {} },
+              ],
+              { model: model.id, stopReason: "toolUse" },
+            ),
+            makeTextToolResult("call_1", "lookup", "42", false, 0),
+          ],
+        },
+      );
 
-    expect(capturedPayload as { max_tokens?: number; thinking?: unknown }).toMatchObject({
-      max_tokens: 32,
-    });
-    expect((capturedPayload as { thinking?: unknown }).thinking).toEqual({ type: "disabled" });
-  });
+      expect(capturedPayload as { max_tokens?: number; thinking?: unknown }).toMatchObject({
+        max_tokens: 32,
+      });
+      expect((capturedPayload as { thinking?: unknown }).thinking).toEqual({ type: "disabled" });
+    },
+  );
 
   it("preserves mixed text and image tool-result order", async () => {
     const imageData = Buffer.from("image").toString("base64");
@@ -1920,6 +1933,20 @@ describe("Anthropic provider", () => {
     },
   );
 
+  it.each([undefined, "low", "medium", "high", "xhigh", "max"] as const)(
+    "sends pooled Fable %s effort and preserves its routed model id",
+    async (reasoning) => {
+      const id = "Claude Gateway/claude-fable-5-1";
+      const { payload } = await captureSimpleAnthropicPayload(
+        { id, name: "Pooled Fable", provider: "proxy" },
+        { reasoning },
+      );
+      expect(payload.model).toBe(id);
+      expect(payload.thinking).toMatchObject({ type: "adaptive" });
+      expect(payload.output_config).toEqual({ effort: reasoning ?? "medium" });
+    },
+  );
+
   const adaptiveThinkingCases: AnthropicAdaptiveThinkingTestCase[] = [
     {
       name: "uses the Claude Opus 5 adaptive-thinking request contract",
@@ -1959,7 +1986,7 @@ describe("Anthropic provider", () => {
       options: { temperature: 0.2 },
       expected: {
         thinking: { type: "adaptive", display: "summarized" },
-        output_config: { effort: "high" },
+        output_config: { effort: "medium" },
       },
       absent: ["temperature"],
     },
@@ -2209,20 +2236,24 @@ describe("Anthropic provider", () => {
     }
   });
 
-  it("honors provider effort restrictions for Claude Fable 5", async () => {
+  it.each([
+    { reasoning: "xhigh", thinkingLevelMap: { xhigh: null, max: null }, effort: "high" },
+    { reasoning: undefined, thinkingLevelMap: { medium: null }, effort: "high" },
+    { reasoning: undefined, thinkingLevelMap: { medium: "low" }, effort: "low" },
+  ] as const)("honors provider effort restrictions for Claude Fable 5: %j", async (testCase) => {
     const { payload } = await captureSimpleAnthropicPayload(
       {
         id: "claude-fable-5",
         name: "Claude Fable 5",
         provider: "github-copilot",
         reasoning: false,
-        thinkingLevelMap: { xhigh: null, max: null },
+        thinkingLevelMap: testCase.thinkingLevelMap,
       },
-      { apiKey: "copilot-token", reasoning: "xhigh" },
+      { apiKey: "copilot-token", reasoning: testCase.reasoning },
     );
     expect(payload).toMatchObject({
       thinking: { type: "adaptive", display: "summarized" },
-      output_config: { effort: "high" },
+      output_config: { effort: testCase.effort },
     });
   });
 
@@ -2398,6 +2429,36 @@ describe("Anthropic provider", () => {
       {
         type: "text",
         text: "Dynamic suffix",
+      },
+    ]);
+  });
+
+  it("keeps the relocatable marker out of native Anthropic system blocks", async () => {
+    // Native Anthropic relocates nothing, so the marker must not survive into
+    // the payload while the cache breakpoint still lands on the stable prefix.
+    const { payload: capturedPayload, result } = await captureSimpleAnthropicPayload(
+      {},
+      { stopBeforeNetwork: true },
+      {
+        systemPrompt: `Stable prefix${SYSTEM_PROMPT_CACHE_BOUNDARY}Reactions guidance${SYSTEM_PROMPT_RELOCATABLE_BOUNDARY}Runtime: session=alpha${SYSTEM_PROMPT_RELOCATABLE_BOUNDARY_END}`,
+        messages: [{ role: "user", content: "hello", timestamp: 0 }],
+      },
+    );
+
+    expect(result.stopReason).toBe("error");
+    const system = (capturedPayload as { system?: unknown }).system;
+    const serialized = JSON.stringify(system);
+    expect(serialized).not.toContain("OPENCLAW-RELOCATABLE-BOUNDARY");
+    expect(serialized).not.toContain("OPENCLAW_CACHE_BOUNDARY");
+    expect(system).toEqual([
+      {
+        type: "text",
+        text: "Stable prefix",
+        cache_control: { type: "ephemeral" },
+      },
+      {
+        type: "text",
+        text: "Reactions guidance\nRuntime: session=alpha",
       },
     ]);
   });

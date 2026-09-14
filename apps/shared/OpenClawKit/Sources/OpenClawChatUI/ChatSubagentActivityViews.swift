@@ -1,11 +1,12 @@
 import SwiftUI
 
 struct ChatSubagentActivityList: View {
+    @Environment(\.openClawChatDesktopLayout) private var isDesktopLayout
     let activities: [ChatSubagentActivity]
     let hiddenWorkingCount: Int
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: self.isDesktopLayout ? 6 : 2) {
             ForEach(self.activities) { activity in
                 ChatSubagentActivityRow(activity: activity)
             }
@@ -25,6 +26,10 @@ struct ChatSubagentActivityList: View {
 
 private struct ChatSubagentActivityRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openClawChatDesktopLayout) private var isDesktopLayout
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+    @State private var expanded = false
 
     let activity: ChatSubagentActivity
 
@@ -37,7 +42,9 @@ private struct ChatSubagentActivityRow: View {
 
     private var title: LocalizedStringResource {
         switch self.activity.status {
-        case .queued, .running:
+        case .queued:
+            "Subagent queued"
+        case .running:
             "Subagent working"
         case .completed:
             "Subagent finished"
@@ -53,29 +60,80 @@ private struct ChatSubagentActivityRow: View {
         case .failed, .timedOut:
             OpenClawChatTheme.danger
         case .queued, .running, .completed, .cancelled:
-            OpenClawChatTheme.assistantText
+            self.isDesktopLayout
+                ? OpenClawChatTheme.desktopText(in: self.colorScheme, contrast: self.colorSchemeContrast)
+                : OpenClawChatTheme.assistantText
+        }
+    }
+
+    private var statusLabel: LocalizedStringResource {
+        switch self.activity.status {
+        case .queued: "Queued"
+        case .running: "Working"
+        case .completed: "Finished"
+        case .failed, .timedOut: "Failed"
+        case .cancelled: "Cancelled"
         }
     }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if self.isDesktopLayout, self.detail != nil {
+                Button {
+                    withAnimation(self.reduceMotion ? nil : .easeOut(duration: 0.15)) {
+                        self.expanded.toggle()
+                    }
+                } label: {
+                    self.summary
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityValue(self.expanded ? "Expanded" : "Collapsed")
+                .accessibilityIdentifier("chat-subagent-activity-\(self.activity.id)")
+            } else {
+                self.summary
+            }
+            if self.isDesktopLayout, self.expanded, let detail = self.detail {
+                Text(verbatim: detail)
+                    .font(OpenClawChatTypography.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .padding(.leading, 35)
+            }
+        }
+        .modifier(ChatWorkCardStyle())
+    }
+
+    private var summary: some View {
         HStack(alignment: .center, spacing: 7) {
-            if self.activity.status.isWorking {
+            if self.activity.status == .running {
                 ChatWorkingClawView(seed: self.activity.id)
             } else {
-                Image(systemName: self.activity.status == .completed ? "checkmark" : "xmark")
+                Image(systemName: self.statusSymbol)
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(
                         self.activity.status == .completed
                             ? OpenClawChatTheme.success
+                            : self.activity.status == .cancelled || self.activity.status == .queued
+                            ? Color.secondary
                             : OpenClawChatTheme.danger)
                     .frame(width: 28, height: 24)
                     .accessibilityHidden(true)
             }
 
-            Text(self.title)
+            (self.activity.title.map { Text(verbatim: $0) } ?? Text(self.title))
                 .font(OpenClawChatTypography.footnoteSemiBold)
                 .foregroundStyle(self.titleColor)
                 .lineLimit(1)
+                .help(self.activity.title ?? String(localized: self.title))
+
+            if self.activity.title != nil {
+                Text(self.statusLabel)
+                    .font(OpenClawChatTypography.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+            }
 
             if let detail = self.detail {
                 Text(verbatim: detail)
@@ -94,8 +152,24 @@ private struct ChatSubagentActivityRow: View {
             }
 
             Spacer(minLength: 0)
+            if self.isDesktopLayout, self.detail != nil {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(self.expanded ? 90 : 0))
+            }
         }
         .padding(.vertical, 3)
         .accessibilityElement(children: .combine)
+    }
+
+    private var statusSymbol: String {
+        switch self.activity.status {
+        case .queued: "hourglass"
+        case .running: "circle.dotted"
+        case .completed: "checkmark"
+        case .cancelled: "stop.circle"
+        case .failed, .timedOut: "exclamationmark.triangle"
+        }
     }
 }

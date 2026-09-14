@@ -9,12 +9,12 @@ import {
   createSqliteLifecycleAggregateError,
   runWithSqliteCoordinator,
 } from "../infra/sqlite-coordinator.js";
+import { isSqliteLockError } from "../infra/sqlite-error-diagnostics.js";
 import { quarantineOrphanedSqliteSidecars } from "../infra/sqlite-files.js";
 import {
   prepareSqliteReadOnlyLocation,
   prepareSqliteReadOnlyLocationSync,
-} from "../infra/sqlite-readonly-location.js";
-import { isSqliteLockError } from "../infra/sqlite-transaction.js";
+} from "../infra/sqlite-snapshot-source.js";
 import {
   acquireStateDatabaseCoordinator,
   StateDatabaseCoordinatorContentionError,
@@ -53,7 +53,7 @@ export class OpenClawStateOwnershipMetadataError extends OpenClawStateOwnershipE
   }
 }
 
-class OpenClawStateExternalOwnershipError extends OpenClawStateOwnershipError {
+export class OpenClawStateExternalOwnershipError extends OpenClawStateOwnershipError {
   constructor(
     readonly databasePath: string,
     readonly managerId: string,
@@ -322,7 +322,7 @@ export async function assertOpenClawStateWriteAllowedAtPath(options: {
       env,
     );
   } finally {
-    prepared.cleanup();
+    await prepared.cleanupAsync();
   }
 }
 

@@ -41,7 +41,11 @@ function props({
     context: {
       basePath: "",
       navigate: vi.fn(),
-      gateway: { snapshot: { hello: null } },
+      gateway: {
+        snapshot: { hello: null, client: null, phase: "stopped" },
+        subscribe: () => () => {},
+        subscribeEvents: () => () => {},
+      },
       agents: { state: { agentsList: { defaultId: "main", mainKey: "main" } } },
       agentSelection: { state: { selectedId: "main" } },
       sessions: { state: { result: { sessions: [] } } },
@@ -84,6 +88,26 @@ describe("session activity semantics", () => {
   });
   beforeEach(() => {
     document.body.innerHTML = "";
+  });
+
+  it("offers recap Retry only for rows with current generation permission", () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const retry = vi.fn();
+    const rows = [true, false].map((canEnsure, index) =>
+      row(`recap-${index}`, { id: "owner" }, Date.now(), {
+        activitySummary: { state: "unavailable", text: "Cached recap", canEnsure },
+      }),
+    );
+    render(renderSessionActivityView(props({ rows, onSummaryRetry: retry })), container);
+    const buttons = container.querySelectorAll<HTMLButtonElement>(".activity-feed__recap-retry");
+    expect(buttons).toHaveLength(1);
+    buttons[0]!.click();
+    expect(retry).toHaveBeenCalledWith(rows[0]);
+    rows[0]!.activitySummary!.canEnsure = false;
+    render(renderSessionActivityView(props({ rows, onSummaryRetry: retry })), container);
+    expect(container.querySelector(".activity-feed__recap-retry")).toBeNull();
+    expect(container.textContent).toContain("Cached recap");
   });
 
   it("leaves the page main landmark to the app shell", () => {

@@ -193,8 +193,8 @@ export type ChatStreamSegment = {
   persisted?: true;
   /** Keyed item that consumed this cumulative occurrence; late updates cannot consume another. */
   retiredItemId?: string;
-  /** Original cumulative prefix when the item overtook its final chat delta. */
-  pendingStreamText?: string;
+  /** In-flight handoff owned by the retired cumulative prefix, not its live display. */
+  pendingCommentary?: { text: string; prefixLength: number };
   toolCallId?: string;
   itemId?: string;
 };
@@ -254,7 +254,13 @@ export type MessageGroup = {
   senderSession?: { sessionKey?: string; agentId?: string } | null;
   sender?: SenderIdentity;
   replyToSender?: SenderIdentity;
-  messages: Array<{ message: unknown; key: string; duplicateCount?: number }>;
+  messages: Array<{
+    message: unknown;
+    key: string;
+    duplicateCount?: number;
+    /** Rendered reply content, excluding assistant thinking tags. */
+    hasVisibleContent: boolean;
+  }>;
   visibleContent: "none" | "text" | "non-text";
   timestamp: number;
   isStreaming: boolean;
@@ -338,6 +344,8 @@ export type NormalizedMessage = {
 export type ToolCard = {
   id: string;
   callId?: string;
+  runId?: string;
+  parentToolCallId?: string;
   name: string;
   args?: unknown;
   inputText?: string;

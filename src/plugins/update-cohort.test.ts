@@ -244,10 +244,15 @@ describe("plugin release cohort package reconciliation", () => {
     },
   );
 
-  it("removes the legacy load path after a successful post-core owner migration", async () => {
+  it.each(["update", "repair"])("reconciles the %s owner migration", async (phase) => {
     const legacyRoot = "/plugins/qqbot-legacy";
     const canonicalRoot = "/plugins/openclaw-qqbot";
     const legacyRecords = {
+      unrelated: {
+        source: "npm",
+        spec: "@example/unrelated",
+        installPath: "/plugins/unrelated",
+      },
       qqbot: {
         source: "npm",
         spec: "@openclaw/qqbot@1.9.0",
@@ -260,6 +265,7 @@ describe("plugin release cohort package reconciliation", () => {
       },
     } satisfies Record<string, PluginInstallRecord>;
     const canonicalRecords = {
+      unrelated: legacyRecords.unrelated,
       "openclaw-qqbot": {
         source: "npm",
         spec: "@tencent-connect/openclaw-qqbot@2.0.3",
@@ -294,6 +300,16 @@ describe("plugin release cohort package reconciliation", () => {
           }),
         }),
       );
+    if (phase === "repair") {
+      collectMissingPluginInstallPayloadsMock.mockResolvedValueOnce([
+        { pluginId: "qqbot", installPath: legacyRoot, reason: "missing-package-json" },
+      ]);
+    }
+    updateNpmInstalledPluginsMock.mockImplementation(async ({ config: current }) => ({
+      config: current,
+      changed: false,
+      outcomes: [],
+    }));
     updateNpmInstalledPluginsMock.mockResolvedValueOnce(
       attachPluginInstallOwnerMigrations(
         { config: updatedConfig, changed: true, outcomes: [] },
@@ -307,9 +323,72 @@ describe("plugin release cohort package reconciliation", () => {
       timeoutMs: 60_000,
     });
 
+    if (phase === "repair") {
+      const ordinaryUpdateRequest = updateNpmInstalledPluginsMock.mock.lastCall?.[0];
+      expect(ordinaryUpdateRequest?.config).toEqual(updatedConfig);
+      expect(ordinaryUpdateRequest?.skipIds).toEqual(new Set(["qqbot", "openclaw-qqbot"]));
+    }
     expect(result.changed).toBe(true);
     expect(result.config.channels?.qqbot).toEqual(config.channels.qqbot);
     expect(result.config.plugins?.installs).toEqual(canonicalRecords);
     expect(result.config.plugins?.load?.paths).toEqual(["/plugins/unrelated.js"]);
+  });
+
+  it("rejects a repair owner migration when caller authority is revoked before the cohort resumes", async () => {
+    const records = {
+      legacy: { source: "npm", spec: "@example/legacy", installPath: "/plugins/legacy" },
+    } satisfies Record<string, PluginInstallRecord>;
+    const config = { plugins: { installs: records } };
+    const repair = attachPluginInstallOwnerMigrations(
+      {
+        config: {
+          plugins: {
+            installs: {
+              canonical: {
+                source: "npm",
+                spec: "@example/canonical",
+                installPath: "/plugins/canonical",
+              },
+            },
+          },
+        } satisfies OpenClawConfig,
+        changed: true,
+        outcomes: [],
+      },
+      { legacy: "canonical" },
+    );
+    const failure = new Error("original update authority revoked");
+    let current = true;
+    const assertCurrent = () => {
+      if (!current) {
+        throw failure;
+      }
+    };
+    loadInstalledPluginIndexMock.mockReturnValue(installedIndex({ records }));
+    collectMissingPluginInstallPayloadsMock.mockResolvedValueOnce([
+      { pluginId: "legacy", installPath: "/plugins/legacy", reason: "missing-package-json" },
+    ]);
+    updateNpmInstalledPluginsMock.mockResolvedValue(repair).mockImplementationOnce(async () => {
+      // Revoke after repair returns but before the awaiting cohort continues.
+      queueMicrotask(() => {
+        current = false;
+      });
+      return repair;
+    });
+
+    await expect(
+      convergePluginReleaseCohort({
+        config,
+        channel: "stable",
+        timeoutMs: 60_000,
+        beforePersistentEffect: assertCurrent,
+      }),
+    ).rejects.toBe(failure);
+    expect(updateNpmInstalledPluginsMock).toHaveBeenCalledOnce();
+    expect(updateNpmInstalledPluginsMock).toHaveBeenCalledWith(
+      expect.objectContaining({ pluginIds: ["legacy"], beforePersistentEffect: assertCurrent }),
+    );
+    expect(loadInstalledPluginIndexMock).toHaveBeenCalledOnce();
+    expect(collectMissingPluginInstallPayloadsMock).toHaveBeenCalledOnce();
   });
 });

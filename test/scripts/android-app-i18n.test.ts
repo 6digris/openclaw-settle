@@ -201,6 +201,141 @@ describe("Android app i18n resources", () => {
     expect(selectGeneratedTranslation("Sessions", ["Sesiones"], existing)).toBe("Sesiones");
   });
 
+  // Expected values were independently compiled and dumped with AAPT2 2.20-15978811.
+  it.each([
+    {
+      name: "named_quote",
+      raw: "Read &amp; write &lt;now&gt; &quot;safely&quot;",
+      expected: "Read & write <now> safely",
+    },
+    {
+      name: "literal_quote",
+      raw: 'Read &amp; write &lt;now&gt; "safely"',
+      expected: "Read & write <now> safely",
+    },
+    {
+      name: "decimal_quote",
+      raw: "Read &amp; write &lt;now&gt; &#34;safely&#34;",
+      expected: "Read & write <now> safely",
+    },
+    {
+      name: "hex_quote",
+      raw: "Read &amp; write &lt;now&gt; &#x22;safely&#x22;",
+      expected: "Read & write <now> safely",
+    },
+    {
+      name: "escaped_named_quote",
+      raw: String.raw`Read &amp; write &lt;now&gt; \&quot;safely\&quot;`,
+      expected: 'Read & write <now> "safely"',
+    },
+    {
+      name: "escaped_literal_quote",
+      raw: String.raw`Read &amp; write &lt;now&gt; \"safely\"`,
+      expected: 'Read & write <now> "safely"',
+    },
+    {
+      name: "outer_quoted",
+      raw: String.raw`"Say \"hello\" to %1$s"`,
+      expected: 'Say "hello" to %1$s',
+    },
+    {
+      name: "literal_backslash_n",
+      raw: String.raw`Path \\n suffix`,
+      expected: String.raw`Path \n suffix`,
+    },
+    {
+      name: "double_encoded_amp",
+      raw: "Read &amp;quot;safely&amp;quot;",
+      expected: "Read &quot;safely&quot;",
+    },
+    {
+      name: "escaped_apostrophe",
+      raw: String.raw`This session\'s approvals`,
+      expected: "This session's approvals",
+    },
+  ])("matches AAPT2 Android resource decoding: $name", ({ raw, expected }) => {
+    expect(decodeAndroidResourceValue(raw)).toBe(expected);
+  });
+
+  it.each([
+    { raw: "&#128;", expected: "\u0080" },
+    { raw: "&#x80;", expected: "\u0080" },
+    { raw: "&#x9;", expected: "\t" },
+    { raw: "&#xA;", expected: "\n" },
+    { raw: "&#xD;", expected: "\r" },
+    { raw: "&#xD7FF;", expected: "\ud7ff" },
+    { raw: "&#xE000;", expected: "\ue000" },
+    { raw: "&#xFFFD;", expected: "\ufffd" },
+    { raw: "&#x10000;", expected: "\u{10000}" },
+    { raw: "&#x10FFFF;", expected: "\u{10ffff}" },
+  ])("decodes XML character references without HTML remapping: $raw", ({ raw, expected }) => {
+    expect(decodeAndroidResourceValue(`Before ${raw} after`)).toBe(`Before ${expected} after`);
+  });
+
+  it.each([
+    "&#0;",
+    "&#xB;",
+    "&#xD800;",
+    "&#xDFFF;",
+    "&#xFFFE;",
+    "&#xFFFF;",
+    "&#x110000;",
+    "&#999999999999999999999999;",
+    "&#34",
+    "&#X22;",
+    "&nbsp;",
+  ])("leaves invalid or non-XML references for resource validation: %s", (raw) => {
+    expect(decodeAndroidResourceValue(`Before ${raw} after`)).toBe(`Before ${raw} after`);
+  });
+
+  it.each([
+    { raw: String.raw`This session\&apos;s approvals`, expected: "This session's approvals" },
+    { raw: String.raw`Read \&#34;safely\&#34;`, expected: 'Read "safely"' },
+    { raw: "Read &#38;quot;safely&#38;quot;", expected: "Read &quot;safely&quot;" },
+    { raw: "Read &amp;#34;safely&amp;#34;", expected: "Read &#34;safely&#34;" },
+  ])("does not rescan emitted XML or Android characters: $raw", ({ raw, expected }) => {
+    expect(decodeAndroidResourceValue(raw)).toBe(expected);
+  });
+
+  it.each([
+    { raw: "  Read  next  ", expected: "Read  next" },
+    { raw: '  "  Read  next  "  ', expected: "  Read  next  " },
+    { raw: String.raw`Read \t \q \u0022 next`, expected: String.raw`Read \t \q \u0022 next` },
+  ])("retains the existing whitespace and unsupported-escape policy: $raw", ({ raw, expected }) => {
+    expect(decodeAndroidResourceValue(raw)).toBe(expected);
+  });
+
+  it.each([
+    {
+      name: "quotes_and_xml",
+      value: 'Read & write <now> "safely"',
+      rendered: String.raw`Read &amp; write &lt;now&gt; \"safely\"`,
+    },
+    {
+      name: "literal_entity",
+      value: "Read &quot;safely&quot;",
+      rendered: "Read &amp;quot;safely&amp;quot;",
+    },
+    {
+      name: "literal_backslash_n",
+      value: String.raw`Path \n suffix`,
+      rendered: String.raw`Path \\n suffix`,
+    },
+    {
+      name: "apostrophe",
+      value: "This session's approvals",
+      rendered: String.raw`This session\'s approvals`,
+    },
+    {
+      name: "line_break",
+      value: "First line\nSecond line",
+      rendered: String.raw`First line\nSecond line`,
+    },
+  ])("round-trips rendered Android resource text: $name", ({ value, rendered }) => {
+    expect(renderAndroidResourceValue(value, value)).toBe(rendered);
+    expect(decodeAndroidResourceValue(rendered)).toBe(value);
+  });
+
   it("does not reuse a localized resource after its English source changes", () => {
     const existing = { source: "Sessions", translation: "Sitzungen" };
     expect(selectGeneratedTranslation("Threads", [], existing)).toBe("");

@@ -433,6 +433,7 @@ class GatewaySession(
     val options: GatewayConnectOptions,
     val tls: GatewayTlsParams?,
     val bootstrapHandoff: GatewayBootstrapHandoff?,
+    val onReady: (() -> Unit)?,
   ) {
     var recoveringStoredBootstrap = false
 
@@ -476,10 +477,11 @@ class GatewaySession(
     options: GatewayConnectOptions,
     tls: GatewayTlsParams? = null,
     bootstrapHandoff: GatewayBootstrapHandoff? = null,
+    onReady: (() -> Unit)? = null,
   ) {
     val connectionToClose: Connection?
     synchronized(notificationLock) {
-      val target = DesiredConnection(endpoint, token, bootstrapToken, password, options, tls, bootstrapHandoff)
+      val target = DesiredConnection(endpoint, token, bootstrapToken, password, options, tls, bootstrapHandoff, onReady)
       synchronized(lifecycleLock) {
         desired?.cleanupDeadline?.cancel()
         desired = target
@@ -756,6 +758,8 @@ class GatewaySession(
     try {
       val res = conn.request(GatewayMethod.NodeEvent.rawValue, params, timeoutMs = timeoutMs)
       return RpcResult(ok = res.ok, payloadJson = res.payloadJson, error = res.error)
+    } catch (err: CancellationException) {
+      throw err
     } catch (err: Throwable) {
       Log.w("OpenClawGateway", "node.event failed: ${err::class.java.simpleName}")
       return RpcResult(
@@ -1148,6 +1152,8 @@ class GatewaySession(
         sendJson(buildRequestFrame(id = id, method = method, params = params), withEnqueue)
         return withTimeout(timeoutMs) { deferred.await() }
       } catch (err: TimeoutCancellationException) {
+        // Caller deadlines must propagate; only RPC-owned timeouts become request failures.
+        currentCoroutineContext().ensureActive()
         if (method == GatewayMethod.Connect.rawValue) {
           throw GatewayConnectFailure(gatewayNetworkConnectError(timedOut = true))
         }
@@ -2176,6 +2182,10 @@ class GatewaySession(
           sessionRouting = connected.sessionRouting
           drainReconnectSignals()
           onConnected(connected.hello)
+          // The callback can replace or disconnect this intent; only its current socket publishes readiness.
+          if (currentConnection === conn && desired === target && job?.isActive == true && conn.isReady()) {
+            target.onReady?.invoke()
+          }
         }
       }
       conn.awaitClose()

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeSortedUniqueTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
 import type { Insertable, Selectable, Updateable } from "kysely";
@@ -90,6 +91,8 @@ type WorkerDb = Pick<
   | "worker_environment_credentials"
   | "worker_environment_ssh_fallback_ports"
   | "worker_environments"
+  | "worker_session_placement_moves"
+  | "worker_session_placements"
   | "worker_transcript_commit_heads"
 >;
 type Row = Selectable<WorkerEnvironments>;
@@ -112,6 +115,17 @@ type TransitionInput = {
   placementBinding?: PreparedEnvironmentPlacementBinding;
   patch?: WorkerEnvironmentTransitionPatch;
 };
+type BootstrapRefreshInput = {
+  environmentId: string;
+  expectedOwnerEpoch: number;
+  expectedNodeDeviceId: string | null;
+  expectedBootstrapReceipt: WorkerEnvironmentBootstrapReceipt;
+  bootstrapReceipt: WorkerEnvironmentBootstrapReceipt;
+  assertCurrent: () => void;
+} & (
+  | { expectedState: "attached"; expectedPlacementGeneration: number }
+  | { expectedState: "ready" | "idle"; expectedPlacementGeneration?: never }
+);
 const TERMINAL_STATES: WorkerEnvironmentState[] = ["destroyed", "failed", "orphaned"];
 const WORKER_BUNDLE_HASH_PATTERN = /^[a-f0-9]{64}$/u;
 const MAX_HOST_KEY_LENGTH = 16_384;
@@ -813,6 +827,9 @@ export function createWorkerEnvironmentStore(
     return result;
   };
   write((db) => reconcileAttachedSessionOwners(db, now()));
+  // Listeners observe permanent credential revocations that must fence live transfers.
+  // Rotation-style revocations (device reconcile re-mints) intentionally do not notify.
+  const credentialRevocationListeners = new Set<(environmentId: string) => void>();
   const writeCredential = (
     input: CredentialInput & {
       environmentId: string;
@@ -995,8 +1012,21 @@ export function createWorkerEnvironmentStore(
     getCredential: (environmentId: string) => findCredential(read(), required(environmentId, "id")),
     getTransferOwner: (environmentId: string) =>
       findTransferOwner(read(), required(environmentId, "id")),
-    revokeEnvironmentCredential(environmentId: string): void {
-      return write((db) => revokeCredential(db, required(environmentId, "id")));
+    onCredentialRevoked(listener: (environmentId: string) => void): () => void {
+      credentialRevocationListeners.add(listener);
+      return () => credentialRevocationListeners.delete(listener);
+    },
+    revokeEnvironmentCredential(
+      environmentId: string,
+      opts: { fenceWorkspaceTransfers?: boolean } = {},
+    ): void {
+      const result = write((db) => revokeCredential(db, required(environmentId, "id")));
+      if (opts.fenceWorkspaceTransfers) {
+        for (const listener of credentialRevocationListeners) {
+          listener(environmentId);
+        }
+      }
+      return result;
     },
     findCredentialByHash: (credentialHash: string) =>
       findCredentialByHash(read(), normalizeCredentialHash(credentialHash)),
@@ -1094,6 +1124,81 @@ export function createWorkerEnvironmentStore(
             ? {}
             : { last_error: required(input.lastError, "last error") }),
         });
+      });
+    },
+    refreshBootstrapReceipt(input: BootstrapRefreshInput): WorkerEnvironmentRecord {
+      const environmentId = required(input.environmentId, "id");
+      const expectedReceipt = normalizeBootstrapReceipt(input.expectedBootstrapReceipt);
+      const receipt = normalizeBootstrapReceipt(input.bootstrapReceipt);
+      return write((db) => {
+        input.assertCurrent();
+        const current = getRequired(db, environmentId);
+        if (
+          current.state !== input.expectedState ||
+          current.ownerEpoch !== input.expectedOwnerEpoch ||
+          current.nodeDeviceId !== input.expectedNodeDeviceId ||
+          current.destroyRequestedAtMs !== null ||
+          !current.leaseId ||
+          (!current.nodeDeviceId && !current.sshEndpoint) ||
+          !isDeepStrictEqual(current.bootstrapReceipt, expectedReceipt)
+        ) {
+          throw new Error("Worker environment changed during runtime refresh");
+        }
+        if (findCredential(db, environmentId)) {
+          throw new Error("Worker runtime refresh requires its previous credential to be revoked");
+        }
+        const updatedAtMs = now();
+        if (input.expectedState === "attached") {
+          const attachedSessionId = current.attachedSessionIds[0];
+          const placements = executeSqliteQuerySync(
+            db,
+            query(db)
+              .selectFrom("worker_session_placements")
+              .selectAll()
+              .where("environment_id", "=", environmentId)
+              .where("state", "=", "active"),
+          ).rows;
+          const placement = placements.length === 1 ? placements[0] : undefined;
+          if (
+            current.attachedSessionIds.length !== 1 ||
+            !placement ||
+            placement.session_id !== attachedSessionId ||
+            placement.active_owner_epoch !== current.ownerEpoch ||
+            placement.transition_generation !== input.expectedPlacementGeneration ||
+            placement.worker_bundle_hash !== expectedReceipt.bundleHash
+          ) {
+            throw new Error("Worker placement changed during runtime refresh");
+          }
+          if (
+            executeSqliteQueryTakeFirstSync(
+              db,
+              query(db)
+                .selectFrom("worker_session_placement_moves")
+                .select("session_id")
+                .where("session_id", "=", placement.session_id),
+            )
+          ) {
+            throw new Error("Cannot refresh a worker runtime while its session is moving");
+          }
+          executeSqliteQuerySync(
+            db,
+            query(db)
+              .updateTable("worker_session_placements")
+              .set({ worker_bundle_hash: receipt.bundleHash, updated_at_ms: updatedAtMs })
+              .where("session_id", "=", placement.session_id),
+          );
+        }
+        // The epoch also names the node workspace directory. Rotate executable authority
+        // through fresh credentials and turn claims without replacing that workspace owner.
+        updateRow(db, environmentId, current.state, {
+          bootstrap_bundle_hash: receipt.bundleHash,
+          bootstrap_openclaw_version: receipt.openclawVersion,
+          bootstrap_protocol_features_json: json(receipt.protocolFeatures),
+          bootstrap_install_kind: receipt.installKind ?? null,
+          updated_at_ms: updatedAtMs,
+          last_error: null,
+        });
+        return getRequired(db, environmentId);
       });
     },
     transition(input: TransitionInput): WorkerEnvironmentRecord {

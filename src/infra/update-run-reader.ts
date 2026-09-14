@@ -12,8 +12,11 @@ import {
   getNodeSqliteKysely,
   iterateSqliteQuerySync,
 } from "./kysely-sync.js";
+import { inspectUpdateRunAbandonment } from "./update-run-activity.js";
 import { decodeRun } from "./update-run-codec.js";
 import type { UpdateFetchFailure, UpdateRunRecord } from "./update-run-record.js";
+import { hasStoredUpdateRecovery } from "./update-run-recovery-store.js";
+import { ABANDONED_UPDATE_RUN_MS } from "./update-run-timeouts.js";
 
 export function readUpdateRunRecord(db: DatabaseSync, runId: string): UpdateRunRecord | undefined {
   const query = getNodeSqliteKysely<Pick<DB, "update_runs">>(db)
@@ -22,6 +25,22 @@ export function readUpdateRunRecord(db: DatabaseSync, runId: string): UpdateRunR
     .where("run_id", "=", runId);
   const row = executeSqliteQueryTakeFirstSync(db, query);
   return row ? decodeRun(row) : undefined;
+}
+
+export function getUpdateRun(
+  runId: string,
+  options: OpenClawStateDatabaseOptions = {},
+): UpdateRunRecord | undefined {
+  return withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(
+    ({ db }) => (tableExists(db, "update_runs") ? readUpdateRunRecord(db, runId) : undefined),
+    options,
+  );
+}
+
+export function findActiveUpdateRun(
+  options: OpenClawStateDatabaseOptions = {},
+): UpdateRunRecord | undefined {
+  return listUpdateRuns({ limit: 1, active: true }, options)[0];
 }
 
 export async function getUpdateRunAsync(
@@ -34,7 +53,7 @@ export async function getUpdateRunAsync(
   );
 }
 
-type ListInput = { limit?: number; active?: boolean };
+type ListInput = { limit?: number; active?: boolean; reason?: string; includeRunId?: string };
 
 function readRuns(db: DatabaseSync, input: ListInput): UpdateRunRecord[] {
   if (!tableExists(db, "update_runs")) {
@@ -46,13 +65,24 @@ function readRuns(db: DatabaseSync, input: ListInput): UpdateRunRecord[] {
   if (input.active) {
     query = query.where("status", "=", "running");
   }
-  return executeSqliteQuerySync(
+  if (input.reason) {
+    query = query.where("reason", "=", input.reason);
+  }
+  const runs = executeSqliteQuerySync(
     db,
     query
       .orderBy("created_at_ms", "desc")
       .orderBy("run_id", "desc")
       .limit(Math.max(1, Math.min(100, Math.trunc(input.limit ?? 20)))),
   ).rows.map(decodeRun);
+  // Restoration must retain its captured owner even after that row becomes terminal.
+  if (input.includeRunId && !runs.some((run) => run.runId === input.includeRunId)) {
+    const captured = readUpdateRunRecord(db, input.includeRunId);
+    if (captured) {
+      runs.push(captured);
+    }
+  }
+  return runs;
 }
 
 export function listUpdateRuns(
@@ -143,4 +173,50 @@ export function getLatestUpdateFetchFailure(
     }
     return latestFailure;
   }, options);
+}
+
+export type UpdateRunReconciliationInput = {
+  explicit?: boolean;
+  runIds?: readonly string[];
+  requireAllActive?: boolean;
+  legacyOnly?: boolean;
+};
+export type UpdateRunReconciliationCandidate = {
+  record: UpdateRunRecord;
+  rule: string | undefined;
+};
+
+export function inspectUpdateRunReconciliation(
+  db: DatabaseSync,
+  record: UpdateRunRecord,
+  input: UpdateRunReconciliationInput,
+): UpdateRunReconciliationCandidate {
+  return {
+    record,
+    rule: hasStoredUpdateRecovery(db, record.runId)
+      ? undefined
+      : inspectUpdateRunAbandonment(record, input),
+  };
+}
+
+export function readUpdateRunReconciliationCandidates(
+  db: DatabaseSync,
+  input: UpdateRunReconciliationInput,
+): UpdateRunReconciliationCandidate[] {
+  if (!tableExists(db, "update_runs")) {
+    return [];
+  }
+  let query = getNodeSqliteKysely<Pick<DB, "update_runs">>(db)
+    .selectFrom("update_runs")
+    .selectAll()
+    .where("status", "=", "running");
+  if (!input.explicit) {
+    query = query.where("updated_at_ms", "<", Date.now() - ABANDONED_UPDATE_RUN_MS);
+  }
+  if (input.runIds) {
+    query = query.where("run_id", "in", [...input.runIds]);
+  }
+  return executeSqliteQuerySync(db, query.orderBy("run_id")).rows.map((row) =>
+    inspectUpdateRunReconciliation(db, decodeRun(row), input),
+  );
 }

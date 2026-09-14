@@ -41,6 +41,8 @@ export type SettingsSectionProps = {
   description?: unknown;
   /** Right-aligned inline actions next to the heading (e.g. an Add button). */
   actions?: TemplateResult;
+  /** Section notice above the group, keeping bordered callouts outside the card. */
+  notice?: TemplateResult | typeof nothing;
   /** Extra count shown next to the heading. */
   count?: number;
   /** Marks the group surface as a danger zone. */
@@ -183,10 +185,21 @@ export function renderSettingsSection(props: SettingsSectionProps, rows: unknown
     .join(" ");
   return html`
     <section class="settings-section ${props.carapace ? "oc-settings-section" : ""}">
-      ${header}
+      ${header} ${props.notice ?? nothing}
       <div class=${groupClass}>${rows}</div>
     </section>
   `;
+}
+
+export function renderSettingsSummary(items: ReadonlyArray<{ label: string; value: number }>) {
+  return html`<dl class="settings-summary">
+    ${items.map(
+      (item) => html`<div class="settings-group settings-summary__tile">
+        <dt>${item.label}</dt>
+        <dd>${item.value}</dd>
+      </div>`,
+    )}
+  </dl>`;
 }
 
 /** A bare group surface without a section heading (rare; prefer sections). */
@@ -294,6 +307,7 @@ export function renderSettingsToggle(props: {
 /** Toggle row: one <label> wraps title, description, and switch, so the whole
  * row is clickable and the checkbox gets its accessible name from the title. */
 export function renderSettingsToggleRow(props: {
+  icon?: unknown;
   title: unknown;
   ariaLabel?: unknown;
   description?: unknown;
@@ -329,6 +343,7 @@ export function renderSettingsToggleRow(props: {
         props.onChange(checked);
       }}
     >
+      ${props.icon ?? nothing}
       <div class="settings-row__text">
         <span class="settings-row__title">${props.title}</span>
         ${

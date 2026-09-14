@@ -1,6 +1,8 @@
 package ai.openclaw.wear
 
+import ai.openclaw.app.gateway.DeviceIdentityStore
 import ai.openclaw.app.gateway.GatewayEndpoint
+import ai.openclaw.app.gateway.GatewayRegistryStore
 import android.content.Context
 import android.content.SharedPreferences
 import kotlinx.coroutines.CoroutineScope
@@ -47,6 +49,7 @@ import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
@@ -589,6 +592,210 @@ class WearDirectRuntimeTest {
     }
 
   @Test
+  fun approvalReplayFromOlderRefreshCannotReplaceNewerTerminalState() =
+    conversationTest {
+      gateway.holdHistory = false
+      gateway.holdApprovalReplay = true
+      val olderWork = operation(runtime::refresh)
+      val older = next(gateway.approvalReplays)
+      val newerWork = operation(runtime::refresh)
+      next(gateway.approvalReplays).reply(gateway.approvalReplay(listOf(gateway.approval("plugin"))))
+      finish(newerWork)
+      gateway.event(
+        "session.approval",
+        buildJsonObject {
+          put("sessionKey", "agent:main:main")
+          put("updatedAtMs", 10)
+          put("phase", "terminal")
+          put("approval", gateway.approval("plugin", status = "denied"))
+        },
+      )
+      await { runtime.state.value.takeIf { it.approvals.singleOrNull()?.status == "denied" } }
+      older.reply(gateway.approvalReplay(listOf(gateway.approval("plugin"), gateway.approval("exec"))))
+      finish(olderWork)
+      assertEquals(
+        "Older replay must not replace the newer approval set or resurrect a terminal approval",
+        listOf("plugin" to "denied"),
+        runtime.state.value.approvals
+          .map { it.id to it.status },
+      )
+      assertTrue(runtime.state.value.approvalsReady)
+    }
+
+  @Test
+  fun approvalReplayBeforeSequenceGapCannotPublishReadyWhileRecoveryIsPending() =
+    conversationTest {
+      gateway.holdHistory = false
+      gateway.holdApprovalReplay = true
+      val olderWork = operation(runtime::refresh)
+      val older = next(gateway.approvalReplays)
+      // Real sequence numbers make GatewaySession signal its gap before the second event.
+      gateway.event("tick", buildJsonObject {}, sequence = 1)
+      gateway.event("tick", buildJsonObject {}, sequence = 3)
+      val recovery = next(gateway.approvalReplays)
+      assertFalse(runtime.state.value.approvalsReady)
+      older.reply(gateway.approvalReplay(listOf(gateway.approval("exec"))))
+      finish(olderWork)
+      val readyBeforeRecovery = runtime.state.value.approvalsReady
+      recovery.reply(gateway.approvalReplay(listOf(gateway.approval("plugin"))))
+      await { runtime.state.value.takeIf { it.approvalsReady && it.approvals.singleOrNull()?.id == "plugin" } }
+      assertFalse("A pre-gap response cannot authorize the incomplete approval feed", readyBeforeRecovery)
+    }
+
+  @Test
+  fun approvalRefreshOlderSessionListCannotSupersedeNewerRefresh() = verifyOlderSessionList(fails = false)
+
+  @Test
+  fun approvalRefreshOlderSessionListErrorCannotReplaceNewerOutcome() = verifyOlderSessionList(fails = true)
+
+  private fun verifyOlderSessionList(fails: Boolean) =
+    conversationTest {
+      gateway.holdHistory = false
+      gateway.holdSessionList = true
+      val olderWork = operation(runtime::refresh)
+      val older = next(gateway.sessionLists)
+      val newerWork = operation(runtime::refresh)
+      next(gateway.sessionLists).reply(gateway.sessionList("Newer session title"))
+      finish(newerWork)
+      val afterNewer = runtime.state.value
+      val subscriptions = gateway.approvalRequestCount.get()
+      val histories = gateway.historyRequestCount.get()
+      older.reply(
+        if (fails) {
+          buildJsonObject {
+            put("code", "UNAVAILABLE")
+            put("message", "Older fixture list failed")
+          }
+        } else {
+          gateway.sessionList("Obsolete session title")
+        },
+        ok = !fails,
+      )
+      finish(olderWork)
+      assertEquals("Older list work must not replace current sessions", afterNewer.sessions, runtime.state.value.sessions)
+      assertEquals("Older list failure must not publish a current error", afterNewer.error, runtime.state.value.error)
+      assertEquals("Superseded list work must not start another approval replay", subscriptions, gateway.approvalRequestCount.get())
+      assertEquals("Superseded list work must not load history", histories, gateway.historyRequestCount.get())
+    }
+
+  @Test
+  fun approvalReplayInvalidCurrentResultStillLoadsChatHistory() =
+    conversationTest {
+      gateway.holdApprovalReplay = true
+      val work = operation(runtime::refresh)
+      next(gateway.approvalReplays).reply(buildJsonObject { put("subscribed", false) })
+      next(gateway.histories).reply(history("History with unavailable approvals"))
+      finish(work)
+      val state = runtime.state.value
+      assertFalse(state.approvalsReady)
+      assertEquals("Approval replay is unavailable. Reconnect to refresh.", state.error)
+      assertEquals("History with unavailable approvals", state.messages.single().text)
+    }
+
+  @Test
+  fun forgetInactiveGatewayPreservesActiveConversationAndInFlightSend() {
+    val inactive = WearGatewaySetup(GatewayEndpoint.manual("inactive.example", 443, true), "inactive-bootstrap")
+    conversationTest(savedGateway = inactive) {
+      val activeSocket = next(gateway.operatorSockets)
+      val input = runtime.inputOwner()
+      val (sendWork, send) = beginSend()
+      val before = runtime.state.value
+      assertTrue(before.gateways.any { it.stableId == inactive.endpoint.stableId })
+      val forgetWork = operation { runtime.forget(inactive.endpoint.stableId) }
+      finish(forgetWork)
+      val after = runtime.state.value
+      assertEquals(before.selected, after.selected)
+      assertTrue("Forgetting inactive B must preserve A's physical connection", after.connected)
+      assertEquals(input, runtime.inputOwner())
+      assertEquals(before.sessionKey, after.sessionKey)
+      assertEquals(before.messages, after.messages)
+      assertEquals(before.pendingSend, after.pendingSend)
+      assertTrue(after.sending)
+      assertFalse(after.sendUnknown)
+      assertEquals(before.approvals, after.approvals)
+      assertEquals(before.approvalsReady, after.approvalsReady)
+      assertEquals(null, after.error)
+      assertFalse(after.gateways.any { it.stableId == inactive.endpoint.stableId })
+      assertEquals(null, store.bootstrap(inactive.endpoint.stableId))
+      assertEquals(before.selected?.stableId, store.registry.activeStableId.value)
+      send.acknowledge("started")
+      finish(sendWork)
+      assertSettledSend()
+      assertEquals(send.params.text("idempotencyKey"), runtime.state.value.runId)
+      assertTrue("Inactive removal must not create a replacement socket", gateway.operatorSockets.tryReceive().isFailure)
+      assertTrue("The original server-side socket must remain writable", activeSocket.send("""{"type":"event","event":"tick","payload":{}}"""))
+    }
+  }
+
+  @Test
+  fun failedInactiveForgetPreservesActiveSendAndReportsStorageFailure() {
+    val inactive = WearGatewaySetup(GatewayEndpoint.manual("inactive.example", 443, true), "inactive-bootstrap")
+    conversationTest(savedGateway = inactive) {
+      val input = runtime.inputOwner()
+      val (sendWork, send) = beginSend()
+      val before = runtime.state.value
+      failRegistryCommit = true
+      val forgetWork = operation { runtime.forget(inactive.endpoint.stableId) }
+      finish(forgetWork)
+      val after = runtime.state.value
+      assertNotNull("Failed inactive removal must remain visible", after.error)
+      assertEquals(before.gateways, store.registry.entries.value)
+      assertEquals(before.selected?.stableId, store.registry.activeStableId.value)
+      assertEquals(inactive.bootstrapToken, store.bootstrap(inactive.endpoint.stableId))
+      assertTrue("Failed inactive removal must not retire the active socket", after.connected)
+      assertEquals(input, runtime.inputOwner())
+      assertEquals(before.messages, after.messages)
+      assertEquals(before.sessionKey, after.sessionKey)
+      assertEquals(before.pendingSend, after.pendingSend)
+      assertEquals(before.approvals, after.approvals)
+      assertEquals(before.approvalsReady, after.approvalsReady)
+      assertTrue(after.sending)
+      assertFalse(after.sendUnknown)
+      send.acknowledge("started")
+      finish(sendWork)
+      assertSettledSend()
+      assertEquals(send.params.text("idempotencyKey"), runtime.state.value.runId)
+    }
+  }
+
+  @Test
+  fun forgettingActiveGatewayRetiresOriginalSocketAndClearsItsConversation() {
+    val inactive = WearGatewaySetup(GatewayEndpoint.manual("inactive.example", 443, true), "inactive-bootstrap")
+    conversationTest(savedGateway = inactive) {
+      val activeSocket = next(gateway.operatorSockets)
+      val input = runtime.inputOwner()
+      val (sendWork, _) = beginSend()
+      val activeId = checkNotNull(runtime.state.value.selected).stableId
+      val forgetWork = operation { runtime.forget(activeId) }
+      finish(forgetWork)
+      finish(sendWork)
+      await { runtime.state.value.takeIf { !it.busy } }
+      assertTrue(runtime.isPhoneProxySelected())
+      val state = runtime.state.value
+      assertFalse(state.connected)
+      assertFalse(state.busy)
+      assertEquals(null, state.error)
+      assertEquals(null, state.selected)
+      assertEquals(null, state.sessionKey)
+      assertTrue(state.messages.isEmpty())
+      assertTrue(state.approvals.isEmpty())
+      assertEquals(null, state.pendingSend)
+      assertFalse(state.sending)
+      assertFalse(state.sendUnknown)
+      assertEquals(listOf(inactive.endpoint.stableId), state.gateways.map { it.stableId })
+      assertEquals(inactive.bootstrapToken, store.bootstrap(inactive.endpoint.stableId))
+      assertEquals(null, store.bootstrap(activeId))
+      assertEquals(null, store.registry.activeStableId.value)
+      val termination = next(gateway.terminatedOperatorSockets)
+      assertEquals(activeSocket, termination.first)
+      println("Active Forget server terminal callback: ${termination.second}")
+      runtime.send("Input from the forgotten gateway", input)
+      assertEquals(null, runtime.state.value.pendingSend)
+      assertTrue("Forgetting active A must not connect inactive B", gateway.operatorSockets.tryReceive().isFailure)
+    }
+  }
+
+  @Test
   fun liveChatAndSessionMessageEventsFenceOlderHistory() =
     conversationTest {
       val oldWork = operation(runtime::refresh)
@@ -659,21 +866,26 @@ class WearDirectRuntimeTest {
   @Test
   fun terminalHistoryAlreadyPendingSurvivesDelayedAcknowledgement() = verifyTerminalAcknowledgement("final", ackFirst = false)
 
+  @Test
+  fun terminalHistoryAlreadyPendingSurvivesDelayedTimeoutAcknowledgement() = verifyTerminalAcknowledgement("error", ackFirst = false, status = "timeout")
+
   private fun verifyTerminalAcknowledgement(
     terminal: String,
     ackFirst: Boolean,
+    status: String = "started",
   ) = conversationTest {
     val (sendWork, send) = beginSend()
     val run = checkNotNull(send.params.text("idempotencyKey"))
-    if (ackFirst) send.acknowledge("started")
+    if (ackFirst) send.acknowledge(status)
     // Same-socket wire order completes the ACK deferred, but its consumer remains paused.
     gateway.chat(run, "Terminal $terminal", state = terminal)
     await(runTasks = false) { runtime.state.value.takeIf { it.messages.lastOrNull()?.text == "Terminal $terminal" } }
     assertTrue(runtime.state.value.sending)
     val pendingHistory = if (ackFirst) null else next(gateway.histories)
-    if (!ackFirst) send.acknowledge("started")
+    if (!ackFirst) send.acknowledge(status)
     finish(sendWork)
     assertSettledSend()
+    assertEquals("A superseded $status ACK must not add a terminal notice", null, runtime.state.value.error)
     assertEquals("A delayed ACK must not restore a $terminal run", null, runtime.state.value.runId)
     assertEquals(null, runtime.state.value.streamText)
     (pendingHistory ?: next(gateway.histories)).reply(history("Persisted $terminal"))
@@ -685,7 +897,7 @@ class WearDirectRuntimeTest {
   @Test
   fun chatEventsSupersedeAcknowledgementsWithoutReplacingLiveRunOrText() =
     conversationTest {
-      for ((status, newerRun) in listOf("started" to false, "in_flight" to true, "ok" to true)) {
+      for ((status, newerRun) in listOf("started" to false, "in_flight" to true, "ok" to true, "timeout" to true)) {
         val (sendWork, send) = beginSend()
         val run = if (newerRun) "newer-$status" else checkNotNull(send.params.text("idempotencyKey"))
         send.acknowledge(status)
@@ -695,6 +907,7 @@ class WearDirectRuntimeTest {
         assertSettledSend()
         assertEquals("Chat events must retain the live run after $status ACK", run, runtime.state.value.runId)
         assertEquals("Live $status", runtime.state.value.streamText)
+        assertEquals("A superseded $status ACK must not add a terminal notice", null, runtime.state.value.error)
         assertEquals(
           "Initial history",
           runtime.state.value.messages
@@ -738,29 +951,527 @@ class WearDirectRuntimeTest {
     }
 
   @Test
-  fun okAcknowledgementReconcilesBothActiveDurableClaimAndTerminalHistory() =
+  fun foreignFinalPreservesActiveRunAndStop() = verifyForeignTerminal("final", beforeAck = false)
+
+  @Test
+  fun foreignAbortedPreservesActiveRunAndStop() = verifyForeignTerminal("aborted", beforeAck = false)
+
+  @Test
+  fun foreignErrorPreservesActiveRunAndStop() = verifyForeignTerminal("error", beforeAck = false)
+
+  @Test
+  fun foreignFinalBeforeAcknowledgementPreservesPendingRun() = verifyForeignTerminal("final", beforeAck = true)
+
+  @Test
+  fun foreignAbortedBeforeAcknowledgementPreservesPendingRun() = verifyForeignTerminal("aborted", beforeAck = true)
+
+  @Test
+  fun foreignErrorBeforeAcknowledgementPreservesPendingRun() = verifyForeignTerminal("error", beforeAck = true)
+
+  private fun verifyForeignTerminal(
+    terminal: String,
+    beforeAck: Boolean,
+  ) = conversationTest {
+    val (sendWork, send) = beginSend()
+    val run = checkNotNull(send.params.text("idempotencyKey"))
+    if (!beforeAck) {
+      send.acknowledge("started")
+      finish(sendWork)
+      gateway.chat(run, "Current stream")
+      await { runtime.state.value.takeIf { it.streamText == "Current stream" } }
+    }
+    observeTerminal("inject-foreign", terminal)
+    if (beforeAck) {
+      assertEquals(
+        run,
+        runtime.state.value.pendingSend
+          ?.key,
+      )
+      send.acknowledge("started")
+      finish(sendWork)
+    }
+    assertEquals("A foreign $terminal must not retire the current run", run, runtime.state.value.runId)
+    assertEquals(if (beforeAck) null else "Current stream", runtime.state.value.streamText)
+    val stopWork = operation(runtime::abort)
+    val stop = next(gateway.stops)
+    assertEquals(run, stop.params.text("runId"))
+    gateway.holdHistory = false
+    stop.reply(buildJsonObject { put("ok", true) })
+    finish(stopWork)
+  }
+
+  @Test
+  fun previousRunTerminalFinalSettlesOnlyPreviousRun() = verifyPreviousRunTerminal("final")
+
+  @Test
+  fun previousRunTerminalAbortedSettlesOnlyPreviousRun() = verifyPreviousRunTerminal("aborted")
+
+  @Test
+  fun previousRunTerminalErrorSettlesOnlyPreviousRun() = verifyPreviousRunTerminal("error")
+
+  private fun verifyPreviousRunTerminal(terminal: String) =
     conversationTest {
-      for (active in listOf(true, false)) {
-        gateway.chat("previous-run", "Previous text")
-        await { runtime.state.value.takeIf { it.streamText == "Previous text" } }
+      gateway.chat("previous-run", "Previous stream")
+      await { runtime.state.value.takeIf { it.streamText == "Previous stream" } }
+      val (sendWork, send) = beginSend()
+      val pending = runtime.state.value.pendingSend
+      observeTerminal("previous-run", terminal)
+      assertEquals("The matching terminal must settle A", null, runtime.state.value.runId)
+      assertEquals(null, runtime.state.value.streamText)
+      assertTrue(runtime.state.value.pendingSend === pending)
+      send.acknowledge("started")
+      finish(sendWork)
+      assertSettledSend()
+      assertEquals("A's terminal must not fence B's ACK", send.params.text("idempotencyKey"), runtime.state.value.runId)
+    }
+
+  @Test
+  fun foreignTerminalHistoryCannotOverwriteNewerAcknowledgement() =
+    conversationTest {
+      val (sendWork, send) = beginSend()
+      observeTerminal("inject-history", "final")
+      val snapshot = next(gateway.histories)
+      send.acknowledge("started")
+      finish(sendWork)
+      snapshot.reply(history("Persisted injected message"))
+      receiveBarrier("exec")
+      runCurrent()
+      assertSettledSend()
+      assertEquals("Transcript reconciliation cannot discard the newer ACK owner", send.params.text("idempotencyKey"), runtime.state.value.runId)
+      assertEquals(
+        "Observed final",
+        runtime.state.value.messages
+          .last()
+          .text,
+      )
+    }
+
+  @Test
+  fun approvalPreflightRejectionReleasesAttempt() = verifyApprovalPreflightFailure("rejected")
+
+  @Test
+  fun approvalPreflightInvalidResultReleasesAttempt() = verifyApprovalPreflightFailure("invalid")
+
+  @Test
+  fun approvalPreflightTimeoutReleasesAttempt() = verifyApprovalPreflightFailure("timeout")
+
+  @Test
+  fun approvalPreflightCancellationReleasesAttempt() = verifyApprovalPreflightFailure("cancelled")
+
+  @Test
+  fun approvalPreflightPhysicalRetirementReleasesAttempt() = verifyApprovalPreflightFailure("physical")
+
+  @Test
+  fun approvalPreflightIntentRetirementReleasesAttempt() = verifyApprovalPreflightFailure("intent")
+
+  @Test
+  fun approvalPreflightRetirementAfterReadNeverSubmits() = verifyApprovalPreflightFailure("after-read")
+
+  private fun verifyApprovalPreflightFailure(failure: String) =
+    conversationTest {
+      val (work, get) = beginApproval()
+      when (failure) {
+        "rejected" -> {
+          get.reply(approvalNotFound(), ok = false)
+        }
+
+        "invalid" -> {
+          get.reply(buildJsonObject {})
+        }
+
+        "timeout" -> {
+          advanceRpcDeadline()
+        }
+
+        "cancelled" -> {
+          work.forEach { it.cancel() }
+        }
+
+        "physical" -> {
+          assertTrue(next(gateway.operatorSockets).close(1000, "Fixture preflight retirement"))
+          await(runTasks = false) { runtime.state.value.takeIf { !it.connected } }
+        }
+
+        "intent", "after-read" -> {
+          if (failure == "after-read") get.reply(approvalResult("pending"))
+          runtime.setVisible(false)
+        }
+
+        else -> {
+          error("Unknown preflight fixture")
+        }
+      }
+      finish(work)
+      assertTrue("No approval.resolve may follow a failed preflight", gateway.approvalResolves.tryReceive().isFailure)
+      assertFalse("A $failure preflight must release its exact attempt", "plugin" in runtime.state.value.resolving)
+      if (failure == "cancelled") assertTrue(work.all { it.isCancelled })
+      if (failure in setOf("rejected", "invalid", "timeout")) {
+        assertNotNull("The failed preflight must remain visible", runtime.state.value.error)
+        val (retryWork, retryGet) = beginApproval()
+        retryGet.reply(approvalResult("denied"))
+        finish(retryWork)
+        assertFalse("plugin" in runtime.state.value.resolving)
+        assertTrue(gateway.approvalResolves.tryReceive().isFailure)
+      }
+    }
+
+  @Test
+  fun approvalEarlierAttemptFailureCannotReleaseReplacement() =
+    conversationTest {
+      val (oldWork, oldGet) = beginApproval()
+      val refresh = operation(runtime::refresh)
+      next(gateway.approvalGets).reply(approvalResult("pending"))
+      next(gateway.histories).reply(history("Reconciled pending approval"))
+      finish(refresh)
+      val (newWork, newGet) = beginApproval()
+      oldGet.reply(approvalNotFound(), ok = false)
+      finish(oldWork)
+      assertTrue("The old attempt cannot release its replacement", "plugin" in runtime.state.value.resolving)
+      newGet.reply(approvalResult("pending"))
+      next(gateway.approvalResolves).reply(approvalResult("denied", applied = true))
+      finish(newWork)
+      assertFalse("plugin" in runtime.state.value.resolving)
+      assertEquals(
+        "denied",
+        runtime.state.value.approvals
+          .single { it.id == "plugin" }
+          .status,
+      )
+    }
+
+  @Test
+  fun approvalSubmittedTimeoutRetainsOwnershipUntilTerminalReadback() = verifyApprovalReconciliation("terminal")
+
+  @Test
+  fun approvalReconciliationRejectionStillLoadsHistory() = verifyApprovalReconciliation("rejected")
+
+  @Test
+  fun approvalReconciliationInvalidResultStillLoadsHistory() = verifyApprovalReconciliation("invalid")
+
+  private fun verifyApprovalReconciliation(result: String) =
+    conversationTest {
+      val (work, get) = beginApproval()
+      get.reply(approvalResult("pending"))
+      val submitted = next(gateway.approvalResolves)
+      assertEquals("plugin", submitted.params.text("id"))
+      advanceRpcDeadline()
+      finish(work)
+      assertTrue("A wire-observed unresolved decision remains owned", "plugin" in runtime.state.value.resolving)
+      assertNotNull(runtime.state.value.error)
+      val refresh = operation(runtime::refresh)
+      val readback = next(gateway.approvalGets)
+      when (result) {
+        "terminal" -> readback.reply(approvalResult("denied"))
+        "rejected" -> readback.reply(approvalNotFound(), ok = false)
+        "invalid" -> readback.reply(buildJsonObject {})
+      }
+      val loaded =
+        await {
+          gateway.histories.tryReceive().takeIf { it.isSuccess || refresh.all { job -> job.isCompleted } }
+        }.getOrNull()
+      assertNotNull("An approval readback failure must not prevent history loading", loaded)
+      checkNotNull(loaded).reply(history("History after approval readback"))
+      finish(refresh)
+      assertEquals(
+        "History after approval readback",
+        runtime.state.value.messages
+          .single()
+          .text,
+      )
+      assertEquals(result != "terminal", "plugin" in runtime.state.value.resolving)
+      if (result != "terminal") assertNotNull("Unconfirmed approval readback must remain visible", runtime.state.value.error)
+      assertTrue("Reconciliation must not resubmit a decision", gateway.approvalResolves.tryReceive().isFailure)
+    }
+
+  @Test
+  fun approvalTerminalPreflightDoesNotSubmitDecision() =
+    conversationTest {
+      val (work, get) = beginApproval()
+      get.reply(approvalResult("expired"))
+      finish(work)
+      assertFalse("plugin" in runtime.state.value.resolving)
+      assertEquals(
+        "expired",
+        runtime.state.value.approvals
+          .single { it.id == "plugin" }
+          .status,
+      )
+      assertTrue(gateway.approvalResolves.tryReceive().isFailure)
+    }
+
+  @Test
+  fun approvalSuccessfulResolvePublishesCanonicalTerminal() =
+    conversationTest {
+      val (work, get) = beginApproval()
+      get.reply(approvalResult("pending"))
+      next(gateway.approvalResolves).reply(approvalResult("denied", applied = true))
+      finish(work)
+      assertFalse("plugin" in runtime.state.value.resolving)
+      assertEquals(
+        "denied",
+        runtime.state.value.approvals
+          .single { it.id == "plugin" }
+          .status,
+      )
+    }
+
+  @Test
+  fun selectingCurrentSessionPreservesWireObservedSend() =
+    conversationTest {
+      val socket = next(gateway.operatorSockets)
+      val input = runtime.inputOwner()
+      val (work, send) = beginSend()
+      val pending = checkNotNull(runtime.state.value.pendingSend)
+      val selection = operation { runtime.selectSession(checkNotNull(runtime.state.value.sessionKey)) }
+      assertTrue("Reselecting the current session must retain the exact pending send", runtime.state.value.pendingSend === pending)
+      assertEquals(input, runtime.inputOwner())
+      assertEquals(pending.key, send.params.text("idempotencyKey"))
+      assertTrue(runtime.state.value.connected)
+      assertTrue(runtime.state.value.sending)
+      assertFalse(runtime.state.value.sendUnknown)
+      finish(selection)
+
+      send.acknowledge("started")
+      finish(work)
+      assertSettledSend()
+      assertEquals(pending.key, runtime.state.value.runId)
+      runtime.retrySend()
+      assertTrue("The original wire send must not be resent", gateway.sends.tryReceive().isFailure)
+      assertTrue("Reselection must not replace the physical socket", gateway.operatorSockets.tryReceive().isFailure)
+      assertTrue(gateway.terminatedOperatorSockets.tryReceive().isFailure)
+      assertTrue(socket.send("""{"type":"event","event":"tick","payload":{}}"""))
+    }
+
+  @Test
+  fun selectingCurrentSessionPreservesSubmittedApprovalAttempt() =
+    conversationTest {
+      val socket = next(gateway.operatorSockets)
+      val input = runtime.inputOwner()
+      val approval =
+        runtime.state.value.approvals
+          .single { it.id == "plugin" }
+      val (work, get) = beginApproval()
+      get.reply(approvalResult("pending"))
+      val submitted = next(gateway.approvalResolves)
+      val attempt = checkNotNull(runtime.state.value.resolving[approval.id])
+      val selection = operation { runtime.selectSession(checkNotNull(runtime.state.value.sessionKey)) }
+      assertTrue("Reselecting the current session must retain the exact submitted attempt", runtime.state.value.resolving[approval.id] === attempt)
+      assertEquals(input, runtime.inputOwner())
+      assertEquals(approval.id, submitted.params.text("id"))
+      assertTrue(runtime.state.value.connected)
+      finish(selection)
+
+      val duplicate = operation { runtime.resolve(approval, "deny") }
+      finish(duplicate)
+      assertTrue("A submitted decision cannot start another preflight", gateway.approvalGets.tryReceive().isFailure)
+      assertTrue("A submitted decision cannot enqueue twice", gateway.approvalResolves.tryReceive().isFailure)
+      submitted.reply(approvalResult("denied", applied = true))
+      finish(work)
+      assertFalse(approval.id in runtime.state.value.resolving)
+      assertEquals(
+        "denied",
+        runtime.state.value.approvals
+          .single { it.id == approval.id }
+          .status,
+      )
+      assertTrue(gateway.operatorSockets.tryReceive().isFailure)
+      assertTrue(gateway.terminatedOperatorSockets.tryReceive().isFailure)
+      assertTrue(socket.send("""{"type":"event","event":"tick","payload":{}}"""))
+    }
+
+  @Test
+  fun selectingDifferentSessionRetiresWorkAndReturningUsesFreshReplay() =
+    conversationTest {
+      val originalSocket = next(gateway.operatorSockets)
+      val originalInput = runtime.inputOwner()
+      val originalKey = checkNotNull(runtime.state.value.sessionKey)
+      val (sendWork, _) = beginSend()
+      val (approvalWork, get) = beginApproval()
+      get.reply(approvalResult("pending"))
+      next(gateway.approvalResolves)
+      assertNotNull(runtime.state.value.pendingSend)
+      assertTrue("plugin" in runtime.state.value.resolving)
+      gateway.holdApprovalReplay = true
+
+      suspend fun selectWithReplay(
+        key: String,
+        message: String,
+        approvals: List<JsonObject>,
+      ): WebSocket {
+        val selection = operation { runtime.selectSession(key) }
+        val replay = next(gateway.approvalReplays)
+        assertEquals(key, replay.params.text("key"))
+        replay.reply(gateway.approvalReplay(approvals, key))
+        val snapshot = next(gateway.histories)
+        assertEquals(key, snapshot.params.text("sessionKey"))
+        snapshot.reply(history(message))
+        await {
+          runtime.state.value.takeIf {
+            it.connected && it.approvalsReady && it.sessionKey == key && it.messages.singleOrNull()?.text == message
+          }
+        }
+        finish(selection)
+        return next(gateway.operatorSockets)
+      }
+
+      val replacementSocket = selectWithReplay("agent:main:other", "Session B history", emptyList())
+      finish(sendWork)
+      finish(approvalWork)
+      assertFalse(originalSocket === replacementSocket)
+      assertEquals(originalSocket, next(gateway.terminatedOperatorSockets).first)
+      assertFalse(originalInput == runtime.inputOwner())
+      assertSettledSend()
+      assertTrue(
+        runtime.state.value.approvals
+          .isEmpty(),
+      )
+      assertTrue(
+        runtime.state.value.resolving
+          .isEmpty(),
+      )
+      runtime.send("Late input from session A", originalInput)
+      assertEquals(null, runtime.state.value.pendingSend)
+      assertTrue(gateway.sends.tryReceive().isFailure)
+
+      val returnedSocket =
+        selectWithReplay(
+          originalKey,
+          "Fresh session A history",
+          listOf(gateway.approval("plugin", "pending")),
+        )
+      assertFalse(replacementSocket === returnedSocket)
+      assertEquals(replacementSocket, next(gateway.terminatedOperatorSockets).first)
+      assertSettledSend()
+      assertTrue(
+        "Returning cannot restore the old submitted attempt",
+        runtime.state.value.resolving
+          .isEmpty(),
+      )
+      assertEquals(
+        "pending",
+        runtime.state.value.approvals
+          .single()
+          .status,
+      )
+      runtime.retrySend()
+      assertTrue("Returning cannot replay the retired send", gateway.sends.tryReceive().isFailure)
+      assertTrue("Fresh replay must not restore old approval reconciliation", gateway.approvalGets.tryReceive().isFailure)
+      assertTrue(gateway.approvalResolves.tryReceive().isFailure)
+    }
+
+  @Test
+  fun okAcknowledgementReconcilesBothActiveDurableClaimAndTerminalHistory() = verifyNonActiveAcknowledgement("ok")
+
+  @Test
+  fun timeoutAcknowledgementReconcilesHistoryWithoutLosingTerminalNotice() = verifyNonActiveAcknowledgement("timeout")
+
+  private fun verifyNonActiveAcknowledgement(status: String) =
+    conversationTest {
+      for (active in if (status == "timeout") listOf(false) else listOf(true, false)) {
+        if (status != "timeout") {
+          gateway.chat("previous-run", "Previous text")
+          await { runtime.state.value.takeIf { it.streamText == "Previous text" } }
+        }
+        val before = runtime.state.value
         val (sendWork, send) = beginSend()
-        send.acknowledge("ok")
+        send.acknowledge(status, stopReason = if (active) null else "rpc")
         val reconciliation = historyWhileSending(sendWork)
         assertSettledSend()
+        assertEquals("A non-active ACK must not adopt a run", before.runId, runtime.state.value.runId)
+        assertEquals(before.streamText, runtime.state.value.streamText)
+        assertEquals(before.messages, runtime.state.value.messages)
+        val beforeHistoryError = runtime.state.value.error
         val run = if (active) checkNotNull(send.params.text("idempotencyKey")) else null
-        reconciliation.reply(history("Canonical accepted history", run, "Recovered stream"))
+        val historyText = if (status == "timeout") "Initial history" else "Canonical accepted history"
+        reconciliation.reply(history(historyText, run, "Recovered stream"))
         finish(sendWork)
         assertEquals(run, runtime.state.value.runId)
         assertEquals(if (active) "Recovered stream" else null, runtime.state.value.streamText)
         assertEquals(
-          "Canonical accepted history",
+          historyText,
           runtime.state.value.messages
             .single()
             .text,
         )
         assertSettledSend()
         assertTrue(gateway.histories.tryReceive().isFailure)
+        runtime.retrySend()
+        assertTrue("A settled $status ACK must never retry automatically or explicitly", gateway.sends.tryReceive().isFailure)
+        val notice =
+          if (status == "timeout") {
+            "This message's run ended or was cancelled. Check history before sending again."
+          } else {
+            null
+          }
+        assertEquals(
+          "$status notice before and after successful reconciliation",
+          listOf(notice, notice),
+          listOf(beforeHistoryError, runtime.state.value.error),
+        )
       }
+    }
+
+  @Test
+  fun timeoutAcknowledgementDoesNotReplaceInterveningError() =
+    conversationTest {
+      val (sendWork, send) = beginSend()
+      val refreshWork = operation(runtime::refresh)
+      next(gateway.histories).reply(
+        buildJsonObject {
+          put("code", "UNAVAILABLE")
+          put("message", "Fixture history unavailable")
+        },
+        ok = false,
+      )
+      finish(refreshWork)
+      val error = runtime.state.value.error
+      assertNotNull("The intervening history failure must be visible", error)
+      send.acknowledge("timeout")
+      val reconciliation = historyWhileSending(sendWork)
+      assertSettledSend()
+      assertEquals(error, runtime.state.value.error)
+      reconciliation.reply(history("Canonical accepted history"))
+      finish(sendWork)
+      assertSettledSend()
+      assertEquals(error, runtime.state.value.error)
+      assertTrue(gateway.sends.tryReceive().isFailure)
+    }
+
+  @Test
+  fun timeoutAcknowledgementFromRetiredSelectionCannotPublish() = verifyRetiredTimeoutAcknowledgement(peerClosed = false)
+
+  @Test
+  fun timeoutAcknowledgementFromRetiredPhysicalSocketCannotPublish() = verifyRetiredTimeoutAcknowledgement(peerClosed = true)
+
+  private fun verifyRetiredTimeoutAcknowledgement(peerClosed: Boolean) =
+    conversationTest {
+      val (sendWork, send) = beginSend()
+      val pending = runtime.state.value.pendingSend
+      val socket = next(gateway.operatorSockets)
+      send.acknowledge("timeout")
+      receiveBarrier("plugin")
+      val key = if (peerClosed) "agent:main:main" else "agent:main:replacement"
+      if (peerClosed) {
+        assertTrue(socket.close(1000, "Fixture peer disconnected"))
+        await(runTasks = false) { runtime.state.value.takeIf { !it.connected } }
+      } else {
+        runtime.selectSession(key)
+      }
+      val replacement = next(gateway.histories)
+      assertEquals(key, replacement.params.text("sessionKey"))
+      replacement.reply(history("Replacement history"))
+      finish(sendWork)
+      await { runtime.state.value.takeIf { it.messages.singleOrNull()?.text == "Replacement history" } }
+      assertEquals(key, runtime.state.value.sessionKey)
+      assertEquals(null, runtime.state.value.error)
+      if (peerClosed) {
+        assertTrue("The retired ACK cannot settle the retained attempt", runtime.state.value.pendingSend === pending)
+        assertTrue(runtime.state.value.sendUnknown)
+      } else {
+        assertSettledSend()
+      }
+      assertTrue("The retired ACK cannot create another reconciliation", gateway.histories.tryReceive().isFailure)
+      assertTrue("Retirement cannot automatically retry the send", gateway.sends.tryReceive().isFailure)
     }
 
   @Test
@@ -891,30 +1602,66 @@ class WearDirectRuntimeTest {
       assertTrue("A retired Stop must not enqueue on either socket", gateway.stops.tryReceive().isFailure)
     }
 
-  private fun conversationTest(block: suspend Conversation.() -> Unit) =
-    runBlocking {
-      val conversation = Conversation()
-      try {
-        conversation.gateway.holdHistory = true
-        conversation.runtime.setVisible(true)
-        conversation.runtime.setup(conversation.gateway.setupCode())
-        conversation.next(conversation.gateway.histories).reply(history("Initial history"))
-        conversation.await {
-          conversation.runtime.state.value
-            .takeIf { it.connected && it.approvalsReady && it.messages.singleOrNull()?.text == "Initial history" }
-        }
-        conversation.block()
-      } finally {
-        conversation.close()
+  private fun conversationTest(
+    savedGateway: WearGatewaySetup? = null,
+    block: suspend Conversation.() -> Unit,
+  ) = runBlocking {
+    val conversation = Conversation(savedGateway)
+    try {
+      conversation.gateway.holdHistory = true
+      conversation.runtime.setVisible(true)
+      conversation.runtime.setup(conversation.gateway.setupCode())
+      conversation.next(conversation.gateway.histories).reply(history("Initial history"))
+      conversation.await {
+        conversation.runtime.state.value
+          .takeIf { it.connected && it.approvalsReady && it.messages.singleOrNull()?.text == "Initial history" }
       }
+      conversation.block()
+    } finally {
+      conversation.close()
     }
+  }
 
   @OptIn(ExperimentalCoroutinesApi::class)
-  private inner class Conversation {
+  private inner class Conversation(
+    savedGateway: WearGatewaySetup?,
+  ) {
     val gateway = Gateway()
     private val job = SupervisorJob()
     private val scheduler = TestCoroutineScheduler()
-    val runtime = runtime(CoroutineScope(job + StandardTestDispatcher(scheduler)))
+    private val context = RuntimeEnvironment.getApplication()
+    var failRegistryCommit = false
+    private val backing = context.getSharedPreferences("conversation-${UUID.randomUUID()}", Context.MODE_PRIVATE)
+    val store =
+      WearGatewayStore(
+        object : SharedPreferences by backing {
+          override fun edit(): SharedPreferences.Editor {
+            val edit = backing.edit()
+            var writesRegistry = false
+            return object : SharedPreferences.Editor by edit {
+              override fun putString(
+                key: String?,
+                value: String?,
+              ): SharedPreferences.Editor {
+                writesRegistry = writesRegistry || key == GatewayRegistryStore.STORAGE_KEY
+                edit.putString(key, value)
+                return this
+              }
+
+              override fun commit(): Boolean {
+                val committed = edit.commit()
+                return committed && !(failRegistryCommit && writesRegistry)
+              }
+            }
+          }
+        },
+      )
+
+    init {
+      savedGateway?.let { store.replace(it, DeviceIdentityStore.withPrefs(context, store).loadOrCreate().deviceId) }
+    }
+
+    val runtime = WearDirectRuntime(context, CoroutineScope(job + StandardTestDispatcher(scheduler)), store)
 
     fun operation(action: () -> Unit): List<Job> {
       val existing = job.children.toSet()
@@ -944,6 +1691,61 @@ class WearDirectRuntimeTest {
       val work = operation { runtime.send("Current input", runtime.inputOwner()) }
       next(gateway.sends)
       return work to next(gateway.sendReplies)
+    }
+
+    suspend fun beginApproval(): Pair<List<Job>, HeldRequest> {
+      val approval =
+        runtime.state.value.approvals
+          .single { it.id == "plugin" }
+      val work = operation { runtime.resolve(approval, "deny") }
+      return work to next(gateway.approvalGets)
+    }
+
+    fun approvalResult(
+      status: String,
+      applied: Boolean? = null,
+    ): JsonObject =
+      buildJsonObject {
+        put("approval", gateway.approval("plugin", status))
+        applied?.let { put("applied", it) }
+      }
+
+    fun approvalNotFound(): JsonObject =
+      buildJsonObject {
+        put("code", "INVALID_REQUEST")
+        put("message", "Approval not found")
+        put("details", buildJsonObject { put("reason", "APPROVAL_NOT_FOUND") })
+      }
+
+    fun advanceRpcDeadline() {
+      // Arm the existing RPC timeout only after the server has observed its frame.
+      scheduler.runCurrent()
+      scheduler.advanceTimeBy(15_000)
+      scheduler.runCurrent()
+    }
+
+    fun runCurrent() = scheduler.runCurrent()
+
+    suspend fun observeTerminal(
+      run: String,
+      terminal: String,
+    ) {
+      gateway.chat(run, "Observed $terminal", state = terminal)
+      receiveBarrier("plugin")
+    }
+
+    suspend fun receiveBarrier(id: String) {
+      // A following same-socket event is a receive-pump barrier, not a render or history claim.
+      gateway.event(
+        "session.approval",
+        buildJsonObject {
+          put("sessionKey", "agent:main:main")
+          put("phase", "terminal")
+          put("updatedAtMs", 2)
+          put("approval", gateway.approval(id, status = "denied"))
+        },
+      )
+      await(runTasks = false) { runtime.state.value.takeIf { it.approvals.single { approval -> approval.id == id }.status == "denied" } }
     }
 
     suspend fun historyWhileSending(work: List<Job>): HeldRequest {
@@ -1014,7 +1816,14 @@ class WearDirectRuntimeTest {
     val sends = Channel<JsonObject>(Channel.UNLIMITED)
     val operatorHellos = Channel<() -> Unit>(Channel.UNLIMITED)
     val operatorSockets = Channel<WebSocket>(Channel.UNLIMITED)
+    val terminatedOperatorSockets = Channel<Pair<WebSocket, String>>(Channel.UNLIMITED)
     val histories = Channel<HeldRequest>(Channel.UNLIMITED)
+    val approvalReplays = Channel<HeldRequest>(Channel.UNLIMITED)
+    val approvalGets = Channel<HeldRequest>(Channel.UNLIMITED)
+    val approvalResolves = Channel<HeldRequest>(Channel.UNLIMITED)
+    val sessionLists = Channel<HeldRequest>(Channel.UNLIMITED)
+    val approvalRequestCount = AtomicInteger()
+    val historyRequestCount = AtomicInteger()
     val sendReplies = Channel<HeldRequest>(Channel.UNLIMITED)
     val stops = Channel<HeldRequest>(Channel.UNLIMITED)
     private val operatorSocket = AtomicReference<WebSocket>()
@@ -1027,6 +1836,10 @@ class WearDirectRuntimeTest {
 
     @Volatile var holdHistory = false
 
+    @Volatile var holdApprovalReplay = false
+
+    @Volatile var holdSessionList = false
+
     @Volatile var historyMessage: String? = null
     val server =
       MockWebServer().apply {
@@ -1035,6 +1848,8 @@ class WearDirectRuntimeTest {
             override fun dispatch(request: RecordedRequest): MockResponse =
               MockResponse().withWebSocketUpgrade(
                 object : WebSocketListener() {
+                  private var operator = false
+
                   override fun onOpen(
                     webSocket: WebSocket,
                     response: Response,
@@ -1054,6 +1869,7 @@ class WearDirectRuntimeTest {
                         "connect" -> {
                           connects.trySend(params)
                           val node = params.text("role") == "node"
+                          operator = !node
                           if (!node) {
                             operatorSocket.set(webSocket)
                             operatorSockets.trySend(webSocket)
@@ -1068,26 +1884,27 @@ class WearDirectRuntimeTest {
                         }
 
                         "sessions.list" -> {
-                          Json.parseToJsonElement("""{"sessions":[{"key":"agent:main:main","displayName":"Main"}]}""")
+                          if (holdSessionList) {
+                            sessionLists.trySend(held)
+                            return
+                          }
+                          sessionList("Main")
                         }
 
                         "sessions.messages.subscribe" -> {
-                          buildJsonObject {
-                            put("subscribed", true)
-                            put("key", params.text("key") ?: "agent:main:main")
-                            put(
-                              "approvalReplay",
-                              buildJsonObject {
-                                put("sessionKey", params.text("key") ?: "agent:main:main")
-                                put("updatedAtMs", 1)
-                                put("truncated", false)
-                                put("approvals", JsonArray(listOf("exec", "plugin", "system-agent").map(::approval)))
-                              },
-                            )
+                          approvalRequestCount.incrementAndGet()
+                          if (holdApprovalReplay) {
+                            approvalReplays.trySend(held)
+                            return
                           }
+                          approvalReplay(
+                            listOf("exec", "plugin", "system-agent").map { approval(it) },
+                            key = params.text("key") ?: "agent:main:main",
+                          )
                         }
 
                         "chat.history" -> {
+                          historyRequestCount.incrementAndGet()
                           if (holdHistory) {
                             histories.trySend(held)
                             return
@@ -1120,6 +1937,16 @@ class WearDirectRuntimeTest {
 
                         "chat.abort", "sessions.abort" -> {
                           stops.trySend(held)
+                          return
+                        }
+
+                        "approval.get" -> {
+                          approvalGets.trySend(held)
+                          return
+                        }
+
+                        "approval.resolve" -> {
+                          approvalResolves.trySend(held)
                           return
                         }
 
@@ -1159,6 +1986,23 @@ class WearDirectRuntimeTest {
                   ) {
                     webSocket.close(code, reason)
                   }
+
+                  override fun onClosed(
+                    webSocket: WebSocket,
+                    code: Int,
+                    reason: String,
+                  ) {
+                    if (operator) terminatedOperatorSockets.trySend(webSocket to "onClosed")
+                  }
+
+                  override fun onFailure(
+                    webSocket: WebSocket,
+                    t: Throwable,
+                    response: Response?,
+                  ) {
+                    // GatewaySession cancels its socket; peer EOF is also terminal evidence.
+                    if (operator) terminatedOperatorSockets.trySend(webSocket to "onFailure:${t.javaClass.simpleName}")
+                  }
                 },
               )
           }
@@ -1189,6 +2033,7 @@ class WearDirectRuntimeTest {
     fun event(
       name: String,
       payload: JsonObject,
+      sequence: Long? = null,
     ) {
       check(
         operatorSocket.get().send(
@@ -1196,6 +2041,7 @@ class WearDirectRuntimeTest {
             put("type", "event")
             put("event", name)
             put("payload", payload)
+            if (sequence != null) put("seq", sequence)
           }.toString(),
         ),
       )
@@ -1209,10 +2055,46 @@ class WearDirectRuntimeTest {
         }.toString().toByteArray(),
       )
 
-    private fun approval(kind: String): JsonObject =
+    fun sessionList(title: String): JsonObject =
+      buildJsonObject {
+        put(
+          "sessions",
+          JsonArray(
+            listOf(
+              buildJsonObject {
+                put("key", "agent:main:main")
+                put("displayName", title)
+              },
+            ),
+          ),
+        )
+      }
+
+    fun approvalReplay(
+      approvals: List<JsonObject>,
+      key: String = "agent:main:main",
+    ): JsonObject =
+      buildJsonObject {
+        put("subscribed", true)
+        put("key", key)
+        put(
+          "approvalReplay",
+          buildJsonObject {
+            put("sessionKey", key)
+            put("updatedAtMs", 1)
+            put("truncated", false)
+            put("approvals", JsonArray(approvals))
+          },
+        )
+      }
+
+    fun approval(
+      kind: String,
+      status: String = "pending",
+    ): JsonObject =
       buildJsonObject {
         put("id", kind)
-        put("status", "pending")
+        put("status", status)
         put("createdAtMs", 1)
         put("expiresAtMs", 9_000_000_000_000)
         put("urlPath", "/approvals/$kind")
@@ -1249,13 +2131,20 @@ class WearDirectRuntimeTest {
   ) {
     val params = frame["params"]!!.jsonObject
 
-    fun acknowledge(status: String) =
-      reply(
-        buildJsonObject {
-          put("runId", checkNotNull(params.text("idempotencyKey")))
-          put("status", status)
-        },
-      )
+    fun acknowledge(
+      status: String,
+      stopReason: String? = null,
+    ) = reply(
+      buildJsonObject {
+        put("runId", checkNotNull(params.text("idempotencyKey")))
+        put("status", status)
+        if (status == "timeout") {
+          put("summary", "aborted")
+          put("endedAt", 1_700_000_000_123L)
+          stopReason?.let { put("stopReason", it) }
+        }
+      },
+    )
 
     fun reply(
       payload: JsonObject,

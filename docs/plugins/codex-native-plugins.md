@@ -23,7 +23,7 @@ working.
 - `plugins.entries.codex.enabled` is `true`.
 - `plugins.entries.codex.config.codexPlugins.enabled` is `true`.
 - Codex app-server reports `0.149.0` or newer. The official plugin ships
-  `@openai/codex` `0.153.4`; newer custom, remote, and macOS desktop-owned
+  `@openai/codex` `0.154.0`; newer custom, remote, and macOS desktop-owned
   binaries continue with a compatibility warning and normal runtime validation.
 - The target Codex app-server can see the expected marketplace, plugin, and
   app inventory.
@@ -48,6 +48,10 @@ come from the signed-in Codex account. See
 for the OpenAI account and admin model.
 
 ## Quickstart
+
+The source Codex home is the Codex CLI state directory you are migrating from:
+`~/.codex` by default, or `CODEX_HOME` when that variable is set. See
+[`openclaw migrate`](/cli/migrate) to point at a different one with `--from`.
 
 Preview migration from the source Codex home:
 

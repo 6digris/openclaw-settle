@@ -24,6 +24,23 @@ In the current DM or group chat, the action can return the trusted sender's stab
 Private/shared-channel and non-current chat member lookups require additional roster permissions
 and are rejected by the default permission baseline.
 
+For `member-info` and `search` in the message tool, use `channelId` to select the
+conversation. A Teams channel uses the Graph `<team-id>/<channel-id>` form:
+
+```json5
+{
+  action: "member-info",
+  channel: "msteams",
+  channelId: "<team-id>/<channel-id>",
+  userId: "<user-id>",
+}
+```
+
+`search` uses the same `channelId` filter with a `query` instead of `userId`.
+Omitting the filter uses the current conversation when its Graph route is
+available. The selected conversation must still satisfy the configured access
+policy and the action's membership requirements.
+
 ## Native approval cards
 
 Microsoft Teams can deliver exec and plugin approval requests as Adaptive Cards in the originating conversation. Each card describes the requested command or plugin action and provides only the decisions allowed for that request, such as **Approve once**, **Always allow**, and **Deny**. After a decision or expiration, OpenClaw updates the original card with its final status.
@@ -56,7 +73,7 @@ OpenClaw sends Teams polls as Adaptive Cards (there is no native Teams poll API)
 - Votes are recorded by the gateway in OpenClaw plugin-state SQLite under `state/openclaw.sqlite`.
 - Existing `msteams-polls.json` files are imported by `openclaw doctor --fix`, not by the running plugin.
 - The gateway must stay online to record votes.
-- Polls do not auto-post result summaries, and there is no poll-results CLI yet.
+- Polls do not auto-post result summaries, and there is no poll-results CLI.
 
 ## Presentation cards
 

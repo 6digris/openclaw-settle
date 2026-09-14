@@ -6,7 +6,11 @@ import { safeParseJson } from "@openclaw/normalization-core";
 import { asFiniteNumber as normalizeFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { sql, type Insertable, type Selectable, type Updateable } from "kysely";
-import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../../infra/kysely-sync.js";
+import {
+  executeSqliteQuerySync,
+  getNodeSqliteKysely,
+  sqliteStringSet,
+} from "../../../infra/kysely-sync.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../../state/openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
@@ -28,6 +32,7 @@ type SubagentRunReadSqliteRow = Pick<
   "run_id" | "child_session_key" | "controller_session_key" | "requester_session_key" | "created_at"
 > & {
   model: string | null;
+  swarm_run_id: string | null;
   run_timeout_seconds: number | null;
   execution_status: SubagentRunRecord["execution"]["status"];
   started_at: number | null;
@@ -81,7 +86,13 @@ function parseJson(raw: string | null): unknown {
 
 /** Rehydrates one sqlite row into the normalized subagent run record shape. */
 function rowToSubagentRunRecord(row: SubagentRunSqliteRow): SubagentRunRecord | null {
-  const payload = parseJson(row.payload_json);
+  const stored = parseJson(row.payload_json);
+  const payload =
+    isRecord(stored) &&
+    isRecord(stored.parentCompletion) &&
+    stored.parentCompletion.completionTarget === "parent"
+      ? stored.parentCompletion
+      : stored;
   if (!isCanonicalSubagentRunRecord(payload)) {
     return null;
   }
@@ -118,7 +129,12 @@ export function bindSubagentRunRecord(entry: SubagentRunRecord): BoundSubagentRu
     controller_session_key: normalized.controllerSessionKey?.trim() || null,
     requester_session_key: normalized.requesterSessionKey,
     created_at: normalized.createdAt,
-    payload_json: JSON.stringify(normalized),
+    // Released readers require root execution/completion/delivery state. Hiding
+    // the whole private record also excludes it from legacy mixed/nested summaries.
+    // Downgrades may discard these rows, but cannot reinterpret them as public.
+    payload_json: JSON.stringify(
+      normalized.completionTarget === "parent" ? { parentCompletion: normalized } : normalized,
+    ),
   };
 }
 
@@ -204,14 +220,28 @@ function writeSubagentRunValues(
 
 type SubagentRegistryReadScope =
   | { kind: "controller"; sessionKey: string }
-  | { kind: "child"; sessionKey: string };
+  | { kind: "session"; sessionKey: string }
+  | { kind: "child"; sessionKey: string }
+  | { kind: "runs"; runIds: readonly string[] };
 
-function readSubagentRegistryRows(scope?: SubagentRegistryReadScope): SubagentRunSqliteRow[] {
-  const { db } = openOpenClawStateDatabase();
+function readSubagentRegistryRows(
+  scope?: SubagentRegistryReadScope,
+  database = openOpenClawStateDatabase(),
+): SubagentRunSqliteRow[] {
+  const { db } = database;
   const stateDb = getNodeSqliteKysely<SubagentRegistryDatabase>(db);
   let query = stateDb.selectFrom("subagent_runs").selectAll();
   if (scope?.kind === "child") {
     query = query.where("child_session_key", "=", scope.sessionKey);
+  } else if (scope?.kind === "runs") {
+    query = query.where("run_id", "in", sqliteStringSet(scope.runIds));
+  } else if (scope?.kind === "session") {
+    query = query.where((eb) =>
+      eb.or([
+        eb("controller_session_key", "=", scope.sessionKey),
+        eb("requester_session_key", "=", scope.sessionKey),
+      ]),
+    );
   } else if (scope?.kind === "controller") {
     // The writer trims controller keys; older null/empty rows belong to their requester.
     query = query.where((eb) =>
@@ -261,13 +291,30 @@ function readSubagentSessionListRows(): SubagentRunReadSqliteRow[] {
   return executeSqliteQuerySync(
     db,
     stateDb
-      .selectFrom("subagent_runs")
+      .with("canonical_runs", (query) =>
+        query.selectFrom("subagent_runs").select([
+          "run_id",
+          "child_session_key",
+          "controller_session_key",
+          "requester_session_key",
+          "created_at",
+          /* kysely-allow-raw: Normalize the private storage variant once before the shared canonical projection/filter. */
+          sql<string>`CASE WHEN json_valid(payload_json)
+          AND json_type(payload_json, '$.parentCompletion') = 'object'
+          AND json_extract(payload_json, '$.parentCompletion.completionTarget') = 'parent'
+          THEN json_extract(payload_json, '$.parentCompletion') ELSE payload_json END`.as(
+            "payload_json",
+          ),
+        ]),
+      )
+      .selectFrom("canonical_runs")
       .select([
         "run_id",
         "child_session_key",
         "controller_session_key",
         "requester_session_key",
         "created_at",
+        subagentPayloadJsonValue<string | null>("$.swarmRunId").as("swarm_run_id"),
         subagentPayloadJsonValue<string | null>("$.model").as("model"),
         subagentPayloadJsonValue<number | null>("$.collect").as("collect"),
         subagentPayloadJsonValue<string | null>("$.groupId").as("group_id"),
@@ -327,6 +374,7 @@ function rowToSubagentRunReadRecord(row: SubagentRunReadSqliteRow): SubagentRunR
   return Object.fromEntries(
     Object.entries({
       runId,
+      swarmRunId: row.swarm_run_id || undefined,
       childSessionKey,
       controllerSessionKey: row.controller_session_key?.trim() || undefined,
       requesterSessionKey,
@@ -361,12 +409,20 @@ function rowToSubagentRunReadRecord(row: SubagentRunReadSqliteRow): SubagentRunR
   ) as SubagentRunReadRecord;
 }
 
-function loadScopedSubagentRuns(scope: SubagentRegistryReadScope): SubagentRunRecord[] {
-  const key = scope.sessionKey.trim();
-  if (!key) {
+function loadScopedSubagentRuns(
+  scope: SubagentRegistryReadScope,
+  database?: OpenClawStateDatabase,
+): SubagentRunRecord[] {
+  const normalizedScope =
+    scope.kind === "runs" ? scope : { ...scope, sessionKey: scope.sessionKey.trim() };
+  if (
+    normalizedScope.kind === "runs"
+      ? normalizedScope.runIds.length === 0
+      : !normalizedScope.sessionKey
+  ) {
     return [];
   }
-  return readSubagentRegistryRows({ ...scope, sessionKey: key }).flatMap((row) => {
+  return readSubagentRegistryRows(normalizedScope, database).flatMap((row) => {
     const run = rowToSubagentRunRecord(row);
     return run ? [run] : [];
   });
@@ -379,11 +435,22 @@ export function loadSubagentRunsForControllerFromSqlite(
   return loadScopedSubagentRuns({ kind: "controller", sessionKey: controllerSessionKey });
 }
 
+/** Loads all generations readable by one requester or controller session. */
+export function loadSubagentRunsForSessionFromSqlite(sessionKey: string): SubagentRunRecord[] {
+  return loadScopedSubagentRuns({ kind: "session", sessionKey });
+}
+
 /** Loads all persisted generations for one child session through its existing index. */
 export function loadSubagentRunsForChildSessionFromSqlite(
   childSessionKey: string,
+  database?: OpenClawStateDatabase,
 ): SubagentRunRecord[] {
-  return loadScopedSubagentRuns({ kind: "child", sessionKey: childSessionKey });
+  return loadScopedSubagentRuns({ kind: "child", sessionKey: childSessionKey }, database);
+}
+
+/** Hydrates exact physical rows selected by the shared registry read projection. */
+export function loadSubagentRunsByRunIdsFromSqlite(runIds: readonly string[]): SubagentRunRecord[] {
+  return loadScopedSubagentRuns({ kind: "runs", runIds });
 }
 
 /** Loads the canonical subagent registry from shared SQLite state. */

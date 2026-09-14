@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { decodeXML } from "entities";
 import { expectDefined } from "../packages/normalization-core/src/expect.js";
 import { isDirectRunUrl } from "./lib/direct-run.mjs";
 import { NATIVE_I18N_LOCALES } from "./native-i18n-locales.ts";
@@ -120,23 +121,30 @@ function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function decodeXml(value: string): string {
-  return value
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .replaceAll("&quot;", '"')
-    .replaceAll("&amp;", "&")
-    .replaceAll("\\n", "\n")
-    .replaceAll("\\'", "'")
-    .replaceAll('\\"', '"')
-    .replaceAll("\\\\", "\\");
-}
-
 export function decodeAndroidResourceValue(rawValue: string): string {
-  const trimmed = rawValue.trim();
-  const unquoted =
-    trimmed.startsWith('"') && trimmed.endsWith('"') ? trimmed.slice(1, -1) : trimmed;
-  return decodeXml(unquoted);
+  // Expand original XML references once; entities applies HTML C1 remapping to numerics.
+  const xml = rawValue
+    .trim()
+    .replace(/&(?:amp|lt|gt|quot|apos|#(?:\d+|x[\da-fA-F]+));/gu, (ref) => {
+      if (!ref.startsWith("&#")) {
+        return decodeXML(ref);
+      }
+      const radix = ref.startsWith("&#x") ? 16 : 10;
+      const codePoint = Number.parseInt(ref.slice(radix === 16 ? 3 : 2, -1), radix);
+      // XML 1.0 Char ranges; invalid references remain for the resource compiler to reject.
+      return codePoint === 0x9 ||
+        codePoint === 0xa ||
+        codePoint === 0xd ||
+        (codePoint >= 0x20 && codePoint <= 0xd7ff) ||
+        (codePoint >= 0xe000 && codePoint <= 0xfffd) ||
+        (codePoint >= 0x10000 && codePoint <= 0x10ffff)
+        ? String.fromCodePoint(codePoint)
+        : ref;
+    });
+  // Consume each supported escape atomically; emitted quotes/backslashes are not syntax again.
+  return xml.replace(/\\([n'"\\])|"/gu, (_match, escaped: string | undefined) =>
+    escaped === undefined ? "" : escaped === "n" ? "\n" : escaped,
+  );
 }
 
 type KotlinInterpolation = {
@@ -272,7 +280,7 @@ function parseStrings(source: string): ResourceString[] {
     key: match[1] ?? "",
     attrs: match[2] ?? "",
     rawValue: match[3] ?? "",
-    value: decodeXml(match[3] ?? ""),
+    value: decodeAndroidResourceValue(match[3] ?? ""),
   }));
 }
 
@@ -294,7 +302,7 @@ function parseArrays(source: string): Map<string, string[]> {
     [...source.matchAll(ARRAY_RE)].map((match) => [
       match[1] ?? "",
       [...(match[2] ?? "").matchAll(ARRAY_ITEM_RE)].map((item) =>
-        decodeXml((item[1] ?? "").trim()),
+        decodeAndroidResourceValue(item[1] ?? ""),
       ),
     ]),
   );

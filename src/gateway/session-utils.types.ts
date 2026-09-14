@@ -61,6 +61,7 @@ export type GatewaySessionRow = Omit<SessionRow, "archivedBy" | "updatedAt" | "w
   updatedAt: number | null;
   archivedBy?: SessionEntry["archivedBy"];
   agentStatus?: SessionEntry["agentStatus"];
+  activitySummary?: import("../../packages/gateway-protocol/src/schema/sessions-activity-summary.js").SessionActivitySummary;
   observerDigest?: Pick<
     SessionObserverDigest,
     "agentId" | "runId" | "headline" | "health" | "updatedAt" | "revision"
@@ -130,7 +131,7 @@ export type SessionPreviewItem = {
 
 export type SessionsPreviewEntry = {
   key: string;
-  status: "ok" | "empty" | "missing" | "error";
+  status: "ok" | "empty" | "missing" | "cold" | "error";
   items: SessionPreviewItem[];
 };
 

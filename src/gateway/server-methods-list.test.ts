@@ -151,6 +151,19 @@ describe("listGatewayMethods", () => {
     expect(listGatewayMethods()).toContain("node.pluginSurface.refresh");
   });
 
+  it("advertises plugin reload with admin mutation policy and generation invalidation", () => {
+    expect(GATEWAY_EVENTS).toContain("plugins.changed");
+    expect(listGatewayMethods()).toContain("plugins.reload");
+    expect(coreGatewayHandlers["plugins.reload"]).toBeTypeOf("function");
+    const descriptors = createCoreGatewayMethodDescriptors(coreGatewayHandlers);
+    for (const name of ["plugins.reload", "plugins.refresh"]) {
+      expect(descriptors.find((descriptor) => descriptor.name === name)).toMatchObject({
+        scope: "operator.admin",
+        controlPlaneWrite: true,
+      });
+    }
+  });
+
   it("advertises node plugin tool catalog updates", () => {
     expect(listGatewayMethods()).toContain("node.pluginTools.update");
   });
@@ -184,6 +197,18 @@ describe("listGatewayMethods", () => {
       "claws.monitors",
       ...pluginDiscoveryMethods,
       "tasks.history",
+      "environments.prepare",
+      "models.authRefresh",
+      "models.authLogin",
+      "models.authSetApiKey",
+      "sessions.storage.status",
+      "sessions.storage.run",
+      "plugins.reload",
+      "claws.packages.remove",
+      "canvas.document.preview",
+      "computer.status",
+      "computer.invoke",
+      "sessions.activitySummary.ensure",
     ];
     expect(listGatewayMethods().slice(-expectedSuffix.length)).toEqual(expectedSuffix);
     const methods = listGatewayMethods();
@@ -208,6 +233,18 @@ describe("listGatewayMethods", () => {
       "claws.monitors",
       ...pluginDiscoveryMethods,
       "tasks.history",
+      "environments.prepare",
+      "models.authRefresh",
+      "models.authLogin",
+      "models.authSetApiKey",
+      "sessions.storage.status",
+      "sessions.storage.run",
+      "plugins.reload",
+      "claws.packages.remove",
+      "canvas.document.preview",
+      "computer.status",
+      "computer.invoke",
+      "sessions.activitySummary.ensure",
     ]);
   });
 
@@ -359,6 +396,18 @@ describe("listGatewayMethods", () => {
       "claws.monitors",
       ...pluginDiscoveryMethods,
       "tasks.history",
+      "environments.prepare",
+      "models.authRefresh",
+      "models.authLogin",
+      "models.authSetApiKey",
+      "sessions.storage.status",
+      "sessions.storage.run",
+      "plugins.reload",
+      "claws.packages.remove",
+      "canvas.document.preview",
+      "computer.status",
+      "computer.invoke",
+      "sessions.activitySummary.ensure",
     ];
     expect(coreMethods.slice(-expectedCoreSuffix.length)).toEqual(expectedCoreSuffix);
     expect(methods.indexOf("approval.get")).toBeGreaterThan(methods.indexOf("tts.speak"));
@@ -412,6 +461,16 @@ describe("listGatewayMethods", () => {
     );
   });
 
+  it("advertises API-key saving as an administrator control-plane write", () => {
+    expect(listGatewayMethods()).toContain("models.authSetApiKey");
+    expect(coreGatewayHandlers["models.authSetApiKey"]).toBeTypeOf("function");
+    expect(
+      createCoreGatewayMethodDescriptors(coreGatewayHandlers).find(
+        (descriptor) => descriptor.name === "models.authSetApiKey",
+      ),
+    ).toMatchObject({ scope: "operator.admin", controlPlaneWrite: true });
+  });
+
   it("advertises the versioned Talk session RPCs", () => {
     const methods = listGatewayMethods();
     expect(methods).toContain("talk.client.create");
@@ -429,7 +488,11 @@ describe("listGatewayMethods", () => {
   });
 
   it("advertises and wires cloud worker environment mutations", () => {
-    const methods = ["environments.create", "environments.destroy"] as const;
+    const methods = [
+      "environments.create",
+      "environments.destroy",
+      "environments.prepare",
+    ] as const;
     const advertisedMethods = listGatewayMethods();
     const descriptors = createCoreGatewayMethodDescriptors(coreGatewayHandlers);
 

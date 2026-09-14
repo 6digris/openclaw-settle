@@ -61,6 +61,7 @@ type GatewayRequestContextRuntime = Pick<
   | "nodeRegistry"
   | "workerEnvironmentService"
   | "hostDesktopService"
+  | "gatewayComputerService"
   | "githubPublicationService"
   | "validateAgentRuntimeApprovalAuthority"
   | "terminalSessions"
@@ -96,6 +97,7 @@ type GatewayRequestContextRuntime = Pick<
     | "getAttachedGatewayMethodRegistry"
   > & {
     sessionObserver: NonNullable<GatewayRequestContext["sessionObserver"]>;
+    sessionActivitySummaries?: GatewayRequestContext["sessionActivitySummaries"];
     sessionCompanion: NonNullable<GatewayRequestContext["sessionCompanion"]>;
     isConnectionActive: NonNullable<GatewayRequestContext["isConnectionActive"]>;
     clients: Set<GatewayWsClient>;
@@ -135,7 +137,7 @@ type GatewayRequestContextRuntime = Pick<
     readinessEventLoopHealth: Pick<GatewayCoreRuntime["readinessEventLoopHealth"], "snapshot">;
     kernel: Pick<
       GatewayCoreRuntime["kernel"],
-      "notifyPluginMetadataChanged" | "getConfigReloaderHotReloadStatus"
+      "applyPluginLifecycleChange" | "getConfigReloaderHotReloadStatus"
     >;
     workerEnvironmentStartup:
       | Pick<NonNullable<GatewayCoreRuntime["workerEnvironmentStartup"]>, "placementStore">
@@ -217,6 +219,7 @@ export function createGatewayRequestContext(
     sessionEventSubscribers,
     sessionMessageSubscribers,
     sessionObserver,
+    sessionActivitySummaries,
   } = runtime;
   const { getPortalService } = runtime.transportBridge;
   const workerSessionPlacementService = runtime.workerEnvironmentStartup?.placementStore;
@@ -250,15 +253,16 @@ export function createGatewayRequestContext(
         ? []
         : (runtimeState.configReloader.getDeferredChannelReloads?.() ?? []),
     getGatewayMethodRegistry: runtime.getAttachedGatewayMethodRegistry,
-    gatewayTlsFingerprint: runtime.gatewayTls.enabled
-      ? runtime.gatewayTls.fingerprintSha256
-      : undefined,
+    get gatewayTlsFingerprint() {
+      return runtime.gatewayTls.enabled ? runtime.gatewayTls.fingerprintSha256 : undefined;
+    },
     controlUiSessionPullRequests: runtimeState.controlUiSessionPullRequests,
     sessionViewerPresence: runtimeState.sessionViewerPresence,
     sessionCompanion: runtime.sessionCompanion,
     sessionObserver,
+    sessionActivitySummaries,
     mentionInbox: runtime.mentionInbox,
-    notifyPluginMetadataChanged: runtime.kernel.notifyPluginMetadataChanged,
+    applyPluginLifecycleChange: runtime.kernel.applyPluginLifecycleChange,
     getMcpAppSandboxPort: runtime.transportBridge.getMcpAppSandboxPort,
     ensureSandboxHostPort: runtime.transportBridge.ensureSandboxHostPort,
     get portalService() {
@@ -474,6 +478,9 @@ export function createGatewayRequestContext(
       ? { workerEnvironmentService: runtime.workerEnvironmentService }
       : {}),
     ...(runtime.hostDesktopService ? { hostDesktopService: runtime.hostDesktopService } : {}),
+    ...(runtime.gatewayComputerService
+      ? { gatewayComputerService: runtime.gatewayComputerService }
+      : {}),
     ...(workerSessionPlacementService ? { workerSessionPlacementService } : {}),
     ...(workerPlacementDiskSpaceReader ? { workerPlacementDiskSpaceReader } : {}),
     ...(workerPlacementRunnerAvailabilityReader ? { workerPlacementRunnerAvailabilityReader } : {}),

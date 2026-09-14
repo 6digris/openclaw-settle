@@ -15,6 +15,10 @@ export const managedHandoffBootSchema = z.union([
     platform: z.literal("win32"),
     identity: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z$/),
   }),
+  z.strictObject({
+    platform: z.literal("freebsd"),
+    identity: z.string().regex(/^[a-f0-9]{32}$/),
+  }),
 ]);
 const nativeLifetimeSchema = z.strictObject({
   kind: z.literal("native"),
@@ -85,10 +89,26 @@ export type HandoffNativeLifetime = z.infer<typeof nativeLifetimeSchema>;
 export type ManagedHandoffLeaseAction = z.infer<typeof actionSchema>;
 export type ManagedHandoffLeasePayload = z.infer<typeof payloadSchema>;
 
+// A retired v1 record names one process. It predates both the executor/helper
+// split and native custody, so it can never carry a v3 borrower.
+const retiredPayloadSchema = z.strictObject({
+  version: z.literal(1),
+  ...processIdentitySchema.shape,
+});
+
 export function parseManagedHandoffLeasePayload(value: string) {
   try {
     return payloadSchema.parse(JSON.parse(value));
   } catch {
     return null;
+  }
+}
+
+/** Distinguish an exactly decoded retired record from unreadable prospective data. */
+export function isRetiredManagedHandoffLeasePayload(value: string): boolean {
+  try {
+    return retiredPayloadSchema.safeParse(JSON.parse(value)).success;
+  } catch {
+    return false;
   }
 }

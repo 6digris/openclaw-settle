@@ -34,11 +34,14 @@ openclaw plugins install @openclaw/irc
 }
 ```
 
-3. Start/restart the Gateway:
+3. Verify the channel:
 
 ```bash
-openclaw gateway run
+openclaw channels status --probe
 ```
+
+Config changes follow [hot reload](/gateway/configuration/hot-reload). If the
+Gateway is offline, start it with `openclaw gateway run`.
 
 Prefer a private IRC server for bot coordination. If you intentionally use a public IRC network, common choices include Libera.Chat, OFTC, and Snoonet. Avoid predictable public channels for bot or swarm backchannel traffic.
 
@@ -304,5 +307,5 @@ Default account supports:
 - [Channels Overview](/channels) — all supported channels
 - [Pairing](/channels/pairing) — DM authentication and pairing flow
 - [Groups](/channels/groups) — group chat behavior and mention gating
-- [Channel Routing](/channels/channel-routing) — session routing for messages
+- [Channel routing](/channels/channel-routing) — session routing for messages
 - [Security](/gateway/security) — access model and hardening

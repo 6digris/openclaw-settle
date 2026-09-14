@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import { createRequire, registerHooks } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { SQLITE_READONLY_CHILD_ARG } from "../infra/runtime-process-entrypoints.js";
 
 const require = createRequire(import.meta.url);
 const root = process.env.HOME!;
@@ -73,6 +74,7 @@ async function triageCommand() {
   const contextIndex = process.argv.indexOf('--update-result');
   if (contextIndex < 0) throw new Error('Missing update failure artifact');
   await fs.readFile(process.argv[contextIndex + 1], 'utf8');
+  ${scenario === "plugin-error" ? "await new Promise(resolve => setTimeout(resolve, 11_000));" : ""}
   const promptPath = path.join(process.env.OPENCLAW_STATE_DIR, 'logs', 'support', 'triage-fixture-prompt.md');
   await fs.mkdir(path.dirname(promptPath), { recursive: true });
   await fs.writeFile(promptPath, 'Synthetic update failure debugging prompt.\\n');
@@ -111,7 +113,8 @@ const stubs = new Map<string, string>([
   // place that URL in a shared chunk. Workers still execute their real compiled code.
   [
     sourceUrl("../infra/runtime-process-entrypoints.ts"),
-    `export const runtimeProcessEntrypoints = ${runtimeProcessEntrypointsJson};`,
+    `export const runtimeProcessEntrypoints = ${runtimeProcessEntrypointsJson};
+export const SQLITE_READONLY_CHILD_ARG = ${JSON.stringify(SQLITE_READONLY_CHILD_ARG)};`,
   ],
   [sourceUrl("../commands/doctor.ts"), doctorSource],
   [sourceUrl("../config/config.ts"), snapshotSource],

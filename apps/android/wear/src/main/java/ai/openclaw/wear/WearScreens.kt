@@ -158,6 +158,11 @@ internal fun OpenClawWearScreens(
   initialPage: WearHomePage = WearHomePage.Chat,
   navigationRequest: WearNavigationRequest? = null,
   voiceSwipeHintEnabled: Boolean = true,
+  speechFailed: Boolean = false,
+  realtimeStopping: Boolean = false,
+  microphonePermissionRequired: Boolean = false,
+  microphoneSettingsRequired: Boolean = false,
+  onMicrophoneRecovery: () -> Unit = {},
   onNavigationRequestHandled: (Int) -> Unit = {},
   onTalk: () -> Unit,
   onType: () -> Unit,
@@ -311,6 +316,7 @@ internal fun OpenClawWearScreens(
             onClearSessionSearch = onClearSessionSearch,
             onSearchModels = onSearchModels,
             onClearModelSearch = onClearModelSearch,
+            speechFailed = speechFailed,
             onSpeakLatest = onSpeakLatest,
             onStopSpeaking = onStopSpeaking,
           )
@@ -319,8 +325,12 @@ internal fun OpenClawWearScreens(
         WearHomePage.Voice -> {
           VoicePage(
             voicePagerState = voicePagerState,
+            microphonePermissionRequired = microphonePermissionRequired,
+            microphoneSettingsRequired = microphoneSettingsRequired,
+            onMicrophoneRecovery = onMicrophoneRecovery,
             showSwipeHint = showVoiceSwipeHint && homePages.getOrNull(pagerState.currentPage) == WearHomePage.Voice,
             realtimeTalk = snapshot.realtimeTalk,
+            realtimeStopping = realtimeStopping,
             speaking = speaking,
             realtimeCapturing = realtimeCapturing,
             realtimePlaying = realtimePlaying,
@@ -382,6 +392,7 @@ internal fun wearLaunchPage(
 @Composable
 private fun ChatPage(
   snapshot: WearConversationSnapshot,
+  speechFailed: Boolean,
   interaction: WearInteractionState,
   speaking: Boolean,
   actionBusy: Boolean,
@@ -478,6 +489,7 @@ private fun ChatPage(
           speaking = speaking,
           gatewayConnected = snapshot.gatewayState == WearGatewayState.CONNECTED,
         )
+        if (speechFailed) InlineError(stringResource(R.string.real_time_audio_failed))
       }
       if (canAbort) {
         item {
@@ -605,7 +617,11 @@ private fun ChatPage(
 private fun VoicePage(
   voicePagerState: androidx.wear.compose.foundation.pager.PagerState,
   showSwipeHint: Boolean,
+  microphonePermissionRequired: Boolean,
+  microphoneSettingsRequired: Boolean,
+  onMicrophoneRecovery: () -> Unit,
   realtimeTalk: WearRealtimeTalkSnapshot,
+  realtimeStopping: Boolean,
   speaking: Boolean,
   realtimeCapturing: Boolean,
   realtimePlaying: Boolean,
@@ -672,7 +688,11 @@ private fun VoicePage(
       when (mode) {
         VOICE_HOME_MODE -> {
           VoiceHomeMode(
+            microphonePermissionRequired = microphonePermissionRequired,
+            microphoneSettingsRequired = microphoneSettingsRequired,
+            onMicrophoneRecovery = onMicrophoneRecovery,
             realtimeTalk = realtimeTalk,
+            realtimeStopping = realtimeStopping,
             speaking = speaking,
             realtimeCapturing = realtimeCapturing,
             realtimePlaying = realtimePlaying,
@@ -693,12 +713,18 @@ private fun VoicePage(
           ThreadVoiceMode(
             conversation = realtimeTalk.conversation,
             thinking =
-              realtimeThinkingOverride || realtimeTalk.status == WearRealtimeTalkStatus.THINKING,
+              !realtimeStopping && (realtimeThinkingOverride || realtimeTalk.status == WearRealtimeTalkStatus.THINKING),
             realtimeActive = realtimeTalk.active || realtimeCapturing,
             actionBusy = actionBusy,
             inputEnabled = inputEnabled,
             onType = onType,
-            onRealtimeTalk = onRealtimeTalk,
+            onRealtimeTalk = {
+              if (microphonePermissionRequired && !realtimeTalk.active && !realtimeCapturing) {
+                selectMode(VOICE_HOME_MODE)
+              } else {
+                onRealtimeTalk()
+              }
+            },
           )
         }
       }
@@ -722,7 +748,11 @@ private fun VoicePage(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun VoiceHomeMode(
+  microphonePermissionRequired: Boolean,
+  microphoneSettingsRequired: Boolean,
+  onMicrophoneRecovery: () -> Unit,
   realtimeTalk: WearRealtimeTalkSnapshot,
+  realtimeStopping: Boolean,
   speaking: Boolean,
   realtimeCapturing: Boolean,
   realtimePlaying: Boolean,
@@ -740,6 +770,7 @@ private fun VoiceHomeMode(
   val colors = OpenClawWearTheme.colors
   val realtimeActive = realtimeTalk.active || realtimeCapturing
   val ttsOnly = speaking && !realtimeActive
+  val recoverMicrophone = microphonePermissionRequired && !realtimeActive && !ttsOnly
   val state =
     realtimeVoiceButtonState(
       realtimeTalk = realtimeTalk,
@@ -747,7 +778,7 @@ private fun VoiceHomeMode(
       realtimeCapturing = realtimeCapturing,
       realtimePlaying = realtimePlaying,
       realtimePlaybackFailed = realtimePlaybackFailed,
-      realtimeThinkingOverride = realtimeThinkingOverride,
+      realtimeThinkingOverride = realtimeThinkingOverride && !realtimeStopping,
     )
   var dictatePreview by remember { mutableStateOf(false) }
   val coroutineScope = rememberCoroutineScope()
@@ -768,6 +799,8 @@ private fun VoiceHomeMode(
     if (liveActionEnabled) {
       if (ttsOnly) {
         onStopSpeaking()
+      } else if (recoverMicrophone) {
+        onMicrophoneRecovery()
       } else {
         onRealtimeTalk()
       }
@@ -784,6 +817,7 @@ private fun VoiceHomeMode(
     }
   val statusText =
     when {
+      realtimeStopping -> stringResource(R.string.stopping)
       dictatePreview -> stringResource(R.string.listening)
       label == null -> null
       realtimeActive -> "$label · ${formatVoiceElapsedTime(realtimeElapsedSeconds)}"
@@ -800,6 +834,7 @@ private fun VoiceHomeMode(
   val liveClickLabel =
     when {
       ttsOnly -> stringResource(R.string.stop_speaking)
+      recoverMicrophone -> stringResource(if (microphoneSettingsRequired) R.string.open_settings else R.string.retry)
       realtimeActive -> stringResource(R.string.stop_speaking)
       else -> stringResource(R.string.speak_to_agent)
     }
@@ -855,7 +890,8 @@ private fun VoiceHomeMode(
           modifier =
             Modifier
               .align(Alignment.Center)
-              .size(layout.orbSize)
+              .width(layout.orbSize)
+              .then(if (recoverMicrophone) Modifier else Modifier.height(layout.orbSize))
               .offset(y = voiceControlOffset)
               .combinedClickable(
                 // combinedClickable gates every gesture together; keep preview exclusive and fall back to Dictate.
@@ -871,14 +907,36 @@ private fun VoiceHomeMode(
               },
           contentAlignment = Alignment.Center,
         ) {
-          WearTalkAvatar(
-            state = avatarState,
-            mouthLevel = if (realtimePlaying) realtimeMouthLevel else 0f,
-            syntheticSpeech = ttsOnly,
-            accent = accent,
-            danger = colors.danger,
-            modifier = Modifier.fillMaxSize(),
-          )
+          if (recoverMicrophone) {
+            Column(
+              horizontalAlignment = Alignment.CenterHorizontally,
+              verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+              Text(
+                text = stringResource(R.string.microphone_permission_required),
+                color = colors.danger,
+                textAlign = TextAlign.Center,
+                fontSize = 12.sp,
+                lineHeight = 14.sp,
+              )
+              Text(
+                text = stringResource(if (microphoneSettingsRequired) R.string.open_settings else R.string.retry),
+                color = colors.voiceAccent,
+                textAlign = TextAlign.Center,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+              )
+            }
+          } else {
+            WearTalkAvatar(
+              state = avatarState,
+              mouthLevel = if (realtimePlaying) realtimeMouthLevel else 0f,
+              syntheticSpeech = ttsOnly,
+              accent = accent,
+              danger = colors.danger,
+              modifier = Modifier.fillMaxSize(),
+            )
+          }
         }
         statusText?.let { status ->
           Text(
@@ -2129,9 +2187,14 @@ private fun ContextPickerOverlay(
       }
 
       WearContextPicker.Model -> {
+        if (!snapshot.sessionModelCatalogSupported) {
+          item { InlineError(text = stringResource(R.string.model_catalog_update_required)) }
+        } else if (snapshot.modelCatalogRefreshFailed) {
+          item { InlineError(text = stringResource(R.string.model_catalog_refresh_failed)) }
+        }
         val models =
           if (snapshot.modelSearchQuery == null) snapshot.models else snapshot.modelSearchResults
-        if (models.isEmpty()) {
+        if (snapshot.sessionModelCatalogSupported && models.isEmpty()) {
           item { PickerEmptyResult() }
         }
         models.forEach { model ->

@@ -354,29 +354,136 @@ describe("native app i18n inventory", () => {
     expect(entries.map((entry) => entry.source)).toEqual(["Gateway ready"]);
   });
 
-  it("decodes Android XML resource values once before inventory identity", () => {
-    const entries = extractNativeI18nCandidates(
-      "android",
-      "apps/android/wear/src/main/res/values/strings.xml",
-      String.raw`<resources>
-        <string name="session">This session\'s approvals</string>
-        <string name="quoted">"Say \"hello\" to %1$s"</string>
-        <string name="entities">Read &amp; write &lt;now&gt; &quot;safely&quot;</string>
-        <string name="backslash">Path C:\\temp</string>
-        <string-array name="choices"><item>"Read &amp; write"</item></string-array>
-        <plurals name="approvals"><item quantity="one">%1$d session\'s approval</item></plurals>
-      </resources>`,
-    );
+  // The first sixteen rows match independently compiled AAPT2 resource values.
+  it.each([
+    {
+      name: "named_quote",
+      xml: '<string name="named_quote">Read &amp; write &lt;now&gt; &quot;safely&quot;</string>',
+      kind: "resource-string",
+      source: "Read & write <now> safely",
+    },
+    {
+      name: "literal_quote",
+      xml: '<string name="literal_quote">Read &amp; write &lt;now&gt; "safely"</string>',
+      kind: "resource-string",
+      source: "Read & write <now> safely",
+    },
+    {
+      name: "decimal_quote",
+      xml: '<string name="decimal_quote">Read &amp; write &lt;now&gt; &#34;safely&#34;</string>',
+      kind: "resource-string",
+      source: "Read & write <now> safely",
+    },
+    {
+      name: "hex_quote",
+      xml: '<string name="hex_quote">Read &amp; write &lt;now&gt; &#x22;safely&#x22;</string>',
+      kind: "resource-string",
+      source: "Read & write <now> safely",
+    },
+    {
+      name: "escaped_named_quote",
+      xml: String.raw`<string name="escaped_named_quote">Read &amp; write &lt;now&gt; \&quot;safely\&quot;</string>`,
+      kind: "resource-string",
+      source: 'Read & write <now> "safely"',
+    },
+    {
+      name: "escaped_literal_quote",
+      xml: String.raw`<string name="escaped_literal_quote">Read &amp; write &lt;now&gt; \"safely\"</string>`,
+      kind: "resource-string",
+      source: 'Read & write <now> "safely"',
+    },
+    {
+      name: "outer_quoted",
+      xml: String.raw`<string name="outer_quoted">"Say \"hello\" to %1$s"</string>`,
+      kind: "resource-string",
+      source: 'Say "hello" to %1$s',
+    },
+    {
+      name: "literal_backslash_n",
+      xml: String.raw`<string name="literal_backslash_n">Path \\n suffix</string>`,
+      kind: "resource-string",
+      source: String.raw`Path \n suffix`,
+    },
+    {
+      name: "double_encoded_amp",
+      xml: '<string name="double_encoded_amp">Read &amp;quot;safely&amp;quot;</string>',
+      kind: "resource-string",
+      source: "Read &quot;safely&quot;",
+    },
+    {
+      name: "escaped_apostrophe",
+      xml: String.raw`<string name="escaped_apostrophe">This session\'s approvals</string>`,
+      kind: "resource-string",
+      source: "This session's approvals",
+    },
+    {
+      name: "array_named_quote",
+      xml: '<string-array name="quote_forms"><item>Read &quot;safely&quot;</item></string-array>',
+      kind: "resource-item",
+      source: "Read safely",
+    },
+    {
+      name: "array_decimal_quote",
+      xml: '<string-array name="quote_forms"><item>Read &#34;safely&#34;</item></string-array>',
+      kind: "resource-item",
+      source: "Read safely",
+    },
+    {
+      name: "array_escaped_named_quote",
+      xml: String.raw`<string-array name="quote_forms"><item>Read \&quot;safely\&quot;</item></string-array>`,
+      kind: "resource-item",
+      source: 'Read "safely"',
+    },
+    {
+      name: "array_double_encoded_amp",
+      xml: '<string-array name="quote_forms"><item>Read &amp;quot;safely&amp;quot;</item></string-array>',
+      kind: "resource-item",
+      source: "Read &quot;safely&quot;",
+    },
+    {
+      name: "plural_named_quote",
+      xml: '<plurals name="quoted_counts"><item quantity="one">%1$d &quot;session&quot;</item></plurals>',
+      kind: "resource-item",
+      source: "%1$d session",
+    },
+    {
+      name: "plural_escaped_named_quote",
+      xml: String.raw`<plurals name="quoted_counts"><item quantity="other">%1$d \&quot;sessions\&quot;</item></plurals>`,
+      kind: "resource-item",
+      source: '%1$d "sessions"',
+    },
+    {
+      name: "backslash_path",
+      xml: String.raw`<string name="backslash">Path C:\\temp</string>`,
+      kind: "resource-string",
+      source: String.raw`Path C:\temp`,
+    },
+    {
+      name: "outer_quoted_array",
+      xml: '<string-array name="choices"><item>"Read &amp; write"</item></string-array>',
+      kind: "resource-item",
+      source: "Read & write",
+    },
+    {
+      name: "plural_apostrophe",
+      xml: String.raw`<plurals name="approvals"><item quantity="one">%1$d session\'s approval</item></plurals>`,
+      kind: "resource-item",
+      source: "%1$d session's approval",
+    },
+  ])(
+    "decodes Android XML resource values once before inventory identity: $name",
+    ({ xml, kind, source }) => {
+      const entries = extractNativeI18nCandidates(
+        "android",
+        "apps/android/wear/src/main/res/values/strings.xml",
+        `<resources>${xml}</resources>`,
+      );
 
-    expect(entries.map(({ kind, source }) => ({ kind, source }))).toEqual([
-      { kind: "resource-string", source: "This session's approvals" },
-      { kind: "resource-string", source: 'Say "hello" to %1$s' },
-      { kind: "resource-string", source: 'Read & write <now> "safely"' },
-      { kind: "resource-string", source: String.raw`Path C:\temp` },
-      { kind: "resource-item", source: "Read & write" },
-      { kind: "resource-item", source: "%1$d session's approval" },
-    ]);
-  });
+      expect(entries.map((entry) => ({ kind: entry.kind, source: entry.source }))).toEqual([
+        { kind, source },
+      ]);
+    },
+  );
 
   it("extracts only localizable usage descriptions from Apple plists", () => {
     const entries = extractNativeI18nCandidates(
@@ -704,7 +811,7 @@ describe("native app i18n inventory", () => {
       entries.some(
         (entry) =>
           entry.source ===
-          "The current gateway.remote.token value is not plain text. OpenClaw for macOS cannot use it directly; enter a plaintext token here to replace it.",
+          "Use the credential for this destination. Leave both fields empty only if this route already has device pairing or does not require a shared credential. Changing the destination clears this form's saved credentials.",
       ),
     ).toBe(true);
     expect(
@@ -725,16 +832,16 @@ describe("native app i18n inventory", () => {
       entries.some(
         (entry) =>
           entry.source ===
-          "Paste the token configured on the gateway host. On the gateway host, run `openclaw gateway auth-token --show` in an interactive terminal, then paste its output.",
+          "A setup code supplies the address and available certificate information automatically. For token or password authentication, enter the ordinary Gateway credential below.",
       ),
     ).toBe(true);
     expect(
       entries.some((entry) =>
         [
-          "The current gateway.remote.token value is not plain text. ",
+          "Use the credential for this destination. Leave both fields empty only if this route ",
           "Cron changes require operator.admin. Setup codes intentionally do not grant it. ",
           "Writes a rotating, local-only log under ~/Library/Logs/OpenClaw/. ",
-          "Paste the token configured on the gateway host. ",
+          "A setup code supplies the address and available certificate information automatically. ",
         ].includes(entry.source),
       ),
     ).toBe(false);

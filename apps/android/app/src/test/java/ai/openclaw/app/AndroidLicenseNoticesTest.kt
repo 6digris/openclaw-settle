@@ -133,5 +133,8 @@ class AndroidLicenseNoticesTest {
     assertTrue(licenses.any { license -> license.title == "CodexBar" && license.text.contains("Peter Steinberger") })
     assertTrue(licenses.any { license -> license.title == "Lobe Icons" && license.text.contains("LobeHub") })
     assertTrue(licenses.any { license -> license.title == "llama.cpp" && license.text.contains("ggml authors") })
+    val composeNotice = licenses.single { license -> license.title == "AndroidX Compose" }.text
+    assertTrue(composeNotice.contains("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.0"))
+    assertTrue(composeNotice.contains("androidx.lifecycle:lifecycle-viewmodel-compose-android:2.11.0"))
   }
 }

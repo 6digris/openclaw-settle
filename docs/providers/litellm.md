@@ -30,8 +30,13 @@ spend limits, and backend failover without changing OpenClaw config.
   <Tab title="Manual setup">
     <Steps>
       <Step title="Start LiteLLM Proxy">
+        LiteLLM calls the upstream provider on your behalf, so export that
+        provider's key before starting it — `ANTHROPIC_API_KEY` for the model
+        below. See [Model routing](#advanced) for multi-backend setups.
+
         ```bash
         pip install 'litellm[proxy]'
+        export ANTHROPIC_API_KEY=sk-ant-...
         litellm --model claude-opus-4-6
         ```
       </Step>
@@ -42,6 +47,7 @@ spend limits, and backend failover without changing OpenClaw config.
         ```
       </Step>
     </Steps>
+
   </Tab>
 </Tabs>
 
@@ -65,8 +71,8 @@ spend limits, and backend failover without changing OpenClaw config.
             maxTokens: 64000,
           },
           {
-            id: "gpt-5.6-sol",
-            name: "GPT-5.6 Sol",
+            id: "gpt-6-astra",
+            name: "GPT-6 Astra",
             reasoning: true,
             input: ["text", "image"],
             contextWindow: 1050000,
@@ -150,9 +156,9 @@ without a global private-network override. For a LAN-hosted proxy, set
           model: claude-opus-4-6
           api_key: os.environ/ANTHROPIC_API_KEY
 
-      - model_name: gpt-5.6-sol
+      - model_name: gpt-6-astra
         litellm_params:
-          model: gpt-5.6-sol
+          model: gpt-6-astra
           api_key: os.environ/OPENAI_API_KEY
     ```
 

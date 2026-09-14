@@ -44,12 +44,38 @@ class WearApprovalsTest {
 
   @Test
   fun liveTerminalWinsOverPendingReplayEvenWithEqualTimestamps() {
+    for (statuses in listOf(listOf("pending", "denied"), listOf("denied", "pending"))) {
+      val feed = WearApprovalFeed()
+      feed.begin()
+      for (status in statuses) {
+        feed.accept(WearApprovalTransition("session", 10, parseWearApproval(approval("exec", status))!!))
+      }
+      assertTrue(feed.replay(replay("session", listOf(approval("exec")))))
+      assertEquals(statuses.toString(), "denied", feed.approvals.single().status)
+      feed.accept(WearApprovalTransition("session", 9, parseWearApproval(approval("exec"))!!))
+      assertEquals("denied", feed.approvals.single().status)
+    }
+  }
+
+  @Test
+  fun canonicalReadbackDuringReplayCannotRevivePendingApproval() {
     val feed = WearApprovalFeed()
     feed.begin()
-    feed.accept(WearApprovalTransition("session", 10, parseWearApproval(approval("exec", "denied"))!!))
     assertTrue(feed.replay(replay("session", listOf(approval("exec")))))
+    feed.begin()
+    feed.replace(parseWearApproval(approval("exec", "denied"))!!)
+    assertTrue(feed.replay(replay("session", listOf(approval("exec")))))
+    assertTrue(feed.ready)
     assertEquals("denied", feed.approvals.single().status)
-    feed.accept(WearApprovalTransition("session", 9, parseWearApproval(approval("exec"))!!))
+  }
+
+  @Test
+  fun canonicalReadbackWhileReadyUpdatesImmediately() {
+    val feed = WearApprovalFeed()
+    feed.begin()
+    assertTrue(feed.replay(replay("session", listOf(approval("exec")))))
+    feed.replace(parseWearApproval(approval("exec", "denied"))!!)
+    assertTrue(feed.ready)
     assertEquals("denied", feed.approvals.single().status)
   }
 

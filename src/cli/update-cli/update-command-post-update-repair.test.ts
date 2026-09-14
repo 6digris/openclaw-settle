@@ -71,9 +71,8 @@ vi.mock("../daemon-cli/restart-health-probe.js", async (importOriginal) => ({
   resolveGatewayRestartProbeContext: async () => ({ config: {} }),
   confirmGatewayReachable: async () => ({ reachable: false }),
 }));
-vi.mock("../daemon-cli/restart-health.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../daemon-cli/restart-health.js")>()),
-  waitForGatewayHealthyRestart: async ({ expectedVersion }: { expectedVersion?: string }) => ({
+vi.mock("../daemon-cli/restart-health.js", async (importOriginal) => {
+  const readHealth = async ({ expectedVersion }: { expectedVersion?: string }) => ({
     gatewayBootId: "repair-boot",
     healthy: mocks.healthy && mocks.version === expectedVersion,
     runtime: { status: mocks.healthy ? "running" : "stopped", pid: 4321 },
@@ -82,9 +81,14 @@ vi.mock("../daemon-cli/restart-health.js", async (importOriginal) => ({
     versionMismatch: mocks.version !== expectedVersion,
     portUsage: { status: "free", listeners: [] },
     staleGatewayPids: [],
-  }),
-  waitForGatewayHttpReadiness: mocks.readyz,
-}));
+  });
+  return {
+    ...(await importOriginal<typeof import("../daemon-cli/restart-health.js")>()),
+    waitForGatewayHealthyRestart: readHealth,
+    inspectGatewayRestart: readHealth,
+    waitForGatewayHttpReadiness: mocks.readyz,
+  };
+});
 vi.mock("./update-command-service-recovery.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./update-command-service-recovery.js")>()),
   hasLoadedLaunchdKeepAliveSupervisor: async () => false,
@@ -381,7 +385,6 @@ describe("post-activation repair after rollback refusal or failure", () => {
           stateDir: run.env.OPENCLAW_STATE_DIR,
           configPath: run.env.OPENCLAW_CONFIG_PATH,
         });
-        expect(repair.target.candidateRoot).toBeUndefined();
         expect(getUpdateRun(run.runId, { env: run.env })?.phase).toBe("repairing");
         const signal = new AbortController().signal;
         expect((await repair.validate(signal)).ok).toBe(false);

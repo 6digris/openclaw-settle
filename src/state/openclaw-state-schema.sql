@@ -1494,6 +1494,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_cron_run_receipts_active_job
 CREATE INDEX IF NOT EXISTS idx_cron_run_receipts_job_history
   ON cron_run_receipts(store_key, job_id, started_at_ms DESC, receipt_id DESC);
 
+-- Retirement follows the receipt's retention without changing its released shape.
+CREATE TABLE IF NOT EXISTS cron_run_trigger_state_retirements (
+  receipt_id TEXT PRIMARY KEY
+    REFERENCES cron_run_receipts(receipt_id) ON DELETE CASCADE
+) STRICT;
+
 -- Runtime-private authority is independent of job_json so downgraded writers
 -- can rewrite recognized job config without erasing or silently widening it.
 CREATE TABLE IF NOT EXISTS cron_job_runtime_authorities (
@@ -1840,6 +1846,21 @@ CREATE TABLE IF NOT EXISTS worktree_provisioned_file_chunks (
   PRIMARY KEY (worktree_id, path, chunk_index)
 ) STRICT;
 
+CREATE TABLE IF NOT EXISTS worktree_templates (
+  cache_key TEXT NOT NULL PRIMARY KEY,
+  id TEXT NOT NULL UNIQUE,
+  repo_root TEXT NOT NULL,
+  common_dir TEXT NOT NULL,
+  worktree_root TEXT NOT NULL,
+  path TEXT NOT NULL,
+  backend TEXT NOT NULL,
+  source_commit TEXT NOT NULL,
+  content_key TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('preparing', 'ready')),
+  created_at INTEGER NOT NULL,
+  last_used_at INTEGER NOT NULL
+) STRICT;
+
 CREATE TABLE IF NOT EXISTS projects (
   id TEXT NOT NULL PRIMARY KEY,
   display_name TEXT NOT NULL,
@@ -1878,6 +1899,7 @@ CREATE TABLE IF NOT EXISTS worker_environments (
   profile_snapshot_json TEXT NOT NULL,
   last_activated_at_ms INTEGER,
   preparation_key TEXT,
+  preparation_purpose TEXT,
   preparation_demand_at_ms INTEGER,
   preparation_expires_at_ms INTEGER,
   preparation_consumed_at_ms INTEGER CHECK (

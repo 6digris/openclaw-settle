@@ -26,11 +26,11 @@ using a fixed, no-shell `command/exec` reader. The reader rejects symlinks,
 enforces file and response size limits before allocation, and stages immutable
 Gateway-managed media before channel delivery without requiring a shared or
 synchronized filesystem. Codex images are materialized directly from typed
-app-server events; saved-path-only images use the same bounded remote reader.
+app-server events. Saved-path-only images use the same bounded remote reader.
 Uploads always use the Gateway's configured channel identity and request timeout.
 
-Use canonical OpenAI model refs such as `openai/gpt-5.6-sol`. Do not configure
-legacy Codex GPT refs; put OpenAI agent auth order under `auth.order.openai`.
+Use canonical OpenAI model refs such as `openai/gpt-6-astra`. Do not configure
+legacy Codex GPT refs. Put OpenAI agent auth order under `auth.order.openai`.
 Legacy Codex auth profile ids and legacy Codex auth order entries are
 repaired by `openclaw doctor --fix`.
 
@@ -51,9 +51,24 @@ with Codex native code mode enabled (code-mode-only stays off by default), so
 native workspace/code capabilities remain available alongside OpenClaw
 dynamic tools routed through the app-server `item/tool/call` bridge. An
 ordinary OpenClaw sandbox or restricted tool policy disables native code mode
-unless you opt into the experimental sandbox exec-server path. Node-backed
+unless you opt into the experimental sandbox exec-server path. The effective
+tool profile must allow all native shell and filesystem capabilities: `coding`
+and `full` do, while `messaging` and `minimal` disable the native surface. Agent
+and provider profile overrides and explicit tool restrictions still apply.
+The sandbox exec-server option does not bypass those tool restrictions. Node-backed
 `remote-exec` on a paired device or cloud worker instead uses its
-placement-owned environment without that experimental flag. A dedicated cloud worker with a completed project preparation keeps the bound workspace and `HOME` paths, so native commands can reuse setup caches. The node exec-server still uses a separate temporary `CODEX_HOME` for each connection; ending the connection removes that Codex state and preserves the prepared project home.
+placement-owned environment without that experimental flag. A dedicated cloud worker with a completed project preparation keeps the bound workspace and `HOME` paths, so native commands can reuse setup caches. The node exec-server still uses a separate temporary `CODEX_HOME` for each connection. Ending the connection removes that Codex state and preserves the prepared project home.
+
+Some placements require native execution. Node-backed `remote-exec` turns reject
+a limited profile when they cannot run without native tools. A native-owned
+attached Codex thread can also reject a restricted turn when applying the policy
+would require replacing that externally owned thread. This can interrupt an
+existing conversation after an upgrade. To retain a limited profile, use a
+Gateway-managed conversation or runtime with a compatible execution environment.
+If native shell and filesystem access is intended, the operator can choose
+`coding` or `full`. Other explicit tool and sandbox restrictions still apply;
+an explicit finite tool allowlist still blocks native execution. OpenClaw does
+not broaden tool access or replace externally owned threads automatically.
 
 Eligible native-shell turns also retain `gateway_exec` and `gateway_process`
 as a distinct OpenClaw execution path. Use `gateway_exec` only when a command
@@ -68,7 +83,7 @@ terminals listed on that Codex thread before releasing the run. Other Codex
 threads and deliberately backgrounded `gateway_process` jobs are unaffected.
 If native terminal cleanup fails, the run reports an error instead of silently
 claiming cleanup succeeded. Inspect that thread's running terminals before
-starting more work. This uses Codex's terminal ownership; it does not guarantee
+starting more work. This uses Codex's terminal ownership. It does not guarantee
 cleanup of commands that deliberately detach from that ownership.
 
 With the default `tools.exec.host: "auto"` and no active OpenClaw sandbox,
@@ -76,7 +91,7 @@ Codex also receives `node_exec` when a connected node supports `system.run`.
 Offline paired devices and devices without shell support do not expose this tool.
 When a node is configured, that binding must resolve to an eligible node. Native shell
 remains on the Codex app-server host and workspace
-(Gateway-local for the default stdio deployment); `node_exec` selects the sole
+(Gateway-local for the default stdio deployment). `node_exec` selects the sole
 connected node that supports `system.run`, or requires a name or id when several
 are eligible. It keeps OpenClaw's node approval policy in force and waits for the
 remote command to finish. Remote-node background follow-up is not available. If
@@ -100,16 +115,25 @@ This Codex-native feature is separate from
 [OpenClaw Code Mode](/tools/code-mode), an opt-in QuickJS-WASI runtime
 for generic OpenClaw runs with a different `exec` input shape. For the
 broader model/provider/runtime split, start with
-[Agent runtimes](/concepts/agent-runtimes): `openai/gpt-5.6-sol` is the model
+[Agent runtimes](/concepts/agent-runtimes): `openai/gpt-6-astra` is the model
 ref, `codex` is the runtime, and Telegram, Discord, Slack, or another
 channel is the communication surface.
+
+## Saved-account usage
+
+The plugin's `codex.accountUsage` Gateway method accepts `agentId` and `profileId`.
+It reuses `account/rateLimits/read` in a temporary local app-server with the
+selected login, even when the normal harness uses a native home or remote server.
+Each request fetches current quotas for the selected saved subscription login.
+The request requires `operator.admin` and rejects changed or removed credentials.
+Proxy launch arguments are rejected to avoid changing a shared daemon's login.
 
 ## Requirements
 
 - The official `@openclaw/codex` plugin installed. Include `codex` in
   `plugins.allow` if your config uses an allowlist.
-- Managed Codex app-server `0.153.4`. The plugin ships and manages
-  `@openai/codex` `0.153.4` by default, so a `codex` command on `PATH` does not
+- Managed Codex app-server `0.154.0`. The plugin ships and manages
+  `@openai/codex` `0.154.0` by default, so a `codex` command on `PATH` does not
   affect normal startup. Explicit custom, remote, and macOS desktop-owned
   app-servers must report a parseable semantic version of `0.149.0` or newer.
   Newer versions continue with a compatibility warning and normal runtime
@@ -146,7 +170,7 @@ Enable the `codex` plugin and select an OpenAI agent model:
   },
   agents: {
     defaults: {
-      model: "openai/gpt-5.6-sol",
+      model: "openai/gpt-6-astra",
     },
   },
 }
@@ -167,7 +191,9 @@ If your config uses `plugins.allow`, add `codex` there too:
 }
 ```
 
-Restart the gateway after changing plugin config. If a chat already has a
+Plugin config changes apply automatically in the default hybrid reload mode.
+See [Apply changes and inspect](/plugins/manage-plugins#apply-changes-and-inspect).
+If a chat already has a
 session, run `/new` or `/reset` first so the next turn resolves the harness
 from current config.
 

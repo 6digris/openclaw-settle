@@ -20,8 +20,14 @@ import {
   resolveSessionPreferredFace,
   sessionNavigationTarget,
 } from "../../lib/sessions/route-navigation.ts";
-import { resolveUiConfiguredMainKey } from "../../lib/sessions/session-key.ts";
+import {
+  parseAgentSessionKey,
+  resolveUiConfiguredMainKey,
+  scopedSessionArtifactKey,
+} from "../../lib/sessions/session-key.ts";
+import "./session-activity-git.ts";
 import { activityRunInspectorHref } from "./run-inspector-model.ts";
+import { renderSessionActivitySummary } from "./session-activity-summary.ts";
 import {
   ACTIVITY_TIME_FILTERS,
   projectSessionActivity,
@@ -44,6 +50,7 @@ type SessionActivityViewProps = {
   onRetry: () => void;
   onAutomationDayToggle: (dayKey: string) => void;
   onFiltersChange: (filters: SessionActivityFilters) => void;
+  onSummaryRetry?: (row: GatewaySessionRow) => void;
 };
 
 const TIME_LABELS: Record<ActivityTimeFilter, string> = {
@@ -239,7 +246,15 @@ function dayLabel(timestamp: number | null, now = Date.now()): string {
   }).format(timestamp);
 }
 
-function renderSessionLink(context: ApplicationContext, row: GatewaySessionRow) {
+function renderSessionLink(
+  context: ApplicationContext,
+  row: GatewaySessionRow,
+  onSummaryRetry?: (row: GatewaySessionRow) => void,
+) {
+  const agentId =
+    parseAgentSessionKey(row.key)?.agentId ??
+    row.agentId ??
+    resolveSessionNavigationAgentId(context);
   const face = resolveSessionPreferredFace(row);
   const target = sessionNavigationTarget({
     face,
@@ -324,6 +339,12 @@ function renderSessionLink(context: ApplicationContext, row: GatewaySessionRow) 
         }
       </span>
     </a>
+    ${renderSessionActivitySummary(row, onSummaryRetry)}
+    <openclaw-activity-session-git
+      .context=${context}
+      .sessionKey=${scopedSessionArtifactKey(row.key, agentId)}
+      .agentId=${agentId}
+    ></openclaw-activity-session-git>
     ${
       activeObserverRunId
         ? html`<a
@@ -341,19 +362,19 @@ function renderDaySessions(
   day: ReturnType<typeof projectSessionActivity>["days"][number],
 ) {
   if (props.filters.query || props.filters.personId) {
-    return day.sessions.map((row) => renderSessionLink(props.context, row));
+    return day.sessions.map((row) => renderSessionLink(props.context, row, props.onSummaryRetry));
   }
   // GatewaySessionRow.hasAutomation records that an enabled cron job is bound to the session;
   // grouping must consume that fact directly rather than infer automation from titles or keys.
   const automation = day.sessions.filter((row) => row.hasAutomation === true);
   if (automation.length < 2) {
-    return day.sessions.map((row) => renderSessionLink(props.context, row));
+    return day.sessions.map((row) => renderSessionLink(props.context, row, props.onSummaryRetry));
   }
   const expanded = props.expandedAutomationDays.has(day.key);
   return html`
     ${day.sessions
       .filter((row) => row.hasAutomation !== true)
-      .map((row) => renderSessionLink(props.context, row))}
+      .map((row) => renderSessionLink(props.context, row, props.onSummaryRetry))}
     <button
       type="button"
       class="activity-feed__session activity-feed__automation-group"
@@ -367,7 +388,11 @@ function renderDaySessions(
         >${icons.chevronRight}</span
       >
     </button>
-    ${expanded ? automation.map((row) => renderSessionLink(props.context, row)) : nothing}
+    ${
+      expanded
+        ? automation.map((row) => renderSessionLink(props.context, row, props.onSummaryRetry))
+        : nothing
+    }
   `;
 }
 

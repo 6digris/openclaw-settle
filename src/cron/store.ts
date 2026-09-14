@@ -7,7 +7,7 @@ import { asRecord } from "@openclaw/normalization-core/record-coerce";
 import { expandHomePrefix } from "../infra/home-dir.js";
 import { pruneMapToMaxSize } from "../infra/map-size.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
-import { prepareSqliteReadOnlyLocationSync } from "../infra/sqlite-readonly-location.js";
+import { prepareSqliteReadOnlyLocationSync } from "../infra/sqlite-snapshot-source.js";
 import { isArtifactPreservingStateRead } from "../state/openclaw-state-db-readonly.js";
 import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
 import {
@@ -84,8 +84,12 @@ function resolveDefaultCronStorePath(env: NodeJS.ProcessEnv): string {
 }
 
 /** Resolves the cron jobs store path, expanding home-relative user input. */
-export function resolveCronJobsStorePath(storePath?: string, env: NodeJS.ProcessEnv = process.env) {
-  const selected = storePath?.trim() || readCronStoreStatePath(env);
+export function resolveCronJobsStorePath(
+  storePath?: string,
+  env: NodeJS.ProcessEnv = process.env,
+  stateEnv: NodeJS.ProcessEnv = env,
+) {
+  const selected = storePath?.trim() || readCronStoreStatePath(stateEnv);
   if (selected) {
     const raw = selected.trim();
     if (raw.startsWith("~")) {
@@ -100,9 +104,10 @@ export function resolveCronJobsStorePath(storePath?: string, env: NodeJS.Process
 export function resolveCronJobsStorePathFromConfig(
   cfg: { cron?: unknown },
   env: NodeJS.ProcessEnv = process.env,
+  stateEnv: NodeJS.ProcessEnv = env,
 ): string {
   const store = (cfg.cron as { store?: unknown } | undefined)?.store;
-  return resolveCronJobsStorePath(typeof store === "string" ? store : undefined, env);
+  return resolveCronJobsStorePath(typeof store === "string" ? store : undefined, env, stateEnv);
 }
 
 /** Loads cron jobs plus config/runtime sidecars from the SQLite-backed store. */
@@ -322,6 +327,10 @@ function mergeCronRuntimeChanges(
     } else {
       Reflect.deleteProperty(merged, key);
     }
+  }
+  if (previous.runningAtMs !== next.runningAtMs) {
+    merged.runningReceiptId =
+      next.runningAtMs === current.runningAtMs ? current.runningReceiptId : next.runningReceiptId;
   }
   return merged;
 }

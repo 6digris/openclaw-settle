@@ -6,7 +6,9 @@ read_when:
 title: "Health checks"
 ---
 
-Short guide to verify channel connectivity without guessing.
+Short guide to verify Gateway and channel health without guessing. It covers the
+CLI health checks, the HTTP probe endpoints, the dedicated `health` command, and
+uptime monitoring.
 
 ## Quick checks
 
@@ -82,6 +84,11 @@ including worker and native threads, divided by elapsed wall time. The unit is
 core equivalents: `1` means one CPU core fully occupied over the interval, and
 parallel work can produce values above `1`. It is not a percentage of the host's
 total CPU capacity.
+
+The Control UI's **System busyness** overlay reads the same sampler through
+`status.eventLoop` on both Node and Bun. Its CPU percentage uses `100%` for one
+fully occupied core. CPU and delay show a dash until the first sample completes;
+a persistent dash means the telemetry is unavailable, not zero CPU usage.
 
 Event-loop delay and utilization describe the main thread separately. A `cpu`
 degradation reason reports process CPU pressure with delay co-evidence; it does

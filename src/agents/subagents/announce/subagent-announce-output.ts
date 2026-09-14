@@ -23,7 +23,7 @@ import {
   readLatestSubagentOutputWithRetryUsing,
 } from "./subagent-announce-capture.js";
 import {
-  callGateway,
+  callSubagentLifecycleGateway,
   getRuntimeConfig,
   readSubagentSessionEntry,
   readSessionMessagesAsync,
@@ -45,7 +45,7 @@ const ASSISTANT_TOOL_CALL_BLOCK_TYPES = new Set([
   "function_call",
 ]);
 type SubagentAnnounceOutputDeps = {
-  callGateway: typeof callGateway;
+  callGateway: typeof callSubagentLifecycleGateway;
   getRuntimeConfig: typeof getRuntimeConfig;
   readSubagentSessionEntry: typeof readSubagentSessionEntry;
   readSessionMessagesAsync: typeof readSessionMessagesAsync;
@@ -54,7 +54,7 @@ type SubagentAnnounceOutputDeps = {
 };
 
 const defaultSubagentAnnounceOutputDeps: SubagentAnnounceOutputDeps = {
-  callGateway,
+  callGateway: callSubagentLifecycleGateway,
   getRuntimeConfig,
   readSubagentSessionEntry,
   readSessionMessagesAsync,
@@ -544,14 +544,9 @@ export function buildChildCompletionFindings(
   );
 }
 
-export function dedupeLatestChildCompletionRows(
-  children: Array<
-    ChildCompletionRow & {
-      runId: string;
-      generation?: number;
-    }
-  >,
-) {
+export function dedupeLatestChildCompletionRows<
+  T extends ChildCompletionRow & { runId: string; generation?: number },
+>(children: T[]): T[] {
   const latestByChildSessionKey = new Map<string, (typeof children)[number]>();
   for (const child of children) {
     recordLatestSubagentRun(latestByChildSessionKey, child.childSessionKey, child);
@@ -559,14 +554,14 @@ export function dedupeLatestChildCompletionRows(
   return [...latestByChildSessionKey.values()];
 }
 
-export function filterCurrentDirectChildCompletionRows(
-  children: Array<
-    ChildCompletionRow & {
-      runId: string;
-      requesterSessionKey: string;
-      requesterAgentId?: string;
-    }
-  >,
+export function filterCurrentDirectChildCompletionRows<
+  T extends ChildCompletionRow & {
+    runId: string;
+    requesterSessionKey: string;
+    requesterAgentId?: string;
+  },
+>(
+  children: T[],
   params: {
     requesterSessionKey: string;
     requesterAgentId?: string;
@@ -579,7 +574,7 @@ export function filterCurrentDirectChildCompletionRows(
       | null
       | undefined;
   },
-) {
+): T[] {
   if (typeof params.getLatestSubagentRunByChildSessionKey !== "function") {
     return children;
   }

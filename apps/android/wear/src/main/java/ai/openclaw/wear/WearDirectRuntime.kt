@@ -67,6 +67,13 @@ internal data class WearInputOwner(
   val sessionKey: String?,
 )
 
+internal class WearApprovalAttempt(
+  val id: String,
+) {
+  // Runtime-lock owned: a queued frame, not a started coroutine, makes the outcome uncertain.
+  var submitted = false
+}
+
 internal data class WearDirectState(
   val selected: GatewayRegistryEntry? = null,
   val gateways: List<GatewayRegistryEntry> = emptyList(),
@@ -87,7 +94,7 @@ internal data class WearDirectState(
   val approvals: List<WearApproval> = emptyList(),
   val approvalsReady: Boolean = false,
   val approvalsIncomplete: Boolean = false,
-  val resolving: Set<String> = emptySet(),
+  val resolving: Map<String, WearApprovalAttempt> = emptyMap(),
 )
 
 /** One foreground connection intent owns all direct transport, storage and conversation effects. */
@@ -233,14 +240,35 @@ internal class WearDirectRuntime(
   }
 
   fun forget(stableId: String) {
-    invalidateInput()
-    changeIntent { intent ->
-      val deviceId = identity.loadOrCreate().deviceId
-      synchronized(lock) {
-        if (generation != intent) return@changeIntent
-        store.forget(stableId, deviceId)
+    val id = stableId.trim()
+    scope.launch {
+      cleanup.withLock {
+        // Classify under the same lock that admits retirement; an inactive removal
+        // must not retire another gateway's transport, input or conversation.
+        changeIntent(admit = {
+          if (store.registry.activeStableId.value == id) {
+            selectionRevision += 1
+            true
+          } else {
+            try {
+              store.forget(id, identity.loadOrCreate().deviceId)
+              mutableState.value = mutableState.value.copy(gateways = store.registry.entries.value)
+            } catch (error: CancellationException) {
+              throw error
+            } catch (_: Exception) {
+              mutableState.value = mutableState.value.copy(error = "Could not remove the saved Gateway. Try Forget again.")
+            }
+            false
+          }
+        }) { intent ->
+          val deviceId = identity.loadOrCreate().deviceId
+          synchronized(lock) {
+            if (generation != intent) return@changeIntent
+            store.forget(id, deviceId)
+          }
+          publishRegistry(intent, clearConversation = true)
+        }
       }
-      publishRegistry(intent, clearConversation = true)
     }
   }
 
@@ -257,9 +285,13 @@ internal class WearDirectRuntime(
     }
   }
 
-  private fun changeIntent(action: suspend (Long) -> Unit) {
+  private fun changeIntent(
+    admit: () -> Boolean = { true },
+    action: suspend (Long) -> Unit,
+  ) {
     val (intent, retired) =
       synchronized(lock) {
+        if (!admit()) return
         generation += 1
         conversation += 1
         val retired = owner
@@ -466,8 +498,9 @@ internal class WearDirectRuntime(
   }
 
   fun selectSession(key: String) {
-    invalidateInput()
     synchronized(lock) {
+      if (mutableState.value.sessionKey == key) return
+      invalidateInput()
       conversation += 1
       feed = WearApprovalFeed()
       mutableState.value =
@@ -481,7 +514,7 @@ internal class WearDirectRuntime(
           pendingSend = null,
           sending = false,
           sendUnknown = false,
-          resolving = emptySet(),
+          resolving = emptyMap(),
         )
     }
     // Replacing the socket drops all old session subscriptions and their late events.
@@ -492,6 +525,8 @@ internal class WearDirectRuntime(
     val intent: Long,
     val conversation: Long,
     val lease: GatewaySession.RequestLease,
+    val replay: Long? = null,
+    val approval: WearApprovalAttempt? = null,
   )
 
   private fun capture(): RequestContext? {
@@ -500,18 +535,25 @@ internal class WearDirectRuntime(
     return RequestContext(snapshot.second, snapshot.third, lease).takeIf { requestCurrent(it) }
   }
 
-  private fun requestCurrent(request: RequestContext): Boolean = synchronized(lock) { generation == request.intent && conversation == request.conversation && visible && !stopped }
+  private fun requestCurrent(request: RequestContext): Boolean =
+    synchronized(lock) {
+      generation == request.intent && conversation == request.conversation && visible && !stopped &&
+        (request.replay == null || feed.isCurrent(request.replay)) &&
+        (request.approval == null || mutableState.value.resolving[request.approval.id] === request.approval)
+    }
 
   private suspend fun request(
     request: RequestContext,
     method: String,
     params: JsonObject,
+    onEnqueued: (() -> Unit)? = null,
   ): JsonObject {
     val raw =
       request.lease.request(method, params.toString(), withEnqueue = { enqueue ->
         synchronized(lock) {
           if (!requestCurrent(request)) throw GatewayRequestNotEnqueued("Watch route changed")
           enqueue()
+          onEnqueued?.invoke()
         }
       })
     return Json.parseToJsonElement(raw) as? JsonObject ?: error("Invalid Gateway result")
@@ -520,14 +562,28 @@ internal class WearDirectRuntime(
   private fun commit(
     request: RequestContext,
     action: () -> Unit,
-  ) {
+  ): Boolean {
+    var committed = false
     request.lease.commitIfCurrent {
-      synchronized(lock) { if (requestCurrent(request)) action() }
+      synchronized(lock) {
+        if (requestCurrent(request)) {
+          action()
+          committed = true
+        }
+      }
     }
+    return committed
   }
 
   fun refresh() {
-    val request = capture() ?: return
+    val captured = capture() ?: return
+    var admitted: RequestContext? = null
+    commit(captured) {
+      // The replay owner fences the whole refresh, including the initial list await.
+      admitted = captured.copy(replay = feed.begin())
+      mutableState.value = mutableState.value.copy(approvalsReady = false)
+    }
+    val request = admitted ?: return
     scope.launch {
       try {
         val result =
@@ -546,10 +602,13 @@ internal class WearDirectRuntime(
             val key = obj.text("key") ?: return@mapNotNull null
             WearDirectSession(key, (obj.text("displayName") ?: obj.text("label") ?: key).take(160))
           }
-        commit(request) {
-          mutableState.value = mutableState.value.copy(sessions = sessions, error = null)
+        if (!commit(request) {
+            mutableState.value = mutableState.value.copy(sessions = sessions, error = null)
+          }
+        ) {
+          return@launch
         }
-        subscribe(request)
+        if (!subscribe(request)) return@launch
         loadHistory(request)
       } catch (error: CancellationException) {
         throw error
@@ -559,12 +618,8 @@ internal class WearDirectRuntime(
     }
   }
 
-  private suspend fun subscribe(request: RequestContext) {
-    val key = state.value.sessionKey ?: return
-    commit(request) {
-      feed.begin()
-      mutableState.value = mutableState.value.copy(approvalsReady = false)
-    }
+  private suspend fun subscribe(request: RequestContext): Boolean {
+    val key = state.value.sessionKey ?: return false
     val subscribed =
       request(
         request,
@@ -574,19 +629,24 @@ internal class WearDirectRuntime(
           put("includeApprovals", true)
         },
       )
-    commit(request) {
-      val replay = subscribed["approvalReplay"] as? JsonObject
-      if (subscribed.flag("subscribed") != true || replay == null || !feed.replay(replay)) {
-        mutableState.value = mutableState.value.copy(error = "Approval replay is unavailable. Reconnect to refresh.", approvalsReady = false)
-      } else {
-        mutableState.value = mutableState.value.copy(sessionKey = subscribed.text("key") ?: key)
-        publishApprovals()
+    if (!commit(request) {
+        val snapshot = subscribed["approvalReplay"] as? JsonObject
+        if (subscribed.flag("subscribed") != true || snapshot == null || !feed.replay(snapshot)) {
+          mutableState.value = mutableState.value.copy(error = "Approval replay is unavailable. Reconnect to refresh.", approvalsReady = false)
+        } else {
+          mutableState.value = mutableState.value.copy(sessionKey = subscribed.text("key") ?: key)
+          publishApprovals()
+        }
       }
+    ) {
+      return false
     }
     request(request, "chat.subscribe", buildJsonObject { put("sessionKey", state.value.sessionKey ?: key) })
     state.value.resolving
+      .values
       .toList()
-      .forEach { id -> reconcileApproval(request, id) }
+      .forEach { attempt -> reconcileApproval(request.copy(approval = attempt), attempt.id) }
+    return true
   }
 
   private suspend fun loadHistory(
@@ -707,6 +767,10 @@ internal class WearDirectRuntime(
             pendingSend = null,
             sendUnknown = false,
             runId = if (adoptRun) result.text("runId") else mutableState.value.runId,
+            error =
+              mutableState.value.error ?: "This message's run ended or was cancelled. Check history before sending again.".takeIf {
+                unchanged && mutableState.value.pendingSend === attempt && result.text("status") == "timeout"
+              },
           )
       }
       if (reconcile) {
@@ -753,20 +817,20 @@ internal class WearDirectRuntime(
     approval: WearApproval,
     decision: String,
   ) {
-    val request = capture() ?: return
-    val admitted =
-      synchronized(lock) {
-        val state = mutableState.value
-        if (!state.approvalsReady || approval.id in state.resolving ||
-          !approval.canResolve(decision, System.currentTimeMillis())
-        ) {
-          false
-        } else {
-          mutableState.value = state.copy(resolving = state.resolving + approval.id)
-          true
-        }
+    val captured = capture() ?: return
+    val attempt = WearApprovalAttempt(approval.id)
+    var admitted = false
+    commit(captured) {
+      val state = mutableState.value
+      if (state.approvalsReady && approval.id !in state.resolving &&
+        approval.canResolve(decision, System.currentTimeMillis())
+      ) {
+        mutableState.value = state.copy(resolving = state.resolving + (approval.id to attempt))
+        admitted = true
       }
+    }
     if (!admitted) return
+    val request = captured.copy(approval = attempt)
     scope.launch {
       try {
         val fresh =
@@ -790,6 +854,7 @@ internal class WearDirectRuntime(
               put("kind", approval.kind)
               put("decision", decision)
             },
+            onEnqueued = { attempt.submitted = true },
           )
         val terminal = parseWearApproval(result["approval"]) ?: error("Invalid approval result")
         check(terminal.id == approval.id && terminal.kind == approval.kind && terminal.status != "pending" && result.flag("applied") != null)
@@ -800,9 +865,20 @@ internal class WearDirectRuntime(
         }
       } catch (error: Exception) {
         commit(request) {
-          mutableState.value = mutableState.value.copy(error = "Approval outcome is unconfirmed. Refresh to reconcile it.")
+          mutableState.value =
+            mutableState.value.copy(
+              error = if (attempt.submitted) "Approval outcome is unconfirmed. Refresh to reconcile it." else "Could not review this approval. Retry.",
+            )
         }
         if (error is CancellationException) throw error
+      } finally {
+        // Retirement can invalidate the lease while retaining conversation state. Only this
+        // unsubmitted attempt may release its slot; an overlapping replacement owns its own.
+        synchronized(lock) {
+          if (!attempt.submitted && mutableState.value.resolving[attempt.id] === attempt) {
+            mutableState.value = mutableState.value.copy(resolving = mutableState.value.resolving - attempt.id)
+          }
+        }
       }
     }
   }
@@ -811,12 +887,19 @@ internal class WearDirectRuntime(
     request: RequestContext,
     id: String,
   ) {
-    val result = parseWearApproval(request(request, "approval.get", buildJsonObject { put("id", id) })["approval"]) ?: return
-    if (result.id != id) return
-    commit(request) {
-      feed.replace(result)
-      mutableState.value = mutableState.value.copy(resolving = mutableState.value.resolving - id)
-      publishApprovals()
+    try {
+      val result = parseWearApproval(request(request, "approval.get", buildJsonObject { put("id", id) })["approval"]) ?: error("Invalid approval")
+      check(result.id == id)
+      commit(request) {
+        feed.replace(result)
+        mutableState.value = mutableState.value.copy(resolving = mutableState.value.resolving - id)
+        publishApprovals()
+      }
+    } catch (error: CancellationException) {
+      throw error
+    } catch (_: Exception) {
+      // One unavailable approval must remain visible without blocking canonical chat history.
+      commit(request) { mutableState.value = mutableState.value.copy(error = "Approval outcome is unconfirmed. Refresh to reconcile it.") }
     }
   }
 
@@ -841,15 +924,31 @@ internal class WearDirectRuntime(
         parseWearApprovalTransition(obj)?.let(feed::accept)
         publishApprovals()
       } else if (event == "chat" && obj.text("sessionKey") == mutableState.value.sessionKey) {
-        chatRevision += 1
-        historyRevision += 1
+        val state = mutableState.value
         val message = directChatMessage(obj["message"])
         val terminal = obj.text("state") in setOf("final", "aborted", "error")
+        val run = obj.text("runId")
+        val settlesRun = state.runId == null || state.runId == run
+        // A displayed run and a newly submitted send can differ. Settling the former
+        // must not fence the latter's ACK; foreign terminals still reconcile history.
+        val ownsAcknowledgement = state.pendingSend?.let { it.key == run } ?: settlesRun
+        if (!terminal || ownsAcknowledgement) chatRevision += 1
+        historyRevision += 1
         mutableState.value =
-          mutableState.value.copy(
-            streamText = if (terminal) null else message?.text,
-            runId = if (terminal) null else obj.text("runId"),
-            messages = if (terminal && message != null) (mutableState.value.messages + message).takeLast(20) else mutableState.value.messages,
+          state.copy(
+            streamText =
+              when {
+                !terminal -> message?.text
+                settlesRun -> null
+                else -> state.streamText
+              },
+            runId =
+              when {
+                !terminal -> run
+                settlesRun -> null
+                else -> state.runId
+              },
+            messages = if (terminal && message != null) (state.messages + message).takeLast(20) else state.messages,
           )
         if (terminal) scope.launch { capture()?.let { runCatching { loadHistory(it) } } }
       } else if (event == "session.message" && obj.text("sessionKey") == mutableState.value.sessionKey) {

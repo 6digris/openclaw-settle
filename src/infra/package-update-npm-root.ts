@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import { formatErrorMessage } from "./errors.js";
 import {
   createPackageIntegrityReader,
+  type PackageDirectoryIdentity,
   type PackageRootIntegrityFingerprint,
 } from "./package-update-integrity.js";
 
@@ -39,14 +40,17 @@ export function createNpmPackageRootLinkLifecycle(params: {
         };
       }
     },
-    async retire(): Promise<string | null> {
+    async retire(assertCurrent = () => {}): Promise<string | null> {
       try {
+        assertCurrent();
         await assertUnchanged(params.backupRoot);
         // This observation does not exclude concurrent writers. Non-recursive
         // removal protects a substituted directory and the external checkout.
+        assertCurrent();
         await fs.unlink(params.backupRoot);
         return null;
       } catch (error) {
+        assertCurrent();
         return `Could not retire retained npm package link at ${params.backupRoot}: ${formatErrorMessage(error)}`;
       }
     },
@@ -60,6 +64,7 @@ export async function verifyNpmRootRecovery(
     fromBackup: boolean;
     hadPackage: boolean;
     previousRoot: PackageRootIntegrityFingerprint | undefined;
+    previousIdentity?: PackageDirectoryIdentity;
     targetSwapRoot: string;
     shims: readonly { destination: string; backup: string | null; fingerprint?: string }[];
   },
@@ -70,11 +75,13 @@ export async function verifyNpmRootRecovery(
   await reader.observe(fromBackup ? "retained" : "restored", async () => {
     if (
       hadPackage
-        ? !previousRoot ||
-          !isDeepStrictEqual(
-            await reader.rootEntry(root, targetSwapRoot, previousRoot.kind),
-            previousRoot,
-          )
+        ? previousRoot
+          ? !isDeepStrictEqual(
+              await reader.rootEntry(root, targetSwapRoot, previousRoot.kind),
+              previousRoot,
+            )
+          : !params.previousIdentity ||
+            !isDeepStrictEqual(await reader.directoryIdentity(root), params.previousIdentity)
         : !fromBackup && (await reader.exists(root))
     ) {
       throw new Error(

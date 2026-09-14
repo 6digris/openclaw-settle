@@ -22,7 +22,7 @@ title: "Thinking levels"
 - Provider notes:
   - Thinking menus and pickers are provider-profile driven. Provider plugins declare the exact level set for the selected model, including labels such as binary `on`.
   - `adaptive`, `xhigh`, `max`, and `ultra` are only advertised for provider/model/runtime profiles that support them. Typed directives for unsupported levels are rejected with that model's valid options.
-  - Existing stored unsupported levels are remapped by provider profile rank. `adaptive` falls back to `medium` on non-adaptive models, while `xhigh` and `max` fall back to the largest supported non-off level for the selected model.
+  - Existing stored unsupported levels are remapped by provider profile rank. When `adaptive` is not selectable, it uses the provider's declared non-off default; otherwise its ranked fallback preserves enabled thinking, usually `medium`. `xhigh` and `max` fall back to the largest supported non-off level for the selected model.
   - Anthropic Claude 4.6 models default to `adaptive` when no explicit thinking level is set.
   - Anthropic Claude Opus 4.8 and Opus 4.7 keep thinking off unless you explicitly set a thinking level. Opus 4.8's provider-owned effort default is `high` after adaptive thinking is enabled.
   - Anthropic Claude Opus 4.7+ maps `/think xhigh` to adaptive thinking plus `output_config.effort: "xhigh"`, because `/think` is a thinking directive and `xhigh` is the Opus effort setting.
@@ -38,15 +38,46 @@ title: "Thinking levels"
   - Google Gemini maps `/think adaptive` to Gemini's provider-owned dynamic thinking. Gemini 3 requests omit a fixed `thinkingLevel`, while Gemini 2.5 requests send `thinkingBudget: -1`; fixed levels still map to the closest Gemini `thinkingLevel` or budget for that model family.
   - MiniMax M2.x (`minimax/MiniMax-M2*`) on the Anthropic-compatible streaming path defaults to `thinking: { type: "disabled" }` unless you explicitly set thinking in model params or request params. This avoids leaked `reasoning_content` deltas from M2.x's non-native Anthropic stream format. MiniMax-M3 (and M3.x) is exempt: M3 emits proper Anthropic thinking blocks and returns empty content when thinking is disabled, so OpenClaw keeps M3 on the provider's omitted/adaptive thinking path.
   - Z.AI (`zai/*`) is binary (`on`/`off`) for most GLM models. GLM-5.2 and GLM-5.3 are the exceptions. GLM-5.2 exposes `/think off|low|high|max` with an `off` default, maps `low` and `high` to Z.AI `reasoning_effort: "high"`, and maps `max` to `reasoning_effort: "max"`. GLM-5.3 exposes `/think low|high|max` with a `max` default, maps `off`, `minimal`, and `low` to `reasoning_effort: "low"`, `medium` and `high` to `"high"`, and `xhigh`, `adaptive`, and `max` to `"max"`.
-  - Moonshot API Kimi K3 (`moonshot/kimi-k3`) always thinks at `max`, sends `reasoning_effort: "max"`, omits the K2 `thinking` field and fixed sampling overrides, and preserves K3-supported tool choices. Kimi Code K3 (`kimi/k3` and `kimi/k3-256k`) exposes the full `/think` ladder with a `high` default: `off` sends `thinking.type: "disabled"`, `minimal`/`low` map to low effort, `medium`/`high`/`adaptive` to high effort, and `xhigh`/`max` to max effort. Current Kimi Code refs also include `kimi/kimi-for-coding` and `kimi/kimi-for-coding-highspeed`. Kimi K2.7 Code (`moonshot/kimi-k2.7-code` and `moonshot/kimi-k2.7-code-highspeed`) always thinks, exposes only `on`, and omits both outbound `thinking` and `reasoning_effort`. Other `moonshot/*` models map `/think off` to `thinking: { type: "disabled" }` and any non-`off` level to `thinking: { type: "enabled" }`. When K2 thinking is enabled, Moonshot only accepts `tool_choice` `auto|none`; OpenClaw normalizes incompatible values to `auto`.
+  - Moonshot API Kimi K3 (`moonshot/kimi-k3`) always thinks at `max`, sends `reasoning_effort: "max"`, omits the K2 `thinking` field and fixed sampling overrides, and preserves K3-supported tool choices. Kimi Code K3 (`kimi/k3` and `kimi/k3-256k`) exposes the full `/think` ladder with a `high` default: `off` sends `thinking.type: "disabled"`, `minimal`/`low` map to low effort, `medium`/`high`/`adaptive` to high effort, and `xhigh`/`max` to max effort. Kimi Code refs also include `kimi/kimi-for-coding` and `kimi/kimi-for-coding-highspeed`. Kimi K2.7 Code (`moonshot/kimi-k2.7-code` and `moonshot/kimi-k2.7-code-highspeed`) always thinks, exposes only `on`, and omits both outbound `thinking` and `reasoning_effort`. Other `moonshot/*` models map `/think off` to `thinking: { type: "disabled" }` and any non-`off` level to `thinking: { type: "enabled" }`. When K2 thinking is enabled, Moonshot only accepts `tool_choice` `auto|none`; OpenClaw normalizes incompatible values to `auto`.
 
 ## Resolution order
 
 1. Inline directive on the message (applies only to that message).
 2. Session override (set by sending a directive-only message).
 3. Per-agent default (`agents.entries.*.thinkingDefault` in config).
-4. Global default (`agents.defaults.thinkingDefault` in config).
-5. Fallback: provider-declared default when available; otherwise reasoning-capable models resolve to `medium` or the nearest supported non-`off` level for that model, and non-reasoning models stay `off`.
+4. Per-model default (`agents.defaults.models["<provider>/<model>"].params.thinking` in config).
+5. Global default (`agents.defaults.thinkingDefault` in config).
+6. Fallback: provider-declared default when available; otherwise reasoning-capable models resolve to `medium` or the nearest supported non-`off` level for that model, and non-reasoning models stay `off`.
+
+## Setting a model default
+
+Use `params.thinking` to set the default for one configured model without changing
+the default for your other models. The key must match the provider and model you
+actually select, including any model path exposed by a custom provider.
+
+Replace `<provider>/<model>` with a configured model's full ID, then merge this
+entry into your existing model configuration:
+
+```json5
+{
+  agents: {
+    defaults: {
+      models: {
+        "<provider>/<model>": {
+          params: { thinking: "high" },
+        },
+      },
+    },
+  },
+}
+```
+
+The provider must already be configured, and the model must support the selected
+thinking level.
+
+An inline directive, a saved session override, or a per-agent `thinkingDefault`
+still takes precedence. Send `/think default` to clear a saved session override;
+check the per-agent setting if the model default still does not take effect.
 
 ## Setting a session default
 
@@ -135,6 +166,8 @@ Malformed local-model reasoning tags are handled conservatively. Closed `<think>
 
 ## Web chat UI
 
+- Model, thinking-level, and fast-mode overrides can be changed in an existing session with `operator.write`; administrator access is not required for these three controls. Read-only clients cannot change them.
+- These are session preferences for subsequent turns, not a promise to change an already-running model call. The composer disables the controls while a reply is running and while a model change is being applied.
 - The web chat thinking selector shows the explicit session override, or the inherited configured/provider default when no override is stored.
 - Refreshing, reloading, or compacting a conversation keeps an inherited choice inherited; it does not store the resolved level as an override. While model metadata is loading, refreshes retain the known thinking profile for the same model and runtime.
 - Selecting a level on the effort slider writes an explicit session override immediately via `sessions.patch`; it does not wait for the next send and it is not a one-shot `thinkingOnce` override.

@@ -9,6 +9,12 @@ read_when:
 Explicit SQLite maintenance runs offline, with the Gateway stopped. This page covers
 shared-state compaction and the targeted session SQLite modes.
 
+On Linux, a stopped Gateway service can still have child processes in its systemd
+cgroup. Doctor and update maintenance remain blocked until those processes exit.
+Inspect the service status and journal, and have the process owner stop the
+remaining children before retrying. A root-owned child may require administrator
+help even when the Gateway itself runs as a user service.
+
 ## Shared state SQLite compaction
 
 See [Database schemas](/reference/database-schemas) for schema versioning, integrity checks, and downgrade recovery.
@@ -66,20 +72,36 @@ CLI startup do not import, restore, or rewrite legacy session JSON/JSONL files.
 When startup finds a legacy session store, it refuses readiness and prints a
 `doctor --fix` command for the active profile instead of serving empty history.
 
-To upgrade history from an older file-backed installation, stop the Gateway,
-back up its state, and run `openclaw doctor --fix` before restarting it.
+To upgrade history from an older file-backed installation, stop the Gateway
+(`openclaw gateway stop`), back up its state (`openclaw backup create --verify`),
+and run `openclaw doctor --fix` before restarting it with
+`openclaw gateway start`.
 `openclaw doctor --session-sqlite <mode>` provides targeted inspection,
 import, validation, and SQLite maintenance. Legacy `sessions.json` files are
 migration sources. Hot transcript JSONL files are imported and archived after
 successful import; archive-tier JSONL files remain support artifacts, not
 runtime fallbacks.
 
+Doctor also discovers primary conversation transcripts omitted from the legacy
+registry, including timestamp-prefixed filenames. It verifies the session header,
+file identity, and logical owner before importing. Known historical generations
+remain attached to their existing session without changing its current generation
+or settings. History with no registry owner is recovered as an archived session
+only when its agent owner is unambiguous.
+
+Rerunning import can recover primary history swept into protected archives by an
+earlier migration. Doctor uses retained migration manifests and archived registry
+lineage; it does not restore stale settings over live SQLite state. Originals stay
+protected, and completed recovery is recorded so later runs do not resurrect
+history explicitly deleted by the user. Diagnostic trajectory envelopes, deleted
+artifacts, unsupported files, conflicting identities, and ambiguous ownership are
+not converted into conversations. Deferred files remain available for recovery.
+
 The public Doctor migration path stages transcript payloads and performs branch
 and provider repairs in a private, temporary SQLite database instead of retaining
 complete histories in memory. It keeps the raw transcript untouched until archiving it through an
 exclusive same-filesystem move, avoiding both an extra full `.pre-doctor` raw
-copy and a rewritten intermediate file. Standalone transcript repair retains
-its original backup behavior.
+copy and a rewritten intermediate file.
 
 For large histories, plan space for the original JSON/JSONL files, the temporary
 SQLite spool, and the destination database and WAL at the same time. Keep free
@@ -94,8 +116,10 @@ Staging is removed when the operation finishes and is never used as a runtime
 store or resumed after an interruption; retries use the original sources and
 committed session data. After import, Doctor checkpoints and incrementally vacuums databases that already
 support auto-vacuum, retaining full integrity and foreign-key checks before and
-after cleanup. Databases without auto-vacuum still need a full `VACUUM` to enable
-it. Incremental cleanup frees unused pages but does not repack partially filled
+after cleanup. If a database is already in incremental auto-vacuum mode, has no
+free pages, and has no WAL to checkpoint, import finalization verifies it once
+and leaves its contents unchanged. Databases without auto-vacuum still need a
+full `VACUUM` to enable it. Incremental cleanup frees unused pages but does not repack partially filled
 pages; explicit session and shared-state `compact` modes still run a full `VACUUM`.
 
 The regular `openclaw doctor` pass also reports canonical SQLite transcripts
@@ -120,7 +144,7 @@ Modes:
 Selectors:
 
 - Default: the configured default agent store; SQLite inspection does not require a legacy file.
-- `--session-sqlite-agent <id>`: one configured agent.
+- `--session-sqlite-agent <id>`: one configured agent, or the expected database owner when paired with `--session-sqlite-store` (which otherwise assumes `main`).
 - `--session-sqlite-all-agents`: configured agent stores plus discovered agent stores.
 - `--session-sqlite-store <path>`: one explicit `.sqlite` database or legacy `sessions.json` path.
 

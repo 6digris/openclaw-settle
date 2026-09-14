@@ -10,7 +10,10 @@ import {
 import type { WorkerNodeDesktopCarrier } from "./node-desktop-carrier.js";
 import type { NodeWorkerTunnelManager } from "./node-worker-tunnel.js";
 import { readWorkerProjectPreparation } from "./preparation-identity.js";
+import { readWorkerProjectSnapshot } from "./project-preparation.js";
 import type { WorkerProviderLifecycleInputOptions } from "./provider-lifecycle.types.js";
+import { WorkerRuntimeRefreshPendingError } from "./provider-runtime-refresh.js";
+import { prepareRepositoryWorkerProjectSource } from "./repository-project-admission.js";
 import type { WorkerDesktopLaunchResult, WorkerDesktopObserveResult } from "./service-contract.js";
 import type { WorkerEnvironmentState } from "./state.js";
 import type { WorkerEnvironmentRecord, WorkerEnvironmentStore } from "./store.js";
@@ -23,6 +26,7 @@ const TUNNEL_START_TIMEOUT_MS = 3 * 60_000;
 type WorkerEnvironmentAccessOptions = {
   store: WorkerEnvironmentStore;
   getConfig: () => OpenClawConfig;
+  projectNamespace?: string;
   prepareCurrentBundle: () => Promise<ExpectedWorkerBuild>;
   bindPreparedWorkspace?: WorkerProviderLifecycleInputOptions["bindPreparedWorkspace"];
   tunnelManager?: WorkerTunnelManager;
@@ -37,6 +41,7 @@ type WorkerEnvironmentAccessOptions = {
   inState: (record: WorkerEnvironmentRecord, ...states: WorkerEnvironmentState[]) => boolean;
   isStopping: () => boolean;
   providerFor: (providerId: string) => WorkerProvider;
+  resolveProvider: WorkerProviderLifecycleInputOptions["resolveProvider"];
   serviceError: (
     code:
       | "desktop_app_not_found"
@@ -135,7 +140,38 @@ export function createWorkerEnvironmentAccess(options: WorkerEnvironmentAccessOp
     if (!bind) {
       throw new Error("Prepared workspace node transport is unavailable");
     }
-    const prepared = await bind({ ...request, assertCurrent });
+    const projectSnapshot = readWorkerProjectSnapshot(
+      store.get(request.environmentId)!.profileSnapshot.project,
+    );
+    let repository: Awaited<ReturnType<typeof prepareRepositoryWorkerProjectSource>> | undefined;
+    if (projectSnapshot && "source" in projectSnapshot) {
+      if (!options.projectNamespace) {
+        throw new Error("Prepared repository namespace is unavailable");
+      }
+      // A ready hit and resumed initial binding must prove current source access too;
+      // a snapshot is reusable content, never a substitute for repository authority.
+      const preparedIdentity = readWorkerProjectPreparation(
+        store.get(request.environmentId)!.profileSnapshot.project,
+      );
+      repository = await prepareRepositoryWorkerProjectSource({
+        expected: projectSnapshot,
+        namespace: options.projectNamespace,
+        getConfig: options.getConfig,
+        assertCurrent,
+        signal: request.signal,
+        knownRecipe: preparedIdentity
+          ? () => ({ project: projectSnapshot, setupRecipe: preparedIdentity.setupRecipe })
+          : undefined,
+      });
+    }
+    const assertBindingCurrent = () => {
+      assertCurrent();
+      repository?.assertCurrent();
+    };
+    assertBindingCurrent();
+    const prepared = await bind({ ...request, assertCurrent: assertBindingCurrent });
+    assertBindingCurrent();
+    await repository?.revalidate(request.signal);
     assertCurrent();
     return prepared;
   };
@@ -175,6 +211,13 @@ export function createWorkerEnvironmentAccess(options: WorkerEnvironmentAccessOp
           "provider_failure",
           "Worker lease isolation is not reconciled; retry after provider inspection",
         );
+      }
+      if (
+        record.ownerEpoch === request.ownerEpoch &&
+        record.lastError &&
+        !verifyWorkerAdmissionHandshake(record.bootstrapReceipt, currentBundle)
+      ) {
+        throw new WorkerRuntimeRefreshPendingError(boundedError(record.lastError));
       }
       const credential = store.getCredential(request.environmentId);
       if (
@@ -277,20 +320,23 @@ export function createWorkerEnvironmentAccess(options: WorkerEnvironmentAccessOp
     let startup: ReturnType<WorkerTunnelManager["desktop"]["acquire"]> | undefined;
     let nodeStartup: ReturnType<WorkerNodeDesktopCarrier["observe"]> | undefined;
     let ownerEpoch: number | undefined;
+    let canResize = false;
     await withLock(request.environmentId, async () => {
       const { record, desktop, leaseId } = requireDesktopRecord(request.environmentId);
       ownerEpoch = record.ownerEpoch;
+      // Node observation remains usable without its provisioning plugin. Missing
+      // optional permission disables resizing, not the established transport.
+      canResize = options.resolveProvider(record.providerId)?.allowsDesktopResize === true;
       if (record.sshEndpoint) {
         if (!tunnels) {
           throw serviceError("invalid_state", "Worker SSH desktop runtime is unavailable");
         }
-        const provider = providerFor(record.providerId);
         startup = tunnels.desktop.acquire({
           environmentId: record.environmentId,
           ownerEpoch: record.ownerEpoch,
           ssh: record.sshEndpoint,
           desktop,
-          resolveIdentity: identityResolverFor(record, provider, leaseId),
+          resolveIdentity: identityResolverFor(record, providerFor(record.providerId), leaseId),
         });
         return;
       }
@@ -308,7 +354,7 @@ export function createWorkerEnvironmentAccess(options: WorkerEnvironmentAccessOp
       throw serviceError("invalid_state", "Worker environment has no desktop transport");
     });
     if (nodeStartup) {
-      return await nodeStartup;
+      return { ...(await nodeStartup), ...(canResize ? { canResize } : {}) };
     }
     if (!startup || ownerEpoch === undefined) {
       throw serviceError("invalid_state", "Worker desktop tunnel failed to start");
@@ -329,6 +375,7 @@ export function createWorkerEnvironmentAccess(options: WorkerEnvironmentAccessOp
       wsPath: `${DESKTOP_OBSERVE_PATH}?token=${minted.token}`,
       expiresAtMs: minted.expiresAtMs,
       control: request.control,
+      ...(canResize ? { canResize } : {}),
       ...(acquired.vncPassword ? { vncPassword: acquired.vncPassword } : {}),
     };
   };

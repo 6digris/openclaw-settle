@@ -6,6 +6,7 @@ import type { TaskRecord } from "../../../tasks/task-registry.types.js";
 import { createSubagentRunRecord } from "../../subagent-test-fixtures.test-helpers.js";
 import { SubagentLifecycleController } from "../registry/subagent-registry-lifecycle.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
+import { getLatestLiveSubagentRunByChildSessionKey } from "../registry/subagent-registry-read.js";
 import { saveSubagentRegistryToSqlite } from "../registry/subagent-registry.store.sqlite.js";
 import type { SubagentRunRecord } from "../registry/subagent-registry.types.js";
 
@@ -75,7 +76,9 @@ export function records() {
 }
 
 export function requesterWakeDriver(inputs: ReturnType<typeof records>[]) {
-  const wake = vi.fn(async () => {
+  const wake = vi.fn<
+    SubagentLifecycleController["options"]["maybeWakeRequesterAfterAllChildrenSettled"]
+  >(async () => {
     throw new Error("requester unavailable");
   });
   const warn = vi.fn();
@@ -89,6 +92,7 @@ export function requesterWakeDriver(inputs: ReturnType<typeof records>[]) {
     persistOrThrow: persist,
     clearPendingLifecycleError: vi.fn(),
     countPendingDescendantRuns: () => 0,
+    getLatestRunForChildSession: getLatestLiveSubagentRunByChildSessionKey,
     suppressAnnounceForSteerRestart: () => false,
     resolveSubagentTask: (entry) => ({
       lookup: "available",
@@ -112,9 +116,7 @@ export function requesterWakeDriver(inputs: ReturnType<typeof records>[]) {
     warn,
     async run(entry = inputs[0]!.subagent) {
       controller.resumeRequesterSettleWake(entry.runId, entry);
-      await vi.waitFor(() =>
-        expect(warn).toHaveBeenCalledWith("requester settle wake failed", expect.any(Object)),
-      );
+      await vi.waitFor(() => expect(wake).toHaveBeenCalled());
       await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
     },
   };

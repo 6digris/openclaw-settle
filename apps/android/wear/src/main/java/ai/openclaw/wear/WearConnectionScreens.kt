@@ -28,9 +28,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.viewmodel.compose.rememberViewModelStoreOwner
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.wear.compose.material3.AppScaffold
 import androidx.wear.compose.material3.Text
 import androidx.wear.input.RemoteInputIntentHelper
@@ -46,14 +46,10 @@ internal fun WearConnectionHost(
   val runtime = app.directRuntime
   val state by runtime.state.collectAsState()
   var manage by remember { mutableStateOf(false) }
+  // Presentation changes retain Phone Proxy work; selecting Direct retires its owner.
+  val phoneProxyOwner = if (state.selected == null) rememberViewModelStoreOwner() else null
   if (!manage && !state.connectionManagementRequired && state.selected == null && !state.busy) {
-    // Leaving Phone Proxy disposes its ViewModel scope and microphone owner.
-    val viewModels = remember { ViewModelStore() }
-    val viewModel =
-      remember(viewModels) {
-        ViewModelProvider(viewModels, ViewModelProvider.AndroidViewModelFactory.getInstance(app))[WearViewModel::class.java]
-      }
-    DisposableEffect(viewModels) { onDispose { viewModels.clear() } }
+    val viewModel = viewModel<WearViewModel>(checkNotNull(phoneProxyOwner))
     OpenClawWearApp(
       viewModel,
       remember { WearSettingsStore(app) },

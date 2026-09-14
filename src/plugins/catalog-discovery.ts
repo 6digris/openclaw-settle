@@ -120,8 +120,6 @@ export function resolvePluginDiscoveryIdentity(
 
 export function joinClawHubPluginCatalog(params: {
   remote: readonly ClawHubPluginCatalogEntry[];
-  /** Complete ClawHub identity set used to classify unpublished bundled plugins. */
-  published?: readonly ClawHubPluginCatalogEntry[];
   local: PluginsListResult;
   includeBundledOnly?: boolean;
   intent?: "all" | "bundled" | "trending" | "official" | "updated" | "featured";
@@ -147,6 +145,10 @@ export function joinClawHubPluginCatalog(params: {
         ...(plugin.downloads !== undefined ? { downloads: plugin.downloads } : {}),
         ...(plugin.installs !== undefined ? { installs: plugin.installs } : {}),
         ...(plugin.verificationTier ? { verificationTier: plugin.verificationTier } : {}),
+        ...(plugin.featured !== undefined ? { featured: plugin.featured } : {}),
+        ...(plugin.trending !== undefined ? { trending: plugin.trending } : {}),
+        ...(plugin.featuredRank !== undefined ? { featuredRank: plugin.featuredRank } : {}),
+        ...(plugin.trendingRank !== undefined ? { trendingRank: plugin.trendingRank } : {}),
         publishedToClawHub: true,
       },
       local: projectLocalFacts(localPlugin, params.local.mutationAllowed),
@@ -162,21 +164,15 @@ export function joinClawHubPluginCatalog(params: {
       publishedLocalPlugins.add(localPlugin);
     }
   }
-  if (params.includeBundledOnly) {
-    for (const plugin of params.published ?? []) {
-      const localPlugin = findLocalPlugin(plugin, localIndex);
-      if (localPlugin && !(params.intent === "all" && localPlugin.installed)) {
-        publishedLocalPlugins.add(localPlugin);
-      }
-    }
-  }
   const query = normalizedAlias(params.query);
   const localOnly = params.local.plugins
     .filter(
       (plugin) =>
         !publishedLocalPlugins.has(plugin) &&
         ((params.intent === "all" && plugin.installed) ||
-          (params.includeBundledOnly && plugin.origin === "bundled")),
+          (params.includeBundledOnly &&
+            plugin.origin === "bundled" &&
+            (params.intent !== "bundled" || !localClawHubIdentity(plugin)))),
     )
     .filter((plugin) => {
       const categories = localDiscoveryCategories(plugin);
@@ -194,7 +190,8 @@ export function joinClawHubPluginCatalog(params: {
     .map((plugin) =>
       projectLocalDiscoveryEntry(plugin, params.local.mutationAllowed, params.includeBundledOnly),
     );
-  return [...localOnly, ...remote];
+  const joined = [...localOnly, ...remote];
+  return params.intent === "all" && !query ? joined.toSorted(compareOfficialDownloads) : joined;
 }
 
 function localDiscoveryCategories(plugin: PluginCatalogEntry): string[] {
@@ -233,6 +230,14 @@ function projectLocalDiscoveryEntry(
   };
 }
 
+function compareOfficialDownloads(left: PluginDiscoveryEntry, right: PluginDiscoveryEntry): number {
+  if (left.catalog.official !== right.catalog.official) {
+    return left.catalog.official ? -1 : 1;
+  }
+  const downloadOrder = (right.catalog.downloads ?? 0) - (left.catalog.downloads ?? 0);
+  return downloadOrder || left.catalog.name.localeCompare(right.catalog.name);
+}
+
 export function findLocalPluginByIdentity(
   local: PluginsListResult,
   identity: string,
@@ -258,7 +263,7 @@ export function joinLocalPluginDetail(params: {
       topics: [],
       configuration: [],
       mcpServers: inspection?.declared.mcpServers ?? [],
-      skills: (inspection?.declared.skills ?? []).map((name) => ({ name })),
+      skills: (inspection?.components.skills ?? []).map((name) => ({ name })),
       versions: [],
     },
   };
