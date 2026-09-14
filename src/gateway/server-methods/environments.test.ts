@@ -110,28 +110,66 @@ describe("environment gateway methods", () => {
     },
   );
 
-  it("reports metadata failure instead of a successful optionless cloud profile", async () => {
-    const service = workerService({
-      listMachineOptions: vi.fn(async () => {
-        throw new Error("provider failed");
-      }),
-    });
-    const [ok, payload, error] = await callEnvironmentMethod("environments.list", {}, { service });
-    expect(ok).toBe(false);
-    expect(payload).toBeUndefined();
-    expect(error).toEqual(
-      expect.objectContaining({
-        code: "UNAVAILABLE",
-        message: "cloud profile options unavailable",
-      }),
-    );
-    const [inventoryOk] = await callEnvironmentMethod(
-      "environments.list",
-      { includeProfiles: false },
-      { service },
-    );
-    expect(inventoryOk).toBe(true);
-  });
+  it.each(["listMachineOptions", "listOperatingSystems"] as const)(
+    "keeps node inventory and profile summaries when %s fails for one provider",
+    async (failedMethod) => {
+      const machines = [{ id: "standard", label: "Standard", default: true }];
+      const operatingSystems = [
+        { id: "linux", label: "Linux", default: true },
+        { id: "windows", label: "Windows" },
+      ];
+      for (const includeProfiles of [undefined, true, false]) {
+        const service = workerService({
+          supportsExecutionMode: vi.fn((_profileId, mode) => mode === "worker-turn"),
+          listMachineOptions: vi.fn(async (profileId) => {
+            if (profileId === "aws" && failedMethod === "listMachineOptions") {
+              throw new Error("provider metadata failure");
+            }
+            return machines;
+          }),
+          listOperatingSystems: vi.fn(async (profileId) => {
+            if (profileId === "aws" && failedMethod === "listOperatingSystems") {
+              throw new Error("provider metadata failure");
+            }
+            return operatingSystems;
+          }),
+        });
+        const [ok, payload, error] = await callEnvironmentMethod(
+          "environments.list",
+          includeProfiles === undefined ? {} : { includeProfiles },
+          { service },
+        );
+        expect([ok, error]).toEqual([true, undefined]);
+        expect(payload).toMatchObject({
+          environments: expect.arrayContaining([
+            expect.objectContaining({ id: "node:node-live", status: "available" }),
+          ]),
+        });
+        if (includeProfiles === false) {
+          expect(payload).not.toHaveProperty("profiles");
+          expect(service.listMachineOptions).not.toHaveBeenCalled();
+          expect(service.listOperatingSystems).not.toHaveBeenCalled();
+        } else {
+          expect(payload).toHaveProperty("profiles", [
+            {
+              id: "aws",
+              providerId: "crabbox",
+              executionMode: "worker-turn",
+              executionModes: ["worker-turn"],
+            },
+            {
+              id: "zeta",
+              providerId: "static-ssh",
+              executionMode: "worker-turn",
+              executionModes: ["worker-turn"],
+              machines,
+              operatingSystems,
+            },
+          ]);
+        }
+      }
+    },
+  );
   it.each(["locked", "unlocked", "unknown"])(
     "projects %s desktop availability only from its matching live node",
     async (state) => {
