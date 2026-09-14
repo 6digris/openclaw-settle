@@ -277,6 +277,43 @@ clearing. It contains counts only, without tool arguments or result content, and
 requires no debug flag. See [Session pruning](/concepts/session-pruning#direct-anthropic-api-key-requests)
 for the routes and thresholds that enable clearing.
 
+### Agent stops and continuation
+
+A provider response ending normally does not prove the user's task is complete.
+When [trajectory recording](/tools/trajectory) is enabled, embedded attempts
+record `agent.loop.decision` at the loop's continuation and exit decisions. The
+record includes the model turn number, `stopReason`, optional `endTurn`, tool
+result count, tool-batch termination, streamed continuation, and pending input
+count. Its reason distinguishes a model terminal response from host stop hooks,
+tool termination, cancellation, exceptions, and queued input. Missing fields are
+unknown; diagnostics do not interpret progress text as task completion.
+
+`context.identity` records SHA-256 fingerprints of the prepared system prompt
+and recorded provider-visible tool definitions, plus the visible tool count. These small
+records remain separate from the larger `context.compiled` snapshot. They compare
+prepared inputs, not final provider wire payloads or deployed source trees; use
+existing `trace.metadata` and deployment receipts for runtime identity.
+
+With process diagnostics enabled, plugin refresh emits `run.continuation` events
+and info-level `embedded run continuation` file logs. The phases are:
+
+- `requested`: the active refresh owner accepted a request.
+- `registered`: the runner prepared continuation parameters after the attempt.
+- `started`: the orchestrator entered the next generation; model admission may
+  still be pending.
+- `settled`: that generation returned a result, including an error result. This
+  does not assert task completion or that cleanup has finished.
+- `failed`: that generation threw before returning a result.
+- `not_registered`: a requested refresh could not register after the attempt,
+  because the attempt was not OK or held work remained.
+
+Correlate those records by run and session with model-call events, terminal
+results, and existing restart recovery receipts. A `registered` record without
+`started` narrows the gap to the handoff; it does not establish its cause. The
+stability snapshot retains the phase, owner, and reason with its existing safe
+identifier projection. These diagnostics follow existing collection and retention
+settings and do not schedule retries or change stop decisions.
+
 ### Trace correlation
 
 File logs are JSONL. When a log call carries a valid diagnostic trace context,

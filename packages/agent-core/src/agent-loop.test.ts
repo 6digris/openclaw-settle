@@ -24,6 +24,7 @@ import {
   type Message,
   type Model,
 } from "./llm.js";
+import { setAgentLoopObserver, type AgentLoopDecision } from "./loop-diagnostics.js";
 import {
   getAgentToolExecutionContext,
   type AgentToolExecutionContext,
@@ -987,6 +988,58 @@ describe("agentLoop tool termination", () => {
       return stream;
     };
   }
+
+  it.each(["steering", "follow_up", "next_turn_stop", "exception", "input_cancelled"])(
+    "records %s at the loop boundary without changing requests",
+    async (reason) => {
+      const decisions: AgentLoopDecision[] = [];
+      const requests: Message[][] = [];
+      let queued = true;
+      const drain = async () => {
+        if (!queued || requests.length === 0) {
+          return [];
+        }
+        queued = false;
+        return [{ role: "user" as const, content: "check again", timestamp: 2 }];
+      };
+      const loopConfig: AgentLoopConfig = {
+        ...config,
+        getSteeringMessages: reason === "steering" ? drain : undefined,
+        getFollowUpMessages: reason === "follow_up" ? drain : undefined,
+        consumeQueuedMessageCancellation: reason === "input_cancelled" ? () => true : undefined,
+        prepareNextTurn: () => {
+          if (reason === "exception") {
+            throw new Error("host preparation failed");
+          }
+          return reason === "next_turn_stop" ? { stop: true } : undefined;
+        },
+      };
+      setAgentLoopObserver(loopConfig, (decision) => {
+        decisions.push(decision);
+      });
+      const stream = agentLoop(
+        [{ role: "user", content: "check", timestamp: 1 }],
+        { systemPrompt: "", messages: [] },
+        loopConfig,
+        undefined,
+        createTurnSequenceStream(
+          [[{ type: "text", text: "first" }], [{ type: "text", text: "second" }]],
+          requests,
+        ),
+      );
+      await collectEvents(stream);
+      const continues = reason === "steering" || reason === "follow_up";
+      expect(decisions[0]).toMatchObject({
+        decision: continues ? "continue" : "stop",
+        reason,
+        ...(continues ? { pendingMessageCount: 1 } : {}),
+      });
+      expect(requests).toHaveLength(continues ? 2 : reason === "input_cancelled" ? 0 : 1);
+      if (continues) {
+        expect(decisions.at(-1)).toMatchObject({ decision: "stop", reason: "model_terminal" });
+      }
+    },
+  );
 
   it("makes a queued steer visible before the next sequential tool starts", async () => {
     const firstReleased = createDeferred();

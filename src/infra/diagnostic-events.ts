@@ -624,6 +624,13 @@ type DiagnosticRunBaseEvent = DiagnosticBaseEvent & {
   channel?: string;
 };
 
+export type DiagnosticRunContinuationEvent = DiagnosticRunBaseEvent & {
+  type: "run.continuation";
+  owner: "plugin_refresh";
+  phase: "requested" | "registered" | "started" | "settled" | "failed" | "not_registered";
+  reason?: "pending_work" | "attempt_not_ok";
+};
+
 export type DiagnosticRunStartedEvent = DiagnosticRunBaseEvent & {
   type: "run.started";
 };
@@ -876,6 +883,7 @@ export type DiagnosticEventPayload =
   | DiagnosticSkillUsedEvent
   | DiagnosticExecProcessCompletedEvent
   | DiagnosticExecApprovalFollowupSuppressedEvent
+  | DiagnosticRunContinuationEvent
   | DiagnosticRunStartedEvent
   | DiagnosticRunCompletedEvent
   | DiagnosticHarnessRunStartedEvent
@@ -1036,6 +1044,7 @@ const ASYNC_DIAGNOSTIC_EVENT_TYPES = new Set<DiagnosticEventPayload["type"]>([
   "model.call.error",
   "run.progress",
   "run.execution_phase",
+  "run.continuation",
   "harness.run.completed",
   "harness.run.error",
   "context.assembled",

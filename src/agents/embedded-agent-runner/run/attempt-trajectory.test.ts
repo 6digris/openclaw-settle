@@ -1,4 +1,6 @@
+import { createAssistantMessageEventStream, type AssistantMessage } from "@openclaw/ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { Agent } from "../../runtime/index.js";
 
 const hoisted = vi.hoisted(() => ({
   buildTrajectoryRunMetadata: vi.fn(() => ({ trace: "metadata" })),
@@ -20,7 +22,7 @@ import { prepareEmbeddedAttemptTrajectory } from "./attempt-trajectory.js";
 
 function createInput(disableTrajectory = false) {
   return {
-    activeSession: { sessionId: "session-1" },
+    activeSession: { sessionId: "session-1", agent: new Agent() },
     attempt: {
       config: {},
       disableTrajectory,
@@ -93,6 +95,74 @@ describe("prepareEmbeddedAttemptTrajectory", () => {
       expect.objectContaining({ fastMode: true, provider: "provider-1" }),
     );
   });
+
+  it.each(["normal", "throw", "reject", "pending"])(
+    "observes the real Agent loop without changing completion when recording is %s",
+    async (mode) => {
+      const input = createInput();
+      const { agent } = input.activeSession;
+      const recorder = {
+        recordEvent: vi.fn((type: string) => {
+          if (type !== "agent.loop.decision") {
+            return undefined;
+          }
+          if (mode === "throw") {
+            throw new Error("diagnostic sink failed");
+          }
+          if (mode === "reject") {
+            return Promise.reject(new Error("diagnostic sink rejected"));
+          }
+          if (mode === "pending") {
+            return new Promise<void>(() => {});
+          }
+          return undefined;
+        }),
+      };
+      hoisted.createTrajectoryRuntimeRecorder.mockReturnValue(recorder);
+      const message: AssistantMessage = {
+        role: "assistant",
+        content: [{ type: "text", text: "Finished" }],
+        api: "test-api",
+        provider: "test-provider",
+        model: "test-model",
+        stopReason: "stop",
+        timestamp: 1,
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+      };
+      agent.streamFn = vi.fn(() => {
+        const stream = createAssistantMessageEventStream();
+        stream.push({ type: "done", reason: "stop", message });
+        stream.end(message);
+        return stream;
+      });
+      await prepareEmbeddedAttemptTrajectory(input as never);
+      await agent.prompt("Complete the check");
+      expect(agent.state.messages.at(-1)).toEqual(message);
+      expect(agent.streamFn).toHaveBeenCalledOnce();
+      expect(recorder.recordEvent).toHaveBeenCalledWith(
+        "agent.loop.decision",
+        expect.objectContaining({
+          decision: "stop",
+          reason: "model_terminal",
+          stopReason: "stop",
+          modelTurn: 1,
+        }),
+      );
+      // Reusing the session with collection disabled must release the old recorder.
+      recorder.recordEvent.mockClear();
+      input.attempt.disableTrajectory = true;
+      await prepareEmbeddedAttemptTrajectory(input as never);
+      await agent.prompt("Another check");
+      expect(recorder.recordEvent).not.toHaveBeenCalled();
+    },
+  );
 
   it("keeps trajectory path resolution but skips recorder creation when disabled", async () => {
     await expect(prepareEmbeddedAttemptTrajectory(createInput(true) as never)).resolves.toBeNull();

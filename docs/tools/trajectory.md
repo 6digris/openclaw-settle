@@ -79,7 +79,9 @@ Runtime events include:
 
 - `session.started`
 - `trace.metadata`
+- `context.identity`, with prepared system prompt and visible tool fingerprints
 - `context.compiled`
+- `agent.loop.decision`, with the loop continuation or stop reason and bounded control metadata; see [Agent stops and continuation](/logging#agent-stops-and-continuation)
 - `prompt.submitted`
 - `tool.call`, with the tool identity and sanitized arguments
 - `tool.result`, with the sanitized result and execution outcome

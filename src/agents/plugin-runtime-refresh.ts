@@ -6,6 +6,7 @@ type Refresh = {
   holds: number;
   consumer?: () => boolean;
   requested: boolean;
+  onRequested?: () => void;
 };
 
 const refreshScope = resolveGlobalSingleton(
@@ -27,6 +28,11 @@ export function captureAgentPluginRuntimeRefresh() {
         return false;
       }
       owner.requested = true;
+      try {
+        void Promise.resolve(owner.onRequested?.()).catch(() => {});
+      } catch {
+        // The refresh request remains accepted when diagnostic collection fails.
+      }
       return true;
     },
     isRequested: () => owner?.active === true && owner.requested,
@@ -60,7 +66,7 @@ export function captureAgentPluginRuntimeRefresh() {
 }
 
 /** One visible run owns refresh requests across all of its prepared runtime generations. */
-export function createAgentPluginRuntimeRefresh() {
+export function createAgentPluginRuntimeRefresh(onRequested?: () => void) {
   let owner: Refresh | undefined;
   const close = () => {
     if (owner) {
@@ -72,7 +78,7 @@ export function createAgentPluginRuntimeRefresh() {
   return {
     run: <T>(run: () => T): T => {
       close();
-      owner = { active: true, holds: 0, requested: false };
+      owner = { active: true, holds: 0, requested: false, onRequested };
       return refreshScope.run(owner, run);
     },
     close,

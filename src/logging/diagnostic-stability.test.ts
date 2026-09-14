@@ -287,6 +287,28 @@ describe("diagnostic stability recorder", () => {
     expect(snapshot.events[0]).not.toHaveProperty("systemPromptChars");
   });
 
+  it("retains the continuation decision without raw session identifiers", async () => {
+    startDiagnosticStabilityRecorder();
+    emitDiagnosticEvent({
+      type: "run.continuation",
+      owner: "plugin_refresh",
+      phase: "not_registered",
+      reason: "pending_work",
+      runId: "private-run",
+      sessionId: "private-session",
+      sessionKey: "private-key",
+    });
+    await waitForDiagnosticEventsDrained();
+    const snapshot = getDiagnosticStabilitySnapshot({ limit: 10 });
+    expectFields(snapshot.events[0], {
+      type: "run.continuation",
+      source: "plugin_refresh",
+      phase: "not_registered",
+      reason: "pending_work",
+    });
+    expect(JSON.stringify(snapshot)).not.toContain("private-");
+  });
+
   it("projects run.execution_phase into the dedicated phase fields", async () => {
     startDiagnosticStabilityRecorder();
 

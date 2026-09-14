@@ -1,7 +1,14 @@
 import {
+  areDiagnosticsEnabledForProcess,
+  emitDiagnosticEvent,
+  type DiagnosticRunContinuationEvent,
+  type DiagnosticEventInput,
+} from "../../infra/diagnostic-events.js";
+import {
   captureAgentPluginRuntimeRefresh,
   createAgentPluginRuntimeRefresh,
 } from "../plugin-runtime-refresh.js";
+import { log } from "./logger.js";
 import { createInheritedDeliveryCallbacks } from "./plugin-runtime-refresh-delivery.js";
 import {
   copyAttemptDeliveryState,
@@ -25,7 +32,34 @@ export type EmbeddedPluginRuntimeRefresh = ReturnType<
 export function createEmbeddedAgentPluginRuntimeRefresh(
   callbacks: RunEmbeddedAgentParamsWithSessionFile,
 ) {
-  const refresh = createAgentPluginRuntimeRefresh();
+  const recordContinuation = (
+    phase: DiagnosticRunContinuationEvent["phase"],
+    params: Pick<RunEmbeddedAgentParamsWithSessionFile, "sessionId" | "sessionKey">,
+    reason?: DiagnosticRunContinuationEvent["reason"],
+  ) => {
+    if (!areDiagnosticsEnabledForProcess()) {
+      return;
+    }
+    try {
+      const event: DiagnosticEventInput = {
+        type: "run.continuation",
+        owner: "plugin_refresh",
+        phase,
+        reason,
+        runId: callbacks.runId,
+        sessionId: params.sessionId,
+        sessionKey: params.sessionKey,
+      };
+      emitDiagnosticEvent(event);
+      log.info("embedded run continuation", event);
+    } catch {
+      // Metadata collection must never change refresh ownership or continuation.
+    }
+  };
+  let generationParams = callbacks;
+  const refresh = createAgentPluginRuntimeRefresh(() =>
+    recordContinuation("requested", generationParams),
+  );
   const pendingToolMedia = createPendingToolMediaCarry();
   const successfulToolNames = new Set<string>();
   let delivered: AttemptDeliveryState | undefined;
@@ -41,10 +75,17 @@ export function createEmbeddedAgentPluginRuntimeRefresh(
     assertActive: () => void,
     isTurnTainted: () => boolean,
   ): EmbeddedAgentRunResult | undefined {
-    if (
-      input.dispatchedAttempt.rawAttempt.terminal.kind !== "ok" ||
-      !captureAgentPluginRuntimeRefresh().isPending()
-    ) {
+    const requested = captureAgentPluginRuntimeRefresh();
+    if (input.dispatchedAttempt.rawAttempt.terminal.kind !== "ok" || !requested.isPending()) {
+      if (requested.isRequested()) {
+        recordContinuation(
+          "not_registered",
+          input.sessionPromptState,
+          input.dispatchedAttempt.rawAttempt.terminal.kind !== "ok"
+            ? "attempt_not_ok"
+            : "pending_work",
+        );
+      }
       return undefined;
     }
     assertActive();
@@ -82,6 +123,7 @@ export function createEmbeddedAgentPluginRuntimeRefresh(
       prompt:
         "The plugin runtime has been refreshed. Continue the current task from the transcript using the updated tools. Verify the requested change; do not repeat completed actions or the original user request.",
     };
+    recordContinuation("registered", continuation);
     return {
       meta: {
         durationMs: Date.now() - runInput.startedAtMs,
@@ -98,11 +140,13 @@ export function createEmbeddedAgentPluginRuntimeRefresh(
   }
 
   return {
-    run: <T>(run: () => T): T => {
+    run: <T>(run: () => T, params: RunEmbeddedAgentParamsWithSessionFile): T => {
       closeGeneration();
+      generationParams = params;
       return refresh.run(run);
     },
     continueAfterAttempt,
+    recordContinuation,
     mergeToolMedia: pendingToolMedia.merge,
     applyDeliveryState: <T extends Parameters<typeof copyAttemptDeliveryState>[0]>(
       attempt: T,

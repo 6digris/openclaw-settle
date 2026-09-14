@@ -598,9 +598,10 @@ describe("embedded run detached session metadata", () => {
     async (harness, suppliedManager) => {
       const { params, stateDir } = await createRun("research", "detached");
       const { prepareEmbeddedAttemptTrajectory } = await import("./run/attempt-trajectory.js");
+      const { Agent } = await import("../runtime/index.js");
       runAttempt.mockImplementationOnce(async (attempt) => {
         const recorder = await prepareEmbeddedAttemptTrajectory({
-          activeSession: { sessionId: attempt.sessionId },
+          activeSession: { sessionId: attempt.sessionId, agent: new Agent() },
           attempt,
           clientToolCount: 0,
           effectiveToolCount: 0,

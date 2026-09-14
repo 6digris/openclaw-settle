@@ -2,6 +2,7 @@
  * Supports prompt construction and observation between session setup and submission.
  * It may assume resolved tools, hook context, and diagnostic inputs are ready.
  */
+import { createHash } from "node:crypto";
 import { emitTrustedDiagnosticEvent } from "../../../infra/diagnostic-events.js";
 import {
   createChildDiagnosticTraceContext,
@@ -252,6 +253,15 @@ export function observeEmbeddedAttemptPrompt(input: {
       const trajectoryTools = input.toolSearchCompacted
         ? toTrajectoryToolDefinitions(input.uncompactedEffectiveTools)
         : providerVisibleTools;
+      trajectoryRecorder.recordEvent("context.identity", {
+        systemPromptSha256: createHash("sha256")
+          .update(input.systemPromptForHook ?? "")
+          .digest("hex"),
+        providerToolsSha256: createHash("sha256")
+          .update(JSON.stringify(providerVisibleTools))
+          .digest("hex"),
+        providerToolCount: providerVisibleTools.length,
+      });
       trajectoryRecorder.recordEvent("context.compiled", {
         systemPrompt: input.systemPromptForHook,
         prompt: input.promptForModel,

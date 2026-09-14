@@ -10,6 +10,7 @@ import type {
 import { runAgentLoop, runAgentLoopContinue } from "./agent-loop.js";
 import { TranscriptNotContinuableError } from "./errors.js";
 import { attachInternalSyncSteeringGetter, getInternalBeforeToolBatch } from "./internal-hooks.js";
+import { copyAgentLoopObserver } from "./loop-diagnostics.js";
 import { resolveAgentReasoningOption } from "./reasoning.js";
 import { type AgentCoreStreamRuntimeDeps, resolveAgentCoreStreamFn } from "./runtime-deps.js";
 import {
@@ -595,7 +596,7 @@ export class Agent {
         subscribe: (listener) => this.steeringQueue.subscribe(listener),
       },
     );
-    return {
+    return copyAgentLoopObserver(this, {
       model: this.mutableState.model,
       thinkingLevel: this.mutableState.thinkingLevel,
       reasoning: resolveAgentReasoningOption(
@@ -632,7 +633,7 @@ export class Agent {
       consumeQueuedMessageCancellation: (message) =>
         this.steeringQueue.consumeCancellation(message) ||
         this.followUpQueue.consumeCancellation(message),
-    };
+    });
   }
 
   private async runWithLifecycle(executor: (signal: AbortSignal) => Promise<void>): Promise<void> {

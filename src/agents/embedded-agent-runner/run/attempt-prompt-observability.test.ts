@@ -115,6 +115,35 @@ describe("observeEmbeddedAttemptPrompt", () => {
     hoisted.log.isEnabled.mockReturnValue(false);
   });
 
+  it("fingerprints the prepared prompt and visible tools independently of deferred tools", () => {
+    const capture = (overrides: Partial<PromptObservabilityInput> = {}) => {
+      hoisted.recordTrajectoryEvent.mockClear();
+      observeEmbeddedAttemptPrompt(createInput(overrides));
+      return hoisted.recordTrajectoryEvent.mock.calls.find(
+        ([type]) => type === "context.identity",
+      )?.[1];
+    };
+    const baseline = capture();
+    expect(baseline).toEqual({
+      systemPromptSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      providerToolsSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      providerToolCount: 1,
+    });
+    expect(capture()).toEqual(baseline);
+    expect(capture({ systemPromptForHook: "changed prompt" })).toEqual({
+      ...baseline,
+      systemPromptSha256: expect.not.stringMatching(baseline.systemPromptSha256),
+    });
+    expect(capture({ effectiveTools: [{ name: "changed-tool" }] })).toEqual({
+      ...baseline,
+      providerToolsSha256: expect.not.stringMatching(baseline.providerToolsSha256),
+    });
+    expect(capture({ uncompactedEffectiveTools: [{ name: "other-deferred-tool" }] })).toEqual(
+      baseline,
+    );
+    expect(capture({ trajectoryRecorder: null })).toBeUndefined();
+  });
+
   it("records the assembled prompt boundary and dispatches a cloned llm_input snapshot", () => {
     const input = createInput();
 
@@ -179,11 +208,11 @@ describe("observeEmbeddedAttemptPrompt", () => {
     expect(observeEmbeddedAttemptPrompt(input)).toEqual({ skipPromptSubmission: true });
 
     expect(hoisted.recordTrajectoryEvent).toHaveBeenNthCalledWith(
-      1,
+      2,
       "context.compiled",
       expect.any(Object),
     );
-    expect(hoisted.recordTrajectoryEvent).toHaveBeenNthCalledWith(2, "prompt.skipped", {
+    expect(hoisted.recordTrajectoryEvent).toHaveBeenNthCalledWith(3, "prompt.skipped", {
       reason: "blank_user_prompt",
       prompt: "   ",
       messages: input.sessionMessages,

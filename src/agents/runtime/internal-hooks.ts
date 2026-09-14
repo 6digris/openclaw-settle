@@ -13,3 +13,5 @@ export {
   type InternalBeforeToolBatchHook,
   type InternalToolExecutionPreparer,
 } from "../../../packages/agent-core/src/internal-hooks.js";
+
+export { setAgentLoopObserver } from "../../../packages/agent-core/src/loop-diagnostics.js";

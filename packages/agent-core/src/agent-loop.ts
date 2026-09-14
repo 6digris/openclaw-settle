@@ -25,6 +25,7 @@ import {
   takeInternalToolBatchLifecycle,
   type InternalToolBatchLifecycle,
 } from "./internal-hooks.js";
+import { recordAgentLoopDecision, type AgentLoopDecision } from "./loop-diagnostics.js";
 import { resolveAgentReasoningOption } from "./reasoning.js";
 import type { AgentCoreStreamRuntimeDeps } from "./runtime-deps.js";
 import {
@@ -194,10 +195,27 @@ async function runAgentLoopCore(
   if (prompts.length > 0 && newMessages.length === 0) {
     // A drained queue batch can be cancelled while turn_start listeners settle.
     // Close without a provider call so cancelled input cannot become an empty continuation.
+    recordAgentLoopDecision(config, {
+      decision: "stop",
+      reason: "input_cancelled",
+      modelTurn: 0,
+      toolResultCount: 0,
+      batchTerminate: false,
+      streamedContinuation: false,
+      pendingMessageCount: 0,
+    });
     await emit({ type: "agent_end", messages: [] });
     return [];
   }
-  return runLoop(state, newMessages, config, signal, emit, streamFn, runtime);
+  try {
+    return await runLoop(state, newMessages, config, signal, emit, streamFn, runtime);
+  } catch (error) {
+    recordAgentLoopDecision(config, {
+      decision: "stop",
+      reason: signal?.aborted ? "aborted" : "exception",
+    });
+    throw error;
+  }
 }
 
 function createAgentStream(): EventStream<AgentEvent, AgentMessage[]> {
@@ -242,6 +260,28 @@ async function runLoop(
   runtime?: AgentCoreStreamRuntimeDeps,
 ): Promise<AgentMessage[]> {
   let config = initialConfig;
+  let modelTurn = 0;
+  let stopReason: AssistantMessage["stopReason"] | undefined;
+  let endTurn: boolean | undefined;
+  let toolResultCount = 0;
+  let batchTerminate = false;
+  let streamedContinuation = false;
+  const recordDecision = (
+    decision: AgentLoopDecision["decision"],
+    reason: AgentLoopDecision["reason"],
+    pendingMessageCount = 0,
+  ) =>
+    recordAgentLoopDecision(initialConfig, {
+      decision,
+      reason,
+      modelTurn,
+      stopReason,
+      endTurn,
+      toolResultCount,
+      batchTerminate,
+      streamedContinuation,
+      pendingMessageCount,
+    });
   let firstTurn = true;
   let turnOpen = true;
   let turnTainted = isActiveTurnTainted(state.context.messages);
@@ -279,6 +319,7 @@ async function runLoop(
     if (!isTurnHandoffAbort(signal)) {
       await appendInterruptedTurnMessage(newMessages, emit);
     }
+    recordDecision("stop", "aborted", pendingMessages.length);
     await emit({ type: "agent_end", messages: newMessages });
     return true;
   };
@@ -338,6 +379,12 @@ async function runLoop(
       }
 
       // Stream assistant response
+      modelTurn += 1;
+      stopReason = undefined;
+      endTurn = undefined;
+      toolResultCount = 0;
+      batchTerminate = false;
+      streamedContinuation = false;
       let streamedSteering: AgentMessage[] = [];
       const streamedConfig: AgentLoopConfig = {
         ...config,
@@ -376,6 +423,12 @@ async function runLoop(
         runtime,
       );
       const { message } = streamed;
+      stopReason = message.stopReason;
+      endTurn = message.endTurn;
+      streamedContinuation = streamed.continuationRequired;
+      toolResultCount = streamed.batches.reduce((count, batch) => count + batch.messages.length, 0);
+      batchTerminate =
+        streamed.batches.length > 0 && streamed.batches.every((batch) => batch.terminate);
 
       if (message.stopReason === "error" || message.stopReason === "aborted") {
         await emit({
@@ -386,6 +439,7 @@ async function runLoop(
         if (message.stopReason === "aborted" && signal?.aborted && !isTurnHandoffAbort(signal)) {
           await appendInterruptedTurnMessage(newMessages, emit);
         }
+        recordDecision("stop", message.stopReason === "aborted" ? "aborted" : "model_terminal");
         await emit({ type: "agent_end", messages: newMessages });
         return newMessages;
       }
@@ -422,6 +476,8 @@ async function runLoop(
           }
         : undefined;
       const toolResults = executedToolBatch?.messages ?? [];
+      toolResultCount = toolResults.length;
+      batchTerminate = executedToolBatch?.terminate === true;
       turnTainted ||= toolResults.some(toolResultTaintsTurn);
       hasMoreToolCalls =
         streamed.continuationRequired ||
@@ -463,6 +519,7 @@ async function runLoop(
         await emit({ type: "message_end", message: terminalMessage });
         await emit({ type: "turn_end", message: terminalMessage, toolResults: [] });
         turnOpen = false;
+        recordDecision("stop", "tool_loop_termination", pendingMessages.length);
         await emit({ type: "agent_end", messages: newMessages });
         return newMessages;
       }
@@ -504,6 +561,7 @@ async function runLoop(
             newMessages,
           }))
         ) {
+          recordDecision("stop", "host_stop");
           await emit({ type: "agent_end", messages: newMessages });
           return newMessages;
         }
@@ -516,23 +574,41 @@ async function runLoop(
       }
       if (nextTurnSnapshot?.stop) {
         // The old owner is about to close; commit accepted steering before re-admission.
+        const pendingCount = pendingMessages.length;
         await commitPendingMessages();
+        recordDecision("stop", "next_turn_stop", pendingCount);
         await emit({ type: "agent_end", messages: newMessages });
         return newMessages;
+      }
+      if (hasMoreToolCalls || pendingMessages.length > 0) {
+        recordDecision(
+          "continue",
+          pendingMessages.length > 0
+            ? "steering"
+            : streamedContinuation ||
+                (message.stopReason === "stop" && message.endTurn === false && !batchTerminate)
+              ? "provider_continuation"
+              : "tool_results",
+          pendingMessages.length,
+        );
       }
     }
 
     pendingMessages = (await config.getFollowUpMessages?.()) || [];
+    let queuedReason: AgentLoopDecision["reason"] = "follow_up";
     if (pendingMessages.length === 0) {
       // Recheck after the awaited follow-up drain so agent_end cannot strand an accepted steer.
+      queuedReason = "steering";
       const finalSteering = getSteeringAtCheckpoint(config);
       pendingMessages = Array.isArray(finalSteering) ? finalSteering : await finalSteering;
     }
     if (pendingMessages.length === 0) {
       break;
     }
+    recordDecision("continue", queuedReason, pendingMessages.length);
   }
 
+  recordDecision("stop", batchTerminate ? "tool_batch_termination" : "model_terminal");
   await emit({ type: "agent_end", messages: newMessages });
   return newMessages;
 }

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildReplyPayloads } from "../../auto-reply/reply/agent-runner-payloads.js";
+import type { DiagnosticRunContinuationEvent } from "../../infra/diagnostic-events.js";
 import {
   getPluginRuntimeGatewayRequestScope,
   withPluginRuntimeGatewayRequestScope,
@@ -118,6 +119,14 @@ describe("plugin runtime refresh admission", () => {
     const { getAgentRunContext } = await import("../../infra/agent-run-registry.js");
     state = await createOpenClawTestState({ label: "plugin-runtime-refresh" });
     const runParams = createOverflowRunParams(state);
+    const { onInternalDiagnosticEvent, waitForDiagnosticEventsDrained } =
+      await import("../../infra/diagnostic-events.js");
+    const continuations: DiagnosticRunContinuationEvent[] = [];
+    const unsubscribe = onInternalDiagnosticEvent((event) => {
+      if (event.type === "run.continuation" && event.runId === runParams.runId) {
+        continuations.push(event);
+      }
+    });
     const originalPrompt = "edit and reload twice";
     const originalMessage = { role: "user" as const, content: originalPrompt, timestamp: 1 };
     const onUserMessagePersisted = vi.fn();
@@ -249,6 +258,20 @@ describe("plugin runtime refresh admission", () => {
         successfulToolNames: ["plugins", "alpha", "zeta", "read", "beta", "final_check"],
       });
       expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(3);
+      await waitForDiagnosticEventsDrained();
+      expect(continuations.map((event) => event.phase)).toEqual([
+        "requested",
+        "registered",
+        "started",
+        "requested",
+        "registered",
+        "settled",
+        "started",
+        "settled",
+      ]);
+      for (const event of continuations) {
+        expect(event).toMatchObject({ owner: "plugin_refresh", sessionId: "test-session" });
+      }
       expect(mockedAcquireAgentRunPreparedModelRuntime).toHaveBeenCalledTimes(3);
       expect(onUserMessagePersisted).toHaveBeenCalledExactlyOnceWith(originalMessage);
       expect(
@@ -265,6 +288,7 @@ describe("plugin runtime refresh admission", () => {
       const next = await runEmbeddedAgent({ ...runParams, prompt: "new task" });
       expect(next.meta.agentMeta?.terminalReceipt?.successfulToolNames).toEqual([]);
     } finally {
+      unsubscribe();
       mockedAcquireAgentRunPreparedModelRuntime.mockReset();
       mockedRunEmbeddedAttempt.mockReset();
     }

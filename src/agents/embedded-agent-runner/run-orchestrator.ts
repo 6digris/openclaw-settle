@@ -627,12 +627,25 @@ async function runEmbeddedAgentInternal(
         let result: EmbeddedAgentRunResult;
         try {
           for (;;) {
-            const run = () => refresh.run(runGeneration);
-            result = await (refreshed
-              ? runOutsidePreparedModelRuntimePluginGenerationScope(() =>
-                  runOutsidePluginRuntimeGenerationScope(run),
-                )
-              : run());
+            const run = () => refresh.run(runGeneration, params);
+            if (refreshed) {
+              refresh.recordContinuation("started", params);
+            }
+            try {
+              result = await (refreshed
+                ? runOutsidePreparedModelRuntimePluginGenerationScope(() =>
+                    runOutsidePluginRuntimeGenerationScope(run),
+                  )
+                : run());
+            } catch (error) {
+              if (refreshed) {
+                refresh.recordContinuation("failed", params);
+              }
+              throw error;
+            }
+            if (refreshed) {
+              refresh.recordContinuation("settled", params);
+            }
             const continuation = refresh.takeContinuation();
             if (refreshed || continuation) {
               mergeUsageIntoAccumulator(usage, result.meta.agentMeta?.usage);

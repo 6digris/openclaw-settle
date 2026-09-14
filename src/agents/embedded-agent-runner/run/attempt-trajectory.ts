@@ -2,12 +2,13 @@
 import type { SessionSystemPromptReport } from "../../../config/sessions/types.js";
 import { buildTrajectoryRunMetadata } from "../../../trajectory/metadata.js";
 import { createTrajectoryRuntimeRecorder } from "../../../trajectory/runtime.js";
+import { setAgentLoopObserver } from "../../runtime/internal-hooks.js";
 import type { AgentSession } from "../../sessions/index.js";
 import { resolveAttemptTrajectorySessionFile } from "./attempt-transcript-helpers.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
 
 export async function prepareEmbeddedAttemptTrajectory(input: {
-  activeSession: Pick<AgentSession, "sessionId">;
+  activeSession: Pick<AgentSession, "sessionId" | "agent">;
   attempt: EmbeddedRunAttemptParams;
   clientToolCount: number;
   effectiveToolCount: number;
@@ -17,6 +18,7 @@ export async function prepareEmbeddedAttemptTrajectory(input: {
   systemPromptReport?: SessionSystemPromptReport;
 }): Promise<ReturnType<typeof createTrajectoryRuntimeRecorder> | null> {
   const { activeSession, attempt } = input;
+  setAgentLoopObserver(activeSession.agent, undefined);
   const trajectorySessionFile = await resolveAttemptTrajectorySessionFile({
     agentId: input.sessionAgentId,
     config: attempt.config,
@@ -53,6 +55,11 @@ export async function prepareEmbeddedAttemptTrajectory(input: {
     modelApi: attempt.model.api,
     workspaceDir: attempt.workspaceDir,
   });
+  if (recorder) {
+    setAgentLoopObserver(activeSession.agent, (decision) =>
+      recorder.recordEvent("agent.loop.decision", { ...decision }),
+    );
+  }
   recorder?.recordEvent("session.started", {
     trigger: attempt.trigger,
     sessionFile: attempt.sessionFile,

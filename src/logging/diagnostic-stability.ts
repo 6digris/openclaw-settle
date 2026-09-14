@@ -384,6 +384,11 @@ function sanitizeDiagnosticEvent(event: DiagnosticEventPayload): DiagnosticStabi
     case "run.progress":
       assignReasonCode(record, event.reason);
       break;
+    case "run.continuation":
+      record.source = event.owner;
+      record.phase = event.phase;
+      assignReasonCode(record, event.reason);
+      break;
     case "run.execution_phase":
       record.phase = event.phase;
       record.provider = event.provider;

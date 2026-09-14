@@ -7,7 +7,8 @@ import { WebSocketServer } from "ws";
 import { streamOpenAICodexResponses } from "../../ai/src/providers/openai-chatgpt-responses.js";
 import { agentLoop } from "./agent-loop.js";
 import type { Message, Model } from "./llm.js";
-import type { AgentEvent, AgentTool } from "./types.js";
+import { setAgentLoopObserver, type AgentLoopDecision } from "./loop-diagnostics.js";
+import type { AgentEvent, AgentLoopConfig, AgentTool } from "./types.js";
 
 function textItem(id: string, text: string, phase = "final_answer") {
   return {
@@ -29,6 +30,7 @@ describe("Responses turn continuation", () => {
       phase: "commentary",
       requests: 3,
     },
+    { label: "recoverable tool error", endTurn: false, toolError: true, requests: 3 },
     { label: "explicit end", endTurn: true, requests: 1 },
     { label: "omitted end_turn", endTurn: undefined, requests: 1 },
     { label: "malformed end_turn", endTurn: "false", requests: 1 },
@@ -104,10 +106,12 @@ describe("Responses turn continuation", () => {
     };
     const encode = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url");
     const apiKey = `${encode({ alg: "none", typ: "JWT" })}.${encode({ "https://api.openai.com/auth": { chatgpt_account_id: "acct-loopback" } })}.signature`;
-    const execute = vi.fn(async () => ({
-      content: [{ type: "text" as const, text: "checked" }],
-      details: {},
-    }));
+    const execute = vi.fn(async () => {
+      if (scenario.toolError) {
+        throw new Error("Connection unavailable");
+      }
+      return { content: [{ type: "text" as const, text: "checked" }], details: {} };
+    });
     const tool: AgentTool = {
       name: "check",
       label: "Check",
@@ -117,15 +121,20 @@ describe("Responses turn continuation", () => {
     };
     try {
       const events: AgentEvent[] = [];
+      const decisions: AgentLoopDecision[] = [];
+      const config: AgentLoopConfig = {
+        model,
+        convertToLlm: (messages) => messages as Message[],
+        shouldStopAfterTurn: () => scenario.stop === true,
+        afterToolCall: async () => (scenario.terminateTool ? { terminate: true } : undefined),
+      };
+      setAgentLoopObserver(config, (decision) => {
+        decisions.push(decision);
+      });
       const stream = agentLoop(
         [{ role: "user", content: "Check the result and report it.", timestamp: 1 }],
         { systemPrompt: "", messages: [], tools: [tool] },
-        {
-          model,
-          convertToLlm: (messages) => messages as Message[],
-          shouldStopAfterTurn: () => scenario.stop === true,
-          afterToolCall: async () => (scenario.terminateTool ? { terminate: true } : undefined),
-        },
+        config,
         controller.signal,
         (_model, context, options) =>
           streamOpenAICodexResponses(model, context, {
@@ -142,6 +151,29 @@ describe("Responses turn continuation", () => {
       }
       const result = await stream.result();
       expect(requests).toHaveLength(scenario.requests);
+      expect(decisions.filter((decision) => decision.decision === "stop")).toEqual([
+        expect.objectContaining({
+          reason: scenario.cancel
+            ? "aborted"
+            : scenario.stop
+              ? "host_stop"
+              : scenario.terminateTool
+                ? "tool_batch_termination"
+                : "model_terminal",
+          modelTurn: scenario.requests,
+          toolResultCount: scenario.terminateTool ? 1 : 0,
+          batchTerminate: scenario.terminateTool === true,
+          pendingMessageCount: 0,
+        }),
+      ]);
+      if (scenario.requests > 1) {
+        expect(decisions[0]).toMatchObject({
+          decision: "continue",
+          reason: "provider_continuation",
+          endTurn: false,
+        });
+      }
+      expect(JSON.stringify(requests)).not.toContain("pendingMessageCount");
       expect(execute).toHaveBeenCalledTimes(scenario.requests > 1 ? 1 : 0);
       expect(events.filter((event) => event.type === "agent_end")).toHaveLength(1);
       const assistants = result
@@ -187,7 +219,7 @@ describe("Responses turn continuation", () => {
             expect.objectContaining({
               type: "function_call_output",
               call_id: "call_check",
-              output: "checked",
+              output: scenario.toolError ? "Connection unavailable" : "checked",
             }),
           ]),
         );
