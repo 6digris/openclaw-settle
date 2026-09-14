@@ -927,6 +927,85 @@ private struct ChatExternalSubmissionTests {
         await fixture.close()
     }
 
+    @Test
+    func `initial owner verification failure leaves the same invocation unstarted`() async throws {
+        let fixture = try NativeSubmissionFixture(transport: NativeSubmissionTransport())
+        await fixture.prepare()
+        let route = await fixture.transport.route(fixture.target)
+        let request = fixture.request()
+        let failure = NSError(domain: "NativeSubmissionVerification", code: 1)
+        do {
+            do {
+                _ = try await fixture.vm.submit(request, using: route, ownerVerification: .failure(failure))
+                Issue.record("Initial verification must preserve its admission error")
+            } catch {
+                #expect(error as NSError === failure)
+            }
+            #expect(await fixture.transport.sent.isEmpty)
+            #expect(try await fixture.vm.submit(request, using: route, ownerVerification: .success(())) ==
+                .accepted(runID: "remote-\(request.operationID.uuidString)"))
+            #expect(await fixture.transport.sent.count == 1)
+        } catch {
+            await fixture.close()
+            throw error
+        }
+        await fixture.close()
+    }
+
+    @Test(arguments: [NativeSubmissionTransport.Response.accepted, .uncertain])
+    func `failed owner verification observes a concurrently started invocation without retiring it`(
+        response: NativeSubmissionTransport.Response) async throws
+    {
+        let verificationGate = NativeSubmissionGate()
+        let sendGate = NativeSubmissionGate()
+        let fixture = try NativeSubmissionFixture(transport: NativeSubmissionTransport(
+            response: response, sendGate: sendGate))
+        await fixture.prepare()
+        let route = await fixture.transport.route(fixture.target)
+        let request = fixture.request()
+        let verification = Task {
+            await verificationGate.wait()
+            return try await fixture.vm.submit(
+                request, using: route,
+                ownerVerification: .failure(NSError(domain: "NativeSubmissionVerification", code: 1)))
+        }
+        var original: Task<OpenClawChatSubmissionOutcome, Never>?
+        do {
+            try await waitUntil("owner verification started before submission") { await verificationGate.entered }
+            let sending = Task { await fixture.vm.submit(request, using: route) }
+            original = sending
+            try await waitUntil("original send entered") { await sendGate.entered }
+            await verificationGate.open()
+            #expect(try await verification.value == .uncertain(
+                reason: "Reconnect to the selected account to check this operation. Do not send it again."))
+            #expect(!sending.isCancelled)
+            #expect(fixture.vm.isSending)
+            #expect(await fixture.transport.sent.count == 1)
+            await sendGate.open()
+            let result = await sending.value
+            if case .accepted = response {
+                #expect(result == .accepted(runID: "remote-\(request.operationID.uuidString)"))
+            } else {
+                #expect(result == .uncertain(
+                    reason: "Delivery is unconfirmed. Check the selected chat before sending again."))
+            }
+            // This transient verifier failure leaves the original, still-current
+            // route intact. A retired socket/account must never recover this readback.
+            #expect(try await fixture.vm.submit(request, using: route, ownerVerification: .success(())) == result)
+            #expect(await fixture.transport.sent.count == 1)
+        } catch {
+            verification.cancel()
+            original?.cancel()
+            await verificationGate.open()
+            await sendGate.open()
+            _ = try? await verification.value
+            _ = await original?.value
+            await fixture.close()
+            throw error
+        }
+        await fixture.close()
+    }
+
     @Test(arguments: [NativeSubmissionTransport.Response.accepted, .uncertain])
     func `cancellation after dispatch cannot erase acceptance or allow replay`(
         response: NativeSubmissionTransport.Response) async throws

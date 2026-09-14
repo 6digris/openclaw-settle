@@ -62,6 +62,9 @@ public struct OpenClawChatExternalSubmissionRoute: Sendable {
 }
 
 extension OpenClawChatViewModel {
+    private static let unavailableExternalSubmission = OpenClawChatSubmissionOutcome.uncertain(
+        reason: "Reconnect to the selected account to check this operation. Do not send it again.")
+
     /// The platform must bind this view model to the verified route owner.
     /// External submissions never enter the durable outbox or borrow its retry policy.
     public func submit(
@@ -100,6 +103,20 @@ extension OpenClawChatViewModel {
         }
     }
 
+    func submit(
+        _ submission: OpenClawChatExternalSubmission,
+        using route: OpenClawChatExternalSubmissionRoute,
+        ownerVerification: Result<Void, any Error>) async throws -> OpenClawChatSubmissionOutcome
+    {
+        if case let .failure(error) = ownerVerification {
+            // Verification can suspend while another caller starts this invocation.
+            // Only idle work may expose admission failure; retained work stays no-resend.
+            guard case .idle = submission.state else { return Self.unavailableExternalSubmission }
+            throw error
+        }
+        return await self.submit(submission, using: route)
+    }
+
     private func readExternalSubmission(
         _ submission: OpenClawChatExternalSubmission,
         result: () async -> OpenClawChatSubmissionOutcome) async -> OpenClawChatSubmissionOutcome
@@ -108,15 +125,13 @@ extension OpenClawChatViewModel {
               await isCurrent(),
               self.matchesExternalTarget(submission.target, session: self.currentSessionSnapshot())
         else {
-            return .uncertain(
-                reason: "Reconnect to the selected account to check this operation. Do not send it again.")
+            return Self.unavailableExternalSubmission
         }
         let outcome = await result()
         guard await isCurrent(),
               self.matchesExternalTarget(submission.target, session: self.currentSessionSnapshot())
         else {
-            return .uncertain(
-                reason: "Reconnect to the selected account to check this operation. Do not send it again.")
+            return Self.unavailableExternalSubmission
         }
         return outcome
     }

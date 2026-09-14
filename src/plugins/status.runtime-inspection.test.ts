@@ -7,6 +7,7 @@ import { handlePluginsCommand } from "../auto-reply/reply/commands-plugins.js";
 import { buildPluginsCommandParams } from "../auto-reply/reply/commands.test-harness.js";
 import { runPluginsDoctorCommand } from "../cli/plugins-cli.runtime.js";
 import { runPluginsInspectCommand } from "../cli/plugins-inspect-command.js";
+import * as configIO from "../config/config.js";
 import { readConfigFileSnapshotForWrite, writeConfigFile } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { defaultRuntime } from "../runtime.js";
@@ -858,20 +859,87 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
     const { id, event, config, disposed } = fixture(state);
     await state.writeConfig(config);
     const before = process.listenerCount(event);
-    for (const name of [id, "all"]) {
-      const result = await handlePluginsCommand(
-        buildPluginsCommandParams({
-          cfg: config,
-          workspaceDir: state.workspaceDir,
-          commandBodyNormalized: `/plugins inspect ${name}`,
-        }),
-        true,
-      );
-      expect(result?.reply?.text).toContain("diagnostics-resource-service");
-      expect(result?.reply?.text).toContain('"status": "loaded"');
-      expect(process.listenerCount(event)).toBe(before);
+    // Observe the command's own read. A separate diagnostic read can hide transient
+    // validation/observation failures and must not change this ordered lifecycle proof.
+    const snapshotRead = vi.spyOn(configIO, "readConfigFileSnapshot");
+    try {
+      for (const name of [id, "all"]) {
+        const firstRead = snapshotRead.mock.results.length;
+        try {
+          const result = await handlePluginsCommand(
+            buildPluginsCommandParams({
+              cfg: config,
+              workspaceDir: state.workspaceDir,
+              commandBodyNormalized: `/plugins inspect ${name}`,
+            }),
+            true,
+          );
+          expect(result?.reply?.text).toContain("diagnostics-resource-service");
+          expect(result?.reply?.text).toContain('"status": "loaded"');
+          expect(process.listenerCount(event)).toBe(before);
+        } catch (error) {
+          const readCount = snapshotRead.mock.results.length - firstRead;
+          const settled = snapshotRead.mock.settledResults[firstRead];
+          const snapshot =
+            readCount === 1 && settled?.type === "fulfilled" ? settled.value : undefined;
+          const safeCode = (code: string | null | undefined) =>
+            code == null
+              ? null
+              : [
+                    "ENOENT",
+                    "EACCES",
+                    "EPERM",
+                    "ENOSPC",
+                    "EIO",
+                    "EMFILE",
+                    "SQLITE_BUSY",
+                    "SQLITE_LOCKED",
+                    "SQLITE_ERROR",
+                  ].includes(code)
+                ? code
+                : "other";
+          console.error(
+            JSON.stringify({
+              event: "chat-inspect-config-failure",
+              selector: name === id ? "single" : "all",
+              readCount,
+              snapshotPresent: snapshot !== undefined,
+              fixturePathMatches: snapshot ? snapshot.path === state.configPath : null,
+              exists: snapshot?.exists ?? null,
+              valid: snapshot?.valid ?? null,
+              rawPresent: snapshot ? snapshot.raw !== null : null,
+              readErrorCode: safeCode(snapshot?.readError?.code),
+              issueCount: snapshot?.issues.length ?? null,
+              issuesTruncated: (snapshot?.issues.length ?? 0) > 8,
+              issues:
+                snapshot?.issues.slice(0, 8).map((issue) => ({
+                  // Only fixed schema families and categories escape; validator messages
+                  // can contain runner paths, authored values, or environment information.
+                  field:
+                    ["agents", "plugins", "commands"].find(
+                      (key) => issue.path === key || issue.path.startsWith(`${key}.`),
+                    ) ?? (issue.path ? "other" : "root"),
+                  category: issue.message.startsWith("JSON5 parse failed:")
+                    ? "parse"
+                    : issue.message.startsWith("read failed:")
+                      ? "read-or-observe"
+                      : /include/i.test(issue.message)
+                        ? "include"
+                        : "validation-or-other",
+                  errorName:
+                    /^read failed: (TypeError|RangeError|SyntaxError|Error):/.exec(
+                      issue.message,
+                    )?.[1] ?? null,
+                })) ?? [],
+            }),
+          );
+          throw error;
+        }
+      }
+      expect(fs.readFileSync(disposed, "utf8")).toBe("disposed\ndisposed\n");
+    } finally {
+      snapshotRead.mockRestore();
     }
-    expect(fs.readFileSync(disposed, "utf8")).toBe("disposed\ndisposed\n");
   });
 });
 

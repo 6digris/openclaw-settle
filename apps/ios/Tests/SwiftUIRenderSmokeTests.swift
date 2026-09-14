@@ -34,18 +34,49 @@ struct SwiftUIRenderSmokeTests {
         return window
     }
 
-    @MainActor private static func composer(in window: UIWindow) throws -> ChatComposerUITextView {
-        var pending: [UIView] = [window]
-        var inputs: [ChatComposerUITextView] = []
-        var visited = 0
-        while let view = pending.popLast() {
-            visited += 1
-            try #require(visited <= 512)
-            if let input = view as? ChatComposerUITextView { inputs.append(input) }
-            pending.append(contentsOf: view.subviews)
-        }
-        try #require(inputs.count == 1)
-        return try #require(inputs.first)
+    @MainActor private static func hostNativeChat(
+        _ view: some View,
+        previousKeyWindow: inout UIWindow?) throws -> UIWindow
+    {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .filter { $0.activationState == .foregroundActive }
+        try #require(scenes.count == 1)
+        let scene = try #require(scenes.first)
+        previousKeyWindow = scene.windows.first { $0.isKeyWindow && !$0.isHidden }
+        // A frame-only window has no scene and need not materialize its SwiftUI editor.
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = UIHostingController(rootView: view)
+        window.makeKeyAndVisible()
+        window.rootViewController?.view.setNeedsLayout()
+        window.rootViewController?.view.layoutIfNeeded()
+        return window
+    }
+
+    @MainActor private static func composer(
+        in window: UIWindow,
+        expectedText: String) async throws -> ChatComposerUITextView
+    {
+        let deadline = ContinuousClock.now + .seconds(2)
+        repeat {
+            var pending: [UIView] = [window]
+            var inputs: [ChatComposerUITextView] = []
+            var visited = 0
+            while let view = pending.popLast() {
+                visited += 1
+                try #require(visited <= 512)
+                if let input = view as? ChatComposerUITextView { inputs.append(input) }
+                pending.append(contentsOf: view.subviews)
+            }
+            try #require(inputs.count <= 1)
+            if let input = inputs.first, input.window === window,
+               input.bounds.width > 0, input.bounds.height > 0,
+               (input.text ?? "").utf8.elementsEqual(expectedText.utf8)
+            {
+                return input
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        } while ContinuousClock.now < deadline
+        throw OpenClawNativeActionError("Native chat editor did not materialize its expected text")
     }
 
     @Test @MainActor func `settings hub fallback builds in light and dark mode`() {
@@ -266,11 +297,11 @@ struct SwiftUIRenderSmokeTests {
             let expectedProfile = isUnbound ? nil : session.owner.profileID
             var createdProfiles: [String?] = []
             var createdKeys: [String] = []
-            var historyKeys: Set<String> = []
             var beforeCreateResponse: (@MainActor () -> Void)?
             var sentParams: [[String: Any]] = []
             var routingReads = 0
             var rpcCount = 0
+            var phase = "setup"
             let fixture = try await NativeGatewayWebSocketFixture.start(
                 issuedDeviceTokens: [],
                 hello: .init(
@@ -289,15 +320,23 @@ struct SwiftUIRenderSmokeTests {
                     }
                     let profile = frame["expectedProfileId"] as? String
                     let params = frame["params"] as? [String: Any] ?? [:]
+                    let methodLabel: String = switch method {
+                    case "users.self", "agents.list", "chat.history", "sessions.messages.subscribe", "health",
+                         "sessions.list", "chat.send", "models.list", "commands.list", "chat.metadata", "tasks.list",
+                         "sessions.create": method
+                    default: "unknown"
+                    }
                     if method == "sessions.list", params["limit"] as? Int == 80 {
                         // This is the ordinary share-route refresh scheduled by agent selection.
-                        #expect(profile == nil)
+                        #expect(profile == nil, "action=\(action) method=\(methodLabel) phase=\(phase) oracle=share")
                         #expect(Set(params.keys) == ["limit", "includeGlobal", "includeUnknown", "agentId"])
                         #expect(params["includeGlobal"] as? Bool == true)
                         #expect(params["includeUnknown"] as? Bool == false)
                         #expect(params["agentId"] as? String == session.agentID)
                     } else {
-                        #expect(profile == expectedProfile)
+                        #expect(
+                            profile == expectedProfile,
+                            "action=\(action) method=\(methodLabel) phase=\(phase) oracle=selected-profile")
                     }
                     switch method {
                     case "users.self":
@@ -313,7 +352,6 @@ struct SwiftUIRenderSmokeTests {
                             Issue.record("Chat history request is missing its selected key")
                             return .failure(code: "INVALID_REQUEST", message: "Missing session key")
                         }
-                        historyKeys.insert(key)
                         return .success([
                             "sessionKey": key, "messages": [],
                             "sessionInfo": [
@@ -383,15 +421,29 @@ struct SwiftUIRenderSmokeTests {
             options.deviceAuthGatewayID = session.owner.gatewayID
             options.allowStoredDeviceAuth = false
             var window: UIWindow?
+            var previousKeyWindow: UIWindow?
+            let releaseWindow: () -> Void = {
+                // Restore only while this fixture still owns key status. Teardown can
+                // synchronously install a successor that must not be overridden.
+                if let window, window.isKeyWindow, let scene = window.windowScene,
+                   let previousKeyWindow, !previousKeyWindow.isHidden,
+                   previousKeyWindow.windowScene === scene
+                {
+                    previousKeyWindow.makeKey()
+                }
+                window?.isHidden = true
+                window?.rootViewController = nil
+                window = nil
+                previousKeyWindow = nil
+            }
             do {
                 defer {
+                    phase = "cleanup"
                     releaseRestore?.resume()
                     releaseRestore = nil
                     appModel.testChatSessionRoutingRestoreHandler = nil
                     beforeCreateResponse = nil
-                    window?.isHidden = true
-                    window?.rootViewController = nil
-                    window = nil
+                    releaseWindow()
                     router.unregisterPresentation(presentationID)
                     appModel.setOperatorConnected(false)
                     appModel.activeGatewayConnectConfig = nil
@@ -416,11 +468,12 @@ struct SwiftUIRenderSmokeTests {
                 appModel.connectedGatewayID = session.owner.gatewayID
                 appModel.setOperatorConnected(true)
                 appModel.focusChatSession(session.sessionKey)
-                window = Self.host(
+                window = try Self.hostNativeChat(
                     NativeChatHost(presentation: presentation, presentationID: isUnbound ? nil : presentationID)
                         .environment(appModel)
                         .environment(gatewayController)
-                        .environment(router))
+                        .environment(router),
+                    previousKeyWindow: &previousKeyWindow)
                 let restoreDeadline = ContinuousClock.now + .seconds(2)
                 while releaseRestore == nil, ContinuousClock.now < restoreDeadline {
                     try await Task.sleep(for: .milliseconds(10))
@@ -428,6 +481,7 @@ struct SwiftUIRenderSmokeTests {
                 let release = try #require(releaseRestore)
 
                 if !isUnbound {
+                    phase = "opening"
                     let opening: OpenClawNativeOpenRequest = (action == "reopen" || action == "profile-reopen")
                         ? .compose(session, draft: "retained idle text") : .session(session)
                     #expect(await router.open(opening) == .opened)
@@ -442,6 +496,7 @@ struct SwiftUIRenderSmokeTests {
                     try await Task.sleep(for: .milliseconds(10))
                 }
                 try #require(restoreReturned)
+                phase = "presented"
                 try #require(createdProfiles.isEmpty)
                 #expect(restoreReturned)
                 if action == "new-chat" || isUnbound || retiresDuringCreate {
@@ -450,21 +505,24 @@ struct SwiftUIRenderSmokeTests {
                     } else {
                         nil
                     }
+                    let creatingModel = try #require(appModel.presentedChatViewModel)
                     if retiresDuringCreate {
                         beforeCreateResponse = {
+                            #expect(creatingModel.isCreatingSession)
+                            phase = "retiring"
                             // Retire while sessions.create is in flight, before the fixture sends its reply.
                             router.unregisterPresentation(presentationID)
-                            window?.isHidden = true
-                            window?.rootViewController = nil
-                            window = nil
+                            releaseWindow()
+                            phase = "retired"
                         }
                     }
                     // A's suspended restore cannot consume the native command.
+                    phase = "creating"
                     appModel.requestNewChat()
                     let commandDeadline = ContinuousClock.now + .seconds(2)
                     while ContinuousClock.now < commandDeadline {
                         if retiresDuringCreate {
-                            if createdKeys.contains(where: { historyKeys.contains($0) }) { break }
+                            if !createdKeys.isEmpty, !creatingModel.isCreatingSession { break }
                         } else if appModel.chatSessionKey != session.sessionKey {
                             break
                         }
@@ -473,9 +531,9 @@ struct SwiftUIRenderSmokeTests {
                     let createdKey = try #require(createdKeys.first)
                     #expect(createdProfiles == [expectedProfile])
                     if let prepared {
-                        // The retained confirmation keeps the real model alive until its post-create
-                        // history proves adoption finished. Its callback must not refocus the app.
-                        try #require(historyKeys.contains(createdKey))
+                        // The original owner's defer settles even when retirement suppresses
+                        // bootstrap. A history request does not define create completion.
+                        try #require(!creatingModel.isCreatingSession)
                         #expect(appModel.chatSessionKey == session.sessionKey)
                         await #expect(throws: Error.self) { try await prepared.submit() }
                         #expect(sentParams.isEmpty)
@@ -549,12 +607,16 @@ struct SwiftUIRenderSmokeTests {
                         if action == "profile-reopen" {
                             let reused = try #require(presentation.binding)
                             #expect(reused !== oldBinding && oldBinding.canReuse(reused))
+                            let input = try await Self.composer(
+                                in: #require(window),
+                                expectedText: "retained idle text")
+                            phase = "retiring"
                             #expect(await oldBinding.accepts(EventFrame(
                                 type: "event", event: "presence", payload: nil, recipientprofileid: "other-profile")) ==
                                 false)
                             #expect(await reused.isCurrent() == false)
+                            phase = "retired"
                             let countBeforeSync = rpcCount
-                            let input = try Self.composer(in: #require(window))
                             #expect(input.text == "retained idle text")
                             let coordinator = try #require(input.delegate as? ChatComposerTextViewIOS.Coordinator)
                             // Change the actual editor binding. Its protected-composer observer
@@ -577,6 +639,7 @@ struct SwiftUIRenderSmokeTests {
                         }
                         let reopening: OpenClawNativeOpenRequest = action == "profile-reopen"
                             ? .compose(session, draft: "retained idle text") : .session(session)
+                        phase = "reopening"
                         #expect(await router.open(reopening) == .opened)
                         #expect(presentation.binding !== oldBinding)
                         #expect((presentation.binding?.route == oldBinding.route) == (action == "profile-reopen"))

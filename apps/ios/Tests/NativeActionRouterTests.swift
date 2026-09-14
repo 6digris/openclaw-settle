@@ -666,4 +666,55 @@ struct NativeActionRouterTests {
             #expect(host.sent.count == 1)
         }
     }
+
+    @Test(arguments: [false, true], ["disconnect", "account refusal"])
+    func `retained confirmations preserve no resend after gateway verification fails`(
+        uncertain: Bool, retirement: String) async throws
+    {
+        try await self.withHost { host in
+            let prepared = try await host.prepare()
+            let binding = try #require(host.binding)
+            if uncertain {
+                host.rejectMethod = "chat.send"
+                host.rejectionExecution = "may_have_executed"
+                do {
+                    _ = try await prepared.submit()
+                    Issue.record("The original send must retain delivery uncertainty")
+                } catch let error as OpenClawNativeActionError {
+                    #expect(error.message == "The selected account changed. "
+                        + "Delivery is unconfirmed; check the chat before retrying.")
+                }
+            } else {
+                #expect(try await prepared.submit() == .init(session: host.session(), runID: "run-1"))
+            }
+            #expect(host.sent.count == 1)
+            if retirement == "disconnect" {
+                await host.model.operatorSession.disconnect()
+                #expect(await binding.gateway.currentRoute() != binding.route)
+            } else {
+                host.rejectMethod = "users.self"
+                host.rejectionExecution = "not_started"
+                #expect(await binding.gateway.currentRoute() == binding.route)
+            }
+            do {
+                _ = try await prepared.submit()
+                Issue.record("Failed verification cannot expose a retained receipt or imply safe replay")
+            } catch let error as OpenClawNativeActionError {
+                #expect(error.message ==
+                    "Reconnect to the selected account to check this operation. Do not send it again.")
+            }
+            #expect(host.rejectMethod == nil)
+            #expect(await binding.isCurrent() == false)
+            #expect(host.sent.count == 1)
+        }
+    }
+
+    @Test func `disconnected initial confirmation keeps its admission error without sending`() async throws {
+        try await self.withHost { host in
+            let prepared = try await host.prepare()
+            await host.model.operatorSession.disconnect()
+            await #expect(throws: CancellationError.self) { _ = try await prepared.submit() }
+            #expect(host.sent.isEmpty)
+        }
+    }
 }

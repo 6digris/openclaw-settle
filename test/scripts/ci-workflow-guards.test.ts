@@ -12565,6 +12565,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     },
     ...[
       "scripts/test-native-action-gateway.mts",
+      "scripts/lib/native-action-gateway-diagnostics.mts",
       "test/fixtures/qa-gateway-rpc-proxy.mjs",
       "test/e2e/qa-lab/runtime/profile-binding-wire-fixture.ts",
       "test/e2e/qa-lab/runtime/skill-library-wire-fixture.ts",

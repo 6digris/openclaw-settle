@@ -202,8 +202,14 @@ public struct OpenClawChatNativeActionGateway: Sendable {
         return OpenClawNativePreparedSend(session: session, message: invocation.message) {
             // Confirmation can outlive the connection, account, or visible chat.
             // Revalidate the captured owner; never acquire a successor lease.
-            _ = try await self.owner(expected: session.owner)
-            switch await viewModel.submit(invocation, using: route) {
+            let verification: Result<Void, any Error>
+            do {
+                _ = try await self.owner(expected: session.owner)
+                verification = .success(())
+            } catch {
+                verification = .failure(error)
+            }
+            switch try await viewModel.submit(invocation, using: route, ownerVerification: verification) {
             case let .accepted(runID):
                 return OpenClawNativeRunRef(session: session, runID: runID)
             case .queued:

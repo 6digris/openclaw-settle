@@ -26,6 +26,10 @@ import { startQaGatewayRpcProxy } from "../test/fixtures/qa-gateway-rpc-proxy.mj
 import type { OpenClawTestInstance } from "../test/helpers/openclaw-test-instance.js";
 import { runQaGatewayFixture } from "../test/helpers/qa-gateway-cleanup.js";
 import { runManagedCommand } from "./lib/managed-child-process.mts";
+import {
+  captureNativeHistoryWindow,
+  readNativeHistoryDiagnostic,
+} from "./lib/native-action-gateway-diagnostics.mts";
 
 const CASES = {
   allowed: "allowed",
@@ -313,6 +317,7 @@ export async function withNativeActionGateway(
     () => startNativeActionProvider(platform === "ios"),
     async (fixture) => {
       const { instance, provider, admin, alice, bob, aliceId, bobId } = fixture;
+      const historyTimelinePath = path.join(instance.stateDir, "native-history-timeline.jsonl");
       // Retain this started child across native preparation. An absent exit is
       // only unobserved termination; it does not establish Gateway responsiveness.
       const gatewayChild = instance.child;
@@ -827,6 +832,7 @@ export async function withNativeActionGateway(
           });
           const address = control.address();
           assert(address && typeof address !== "string");
+          const historyWindow = await captureNativeHistoryWindow(historyTimelinePath);
           try {
             await executeNative({
               version: 1,
@@ -840,6 +846,15 @@ export async function withNativeActionGateway(
               media,
             });
           } catch (error) {
+            const failedAtMs = Date.now();
+            // Capture owner facts before the diagnostic file read yields or fixture cleanup starts.
+            const gatewayChildFailure = gatewayChildSnapshot("native-child-failure");
+            const readiness = proxy.readinessSnapshot();
+            const historyTimeline = await readNativeHistoryDiagnostic(
+              historyTimelinePath,
+              historyWindow,
+              failedAtMs,
+            );
             console.error(
               JSON.stringify({
                 event: "native-child-failed",
@@ -848,9 +863,10 @@ export async function withNativeActionGateway(
                 completedMedia: mediaCompleted.size,
                 completedWidgets: widgetsCompleted.size,
                 lastSignInCheckpoint: signInCheckpoints.at(-1) ?? "none",
-                gatewayChild: gatewayChildSnapshot("native-child-failure"),
+                gatewayChild: gatewayChildFailure,
                 // Native cleanup may already have closed these retained initial sockets.
-                readiness: proxy.readinessSnapshot(),
+                readiness,
+                historyTimeline,
               }),
             );
             throw error;
@@ -1001,6 +1017,12 @@ export async function withNativeActionGateway(
       completedWidgets = [...widgetsCompleted.keys()];
     },
     async ({ instance, provider, config }) => {
+      // The existing timeline writer and fixture cleanup own this private diagnostic artifact.
+      instance.env.OPENCLAW_DIAGNOSTICS = "timeline";
+      instance.env.OPENCLAW_DIAGNOSTICS_TIMELINE_PATH = path.join(
+        instance.stateDir,
+        "native-history-timeline.jsonl",
+      );
       await provider.signIn?.prepare(instance, config);
     },
   );

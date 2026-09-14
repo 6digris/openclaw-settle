@@ -1,9 +1,9 @@
-import OpenClawChatUI
 import OpenClawKit
 import SwiftUI
 import UIKit
 import XCTest
 @testable import OpenClaw
+@testable import OpenClawChatUI
 
 @MainActor
 final class NativeActionVisualProofTests: XCTestCase {
@@ -63,7 +63,8 @@ final class NativeActionVisualProofTests: XCTestCase {
                             "sessionInfo": [
                                 "key": key, "agentId": agent, "sessionId": "visual-session-\(agent)",
                                 "permissionMode": "guarded", "toolOverrides": [:],
-                                "activeRunIds": agent == "main" ? [run.runID] : [],
+                                "activeRunIds": agent == session.agentID && key == session
+                                    .sessionKey ? [run.runID] : [],
                             ],
                         ])
                     case "sessions.list":
@@ -102,10 +103,20 @@ final class NativeActionVisualProofTests: XCTestCase {
                     }
                 })
             var window: UIWindow?
+            var previousKeyWindow: UIWindow?
             let cleanup: () async -> Void = {
+                // Restore before teardown, only while this fixture still owns key status.
+                // A hidden predecessor or a newly installed key owner stays untouched.
+                if let window, window.isKeyWindow, let scene = window.windowScene,
+                   let previousKeyWindow, !previousKeyWindow.isHidden,
+                   previousKeyWindow.windowScene === scene
+                {
+                    previousKeyWindow.makeKey()
+                }
                 window?.isHidden = true
                 window?.rootViewController = nil
                 window = nil
+                previousKeyWindow = nil
                 await model.operatorSession.disconnect()
                 fixture.stop()
                 model.setOperatorConnected(false)
@@ -135,7 +146,14 @@ final class NativeActionVisualProofTests: XCTestCase {
                     .environment(\.scenePhase, .active)
                     .preferredColorScheme(.light)
                 let hosting = UIHostingController(rootView: root)
-                let ownedWindow = UIWindow(frame: CGRect(x: 0, y: 0, width: 393, height: 852))
+                let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                    .filter { $0.activationState == .foregroundActive }
+                XCTAssertEqual(scenes.count, 1)
+                guard scenes.count == 1 else { throw OpenClawNativeActionError("Native visual scene is ambiguous") }
+                let scene = try XCTUnwrap(scenes.first)
+                previousKeyWindow = scene.windows.first { $0.isKeyWindow && !$0.isHidden }
+                let ownedWindow = UIWindow(windowScene: scene)
+                ownedWindow.frame = CGRect(x: 0, y: 0, width: 393, height: 852)
                 window = ownedWindow
                 ownedWindow.rootViewController = hosting
                 ownedWindow.makeKeyAndVisible()
@@ -148,6 +166,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                 guard opened == .opened else { throw OpenClawNativeActionError("Visual chat did not open") }
                 XCTAssertEqual(model.chatSessionKey, session.sessionKey)
                 XCTAssertEqual(model.chatDeliveryAgentId, session.agentID)
+                try await self.waitForComposer(in: ownedWindow)
                 XCTAssertNil(hosting.presentedViewController)
                 try self.attach(ownedWindow, name: "native-action-before-inspection")
 
@@ -175,12 +194,36 @@ final class NativeActionVisualProofTests: XCTestCase {
         }
     }
 
-    private func waitUntil(_ ready: @MainActor () -> Bool) async throws {
+    private func waitForComposer(in window: UIWindow) async throws {
+        // Router readiness precedes UIKit materialization. Capture only after the
+        // owned window contains the actual empty editor for this no-draft fixture.
+        try await self.waitUntil {
+            var pending: [UIView] = [window]
+            var inputs: [ChatComposerUITextView] = []
+            var visited = 0
+            while let view = pending.popLast() {
+                visited += 1
+                guard visited <= 512 else {
+                    throw OpenClawNativeActionError("Native visual hierarchy exceeds its bound")
+                }
+                if let input = view as? ChatComposerUITextView { inputs.append(input) }
+                pending.append(contentsOf: view.subviews)
+            }
+            guard inputs.count <= 1 else {
+                throw OpenClawNativeActionError("Native visual editor is ambiguous")
+            }
+            guard let input = inputs.first else { return false }
+            return input.window === window && input.bounds.width > 0 && input.bounds.height > 0 &&
+                (input.text ?? "").utf8.isEmpty
+        }
+    }
+
+    private func waitUntil(_ ready: @MainActor () throws -> Bool) async throws {
         let deadline = ContinuousClock.now + .seconds(3)
-        while !ready(), ContinuousClock.now < deadline {
+        while try !ready(), ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
-        guard ready() else { throw OpenClawNativeActionError("Native visual presentation did not settle") }
+        guard try ready() else { throw OpenClawNativeActionError("Native visual presentation did not settle") }
     }
 
     private func attach(_ window: UIWindow, name: String) throws {
