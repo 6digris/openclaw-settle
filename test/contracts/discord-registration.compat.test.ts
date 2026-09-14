@@ -1,10 +1,11 @@
+// Cross-package contract: actual Discord APIs and persistence FIFO under the host lifecycle.
 import { setImmediate } from "node:timers/promises";
 import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
 import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { loadDiscordComponentRegistryTestHarness } from "../../extensions/discord/test-api.js";
-import { createDeferredCore } from "../shared/deferred.js";
-import { LegacyPluginSdkResourceHost } from "./legacy-sdk-resource-host.js";
-import { PluginInstance } from "./plugin-instance.js";
+import { LegacyPluginSdkResourceHost } from "../../src/plugins/legacy-sdk-resource-host.js";
+import { PluginInstance } from "../../src/plugins/plugin-instance.js";
+import { createDeferredCore } from "../../src/shared/deferred.js";
 
 let registry: Awaited<ReturnType<typeof loadDiscordComponentRegistryTestHarness>>;
 
@@ -17,8 +18,8 @@ const mocked = vi.hoisted(() => {
 });
 // This registration-flow test executes the actual current plugin runtime and
 // registry through the external SDK facade; source selection stays synthetic.
-vi.mock("../plugin-sdk/facade-loader.js", async (original) => ({
-  ...(await original<typeof import("../plugin-sdk/facade-loader.js")>()),
+vi.mock("../../src/plugin-sdk/facade-loader.js", async (original) => ({
+  ...(await original<typeof import("../../src/plugin-sdk/facade-loader.js")>()),
   createLazyFacadeObjectValue: () => ({}),
   loadBundledPluginPublicSurfaceModuleSyncCore: () => {
     if (!mocked.runtime) {
@@ -27,8 +28,8 @@ vi.mock("../plugin-sdk/facade-loader.js", async (original) => ({
     return mocked.runtime;
   },
 }));
-vi.mock("../logging/subsystem.js", async (original) => {
-  const actual = await original<typeof import("../logging/subsystem.js")>();
+vi.mock("../../src/logging/subsystem.js", async (original) => {
+  const actual = await original<typeof import("../../src/logging/subsystem.js")>();
   return {
     ...actual,
     createSubsystemLogger: (name: string) =>
