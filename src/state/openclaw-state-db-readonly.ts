@@ -10,6 +10,7 @@ import {
   prepareSqliteReadOnlyLocationSync,
 } from "../infra/sqlite-snapshot-source.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
+import { observeOpenClawDatabaseMaintenanceResource } from "./openclaw-state-db-async-lifecycle.js";
 import { openClawStateDatabaseCache } from "./openclaw-state-db-cache.js";
 import type {
   OpenClawStateDatabaseOptions,
@@ -209,8 +210,8 @@ function withOpenClawStateDatabaseReadOnlyIfOpen<T>(
       value: withOpenClawStateReadOnlyLocation(operation, pathname, snapshot.location),
     };
   }
-  const opened = openClawStateDatabaseCache.getOpenClawStateDatabaseIfOpenAtPath(pathname);
-  if (!opened || opened.db.isTransaction) {
+  const opened = openClawStateDatabaseCache.getCachedOpenClawStateDatabase(pathname);
+  if (!opened?.db.isOpen || opened.db.isTransaction) {
     return { reused: false };
   }
   try {
@@ -221,6 +222,7 @@ function withOpenClawStateDatabaseReadOnlyIfOpen<T>(
       // A newer build can migrate this file while the handle stays open, so the
       // forward-compatibility gate still runs before any reused read.
       assertSupportedStateSchemaVersion(opened.db, pathname);
+      observeOpenClawDatabaseMaintenanceResource(opened.db);
       return { reused: true, value: operation(opened) };
     } finally {
       closeSchemaReadAdmission?.();
