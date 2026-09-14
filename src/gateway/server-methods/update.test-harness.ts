@@ -8,6 +8,7 @@ import type { RestartSentinelPayload } from "../../infra/restart-sentinel.js";
 import type { RespawnSupervisor } from "../../infra/supervisor-markers.js";
 import type { UpdateChannel } from "../../infra/update-channels.js";
 import { getUpdateRun } from "../../infra/update-run-ledger.js";
+import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { createTempHomeEnv, type TempHomeEnv } from "../../test-utils/temp-home.js";
 
 let ledgerHome: TempHomeEnv | undefined;
@@ -237,7 +238,7 @@ export type UpdateRunPayload = {
   ok: boolean;
   ackDelivered: boolean;
   message?: string;
-  result?: { status?: string; reason?: string; mode?: string };
+  result?: UpdateRunResult;
   handoff?: { status?: string; command?: string; message?: string };
   sentinel?: { persisted?: boolean };
   restart?: unknown;
@@ -337,7 +338,8 @@ vi.mock("../../infra/update-post-core-finalize.js", async () => {
   };
 });
 
-vi.mock("../../../packages/gateway-protocol/src/index.js", () => ({
+vi.mock("../../../packages/gateway-protocol/src/index.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../packages/gateway-protocol/src/index.js")>()),
   validateUpdateRunsGetParams: () => true,
   validateUpdateRunsListParams: () => true,
   validateUpdateStatusParams: () => true,
