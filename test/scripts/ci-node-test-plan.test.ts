@@ -3138,6 +3138,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         createPluginsVitestConfig({}),
         createTasksVitestConfig({}),
         createToolingVitestConfig({}),
+        createWizardVitestConfig({}),
       ].flatMap(listMatchedTestFiles),
     );
     for (const file of databaseWorkerCoreTestFiles) {
@@ -3147,6 +3148,8 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     const selected = [
       "src/plugin-state/plugin-state-store.test.ts",
       "test/plugins/beam-http-identity.test.ts",
+      "src/wizard/setup.inference-recovery.integration.test.ts",
+      "src/wizard/setup.provenance.integration.test.ts",
     ];
     const includeFile = join(tempDirs.make("database-worker-routing-"), "include.json");
     writeFileSync(includeFile, JSON.stringify(selected));
