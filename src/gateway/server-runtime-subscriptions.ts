@@ -75,6 +75,7 @@ function dispatchEventHandler<TEvent>(params: {
 
 /** Register gateway runtime event subscriptions and return unsubscribe handles. */
 export function startGatewayEventSubscriptions(params: {
+  signal: AbortSignal;
   log: SubsystemLogger;
   broadcast: GatewayBroadcastFn;
   broadcastToConnIds: (
@@ -83,6 +84,7 @@ export function startGatewayEventSubscriptions(params: {
     connIds: ReadonlySet<string>,
     opts?: { dropIfSlow?: boolean },
   ) => void;
+  nodeHasSessionSubscribers: (sessionKey: string) => boolean;
   nodeSendToSession: (sessionKey: string, event: string, payload: unknown) => void;
   agentRunSeq: Map<string, number>;
   chatRunState: ChatRunState;
@@ -92,6 +94,7 @@ export function startGatewayEventSubscriptions(params: {
   chatAbortControllers: Map<string, ChatAbortControllerEntry>;
   restartRecoveryCandidates: Map<string, RestartRecoveryCandidate>;
   terminalSessions: Pick<TerminalSessionManager, "closeTaskSessions">;
+  refreshConnectedUserProfiles: () => void;
 }) {
   // The worker always runs retention maintenance. audit.enabled only controls
   // producer subscriptions, so disabling collection cannot strand expired rows.
@@ -143,6 +146,22 @@ export function startGatewayEventSubscriptions(params: {
     getConfig: getRuntimeConfig,
     sessionObserver,
   });
+  let sessionBackgroundStop: Promise<void> | undefined;
+  // Auxiliary model calls can inherit request work; cancel before that work drains.
+  const stopSessionBackgroundWork = (): void => {
+    if (!sessionBackgroundStop) {
+      sessionCompanion.dispose();
+      sessionObserver.dispose();
+      sessionBackgroundStop = sessionActivitySummaries.dispose();
+      void sessionBackgroundStop.catch((error: unknown) => {
+        params.log.warn(`session background cleanup failed: ${String(error)}`);
+      });
+    }
+  };
+  params.signal.addEventListener("abort", stopSessionBackgroundWork, { once: true });
+  if (params.signal.aborted) {
+    stopSessionBackgroundWork();
+  }
   const unsubscribePrivateAuditEvents = auditEnabled
     ? onAgentAuditEvent(auditRecorder.record)
     : undefined;
@@ -248,6 +267,7 @@ export function startGatewayEventSubscriptions(params: {
           createAgentEventHandler({
             broadcast: params.broadcast,
             broadcastToConnIds: params.broadcastToConnIds,
+            nodeHasSessionSubscribers: params.nodeHasSessionSubscribers,
             nodeSendToSession: params.nodeSendToSession,
             agentRunSeq: params.agentRunSeq,
             chatRunState: params.chatRunState,
@@ -490,9 +510,9 @@ export function startGatewayEventSubscriptions(params: {
   });
   const agentUnsub = async () => {
     unsubscribeAgentEvents();
-    sessionCompanion.dispose();
-    sessionObserver.dispose();
-    await sessionActivitySummaries.dispose();
+    params.signal.removeEventListener("abort", stopSessionBackgroundWork);
+    stopSessionBackgroundWork();
+    await sessionBackgroundStop;
     unsubscribePrivateAuditEvents?.();
     unsubscribeToolAuditEvents?.();
     unsubscribeMessageAuditEvents?.();
@@ -529,6 +549,7 @@ export function startGatewayEventSubscriptions(params: {
   });
 
   const unsubscribeProfileChanges = onUserProfilesChanged(() => {
+    params.refreshConnectedUserProfiles();
     params.broadcastToConnIds(
       "sessions.changed",
       { reason: "profile-identity" },

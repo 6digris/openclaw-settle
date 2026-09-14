@@ -39,7 +39,10 @@ import { codexExtensionTestRoots } from "../test/vitest/vitest.extension-codex-p
 import { databaseWorkerExtensionTestFiles } from "../test/vitest/vitest.extension-database-workers-paths.mjs";
 import { matrixExtensionTestRoots } from "../test/vitest/vitest.extension-matrix-paths.mjs";
 import { telegramExtensionTestRoots } from "../test/vitest/vitest.extension-telegram-paths.mjs";
-import { gatewayPluginTestFiles } from "../test/vitest/vitest.gateway-server-paths.mjs";
+import {
+  gatewayDatabaseWorkerTestFiles,
+  gatewayPluginTestFiles,
+} from "../test/vitest/vitest.gateway-server-paths.mjs";
 import { packageContractTestFiles } from "../test/vitest/vitest.package-contract-paths.mjs";
 import { resolveVitestFsModuleCacheRoot } from "../test/vitest/vitest.performance-config.ts";
 import {
@@ -60,6 +63,7 @@ import {
   isControlUiSourcePath,
   isPluginControlUiPath,
   isUiBrowserTestFile,
+  uiTimingTestFiles,
 } from "../test/vitest/vitest.ui-paths.mjs";
 import {
   getUnitFastIsolatedTestFiles,
@@ -272,6 +276,8 @@ const FULL_AGENTIC_VITEST_CONFIG = "test/vitest/vitest.full-agentic.config.ts";
 const FULL_EXTENSIONS_VITEST_CONFIG = "test/vitest/vitest.full-extensions.config.ts";
 const GATEWAY_CLIENT_VITEST_CONFIG = "test/vitest/vitest.gateway-client.config.ts";
 const GATEWAY_CORE_VITEST_CONFIG = "test/vitest/vitest.gateway-core.config.ts";
+const GATEWAY_DATABASE_WORKERS_VITEST_CONFIG =
+  "test/vitest/vitest.gateway-database-workers.config.ts";
 const GATEWAY_METHODS_VITEST_CONFIG = "test/vitest/vitest.gateway-methods.config.ts";
 const GATEWAY_SERVER_VITEST_CONFIG = "test/vitest/vitest.gateway-server.config.ts";
 const GATEWAY_VITEST_CONFIG = "test/vitest/vitest.gateway.config.ts";
@@ -460,6 +466,7 @@ const BROAD_TOOLING_SCRIPT_TEST_TARGET_CHUNK_SIZE = 60;
 const FULL_SUITE_AGENTS_CORE_TEST_TARGET_CHUNK_COUNT = 6;
 const FULL_SUITE_TOOLING_TEST_TARGET_CHUNK_SIZE = 2;
 const FULL_SUITE_UNIT_FAST_TEST_TARGET_CHUNK_SIZE = 70;
+const FULL_SUITE_UNIT_SRC_TEST_TARGET_CHUNK_SIZE = 150;
 const TUI_VITEST_CONFIG = "test/vitest/vitest.tui.config.ts";
 const TUI_PTY_VITEST_CONFIG = "test/vitest/vitest.tui-pty.config.ts";
 const UI_VITEST_CONFIG = "test/vitest/vitest.ui.config.ts";
@@ -488,6 +495,7 @@ const VITEST_CONFIG_BY_KIND: Record<string, string> = {
   bundled: BUNDLED_VITEST_CONFIG,
   gateway: GATEWAY_VITEST_CONFIG,
   gatewayCore: GATEWAY_CORE_VITEST_CONFIG,
+  gatewayDatabaseWorkers: GATEWAY_DATABASE_WORKERS_VITEST_CONFIG,
   gatewayClient: GATEWAY_CLIENT_VITEST_CONFIG,
   gatewayMethods: GATEWAY_METHODS_VITEST_CONFIG,
   gatewayServer: GATEWAY_SERVER_VITEST_CONFIG,
@@ -534,6 +542,7 @@ const VITEST_CONFIG_BY_KIND: Record<string, string> = {
   ui: UI_VITEST_CONFIG,
   uiIsolated: UI_ISOLATED_VITEST_CONFIG,
   uiBrowser: UI_BROWSER_VITEST_CONFIG,
+  uiTiming: "test/vitest/vitest.ui-timing.config.ts",
   uiE2e: UI_E2E_VITEST_CONFIG,
   unitSrc: UNIT_SRC_VITEST_CONFIG,
   unitSecurity: UNIT_SECURITY_VITEST_CONFIG,
@@ -1047,6 +1056,31 @@ function listUnitFastFullSuiteTestTargets() {
   return getUnitFastTestFiles().filter(
     (file) => !timerTargets.has(file) && !isolatedTargets.has(file),
   );
+}
+
+let cachedUnitSrcFullSuiteTestTargets: string[] | null = null;
+let cachedUnitSrcFullSuiteTestTargetsCwd: string | null = null;
+
+function listUnitSrcFullSuiteTestTargets(cwd: string) {
+  if (cachedUnitSrcFullSuiteTestTargets && cachedUnitSrcFullSuiteTestTargetsCwd === cwd) {
+    return cachedUnitSrcFullSuiteTestTargets;
+  }
+  const unitFastTargets = new Set(getUnitFastTestFiles());
+  const srcDir = path.join(cwd, "src");
+  cachedUnitSrcFullSuiteTestTargets = (
+    fs.existsSync(srcDir) ? listRepoFilesRecursive(srcDir, cwd) : []
+  )
+    .filter(
+      (file) =>
+        file.endsWith(".test.ts") &&
+        isUnitConfigTestFile(file) &&
+        !unitFastTargets.has(file) &&
+        !path.matchesGlob(file, "src/acp/**") &&
+        !path.matchesGlob(file, "src/security/**"),
+    )
+    .toSorted((left, right) => left.localeCompare(right));
+  cachedUnitSrcFullSuiteTestTargetsCwd = cwd;
+  return cachedUnitSrcFullSuiteTestTargets;
 }
 
 function listAgentsCoreFullSuiteTestTargets(cwd: string) {
@@ -1753,7 +1787,7 @@ function listImportGraphGrepMatches(
         ? result.stdout.split("\0").filter((file) => trackedFiles.has(file))
         : [...trackedFiles].filter((file) => !testFilesOnly || isTestFileTarget(file))
     ).toSorted((left, right) => left.localeCompare(right));
-    // Per-term membership protects the broad cap and helper first-success rule.
+    // Per-term membership preserves the helper first-success rule.
     // Cached edges need only term facts; full-graph acquisition reuses their parsing.
     for (const { edges, matches: fileTerms } of readImportGraphEdges(
       cwd,
@@ -1784,17 +1818,11 @@ function findDirectImporters(
     return null;
   }
 
-  let skippedBroadTerm = false;
   const importers: string[] = [];
   for (const term of terms) {
     const candidates = matches.get(term);
     if (!candidates) {
       return null;
-    }
-    // Central test helpers intentionally fan out broadly; incomplete scans silently drop owning tests.
-    if (candidates.length > 800 && !isTestHelper) {
-      skippedBroadTerm = true;
-      continue;
     }
     for (const { file, imports } of candidates) {
       if (file !== importedFile && !importers.includes(file) && imports.has(importedFile)) {
@@ -1805,7 +1833,7 @@ function findDirectImporters(
       break;
     }
   }
-  return skippedBroadTerm && importers.length === 0 && !isTestHelper ? null : importers;
+  return importers;
 }
 
 /** Prove an entry is unshared using the canonical targeted reverse-import scan. */
@@ -3576,6 +3604,9 @@ function classifyTarget(arg: string, cwd: string, beforeDatabaseWorkerOwnership 
   } else if (isDatabaseWorkerCoreTestFile(relative)) {
     return "infra";
   }
+  if (gatewayDatabaseWorkerTestFiles.includes(relative)) {
+    return beforeDatabaseWorkerOwnership ? "gateway" : "gatewayDatabaseWorkers";
+  }
   if (isAgentsCoreIsolatedTestFile(relative)) {
     return agentVitestProjectOwners.coreIsolated.kind;
   }
@@ -3590,6 +3621,9 @@ function classifyTarget(arg: string, cwd: string, beforeDatabaseWorkerOwnership 
   }
   if (isUiIsolatedTestFile(relative)) {
     return "uiIsolated";
+  }
+  if (uiTimingTestFiles.includes(relative)) {
+    return "uiTiming";
   }
   if (isUiBrowserTestFile(relative)) {
     return "uiBrowser";
@@ -3946,6 +3980,7 @@ export function buildVitestRunPlans(
     relative: toRepoRelativeTarget(targetArg, cwd),
     kind: classifyTarget(targetArg, cwd),
   }));
+  const hasGatewayAggregateTarget = classifiedTargets.some(({ kind }) => kind === "gateway");
   const explicitConfigTargets = classifiedTargets.map(({ relative }) => relative);
   const impliedDatabaseWorkerTargets = databaseWorkerCoreTestFiles.filter((file) =>
     [...requestedTargetArgs, ...activeTargetArgs].some((targetArg) => {
@@ -3980,6 +4015,9 @@ export function buildVitestRunPlans(
     }
     return explicitConfigTargets
       .filter((config) => !hasE2eTarget || config !== PACKAGE_CONTRACT_VITEST_CONFIG)
+      .filter(
+        (config) => !hasGatewayAggregateTarget || config !== GATEWAY_DATABASE_WORKERS_VITEST_CONFIG,
+      )
       .flatMap((config) =>
         createBoundedExtensionPlans(
           {
@@ -4009,14 +4047,21 @@ export function buildVitestRunPlans(
       continue;
     }
 
-    // Package builds clean shared outputs. Mixed E2E selections keep their
-    // original serial owner instead of introducing a concurrent artifact writer.
-    const kind = hasE2eTarget && targetKind === "packageContract" ? "e2e" : targetKind;
+    // A requested Gateway aggregate already owns its worker tests. Watch also
+    // keeps that aggregate; mixed E2E selections retain their serial build owner.
+    const kind =
+      targetKind === "gatewayDatabaseWorkers" && (watchMode || hasGatewayAggregateTarget)
+        ? "gateway"
+        : hasE2eTarget && targetKind === "packageContract"
+          ? "e2e"
+          : targetKind;
     const current = groupedTargets.get(kind) ?? [];
     current.push(
       ...(hasE2eTarget && relative === PACKAGE_CONTRACT_VITEST_CONFIG
         ? packageContractTestFiles
-        : [targetArg]),
+        : kind === "gateway" && relative === GATEWAY_DATABASE_WORKERS_VITEST_CONFIG
+          ? gatewayDatabaseWorkerTestFiles
+          : [targetArg]),
     );
     groupedTargets.set(kind, current);
   }
@@ -4061,6 +4106,16 @@ export function buildVitestRunPlans(
     groupedTargets.set("toolingIsolated", current);
   }
   const uiTargets = groupedTargets.get("ui") ?? [];
+  const impliedUiTimingTargets = uiTimingTestFiles.filter((file) =>
+    uiTargets.some((targetArg) =>
+      includePatternMatchesAnyFile(toScopedIncludePattern(targetArg, cwd), [file]),
+    ),
+  );
+  if (impliedUiTimingTargets.length > 0) {
+    groupedTargets.set("uiTiming", [
+      ...new Set([...(groupedTargets.get("uiTiming") ?? []), ...impliedUiTimingTargets]),
+    ]);
+  }
   const broadUiTargets = uiTargets.filter(
     (targetArg) => !isTestFileTarget(toRepoRelativeTarget(targetArg, cwd)),
   );
@@ -4305,6 +4360,13 @@ export function buildFullSuiteVitestRunPlans(args: string[], cwd = process.cwd()
           const chunkCount = Math.ceil(
             targets.length / FULL_SUITE_UNIT_FAST_TEST_TARGET_CHUNK_SIZE,
           );
+          chunks = splitTargetChunks(targets, chunkCount);
+        } else if (config === UNIT_SRC_VITEST_CONFIG) {
+          // The 600+ file process can run for 20 minutes and has produced late,
+          // non-reproducible mock-transform failures under Bun. Bound the worker
+          // lifetime while preserving the complete file inventory.
+          const targets = listUnitSrcFullSuiteTestTargets(cwd);
+          const chunkCount = Math.ceil(targets.length / FULL_SUITE_UNIT_SRC_TEST_TARGET_CHUNK_SIZE);
           chunks = splitTargetChunks(targets, chunkCount);
         } else if (config === TOOLING_VITEST_CONFIG) {
           // Tooling tests spawn package managers and native helpers. Keep native

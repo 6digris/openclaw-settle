@@ -1,4 +1,10 @@
 import {
+  patchConfigHealthEntryInDatabase,
+  readConfigHealthSnapshotInDatabase,
+} from "../config/io.health-state.kernel.js";
+import { executeSessionDeliveryCommand } from "../infra/session-delivery-queue.worker.js";
+import { createSqliteAuditRecordKernel } from "../infra/sqlite-audit-record.kernel.js";
+import {
   readStableSqliteFileGeneration,
   sameSqliteFileGeneration,
 } from "../infra/sqlite-file-generation.js";
@@ -7,6 +13,7 @@ import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js
 import type { SqliteWorkerBackend } from "../infra/sqlite-worker-contract.js";
 import { getSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { readPluginMetadataStateRowSync } from "../plugins/installed-plugin-index-row.js";
 import { mapTaskFlowView } from "../tasks/task-domain-views.js";
 import { runManagedTaskInFlowInDatabase } from "../tasks/task-flow-managed-run-task.kernel.js";
 import type { RunTaskInFlowResult } from "../tasks/task-flow-managed-run-task.types.js";
@@ -40,6 +47,7 @@ import {
 import type { OpenClawStateDatabase } from "./openclaw-state-db-contract.js";
 import {
   withArtifactPreservingStateReads,
+  withExistingOpenClawStateDatabaseArtifactPreservingReadOnly,
   withExistingOpenClawStateDatabaseReadOnly,
 } from "./openclaw-state-db-readonly.js";
 import { withSharedStateWriteCoordinator } from "./openclaw-state-db-write-coordination.js";
@@ -123,6 +131,13 @@ function createSharedStateWorkerBackend(
         return command.input.preserveSourceArtifacts
           ? withArtifactPreservingStateReads(read)
           : read();
+      }
+      if (command.type === "plugins.metadata.read") {
+        return readPluginMetadataStateRowSync(
+          command.input.selector,
+          { path: context.databasePath, env: getSqliteWorkerStateContext().environment },
+          command.input.artifactPreservingReadOnly,
+        );
       }
       if (command.type === "database.generationMatches") {
         // Unavailable inspection retains the known failure; only a stable mismatch expires it.
@@ -233,7 +248,53 @@ function createSharedStateWorkerBackend(
           };
         }
       }
-      const { db } = open();
+      if (command.type === "config.health.read") {
+        const read = command.input.artifactPreserving
+          ? withExistingOpenClawStateDatabaseArtifactPreservingReadOnly
+          : withExistingOpenClawStateDatabaseReadOnly;
+        return (
+          read(({ db }) => readConfigHealthSnapshotInDatabase(db), {
+            path: context.databasePath,
+            env: getSqliteWorkerStateContext().environment,
+          }) ?? { state: {}, basis: {} }
+        );
+      }
+      const database = open();
+      if (
+        command.type === "sessionDelivery.enqueue" ||
+        command.type === "sessionDelivery.enqueueClaimed" ||
+        command.type === "sessionDelivery.releaseClaim" ||
+        command.type === "sessionDelivery.defer" ||
+        command.type === "sessionDelivery.advanceAgentRun" ||
+        command.type === "sessionDelivery.mergePreparedMedia" ||
+        command.type === "sessionDelivery.markAttemptStarted" ||
+        command.type === "sessionDelivery.markSettlement" ||
+        command.type === "sessionDelivery.complete" ||
+        command.type === "sessionDelivery.fail" ||
+        command.type === "sessionDelivery.load" ||
+        command.type === "sessionDelivery.list" ||
+        command.type === "sessionDelivery.moveToFailed"
+      ) {
+        return executeSessionDeliveryCommand(command, database);
+      }
+      const writeOptions = {
+        database,
+        path: context.databasePath,
+        env: getSqliteWorkerStateContext().environment,
+      };
+      if (command.type === "config.health.patch") {
+        const { configPath, patch, expected, updatedAtMs } = command.input;
+        return runOpenClawStateWriteTransaction(({ db }) => {
+          return patchConfigHealthEntryInDatabase(db, configPath, patch, expected, updatedAtMs);
+        }, writeOptions);
+      }
+      if (command.type === "diagnostic.register") {
+        const { scope, maxEntries, record } = command.input;
+        return runOpenClawStateWriteTransaction(({ db }) => {
+          createSqliteAuditRecordKernel(db, { scope, maxEntries }).register(record);
+        }, writeOptions);
+      }
+      const { db } = database;
       return runSqliteDeferredTransactionSync(db, () => {
         switch (command.type) {
           case "tasks.mutationSnapshot":

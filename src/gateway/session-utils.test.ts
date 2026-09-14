@@ -1253,6 +1253,8 @@ describe("gateway session utils", () => {
         patch: { key: "agent:main:main", contextWindow: String(after) },
         defaultProvider: "ollama",
         defaultModel: "qwen3:8b",
+        runtimeId: () => "openclaw",
+        routeVariants: () => catalog,
         *loadModelCatalog() {
           yield;
           return catalog;

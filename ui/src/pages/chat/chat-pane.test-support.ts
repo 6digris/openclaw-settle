@@ -31,6 +31,7 @@ import { createAgentIdentityCapability } from "../../lib/agents/identity.ts";
 import { createAgentCapability } from "../../lib/agents/index.ts";
 import type { CatalogSessionKey } from "../../lib/sessions/catalog-key.ts";
 import { createSessionCapability, type SessionCapability } from "../../lib/sessions/index.ts";
+import { createSessionArchiveState } from "../../lib/sessions/session-archive-state.ts";
 import "./chat-pane.ts";
 import {
   createTestGatewayClient,
@@ -89,6 +90,7 @@ export type TestChatPane = HTMLElement & {
   discardStagedAttachments?: () => void;
   resumeStagedAttachments?: () => void;
   acceptTaskSuggestion: (suggestion: TaskSuggestion) => Promise<void>;
+  dismissTaskSuggestion: (suggestion: TaskSuggestion) => Promise<void>;
   copyTaskSuggestionPrompt: (suggestion: TaskSuggestion) => Promise<void>;
   handleDocumentKeydown: (event: KeyboardEvent) => void;
   handleTaskSuggestionEvent: (event: TaskSuggestionEvent) => void;
@@ -325,7 +327,16 @@ type SessionCapabilityFixtureOverrides = Omit<Partial<SessionCapability>, "patch
 export function createSessionCapabilityFixture(
   overrides: SessionCapabilityFixtureOverrides = {},
 ): SessionCapability {
-  return { deletionState: () => undefined, ...overrides } as typeof overrides & SessionCapability;
+  const archiveState = createSessionArchiveState(
+    (key) => overrides.state?.result?.sessions.find((row) => row.key === key),
+    () => {},
+  );
+  return {
+    deletionState: () => undefined,
+    archiveVisibility: archiveState.visibility,
+    beginArchive: archiveState.beginPending,
+    ...overrides,
+  } as typeof overrides & SessionCapability;
 }
 
 export function createSessionContext(

@@ -500,7 +500,8 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
     return buildReconciledSidebarZone({
       sidebarEntries: this.sidebarEntries,
       rows,
-      pluginNavigationKeys: new Set(this.pluginNavigation().map((entry) => entry.key)),
+      pluginNavigation: this.pluginNavigation(),
+      pluginTabs: this.context?.gateway.snapshot.hello?.controlUiTabs,
     });
   }
 

@@ -28,6 +28,7 @@ import {
   loadSessionEntry,
   loadExactSessionEntry,
   loadTranscriptEventsSync,
+  listSessionPendingInputs,
   patchSessionEntryCore,
   replaceTranscriptEvents,
   replaceSessionEntry,
@@ -43,6 +44,8 @@ import { rotateAgentEventLifecycleGeneration } from "../infra/agent-events.js";
 import { onDiagnosticEvent, type DiagnosticPayloadLargeEvent } from "../infra/diagnostic-events.js";
 import { flushDiagnosticsTimeline } from "../infra/diagnostics-timeline.js";
 import { ExecApprovalsMigrationRequiredError } from "../infra/exec-approvals-migration-gate.js";
+import { readPersistedMediaFacts } from "../media/media-facts.js";
+import { resolveMediaReferenceLocalPath } from "../media/media-reference.js";
 import { getMediaDir } from "../media/store.js";
 import { withPluginMetadataSnapshotScope } from "../plugins/current-plugin-metadata-snapshot.js";
 import { resolveInstalledPluginIndexPolicyHash } from "../plugins/installed-plugin-index-policy.js";
@@ -957,6 +960,7 @@ describe("gateway server chat", () => {
       const handler = createAgentEventHandler({
         broadcast: context.broadcast,
         broadcastToConnIds: context.broadcastToConnIds,
+        nodeHasSessionSubscribers: () => false,
         nodeSendToSession: context.nodeSendToSession,
         agentRunSeq: context.agentRunSeq,
         chatRunState: context.chatRunState,
@@ -1199,6 +1203,7 @@ describe("gateway server chat", () => {
       const handler = createAgentEventHandler({
         broadcast: context.broadcast,
         broadcastToConnIds: context.broadcastToConnIds,
+        nodeHasSessionSubscribers: () => false,
         nodeSendToSession: context.nodeSendToSession,
         agentRunSeq: context.agentRunSeq,
         chatRunState: context.chatRunState,
@@ -2968,7 +2973,11 @@ describe("gateway server chat", () => {
         }),
         client: {
           connId: "conn-owner",
-          connect: { device: { id: "dev-owner" }, scopes: ["operator.write"] },
+          connect: {
+            ...makeGatewayWebchatClient(),
+            device: { id: "dev-owner" },
+            scopes: ["operator.write"],
+          },
         } as never,
         respond: ((ok, payload, error) => {
           responses.push({ ok, payload, error });
@@ -2985,16 +2994,15 @@ describe("gateway server chat", () => {
     }
   });
 
-  test("chat.send discards prepared inbound media when setup throws before the ACK", async () => {
-    openDirectChatSession();
+  test("chat.send retains durably admitted media when later setup throws before the ACK", async () => {
+    const { storePath } = openDirectChatSession();
     try {
       await writeStoredMainSession({
         modelProvider: "test-provider",
         model: "vision-model",
       });
       const context = createDirectChatContext({
-        // Throwing from addChatRun exercises handleChatSendSetupError — one of
-        // the pre-persistence exits that previously leaked staged media.
+        // addChatRun runs after durable input admission but before the ACK.
         addChatRun: vi.fn(() => {
           throw new Error("setup exploded before ack");
         }),
@@ -3010,8 +3018,6 @@ describe("gateway server chat", () => {
           idempotencyKey: "idem-setup-error-media",
           attachments: [
             {
-              // Non-image attachments always offload into the inbound media
-              // store during preparation; the failed send must discard them.
               type: "file",
               mimeType: "text/plain",
               fileName: "notes.txt",
@@ -3021,7 +3027,16 @@ describe("gateway server chat", () => {
         }),
         client: {
           connId: "conn-owner",
-          connect: { device: { id: "dev-owner" }, scopes: ["operator.write"] },
+          connect: {
+            client: {
+              id: GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT,
+              mode: GATEWAY_CLIENT_MODES.BACKEND,
+              version: "1.0.0",
+              platform: "node",
+            },
+            device: { id: "dev-owner" },
+            scopes: ["operator.write"],
+          },
         } as never,
         respond: ((ok, payload, error) => {
           responses.push({ ok, payload, error });
@@ -3035,13 +3050,28 @@ describe("gateway server chat", () => {
           error: expect.anything(),
         },
       ]);
-      // Prepared inbound media has no transcript reference on this exit; the
-      // admission cleanup owner must discard it or the file is orphaned
-      // forever (the inbound sweep is off unless attachments.ttlHours is set).
-      await waitForFast(async () => {
-        const remaining = await fs.readdir(inboundDir).catch(() => []);
-        expect(remaining.filter((name) => !inboundBaseline.has(name))).toEqual([]);
-      }, FAST_WAIT_OPTS);
+      const pending = listSessionPendingInputs({
+        agentId: "main",
+        sessionKey: "agent:main:main",
+        sessionId: "sess-main",
+        storePath,
+      });
+      expect(pending).toMatchObject({
+        total: 1,
+        items: [{ state: "interrupted", runId: "idem-setup-error-media" }],
+      });
+      const media = readPersistedMediaFacts(
+        expectDefined(pending.items[0]?.message, "Expected the retained pending input"),
+      );
+      expect(media).toHaveLength(1);
+      const retainedUrl = expectDefined(media?.[0]?.url, "Expected the pending attachment URL");
+      expect(retainedUrl).toMatch(/^media:\/\/inbound\//);
+      const retainedPath = await resolveMediaReferenceLocalPath(retainedUrl);
+      await expect(fs.readFile(retainedPath, "utf8")).resolves.toBe("offloaded inbound media");
+      const remaining = await fs.readdir(inboundDir);
+      expect(remaining.filter((name) => !inboundBaseline.has(name))).toEqual([
+        path.basename(retainedPath),
+      ]);
     } finally {
       resetDirectChatSession();
     }
@@ -8227,7 +8257,15 @@ describe("gateway server chat", () => {
       let aborted = false;
       await connectOk(ws);
 
-      await createSessionDir();
+      const sessionDir = await createSessionDir();
+      // Keep ACK timing independent of earlier custom-store fixture registrations.
+      testState.sessionStorePath = path.join(
+        sessionDir,
+        "agents",
+        "main",
+        "agent",
+        "openclaw-agent.sqlite",
+      );
       await writeMainSessionStore();
 
       mockGetReplyFromConfigOnce(async (_ctx, opts) => {
@@ -8258,7 +8296,6 @@ describe("gateway server chat", () => {
           idempotencyKey: "idem-abort-1",
           timeoutMs: 30_000,
         }),
-        2_000,
       );
 
       expect(sendRes.ok).toBe(true);

@@ -28,7 +28,7 @@ import {
 import { showToast } from "../../lib/toast.ts";
 import { mutateChatGoal, submitChatGoalDraft } from "./chat-goals.ts";
 import { clearChatHistory } from "./chat-history-actions.ts";
-import { getChatHistoryLoadState, isInitialChatHistoryUnavailable } from "./chat-history-state.ts";
+import { isInitialChatHistoryUnavailable } from "./chat-history-state.ts";
 import { resolveChatMessageAccess } from "./chat-message-access.ts";
 import { chatModelUnavailableBanner, requiresChatModelSetup } from "./chat-model-setup.ts";
 import { ChatPaneLayoutRender } from "./chat-pane-layout-render.ts";
@@ -49,7 +49,7 @@ import { createChatQuestionActions } from "./chat-question-actions.ts";
 import { dismissRealtimeTalkError } from "./chat-realtime.ts";
 import { activeChatRunStartupStatus } from "./chat-run-startup.ts";
 import { chatSendHoldReason } from "./chat-send-support.ts";
-import { refreshChatCommands, refreshPageChat } from "./chat-state-refresh.ts";
+import { refreshChatCommands } from "./chat-state-refresh.ts";
 import {
   resolveChatAgentId,
   resolveChatAvatarUrl,
@@ -57,7 +57,6 @@ import {
 } from "./chat-state-route.ts";
 import type { ChatProps } from "./chat-view.ts";
 import { getChatComposerState } from "./components/chat-composer-state.ts";
-import { chatPullRequestId } from "./components/chat-pull-requests.ts";
 import {
   openSessionWorkspaceFile,
   revealSessionWorkspaceFile,
@@ -66,7 +65,6 @@ import { resolveChatLinkFaviconFetcher } from "./link-favicon-loader.ts";
 import { activeQueuedMessageEdit } from "./queued-message-edit.ts";
 import { hasAbortableSessionRun, hasDirectSessionRun } from "./run-lifecycle.ts";
 import { scheduleChatScroll } from "./scroll.ts";
-import { maybeResetToolStream } from "./stream-reconciliation.ts";
 import { resolveChatProjectionRunId } from "./tool-stream-status.ts";
 import { workspaceResultConflictFromPlacement } from "./workspace-conflict.ts";
 
@@ -528,12 +526,11 @@ export class ChatPane extends ChatPaneLayoutRender {
       permissionPicker: composerControls?.permissionPicker,
       backgroundTasks: catalogKey ? undefined : backgroundTasks,
       ...this.suggestionChatProps(state.connected, selectedSessionArchived, multiIdentity),
-      pullRequests: this.sessionPullRequests.filter(
-        (pullRequest) => !this.dismissedSessionPullRequestIds.has(chatPullRequestId(pullRequest)),
-      ),
+      pullRequests: this.visibleSessionPullRequests,
       githubRepo: this.githubRepo,
+      pullRequestsGateway: this.context.gateway,
       pullRequestsBranch: this.sessionPullRequestsBranch,
-      pullRequestsRateLimited: this.sessionPullRequestsRateLimited,
+      pullRequestsStatus: this.sessionPullRequestsStatus,
       pullRequestsExpanded: this.sessionPullRequestsExpanded,
       onOpenSessionDiff: sessionWorkspace.onOpenDiff,
       onExpandPullRequests: () => {
@@ -545,17 +542,7 @@ export class ChatPane extends ChatPaneLayoutRender {
       onOpenWorkspaceFile: (target) => openSessionWorkspaceFile(state, target),
       onOpenSessionLink: (target) => navigateMarkdownSession(this.context, target),
       onRevealWorkspaceFile: (path) => revealSessionWorkspaceFile(state, path),
-      onRefresh: () => {
-        if (catalogKey) {
-          void this.loadCatalogSession(catalogKey, false);
-          return;
-        }
-        maybeResetToolStream(state, { preserveStreamSegments: state.chatRunId !== null });
-        this.reconcileWaitingApprovalSnapshot();
-        const historyLoad = getChatHistoryLoadState(state);
-        const startup = historyLoad.phase === "failed" && historyLoad.startup;
-        void refreshPageChat(state, { awaitHistory: true, scheduleScroll: false, startup });
-      },
+      onRefresh: this.refreshHistory,
       onChatScroll: (event) => this.handleTranscriptScroll(event),
       onHistoryIntent: (event) => this.handleTranscriptHistoryIntent(event),
       // Lazy SVG sizing can resize a committed row; re-enter the scroll owner

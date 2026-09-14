@@ -26,6 +26,7 @@ data class GatewayRequestFrame(
   val method: String,
   val params: JsonElement? = null,
   val traceparent: String? = null,
+  val expectedProfileId: String? = null,
 )
 
 @Serializable
@@ -44,6 +45,7 @@ data class GatewayEventFrame(
   val payload: JsonElement? = null,
   val seq: Long? = null,
   val stateVersion: GatewayEventFrameStateVersion? = null,
+  val recipientProfileId: String? = null,
 )
 
 @Serializable
@@ -945,6 +947,7 @@ enum class GatewayMethod(
   ComputerStatus("computer.status"),
   ComputerInvoke("computer.invoke"),
   SessionsActivitySummaryEnsure("sessions.activitySummary.ensure"),
+  ControlUiSessionPullRequestsChecks("controlUi.sessionPullRequests.checks"),
 }
 
 enum class GatewayEvent(
