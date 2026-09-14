@@ -312,7 +312,7 @@ async function main() {
   try {
     save();
     assert.ok(["baseline", "control"].includes(mode), "Unexpected diagnostic case");
-    assert.equal(process.version, "v24.19.0", "No runtime installation/upgrade fallback");
+    assert.equal(process.version, "v24.19.0", "Exact pinned Node runtime required");
     assert.ok(
       !Object.keys(process.env).some(
         (key) => /^GIT_CONFIG/u.test(key) || /^GIT_SSL_(CERT|KEY)/u.test(key),

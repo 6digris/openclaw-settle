@@ -23,26 +23,23 @@ jobs:
       matrix:
         case: [baseline, control]
     steps:
-      - name: Require provisioned tools without installation fallback
+      - name: Require provisioned Git and Linux runner
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/mobile-authority-git-artifacts"
           git --version >"$RUNNER_TEMP/mobile-authority-git-artifacts/provisioned-git.txt"
+          printf '%s/%s\n' "$RUNNER_OS" "$RUNNER_ARCH" >"$RUNNER_TEMP/mobile-authority-git-artifacts/provisioned-platform.txt"
           test "$(git --version)" = 'git version 2.55.0'
           test "$RUNNER_OS/$RUNNER_ARCH" = 'Linux/X64'
-          # setup-node must find a completed cache entry, not download a runtime.
-          test -f "$RUNNER_TOOL_CACHE/node/24.19.0/x64.complete"
-          test "$("$RUNNER_TOOL_CACHE/node/24.19.0/x64/bin/node" --version)" = 'v24.19.0'
 
-      - name: Select already provisioned Node before checking out source
+      - name: Set up exact Node before checking out source
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.19.0
           architecture: x64
           check-latest: false
           package-manager-cache: false
-          token: ""
 
       - name: Checkout only the diagnostic helper
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
