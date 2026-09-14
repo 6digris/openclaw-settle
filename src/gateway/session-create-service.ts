@@ -24,8 +24,9 @@ import {
   normalizeInheritedToolDenylist,
 } from "../agents/inherited-tool-deny.js";
 import { resolveModelProviderAuthConfig } from "../agents/model-auth-provider-route.js";
+import { selectModelCatalogRuntimeEntry } from "../agents/model-catalog-view.js";
 import { findModelCatalogEntry } from "../agents/model-catalog.js";
-import type { ModelCatalogEntry } from "../agents/model-catalog.types.js";
+import type { ModelCatalogSnapshot } from "../agents/model-catalog.types.js";
 import { resolveModelContextWindowProfile } from "../agents/model-context-window.js";
 import { splitTrailingAuthProfile } from "../agents/model-ref-profile.js";
 import {
@@ -33,6 +34,7 @@ import {
   resolveSubagentConfiguredModelSelection,
 } from "../agents/model-selection.js";
 import { resolveSessionModelRef } from "../agents/session-model-ref.js";
+import { resolveEffectiveAgentRuntime } from "../agents/thinking-runtime.js";
 import {
   forkSessionFromParentWithDecision,
   MODEL_SELECTION_LOCKED_PARENT_FORK_MESSAGE,
@@ -99,6 +101,11 @@ import { ModelAccountConnectAuthorityError } from "./model-account-connect.js";
 import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "./operator-role-policy.js";
 import { ADMIN_SCOPE } from "./operator-scopes.js";
 import { prepareSessionCreateFilesystemRoot } from "./server-methods/session-create-root.js";
+import {
+  prepareSessionPatchRuntimeSelection,
+  refreshSessionPatchQueuedSelection,
+  resolveSessionPatchModelSelection,
+} from "./server-methods/sessions-patch-model-selection.js";
 import type { GatewayOperatorRoleActor } from "./server-methods/shared-types.js";
 import { buildForkedGatewaySessionEntry } from "./session-create-fork-entry.js";
 import { resolveSessionCreateModelSelection } from "./session-create-model-selection.js";
@@ -114,7 +121,8 @@ import {
   loadGatewaySessionEntryReadOnly,
   resolveGatewaySessionStoreTarget,
 } from "./session-utils.js";
-import { projectSessionsPatchEntry, resolveSessionPatchModelSelection } from "./sessions-patch.js";
+import { resolveSessionWorkerPlacementContext } from "./session-worker-placement-context.js";
+import { projectSessionsPatchEntry } from "./sessions-patch.js";
 
 type TrustedCatalogSessionTarget = {
   model: string;
@@ -136,8 +144,9 @@ async function existingSessionSelectionWouldChange(params: {
   defaultModel: string;
   defaultProvider: string;
   existingEntry: SessionEntry;
-  loadGatewayModelCatalog?: () => Promise<ModelCatalogEntry[]>;
+  loadGatewayModelCatalogSnapshot?: () => Promise<ModelCatalogSnapshot>;
   requestedModel?: string;
+  requestedAgentRuntime?: string;
   requestedContextWindow?: string;
   requestedFastMode?: FastMode;
   requestedThinkingLevel?: string;
@@ -147,6 +156,12 @@ async function existingSessionSelectionWouldChange(params: {
     // Public catalog creates cannot include a key, and the service rejects
     // catalog targets for existing rows. If a trusted caller reaches this,
     // keep catalog-owned model/runtime adoption fail-closed.
+    return true;
+  }
+  if (
+    params.requestedAgentRuntime !== undefined &&
+    params.requestedAgentRuntime !== params.existingEntry.agentRuntimeOverride
+  ) {
     return true;
   }
   const requestedThinkingLevel = normalizeOptionalString(params.requestedThinkingLevel);
@@ -173,17 +188,17 @@ async function existingSessionSelectionWouldChange(params: {
   if (!requestedModel) {
     return false;
   }
-  if (!params.loadGatewayModelCatalog) {
+  if (!params.loadGatewayModelCatalogSnapshot) {
     // Public/TUI model selection paths provide the catalog loader used by the
     // patch resolver. Without it, an existing-row model request cannot prove
     // it is a no-op, so non-admin callers must not reach the mutation path.
     return true;
   }
-  const catalog = await params.loadGatewayModelCatalog();
+  const catalog = await params.loadGatewayModelCatalogSnapshot();
   const resolved = resolveSessionPatchModelSelection({
     cfg: params.cfg,
     agentId: params.agentId,
-    catalog,
+    catalog: catalog.entries,
     raw: requestedModel,
     defaultProvider: params.defaultProvider,
     defaultModel: params.defaultModel,
@@ -202,7 +217,7 @@ async function existingSessionSelectionWouldChange(params: {
     const resolvedSubagentDefault = resolveSessionPatchModelSelection({
       cfg: params.cfg,
       agentId: params.agentId,
-      catalog,
+      catalog: catalog.entries,
       raw: params.subagentModelHint,
       defaultProvider: params.defaultProvider,
       defaultModel: params.defaultModel,
@@ -291,6 +306,7 @@ export async function createGatewaySession(params: {
   displayName?: string;
   category?: string;
   model?: string;
+  agentRuntime?: string;
   personalModelSelection?: UserModelAccountSelection;
   /** Direct human authority for defaults on a genuinely new row; never sourced from provenance. */
   personalAccountDefaults?: ModelAccountConnectAction;
@@ -345,7 +361,7 @@ export async function createGatewaySession(params: {
   emitCommandHooks?: boolean;
   resetMainWhenUnspecified?: boolean;
   commandSource: string;
-  loadGatewayModelCatalog?: () => Promise<ModelCatalogEntry[]>;
+  loadGatewayModelCatalogSnapshot?: () => Promise<ModelCatalogSnapshot>;
   /** Trusted in-process initializer; never populated from public Gateway params. */
   initialEntry?: TrustedInitialSessionEntry;
   /** Keep a new ordinary session unusable until afterCreate succeeds, or roll it back. */
@@ -376,6 +392,15 @@ export async function createGatewaySession(params: {
   commitGuard?: () => void;
 }): Promise<CreateGatewaySessionResult> {
   const { personalModelSelection, personalAccountDefaults } = params;
+  if (params.agentRuntime !== undefined && (!params.model || params.catalogTarget)) {
+    return {
+      ok: false,
+      error: errorShape(
+        ErrorCodes.INVALID_REQUEST,
+        "agentRuntime requires an explicit canonical provider/model selection",
+      ),
+    };
+  }
   const requestedProfile = splitTrailingAuthProfile(
     params.catalogTarget?.model ?? params.model ?? "",
   ).profile;
@@ -395,10 +420,18 @@ export async function createGatewaySession(params: {
   // Fresh account authority covers title generation and resource preparation,
   // not just the final row. An inherited parent pin is not a new selection.
   let selectedDefaultProfile: string | undefined;
+  let validateRuntimeSelection: (() => ErrorShape | undefined) | undefined;
   const commitGuard =
-    personalModelSelection || personalAccountDefaults || params.activeParentFork
+    personalModelSelection ||
+    personalAccountDefaults ||
+    params.activeParentFork ||
+    params.agentRuntime !== undefined
       ? () => {
           params.commitGuard?.();
+          const runtimeError = validateRuntimeSelection?.();
+          if (runtimeError) {
+            throw new Error(runtimeError.message);
+          }
           params.activeParentFork?.assertCurrent();
           personalModelSelection?.assertCurrent();
           personalAccountDefaults?.assertCurrent();
@@ -1024,7 +1057,8 @@ export async function createGatewaySession(params: {
     const titleModelSelection = resolveSessionCreateModelSelection(
       params.cfg,
       target.agentId,
-      params.catalogTarget ?? params.model,
+      params.catalogTarget ??
+        (params.model ? { model: params.model, agentRuntime: params.agentRuntime } : undefined),
       currentParentSessionEntry,
     );
     commitGuard?.();
@@ -1049,6 +1083,8 @@ export async function createGatewaySession(params: {
     );
     const runtimeCwd = spawnedCwd ?? sessionRoot;
 
+    const loadModelCatalog = params.loadGatewayModelCatalogSnapshot;
+    let preparedModelCatalog: ModelCatalogSnapshot | undefined;
     const created = await createSessionEntryWithTranscript<ErrorShape>(
       {
         agentId: target.agentId,
@@ -1174,8 +1210,9 @@ export async function createGatewaySession(params: {
             defaultModel: gateDefaultModel.model,
             defaultProvider: gateDefaultModel.provider,
             existingEntry,
-            loadGatewayModelCatalog: params.loadGatewayModelCatalog,
+            loadGatewayModelCatalogSnapshot: params.loadGatewayModelCatalogSnapshot,
             requestedModel,
+            requestedAgentRuntime: params.agentRuntime,
             requestedContextWindow,
             requestedFastMode,
             requestedThinkingLevel,
@@ -1214,13 +1251,19 @@ export async function createGatewaySession(params: {
             label: normalizeOptionalString(params.label),
             category: normalizeOptionalString(params.category),
             ...((catalogModel ?? requestedModel) ? { model: catalogModel ?? requestedModel } : {}),
+            ...(params.agentRuntime !== undefined ? { agentRuntime: params.agentRuntime } : {}),
             ...(requestedContextWindow ? { contextWindow: requestedContextWindow } : {}),
             ...(requestedThinkingLevel ? { thinkingLevel: requestedThinkingLevel } : {}),
             ...(requestedFastMode !== undefined ? { fastMode: requestedFastMode } : {}),
             ...(requestedToolOverrides ? { toolOverrides: params.toolOverrides } : {}),
             ...(params.permissionMode ? { permissionMode: params.permissionMode } : {}),
           },
-          loadGatewayModelCatalog: params.loadGatewayModelCatalog,
+          loadGatewayModelCatalogSnapshot: loadModelCatalog
+            ? async () => {
+                preparedModelCatalog = await loadModelCatalog();
+                return preparedModelCatalog;
+              }
+            : undefined,
           authorizedAgentHarnessId: params.authorizedAgentHarnessId,
           personalModelSelection: params.personalModelSelection,
         });
@@ -1431,6 +1474,26 @@ export async function createGatewaySession(params: {
               delete entry.authProfileOverrideCompactionCount;
             }
           }
+        }
+        const runtimeSelection = await prepareSessionPatchRuntimeSelection({
+          cfg: params.cfg,
+          agentId: target.agentId,
+          patch: { key: target.canonicalKey, agentRuntime: params.agentRuntime },
+          entry,
+          ...(params.agentRuntime !== undefined
+            ? {
+                placement: {
+                  context: resolveSessionWorkerPlacementContext(),
+                  sessionKey: target.canonicalKey,
+                },
+              }
+            : {}),
+        });
+        if (!runtimeSelection.ok) {
+          return runtimeSelection;
+        }
+        validateRuntimeSelection = runtimeSelection.validate;
+        if (params.fork !== true) {
           return { ...initialized, entry };
         }
         const forkParentSessionKey = canonicalParentSessionKey;
@@ -1441,13 +1504,28 @@ export async function createGatewaySession(params: {
           };
         }
         const childModel = resolveSessionModelRef(params.cfg, entry, target.agentId);
-        const childCatalog = params.loadGatewayModelCatalog
-          ? await params.loadGatewayModelCatalog()
-          : [];
-        const childCatalogEntry = findModelCatalogEntry(childCatalog, {
+        const childCatalog = params.loadGatewayModelCatalogSnapshot
+          ? await params.loadGatewayModelCatalogSnapshot()
+          : undefined;
+        const childLogicalEntry = findModelCatalogEntry(childCatalog?.entries ?? [], {
           provider: childModel.provider,
           modelId: childModel.model,
         });
+        const childCatalogEntry =
+          childLogicalEntry && childCatalog
+            ? selectModelCatalogRuntimeEntry({
+                entry: childLogicalEntry,
+                routeVariants: childCatalog.routeVariants,
+                runtimeId: resolveEffectiveAgentRuntime({
+                  cfg: params.cfg,
+                  agentId: target.agentId,
+                  provider: childModel.provider,
+                  modelId: childModel.model,
+                  sessionKey: target.canonicalKey,
+                  sessionEntry: entry,
+                }),
+              }).entry
+            : undefined;
         const childContextWindow = resolveModelContextWindowProfile({
           catalogEntry: childCatalogEntry,
           selected: entry.contextWindow,
@@ -1541,6 +1619,16 @@ export async function createGatewaySession(params: {
       isNew: createdNewEntry,
     };
     lifecyclePreparationCommitted = true;
+    if (!createdNewEntry && params.agentRuntime !== undefined) {
+      refreshSessionPatchQueuedSelection({
+        cfg: params.cfg,
+        entry: created.entry,
+        patch: { key: target.canonicalKey, agentRuntime: params.agentRuntime },
+        sessionKey: target.canonicalKey,
+        agentId: target.agentId,
+        catalog: preparedModelCatalog?.entries,
+      });
+    }
     if (createdNewEntry) {
       // The created fact belongs to this row generation; record it before a
       // same-key delete can acquire the lifecycle fence and purge that state.

@@ -2213,9 +2213,10 @@ describe("scripts/test-projects changed-target routing", () => {
   );
 
   it.each(
-    ["test/vitest/vitest.gateway.config.ts", "src/gateway/config-reload.test.ts"].flatMap(
-      (target) => [true, false].map((workerFirst) => ({ target, workerFirst })),
-    ),
+    [
+      "test/vitest/vitest.gateway.config.ts",
+      "src/gateway/config-reload.telegram-policy.test.ts",
+    ].flatMap((target) => [true, false].map((workerFirst) => ({ target, workerFirst }))),
   )(
     "coalesces Gateway worker config with $target (worker first: $workerFirst)",
     ({ target, workerFirst }) => {

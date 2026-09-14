@@ -5,7 +5,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { validateQaEvidenceSummaryJson } from "./evidence-summary.js";
 import { readQaScenarioById } from "./scenario-catalog.js";
 import { attachQaProfileScorecardEvidenceToFile } from "./scorecard-evidence.js";
-import { runQaTestFileScenarios } from "./test-file-scenario-runner.js";
+import {
+  resolveQaScriptRuntimeExecutable,
+  runQaTestFileScenarios,
+} from "./test-file-scenario-runner.js";
 import {
   buildScriptProducerEvidence,
   createScenarioRunnerTestHarness,
@@ -141,7 +144,7 @@ describe.skipIf(process.platform === "win32")("onboarding assertion attribution"
       });
       expect(result.results[0]).toMatchObject({
         status: "fail",
-        failureMessage: `${path.basename(process.execPath)} exited with 7`,
+        failureMessage: `${path.basename(resolveQaScriptRuntimeExecutable())} exited with 7`,
         includeFallbackEvidence: true,
       });
       expect(result.evidence.entries.map((entry) => [entry.test.id, entry.result.status])).toEqual([
