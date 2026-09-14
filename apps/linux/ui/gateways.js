@@ -22,7 +22,7 @@ const showError = (error) => {
 const clearError = () => { elements["gateway-error"].hidden = true; };
 const setBusy = (value) => {
   busy = value;
-  for (const control of document.querySelectorAll("button, input, select")) control.disabled = value;
+  for (const control of document.querySelectorAll(".gateways-panel :is(button, input, select), #remove-dialog button")) control.disabled = value;
   elements.profiles.setAttribute("aria-busy", String(value));
   if (!value) {
     syncTransport();

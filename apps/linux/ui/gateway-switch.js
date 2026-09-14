@@ -5,39 +5,26 @@
 
   const invoke = window.__TAURI_INTERNALS__.invoke.bind(window.__TAURI_INTERNALS__);
   let token;
-  let errorNotice;
-  let pendingError;
+  let noticeVersion = 0;
+  window.addEventListener("openclaw:gateway-notice", () => { noticeVersion += 1; });
   const queued = [];
-  const renderError = () => {
-    if (!document.body) return;
-    if (!errorNotice) {
-      errorNotice = document.createElement("div");
-      errorNotice.setAttribute("role", "alert");
-      // This bridge also serves older dashboards without the shared chrome CSS.
-      errorNotice.style.cssText = "position:fixed;top:56px;right:12px;z-index:10000;max-width:min(360px,90vw);padding:12px;border:1px solid currentColor;border-radius:8px;background:var(--bg,#0e1015);color:var(--text,#f6f7fb);font:13px system-ui,sans-serif";
-      document.body.append(errorNotice);
-    }
-    errorNotice.textContent = pendingError;
-    errorNotice.hidden = false;
-  };
   const showError = (error) => {
-    pendingError = `Gateway action failed: ${String(error)}`;
-    renderError();
+    window.dispatchEvent(new CustomEvent("openclaw:gateway-notice", {
+      detail: { message: `Gateway action failed: ${String(error)}` },
+    }));
   };
-  document.addEventListener("DOMContentLoaded", () => {
-    if (pendingError) renderError();
-  }, { once: true });
   const post = async (message) => {
     if (!token) {
       queued.push(message);
       return;
     }
     const requestToken = token;
+    const requestNoticeVersion = noticeVersion;
     try {
       await invoke("gateway_request", { message, token: requestToken });
-      if (requestToken === token) {
-        pendingError = undefined;
-        if (errorNotice) errorNotice.hidden = true;
+      // A successful native action may still report a credential-storage warning.
+      if (requestToken === token && requestNoticeVersion === noticeVersion) {
+        window.dispatchEvent(new Event("openclaw:gateway-notice-clear"));
       }
     } catch (error) {
       if (requestToken === token) showError(error);
