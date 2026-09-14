@@ -3,6 +3,7 @@
 import { completeSimple, type Model } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it } from "vitest";
 import { isTruthyEnvValue } from "../infra/env.js";
+import { redactSensitiveText } from "../logging/redact.js";
 import {
   createSingleUserPromptMessage,
   extractNonEmptyAssistantText,
@@ -64,9 +65,15 @@ async function expectModelReturnsAssistantText(
     error: final.errorMessage ?? "",
   });
   const errorClass = final.errorMessage ? (drift?.reason ?? "unclassified") : "none";
+  // Temporary diagnostic probe: redact the exact credential before generic
+  // redaction and truncation so even unrecognized provider errors are safe.
+  const safeError = redactSensitiveText(
+    (final.errorMessage ?? "").split(ZAI_KEY).join("[REDACTED]"),
+    { mode: "tools" },
+  ).slice(0, 1_200);
   expect(
     text.length,
-    `${modelId} returned no assistant text; initialStopReason=${initial.stopReason}; finalStopReason=${final.stopReason}; errorClass=${errorClass}; contentTypes=${final.content.map((block) => block.type).join(",") || "none"}`,
+    `${modelId} returned no assistant text; initialStopReason=${initial.stopReason}; finalStopReason=${final.stopReason}; errorClass=${errorClass}; contentTypes=${final.content.map((block) => block.type).join(",") || "none"}; safeError=${safeError}`,
   ).toBeGreaterThan(0);
 }
 
