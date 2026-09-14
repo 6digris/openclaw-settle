@@ -5,10 +5,12 @@ export {
   type QaEvidencePackageSource,
   type QaEvidenceStatus,
   type QaEvidenceSummaryJson,
+  validateQaEvidenceSummaryJson,
 } from "./src/evidence-summary.js";
+export { splitQaModelRef } from "./src/model-selection.js";
 export { qaProfileEvidencePlan } from "./src/profile-evidence-plan.js";
 export type { QaProviderMode } from "./src/providers/index.js";
-export { readQaScenarioById } from "./src/scenario-catalog.js";
+export { readQaScenarioById, type QaSeedScenarioWithSource } from "./src/scenario-catalog.js";
 export {
   qaMaturityTaxonomyIdentity,
   readQaMaturityTaxonomySource,

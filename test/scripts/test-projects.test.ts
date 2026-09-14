@@ -1361,6 +1361,7 @@ describe("scripts/test-projects changed-target routing", () => {
         "test/scripts/clawhub-postpublish.test.ts",
         "test/scripts/frv.test.ts",
         "test/scripts/full-release-publication-admission.test.ts",
+        "test/scripts/linux-app-channel.test.ts",
         "test/scripts/linux-updater-manifest.test.ts",
         "test/scripts/openclaw-release-ready.test.ts",
         "test/scripts/plugin-npm-extended-stable-workflow.test.ts",
