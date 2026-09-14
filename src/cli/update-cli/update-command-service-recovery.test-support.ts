@@ -210,6 +210,9 @@ export function registerRecoveryTests(params: {
           maybeRestartServiceAfterFailedMutableUpdate({
             preManagedServiceStop: {
               stopped: true,
+              inspected: true,
+              runtimeInspected: true,
+              running: state.running,
               serviceEnv: state.env,
               serviceUpdateVerdict: verdict,
             },
