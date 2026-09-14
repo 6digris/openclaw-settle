@@ -62,6 +62,8 @@ export interface PluginModuleLoaderOwner extends PluginInstanceResource, PluginI
 
 /** Current-call helpers retain the instance itself, not a registry or plugin-id lookup. */
 export interface PluginInvocationInstance extends PluginModuleLoaderOwner {
+  readonly acceptingCalls: boolean;
+  retainConsumer(): PluginInstanceConsumer;
   readonly slots: Map<string | symbol, { runtime: unknown }>;
   wrap<T>(value: T): T;
 }

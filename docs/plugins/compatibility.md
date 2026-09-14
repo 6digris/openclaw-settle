@@ -233,3 +233,32 @@ consume it.
 Release notes should include upcoming plugin deprecations with target dates
 and links to migration docs, before a compatibility path moves to
 `removal-pending` or `removed`.
+
+## Discord component registration compatibility
+
+`registerBuiltDiscordComponentMessage` preserves its shipped `void` contract
+through `openclaw/plugin-sdk/discord`. It returns actual `undefined` after
+synchronously admitting registration into the existing FIFO. A following
+supported component or modal lookup joins that FIFO; legacy callers do not need
+to add `await` for lookup ordering. This is not a synchronous persistence guarantee.
+
+The current Discord plugin's internal `runtime-api` function remains
+`Promise<void>`. Bundled send/edit callers await it, joining all persistence
+attempts. Expected store failures still report the existing warning and retain
+the in-memory fallback; completion does not certify a successful durable write.
+See the [internal module convention](/plugins/sdk-overview/imports#internal-module-convention)
+for the distinction between internal runtime barrels and the external SDK contract.
+
+The core SDK facade transfers completion to its private resource host, retaining
+the exact managed plugin instance and cooperating work through settlement. It
+refuses fresh work after retirement, reports unexpected asynchronous failures,
+and retains those failures for host-close reporting. Synchronous loading,
+admission, and normalization exceptions still reach the caller synchronously.
+Standalone use keeps the existing process-host lifetime; forced process exit is
+not a flushing guarantee.
+
+The facade also accepts older Discord runtimes returning void. It does not require
+an additional runtime export or claim to drain work those runtimes never expose.
+Discord's existing plugin API, minimum-host metadata, and npm peer ranges remain
+unchanged. This repair adds no public SDK API, sets no removal date, and does not
+shorten the external facade's compatibility window.

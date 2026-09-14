@@ -1,8 +1,14 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { AsyncWorkScope, getAsyncWorkSignal } from "../shared/async-work-scope.js";
+import {
+  AsyncWorkScope,
+  captureAsyncWorkTracker,
+  getAsyncWorkSignal,
+} from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
-import type { PluginInstanceHandle } from "./plugin-instance-scope.js";
+import { PluginInstanceUnavailableError } from "./plugin-instance-error.js";
+import { pluginInstanceInvocation } from "./plugin-instance-invocation.js";
+import { getPluginInstanceOwner, type PluginInstanceHandle } from "./plugin-instance-scope.js";
 import { resolvePluginReturnPromise } from "./plugin-return-value.js";
 import { hasRetainedPluginRuntimeCloseError } from "./runtime-close-error.js";
 import {
@@ -20,6 +26,7 @@ export type LegacyPluginSdkProviderProjection = {
 /** Owns resources borrowed by shipped SDK results that have no release method. */
 export class LegacyPluginSdkResourceHost {
   private readonly work = new AsyncWorkScope();
+  private readonly detachedWorkContext = new AsyncLocalStorage<AsyncWorkScope>();
   private readonly claims = new Map<object, ResourceClaim>();
   private readonly providerProjections = new WeakMap<object, LegacyPluginSdkProviderProjection>();
   private readonly pending = new Set<Promise<void>>();
@@ -43,17 +50,124 @@ export class LegacyPluginSdkResourceHost {
 
   /** Preserve synchronous SDK hooks while joining their asynchronous results and descendants. */
   invoke<T>(run: () => T): T {
-    if (getAsyncWorkSignal() !== this.work.signal) {
+    const detachedWork = this.detachedWorkContext.getStore();
+    const work = detachedWork && !detachedWork.isClosing ? detachedWork : this.work;
+    if (detachedWork === work && getAsyncWorkSignal() !== work.signal) {
+      return this.invokeNestedDetached(work, run);
+    }
+    if (getAsyncWorkSignal() !== work.signal) {
       this.assertOpen();
     }
-    return this.work.run(() =>
+    return this.invokeInScope(work, run);
+  }
+
+  private invokeInScope<T>(work: AsyncWorkScope, run: () => T): T {
+    return work.run(() =>
       this.run(() => {
         const result = run();
         const completion = resolvePluginReturnPromise(result);
         // SAFETY: Only promise-like results are normalized; synchronous hook values stay unchanged.
-        return completion ? (this.work.track(() => completion) as T) : result;
+        return completion ? (work.track(() => completion) as T) : result;
       }),
     );
+  }
+
+  private invokeNestedDetached<T>(detachedWork: AsyncWorkScope, run: () => T): T {
+    const parentTrack = captureAsyncWorkTracker();
+    const invocationWork = new AsyncWorkScope();
+    const returned = createDeferredCore();
+    let admitted = false;
+    // Retain both the plugin consumer and a nested cancellation scope until this
+    // invocation's own tails settle. Waiting for either whole parent would cycle.
+    const completion = detachedWork.track(() =>
+      parentTrack(async () => {
+        admitted = true;
+        await returned.promise;
+        await AsyncWorkScope.runWhenAllIdle(
+          () => [invocationWork],
+          () => invocationWork.drain(),
+        );
+      }),
+    );
+    void completion.catch((error: unknown) => {
+      // A refused parent scope never invoked plugin code; its synchronous caller owns denial.
+      if (admitted) {
+        this.failures.push(error);
+      }
+    });
+    if (!admitted) {
+      throw new Error("Plugin SDK invocation work scope is closed");
+    }
+    try {
+      return this.invokeInScope(invocationWork, run);
+    } finally {
+      returned.resolve();
+    }
+  }
+
+  /** A void SDK call transfers completion and failures, but never delays synchronous admission. */
+  invokeDetached(run: () => void | Promise<void>, reportError: (error: unknown) => void): void {
+    this.assertOpen();
+    const instance = pluginInstanceInvocation.getStore()?.instance;
+    if (instance && (!instance.acceptingCalls || getPluginInstanceOwner(instance)?.revoked)) {
+      throw new PluginInstanceUnavailableError(instance.pluginId);
+    }
+    const consumer = instance?.retainConsumer();
+    const operation = createDeferredCore();
+    // A per-operation work scope retains this consumer's cooperating tails without
+    // waiting on unrelated host work that may itself be retiring this instance.
+    const detachedWork = new AsyncWorkScope();
+    const work = this.work.track(() =>
+      this.run(async () => {
+        try {
+          await operation.promise;
+        } catch (error) {
+          this.reportDetachedFailure(error, reportError);
+        } finally {
+          try {
+            await AsyncWorkScope.runWhenAllIdle(
+              () => [detachedWork],
+              () => detachedWork.drain(),
+            );
+          } finally {
+            consumer?.release();
+          }
+        }
+      }),
+    );
+    const completion = work.then(
+      () => {
+        this.pending.delete(completion);
+      },
+      (error: unknown) => {
+        this.reportDetachedFailure(error, reportError);
+        this.pending.delete(completion);
+      },
+    );
+    // Both owners are registered before plugin code can reenter close/disposal.
+    this.pending.add(completion);
+    try {
+      operation.resolve(
+        this.detachedWorkContext.run(detachedWork, () =>
+          detachedWork.run(() => this.run(() => (consumer ? consumer.run(run) : run()))),
+        ),
+      );
+    } catch (error) {
+      // The synchronous caller owns this exception; already admitted tails still
+      // retain their consumer and host until the work scope becomes idle.
+      operation.resolve();
+      throw error;
+    }
+  }
+
+  private reportDetachedFailure(error: unknown, reportError: (error: unknown) => void): void {
+    this.failures.push(error);
+    try {
+      reportError(error);
+    } catch (reporterError) {
+      // Reporting cannot create an unobserved rejection or lose teardown evidence.
+      this.failures.push(reporterError);
+    }
   }
 
   adopt(source: object, claim: ResourceClaim): void {

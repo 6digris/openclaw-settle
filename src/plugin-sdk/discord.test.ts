@@ -66,7 +66,7 @@ const mocks = vi.hoisted(() => {
     collectDiscordAuditChannelIds: vi.fn(() => ({ channelIds: [], unresolvedChannels: [] })),
     editDiscordComponentMessage: vi.fn(async () => componentEditResult),
     listThreadBindingsBySessionKey: vi.fn(() => []),
-    registerBuiltDiscordComponentMessage: vi.fn().mockResolvedValue(undefined),
+    registerBuiltDiscordComponentMessage: vi.fn(() => {}),
     unbindThreadBindingsBySessionKey: vi.fn(() => []),
   };
 
@@ -144,7 +144,7 @@ describe("discord plugin-sdk facade", () => {
     }
   });
 
-  it("forwards Discord component helpers through the facade", async () => {
+  it("forwards component helpers and supports older void-only Discord runtimes", async () => {
     const {
       buildDiscordComponentMessage,
       editDiscordComponentMessage,
@@ -158,10 +158,14 @@ describe("discord plugin-sdk facade", () => {
       { text: "edited" },
       { cfg: mocks.runtimeConfig },
     );
-    await registerBuiltDiscordComponentMessage({
+    const registered = registerBuiltDiscordComponentMessage({
       buildResult: built,
       messageId: "message",
     });
+    expect(registered).toBeUndefined();
+    expectTypeOf(registered).toEqualTypeOf<void>();
+    const synchronousAdapter: typeof registerBuiltDiscordComponentMessage = () => {};
+    expect(synchronousAdapter({ buildResult: built, messageId: "synthetic" })).toBeUndefined();
 
     expect(mocks.apiModule.buildDiscordComponentMessage).toHaveBeenCalledWith({
       spec: { text: "hello" },

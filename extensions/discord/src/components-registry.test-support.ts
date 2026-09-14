@@ -7,3 +7,9 @@ export function clearDiscordComponentEntriesForTest(): void {
   discordComponentRegistryState.persistentModalStore = undefined;
   discordComponentRegistryState.persistentRegistryDisabled = false;
 }
+
+export { discordComponentRegistryState };
+export {
+  resolveDiscordComponentEntryWithPersistence,
+  resolveDiscordModalEntryWithPersistence,
+} from "./components-registry.js";
