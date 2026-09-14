@@ -77,12 +77,27 @@ export function createLocalUpdateRepairTurn(target: UpdateRepairTarget): UpdateR
       throw new Error("wall-clock-budget");
     }
     params.onRoute({ model: route.model, provider: route.provider });
-    return runLocalUpdateRepairTurn({
-      ...params,
-      target,
-      route,
-      modelFallbacks,
-      timeoutMs,
-    });
+    const controller = new AbortController();
+    const signal = AbortSignal.any([params.signal, controller.signal]);
+    const timer = setTimeout(() => controller.abort(new Error("per-turn-budget")), timeoutMs);
+    try {
+      const outcome = await runLocalUpdateRepairTurn({
+        ...params,
+        target,
+        route,
+        modelFallbacks,
+        timeoutMs,
+        signal,
+        isCurrent: () => {
+          signal.throwIfAborted();
+          return params.isCurrent();
+        },
+      });
+      return outcome.status === "completed"
+        ? { ...outcome, timedOut: outcome.timedOut || controller.signal.aborted }
+        : outcome;
+    } finally {
+      clearTimeout(timer);
+    }
   };
 }

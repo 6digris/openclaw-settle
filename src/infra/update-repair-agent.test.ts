@@ -130,7 +130,7 @@ describe("runUpdateRepairLoop", () => {
     expect(result.attempts).toHaveLength(1);
   });
 
-  it("aborts the turn at its deadline and validates any partial edits after draining", async () => {
+  it.each([false, true])("validates timed-out edits: healthy=%s", async (repaired) => {
     let drained = false;
     runtime.runUpdateRepairTurn.mockImplementationOnce(
       ({ signal }) =>
@@ -148,11 +148,16 @@ describe("runUpdateRepairLoop", () => {
     const validate = vi.fn().mockImplementation(async () => {
       if (validate.mock.calls.length > 1) {
         expect(drained).toBe(true);
+        if (repaired) {
+          return healthy;
+        }
       }
       return unhealthy(-1);
     });
     const result = await runUpdateRepairLoop({ ...params(validate), budget: { perTurnMs: 10 } });
-    expect(result).toMatchObject({ status: "aborted", reason: "per-turn-budget" });
+    expect(result).toMatchObject(
+      repaired ? { status: "repaired" } : { status: "aborted", reason: "per-turn-budget" },
+    );
     expect(validate).toHaveBeenCalledTimes(2);
     expect(result.attempts).toHaveLength(1);
   });

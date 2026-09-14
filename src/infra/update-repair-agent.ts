@@ -143,38 +143,26 @@ export async function runUpdateRepairLoop(params: UpdateRepairParams): Promise<U
       if (timeoutMs <= 0) {
         return stop("aborted", "wall-clock-budget");
       }
-      const turnController = new AbortController();
-      let turnTimer: ReturnType<typeof setTimeout> | undefined;
-      const turnSignal = AbortSignal.any([signal, turnController.signal]);
-      let outcome;
-      try {
-        outcome = await cleanup.run(() =>
-          runTurn({
-            wallClockMs: Math.max(1, deadline - Date.now()),
-            prompt: repairPrompt(params, finalValidation),
-            timeoutMs,
-            maxToolCalls: remainingToolCalls,
-            signal: turnSignal,
-            onRoute: (route) => {
-              if (!routeSelected) {
-                params.onEvent?.({ type: "route-selected", ...route });
-                routeSelected = true;
-              }
-              turnTimer = setTimeout(
-                () => turnController.abort(new Error("per-turn-budget")),
-                timeoutMs,
-              );
-              params.onEvent?.({ type: "turn-started", turn, ...route });
-            },
-            isCurrent: () => {
-              assertCurrent();
-              return true;
-            },
-          }),
-        );
-      } finally {
-        clearTimeout(turnTimer);
-      }
+      const outcome = await cleanup.run(() =>
+        runTurn({
+          wallClockMs: Math.max(1, deadline - Date.now()),
+          prompt: repairPrompt(params, finalValidation),
+          timeoutMs,
+          maxToolCalls: remainingToolCalls,
+          signal,
+          onRoute: (route) => {
+            if (!routeSelected) {
+              params.onEvent?.({ type: "route-selected", ...route });
+              routeSelected = true;
+            }
+            params.onEvent?.({ type: "turn-started", turn, ...route });
+          },
+          isCurrent: () => {
+            assertCurrent();
+            return true;
+          },
+        }),
+      );
       if (outcome.status !== "completed") {
         return stop(outcome.status, outcome.reason);
       }
@@ -229,7 +217,7 @@ export async function runUpdateRepairLoop(params: UpdateRepairParams): Promise<U
       if (finalValidation.ok) {
         return stop("repaired");
       }
-      if (turnController.signal.aborted || outcome.timedOut) {
+      if (outcome.timedOut) {
         return stop("aborted", "per-turn-budget");
       }
       if (remainingToolCalls <= 0) {
