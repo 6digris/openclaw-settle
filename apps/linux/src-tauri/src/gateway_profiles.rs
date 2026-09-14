@@ -76,9 +76,27 @@ struct SystemCredential {
 }
 
 fn credential_error(error: keyring::Error) -> String {
+    #[cfg(target_os = "macos")]
+    if let keyring::Error::PlatformFailure(cause) | keyring::Error::NoStorageAccess(cause) = &error
+    {
+        if let Some(cause) = cause.downcast_ref::<security_framework::base::Error>() {
+            return match cause.code() {
+                -25307 => "Saved Gateways are unavailable because macOS has no default login keychain. Open Keychain Access to configure or restore it, then try again.".to_string(),
+                -25294 => "Saved Gateways are unavailable because the login keychain could not be found. Open Keychain Access to restore it, then try again.".to_string(),
+                -25291 => "macOS Keychain is unavailable. Try again after your login session is ready.".to_string(),
+                -25308 | -25293 => "macOS denied access to the login keychain. Unlock it in Keychain Access or approve OpenClaw-Tauri access, then try again.".to_string(),
+                -128 => "Access to saved Gateways was canceled. Try again and approve Keychain access when prompted.".to_string(),
+                code => format!("Could not access saved Gateways in macOS Keychain (error {code}). Check Keychain Access and try again."),
+            };
+        }
+    }
+    // Backend errors can contain credential bytes or entry metadata. Only a
+    // typed macOS status code above is safe to include in the user message.
     match error {
         keyring::Error::TooLong(_, _) => "These saved Gateways exceed the system credential store's size limit. Shorten or remove an entry, then try again.".to_string(),
-        _ => "Could not access saved Gateways in the system credential store. Unlock your keychain or credential vault, then try again.".to_string(),
+        keyring::Error::NoDefaultStore => "The system credential store is unavailable. Check that your keychain or credential vault is configured, then restart OpenClaw-Tauri.".to_string(),
+        keyring::Error::BadEncoding(_) | keyring::Error::BadDataFormat(_, _) | keyring::Error::BadStoreFormat(_) => CORRUPT.to_string(),
+        _ => "Could not access saved Gateways in the system credential store. Check that your keychain or credential vault is available, then try again.".to_string(),
     }
 }
 
@@ -380,6 +398,55 @@ mod tests {
             password: None,
             remote_port: None,
             tls_fingerprint: None,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn credential_errors_distinguish_missing_keychains_from_denied_access() {
+        for (code, no_storage_access, guidance, may_suggest_unlock) in [
+            (-25307, false, "no default login keychain", false),
+            (-25294, true, "login keychain could not be found", false),
+            (-25291, true, "Keychain is unavailable", false),
+            (-25308, false, "Unlock", true),
+            (-25293, false, "Unlock", true),
+            (-128, false, "canceled", false),
+            (-77777, false, "-77777", false),
+        ] {
+            let cause = Box::new(security_framework::base::Error::from_code(code));
+            let error = if no_storage_access {
+                keyring::Error::NoStorageAccess(cause)
+            } else {
+                keyring::Error::PlatformFailure(cause)
+            };
+            let message = credential_error(error);
+            assert!(
+                message.contains(guidance),
+                "wrong guidance for OSStatus {code}"
+            );
+            if !may_suggest_unlock {
+                assert!(!message.to_lowercase().contains("unlock"));
+            }
+        }
+    }
+
+    #[test]
+    fn credential_errors_never_format_secret_bearing_backend_payloads() {
+        for error in [
+            keyring::Error::NoDefaultStore,
+            keyring::Error::BadEncoding(b"fixture-secret".to_vec()),
+            keyring::Error::BadDataFormat(
+                b"fixture-secret".to_vec(),
+                Box::new(std::io::Error::other("fixture-secret")),
+            ),
+            keyring::Error::BadStoreFormat("fixture-secret".to_string()),
+            keyring::Error::Invalid("fixture-secret".to_string(), "fixture-secret".to_string()),
+            keyring::Error::PlatformFailure(Box::new(std::io::Error::other("fixture-secret"))),
+            keyring::Error::NoStorageAccess(Box::new(std::io::Error::other("fixture-secret"))),
+        ] {
+            let message = credential_error(error);
+            assert!(!message.contains("fixture-secret"));
+            assert!(!message.to_lowercase().contains("unlock"));
         }
     }
 

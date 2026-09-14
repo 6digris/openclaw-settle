@@ -15,7 +15,6 @@ use tauri::ipc::CapabilityBuilder;
 use tauri::menu::{MenuItem, PredefinedMenuItem, Submenu};
 use tauri::webview::{NewWindowResponse, PageLoadEvent, WebviewBuilder};
 use tauri::{AppHandle, LogicalPosition, Manager, Url, Webview, WebviewUrl, WindowBuilder};
-use tauri_plugin_dialog::DialogExt;
 
 pub(crate) const PRIMARY: &str = "primary";
 const SETTINGS: &str = "gateway-settings";
@@ -1347,7 +1346,8 @@ impl GatewayWindows {
             app: app.clone(),
             label: label.to_string(),
             script: format!(
-                "({})({config});",
+                "{}\n({})({config});",
+                include_str!("../../ui/gateway-notice.js"),
                 include_str!("../../ui/gateway-switch.js")
             ),
             lifetime,
@@ -1955,7 +1955,7 @@ fn finish_document(
     }
     let detail = json!({"token":doc.nonce,"snapshot":owner.snapshot(&event.label)});
     let notice = notice
-        .map(|message| format!("window.alert({});", json!(message)))
+        .map(|message| notice_script(&message))
         .unwrap_or_default();
     let ready_script = format!("window.dispatchEvent(new CustomEvent('openclaw:gateway-ready',{{detail:{detail}}}));{notice}");
     let _ = webview.eval(scoped_script(&doc, &ready_script));
@@ -2559,8 +2559,10 @@ pub(crate) fn restore_selected_main(app: &AppHandle) -> Result<(), String> {
             if error != STALE {
                 if let Some(view) = app.get_webview("main") {
                     let expected = json!(url.as_str());
-                    let error = json!(error);
-                    let _=view.eval(format!("if (window === window.top && location.href === {expected}) window.alert({error});"));
+                    let notice = notice_script(&error);
+                    let _ = view.eval(format!(
+                        "if (window === window.top && location.href === {expected}) {{{notice}}}"
+                    ));
                 }
             }
         }
@@ -2864,10 +2866,7 @@ pub(crate) async fn gateway_profile_request(
                         .remember_edited_selection(&retiring);
                 }
                 if let Err(error) = open_profile_recovery(app, &retiring, "") {
-                    app.dialog()
-                        .message(&error)
-                        .title("Gateway connection needs attention")
-                        .show(|_| {});
+                    show_error(app, view.label(), &error);
                     continue;
                 }
                 reconnects.push(
@@ -2898,33 +2897,39 @@ pub(crate) async fn gateway_profile_request(
     Ok(result)
 }
 
+fn notice_script(message: &str) -> String {
+    let detail = json!({ "message": message });
+    format!("window.dispatchEvent(new CustomEvent('openclaw:gateway-notice',{{detail:{detail}}}));")
+}
+
 fn show_error(app: &AppHandle, label: &str, error: &str) {
     let owner = app.state::<GatewayWindows>();
-    let mut native_notice = true;
+    let mut local_notice = true;
     let document = owner.routing.lock().ok().and_then(|mut state| {
         let route = state.windows.get_mut(label)?;
         if let Some(document) = route.document.as_ref().filter(|doc| doc.nonce.is_some()) {
-            native_notice = false;
+            local_notice = false;
             Some(document.clone())
-        } else if route.recovery.is_some() {
-            native_notice = false;
-            None
-        } else if route.document.is_some() {
-            native_notice = false;
-            route.notice = Some(error.to_string());
-            None
         } else {
+            local_notice = route.document.is_none();
+            route.notice = Some(error.to_string());
             None
         }
     });
-    if let (Some(view), Some(doc)) = (app.get_webview(label), document) {
-        let error = json!(error);
-        let _ = view.eval(scoped_script(&doc, &format!("window.alert({error});")));
-    } else if native_notice {
-        app.dialog()
-            .message(error)
-            .title("Gateway connection needs attention")
-            .show(|_| {});
+    let Some(view) = app.get_webview(label) else {
+        return;
+    };
+    let notice = notice_script(error);
+    if let Some(doc) = document {
+        let _ = view.eval(scoped_script(&doc, &notice));
+    } else if local_notice {
+        let mut local = app.state::<crate::DesktopState>().inner.local_url.clone();
+        local.set_query(None);
+        local.set_fragment(None);
+        let index = local.to_string();
+        local.set_path("/gateways.html");
+        let allowed = json!([index, local.as_str()]);
+        let _=view.eval(format!("if(window===window.top){{const current=new URL(location.href);current.search='';current.hash='';if({allowed}.includes(current.href)){{{notice}}}}}"));
     }
 }
 
@@ -3012,6 +3017,21 @@ pub(crate) fn startup(app: &AppHandle) {
     tauri::async_runtime::spawn(async move {
         let reserved = on_main(&app, |app| {
             let owner = app.state::<GatewayWindows>();
+            {
+                let mut state = owner.routing.lock().map_err(|_| STALE)?;
+                if state.closing || !matches!(state.initial_selection, InitialSelection::Waiting) {
+                    return Ok(None);
+                }
+                if state
+                    .windows
+                    .get("main")
+                    .is_some_and(|route| route.document.is_some())
+                {
+                    // WKWebView has no URL before its first navigation commits.
+                    // Registered documents already own readiness and source identity.
+                    return Ok(state.reserve_initial_selection(None));
+                }
+            }
             let local = app
                 .get_webview("main")
                 .and_then(|view| view.url().ok())
@@ -3105,23 +3125,28 @@ pub(crate) fn startup(app: &AppHandle) {
     });
 }
 
-pub(crate) fn local_page_load(view: Webview, started: bool) {
+pub(crate) fn local_page_load(view: Webview, url: &Url, started: bool) {
     let app = view.app_handle();
-    let Ok(url) = view.url() else {
+    let owner = app.state::<GatewayWindows>();
+    if owner.routing.lock().is_ok_and(|state| {
+        state
+            .windows
+            .get(view.label())
+            .is_some_and(|route| route.document.is_some())
+    }) {
         return;
-    };
+    }
     if view.label() != "main"
         || !{
             app.state::<crate::DesktopState>()
-                .main_window_has_local_url(&url)
+                .main_window_has_local_url(url)
         }
     {
         return;
     }
-    let owner = app.state::<GatewayWindows>();
     if app
         .state::<crate::DesktopState>()
-        .main_window_has_connection_settings_url(&url)
+        .main_window_has_connection_settings_url(url)
     {
         if let Ok(mut state) = owner.routing.lock() {
             state.settings_page_load(started);
@@ -3134,6 +3159,15 @@ pub(crate) fn local_page_load(view: Webview, started: bool) {
             state.cancel("main");
         }
     } else {
+        let notice = owner.routing.lock().ok().and_then(|state| {
+            state
+                .windows
+                .get(view.label())
+                .and_then(|route| route.notice.clone())
+        });
+        if let Some(notice) = notice {
+            show_error(app, view.label(), &notice);
+        }
         startup(app);
     }
 }

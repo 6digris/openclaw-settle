@@ -2244,6 +2244,19 @@ describe("scripts/test-projects changed-target routing", () => {
     },
   );
 
+  it.each([
+    "src/wizard/setup.inference-recovery.integration.test.ts",
+    "src/wizard",
+    "src/wizard/**/*.test.ts",
+  ])("keeps Wizard recovery in the infra fork plan for %s", (target) => {
+    const recovery = "src/wizard/setup.inference-recovery.integration.test.ts";
+    const owners = buildVitestRunPlans([target]).filter(
+      (plan) => plan.config === "test/vitest/vitest.infra.config.ts",
+    );
+    expect(owners).toHaveLength(1);
+    expect(owners[0]?.includePatterns?.filter((file) => file === recovery)).toEqual([recovery]);
+  });
+
   it.each(["src/plugin-sdk/memory-host-events.ts", "src/plugin-sdk/persistent-dedupe.ts"])(
     "preserves database consumer coverage for source target %s",
     (sourceFile) => {
