@@ -308,14 +308,14 @@ struct SwiftUIRenderSmokeTests {
             weak var diagnosticAppModel: NodeAppModel?
             weak var diagnosticCreatingModel: OpenClawChatViewModel?
             var creatingAtResponse: Bool?
-            func modelFacts(_ model: OpenClawChatViewModel?) -> String {
+            @MainActor func modelFacts(_ model: OpenClawChatViewModel?) -> String {
                 "present=\(model != nil),detached=\(model?.isTransportDetached == true)," +
                     "native=\((model?.transport as? IOSGatewayChatTransport)?.nativeBinding != nil)," +
                     "original=\(model?.sessionKey == session.sessionKey)," +
                     "created=\(model.map { createdKeys.contains($0.sessionKey) } == true)," +
                     "agent=\(model?.activeAgentId == session.agentID)"
             }
-            func observeCallback(
+            @MainActor func observeCallback(
                 _ condition: Bool,
                 rule: String,
                 method: String,
