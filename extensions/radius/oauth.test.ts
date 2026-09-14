@@ -1,6 +1,8 @@
 import type { ProviderAuthContext } from "openclaw/plugin-sdk/plugin-entry";
+import { registerSingleProviderPlugin } from "openclaw/plugin-sdk/plugin-test-runtime";
 import type { OAuthCredential } from "openclaw/plugin-sdk/provider-auth";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import radiusPlugin from "./index.js";
 import { loginRadiusOAuth, refreshRadiusOAuthCredential } from "./oauth.js";
 
 const { guardedFetch, release } = vi.hoisted(() => ({
@@ -178,18 +180,43 @@ describe("Radius OAuth", () => {
     expect(guardedFetch).toHaveBeenCalledTimes(1);
   });
 
-  it("cancels the wait and clears its timer without another token request", async () => {
-    device();
-    const abort = new AbortController();
-    const { ctx, progress } = context({ signal: abort.signal });
-    const rejection = expect(loginRadiusOAuth(ctx)).rejects.toThrow(/abort/i);
-    await vi.advanceTimersByTimeAsync(0);
-    abort.abort();
-    await rejection;
-    expect(vi.getTimerCount()).toBe(0);
-    expect(guardedFetch).toHaveBeenCalledTimes(1);
-    expect(progress.stop).toHaveBeenCalledWith("Radius sign-in stopped");
-  });
+  it.each([false, true])(
+    "keeps the registered device destination and code, then cancels without another request (remote=%s)",
+    async (isRemote) => {
+      device({ expires_in: 300, interval: 5 });
+      const provider = await registerSingleProviderPlugin(radiusPlugin);
+      const method = provider.auth.find((entry) => entry.id === "oauth");
+      if (!method) {
+        throw new Error("Radius did not register its OAuth method");
+      }
+      const abort = new AbortController();
+      const presented = Promise.withResolvers<void>();
+      const deviceCode = vi.fn(async () => presented.resolve());
+      const { ctx, progress } = context({ signal: abort.signal, isRemote });
+      ctx.prompter.deviceCode = deviceCode;
+      const run = method.run(ctx);
+      const rejection = expect(run).rejects.toThrow(/abort/i);
+      try {
+        await Promise.race([presented.promise, run]);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(ctx.openUrl).toHaveBeenCalledExactlyOnceWith("https://radius.earendil.com/device");
+        expect(deviceCode).toHaveBeenCalledExactlyOnceWith({
+          title: "Radius sign-in",
+          code: "ABCD-EFGH",
+          expiresInMinutes: 5,
+          message: "Enter this one-time code to sign in to Radius.",
+        });
+        expect(ctx.prompter.note).not.toHaveBeenCalled();
+      } finally {
+        abort.abort();
+        await rejection;
+      }
+      expect(vi.getTimerCount()).toBe(0);
+      expect(guardedFetch).toHaveBeenCalledTimes(1);
+      expect(release).toHaveBeenCalledTimes(1);
+      expect(progress.stop).toHaveBeenCalledWith("Radius sign-in stopped");
+    },
+  );
 
   it("rechecks authority after showing the device code before opening the browser", async () => {
     device();
