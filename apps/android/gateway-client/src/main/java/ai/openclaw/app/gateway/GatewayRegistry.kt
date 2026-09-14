@@ -129,13 +129,6 @@ class GatewayRegistryStore(
       persist()
     }
 
-  fun connectedEntries(): List<GatewayRegistryEntry> =
-    synchronized(mutationLock) {
-      _connectedStableIds.value.mapNotNull { connectedId ->
-        _entries.value.firstOrNull { it.stableId == connectedId }
-      }
-    }
-
   fun markConnected(
     stableId: String,
     atMs: Long,
