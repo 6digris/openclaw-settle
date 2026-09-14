@@ -855,6 +855,7 @@ private class AppearanceGatewayFixture(
   val endpoint: GatewayEndpoint
   private var session: GatewaySession
   private var connected = false
+  private var initialSelectionRegistered = false
 
   init {
     app.getSharedPreferences("openclaw.node", Context.MODE_PRIVATE).edit().apply {
@@ -886,6 +887,11 @@ private class AppearanceGatewayFixture(
     waitForBranding: Boolean = true,
   ) {
     if (!connected) stopStartupJobs()
+    if (!initialSelectionRegistered) {
+      // Seed direct admission once; recreation must rely on the persisted selection.
+      check(prefs.gatewayRegistry.upsertAndSetActive(gatewayRegistryEntry(endpoint, null)))
+      initialSelectionRegistered = true
+    }
     val identity = Connection(profileId, scopes, methods)
     nextConnection = identity
     if (!connected) {

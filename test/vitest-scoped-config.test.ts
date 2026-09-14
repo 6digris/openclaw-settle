@@ -1031,6 +1031,19 @@ describe("scoped vitest configs", () => {
     for (const file of databaseWorkerCoreTestFiles) {
       expect(matchingExcludePatterns(testConfig.exclude ?? [], file), file).toEqual([]);
     }
+    const fixture = "src/wizard/setup.inference-recovery.integration.test.ts";
+    expectForkedIsolatedRunner(defaultInfraConfig);
+    expect(
+      (testConfig.include ?? []).filter((pattern) => path.matchesGlob(fixture, pattern)),
+      fixture,
+    ).toHaveLength(1);
+    expect(matchingExcludePatterns(testConfig.exclude ?? [], fixture), fixture).toEqual([]);
+    expect(
+      matchingExcludePatterns(
+        requireTestConfig(defaultWizardConfig).exclude ?? [],
+        "wizard/setup.inference-recovery.integration.test.ts",
+      ),
+    ).not.toEqual([]);
   });
 
   it("discovers current and newly added watch files once across the original and database owners", async () => {
@@ -1106,6 +1119,10 @@ describe("scoped vitest configs", () => {
     const testConfig = requireTestConfig(defaultCronConfig);
     expect(testConfig.dir).toBe(path.join(process.cwd(), "src"));
     expect(testConfig.include).toEqual(["cron/**/*.test.ts"]);
+    expectForkedNonIsolatedRunner(defaultCronConfig);
+    expect(testConfig.maxWorkers).toBe(1);
+    expect(testConfig.fileParallelism).toBe(false);
+    expect(testConfig.sequence).toMatchObject({ groupOrder: 1 });
   });
 
   it("normalizes daemon include patterns relative to the scoped dir", () => {

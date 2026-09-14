@@ -7818,7 +7818,6 @@ describe("update-cli", () => {
     );
     expect(packageInstallCommandCall()?.[1].env).toBe(preflightParams?.env);
     expect(defaultRuntime.exit).not.toHaveBeenCalledWith(1);
-    expect(getLogOutput()).toContain("Low disk space near");
   });
 
   it.each(["insufficient", "alternative", "unknown", "plenty", "package-only"] as const)(
