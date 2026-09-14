@@ -1,3 +1,4 @@
+import { expectDefined } from "@openclaw/normalization-core";
 import { nothing, render } from "lit";
 import { vi } from "vitest";
 import { resetChatThreadState } from "../chat-thread.ts";
@@ -138,6 +139,29 @@ export function resetTranscriptTestDom(): void {
 }
 
 export type TestContentRow = Extract<TranscriptRow, { kind: "content" }>;
+
+export function transcriptSize(container: ParentNode): number {
+  const sizer = expectDefined(
+    container.querySelector<HTMLElement>(".chat-virtual-sizer"),
+    "transcript extent",
+  );
+  return Number.parseFloat(sizer.style.height);
+}
+
+export function stubMcpAppLifecycle(
+  container: ParentNode,
+  teardown: () => Promise<void> = () => Promise.resolve(),
+) {
+  const app = expectDefined(
+    container.querySelector<HTMLElement>("mcp-app-view"),
+    "mounted MCP app",
+  );
+  const lifecycle = {
+    restartAfterTeardown: vi.fn(),
+    teardown: vi.fn(teardown),
+  };
+  return { app: Object.assign(app, lifecycle), ...lifecycle };
+}
 
 export async function mountTestTranscript(
   paneId: string,

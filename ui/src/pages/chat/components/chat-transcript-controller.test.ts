@@ -21,34 +21,13 @@ import {
   observedElements,
   resetTranscriptTestDom,
   resizeObservers,
+  stubMcpAppLifecycle,
   threadProps,
   type TestContentRow,
   transcriptDomState,
   transcriptRows,
+  transcriptSize,
 } from "./chat-transcript.test-support.ts";
-
-function transcriptSize(container: ParentNode): number {
-  const sizer = expectDefined(
-    container.querySelector<HTMLElement>(".chat-virtual-sizer"),
-    "transcript extent",
-  );
-  return Number.parseFloat(sizer.style.height);
-}
-
-function stubMcpAppLifecycle(
-  container: ParentNode,
-  teardown: () => Promise<void> = () => Promise.resolve(),
-) {
-  const app = expectDefined(
-    container.querySelector<HTMLElement>("mcp-app-view"),
-    "mounted MCP app",
-  );
-  const lifecycle = {
-    restartAfterTeardown: vi.fn(),
-    teardown: vi.fn(teardown),
-  };
-  return { app: Object.assign(app, lifecycle), ...lifecycle };
-}
 
 function mcpRangeRows(appContent: unknown): TestContentRow[] {
   return Array.from({ length: 24 }, (_, index) => ({
