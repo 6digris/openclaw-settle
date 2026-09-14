@@ -94,6 +94,47 @@ function renderPicker(
 }
 
 describe("Where chip", () => {
+  it("shows a Cloud-only spinner without disabling ready devices", () => {
+    const container = renderPicker(
+      true,
+      undefined,
+      { cloudProfiles: [] },
+      { cloudProfilesPending: true },
+    );
+    expect(
+      container.querySelector('[data-cloud-catalog-status="loading"] .btn__spinner'),
+    ).not.toBeNull();
+    expect(container.querySelector('[data-value="device:runner"]')?.hasAttribute("disabled")).toBe(
+      false,
+    );
+    expect(container.querySelector('[data-value="gateway"]')?.hasAttribute("disabled")).toBe(false);
+    expect(
+      container.querySelector('[data-cloud-catalog-status="loading"]')?.getAttribute("role"),
+    ).toBe("status");
+  });
+
+  it("retires loading to retryable failure or completed options", () => {
+    const retry = vi.fn();
+    const failed = renderPicker(
+      true,
+      undefined,
+      { cloudProfiles: [] },
+      { cloudProfilesError: true, onRetryCloudProfiles: retry },
+    );
+    expect(failed.querySelector(".btn__spinner")).toBeNull();
+    (
+      failed.querySelector('[data-cloud-catalog-status="error"] button') as HTMLButtonElement
+    ).click();
+    expect(retry).toHaveBeenCalledOnce();
+    const complete = renderPicker(true);
+    expect(complete.querySelector("[data-cloud-catalog-status]")).toBeNull();
+    expect(complete.querySelector('[data-value="cloud:aws"]')).not.toBeNull();
+    expect(
+      renderPicker(true, undefined, { cloudProfiles: [] }).querySelector(
+        "[data-cloud-catalog-status]",
+      ),
+    ).toBeNull();
+  });
   it.each([
     { label: "Work MacBook Pro", platform: "darwin", icon: deviceIcons.laptop, form: "laptop" },
     {

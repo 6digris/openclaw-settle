@@ -64,6 +64,74 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("environment gateway methods", () => {
+  it.each(["listMachineOptions", "listOperatingSystems"] as const)(
+    "returns node inventory while %s remains pending for 30 seconds",
+    async (method) => {
+      vi.useFakeTimers();
+      const pending = createDeferred();
+      const metadata = vi.fn(async () => {
+        await pending.promise;
+        return undefined;
+      });
+      const service = workerService({ [method]: metadata });
+      let fullCompleted = false;
+      const full = callEnvironmentMethod("environments.list", {}, { service }).then((result) => {
+        fullCompleted = true;
+        return result;
+      });
+      try {
+        const [ok, payload] = await callEnvironmentMethod(
+          "environments.list",
+          { includeProfiles: false },
+          { service },
+        );
+        expect(ok).toBe(true);
+        expect(payload).toMatchObject({
+          environments: expect.arrayContaining([
+            expect.objectContaining({ id: "node:node-live", status: "available" }),
+          ]),
+        });
+        expect(payload).not.toHaveProperty("profiles");
+        expect(metadata).toHaveBeenCalledTimes(2);
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(fullCompleted).toBe(false);
+        const [statusOk] = await callEnvironmentMethod(
+          "environments.status",
+          { environmentId: "node:node-live" },
+          { service },
+        );
+        expect(statusOk).toBe(true);
+      } finally {
+        pending.resolve();
+        await full;
+        vi.useRealTimers();
+      }
+      expect(fullCompleted).toBe(true);
+    },
+  );
+
+  it("reports metadata failure instead of a successful optionless cloud profile", async () => {
+    const service = workerService({
+      listMachineOptions: vi.fn(async () => {
+        throw new Error("provider failed");
+      }),
+    });
+    const [ok, payload, error] = await callEnvironmentMethod("environments.list", {}, { service });
+    expect(ok).toBe(false);
+    expect(payload).toBeUndefined();
+    expect(error).toEqual(
+      expect.objectContaining({
+        code: "UNAVAILABLE",
+        message: "cloud profile options unavailable",
+      }),
+    );
+    const [inventoryOk] = await callEnvironmentMethod(
+      "environments.list",
+      { includeProfiles: false },
+      { service },
+    );
+    expect(inventoryOk).toBe(true);
+  });
   it.each(["locked", "unlocked", "unknown"])(
     "projects %s desktop availability only from its matching live node",
     async (state) => {

@@ -271,16 +271,15 @@ export function resolveNewSessionSubmitBlock(
     return { gate: "device-runtime", reason: deviceRuntimeUnsupportedReason };
   }
   const placementTarget = host.placementTargetForSubmission();
-  if (
-    placementTarget &&
-    (!client.recoveryScope || !client.recoveryScopeReady || gateway.cloudProfilesPending)
-  ) {
+  if (placementTarget && (!client.recoveryScope || !client.recoveryScopeReady)) {
     return { gate: "placement-recovery", reason: t("newSession.placementNotReady") };
   }
   const cloudProfileId = placementTarget?.kind === "profile" ? placementTarget.profileId : "";
   if (
     cloudProfileId &&
-    (!gateway.cloudProfilesReady ||
+    (gateway.cloudProfilesPending ||
+      gateway.cloudProfilesError ||
+      !gateway.cloudProfilesReady ||
       !gateway.cloudProfiles.some((profile) => profile.id === cloudProfileId) ||
       Boolean(host.cloudRuntimeUnsupportedReason()))
   ) {

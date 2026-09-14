@@ -242,27 +242,17 @@ async function listWorkerProfilesWithMachines(context: GatewayRequestContext) {
           context.workerEnvironmentService?.supportsExecutionMode(summary.id, mode) === true,
       );
       const executionMode = executionModes[0];
-      const resolvedSummary = Object.assign(
+      const [options, operatingSystems] = await Promise.all([
+        context.workerEnvironmentService?.listMachineOptions?.(summary.id),
+        context.workerEnvironmentService?.listOperatingSystems?.(summary.id),
+      ]);
+      const machines = options ?? [];
+      return Object.assign(
         summary,
         executionMode ? { executionMode, executionModes } : {},
+        machines.length > 0 ? { machines } : {},
+        operatingSystems && operatingSystems.length > 1 ? { operatingSystems } : {},
       );
-      try {
-        const [options, operatingSystems] = await Promise.all([
-          context.workerEnvironmentService?.listMachineOptions?.(summary.id),
-          context.workerEnvironmentService?.listOperatingSystems?.(summary.id),
-        ]);
-        const machines = options ?? [];
-        return Object.assign(
-          resolvedSummary,
-          machines.length > 0 ? { machines } : {},
-          operatingSystems && operatingSystems.length > 1 ? { operatingSystems } : {},
-        );
-      } catch (error) {
-        context.logGateway.warn(
-          `worker machine catalog unavailable (${summary.id}): ${formatForLog(error)}`,
-        );
-        return resolvedSummary;
-      }
     }),
   );
 }
@@ -500,7 +490,20 @@ export const environmentsHandlers: GatewayRequestHandlers = {
       environments.push(
         ...workers.map((record) => summarizeWorkerEnvironment(record, summarizedAtMs)),
       );
-      const profiles = await listWorkerProfilesWithMachines(context);
+      let profiles: Awaited<ReturnType<typeof listWorkerProfilesWithMachines>>;
+      try {
+        profiles =
+          params.includeProfiles === false ? [] : await listWorkerProfilesWithMachines(context);
+      } catch (error) {
+        context.logGateway.warn(`worker catalog unavailable: ${formatForLog(error)}`);
+        // Preserve diagnostic detail in logs, not in the public response.
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.UNAVAILABLE, "cloud profile options unavailable"),
+        );
+        return;
+      }
       respond(true, { environments, ...(profiles.length > 0 ? { profiles } : {}) }, undefined);
     });
   },

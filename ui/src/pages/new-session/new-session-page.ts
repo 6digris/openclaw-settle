@@ -205,6 +205,7 @@ export class NewSessionPage extends OpenClawLightDomElement {
               return;
             }
             if (isPlaceTopologyEvent(event.event)) {
+              void this.gateway.refreshEnvironments();
               void this.gateway.refreshCloudProfiles();
               this.gateway.handleCatalogRetry();
               return;
@@ -216,7 +217,7 @@ export class NewSessionPage extends OpenClawLightDomElement {
             const signature = nodePresenceStateSignature(presence);
             if (signature !== this.presenceSignature) {
               this.presenceSignature = signature;
-              void this.gateway.refreshCloudProfiles();
+              void this.gateway.refreshEnvironments();
               this.gateway.handleCatalogRetry();
             }
           });

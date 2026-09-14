@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../../test/helpers/promise.ts";
 import { CHAT_ROUTE_READY_EVENT } from "../chat/chat-history-events.ts";
 import { createDraftFixture } from "./draft-submission-flow.test-support.ts";
 import { renderControl } from "./model-control.test-support.ts";
@@ -17,6 +18,87 @@ afterEach(() => {
 });
 
 describe("DraftSubmissionFlow submit gates", () => {
+  it("does not wait for preference migration writes or reapply them over user edits", async () => {
+    const migration = createDeferred<{ status: "ok" }>();
+    const fixture = createDraftFixture({
+      methods: ["users.prefs.get", "users.prefs.set", "sessions.create"],
+      selfUser: { id: "proof-user" },
+      request: async (method) =>
+        method === "users.prefs.get"
+          ? { status: "ok", entries: {} }
+          : method === "users.prefs.set"
+            ? migration.promise
+            : {},
+    });
+    try {
+      fixture.flow.setMessage("Start after preferences are read");
+      await vi.waitFor(() => expect(fixture.gateway.preferenceLoading).toBe(false));
+      expect(fixture.request).toHaveBeenCalledWith("users.prefs.set", expect.anything());
+      expect(fixture.flow.canSubmit()).toBe(true);
+      fixture.place.applyFolder("/edited-workspace");
+      migration.resolve({ status: "ok" });
+      await migration.promise;
+      await Promise.resolve();
+      expect(fixture.place.folder).toBe("/edited-workspace");
+      expect(fixture.flow.canSubmit()).toBe(true);
+    } finally {
+      migration.resolve({ status: "ok" });
+      fixture.gateway.disconnect();
+    }
+  });
+
+  it.each(["complete", "failure"] as const)(
+    "keeps a ready node start independent of cloud %s",
+    async (outcome) => {
+      const cloud = createDeferred<{ environments: unknown[]; profiles: unknown[] }>();
+      const fixture = createDraftFixture({
+        methods: ["environments.list", "sessions.create", "sessions.dispatch"],
+        scopes: ["operator.admin", "operator.read", "operator.write"],
+        request: async (method, params) =>
+          method === "environments.list"
+            ? (params as { includeProfiles?: boolean }).includeProfiles === false
+              ? {
+                  environments: [
+                    {
+                      id: "node:ready",
+                      type: "node",
+                      status: "available",
+                      sessionHost: true,
+                      workerSlots: { total: 2, available: 1 },
+                    },
+                  ],
+                }
+              : cloud.promise
+            : {},
+      });
+      const loading = fixture.gateway.refreshCloudProfiles();
+      try {
+        await fixture.gateway.refreshEnvironments();
+        fixture.place.selectDevice("ready");
+        fixture.flow.setMessage("Use exactly the selected node");
+        expect(fixture.gateway.cloudProfilesPending).toBe(true);
+        expect(fixture.place.deviceId).toBe("ready");
+        expect(fixture.flow.submitBlock()).toBeUndefined();
+        fixture.flow.setError("The selected node rejected the start");
+        if (outcome === "complete") {
+          cloud.resolve({ environments: [], profiles: [{ id: "cloud", providerId: "test" }] });
+        } else {
+          cloud.reject(new Error("cloud discovery unavailable"));
+        }
+        await loading;
+        expect(fixture.gateway.cloudProfilesPending).toBe(false);
+        expect(fixture.gateway.cloudProfilesError).toBe(outcome === "failure");
+        expect(fixture.flow.error).toBe("The selected node rejected the start");
+        expect(fixture.place.deviceId).toBe("ready");
+        expect(fixture.flow.submitBlock()).toBeUndefined();
+      } finally {
+        cloud.resolve({ environments: [], profiles: [] });
+        await loading;
+        fixture.gateway.disconnect();
+      }
+    },
+  );
+
   it.each([
     {
       reason: "missing-auth",
@@ -300,7 +382,7 @@ describe("DraftSubmissionFlow submit gates", () => {
             }
           : {},
     });
-    await fixture.gateway.refreshCloudProfiles();
+    await fixture.gateway.refreshEnvironments();
     await vi.waitFor(() => expect(fixture.place.devices()).toHaveLength(1));
     fixture.place.selectDevice("build-mac");
     fixture.flow.setMessage("run on the device");
