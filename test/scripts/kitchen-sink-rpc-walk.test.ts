@@ -62,6 +62,7 @@ import {
   usesBuiltOpenClawEntry,
   validateCliArgs,
   waitForGatewayReady,
+  type OpenClawRunner,
 } from "../../scripts/e2e/kitchen-sink-rpc-walk.mts";
 import {
   resolveWindowsPowerShellPath,
@@ -70,7 +71,7 @@ import {
 } from "../../scripts/lib/windows-taskkill.mjs";
 import { formatGatewayClientRequestErrorJson } from "../../src/gateway/call.js";
 import { waitForChildClose } from "../helpers/process-wait.js";
-import { cleanupTempDirs, makeTempDir } from "../helpers/temp-dir.js";
+import { cleanupTempDirs, makeTempDir, useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const posixIt = process.platform === "win32" ? it.skip : it;
 const realDelay = delay;
@@ -178,6 +179,229 @@ function captureSyncError(action: () => void): Error {
   }
   throw new Error("expected action to throw");
 }
+
+describe("kitchen-sink RPC walk runner selection", () => {
+  const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+
+  async function runWalkFixture(
+    options: {
+      entry?: string;
+      runner?: OpenClawRunner;
+      failInstall?: boolean;
+    } = {},
+  ) {
+    const root = tempDirs.make("openclaw-kitchen-runner-");
+    mkdirSync(path.join(root, "dist"));
+    writeFileSync(path.join(root, "dist/index.js"), "");
+    const entry = options.entry ? path.join(root, options.entry) : undefined;
+    const walkerUrl = new URL("../../scripts/e2e/kitchen-sink-rpc-walk.mts", import.meta.url);
+    // Cwd and env must precede import: the walk caches its entry and RPC module per process.
+    const script = `
+      import childProcess from "node:child_process";
+      import { EventEmitter } from "node:events";
+      import fs from "node:fs";
+      import path from "node:path";
+      import { PassThrough } from "node:stream";
+      const { runKitchenSinkRpcWalk } = await import(${JSON.stringify(walkerUrl.href)});
+      const calls = [];
+      const intervals = new Set();
+      const signals = [];
+      const listenerCounts = ["SIGINT", "SIGTERM"].map(signal => process.listenerCount(signal));
+      const nativeSetInterval = globalThis.setInterval;
+      const nativeClearInterval = globalThis.clearInterval;
+      let gatewayClosed = false;
+      let gatewayLog;
+      let gatewaySamplingTimers = 0;
+      globalThis.setInterval = (...args) => {
+        const timer = nativeSetInterval(...args);
+        intervals.add(timer);
+        if (args[1] === 1000) gatewaySamplingTimers++;
+        return timer;
+      };
+      globalThis.clearInterval = timer => {
+        intervals.delete(timer);
+        nativeClearInterval(timer);
+      };
+      childProcess.spawn = (command, args, spawnOptions) => {
+        const child = Object.assign(new EventEmitter(), {
+          stdout: new PassThrough(),
+          stderr: new PassThrough(),
+          exitCode: null,
+          signalCode: null,
+          kill(signal) {
+            signals.push(signal);
+            fs.appendFileSync(gatewayLog, "fixture shutdown complete\\n");
+            child.signalCode = signal;
+            child.stdout.end();
+            child.stderr.end();
+            child.emit("exit", null, signal);
+            gatewayClosed = true;
+            child.emit("close", null, signal);
+            return true;
+          },
+        });
+        const finish = (stdout = "", status = 0, stderr = "") => {
+          setImmediate(() => {
+            child.stdout.end(stdout);
+            child.stderr.end(stderr);
+            child.exitCode = status;
+            child.emit("exit", status, null);
+            setImmediate(() => child.emit("close", status, null));
+          });
+          return child;
+        };
+        if (command === "ps") return finish("4321 1 1024 0 fixture\\n");
+        if (command.endsWith("powershell.exe")) return finish("1048576 0 4321 1048576");
+        if (command.endsWith("netstat.exe")) return finish();
+        calls.push({ command, args });
+        if (args.includes("gateway")) {
+          gatewayLog = path.join(path.dirname(spawnOptions.env.HOME), "gateway.log");
+          fs.writeSync(spawnOptions.stdio[1], "fixture gateway diagnostic\\n");
+          return child;
+        }
+        child.pid = 4321;
+        if (args.includes("--help")) return finish("Usage: plugins install\\n");
+        if (args.includes("install")) {
+          if (${Boolean(options.failInstall)}) return finish("install stdout", 17, "install stderr");
+          fs.writeFileSync("dist/index.mjs", "");
+          return finish();
+        }
+        if (args.includes("enable")) return finish();
+        if (args.includes("inspect")) {
+          return finish(JSON.stringify({
+            plugin: { status: "loaded", providerIds: ["kitchen-sink-provider"] },
+          }));
+        }
+        throw new Error("unexpected fixture command: " + JSON.stringify({ command, args }));
+      };
+      globalThis.fetch = async input => new Response(
+        JSON.stringify(String(input).endsWith("/readyz") ? { ready: true } : { status: "broken" }),
+        { status: 200 },
+      );
+      let failure;
+      try {
+        await runKitchenSinkRpcWalk(${JSON.stringify(options.runner)});
+      } catch (error) {
+        failure = { message: error.message, status: error.status, stdout: error.stdout, stderr: error.stderr };
+      }
+      console.log("WALK_FIXTURE_RESULT=" + JSON.stringify({
+        calls, failure, signals, gatewayClosed, gatewaySamplingTimers,
+        remainingIntervals: intervals.size,
+        listenerDeltas: ["SIGINT", "SIGTERM"].map((signal, index) =>
+          process.listenerCount(signal) - listenerCounts[index]),
+        gatewayLog: gatewayLog ? fs.readFileSync(gatewayLog, "utf8") : null,
+      }));
+    `;
+    const result = await runCommand(
+      process.execPath,
+      ["--import", import.meta.resolve("tsx"), "--input-type=module", "--eval", script],
+      {
+        cwd: root,
+        env: {
+          ...process.env,
+          OPENCLAW_ENTRY: entry,
+          OPENCLAW_KITCHEN_SINK_KEEP_TMP: "1",
+          OPENCLAW_KITCHEN_SINK_RPC_PORT: undefined,
+          TEMP: root,
+          TMP: root,
+          TMPDIR: root,
+        },
+        timeoutMs: 10_000,
+      },
+    );
+    expect(result.stdoutTruncatedChars).toBe(0);
+    expect(result.stderrTruncatedChars).toBe(0);
+    const line = expectDefined(
+      result.stdout.split("\n").find((value) => value.startsWith("WALK_FIXTURE_RESULT=")),
+    );
+    const observed = JSON.parse(line.slice("WALK_FIXTURE_RESULT=".length)) as {
+      calls: Array<{ command: string; args: string[] }>;
+      failure?: { message: string; status?: number; stdout?: string; stderr?: string };
+      signals: string[];
+      gatewayClosed: boolean;
+      gatewaySamplingTimers: number;
+      remainingIntervals: number;
+      listenerDeltas: number[];
+      gatewayLog: string | null;
+    };
+    expect(observed.remainingIntervals).toBe(0);
+    expect(observed.listenerDeltas).toEqual([0, 0]);
+    expect(result.stdout).not.toContain("Kitchen Sink RPC walk passed");
+    expect(result.stderr).toContain("Kitchen Sink RPC temp root preserved:");
+    return { ...result, observed, root, entry };
+  }
+
+  it.each([
+    { name: "rediscovers built dist after installation", entry: undefined, runner: undefined },
+    { name: "retains OPENCLAW_ENTRY after installation", entry: "selected.mjs", runner: undefined },
+    {
+      name: "retains an explicit runner despite a conflicting OPENCLAW_ENTRY",
+      entry: "conflicting.mjs",
+      runner: {
+        command: "fixture-bun",
+        baseArgs: ["--smol", "fixture-openclaw.mjs"],
+        label: "explicit fixture runtime",
+      },
+    },
+  ])("$name and tears down on a health failure", async ({ entry, runner }) => {
+    const {
+      observed,
+      root,
+      stderr,
+      entry: resolvedEntry,
+    } = await runWalkFixture({ entry, runner });
+    const initial = runner ?? {
+      command: "node",
+      baseArgs: [resolvedEntry ?? path.join(root, "dist/index.js")],
+    };
+    const runtime = runner ?? {
+      command: "node",
+      baseArgs: [resolvedEntry ?? path.join(root, "dist/index.mjs")],
+    };
+    expect(
+      observed.calls.map(({ command, args }) => ({
+        command,
+        prefix: args.slice(0, runner?.baseArgs.length ?? 1),
+      })),
+    ).toEqual(
+      [initial, initial, runtime, runtime, runtime].map(({ command, baseArgs }) => ({
+        command,
+        prefix: baseArgs,
+      })),
+    );
+    expect(observed.calls.map(({ args }) => args.slice(runner?.baseArgs.length ?? 1))).toEqual([
+      ["plugins", "install", "--help"],
+      ["plugins", "install", expect.any(String), "--force"],
+      ["plugins", "enable", "openclaw-kitchen-sink-fixture"],
+      ["plugins", "inspect", "openclaw-kitchen-sink-fixture", "--runtime", "--json"],
+      ["gateway", "--port", expect.any(String), "--bind", "loopback", "--allow-unconfigured"],
+    ]);
+    expect(observed.failure?.message).toContain("/healthz did not report live:");
+    expect(observed.signals).toEqual(["SIGTERM"]);
+    expect(observed.gatewayClosed).toBe(true);
+    expect(observed.gatewaySamplingTimers).toBe(1);
+    expect(stderr).toContain("fixture gateway diagnostic");
+    expect(observed.gatewayLog).toBe("fixture gateway diagnostic\nfixture shutdown complete\n");
+  });
+
+  it("preserves install failure and never enables or starts a gateway", async () => {
+    const { observed } = await runWalkFixture({ failInstall: true });
+    expect(observed.calls.map(({ args }) => args.slice(1))).toEqual([
+      ["plugins", "install", "--help"],
+      ["plugins", "install", expect.any(String), "--force"],
+    ]);
+    expect(observed.failure).toMatchObject({
+      message: expect.stringContaining("failed with 17"),
+      status: 17,
+      stdout: "install stdout",
+      stderr: "install stderr",
+    });
+    expect(observed.signals).toEqual([]);
+    expect(observed.gatewayClosed).toBe(false);
+    expect(observed.gatewaySamplingTimers).toBe(0);
+    expect(observed.gatewayLog).toBeNull();
+  });
+});
 
 describe("kitchen-sink RPC isolated state", () => {
   it("prints help without creating temp state or installing the plugin", async () => {

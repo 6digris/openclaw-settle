@@ -37,7 +37,7 @@ type KitchenSinkEnv = {
 type CapturedOutput = { text: string; truncatedChars: number };
 type CommandChild = ChildProcess;
 type ProcessTreeTarget = Pick<CommandChild, "exitCode" | "kill" | "pid" | "signalCode">;
-type OpenClawRunner =
+export type OpenClawRunner =
   | { baseArgs: string[]; command: string; label?: string; pnpm?: never }
   | { baseArgs: string[]; label?: string; pnpm: true; command?: never };
 type TaskkillRunner = (
@@ -2729,9 +2729,9 @@ function tailText(text: string) {
   return text.split(/\r?\n/u).slice(-120).join("\n");
 }
 
-async function main() {
+export async function runKitchenSinkRpcWalk(runnerOverride?: OpenClawRunner): Promise<void> {
   const config = resolveKitchenSinkRpcConfig();
-  let runner = resolveOpenClawRunner();
+  let runner = runnerOverride ?? resolveOpenClawRunner();
   const port = await resolveKitchenSinkRpcPort();
   const { root, env } = makeEnv();
   const logPath = path.join(root, "gateway.log");
@@ -2773,7 +2773,7 @@ async function main() {
         timeoutMs: config.installTimeoutMs,
       },
     );
-    runner = resolveOpenClawRunner();
+    runner = runnerOverride ?? resolveOpenClawRunner();
     console.log(`Kitchen Sink RPC runtime runner: ${runner.label}`);
     configureKitchenSink(env, port);
     await runOpenClaw(runner, ["plugins", "enable", PLUGIN_ID], env, {
@@ -2994,7 +2994,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);
     }
-    await main();
+    await runKitchenSinkRpcWalk();
   }
 }
 
