@@ -149,8 +149,8 @@ export abstract class MemoryManagerSessionSyncOps extends MemoryManagerWatchOps 
           this.scheduleSessionDirty(target);
           return;
         }
-        const sessionFile = update.sessionFile;
-        if (sessionFile) {
+        if (update.sessionFile) {
+          const sessionFile = update.sessionFile;
           void this.withManagerOperation(() =>
             this.scheduleCorpusSessionFileDirty(sessionFile),
           ).catch((err: unknown) => {
@@ -185,6 +185,7 @@ export abstract class MemoryManagerSessionSyncOps extends MemoryManagerWatchOps 
     if (!this.sources.has("sessions") || this.closing || this.closed) {
       return;
     }
+    // Discovery can reopen the agent store after filesystem awaits; close must drain it.
     void this.withManagerOperation(() => this.runSessionStartupCatchup()).catch((err: unknown) => {
       log.warn("memory session startup catch-up failed: " + String(err));
     });
@@ -304,6 +305,9 @@ export abstract class MemoryManagerSessionSyncOps extends MemoryManagerWatchOps 
   }
 
   private scheduleSessionDirty(target: string | MemorySessionSyncTarget) {
+    if (this.closing || this.closed) {
+      return;
+    }
     if (typeof target === "string") {
       this.sessionPendingFiles.add(target);
     } else {

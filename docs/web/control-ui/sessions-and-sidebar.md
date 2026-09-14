@@ -63,6 +63,28 @@ transcript entry. Acceptance does not imply that a transcript row already
 exists; the accepted input replaces its local pending copy and later becomes
 one canonical message, including its attachments.
 
+## Systems workspace
+
+Open **Systems** in the sidebar, or visit `/systems`, to inspect the Gateway,
+worker environments, and paired devices available to your connection. If your
+customized sidebar does not include Systems, add it from **Edit pinned items**.
+
+Systems replaces the lower conversation list with a machine list. The global
+navigation and footer stay in place, and returning to conversations restores
+their sidebar scroll position. Navigation changes this context; background
+machine or session activity does not switch your workspace.
+
+Select a desktop-capable system to open the existing Desktop viewer in the main
+workspace. It uses the same connection, control, sizing, and fullscreen behavior
+as the Desktop panel. Headless and offline entries remain inspectable instead
+of opening an empty desktop. Pairing, desktop enablement, and operator permissions
+still apply; opening Systems does not grant additional access.
+
+System details use reported facts. A connected device is not necessarily the
+machine running a session, and unavailable measurements are not shown as zero.
+See [Cloud Worker Desktop](/gateway/cloud-workers/desktop) for worker desktop
+enablement and sizing.
+
 ## Sidebar navigation
 
 Drag page destinations, including plugin-provided pages, to reorder them together.
@@ -149,7 +171,7 @@ The menu groups routine actions first: **Pin/Unpin**, **Rename**, **Mark as unre
 
 - **Icon & color** opens one picker with color swatches, an icon grid, and **Reset to default**. It stays open while you change both; the sidebar reflects your changes.
 - **Move to group** includes **New group** and **Remove from group**. Multi-user gateways also offer **Assign to** ([session ownership](/concepts/multi-user#assigning-an-owner)).
-- **Fork conversation** creates a separate conversation; while a run is active, it forks from the last completed message.
+- **Fork conversation** creates a separate conversation; while a run is active, it forks from the last completed message. Forks of local folder and project sessions keep that workspace, so existing file references continue to open. **Fork from here** keeps the same local workspace as well.
 - **Copy** offers a session link, conversation text as Markdown, and the session ID. The link requires normal Gateway authentication and session access; copying it does not grant access. Markdown loads the available conversation history, not just the messages currently visible. Both copied Markdown and `/export` downloads retain the conversation's sender labels, so messages from different participants remain distinguishable.
 - The chat header's **Session sharing** control manages authenticated teammate visibility and membership. For a saved, non-incognito session, its creator or a Gateway admin can also enable world-readable, read-only public access.
 - **Open in** offers a new browser tab or window. Desktop chat also offers **Split right** and **Split below**. Eligible local workspaces expose native editor destinations, and the chat header includes **Continue in terminal** in this submenu.

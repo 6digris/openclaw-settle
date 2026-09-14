@@ -31,7 +31,8 @@ when its applied configuration is loaded. Hovering a link shows the session card
 when the session is known locally. Unknown or ambiguous session references remain
 navigable without a card; links to other origins keep normal browser behavior.
 Document-relative hrefs are never session links; file references such as
-`src/utils/foo.ts` retain workspace file handling.
+`src/utils/foo.ts` and `qa-café/index.md` retain workspace file handling, including
+Unicode names and percent-encoded Markdown link destinations.
 
 When authentication status is available, each provider heading in the chat model picker says how that provider is signed in: **API** for an API key (or an explicitly selected API-key account), the plan name for a provider with one subscription, and **Subscription** for a provider with several. With several subscriptions, the heading adds the email of an explicitly selected account when the Gateway supplies it, and the **Account** rows show each account's email; automatic selection shows no account identity. Hover a truncated heading to read the full text.
 
@@ -276,7 +277,8 @@ same conflict detection and **Reload**/**Overwrite** actions as **Source**.
 A preview transport failure shows **Retry** without retrying in a loop, and
 **Source** remains available, including when the optional preview cannot load.
 
-**View Raw Text** keeps Markdown notation literal, including nested code fences.
+**View Raw Text** opens a **Source** view that keeps Markdown notation literal,
+including nested code fences. The raw-text action disappears while that view is open.
 Decoded text artifacts use the same literal preview. **Copy code** preserves the
 code's leading whitespace and final newline when present. Indented Markdown code
 blocks also work at the start of a message and remain literal while streaming,
@@ -409,8 +411,8 @@ Codex harness. Select a task to read its messages, thinking, and tool calls;
 select **Show earlier** to load older history. Task activity refreshes the view
 while the subagent runs. The generic fallback label is **Subagent**.
 
-For tasks with a child session, capped assistant replies load their complete text
-automatically. The preview stays visible while loading. If recovery fails three
+In the Chat task panel, tasks with a readable current child session load the
+complete text of capped assistant replies automatically. The preview stays visible while loading. If recovery fails three
 times, the panel keeps the preview and offers **Retry**. Task transcripts without
 a session address keep the text supplied by their runtime.
 
@@ -420,6 +422,18 @@ native thread. Changing the parent session or account can make that history
 unavailable. If the runtime or its parent binding is unavailable, the panel shows
 an error with a retry action.
 Tasks without readable history retain their prompt and output inspector.
+
+Automation task transcripts stay tied to the recorded run, including after its
+temporary continuation session is removed or the automation runs again. If that
+recorded transcript is unavailable, the viewer reports an error instead of
+showing a newer run. Select **View transcript** on a row in the full Tasks page
+or under **Automations → Run history** to read that exact run without opening its
+temporary session. **Open session** remains a separate action on the Tasks page.
+
+The full Tasks page displays the supplied transcript. Core session transcripts
+are currently capped at 8,000 characters per text block. The Chat panel's full-text recovery may be unavailable
+after a temporary session is removed; loading earlier messages does not recover
+a capped reply's missing text.
 
 ## Chat message width
 

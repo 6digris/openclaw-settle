@@ -8,6 +8,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/system-agent/setup-inference-activate.test.ts",
   "src/system-agent/setup-inference-detect.lifecycle.test.ts",
   "src/wizard/setup.test.ts",
+  "src/wizard/setup.provenance.integration.test.ts",
   "src/wizard/setup.inference-recovery.integration.test.ts",
   "src/flows/search-setup.test.ts",
   "src/flows/channel-setup.test.ts",
@@ -45,6 +46,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/plugins/installed-plugin-index-records.test.ts",
   "src/agents/agent-tools.at-prefixed-remote-paths.test.ts",
   "src/agents/agent-tools.create-openclaw-coding-tools.test.ts",
+  "src/agents/bash-tools.notify-on-exit-ack.test.ts",
   "src/agents/memory-write-provenance.test.ts",
   "src/agents/subagents/completion/subagent-completion-admission.store.test.ts",
   "src/commands/doctor-maintenance.worker.test.ts",
@@ -57,6 +59,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/plugin-sdk/provider-auth.test.ts",
   "src/plugin-sdk/provider-auth-copilot-cache.test.ts",
   "src/plugins/doctor-contract-registry.load-paths.test.ts",
+  "src/state/openclaw-state-maintenance-resources.test.ts",
   "src/tasks/task-registry.test.ts",
   "test/plugins/beam-http-identity.test.ts",
   "src/plugin-sdk/runtime-doctor-migrations.test.ts",
@@ -68,6 +71,9 @@ export const databaseWorkerCoreTestFiles = [
   "src/plugin-state/plugin-state-store.retention.test.ts",
   "src/plugin-state/plugin-state-store.runtime.test.ts",
   "src/plugin-state/plugin-state-store.schema.test.ts",
+  "src/agents/tools/cron-tool.output-contract.test.ts",
+  "src/plugins/services.cron.test.ts",
+  "src/state/creator-namespace-migration.test.ts",
 ];
 
 const databaseWorkerCoreTestFileSet = new Set(databaseWorkerCoreTestFiles);

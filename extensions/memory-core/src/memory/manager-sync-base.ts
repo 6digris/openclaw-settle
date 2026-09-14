@@ -93,12 +93,10 @@ const VECTOR_LOAD_TIMEOUT_MS = 30_000;
 const log = createSubsystemLogger("memory");
 
 export abstract class MemoryManagerSyncBase extends MemoryManagerDatabaseContext {
-  protected readonly acquireLocalService?: MemoryCoreAcquireLocalService;
-  protected abstract readonly purpose: "default" | "status" | "cli" | "maintenance";
   protected closing = false;
   protected activeManagerOperations = 0;
   protected managerIdleWaiters = new Set<() => void>();
-  protected activeBackgroundSearchSyncs = new Set<Promise<void>>();
+  protected readonly acquireLocalService?: MemoryCoreAcquireLocalService;
   protected abstract readonly cfg: OpenClawConfig;
   protected abstract readonly agentId: string;
   protected abstract readonly workspaceDir: string;
@@ -178,7 +176,6 @@ export abstract class MemoryManagerSyncBase extends MemoryManagerDatabaseContext
     prefixIndexItems?: MemoryIndexWorkItem[];
   }): Promise<MemorySourceSyncPlan>;
 
-  // Corpus preparation can open stores before sync; close must drain that work too.
   protected async withManagerOperation<T>(run: () => Promise<T>): Promise<T> {
     if (this.closing || this.closed) {
       throw new Error("Memory index manager is closed");
@@ -195,20 +192,6 @@ export abstract class MemoryManagerSyncBase extends MemoryManagerDatabaseContext
           resolve();
         }
       }
-    }
-  }
-
-  protected async awaitManagerIdle(): Promise<void> {
-    if (this.activeManagerOperations > 0) {
-      await new Promise<void>((resolve) => {
-        this.managerIdleWaiters.add(resolve);
-      });
-    }
-    // CLI request teardown must not wait after a published search result is ready;
-    // its detached task owns a separate maintenance manager. Persistent managers
-    // still drain maintenance before closing shared resources.
-    while (this.purpose !== "cli" && this.activeBackgroundSearchSyncs.size > 0) {
-      await Promise.all(Array.from(this.activeBackgroundSearchSyncs));
     }
   }
 

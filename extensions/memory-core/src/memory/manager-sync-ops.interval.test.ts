@@ -20,7 +20,6 @@ type MemoryIndexEntry = {
 };
 
 class IntervalSyncHarness extends MemoryManagerSyncOps {
-  protected readonly purpose = "default" as const;
   protected readonly createProvider = (): never => {
     throw new Error("Interval harness does not acquire embedding providers");
   };
