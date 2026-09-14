@@ -6307,7 +6307,7 @@ setImmediate(() => {
       ]) {
         for (const lint of [undefined, false, true]) {
           const extendedBudget =
-            (task === "test-third-party" && lint === true) ||
+            ((task === "test-play" || task === "test-third-party") && lint === true) ||
             (task === "build-play" && runner === "ubuntu-24.04");
           expect(
             evaluateTimeout("android", { ...context, matrix: { task, lint } }),
