@@ -118,9 +118,6 @@ const TELEGRAM_ACTION_ALIASES = {
 } as const;
 
 type TelegramActionName = (typeof TELEGRAM_ACTION_ALIASES)[keyof typeof TELEGRAM_ACTION_ALIASES];
-type ConversationReadInvocationOrigin = NonNullable<
-  ChannelMessageActionContext["conversationReadOrigin"]
->;
 type TelegramForumTopicIconColor = (typeof TELEGRAM_FORUM_TOPIC_ICON_COLORS)[number];
 
 function readTelegramForumTopicIconColor(
@@ -429,21 +426,17 @@ async function describeTelegramAllowedReactionSample(params: {
 export async function handleTelegramAction(
   params: Record<string, unknown>,
   cfg: OpenClawConfig,
-  options?: {
+  options?: TelegramMessageMutationContext & {
     mediaAccess?: ChannelMessageActionContext["mediaAccess"];
     mediaLocalRoots?: readonly string[];
     mediaReadFile?: (filePath: string) => Promise<Buffer>;
-    sessionKey?: string | null;
     inboundEventKind?: string;
     gatewayClientScopes?: readonly string[];
     deliveryRetryOwner?: ChannelMessageActionContext["deliveryRetryOwner"];
     onPlatformSendDispatch?: ChannelMessageActionContext["onPlatformSendDispatch"];
     assertDirectAdapterHandoff?: ChannelMessageActionContext["assertDirectAdapterHandoff"];
     skipQueue?: boolean;
-    conversationReadOrigin?: ConversationReadInvocationOrigin;
-    requesterAccountId?: string | null;
     reply?: ChannelMessageActionContext["reply"];
-    toolContext?: TelegramMessageMutationContext["toolContext"];
   },
 ): Promise<AgentToolResult<unknown>> {
   rejectTelegramNativeButtonParams(params);

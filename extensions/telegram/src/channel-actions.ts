@@ -245,6 +245,7 @@ export const telegramMessageActions: ChannelMessageActionAdapter = {
     mediaLocalRoots,
     mediaReadFile,
     sessionKey,
+    sessionId,
     inboundEventKind,
     toolContext,
     conversationReadOrigin,
@@ -264,6 +265,7 @@ export const telegramMessageActions: ChannelMessageActionAdapter = {
       mediaAccess: _modelMediaAccess,
       requesterAccountId: _modelRequesterAccountId,
       sessionKey: _modelSessionKey,
+      sessionId: _modelSessionId,
       reply: _modelReply,
       toolContext: _modelToolContext,
       ...runtimeParams
@@ -287,6 +289,7 @@ export const telegramMessageActions: ChannelMessageActionAdapter = {
         mediaLocalRoots,
         mediaReadFile,
         sessionKey,
+        sessionId,
         inboundEventKind,
         gatewayClientScopes,
         deliveryRetryOwner,

@@ -5,7 +5,11 @@ import {
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { parseStrictPositiveInteger } from "openclaw/plugin-sdk/number-runtime";
 import { resolveAgentIdFromSessionKey } from "openclaw/plugin-sdk/routing";
-import { getSessionEntry, resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
+import {
+  getSessionEntry,
+  resolveStorePath,
+  resolveTranscriptSessionKeyBySessionId,
+} from "openclaw/plugin-sdk/session-store-runtime";
 import { resolveTelegramAccountOwnerAgentId } from "./account-owner.js";
 import { listTelegramAccountIds, mergeTelegramAccountConfig } from "./accounts.js";
 import { readCachedTelegramBotInfo } from "./bot-info-cache.js";
@@ -136,15 +140,23 @@ export async function readTelegramCachedHistory(input: {
   });
   // A reset during cache or policy reads must apply before publishing this page.
   const sessionKey = context?.sessionKey?.trim();
-  const entry = sessionKey
-    ? getSessionEntry({
-        sessionKey,
-        storePath: resolveStorePath(cfg.session?.store, {
-          agentId: resolveAgentIdFromSessionKey(sessionKey),
-        }),
-      })
+  const sessionId = context?.sessionId?.trim();
+  const agentId = sessionKey ? resolveAgentIdFromSessionKey(sessionKey) : undefined;
+  const storePath = agentId ? resolveStorePath(cfg.session?.store, { agentId }) : undefined;
+  // A DM's policy key can differ from its persisted main-session key.
+  const persistedSessionKey =
+    context?.conversationReadOrigin === "delegated"
+      ? agentId && sessionId
+        ? resolveTranscriptSessionKeyBySessionId({ agentId, sessionId, storePath })
+        : undefined
+      : sessionKey;
+  const entry = persistedSessionKey
+    ? getSessionEntry({ agentId, sessionKey: persistedSessionKey, storePath })
     : undefined;
-  if (context?.conversationReadOrigin === "delegated" && !entry) {
+  if (
+    context?.conversationReadOrigin === "delegated" &&
+    (!entry || entry.sessionId !== sessionId)
+  ) {
     throw new Error("Telegram cached history requires the current host session.");
   }
   const minTimestamp =

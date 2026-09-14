@@ -22,6 +22,7 @@ type ConversationReadInvocationOrigin = NonNullable<
 
 export type TelegramMessageMutationContext = {
   sessionKey?: string | null;
+  sessionId?: string | null;
   conversationReadOrigin?: ConversationReadInvocationOrigin;
   requesterAccountId?: string | null;
   toolContext?: ChannelThreadingToolContext;

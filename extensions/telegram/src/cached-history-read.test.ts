@@ -24,6 +24,7 @@ vi.mock("openclaw/plugin-sdk/session-store-runtime", async (original) => ({
     sessionId: "current",
     sessionStartedAt: state.sessionStartedAt,
   })),
+  resolveTranscriptSessionKeyBySessionId: vi.fn(() => "agent:main:main"),
 }));
 
 const cfg: OpenClawConfig = {
@@ -48,6 +49,7 @@ function host(): ChannelMessageActionContext {
     requesterAccountId: "default",
     conversationReadOrigin: "delegated",
     sessionKey: "agent:main:telegram:group:-1001:topic:77",
+    sessionId: "current",
     toolContext: {
       currentChannelProvider: "telegram",
       currentChannelId: "telegram:-1001:topic:77",
