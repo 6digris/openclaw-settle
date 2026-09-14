@@ -1,5 +1,6 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
+  "src/claws/provenance-runtime-read.async.test.ts",
   "src/auto-reply/reply/commands-plugins.install.test.ts",
   "src/auto-reply/reply/commands-plugins.install-clawhub-spec.test.ts",
   "src/system-agent/setup-inference-credentials.lifecycle.test.ts",
