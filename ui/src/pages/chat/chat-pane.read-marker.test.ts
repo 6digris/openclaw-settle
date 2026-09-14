@@ -63,7 +63,7 @@ async function createUnreadAcknowledgementHarness(markedUnreadAt?: number) {
       firstResponse.resolve(null);
       laterResponse.resolve(null);
       await Promise.allSettled(
-        patch.mock.results.map((result) => (result.type === "return" ? result.value : null)),
+        patch.mock.results.flatMap((result) => (result.type === "return" ? [result.value] : [])),
       );
     },
   };
