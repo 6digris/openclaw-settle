@@ -198,6 +198,7 @@ describe("tsdown config", () => {
       requireNativeHookRelayGraph(),
       requireStandaloneRuntimeGraph("infra/sqlite-readonly-location.worker"),
       requireStandaloneRuntimeGraph("state/openclaw-state-read.worker"),
+      requireStandaloneRuntimeGraph("agents/harness/native-hook-relay-client.worker"),
     ]);
 
     for (const config of configs) {
@@ -270,6 +271,11 @@ describe("tsdown config", () => {
       label: "shared-state reader",
       entry: "state/openclaw-state-read.worker",
       source: "src/state/openclaw-state-read.worker.ts",
+    },
+    {
+      label: "native hook locator worker",
+      entry: "agents/harness/native-hook-relay-client.worker",
+      source: "src/agents/harness/native-hook-relay-client.worker.ts",
     },
   ])("emits the $label once without sealing its package loaders", ({ entry, source }) => {
     const child = requireStandaloneRuntimeGraph(entry);

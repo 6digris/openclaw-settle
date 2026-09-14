@@ -9,6 +9,11 @@ export const runtimeProcessEntrypoints = {
     sourceWorkerName: "../state/openclaw-state-read.worker",
     distWorkerPath: "state/openclaw-state-read.worker.js",
   },
+  nativeHookRelayClient: {
+    currentModuleUrl,
+    sourceWorkerName: "../agents/harness/native-hook-relay-client.worker",
+    distWorkerPath: "agents/harness/native-hook-relay-client.worker.js",
+  },
   computerHost: {
     currentModuleUrl,
     sourceWorkerName: "../gateway/desktop/computer.worker",

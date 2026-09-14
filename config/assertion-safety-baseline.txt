@@ -550,7 +550,7 @@ extensions/imessage/src/monitor/inbound-processing.ts	2
 extensions/imessage/src/monitor/monitor-provider.ts	2
 extensions/imessage/src/probe.ts	1
 extensions/imessage/src/remote-host.ts	1
-extensions/imessage/src/send.ts	5
+extensions/imessage/src/send.ts	2
 extensions/imessage/src/setup-core.ts	1
 extensions/imessage/src/shared.ts	1
 extensions/imessage/src/state-migrations.ts	6
