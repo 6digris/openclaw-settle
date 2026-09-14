@@ -2877,6 +2877,63 @@ type SessionAssistantEntry = {
   text: string;
 };
 
+function sessionMessagesAfterNextUserTurn(
+  messages: readonly unknown[],
+  baselineMessageCount: number,
+  expectedUserText?: string,
+): unknown[] {
+  const nextUserOffset = messages.slice(baselineMessageCount).findIndex((message) => {
+    const actualUserText = extractTranscriptMessageText(message);
+    return (
+      (message as { role?: unknown } | null | undefined)?.role === "user" &&
+      (expectedUserText === undefined || matchesLiveProbeUserText(actualUserText, expectedUserText))
+    );
+  });
+  if (nextUserOffset < 0) {
+    return [];
+  }
+  return messages.slice(baselineMessageCount + nextUserOffset + 1);
+}
+
+function matchesLiveProbeUserText(actual: string, expected: string): boolean {
+  if (actual === expected) {
+    return true;
+  }
+  const markerIndex = expected.indexOf(`${ANTHROPIC_MAGIC_STRING_TRIGGER_REFUSAL}_`);
+  if (markerIndex < 0) {
+    return false;
+  }
+  const nonceSuffix = expected.slice(markerIndex + ANTHROPIC_MAGIC_STRING_TRIGGER_REFUSAL.length);
+  return /^_[a-f0-9]{32}$/.test(nonceSuffix) && actual.endsWith(nonceSuffix);
+}
+
+function sessionAssistantEntriesForLiveProbe(
+  messages: readonly unknown[],
+  modelKey?: string,
+): SessionAssistantEntry[] {
+  const assistantEntries: SessionAssistantEntry[] = [];
+  for (const message of messages) {
+    if (!message || typeof message !== "object") {
+      continue;
+    }
+    const role = (message as { role?: unknown }).role;
+    if (role !== "assistant") {
+      continue;
+    }
+    const stopReason = (message as { stopReason?: unknown }).stopReason;
+    const errorMessage = (message as { errorMessage?: unknown }).errorMessage;
+    assistantEntries.push({
+      text: maybeStripAssistantScaffoldingForLiveModel(
+        extractTranscriptMessageText(message),
+        modelKey,
+      ),
+      ...(typeof stopReason === "string" ? { stopReason } : {}),
+      ...(typeof errorMessage === "string" ? { errorMessage } : {}),
+    });
+  }
+  return assistantEntries;
+}
+
 async function readSessionMessagesForLiveProbe(sessionKey: string): Promise<unknown[]> {
   const { storePath, entry } = loadSessionEntry(sessionKey);
   if (!entry?.sessionId) {
@@ -2899,6 +2956,8 @@ async function readSessionMessagesForLiveProbe(sessionKey: string): Promise<unkn
 async function readSessionAssistantEntries(
   sessionKey: string,
   modelKey?: string,
+  baselineMessageCount?: number,
+  expectedUserText?: string,
 ): Promise<SessionAssistantEntry[]> {
   const { storePath, entry } = loadSessionEntry(sessionKey);
   if (!entry?.sessionId) {
@@ -2916,27 +2975,11 @@ async function readSessionAssistantEntries(
       reason: "live model assistant text verification",
     },
   );
-  const assistantEntries: SessionAssistantEntry[] = [];
-  for (const message of messages) {
-    if (!message || typeof message !== "object") {
-      continue;
-    }
-    const role = (message as { role?: unknown }).role;
-    if (role !== "assistant") {
-      continue;
-    }
-    const stopReason = (message as { stopReason?: unknown }).stopReason;
-    const errorMessage = (message as { errorMessage?: unknown }).errorMessage;
-    assistantEntries.push({
-      text: maybeStripAssistantScaffoldingForLiveModel(
-        extractTranscriptMessageText(message),
-        modelKey,
-      ),
-      ...(typeof stopReason === "string" ? { stopReason } : {}),
-      ...(typeof errorMessage === "string" ? { errorMessage } : {}),
-    });
-  }
-  return assistantEntries;
+  const scopedMessages =
+    baselineMessageCount === undefined
+      ? messages
+      : sessionMessagesAfterNextUserTurn(messages, baselineMessageCount, expectedUserText);
+  return sessionAssistantEntriesForLiveProbe(scopedMessages, modelKey);
 }
 
 function hasFreshProviderUnavailableFailure(
@@ -2969,8 +3012,15 @@ async function normalizeGatewayLiveAgentWaitError(params: {
   return params.error instanceof Error ? params.error : new Error(String(params.error));
 }
 
-async function readSessionAssistantTexts(sessionKey: string, modelKey?: string): Promise<string[]> {
-  return (await readSessionAssistantEntries(sessionKey, modelKey)).map((entry) => entry.text);
+async function readSessionAssistantTexts(
+  sessionKey: string,
+  modelKey?: string,
+  baselineMessageCount?: number,
+  expectedUserText?: string,
+): Promise<string[]> {
+  return (
+    await readSessionAssistantEntries(sessionKey, modelKey, baselineMessageCount, expectedUserText)
+  ).map((entry) => entry.text);
 }
 
 async function assertGatewayLiveSessionSelection(params: {
@@ -3164,11 +3214,29 @@ describe("latestAssistantTextAfterBaseline", () => {
       ),
     ).toBeUndefined();
   });
+
+  it("correlates retries after late writes from a prior tool probe", () => {
+    const messages = [
+      { role: "user", content: "prior attempt" },
+      { role: "assistant", stopReason: "stop", content: "stale-a stale-b" },
+      { role: "user", content: "stale retry" },
+      { role: "assistant", stopReason: "stop", content: "stale-a stale-b" },
+      { role: "user", content: "read current-a current-b" },
+      { role: "assistant", stopReason: "toolUse", content: "reading current probe" },
+      { role: "toolResult", content: "current-a current-b" },
+      { role: "assistant", stopReason: "stop", content: "current-a current-b" },
+    ];
+    const entries = sessionAssistantEntriesForLiveProbe(
+      sessionMessagesAfterNextUserTurn(messages, 2, "read current-a current-b"),
+    );
+    expect(latestTerminalAssistantTextAfterBaseline(entries, 0)).toBe("current-a current-b");
+  });
 });
 
 async function waitForSessionAssistantText(params: {
   sessionKey: string;
-  baselineAssistantCount: number;
+  baselineMessageCount: number;
+  expectedUserText: string;
   context: string;
   modelKey?: string;
   terminalOnly?: boolean;
@@ -3181,12 +3249,17 @@ async function waitForSessionAssistantText(params: {
   const timeoutMs = params.timeoutMs ?? GATEWAY_LIVE_TRANSCRIPT_TIMEOUT_MS;
   const timeoutLabel = params.timeoutLabel ?? "model";
   while (Date.now() - startedAt < timeoutMs) {
-    const assistantEntries = await readSessionAssistantEntries(params.sessionKey, params.modelKey);
+    const assistantEntries = await readSessionAssistantEntries(
+      params.sessionKey,
+      params.modelKey,
+      params.baselineMessageCount,
+      params.expectedUserText,
+    );
     const freshText = params.terminalOnly
-      ? latestTerminalAssistantTextAfterBaseline(assistantEntries, params.baselineAssistantCount)
+      ? latestTerminalAssistantTextAfterBaseline(assistantEntries, 0)
       : latestAssistantTextAfterBaseline(
           assistantEntries.map((entry) => entry.text),
-          params.baselineAssistantCount,
+          0,
         );
     if (freshText) {
       return freshText;
@@ -3291,6 +3364,7 @@ async function requestGatewayAgentText(params: {
     content: string;
   }>;
 }) {
+  const baselineMessageCount = (await readSessionMessagesForLiveProbe(params.sessionKey)).length;
   const baselineAssistantCount = (
     await readSessionAssistantTexts(params.sessionKey, params.modelKey)
   ).length;
@@ -3320,12 +3394,18 @@ async function requestGatewayAgentText(params: {
       timeoutMs: GATEWAY_LIVE_AGENT_WAIT_TIMEOUT_MS,
       allowCompletedWithoutReply: true,
     });
-    const assistantTexts = await readSessionAssistantTexts(params.sessionKey, params.modelKey);
-    return assistantTexts.length > baselineAssistantCount ? (assistantTexts.at(-1) ?? "") : "";
+    const assistantTexts = await readSessionAssistantTexts(
+      params.sessionKey,
+      params.modelKey,
+      baselineMessageCount,
+      params.message,
+    );
+    return assistantTexts.at(-1) ?? "";
   }
   const transcriptPromise = waitForSessionAssistantText({
     sessionKey: params.sessionKey,
-    baselineAssistantCount,
+    baselineMessageCount,
+    expectedUserText: params.message,
     context: `${params.context}: transcript-final`,
     modelKey: params.modelKey,
     timeoutLabel: "model",
@@ -3358,7 +3438,8 @@ async function requestGatewayAgentText(params: {
     }
     return await waitForSessionAssistantText({
       sessionKey: params.sessionKey,
-      baselineAssistantCount,
+      baselineMessageCount,
+      expectedUserText: params.message,
       context: `${params.context}: transcript-terminal`,
       modelKey: params.modelKey,
       terminalOnly: true,
@@ -3378,7 +3459,8 @@ async function requestGatewayAgentText(params: {
   }
   return await waitForSessionAssistantText({
     sessionKey: params.sessionKey,
-    baselineAssistantCount,
+    baselineMessageCount,
+    expectedUserText: params.message,
     context: `${params.context}: transcript-after-agent-wait`,
     modelKey: params.modelKey,
     terminalOnly: true,
