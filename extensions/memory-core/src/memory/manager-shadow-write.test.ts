@@ -28,19 +28,26 @@ describe("private session source staging", () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
-  async function setup() {
+  async function setup(vectorEnabled = false) {
     await fixture.seedSessionTranscript({
       sessionId: "shadow-session",
       messages: [
-        { role: "user", timestamp: 1, content: "Violet session preference.", senderIsOwner: true },
+        {
+          role: "user",
+          timestamp: 1,
+          content: vectorEnabled
+            ? "Violet session preference. Beta."
+            : "Violet session preference.",
+          senderIsOwner: true,
+        },
       ],
     });
     const manager = await fixture.getFreshManager(
       fixture.createConfig({
-        provider: "none",
+        provider: vectorEnabled ? "openai" : "none",
         sources: ["memory", "sessions"],
         sessionMemory: true,
-        vectorEnabled: false,
+        vectorEnabled,
       }),
     );
     // SAFETY: this fixture owns the manager and inspects its published native store.
@@ -48,32 +55,59 @@ describe("private session source staging", () => {
     return { manager, db };
   }
 
-  it("runs forced session staging off-thread while retaining the memory-file path", async () => {
-    const { manager, db } = await setup();
-    // oxlint-disable-next-line typescript/unbound-method -- Called below with the intercepted kernel receiver.
-    const replace = MemorySourceIndexKernel.prototype.replace;
-    let memoryWrites = 0;
-    vi.spyOn(MemorySourceIndexKernel.prototype, "replace").mockImplementation(
-      function (this: MemorySourceIndexKernel, input) {
-        if (input.source === "sessions") {
-          throw new Error("session staging reached the application thread");
-        }
-        memoryWrites += 1;
-        return replace.call(this, input);
-      },
-    );
-    await manager.sync({ reason: "cli", force: true });
-    expect(memoryWrites).toBeGreaterThan(0);
-    expect(
-      db.prepare("SELECT DISTINCT source FROM memory_index_chunks ORDER BY source").all(),
-    ).toEqual([{ source: "memory" }, { source: "sessions" }]);
-    expect(
-      db.prepare("SELECT text FROM memory_index_chunks WHERE source='sessions'").all(),
-    ).toEqual([{ text: expect.stringContaining("Violet session preference.") }]);
-    await manager.close();
-    const entries = await fs.readdir(path.dirname(db.location()!));
-    expect(entries.filter((name) => name.includes(".memory-reindex-"))).toEqual([]);
-  });
+  it.each([
+    { mode: "FTS-only", vectorEnabled: false },
+    { mode: "vector", vectorEnabled: true },
+  ])(
+    "runs forced $mode session staging off-thread while retaining the memory-file path",
+    async ({ vectorEnabled }) => {
+      const { manager, db } = await setup(vectorEnabled);
+      // oxlint-disable-next-line typescript/unbound-method -- Called below with the intercepted kernel receiver.
+      const replace = MemorySourceIndexKernel.prototype.replace;
+      let memoryWrites = 0;
+      vi.spyOn(MemorySourceIndexKernel.prototype, "replace").mockImplementation(
+        function (this: MemorySourceIndexKernel, input) {
+          if (input.source === "sessions") {
+            throw new Error("session staging reached the application thread");
+          }
+          memoryWrites += 1;
+          return replace.call(this, input);
+        },
+      );
+      await manager.sync({ reason: "cli", force: true });
+      expect(memoryWrites).toBeGreaterThan(0);
+      expect(
+        db.prepare("SELECT DISTINCT source FROM memory_index_chunks ORDER BY source").all(),
+      ).toEqual([{ source: "memory" }, { source: "sessions" }]);
+      const sessionChunks = db
+        .prepare(
+          "SELECT id, text, embedding FROM memory_index_chunks WHERE source='sessions' ORDER BY id",
+        )
+        .all();
+      expect(sessionChunks).toEqual([
+        {
+          id: expect.any(String),
+          text: expect.stringContaining("Violet session preference."),
+          embedding: vectorEnabled ? "[0,1,0,0]" : "[]",
+        },
+      ]);
+      if (vectorEnabled) {
+        const vectors = db
+          .prepare(
+            "SELECT v.id, hex(v.embedding) AS embedding FROM memory_index_chunks_vec AS v " +
+              "JOIN memory_index_chunks AS c ON c.id = v.id WHERE c.source = 'sessions' ORDER BY v.id",
+          )
+          .all();
+        const embedding = Buffer.from(new Float32Array([0, 1, 0, 0]).buffer)
+          .toString("hex")
+          .toUpperCase();
+        expect(vectors).toEqual(sessionChunks.map(({ id }) => ({ id, embedding })));
+      }
+      await manager.close();
+      const entries = await fs.readdir(path.dirname(db.location()!));
+      expect(entries.filter((name) => name.includes(".memory-reindex-"))).toEqual([]);
+    },
+  );
 
   it("rejects a tombstone recorded after native staging before publishing the shadow", async () => {
     const { manager, db } = await setup();
