@@ -2923,7 +2923,7 @@ fn replace_main_webview_for_target(
                     return;
                 }
             } else {
-                gateway_windows::local_page_load(webview.clone(), !loaded);
+                gateway_windows::local_page_load(webview.clone(), payload.url(), !loaded);
             }
             native_browser_bridge::page_load(webview, !loaded, document_token.as_deref());
             if remote_generation.is_some() && !loaded {
@@ -3197,17 +3197,17 @@ fn main() {
         let window = WebviewWindowBuilder::from_config(app.handle(), &window_config)?
             .initialization_script(window_chrome::initialization_script(None, true))
             .on_page_load(|window, payload| {
-                if let Some(webview) = window.app_handle().get_webview("main") {
-                    gateway_windows::local_page_load(
-                        webview.clone(),
-                        matches!(payload.event(), PageLoadEvent::Started),
-                    );
-                    native_browser_bridge::page_load(
-                        webview,
-                        matches!(payload.event(), PageLoadEvent::Started),
-                        None,
-                    );
-                }
+                let webview: Webview = window.as_ref().clone();
+                gateway_windows::local_page_load(
+                    webview.clone(),
+                    payload.url(),
+                    matches!(payload.event(), PageLoadEvent::Started),
+                );
+                native_browser_bridge::page_load(
+                    webview,
+                    matches!(payload.event(), PageLoadEvent::Started),
+                    None,
+                );
             })
             .on_new_window(move |url, _features| {
                 open_external_browser(&browser_app, &url);

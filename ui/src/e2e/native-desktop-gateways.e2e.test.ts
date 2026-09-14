@@ -41,8 +41,13 @@ async function installAdapter(page: Page, config?: { origin?: string; base?: str
     content: `window.gatewayRequests = [];
       window.__TAURI_INTERNALS__ = { invoke: async (command, params) => {
         window.gatewayRequests.push({ command, params });
+        if (window.holdNextGatewayRequest) {
+          window.holdNextGatewayRequest = false;
+          await new Promise((resolve) => { window.completeGatewayRequest = resolve; });
+        }
         if (params.message.type === "open-settings") throw new Error("Could not open Gateway settings. Try again.");
       }};
+      ${companionFile("gateway-notice.js")}
       (${companionFile("gateway-switch.js")})(${JSON.stringify({ origin: new URL(suite.server.baseUrl).origin, base: "", snapshot, ...config })});`,
   });
   return () => page.evaluate(() => Reflect.get(window, "gatewayRequests") as GatewayRequest[]);
@@ -82,6 +87,90 @@ async function serveCompanion(page: Page) {
 }
 
 suite.define(() => {
+  it.each(["index.html?mode=stopped", "gateways.html"])(
+    "keeps one dismissible native Gateway notice on %s without modal alerts",
+    async (file) => {
+      await suite.withPage({}, async ({ page }) => {
+        const dialogs: string[] = [];
+        page.on("dialog", async (dialog) => {
+          dialogs.push(dialog.message());
+          await dialog.dismiss();
+        });
+        await serveCompanion(page);
+        await page.addInitScript(() => {
+          let holdProfiles = false;
+          let releaseProfiles: (() => void) | undefined;
+          Object.assign(window, {
+            holdProfileRefresh: () => {
+              holdProfiles = true;
+            },
+            releaseProfileRefresh: () => releaseProfiles?.(),
+            __TAURI__: {
+              core: {
+                invoke: async (command: string) => {
+                  if (command === "discover_gateways") {
+                    return [];
+                  }
+                  if (command === "gateway_profile_request") {
+                    if (holdProfiles) {
+                      await new Promise<void>((resolve) => {
+                        releaseProfiles = resolve;
+                      });
+                      holdProfiles = false;
+                    }
+                    return { profiles: [], selectedId: null };
+                  }
+                  return null;
+                },
+              },
+              event: { listen: async () => () => {} },
+            },
+          });
+        });
+        await page.goto(`${suite.server.baseUrl}companion/${file}`);
+        const show = (message: string) =>
+          page.evaluate((noticeMessage) => {
+            window.dispatchEvent(
+              new CustomEvent("openclaw:gateway-notice", { detail: { message: noticeMessage } }),
+            );
+          }, message);
+        await show("Credential store is locked.");
+        const notice = page.getByRole("alert").filter({ hasText: "Credential store is locked." });
+        await notice.waitFor();
+        const original = await notice.elementHandle();
+        await page.addScriptTag({ content: companionFile("gateway-notice.js") });
+        const repeated = "Credential store is locked. <img src=x onerror=alert('unsafe')>";
+        await show(repeated);
+        await show(repeated);
+        expect(await original?.textContent()).toContain(repeated);
+        expect(await page.getByRole("alert").count()).toBe(1);
+        expect(await page.getByRole("alert").locator("img").count()).toBe(0);
+        if (file === "gateways.html") {
+          await page.evaluate(() => {
+            Reflect.get(window, "holdProfileRefresh")();
+            window.dispatchEvent(
+              new CustomEvent("openclaw:gateway-profiles-changed", { detail: {} }),
+            );
+          });
+          await expect
+            .poll(() => page.getByRole("button", { name: "Add Gateway", exact: true }).isDisabled())
+            .toBe(true);
+        }
+        await page.getByRole("button", { name: "Dismiss Gateway notice" }).click();
+        expect(await page.getByRole("alert").count()).toBe(0);
+        if (file === "gateways.html") {
+          await page.evaluate(() => Reflect.get(window, "releaseProfileRefresh")());
+        }
+        await show("Retry after unlocking the credential store.");
+        expect(await original?.textContent()).toContain("Retry after unlocking");
+        expect(await page.getByRole("alert").count()).toBe(1);
+        await page.evaluate(() => window.dispatchEvent(new Event("openclaw:gateway-notice-clear")));
+        expect(await page.getByRole("alert").count()).toBe(0);
+        expect(dialogs).toEqual([]);
+      });
+    },
+  );
+
   it("uses the shared Gateway menu, queues until native readiness, and replaces the document token", async () => {
     await suite.withPage({ viewport: { width: 1280, height: 900 } }, async ({ page }) => {
       const parent = process.env.OPENCLAW_UI_RAIL_PROOF_DIR?.trim();
@@ -98,7 +187,14 @@ suite.define(() => {
       expect(await page.getByRole("menuitemradio", { name: /Studio/ }).count()).toBe(0);
       await capture(page, proof, "gateway-menu-before.png");
       const requests = await installAdapter(page);
+      await page.addInitScript({
+        content: `${companionFile("gateway-notice.js")}
+          window.dispatchEvent(new CustomEvent("openclaw:gateway-notice", {
+            detail: { message: "Credential store was unavailable during startup." },
+          }));`,
+      });
       await page.reload();
+      await page.getByRole("alert").filter({ hasText: "unavailable during startup" }).waitFor();
       await openMenu();
       const studio = page.getByRole("menuitemradio", { name: /Studio/ });
       await studio.waitFor();
@@ -126,6 +222,17 @@ suite.define(() => {
         .getByRole("alert")
         .filter({ hasText: "Could not open Gateway settings" })
         .waitFor();
+      const notice = await page.getByRole("alert").elementHandle();
+      await page.evaluate(() =>
+        window.dispatchEvent(
+          new CustomEvent("openclaw:gateway-notice", {
+            detail: { message: "Could not unlock saved Gateway credentials." },
+          }),
+        ),
+      );
+      expect(await notice?.textContent()).toContain("Could not unlock saved Gateway credentials.");
+      expect(await page.getByRole("alert").count()).toBe(1);
+      await capture(page, proof, "gateway-credential-notice.png");
       expect((await requests()).slice(1)).toEqual([
         {
           command: "gateway_request",
@@ -143,6 +250,55 @@ suite.define(() => {
           params: { message: { type: "open-settings" }, token: "next-document" },
         },
       ]);
+      await openMenu();
+      await page.getByRole("menuitemradio", { name: /Local Gateway/ }).click();
+      await expect.poll(() => page.getByRole("alert").count()).toBe(0);
+      for (const source of ["native", "invoke"] as const) {
+        await page.evaluate(() => {
+          Reflect.set(window, "holdNextGatewayRequest", true);
+          const { postMessage: postGatewayMessage } = Reflect.get(window, "webkit").messageHandlers
+            .openclawGateways;
+          Reflect.set(
+            window,
+            "pendingGatewayRequest",
+            postGatewayMessage({ type: "select", id: "primary" }),
+          );
+        });
+        const message =
+          source === "native"
+            ? "Could not remember the selected Gateway. Unlock the credential store."
+            : "Could not open Gateway settings. Try again.";
+        if (source === "native") {
+          await page.evaluate(
+            (noticeMessage) =>
+              window.dispatchEvent(
+                new CustomEvent("openclaw:gateway-notice", {
+                  detail: { message: noticeMessage },
+                }),
+              ),
+            message,
+          );
+        } else {
+          await page.evaluate(() => {
+            const { postMessage: postGatewayMessage } = Reflect.get(window, "webkit")
+              .messageHandlers.openclawGateways;
+            return postGatewayMessage({ type: "open-settings" });
+          });
+        }
+        const warning = page.getByRole("alert").filter({ hasText: message });
+        await warning.waitFor();
+        await page.evaluate(async () => {
+          Reflect.get(window, "completeGatewayRequest")();
+          await Reflect.get(window, "pendingGatewayRequest");
+        });
+        expect(await warning.isVisible()).toBe(true);
+        await page.evaluate(() => {
+          const { postMessage: postGatewayMessage } = Reflect.get(window, "webkit").messageHandlers
+            .openclawGateways;
+          return postGatewayMessage({ type: "select", id: "primary" });
+        });
+        expect(await page.getByRole("alert").count()).toBe(0);
+      }
     });
   });
 

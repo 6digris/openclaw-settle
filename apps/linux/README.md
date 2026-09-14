@@ -231,6 +231,11 @@ or SSH connection. Saved credentials stay in this app's system credential store;
 editing a connection keeps its token and password fields empty. Leave both blank
 to retain the credentials for the same endpoint.
 
+If the credential store is unavailable, the app keeps the dashboard open and
+shows one dismissible notice. Saved connections remain intact. Resolve the
+reported credential-store problem, then use **Manage Gateways… → Try again** to load
+them again.
+
 The dashboard's profile menu switches the current window to a saved Gateway.
 Command-click or Control-click opens another window. The native **Gateways** menu
 opens or focuses an existing Gateway window without reloading its current page;
