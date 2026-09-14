@@ -22,7 +22,7 @@ function decodeTaskReply(reply: OpenClawStateReadReply): OpenClawStateReadOutcom
   const error = new Error(reply.message);
   retainOpenClawStateWorkerErrorPayload(error, reply.error);
   return {
-    error: hydrateOpenClawStateWorkerError(error, { includeGenericErrors: true }),
+    error: hydrateOpenClawStateWorkerError(error, { includeOrdinary: true }),
     sourceAdmitted: reply.sourceAdmitted,
   };
 }

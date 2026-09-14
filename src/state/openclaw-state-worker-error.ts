@@ -17,8 +17,6 @@ type StateMigrationKind = ConstructorParameters<
 >[0];
 type CoordinatorFamily = ConstructorParameters<typeof StateDatabaseCoordinatorContentionError>[0];
 
-type ErrorTransportOptions = { includeGenericErrors?: boolean };
-
 type ErrorValue =
   | { ref: number }
   | { value: string | number | boolean | null }
@@ -48,6 +46,8 @@ export type OpenClawStateWorkerErrorPayload = {
   root: number;
   nodes: ErrorNode[];
 };
+
+type ErrorGraphOptions = { includeOrdinary?: boolean };
 
 function identifyError(error: Error): ErrorIdentity {
   if (error instanceof StateDatabaseCoordinatorContentionError) {
@@ -103,7 +103,7 @@ function isNativeErrorCode(value: unknown): value is number {
 
 export function encodeOpenClawStateWorkerError(
   error: unknown,
-  options: ErrorTransportOptions = {},
+  options: ErrorGraphOptions = {},
 ): OpenClawStateWorkerErrorPayload | undefined {
   if (!(error instanceof Error)) {
     return undefined;
@@ -145,7 +145,9 @@ export function encodeOpenClawStateWorkerError(
         ...(current instanceof AggregateError ? { errors: current.errors.map(encodeValue) } : {}),
       });
     }
-    return canonical || options.includeGenericErrors ? { version: 1, root: 0, nodes } : undefined;
+    return canonical || options.includeOrdinary === true
+      ? { version: 1, root: 0, nodes }
+      : undefined;
   } catch {
     return undefined;
   }
@@ -310,7 +312,7 @@ function createError(node: ErrorNode): Error {
 
 function decodeErrorGraph(
   value: unknown,
-  options: ErrorTransportOptions,
+  options: ErrorGraphOptions,
 ): { errors: Error[]; nodes: ErrorNode[]; root: number } | undefined {
   try {
     if (
@@ -349,7 +351,7 @@ function decodeErrorGraph(
         }
       }
     }
-    if ((!canonical && !options.includeGenericErrors) || visited.size !== nodes.length) {
+    if ((!canonical && options.includeOrdinary !== true) || visited.size !== nodes.length) {
       return undefined;
     }
     const errors = nodes.map(createError);
@@ -414,17 +416,14 @@ export function retainOpenClawStateWorkerErrorPayload(error: Error, payload: unk
 }
 
 /** Hydrate each caller independently; never rewrite a cached opening rejection. */
-export function hydrateOpenClawStateWorkerError(
-  value: Error,
-  options?: ErrorTransportOptions,
-): Error;
+export function hydrateOpenClawStateWorkerError(value: Error, options?: ErrorGraphOptions): Error;
 export function hydrateOpenClawStateWorkerError(
   value: unknown,
-  options?: ErrorTransportOptions,
+  options?: ErrorGraphOptions,
 ): unknown;
 export function hydrateOpenClawStateWorkerError(
   value: unknown,
-  options: ErrorTransportOptions = {},
+  options: ErrorGraphOptions = {},
 ): unknown {
   if (!(value instanceof Error)) {
     return value;

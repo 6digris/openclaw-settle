@@ -668,6 +668,7 @@ export const en: TranslationMap & {
     coalescedRestart:
       "Update installed. A gateway restart is already in progress; status will refresh after it reconnects.",
     error: "Update error: {error}",
+    checkError: "Could not check for updates: {error}",
     status: "Update {status}: {reason}. {guidance}",
     verificationFailedWithIdentity:
       "Update finished, but the running install does not match the expected revision. Expected {expected}, running {actual}. Run `openclaw triage` on the Gateway host before retrying.",

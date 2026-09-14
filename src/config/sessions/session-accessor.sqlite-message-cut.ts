@@ -157,6 +157,7 @@ async function mutateSqliteSessionAtMessage(
           entryId: params.entryId,
           canonicalSourceKey,
           creation: params.creation,
+          forkWorkspace: params.forkWorkspace,
           mode,
           expectedState: preparedExpectedState,
           repositoryWorkspaceId: params.repositoryWorkspaceId,
@@ -196,6 +197,7 @@ function mutateSqliteSessionAtMessageInTransaction(
   params: {
     canonicalSourceKey: string;
     creation?: SessionMessageCutMutationParams["creation"];
+    forkWorkspace?: SessionMessageCutMutationParams["forkWorkspace"];
     entryId: string;
     expectedState: SessionEntryExpectedState | undefined;
     mode: SessionTranscriptMutationMode;
@@ -299,6 +301,7 @@ function mutateSqliteSessionAtMessageInTransaction(
           : undefined,
       nextSessionId,
     }),
+    ...(params.mode === "fork" ? params.forkWorkspace : {}),
     ...(params.mode === "fork" && params.creation
       ? buildSessionCreationStamp(params.creation)
       : {}),

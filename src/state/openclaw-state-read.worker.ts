@@ -72,7 +72,7 @@ serveWorkerTasks((input): OpenClawStateReadReply => {
       ok: false,
       sourceAdmitted,
       message: error.message,
-      error: encodeOpenClawStateWorkerError(error, { includeGenericErrors: true }),
+      error: encodeOpenClawStateWorkerError(error, { includeOrdinary: true }),
     };
   }
 });

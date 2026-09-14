@@ -161,6 +161,26 @@ describe("shared-state worker error transport", () => {
     expect(combined.errors).toEqual([first, second]);
   });
 
+  it("encodes and hydrates ordinary error graphs only with an explicit opt-in", () => {
+    const cause = Object.assign(new Error("native failure"), { code: "SQLITE_BUSY" });
+    const original = new AggregateError([cause], "load and cleanup", { cause });
+    cause.cause = original;
+    expect(encodeOpenClawStateWorkerError(original)).toBeUndefined();
+    const payload = encodeOpenClawStateWorkerError(original, { includeOrdinary: true });
+    expect(payload).toBeDefined();
+    const retained = new Error("remote failure");
+    retainOpenClawStateWorkerErrorPayload(retained, structuredClone(payload));
+    expect(hydrateOpenClawStateWorkerError(retained)).toBe(retained);
+    const decoded = hydrateOpenClawStateWorkerError(retained, { includeOrdinary: true });
+    expect(decoded).toBeInstanceOf(AggregateError);
+    expect(decoded.cause).toMatchObject({ message: "native failure", code: "SQLITE_BUSY" });
+    if (!(decoded instanceof AggregateError) || !(decoded.cause instanceof Error)) {
+      throw new Error("Expected the constructed aggregate and its cause");
+    }
+    expect(decoded.errors[0]).toBe(decoded.cause);
+    expect(decoded.cause.cause).toBe(decoded);
+  });
+
   it("leaves ordinary and already-current error graphs identical", () => {
     const local = new Error("caller rejected");
     const ordinary = new AggregateError([local], "caller and cleanup", { cause: local });
@@ -331,7 +351,7 @@ describe("shared-state worker error transport", () => {
       cause: integrity,
     });
     original.errors.push(original);
-    const options = { includeGenericErrors: true };
+    const options = { includeOrdinary: true };
     const payload = encodeOpenClawStateWorkerError(original, options);
     expect(payload).toBeDefined();
     expect(JSON.stringify(payload)).not.toContain("fixture-not-for-transport");
@@ -425,8 +445,6 @@ describe("shared-state worker error transport", () => {
     const retained = new Error("ordinary transport failure");
     retainOpenClawStateWorkerErrorPayload(retained, payload);
     expect(hydrateOpenClawStateWorkerError(retained)).toBe(retained);
-    expect(hydrateOpenClawStateWorkerError(retained, { includeGenericErrors: true })).toBe(
-      retained,
-    );
+    expect(hydrateOpenClawStateWorkerError(retained, { includeOrdinary: true })).toBe(retained);
   });
 });

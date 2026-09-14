@@ -3,6 +3,7 @@ import type {
   ConfigHealthSnapshot,
   ConfigHealthEntryBasis,
 } from "../config/io.health-state.types.js";
+import type { CronStoreWorkerOperations } from "../cron/store/load-worker.types.js";
 import type { FleetRegistryWriteOperations } from "../fleet/registry.types.js";
 import type { SessionDeliveryWorkerOperations } from "../infra/session-delivery-queue.worker-contract.js";
 import type { PreparedSqliteAuditRecord } from "../infra/sqlite-audit-record.kernel.js";
@@ -43,6 +44,7 @@ type TaskFlowReadQuery = {
 
 /** Commands share one physical shared-state actor; bindings belong to commands, not open input. */
 export type OpenClawStateWorkerOperations = UserPreferenceWorkerOperations &
+  CronStoreWorkerOperations &
   FleetRegistryWriteOperations &
   SessionDeliveryWorkerOperations & {
     "plugins.metadata.read": {

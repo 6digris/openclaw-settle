@@ -2,6 +2,7 @@ import {
   patchConfigHealthEntryInDatabase,
   readConfigHealthSnapshotInDatabase,
 } from "../config/io.health-state.kernel.js";
+import { loadMutableCronStoreInWorker } from "../cron/store/load.worker.js";
 import {
   acquireFleetCellOperationInDatabase,
   assertFleetCellOperationInDatabase,
@@ -269,6 +270,9 @@ function createSharedStateWorkerBackend(
         );
       }
       const database = open();
+      if (command.type === "cron.loadMutable") {
+        return loadMutableCronStoreInWorker(database, command.input.storeKey);
+      }
       if (
         command.type === "sessionDelivery.enqueue" ||
         command.type === "sessionDelivery.enqueueClaimed" ||
