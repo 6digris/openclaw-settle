@@ -1164,7 +1164,7 @@ extension IOSGatewayChatTransportTests {
             if self.held != nil || self.mockHeld != nil { return }
             let id = UUID()
             try await withTaskCancellationHandler {
-                try await withCheckedThrowingContinuation { continuation in
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
                     guard !Task.isCancelled, !self.finished else {
                         continuation.resume(throwing: CancellationError())
                         return
