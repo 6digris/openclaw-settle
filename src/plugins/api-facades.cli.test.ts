@@ -398,7 +398,9 @@ describe("managed CLI callbacks", () => {
         await Promise.resolve();
         events.push(`action:${current()}`);
       });
-      child.hook("postAction", () => events.push(`post:${current()}`));
+      child.hook("postAction", () => {
+        events.push(`post:${current()}`);
+      });
       expect(program.addCommand(child)).toBe(program);
     });
     expect(host.commands[0]).toBe(child);
@@ -419,6 +421,9 @@ describe("managed CLI callbacks", () => {
     const host = new Command();
     const branch = new Command("prepared");
     const leaf = new Command("leaf");
+    if (!(leaf instanceof EventEmitter)) {
+      throw new Error("Expected native EventEmitter");
+    }
     const output: string[] = [];
     const seen: string[] = [];
     const listener = function (this: Command) {
@@ -432,7 +437,9 @@ describe("managed CLI callbacks", () => {
     leaf.configureHelp({ commandDescription: () => current() });
     leaf.configureOutput({ writeOut: (text) => output.push(`${current()}:${text}`) });
     leaf.addHelpText("after", () => `help:${current()}`);
-    leaf.action(() => seen.push(`action:${current()}`));
+    leaf.action(() => {
+      seen.push(`action:${current()}`);
+    });
     branch.addCommand(leaf);
     const addedBefore = newListener.mock.calls.length;
     const removedBefore = removedListener.mock.calls.length;
@@ -460,10 +467,66 @@ describe("managed CLI callbacks", () => {
     );
   });
 
+  it("preserves native listener-array descriptors without invoking metadata accessors", async () => {
+    const owner = fixture();
+    const child = new Command("prepared");
+    if (!(child instanceof EventEmitter)) {
+      throw new Error("Expected native EventEmitter");
+    }
+    const seen: string[] = [];
+    child.on("custom", () => seen.push(`on:${current()}`));
+    child.once("custom", () => seen.push(`once:${current()}`));
+    const events: unknown = Reflect.get(child, "_events");
+    if (!events || typeof events !== "object") {
+      throw new Error("Expected the real EventEmitter event table");
+    }
+    const stored: unknown = Reflect.get(events, "custom");
+    if (!Array.isArray(stored)) {
+      throw new Error("Expected the real EventEmitter listener array");
+    }
+    const metadata = Symbol("native-array-metadata");
+    const marker = {};
+    const readMetadata = vi.fn(() => marker);
+    const prototype = Object.create(Object.getPrototypeOf(stored));
+    Object.setPrototypeOf(stored, prototype);
+    Object.defineProperty(stored, metadata, { get: readMetadata, configurable: true });
+    Object.defineProperty(stored, "__proto__", { value: marker, configurable: true });
+    const length = Object.getOwnPropertyDescriptor(stored, "length");
+
+    await owner.register(new Command(), ({ program }) => {
+      program.addCommand(child);
+    });
+    const reboundEvents: unknown = Reflect.get(child, "_events");
+    if (!reboundEvents || typeof reboundEvents !== "object") {
+      throw new Error("Expected the adopted EventEmitter event table");
+    }
+    const rebound: unknown = Reflect.get(reboundEvents, "custom");
+    if (!Array.isArray(rebound)) {
+      throw new Error("Expected an adopted native listener array");
+    }
+    expect(rebound).not.toBe(stored);
+    expect(Object.getPrototypeOf(rebound)).toBe(prototype);
+    expect(Reflect.ownKeys(rebound)).toEqual(Reflect.ownKeys(stored));
+    expect(Object.getOwnPropertyDescriptor(rebound, "length")).toEqual(length);
+    for (const key of [metadata, "__proto__"]) {
+      expect(Object.getOwnPropertyDescriptor(rebound, key)).toEqual(
+        Object.getOwnPropertyDescriptor(stored, key),
+      );
+    }
+    expect(readMetadata).not.toHaveBeenCalled();
+    child.emit("custom");
+    child.emit("custom");
+    expect(seen).toEqual(["on:alpha", "once:alpha", "on:alpha"]);
+    expect(readMetadata).not.toHaveBeenCalled();
+  });
+
   it("removes the latest matching prepared on/once registration before emission", async () => {
     const owner = fixture();
     const host = new Command();
     const child = new Command("prepared");
+    if (!(child instanceof EventEmitter)) {
+      throw new Error("Expected native EventEmitter");
+    }
     const seen: string[] = [];
     const listener = () => seen.push(current());
     child.on("custom", listener).once("custom", listener);
@@ -485,6 +548,9 @@ describe("managed CLI callbacks", () => {
     async (mutation) => {
       const run = async (managed: boolean) => {
         const command = new Command("prepared");
+        if (!(command instanceof EventEmitter)) {
+          throw new Error("Expected native EventEmitter");
+        }
         const seen: string[] = [];
         let changed = false;
         const second = () => seen.push("second");
@@ -527,7 +593,9 @@ describe("managed CLI callbacks", () => {
     const seen: string[] = [];
     let child!: Command;
     await owner.register(host, ({ program }) => {
-      child = new Command("partial").passThroughOptions().action(() => seen.push(current()));
+      child = new Command("partial").passThroughOptions().action(() => {
+        seen.push(current());
+      });
       expect(() => program.addCommand(child)).toThrow("enablePositionalOptions");
     });
     expect(host.commands).toContain(child);
