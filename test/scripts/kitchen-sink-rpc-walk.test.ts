@@ -315,6 +315,7 @@ describe("kitchen-sink RPC walk runner selection", () => {
     expect(result.stderrTruncatedChars).toBe(0);
     const line = expectDefined(
       result.stdout.split("\n").find((value) => value.startsWith("WALK_FIXTURE_RESULT=")),
+      "kitchen sink walk fixture result",
     );
     const observed = JSON.parse(line.slice("WALK_FIXTURE_RESULT=".length)) as {
       calls: Array<{ command: string; args: string[] }>;
