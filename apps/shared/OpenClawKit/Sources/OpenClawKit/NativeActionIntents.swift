@@ -252,6 +252,38 @@ public struct SendMessageIntent: AppIntent {
     }
 }
 
+public struct AskOpenClawIntent: AppIntent {
+    public static let title: LocalizedStringResource = "Ask OpenClaw"
+    public static let description: IntentDescription? = IntentDescription(
+        "Ask in a conversation and return a recorded reply preview or run status. Open the chat for full results.")
+    public static let openAppWhenRun = true
+    public static let authenticationPolicy: IntentAuthenticationPolicy = .requiresLocalDeviceAuthentication
+    @Parameter(title: "Session") public var session: OpenClawSessionEntity
+    @Parameter(title: "Question") public var question: String
+    public static var parameterSummary: some ParameterSummary {
+        Summary("Ask \(\.$question) in \(\.$session)")
+    }
+
+    public init() {}
+
+    @MainActor
+    public func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog & OpensIntent {
+        let prepared = try await OpenClawNativeActionServices.host().prepareSend(
+            to: self.session.session, message: self.question)
+        try await requestConfirmation(
+            actionName: .send,
+            dialog: """
+            Send to \(prepared.session.sessionKey) with \(prepared.session.agentID) \
+            as \(prepared.session.owner.profileID) on \(prepared.session.owner.gatewayID)?
+            """)
+        let reply = try await prepared.submitAndWaitForReply()
+        return try .result(
+            value: reply.text,
+            opensIntent: OpenRunIntent(target: OpenClawRunEntity(run: reply.run)),
+            dialog: "\(reply.dialog)")
+    }
+}
+
 public struct InspectRunIntent: AppIntent {
     public static let title: LocalizedStringResource = "Inspect Run"
     public static let openAppWhenRun = true
