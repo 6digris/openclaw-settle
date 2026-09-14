@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { expect } from "vitest";
 import { getWindowsPowerShellExePath } from "../infra/windows-install-roots.js";
 import { readWindowsProcessSnapshot, terminateGatewayProcessTree } from "./schtasks-process.js";
@@ -123,8 +123,13 @@ export async function writeGatewayTaskSupervisorProbe(params: {
   activePidPath: string;
   eventsPath: string;
   probe: GatewayTaskSupervisorProbe;
+  sourceTsconfigPath: string;
   stateDir: string;
 }): Promise<void> {
+  const checkoutTsconfigPath = fileURLToPath(new URL("../../tsconfig.json", import.meta.url));
+  const normalizationSourcePath = fileURLToPath(
+    new URL("../../packages/normalization-core/src/error-coercion.ts", import.meta.url),
+  );
   const taskSupervisorModuleUrl = new URL("../cli/gateway-cli/task-supervisor.ts", import.meta.url)
     .href;
   const hostedProbeModuleUrl = new URL(
@@ -152,6 +157,7 @@ export async function writeGatewayTaskSupervisorProbe(params: {
     params.probe.probePath,
     [
       'import fs from "node:fs";',
+      'import { createHash } from "node:crypto";',
       // Bound Scheduler's inherited logon environment before importing product
       // owners. Actions service tokens must not reach the supervisor or Gateway.
       "const allowedEnv = new Set([",
@@ -171,7 +177,23 @@ export async function writeGatewayTaskSupervisorProbe(params: {
       "const failedSupervisorPidPath = process.argv[10];",
       "const appendEvent = (phase, details = {}) => fs.appendFileSync(phase === 'started' || phase === 'listening' ? eventsPath : eventsPath + '.hosted-stop', `${JSON.stringify({ phase, pid: process.pid, ppid: process.ppid, ...details })}\\n`);",
       "process.once('exit', (code) => appendEvent('process-exit', { code }));",
-      "appendEvent('bounded-environment', { keys: Object.keys(process.env).map((key) => key.toUpperCase()).sort() });",
+      "const hashKnownSource = (file) => {",
+      "  try { return createHash('sha256').update(fs.readFileSync(file)).digest('hex'); } catch { return null; }",
+      "};",
+      `const producerConfigPath = ${JSON.stringify(params.sourceTsconfigPath)};`,
+      `const checkoutConfigPath = ${JSON.stringify(checkoutTsconfigPath)};`,
+      "const configuredPath = process.env.TSX_TSCONFIG_PATH;",
+      "const producerConfigSha256 = hashKnownSource(producerConfigPath);",
+      "const sourceConfig = {",
+      "  valuePresent: typeof configuredPath === 'string' && configuredPath.length > 0,",
+      "  valueMatchesProducer: configuredPath === producerConfigPath,",
+      "  valueMatchesCheckout: configuredPath === checkoutConfigPath,",
+      "  producerMatchesCheckout: producerConfigPath === checkoutConfigPath,",
+      "  producerConfigSha256,",
+      "  checkoutConfigSha256: producerConfigPath === checkoutConfigPath ? producerConfigSha256 : hashKnownSource(checkoutConfigPath),",
+      `  normalizationSourceSha256: hashKnownSource(${JSON.stringify(normalizationSourcePath)}),`,
+      "};",
+      "appendEvent('bounded-environment', { keys: Object.keys(process.env).map((key) => key.toUpperCase()).sort(), sourceConfig });",
       "if (process.argv.includes('--task-supervisor')) {",
       "  fs.writeFileSync(supervisorPidPath, String(process.pid));",
       `  const { runWindowsGatewayTaskSupervisor } = await import(${JSON.stringify(taskSupervisorModuleUrl)});`,
