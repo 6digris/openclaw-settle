@@ -29,6 +29,7 @@ import {
   installEmbeddedRunnerBaseE2eMocks,
   installEmbeddedRunnerFastRunE2eMocks,
 } from "../test-helpers/embedded-agent-runner-e2e-mocks.js";
+import { createEmbeddedAttemptPreparation } from "./run/attempt-preparation.js";
 import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptResult } from "./run/types.js";
 
 const tempRoots = createTempDirTracker();
@@ -606,6 +607,9 @@ describe("embedded run detached session metadata", () => {
           effectiveToolCount: 0,
           effectiveWorkspace: params.workspaceDir,
           localModelLeanEnabled: false,
+          prepare: createEmbeddedAttemptPreparation({
+            assertCurrent: () => attempt.abortSignal?.throwIfAborted(),
+          }),
           sessionAgentId: "research",
         });
         await recorder?.flush();

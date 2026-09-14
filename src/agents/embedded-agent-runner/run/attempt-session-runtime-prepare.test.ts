@@ -1,4 +1,6 @@
+import { performance } from "node:perf_hooks";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../../test/helpers/promise.js";
 
 const mocks = vi.hoisted(() => ({
   createAnthropicPayloadLogger: vi.fn(),
@@ -9,7 +11,9 @@ const mocks = vi.hoisted(() => ({
   prepareAgentSession: vi.fn(),
   prepareSessionBoundary: vi.fn(),
   prepareSessionManager: vi.fn(),
-  prepareTrajectory: vi.fn(),
+  buildTrajectoryRunMetadata: vi.fn(),
+  createTrajectoryRuntimeRecorder: vi.fn(),
+  resolveTrajectorySessionFile: vi.fn(),
   prepareTransport: vi.fn(),
   restoreProjections: vi.fn(),
 }));
@@ -38,15 +42,23 @@ vi.mock("./attempt-session-settle.js", () => ({
 vi.mock("./attempt-stream-settle.js", () => ({
   prepareEmbeddedAttemptTransport: mocks.prepareTransport,
 }));
-vi.mock("./attempt-trajectory.js", () => ({
-  prepareEmbeddedAttemptTrajectory: mocks.prepareTrajectory,
+vi.mock("../../../trajectory/metadata.js", () => ({
+  buildTrajectoryRunMetadata: mocks.buildTrajectoryRunMetadata,
+}));
+vi.mock("../../../trajectory/runtime.js", () => ({
+  createTrajectoryRuntimeRecorder: mocks.createTrajectoryRuntimeRecorder,
+}));
+vi.mock("./attempt-transcript-helpers.js", () => ({
+  resolveAttemptTrajectorySessionFile: mocks.resolveTrajectorySessionFile,
 }));
 
+import { createEmbeddedAttemptPreparation } from "./attempt-preparation.js";
 import { prepareEmbeddedAttemptSessionRuntime } from "./attempt-session-runtime-prepare.js";
+import { cleanupEmbeddedAttemptResources } from "./attempt-subscription-cleanup.js";
 
 type PrepareInput = Parameters<typeof prepareEmbeddedAttemptSessionRuntime>[0];
 
-function createFixture() {
+function createFixture(runId = "run-1") {
   const order: string[] = [];
   const activeMarker = { type: "custom", customType: "openclaw.cache-ttl", data: "active" };
   const sessionManager = {
@@ -55,6 +67,7 @@ function createFixture() {
     getEntries: () => [activeMarker, { ...activeMarker, data: "sibling" }],
   };
   const activeSession = {
+    dispose: vi.fn(),
     messages: [{ role: "user" }, { role: "assistant" }],
     sessionId: "active-session",
   };
@@ -83,7 +96,13 @@ function createFixture() {
   };
   const cacheTrace = { kind: "cache-trace" };
   const anthropicPayloadLogger = { kind: "payload-logger" };
-  const trajectoryRecorder = { kind: "trajectory" };
+  const trajectoryRecorder = {
+    enabled: true,
+    recordEvent:
+      vi.fn<NonNullable<PrepareInput["resources"]["trajectoryRecorder"]>["recordEvent"]>(),
+    flush: async () => {},
+    describeFlushState: () => undefined,
+  } satisfies NonNullable<PrepareInput["resources"]["trajectoryRecorder"]>;
   const transport = {
     compactionReplayEnabled: true,
     effectiveAgentTransport: "sse",
@@ -139,7 +158,9 @@ function createFixture() {
     order.push("payload-logger");
     return anthropicPayloadLogger;
   });
-  mocks.prepareTrajectory.mockImplementation(async () => {
+  mocks.resolveTrajectorySessionFile.mockResolvedValue("/tmp/trajectory.jsonl");
+  mocks.buildTrajectoryRunMetadata.mockReturnValue({ trace: "metadata" });
+  mocks.createTrajectoryRuntimeRecorder.mockImplementation(() => {
     order.push("trajectory");
     return trajectoryRecorder;
   });
@@ -169,16 +190,21 @@ function createFixture() {
   const externalAbortController = {
     setActiveSessionAbort: vi.fn(() => order.push("arm-session-abort")),
   };
+  const abortController = new AbortController();
+  const prepare = createEmbeddedAttemptPreparation({
+    assertCurrent: () => abortController.signal.throwIfAborted(),
+  });
   const input = {
     attempt: {
       model: { api: "openai-responses", contextWindow: 128_000 },
       modelId: "gpt-5",
       provider: "openai",
-      runId: "run-1",
+      runId,
       sessionId: "session-1",
       workspaceDir: "/workspace",
     },
     agentDir: "/agent",
+    prepare,
     isRawModelRun: false,
     resolveActiveContextEnginePluginId: vi.fn(),
     setup: {
@@ -210,13 +236,14 @@ function createFixture() {
         return await operation();
       }),
     },
-    runAbortSignal: new AbortController().signal,
+    runAbortSignal: abortController.signal,
     externalAbortController,
     resources,
     onSessionYieldReady,
   } as unknown as PrepareInput;
 
   return {
+    abortController,
     abortActiveSession,
     activeSession,
     anthropicPayloadLogger,
@@ -227,6 +254,7 @@ function createFixture() {
     externalAbortController,
     getUserTranscriptContexts,
     input,
+    prepare,
     resources,
     onSessionYieldReady,
     order,
@@ -358,4 +386,100 @@ describe("prepareEmbeddedAttemptSessionRuntime", () => {
 
     expect(mocks.prepareSessionBoundary).toHaveBeenCalledOnce();
   });
+
+  it.each([false, true])(
+    "admits control work between expensive ready trajectory seeds (cancel second: %s)",
+    async (cancelSecond) => {
+      let elapsed = 0;
+      const clock = vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+      const events: string[] = [];
+      const pathsReady = createDeferred();
+      const controlDone = createDeferred();
+      const failure = new Error("cancelled before trajectory seeding");
+      let firstRecorderOwnedAtControl = false;
+      try {
+        const start = async (runId: string) => {
+          const fixture = createFixture(runId);
+          const reachedPath = createDeferred();
+          mocks.resolveTrajectorySessionFile.mockImplementationOnce(async () => {
+            reachedPath.resolve();
+            await pathsReady.promise;
+            return "/tmp/trajectory.jsonl";
+          });
+          const result = fixture.prepare("attempt.session-runtime", () =>
+            prepareEmbeddedAttemptSessionRuntime(fixture.input),
+          );
+          await reachedPath.promise;
+          return { fixture, result };
+        };
+        const first = await start("first");
+        const second = await start("second");
+        const results = Promise.allSettled([first.result, second.result]);
+        mocks.createTrajectoryRuntimeRecorder.mockImplementation(({ runId }) => {
+          const { fixture } = runId === "first" ? first : second;
+          fixture.trajectoryRecorder.recordEvent.mockImplementation((event: string) => {
+            if (event === "trace.metadata") {
+              events.push(`${runId}.seed`);
+              elapsed += 10;
+            }
+          });
+          return fixture.trajectoryRecorder;
+        });
+        setImmediate(() => {
+          firstRecorderOwnedAtControl =
+            first.fixture.resources.trajectoryRecorder === first.fixture.trajectoryRecorder;
+          events.push("control");
+          if (cancelSecond) {
+            second.fixture.abortController.abort(failure);
+          }
+          controlDone.resolve();
+        });
+        pathsReady.resolve();
+
+        const [firstResult, secondResult] = await results;
+        await controlDone.promise;
+        expect(firstResult.status).toBe("fulfilled");
+        expect(firstRecorderOwnedAtControl).toBe(true);
+        expect(first.fixture.resources.trajectoryRecorder).toBe(first.fixture.trajectoryRecorder);
+        expect(events).toEqual(
+          cancelSecond ? ["first.seed", "control"] : ["first.seed", "control", "second.seed"],
+        );
+        if (!cancelSecond) {
+          expect(secondResult.status).toBe("fulfilled");
+          expect(second.fixture.resources.trajectoryRecorder).toBe(
+            second.fixture.trajectoryRecorder,
+          );
+          return;
+        }
+
+        expect(secondResult).toEqual({ status: "rejected", reason: failure });
+        expect(mocks.createTrajectoryRuntimeRecorder).toHaveBeenCalledOnce();
+        const { resources, activeSession, contextGuards, sessionManager } = second.fixture;
+        expect(resources.trajectoryRecorder).toBeNull();
+        expect(resources.session).toBe(activeSession);
+        expect(resources.sessionManager).toBe(sessionManager);
+        const flushReady = createDeferred();
+        const flush = vi.fn(async () => await flushReady.promise);
+        const cleanup = cleanupEmbeddedAttemptResources({
+          ...resources,
+          sessionManager: resources.sessionManager,
+          flushPendingToolResultsAfterIdle: flush,
+          aborted: true,
+          abortSettlePromise: resources.buildAbortSettlePromise(),
+        });
+        expect(contextGuards.remove).toHaveBeenCalledOnce();
+        expect(activeSession.dispose).not.toHaveBeenCalled();
+        flushReady.resolve();
+        await cleanup;
+        expect(flush).toHaveBeenCalledWith({ agent: undefined, sessionManager, timeoutMs: 0 });
+        expect(activeSession.dispose).toHaveBeenCalledOnce();
+        await expect(first.fixture.prepare("attempt.tool-catalog", () => "next")).resolves.toBe(
+          "next",
+        );
+      } finally {
+        pathsReady.resolve();
+        clock.mockRestore();
+      }
+    },
+  );
 });

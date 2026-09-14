@@ -16,6 +16,7 @@ vi.mock("./attempt-transcript-helpers.js", () => ({
   resolveAttemptTrajectorySessionFile: hoisted.resolveAttemptTrajectorySessionFile,
 }));
 
+import { createEmbeddedAttemptPreparation } from "./attempt-preparation.js";
 import { prepareEmbeddedAttemptTrajectory } from "./attempt-trajectory.js";
 
 function createInput(disableTrajectory = false) {
@@ -45,6 +46,7 @@ function createInput(disableTrajectory = false) {
     effectiveToolCount: 7,
     effectiveWorkspace: "/tmp/workspace",
     localModelLeanEnabled: false,
+    prepare: createEmbeddedAttemptPreparation({ assertCurrent: () => {} }),
     sessionAgentId: "main",
   };
 }

@@ -322,6 +322,7 @@ export async function runEmbeddedAttempt(
           ...(activeContextEngine ? { activeContextEngine } : {}),
           agentDir,
           isRawModelRun,
+          prepare,
           resolveActiveContextEnginePluginId,
           setup,
           toolBase: preparedToolBase,

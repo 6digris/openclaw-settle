@@ -8,6 +8,7 @@ import { getEmbeddedSessionPromptState } from "../session-prompt-state.js";
 import { restoreCacheTtlToolResultProjections } from "../tool-result-truncation.js";
 import type { prepareEmbeddedAttemptBundleTools } from "./attempt-bundle-tools.js";
 import type { AttemptContextEngine } from "./attempt-context-engine-helpers.js";
+import type { createEmbeddedAttemptPreparation } from "./attempt-preparation.js";
 import {
   prepareEmbeddedAttemptAgentSession,
   prepareEmbeddedAttemptSessionBoundary,
@@ -44,6 +45,7 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
   activeContextEngine?: AttemptContextEngine;
   agentDir: string;
   isRawModelRun: boolean;
+  prepare: ReturnType<typeof createEmbeddedAttemptPreparation>;
   resolveActiveContextEnginePluginId: () => string | undefined;
   setup: EmbeddedAttemptSetup;
   toolBase: Awaited<ReturnType<typeof prepareEmbeddedAttemptToolBase>>;
@@ -247,6 +249,7 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
     effectiveToolCount,
     effectiveWorkspace,
     localModelLeanEnabled,
+    prepare: input.prepare,
     sessionAgentId,
     ...(systemPromptReport ? { systemPromptReport } : {}),
   });
