@@ -8,17 +8,13 @@ import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { retainBeforeToolCallForNativeHookRelay } from "./host-private-capabilities.js";
-import { formatPermissionApprovalDescription as formatPermissionApprovalDescriptionForTestsImpl } from "./native-hook-relay-approval-presentation.js";
 import {
-  clearNativeHookRelayBridgesForTests,
   NATIVE_HOOK_BRIDGE_REPLACEMENT_RECORD_GRACE_MS,
   NATIVE_HOOK_RELAY_BRIDGE_STALE_REGISTRATION_ERROR,
-  readNativeHookRelayBridgeRecordIfExists,
   registerNativeHookRelayBridge,
   retainNativeHookRelayOperation,
   renewNativeHookRelayBridgeRecord,
   unregisterNativeHookRelayBridge,
-  isRetryableNativeHookRelayBridgeLookupError,
 } from "./native-hook-relay-bridge.js";
 import {
   getNativeHookRelayProviderAdapter,
@@ -28,17 +24,12 @@ import {
 } from "./native-hook-relay-codec.js";
 import { processNativeHookRelayInvocation } from "./native-hook-relay-events.js";
 import {
-  clearNativeHookRelayPermissionsForTests,
-  permissionRequestContentFingerprintForTests as permissionRequestContentFingerprintForTestsImpl,
-  permissionRequestToolInputKeyFingerprintForTests as permissionRequestToolInputKeyFingerprintForTestsImpl,
   pruneNativeHookRelayPermissionAllowAlways,
   removeNativeHookRelayPermissionState,
   detachNativeHookRelayApprovalState,
-  setNativeHookRelayDeferredToolApprovalRequesterForTests as setNativeHookRelayDeferredToolApprovalRequesterForTestsImpl,
-  setNativeHookRelayPermissionApprovalRequesterForTests as setNativeHookRelayPermissionApprovalRequesterForTestsImpl,
 } from "./native-hook-relay-permissions.js";
-import type { NativeHookRelayDeferredToolApprovalRequester } from "./native-hook-relay-permissions.js";
 import { buildNativeHookRelayCommandPlan } from "./native-hook-relay-plan.js";
+import { createNativeHookRelayTesting } from "./native-hook-relay-sdk-compat.js";
 import {
   MAX_NATIVE_HOOK_RELAY_INVOCATIONS,
   nativeHookRelayState,
@@ -49,7 +40,6 @@ import type {
   InvokeNativeHookRelayParams,
   NativeHookRelayEvent,
   NativeHookRelayInvocation,
-  NativeHookRelayPermissionApprovalRequester,
   NativeHookRelayProcessResponse,
   NativeHookRelayRegistration,
   NativeHookRelayRetention,
@@ -691,49 +681,4 @@ function normalizeAllowedEvents(
   return [...new Set(events)];
 }
 
-export const testing = {
-  async clearNativeHookRelaysForTests(): Promise<void> {
-    for (const [relayId, registration] of relays) {
-      unregisterNativeHookRelay(relayId, registration);
-    }
-    await clearNativeHookRelayBridgesForTests();
-    invocations.length = 0;
-    clearNativeHookRelayPermissionsForTests();
-  },
-  getNativeHookRelayInvocationsForTests(): NativeHookRelayInvocation[] {
-    return [...invocations];
-  },
-  getNativeHookRelayRegistrationForTests(relayId: string): NativeHookRelayRegistration | undefined {
-    return relays.get(relayId);
-  },
-  getNativeHookRelayBridgeDirForTests(): string {
-    throw new Error("native hook relay bridge files were retired");
-  },
-  getNativeHookRelayBridgeRegistryPathForTests(relayId: string): string {
-    void relayId;
-    throw new Error("native hook relay bridge files were retired");
-  },
-  async getNativeHookRelayBridgeRecordForTests(
-    relayId: string,
-  ): Promise<Record<string, unknown> | undefined> {
-    const record = await readNativeHookRelayBridgeRecordIfExists(relayId);
-    return record ? { ...record } : undefined;
-  },
-  isNativeHookRelayBridgeLookupRetryableForTests(error: unknown, elapsedMs = 0): boolean {
-    return isRetryableNativeHookRelayBridgeLookupError({ error, elapsedMs });
-  },
-  formatPermissionApprovalDescriptionForTests: formatPermissionApprovalDescriptionForTestsImpl,
-  permissionRequestContentFingerprintForTests: permissionRequestContentFingerprintForTestsImpl,
-  permissionRequestToolInputKeyFingerprintForTests:
-    permissionRequestToolInputKeyFingerprintForTestsImpl,
-  setNativeHookRelayPermissionApprovalRequesterForTests(
-    requester: NativeHookRelayPermissionApprovalRequester,
-  ): void {
-    setNativeHookRelayPermissionApprovalRequesterForTestsImpl(requester);
-  },
-  setNativeHookRelayDeferredToolApprovalRequesterForTests(
-    requester: NativeHookRelayDeferredToolApprovalRequester,
-  ): void {
-    setNativeHookRelayDeferredToolApprovalRequesterForTestsImpl(requester);
-  },
-} as const;
+export const { testing, sdkTesting } = createNativeHookRelayTesting(unregisterNativeHookRelay);

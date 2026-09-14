@@ -85,6 +85,12 @@ function sameNativeHookRelayBridgeSnapshot(
 export async function readNativeHookRelayBridgeRecord(
   params: { relayId: string } & NativeHookRelayBridgeStoreOptions,
 ): Promise<NativeHookRelayBridgeRecord | undefined> {
+  return readNativeHookRelayBridgeRecordSynchronously(params);
+}
+
+export function readNativeHookRelayBridgeRecordSynchronously(
+  params: { relayId: string } & NativeHookRelayBridgeStoreOptions,
+): NativeHookRelayBridgeRecord | undefined {
   return withOpenClawStateDatabaseReadOnly(
     (database) =>
       readNativeHookRelayBridgeSnapshotFromDatabase({
@@ -204,6 +210,15 @@ export async function deleteNativeHookRelayBridgeRecordIfOwned(params: {
   token: string;
   stateDbPath?: string;
 }): Promise<boolean> {
+  return deleteNativeHookRelayBridgeRecordSynchronouslyIfOwned(params);
+}
+
+export function deleteNativeHookRelayBridgeRecordSynchronouslyIfOwned(params: {
+  relayId: string;
+  pid: number;
+  token: string;
+  stateDbPath?: string;
+}): boolean {
   return runOpenClawStateWriteTransaction(
     (database) => {
       const current = readNativeHookRelayBridgeSnapshotFromDatabase({
@@ -303,6 +318,12 @@ export async function pruneNativeHookRelayBridgeRecords(params: {
 export async function clearNativeHookRelayBridgeRecordsForTests(
   options: NativeHookRelayBridgeStoreOptions = {},
 ): Promise<void> {
+  clearNativeHookRelayBridgeRecordsSynchronouslyForTests(options);
+}
+
+export function clearNativeHookRelayBridgeRecordsSynchronouslyForTests(
+  options: NativeHookRelayBridgeStoreOptions = {},
+): void {
   runOpenClawStateWriteTransaction(
     (database) => {
       const db = getNodeSqliteKysely<NativeHookRelayBridgeDatabase>(database.db);

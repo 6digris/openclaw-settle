@@ -46,6 +46,12 @@ Retained compatibility entrypoints keep their shipped caller names:
 `resolvePluginProviders`, and `agent-runtime`'s
 `resolveThinkingDefaultWithRuntimeCatalog` accepts `loadModelCatalog`.
 
+`nativeHookRelayTesting` retains synchronous bridge-record reads and a `void`
+reset. Reset invalidates current relay ownership and clears persisted records
+before returning; it does not promise to join transport shutdown. Late cleanup
+remains tracked by the relay owner and cannot erase a later successor. Internal
+harness teardown continues to await full persistence and transport drainage.
+
 `listAgentIds` accepts full `OpenClawConfig` inputs, including inline config
 literals, through both `agent-runtime` and `agent-scope-runtime`. Readonly
 roster views remain accepted. Only the roster participates in ID selection;

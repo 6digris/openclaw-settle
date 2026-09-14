@@ -12,9 +12,12 @@ import {
 import { nativeHookRelayState } from "./native-hook-relay-state.js";
 import {
   clearNativeHookRelayBridgeRecordsForTests,
+  clearNativeHookRelayBridgeRecordsSynchronouslyForTests,
   deleteNativeHookRelayBridgeRecordIfOwned,
+  deleteNativeHookRelayBridgeRecordSynchronouslyIfOwned,
   pruneNativeHookRelayBridgeRecords,
   readNativeHookRelayBridgeRecord as readNativeHookRelayBridgeRecordFromStore,
+  readNativeHookRelayBridgeRecordSynchronously,
   renewOrRestoreNativeHookRelayBridgeRecord,
   writeNativeHookRelayBridgeRecord,
   type NativeHookRelayBridgeRecord,
@@ -391,10 +394,41 @@ export async function readNativeHookRelayBridgeRecordIfExists(
   return undefined;
 }
 
-export async function clearNativeHookRelayBridgesForTests(): Promise<void> {
+export function readNativeHookRelayBridgeRecordSynchronouslyIfExists(
+  relayId: string,
+  stateDbPath?: string,
+): NativeHookRelayBridgeRecord | undefined {
+  try {
+    return readNativeHookRelayBridgeRecordSynchronously({ relayId, stateDbPath });
+  } catch (error) {
+    log.debug("failed to read native hook relay bridge record", { error, relayId });
+  }
+  return undefined;
+}
+
+function unregisterNativeHookRelayBridgesForTests(): void {
   for (const relayId of relayBridges.keys()) {
     void unregisterNativeHookRelayBridge(relayId);
   }
+}
+
+/** The shipped synchronous reset clears rows now, never after a successor can publish. */
+export function clearNativeHookRelayBridgesSynchronouslyForTests(
+  bridges: readonly NativeHookRelayBridgeRegistration[],
+): void {
+  for (const bridge of bridges) {
+    void unregisterNativeHookRelayBridge(bridge.relayId, { expectedBridge: bridge });
+  }
+  for (const bridge of bridges) {
+    // Start every transport cleanup first, but never report a successful reset after a row failure.
+    deleteNativeHookRelayBridgeRecordSynchronouslyIfOwned({ ...bridge, pid: process.pid });
+  }
+  // Unregistration retains and observes each pending close in this bridge owner.
+  clearNativeHookRelayBridgeRecordsSynchronouslyForTests();
+}
+
+export async function clearNativeHookRelayBridgesForTests(): Promise<void> {
+  unregisterNativeHookRelayBridgesForTests();
   while (pendingOperations.size > 0) {
     await Promise.allSettled(pendingOperations);
   }

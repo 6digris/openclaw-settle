@@ -586,9 +586,9 @@ export {
   hasNativeHookRelayInvocation,
   invokeNativeHookRelay,
   resolveNativeHookRelayDeferredToolApproval,
-  testing as nativeHookRelayTesting,
   registerNativeHookRelay,
 } from "../agents/harness/native-hook-relay.js";
+export { sdkTesting as nativeHookRelayTesting } from "../agents/harness/native-hook-relay.js";
 
 /**
  * Derive the same compact user-facing tool detail that embedded OpenClaw uses for progress logs.
