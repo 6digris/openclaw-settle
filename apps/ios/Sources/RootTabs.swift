@@ -610,7 +610,7 @@ struct RootTabs: View {
                 self.nativePresentationID = self.nativeActions?.registerPresentation(onRetire: {
                     self.nativeChatBinding = nil
                     self.nativeRunInspection = nil
-                }) { request, binding, receipt in
+                }, { request, binding, receipt in
                     guard UIApplication.shared.applicationState == .active,
                           !self.showOnboarding, self.presentedSheet == nil
                     else {
@@ -627,7 +627,7 @@ struct RootTabs: View {
                     self.nativeChatBinding = binding
                     self.selectSidebarDestination(.chat)
                     self.nativeRunInspection = receipt
-                }
+                })
             }
             .sheet(item: self.$nativeRunInspection) { presentation in
                 NavigationStack {

@@ -86,18 +86,26 @@ extension GatewayNodeSession {
         }
     }
 
-    struct PluginSurfaceWaiter {
+    struct PluginSurfaceCaller: Sendable {
         let id: UUID
-        let owner: PluginSurfaceOwner
-        let observedURL: String?
         let cancellation: GatewayRequestCancellationGate
         let deadline: ContinuousClock.Instant?
         let profileObservationID: UUID?
         let onProfileObservation: @Sendable (GatewayProfileBindingObservation) -> Void
-        let continuation: CheckedContinuation<GatewayCanvasHostRoute?, Never>
 
         var isEligible: Bool {
             !self.cancellation.isCancelled && self.deadline.map { ContinuousClock.now < $0 } != false
+        }
+    }
+
+    struct PluginSurfaceWaiter {
+        let owner: PluginSurfaceOwner
+        let observedURL: String?
+        let caller: PluginSurfaceCaller
+        let continuation: CheckedContinuation<GatewayCanvasHostRoute?, Never>
+
+        var isEligible: Bool {
+            self.caller.isEligible
         }
     }
 
@@ -113,6 +121,57 @@ extension GatewayNodeSession {
         var cached: (owner: PluginSurfaceOwner, route: GatewayCanvasHostRoute)?
         var refresh: PluginSurfaceRefresh?
         var pending: [PluginSurfaceWaiter] = []
+
+        mutating func removeJoiningWaiters(for waiter: PluginSurfaceWaiter) -> [PluginSurfaceWaiter] {
+            // Cache authority may survive a fresh capture, but an in-flight
+            // account rejection belongs only to its captured caller lifetime.
+            let joins = { (candidate: PluginSurfaceWaiter) in
+                candidate.owner == waiter.owner &&
+                    candidate.caller.profileObservationID == waiter.caller.profileObservationID
+            }
+            let waiters = self.pending.filter(joins)
+            self.pending.removeAll(where: joins)
+            return waiters
+        }
+
+        mutating func finishRefresh(
+            _ refresh: PluginSurfaceRefresh,
+            route: GatewayCanvasHostRoute?,
+            ownerIsCurrent: Bool)
+        {
+            if let route, ownerIsCurrent, refresh.waiters.contains(where: \.isEligible) {
+                self.cached = (refresh.owner, route)
+            }
+            self.refresh = nil
+        }
+
+        mutating func releaseWaiter(_ id: UUID?) {
+            self.pending.removeAll { waiter in
+                guard waiter.caller.id == id || !waiter.isEligible else { return false }
+                waiter.continuation.resume(returning: nil)
+                return true
+            }
+            if var refresh = self.refresh {
+                refresh.waiters.removeAll { waiter in
+                    guard waiter.caller.id == id || !waiter.isEligible else { return false }
+                    waiter.continuation.resume(returning: nil)
+                    return true
+                }
+                if refresh.waiters.isEmpty {
+                    refresh.task.cancel()
+                    self.refresh = nil
+                } else {
+                    self.refresh = refresh
+                }
+            }
+        }
+
+        func cancelAll() {
+            self.refresh?.task.cancel()
+            for waiter in (self.refresh?.waiters ?? []) + self.pending {
+                waiter.continuation.resume(returning: nil)
+            }
+        }
     }
 
     struct PluginSurfaceRefreshResponse: Decodable {

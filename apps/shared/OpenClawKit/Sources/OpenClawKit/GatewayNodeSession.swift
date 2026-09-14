@@ -462,16 +462,19 @@ public actor GatewayNodeSession {
     {
         let trimmedSurface = surface.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedSurface.isEmpty, !Task.isCancelled else { return nil }
-        let waiterID = UUID()
-        let cancellation = GatewayRequestCancellationGate()
-        let deadline = timeoutMs > 0 ? ContinuousClock.now.advanced(by: .seconds(timeoutMs / 1000)) : nil
+        let caller = PluginSurfaceCaller(
+            id: UUID(),
+            cancellation: GatewayRequestCancellationGate(),
+            deadline: timeoutMs > 0 ? ContinuousClock.now.advanced(by: .seconds(timeoutMs / 1000)) : nil,
+            profileObservationID: profileObservationID,
+            onProfileObservation: onProfileObservation)
         // One race owns the caller's entire budget, including route capture and
         // the queue. Its synchronous gate fences admission before actor cleanup.
         let value = await withTaskCancellationHandler {
             try? await AsyncTimeout.withTimeout(
                 seconds: max(0, timeoutMs) / 1000,
                 onTimeout: {
-                    cancellation.cancel()
+                    caller.cancellation.cancel()
                     return NSError(
                         domain: "Gateway",
                         code: 8,
@@ -483,21 +486,17 @@ public actor GatewayNodeSession {
                         observedURL: observedURL,
                         expectedRoute: expectedRoute,
                         expectedProfileId: expectedProfileId,
-                        profileObservationID: profileObservationID,
-                        onProfileObservation: onProfileObservation,
-                        waiterID: waiterID,
-                        cancellation: cancellation,
-                        deadline: deadline)
+                        caller: caller)
                 })
         } onCancel: {
-            cancellation.cancel()
+            caller.cancellation.cancel()
             Task {
                 await self.releasePluginSurfaceRefreshWaiter(
-                    surface: trimmedSurface, waiterID: waiterID)
+                    surface: trimmedSurface, waiterID: caller.id)
             }
         }
-        cancellation.cancel()
-        self.releasePluginSurfaceRefreshWaiter(surface: trimmedSurface, waiterID: waiterID)
+        caller.cancellation.cancel()
+        self.releasePluginSurfaceRefreshWaiter(surface: trimmedSurface, waiterID: caller.id)
         guard let value, await self.currentRoute() == value.owner.route,
               !Task.isCancelled, self.isCurrentPluginSurfaceOwner(value.owner)
         else { return nil }
@@ -509,13 +508,9 @@ public actor GatewayNodeSession {
         observedURL: String?,
         expectedRoute: GatewayNodeSessionRoute?,
         expectedProfileId: String?,
-        profileObservationID: UUID?,
-        onProfileObservation: @escaping @Sendable (GatewayProfileBindingObservation) -> Void,
-        waiterID: UUID,
-        cancellation: GatewayRequestCancellationGate,
-        deadline: ContinuousClock.Instant?) async -> (owner: PluginSurfaceOwner, route: GatewayCanvasHostRoute)?
+        caller: PluginSurfaceCaller) async -> (owner: PluginSurfaceOwner, route: GatewayCanvasHostRoute)?
     {
-        guard !cancellation.isCancelled, expectedProfileId == nil || expectedRoute != nil else { return nil }
+        guard !caller.cancellation.isCancelled, expectedProfileId == nil || expectedRoute != nil else { return nil }
         if expectedRoute == nil {
             guard let channel = self.channel, self.pluginSurfaceRefreshMethod() != nil else { return nil }
             // Ordinary callers retain reconnect-on-demand inside their original
@@ -525,7 +520,7 @@ public actor GatewayNodeSession {
             } catch {
                 return nil
             }
-            guard self.channel === channel, !cancellation.isCancelled else { return nil }
+            guard self.channel === channel, !caller.cancellation.isCancelled else { return nil }
         }
         guard let route = await self.currentRoute(),
               expectedRoute == nil || expectedRoute == route
@@ -534,10 +529,10 @@ public actor GatewayNodeSession {
         // Join that installation within this caller's existing deadline.
         if !self.snapshotReceived {
             let ready = await withCheckedContinuation { continuation in
-                if cancellation.isCancelled {
+                if caller.cancellation.isCancelled {
                     continuation.resume(returning: false)
                 } else {
-                    self.snapshotWaiters[waiterID] = continuation
+                    self.snapshotWaiters[caller.id] = continuation
                 }
             }
             guard ready else { return nil }
@@ -545,13 +540,9 @@ public actor GatewayNodeSession {
         let owner = PluginSurfaceOwner(route: route, expectedProfileId: expectedProfileId)
         let value = await withCheckedContinuation { continuation in
             let waiter = PluginSurfaceWaiter(
-                id: waiterID,
                 owner: owner,
                 observedURL: observedURL,
-                cancellation: cancellation,
-                deadline: deadline,
-                profileObservationID: profileObservationID,
-                onProfileObservation: onProfileObservation,
+                caller: caller,
                 continuation: continuation)
             guard waiter.isEligible, self.isCurrentPluginSurfaceOwner(owner) else {
                 continuation.resume(returning: nil)
@@ -560,7 +551,7 @@ public actor GatewayNodeSession {
             self.releasePluginSurfaceRefreshWaiter(surface: surface)
             var state = self.pluginSurfaces[surface] ?? PluginSurfaceState()
             if let refresh = state.refresh, refresh.owner == owner,
-               refresh.profileObservationID == profileObservationID
+               refresh.profileObservationID == caller.profileObservationID
             {
                 state.refresh?.waiters.append(waiter)
             } else {
@@ -569,7 +560,7 @@ public actor GatewayNodeSession {
             self.pluginSurfaces[surface] = state
             self.startPluginSurfaceRefresh(surface: surface)
         }
-        guard let value, !cancellation.isCancelled, await self.currentRoute() == owner.route,
+        guard let value, !caller.cancellation.isCancelled, await self.currentRoute() == owner.route,
               self.isCurrentPluginSurfaceOwner(owner)
         else { return nil }
         return (owner, value)
@@ -590,13 +581,7 @@ public actor GatewayNodeSession {
                 continue
             }
             let id = UUID()
-            // A fresh capture may reuse an authorized cache entry, but must not
-            // inherit a prior lifetime's still-pending account rejection.
-            let joins = { (candidate: PluginSurfaceWaiter) in
-                candidate.owner == waiter.owner && candidate.profileObservationID == waiter.profileObservationID
-            }
-            let waiters = [waiter] + state.pending.filter(joins)
-            state.pending.removeAll(where: joins)
+            let waiters = [waiter] + state.removeJoiningWaiters(for: waiter)
             let task = Task<Void, Never> { [weak self] in
                 guard let self else { return }
                 await self.requestPluginSurfaceRefresh(
@@ -606,8 +591,11 @@ public actor GatewayNodeSession {
                     observedURL: waiter.observedURL)
             }
             state.refresh = PluginSurfaceRefresh(
-                id: id, owner: waiter.owner, profileObservationID: waiter.profileObservationID,
-                task: task, waiters: waiters)
+                id: id,
+                owner: waiter.owner,
+                profileObservationID: waiter.caller.profileObservationID,
+                task: task,
+                waiters: waiters)
             // A denial must leave no eligible capability for the resolver's final
             // cache-only read, and another owner must never borrow this rotation.
             state.cached = nil
@@ -621,24 +609,7 @@ public actor GatewayNodeSession {
             self.snapshotWaiters.removeValue(forKey: waiterID)?.resume(returning: false)
         }
         guard var state = self.pluginSurfaces[surface] else { return }
-        state.pending.removeAll { waiter in
-            guard waiter.id == waiterID || !waiter.isEligible else { return false }
-            waiter.continuation.resume(returning: nil)
-            return true
-        }
-        if var refresh = state.refresh {
-            refresh.waiters.removeAll { waiter in
-                guard waiter.id == waiterID || !waiter.isEligible else { return false }
-                waiter.continuation.resume(returning: nil)
-                return true
-            }
-            if refresh.waiters.isEmpty {
-                refresh.task.cancel()
-                state.refresh = nil
-            } else {
-                state.refresh = refresh
-            }
-        }
+        state.releaseWaiter(waiterID)
         self.pluginSurfaces[surface] = state
         self.startPluginSurfaceRefresh(surface: surface)
     }
@@ -655,10 +626,7 @@ public actor GatewayNodeSession {
               let refresh = state.refresh, refresh.id == refreshID
         else { return }
         let current = self.isCurrentPluginSurfaceOwner(refresh.owner)
-        if let route, current, refresh.waiters.contains(where: \.isEligible) {
-            state.cached = (refresh.owner, route)
-        }
-        state.refresh = nil
+        state.finishRefresh(refresh, route: route, ownerIsCurrent: current)
         self.pluginSurfaces[surface] = state
         for waiter in refresh.waiters {
             waiter.continuation.resume(returning: current && waiter.isEligible ? route : nil)
@@ -670,10 +638,7 @@ public actor GatewayNodeSession {
         let states = self.pluginSurfaces.values
         self.pluginSurfaces.removeAll()
         for state in states {
-            state.refresh?.task.cancel()
-            for waiter in (state.refresh?.waiters ?? []) + state.pending {
-                waiter.continuation.resume(returning: nil)
-            }
+            state.cancelAll()
         }
     }
 
@@ -1209,7 +1174,7 @@ extension GatewayNodeSession {
                 // Coalescing shares the request, not caller authority. Every
                 // captured waiter must learn the denial before receiving nil.
                 for waiter in refresh.waiters {
-                    waiter.onProfileObservation(observation)
+                    waiter.caller.onProfileObservation(observation)
                 }
             }
             self.logger.debug("\(method, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")

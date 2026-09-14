@@ -231,7 +231,8 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         // Verification observes the old capture; later confirmation observes the
         // newly admitted binding. Neither facade looks up a successor after an await.
         return CapturedGateway(
-            gateway: makeGateway(observedBinding), route: route,
+            gateway: makeGateway(observedBinding),
+            route: route,
             bindingGateway: { makeGateway($0) })
     }
 
@@ -276,7 +277,9 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         let historyPresentationID = self.presentation?.id
         let history = try await captured.gateway.history(session: session, runID: run?.runID)
         let binding = try await IOSNativeActionBinding.capture(
-            session: session, gateway: self.appModel.operatorSession, route: captured.route,
+            session: session,
+            gateway: self.appModel.operatorSession,
+            route: captured.route,
             reusing: self.chatTransport?.nativeBinding)
         guard await binding.isCurrent(), generation == self.appModel.gatewayConnectGeneration,
               self.selectionID == historySelectionID, self.presentation?.id == historyPresentationID
