@@ -266,6 +266,7 @@ const reindexDatabase = new AsyncLocalStorage<{
 
 export abstract class MemoryManagerDatabaseContext {
   protected abstract publishedDatabase: MemoryIndexDatabase;
+  protected closing = false;
   protected closed = false;
 
   protected async withDatabaseWrite<T>(write: () => T): Promise<T> {

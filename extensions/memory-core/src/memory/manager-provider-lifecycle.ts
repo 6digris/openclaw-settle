@@ -114,7 +114,6 @@ export abstract class MemoryProviderLifecycle extends MemoryManagerEmbeddingOps 
   protected abstract embeddingBootstrapFailure?: MemoryEmbeddingBootstrapDebug;
   protected abstract providerRetirementPromise: Promise<void>;
   protected abstract providersPendingRetirement: Set<EmbeddingProvider>;
-  protected abstract closing: boolean;
   protected abstract activeManagerOperations: number;
   protected abstract managerIdleWaiters: Set<() => void>;
   protected abstract activeBackgroundSearchSyncs: Set<Promise<void>>;

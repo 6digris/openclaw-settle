@@ -48,6 +48,8 @@ type MemorySessionTranscriptUpdate = {
 };
 
 export abstract class MemoryManagerSessionSyncOps extends MemoryManagerWatchOps {
+  protected abstract withManagerOperation<T>(run: () => Promise<T>): Promise<T>;
+
   protected async inspectDiagnosticSourceState(): Promise<void> {
     if (this.sources.has("memory")) {
       try {
@@ -141,7 +143,7 @@ export abstract class MemoryManagerSessionSyncOps extends MemoryManagerWatchOps 
     }
     this.sessionUnsubscribe = this.subscribeSessionTranscriptUpdates((update) =>
       runInMemoryBackgroundContext(() => {
-        if (this.closed) {
+        if (this.closing || this.closed) {
           return;
         }
         const target = this.resolveSessionTranscriptUpdateSyncTarget(update);
@@ -149,10 +151,13 @@ export abstract class MemoryManagerSessionSyncOps extends MemoryManagerWatchOps 
           this.scheduleSessionDirty(target);
           return;
         }
-        if (update.sessionFile) {
-          void this.scheduleCorpusSessionFileDirty(update.sessionFile).catch((err: unknown) => {
-            log.warn(`memory session corpus update failed: ${String(err)}`);
-          });
+        const sessionFile = update.sessionFile;
+        if (sessionFile) {
+          void this.withManagerOperation(() =>
+            this.scheduleCorpusSessionFileDirty(sessionFile),
+          ).catch((err: unknown) =>
+            log.warn(`memory session corpus update failed: ${String(err)}`),
+          );
         }
       }),
     );
@@ -167,6 +172,9 @@ export abstract class MemoryManagerSessionSyncOps extends MemoryManagerWatchOps 
   private async scheduleCorpusSessionFileDirty(sessionFile: string): Promise<void> {
     const resolvedSessionFile = path.resolve(sessionFile);
     const corpusEntries = await this.listSessionCorpusEntries({ includeContentRevision: false });
+    if (this.closing || this.closed) {
+      return;
+    }
     if (
       corpusEntries.some(
         (entry) =>
@@ -176,15 +184,6 @@ export abstract class MemoryManagerSessionSyncOps extends MemoryManagerWatchOps 
     ) {
       this.scheduleSessionDirty(resolvedSessionFile);
     }
-  }
-
-  protected ensureSessionStartupCatchup(): void {
-    if (!this.sources.has("sessions")) {
-      return;
-    }
-    void this.runSessionStartupCatchup().catch((err: unknown) => {
-      log.warn("memory session startup catch-up failed: " + String(err));
-    });
   }
 
   protected async markSessionStartupCatchupDirtyFiles(inspectSources = false): Promise<string[]> {
@@ -291,7 +290,7 @@ export abstract class MemoryManagerSessionSyncOps extends MemoryManagerWatchOps 
 
   protected async runSessionStartupCatchup(): Promise<string[]> {
     const dirtyFiles = await this.markSessionStartupCatchupDirtyFiles();
-    if (!this.sessionsDirty || this.closed) {
+    if (!this.sessionsDirty || this.closing || this.closed) {
       return dirtyFiles;
     }
     void this.sync({ reason: "session-startup-catchup" }).catch((err: unknown) => {
@@ -311,9 +310,12 @@ export abstract class MemoryManagerSessionSyncOps extends MemoryManagerWatchOps 
     }
     this.sessionWatchTimer = setTimeout(() => {
       this.sessionWatchTimer = null;
-      void this.processSessionUpdateBatch().catch((err: unknown) => {
-        log.warn(`memory session update failed: ${String(err)}`);
-      });
+      if (this.closing || this.closed) {
+        return;
+      }
+      void this.withManagerOperation(() => this.processSessionUpdateBatch()).catch((err: unknown) =>
+        log.warn(`memory session update failed: ${String(err)}`),
+      );
     }, SESSION_DIRTY_DEBOUNCE_MS);
   }
 
@@ -326,6 +328,9 @@ export abstract class MemoryManagerSessionSyncOps extends MemoryManagerWatchOps 
     this.sessionPendingFiles.clear();
     this.sessionPendingTargets.clear();
     pending.push(...Array.from(await this.resolveArchiveFilesForSyncTargets(pendingTargets)));
+    if (this.closing || this.closed) {
+      return;
+    }
     for (const sessionFile of pending) {
       this.sessionsDirtyFiles.add(sessionFile);
     }

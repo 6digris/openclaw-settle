@@ -97,7 +97,6 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
   protected providersPendingRetirement = new Set<EmbeddingProvider>();
   private closePromise: Promise<void> | null = null;
   private closeTeardownComplete = false;
-  protected closing = false;
   protected activeManagerOperations = 0;
   protected managerIdleWaiters = new Set<() => void>();
   protected activeBackgroundSearchSyncs = new Set<Promise<void>>();
@@ -327,7 +326,11 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
           this.ensureWatcher();
           this.ensureSessionListener();
           this.ensureIntervalSync();
-          this.ensureSessionStartupCatchup();
+          if (this.sources.has("sessions")) {
+            void this.withManagerOperation(() => this.runSessionStartupCatchup()).catch(
+              (err: unknown) => log.warn("memory session startup catch-up failed: " + String(err)),
+            );
+          }
         });
       }
     } catch (err) {

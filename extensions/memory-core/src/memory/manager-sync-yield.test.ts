@@ -101,6 +101,8 @@ function createDb(): DatabaseSync {
 }
 
 class SessionSyncYieldHarness extends MemoryManagerSyncOps {
+  protected withManagerOperation = <T>(run: () => Promise<T>): Promise<T> => run();
+
   protected readonly createProvider = (): never => {
     throw new Error("Sync yield harness does not acquire embedding providers");
   };
