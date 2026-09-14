@@ -216,7 +216,11 @@ suite.define(() => {
             const state = document.querySelector<HTMLElement & { state: ChatHost }>(
               "openclaw-chat-pane",
             )?.state;
-            return state?.sessionKey === expectedSessionKey && state.chatRunId === null;
+            return (
+              state !== undefined &&
+              state.sessionKey === expectedSessionKey &&
+              state.chatRunId === null
+            );
           },
           { sessionKey },
         );
