@@ -10,6 +10,7 @@ import ai.openclaw.app.NodeRuntime
 import ai.openclaw.app.NodeRuntimeMode
 import ai.openclaw.app.R
 import ai.openclaw.app.SecurePrefs
+import ai.openclaw.app.bindNodeRuntimeTestFixture
 import ai.openclaw.app.chat.ChatCacheScope
 import ai.openclaw.app.chat.ChatController
 import ai.openclaw.app.chat.ChatOutboxItem
@@ -242,7 +243,7 @@ class ChatComposerLayoutTest {
         .apply { isAccessible = true }
         .get(runtime) as ChatController
     originalRuntime = app.peekRuntime()
-    setApplicationRuntime(runtime)
+    bindNodeRuntimeTestFixture(app, runtime)
     originalAnimatorScale = Settings.Global.getString(app.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE)
     Settings.Global.putFloat(app.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 0f)
   }
@@ -251,7 +252,7 @@ class ChatComposerLayoutTest {
   @SuppressLint("RestrictedApi")
   fun tearDown() {
     viewModelStore.clear()
-    setApplicationRuntime(originalRuntime)
+    bindNodeRuntimeTestFixture(app, originalRuntime)
     closeNodeRuntimeTestFixture(runtime)
     AndroidScreenshotFixture.configure(AndroidScreenshotScene.Home)
     Settings.Global.putString(app.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, originalAnimatorScale)
@@ -2586,7 +2587,7 @@ class ChatComposerLayoutTest {
         .getDeclaredField("chat")
         .apply { isAccessible = true }
         .get(runtime) as ChatController
-    setApplicationRuntime(runtime)
+    bindNodeRuntimeTestFixture(app, runtime)
     prefs.gatewayRegistry.upsert(
       GatewayRegistryEntry(stableId = AndroidScreenshotFixture.gatewayId, kind = GatewayRegistryEntryKind.MANUAL, name = "Test gateway"),
     )
@@ -4978,12 +4979,5 @@ class ChatComposerLayoutTest {
       assertTrue("Composer control must stay inside the viewport's left edge", bounds.left >= viewport.left)
       assertTrue("Composer control must stay inside the viewport's right edge", bounds.right <= viewport.right)
     }
-  }
-
-  private fun setApplicationRuntime(value: NodeRuntime?) {
-    NodeApp::class.java
-      .getDeclaredField("runtimeInstance")
-      .apply { isAccessible = true }
-      .set(app, value)
   }
 }
