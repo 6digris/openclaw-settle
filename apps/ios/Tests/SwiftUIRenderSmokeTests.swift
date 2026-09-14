@@ -1,5 +1,6 @@
 import Observation
 import OpenClawKit
+import OpenClawProtocol
 import SwiftUI
 import Testing
 import UIKit
