@@ -846,26 +846,15 @@ describe("scenario-flow-runner", () => {
           {
             name: "uses bundled fixture qaImport",
             actions: [
-              {
-                set: "plugin",
-                value: {
-                  expr: 'await qaImport("./codex-plugin.fixture.js")',
-                },
-              },
-              {
-                set: "artifacts",
-                value: { expr: 'await qaImport("./suite-artifacts.js")' },
-              },
-              {
-                set: "redaction",
-                value: { expr: 'await qaImport("./gateway-log-redaction.js")' },
-              },
-              {
-                set: "slackDelivery",
-                value: {
-                  expr: 'await qaImport("./live-transports/slack/slack-live.delivery-proof.js")',
-                },
-              },
+              ...Object.entries({
+                plugin: "./codex-plugin.fixture.js",
+                artifacts: "./suite-artifacts.js",
+                redaction: "./gateway-log-redaction.js",
+                slackDelivery: "./live-transports/slack/slack-live.delivery-proof.js",
+              }).map(([set, specifier]) => ({
+                set,
+                value: { expr: `await qaImport(${JSON.stringify(specifier)})` },
+              })),
               {
                 assert: {
                   expr:
