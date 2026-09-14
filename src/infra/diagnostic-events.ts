@@ -624,7 +624,7 @@ type DiagnosticRunBaseEvent = DiagnosticBaseEvent & {
   channel?: string;
 };
 
-export type DiagnosticRunContinuationEvent = DiagnosticRunBaseEvent & {
+type DiagnosticRunContinuationEvent = DiagnosticRunBaseEvent & {
   type: "run.continuation";
   owner: "plugin_refresh";
   phase: "requested" | "registered" | "started" | "settled" | "failed" | "not_registered";

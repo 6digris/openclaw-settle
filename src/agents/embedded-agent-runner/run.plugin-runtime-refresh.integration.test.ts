@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildReplyPayloads } from "../../auto-reply/reply/agent-runner-payloads.js";
-import type { DiagnosticRunContinuationEvent } from "../../infra/diagnostic-events.js";
+import type { DiagnosticEventPayload } from "../../infra/diagnostic-events.js";
 import {
   getPluginRuntimeGatewayRequestScope,
   withPluginRuntimeGatewayRequestScope,
@@ -121,7 +121,7 @@ describe("plugin runtime refresh admission", () => {
     const runParams = createOverflowRunParams(state);
     const { onInternalDiagnosticEvent, waitForDiagnosticEventsDrained } =
       await import("../../infra/diagnostic-events.js");
-    const continuations: DiagnosticRunContinuationEvent[] = [];
+    const continuations: Extract<DiagnosticEventPayload, { type: "run.continuation" }>[] = [];
     const unsubscribe = onInternalDiagnosticEvent((event) => {
       if (event.type === "run.continuation" && event.runId === runParams.runId) {
         continuations.push(event);

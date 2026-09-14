@@ -1,7 +1,6 @@
 import {
   areDiagnosticsEnabledForProcess,
   emitDiagnosticEvent,
-  type DiagnosticRunContinuationEvent,
   type DiagnosticEventInput,
 } from "../../infra/diagnostic-events.js";
 import {
@@ -24,6 +23,8 @@ import { createPendingToolMediaCarry } from "./run/tool-media-payloads.js";
 import type { EmbeddedAgentRunResult } from "./types.js";
 import { toNormalizedUsage } from "./usage-accumulator.js";
 
+type ContinuationEvent = Extract<DiagnosticEventInput, { type: "run.continuation" }>;
+
 export type EmbeddedPluginRuntimeRefresh = ReturnType<
   typeof createEmbeddedAgentPluginRuntimeRefresh
 >;
@@ -33,9 +34,9 @@ export function createEmbeddedAgentPluginRuntimeRefresh(
   callbacks: RunEmbeddedAgentParamsWithSessionFile,
 ) {
   const recordContinuation = (
-    phase: DiagnosticRunContinuationEvent["phase"],
+    phase: ContinuationEvent["phase"],
     params: Pick<RunEmbeddedAgentParamsWithSessionFile, "sessionId" | "sessionKey">,
-    reason?: DiagnosticRunContinuationEvent["reason"],
+    reason?: ContinuationEvent["reason"],
   ) => {
     if (!areDiagnosticsEnabledForProcess()) {
       return;
