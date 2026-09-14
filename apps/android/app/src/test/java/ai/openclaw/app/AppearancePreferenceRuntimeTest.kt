@@ -889,7 +889,9 @@ private class AppearanceGatewayFixture(
     if (!connected) stopStartupJobs()
     if (!initialSelectionRegistered) {
       // Seed direct admission once; recreation must rely on the persisted selection.
-      check(prefs.gatewayRegistry.upsertAndSetActive(gatewayRegistryEntry(endpoint, null)))
+      prefs.gatewayRegistry.upsert(gatewayRegistryEntry(endpoint, null))
+      prefs.gatewayRegistry.setActive(endpoint.stableId)
+      check(prefs.gatewayRegistry.storedActiveStableId() == endpoint.stableId)
       initialSelectionRegistered = true
     }
     val identity = Connection(profileId, scopes, methods)
