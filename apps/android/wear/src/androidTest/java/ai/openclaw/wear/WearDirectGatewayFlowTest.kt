@@ -34,8 +34,14 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
+import java.nio.file.AccessDeniedException
+import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 import java.nio.file.LinkOption
+import java.nio.file.NoSuchFileException
+import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.PosixFilePermissions
 import java.security.MessageDigest
 
@@ -43,11 +49,12 @@ import java.security.MessageDigest
 @RunWith(AndroidJUnit4::class)
 class WearDirectGatewayFlowTest {
   private val instrumentation = InstrumentationRegistry.getInstrumentation()
-  private val device = UiDevice.getInstance(instrumentation)
+  private lateinit var device: UiDevice
   private val app by lazy { instrumentation.targetContext.applicationContext as WearApplication }
 
   @Test
   fun limitedSetupAndDurableGatewayFlow() {
+    device = UiDevice.getInstance(instrumentation)
     assumeTrue(InstrumentationRegistry.getArguments().getString("wearDirectGatewayProof") == "true")
     val input = consumeInput()
     val checkpointFile = File(app.filesDir, "wear-direct-gateway-checkpoint.json")
@@ -123,7 +130,11 @@ class WearDirectGatewayFlowTest {
               }
             check(Json.encodeToString(diagnostic).toByteArray().size <= 32_768)
             writeProof(File(app.filesDir, "wear-direct-bootstrap-navigation.json"), diagnostic)
-          }.onFailure { error.addSuppressed(AssertionError("Private navigation diagnostics could not be retained")) }
+          }.onFailure { diagnosticFailure ->
+            error.addSuppressed(
+              diagnosticFailure as? ProofWriteFailure ?: ProofWriteFailure("prepare-diagnostic", diagnosticFailure),
+            )
+          }
           throw error
         }
         setAccessibleText(uniqueEditor(password = true), requireNotNull(input.setupCode))
@@ -261,6 +272,48 @@ class WearDirectGatewayFlowTest {
     // The external harness must join instrumentation, observe socket closure, then restart only
     // its owned app process. A fresh nonce and process start distinguish reopen from Activity resume.
     writeProof(if (previous == null) checkpointFile else File(app.filesDir, "wear-direct-gateway-reopen.json"), checkpoint)
+  }
+
+  @Test
+  fun privateProofWriterPublishesWithoutOverwrite() {
+    assumeTrue(InstrumentationRegistry.getArguments().getString("wearProofWriterProbe") == "true")
+    val directory =
+      try {
+        Files.createTempDirectory(instrumentation.targetContext.filesDir.toPath(), "wear-proof-writer-")
+      } catch (error: Throwable) {
+        throw ProofWriteFailure("fixture-create", error)
+      }
+    val file = directory.resolve("proof.json").toFile()
+    val value = buildJsonObject { put("synthetic", true) }
+    var failure: Throwable? = null
+    try {
+      writeProof(file, value)
+      val original = file.readBytes()
+      assertTrue("published proof has exact content", original.contentEquals(Json.encodeToString(value).toByteArray()))
+      assertTrue(
+        "published proof is private",
+        Files.getPosixFilePermissions(file.toPath(), LinkOption.NOFOLLOW_LINKS) == PosixFilePermissions.fromString("rw-------"),
+      )
+      assertTrue("successful publication removes its temporary file", directory.toFile().list()?.toList() == listOf("proof.json"))
+      val refused = runCatching { writeProof(file, buildJsonObject { put("synthetic", false) }) }.exceptionOrNull()
+      assertTrue(
+        "existing proof is refused before another temporary file",
+        refused is ProofWriteFailure && refused.operation == "no-overwrite" && refused.category == "ASSERTION",
+      )
+      assertTrue("overwrite refusal preserves original bytes", file.readBytes().contentEquals(original))
+      assertTrue("overwrite refusal leaves no temporary file", directory.toFile().list()?.toList() == listOf("proof.json"))
+    } catch (error: Throwable) {
+      val reported = if (error is AssertionError) error else ProofWriteFailure("fixture-verify", error)
+      failure = reported
+      throw reported
+    } finally {
+      try {
+        assertTrue("owned producer fixture is removed", directory.toFile().deleteRecursively())
+      } catch (cleanup: Throwable) {
+        val marker = ProofWriteFailure("fixture-cleanup", cleanup)
+        if (failure == null) throw marker else failure.addSuppressed(marker)
+      }
+    }
   }
 
   private fun exerciseHelpAndDeny(
@@ -423,32 +476,71 @@ class WearDirectGatewayFlowTest {
     file: File,
     value: T,
   ) {
-    assertTrue("private proof is not overwritten", !file.exists())
-    val pending =
-      Files.createTempFile(
-        file.toPath().parent,
-        ".wear-proof-",
-        ".tmp",
-        PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")),
-      )
-    var failure: Throwable? = null
+    var operation = "no-overwrite"
+    var pending: Path? = null
+    var failure: ProofWriteFailure? = null
     try {
+      assertTrue("private proof is not overwritten", !Files.exists(file.toPath(), LinkOption.NOFOLLOW_LINKS))
+      operation = "create-temp"
+      pending =
+        Files.createTempFile(
+          file.toPath().parent,
+          ".wear-proof-",
+          ".tmp",
+          PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")),
+        )
+      operation = "open"
       FileOutputStream(pending.toFile()).use {
-        it.write(Json.encodeToString(value).toByteArray())
+        operation = "encode"
+        val bytes = Json.encodeToString(value).toByteArray()
+        operation = "write"
+        it.write(bytes)
+        operation = "sync"
         it.fd.sync()
+        operation = "close"
       }
-      // Publish only completed, synced bytes. Unlike rename, a hard link cannot replace
-      // an existing receipt; the host never observes the staging file as the final name.
-      Files.createLink(file.toPath(), pending)
+      // This instrumentation is the exclusive publisher; the entry check refuses existing receipts.
+      // Publish only completed, synced bytes. Concurrent publishers are not supported.
+      operation = "move"
+      Files.move(pending, file.toPath(), StandardCopyOption.ATOMIC_MOVE)
+      pending = null
     } catch (error: Throwable) {
-      failure = error
-      throw error
+      // Capture the first operation before cleanup can fail; never retain raw paths or causes.
+      failure = ProofWriteFailure(operation, error)
+      throw failure
     } finally {
-      try {
-        Files.delete(pending)
-      } catch (cleanup: Throwable) {
-        if (failure == null) throw cleanup else failure.addSuppressed(cleanup)
+      if (pending != null) {
+        try {
+          Files.delete(pending)
+        } catch (cleanup: Throwable) {
+          val marker = ProofWriteFailure("delete-temp", cleanup)
+          if (failure == null) throw marker else failure.addSuppressed(marker)
+        }
       }
+    }
+  }
+
+  private class ProofWriteFailure(
+    val operation: String,
+    error: Throwable,
+  ) : AssertionError() {
+    val category =
+      when (error) {
+        is AccessDeniedException -> "ACCESS_DENIED"
+        is FileAlreadyExistsException -> "ALREADY_EXISTS"
+        is NoSuchFileException -> "NOT_FOUND"
+        is UnsupportedOperationException -> "UNSUPPORTED"
+        is SecurityException -> "SECURITY"
+        is IOException -> "IO"
+        is IllegalArgumentException -> "ARGUMENT"
+        is AssertionError -> "ASSERTION"
+        else -> "OTHER"
+      }
+
+    override val message: String get() = "private-proof-write:$operation:$category"
+
+    init {
+      stackTrace = emptyArray()
     }
   }
 
