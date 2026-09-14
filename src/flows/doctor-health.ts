@@ -10,6 +10,7 @@ import { formatUpdateDoctorConfigChange } from "../infra/update-doctor-config.js
 import {
   captureUpdateDoctorConfigWrites,
   createDeferredConfiguredPluginRepairDoctorResult,
+  getUpdateDoctorConfigWriteAuthority,
   normalizeUpdatePostInstallDoctorWarnings,
   UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE,
   UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV,
@@ -129,8 +130,60 @@ async function runDoctorHealthFlowWithResult(
   try {
     const rehearsalRoot = resolveUpdateRehearsalRoot(process.env);
     if (shouldDeferConfiguredPluginInstallRepair(process.env) && !rehearsalRoot) {
-      // Live shipped parents resume with old in-memory plugin records. Only
-      // independent aliases may change before their post-core handoff.
+      let sharedSchemaRepaired = false;
+      // The shipped post-install IPC/compatibility handoff checks shared content
+      // before it can launch the fresh post-core owner. Other deferred calls,
+      // including incomplete private rehearsals, do not acquire this authority.
+      if (
+        updateResult &&
+        process.env.OPENCLAW_COMPATIBILITY_HOST_VERSION?.trim() &&
+        (options.repair === true || options.yes === true)
+      ) {
+        const schemas = await assertDoctorDatabaseSchemasCompatible("state");
+        if (schemas.pendingMigrations?.some((database) => database.kind === "state")) {
+          const { guardUpdateDoctorSchemaUpgrade } =
+            await import("../commands/doctor-update-schema-guard.js");
+          await guardUpdateDoctorSchemaUpgrade({
+            schemas,
+            runtime: effectiveRuntime,
+            json: options.json,
+          });
+          const { beginDoctorMaintenance } = await import("../commands/doctor-maintenance.js");
+          const assertCurrent =
+            getUpdateDoctorConfigWriteAuthority(resolveConfigPath())?.assertCurrent;
+          assertCurrent?.();
+          maintenance = await beginDoctorMaintenance({
+            options,
+            root,
+            runtime: effectiveRuntime,
+            assertCurrent,
+          });
+          const { runDoctorSharedStateSchemaMigration } =
+            await import("../infra/state-migrations.doctor.js");
+          const { throwIfDoctorStateMigrationRefused } =
+            await import("../infra/state-migrations.messages.js");
+          const receipt = await runDoctorSharedStateSchemaMigration({
+            env: process.env,
+            assertCurrent,
+          });
+          throwIfDoctorStateMigrationRefused([receipt]);
+          if (receipt.warnings.length > 0) {
+            throw new Error(receipt.warnings.join("\n"));
+          }
+          const repairedSchemas = await assertDoctorDatabaseSchemasCompatible("state");
+          if (repairedSchemas.pendingMigrations?.some((database) => database.kind === "state")) {
+            throw new Error(
+              "Shared state schema repair did not complete before post-core handoff.",
+            );
+          }
+          for (const change of receipt.changes) {
+            effectiveRuntime.log(change);
+          }
+          sharedSchemaRepaired = true;
+        }
+      }
+      // Retained plugin records, agent migrations and owner materialization stay
+      // deferred. Only independent aliases may change before plugin convergence.
       if (options.repair === true || options.yes === true) {
         const { repairDoctorConfigBeforePluginConvergence } =
           await import("../commands/doctor/shared/automatic-startup-config-repair.js");
@@ -139,8 +192,9 @@ async function runDoctorHealthFlowWithResult(
           effectiveRuntime.log(change);
         }
       }
-      const message =
-        "Plugin-dependent Doctor repair deferred until post-core plugin convergence; state migrations have not run.";
+      const message = sharedSchemaRepaired
+        ? "Shared state schema repair completed; plugin-dependent and agent state repair remain deferred until post-core plugin convergence."
+        : "Plugin-dependent Doctor repair deferred until post-core plugin convergence; state migrations have not run.";
       effectiveRuntime.log(message);
       doctorResult = createDeferredConfiguredPluginRepairDoctorResult([message]);
       if (updateResult) {
