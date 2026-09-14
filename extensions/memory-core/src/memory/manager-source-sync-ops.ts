@@ -64,12 +64,21 @@ export abstract class MemoryManagerSourceSyncOps extends MemoryManagerSessionSyn
   protected async deleteIndexedFile(
     pathname: string,
     source: MemorySource,
-    expectedHash = resolveMemorySourceExistingHash({ db: this.db, path: pathname, source }),
+    expectedHash?: string,
   ): Promise<void> {
+    const capturedHash =
+      expectedHash ??
+      (await this.withDatabaseRead(() =>
+        resolveMemorySourceExistingHash({ db: this.db, path: pathname, source }),
+      ));
     await runSqliteImmediateTransaction(
       this.db,
       async () => () => {
-        this.database.sourceIndex.deleteIfCurrent({ path: pathname, source, expectedHash });
+        this.database.sourceIndex.deleteIfCurrent({
+          path: pathname,
+          source,
+          expectedHash: capturedHash,
+        });
       },
       undefined,
       (write) => this.withDatabaseWrite(write),
