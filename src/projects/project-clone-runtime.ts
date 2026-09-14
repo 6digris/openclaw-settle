@@ -3,15 +3,21 @@ import os from "node:os";
 import path from "node:path";
 import type { ProjectCloneFailureCause } from "../../packages/gateway-protocol/src/index.js";
 import {
-  executeGitCommand,
+  withForegroundGitMaintenance,
   gitNullConfigPath,
   requireGitCommandOutput,
 } from "../infra/git-exec.js";
-import { withGitNetworkRetry } from "../infra/git-network-retry.js";
+import { retryableGitNetworkOperation, withGitNetworkRetry } from "../infra/git-network-retry.js";
 import { runCommandWithTimeout } from "../process/exec.js";
 
 const PROJECT_CLONE_TIMEOUT_MS = 10 * 60_000;
-type ProjectCloneOptions = {
+export type ProjectCloneAuthority = {
+  assertCurrent: () => void;
+  start: <T>(operation: () => T) => Promise<Awaited<T>>;
+};
+
+export type ProjectCloneOptions = {
+  authority?: ProjectCloneAuthority;
   env?: NodeJS.ProcessEnv;
   objectDirectory?: string;
   signal?: AbortSignal;
@@ -110,6 +116,7 @@ export async function cloneProjectCheckout(
   input: { url: string; target: string; requiredCommit?: string },
   options: ProjectCloneOptions = {},
 ): Promise<void> {
+  options.authority?.assertCurrent();
   const env = options.env ?? process.env;
   const existed = await fs.lstat(input.target).then(
     () => true,
@@ -121,6 +128,7 @@ export async function cloneProjectCheckout(
       "A managed checkout already exists for this repository. Register or remove it before retrying.",
     );
   }
+  options.authority?.assertCurrent();
   await fs.mkdir(path.dirname(input.target), { recursive: true });
   const commandEnv = cloneCommandEnv(options.token, env);
   const result = await withGitNetworkRetry(
@@ -130,16 +138,18 @@ export async function cloneProjectCheckout(
       signal: options.signal,
     },
     async (timeoutMs) => {
-      const attempt = await runCommandWithTimeout(
-        ["git", "clone", "--no-recurse-submodules", "--", input.url, input.target],
-        {
-          env: commandEnv,
-          timeoutMs,
-          signal: options.signal,
-          killProcessTree: true,
-          maxOutputBytes: 256 * 1024,
-        },
-      );
+      const run = () =>
+        runCommandWithTimeout(
+          ["git", "clone", "--no-recurse-submodules", "--", input.url, input.target],
+          {
+            env: commandEnv,
+            timeoutMs,
+            signal: options.signal,
+            killProcessTree: true,
+            maxOutputBytes: 256 * 1024,
+          },
+        );
+      const attempt = options.authority ? await options.authority.start(run) : await run();
       if (attempt.code !== 0 || attempt.termination !== "exit") {
         await fs.rm(input.target, { recursive: true, force: true }).catch(() => {});
       }
@@ -328,19 +338,35 @@ function runProjectCheckoutGit(
   args: string[],
   commandOptions: { input?: string } = {},
 ) {
-  return executeGitCommand(
+  const command = [
+    "git",
+    "-C",
     input.target,
-    ["-c", `core.hooksPath=${os.devNull}`, "-c", "core.fsmonitor=false", ...args],
-    {
-      env: {
-        ...cloneCommandEnv(options.token, options.env ?? process.env),
-        ...(options.objectDirectory ? { GIT_OBJECT_DIRECTORY: options.objectDirectory } : {}),
-      },
-      timeoutMs: options.timeoutMs ?? PROJECT_CLONE_TIMEOUT_MS,
-      signal: options.signal,
-      killProcessTree: true,
-      maxOutputBytes: 256 * 1024,
-      ...commandOptions,
+    "-c",
+    `core.hooksPath=${os.devNull}`,
+    "-c",
+    "core.fsmonitor=false",
+    ...args,
+  ];
+  const timeoutMs = options.timeoutMs ?? PROJECT_CLONE_TIMEOUT_MS;
+  return withGitNetworkRetry(
+    retryableGitNetworkOperation(args),
+    { timeoutMs, signal: options.signal },
+    async (attemptTimeoutMs) => {
+      const run = () =>
+        runCommandWithTimeout(withForegroundGitMaintenance(command), {
+          env: {
+            ...cloneCommandEnv(options.token, options.env ?? process.env),
+            ...(options.objectDirectory ? { GIT_OBJECT_DIRECTORY: options.objectDirectory } : {}),
+          },
+          timeoutMs: attemptTimeoutMs,
+          signal: options.signal,
+          killProcessTree: true,
+          maxOutputBytes: 256 * 1024,
+          ...commandOptions,
+        });
+      const result = options.authority ? await options.authority.start(run) : await run();
+      return { ...result, timeoutMs };
     },
   );
 }

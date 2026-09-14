@@ -11,6 +11,7 @@ import {
   ensureProjectCheckoutCommit,
   ProjectCloneError,
   refreshProjectCheckout,
+  type ProjectCloneOptions,
 } from "./project-clone-runtime.js";
 import { parseProjectGitUrl } from "./project-git-url.js";
 import {
@@ -39,11 +40,7 @@ function existingCanonicalProject(
 /** Materializes and registers a project from an accepted GitHub remote. */
 export async function materializeProjectClone(
   input: { cfg: OpenClawConfig; gitUrl: string; name?: string; requiredCommit?: string },
-  options: OpenClawStateDatabaseOptions & {
-    signal?: AbortSignal;
-    timeoutMs?: number;
-    token?: string;
-  } = {},
+  options: OpenClawStateDatabaseOptions & ProjectCloneOptions = {},
 ): Promise<ProjectRegistryRecord> {
   const parsed = parseProjectGitUrl(input.gitUrl);
   if (!parsed) {
@@ -66,6 +63,7 @@ export async function materializeProjectClone(
       operationLabel: "projects.clone.lease",
     },
     async (lease) => {
+      options.authority?.assertCurrent();
       // Keep clone as the outer lease and take one candidate checkout lease at a time. A row that
       // moves roots while we wait must be retried under its new root instead of returned stale.
       while (true) {
@@ -105,10 +103,12 @@ export async function materializeProjectClone(
           signal: lease.signal,
           timeoutMs: options.timeoutMs,
           token: options.token,
+          authority: options.authority,
         },
       );
       try {
         lease.assertOwned();
+        options.authority?.assertCurrent();
         return await registerClonedProjectRegistry(
           { path: target, name: displayName, originUrl: parsed.url },
           options,
@@ -124,17 +124,13 @@ export async function materializeProjectClone(
 /** Refreshes an existing project clone while holding its checkout lifecycle lease. */
 export async function refreshProjectClone(
   project: ProjectRegistryRecord,
-  options: OpenClawStateDatabaseOptions & {
-    env?: NodeJS.ProcessEnv;
-    signal?: AbortSignal;
-    timeoutMs?: number;
-    token?: string;
-  } = {},
+  options: OpenClawStateDatabaseOptions & ProjectCloneOptions = {},
 ): Promise<void> {
   if (project.source !== "cloned") {
     return;
   }
   await withProjectCheckoutLifecycle(project.repoRoot, options, async (lease) => {
+    options.authority?.assertCurrent();
     // Removal and registration share this lease. Re-read now so a queued stale record cannot
     // authorize network, object-store, or ref effects after checkout ownership changes.
     const current = resolveProjectCloneRefreshOwner(project, lease, options);

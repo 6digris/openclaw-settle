@@ -6,13 +6,20 @@ import {
   type ErrorShape,
   type SessionsCreateParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import {
+  GitHubIdentityError,
+  prepareGitHubReadIdentity,
+  resolveConfiguredGitHubToolIdentity,
+} from "../../agents/github-tool-identity.js";
 import { loadSessionEntry, patchSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import { assertAgentRunLifecycleGenerationCurrent } from "../../infra/agent-events.js";
 import { emitAgentRunStatusEvent } from "../../infra/agent-run-status-events.js";
 import { KeyedAsyncQueue } from "../../plugin-sdk/keyed-async-queue.js";
+import { ProjectCloneError } from "../../projects/project-clone-runtime.js";
 import { materializeProjectClone, refreshProjectClone } from "../../projects/project-clone.js";
 import { parseProjectGitUrl } from "../../projects/project-git-url.js";
 import { resolveProjectDirectory } from "../../projects/project-registry.js";
+import { getActiveSecretsRuntimeConfigSnapshot } from "../../secrets/runtime-state.js";
 import { getSessionRepositoryWorkspaceStore } from "../../state/session-repository-workspaces.js";
 import { githubApiToken } from "../control-ui-github-api.js";
 import {
@@ -20,6 +27,7 @@ import {
   hasExplicitSessionName,
   resolveExplicitSessionName,
 } from "../dashboard-session-title.js";
+import { requestCurrentGitHubOAuthRefresh } from "../github-oauth-lifecycle.js";
 import { ADMIN_SCOPE } from "../operator-scopes.js";
 import type {
   PrepareGatewaySessionLifecycle,
@@ -268,17 +276,67 @@ export async function prepareSessionWorkspace(params: {
       delete entry.pendingWorktree;
       return;
     }
+    const configuredIdentity = () => {
+      const config = context.getRuntimeConfig();
+      return (
+        resolveConfiguredGitHubToolIdentity({ config, agentId, scope: "agent" }) ??
+        resolveConfiguredGitHubToolIdentity({ config, agentId, scope: "system" })
+      );
+    };
+    // Gateway-source sessions retain service/anonymous cloning when no managed
+    // identity is selected. A selected profile must never fall back to that path.
+    const identity =
+      gitUrl && configuredIdentity()
+        ? await prepareGitHubReadIdentity({
+            config: context.getRuntimeConfig(),
+            sourceConfig: getActiveSecretsRuntimeConfigSnapshot()?.sourceConfig ?? cfg,
+            agentId,
+            getCurrentConfig: () => context.getRuntimeConfig(),
+            assertActive: assertRunOwnership,
+            refresh: () => requestCurrentGitHubOAuthRefresh(agentId),
+          })
+        : undefined;
+    const assertCloneCurrent = () => {
+      assertRunOwnership();
+      if (identity) {
+        identity.assertSelected();
+      } else if (gitUrl && configuredIdentity()) {
+        throw new GitHubIdentityError("changed");
+      }
+    };
+    const cloneOptions = {
+      signal,
+      token: identity ? identity.token : gitUrl ? githubApiToken(process.env, cfg) : undefined,
+      authority: {
+        assertCurrent: assertCloneCurrent,
+        start: async <T>(operation: () => T): Promise<Awaited<T>> => {
+          assertCloneCurrent();
+          return identity ? await identity.start(operation) : await operation();
+        },
+      },
+    };
+    const projectGit = async <T>(run: () => Promise<T>): Promise<T> => {
+      try {
+        return await run();
+      } catch (error) {
+        if (identity && error instanceof ProjectCloneError && error.failure === "auth_required") {
+          throw new ProjectCloneError(
+            error.failure,
+            "GitHub could not authenticate this repository with the selected agent's GitHub identity. Check its repository access or reconnect it in Settings, then retry.",
+          );
+        }
+        throw error;
+      }
+    };
+    assertCloneCurrent();
     const project = gitUrl
-      ? await materializeProjectClone(
-          { cfg, gitUrl },
-          { signal, token: githubApiToken(process.env, cfg) },
-        )
+      ? await projectGit(() => materializeProjectClone({ cfg, gitUrl }, cloneOptions))
       : undefined;
-    assertRunOwnership();
+    assertCloneCurrent();
     const directory = project
       ? await resolveProjectDirectory(project.repoRoot)
       : pending?.workspace;
-    assertRunOwnership();
+    assertCloneCurrent();
     if (!directory) {
       throw new Error("Saved worktree workspace is invalid; select the repository and retry.");
     }
@@ -296,7 +354,7 @@ export async function prepareSessionWorkspace(params: {
       throw new Error(root.error.message);
     }
     const status = (phase: Parameters<typeof emitAgentRunStatusEvent>[0]["phase"]) => {
-      assertRunOwnership();
+      assertCloneCurrent();
       emitAgentRunStatusEvent({ runId: clientRunId, sessionKey, agentId, phase });
     };
     const needsTitle = pending && !pending.name && !hasExplicitSessionName(saved);
@@ -313,7 +371,7 @@ export async function prepareSessionWorkspace(params: {
             sessionKey,
             storePath,
             userMessage: pending.titleSource,
-            commitGuard: assertRunOwnership,
+            commitGuard: assertCloneCurrent,
             onPersisted: () =>
               emitSessionsChanged(context, { sessionKey, agentId, reason: "chat.title" }),
             onError: (error) => context.logGateway.warn(`worktree title failed: ${String(error)}`),
@@ -331,11 +389,8 @@ export async function prepareSessionWorkspace(params: {
           resolved.error.code === ErrorCodes.INVALID_REQUEST &&
           project?.source === "cloned"
         ) {
-          await refreshProjectClone(project, {
-            signal,
-            token: githubApiToken(process.env, cfg),
-          });
-          assertRunOwnership();
+          await projectGit(() => refreshProjectClone(project, cloneOptions));
+          assertCloneCurrent();
           resolved = await resolveSessionWorktreeBase(directory, pending.baseRef, signal);
         }
         if (!resolved.ok) {
@@ -351,7 +406,7 @@ export async function prepareSessionWorkspace(params: {
             return { pendingWorktree: next };
           },
           {
-            assertCommitAllowed: assertRunOwnership,
+            assertCommitAllowed: assertCloneCurrent,
             requireWriteSuccess: true,
             skipMaintenance: true,
           },
@@ -362,6 +417,8 @@ export async function prepareSessionWorkspace(params: {
         Object.assign(saved, updated);
         pending = next;
       }
+      await identity?.revalidate();
+      assertCloneCurrent();
       // Retries inherit workspace intent, not a previous caller's setup authority.
       const result = await prepareSessionWorktree({
         cfg,
@@ -373,7 +430,7 @@ export async function prepareSessionWorkspace(params: {
         label: title ?? resolveExplicitSessionName(saved) ?? pending.titleSource,
         runSetupScript: client?.connect?.scopes?.includes(ADMIN_SCOPE) === true,
         signal,
-        commitGuard: assertRunOwnership,
+        commitGuard: assertCloneCurrent,
         onProgress: (stage) => status(stage === "setup" ? "running_setup" : "creating_worktree"),
       });
       if (!result.ok) {
@@ -383,6 +440,8 @@ export async function prepareSessionWorkspace(params: {
     }
     let bound;
     try {
+      await identity?.revalidate();
+      assertCloneCurrent();
       bound = await patchSessionEntryCore(
         target,
         (current) => {
@@ -397,7 +456,7 @@ export async function prepareSessionWorkspace(params: {
           };
         },
         {
-          assertCommitAllowed: assertRunOwnership,
+          assertCommitAllowed: assertCloneCurrent,
           requireWriteSuccess: true,
           skipMaintenance: true,
         },
@@ -414,7 +473,7 @@ export async function prepareSessionWorkspace(params: {
     Object.assign(entry, bound);
     delete entry.pendingProjectGitUrl;
     delete entry.pendingWorktree;
-    assertRunOwnership();
+    assertCloneCurrent();
     emitSessionsChanged(context, { sessionKey, agentId, reason: "project" });
   });
   assertRunOwnership();

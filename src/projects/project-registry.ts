@@ -23,6 +23,11 @@ import {
   type OpenClawStateLeaseContext,
   withOpenClawStateLease,
 } from "../state/openclaw-state-lease.js";
+import type { ProjectCloneAuthority } from "./project-clone-runtime.js";
+
+type ProjectRegistrationOptions = OpenClawStateDatabaseOptions & {
+  authority?: ProjectCloneAuthority;
+};
 
 export type ProjectRegistryRecord = {
   id: string;
@@ -95,13 +100,14 @@ function insertProjectRegistry(
     originUrl?: string;
     source: "registered" | "cloned";
   },
-  options: OpenClawStateDatabaseOptions,
+  options: ProjectRegistrationOptions,
   lease: OpenClawStateLeaseContext,
 ): ProjectRegistryRecord {
   ensureProjectRegistrySchema(options);
   return runOpenClawStateWriteTransaction(
     ({ db: sqlite }) => {
       lease.assertOwnedInTransaction(sqlite);
+      options.authority?.assertCurrent();
       const db = getNodeSqliteKysely<ProjectsDatabase>(sqlite);
       const sameRoot = executeSqliteQueryTakeFirstSync(
         sqlite,
@@ -240,7 +246,7 @@ async function registerResolvedProject(
     originUrl?: string;
     source: "registered" | "cloned";
   },
-  options: OpenClawStateDatabaseOptions = {},
+  options: ProjectRegistrationOptions = {},
 ): Promise<ProjectRegistryRecord> {
   const checkout = await resolveProjectCheckout(input.path);
   const displayName = input.name?.trim() || path.basename(checkout.repoRoot) || "Project";
@@ -251,16 +257,18 @@ async function registerResolvedProject(
     if (current.repoRoot !== checkout.repoRoot) {
       throw new ProjectCheckoutError(`project checkout changed while registering: ${input.path}`);
     }
-    return insertProjectRegistry(
-      {
-        displayName,
-        repoRoot: checkout.repoRoot,
-        originUrl: input.originUrl ?? checkout.originUrl,
-        source: input.source,
-      },
-      options,
-      lease,
-    );
+    const insert = () =>
+      insertProjectRegistry(
+        {
+          displayName,
+          repoRoot: checkout.repoRoot,
+          originUrl: input.originUrl ?? checkout.originUrl,
+          source: input.source,
+        },
+        options,
+        lease,
+      );
+    return options.authority ? await options.authority.start(insert) : insert();
   });
 }
 
@@ -273,7 +281,7 @@ export async function registerProjectRegistry(
 
 export async function registerClonedProjectRegistry(
   input: { path: string; name: string; originUrl: string },
-  options: OpenClawStateDatabaseOptions = {},
+  options: ProjectRegistrationOptions = {},
 ): Promise<ProjectRegistryRecord> {
   return await registerResolvedProject({ ...input, source: "cloned" }, options);
 }
