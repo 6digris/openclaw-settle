@@ -1,7 +1,10 @@
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { runWithGatewayIndependentRootWorkAdmission } from "../process/gateway-work-admission.js";
 import { restoreAgentSchemaInspectionError } from "../state/openclaw-agent-schema-inspection-response.js";
-import type { OpenClawStateDatabaseReadAdmission } from "../state/openclaw-state-db-async-lifecycle.js";
+import {
+  runOutsideOpenClawDatabaseMaintenanceScope,
+  type OpenClawStateDatabaseReadAdmission,
+} from "../state/openclaw-state-db-async-lifecycle.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import {
@@ -55,7 +58,7 @@ function scheduleTaskFlowSyncRetry(
     log.warn("Exhausted parent flow sync retries from task", { operation, taskId: id });
     return;
   }
-  const timer = setTimeout(() => {
+  const retry = () => {
     timers.delete(key);
     if (timers.size === 0) {
       taskFlowSyncRetryTimers.delete(store);
@@ -112,7 +115,8 @@ function scheduleTaskFlowSyncRetry(
         error,
       });
     });
-  }, delayMs);
+  };
+  const timer = runOutsideOpenClawDatabaseMaintenanceScope(() => setTimeout(retry, delayMs));
   timer.unref?.();
   timers.set(key, timer);
   taskFlowSyncRetryTimers.set(store, timers);
