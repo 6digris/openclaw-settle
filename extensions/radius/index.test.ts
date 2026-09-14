@@ -1,7 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { AuthStorage, ModelRegistry } from "openclaw/plugin-sdk/agent-sessions";
-import { registerSingleProviderPlugin } from "openclaw/plugin-sdk/plugin-test-runtime";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import {
+  createNonExitingRuntimeEnv,
+  createTestWizardPrompter,
+  registerSingleProviderPlugin,
+} from "openclaw/plugin-sdk/plugin-test-runtime";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, expect, it, vi } from "vitest";
 import { runSingleProviderCatalog } from "../test-support/provider-model-test-helpers.js";
@@ -26,6 +31,70 @@ vi.mock("openclaw/plugin-sdk/provider-transport-runtime", async (importOriginal)
 
 afterEach(() => vi.resetAllMocks());
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+
+it.each([false, true])(
+  "presents the registered device sign-in and cancels before polling (remote=%s)",
+  async (isRemote) => {
+    fetchGuard.mockResolvedValueOnce({
+      response: Response.json({
+        device_code: "synthetic-device-secret",
+        user_code: "ABCD-EFGH",
+        verification_uri: "https://radius.earendil.com/device",
+        expires_in: 300,
+        interval: 5,
+      }),
+      release: async () => undefined,
+    });
+    const provider = await registerSingleProviderPlugin(radiusPlugin);
+    const method = provider.auth.find((entry) => entry.id === "oauth");
+    if (!method) {
+      throw new Error("Radius did not register its OAuth method");
+    }
+    const abort = new AbortController();
+    const started = createDeferred<void>();
+    const openUrl = vi.fn(async () => undefined);
+    const deviceCode = vi.fn(async () => undefined);
+    const stop = vi.fn();
+    const login = method.run({
+      config: {},
+      runtime: createNonExitingRuntimeEnv(),
+      prompter: createTestWizardPrompter({
+        deviceCode,
+        progress: () => {
+          started.resolve();
+          return { update: vi.fn(), stop };
+        },
+      }),
+      signal: abort.signal,
+      isRemote,
+      openUrl,
+      oauth: {
+        createVpsAwareHandlers: () => {
+          throw new Error("Unexpected callback flow");
+        },
+      },
+    });
+    try {
+      expect(await Promise.race([started.promise.then(() => true), login.then(() => false)])).toBe(
+        true,
+      );
+      expect(openUrl).toHaveBeenCalledExactlyOnceWith("https://radius.earendil.com/device");
+      expect(deviceCode).toHaveBeenCalledExactlyOnceWith({
+        title: "Radius sign-in",
+        code: "ABCD-EFGH",
+        expiresInMinutes: 5,
+        message: "Enter this one-time code to sign in to Radius.",
+      });
+      abort.abort();
+      await expect(login).rejects.toThrow(/abort/i);
+      expect(stop).toHaveBeenCalledExactlyOnceWith("Radius sign-in stopped");
+    } finally {
+      abort.abort();
+      await login.catch(() => undefined);
+    }
+    expect(fetchGuard).toHaveBeenCalledOnce();
+  },
+);
 
 it("routes a discovered organization model through the registered native transport", async () => {
   const metadata = {
