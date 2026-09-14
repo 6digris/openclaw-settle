@@ -1,14 +1,24 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { runUpdateCommandRepair } from "../cli/update-cli/update-command-repair.js";
 import { admitUpdateCommandRun } from "../cli/update-cli/update-command-run.js";
+import { resolveServiceManagerEnv } from "../daemon/service-process-env.js";
+import { isChildProcessTreeAlive } from "../process/child-process-tree.js";
+import { runUtf8CommandWithTimeout } from "../process/exec.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
-import { toErrorObject } from "./errors.js";
+import { killPidIfAlive } from "../test-utils/process-tree.js";
 import { UPDATE_RUN_ID_ENV } from "./update-control-plane-sentinel.js";
+import {
+  captureManagedUpdateLeaseDatabaseIdentity,
+  createManagedHandoffLeaseDatabase,
+} from "./update-managed-service-handoff-database.js";
+import { createManagedHandoffLeaseStore } from "./update-managed-service-handoff-lease.js";
 import { prepareUnattendedUpdateRepair } from "./update-repair-agent.js";
 import type { UpdateRepairEvent, UpdateRepairParams } from "./update-repair-protocol.js";
+import { withRepairExecutor } from "./update-repair.test-support.js";
 import * as requesterOwner from "./update-requester-authority.js";
 import { createUpdateRun, getUpdateRun, recordUpdateRunPhase } from "./update-run-ledger.js";
 
@@ -35,7 +45,119 @@ function repairParams(state: {
   };
 }
 
-describe("fresh candidate repair process", () => {
+function prepareOwnedRepair(params: UpdateRepairParams) {
+  return withRepairExecutor(params, prepareUnattendedUpdateRepair);
+}
+
+describe("fresh update repair process", () => {
+  it.skipIf(process.platform === "win32")(
+    "keeps both installations busy after updater death until the repair process exits",
+    async () => {
+      await withOpenClawTestState(
+        { prefix: "repair-child-custody-", layout: "home" },
+        async (state) => {
+          const original = state.path("original");
+          const staged = state.path("staged");
+          const control = state.path("control");
+          await fs.mkdir(original);
+          await fs.mkdir(control, { mode: 0o700 });
+          const pidPath = state.path("repair-pid");
+          await candidate(
+            staged,
+            `
+          import fs from "node:fs";
+          setInterval(() => {}, 1000);
+          // A draining repair can outlive its disconnected updater.
+          process.on("disconnect", () => {});
+          process.on("message", message => {
+            if (message.type !== "start" && message.type !== "turn") return;
+            fs.writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));
+            if (message.type === "start") process.send({ type: "validate", id: 1 });
+          });
+          process.send({ type: "ready", candidateRehearsal: true, repairTurns: true, executorDelegation: "pid-start-v1" });
+        `,
+          );
+          const databasePath = path.join(control, "managed-update-handoffs.sqlite");
+          const identity = createManagedHandoffLeaseDatabase(databasePath)(true, () =>
+            captureManagedUpdateLeaseDatabaseIdentity(databasePath),
+          );
+          const runId = randomUUID();
+          const program = `
+          import fs from "node:fs";
+          import { withUpdateCommandExecutor } from ${JSON.stringify(new URL("../cli/update-cli/update-command-executor.ts", import.meta.url).href)};
+          import { prepareUnattendedUpdateRepair } from ${JSON.stringify(new URL("./update-repair-agent.ts", import.meta.url).href)};
+          await withUpdateCommandExecutor(${JSON.stringify(runId)}, async owner => {
+            const executorFence = await owner.enter(${JSON.stringify(original)});
+            const readyTimer = setInterval(() => {
+              if (fs.existsSync(${JSON.stringify(pidPath)})) {
+                clearInterval(readyTimer);
+                process.stdout.write(fs.readFileSync(${JSON.stringify(pidPath)}, "utf8"), () => process.kill(process.pid, "SIGKILL"));
+              }
+            }, 10);
+            const result = await prepareUnattendedUpdateRepair({
+              executorFence,
+              runId: ${JSON.stringify(runId)},
+              target: ${JSON.stringify({ ...repairParams(state).target, installRoot: staged })},
+              context: { phase: "validating", error: "Synthetic update failure" },
+              budget: { wallClockMs: 30000 },
+              validate: async () => ({ ok: false, score: 0, summary: "Update failed" }),
+            });
+            clearInterval(readyTimer);
+            throw new Error(JSON.stringify(result));
+          }, { existingAuthority: ${JSON.stringify({ ...identity, installKey: original })} });
+        `;
+          let pid: number | undefined;
+          onTestFinished(async () => {
+            const repairPid = pid ?? Number(await fs.readFile(pidPath, "utf8").catch(() => "0"));
+            killPidIfAlive(repairPid || undefined);
+          });
+          const store = createManagedHandoffLeaseStore({
+            databasePath,
+            serviceManagerEnv: resolveServiceManagerEnv(),
+            existingIdentity: identity,
+          });
+          const acquireBoth = () =>
+            [original, staged].map((root) => {
+              const acquired = store.acquire(root, "next-update", { kind: "update" });
+              if (acquired.kind === "acquired") {
+                expect(store.release(acquired.lease)).toBe(true);
+              }
+              return acquired.kind;
+            });
+          try {
+            const exited = await runUtf8CommandWithTimeout(
+              [
+                process.execPath,
+                "--import",
+                path.resolve("scripts/tsx.mjs"),
+                "--input-type=module",
+                "-e",
+                program,
+              ],
+              { env: { ...state.env, ESBUILD_WORKER_THREADS: "0" }, timeoutMs: 30_000 },
+            );
+            expect(exited.signal, exited.stderr).toBe("SIGKILL");
+            pid = Number(exited.stdout);
+            expect(Number.isSafeInteger(pid) && pid > 0).toBe(true);
+            expect(isChildProcessTreeAlive({ pid })).toBe(true);
+            expect(acquireBoth()).toEqual(["busy", "busy"]);
+          } finally {
+            pid ??= Number(await fs.readFile(pidPath, "utf8").catch(() => "0")) || undefined;
+            killPidIfAlive(pid);
+            if (pid) {
+              await vi.waitFor(() => expect(isChildProcessTreeAlive({ pid })).toBe(false), {
+                timeout: 5000,
+                interval: 25,
+              });
+            }
+          }
+          expect(acquireBoth()).toEqual(["acquired", "acquired"]);
+        },
+      );
+    },
+    45000,
+  );
+
   it.each([
     {
       source: "external",
@@ -72,27 +194,16 @@ describe("fresh candidate repair process", () => {
             state.workspaceDir,
             `
         import fs from "node:fs";
-        let start;
-        const send = message => process.send(message);
         process.on("message", message => {
-          if (message.type === "start") {
-            start = message;
-            const expectedRequester = ${JSON.stringify(needsAuthority ? requester : null)};
-            if (JSON.stringify(start.requester ?? null) !== JSON.stringify(expectedRequester)) process.exit(8);
-            fs.writeFileSync("child-pid", String(process.pid));
-            send({ type: "validate", id: 1 });
-          } else if (message.type === "validation-result" && message.id === 1) {
-            send({ type: "event", event: { type: "turn-started", turn: 1, provider: "openai", model: "gpt-5.6-luna" } });
-            fs.writeFileSync("candidate-repaired", start.target.stateDir);
-            send({ type: "validate", id: 2 });
-          } else if (message.type === "validation-result" && message.id === 2) {
-            const attempt = { turn: 1, provider: "openai", model: "gpt-5.6-luna", durationMs: 1, toolCalls: 1, validation: message.validation, summary: "Candidate repair completed." };
-            send({ type: "event", event: { type: "turn-finished", ...attempt } });
-            send({ type: "event", event: { type: "stopped", status: "repaired" } });
-            process.send({ type: "result", result: { status: "repaired", attempts: [attempt], finalValidation: message.validation } }, () => process.disconnect());
-          }
+          if (message.type !== "turn") return;
+          const expectedRequester = ${JSON.stringify(needsAuthority ? requester : null)};
+          if (JSON.stringify(message.requester ?? null) !== JSON.stringify(expectedRequester)) process.exit(8);
+          fs.writeFileSync("child-pid", String(process.pid));
+          process.send({ type: "event", event: { type: "route-selected", provider: "openai", model: "gpt-5.6-luna" } });
+          fs.writeFileSync("candidate-repaired", message.target.stateDir);
+          process.send({ type: "turn-result", result: { status: "completed", provider: "openai", model: "gpt-5.6-luna", toolCalls: 1, summary: "Update repair completed.", timedOut: false } }, () => process.disconnect());
         });
-        send({ type: "ready", candidateRehearsal: true });
+        process.send({ type: "ready", repairTurns: true, executorDelegation: "pid-start-v1" });
       `,
           );
           const prepareAuthority = requesterOwner.createManagedUpdateRequesterAuthority;
@@ -130,7 +241,7 @@ describe("fresh candidate repair process", () => {
             const events: UpdateRepairEvent[] = [];
             let validations = 0;
             let restarts = 0;
-            const result = await runUpdateCommandRepair({
+            const repairOptions: Parameters<typeof runUpdateCommandRepair>[0] = {
               root: state.workspaceDir,
               env: run.env,
               run,
@@ -147,14 +258,16 @@ describe("fresh candidate repair process", () => {
               validate: async (signal) => {
                 signal.throwIfAborted();
                 validations += 1;
-                const childPid = Number(
-                  await fs.readFile(path.join(state.workspaceDir, "child-pid"), "utf8"),
-                );
-                expect(childPid).not.toBe(process.pid);
+                run.executorFence?.assertCurrent();
                 const repaired = await fs
                   .readFile(path.join(state.workspaceDir, "candidate-repaired"), "utf8")
                   .catch(() => "");
                 if (repaired) {
+                  const childPid = Number(
+                    await fs.readFile(path.join(state.workspaceDir, "child-pid"), "utf8"),
+                  );
+                  expect(childPid).not.toBe(process.pid);
+                  expect(isChildProcessTreeAlive({ pid: childPid })).toBe(false);
                   expect(repaired).toBe(state.stateDir);
                   expect(events.at(-1)?.type).toBe("turn-started");
                   restarts += 1;
@@ -165,7 +278,14 @@ describe("fresh candidate repair process", () => {
                   summary: repaired ? "Parent verified restart" : "Service stopped",
                 };
               },
-            });
+            };
+            const result = await withRepairExecutor(
+              { ...repairParams(state), runId: run.runId },
+              ({ executorFence }) => {
+                run.executorFence = executorFence;
+                return runUpdateCommandRepair(repairOptions);
+              },
+            );
             expect(result).toMatchObject({
               status: "repaired",
               attempts: [{ validation: { ok: true } }],
@@ -178,7 +298,10 @@ describe("fresh candidate repair process", () => {
               expect.objectContaining({ status: "succeeded" }),
             ]);
             expect(events.map((event) => event.type)).toEqual([
+              "validation",
+              "route-selected",
               "turn-started",
+              "validation",
               "turn-finished",
               "stopped",
             ]);
@@ -189,6 +312,50 @@ describe("fresh candidate repair process", () => {
       );
     },
   );
+
+  it("validates a timed-out turn after its child finishes draining", async () => {
+    await withOpenClawTestState(
+      { prefix: "repair-child-timeout-", layout: "home" },
+      async (state) => {
+        await candidate(
+          state.workspaceDir,
+          `
+        import fs from "node:fs";
+        process.on("message", message => {
+          if (message.type !== "turn") return;
+          process.send({ type: "event", event: { type: "route-selected", provider: "openai", model: "gpt-5.6-luna" } });
+          setTimeout(() => {
+            fs.writeFileSync("drained", String(process.pid));
+            process.send({ type: "turn-result", result: { status: "completed", provider: "openai", model: "gpt-5.6-luna", toolCalls: 1, summary: "Partial edit drained.", timedOut: true } }, () => process.disconnect());
+          }, message.timeoutMs + 100);
+        });
+        process.send({ type: "ready", repairTurns: true, executorDelegation: "pid-start-v1" });
+      `,
+        );
+        const result = await prepareOwnedRepair({
+          ...repairParams(state),
+          budget: { perTurnMs: 20, wallClockMs: 10_000 },
+          validate: async () => {
+            const pid = await fs
+              .readFile(path.join(state.workspaceDir, "drained"), "utf8")
+              .catch(() => "");
+            if (pid) {
+              expect(isChildProcessTreeAlive({ pid: Number(pid) })).toBe(false);
+            }
+            return {
+              ok: Boolean(pid),
+              score: 0,
+              summary: pid ? "Repair verified" : "Service stopped",
+            };
+          },
+        });
+        expect(result).toMatchObject({
+          status: "repaired",
+          attempts: [{ toolCalls: 1, validation: { ok: true } }],
+        });
+      },
+    );
+  });
 
   it("keeps admission separate from the rehearsal environment sent to the child", async () => {
     await withOpenClawTestState({ prefix: "repair-child-env-", layout: "home" }, async (state) => {
@@ -213,17 +380,16 @@ describe("fresh candidate repair process", () => {
         import fs from "node:fs";
         const send = message => process.send(message);
         process.on("message", message => {
-          if (message.type === "start") {
+          if (message.type === "turn") {
             fs.writeFileSync("repair-child-env.json", JSON.stringify({
               admission: Object.fromEntries(${JSON.stringify(reported)}.map(key => [key, process.env[key]])),
               rehearsal: message.target.environment,
             }));
-            const validation = { ok: true, score: 1, summary: "Environment captured." };
-            send({ type: "event", event: { type: "stopped", status: "repaired" } });
-            process.send({ type: "result", result: { status: "repaired", attempts: [], finalValidation: validation } }, () => process.disconnect());
+            send({ type: "event", event: { type: "route-selected", provider: "openai", model: "gpt-5.6-luna" } });
+            process.send({ type: "turn-result", result: { status: "completed", provider: "openai", model: "gpt-5.6-luna", toolCalls: 0, summary: "Environment captured.", timedOut: false } }, () => process.disconnect());
           }
         });
-        send({ type: "ready", candidateRehearsal: true });
+        send({ type: "ready", repairTurns: true, executorDelegation: "pid-start-v1" });
       `,
       );
       const before = { ...process.env };
@@ -231,8 +397,16 @@ describe("fresh candidate repair process", () => {
         ...state.env,
         TMPDIR: state.path("admission-temp"),
       };
-      const result = await prepareUnattendedUpdateRepair({
+      const result = await prepareOwnedRepair({
         ...repairParams(state),
+        validate: async () => ({
+          ok: await fs.access(path.join(state.workspaceDir, "repair-child-env.json")).then(
+            () => true,
+            () => false,
+          ),
+          score: 0,
+          summary: "Environment captured",
+        }),
         admissionEnv,
         target: {
           stateDir: state.stateDir,
@@ -276,40 +450,46 @@ describe("fresh candidate repair process", () => {
     });
   });
 
-  it("cancels the child and drains the parent oracle before returning", async () => {
+  it("cancels and joins the repair child before releasing the repair slot", async () => {
     await withOpenClawTestState(
       { prefix: "repair-child-cancel-", layout: "home" },
       async (state) => {
         await candidate(
           state.workspaceDir,
           `
+        import fs from "node:fs";
         process.on("message", message => {
-          if (message.type === "start") process.send({ type: "validate", id: 1 });
+          if (message.type === "turn") {
+            fs.writeFileSync("repair-pid", String(process.pid));
+            process.send({ type: "event", event: { type: "route-selected", model: "gpt-5.6-luna", provider: "openai" } });
+          }
         });
-        process.send({ type: "ready", candidateRehearsal: true });
+        process.send({ type: "ready", repairTurns: true, executorDelegation: "pid-start-v1" });
       `,
         );
         const controller = new AbortController();
-        const { promise: entered, resolve: admitted } = createDeferred();
-        let drained = false;
-        const pending = prepareUnattendedUpdateRepair({
-          ...repairParams(state),
-          signal: controller.signal,
-          validate: (signal) =>
-            new Promise((_, reject) => {
-              signal.addEventListener(
-                "abort",
-                () => {
-                  drained = true;
-                  reject(toErrorObject(signal.reason, "Repair validation cancelled."));
-                },
-                { once: true },
-              );
-              admitted();
-            }),
-        });
-        await entered;
-        await expect(prepareUnattendedUpdateRepair(repairParams(state))).resolves.toMatchObject({
+        const entered = createDeferred();
+        let admitted: UpdateRepairParams | undefined;
+        const pending = withRepairExecutor(
+          {
+            ...repairParams(state),
+            signal: controller.signal,
+            onEvent: (event) => {
+              if (event.type === "turn-started") {
+                entered.resolve();
+              }
+            },
+          },
+          async (owned) => {
+            admitted = owned;
+            return await prepareUnattendedUpdateRepair(owned);
+          },
+        );
+        await entered.promise;
+        if (!admitted) {
+          throw new Error("Repair fixture did not acquire its executor.");
+        }
+        await expect(prepareUnattendedUpdateRepair(admitted)).resolves.toMatchObject({
           status: "unavailable",
           reason: "Another installation repair is already running.",
         });
@@ -318,28 +498,29 @@ describe("fresh candidate repair process", () => {
           status: "aborted",
           reason: "repair-cancelled",
         });
-        expect(drained).toBe(true);
+        const pid = Number(await fs.readFile(path.join(state.workspaceDir, "repair-pid"), "utf8"));
+        expect(isChildProcessTreeAlive({ pid })).toBe(false);
       },
     );
   });
 
-  it("refuses a worker that cannot separate live authority from its repair target", async () => {
+  it.each(["validating", "verifying"] as const)("refuses unsupported worker: %s", async (phase) => {
     await withOpenClawTestState({ prefix: "repair-old-worker-", layout: "home" }, async (state) => {
       await candidate(
         state.workspaceDir,
         `
         import fs from "node:fs";
         process.on("message", () => fs.writeFileSync("unexpected-start", "started"));
-        process.send({ type: "ready" });
+        process.send({ type: "ready", ...${JSON.stringify(phase === "verifying" ? { repairTurns: true } : {})} });
         `,
       );
-      const result = await prepareUnattendedUpdateRepair({
+      const result = await prepareOwnedRepair({
         ...repairParams(state),
-        context: { error: "Candidate validation failed.", phase: "validating" },
+        context: { error: "Update validation failed.", phase },
       });
       expect(result).toMatchObject({
         status: "unavailable",
-        reason: expect.stringContaining("cannot repair isolated rehearsal state"),
+        reason: expect.stringContaining("cannot accept delegated repair"),
       });
       await expect(
         fs.stat(path.join(state.workspaceDir, "unexpected-start")),
@@ -354,14 +535,12 @@ describe("fresh candidate repair process", () => {
       { prefix: "repair-child-missing-", layout: "home" },
       async (state) => {
         const events: UpdateRepairEvent[] = [];
-        const result = await prepareUnattendedUpdateRepair({
+        const result = await prepareOwnedRepair({
           ...repairParams(state),
           onEvent: (event) => events.push(event),
         });
-        expect(result.status).toBe("unavailable");
-        expect(events).toEqual([
-          expect.objectContaining({ type: "stopped", status: "unavailable" }),
-        ]);
+        expect(result.status, JSON.stringify(result)).toBe("unavailable");
+        expect(events.at(-1)).toMatchObject({ type: "stopped", status: "unavailable" });
       },
     );
   });

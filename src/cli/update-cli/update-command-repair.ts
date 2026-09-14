@@ -49,6 +49,7 @@ export async function runUpdateCommandRepair(params: {
   const admittedRun = runId ? getUpdateRun(runId, options) : undefined;
   const requester = resolveManagedUpdateRequester(admittedRun?.origin.requester);
   const requesterAuthority = params.run?.requesterAuthority;
+  const executorFence = params.run?.executorFence;
   const isCurrent = () => {
     if ((requester && !requesterAuthority) || requesterAuthority?.isCurrent() === false) {
       throw new UpdateRequesterRevokedError();
@@ -62,7 +63,7 @@ export async function runUpdateCommandRepair(params: {
   let completedTurns = 0;
   let activeTurn = 0;
   let lastValidation: UpdateRepairValidation | undefined;
-  const targetClass = params.phase === "validating" ? "candidate rehearsal" : "live";
+  const targetClass = params.phase === "validating" ? "staged update" : "live";
   if (runId) {
     recordUpdateRunPhase(
       runId,
@@ -92,6 +93,7 @@ export async function runUpdateCommandRepair(params: {
       }
       return await prepareUnattendedUpdateRepair({
         runId,
+        executorFence,
         requester: requesterAuthority?.requester,
         nodeRunner: params.nodeRunner,
         admissionEnv: options.env,
@@ -116,6 +118,7 @@ export async function runUpdateCommandRepair(params: {
         validate: (signal) => {
           const assertCurrent = () => {
             signal.throwIfAborted();
+            executorFence?.assertCurrent();
             if (!isCurrent()) {
               throw new Error("Repair no longer owns the update attempt.");
             }

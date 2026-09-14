@@ -1,56 +1,39 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
+import type { UpdateCommandChildGrant } from "../cli/update-cli/update-command-executor.js";
 import { redactSupportString } from "../logging/diagnostic-support-redaction.js";
 import { createCommandTerminationController } from "../process/exec-termination.js";
 import { installationTargetEnv } from "./installation-target-context.js";
 import { runtimeProcessEntrypoints } from "./runtime-process-entrypoints.js";
 import {
   UPDATE_REPAIR_IPC_MAX_BYTES,
-  updateRepairBudgetSchema,
   updateRepairParentMessageSchema,
   updateRepairWorkerMessageSchema,
   type UpdateRepairParentMessage,
   type UpdateRepairParams,
-  type UpdateRepairResult,
-  type UpdateRepairValidation,
+  type UpdateRepairTurnResult,
+  type UpdateRepairTurnRunner,
 } from "./update-repair-protocol.js";
 
-/** Loaded before replacement; inference imports belong entirely to the candidate child. */
+/** Loaded before replacement; inference imports belong entirely to the update child. */
 export async function runUpdateRepairWorker(
-  params: UpdateRepairParams,
-): Promise<UpdateRepairResult> {
-  const attempts: UpdateRepairResult["attempts"] = [];
-  let finalValidation: UpdateRepairValidation = {
-    ok: false,
-    score: 0,
-    summary: "Candidate repair worker did not validate the installation.",
-  };
+  params: UpdateRepairParams & { runId: string },
+  turn: Parameters<UpdateRepairTurnRunner>[0],
+  executor: UpdateCommandChildGrant,
+  bindChild: (pid: number) => void,
+): Promise<UpdateRepairTurnResult> {
   const clean = (value: unknown) =>
     redactSupportString(
       value instanceof Error ? value.message : String(value),
       { env: process.env, stateDir: params.target.stateDir },
       { maxLength: 1024 },
     );
-  const stopped = (status: "unavailable" | "aborted", reason: string): UpdateRepairResult => {
-    params.onEvent?.({ type: "stopped", status, reason });
-    return { status, attempts, finalValidation, reason };
-  };
-  if (params.isCurrent && !params.runId) {
-    return stopped(
-      "unavailable",
-      "Candidate repair requires the admitting update run identity to preserve its execution guard.",
-    );
-  }
-  const parsedBudget = updateRepairBudgetSchema.safeParse(params.budget ?? {});
-  if (!parsedBudget.success) {
-    return stopped("aborted", "Invalid repair budget.");
-  }
-  const budget = parsedBudget.data;
-  const deadline = Date.now() + budget.wallClockMs;
-  const controller = new AbortController();
-  const signal = params.signal
-    ? AbortSignal.any([controller.signal, params.signal])
-    : controller.signal;
+  const stopped = (status: "unavailable" | "aborted", reason: string): UpdateRepairTurnResult => ({
+    status,
+    reason,
+  });
+  const deadline = Date.now() + turn.wallClockMs;
+  const signal = turn.signal;
   const assertCurrent = () => {
     signal.throwIfAborted();
     if (params.isCurrent?.() === false) {
@@ -62,10 +45,6 @@ export async function runUpdateRepairWorker(
   } catch (error) {
     return stopped("aborted", clean(error));
   }
-  const timer = setTimeout(
-    () => controller.abort(new Error("wall-clock-budget")),
-    budget.wallClockMs,
-  );
   const { installRoot } = params.target;
   const env = {
     ...(params.admissionEnv ?? {
@@ -92,17 +71,15 @@ export async function runUpdateRepairWorker(
       },
     );
   } catch (error) {
-    clearTimeout(timer);
     return stopped("unavailable", clean(error));
   }
   let childExited = false;
   let commandSettled = false;
-  let result: UpdateRepairResult | undefined;
+  let result: UpdateRepairTurnResult | undefined;
   let failure: string | undefined;
   let stopping = false;
   let started = false;
-  let requestId = 0;
-  let pending: { id: number; controller: AbortController; promise: Promise<void> } | undefined;
+  let routeSelected = false;
   const cancelController = new AbortController();
   const termination = createCommandTerminationController({
     child,
@@ -120,18 +97,17 @@ export async function runUpdateRepairWorker(
     }
     stopping = true;
     failure ??= clean(error);
-    pending?.controller.abort(error);
     if (!termination.terminate()) {
       cancelController.abort();
     }
   };
   const send = (message: UpdateRepairParentMessage) => {
     if (!child.connected) {
-      stop(new Error("Candidate repair worker closed its control channel."));
+      stop(new Error("Update repair worker closed its control channel."));
       return;
     }
     if (Buffer.byteLength(JSON.stringify(message)) > UPDATE_REPAIR_IPC_MAX_BYTES) {
-      stop(new Error("Candidate repair message exceeded its bounded diagnostic budget."));
+      stop(new Error("Update repair message exceeded its bounded diagnostic budget."));
       return;
     }
     child.send(message, (error) => {
@@ -157,79 +133,42 @@ export async function runUpdateRepairWorker(
     try {
       assertCurrent();
       if (Buffer.byteLength(JSON.stringify(raw)) > UPDATE_REPAIR_IPC_MAX_BYTES) {
-        throw new Error("Candidate repair response exceeded its bounded diagnostic budget.");
+        throw new Error("Update repair response exceeded its bounded diagnostic budget.");
       }
       const message = updateRepairWorkerMessageSchema.parse(raw);
       if (message.type === "ready") {
         if (started) {
-          throw new Error("Candidate repair worker repeated startup.");
+          throw new Error("Update repair worker repeated startup.");
         }
-        // Released workers only repair live state and discard rehearsal selectors.
-        // Never let one reopen a migrated copy under the previous runtime.
-        if (params.context.phase === "validating" && !message.candidateRehearsal) {
+        if (!message.repairTurns || message.executorDelegation !== "pid-start-v1") {
           throw new Error(
-            "This candidate cannot repair isolated rehearsal state. Run openclaw triage to inspect the validation failure.",
+            "This update runtime cannot accept delegated repair. Run openclaw triage to diagnose the installation.",
           );
         }
         started = true;
-        const { phase, beforeVersion, targetVersion, symptoms, ...failureContext } = params.context;
-        const start = updateRepairParentMessageSchema.parse({
-          type: "start",
-          runId: params.runId,
-          requester: params.requester,
-          target: { ...params.target, installRoot },
-          failure: failureContext,
-          context: { phase, beforeVersion, targetVersion, symptoms },
-          budget: { ...budget, wallClockMs: Math.max(1, deadline - Date.now()) },
-        });
-        send(start);
-      } else if (message.type === "validate") {
-        if (!started || pending || message.id !== ++requestId || requestId > budget.maxTurns + 1) {
-          throw new Error("Candidate repair validation request is outside its active turn.");
+        send(
+          updateRepairParentMessageSchema.parse({
+            type: "turn",
+            runId: params.runId,
+            requester: params.requester,
+            target: params.target,
+            executor,
+            prompt: turn.prompt,
+            timeoutMs: turn.timeoutMs,
+            wallClockMs: Math.max(1, deadline - Date.now()),
+            maxToolCalls: turn.maxToolCalls,
+          }),
+        );
+      } else if (message.type === "event" && message.event.type === "route-selected") {
+        if (!started || routeSelected || result) {
+          throw new Error("Update repair worker reported an unexpected inference route.");
         }
-        const validationController = new AbortController();
-        const validationSignal = AbortSignal.any([signal, validationController.signal]);
-        const promise = Promise.resolve().then(async () => {
-          try {
-            assertCurrent();
-            const validation = await params.validate(validationSignal);
-            validationSignal.throwIfAborted();
-            assertCurrent();
-            finalValidation = { ...validation, summary: clean(validation.summary) };
-            send({ type: "validation-result", id: message.id, validation: finalValidation });
-          } catch (error) {
-            if (!signal.aborted && child.connected) {
-              send({ type: "validation-error", id: message.id, reason: clean(error) });
-            }
-          } finally {
-            pending = undefined;
-          }
-        });
-        pending = { id: message.id, controller: validationController, promise };
-      } else if (message.type === "cancel-validation") {
-        if (pending?.id === message.id) {
-          pending.controller.abort(new Error("Candidate repair validation was cancelled."));
-        }
-      } else if (message.type === "event") {
-        if (
-          (message.event.type === "turn-started" || message.event.type === "turn-finished") &&
-          message.event.turn > budget.maxTurns
-        ) {
-          throw new Error("Candidate repair exceeded its turn budget.");
-        }
-        if (message.event.type === "turn-finished") {
-          if (attempts.length >= budget.maxTurns || message.event.turn !== attempts.length + 1) {
-            throw new Error("Candidate repair repeated a completed turn.");
-          }
-          const { type: _type, ...attempt } = message.event;
-          attempts.push(attempt);
-        }
-        params.onEvent?.(message.event);
-      } else if (message.type === "result") {
-        if (message.result.attempts.length > budget.maxTurns) {
-          throw new Error("Candidate repair exceeded its turn budget.");
-        }
+        routeSelected = true;
+        turn.onRoute({ model: message.event.model, provider: message.event.provider });
+      } else if (message.type === "turn-result" && started && !result) {
         result = message.result;
+      } else {
+        throw new Error("Update repair worker sent an unexpected message.");
       }
     } catch (error) {
       stop(error);
@@ -237,7 +176,7 @@ export async function runUpdateRepairWorker(
   });
   child.once("disconnect", () => {
     if (!result) {
-      stop(new Error("Candidate repair worker closed its control channel."));
+      stop(new Error("Update repair worker closed its control channel."));
     }
   });
   const closed = new Promise<number | null>((resolve) => {
@@ -253,9 +192,15 @@ export async function runUpdateRepairWorker(
     });
   });
   try {
+    if (!child.pid) {
+      throw new Error("Update repair worker has no process identity.");
+    }
+    bindChild(child.pid);
+  } catch (error) {
+    stop(error);
+  }
+  try {
     const code = await closed;
-    pending?.controller.abort(new Error("Candidate repair worker exited."));
-    await pending?.promise;
     await termination.settle();
     assertCurrent();
     return result && code === 0 && !failure
@@ -263,12 +208,11 @@ export async function runUpdateRepairWorker(
       : stopped(
           "unavailable",
           failure ??
-            "Candidate repair worker exited without a result. Inspect the candidate installation with triage.",
+            "Update repair stopped without a result. Run openclaw triage to diagnose the installation.",
         );
   } catch (error) {
     return stopped("aborted", clean(error));
   } finally {
-    clearTimeout(timer);
     signal.removeEventListener("abort", onAbort);
   }
 }

@@ -649,15 +649,32 @@ describe("post-activation repair after rollback refusal or failure", () => {
     },
   );
 
-  it.each(["restart-result", "restart-error", "readiness-result"] as const)(
+  it.each(["restart-result", "restart-error", "readiness-result", "executor-rebound"] as const)(
     "does not continue repair after authority is lost during %s",
     async (boundary) => {
       const params = fixture();
       const run = params.opts.run!;
       const onVerified = vi.fn();
+      let executorCurrent = true;
+      run.executorFence = {
+        assertCurrent: () => {
+          if (!executorCurrent) {
+            throw new Error("Repair no longer owns the update attempt.");
+          }
+        },
+      };
       let settledRun = getUpdateRun(run.runId, { env: run.env });
       const revoke = () => {
-        finishUpdateRun(run.runId, { status: "failed", reason: "owner-revoked" }, { env: run.env });
+        if (boundary === "executor-rebound") {
+          executorCurrent = false;
+          run.executorFence = { assertCurrent: () => {} };
+        } else {
+          finishUpdateRun(
+            run.runId,
+            { status: "failed", reason: "owner-revoked" },
+            { env: run.env },
+          );
+        }
         settledRun = getUpdateRun(run.runId, { env: run.env });
       };
       mocks.repair.mockImplementation(async (repair) => {
@@ -669,7 +686,17 @@ describe("post-activation repair after rollback refusal or failure", () => {
           provider: "openai",
           model: "gpt-4.1",
         });
-        if (boundary === "readiness-result") {
+        if (boundary === "executor-rebound") {
+          mocks.revalidate.mockImplementationOnce(async () => {
+            revoke();
+            return {
+              kind: "owned",
+              root: params.root,
+              fingerprint: "fixture",
+              refreshDefinition: false,
+            };
+          });
+        } else if (boundary === "readiness-result") {
           mocks.healthy = true;
           mocks.readyz.mockImplementationOnce(async () => {
             revoke();
@@ -701,6 +728,9 @@ describe("post-activation repair after rollback refusal or failure", () => {
         onVerified,
       });
       expect(onVerified).not.toHaveBeenCalled();
+      if (boundary === "executor-rebound") {
+        expect(mocks.restartCommand).not.toHaveBeenCalled();
+      }
       expect(getUpdateRun(run.runId, { env: run.env })).toEqual(settledRun);
     },
   );

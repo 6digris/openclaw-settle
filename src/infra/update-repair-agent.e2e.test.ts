@@ -30,6 +30,7 @@ import {
   type UpdateRepairResult,
   type UpdateRepairTurnResult,
 } from "./update-repair-protocol.js";
+import { withRepairExecutor } from "./update-repair.test-support.js";
 import { createUpdateRun, getUpdateRun, recordUpdateRunPhase } from "./update-run-ledger.js";
 
 // Manual triage retains the shared in-process loop. Load its built runtime through
@@ -388,7 +389,7 @@ describe("update repair with a local model provider", () => {
                     ? await runRepairEnvelope(params)
                     : entry === "manual"
                       ? await runUpdateRepairLoop(params)
-                      : await prepareUnattendedUpdateRepair(params);
+                      : await withRepairExecutor(params, prepareUnattendedUpdateRepair);
 
               expect(errors).toEqual([]);
               if (revoke !== "none") {

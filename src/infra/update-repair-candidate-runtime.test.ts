@@ -6,6 +6,8 @@ import { assertSupportedStateSchemaVersion } from "../state/openclaw-state-db-sc
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { prepareUnattendedUpdateRepair } from "./update-repair-agent.js";
+import type { UpdateRepairParams } from "./update-repair-protocol.js";
+import { withRepairExecutor } from "./update-repair.test-support.js";
 
 describe("candidate repair runtime ownership", () => {
   it("lets the candidate read its migrated copy without reopening it in the older parent", async () => {
@@ -34,24 +36,20 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 let start;
 process.on("message", message => {
-  if (message.type === "start") {
+  if (message.type === "turn") {
     start = message;
-    assert.equal(start.context.phase, "validating");
     assert.equal(process.cwd(), start.target.installRoot);
     assert.notEqual(process.env.OPENCLAW_STATE_DIR, start.target.stateDir);
     assert.notEqual(process.env.HOME, start.target.environment.HOME);
-    process.send({ type: "validate", id: 1 });
-  } else if (message.type === "validation-result") {
     const db = new DatabaseSync(path.join(start.target.stateDir, "state", "openclaw.sqlite"), { readOnly: true });
     assert.equal(db.prepare("PRAGMA user_version").get().user_version, ${OPENCLAW_STATE_SCHEMA_VERSION + 1});
     db.close();
-    process.send({ type: "result", result: {
-      status: "unrepaired", attempts: [], finalValidation: message.validation,
-      reason: "Candidate runtime read the migrated copy."
+    process.send({ type: "turn-result", result: {
+      status: "unavailable", reason: "Update runtime read the migrated copy."
     } }, () => process.disconnect());
   }
 });
-process.send({ type: "ready", candidateRehearsal: true });
+process.send({ type: "ready", repairTurns: true, executorDelegation: "pid-start-v1" });
 `,
         );
         const originalConfig = await fs.readFile(state.configPath);
@@ -67,7 +65,7 @@ process.send({ type: "ready", candidateRehearsal: true });
           }
           return { ok: false, score: 0, summary: "Candidate lint failed after migration." };
         });
-        const result = await prepareUnattendedUpdateRepair({
+        const params: UpdateRepairParams = {
           admissionEnv: state.env,
           target: {
             stateDir: copiedState,
@@ -79,10 +77,11 @@ process.send({ type: "ready", candidateRehearsal: true });
           context: { error: "Candidate lint failed", phase: "validating" },
           budget: { wallClockMs: 10_000 },
           validate,
-        });
+        };
+        const result = await withRepairExecutor(params, prepareUnattendedUpdateRepair);
         expect(result).toMatchObject({
-          status: "unrepaired",
-          reason: "Candidate runtime read the migrated copy.",
+          status: "unavailable",
+          reason: "Update runtime read the migrated copy.",
         });
         expect(validate).toHaveBeenCalledOnce();
         expect(await fs.readFile(state.configPath)).toEqual(originalConfig);

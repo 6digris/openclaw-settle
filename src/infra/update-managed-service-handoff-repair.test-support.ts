@@ -158,6 +158,12 @@ export async function managedRepairUpdaterScript(params: {
   await fs.symlink(path.resolve("dist"), path.join(candidate, "dist"), "dir");
   const repairModule = new URL("../cli/update-cli/update-command-repair.ts", import.meta.url).href;
   const admissionModule = new URL("../cli/update-cli/update-command-run.ts", import.meta.url).href;
+  const executorModule = new URL("../cli/update-cli/update-command-executor.ts", import.meta.url)
+    .href;
+  const capabilityModule = new URL(
+    "../cli/update-cli/update-command-service-command.ts",
+    import.meta.url,
+  ).href;
   const sentinelModule = new URL("./update-control-plane-sentinel.ts", import.meta.url).href;
   const installRoot = params.phase === "verifying" ? candidate : params.root;
   return `void (async () => {
@@ -177,7 +183,11 @@ export async function managedRepairUpdaterScript(params: {
     if (run.runId !== ${JSON.stringify(params.runId)}) {
       throw new Error("Repair admission did not preserve the chat update run.");
     }
-    const repair = await runUpdateCommandRepair({
+    const { withUpdateCommandExecutor } = await import(${JSON.stringify(executorModule)});
+    const { isUpdatedInstallGatewayExecutorSupported } = await import(${JSON.stringify(capabilityModule)});
+    const repair = await withUpdateCommandExecutor(run.runId, async executor => {
+      run.executorFence = await executor.enter(${JSON.stringify(params.root)});
+      return runUpdateCommandRepair({
       root: ${JSON.stringify(installRoot)},
       candidateRoot: ${JSON.stringify(candidate)},
       env: run.env,
@@ -186,10 +196,14 @@ export async function managedRepairUpdaterScript(params: {
       onEvent: ({ type }) => process.stderr.write("repair-boundary: " + type + "\\n"),
       result: { status: "error", mode: "npm", reason: "candidate-validation-failed", steps: [], durationMs: 0 },
       validate: async () => {
+        if (!await isUpdatedInstallGatewayExecutorSupported({
+          root: ${JSON.stringify(candidate)}, env: run.env, executor: run.executorFence, nodeRunner: process.execPath, timeoutMs: 30_000,
+        })) throw new Error("Repair did not return native service custody to the updater.");
         const ok = fs.existsSync(${JSON.stringify(path.join(candidate, "repair-second-exec.txt"))}) &&
           fs.existsSync(${JSON.stringify(path.join(candidate, "repair-second-write.txt"))});
         return { ok, score: ok ? 1 : 0, summary: ok ? "Both repair effects verified." : "Repair effects pending." };
       },
+      });
     });
     process.stdout.write(JSON.stringify({ root: ${JSON.stringify(params.root)}, mode: "npm",
       status: repair.status === "repaired" ? "skipped" : "error", reason: repair.reason || "already-current", steps: [] }));

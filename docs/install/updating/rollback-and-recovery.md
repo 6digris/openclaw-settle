@@ -315,13 +315,20 @@ or staged candidate root (`fs.workspaceOnly: true`), preserving safe-bin and too
 allowlists and refusing explicit exec or repair-tool denies with `exec-denied-by-policy`
 and an `openclaw triage` external handoff.
 
+Each automatic repair turn runs in a fresh process from the target installation.
+The updater reserves the original and staged installations until that process
+exits, then resumes diagnostics and service checks. Repair tools recheck the
+live update executor before acting. If the target runtime cannot accept this
+delegation, automatic repair reports the limitation; use `openclaw triage` to
+continue diagnosis.
+
 Chat-requested updates recheck the requester's command ownership before repair
 effects and service activation. If configuration or plugin loading fails, the
 update stops and records the load error. Fix that error before retrying; only a
 successful policy check can report that the requester is no longer an owner.
 
 The default limits are three turns, ten minutes total, five minutes per turn,
-and 40 tool calls per turn. The updater supplies a validation check before the
+and 40 tool calls total. The updater supplies a validation check before the
 first turn and after each attempt. Repair stops when validation succeeds, a
 budget is reached, or a turn fails to improve the result; a regression is
 reported as unrepaired. The model's `REPAIR_RESULT` summary does not replace

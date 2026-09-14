@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { updateFailureSchema, type TriageUpdateFailure } from "../commands/triage-update.js";
+import type { UpdateRecoveryFence } from "./update-run-recovery.js";
 
 export const updateRepairBudgetSchema = z.object({
   maxTurns: z.number().int().nonnegative().default(3),
@@ -131,6 +132,7 @@ export type UpdateRepairParams = {
   admissionEnv?: NodeJS.ProcessEnv;
   nodeRunner?: string;
   runId?: string;
+  executorFence?: UpdateRecoveryFence;
   requester?: { channel?: string; accountId?: string; senderId?: string };
   context: TriageUpdateFailure & {
     phase: "validating" | "verifying";
