@@ -1691,8 +1691,9 @@ extension IOSGatewayChatTransportTests {
                 return { request in
                     #expect(!inline)
                     await retirement.retire(method: "http")
+                    let url = try #require(request.url)
                     return try (bytes, #require(HTTPURLResponse(
-                        url: #require(request.url), statusCode: 200, httpVersion: nil,
+                        url: url, statusCode: 200, httpVersion: nil,
                         headerFields: ["Content-Type": "image/png"])))
                 }
             })
