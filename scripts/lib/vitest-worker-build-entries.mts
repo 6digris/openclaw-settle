@@ -16,6 +16,7 @@ import {
 import { updateExecutorNativeEntrypoints } from "../../src/cli/update-cli/update-command-executor-native-runtime.test-support.ts";
 import { doctorConfigRuntimeEntrypoints } from "../../src/commands/doctor-config-runtime.test-support.ts";
 import { cronOwnerHardeningEntrypoints } from "../../src/cron/owner-hardening-runtime.test-support.ts";
+import { chatMetadataRetentionEntrypoint } from "../../src/gateway/server-methods/chat-metadata-retention-entrypoint.test-support.ts";
 import { sessionListCacheRetentionEntrypoint } from "../../src/gateway/server-methods/sessions-list-cache-retention-entrypoint.test-support.ts";
 import { sessionChildCacheRetentionEntrypoint } from "../../src/gateway/session-child-cache-retention-entrypoint.test-support.ts";
 import { sessionTitleRetentionEntrypoints } from "../../src/gateway/session-title-retention.test-support.ts";
@@ -59,6 +60,7 @@ export const vitestWorkerBuildEntries = {
       ...Object.values(cronOwnerHardeningEntrypoints),
       ...Object.values(tuiPtyRuntimeEntrypoints),
       ...Object.values(sessionTitleRetentionEntrypoints),
+      chatMetadataRetentionEntrypoint,
       sessionListCacheRetentionEntrypoint,
       sessionChildCacheRetentionEntrypoint,
       nodeHostConfigRuntimeEntrypoint,

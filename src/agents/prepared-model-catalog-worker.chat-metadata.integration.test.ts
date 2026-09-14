@@ -33,7 +33,7 @@ describe("chat metadata with published model owners", () => {
     { shape: "entries", count: 64 },
     { shape: "list", count: 64 },
   ] as const)(
-    "bounds unchanged refresh work for $count $shape agents and observes roster replacement",
+    "bounds unchanged and agent-local refresh work for $count $shape agents",
     async ({ shape, count }) => {
       const fixture = createCatalogFixture(makeTempDir, 0);
       const pluginCatalogWrites = Object.fromEntries(
@@ -169,24 +169,27 @@ describe("chat metadata with published model owners", () => {
         }
         const replacement = await publish(configured[0]!, true);
         await runtime.refresh();
-        expect(builds).toBe(2 * count);
+        expect(builds).toBe(count + 1);
         expect(getPublishedPreparedModelCatalogOwnerSnapshot({ agentId: "main", config })).toBe(
           replacement,
         );
+        runtime.invalidate();
+        await runtime.refresh();
+        expect(builds).toBe(2 * count + 1);
         const added = add("added");
         await expect(runtime.refresh()).rejects.toBeInstanceOf(
           ChatMetadataSnapshotUnavailableError,
         );
         await publish(added);
         await runtime.refresh();
-        expect(builds).toBe(3 * count + 1);
+        expect(builds).toBe(3 * count + 2);
         delete entries.added;
         list.pop();
         await runtime.refresh();
         await expect(runtime.read({ agentId: "added" })).rejects.toBeInstanceOf(
           ChatMetadataSnapshotUnavailableError,
         );
-        expect(builds).toBe(4 * count + 1);
+        expect(builds).toBe(4 * count + 2);
         // Leave substantial linear headroom; fail repeated per-agent roster traversal.
         expect(unchangedReads).toBeLessThanOrEqual(8 * count);
       } finally {

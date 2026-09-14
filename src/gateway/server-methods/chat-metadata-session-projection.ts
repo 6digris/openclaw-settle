@@ -9,6 +9,7 @@ import { resolveSessionModelRef } from "../../agents/session-model-ref.js";
 import { resolveCollapsedSessionAuthPinSource } from "../../config/sessions/auth-profile-override-provenance.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
+import { resolveChatAccountSelection } from "./chat-account-selection.js";
 import type {
   ChatMetadataReadParams,
   ChatMetadataResult,
@@ -29,6 +30,41 @@ export type PreparedAgentProjection<T = ChatMetadataResult> = {
   read: () => T;
   isCurrent: () => boolean;
 };
+
+// Reused reads must not retain the originating generation through settlement closures.
+export function bindAgentProjectionRead(
+  prepared: PreparedAgentProjection<{ models?: ModelChoice[] }>,
+  {
+    authStore,
+    commands,
+    swarmEnabled,
+  }: {
+    authStore: AuthProfileStore;
+    commands?: unknown[];
+    swarmEnabled: boolean;
+  },
+  sessionEntry?: ChatMetadataSessionEntry,
+  requesterProfileId?: string,
+  assertCurrent?: () => void,
+): PreparedAgentProjection {
+  return {
+    ...prepared,
+    read: () => {
+      // Revocation is terminal, not a stale projection for readCurrent to retry forever.
+      assertCurrent?.();
+      return {
+        ...prepared.read(),
+        ...(commands !== undefined ? { commands } : {}),
+        swarmEnabled,
+        accountSelection: resolveChatAccountSelection({
+          authStore,
+          sessionEntry,
+          requesterProfileId,
+        }),
+      };
+    },
+  };
+}
 
 export async function prepareChatMetadataModelProjection(params: {
   context: GatewayRequestContext;

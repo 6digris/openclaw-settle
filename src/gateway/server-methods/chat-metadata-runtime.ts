@@ -26,19 +26,19 @@ import {
 } from "../../state/agent-database-admission.js";
 import { isUserModelAuthProfileId } from "../../state/user-model-account-id.js";
 import { listUserProfileAuthLinks } from "../../state/user-model-accounts.js";
-import { resolveChatAccountSelection } from "./chat-account-selection.js";
 import type {
   ChatMetadataReadParams,
   ChatMetadataResult,
   ChatMetadataSessionEntry,
 } from "./chat-metadata-contract.js";
+import { agentFactsMatch, type PreparedAgentFacts } from "./chat-metadata-generation-facts.js";
 import {
+  bindAgentProjectionRead,
   hasSessionCatalogContext,
   prepareChatMetadataModelProjection,
   sessionProjectionKey,
   resolveSessionCatalogProfiles,
   projectChatSessionMetadata,
-  type ChatMetadataProjectionFacts,
   type PreparedAgentProjection,
 } from "./chat-metadata-session-projection.js";
 import type {
@@ -46,12 +46,6 @@ import type {
   ChatStartupProjectionResult,
 } from "./chat-startup-projection-contract.js";
 import type { GatewayRequestContext } from "./types.js";
-
-type PreparedAgentFacts = ChatMetadataProjectionFacts & {
-  authStoreRevision: string;
-  catalogStatusKey: string;
-  skillsVersion: number;
-};
 
 type PreparedGenerationFacts = {
   config: OpenClawConfig;
@@ -182,17 +176,7 @@ function generationFactsMatch(
   ) {
     return false;
   }
-  return left.agents.every((agent, index) => {
-    const candidate = right.agents[index];
-    return (
-      candidate?.agentId === agent.agentId &&
-      candidate.owner === agent.owner &&
-      candidate.authStoreRevision === agent.authStoreRevision &&
-      candidate.modelCatalog === agent.modelCatalog &&
-      candidate.catalogStatusKey === agent.catalogStatusKey &&
-      candidate.skillsVersion === agent.skillsVersion
-    );
-  });
+  return left.agents.every((agent, index) => agentFactsMatch(agent, right.agents[index]));
 }
 
 export function createGatewayChatMetadataRuntime(params: {
@@ -317,23 +301,13 @@ export function createGatewayChatMetadataRuntime(params: {
       })
       .then((prepared) => {
         assertCurrent?.();
-        const preparedProjection: PreparedAgentProjection = {
-          ...prepared,
-          read: () => {
-            // Revocation is terminal, not a stale projection for readCurrent to retry forever.
-            assertCurrent?.();
-            return {
-              ...prepared.read(),
-              ...(agent.commands !== undefined ? { commands: agent.commands } : {}),
-              swarmEnabled: agent.swarmEnabled,
-              accountSelection: resolveChatAccountSelection({
-                authStore: agent.authStore,
-                sessionEntry,
-                requesterProfileId,
-              }),
-            };
-          },
-        };
+        const preparedProjection = bindAgentProjectionRead(
+          prepared,
+          agent,
+          sessionEntry,
+          requesterProfileId,
+          assertCurrent,
+        );
         // Only this pending entry may publish its settlement; eviction or invalidation
         // must not let an obsolete completion replace a newer profile projection.
         if (generation.epoch === invalidationEpoch && projections.get(key) === entry) {
@@ -361,9 +335,27 @@ export function createGatewayChatMetadataRuntime(params: {
   const buildGeneration = async (
     facts: PreparedGenerationFacts,
     epoch: number,
+    predecessor?: PreparedMetadataGeneration,
   ): Promise<PreparedMetadataGeneration | undefined> => {
+    const reusable =
+      predecessor?.facts.configKey === facts.configKey &&
+      predecessor.facts.pluginRegistryVersion === facts.pluginRegistryVersion
+        ? predecessor
+        : undefined;
+    const neutralProjectionByAgentId = new Map<string, AgentProjectionEntry>();
     const agents = await Promise.all(
       facts.agents.map(async (agent): Promise<PreparedAgentMetadata> => {
+        const previousAgent = reusable?.agentsById.get(agent.agentId);
+        const previousProjection = reusable?.neutralProjectionByAgentId.get(agent.agentId);
+        if (
+          previousAgent?.commands !== undefined &&
+          agentFactsMatch(agent, previousAgent) &&
+          previousProjection?.state === "ready" &&
+          previousProjection.projection.isCurrent()
+        ) {
+          neutralProjectionByAgentId.set(agent.agentId, previousProjection);
+          return previousAgent;
+        }
         let commands: unknown[] | undefined;
         try {
           commands = (
@@ -385,7 +377,7 @@ export function createGatewayChatMetadataRuntime(params: {
       epoch,
       facts,
       agentsById: new Map(agents.map((agent) => [agent.agentId, agent])),
-      neutralProjectionByAgentId: new Map(),
+      neutralProjectionByAgentId,
       sessionProjectionByKey: new Map(),
     };
     if (epoch !== invalidationEpoch) {
@@ -395,7 +387,7 @@ export function createGatewayChatMetadataRuntime(params: {
     return generation;
   };
 
-  const runRefresh = async (version: number) => {
+  const runRefresh = async (version: number, predecessor?: PreparedMetadataGeneration) => {
     if (version !== refreshVersion) {
       return;
     }
@@ -411,7 +403,7 @@ export function createGatewayChatMetadataRuntime(params: {
         if (current && generationFactsMatch(current.facts, facts)) {
           return;
         }
-        const generation = await buildGeneration(facts, epoch);
+        const generation = await buildGeneration(facts, epoch, predecessor);
         if (version !== refreshVersion) {
           return;
         }
@@ -495,13 +487,16 @@ export function createGatewayChatMetadataRuntime(params: {
     if (pending?.facts && generationFactsMatch(pending.facts, facts)) {
       return pending.promise;
     }
+    // Only this facts-driven refresh may reuse settled agents. Explicit invalidation,
+    // failure and shutdown discard their generation before a refresh can capture it.
+    const predecessor = current;
     if (current || pending) {
       // Fence reads synchronously only after proving the published facts changed. A suspended
       // session projection must not return its old success or failure while replacement builds.
       invalidate();
     }
     const version = ++refreshVersion;
-    const promise = refreshTail.catch(() => {}).then(() => runRefresh(version));
+    const promise = refreshTail.catch(() => {}).then(() => runRefresh(version, predecessor));
     return trackRefresh(promise, facts);
   };
 
