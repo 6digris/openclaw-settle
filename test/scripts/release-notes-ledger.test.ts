@@ -7,6 +7,7 @@ import {
 } from "../../.agents/skills/openclaw-changelog-update/scripts/verify-release-notes.mjs";
 
 const targetSha = "a".repeat(40);
+const rangeHistory = new Set([targetSha]);
 
 function contributionLedger({
   nodes,
@@ -42,7 +43,7 @@ function contributionLedger({
     new Set(),
     [],
     Date.parse("2026-08-05T00:00:00Z"),
-    new Set([targetSha]),
+    rangeHistory,
   ) as ReturnType<typeof ledgerFor> & {
     provenance: {
       inRangePullRequests: number;
@@ -212,13 +213,13 @@ describe("renderContributionRecordEntry", () => {
       new Set(),
       [],
       Date.parse("2026-07-09T00:00:00Z"),
-      new Set([targetSha]),
+      rangeHistory,
     );
 
     expect(result.ledger).toContain("- **PR #125** Thanks @carol and @alice and @bob.");
   });
 
-  it("counts associated and reachable source PRs before retained seed-only rows", () => {
+  it("counts associated and in-range contextual PRs before retained seed-only rows", () => {
     const nodes = new Map(
       [1, 2, 3].map((number) => [
         number,

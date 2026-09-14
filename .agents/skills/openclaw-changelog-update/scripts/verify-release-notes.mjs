@@ -1530,7 +1530,7 @@ function sourceCommits(base, target, mainRef, releaseProvenance = []) {
     revertedReferences,
     target: targetCommit,
     targetTimestamp,
-    targetHistory,
+    rangeHistory: new Set(commits.keys()),
   };
 }
 
@@ -2226,7 +2226,7 @@ export function ledgerFor(
   revertedReferences,
   shippedBaselines,
   targetTimestamp,
-  targetHistory,
+  rangeHistory,
 ) {
   const entries = references.map((number) => {
     const node = nodes.get(number);
@@ -2244,14 +2244,15 @@ export function ledgerFor(
     };
   });
 
-  // A resolved reference supplies context; only shipped graph evidence supplies membership.
+  // Contextual references need base..target DAG membership; resolved source
+  // associations already prove carried work independently of the original merge.
   const inRangePullRequestNumbers = new Set([
     ...sourcePullRequests,
     ...[...sourceReferences].filter((number) => {
       const node = nodes.get(number);
       return (
         node?.__typename === "PullRequest" &&
-        targetHistory.has(node.mergeCommit?.oid) &&
+        rangeHistory.has(node.mergeCommit?.oid) &&
         mergedByTarget(node.mergedAt, targetTimestamp)
       );
     }),
@@ -2800,7 +2801,7 @@ function main() {
     source.revertedReferences,
     source.shippedBaselines,
     source.targetTimestamp,
-    source.targetHistory,
+    source.rangeHistory,
   );
   const contamination = contaminatingPullRequestReferences({
     noteReferences,

@@ -1518,6 +1518,11 @@ console.log(JSON.stringify({ data }));
     "future-associated",
     "stale-row",
     "reachable-body",
+    "reachable-body-before-base-time",
+    "before-base-body",
+    "at-base-body",
+    "before-base-seed",
+    "before-base-associated",
     "explicit-seed",
     "canonical-carrier",
     "backport-carrier",
@@ -1538,25 +1543,47 @@ console.log(JSON.stringify({ data }));
         });
         return git(cwd, ["rev-parse", "HEAD"]);
       };
-      const base = commitAt("chore: baseline", 1);
+      const historicalReference = mode.startsWith("before-base-") || mode === "at-base-body";
+      const skewedMergeTime = mode === "reachable-body-before-base-time";
+      let base = commitAt("chore: baseline", skewedMergeTime ? 2 : 1);
+      const commitPerformance = () => {
+        writeFileSync(join(cwd, "performance.txt"), "performance implementation\n");
+        return commitAt(
+          "chore: performance work (#22)",
+          historicalReference || skewedMergeTime ? 1 : 3,
+        );
+      };
+      let referenced = base;
+      if (historicalReference) {
+        referenced = commitPerformance();
+        base = mode === "at-base-body" ? referenced : commitAt("chore: release boundary", 1);
+      }
       writeFileSync(join(cwd, "support.txt"), "independent supporting repair\n");
       const source = commitAt(
         "chore: supporting repair (#21)\n\nRelated: #22\nThis repair is independent of the performance work.",
         2,
       );
-      git(cwd, ["checkout", "-qb", "later-main"]);
-      writeFileSync(join(cwd, "performance.txt"), "performance implementation\n");
-      const future = commitAt("chore: performance work (#22)", 3);
-      git(cwd, ["checkout", "-q", "release"]);
+      if (!historicalReference) {
+        git(cwd, ["checkout", "-qb", "later-main"]);
+        referenced = commitPerformance();
+        git(cwd, ["checkout", "-q", "release"]);
+      }
       let main = source;
       let carrier: string | undefined;
-      if (mode === "reachable-body") {
+      if (skewedMergeTime) {
+        commitAt("chore: parallel release preparation", 4);
+        git(cwd, ["merge", "--no-ff", "-qm", "merge: performance side branch", "later-main"], {
+          GIT_COMMITTER_DATE: "2026-07-05T12:00:00Z",
+        });
+      } else if (mode === "reachable-body") {
         git(cwd, ["merge", "--ff-only", "later-main"]);
       } else if (mode.endsWith("-carrier")) {
-        main = future;
+        main = referenced;
         commitAt("chore: release preparation", 4);
         if (mode === "canonical-carrier") {
-          git(cwd, ["cherry-pick", "-x", future], { GIT_COMMITTER_DATE: "2026-07-05T12:00:00Z" });
+          git(cwd, ["cherry-pick", "-x", referenced], {
+            GIT_COMMITTER_DATE: "2026-07-05T12:00:00Z",
+          });
           carrier = git(cwd, ["rev-parse", "HEAD"]);
         } else {
           writeFileSync(join(cwd, "performance.txt"), "performance implementation\n");
@@ -1569,7 +1596,7 @@ console.log(JSON.stringify({ data }));
         }
       }
       let seed: string | undefined;
-      if (mode === "explicit-seed") {
+      if (mode === "explicit-seed" || mode === "before-base-seed") {
         writeFileSync(
           join(cwd, "CHANGELOG.md"),
           `${prose}\n### Complete contribution record\n\nThis audited record covers the complete ${base}..${source} history: 1 in-range PR + 1 retained seed-only PR = 2 unique PRs.\n\n#### Pull requests\n\n- **PR #21** chore: supporting repair.\n- **PR #22** chore: performance work.\n`,
@@ -1586,9 +1613,22 @@ console.log(JSON.stringify({ data }));
           "unresolved-body",
         ].includes(mode)
       ) {
-        expect(() => git(cwd, ["merge-base", "--is-ancestor", future, target])).toThrow();
-        expect(() => git(cwd, ["merge-base", "--is-ancestor", future, main])).toThrow();
+        expect(() => git(cwd, ["merge-base", "--is-ancestor", referenced, target])).toThrow();
+        expect(() => git(cwd, ["merge-base", "--is-ancestor", referenced, main])).toThrow();
         expect(() => git(cwd, ["cat-file", "-e", `${target}:performance.txt`])).toThrow();
+      }
+      const range = git(cwd, ["rev-list", `${base}..${target}`]).split("\n");
+      if (historicalReference) {
+        expect(git(cwd, ["merge-base", "--is-ancestor", referenced, base])).toBe("");
+        expect(range).not.toContain(referenced);
+        expect(referenced === base).toBe(mode === "at-base-body");
+      } else if (mode.startsWith("reachable-body")) {
+        expect(range).toContain(referenced);
+        if (skewedMergeTime) {
+          expect(Number(git(cwd, ["show", "-s", "--format=%ct", referenced]))).toBeLessThan(
+            Number(git(cwd, ["show", "-s", "--format=%ct", base])),
+          );
+        }
       }
       if (mode === "stale-row") {
         writeFileSync(
@@ -1602,12 +1642,13 @@ console.log(JSON.stringify({ data }));
         `#!${process.execPath}\n
 const mode = ${JSON.stringify(mode)};
 const source = ${JSON.stringify(source)};
-const future = ${JSON.stringify(future)};
+const referenced = ${JSON.stringify(referenced)};
+const referencedMergedAt = ${JSON.stringify(historicalReference || skewedMergeTime ? "2026-07-01T12:00:00Z" : "2026-07-03T12:00:00Z")};
 const query = process.argv.find((arg) => arg.startsWith("query="))?.slice(6) ?? "";
 const data = {};
-const nodeFor = (number) => ({ number, mergedAt: number === 21 ? "2026-07-02T12:00:00Z" : "2026-07-03T12:00:00Z", mergeCommit: { oid: number === 21 ? source : future } });
+const nodeFor = (number) => ({ number, mergedAt: number === 21 ? "2026-07-02T12:00:00Z" : referencedMergedAt, mergeCommit: { oid: number === 21 ? source : referenced } });
 for (const [, alias, hash] of query.matchAll(/(c\\d+): repository[\\s\\S]*?object\\(expression: "([0-9a-f]+)"\\)/g)) {
- const numbers = hash === source ? (mode === "future-associated" ? [21, 22] : [21]) : hash === future && mode.endsWith("-carrier") ? [22] : [];
+ const numbers = hash === source ? (["future-associated", "before-base-associated"].includes(mode) ? [21, 22] : [21]) : hash === referenced && mode.endsWith("-carrier") ? [22] : [];
  data[alias] = { object: { associatedPullRequests: { nodes: numbers.map(nodeFor), pageInfo: { hasNextPage: false } }, author: { user: { login: "steipete" } } } };
 }
 for (const [, alias, rawNumber] of query.matchAll(/(n\\d+): repository[\\s\\S]*?issueOrPullRequest\\(number: (\\d+)\\)/g)) {
@@ -1656,15 +1697,22 @@ console.log(JSON.stringify({ data }));
       expect(result.stderr).toBe("");
       expect(result.status, result.stdout).toBe(0);
       const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-      const included = mode === "reachable-body" || mode.endsWith("-carrier") || Boolean(seed);
+      expect(manifest.schemaVersion).toBe(3);
+      const included =
+        mode.startsWith("reachable-body") ||
+        mode.endsWith("-carrier") ||
+        mode === "before-base-associated" ||
+        Boolean(seed);
       expect(
         manifest.pullRequests.map((entry: { number: number }) => entry.number).toSorted(),
       ).toEqual(included ? [21, 22] : [21]);
       expect(manifest.source.inRangePullRequests).toBe(included && !seed ? 2 : 1);
       expect(manifest.source.retainedSeedOnlyPullRequests).toBe(seed ? 1 : 0);
       expect(manifest.source.references).toBe(2);
-      if (mode === "body-only") {
+      expect(manifest.source.uniquePullRequests).toBe(included ? 2 : 1);
+      if (["body-only", "before-base-body", "at-base-body"].includes(mode)) {
         const generated = readFileSync(join(cwd, "CHANGELOG/2026.7.1.md"), "utf8");
+        expect(generated).not.toContain("**PR #22**");
         writeReleaseChangelog({
           rootDir: cwd,
           version: "2026.7.1",

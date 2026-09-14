@@ -128,12 +128,13 @@ of this skill; initial generation must never overwrite them.
    - source PR discovery bounds GitHub commit associations to the selected target
      history, or the frozen main history for canonical carriers. A contextual
      source reference becomes a contribution only when its merged commit is
-     reachable in the target history and its merge time is within the target.
+     reachable from the target but not from the base, and its merge time is no
+     later than the target.
      Keep all references resolvable, but do not promote unrelated PRs merely
      because they merge while release preparation continues. Explicit seeds
      retain their historical membership and remain seed-only unless independently
-     proven in-range. Resolve every association page; existing canonical,
-     cherry-pick, and provenance contracts remain authoritative.
+     proven in-range. Resolve every association page; existing direct-association,
+     canonical, cherry-pick, and provenance contracts remain authoritative.
    - explicit multi-commit reverts require a revert subject and one standalone
      `Reverts <full SHA> and <full SHA>.` declaration (comma-separated lists
      with final `and` also work). The exact ending ` to restore the previous behavior.`
