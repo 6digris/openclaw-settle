@@ -1,18 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import radiusPlugin from "../../extensions/radius/index.js";
 import { createWizardPrompter } from "../../test/helpers/wizard-prompter.js";
 import { createNonExitingRuntime } from "../runtime.js";
-import { registerSingleProviderPlugin } from "../test-utils/plugin-registration.js";
 import { WizardSession } from "../wizard/session.js";
 import { runProviderPluginAuthMethodUnpersisted } from "./provider-auth-method.js";
 import type { ProviderAuthMethod } from "./provider-authentication.types.js";
 
-const { openHostBrowser, guardedFetch } = vi.hoisted(() => ({
+const { openHostBrowser } = vi.hoisted(() => ({
   openHostBrowser: vi.fn(async () => true),
-  guardedFetch: vi.fn(),
 }));
 vi.mock("../infra/browser-open.js", () => ({ openUrl: openHostBrowser }));
-vi.mock("openclaw/plugin-sdk/ssrf-runtime", () => ({ fetchWithSsrFGuard: guardedFetch }));
 
 afterEach(() => vi.clearAllMocks());
 
@@ -86,23 +82,35 @@ describe("runProviderPluginAuthMethodUnpersisted", () => {
   });
 
   it.each([false, true])(
-    "keeps the registered Radius device destination with its code and cancellation (remote=%s)",
+    "keeps device destinations with their code and cancellation (remote=%s)",
     async (isRemote) => {
-      guardedFetch.mockResolvedValueOnce({
-        response: Response.json({
-          device_code: "synthetic-device-secret",
-          user_code: "ABCD-EFGH",
-          verification_uri: "https://radius.earendil.com/device",
-          expires_in: 300,
-          interval: 5,
-        }),
-        release: async () => undefined,
-      });
-      const provider = await registerSingleProviderPlugin(radiusPlugin);
-      const method = provider.auth.find((entry) => entry.id === "oauth");
-      if (!method) {
-        throw new Error("Radius did not register its OAuth method");
-      }
+      let authCancelled = false;
+      const method: ProviderAuthMethod = {
+        id: "device",
+        label: "Provider sign-in",
+        kind: "device_code",
+        run: async (ctx) => {
+          const { signal } = ctx;
+          if (!signal || !ctx.prompter.deviceCode) {
+            throw new Error("Expected an abortable device-code presenter");
+          }
+          await ctx.openUrl(destination);
+          await ctx.prompter.deviceCode({
+            title: "Provider sign-in",
+            code: "ABCD-EFGH",
+            expiresInMinutes: 5,
+          });
+          await new Promise<void>((resolve) => {
+            if (signal.aborted) {
+              resolve();
+            } else {
+              signal.addEventListener("abort", () => resolve(), { once: true });
+            }
+          });
+          authCancelled = signal.aborted;
+          return { profiles: [] };
+        },
+      };
       const session = new WizardSession(async (prompter, signal) => {
         await runProviderPluginAuthMethodUnpersisted({
           ...options,
@@ -116,7 +124,7 @@ describe("runProviderPluginAuthMethodUnpersisted", () => {
         const pending = await session.next();
         expect(pending.step).toMatchObject({
           type: "progress",
-          externalUrl: "https://radius.earendil.com/device",
+          externalUrl: destination,
           deviceCode: { code: "ABCD-EFGH", expiresInMinutes: 5 },
         });
         expect(openHostBrowser).not.toHaveBeenCalled();
@@ -126,7 +134,8 @@ describe("runProviderPluginAuthMethodUnpersisted", () => {
         session.cancel();
         await session.whenSettled();
       }
-      expect(guardedFetch).toHaveBeenCalledOnce();
+      expect(authCancelled).toBe(true);
+      expect(session.isSettled()).toBe(true);
     },
   );
 });

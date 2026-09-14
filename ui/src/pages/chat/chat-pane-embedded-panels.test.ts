@@ -257,6 +257,7 @@ describe("chat pane embedded panels", () => {
     });
     await file.promise;
     await renderPanels();
+    await vi.dynamicImportSettled();
     const editorElement = await vi.waitFor(() =>
       expectDefined(mount.querySelector<HTMLElement>(".cm-editor"), "file editor"),
     );
