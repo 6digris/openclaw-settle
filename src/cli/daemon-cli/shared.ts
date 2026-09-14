@@ -12,6 +12,7 @@ import { buildPlatformServiceStartHints } from "../../daemon/runtime-hints.js";
 import type { GatewayServiceCommandConfig } from "../../daemon/service-types.js";
 import { hasSudoToRootSystemdUserManagerMismatch } from "../../daemon/systemd-user-transport.js";
 import { resolveGatewayServiceMutationError } from "../../infra/gateway-supervision.js";
+import { defaultRuntime } from "../../runtime.js";
 import { formatCliCommand } from "../command-format.js";
 import { parsePort } from "../shared/parse-port.js";
 import { createDaemonActionContext } from "./response.js";
@@ -22,9 +23,17 @@ export { parsePort };
 /** Create install action context with JSON flag normalization. */
 export function createDaemonInstallActionContext(jsonFlag: unknown) {
   const json = Boolean(jsonFlag);
+  const context = createDaemonActionContext({ action: "install", json });
   return {
     json,
-    ...createDaemonActionContext({ action: "install", json }),
+    ...context,
+    warn: (message: string) => {
+      if (json) {
+        context.warnings.push(message);
+      } else {
+        defaultRuntime.log(message);
+      }
+    },
   };
 }
 

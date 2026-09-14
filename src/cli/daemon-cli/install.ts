@@ -162,14 +162,8 @@ export function mergeInstallInvocationEnv(params: {
 
 /** Install or refresh the managed Gateway service. */
 export async function runDaemonInstall(opts: DaemonInstallOptions) {
-  const { json, stdout, warnings, emit, fail } = createDaemonInstallActionContext(opts.json);
-  const warn = (message: string) => {
-    if (json) {
-      warnings.push(message);
-    } else {
-      defaultRuntime.log(message);
-    }
-  };
+  const { json, stdout, warnings, warn, emit, emitMessage, fail } =
+    createDaemonInstallActionContext(opts.json);
   const installBlock = resolveDaemonInstallBlockMessage("gateway");
   if (installBlock) {
     fail(installBlock);
@@ -392,14 +386,13 @@ export async function runDaemonInstall(opts: DaemonInstallOptions) {
   }
 
   if (loaded && !opts.force && !autoRefreshMessage && !opts.deferActivation) {
-    emit({
+    emitMessage({
       ok: true,
       result: "already-installed",
       message: `Gateway service already ${service.loadedText}.`,
       service: buildDaemonServiceSnapshot(service, loaded),
     });
     if (!json) {
-      defaultRuntime.log(`Gateway service already ${service.loadedText}.`);
       defaultRuntime.log(`Reinstall with: ${formatCliCommand("openclaw gateway install --force")}`);
     }
     return;
