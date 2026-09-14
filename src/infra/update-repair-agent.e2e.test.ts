@@ -91,7 +91,9 @@ async function runRepairEnvelope(
           if (message.type === "ready") {
             if (delegation) {
               if (typeof delegation !== "string") {
-                if (!child.pid) throw new Error("Repair worker has no PID.");
+                if (!child.pid) {
+                  throw new Error("Repair worker has no PID.");
+                }
                 delegation.bindChild(child.pid);
               }
               child.send({
