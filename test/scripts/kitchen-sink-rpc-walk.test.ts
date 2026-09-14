@@ -196,6 +196,7 @@ describe("kitchen-sink RPC walk runner selection", () => {
     const entry = options.entry ? path.join(root, options.entry) : undefined;
     const walkerUrl = new URL("../../scripts/e2e/kitchen-sink-rpc-walk.mts", import.meta.url);
     // Cwd and env must precede import: the walk caches its entry and RPC module per process.
+    // Source aliases still belong to the repository tsconfig, not the temporary cwd.
     const script = `
       import childProcess from "node:child_process";
       import { EventEmitter } from "node:events";
@@ -305,6 +306,7 @@ describe("kitchen-sink RPC walk runner selection", () => {
           TEMP: root,
           TMP: root,
           TMPDIR: root,
+          TSX_TSCONFIG_PATH: path.resolve(import.meta.dirname, "../../tsconfig.json"),
         },
         timeoutMs: 10_000,
       },
