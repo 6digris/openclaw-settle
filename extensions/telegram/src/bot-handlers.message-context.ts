@@ -23,10 +23,11 @@ import {
   buildSenderName,
   getTelegramTextParts,
   resolveTelegramPrimaryMedia,
+  resolveTelegramMessageThreadSpec,
   type TelegramThreadSpec,
 } from "./bot/helpers.js";
 import type { TelegramContext } from "./bot/types.js";
-import { selectAllowedTelegramGroupContext } from "./cached-group-context.js";
+import { selectAllowedTelegramCachedContext } from "./cached-history-access.js";
 import {
   resolveTelegramConversationRoute,
   resolveTelegramTargetSession,
@@ -455,17 +456,16 @@ export function createTelegramMessageContextRuntime({
       senderId: msg.from?.id,
     });
     const messageId = typeof msg.message_id === "number" ? String(msg.message_id) : undefined;
-    const currentNode = await messageCache.get({ accountId, chatId: msg.chat.id, messageId });
-    const threadId =
-      options?.threadSpec?.id ?? (currentNode?.threadId ? Number(currentNode.threadId) : undefined);
+    const threadSpec = options?.threadSpec ?? resolveTelegramMessageThreadSpec(msg);
+    const threadId = threadSpec.id;
     const allowedGroupIds =
       isGroup && groupHistoryLimit > 0
-        ? await selectAllowedTelegramGroupContext({
+        ? await selectAllowedTelegramCachedContext({
             cfg: runtimeCfg,
             telegramCfg: runtimeTelegramCfg,
             accountId,
             chatId: msg.chat.id,
-            threadId,
+            threadSpec,
             botId: ctx.me?.id ?? opts.botInfo?.id,
             botUsername: ctx.me?.username ?? opts.botInfo?.username,
             groupAllowFrom:
@@ -540,12 +540,12 @@ export function createTelegramMessageContextRuntime({
       // ambient window. Authorize that host-selected member separately.
       const selectedGroupIds =
         isGroup && node && groupHistoryLimit > 0
-          ? await selectAllowedTelegramGroupContext({
+          ? await selectAllowedTelegramCachedContext({
               cfg: runtimeCfg,
               telegramCfg: runtimeTelegramCfg,
               accountId,
               chatId: msg.chat.id,
-              threadId,
+              threadSpec,
               botId: ctx.me?.id ?? opts.botInfo?.id,
               botUsername: ctx.me?.username ?? opts.botInfo?.username,
               groupAllowFrom:
@@ -554,7 +554,6 @@ export function createTelegramMessageContextRuntime({
                 runtimeTelegramCfg.allowFrom ??
                 opts.allowFrom,
               nodes: [node],
-              currentBatch: true,
             })
           : undefined;
       if (node?.messageId && (!isGroup || selectedGroupIds?.has(node.messageId))) {

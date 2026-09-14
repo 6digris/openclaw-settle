@@ -150,7 +150,7 @@ export function resolveTelegramConversationReadChatId(params: {
     params.context?.toolContext?.currentMessagingTarget;
   const requestedTarget = params.chatId ?? currentTarget;
   if (requestedTarget == null || !String(requestedTarget).trim()) {
-    throw new Error("Telegram emoji-list requires a chatId or current Telegram conversation.");
+    throw new Error("Telegram conversation read requires a chatId or current conversation.");
   }
   const target = parseTelegramTarget(String(requestedTarget));
   if (params.context?.conversationReadOrigin === "direct-operator") {

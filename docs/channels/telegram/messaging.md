@@ -247,6 +247,14 @@ admitted messages and successful bot replies qualify as ordinary history.
 Older cache values without admission provenance remain usable for explicit
 reply context, but are not promoted into automatic or tool-read history.
 
+Album members share history admission. Replies in non-forum groups stay in the
+same conversation; a reply thread does not become a forum topic. `/new` and
+`/reset` exclude earlier context, including on the first turn after a restart.
+
+Telegram processing requires the cache store. Cache failures, including in
+private chats, follow the existing ingress retry path rather than acknowledging
+an update whose context was not saved.
+
 The existing `message` tool supports Telegram `action: "read"` against the local
 message cache. Use `before` with a native Telegram message ID for exclusive
 backward paging and pass the returned `nextBefore` for the next page. `limit`
@@ -257,4 +265,4 @@ native `telegram:file/...` reference; private download paths are not returned.
 Agent reads require host-provided session and conversation context and stay in
 the current account, chat, and topic. Current sender policy and session reset
 boundaries still apply. This is cached history, not arbitrary Telegram history
-hydration. Channel posts and business direct-message topics are not supported.
+hydration. Business direct-message topics are not supported.

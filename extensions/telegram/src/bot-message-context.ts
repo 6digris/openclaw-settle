@@ -1,4 +1,3 @@
-// Telegram plugin module implements bot message context behavior.
 import type { ReactionTypeEmoji } from "grammy/types";
 import {
   resolveAckReaction,
@@ -502,6 +501,11 @@ export const buildTelegramMessageContext = async ({
     void sendTyping().catch((err: unknown) => {
       logVerbose(`telegram early typing cue failed for chat ${chatId}: ${String(err)}`);
     });
+  }
+
+  await options?.recordHistoryEligible?.();
+  if (options?.readPromptContext) {
+    promptContext = await options.readPromptContext(threadSpec);
   }
 
   const { ctxPayload, skillFilter, turn } = await buildTelegramInboundContextPayload({

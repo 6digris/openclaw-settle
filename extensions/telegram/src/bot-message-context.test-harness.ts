@@ -6,7 +6,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import { createTelegramMessageContextRuntime } from "./bot-handlers.message-context.js";
 import type { BuildTelegramMessageContextParams, TelegramMediaRef } from "./bot-message-context.js";
-import type { TelegramThreadSpec } from "./bot/helpers.js";
+import { resolveTelegramMessageThreadSpec, type TelegramThreadSpec } from "./bot/helpers.js";
 import { setTelegramPluginStateRuntimeForTests } from "./runtime-state.test-support.js";
 import { setTelegramRuntime } from "./runtime.js";
 import type { TelegramRuntime } from "./runtime.types.js";
@@ -212,7 +212,8 @@ export async function createTelegramCachedContextForTest(cfg: OpenClawConfig = {
         from: { id: 42, is_bot: false, first_name: "Alice" },
         ...Object.fromEntries(Object.entries(message).filter(([, value]) => value !== undefined)),
       } as Message;
-      await runtime.recordMessageForReplyChain(msg, threadSpec);
+      const observedThread = threadSpec ?? resolveTelegramMessageThreadSpec(msg);
+      await runtime.recordMessageForReplyChain(msg, observedThread);
       await runtime.markHistoryEligible({
         accountId: "default",
         chatId: msg.chat.id,
@@ -225,7 +226,7 @@ export async function createTelegramCachedContextForTest(cfg: OpenClawConfig = {
         await runtime.buildReplyChainForMessage(msg),
         runtimeCfg,
         telegramCfg,
-        threadSpec ? { threadSpec } : undefined,
+        { threadSpec: observedThread },
       );
     },
   };

@@ -35,7 +35,7 @@ export type TelegramChannelIngressResolver = (
 
 export type TelegramMessageContextOptions = {
   threadSpec?: TelegramThreadSpec;
-  /** Re-read the same cache when dispatch recovers a more specific topic. */
+  /** Read after admission, and again if dispatch recovers a more specific topic. */
   readPromptContext?: (thread: TelegramThreadSpec) => Promise<TelegramPromptContextEntry[]>;
   /** Mark independently admitted messages in the existing cache, not their embedded replies. */
   recordHistoryEligible?: () => Promise<void>;

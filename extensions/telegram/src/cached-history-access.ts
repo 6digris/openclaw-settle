@@ -1,9 +1,22 @@
 import { resolveChannelGroupPolicy } from "openclaw/plugin-sdk/channel-policy";
 import { hasControlCommand } from "openclaw/plugin-sdk/command-detection";
 import type { OpenClawConfig, TelegramAccountConfig } from "openclaw/plugin-sdk/config-contracts";
-import { expandTelegramAllowFromWithAccessGroups } from "./access-groups.js";
-import { firstDefined, normalizeAllowFrom } from "./bot-access.js";
+import {
+  expandTelegramAllowFromWithAccessGroups,
+  resolveTelegramDmAllow,
+} from "./access-groups.js";
+import {
+  firstDefined,
+  normalizeAllowFrom,
+  resolveTelegramEffectiveDmPolicy,
+} from "./bot-access.js";
 import { hasLeadingBotCommandAddressedToOtherBot } from "./bot/body-helpers.js";
+import {
+  resolveTelegramGroupAllowFromContext,
+  resolveTelegramMessageThreadSpec,
+  type TelegramThreadSpec,
+} from "./bot/helpers.js";
+import { isTelegramDmAccessAllowed } from "./dm-access.js";
 import {
   evaluateTelegramGroupBaseAccess,
   evaluateTelegramGroupPolicyAccess,
@@ -12,27 +25,26 @@ import { resolveTelegramScopedGroupConfig } from "./group-config-helpers.js";
 import { resolveTelegramCommandIngressAuthorization } from "./ingress.js";
 import {
   isTelegramMessageFromCurrentBot,
+  resolveProviderObservedTelegramThreadSpec,
   type TelegramCachedMessageNode,
 } from "./message-cache.js";
 
 /** Cache observations (including embedded replies) are data, not ingress authority. */
-export async function selectAllowedTelegramGroupContext(params: {
+export async function selectAllowedTelegramCachedContext(params: {
   cfg: OpenClawConfig;
   telegramCfg: TelegramAccountConfig;
   accountId: string;
   chatId: string | number;
-  threadId?: number;
+  threadSpec: TelegramThreadSpec;
   botId?: number;
   botUsername?: string;
   nodes: readonly TelegramCachedMessageNode[];
-  /** Only host-selected current album members may precede history admission. */
-  currentBatch?: boolean;
   groupAllowFrom?: Array<string | number>;
 }): Promise<Set<string>> {
   const { groupConfig, topicConfig } = resolveTelegramScopedGroupConfig(
     params.telegramCfg,
     params.chatId,
-    params.threadId,
+    params.threadSpec.id,
   );
   const override = firstDefined(topicConfig?.allowFrom, groupConfig?.allowFrom);
   const allowFrom =
@@ -42,16 +54,78 @@ export async function selectAllowedTelegramGroupContext(params: {
     params.telegramCfg.allowFrom;
   const allowed = new Set<string>();
   const senderAccess = new Map<string, ReturnType<typeof normalizeAllowFrom>>();
+  const dmAccess = new Map<string, boolean>();
   for (const node of params.nodes) {
-    if (!params.currentBatch && node.historyEligible !== true) {
+    const msg = node.sourceMessage;
+    if (node.historyEligible !== true || String(msg.chat?.id) !== String(params.chatId)) {
       continue;
     }
-    if (node.threadId !== (params.threadId === undefined ? undefined : String(params.threadId))) {
+    const isGroup = msg.chat.type === "group" || msg.chat.type === "supergroup";
+    if (!isGroup && msg.chat.type !== "private") {
+      continue;
+    }
+    const observedThread = resolveProviderObservedTelegramThreadSpec(node);
+    if (
+      params.threadSpec.id === undefined
+        ? observedThread !== undefined || resolveTelegramMessageThreadSpec(msg).id !== undefined
+        : observedThread?.id !== params.threadSpec.id ||
+          observedThread.scope !== params.threadSpec.scope
+    ) {
       continue;
     }
     const isSelf =
       Boolean(params.botId && isTelegramMessageFromCurrentBot(node.sourceMessage, params.botId)) ||
       (node.sourceMessage.from?.id === 0 && node.sourceMessage.from.is_bot);
+    if (!isGroup) {
+      const senderId = isSelf ? String(params.chatId) : (node.senderId ?? "");
+      if (!dmAccess.has(senderId)) {
+        const context = await resolveTelegramGroupAllowFromContext({
+          cfg: params.cfg,
+          accountId: params.accountId,
+          chatId: params.chatId,
+          threadSpec: params.threadSpec,
+          senderId,
+          isGroup: false,
+          dmPolicy: params.telegramCfg.dmPolicy,
+          allowFrom: params.telegramCfg.allowFrom,
+          resolveTelegramGroupConfig: () => ({ groupConfig, topicConfig }),
+        });
+        const dmPolicy = resolveTelegramEffectiveDmPolicy({
+          isGroup: false,
+          groupConfig,
+          dmPolicy: params.telegramCfg.dmPolicy,
+        });
+        const dmAllow = await resolveTelegramDmAllow({
+          cfg: params.cfg,
+          accountId: params.accountId,
+          senderId,
+          dmPolicy,
+          allowFrom: params.telegramCfg.allowFrom,
+          groupAllowOverride: context.groupAllowOverride,
+          storeAllowFrom: context.storeAllowFrom,
+        });
+        dmAccess.set(
+          senderId,
+          evaluateTelegramGroupBaseAccess({
+            ...context,
+            isGroup: false,
+            senderId,
+            enforceAllowOverride: true,
+            requireSenderForAllowOverride: true,
+          }).allowed &&
+            (await isTelegramDmAccessAllowed({
+              accountId: params.accountId,
+              dmPolicy,
+              senderId,
+              effectiveDmAllow: dmAllow.effectiveAllow,
+            })),
+        );
+      }
+      if (dmAccess.get(senderId)) {
+        allowed.add(node.messageId);
+      }
+      continue;
+    }
     // Without authenticated bot identity, addressed commands cannot establish a reset boundary.
     if (!isSelf && !params.botUsername && /^\/[^\s@]+@/u.test(node.body ?? "")) {
       continue;
@@ -122,7 +196,7 @@ export async function selectAllowedTelegramGroupContext(params: {
         cfg: params.cfg,
         accountId: params.accountId,
         chatId: params.chatId,
-        resolvedThreadId: params.threadId,
+        resolvedThreadId: params.threadSpec.id,
         senderId,
         isGroup: true,
         dmPolicy: "pairing",

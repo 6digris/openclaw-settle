@@ -2,10 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Message } from "grammy/types";
 import type { ChannelMessageActionContext } from "openclaw/plugin-sdk/channel-contract";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
-import {
-  createPluginStateKeyedStoreForTests,
-  resetPluginStateStoreForTests,
-} from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { resetPluginStateStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeCachedTelegramBotInfo } from "./bot-info-cache.js";
@@ -13,12 +10,12 @@ import { normalizeTelegramBotInfo } from "./bot-info.js";
 import { telegramMessageActions } from "./channel-actions.js";
 import { resolveTelegramMessageCacheScope } from "./message-cache-persistence.js";
 import { createTelegramMessageCache } from "./message-cache.js";
-import { setTelegramRuntime } from "./runtime.js";
+import { recordOutboundMessageForPromptContext } from "./outbound-message-context.js";
+import { setTelegramPluginStateRuntimeForTests } from "./runtime-state.test-support.js";
 import {
   clearTelegramRuntimeForTest,
   resetTelegramMessageCacheForTest,
 } from "./runtime.test-support.js";
-import type { TelegramRuntime } from "./runtime.types.js";
 
 const state = vi.hoisted(() => ({ sessionStartedAt: 1000 }));
 vi.mock("openclaw/plugin-sdk/session-store-runtime", async (original) => ({
@@ -33,7 +30,7 @@ const cfg: OpenClawConfig = {
   agents: { entries: { main: { default: true } } },
   channels: {
     telegram: {
-      botToken: "tok",
+      botToken: "99:synthetic-token",
       groupPolicy: "allowlist",
       groupAllowFrom: ["1"],
       groups: { "-1001": {} },
@@ -114,16 +111,7 @@ describe("Telegram message.read cached history entrypoint", () => {
     state.sessionStartedAt = 1000;
     resetPluginStateStoreForTests();
     resetTelegramMessageCacheForTest();
-    setTelegramRuntime({
-      state: {
-        openKeyedStore: ((options) =>
-          createPluginStateKeyedStoreForTests(
-            "telegram",
-            options,
-          )) as TelegramRuntime["state"]["openKeyedStore"],
-      },
-      channel: {},
-    } as TelegramRuntime);
+    setTelegramPluginStateRuntimeForTests();
     const botInfo = normalizeTelegramBotInfo({
       id: 99,
       is_bot: true,
@@ -133,9 +121,14 @@ describe("Telegram message.read cached history entrypoint", () => {
     if (!botInfo) {
       throw new Error("Invalid test bot identity");
     }
-    await writeCachedTelegramBotInfo({ accountId: "default", botToken: "tok", botInfo });
+    await writeCachedTelegramBotInfo({
+      accountId: "default",
+      botToken: "99:synthetic-token",
+      botInfo,
+    });
   });
   afterEach(() => {
+    vi.useRealTimers();
     clearTelegramRuntimeForTest();
     resetTelegramMessageCacheForTest();
     resetPluginStateStoreForTests();
@@ -247,10 +240,22 @@ describe("Telegram message.read cached history entrypoint", () => {
       "899",
     ]);
   });
-  it("retains self replies under explicit sender overrides without bypassing disabled rooms", async () => {
-    await record(899, {
-      from: { id: 99, is_bot: true, first_name: "Assistant" },
-      text: "Bot reply",
+  it("retains outbound self replies after startup identity expires without bypassing disabled rooms", async () => {
+    await recordOutboundMessageForPromptContext({
+      cfg,
+      account: { accountId: "default" },
+      chatId: -1001,
+      messageId: 899,
+      botUserId: 99,
+      successfulSendThread: { scope: "forum", id: 77 },
+      message: {
+        message_id: 899,
+        date: 10,
+        chat: { id: -1001, type: "supergroup" },
+        from: { id: 99, is_bot: true, first_name: "Assistant" },
+        text: "Bot reply",
+        message_thread_id: 77,
+      },
     });
     await record(900, { from: { id: 2, is_bot: false, first_name: "Denied" } });
     const local = structuredClone(cfg);
@@ -260,11 +265,69 @@ describe("Telegram message.read cached history entrypoint", () => {
     expect((await readPage({}, { cfg: local })).messages.map((row) => row.messageId)).toEqual([
       "899",
     ]);
+    const nextDay = Date.now() + 25 * 60 * 60 * 1000;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(nextDay);
+    expect((await readPage({}, { cfg: local })).messages.map((row) => row.messageId)).toEqual([
+      "899",
+    ]);
     local.channels!.telegram!.groups["-1001"]!.enabled = false;
     expect((await readPage({}, { cfg: local })).messages).toEqual([]);
     local.channels!.telegram!.groups["-1001"]!.enabled = true;
     local.channels!.telegram!.groupPolicy = "disabled";
     expect((await readPage({}, { cfg: local })).messages).toEqual([]);
+  });
+
+  it("reads successful bot replies in an allowlisted private conversation", async () => {
+    const local = structuredClone(cfg);
+    local.channels!.telegram!.dmPolicy = "allowlist";
+    local.channels!.telegram!.allowFrom = ["1"];
+    const cache = createTelegramMessageCache({
+      scope: resolveTelegramMessageCacheScope(
+        resolveStorePath(local.session?.store, { agentId: "main" }),
+      ),
+    });
+    await cache.record({
+      accountId: "default",
+      chatId: 1,
+      historyEligible: true,
+      msg: {
+        message_id: 899,
+        date: 10,
+        chat: { id: 1, type: "private", first_name: "User" },
+        from: { id: 1, is_bot: false, first_name: "User" },
+        text: "Question",
+      },
+    });
+    await recordOutboundMessageForPromptContext({
+      cfg: local,
+      account: { accountId: "default" },
+      chatId: 1,
+      messageId: 900,
+      botUserId: 99,
+      message: {
+        message_id: 900,
+        date: 10,
+        chat: { id: 1, type: "private" },
+        from: { id: 99, is_bot: true, first_name: "Assistant" },
+        text: "Answer",
+      },
+    });
+    const conversation = {
+      cfg: local,
+      sessionKey: "agent:main:telegram:direct:1",
+      toolContext: {
+        currentChannelProvider: "telegram",
+        currentChannelId: "telegram:1",
+        currentMessageId: "901",
+      },
+    };
+    expect((await readPage({}, conversation)).messages.map((row) => row.messageId)).toEqual([
+      "899",
+      "900",
+    ]);
+    local.channels!.telegram!.dmPolicy = "disabled";
+    expect((await readPage({}, conversation)).messages).toEqual([]);
   });
   it.each(["/new", "/reset"])(
     "does not interpret a bot reply containing %s as a reset",

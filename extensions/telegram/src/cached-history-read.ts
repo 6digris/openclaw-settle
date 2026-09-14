@@ -6,33 +6,29 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { parseStrictPositiveInteger } from "openclaw/plugin-sdk/number-runtime";
 import { resolveAgentIdFromSessionKey } from "openclaw/plugin-sdk/routing";
 import { getSessionEntry, resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
-import { resolveTelegramDmAllow } from "./access-groups.js";
 import { resolveTelegramAccountOwnerAgentId } from "./account-owner.js";
 import { listTelegramAccountIds, mergeTelegramAccountConfig } from "./accounts.js";
-import { resolveTelegramEffectiveDmPolicy } from "./bot-access.js";
 import { readCachedTelegramBotInfo } from "./bot-info-cache.js";
-import { resolveTelegramGroupAllowFromContext } from "./bot/helpers.js";
-import { selectAllowedTelegramGroupContext } from "./cached-group-context.js";
-import { isTelegramDmAccessAllowed } from "./dm-access.js";
-import { evaluateTelegramGroupBaseAccess } from "./group-access.js";
-import { resolveTelegramScopedGroupConfig } from "./group-config-helpers.js";
-import { resolveTelegramMessageCacheScope } from "./message-cache-persistence.js";
+import { selectAllowedTelegramCachedContext } from "./cached-history-access.js";
+import {
+  resolveTelegramMessageCacheScope,
+  TELEGRAM_MESSAGE_CACHE_PERSISTENT_MAX_MESSAGES,
+} from "./message-cache-persistence.js";
 import {
   createTelegramMessageCache,
   isTelegramSessionBoundaryCommandNode,
-  resolveProviderObservedTelegramThreadSpec,
   type TelegramCachedMessageNode,
 } from "./message-cache.js";
 import {
   resolveTelegramCachedHistoryScope,
   type TelegramMessageMutationContext,
 } from "./message-topic-binding.js";
+import { resolveTelegramBotUserIdFromToken } from "./token-fingerprint.js";
 import { resolveTelegramToken } from "./token.js";
 
 const MAX_MESSAGES = 100;
 // UTF-8 bytes bound even adversarial high-token-density text, not just message count.
 const MAX_RESULT_BYTES = 32 * 1024;
-const SCAN_LIMIT = 3000;
 
 type SafeMessage = Pick<
   TelegramCachedMessageNode,
@@ -73,96 +69,6 @@ function projectMessage(node: TelegramCachedMessageNode): SafeMessage {
     replyToId,
     threadId,
   };
-}
-
-async function isSourceAllowed(params: {
-  cfg: OpenClawConfig;
-  accountId: string;
-  chatId: string;
-  threadId?: number;
-  node: TelegramCachedMessageNode;
-  botId?: number;
-  botUsername?: string;
-}): Promise<boolean> {
-  const { cfg, accountId, chatId, threadId, node } = params;
-  const msg = node.sourceMessage;
-  if (String(msg.chat?.id) !== chatId || !msg.from?.id) {
-    return false;
-  }
-  const isGroup = msg.chat.type === "group" || msg.chat.type === "supergroup";
-  // Channel posts and business direct-message topics need their own admission contract.
-  if (!isGroup && msg.chat.type !== "private") {
-    return false;
-  }
-  const observed = resolveProviderObservedTelegramThreadSpec(node);
-  if (
-    threadId !== undefined
-      ? observed?.id !== threadId || observed.scope !== (isGroup ? "forum" : "dm")
-      : node.threadId !== undefined || observed !== undefined
-  ) {
-    return false;
-  }
-  const telegramCfg = mergeTelegramAccountConfig(cfg, accountId);
-  const senderId = String(msg.from.id);
-  const context = await resolveTelegramGroupAllowFromContext({
-    cfg,
-    accountId,
-    chatId,
-    senderId,
-    isGroup,
-    threadSpec: isGroup ? { scope: "forum", id: threadId } : { scope: "dm", id: threadId },
-    dmPolicy: telegramCfg.dmPolicy,
-    allowFrom: telegramCfg.allowFrom,
-    groupAllowFrom: telegramCfg.groupAllowFrom ?? telegramCfg.allowFrom,
-    resolveTelegramGroupConfig: (id, topic) =>
-      resolveTelegramScopedGroupConfig(telegramCfg, id, topic),
-  });
-  if (
-    !evaluateTelegramGroupBaseAccess({
-      ...context,
-      isGroup,
-      senderId,
-      enforceAllowOverride: !isGroup,
-      requireSenderForAllowOverride: true,
-    }).allowed
-  ) {
-    return false;
-  }
-  if (isGroup) {
-    return (
-      await selectAllowedTelegramGroupContext({
-        cfg,
-        telegramCfg,
-        accountId,
-        chatId,
-        threadId,
-        nodes: [node],
-        botId: params.botId,
-        botUsername: params.botUsername,
-      })
-    ).has(node.messageId);
-  }
-  const dmPolicy = resolveTelegramEffectiveDmPolicy({
-    isGroup,
-    groupConfig: context.groupConfig,
-    dmPolicy: telegramCfg.dmPolicy,
-  });
-  const dmAllow = await resolveTelegramDmAllow({
-    cfg,
-    accountId,
-    senderId,
-    dmPolicy,
-    allowFrom: telegramCfg.allowFrom,
-    groupAllowOverride: context.groupAllowOverride,
-    storeAllowFrom: context.storeAllowFrom,
-  });
-  return isTelegramDmAccessAllowed({
-    accountId,
-    dmPolicy,
-    msg,
-    chatId: Number(chatId),
-    effectiveDmAllow: dmAllow.effectiveAllow,
-  });
 }
 
 export async function readTelegramCachedHistory(input: {
@@ -210,6 +116,25 @@ export async function readTelegramCachedHistory(input: {
       }),
     ),
   });
+  // Scan relative to the trusted current message, not the paging cursor: paging
+  // backwards must never cross a reset that occurred after the requested cursor.
+  const nodes = await cache.recentBefore({
+    ...scope,
+    messageId: String(currentId ?? before),
+    limit: TELEGRAM_MESSAGE_CACHE_PERSISTENT_MAX_MESSAGES,
+  });
+  const botToken = resolveTelegramToken(cfg, { accountId: scope.accountId }).token;
+  const botInfo = await readCachedTelegramBotInfo({ accountId: scope.accountId, botToken });
+  const allowedIds = await selectAllowedTelegramCachedContext({
+    ...scope,
+    cfg,
+    telegramCfg: mergeTelegramAccountConfig(cfg, scope.accountId),
+    threadSpec: { scope: scope.chatId.startsWith("-") ? "forum" : "dm", id: scope.threadId },
+    nodes: nodes.filter((node) => node.sourceMessage.chat.is_direct_messages !== true),
+    botId: resolveTelegramBotUserIdFromToken(botToken),
+    botUsername: botInfo?.botInfo.username,
+  });
+  // A reset during cache or policy reads must apply before publishing this page.
   const sessionKey = context?.sessionKey?.trim();
   const entry = sessionKey
     ? getSessionEntry({
@@ -226,38 +151,12 @@ export async function readTelegramCachedHistory(input: {
     entry?.sessionStartedAt === undefined
       ? undefined
       : Math.floor(entry.sessionStartedAt / 1000) * 1000;
-  // Scan relative to the trusted current message, not the paging cursor: paging
-  // backwards must never cross a reset that occurred after the requested cursor.
-  const nodes = await cache.recentBefore({
-    ...scope,
-    messageId: String(currentId ?? before),
-    limit: SCAN_LIMIT,
-  });
-  const botInfo = await readCachedTelegramBotInfo({
-    accountId: scope.accountId,
-    botToken: resolveTelegramToken(cfg, { accountId: scope.accountId }).token,
-  });
-  const allowed: TelegramCachedMessageNode[] = [];
-  for (const node of nodes) {
-    if (
-      node.historyEligible !== true ||
-      (minTimestamp !== undefined &&
-        (node.timestamp === undefined || node.timestamp < minTimestamp))
-    ) {
-      continue;
-    }
-    if (
-      await isSourceAllowed({
-        ...scope,
-        cfg,
-        node,
-        botId: botInfo?.botInfo.id,
-        botUsername: botInfo?.botInfo.username,
-      })
-    ) {
-      allowed.push(node);
-    }
-  }
+  const allowed = nodes.filter(
+    (node) =>
+      allowedIds.has(node.messageId) &&
+      (minTimestamp === undefined ||
+        (node.timestamp !== undefined && node.timestamp >= minTimestamp)),
+  );
   const boundary = allowed.findLast(isTelegramSessionBoundaryCommandNode);
   const eligible = allowed.filter(
     (node) =>

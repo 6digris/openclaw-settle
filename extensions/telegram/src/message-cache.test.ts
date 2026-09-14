@@ -1,8 +1,10 @@
 import type { Message } from "grammy/types";
+import { createPluginStateKeyedStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { describe, expect, it } from "vitest";
 import {
   resolveTelegramMessageCachePersistentScopeKey,
   TELEGRAM_MESSAGE_CACHE_PERSISTENT_MAX_MESSAGES,
+  type PersistedTelegramMessageCacheValue,
   type TelegramResolvedMedia,
 } from "./message-cache-persistence.js";
 import {
@@ -624,6 +626,39 @@ describe("telegram message cache", () => {
     expect(
       (await get(cacheFor(memory.bucketKey, memory.store), "9102"))?.historyEligible,
     ).toBeUndefined();
+  });
+
+  it("keeps concurrent admission and authoritative edits in memory and after restart", async () => {
+    const bucketKey = `test:${process.pid}:${Date.now()}:${persistentStoreId++}`;
+    const store = createPluginStateKeyedStoreForTests<PersistedTelegramMessageCacheValue>(
+      "telegram",
+      { namespace: "telegram.message-cache-writer-race", maxEntries: 10 },
+    );
+    try {
+      const cache = cacheFor(bucketKey, store);
+      await record(cache, message(9104, "Nora", { text: "Release on Thursday" }));
+
+      await Promise.all([
+        cache.markHistoryEligible({ accountId: "default", chatId: 7, messageIds: ["9104"] }),
+        record(
+          cache,
+          message(9104, "Nora", {
+            text: "Release on Friday",
+            edit_date: 1_736_380_910,
+          }),
+        ),
+      ]);
+
+      const live = await get(cache, "9104");
+      const hydrated = await reloadGet(bucketKey, store, "9104");
+      expect({ live, hydrated }).toMatchObject({
+        live: { body: "Release on Friday", historyEligible: true },
+        hydrated: { body: "Release on Friday", historyEligible: true },
+      });
+    } finally {
+      await store.clear();
+      resetCache();
+    }
   });
 
   it("does not expose admission when marking history fails durably", async () => {

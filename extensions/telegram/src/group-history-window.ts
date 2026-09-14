@@ -148,54 +148,6 @@ export function retainTelegramGroupHistoryPromptContext(params: {
   });
 }
 
-export function mergeTelegramGroupHistoryPromptContext(params: {
-  promptContext: TelegramPromptContextEntry[];
-  entries: HistoryEntry[];
-}): TelegramPromptContextEntry[] {
-  if (params.entries.length === 0) {
-    return params.promptContext;
-  }
-  const historyMessages = params.entries.map((entry) => ({
-    ...(entry.messageId ? { message_id: entry.messageId } : {}),
-    sender: entry.sender,
-    ...(entry.timestamp !== undefined ? { timestamp_ms: entry.timestamp } : {}),
-    body: entry.body,
-  }));
-  const chatWindowIndex = params.promptContext.findIndex(isTelegramChatWindowPromptContext);
-  const baseEntry = params.promptContext[chatWindowIndex];
-  const basePayload = telegramChatWindowPayload(baseEntry);
-  const existingMessages = telegramPromptMessages(basePayload);
-  const messagesByKey = new Map<string, Record<string, unknown>>();
-  for (const message of [...historyMessages, ...existingMessages]) {
-    const key = telegramPromptMessageKey(message);
-    if (key) {
-      messagesByKey.set(key, message);
-    }
-  }
-  const mergedMessages = [...messagesByKey.values()].toSorted((left, right) => {
-    const leftTimestamp = typeof left["timestamp_ms"] === "number" ? left["timestamp_ms"] : 0;
-    const rightTimestamp = typeof right["timestamp_ms"] === "number" ? right["timestamp_ms"] : 0;
-    return leftTimestamp - rightTimestamp;
-  });
-  const mergedEntry: TelegramPromptContextEntry = {
-    ...baseEntry,
-    label: "Conversation context",
-    source: baseEntry?.source ?? "telegram",
-    type: "chat_window",
-    payload: {
-      order: "chronological",
-      relation: "selected_for_current_message",
-      messages: mergedMessages,
-    },
-  };
-  if (!baseEntry) {
-    return [...params.promptContext, mergedEntry];
-  }
-  return params.promptContext.map((entry, index) =>
-    index === chatWindowIndex ? mergedEntry : entry,
-  );
-}
-
 /** Derive the legacy inbound-history projection from the selected cache window. */
 export function telegramGroupHistoryEntries(
   context: readonly TelegramPromptContextEntry[],

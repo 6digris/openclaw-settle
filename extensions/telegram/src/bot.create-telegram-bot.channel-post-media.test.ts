@@ -1,4 +1,5 @@
 import { KeyedAsyncQueue } from "openclaw/plugin-sdk/keyed-async-queue";
+import type { SavedRemoteMedia } from "openclaw/plugin-sdk/media-runtime";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { withTimeout } from "openclaw/plugin-sdk/text-utility-runtime";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -143,7 +144,18 @@ function createChannelPostContext(params: {
       ...(params.caption ? { caption: params.caption } : {}),
       ...(params.text ? { text: params.text } : {}),
       ...(params.mediaGroupId ? { media_group_id: params.mediaGroupId } : {}),
-      ...(photoFileId ? { photo: [{ file_id: photoFileId }] } : {}),
+      ...(photoFileId
+        ? {
+            photo: [
+              {
+                file_id: photoFileId,
+                file_unique_id: `unique-${photoFileId}`,
+                width: 1,
+                height: 1,
+              },
+            ],
+          }
+        : {}),
     },
     me: { username: "openclaw_bot" },
     getFile: async () =>
@@ -285,7 +297,14 @@ async function dispatchTelegramGroupPhoto(params: {
       ...(params.albumId ? { media_group_id: params.albumId } : {}),
       ...(params.caption ? { caption: params.caption } : {}),
       ...params.extraMessage,
-      photo: [{ file_id: `photo-${params.messageId}` }],
+      photo: [
+        {
+          file_id: `photo-${params.messageId}`,
+          file_unique_id: `unique-photo-${params.messageId}`,
+          width: 1,
+          height: 1,
+        },
+      ],
       from: { id: 55, is_bot: false, first_name: "u" },
     },
     me: { id: 999, username: "openclaw_bot" },
@@ -347,8 +366,23 @@ function createTelegramPrivateMediaContext(params: {
       message_id: params.messageId,
       date: 1736380800,
       ...(params.fileName
-        ? { document: { file_id: params.fileId, file_name: params.fileName } }
-        : { photo: [{ file_id: params.fileId }] }),
+        ? {
+            document: {
+              file_id: params.fileId,
+              file_unique_id: `unique-${params.fileId}`,
+              file_name: params.fileName,
+            },
+          }
+        : {
+            photo: [
+              {
+                file_id: params.fileId,
+                file_unique_id: `unique-${params.fileId}`,
+                width: 1,
+                height: 1,
+              },
+            ],
+          }),
       from: { id: 55, is_bot: false, first_name: "u" },
     },
     me: { username: "openclaw_bot" },
@@ -413,10 +447,13 @@ describe("createTelegramBot channel_post media", () => {
         if (buffer.length > params.maxBytes) {
           throw new MediaFetchError("max_bytes", `payload exceeds maxBytes ${params.maxBytes}`);
         }
+        const contentType = response.headers.get("content-type");
         return {
+          id: "telegram-media.bin",
           path: "/tmp/telegram-media.bin",
-          contentType: response.headers.get("content-type"),
-        };
+          size: buffer.byteLength,
+          ...(contentType ? { contentType } : {}),
+        } satisfies SavedRemoteMedia;
       },
     );
     rootRead.mockReset();
@@ -730,6 +767,66 @@ describe("createTelegramBot channel_post media", () => {
     expectTelegramIngestHook([]);
   });
 
+  it("retains every admitted album caption for a later group mention", async () => {
+    loadConfig.mockReturnValue({
+      channels: {
+        telegram: {
+          groupPolicy: "allowlist",
+          groupAllowFrom: ["55"],
+          historyLimit: 20,
+          groups: { "-100456": { requireMention: true } },
+        },
+      },
+    });
+    const fetchSpy = createImageFetchSpy();
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    try {
+      createTelegramBot({ token: "tok", testTimings: TELEGRAM_TEST_TIMINGS });
+      await dispatchTelegramGroupPhoto({
+        messageId: 92101,
+        topicId: 42,
+        albumId: "retained-captions",
+        caption: "@openclaw_bot First album caption",
+        extraMessage: { caption_entities: [{ type: "mention", offset: 0, length: 13 }] },
+      });
+      await dispatchTelegramGroupPhoto({
+        messageId: 92102,
+        topicId: 42,
+        albumId: "retained-captions",
+        caption: "The second image shows the new release date",
+      });
+      await flushChannelPostMediaGroup(setTimeoutSpy);
+      expect(replySpy).toHaveBeenCalledTimes(1);
+      expect(replySpy.mock.calls[0]?.[0].RawBody).toContain(
+        "The second image shows the new release date",
+      );
+      expect(sendMessageSpy).not.toHaveBeenCalled();
+
+      replySpy.mockClear();
+      await getOnHandler("message")({
+        message: {
+          chat: { id: -100456, type: "supergroup", title: "Ops Chat", is_forum: true },
+          from: { id: 55, is_bot: false, first_name: "u" },
+          message_id: 92103,
+          date: 1736380900,
+          message_thread_id: 42,
+          is_topic_message: true,
+          text: "@openclaw_bot What did the second caption say?",
+          entities: [{ type: "mention", offset: 0, length: 13 }],
+        },
+        me: telegramBotInfoForTest,
+        getFile: async () => ({}),
+      });
+      expect(replySpy).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(replySpy.mock.calls[0]?.[0].ChannelStructuredContext)).toContain(
+        "The second image shows the new release date",
+      );
+    } finally {
+      setTimeoutSpy.mockRestore();
+      fetchSpy.mockRestore();
+    }
+  });
+
   it.each([
     { name: "all", messageIds: [92068, 92069], partial: false, deniedMention: false },
     { name: "partial", messageIds: [92071, 92072], partial: true, deniedMention: false },
@@ -964,7 +1061,12 @@ describe("createTelegramBot channel_post media", () => {
     const shutdown = new AbortController();
     const mediaPath = "/tmp/live-album-first.jpg";
     saveRemoteMedia
-      .mockResolvedValueOnce({ path: mediaPath, contentType: "image/jpeg" })
+      .mockResolvedValueOnce({
+        id: "live-album-first.jpg",
+        path: mediaPath,
+        size: 4,
+        contentType: "image/jpeg",
+      } satisfies SavedRemoteMedia)
       .mockImplementationOnce(() => rejectTelegramAlbumDownload(shutdown, false));
     const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
     try {
@@ -1001,9 +1103,11 @@ describe("createTelegramBot channel_post media", () => {
     replySpy.mockReset();
     setOpenChannelPostConfig();
     saveRemoteMedia.mockResolvedValueOnce({
+      id: "fatal-album-first.jpg",
       path: "/tmp/fatal-album-first.jpg",
+      size: 4,
       contentType: "image/jpeg",
-    });
+    } satisfies SavedRemoteMedia);
 
     const runtimeError = vi.fn();
     const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");

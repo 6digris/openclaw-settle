@@ -491,16 +491,6 @@ export function createTelegramMessagePipeline({
           });
         }
       }
-      const promptContext = await buildPromptContextForMessage(
-        params.ctx,
-        params.msg,
-        replyChainNodes,
-        runtimeCfg,
-        runtimeTelegramCfg,
-        params.options,
-        promptContextMediaByMessageId,
-        params.promptContextMessageSelection,
-      );
       const result = await processMessage({
         ctx: params.ctx,
         allMedia: params.allMedia,
@@ -547,7 +537,6 @@ export function createTelegramMessagePipeline({
         },
         replyMedia,
         replyChain,
-        promptContext,
       });
       if (spooledReplay) {
         return await finalizeSpooledReplayResult(result);
