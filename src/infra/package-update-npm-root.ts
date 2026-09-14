@@ -1,7 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { formatErrorMessage } from "./errors.js";
+import { splitShellArgs } from "../utils/shell-argv.js";
+import { formatErrorMessage, hasErrnoCode } from "./errors.js";
+import { resolveExecutablePath } from "./executable-path.js";
+import { resolveRequiredOsHomeDir } from "./home-dir.js";
 import {
   createPackageIntegrityReader,
   type PackageDirectoryIdentity,
@@ -9,13 +12,11 @@ import {
 } from "./package-update-integrity.js";
 import { readCurrentGitUpdateRecovery } from "./update-runner-git-recovery.js";
 
-/** The retained package link owns this baseline; its checkout remains operator-owned. */
-async function captureNpmLinkedGitRecovery(
-  packageRoot: string,
-  link: Extract<PackageRootIntegrityFingerprint, { kind: "link" }>,
+/** The retained installation owner supplies this operator-owned checkout. */
+async function captureGitRecovery(
+  target: string,
   timeoutMs?: number,
 ): Promise<(() => Promise<void>) | undefined> {
-  const target = path.resolve(path.dirname(packageRoot), link.target);
   const recovery = await readCurrentGitUpdateRecovery(target, timeoutMs);
   if (!recovery.serviceRestartSafe || !recovery.buildId) {
     return undefined;
@@ -41,15 +42,106 @@ async function captureNpmLinkedGitRecovery(
   };
 }
 
+export type InstallerGitRecovery = {
+  root: string;
+  launcher: string;
+  verifyRuntime: () => Promise<void>;
+  assertCurrent: () => Promise<void>;
+};
+
+async function isInstallerGitWrapper(launcher: string, root: string): Promise<boolean> {
+  const stat = await fs.lstat(launcher).catch((error: unknown) => {
+    if (hasErrnoCode(error, "ENOENT") || hasErrnoCode(error, "ENOTDIR")) {
+      return undefined;
+    }
+    throw error;
+  });
+  if (!stat?.isFile() || stat.isSymbolicLink() || stat.size > 4096 || !(stat.mode & 0o111)) {
+    return false;
+  }
+  const lines = (await fs.readFile(launcher, "utf8")).trimEnd().split(/\r?\n/u);
+  // install.sh emits literal printf %q paths and exactly "$@" argument forwarding.
+  const word = String.raw`(?:[^\x00-\x20\x7f\\'"\x60$;&|<>(){}\[\]*?!]|\\[^\r\n]|'[^'\r\n]*')+`;
+  const execLine = lines[2] ?? "";
+  const args = lines.length === 3 ? splitShellArgs(execLine) : null;
+  if (
+    lines[0] !== "#!/usr/bin/env bash" ||
+    lines[1] !== "set -euo pipefail" ||
+    !new RegExp(`^exec ${word} ${word} "\\$@"$`, "u").test(execLine) ||
+    args?.length !== 4 ||
+    args[0] !== "exec" ||
+    !args[1] ||
+    !path.isAbsolute(args[1]) ||
+    args[2] !== path.join(root, "dist", "entry.js") ||
+    args[3] !== "$@"
+  ) {
+    return false;
+  }
+  const node = resolveExecutablePath(args[1], { useCache: false });
+  return Boolean(node && (await fs.realpath(node)) === (await fs.realpath(process.execPath)));
+}
+
+/** install.sh publishes this canonical exposure; copied/custom wrappers are not its owner. */
+export async function captureInstallerGitRecovery(
+  root: string,
+  timeoutMs: number,
+): Promise<InstallerGitRecovery | undefined> {
+  const launcher = path.join(resolveRequiredOsHomeDir(), ".local", "bin", "openclaw");
+  if (process.platform === "win32" || !(await isInstallerGitWrapper(launcher, root))) {
+    return undefined;
+  }
+  const fingerprint = await createPackageIntegrityReader(timeoutMs).launcher(launcher);
+  const launcherReal = await fs.realpath(launcher);
+  const verifyRuntime = await captureGitRecovery(root, timeoutMs);
+  if (!verifyRuntime) {
+    throw new Error("The installer's previous Git runtime could not be verified.");
+  }
+  const assertCurrent = async () => {
+    const reader = createPackageIntegrityReader(timeoutMs);
+    if (await reader.exists(path.resolve(path.dirname(launcher), "../lib/node_modules/openclaw"))) {
+      throw new Error("The installer destination already contains another npm installation.");
+    }
+    if (
+      (await reader.launcher(launcher)) !== fingerprint ||
+      !(await isInstallerGitWrapper(launcher, root))
+    ) {
+      throw new Error("The installer launcher changed while preparing the update.");
+    }
+    for (const directory of new Set(
+      (process.env.PATH ?? "").split(path.delimiter).filter(Boolean),
+    )) {
+      const other = path.resolve(directory, "openclaw");
+      if (other === launcher) {
+        continue;
+      }
+      const entry = await fs.realpath(other).catch(() => undefined);
+      if (entry === launcherReal) {
+        continue;
+      }
+      if (
+        entry === path.join(root, "openclaw.mjs") ||
+        entry === path.join(root, "dist", "entry.js") ||
+        (await isInstallerGitWrapper(other, root))
+      ) {
+        throw new Error(
+          "Multiple launchers expose this Git checkout; keep one installer exposure before updating.",
+        );
+      }
+    }
+    await verifyRuntime();
+  };
+  await assertCurrent();
+  return { root, launcher, verifyRuntime, assertCurrent };
+}
+
 export async function createNpmPackageRootLinkLifecycle(params: {
   liveRoot: string;
   backupRoot: string;
   fingerprint: Extract<PackageRootIntegrityFingerprint, { kind: "link" }>;
   timeoutMs?: number;
 }) {
-  const verifyRuntime = await captureNpmLinkedGitRecovery(
-    params.liveRoot,
-    params.fingerprint,
+  const verifyRuntime = await captureGitRecovery(
+    path.resolve(path.dirname(params.liveRoot), params.fingerprint.target),
     params.timeoutMs,
   );
   const assertUnchanged = async (root: string) => {
@@ -145,12 +237,12 @@ export async function verifyNpmRootRecovery(
       }
     }
     await verifyGitRuntime?.();
-    // Restoring absence or an unverified external link does not establish a runnable runtime.
+    // Package absence alone is not recovery; an installer launcher can own the verified Git runtime.
     return (
-      hadPackage &&
-      (previousRoot?.kind === "directory" ||
-        verifyGitRuntime !== undefined ||
-        (!previousRoot && params.previousIdentity !== undefined))
+      verifyGitRuntime !== undefined ||
+      (hadPackage &&
+        (previousRoot?.kind === "directory" ||
+          (!previousRoot && params.previousIdentity !== undefined)))
     );
   });
 }

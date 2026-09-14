@@ -12,6 +12,7 @@ import { readPackageVersion } from "./package-json.js";
 import { completePendingPackageLifecycle } from "./package-lifecycle.js";
 import type { LocalPackageOverridesResult } from "./package-local-overrides.js";
 import { readPackageVersionIfPresent } from "./package-update-integrity.js";
+import type { InstallerGitRecovery } from "./package-update-npm-root.js";
 import {
   isBlockingPackageUpdateStep,
   PackageUpdateActivationError,
@@ -735,12 +736,14 @@ export async function runGlobalPackageUpdateSteps(params: {
   validateCandidate?: (packageRoot: string) => Promise<UpdateStepResult[]>;
   beforeActivate?: () => Promise<void>;
   onTransaction?: (transaction: PackageUpdateTransaction) => void;
+  retainedInstaller?: InstallerGitRecovery;
   expectedGitCheckout?: GitRuntimeIdentity;
   activateGitRoot?: string;
   localOverrides?: { reapply: boolean; env?: NodeJS.ProcessEnv };
 }): Promise<PackageUpdateStepsResult> {
   // Transaction callbacks must never silently become an in-place manager install.
   const requireStaging = Boolean(
+    params.retainedInstaller ||
     params.validateCandidate ||
     params.beforeActivate ||
     params.onTransaction ||
@@ -1271,6 +1274,7 @@ export async function runGlobalPackageUpdateSteps(params: {
           packageName: params.packageName,
           postVerifyStep: params.postVerifyStep,
           beforeActivate: params.beforeActivate,
+          retainedInstaller: params.retainedInstaller,
           onLiveMutation: () => {
             liveTreeMutated = true;
           },

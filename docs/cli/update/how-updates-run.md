@@ -27,6 +27,14 @@ aligned:
 
 With `--channel dev`, a dirty Git checkout exposed through an npm launcher on
 macOS or Linux is preserved while the update installs in a fresh checkout.
+The official installer's `~/.local/bin/openclaw` wrapper is also supported when
+its Node runtime and checkout match. The update replaces that canonical wrapper
+through npm and retains it for rollback. Custom installer prefixes and ANSI-C
+quoted paths (`$'...'`, which Bash can emit for non-ASCII paths under `LC_ALL=C`)
+are left unchanged. Commit local changes and retry, or follow the
+[source installation steps](/install#from-source) in a separate directory.
+Another installation at the destination or multiple launchers for the checkout
+must be resolved first. npm must stage its replacement launcher (`bin-links=true`).
 `OPENCLAW_GIT_DIR` must name an empty directory outside the current installation;
 otherwise an occupied default directory gets a fresh sibling. Custom launchers
 are left untouched, with instructions to commit changes and retry.

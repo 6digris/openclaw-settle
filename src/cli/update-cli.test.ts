@@ -11151,6 +11151,17 @@ describe("update-cli", () => {
   const dirtyRelocationScenarios = [
     "package",
     "dirty Git",
+    "installer",
+    "failed installer activation",
+    "failed installer rebuilt",
+    "installer occupied",
+    "installer destination changed",
+    "installer duplicate",
+    "installer wrong Node",
+    "installer bad forwarding",
+    "installer expansion",
+    "installer replaced",
+    "installer missing shim",
     "dirty Git JSON",
     "second PATH exposure",
     "unrelated manager",
@@ -11165,19 +11176,40 @@ describe("update-cli", () => {
     "handles %s updates without changing the original checkout",
     async (scenario) => {
       const root = await fs.realpath(tempDirs.make("openclaw-update-git-alias-"));
+      const installer = scenario.includes("installer");
+      const failedActivation =
+        scenario === "failed activation" || (installer && scenario.startsWith("failed "));
+      const retainedNewRuntime = scenario === "failed installer rebuilt";
+      const installerRefusal = new Map([
+        ["installer occupied", "destination already contains"],
+        ["installer destination changed", "destination already contains"],
+        ["installer duplicate", "Multiple launchers"],
+        ["installer wrong Node", "could not be verified for automatic relocation"],
+        ["installer bad forwarding", "could not be verified for automatic relocation"],
+        ["installer expansion", "could not be verified for automatic relocation"],
+        ["installer replaced", "launcher changed"],
+        ["installer missing shim", "replacement installer launcher"],
+      ]).get(scenario);
       const failedUpdate = scenario.startsWith("failed ");
-      const refused = [
-        "custom launcher",
-        "renamed invocation",
-        "direct launcher",
-        "replaced launcher",
-      ].includes(scenario);
+      const home = path.join(root, "home");
+      const prefix = installer ? path.join(home, ".local") : path.join(root, "package");
+      const refused =
+        ["custom launcher", "renamed invocation", "direct launcher", "replaced launcher"].includes(
+          scenario,
+        ) || installerRefusal !== undefined;
       const json = failedUpdate || scenario === "dirty Git JSON";
       const { nodeModules, pkgRoot } = await setupInstalledPackageAtNodeModules(
-        path.join(root, "package", "lib", "node_modules"),
+        path.join(prefix, "lib", "node_modules"),
       );
-      const originalRoot = path.join(root, "original-checkout");
-      const binDir = path.join(root, "package", "bin");
+      const originalRoot = path.join(
+        root,
+        scenario === "installer expansion"
+          ? "$HOME"
+          : installer
+            ? "original checkout~é"
+            : "original-checkout",
+      );
+      const binDir = path.join(prefix, "bin");
       const originalSha = "b".repeat(40);
       if (scenario !== "package") {
         await fs.rename(pkgRoot, originalRoot);
@@ -11199,7 +11231,7 @@ describe("update-cli", () => {
       }
       const otherPrefix = path.join(root, "other-prefix");
       const otherPackageRoot = path.join(otherPrefix, "lib", "node_modules", "openclaw");
-      if (scenario === "second PATH exposure") {
+      if (scenario === "second PATH exposure" || scenario === "installer duplicate") {
         await fs.mkdir(path.dirname(otherPackageRoot), { recursive: true });
         await fs.symlink(originalRoot, otherPackageRoot, "dir");
         await fs.mkdir(path.join(otherPrefix, "bin"));
@@ -11213,10 +11245,53 @@ describe("update-cli", () => {
         vi.mocked(shared.resolveGlobalManager).mockRestore();
         await fs.mkdir(otherPackageRoot, { recursive: true });
       }
+      const installerEntry = path.join(originalRoot, "dist", "entry.js");
+      // install.sh uses Bash printf %q, which backslash-escapes ordinary path spaces.
+      const quotedEntry =
+        scenario === "installer"
+          ? installerEntry.replaceAll(" ", "\\ ")
+          : quoteCliArg(installerEntry);
+      let installerWrapper = `#!/usr/bin/env bash\nset -euo pipefail\nexec ${quoteCliArg(process.execPath)} ${quotedEntry} "$@"\n`;
+      if (installer) {
+        await fs.unlink(pkgRoot);
+        await fs.unlink(path.join(binDir, "openclaw"));
+        await fs.writeFile(path.join(binDir, "openclaw"), installerWrapper, { mode: 0o755 });
+        await fs.writeFile(installerEntry, "process.stdout.write(JSON.stringify(process.argv));\n");
+        const { execFileSync } =
+          await vi.importActual<typeof import("node:child_process")>("node:child_process");
+        expect(
+          JSON.parse(
+            execFileSync(path.join(binDir, "openclaw"), ["update"], {
+              encoding: "utf8",
+              env: { ...process.env, HOME: home, NODE_DISABLE_COMPILE_CACHE: "1" },
+            }),
+          ),
+        ).toEqual([process.execPath, installerEntry, "update"]);
+      }
+      if (scenario === "installer occupied") {
+        await fs.mkdir(pkgRoot);
+        await fs.writeFile(path.join(pkgRoot, "operator.txt"), "another installation\n");
+      }
+      if (scenario === "installer bad forwarding" || scenario === "installer expansion") {
+        installerWrapper =
+          scenario === "installer bad forwarding"
+            ? installerWrapper.replace('"$@"', "'$@'")
+            : installerWrapper.replace(quotedEntry, `"${installerEntry}"`);
+        await fs.writeFile(path.join(binDir, "openclaw"), installerWrapper);
+      }
+      if (scenario === "installer wrong Node") {
+        installerWrapper = installerWrapper.replace(
+          quoteCliArg(process.execPath),
+          "/usr/bin/false",
+        );
+        await fs.writeFile(path.join(binDir, "openclaw"), installerWrapper);
+      }
       if (scenario !== "package") {
         vi.spyOn(process, "argv", "get").mockReturnValue([
           process.execPath,
-          path.join(binDir, scenario === "renamed invocation" ? "alternate" : "openclaw"),
+          installer
+            ? installerEntry
+            : path.join(binDir, scenario === "renamed invocation" ? "alternate" : "openclaw"),
           "update",
         ]);
       }
@@ -11271,6 +11346,22 @@ describe("update-cli", () => {
       mockNpmGlobalCommands(
         nodeModules,
         async (argv) => {
+          if (
+            installer &&
+            scenario !== "installer missing shim" &&
+            argv[0] === "npm" &&
+            argv[1] === "i"
+          ) {
+            const stagedBin = path.join(
+              requireValue(argv[argv.indexOf("--prefix") + 1], "staged npm prefix"),
+              "bin",
+            );
+            await fs.mkdir(stagedBin, { recursive: true });
+            await fs.symlink(
+              "../lib/node_modules/openclaw/openclaw.mjs",
+              path.join(stagedBin, "openclaw"),
+            );
+          }
           if (scenario === "unrelated manager" && argv[1] === "root" && argv[2] === "-g") {
             return commandResult({
               stdout:
@@ -11281,11 +11372,17 @@ describe("update-cli", () => {
             return commandResult({ code: 1, stderr: "fixture npm exposure failed" });
           }
           if (
-            scenario === "failed activation" &&
+            failedActivation &&
             (argv.includes("doctor") || argv.includes("--doctor")) &&
             argv.some((arg) => arg.startsWith(`${pkgRoot}${path.sep}`))
           ) {
             expect(await fs.realpath(pkgRoot)).toBe(publishedRoot);
+            if (retainedNewRuntime) {
+              await fs.writeFile(
+                path.join(originalRoot, "dist", "build-info.json"),
+                JSON.stringify({ commit: originalSha, buildId: "changed-build" }),
+              );
+            }
             return commandResult({ code: 1, stderr: "fixture activated Doctor failed" });
           }
           if (argv.includes(originalRoot) && argv.includes("status")) {
@@ -11299,8 +11396,12 @@ describe("update-cli", () => {
             await writeOpenClawPackageFixture(stagingDir, "2026.8.17", { git: true });
             await fs.unlink(checkoutAlias);
             await fs.symlink(replacementRoot, checkoutAlias, "dir");
-            if (scenario === "replaced launcher") {
+            if (scenario === "replaced launcher" || scenario === "installer replaced") {
               await replaceLauncher();
+            }
+            if (scenario === "installer destination changed") {
+              await fs.mkdir(pkgRoot);
+              await fs.writeFile(path.join(pkgRoot, "operator.txt"), "another installation\n");
             }
           }
           return undefined;
@@ -11312,37 +11413,55 @@ describe("update-cli", () => {
       await withEnvAsync(
         {
           OPENCLAW_GIT_DIR: checkoutAlias,
+          ...(installer ? { HOME: home } : {}),
           ...(scenario !== "package"
             ? {
-                PATH: `${scenario === "second PATH exposure" ? path.join(otherPrefix, "bin") : binDir}${path.delimiter}${process.env.PATH}`,
+                PATH: `${scenario === "second PATH exposure" ? path.join(otherPrefix, "bin") : scenario === "installer duplicate" ? `${binDir}${path.delimiter}${path.join(otherPrefix, "bin")}` : binDir}${path.delimiter}${process.env.PATH}`,
               }
             : {}),
         },
         async () => {
+          if (installer) {
+            initializeExistingUpdateProfile();
+          }
           const update = updateCommand({ channel: "dev", yes: true, restart: false, json });
           if (failedUpdate) {
             await expect(update).rejects.toMatchObject({ code: 1 });
-            expect(await fs.realpath(path.join(binDir, "openclaw"))).toBe(
-              path.join(originalRoot, "openclaw.mjs"),
-            );
+            if (installer && !retainedNewRuntime) {
+              expect(await fs.readFile(path.join(binDir, "openclaw"), "utf8")).toBe(
+                installerWrapper,
+              );
+            } else {
+              expect(await fs.realpath(path.join(binDir, "openclaw"))).toBe(
+                path.join(retainedNewRuntime ? publishedRoot : originalRoot, "openclaw.mjs"),
+              );
+            }
             const outcome = lastWriteJsonCall();
             if (!isRecord(outcome) || typeof outcome.root !== "string") {
               throw new Error("Missing reported installation root");
             }
-            expect(await fs.realpath(outcome.root)).toBe(originalRoot);
+            expect(await fs.realpath(outcome.root)).toBe(
+              retainedNewRuntime ? publishedRoot : originalRoot,
+            );
             expect(outcome).toMatchObject({
               status: "error",
               recovery: { serviceRestartSafe: scenario === "failed exposure" },
             });
-            if (scenario === "failed activation") {
-              expect(lastWriteJsonCall()).toMatchObject({
-                recovery: { packageRollbackVerified: true },
-              });
+            if (retainedNewRuntime) {
+              expect(outcome).not.toMatchObject({ recovery: { packageRollbackVerified: true } });
+            } else if (failedActivation) {
+              expect(outcome).toMatchObject({ recovery: { packageRollbackVerified: true } });
             }
             return;
           }
           if (refused) {
             await expect(update).rejects.toMatchObject({ code: 1 });
+            if (installer && scenario !== "installer replaced") {
+              expect(await fs.readFile(path.join(binDir, "openclaw"), "utf8")).toBe(
+                installerWrapper,
+              );
+              return;
+            }
             expect(await fs.realpath(path.join(binDir, "openclaw"))).toBe(
               await fs.realpath(
                 scenario === "direct launcher"
@@ -11362,12 +11481,33 @@ describe("update-cli", () => {
         expect(await fs.readFile(path.join(originalRoot, "operator.txt"), "utf8")).toBe(
           "local edits\n",
         );
-        expect(await fs.realpath(pkgRoot)).toBe(
-          failedUpdate || refused ? originalRoot : publishedRoot,
-        );
+        if (scenario === "installer occupied" || scenario === "installer destination changed") {
+          expect(await fs.readFile(path.join(pkgRoot, "operator.txt"), "utf8")).toBe(
+            "another installation\n",
+          );
+        } else if (installer && (failedUpdate || refused) && !retainedNewRuntime) {
+          await expect(fs.lstat(pkgRoot)).rejects.toMatchObject({ code: "ENOENT" });
+        } else {
+          expect(await fs.realpath(pkgRoot)).toBe(
+            (failedUpdate || refused) && !retainedNewRuntime ? originalRoot : publishedRoot,
+          );
+        }
       }
       if (scenario === "second PATH exposure") {
         expect(await fs.realpath(otherPackageRoot)).toBe(originalRoot);
+      }
+      if (installerRefusal) {
+        expect(getErrorOutput() + getLogOutput()).toContain(installerRefusal);
+        expect(runGatewayUpdate).toHaveBeenCalledTimes(
+          [
+            "installer replaced",
+            "installer missing shim",
+            "installer destination changed",
+          ].includes(scenario)
+            ? 1
+            : 0,
+        );
+        return;
       }
       if (failedUpdate) {
         return;

@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import type { InstallerGitRecovery } from "../../infra/package-update-npm-root.js";
 import type { PackageUpdateTransaction } from "../../infra/package-update-steps.js";
 import { hasNodeErrorCode } from "../../infra/path-guards.js";
 import { mergeProcessEnv } from "../../infra/process-env.js";
@@ -438,6 +439,7 @@ export function createBeforeGitMutation(params: {
 }
 
 export type GitInstallRelocation = {
+  installer?: InstallerGitRecovery;
   directory: string;
   installTarget: ResolvedGlobalInstallTarget;
   assertCurrent: () => Promise<void>;
@@ -554,6 +556,7 @@ export async function updateGitInstall(params: {
               activateGitRoot: updateRoot,
               onTransaction: params.onTransaction,
               beforeActivate: params.gitRelocation?.assertCurrent,
+              retainedInstaller: params.gitRelocation?.installer,
               postVerifyStep: (root: string) =>
                 runPackageUpdateDoctor({
                   ...params,

@@ -1,5 +1,6 @@
 // Public contracts shared by package activation and its existing callers.
 import type { LocalPackageOverridesResult } from "./package-local-overrides-shared.js";
+import type { InstallerGitRecovery } from "./package-update-npm-root.js";
 import type { NpmGlobalPrefixLayout, ResolvedGlobalInstallTarget } from "./update-global.js";
 import type { NativePackageStage } from "./update-native-package-stage.js";
 import type { UpdateStepResult } from "./update-runner-types.js";
@@ -36,6 +37,7 @@ export type StagedPackageInstall = {
 };
 
 export type StagedPackageSwapParams = {
+  retainedInstaller?: InstallerGitRecovery;
   stage: StagedPackageInstall;
   installTarget: ResolvedGlobalInstallTarget;
   packageName: string;

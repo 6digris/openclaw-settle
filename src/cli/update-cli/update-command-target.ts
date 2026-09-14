@@ -82,8 +82,21 @@ async function prepareDirtyGitRelocation(
       `${message} The original checkout was preserved. Commit your changes and retry, or run openclaw triage.`,
     );
   };
-  const launcher = process.argv[1] ? path.resolve(process.argv[1]) : undefined;
+  const invocation = process.argv[1] ? path.resolve(process.argv[1]) : undefined;
   const originalRoot = await fs.realpath(root);
+  const { captureInstallerGitRecovery } = await import("../../infra/package-update-npm-root.js");
+  const installer =
+    invocation === path.join(originalRoot, "dist", "entry.js")
+      ? await captureInstallerGitRecovery(originalRoot, timeoutMs).catch((error: unknown) =>
+          refuse(formatErrorMessage(error)),
+        )
+      : undefined;
+  if (invocation === path.join(originalRoot, "dist", "entry.js") && !installer) {
+    return refuse(
+      "The installer wrapper at ~/.local/bin/openclaw could not be verified for automatic relocation. Custom installer prefixes and unsupported path quoting are left unchanged.",
+    );
+  }
+  const launcher = installer?.launcher ?? invocation;
   if (
     process.platform === "win32" ||
     !launcher ||
@@ -101,18 +114,20 @@ async function prepareDirtyGitRelocation(
       await reader.launcher(launcher),
     ];
   };
-  const baseline = await capture();
-  if ((await fs.realpath(launcher)) !== path.join(originalRoot, "openclaw.mjs")) {
-    return refuse("The dirty Git installation does not have a recognized npm launcher.");
-  }
-  if (
-    path.resolve(path.dirname(launcher), await fs.readlink(launcher)) !==
-    path.join(packageRoot, "openclaw.mjs")
-  ) {
-    return refuse("The launcher does not follow the npm installation.");
-  }
-  if ((await fs.realpath(packageRoot)) !== originalRoot) {
-    return refuse("The npm launcher belongs to another installation.");
+  const baseline = installer ? undefined : await capture();
+  if (!installer) {
+    if ((await fs.realpath(launcher)) !== path.join(originalRoot, "openclaw.mjs")) {
+      return refuse("The dirty Git installation does not have a recognized npm launcher.");
+    }
+    if (
+      path.resolve(path.dirname(launcher), await fs.readlink(launcher)) !==
+      path.join(packageRoot, "openclaw.mjs")
+    ) {
+      return refuse("The launcher does not follow the npm installation.");
+    }
+    if ((await fs.realpath(packageRoot)) !== originalRoot) {
+      return refuse("The npm launcher belongs to another installation.");
+    }
   }
   const installTarget = await resolveGlobalInstallTarget({
     manager: "npm",
@@ -148,14 +163,17 @@ async function prepareDirtyGitRelocation(
   return {
     directory,
     installTarget,
-    assertCurrent: async () => {
-      if (
-        !isDeepStrictEqual(baseline, await capture()) ||
-        (await fs.realpath(packageRoot)) !== originalRoot
-      ) {
-        refuse("The npm launcher or installation changed while preparing the update.");
-      }
-    },
+    installer,
+    assertCurrent:
+      installer?.assertCurrent ??
+      (async () => {
+        if (
+          !isDeepStrictEqual(baseline, await capture()) ||
+          (await fs.realpath(packageRoot)) !== originalRoot
+        ) {
+          refuse("The npm launcher or installation changed while preparing the update.");
+        }
+      }),
   };
 }
 
