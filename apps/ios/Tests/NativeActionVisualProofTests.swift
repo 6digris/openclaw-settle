@@ -133,7 +133,6 @@ final class NativeActionVisualProofTests: XCTestCase {
                     .environment(controller)
                     .environment(router)
                     .environment(\.scenePhase, .active)
-                    .environment(\.accessibilityReduceMotion, true)
                     .preferredColorScheme(.light)
                 let hosting = UIHostingController(rootView: root)
                 let ownedWindow = UIWindow(frame: CGRect(x: 0, y: 0, width: 393, height: 852))
