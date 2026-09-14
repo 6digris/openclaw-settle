@@ -264,6 +264,32 @@ describe("Slack QA complete write trace", () => {
     ).toBe(7);
   });
 
+  it.each([
+    { ok: false, error: "feature_disabled", expected: "feature_disabled" },
+    { ok: false, error: "PRIVATE_ERROR_DETAIL", expected: "unrecognized-api-error" },
+    { ok: "PRIVATE_OK_DETAIL", error: "missing_scope", expected: "missing_scope" },
+  ])("retains safe negative-ACK diagnostics for $expected", async ({ ok, error, expected }) => {
+    const result = await trace([
+      buildResponse("f", false, { ok, error }),
+      {
+        id: 1,
+        ...buildMessageRequest({ flowId: "f", method: "agents.sessions.setStatus", text: "TITLE" }),
+      },
+    ]);
+    expect(result.complete).toBe(false);
+    expect(result.issues).toContain("1:rejected");
+    expect(result.writes[0]).toMatchObject({
+      eventId: 1,
+      method: "agents.sessions.setStatus",
+      classification: "metadata",
+      status: "rejected",
+      responseStatus: 200,
+      responseOk: typeof ok === "boolean" ? ok : undefined,
+      errorCode: expected,
+    });
+    expect(JSON.stringify(result)).not.toContain("PRIVATE_");
+  });
+
   it.each<Array<{ name: string; response?: Record<string, unknown>; metaJson?: string }>[number]>([
     { name: "missing acknowledgement", response: undefined },
     { name: "rejected write", response: buildResponse("f", false) },

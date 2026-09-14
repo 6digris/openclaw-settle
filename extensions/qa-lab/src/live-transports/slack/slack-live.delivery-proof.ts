@@ -301,6 +301,7 @@ export function verifySlackDeliveryObservations(params: {
         send.input.channel === "slack" &&
         send.input.target === `channel:${params.channelId}` &&
         send.input.message === params.final &&
+        send.input.final === false &&
         messages[2]?.text === "" &&
         messages[2]?.stopReason === "tool_use" &&
         sendResultMatches));
@@ -361,7 +362,21 @@ export function verifySlackDeliveryObservations(params: {
     })),
     captureComplete: trace.complete,
     captureIssues: trace.issues,
-    unexpectedMethods: unexpected.map((write) => write.method),
+    unexpectedMethods: unexpected.map(() => "unexpected-method"),
+    nonAcknowledgedWrites: trace.writes
+      .filter((write) => write.status !== "acknowledged")
+      .map((write) => ({
+        eventId: write.eventId,
+        method:
+          write.classification !== "other" || safeOtherMethods.has(write.method)
+            ? write.method
+            : "unexpected-method",
+        classification: write.classification,
+        status: write.status,
+        responseStatus: write.responseStatus,
+        responseOk: write.responseOk,
+        errorCode: write.errorCode,
+      })),
     replyWrites: replies.map((write, index) => ({
       observation: index + 1,
       method: write.method,
@@ -511,7 +526,7 @@ export async function runSlackDeliveryProof(
         "Wait for that result. In your second model response emit NO text; only call the execution tool again to run:",
         `${commands[1]}. Do not combine these calls. Do not call any other tools.`,
         mode === "message-tool"
-          ? `After the second result, use only the message tool with action="send", channel="slack", target="channel:${environment.channelId}", and message="${final}". Emit no ordinary text in this tool-call response. After that send completes, finish with ordinary assistant text exactly ${privateFinal}. That final text is private under the configured message-tool-only policy.`
+          ? `After the second result, use only the message tool with action="send", channel="slack", target="channel:${environment.channelId}", message="${final}", and final=false so the turn continues after the send. Emit no ordinary text in this tool-call response. After that send completes, finish with ordinary assistant text exactly ${privateFinal}. That final text is private under the configured message-tool-only policy.`
           : `After the second result, finish with ordinary assistant text exactly ${final}. Do not use the message tool.`,
       ].join(" "),
       matchText: final,

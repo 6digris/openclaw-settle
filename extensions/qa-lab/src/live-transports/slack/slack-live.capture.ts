@@ -14,6 +14,31 @@ const REPLY_METHODS = new Set([
   "chat.stopStream",
 ]);
 const METADATA_METHODS = new Set(["agents.sessions.setStatus", "agents.sessions.rename"]);
+// Public Slack API codes only; unexpected error text can contain private details.
+// https://docs.slack.dev/reference/methods/agents.sessions.setStatus/#errors
+const DIAGNOSTIC_ERROR_CODES = new Set([
+  "account_inactive",
+  "channel_not_found",
+  "fatal_error",
+  "feature_disabled",
+  "internal_error",
+  "invalid_arguments",
+  "invalid_auth",
+  "invalid_status",
+  "missing_scope",
+  "no_permission",
+  "not_allowed_token_type",
+  "not_authed",
+  "not_authorized",
+  "ratelimited",
+  "request_timeout",
+  "service_unavailable",
+  "session_not_found",
+  "thread_ts_not_allowed",
+  "thread_ts_required",
+  "token_expired",
+  "token_revoked",
+]);
 const CONTENT_FIELDS = new Set([
   "text",
   "markdown_text",
@@ -31,6 +56,9 @@ type SlackQaWriteObservation = {
   method: string;
   classification: "reply" | "metadata" | "other";
   status: "acknowledged" | "rejected" | "unconfirmed";
+  responseStatus?: number;
+  responseOk?: boolean;
+  errorCode?: string;
   content: string[];
   nativeMarkdown?: string;
   message?: SlackObservedMessage;
@@ -228,6 +256,14 @@ function collectTrace(params: {
       method,
       classification,
       status,
+      responseStatus: typeof terminal?.status === "number" ? terminal.status : undefined,
+      responseOk: typeof response?.ok === "boolean" ? response.ok : undefined,
+      errorCode:
+        typeof response?.error === "string"
+          ? DIAGNOSTIC_ERROR_CODES.has(response.error)
+            ? response.error
+            : "unrecognized-api-error"
+          : undefined,
       content,
       ...(classification === "reply" && method.endsWith("Stream") ? { nativeMarkdown } : {}),
       ...(message ? { message } : {}),
