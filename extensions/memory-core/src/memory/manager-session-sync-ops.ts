@@ -141,7 +141,7 @@ export abstract class MemoryManagerSessionSyncOps extends MemoryManagerWatchOps 
     }
     this.sessionUnsubscribe = this.subscribeSessionTranscriptUpdates((update) =>
       runInMemoryBackgroundContext(() => {
-        if (this.closed) {
+        if (this.closing || this.closed) {
           return;
         }
         const target = this.resolveSessionTranscriptUpdateSyncTarget(update);
@@ -149,8 +149,11 @@ export abstract class MemoryManagerSessionSyncOps extends MemoryManagerWatchOps 
           this.scheduleSessionDirty(target);
           return;
         }
-        if (update.sessionFile) {
-          void this.scheduleCorpusSessionFileDirty(update.sessionFile).catch((err: unknown) => {
+        const sessionFile = update.sessionFile;
+        if (sessionFile) {
+          void this.withManagerOperation(() =>
+            this.scheduleCorpusSessionFileDirty(sessionFile),
+          ).catch((err: unknown) => {
             log.warn(`memory session corpus update failed: ${String(err)}`);
           });
         }
@@ -179,10 +182,10 @@ export abstract class MemoryManagerSessionSyncOps extends MemoryManagerWatchOps 
   }
 
   protected ensureSessionStartupCatchup(): void {
-    if (!this.sources.has("sessions")) {
+    if (!this.sources.has("sessions") || this.closing || this.closed) {
       return;
     }
-    void this.runSessionStartupCatchup().catch((err: unknown) => {
+    void this.withManagerOperation(() => this.runSessionStartupCatchup()).catch((err: unknown) => {
       log.warn("memory session startup catch-up failed: " + String(err));
     });
   }
@@ -311,9 +314,14 @@ export abstract class MemoryManagerSessionSyncOps extends MemoryManagerWatchOps 
     }
     this.sessionWatchTimer = setTimeout(() => {
       this.sessionWatchTimer = null;
-      void this.processSessionUpdateBatch().catch((err: unknown) => {
-        log.warn(`memory session update failed: ${String(err)}`);
-      });
+      if (this.closing || this.closed) {
+        return;
+      }
+      void this.withManagerOperation(() => this.processSessionUpdateBatch()).catch(
+        (err: unknown) => {
+          log.warn(`memory session update failed: ${String(err)}`);
+        },
+      );
     }, SESSION_DIRTY_DEBOUNCE_MS);
   }
 

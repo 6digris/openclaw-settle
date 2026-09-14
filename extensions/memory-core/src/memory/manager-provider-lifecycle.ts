@@ -106,7 +106,6 @@ export abstract class MemoryProviderLifecycle extends MemoryManagerEmbeddingOps 
   protected abstract canPublishEmbeddingProbe(): boolean;
   protected abstract readonly embeddingProbeCache: Map<string, MemoryEmbeddingProbeCacheEntry>;
   protected abstract readonly cacheKey: string;
-  protected abstract readonly purpose: "default" | "status" | "cli" | "maintenance";
   protected abstract readonly providerRequirement: MemoryEmbeddingProviderRequirement;
   protected abstract readonly requestedProvider: EmbeddingProviderRequest;
   protected abstract providerInitPromise: Promise<void> | null;
@@ -114,10 +113,6 @@ export abstract class MemoryProviderLifecycle extends MemoryManagerEmbeddingOps 
   protected abstract embeddingBootstrapFailure?: MemoryEmbeddingBootstrapDebug;
   protected abstract providerRetirementPromise: Promise<void>;
   protected abstract providersPendingRetirement: Set<EmbeddingProvider>;
-  protected abstract closing: boolean;
-  protected abstract activeManagerOperations: number;
-  protected abstract managerIdleWaiters: Set<() => void>;
-  protected abstract activeBackgroundSearchSyncs: Set<Promise<void>>;
   protected abstract indexIdentityDirty: boolean;
   protected abstract indexIdentityState: MemoryIndexIdentityState;
   protected abstract syncAdmitted(
@@ -516,39 +511,6 @@ export abstract class MemoryProviderLifecycle extends MemoryManagerEmbeddingOps 
       state.status === "mismatched" ||
       (state.status === "missing" && (this.sources.has("memory") || this.hasIndexedChunks()));
     return state;
-  }
-
-  protected async withManagerOperation<T>(run: () => Promise<T>): Promise<T> {
-    if (this.closing || this.closed) {
-      throw new Error("Memory index manager is closed");
-    }
-    this.activeManagerOperations += 1;
-    try {
-      return await this.withPublishedDatabase(run);
-    } finally {
-      this.activeManagerOperations -= 1;
-      if (this.activeManagerOperations === 0) {
-        const waiters = Array.from(this.managerIdleWaiters);
-        this.managerIdleWaiters.clear();
-        for (const resolve of waiters) {
-          resolve();
-        }
-      }
-    }
-  }
-
-  protected async awaitManagerIdle(): Promise<void> {
-    if (this.activeManagerOperations > 0) {
-      await new Promise<void>((resolve) => {
-        this.managerIdleWaiters.add(resolve);
-      });
-    }
-    // CLI request teardown must not wait after a published search result is ready;
-    // its detached task owns a separate maintenance manager. Persistent managers
-    // still drain maintenance before closing shared resources.
-    while (this.purpose !== "cli" && this.activeBackgroundSearchSyncs.size > 0) {
-      await Promise.all(Array.from(this.activeBackgroundSearchSyncs));
-    }
   }
 
   async probeVectorAvailability(): Promise<boolean> {
