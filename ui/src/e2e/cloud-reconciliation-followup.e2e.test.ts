@@ -58,7 +58,8 @@ function session(
     placement: placement(state, workspaceResultReconciling),
     sessionId: "cloud-reconciliation-session",
     status: queuedFollowUp ? "running" : "done",
-    updatedAt: now,
+    // Lifecycle ACKs advance the mock row clock between these transitions.
+    updatedAt: Date.now(),
   };
 }
 
