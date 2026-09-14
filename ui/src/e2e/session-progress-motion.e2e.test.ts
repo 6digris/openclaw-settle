@@ -14,7 +14,7 @@ type InspectedAnimation = {
   id: string;
   name: string;
   type: string;
-  source?: { duration: number };
+  source?: { duration: number; backendNodeId?: number };
 };
 
 suite.define(() => {
@@ -59,8 +59,12 @@ suite.define(() => {
           },
         },
       });
-      const card = page.locator('[data-progress-card-placement="composer"]');
+      const cardSelector = '[data-progress-card-placement="composer"]';
+      const card = page.locator(cardSelector);
       const cardHeight = () => card.evaluate((element) => element.getBoundingClientRect().height);
+      const observed = new Map<string, InspectedAnimation>();
+      let contentBackendNodeId: number | undefined;
+      let phase = "setup";
       try {
         await page.goto(`${suite.server.baseUrl}chat`);
         await card.locator(".session-progress-card__body").waitFor();
@@ -93,17 +97,59 @@ suite.define(() => {
         // Element.getAnimations(). The inspector freezes its real CSS timeline
         // so curve assertions do not depend on runner frame rate or sleeps.
         const inspector = await context.newCDPSession(page);
-        const observed: InspectedAnimation[] = [];
-        await inspector.send("Animation.enable");
+        const { root } = await inspector.send("DOM.getDocument", {
+          depth: 1,
+        });
+        const { nodeIds } = await inspector.send("DOM.querySelectorAll", {
+          nodeId: root.nodeId,
+          selector: cardSelector,
+        });
+        expect(nodeIds, "composer progress card").toHaveLength(1);
+        const { node } = await inspector.send("DOM.describeNode", {
+          nodeId: nodeIds[0]!,
+          depth: 2,
+          pierce: true,
+        });
+        const shadowRoots =
+          node.shadowRoots?.filter((root) => root.shadowRootType === "user-agent") ?? [];
+        expect(shadowRoots, "progress card UA shadow root").toHaveLength(1);
+        const contentSlots =
+          shadowRoots[0]!.children?.filter(
+            (child) =>
+              child.nodeName === "SLOT" &&
+              child.attributes?.some(
+                (attribute, index, attributes) =>
+                  index % 2 === 0 &&
+                  attribute === "id" &&
+                  attributes[index + 1] === "details-content",
+              ),
+          ) ?? [];
+        expect(contentSlots, "progress card details-content slot").toHaveLength(1);
+        contentBackendNodeId = contentSlots[0]!.backendNodeId;
+        expect(contentBackendNodeId).toBeGreaterThan(0);
+
+        // Summary hover transitions can disappear when its open/closed labels swap.
+        // Control only this slot's latest transition for each property and gesture.
+        const animationIds = () => [...observed.values()].map((animation) => animation.id);
+        const waitForContentMotion = () =>
+          expect
+            .poll(() => [...observed.keys()])
+            .toEqual(expect.arrayContaining(["height", "opacity"]));
         inspector.on(
           "Animation.animationStarted",
           ({ animation }: { animation: InspectedAnimation }) => {
-            if (animation.type === "CSSTransition") {
-              observed.push(animation);
+            if (
+              animation.type === "CSSTransition" &&
+              animation.source?.backendNodeId === contentBackendNodeId
+            ) {
+              observed.set(animation.name, animation);
             }
           },
         );
+        await inspector.send("Animation.enable");
         await inspector.send("Animation.setPlaybackRate", { playbackRate: 0 });
+        phase = "closing";
+        observed.clear();
         await card.locator("summary").click();
         await page.evaluate(
           () =>
@@ -112,13 +158,9 @@ suite.define(() => {
             }),
         );
         if (reducedMotion === "no-preference") {
-          await expect
-            .poll(() => observed.some((animation) => animation.name === "height"))
-            .toBe(true);
+          await waitForContentMotion();
         }
-        const duration =
-          observed.find((animation) => animation.name === "height")?.source?.duration ?? 0;
-        const ids = observed.map((animation) => animation.id);
+        const duration = observed.get("height")?.source?.duration ?? 0;
         const samples: Array<{ height: number; opacity: number }> = [];
         const sample = () =>
           card.evaluate((element) => ({
@@ -128,13 +170,13 @@ suite.define(() => {
         if (duration) {
           for (const fraction of [0, 0.25, 0.5, 0.75]) {
             await inspector.send("Animation.seekAnimations", {
-              animations: ids,
+              animations: animationIds(),
               currentTime: duration * fraction,
             });
             samples.push(await sample());
           }
           await inspector.send("Animation.seekAnimations", {
-            animations: ids,
+            animations: animationIds(),
             currentTime: duration * 0.25,
           });
         } else {
@@ -164,7 +206,8 @@ suite.define(() => {
             expect(samples[index]!.height).toBeLessThanOrEqual(samples[index - 1]!.height);
           }
           const reversingFrom = await cardHeight();
-          observed.length = 0;
+          phase = "reopening";
+          observed.clear();
           await card.locator("summary").click();
           await page.evaluate(
             () =>
@@ -172,19 +215,27 @@ suite.define(() => {
                 requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
               }),
           );
-          await expect
-            .poll(() => observed.some((animation) => animation.name === "height"))
-            .toBe(true);
+          await waitForContentMotion();
           expect(Math.abs((await cardHeight()) - reversingFrom)).toBeLessThanOrEqual(1);
-          if (observed.length) {
-            await inspector.send("Animation.setPaused", {
-              animations: observed.map((animation) => animation.id),
-              paused: false,
-            });
-          }
+          await inspector.send("Animation.setPaused", {
+            animations: animationIds(),
+            paused: false,
+          });
           await inspector.send("Animation.setPlaybackRate", { playbackRate: 1 });
           await expect.poll(cardHeight).toBe(before);
         }
+      } catch (error) {
+        console.error("Task progress motion failed", {
+          browserVersion: context.browser()?.version(),
+          phase,
+          contentBackendNodeId,
+          animations: [...observed.values()].map(({ id, name, source }) => ({
+            id,
+            name,
+            backendNodeId: source?.backendNodeId,
+          })),
+        });
+        throw error;
       } finally {
         await page.close();
         if (proofDir && video) {
