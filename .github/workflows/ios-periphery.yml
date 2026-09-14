@@ -1,337 +1,188 @@
-name: iOS Periphery Dead Code
-# Job conclusions cannot distinguish passive draft events from scope loss.
-# Record source admission for the commenter before either job runs.
-run-name: ${{ github.workflow }} [${{ github.event_name == 'workflow_dispatch' && 'manual' || github.event.pull_request.draft == false && 'report' || github.event.action == 'converted_to_draft' && 'draft' || 'passive' }}]
+name: Apple Watch Metadata Probe
+run-name: Apple Watch metadata (${{ github.sha }})
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   workflow_dispatch:
-    inputs:
-      watch_qualification:
-        description: Run focused shared and Watch tests instead of the Periphery scan
-        type: boolean
-        default: false
-
-concurrency:
-  # Admission precedes scope skips: isolate passive drafts before they can cancel useful work.
-  # Keep conversion events in the PR group as an intentional cancellation signal.
-  group: >-
-    ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && github.event.action != 'converted_to_draft'
-      && format('{0}-passive-draft-{1}', github.workflow, github.run_id)
-      || github.event_name == 'workflow_dispatch' && inputs.watch_qualification
-      && format('ios-watch-qualification-{0}', github.sha)
-      || format('ios-periphery-{0}-{1}', github.workflow, github.event.pull_request.number || github.sha) }}
-  cancel-in-progress: true
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 permissions:
   contents: read
 
+concurrency:
+  group: apple-watch-metadata-${{ github.run_id }}
+  cancel-in-progress: false
+
 jobs:
-  scope:
-    name: Detect iOS scan scope
-    runs-on: ubuntu-24.04
-    outputs:
-      should-scan: ${{ steps.scope.outputs.should-scan }}
-    steps:
-      - name: Checkout
-        if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 2
-          fetch-tags: false
-          persist-credentials: false
-          submodules: false
-
-      - name: Detect changed paths
-        id: scope
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
-        with:
-          script: |
-            if (context.eventName === "workflow_dispatch") {
-              core.setOutput("should-scan", "true");
-              return;
-            }
-            if (context.payload.pull_request?.draft) {
-              core.setOutput("should-scan", "false");
-              return;
-            }
-
-            // pull_request checks out GitHub's synthetic merge commit. Its first
-            // parent is the exact base tree used to produce the tested result.
-            const result = await exec.getExecOutput("git", [
-              "diff",
-              "--quiet",
-              "HEAD^1",
-              "HEAD",
-              "--",
-              "apps/ios/",
-              "apps/shared/OpenClawKit/Sources/",
-              "apps/swabble/Sources/SwabbleKit/",
-              ".github/workflows/ios-periphery.yml",
-              ".github/workflows/ios-periphery-comment.yml",
-              "config/swiftformat",
-              "config/swiftlint.yml",
-              "scripts/check-swift-tools.sh",
-              "scripts/format-swift.sh",
-              "scripts/install-periphery.sh",
-              "scripts/install-swift-tools.sh",
-              "scripts/ios-write-swift-filelist.mjs",
-              "scripts/ios-write-swift-filelist.mts",
-              "scripts/lint-swift.sh",
-            ], { ignoreReturnCode: true, silent: true });
-            if (result.exitCode !== 0 && result.exitCode !== 1) {
-              throw new Error(`git diff failed with exit code ${result.exitCode}`);
-            }
-            core.setOutput("should-scan", String(result.exitCode === 1));
-
-  scan:
-    name: Scan iOS dead code
-    needs: scope
-    if: ${{ needs.scope.outputs.should-scan == 'true' }}
+  metadata:
     runs-on: macos-26
-    timeout-minutes: 45
+    timeout-minutes: 5
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 1
-          fetch-tags: false
-          persist-credentials: false
-          submodules: false
-
-      - name: Verify Xcode
+      - name: Observe installed Watch simulator capabilities
+        timeout-minutes: 4
+        shell: bash
         run: |
           set -euo pipefail
-          for xcode_app in /Applications/Xcode_26.6.app /Applications/Xcode-26.6.0.app; do
-            if [ -d "$xcode_app/Contents/Developer" ]; then
-              sudo xcode-select -s "$xcode_app/Contents/Developer"
-              break
-            fi
-          done
-          xcodebuild -version
-          xcode_version="$(xcodebuild -version | awk 'NR == 1 { print $2 }')"
-          if [[ "$xcode_version" != 26.6* ]]; then
-            echo "error: expected Xcode 26.6, got $xcode_version" >&2
-            exit 1
-          fi
-          swift --version
+          /usr/bin/python3 <<'PY'
+          import collections
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
 
-      - name: Setup Node environment
-        uses: ./.github/actions/setup-node-env
-        with:
-          cache-mode: restore
-          install-bun: "false"
+          failures = []
 
-      - name: Install Watch Rust toolchain
-        run: |
-          set -euo pipefail
-          export PATH="$HOME/.cargo/bin:$PATH"
-          watch_toolchain="$(awk -F '"' '/^channel =/ { print $2; exit }' apps/shared/OpenClawWatchRTC/rust-toolchain.toml)"
-          test -n "$watch_toolchain"
-          rustup toolchain install "$watch_toolchain" --profile minimal --component rust-src
+          def emit(probe, outcome="observed", **fields):
+              print(json.dumps({"probe": probe, "outcome": outcome, **fields}, sort_keys=True), flush=True)
 
-      - name: Install iOS Swift tooling
-        env:
-          WATCH_QUALIFICATION: ${{ github.event_name == 'workflow_dispatch' && inputs.watch_qualification }}
-        run: |
-          if [ "$WATCH_QUALIFICATION" != "true" ]; then
-            periphery_dir="$RUNNER_TEMP/openclaw-periphery"
-            ./scripts/install-periphery.sh "$periphery_dir"
-            echo "$periphery_dir" >> "$GITHUB_PATH"
-          fi
-          swift_tools_dir="$RUNNER_TEMP/openclaw-swift-tools"
-          # Homebrew's xcodegen bottle can arrive corrupted on runner images;
-          # use the repo's pinned, checksummed release installer like ci.yml.
-          ./scripts/install-xcodegen.sh "$swift_tools_dir"
-          "$swift_tools_dir/xcodegen" --version
-          ./scripts/install-swift-tools.sh "$swift_tools_dir"
-          echo "$swift_tools_dir" >> "$GITHUB_PATH"
-          "$swift_tools_dir/swiftformat" --version
-          "$swift_tools_dir/swiftlint" version
+          def fail(probe, outcome, **fields):
+              failures.append(probe)
+              emit(probe, outcome, **fields)
 
-      - name: Generate iOS project
-        run: |
-          set -euo pipefail
-          ./scripts/ios-configure-signing.sh
-          ./scripts/ios-write-version-xcconfig.sh
-          node scripts/ios-write-swift-filelist.mjs
-          cd apps/ios
-          xcodegen generate
+          def capture(probe, arguments, timeout=15):
+              try:
+                  result = subprocess.run(
+                      arguments, stdin=subprocess.DEVNULL, capture_output=True,
+                      text=True, timeout=timeout, check=False,
+                  )
+              except FileNotFoundError:
+                  fail(probe, "executable-missing")
+                  return None
+              except subprocess.TimeoutExpired:
+                  fail(probe, "timed-out", timeoutSeconds=timeout)
+                  return None
+              except (OSError, UnicodeError):
+                  fail(probe, "capture-failed")
+                  return None
+              if result.returncode != 0:
+                  fail(probe, "command-failed", exitCode=result.returncode)
+                  return None
+              return result
 
-      - name: Run Periphery
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.watch_qualification) }}
-        run: |
-          set -euo pipefail
-          output_dir="$RUNNER_TEMP/ios-periphery"
-          mkdir -p "$output_dir"
-          cd apps/ios
-          set +e
-          periphery scan \
-            --config .periphery.yml \
-            --strict \
-            --format json \
-            --write-results "$output_dir/periphery.json" \
-            >"$output_dir/periphery.stdout.json" \
-            2>"$output_dir/periphery.stderr.log"
-          periphery_status="$?"
-          set -e
-          printf '%s\n' "$periphery_status" >"$output_dir/periphery.status"
-          if [ ! -s "$output_dir/periphery.json" ]; then
-            cp "$output_dir/periphery.stdout.json" "$output_dir/periphery.json"
-          fi
+          def items(probe, arguments, key, timeout=15):
+              result = capture(probe, arguments, timeout)
+              if result is None:
+                  return None
+              try:
+                  value = json.loads(result.stdout)[key]
+                  if not isinstance(value, list) or not all(isinstance(row, dict) for row in value):
+                      raise ValueError()
+                  return value
+              except (ValueError, KeyError, TypeError):
+                  fail(probe, "unrecognized-metadata", exitCode=0)
+                  return None
 
-      - name: Build Periphery report
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.watch_qualification) }}
-        run: |
-          set -euo pipefail
-          node <<'NODE'
-          const fs = require("node:fs");
-          const path = require("node:path");
+          # Only allowlisted fields reach the log; raw output may contain device identities.
+          developer = os.environ["DEVELOPER_DIR"]
+          if not os.path.isdir(developer):
+              fail("xcode", "approved-path-missing")
+              sys.exit(1)
+          for tool in ("xcodebuild", "swift", "simctl"):
+              probe = "resolve-" + tool
+              result = capture(probe, ["/usr/bin/xcrun", "--find", tool])
+              if result is not None:
+                  resolved = result.stdout.strip()
+                  inside = resolved.startswith(developer + "/") and os.access(resolved, os.X_OK)
+                  if inside:
+                      emit(probe, exitCode=0, approvedXcode=True)
+                  else:
+                      fail(probe, "outside-approved-xcode", exitCode=0)
+          if failures:
+              sys.exit(1)
 
-          const outputDir = path.join(process.env.RUNNER_TEMP, "ios-periphery");
-          const read = (name) => {
-            const file = path.join(outputDir, name);
-            return fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
-          };
+          result = capture("xcode", ["/usr/bin/xcrun", "xcodebuild", "-version"])
+          if result is None:
+              sys.exit(1)
+          version = re.fullmatch(r"Xcode (26\.6(?:\.\d+)?)\nBuild version ([A-Za-z0-9]+)\s*", result.stdout)
+          if version is None:
+              fail("xcode", "unexpected-version", exitCode=0)
+              sys.exit(1)
+          emit("xcode", exitCode=0, version=version[1], build=version[2])
+          emit("python", version=".".join(str(part) for part in sys.version_info[:3]))
 
-          const status = Number(read("periphery.status").trim() || "1");
-          let findings = null;
-          for (const name of ["periphery.json", "periphery.stdout.json"]) {
-            try {
-              const parsed = JSON.parse(read(name));
-              if (Array.isArray(parsed)) {
-                findings = parsed;
-                break;
-              }
-            } catch {}
-          }
+          for probe, arguments, pattern in (
+              ("macos", ["/usr/bin/sw_vers", "-productVersion"], r"^(\d+(?:\.\d+){1,2})\s*$"),
+              ("swift", ["/usr/bin/xcrun", "swift", "--version"], r"Apple Swift version (\d+(?:\.\d+){1,2})"),
+          ):
+              result = capture(probe, arguments)
+              if result is not None:
+                  version = re.search(pattern, result.stdout)
+                  if version:
+                      emit(probe, exitCode=0, version=version[1])
+                  else:
+                      fail(probe, "unrecognized-version", exitCode=0)
 
-          const escapeCommandData = (value) =>
-            String(value ?? "")
-              .replaceAll("%", "%25")
-              .replaceAll("\r", "%0D")
-              .replaceAll("\n", "%0A");
-          const escapeCommandProperty = (value) =>
-            escapeCommandData(value)
-              .replaceAll(":", "%3A")
-              .replaceAll(",", "%2C");
+          for command, tokens in (
+              ("keychain", ("add-root-cert", "add-cert", "reset")),
+              ("privacy", ("grant", "revoke", "reset", "microphone")),
+              ("io", ("enumerate", "poll", "screenshot", "recordVideo", "recordAudio", "playAudio", "audio", "microphone")),
+          ):
+              probe = "simctl-help-" + command
+              result = capture(probe, ["/usr/bin/xcrun", "simctl", "help", command])
+              if result is not None:
+                  text = result.stdout + "\n" + result.stderr
+                  mentioned = [token for token in tokens if re.search(r"(?<![\w-])" + re.escape(token) + r"(?![\w-])", text)]
+                  emit(probe, exitCode=0, helpMentions=mentioned)
 
-          const rows = (findings ?? []).map((finding) => {
-            const location = String(finding.location ?? "");
-            const [file, line] = location.split(":");
-            const repoFile = file ? `apps/ios/${file}` : "";
-            return {
-              file: repoFile,
-              line: line || "",
-              kind: String(finding.kind ?? ""),
-              name: String(finding.name ?? ""),
-            };
-          });
+          runtimes = items("watch-runtimes", ["/usr/bin/xcrun", "simctl", "list", "runtimes", "--json"], "runtimes")
+          if runtimes is not None:
+              selected = []
+              for runtime in runtimes:
+                  if not str(runtime.get("identifier", "")).startswith("com.apple.CoreSimulator.SimRuntime.watchOS-"):
+                      continue
+                  version = runtime.get("version")
+                  build = runtime.get("buildversion")
+                  available = runtime.get("isAvailable")
+                  if (not isinstance(version, str) or not re.fullmatch(r"\d+(?:\.\d+){1,2}", version)
+                          or not isinstance(build, str) or not re.fullmatch(r"[A-Za-z0-9]+", build)
+                          or not isinstance(available, bool)):
+                      fail("watch-runtimes", "unrecognized-metadata", exitCode=0)
+                      break
+                  selected.append({"version": version, "build": build, "available": available})
+              else:
+                  emit("watch-runtimes", exitCode=0, runtimes=sorted(selected, key=lambda row: (row["version"], row["build"])))
 
-          for (const row of rows) {
-            if (!row.file) continue;
-            const line = row.line ? `,line=${escapeCommandProperty(row.line)}` : "";
-            const title = `${row.kind || "Unused code"} ${row.name}`.trim();
-            console.log(`::error file=${escapeCommandProperty(row.file)}${line},title=Dead Swift code::${escapeCommandData(title)}`);
-          }
+          types = items("watch-device-types", ["/usr/bin/xcrun", "simctl", "list", "devicetypes", "--json"], "devicetypes")
+          if types is not None:
+              ranges = collections.Counter()
+              for device_type in types:
+                  if device_type.get("productFamily") != "Apple Watch":
+                      continue
+                  minimum = device_type.get("minRuntimeVersionString")
+                  maximum = device_type.get("maxRuntimeVersionString")
+                  if not all(isinstance(value, str) and re.fullmatch(r"\d+(?:\.\d+){1,2}", value) for value in (minimum, maximum)):
+                      fail("watch-device-types", "unrecognized-metadata", exitCode=0)
+                      break
+                  ranges[(minimum, maximum)] += 1
+              else:
+                  emit("watch-device-types", exitCode=0, installedTypeCount=sum(ranges.values()),
+                       runtimeRanges=[{"minimum": low, "maximum": high, "count": count} for (low, high), count in sorted(ranges.items())])
 
-          let shouldFail = "1";
-          let summary = "";
+          audio = items(
+              "audio-inputs",
+              ["/usr/sbin/system_profiler", "-json", "-detailLevel", "mini", "-timeout", "10", "SPAudioDataType"],
+              "SPAudioDataType", timeout=30,
+          )
+          if audio is not None:
+              try:
+                  inputs = 0
+                  for group in audio:
+                      devices = group["_items"]
+                      if not isinstance(devices, list):
+                          raise ValueError()
+                      for device in devices:
+                          channels = device.get("coreaudio_device_input")
+                          if channels is not None:
+                              if not re.fullmatch(r"\d+", str(channels)):
+                                  raise ValueError()
+                              inputs += int(channels) > 0
+                  # Enumeration is not microphone permission, activation, or voice-flow proof.
+                  emit("audio-inputs", exitCode=0, reportedInputCount=inputs,
+                       availability="reported" if inputs else "not-reported")
+              except (ValueError, KeyError, TypeError, AttributeError):
+                  fail("audio-inputs", "unrecognized-metadata", exitCode=0)
 
-          if (findings === null) {
-            summary = [
-              "### iOS Periphery",
-              "",
-              "Periphery did not complete. Check the workflow artifact for stdout/stderr.",
-            ].join("\n");
-          } else if (rows.length === 0 && status === 0) {
-            shouldFail = "0";
-            summary = [
-              "### iOS Periphery",
-              "",
-              "No dead Swift code found.",
-            ].join("\n");
-          } else if (rows.length > 0) {
-            summary = [
-              "### iOS Periphery",
-              "",
-              `Found ${rows.length} dead Swift code ${rows.length === 1 ? "symbol" : "symbols"}. See the PR comment or workflow artifact for details.`,
-            ].join("\n");
-          } else {
-            summary = [
-              "### iOS Periphery",
-              "",
-              "Periphery exited with a non-zero status before producing findings. Check the workflow artifact for stdout/stderr.",
-            ].join("\n");
-          }
-
-          fs.writeFileSync(path.join(outputDir, "should-fail.txt"), `${shouldFail}\n`);
-          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${summary.trim()}\n`);
-          NODE
-
-      - name: Upload Periphery report
-        if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.watch_qualification) }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: ios-periphery-dead-code-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/ios-periphery
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Fail on dead code
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.watch_qualification) }}
-        run: |
-          set -euo pipefail
-          test "$(cat "$RUNNER_TEMP/ios-periphery/should-fail.txt")" = "0"
-
-      - name: Run focused shared Watch transport tests
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.watch_qualification }}
-        run: |
-          set -euo pipefail
-          output_dir="$RUNNER_TEMP/watch-qualification"
-          mkdir -p "$output_dir"
-          git rev-parse HEAD > "$output_dir/source-head.txt"
-          xcodebuild -version > "$output_dir/xcode-version.txt"
-          swift test --package-path apps/shared/OpenClawKit \
-            --scratch-path "$RUNNER_TEMP/watch-qualification-swift" \
-            --jobs 4 --no-parallel \
-            --filter 'GatewayOperatorHTTPSessionTests|GatewayOperatorHTTPWireTests|GatewayNativeTransportDeviceAuthTests|GatewayNodeSessionTests|DeviceAuthStoreTests|GatewayTLSPinningTests' \
-            2>&1 | tee "$output_dir/shared-tests.log"
-
-      - name: Run focused Apple Watch operation simulator tests
-        id: watch_tests
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.watch_qualification && !cancelled() }}
-        run: |
-          set -euo pipefail
-          output_dir="$RUNNER_TEMP/watch-qualification"
-          mkdir -p "$output_dir"
-          /bin/bash scripts/ios-watch-operation-tests.sh "$output_dir/WatchOperationTests.xcresult" \
-            2>&1 | tee "$output_dir/watch-tests.log"
-
-      - name: Prove Foundation operator HTTPS against a real Gateway
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.watch_qualification && !cancelled() }}
-        run: node --import ./scripts/tsx.mjs scripts/ios-watch-operator-https-proof.mts
-
-      - name: Capture direct Watch review surfaces
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.watch_qualification && steps.watch_tests.outcome == 'success' && !cancelled() }}
-        run: /bin/bash scripts/ios-watch-direct-captures.sh "$RUNNER_TEMP/watch-qualification/ui-fixtures"
-
-      - name: Upload Watch qualification evidence
-        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.watch_qualification }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: ios-watch-qualification-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/watch-qualification/source-head.txt
-            ${{ runner.temp }}/watch-qualification/xcode-version.txt
-            ${{ runner.temp }}/watch-qualification/shared-tests.log
-            ${{ runner.temp }}/watch-qualification/watch-tests.log
-            ${{ runner.temp }}/watch-qualification/WatchOperationTests.xcresult
-            ${{ runner.temp }}/watch-qualification/ui-fixtures
-            ${{ runner.temp }}/watch-qualification/operator-https.json
-          if-no-files-found: error
-          retention-days: 14
+          emit("summary", failedProbes=failures)
+          sys.exit(bool(failures))
+          PY
