@@ -2,10 +2,8 @@ import { describe, expect, it } from "vitest";
 import { buildQaGatewayConfig } from "../../qa-gateway-config.js";
 import type { SlackQaWriteTrace } from "./slack-live.capture.js";
 import { buildSlackQaConfig } from "./slack-live.config.js";
-import {
-  readSlackDeliveryProviderMessages,
-  verifySlackDeliveryObservations,
-} from "./slack-live.delivery-proof.js";
+import { verifySlackDeliveryObservations } from "./slack-live.delivery-proof.js";
+import { readSlackDeliveryProviderMessages } from "./slack-live.provider-capture.js";
 
 function fixture(): Parameters<typeof verifySlackDeliveryObservations>[0] {
   const first = {
