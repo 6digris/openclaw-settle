@@ -11,6 +11,7 @@ import {
   readSessionTranscriptWatermark,
   patchSessionEntryCore,
   persistSessionTranscriptTurn,
+  waitForSessionTranscriptProjection,
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
 import { writeSessionEntry } from "../config/sessions/session-accessor.sqlite-entry-store.js";
@@ -390,6 +391,8 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     expect(readSessionTranscriptWatermark(scope).generation).toBe(oldWatermark.generation);
     expect(read()?.updatedAt).toBe(oldActivity);
     expect(view()?.state).toBe("stale");
+    // Offline edits rebuild asynchronously; finish the fixture before restarting its observer.
+    await waitForSessionTranscriptProjection(scope);
     service = createSessionActivitySummaries({
       getConfig: () => cfg,
       onChanged: changed,

@@ -168,6 +168,13 @@ suite.define(() => {
         }
 
         const active = session("active");
+        // The persisted event and later history reads describe the same reply.
+        const resumedReplyId = "automatic-follow-up-result";
+        const resumedReply = {
+          role: "assistant",
+          content: "The queued follow-up started automatically.",
+          __openclaw: { id: resumedReplyId },
+        };
         const activeHistory = {
           inFlightRun: null,
           messages: [
@@ -176,6 +183,7 @@ suite.define(() => {
               ...pendingInput.message,
               __openclaw: { id: "persisted-follow-up", idempotencyKey: `${runId}:user` },
             },
+            resumedReply,
           ],
           pendingInputs: { items: [], total: 0 },
           sessionId: active.sessionId,
@@ -192,8 +200,8 @@ suite.define(() => {
         await gateway.emitGatewayEvent("session.message", {
           activeRunIds: [],
           hasActiveRun: false,
-          message: { role: "assistant", content: "The queued follow-up started automatically." },
-          messageId: "automatic-follow-up-result",
+          message: resumedReply,
+          messageId: resumedReplyId,
           messageSeq: 3,
           session: active,
           sessionKey,
