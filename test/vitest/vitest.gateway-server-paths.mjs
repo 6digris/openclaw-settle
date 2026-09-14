@@ -12,6 +12,12 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/server-methods/models-list.freshness.integration.test.ts",
   "src/gateway/server-methods/models-list.membership.integration.test.ts",
   "src/gateway/session-delivery-clock-jump.integration.test.ts",
+  "src/gateway/local-request-context.test.ts",
+  "src/gateway/server-methods/cron.list-scoped.test.ts",
+  "src/gateway/server-methods/cron.runs.test.ts",
+  "src/gateway/server-methods/cron.self-removal.test.ts",
+  "src/gateway/server-methods/cron.validation.test.ts",
+  "src/gateway/server-methods/requester-cron-authority.integration.test.ts",
 ];
 
 // Canonical file ownership for the non-isolated Gateway server Vitest project.

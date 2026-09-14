@@ -36,6 +36,7 @@ export const cliProcessTestFiles = [
   "src/cli/program/subcli-descriptors.test.ts",
   "src/cli/state-dir-gateway-check.process.test.ts",
   "src/cli/state-dir-gateway-check.server.test.ts",
+  "src/cli/cron-cli/cron-suppression.gateway.test.ts",
 ];
 
 const cliProcessTestFileSet = new Set(cliProcessTestFiles);

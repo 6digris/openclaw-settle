@@ -25,6 +25,9 @@ export const databaseWorkerCoreTestFiles = [
   "src/plugin-state/plugin-state-store.retention.test.ts",
   "src/plugin-state/plugin-state-store.runtime.test.ts",
   "src/plugin-state/plugin-state-store.schema.test.ts",
+  "src/agents/tools/cron-tool.output-contract.test.ts",
+  "src/plugins/services.cron.test.ts",
+  "src/state/creator-namespace-migration.test.ts",
 ];
 
 const databaseWorkerCoreTestFileSet = new Set(databaseWorkerCoreTestFiles);
