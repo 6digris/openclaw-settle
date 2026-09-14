@@ -313,6 +313,26 @@ export async function withNativeActionGateway(
     () => startNativeActionProvider(platform === "ios"),
     async (fixture) => {
       const { instance, provider, admin, alice, bob, aliceId, bobId } = fixture;
+      // Retain this started child across native preparation. An absent exit is
+      // only unobserved termination; it does not establish Gateway responsiveness.
+      const gatewayChild = instance.child;
+      const gatewayChildSnapshot = (observation: "control-failure" | "native-child-failure") => {
+        const signal = gatewayChild?.signalCode;
+        return {
+          observation,
+          capturedPresent: gatewayChild !== undefined,
+          exitCode: gatewayChild?.exitCode ?? null,
+          signalCode: signal
+            ? ["SIGHUP", "SIGINT", "SIGTERM", "SIGKILL", "SIGABRT", "SIGSEGV", "SIGBUS"].includes(
+                signal,
+              )
+              ? signal
+              : "other"
+            : null,
+          stdoutClosed: gatewayChild?.stdout.closed ?? null,
+          stderrClosed: gatewayChild?.stderr.closed ?? null,
+        };
+      };
       const controlToken = randomUUID();
       const mediaPaths = new Set<string>();
       const proxy = await startQaGatewayRpcProxy({
@@ -704,7 +724,8 @@ export async function withNativeActionGateway(
             const message =
               `native fixture controls failed: action=${progress.action}; phase=${progress.phase}; reason=request-failed; category=${category}` +
               (progress.signInCheckpoint ? `; signInCheckpoint=${progress.signInCheckpoint}` : "") +
-              connectionTrace;
+              connectionTrace +
+              `; gatewayChild=${JSON.stringify(gatewayChildSnapshot("control-failure"))}`;
             // Raw assertions and stacks can contain fixture credentials and private paths.
             firstControlFailure = new Error(message);
             firstControlFailure.stack = message;
@@ -827,6 +848,7 @@ export async function withNativeActionGateway(
                 completedMedia: mediaCompleted.size,
                 completedWidgets: widgetsCompleted.size,
                 lastSignInCheckpoint: signInCheckpoints.at(-1) ?? "none",
+                gatewayChild: gatewayChildSnapshot("native-child-failure"),
                 // Native cleanup may already have closed these retained initial sockets.
                 readiness: proxy.readinessSnapshot(),
               }),

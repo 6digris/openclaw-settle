@@ -34,6 +34,7 @@ final class NativeGatewayWebSocketFixture {
     enum RPCResponse {
         case success([String: Any])
         case failure(code: String, message: String, details: [String: Any]? = nil)
+        case deferred(@MainActor @Sendable () async throws -> RPCResponse)
     }
 
     typealias RPCHandler = @MainActor @Sendable ([String: Any]) -> RPCResponse
@@ -61,6 +62,7 @@ final class NativeGatewayWebSocketFixture {
     private var upgradeHeaders: [Int: String] = [:]
     private var nextConnectionIndex = 0
     private var stopped = false
+    private var pendingReplies: [UUID: (connection: Int, task: Task<Void, Never>)] = [:]
     nonisolated let port: UInt16
     nonisolated let usesTLS: Bool
 
@@ -158,6 +160,10 @@ final class NativeGatewayWebSocketFixture {
         self.clients.count
     }
 
+    var pendingReplyCount: Int {
+        self.pendingReplies.count
+    }
+
     func capturedAuth(at index: Int) -> ConnectAuth? {
         guard self.connectAuth.indices.contains(index) else { return nil }
         return self.connectAuth[index]
@@ -179,8 +185,21 @@ final class NativeGatewayWebSocketFixture {
         guard !self.stopped else { return }
         self.stopped = true
         self.listener.cancel()
+        for reply in self.pendingReplies.values {
+            reply.task.cancel()
+        }
         for index in Array(self.clients.keys) {
             self.close(index)
+        }
+    }
+
+    func stopAndWait() async {
+        self.stop()
+        // Canceled replies remain owned until completion, including replies whose
+        // original client has already closed. Never let them outlive the scenario.
+        let tasks = self.pendingReplies.values.map(\.task)
+        for task in tasks {
+            await task.value
         }
     }
 
@@ -202,7 +221,7 @@ final class NativeGatewayWebSocketFixture {
                 case .ready:
                     self.receive(index)
                 case .cancelled, .failed:
-                    self.clients[index] = nil
+                    self.close(index)
                 default:
                     break
                 }
@@ -339,6 +358,7 @@ final class NativeGatewayWebSocketFixture {
     }
 
     private func sendRPCResponse(_ response: RPCResponse, id: String, index: Int) {
+        guard !self.stopped, self.clients[index] != nil else { return }
         var frame: [String: Any] = ["type": "res", "id": id]
         switch response {
         case let .success(payload):
@@ -349,6 +369,30 @@ final class NativeGatewayWebSocketFixture {
             if let details { error["details"] = details }
             frame["ok"] = false
             frame["error"] = error
+        case let .deferred(operation):
+            guard self.pendingReplies.count < 32 else {
+                Issue.record("Native fixture exceeded its pending reply limit")
+                self.close(index)
+                return
+            }
+            let replyID = UUID()
+            let task = Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer { self.pendingReplies[replyID] = nil }
+                do {
+                    let result = try await operation()
+                    // A late reply belongs to this exact client, never a replacement.
+                    guard !Task.isCancelled, !self.stopped, self.clients[index] != nil else { return }
+                    self.sendRPCResponse(result, id: id, index: index)
+                } catch is CancellationError {
+                    // Closing this client cancels only its own pending replies.
+                } catch {
+                    Issue.record(error)
+                    self.close(index)
+                }
+            }
+            self.pendingReplies[replyID] = (index, task)
+            return
         }
         self.sendJSON(frame, index: index)
     }
@@ -461,6 +505,9 @@ final class NativeGatewayWebSocketFixture {
 
     private func close(_ index: Int) {
         self.clients.removeValue(forKey: index)?.connection.cancel()
+        for reply in self.pendingReplies.values where reply.connection == index {
+            reply.task.cancel()
+        }
     }
 
     private static func takeFrame(from buffer: inout Data) -> (opcode: UInt8, payload: Data)? {

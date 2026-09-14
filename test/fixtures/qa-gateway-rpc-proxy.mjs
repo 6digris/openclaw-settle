@@ -89,9 +89,14 @@ export async function startQaGatewayRpcProxy({
   const readinessConnection = (id) => (captureReadiness ? readiness[id - 1] : undefined);
   const readinessSnapshot = () => ({
     truncated: readinessTruncated,
-    connections: readiness.map(({ connection, lifecycle, requests, truncated }) => ({
+    connections: readiness.map(({ connection, handshake, lifecycle, requests, truncated }) => ({
       connection,
       truncated,
+      handshake: {
+        ...handshake,
+        socketAssigned: handshake.socketAssigned ? { ...handshake.socketAssigned } : undefined,
+        httpResponse: handshake.httpResponse ? { ...handshake.httpResponse } : undefined,
+      },
       lifecycle: lifecycle.map((entry) => ({ ...entry })),
       requests: requests.map((entry) => ({
         ...entry,
@@ -398,6 +403,7 @@ export async function startQaGatewayRpcProxy({
       if (id <= 4) {
         readiness.push({
           connection: id,
+          handshake: {},
           lifecycle: [],
           requests: [],
           truncated: false,
@@ -412,18 +418,56 @@ export async function startQaGatewayRpcProxy({
     }
     recordFirstConnection(id, "front-open");
     let challengeReceived = false;
+    const diagnostic = readinessConnection(id);
     // Native ws:// clients deliberately omit custom headers. This fixture acts
     // as their trusted proxy without changing signed client/device identity.
     recordFirstConnection(id, "upstream-create-start");
     const back = new WebSocket(`ws://127.0.0.1:${backendPort}`, {
       headers: upstreamHeaders,
+      ...(diagnostic
+        ? {
+            /** @param {import("node:http").ClientRequest} req */
+            finishRequest(req) {
+              const { handshake } = diagnostic;
+              handshake.requestReadyMs = readinessTime();
+              req.once("socket", (socket) => {
+                handshake.socketAssigned = {
+                  elapsedMs: readinessTime(),
+                  connecting: socket.connecting,
+                };
+                socket.once("connect", () => {
+                  handshake.tcpConnectedMs = readinessTime();
+                });
+              });
+              req.once("finish", () => {
+                // This is local OS handoff, not receipt by the Gateway.
+                handshake.requestFinishedMs = readinessTime();
+              });
+              req.once("response", (response) => {
+                const status = response.statusCode;
+                handshake.httpResponse = {
+                  elapsedMs: readinessTime(),
+                  statusCode:
+                    typeof status === "number" &&
+                    Number.isInteger(status) &&
+                    status >= 100 &&
+                    status <= 599
+                      ? status
+                      : "other",
+                };
+              });
+              // ws installs its abort/upgrade handlers before this hook. Keep
+              // its default synchronous end; observing unexpected-response would disable abort.
+              req.end();
+            },
+          }
+        : {}),
     });
     recordFirstConnection(id, "upstream-create-return");
     const peer = { id, front, back };
     peers.add(peer);
     const methods = new Map();
     const diagnosticRequests = new Map();
-    const diagnostic = readinessConnection(id);
     const sendUpstream = (raw, trace) => {
       if (trace) trace.upstreamStartedMs = readinessTime();
       back.send(

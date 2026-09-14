@@ -627,7 +627,8 @@ struct NativeActionGatewayWireTests {
                     _ = try await submission.value
                     throw OpenClawNativeActionError("The closed presentation accepted a confirmation.")
                 } catch let error as OpenClawNativeActionError {
-                    try #require(error.localizedDescription == "The selected chat changed. Nothing was sent.")
+                    try #require(error
+                        .localizedDescription == "The selected session changed. Open it again before sending.")
                 }
                 // Neither a broadcast nor B's own request has retired this warm
                 // capture. Only A's next typed refusal may invalidate both owners.

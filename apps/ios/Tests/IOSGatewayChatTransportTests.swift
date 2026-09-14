@@ -123,6 +123,19 @@ struct IOSGatewayChatTransportTests {
         }
     }
 
+    @MainActor
+    private static func nativeResponse(_ data: Data) throws -> NativeGatewayWebSocketFixture.RPCResponse {
+        let frame = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        if frame["ok"] as? Bool == true {
+            return try .success(#require(frame["payload"] as? [String: Any]))
+        }
+        let error = try #require(frame["error"] as? [String: Any])
+        return try .failure(
+            code: #require(error["code"] as? String),
+            message: #require(error["message"] as? String),
+            details: error["details"] as? [String: Any])
+    }
+
     private actor ResponseRetirement {
         private var pending: (IOSNativeActionBinding, String)?
 
@@ -144,6 +157,7 @@ struct IOSGatewayChatTransportTests {
 
     private func withSessionTransport(
         unreadAckAdvertisement: Bool? = true,
+        nativeSocket: Bool = false,
         gatewayID: String? = nil,
         capabilities: [String] = [],
         nativeProfileID: String? = nil,
@@ -158,6 +172,50 @@ struct IOSGatewayChatTransportTests {
     {
         let recorder = RequestRecorder()
         let gateway = GatewayNodeSession()
+        let respond: @Sendable (RecordedRequest) async throws -> Data = { request in
+            let payload = switch request.method {
+            case "agents.list": GatewayWebSocketTestSupport.agentCatalogPayload
+            case "sessions.create": #"{"key":"forked"}"#
+            case "health": #"{"ok":true}"#
+            case "chat.history":
+                if resolvesRequestedHistory {
+                    try String(decoding: JSONSerialization.data(withJSONObject: [
+                        "sessionKey": request.params["sessionKey"]?.value as? String ?? "",
+                        "messages": [],
+                        "sessionInfo": [
+                            "key": request.params["sessionKey"]?.value as? String ?? "",
+                            "agentId": request.params["agentId"]?.value as? String ?? "reviewer",
+                        ],
+                    ]), as: UTF8.self)
+                } else {
+                    """
+                    {"sessionKey":"agent:reviewer:main","messages":[],
+                     "sessionInfo":{"key":"agent:reviewer:main","agentId":"reviewer"}}
+                    """
+                }
+            case "sessions.list":
+                #"{"ts":0,"count":2,"sessions":[{"key":"global"},{"key":"agent:other:main"}]}"#
+            case "chat.send": sendPayload
+            case "sessions.messages.subscribe": #"{"subscribed":true,"key":"agent:reviewer:main"}"#
+            default: #"{"entry":{}}"#
+            }
+            if retireOnSend, request.method == "chat.send" {
+                await gateway._test_handleChannelDisconnected("retired admission", socketGeneration: 1)
+            }
+            try await beforeResponse?(request)
+            if let responseError {
+                return try JSONSerialization.data(withJSONObject: [
+                    "type": "res", "id": request.id, "ok": false,
+                    "error": ["code": "INVALID_REQUEST", "message": "Fixture refusal", "details": [
+                        "reason": responseError.reason, "execution": responseError.execution,
+                    ]],
+                ])
+            } else {
+                let selectedPayload = responsePayloads[request.method] ?? payload
+                return Data(
+                    #"{"type":"res","id":"\#(request.id)","ok":true,"payload":\#(selectedPayload)}"#.utf8)
+            }
+        }
         let session = GatewayTestWebSocketSession(taskFactory: {
             GatewayTestWebSocketTask(sendHook: { socket, message, sendIndex in
                 guard sendIndex > 0 else { return }
@@ -167,48 +225,8 @@ struct IOSGatewayChatTransportTests {
                 @unknown default: throw URLError(.cannotParseResponse)
                 }
                 let request = try await recorder.record(data)
-                let payload = switch request.method {
-                case "agents.list": GatewayWebSocketTestSupport.agentCatalogPayload
-                case "sessions.create": #"{"key":"forked"}"#
-                case "health": #"{"ok":true}"#
-                case "chat.history":
-                    if resolvesRequestedHistory {
-                        try String(decoding: JSONSerialization.data(withJSONObject: [
-                            "sessionKey": request.params["sessionKey"]?.value as? String ?? "",
-                            "messages": [],
-                            "sessionInfo": [
-                                "key": request.params["sessionKey"]?.value as? String ?? "",
-                                "agentId": request.params["agentId"]?.value as? String ?? "reviewer",
-                            ],
-                        ]), as: UTF8.self)
-                    } else {
-                        """
-                        {"sessionKey":"agent:reviewer:main","messages":[],
-                         "sessionInfo":{"key":"agent:reviewer:main","agentId":"reviewer"}}
-                        """
-                    }
-                case "sessions.list":
-                    #"{"ts":0,"count":2,"sessions":[{"key":"global"},{"key":"agent:other:main"}]}"#
-                case "chat.send": sendPayload
-                case "sessions.messages.subscribe": #"{"subscribed":true,"key":"agent:reviewer:main"}"#
-                default: #"{"entry":{}}"#
-                }
-                if retireOnSend, request.method == "chat.send" {
-                    await gateway._test_handleChannelDisconnected("retired admission", socketGeneration: 1)
-                }
-                try await beforeResponse?(request)
-                if let responseError {
-                    try socket.emitReceiveSuccess(.data(JSONSerialization.data(withJSONObject: [
-                        "type": "res", "id": request.id, "ok": false,
-                        "error": ["code": "INVALID_REQUEST", "message": "Fixture refusal", "details": [
-                            "reason": responseError.reason, "execution": responseError.execution,
-                        ]],
-                    ])))
-                } else {
-                    let selectedPayload = responsePayloads[request.method] ?? payload
-                    socket.emitReceiveSuccess(.data(Data(
-                        #"{"type":"res","id":"\#(request.id)","ok":true,"payload":\#(selectedPayload)}"#.utf8)))
-                }
+                let response = try await respond(request)
+                socket.emitReceiveSuccess(.data(response))
             }, receiveHook: { socket, receiveIndex in
                 if receiveIndex == 0 { return .data(GatewayWebSocketTestSupport.connectChallengeData()) }
                 let hello = GatewayWebSocketTestSupport.connectOkData(
@@ -235,12 +253,29 @@ struct IOSGatewayChatTransportTests {
         var options = GatewayWebSocketTestSupport.identityFreeOperatorConnectOptions
         options.allowStoredDeviceAuth = false
         options.deviceAuthGatewayID = gatewayID
+        let nativeFixture: NativeGatewayWebSocketFixture? = if nativeSocket {
+            try await NativeGatewayWebSocketFixture.start(
+                issuedDeviceTokens: [],
+                hello: .init(
+                    role: "operator",
+                    scopes: ["operator.read", "operator.write"],
+                    capabilities: capabilities),
+                rpcHandler: { request in
+                    .deferred {
+                        let data = try JSONSerialization.data(withJSONObject: request)
+                        let recorded = try await recorder.record(data)
+                        return try await Self.nativeResponse(respond(recorded))
+                    }
+                })
+        } else {
+            nil
+        }
         do {
             try await gateway.connect(
-                url: #require(URL(string: "ws://session-transport-test.invalid")),
+                url: nativeFixture?.url() ?? #require(URL(string: "ws://session-transport-test.invalid")),
                 credentials: .init(),
                 connectOptions: options,
-                sessionBox: WebSocketSessionBox(session: session),
+                sessionBox: nativeFixture == nil ? WebSocketSessionBox(session: session) : nil,
                 onConnected: {},
                 onDisconnected: { _ in },
                 onInvoke: { BridgeInvokeResponse(id: $0.id, ok: true) })
@@ -263,8 +298,16 @@ struct IOSGatewayChatTransportTests {
                 outboxGatewayID: gatewayID,
                 nativeBinding: binding), recorder)
             await gateway.disconnect()
+            await nativeFixture?.stopAndWait()
+            if let nativeFixture {
+                #expect(await nativeFixture.pendingReplyCount == 0)
+            }
         } catch {
             await gateway.disconnect()
+            await nativeFixture?.stopAndWait()
+            if let nativeFixture {
+                #expect(await nativeFixture.pendingReplyCount == 0)
+            }
             throw error
         }
     }
@@ -1089,15 +1132,22 @@ extension IOSGatewayChatTransportTests {
         }
     }
 
-    private actor WidgetFixture {
+    @MainActor
+    private final class WidgetFixture {
         var profileID: String
+        private let usesNativeSocket: Bool
+        private var nativeFixture: NativeGatewayWebSocketFixture?
+        private var nativeRecorder: RequestRecorder?
         private var responseCount = 0
         private var holdNext = false
-        private var held: (GatewayTestWebSocketTask, Data)?
-        private var heldWaiters: [CheckedContinuation<Void, Never>] = []
+        private var finished = false
+        private var held: (id: UUID, data: Data, continuation: CheckedContinuation<Data, any Error>)?
+        private var mockHeld: (socket: GatewayTestWebSocketTask, data: Data)?
+        private var heldWaiters: [UUID: CheckedContinuation<Void, any Error>] = [:]
 
-        init(profileID: String) {
+        init(profileID: String, nativeSocket: Bool) {
             self.profileID = profileID
+            self.usesNativeSocket = nativeSocket
         }
 
         func setProfile(_ profileID: String) {
@@ -1108,22 +1158,84 @@ extension IOSGatewayChatTransportTests {
             self.holdNext = true
         }
 
-        func waitForHeldRefresh() async {
-            if self.held != nil { return }
-            await withCheckedContinuation { self.heldWaiters.append($0) }
-        }
-
-        func release() {
-            if let (socket, data) = self.held { socket.emitReceiveSuccess(.data(data)) }
-            self.held = nil
-            let waiters = self.heldWaiters
-            self.heldWaiters.removeAll()
-            for waiter in waiters {
-                waiter.resume()
+        func waitForHeldRefresh() async throws {
+            try Task.checkCancellation()
+            guard !self.finished else { throw CancellationError() }
+            if self.held != nil || self.mockHeld != nil { return }
+            let id = UUID()
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    guard !Task.isCancelled, !self.finished else {
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
+                    self.heldWaiters[id] = continuation
+                }
+            } onCancel: {
+                Task { @MainActor in
+                    self.heldWaiters.removeValue(forKey: id)?.resume(throwing: CancellationError())
+                }
             }
         }
 
-        func respond(_ socket: GatewayTestWebSocketTask, request: RecordedRequest) throws {
+        func release() {
+            let held = self.held
+            let mockHeld = self.mockHeld
+            self.held = nil
+            self.mockHeld = nil
+            if let held { held.continuation.resume(returning: held.data) }
+            if let mockHeld { mockHeld.socket.emitReceiveSuccess(.data(mockHeld.data)) }
+        }
+
+        func finish() {
+            // Cleanup must also disarm a hold whose responder has not entered yet.
+            self.finished = true
+            self.holdNext = false
+            let held = self.held
+            let mockHeld = self.mockHeld
+            self.held = nil
+            self.mockHeld = nil
+            held?.continuation.resume(throwing: CancellationError())
+            if let mockHeld { mockHeld.socket.emitReceiveSuccess(.data(mockHeld.data)) }
+            let waiters = self.heldWaiters
+            self.heldWaiters.removeAll()
+            for waiter in waiters.values {
+                waiter.resume(throwing: CancellationError())
+            }
+        }
+
+        func stopAndWait() async {
+            await self.nativeFixture?.stopAndWait()
+            if let nativeFixture {
+                #expect(nativeFixture.pendingReplyCount == 0)
+            }
+        }
+
+        func connectNativeSocket(recorder: RequestRecorder) async throws -> NativeGatewayWebSocketFixture? {
+            guard self.usesNativeSocket else { return nil }
+            self.nativeRecorder = recorder
+            if let nativeFixture { return nativeFixture }
+            let fixture = try await NativeGatewayWebSocketFixture.start(
+                issuedDeviceTokens: [],
+                hello: .init(
+                    role: "operator",
+                    scopes: ["operator.read", "operator.write"],
+                    capabilities: ["profile-binding-v1"]),
+                rpcHandler: { [weak self] request in
+                    guard let self, let recorder = self.nativeRecorder else {
+                        return .failure(code: "UNAVAILABLE", message: "Fixture closed")
+                    }
+                    return .deferred {
+                        let data = try JSONSerialization.data(withJSONObject: request)
+                        let recorded = try await recorder.record(data)
+                        return try await IOSGatewayChatTransportTests.nativeResponse(self.respond(recorded))
+                    }
+                })
+            self.nativeFixture = fixture
+            return fixture
+        }
+
+        private func responseData(_ request: RecordedRequest) throws -> Data {
             try #require(["plugin.surface.refresh", "agents.list"].contains(request.method))
             if request.method == "plugin.surface.refresh" { self.responseCount += 1 }
             let allowed = request.expectedProfileId.map { $0.utf8.elementsEqual(self.profileID.utf8) } ?? true
@@ -1143,17 +1255,54 @@ extension IOSGatewayChatTransportTests {
                     "details": ["reason": "EXPECTED_PROFILE_MISMATCH"],
                 ]
             }
-            let data = try JSONSerialization.data(withJSONObject: frame)
+            return try JSONSerialization.data(withJSONObject: frame)
+        }
+
+        private func signalHeldResponse() {
+            let waiters = self.heldWaiters
+            self.heldWaiters.removeAll()
+            for waiter in waiters.values {
+                waiter.resume()
+            }
+        }
+
+        func respondMock(_ socket: GatewayTestWebSocketTask, request: RecordedRequest) throws {
+            guard !self.finished else { throw CancellationError() }
+            let data = try self.responseData(request)
+            // Mock sends finish immediately; the captured socket owns the later
+            // receive callback. Holding its send hook would create an unjoined task.
             if self.holdNext, request.method == "plugin.surface.refresh" {
                 self.holdNext = false
-                self.held = (socket, data)
-                let waiters = self.heldWaiters
-                self.heldWaiters.removeAll()
-                for waiter in waiters {
-                    waiter.resume()
-                }
+                self.mockHeld = (socket, data)
+                self.signalHeldResponse()
             } else {
                 socket.emitReceiveSuccess(.data(data))
+            }
+        }
+
+        func respond(_ request: RecordedRequest) async throws -> Data {
+            try Task.checkCancellation()
+            guard !self.finished else { throw CancellationError() }
+            let data = try self.responseData(request)
+            guard self.holdNext, request.method == "plugin.surface.refresh" else { return data }
+            self.holdNext = false
+            let id = UUID()
+            return try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    guard !Task.isCancelled, !self.finished else {
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
+                    self.held = (id, data, continuation)
+                    self.signalHeldResponse()
+                }
+            } onCancel: {
+                Task { @MainActor in
+                    guard self.held?.id == id else { return }
+                    let held = self.held
+                    self.held = nil
+                    held?.continuation.resume(throwing: CancellationError())
+                }
             }
         }
     }
@@ -1170,7 +1319,8 @@ extension IOSGatewayChatTransportTests {
                 case let .string(value): Data(value.utf8)
                 @unknown default: throw URLError(.cannotParseResponse)
                 }
-                try await fixture.respond(socket, request: recorder.record(data))
+                let request = try await recorder.record(data)
+                try await fixture.respondMock(socket, request: request)
             }, receiveHook: { socket, index in
                 if index == 0 { return .data(GatewayWebSocketTestSupport.connectChallengeData()) }
                 return .data(GatewayWebSocketTestSupport.connectOkData(
@@ -1182,9 +1332,11 @@ extension IOSGatewayChatTransportTests {
         var options = GatewayWebSocketTestSupport.identityFreeOperatorConnectOptions
         options.allowStoredDeviceAuth = false
         options.deviceAuthGatewayID = "widget-gateway"
+        let nativeFixture = try await fixture.connectNativeSocket(recorder: recorder)
         try await gateway.connect(
-            url: #require(URL(string: "ws://widget-test.invalid")),
-            credentials: .init(), connectOptions: options, sessionBox: WebSocketSessionBox(session: session),
+            url: nativeFixture?.url() ?? #require(URL(string: "ws://widget-test.invalid")),
+            credentials: .init(), connectOptions: options,
+            sessionBox: nativeFixture == nil ? WebSocketSessionBox(session: session) : nil,
             onConnected: {}, onDisconnected: { _ in }, onInvoke: { .init(id: $0.id, ok: true) })
         let binding = try IOSNativeActionBinding(
             session: .init(
@@ -1196,22 +1348,25 @@ extension IOSGatewayChatTransportTests {
 
     private func withWidgetTransport(
         profileID: String = "alice",
+        nativeSocket: Bool = false,
         _ run: (IOSGatewayChatTransport, WidgetFixture, RequestRecorder) async throws -> Void) async throws
     {
         let gateway = GatewayNodeSession()
-        let fixture = WidgetFixture(profileID: profileID)
+        let fixture = await WidgetFixture(profileID: profileID, nativeSocket: nativeSocket)
         let recorder = RequestRecorder()
         do {
             let transport = try await self.connectWidgetTransport(
                 gateway: gateway, fixture: fixture, recorder: recorder, profileID: profileID)
             try await run(transport, fixture, recorder)
         } catch {
-            await fixture.release()
+            await fixture.finish()
             await gateway.disconnect()
+            await fixture.stopAndWait()
             throw error
         }
-        await fixture.release()
+        await fixture.finish()
         await gateway.disconnect()
+        await fixture.stopAndWait()
     }
 
     @Test(arguments: [" alice ", "profile-e\u{301}", "profile-\u{E9}"])
@@ -1261,7 +1416,7 @@ extension IOSGatewayChatTransportTests {
     }
 
     @Test func `same-lifetime widget waiters share one denial and both observe it`() async throws {
-        try await self.withWidgetTransport { transport, fixture, recorder in
+        try await self.withWidgetTransport(nativeSocket: true) { transport, fixture, recorder in
             let original = try #require(transport.nativeBinding)
             let sibling = try await IOSNativeActionBinding.capture(
                 session: original.session, gateway: original.gateway, route: original.route,
@@ -1292,7 +1447,7 @@ extension IOSGatewayChatTransportTests {
             }
             do {
                 try await AsyncTimeout.withTimeout(seconds: 2, onTimeout: { URLError(.timedOut) }) {
-                    await fixture.waitForHeldRefresh()
+                    try await fixture.waitForHeldRefresh()
                     while await original.gateway._test_pluginSurfaceWaiterCounts() != (2, 0) {
                         try await Task.sleep(for: .milliseconds(1))
                     }
@@ -1310,7 +1465,7 @@ extension IOSGatewayChatTransportTests {
                 #expect(await sibling.isCurrent() == false)
                 #expect(await recorder.all().map(\.method) == ["agents.list", "plugin.surface.refresh"])
             } catch {
-                await fixture.release()
+                await fixture.finish()
                 first.cancel()
                 second.cancel()
                 _ = await first.value
@@ -1322,7 +1477,7 @@ extension IOSGatewayChatTransportTests {
     }
 
     @Test func `fresh widget capture cannot join a retired lifetime's held denial`() async throws {
-        try await self.withWidgetTransport { transport, fixture, recorder in
+        try await self.withWidgetTransport(nativeSocket: true) { transport, fixture, recorder in
             let path = "/__openclaw__/canvas/documents/test/index.html"
             let original = try #require(transport.nativeBinding)
             let sibling = try await IOSNativeActionBinding.capture(
@@ -1334,7 +1489,7 @@ extension IOSGatewayChatTransportTests {
             var loading: Task<OpenClawChatWidgetResource?, Never>?
             do {
                 try await AsyncTimeout.withTimeout(seconds: 2, onTimeout: { URLError(.timedOut) }) {
-                    await fixture.waitForHeldRefresh()
+                    try await fixture.waitForHeldRefresh()
                 }
                 #expect(await original.accepts(EventFrame(
                     type: "event", event: "presence", payload: nil, recipientprofileid: "bob")) == false)
@@ -1366,7 +1521,7 @@ extension IOSGatewayChatTransportTests {
                     "agents.list", "plugin.surface.refresh", "agents.list", "plugin.surface.refresh",
                 ])
             } catch {
-                await fixture.release()
+                await fixture.finish()
                 old.cancel()
                 loading?.cancel()
                 _ = await old.value
@@ -1379,6 +1534,7 @@ extension IOSGatewayChatTransportTests {
     @Test(arguments: ["changed owner", "matching owner", "typed rejection"])
     func `late captured account observations cannot retire a fresh verified successor`(result: String) async throws {
         try await self.withSessionTransport(
+            nativeSocket: true,
             gatewayID: "native-observation", capabilities: [GatewayServerCapability.profileBinding.rawValue],
             nativeProfileID: "alice")
         { transport, recorder in
@@ -1465,7 +1621,7 @@ extension IOSGatewayChatTransportTests {
             async let loading = transport.resolveInlineWidgetResource(path: path, replacing: initial)
             try await AsyncTimeout.withTimeout(
                 seconds: 2, onTimeout: { URLError(.timedOut) },
-                operation: { await fixture.waitForHeldRefresh() })
+                operation: { try await fixture.waitForHeldRefresh() })
             await transport.gateway.disconnect()
             let successorRecorder = RequestRecorder()
             let successor = try await self.connectWidgetTransport(
@@ -1484,7 +1640,7 @@ extension IOSGatewayChatTransportTests {
     func `account retirement invalidates warm widgets across copies until a fresh verified capture`(
         recipient: String?) async throws
     {
-        try await self.withWidgetTransport { transport, fixture, recorder in
+        try await self.withWidgetTransport(nativeSocket: true) { transport, fixture, recorder in
             let path = "/__openclaw__/canvas/documents/test/index.html"
             let binding = try #require(transport.nativeBinding)
             let scoped = try #require(transport.scoped(toAgentID: "research") as? IOSGatewayChatTransport)
@@ -1578,6 +1734,7 @@ extension IOSGatewayChatTransportTests {
     {
         let retirement = ResponseRetirement()
         try await self.withSessionTransport(
+            nativeSocket: true,
             gatewayID: "gateway-a", capabilities: ["profile-binding-v1"], nativeProfileID: "alice",
             nativeSessionKey: "global",
             beforeResponse: { await retirement.beforeResponse($0) })
@@ -1610,37 +1767,38 @@ extension IOSGatewayChatTransportTests {
     func `different accounts and replacement sockets keep independent retirement`(
         originalProfile: String, nextProfile: String) async throws
     {
-        try await self.withWidgetTransport(profileID: originalProfile) { transport, fixture, recorder in
-            let original = try #require(transport.nativeBinding)
-            await fixture.setProfile(nextProfile)
-            let target = OpenClawNativeSessionRef(
-                owner: .init(gatewayID: original.session.owner.gatewayID, profileID: nextProfile),
-                agentID: original.session.agentID, sessionKey: original.session.sessionKey)
-            let next = try await IOSNativeActionBinding.capture(
-                session: target, gateway: original.gateway, route: original.route,
-                reservation: original.reserveRetirement())
-            #expect(await original.isCurrent())
-            #expect(await next.isCurrent())
-            #expect(original.profileObservationID != next.profileObservationID)
-            #expect(!original.canReuse(next))
-            original.observe(.rejected(expectedProfileID: originalProfile))
-            #expect(await original.isCurrent() == false)
-            #expect(await next.isCurrent())
+        try await self
+            .withWidgetTransport(profileID: originalProfile, nativeSocket: true) { transport, fixture, recorder in
+                let original = try #require(transport.nativeBinding)
+                await fixture.setProfile(nextProfile)
+                let target = OpenClawNativeSessionRef(
+                    owner: .init(gatewayID: original.session.owner.gatewayID, profileID: nextProfile),
+                    agentID: original.session.agentID, sessionKey: original.session.sessionKey)
+                let next = try await IOSNativeActionBinding.capture(
+                    session: target, gateway: original.gateway, route: original.route,
+                    reservation: original.reserveRetirement())
+                #expect(await original.isCurrent())
+                #expect(await next.isCurrent())
+                #expect(original.profileObservationID != next.profileObservationID)
+                #expect(!original.canReuse(next))
+                original.observe(.rejected(expectedProfileID: originalProfile))
+                #expect(await original.isCurrent() == false)
+                #expect(await next.isCurrent())
 
-            await transport.gateway.disconnect()
-            let replacement = try await self.connectWidgetTransport(
-                gateway: transport.gateway, fixture: fixture, recorder: recorder, profileID: nextProfile)
-            let replacementBinding = try #require(replacement.nativeBinding)
-            let fresh = try await IOSNativeActionBinding.capture(
-                session: target, gateway: next.gateway, route: replacementBinding.route,
-                reservation: next.reserveRetirement())
-            #expect(fresh.route != next.route)
-            #expect(fresh.profileObservationID != next.profileObservationID)
-            #expect(!next.canReuse(fresh))
-            next.observe(.rejected(expectedProfileID: nextProfile))
-            #expect(await next.isCurrent() == false)
-            #expect(await fresh.isCurrent())
-        }
+                await transport.gateway.disconnect()
+                let replacement = try await self.connectWidgetTransport(
+                    gateway: transport.gateway, fixture: fixture, recorder: recorder, profileID: nextProfile)
+                let replacementBinding = try #require(replacement.nativeBinding)
+                let fresh = try await IOSNativeActionBinding.capture(
+                    session: target, gateway: next.gateway, route: replacementBinding.route,
+                    reservation: next.reserveRetirement())
+                #expect(fresh.route != next.route)
+                #expect(fresh.profileObservationID != next.profileObservationID)
+                #expect(!next.canReuse(fresh))
+                next.observe(.rejected(expectedProfileID: nextProfile))
+                #expect(await next.isCurrent() == false)
+                #expect(await fresh.isCurrent())
+            }
     }
 
     @Test(arguments: [
@@ -1733,6 +1891,7 @@ extension IOSGatewayChatTransportTests {
             url: inline ? nil : "/api/chat/media/outgoing/main/fixture/full?mediaTicket=fixture")
         let payload = try String(decoding: JSONEncoder().encode(response), as: UTF8.self)
         try await self.withSessionTransport(
+            nativeSocket: true,
             gatewayID: "gateway-a", capabilities: ["profile-binding-v1"], nativeProfileID: "alice",
             responsePayloads: ["artifacts.download": payload],
             beforeResponse: { await retirement.beforeResponse($0) })

@@ -571,7 +571,24 @@ extension OpenClawChatViewModel {
             return .rejected(reason: reason)
         }
         let attempt = self.beginLiveSend(draft)
-        return await self.deliverLiveSend(attempt)
+        let outcome = await self.deliverLiveSend(attempt)
+        if !draft.isComposer {
+            switch outcome {
+            case .notDispatched, .cancelled:
+                // Proven non-dispatch releases this local attempt even after detach.
+                // A successor session or echo still belongs to its newer owner.
+                if self.currentSessionSnapshot() == draft.session,
+                   self.pendingLocalUserEchoMessageIDsByRunID[attempt.runId] == attempt.userMessageID
+                {
+                    self.removePendingLocalUserEcho(for: attempt.runId)
+                    self.runMessageScopesByRunID.removeValue(forKey: attempt.runId)
+                    self.clearPendingRun(attempt.runId)
+                }
+            default:
+                break
+            }
+        }
+        return outcome
     }
 
     private func captureSendDraft() -> SendDraft? {

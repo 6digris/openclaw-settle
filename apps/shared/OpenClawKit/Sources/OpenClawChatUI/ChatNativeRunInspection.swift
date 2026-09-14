@@ -203,9 +203,6 @@ public struct OpenClawChatNativeActionGateway: Sendable {
             // Confirmation can outlive the connection, account, or visible chat.
             // Revalidate the captured owner; never acquire a successor lease.
             _ = try await self.owner(expected: session.owner)
-            guard presentationIsCurrent() else {
-                throw OpenClawNativeActionError("The selected chat changed. Nothing was sent.")
-            }
             switch await viewModel.submit(invocation, using: route) {
             case let .accepted(runID):
                 return OpenClawNativeRunRef(session: session, runID: runID)

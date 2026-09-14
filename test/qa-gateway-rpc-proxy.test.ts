@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -25,6 +26,7 @@ async function withProxy(
     reconnect: () => Promise<{ front: WebSocket; upstream: Promise<WebSocket> }>;
   }) => Promise<void>,
   captureReadiness = false,
+  rejectUpgrade = false,
 ) {
   const server = createServer();
   const sockets = new Set<Duplex>();
@@ -39,7 +41,11 @@ async function withProxy(
   });
   server.on("upgrade", (request, socket, head) => {
     upgrade.resolve(socket);
-    if (holdUpgrade) {
+    if (rejectUpgrade) {
+      socket.end(
+        "HTTP/1.1 503 Service Unavailable\r\nX-Fixture-Private: private-header-marker\r\nContent-Length: 19\r\n\r\nprivate-body-marker",
+      );
+    } else if (holdUpgrade) {
       socket.on("end", () => socket.end());
       socket.resume();
     } else {
@@ -270,6 +276,66 @@ describe("QA Gateway proxy readiness diagnostics", () => {
     expect((await returned)[0]).toEqual(response);
   }
 
+  it("distinguishes a locally written upgrade request from an upstream HTTP upgrade", async () => {
+    await withProxy(
+      true,
+      async ({ proxy, upgrade }) => {
+        await upgrade;
+        await expect
+          .poll(() => proxy.readinessSnapshot().connections[0]?.handshake.requestFinishedMs)
+          .toBeTypeOf("number");
+        const connection = proxy.readinessSnapshot().connections[0];
+        assert(connection);
+        expect(connection.handshake).toMatchObject({
+          requestReadyMs: expect.any(Number),
+          socketAssigned: { elapsedMs: expect.any(Number), connecting: expect.any(Boolean) },
+          tcpConnectedMs: expect.any(Number),
+          requestFinishedMs: expect.any(Number),
+        });
+        expect(connection.handshake.httpResponse).toBeUndefined();
+        expect(connection.lifecycle).not.toEqual(
+          expect.arrayContaining([expect.objectContaining({ tag: "upstream-upgrade" })]),
+        );
+        expect(connection.lifecycle).not.toEqual(
+          expect.arrayContaining([expect.objectContaining({ tag: "upstream-open" })]),
+        );
+      },
+      true,
+    );
+  });
+
+  it("records a non-upgrade HTTP status without suppressing the default WebSocket abort", async () => {
+    await withProxy(
+      false,
+      async ({ proxy, front }) => {
+        await expect.poll(() => front.readyState).toBe(WebSocket.CLOSED);
+        await proxy.stop();
+        const connection = proxy.readinessSnapshot().connections[0];
+        assert(connection);
+        expect(connection.handshake.httpResponse).toEqual({
+          elapsedMs: expect.any(Number),
+          statusCode: 503,
+        });
+        expect(connection.lifecycle).toContainEqual(
+          expect.objectContaining({ tag: "upstream-error", localTermination: "none" }),
+        );
+        expect(connection.lifecycle).toContainEqual(
+          expect.objectContaining({ tag: "upstream-close" }),
+        );
+        expect(connection.lifecycle).not.toEqual(
+          expect.arrayContaining([expect.objectContaining({ tag: "upstream-open" })]),
+        );
+        expect(JSON.stringify(connection)).not.toMatch(/private|127\.0\.0\.1|503 Service/);
+        connection.handshake.httpResponse.statusCode = 500;
+        expect(proxy.readinessSnapshot().connections[0]?.handshake.httpResponse?.statusCode).toBe(
+          503,
+        );
+      },
+      true,
+      true,
+    );
+  });
+
   it("retains pairing-retry requests and a pending method without private wire data", async () => {
     await withProxy(
       false,
@@ -292,14 +358,16 @@ describe("QA Gateway proxy readiness diagnostics", () => {
         const snapshot = proxy.readinessSnapshot();
         expect(snapshot.truncated).toBe(false);
         expect(snapshot.connections.map(({ connection }) => connection)).toEqual([1, 2]);
-        expect(snapshot.connections[0].requests[0]).toMatchObject({
+        const [firstConnection, secondConnection] = snapshot.connections;
+        assert(firstConnection && secondConnection);
+        expect(firstConnection.requests[0]).toMatchObject({
           ordinal: 1,
           method: "connect",
           response: { outcome: "error", code: "other" },
           upstreamWrite: { outcome: "ok" },
           frontWrite: { outcome: "ok" },
         });
-        expect(snapshot.connections[1].requests).toEqual([
+        expect(secondConnection.requests).toEqual([
           expect.objectContaining({
             ordinal: 1,
             method: "connect",
@@ -316,18 +384,22 @@ describe("QA Gateway proxy readiness diagnostics", () => {
             upstreamWrite: expect.objectContaining({ outcome: "ok" }),
           }),
         ]);
-        expect(snapshot.connections[1].requests[2].response).toBeUndefined();
-        expect(snapshot.connections[1].lifecycle).toContainEqual(
+        expect(secondConnection.requests[2].response).toBeUndefined();
+        expect(secondConnection.lifecycle).toContainEqual(
           expect.objectContaining({ tag: "front-close" }),
         );
         expect(JSON.stringify(snapshot)).not.toMatch(
           /private|127\.0\.0\.1|requestId|profileId|token|payload|https:/,
         );
-        snapshot.connections[0].requests[0].response!.code = "none";
-        snapshot.connections[1].lifecycle[0].elapsedMs = -1;
-        expect(proxy.readinessSnapshot().connections[0].requests[0].response?.code).toBe("other");
+        firstConnection.requests[0].response!.code = "none";
+        secondConnection.lifecycle[0].elapsedMs = -1;
+        secondConnection.handshake.socketAssigned.elapsedMs = -1;
+        expect(proxy.readinessSnapshot().connections[0]?.requests[0].response?.code).toBe("other");
         expect(
-          proxy.readinessSnapshot().connections[1].lifecycle[0].elapsedMs,
+          proxy.readinessSnapshot().connections[1]?.lifecycle[0].elapsedMs,
+        ).toBeGreaterThanOrEqual(0);
+        expect(
+          proxy.readinessSnapshot().connections[1]?.handshake.socketAssigned?.elapsedMs,
         ).toBeGreaterThanOrEqual(0);
       },
       true,
@@ -341,7 +413,8 @@ describe("QA Gateway proxy readiness diagnostics", () => {
         await upgrade;
         front.send(JSON.stringify({ type: "req", id: "private-queued", method: "users.self" }));
         await expect.poll(() => proxy.readinessSnapshot().connections[0]?.requests.length).toBe(1);
-        const request = proxy.readinessSnapshot().connections[0].requests[0];
+        const request = proxy.readinessSnapshot().connections[0]?.requests[0];
+        assert(request);
         expect(request.queued).toBe(true);
         expect(request.upstreamStartedMs).toBeUndefined();
         expect(request.upstreamWrite).toBeUndefined();
@@ -372,9 +445,12 @@ describe("QA Gateway proxy readiness diagnostics", () => {
           expect(connection.truncated).toBe(true);
           expect(connection.requests).toHaveLength(32);
           expect(connection.lifecycle.length).toBeLessThanOrEqual(16);
-          expect(connection.requests.every(({ response }) => response?.outcome === "ok")).toBe(
-            true,
-          );
+          expect(
+            connection.requests.every(
+              ({ response }: { response?: { outcome: "ok" | "error" } }) =>
+                response?.outcome === "ok",
+            ),
+          ).toBe(true);
         }
         expect(Buffer.byteLength(JSON.stringify(snapshot))).toBeLessThan(64 * 1024);
         expect(proxy.snapshot().events).toEqual([]);

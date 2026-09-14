@@ -28,6 +28,7 @@ struct NativeActionRouterTests {
         var profileID = "alice"
         var catalogDiscovery = false
         var rejectMethod: String?
+        var rejectionExecution = "not_started"
         var requestsBeforeRejection = 0
         var widgetRefreshes = 0
         var rosterRequests = 0
@@ -100,11 +101,12 @@ struct NativeActionRouterTests {
                             : "alice"
                         #expect(request["expectedProfileId"] as? String == expected)
                     }
+                    if request["method"] as? String == "chat.send" { self.sent.append(params) }
                     if request["method"] as? String == self.rejectMethod {
                         if self.requestsBeforeRejection == 0 {
                             self.rejectMethod = nil
                             return .failure(code: "INVALID_REQUEST", message: "Selected profile changed", details: [
-                                "reason": "EXPECTED_PROFILE_MISMATCH", "execution": "not_started",
+                                "reason": "EXPECTED_PROFILE_MISMATCH", "execution": self.rejectionExecution,
                             ])
                         }
                         self.requestsBeforeRejection -= 1
@@ -148,7 +150,6 @@ struct NativeActionRouterTests {
                             },
                         ])
                     case "chat.send":
-                        self.sent.append(params)
                         let before = self.beforeSendReply
                         self.beforeSendReply = nil
                         before?()
@@ -484,7 +485,7 @@ struct NativeActionRouterTests {
                 _ = try await prepared.submit()
                 Issue.record("The retired presentation must reject its retained confirmation")
             } catch let error as OpenClawNativeActionError {
-                #expect(error.message == "The selected chat changed. Nothing was sent.")
+                #expect(error.message == "The action route changed. Select the session again.")
             }
             #expect(host.sent.isEmpty)
         }
@@ -586,6 +587,63 @@ struct NativeActionRouterTests {
         }
     }
 
+    @Test func `proven account refusal releases the chat for an explicitly verified reopen`() async throws {
+        try await self.withHost { host in
+            let prepared = try await host.prepare()
+            let chat = try #require(host.chat)
+            let binding = try #require(host.binding)
+            chat.input = "preserved idle text"
+            host.rejectMethod = "chat.send"
+            do {
+                _ = try await prepared.submit()
+                Issue.record("The Gateway must reject this send before execution")
+            } catch let error as OpenClawNativeActionError {
+                #expect(error.message == "chat.send: [INVALID_REQUEST] Selected profile changed")
+            }
+            #expect(host.rejectMethod == nil)
+            #expect(host.sent.count == 1)
+            #expect(await binding.isCurrent() == false)
+            #expect(await binding.gateway.currentRoute() == binding.route)
+            #expect(chat.pendingRunCount == 0)
+            #expect(chat.messages.isEmpty)
+            #expect(chat.input == "preserved idle text")
+            #expect(chat.canPreserveIdleTextDraft)
+            #expect(await host.router.open(.session(host.session())) == .opened)
+            let fresh = try #require(host.binding)
+            #expect(fresh.profileObservationID != binding.profileObservationID)
+            #expect(await fresh.isCurrent())
+            #expect(host.sent.count == 1)
+            let next = try await host.prepare()
+            #expect(try await next.submit().runID == "run-2")
+            #expect(host.sent.count == 2)
+        }
+    }
+
+    @Test func `uncertain retained confirmation never reports a safe resend`() async throws {
+        try await self.withHost { host in
+            let prepared = try await host.prepare()
+            host.rejectMethod = "chat.send"
+            host.rejectionExecution = "may_have_executed"
+            do {
+                _ = try await prepared.submit()
+                Issue.record("Handler entry must preserve delivery uncertainty")
+            } catch let error as OpenClawNativeActionError {
+                #expect(error.message == "The selected account changed. "
+                    + "Delivery is unconfirmed; check the chat before retrying.")
+            }
+            #expect(host.rejectMethod == nil)
+            #expect(host.sent.count == 1)
+            do {
+                _ = try await prepared.submit()
+                Issue.record("A retired confirmation cannot replay or claim non-dispatch")
+            } catch let error as OpenClawNativeActionError {
+                #expect(error.message ==
+                    "Reconnect to the selected account to check this operation. Do not send it again.")
+            }
+            #expect(host.sent.count == 1)
+        }
+    }
+
     @Test func `accepted acknowledgement survives target retirement without a second send`() async throws {
         try await self.withHost { host in
             let prepared = try await host.prepare()
@@ -598,7 +656,13 @@ struct NativeActionRouterTests {
             #expect(run.runID == "run-1")
             #expect(run.session == host.session())
             #expect(host.sent.count == 1)
-            await #expect(throws: Error.self) { _ = try await prepared.submit() }
+            do {
+                _ = try await prepared.submit()
+                Issue.record("A retired confirmation cannot claim that the accepted send never happened")
+            } catch let error as OpenClawNativeActionError {
+                #expect(error.message ==
+                    "Reconnect to the selected account to check this operation. Do not send it again.")
+            }
             #expect(host.sent.count == 1)
         }
     }

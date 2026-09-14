@@ -54,6 +54,7 @@ private actor NativeSubmissionTransport: OpenClawChatTransport {
     let ackSummary: String?
     let validationGateCall: Int
     private var responseError: GatewayResponseError?
+    private let retireOnResponseError: Bool
     private var generation = 0
     private(set) var validationCalls = 0
     private(set) var catalogLoads = 0
@@ -73,7 +74,8 @@ private actor NativeSubmissionTransport: OpenClawChatTransport {
         validationGateCall: Int = 1,
         supportsComposerCapabilities: Bool = false,
         supportsSessionSettingsCAS: Bool = true,
-        responseError: GatewayResponseError? = nil)
+        responseError: GatewayResponseError? = nil,
+        retireOnResponseError: Bool = false)
     {
         self.response = response
         self.ackStatus = ackStatus
@@ -86,6 +88,7 @@ private actor NativeSubmissionTransport: OpenClawChatTransport {
         self.supportsComposerCapabilities = supportsComposerCapabilities
         self.supportsSessionSettingsCAS = supportsSessionSettingsCAS
         self.responseError = responseError
+        self.retireOnResponseError = retireOnResponseError
     }
 
     func invalidate() {
@@ -135,7 +138,10 @@ private actor NativeSubmissionTransport: OpenClawChatTransport {
         self.sent.append(message)
         await self.sendGate?.wait()
         guard self.generation == generation else { throw CancellationError() }
-        if let responseError { throw responseError }
+        if let responseError {
+            if self.retireOnResponseError { self.invalidate() }
+            throw responseError
+        }
         switch self.response {
         case .accepted:
             return OpenClawChatSendResponse(
@@ -278,15 +284,18 @@ private struct ChatExternalSubmissionTests {
         await fixture.close()
     }
 
-    @Test(arguments: ["not_started", "may_have_executed", "unknown", "missing", "malformed"])
-    func `profile mismatch needs explicit non execution evidence and never replays`(execution: String) async throws {
+    @Test(arguments: ["not_started", "may_have_executed", "unknown", "missing", "malformed"], [false, true])
+    func `profile mismatch needs explicit non execution evidence and never replays`(
+        execution: String, retire: Bool) async throws
+    {
         var details = ["reason": AnyCodable("EXPECTED_PROFILE_MISMATCH")]
         if execution != "missing" {
             details["execution"] = execution == "malformed" ? AnyCodable(17) : AnyCodable(execution)
         }
         let error = GatewayResponseError(
             method: "chat.send", code: "INVALID_REQUEST", message: "Account changed", details: details)
-        let fixture = try NativeSubmissionFixture(transport: NativeSubmissionTransport(responseError: error))
+        let fixture = try NativeSubmissionFixture(transport: NativeSubmissionTransport(
+            responseError: error, retireOnResponseError: retire))
         await fixture.prepare()
         fixture.vm.input = "preserved draft"
         let invocation = fixture.request()
@@ -297,10 +306,137 @@ private struct ChatExternalSubmissionTests {
         } else {
             if case .uncertain = outcome {} else { Issue.record("Handler entry cannot prove non-delivery") }
         }
-        #expect(await fixture.vm.submit(invocation, using: route) == outcome)
+        let readback = await fixture.vm.submit(invocation, using: route)
+        if retire {
+            #expect(readback == .uncertain(
+                reason: "Reconnect to the selected account to check this operation. Do not send it again."))
+            #expect(fixture.vm.errorText == nil)
+        } else {
+            #expect(readback == outcome)
+        }
+        let released = !retire || execution == "not_started"
         #expect(await fixture.transport.sent.count == 1)
         #expect(fixture.vm.input == "preserved draft")
-        #expect(fixture.vm.pendingRunCount == 0)
+        #expect(fixture.vm.pendingRunCount == (released ? 0 : 1))
+        #expect(fixture.vm.messages.count == (released ? 0 : 1))
+        #expect(fixture.vm.canPreserveIdleTextDraft == released)
+        await fixture.close()
+    }
+
+    @Test func `proven non dispatch releases only the detached attempt`() async throws {
+        let gate = NativeSubmissionGate()
+        let fixture = try NativeSubmissionFixture(transport: NativeSubmissionTransport(
+            sendGate: gate,
+            responseError: GatewayResponseError(
+                method: "chat.send", code: "INVALID_REQUEST", message: "Account changed",
+                details: ["reason": AnyCodable("EXPECTED_PROFILE_MISMATCH"), "execution": AnyCodable("not_started")]),
+            retireOnResponseError: true))
+        await fixture.prepare()
+        fixture.vm.input = "preserved draft"
+        let snapshot = fixture.vm.currentSessionSnapshot()
+        let invocation = fixture.request()
+        let route = await fixture.transport.route(fixture.target)
+        let task = Task { await fixture.vm.submit(invocation, using: route) }
+        do {
+            try await waitUntil("external send entered") { await gate.entered }
+            #expect(fixture.vm.pendingRunCount == 1)
+            fixture.vm.handleTransportEvent(.routeUnavailable(reason: "Retained account unavailable."))
+            await gate.open()
+            if case .notDispatched = await task.value {} else { Issue.record("Expected proven non-dispatch") }
+            #expect(fixture.vm.currentSessionSnapshot() == snapshot)
+            #expect(fixture.vm.pendingRunCount == 0)
+            #expect(fixture.vm.messages.isEmpty)
+            #expect(fixture.vm.runMessageScopesByRunID[invocation.operationID.uuidString] == nil)
+            #expect(fixture.vm.input == "preserved draft")
+            #expect(fixture.vm.errorText == "Retained account unavailable.")
+            #expect(!fixture.vm.healthOK)
+            #expect(fixture.vm.canPreserveIdleTextDraft)
+            #expect(await fixture.transport.sent.count == 1)
+        } catch {
+            await fixture.close()
+            _ = await task.value
+            throw error
+        }
+        await fixture.close()
+    }
+
+    @Test(arguments: [false, true])
+    func `final route refusal releases the reserved local attempt`(cancel: Bool) async throws {
+        let gate = NativeSubmissionGate()
+        let fixture = try NativeSubmissionFixture(transport: NativeSubmissionTransport(
+            validationGate: gate, validationGateCall: 2))
+        await fixture.prepare()
+        fixture.vm.input = "preserved draft"
+        let route = await fixture.transport.route(fixture.target)
+        let invocation = fixture.request()
+        let task = Task { await fixture.vm.submit(invocation, using: route) }
+        do {
+            try await waitUntil("final route validation entered") { await gate.entered }
+            #expect(fixture.vm.pendingRunCount == 1)
+            await fixture.transport.invalidate()
+            fixture.vm.errorText = "Retained presentation"
+            if cancel { task.cancel() }
+            await gate.open()
+            let outcome = await task.value
+            if cancel {
+                #expect(outcome == .cancelled)
+            } else if case .notDispatched = outcome {} else {
+                Issue.record("Expected known pre-dispatch refusal")
+            }
+            #expect(await fixture.transport.sent.isEmpty)
+            #expect(fixture.vm.pendingRunCount == 0)
+            #expect(fixture.vm.messages.isEmpty)
+            #expect(fixture.vm.input == "preserved draft")
+            #expect(fixture.vm.errorText == "Retained presentation")
+            #expect(fixture.vm.canPreserveIdleTextDraft)
+        } catch {
+            await fixture.close()
+            _ = await task.value
+            throw error
+        }
+        await fixture.close()
+    }
+
+    @Test func `old non dispatch cannot settle a successor session's operation`() async throws {
+        let gate = NativeSubmissionGate()
+        let fixture = try NativeSubmissionFixture(transport: NativeSubmissionTransport(
+            sendGate: gate,
+            responseError: GatewayResponseError(
+                method: "chat.send", code: "INVALID_REQUEST", message: "Account changed",
+                details: ["reason": AnyCodable("EXPECTED_PROFILE_MISMATCH"), "execution": AnyCodable("not_started")]),
+            retireOnResponseError: true))
+        await fixture.prepare()
+        let original = fixture.vm.currentSessionSnapshot()
+        let route = await fixture.transport.route(fixture.target)
+        let task = Task { await fixture.vm.submit(fixture.request(), using: route) }
+        do {
+            try await waitUntil("external send entered") { await gate.entered }
+            fixture.vm.switchSession(to: "agent:agent-a:other", agentID: fixture.target.agentID)
+            fixture.vm.switchSession(to: fixture.target.sessionKey, agentID: fixture.target.agentID)
+            fixture.vm.detachTransport()
+            #expect(fixture.vm.currentSessionSnapshot() != original)
+            let successor = OpenClawChatMessage(
+                role: "user", content: [], timestamp: 1, idempotencyKey: "successor:user")
+            fixture.vm.replaceMessages([successor])
+            fixture.vm.pendingRuns = ["successor"]
+            fixture.vm.pendingLocalUserEchoMessageIDsByRunID["successor"] = successor.id
+            fixture.vm.runMessageScopesByRunID["successor"] = fixture.vm.currentRunMessageScope()
+            fixture.vm.input = "successor draft"
+            fixture.vm.errorText = "successor status"
+            await gate.open()
+            if case .notDispatched = await task.value {} else { Issue.record("Expected proven non-dispatch") }
+            #expect(fixture.vm.messages == [successor])
+            #expect(fixture.vm.pendingRuns == ["successor"])
+            #expect(fixture.vm.pendingLocalUserEchoMessageIDsByRunID == ["successor": successor.id])
+            #expect(fixture.vm.runMessageScopesByRunID["successor"] != nil)
+            #expect(fixture.vm.input == "successor draft")
+            #expect(fixture.vm.errorText == "successor status")
+            #expect(await fixture.transport.sent.count == 1)
+        } catch {
+            await fixture.close()
+            _ = await task.value
+            throw error
+        }
         await fixture.close()
     }
 
@@ -548,7 +684,7 @@ private struct ChatExternalSubmissionTests {
         let messages = scenario == "committed"
             ? #"[{"role":"user","content":[{"type":"text","text":"external text"}],"idempotencyKey":"admitted-run:user"}]"#
             : "[]"
-        await fixture.transport.setHistoryPayload(try JSONDecoder().decode(
+        try await fixture.transport.setHistoryPayload(JSONDecoder().decode(
             OpenClawChatHistoryPayload.self,
             from: Data(#"{"sessionKey":"\#(fixture.target.sessionKey)","messages":\#(messages)}"#.utf8)))
         let invocation = fixture.request()
@@ -584,7 +720,7 @@ private struct ChatExternalSubmissionTests {
             validationGateCall: 4)
         let fixture = try NativeSubmissionFixture(transport: transport)
         await fixture.prepare()
-        await transport.setHistoryPayload(try JSONDecoder().decode(
+        try await transport.setHistoryPayload(JSONDecoder().decode(
             OpenClawChatHistoryPayload.self,
             from: Data("""
             {"sessionKey":"\(fixture.target.sessionKey)","messages":[
