@@ -150,6 +150,13 @@ describe("OpenClaw shell dock suppression", () => {
     ).toBe("research");
     expect(
       (
+        container.querySelector("openclaw-browser-panel") as HTMLElement & {
+          agentId: string | null;
+        }
+      ).agentId,
+    ).toBe("research");
+    expect(
+      (
         container.querySelector("openclaw-terminal-panel") as HTMLElement & {
           suppressed: boolean;
         }

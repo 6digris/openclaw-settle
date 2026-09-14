@@ -163,6 +163,7 @@ export function sidebarPanelDefinitions(
         .presented=${params?.browserPresented ?? false}
         .tabsInHeader=${params?.browserTabsInHeader ?? false}
         .refreshOnPresentation=${params?.browserRefreshOnPresentation ?? true}
+        .agentId=${params?.agentId ?? null}
         .sessionKey=${state.sessionKey}
         .preferredTab=${params?.preferredBrowserTab}
         .resourceBasePath=${state.resourceBasePath}

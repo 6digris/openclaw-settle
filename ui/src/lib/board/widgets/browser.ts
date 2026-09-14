@@ -17,6 +17,7 @@ import { registerBrowserEnglish } from "../../../i18n/locales/en-browser.ts";
 import { OpenClawLightDomElement } from "../../../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../../../lit/subscriptions-controller.ts";
 import { formatUiError } from "../../format-error.ts";
+import { normalizeAgentId, resolveUiConversationIdentity } from "../../sessions/session-key.ts";
 import type { BoardWidget } from "../types.ts";
 import "./browser.css";
 
@@ -152,6 +153,10 @@ class OpenClawBrowserDashboardWidget extends OpenClawLightDomElement {
     if (!gateway || !this.available) {
       return html`<p class="board-browser__notice">${t("browser.dashboardUnavailable")}</p>`;
     }
+    const explicitAgentId = this.session.agentId?.trim();
+    const agentId = explicitAgentId
+      ? normalizeAgentId(explicitAgentId)
+      : (resolveUiConversationIdentity({}, this.session.sessionKey).agentId ?? "");
     return html`<div class="board-browser" data-chat-autotype-exempt>
       <div class="board-browser__content">
         ${
@@ -162,6 +167,7 @@ class OpenClawBrowserDashboardWidget extends OpenClawLightDomElement {
                 .available=${this.available}
                 .remoteAvailable=${this.available}
                 .presented=${this.active}
+                .agentId=${agentId}
                 .sessionKey=${dashboard.sessionKey}
                 .fixedTab=${dashboard.browserTab}
                 .dashboardTarget=${{ ...this.session, name: dashboard.name, instanceId: dashboard.instanceId }}

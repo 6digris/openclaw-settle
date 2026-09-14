@@ -6,13 +6,17 @@
 // prompt + attachment) and inspect (element details at the pointer). Works in
 // any regular browser — no native webview required — and equally inside the
 // macOS app's dashboard.
+import { consume } from "@lit/context";
 import { nothing } from "lit";
 import { property } from "lit/decorators.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
+import { applicationContext, type ApplicationContext } from "../../app/context.ts";
 import { hasNativeBrowserBridge } from "../../app/native-browser-bridge.ts";
 import { t } from "../../i18n/index.ts";
+import { normalizeAgentLabel } from "../../lib/agents/display.ts";
 import { OpenClawLitElement } from "../../lit/openclaw-element.ts";
 import { scrollbarShadowStyles } from "../../lit/scrollbar-styles.ts";
+import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
 import { DockLayoutController } from "../dock-layout-controller.ts";
 import { browserPanelLayout } from "../dock-panel-layout.ts";
 import { dockPanelStyles } from "../dock-panel-styles.ts";
@@ -46,6 +50,10 @@ class OpenClawBrowserPanel
   extends OpenClawLitElement
   implements BrowserPanelControllerHost, PanelHostedTabsElement
 {
+  @consume({ context: applicationContext, subscribe: true })
+  @property({ attribute: false })
+  private context: Pick<ApplicationContext, "agents" | "agentIdentity"> | undefined;
+
   /** Gateway client used for browser.request RPCs; null until connected. */
   @property({ attribute: false }) client: GatewayBrowserClient | null = null;
   /** Whether the connected gateway advertises browser.request to this operator. */
@@ -66,6 +74,8 @@ class OpenClawBrowserPanel
   @property({ type: Boolean }) presented = false;
   /** Whether presentation owns initial work instead of a pending explicit toggle. */
   @property({ type: Boolean }) refreshOnPresentation = true;
+  /** Agent that shares this browser surface with the user. */
+  @property({ attribute: false }) agentId: string | null = null;
 
   @property({ attribute: false }) sessionKey = "";
   @property({ attribute: false }) preferredTab?: BrowserTabSelection;
@@ -93,6 +103,19 @@ class OpenClawBrowserPanel
     browserPanelStyles,
     scrollbarShadowStyles,
   ];
+
+  constructor() {
+    super();
+    void new SubscriptionsController(this)
+      .watch(
+        () => this.context?.agents,
+        (agents, notify) => agents.subscribe(notify),
+      )
+      .watch(
+        () => this.context?.agentIdentity,
+        (identity, notify) => identity.subscribe(notify),
+      );
+  }
 
   override connectedCallback(): void {
     super.connectedCallback();
@@ -362,6 +385,17 @@ class OpenClawBrowserPanel
     this.dockLayout.setDock(dock);
   }
 
+  private agentName(): string {
+    const agentId = this.agentId?.trim();
+    if (!agentId) {
+      return "";
+    }
+    const agent = this.context?.agents?.state.agentsList?.agents.find(
+      (entry) => entry.id === agentId,
+    );
+    return normalizeAgentLabel(agent ?? { id: agentId }, this.context?.agentIdentity?.get(agentId));
+  }
+
   override render() {
     if (!this.available || (!this.embedded && !this.dockLayout.open)) {
       return nothing;
@@ -376,6 +410,7 @@ class OpenClawBrowserPanel
       this.dockLayout.renderResizer("bp", t("browser.resize")),
       this.embedded,
       this.tabsInHeader,
+      this.agentName(),
     );
   }
 }

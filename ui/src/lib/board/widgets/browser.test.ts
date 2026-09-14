@@ -45,7 +45,11 @@ function response(instanceId: string, paused = false) {
         }),
   };
 }
-function mount(handle: Parameters<typeof createBrowserClient>[0], active = true) {
+function mount(
+  handle: Parameters<typeof createBrowserClient>[0],
+  active = true,
+  session: { sessionKey: string; agentId?: string } = { sessionKey },
+) {
   const requests: BrowserRequestEnvelope[] = [];
   const { client, request } = createBrowserClient(async (envelope) => {
     requests.push(envelope);
@@ -67,7 +71,7 @@ function mount(handle: Parameters<typeof createBrowserClient>[0], active = true)
     gateway,
   } as unknown as ApplicationContext);
   const element = document.createElement("openclaw-browser-dashboard-widget");
-  element.session = { sessionKey };
+  element.session = session;
   element.widget = widget("first");
   element.active = active;
   provider.append(element);
@@ -77,6 +81,21 @@ function mount(handle: Parameters<typeof createBrowserClient>[0], active = true)
 afterEach(() => document.body.replaceChildren());
 
 describe("Browser dashboard presentation", () => {
+  it("keeps an explicit dashboard agent for an opaque session key", async () => {
+    const opaqueSessionKey = "dashboard-test";
+    const { element } = mount(
+      async (envelope) =>
+        envelope.path === "/dashboard"
+          ? { ...response("first"), sessionKey: opaqueSessionKey }
+          : { running: false, tabs: [] },
+      true,
+      { sessionKey: opaqueSessionKey, agentId: "writer" },
+    );
+    await vi.waitFor(() =>
+      expect(element.querySelector("openclaw-browser-panel")?.agentId).toBe("writer"),
+    );
+  });
+
   it.each(["user", "agent"] as const)(
     "keeps an unfinished %s Stop visible until closure is confirmed",
     async (initiator) => {

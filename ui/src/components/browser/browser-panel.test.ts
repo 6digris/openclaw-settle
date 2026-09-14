@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
+import { createContext, createGateway, createSessions } from "../../test-helpers/app-sidebar.ts";
+import { createApplicationContextProvider } from "../../test-helpers/application-context.ts";
+import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
 import { createStorageMock } from "../../test-helpers/storage.ts";
 import { waitForFast } from "../../test-helpers/wait-for.ts";
 import "./browser-panel.ts";
@@ -130,22 +133,65 @@ describe("normalizeBrowserUrlDraft", () => {
     expect(panel.renderRoot.querySelector(".bp")).not.toBeNull();
   });
 
-  it("uses the shared surface empty state when the embedded browser has no tabs", async () => {
+  it("uses the selected agent name in the shared surface empty state", async () => {
+    const context = createContext(
+      createGateway(createTestGatewayClient(vi.fn(async () => ({})))),
+      createSessions("main", []),
+      {
+        defaultId: "main",
+        mainKey: "main",
+        scope: "per-sender",
+        agents: [
+          { id: "main", name: "Clawd" },
+          { id: "sardine", name: "Sardine" },
+        ],
+      },
+    );
+    const agentListeners = new Set<Parameters<typeof context.agents.subscribe>[0]>();
+    context.agents.subscribe = (listener) => {
+      agentListeners.add(listener);
+      return () => agentListeners.delete(listener);
+    };
+    const provider = createApplicationContextProvider(context);
     const panel = document.createElement("openclaw-browser-panel") as unknown as HTMLElement & {
       available: boolean;
+      agentId: string | null;
       embedded: boolean;
       renderRoot: ShadowRoot;
       updateComplete: Promise<unknown>;
     };
     panel.available = true;
+    panel.agentId = "main";
     panel.embedded = true;
-    document.body.append(panel);
+    provider.append(panel);
+    document.body.append(provider);
     await panel.updateComplete;
 
-    const empty = panel.renderRoot.querySelector("openclaw-panel-empty-state");
-    await empty?.updateComplete;
-    expect(empty?.shadowRoot?.querySelector(".empty-state__title")?.textContent).toBe("Browser");
-    expect(empty?.querySelector("svg")).not.toBeNull();
+    const description = async () => {
+      const empty = panel.renderRoot.querySelector("openclaw-panel-empty-state");
+      await empty?.updateComplete;
+      return empty?.shadowRoot?.querySelector(".empty-state__description")?.textContent;
+    };
+    expect(await description()).toBe("A shared browser for you and Clawd.");
+
+    panel.agentId = "sardine";
+    await panel.updateComplete;
+    expect(await description()).toBe("A shared browser for you and Sardine.");
+
+    const sardine = context.agents.state.agentsList!.agents.find((agent) => agent.id === "sardine");
+    if (!sardine) {
+      throw new Error("expected Sardine agent fixture");
+    }
+    sardine.name = "Scout";
+    for (const listener of agentListeners) {
+      listener(context.agents.state);
+    }
+    await panel.updateComplete;
+    expect(await description()).toBe("A shared browser for you and Scout.");
+
+    panel.agentId = null;
+    await panel.updateComplete;
+    expect(await description()).toBe("A shared browser for you and the agent.");
   });
 
   it("overlays a retained browser view only while its refresh is pending", async () => {
