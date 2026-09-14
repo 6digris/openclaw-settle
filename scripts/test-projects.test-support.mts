@@ -63,6 +63,7 @@ import {
   isControlUiSourcePath,
   isPluginControlUiPath,
   isUiBrowserTestFile,
+  uiTimingTestFiles,
 } from "../test/vitest/vitest.ui-paths.mjs";
 import {
   getUnitFastIsolatedTestFiles,
@@ -540,6 +541,7 @@ const VITEST_CONFIG_BY_KIND: Record<string, string> = {
   ui: UI_VITEST_CONFIG,
   uiIsolated: UI_ISOLATED_VITEST_CONFIG,
   uiBrowser: UI_BROWSER_VITEST_CONFIG,
+  uiTiming: "test/vitest/vitest.ui-timing.config.ts",
   uiE2e: UI_E2E_VITEST_CONFIG,
   unitSrc: UNIT_SRC_VITEST_CONFIG,
   unitSecurity: UNIT_SECURITY_VITEST_CONFIG,
@@ -3594,6 +3596,9 @@ function classifyTarget(arg: string, cwd: string, beforeDatabaseWorkerOwnership 
   if (isUiIsolatedTestFile(relative)) {
     return "uiIsolated";
   }
+  if (uiTimingTestFiles.includes(relative)) {
+    return "uiTiming";
+  }
   if (isUiBrowserTestFile(relative)) {
     return "uiBrowser";
   }
@@ -4075,6 +4080,16 @@ export function buildVitestRunPlans(
     groupedTargets.set("toolingIsolated", current);
   }
   const uiTargets = groupedTargets.get("ui") ?? [];
+  const impliedUiTimingTargets = uiTimingTestFiles.filter((file) =>
+    uiTargets.some((targetArg) =>
+      includePatternMatchesAnyFile(toScopedIncludePattern(targetArg, cwd), [file]),
+    ),
+  );
+  if (impliedUiTimingTargets.length > 0) {
+    groupedTargets.set("uiTiming", [
+      ...new Set([...(groupedTargets.get("uiTiming") ?? []), ...impliedUiTimingTargets]),
+    ]);
+  }
   const broadUiTargets = uiTargets.filter(
     (targetArg) => !isTestFileTarget(toRepoRelativeTarget(targetArg, cwd)),
   );
