@@ -1264,7 +1264,8 @@ extension IOSGatewayChatTransportTests {
         try await self.withWidgetTransport { transport, fixture, recorder in
             let original = try #require(transport.nativeBinding)
             let sibling = try await IOSNativeActionBinding.capture(
-                session: original.session, gateway: original.gateway, route: original.route, reusing: original)
+                session: original.session, gateway: original.gateway, route: original.route,
+                reservation: original.reserveRetirement())
             #expect(original.profileObservationID == sibling.profileObservationID)
             await fixture.setProfile("bob")
             await fixture.holdNextRefresh()
@@ -1325,7 +1326,8 @@ extension IOSGatewayChatTransportTests {
             let path = "/__openclaw__/canvas/documents/test/index.html"
             let original = try #require(transport.nativeBinding)
             let sibling = try await IOSNativeActionBinding.capture(
-                session: original.session, gateway: original.gateway, route: original.route, reusing: original)
+                session: original.session, gateway: original.gateway, route: original.route,
+                reservation: original.reserveRetirement())
             await fixture.setProfile("bob")
             await fixture.holdNextRefresh()
             let old = Task { await transport.resolveInlineWidgetResource(path: path, replacing: nil) }
@@ -1338,7 +1340,8 @@ extension IOSGatewayChatTransportTests {
                     type: "event", event: "presence", payload: nil, recipientprofileid: "bob")) == false)
                 await fixture.setProfile("alice")
                 let fresh = try await IOSNativeActionBinding.capture(
-                    session: original.session, gateway: original.gateway, route: original.route, reusing: sibling)
+                    session: original.session, gateway: original.gateway, route: original.route,
+                    reservation: sibling.reserveRetirement())
                 #expect(fresh.profileObservationID != original.profileObservationID)
                 let freshTransport = IOSGatewayChatTransport(gateway: fresh.gateway, nativeBinding: fresh)
                 let current = Task { await freshTransport.resolveInlineWidgetResource(path: path, replacing: nil) }
@@ -1381,7 +1384,8 @@ extension IOSGatewayChatTransportTests {
         { transport, recorder in
             let original = try #require(transport.nativeBinding)
             let sibling = try await IOSNativeActionBinding.capture(
-                session: original.session, gateway: original.gateway, route: original.route, reusing: original)
+                session: original.session, gateway: original.gateway, route: original.route,
+                reservation: original.reserveRetirement())
             original.observe(.rejected(expectedProfileID: "another-profile"))
             #expect(await original.isCurrent())
             let entered = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
@@ -1421,7 +1425,8 @@ extension IOSGatewayChatTransportTests {
                 #expect(await original.accepts(EventFrame(
                     type: "event", event: "presence", payload: nil, recipientprofileid: "bob")) == false)
                 let fresh = try await IOSNativeActionBinding.capture(
-                    session: original.session, gateway: original.gateway, route: original.route, reusing: sibling)
+                    session: original.session, gateway: original.gateway, route: original.route,
+                    reservation: sibling.reserveRetirement())
                 #expect(await fresh.isCurrent())
                 #expect(!original.canReuse(fresh))
                 release.continuation.yield(())
@@ -1487,7 +1492,8 @@ extension IOSGatewayChatTransportTests {
             #expect(await scoped.resolveInlineWidgetResource(path: path, replacing: nil)?.url == initial.url)
             #expect(await recorder.all().map(\.method) == ["plugin.surface.refresh"])
             let reused = try await IOSNativeActionBinding.capture(
-                session: binding.session, gateway: binding.gateway, route: binding.route, reusing: binding)
+                session: binding.session, gateway: binding.gateway, route: binding.route,
+                reservation: binding.reserveRetirement())
             #expect(reused !== binding && binding.canReuse(reused))
             #expect(reused.sessionRoutingContract == "per-sender|main|system")
             #expect(reused.mediaConnection?.nativeBinding === reused)
@@ -1520,7 +1526,8 @@ extension IOSGatewayChatTransportTests {
             #expect(await binding.accepts(EventFrame(
                 type: "event", event: "presence", payload: nil, recipientprofileid: "alice")) == false)
             let fresh = try await IOSNativeActionBinding.capture(
-                session: binding.session, gateway: binding.gateway, route: binding.route, reusing: reused)
+                session: binding.session, gateway: binding.gateway, route: binding.route,
+                reservation: reused.reserveRetirement())
             #expect(fresh !== binding)
             #expect(await fresh.isCurrent())
             #expect(!binding.canReuse(fresh))
@@ -1565,26 +1572,74 @@ extension IOSGatewayChatTransportTests {
         }
     }
 
-    @Test func `retirement during reused capture verification cannot mint a fresh owner`() async throws {
+    @Test(arguments: [("reviewer", "global"), ("reviewer", "Matrix:Channel:Room"), ("research", "global")])
+    func `retirement during reused capture verification cannot mint a fresh owner`(
+        agentID: String, sessionKey: String) async throws
+    {
         let retirement = ResponseRetirement()
         try await self.withSessionTransport(
             gatewayID: "gateway-a", capabilities: ["profile-binding-v1"], nativeProfileID: "alice",
+            nativeSessionKey: "global",
             beforeResponse: { await retirement.beforeResponse($0) })
         { transport, recorder in
             let original = try #require(transport.nativeBinding)
+            let target = OpenClawNativeSessionRef(
+                owner: original.session.owner,
+                agentID: agentID,
+                sessionKey: sessionKey)
             await retirement.arm(original, method: "agents.list")
             await #expect(throws: CancellationError.self) {
                 _ = try await IOSNativeActionBinding.capture(
-                    session: original.session, gateway: original.gateway, route: original.route, reusing: original)
+                    session: target, gateway: original.gateway, route: original.route,
+                    reservation: original.reserveRetirement())
             }
             #expect(await original.isCurrent() == false)
             let fresh = try await IOSNativeActionBinding.capture(
-                session: original.session, gateway: original.gateway, route: original.route, reusing: original)
+                session: target, gateway: original.gateway, route: original.route,
+                reservation: original.reserveRetirement())
+            #expect(fresh.session == target)
             #expect(await fresh.isCurrent())
             #expect(!original.canReuse(fresh))
             #expect(fresh.sessionRoutingContract == "per-sender|main|system")
             #expect(fresh.mediaConnection?.nativeBinding === fresh)
             #expect(await recorder.all().map(\.method) == ["agents.list", "agents.list"])
+        }
+    }
+
+    @Test(arguments: [("alice", "bob"), ("profile-e\u{301}", "profile-\u{E9}")])
+    func `different accounts and replacement sockets keep independent retirement`(
+        originalProfile: String, nextProfile: String) async throws
+    {
+        try await self.withWidgetTransport(profileID: originalProfile) { transport, fixture, recorder in
+            let original = try #require(transport.nativeBinding)
+            await fixture.setProfile(nextProfile)
+            let target = OpenClawNativeSessionRef(
+                owner: .init(gatewayID: original.session.owner.gatewayID, profileID: nextProfile),
+                agentID: original.session.agentID, sessionKey: original.session.sessionKey)
+            let next = try await IOSNativeActionBinding.capture(
+                session: target, gateway: original.gateway, route: original.route,
+                reservation: original.reserveRetirement())
+            #expect(await original.isCurrent())
+            #expect(await next.isCurrent())
+            #expect(original.profileObservationID != next.profileObservationID)
+            #expect(!original.canReuse(next))
+            original.observe(.rejected(expectedProfileID: originalProfile))
+            #expect(await original.isCurrent() == false)
+            #expect(await next.isCurrent())
+
+            await transport.gateway.disconnect()
+            let replacement = try await self.connectWidgetTransport(
+                gateway: transport.gateway, fixture: fixture, recorder: recorder, profileID: nextProfile)
+            let replacementBinding = try #require(replacement.nativeBinding)
+            let fresh = try await IOSNativeActionBinding.capture(
+                session: target, gateway: next.gateway, route: replacementBinding.route,
+                reservation: next.reserveRetirement())
+            #expect(fresh.route != next.route)
+            #expect(fresh.profileObservationID != next.profileObservationID)
+            #expect(!next.canReuse(fresh))
+            next.observe(.rejected(expectedProfileID: nextProfile))
+            #expect(await next.isCurrent() == false)
+            #expect(await fresh.isCurrent())
         }
     }
 
@@ -1684,7 +1739,8 @@ extension IOSGatewayChatTransportTests {
         { transport, recorder in
             let binding = try #require(transport.nativeBinding)
             let reused = try await IOSNativeActionBinding.capture(
-                session: binding.session, gateway: binding.gateway, route: binding.route, reusing: binding)
+                session: binding.session, gateway: binding.gateway, route: binding.route,
+                reservation: binding.reserveRetirement())
             let connection = try #require(reused.mediaConnection)
             let loader = IOSMediaArtifactLoader(connectionProvider: { connection }, requestFactory: { captured, _ in
                 #expect(captured.nativeBinding === reused)

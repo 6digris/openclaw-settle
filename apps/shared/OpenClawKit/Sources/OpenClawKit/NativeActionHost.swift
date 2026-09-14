@@ -84,13 +84,16 @@ public struct OpenClawNativeRunInspection: Equatable, Sendable {
 @MainActor
 public struct OpenClawNativePreparedSend {
     public let session: OpenClawNativeSessionRef
+    public let message: String
     public let submit: @MainActor () async throws -> OpenClawNativeRunRef
 
     public init(
         session: OpenClawNativeSessionRef,
+        message: String,
         submit: @escaping @MainActor () async throws -> OpenClawNativeRunRef)
     {
         self.session = session
+        self.message = message
         self.submit = submit
     }
 }

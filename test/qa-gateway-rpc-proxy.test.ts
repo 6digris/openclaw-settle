@@ -22,7 +22,9 @@ async function withProxy(
     front: WebSocket;
     upstream: Promise<WebSocket>;
     upgrade: Promise<Duplex>;
+    reconnect: () => Promise<{ front: WebSocket; upstream: Promise<WebSocket> }>;
   }) => Promise<void>,
+  captureReadiness = false,
 ) {
   const server = createServer();
   const sockets = new Set<Duplex>();
@@ -30,6 +32,7 @@ async function withProxy(
   const backend = new WebSocketServer({ noServer: true });
   const upgrade = createDeferred<Duplex>();
   const upstream = createDeferred<WebSocket>();
+  let nextUpstream = upstream;
   server.on("connection", (socket) => {
     sockets.add(socket);
     socket.once("close", () => sockets.delete(socket));
@@ -43,7 +46,7 @@ async function withProxy(
       backend.handleUpgrade(request, socket, head, (ws) => {
         peers.add(ws);
         ws.once("close", () => peers.delete(ws));
-        upstream.resolve(ws);
+        nextUpstream.resolve(ws);
       });
     }
   });
@@ -58,10 +61,24 @@ async function withProxy(
         backendPort: (server.address() as AddressInfo).port,
         repoRoot: fileURLToPath(new URL("../", import.meta.url)),
         upstreamHeaders: { "x-qa-private": "private-header-marker" },
+        captureReadiness,
       });
       front = new WebSocket(proxy.url);
       await acquireGatewayTestWebSocket(front, 5000);
-      await body({ proxy, front, upstream: upstream.promise, upgrade: upgrade.promise });
+      const proxyURL = proxy.url;
+      await body({
+        proxy,
+        front,
+        upstream: upstream.promise,
+        upgrade: upgrade.promise,
+        reconnect: async () => {
+          if (front) await closeGatewayTestWebSocket(front);
+          nextUpstream = createDeferred<WebSocket>();
+          front = new WebSocket(proxyURL);
+          await acquireGatewayTestWebSocket(front, 5000);
+          return { front, upstream: nextUpstream.promise };
+        },
+      });
     },
     async () => {
       if (front) {
@@ -131,6 +148,7 @@ describe("QA Gateway proxy first-connection diagnostics", () => {
         "upstream-open",
       ]);
       expect(JSON.stringify(trace)).not.toContain("private-");
+      expect(proxy.readinessSnapshot()).toEqual({ truncated: false, connections: [] });
     });
   });
 
@@ -210,5 +228,159 @@ describe("QA Gateway proxy first-connection diagnostics", () => {
       const evidence = JSON.stringify(trace);
       expect(evidence).not.toMatch(/private-|127\.0\.0\.1|socket hang up|Error:/);
     });
+  });
+});
+
+describe("QA Gateway proxy readiness diagnostics", () => {
+  async function exchange(
+    front: WebSocket,
+    back: WebSocket,
+    ordinal: number,
+    method: string,
+    ok: boolean,
+  ) {
+    const id = `private-request-${ordinal}`;
+    const request = Buffer.from(
+      JSON.stringify({
+        type: "req",
+        id,
+        method,
+        expectedProfileId: "private-profile",
+        params: { token: "private-token" },
+      }),
+    );
+    const received = once(back, "message");
+    front.send(request);
+    expect((await received)[0]).toEqual(request);
+    const response = Buffer.from(
+      JSON.stringify({
+        type: "res",
+        id,
+        ok,
+        payload: { token: "private-response" },
+        error: {
+          code: "private-code",
+          message: "private-message",
+          details: { url: "https://private.example" },
+        },
+      }),
+    );
+    const returned = once(front, "message");
+    back.send(response);
+    expect((await returned)[0]).toEqual(response);
+  }
+
+  it("retains pairing-retry requests and a pending method without private wire data", async () => {
+    await withProxy(
+      false,
+      async ({ proxy, front, upstream, reconnect }) => {
+        await exchange(front, await upstream, 1, "connect", false);
+        const second = await reconnect();
+        const back = await second.upstream;
+        await exchange(second.front, back, 2, "connect", true);
+        await exchange(second.front, back, 3, "users.self", true);
+        const received = once(back, "message");
+        second.front.send(
+          JSON.stringify({ type: "req", id: "private-pending", method: "chat.history" }),
+        );
+        await received;
+        await expect
+          .poll(() => proxy.readinessSnapshot().connections[1]?.requests[1]?.frontWrite?.outcome)
+          .toBe("ok");
+        await closeGatewayTestWebSocket(second.front);
+        await proxy.stop();
+        const snapshot = proxy.readinessSnapshot();
+        expect(snapshot.truncated).toBe(false);
+        expect(snapshot.connections.map(({ connection }) => connection)).toEqual([1, 2]);
+        expect(snapshot.connections[0].requests[0]).toMatchObject({
+          ordinal: 1,
+          method: "connect",
+          response: { outcome: "error", code: "other" },
+          upstreamWrite: { outcome: "ok" },
+          frontWrite: { outcome: "ok" },
+        });
+        expect(snapshot.connections[1].requests).toEqual([
+          expect.objectContaining({
+            ordinal: 1,
+            method: "connect",
+            response: expect.objectContaining({ outcome: "ok", code: "none" }),
+          }),
+          expect.objectContaining({
+            ordinal: 2,
+            method: "users.self",
+            response: expect.objectContaining({ outcome: "ok", code: "none" }),
+          }),
+          expect.objectContaining({
+            ordinal: 3,
+            method: "chat.history",
+            upstreamWrite: expect.objectContaining({ outcome: "ok" }),
+          }),
+        ]);
+        expect(snapshot.connections[1].requests[2].response).toBeUndefined();
+        expect(snapshot.connections[1].lifecycle).toContainEqual(
+          expect.objectContaining({ tag: "front-close" }),
+        );
+        expect(JSON.stringify(snapshot)).not.toMatch(
+          /private|127\.0\.0\.1|requestId|profileId|token|payload|https:/,
+        );
+        snapshot.connections[0].requests[0].response!.code = "none";
+        snapshot.connections[1].lifecycle[0].elapsedMs = -1;
+        expect(proxy.readinessSnapshot().connections[0].requests[0].response?.code).toBe("other");
+        expect(
+          proxy.readinessSnapshot().connections[1].lifecycle[0].elapsedMs,
+        ).toBeGreaterThanOrEqual(0);
+      },
+      true,
+    );
+  });
+
+  it("distinguishes queued requests from an upstream write attempt", async () => {
+    await withProxy(
+      true,
+      async ({ proxy, front, upgrade }) => {
+        await upgrade;
+        front.send(JSON.stringify({ type: "req", id: "private-queued", method: "users.self" }));
+        await expect.poll(() => proxy.readinessSnapshot().connections[0]?.requests.length).toBe(1);
+        const request = proxy.readinessSnapshot().connections[0].requests[0];
+        expect(request.queued).toBe(true);
+        expect(request.upstreamStartedMs).toBeUndefined();
+        expect(request.upstreamWrite).toBeUndefined();
+        expect(request.response).toBeUndefined();
+      },
+      true,
+    );
+  });
+
+  it("caps connections and requests without dropping forwarded bytes or clearing saturation", async () => {
+    await withProxy(
+      false,
+      async ({ proxy, front, upstream, reconnect }) => {
+        let pair = { front, upstream };
+        for (let connection = 1; connection <= 5; connection++) {
+          const back = await pair.upstream;
+          for (let request = 1; request <= 34; request++) {
+            await exchange(pair.front, back, request, "health", true);
+          }
+          if (connection < 5) pair = await reconnect();
+        }
+        await closeGatewayTestWebSocket(pair.front);
+        await proxy.stop();
+        const snapshot = proxy.readinessSnapshot();
+        expect(snapshot.truncated).toBe(true);
+        expect(snapshot.connections).toHaveLength(4);
+        for (const connection of snapshot.connections) {
+          expect(connection.truncated).toBe(true);
+          expect(connection.requests).toHaveLength(32);
+          expect(connection.lifecycle.length).toBeLessThanOrEqual(16);
+          expect(connection.requests.every(({ response }) => response?.outcome === "ok")).toBe(
+            true,
+          );
+        }
+        expect(Buffer.byteLength(JSON.stringify(snapshot))).toBeLessThan(64 * 1024);
+        expect(proxy.snapshot().events).toEqual([]);
+        expect(proxy.readinessSnapshot().truncated).toBe(true);
+      },
+      true,
+    );
   });
 });

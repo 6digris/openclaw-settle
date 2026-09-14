@@ -1,10 +1,10 @@
 import CryptoKit
 import Foundation
 import OpenClawChatUI
-import OpenClawKit
 import OpenClawProtocol
 import Testing
 @testable import OpenClaw
+@testable import OpenClawKit
 
 /// The harness requires every case's completion, so an absent or mis-selected suite cannot pass CI.
 @Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["OPENCLAW_NATIVE_ACTION_FIXTURE"] != nil))
@@ -279,7 +279,7 @@ struct NativeActionGatewayWireTests {
             }
             try await fixture.verify("foreign")
 
-            try await Self.rejectAcrossSuspension(
+            _ = try await Self.rejectAcrossSuspension(
                 presentation, first: "aclSuspended", second: "acl", mutation: "revoke-acl")
             let aclControl = try await presentation.prepare("controlACL").submit()
             try await fixture.verify("controlACL", runID: aclControl.runID)
@@ -292,7 +292,7 @@ struct NativeActionGatewayWireTests {
             _ = try await signIn.prepare("controlACL")
             let aliceSignIn = try await Self.beginSignIn(signIn, authChoice: authChoice)
             _ = try await fixture.control("signin-checkpoint", fields: ["checkpoint": "admitted"])
-            try await Self.rejectAcrossSuspension(
+            let profileCapture = try await Self.rejectAcrossSuspension(
                 presentation, first: "profileSuspended", second: "profile", mutation: "merge-profile")
             try await Self.verifySignInRetirement(signIn, admitted: aliceSignIn)
             _ = try await Self.verifyWidget(
@@ -300,10 +300,14 @@ struct NativeActionGatewayWireTests {
                 id: "profile",
                 transport: widget.transport,
                 replacing: widget.resource,
-                allowed: false)
+                allowed: false,
+                alsoRejecting: profileCapture.transport)
             let profileControl = try await presentation.prepare(
                 "controlProfile", profileID: fixture.bobProfileID).submit()
             try await fixture.verify("controlProfile", runID: profileControl.runID)
+            let freshBinding = try #require(presentation.binding)
+            try await Self.requireProfileRejection(profileCapture.prepared)
+            try #require(await freshBinding.isCurrent())
             try await Self.verifyMedia(presentation, id: "controlProfile", session: "controlProfile", allowed: true)
             _ = try await Self.verifyWidget(
                 presentation,
@@ -459,7 +463,8 @@ struct NativeActionGatewayWireTests {
         transport: IOSGatewayChatTransport,
         replacing failed: OpenClawChatWidgetResource? = nil,
         allowed: Bool,
-        recover: Bool = false) async throws -> OpenClawChatWidgetResource?
+        recover: Bool = false,
+        alsoRejecting retained: IOSGatewayChatTransport? = nil) async throws -> OpenClawChatWidgetResource?
     {
         let fixture = presentation.fixture
         let started = try await fixture.control("widget-start", fields: ["case": id])
@@ -479,9 +484,22 @@ struct NativeActionGatewayWireTests {
         } else {
             let rejected = resource == nil
             try #require(rejected, "Retired native widget authority returned a resource.")
+            if let retained {
+                let binding = try #require(retained.nativeBinding)
+                try #require(await binding.isCurrent() == false)
+                try #require(await retained.resolveInlineWidgetResource(
+                    path: "/__openclaw__/canvas/documents/native.html", replacing: nil) == nil)
+            }
+        }
+        var fields = ["case": id, "outcome": allowed ? "allowed" : "rejected"]
+        if id == "profile" {
+            let binding = try #require(transport.nativeBinding)
+            try #require(await binding.isCurrent() == false)
+            try #require(await binding.gateway.currentRoute() == binding.route)
+            fields["locallyRetired"] = "true"
         }
         _ = try await fixture.control(
-            "widget-complete", fields: ["case": id, "outcome": allowed ? "allowed" : "rejected"])
+            "widget-complete", fields: fields)
         return resource
     }
 
@@ -550,18 +568,53 @@ struct NativeActionGatewayWireTests {
     }
 
     @MainActor
+    private static func requireProfileRejection(_ prepared: OpenClawNativePreparedSend) async throws {
+        do {
+            _ = try await prepared.submit()
+            throw OpenClawNativeActionError("The retired account unexpectedly accepted a confirmation.")
+        } catch let error as GatewayResponseError {
+            try #require(error.detailsReason == "EXPECTED_PROFILE_MISMATCH")
+            try #require(error.details["execution"]?.stringValue == "not_started")
+        }
+    }
+
+    @MainActor
     private static func rejectAcrossSuspension(
         _ presentation: Presentation,
         first: String,
         second: String,
         mutation: String) async throws
+        -> (transport: IOSGatewayChatTransport, prepared: OpenClawNativePreparedSend)
     {
         let fixture = presentation.fixture
+        if second == "profile" {
+            presentation.chat?.detachTransport()
+            presentation.router.unregisterChat(presentation.chat, presentationID: presentation.presentationID)
+        }
         let suspended = try await presentation.prepare(first)
+        let firstBinding = try #require(presentation.binding)
         let beforeAdmission = try await presentation.prepare(second)
         let retainedTransport = try #require(presentation.transport)
+        let secondBinding = try #require(retainedTransport.nativeBinding)
         try await Self.verifyMedia(
             presentation, id: "\(second)Allowed", session: second, allowed: true, transport: retainedTransport)
+        if second == "profile" {
+            try #require(firstBinding.session != secondBinding.session)
+            try #require(!firstBinding.canReuse(secondBinding))
+            try #require(await retainedTransport.resolveInlineWidgetResource(
+                path: "/__openclaw__/canvas/documents/native.html", replacing: nil) != nil)
+            // Close the real presentation subscribers. A later account broadcast
+            // must not stand in for propagation of the retained confirmation's refusal.
+            presentation.chat?.detachTransport()
+            presentation.router.unregisterChat(presentation.chat, presentationID: presentation.presentationID)
+            try await AsyncTimeout.withTimeout(seconds: 2, onTimeout: { URLError(.timedOut) }) {
+                while await secondBinding.gateway._test_serverEventSubscriberCount() != 0 {
+                    try await Task.sleep(for: .milliseconds(1))
+                }
+            }
+            try #require(await firstBinding.isCurrent())
+            try #require(await secondBinding.isCurrent())
+        }
         _ = try await fixture.control("hold-response", fields: ["method": "users.self"])
         let submission = Task { @MainActor in try await suspended.submit() }
         do {
@@ -569,13 +622,31 @@ struct NativeActionGatewayWireTests {
             try #require(held.method == "users.self" && held.ok)
             _ = try await fixture.control(mutation)
             _ = try await fixture.control("release-response")
-            try await Self.requireRejection(submission.result)
+            if second == "profile" {
+                do {
+                    _ = try await submission.value
+                    throw OpenClawNativeActionError("The closed presentation accepted a confirmation.")
+                } catch let error as OpenClawNativeActionError {
+                    try #require(error.localizedDescription == "The selected chat changed. Nothing was sent.")
+                }
+                // Neither a broadcast nor B's own request has retired this warm
+                // capture. Only A's next typed refusal may invalidate both owners.
+                try #require(await firstBinding.isCurrent())
+                try #require(await secondBinding.isCurrent())
+                try await Self.requireProfileRejection(suspended)
+                try #require(await firstBinding.isCurrent() == false)
+                try #require(await secondBinding.isCurrent() == false)
+                try #require(await secondBinding.gateway.currentRoute() == secondBinding.route)
+            } else {
+                try await Self.requireRejection(submission.result)
+            }
             try await fixture.verify(first)
             let direct = Task { @MainActor in try await beforeAdmission.submit() }
             try await Self.requireRejection(direct.result)
             try await fixture.verify(second)
             try await Self.verifyMedia(
                 presentation, id: second, session: second, allowed: false, transport: retainedTransport)
+            return (retainedTransport, suspended)
         } catch {
             await presentation.disconnect()
             submission.cancel()
@@ -590,7 +661,7 @@ struct NativeActionGatewayWireTests {
         id: String,
         session: String,
         allowed: Bool,
-        transport retained: (any OpenClawChatTransport)? = nil) async throws
+        transport retained: IOSGatewayChatTransport? = nil) async throws
     {
         let fixture = presentation.fixture
         let media = try #require(fixture.media.sessions[session])
@@ -608,6 +679,16 @@ struct NativeActionGatewayWireTests {
             let digest = SHA256.hash(data: image.data).map { String(format: "%02x", $0) }.joined()
             try #require(digest == fixture.media.sha256)
             fields["sha256"] = digest
+        } else if id == "profile" {
+            // The earlier typed profile rejection retires this exact capture.
+            // Its later lookup must stop locally, before artifact authorization.
+            let binding = try #require(transport.nativeBinding)
+            try #require(await binding.isCurrent() == false)
+            try #require(await transport.gateway.currentRoute() == binding.route)
+            let loaded = try await transport.loadMediaArtifact(
+                sessionKey: media.sessionKey, artifactId: media.artifactID, kind: .image, playback: nil)
+            try #require(loaded == nil)
+            fields["locallyRetired"] = "true"
         } else {
             let rejection: Error?
             do {

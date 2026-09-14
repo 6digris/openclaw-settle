@@ -199,7 +199,7 @@ public struct OpenClawChatNativeActionGateway: Sendable {
             guard await self.isCurrent() else { return false }
             return await presentationIsCurrent()
         }
-        return OpenClawNativePreparedSend(session: session) {
+        return OpenClawNativePreparedSend(session: session, message: invocation.message) {
             // Confirmation can outlive the connection, account, or visible chat.
             // Revalidate the captured owner; never acquire a successor lease.
             _ = try await self.owner(expected: session.owner)

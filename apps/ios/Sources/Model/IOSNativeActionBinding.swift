@@ -5,6 +5,10 @@ import OpenClawProtocol
 import Synchronization
 
 final class IOSNativeActionBinding: Sendable {
+    struct RetirementReservation: Sendable {
+        fileprivate let binding: IOSNativeActionBinding
+    }
+
     private final class RetirementOwner: Sendable {
         let id = UUID()
         let retired = Mutex(false)
@@ -54,12 +58,12 @@ final class IOSNativeActionBinding: Sendable {
         session: OpenClawNativeSessionRef,
         gateway: GatewayNodeSession,
         route: GatewayNodeSessionRoute,
-        reusing previous: IOSNativeActionBinding? = nil) async throws -> Self
+        reservation: RetirementReservation? = nil) async throws -> Self
     {
         let candidate = Self(session: session, gateway: gateway, route: route)
-        // Join before verification suspends: the reused model's account loss must
-        // retire both captures, including one whose roster response is still pending.
-        let binding = if let previous, previous.canShareRetirement(with: candidate) {
+        // Keep the lifetime selected before verification began. Retirement while
+        // owner/history reads suspend must reject this capture, not mint a fresh one.
+        let binding = if let previous = reservation?.binding, previous.matchesAccountRoute(candidate) {
             Self(capture: candidate, retirement: previous.retirement)
         } else {
             candidate
@@ -157,11 +161,16 @@ final class IOSNativeActionBinding: Sendable {
     func canReuse(_ other: IOSNativeActionBinding) -> Bool {
         // Value-scoped transports keep this reference owner. A new verified
         // capture may reuse a healthy model, never a retired account's model.
-        self.retirement === other.retirement && self.canShareRetirement(with: other)
+        self.session == other.session && self.retirement === other.retirement &&
+            !self.isRetired && !other.isRetired && self.matchesAccountRoute(other)
     }
 
-    private func canShareRetirement(with other: IOSNativeActionBinding) -> Bool {
-        !self.isRetired && !other.isRetired && self.session == other.session &&
+    func reserveRetirement() -> RetirementReservation? {
+        self.isRetired ? nil : RetirementReservation(binding: self)
+    }
+
+    private func matchesAccountRoute(_ other: IOSNativeActionBinding) -> Bool {
+        self.session.owner == other.session.owner &&
             self.gateway === other.gateway && self.route == other.route
     }
 

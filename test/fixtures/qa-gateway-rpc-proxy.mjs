@@ -6,6 +6,25 @@ import path from "node:path";
 import { finished } from "node:stream/promises";
 import { pathToFileURL } from "node:url";
 
+const READINESS_METHODS = new Set([
+  "connect",
+  "users.self",
+  "chat.history",
+  "agents.list",
+  "sessions.messages.subscribe",
+  "sessions.branches.list",
+  "health",
+  "sessions.list",
+  "models.list",
+]);
+const READINESS_ERROR_CODES = new Set([
+  "NOT_LINKED",
+  "NOT_PAIRED",
+  "AGENT_TIMEOUT",
+  "INVALID_REQUEST",
+  "UNAVAILABLE",
+]);
+
 /**
  * @typedef {"front-open" | "upstream-create-start" | "upstream-create-return" |
  *   "upstream-upgrade" | "upstream-open" | "challenge-received" |
@@ -31,6 +50,7 @@ import { pathToFileURL } from "node:url";
  *   port?: number,
  *   upstreamHeaders?: import("ws").ClientOptions["headers"],
  *   observedMethods?: readonly string[],
+ *   captureReadiness?: boolean,
  *   mediaPaths?: ReadonlySet<string>
  * }} options
  */
@@ -42,6 +62,7 @@ export async function startQaGatewayRpcProxy({
   port = 0,
   upstreamHeaders,
   observedMethods = [],
+  captureReadiness = false,
   mediaPaths = new Set(),
 }) {
   const { WebSocket, WebSocketServer } = createRequire(path.join(repoRoot, "package.json"))("ws");
@@ -59,6 +80,27 @@ export async function startQaGatewayRpcProxy({
   /** @type {((error?: Error) => void) | undefined} */
   let heldWaiter;
   let mediaTask;
+  // This public failure projection is separate from private assertion evidence.
+  // Saturation stops recording, never forwarding; raw correlation IDs stay private.
+  const readiness = [];
+  let readinessTruncated = false;
+  const readinessStartedAt = performance.now();
+  const readinessTime = () => Math.max(0, Math.floor(performance.now() - readinessStartedAt));
+  const readinessConnection = (id) => (captureReadiness ? readiness[id - 1] : undefined);
+  const readinessSnapshot = () => ({
+    truncated: readinessTruncated,
+    connections: readiness.map(({ connection, lifecycle, requests, truncated }) => ({
+      connection,
+      truncated,
+      lifecycle: lifecycle.map((entry) => ({ ...entry })),
+      requests: requests.map((entry) => ({
+        ...entry,
+        upstreamWrite: entry.upstreamWrite ? { ...entry.upstreamWrite } : undefined,
+        response: entry.response ? { ...entry.response } : undefined,
+        frontWrite: entry.frontWrite ? { ...entry.frontWrite } : undefined,
+      })),
+    })),
+  });
   /** @type {Array<{ tag: FirstConnectionTag, elapsedMs: number } & FirstConnectionFacts>} */
   const firstConnection = [];
   /** @type {{ front: TerminationCause, upstream: TerminationCause }} */
@@ -67,6 +109,24 @@ export async function startQaGatewayRpcProxy({
   // Diagnostics must not throw through socket callbacks or consume the RPC evidence limit.
   /** @param {number} id @param {FirstConnectionTag} tag @param {FirstConnectionFacts} [facts] */
   const recordFirstConnection = (id, tag, facts = {}) => {
+    const diagnostic = readinessConnection(id);
+    if (diagnostic && !diagnostic.lifecycle.some((entry) => entry.tag === tag)) {
+      if (diagnostic.lifecycle.length < 16) {
+        diagnostic.lifecycle.push({
+          tag,
+          elapsedMs: readinessTime(),
+          ...facts,
+          ...(tag === "front-error" || tag === "upstream-error"
+            ? {
+                localTermination:
+                  diagnostic.terminations[tag === "front-error" ? "front" : "upstream"],
+              }
+            : {}),
+        });
+      } else {
+        diagnostic.truncated = readinessTruncated = true;
+      }
+    }
     if (
       id !== 1 ||
       firstConnection.length >= 16 ||
@@ -119,6 +179,14 @@ export async function startQaGatewayRpcProxy({
    * @param {import("ws").WebSocket} socket @param {TerminationCause} cause
    */
   const recordFirstTermination = (id, endpoint, socket, cause) => {
+    const diagnostic = readinessConnection(id);
+    if (diagnostic && diagnostic.terminations[endpoint] === "none") {
+      diagnostic.terminations[endpoint] = cause;
+      recordFirstConnection(id, endpoint === "front" ? "front-terminate" : "upstream-terminate", {
+        state: socketState(socket.readyState),
+        localTermination: cause,
+      });
+    }
     if (id !== 1 || firstTerminations[endpoint] !== "none") {
       return;
     }
@@ -326,6 +394,19 @@ export async function startQaGatewayRpcProxy({
   const sockets = new WebSocketServer({ server });
   sockets.on("connection", (front) => {
     const id = ++connection;
+    if (captureReadiness) {
+      if (id <= 4) {
+        readiness.push({
+          connection: id,
+          lifecycle: [],
+          requests: [],
+          truncated: false,
+          terminations: { front: "none", upstream: "none" },
+        });
+      } else {
+        readinessTruncated = true;
+      }
+    }
     if (id === 1) {
       firstConnectionStartedAt = performance.now();
     }
@@ -341,9 +422,23 @@ export async function startQaGatewayRpcProxy({
     const peer = { id, front, back };
     peers.add(peer);
     const methods = new Map();
+    const diagnosticRequests = new Map();
+    const diagnostic = readinessConnection(id);
+    const sendUpstream = (raw, trace) => {
+      if (trace) trace.upstreamStartedMs = readinessTime();
+      back.send(
+        raw,
+        trace
+          ? (error) => {
+              trace.upstreamWrite = { elapsedMs: readinessTime(), outcome: error ? "error" : "ok" };
+            }
+          : undefined,
+      );
+    };
     const pending = [];
     front.on("message", (raw) => {
       const frame = JSON.parse(raw.toString());
+      let trace;
       if (frame.type === "req") {
         if (methods.size >= 128 || pending.length >= 128) {
           recordFirstTermination(id, "front", front, "request-limit");
@@ -351,6 +446,20 @@ export async function startQaGatewayRpcProxy({
           return;
         }
         methods.set(frame.id, frame.method);
+        if (diagnostic && READINESS_METHODS.has(frame.method)) {
+          if (diagnostic.requests.length < 32) {
+            trace = {
+              ordinal: diagnostic.requests.length + 1,
+              method: frame.method,
+              observedMs: readinessTime(),
+              queued: back.readyState !== WebSocket.OPEN,
+            };
+            diagnostic.requests.push(trace);
+            diagnosticRequests.set(frame.id, trace);
+          } else {
+            diagnostic.truncated = readinessTruncated = true;
+          }
+        }
         if (observedMethods.includes(frame.method)) {
           record("rpc-request", {
             connection: id,
@@ -374,23 +483,23 @@ export async function startQaGatewayRpcProxy({
         }
       }
       if (back.readyState === WebSocket.OPEN) {
-        back.send(raw);
+        sendUpstream(raw, trace);
       } else {
-        pending.push(raw);
+        pending.push({ raw, trace });
       }
     });
     // ws emits upgrade before validation; open marks a validated WebSocket upgrade.
     back.on("upgrade", () => recordFirstConnection(id, "upstream-upgrade"));
     back.on("open", () => {
       recordFirstConnection(id, "upstream-open");
-      for (const raw of pending.splice(0)) {
-        back.send(raw);
+      for (const { raw, trace } of pending.splice(0)) {
+        sendUpstream(raw, trace);
       }
     });
     back.on("message", (raw) => {
       const frame = JSON.parse(raw.toString());
       const firstChallenge =
-        id === 1 &&
+        (id === 1 || diagnostic !== undefined) &&
         !challengeReceived &&
         frame.type === "event" &&
         frame.event === "connect.challenge";
@@ -399,8 +508,22 @@ export async function startQaGatewayRpcProxy({
         recordFirstConnection(id, "challenge-received");
       }
       const method = methods.get(frame.id);
+      const trace = diagnosticRequests.get(frame.id);
       if (frame.type === "res") {
         methods.delete(frame.id);
+        diagnosticRequests.delete(frame.id);
+        if (trace) {
+          trace.response = {
+            elapsedMs: readinessTime(),
+            outcome: frame.ok === true ? "ok" : "error",
+            code:
+              frame.ok === true
+                ? "none"
+                : READINESS_ERROR_CODES.has(frame.error?.code)
+                  ? frame.error.code
+                  : "other",
+          };
+        }
         if (observedMethods.includes(method)) {
           record("rpc-response", {
             connection: id,
@@ -435,13 +558,24 @@ export async function startQaGatewayRpcProxy({
           });
         }
         if (holdMethod && method === holdMethod) {
+          if (trace) trace.held = true;
           holdMethod = undefined;
           heldResponse = {
             release: () => {
               if (front.readyState !== WebSocket.OPEN) {
                 return false;
               }
-              front.send(raw);
+              front.send(
+                raw,
+                trace
+                  ? (error) => {
+                      trace.frontWrite = {
+                        elapsedMs: readinessTime(),
+                        outcome: error ? "error" : "ok",
+                      };
+                    }
+                  : undefined,
+              );
               return true;
             },
             summary: {
@@ -483,6 +617,7 @@ export async function startQaGatewayRpcProxy({
         }
       }
       if (frame.type === "res" && method === "connect" && frame.ok && holdHello) {
+        if (trace) trace.held = true;
         holdHello = false;
         held = { connection: id, front, frames: [raw] };
         record("hello-held", { connection: id });
@@ -499,14 +634,22 @@ export async function startQaGatewayRpcProxy({
       } else if (front.readyState === WebSocket.OPEN) {
         front.send(
           raw,
-          firstChallenge
-            ? (error) =>
-                recordFirstConnection(id, error ? "challenge-write-error" : "challenge-write-ok")
+          firstChallenge || trace
+            ? (error) => {
+                if (firstChallenge)
+                  recordFirstConnection(id, error ? "challenge-write-error" : "challenge-write-ok");
+                if (trace)
+                  trace.frontWrite = {
+                    elapsedMs: readinessTime(),
+                    outcome: error ? "error" : "ok",
+                  };
+              }
             : undefined,
         );
       }
     });
     front.on("close", () => {
+      diagnosticRequests.clear();
       recordFirstConnection(id, "front-close");
       recordFirstTermination(id, "upstream", back, "front-close");
       back.terminate();
@@ -516,6 +659,7 @@ export async function startQaGatewayRpcProxy({
       }
     });
     back.on("close", () => {
+      diagnosticRequests.clear();
       recordFirstConnection(id, "upstream-close");
       recordFirstTermination(id, "front", front, "upstream-close");
       front.terminate();
@@ -572,6 +716,7 @@ export async function startQaGatewayRpcProxy({
     url: `ws://127.0.0.1:${address.port}`,
     controlUrl: `http://127.0.0.1:${address.port}/__fixture`,
     snapshot,
+    readinessSnapshot,
     stop,
   };
 }

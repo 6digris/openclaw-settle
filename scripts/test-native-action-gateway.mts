@@ -61,7 +61,7 @@ const IOS_WIDGET_CASES = {
   retiredResult: { allowed: false, requests: 1 },
   retiredLookup: { allowed: false, requests: 0 },
   retiredControl: { allowed: true, requests: 1 },
-  profile: { allowed: false, requests: 1 },
+  profile: { allowed: false, requests: 0 },
   controlProfile: { allowed: true, requests: 1 },
 } as const;
 type IOSWidgetCaseID = keyof typeof IOS_WIDGET_CASES;
@@ -321,6 +321,7 @@ export async function withNativeActionGateway(
         token: controlToken,
         recordPath: undefined,
         observedMethods: ["artifacts.download", "plugin.surface.refresh"],
+        captureReadiness: true,
         mediaPaths,
         upstreamHeaders: {
           "x-forwarded-user": SKILL_LIBRARY_ALICE,
@@ -519,6 +520,11 @@ export async function withNativeActionGateway(
             assert(widgetAttempt && widgetAttempt.id === input.case, "widget case was not started");
             const { id, before } = widgetAttempt;
             assert.equal(input.outcome, IOS_WIDGET_CASES[id].allowed ? "allowed" : "rejected");
+            assert.equal(
+              input.locallyRetired,
+              id === "profile" ? "true" : undefined,
+              "profile widget refusal requires observed native account retirement",
+            );
             widgetsCompleted.set(id, proxy.snapshot().events.slice(before.events.length));
             widgetAttempt = undefined;
             return { completed: id };
@@ -549,8 +555,32 @@ export async function withNativeActionGateway(
                 (event: { kind: string; method?: string }) =>
                   event.kind === "rpc-response" && event.method === "artifacts.download",
               );
-            assert.equal(responses.length, 1, `${id}: fresh artifact authorization response`);
-            assert.equal(responses[0].ok, expected === 1, `${id}: artifact authorization`);
+            const locallyRetired = input.locallyRetired === "true";
+            assert.equal(
+              input.locallyRetired,
+              platform === "ios" && id === "profile" ? "true" : undefined,
+              "local media refusal requires the retired iOS profile route",
+            );
+            // The native test observes captured retirement and nil before
+            // reporting local refusal; server ACL denial still needs its RPC.
+            assert.equal(
+              responses.length,
+              locallyRetired ? 0 : 1,
+              `${id}: fresh artifact authorization response`,
+            );
+            if (locallyRetired) {
+              assert(
+                !after.events
+                  .slice(before.events.length)
+                  .some(
+                    (event: { kind: string; method?: string }) =>
+                      event.kind === "rpc-request" && event.method === "artifacts.download",
+                  ),
+                "locally retired media route dispatched authorization",
+              );
+            } else {
+              assert.equal(responses[0].ok, expected === 1, `${id}: artifact authorization`);
+            }
             if (id === "retiredResult") {
               const held = after.events
                 .slice(before.events.length)
@@ -797,6 +827,8 @@ export async function withNativeActionGateway(
                 completedMedia: mediaCompleted.size,
                 completedWidgets: widgetsCompleted.size,
                 lastSignInCheckpoint: signInCheckpoints.at(-1) ?? "none",
+                // Native cleanup may already have closed these retained initial sockets.
+                readiness: proxy.readinessSnapshot(),
               }),
             );
             throw error;
@@ -864,11 +896,8 @@ export async function withNativeActionGateway(
                 const response = responses[index]!;
                 assert.equal(response.requestId, request.requestId);
                 assert.equal(response.connection, request.connection);
-                assert.equal(response.ok, id !== "profile", `${id}: widget authorization`);
-                assert.equal(
-                  response.reason,
-                  id === "profile" ? "EXPECTED_PROFILE_MISMATCH" : undefined,
-                );
+                assert.equal(response.ok, true, `${id}: widget authorization`);
+                assert.equal(response.reason, undefined);
               }
               if (id === "retiredResult") {
                 const held = events.find(

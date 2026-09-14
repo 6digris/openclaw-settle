@@ -21,13 +21,16 @@ struct NativeActionRouterTests {
         var sent: [[String: Any]] = []
         var retired = 0
         var rejectPresentation = false
+        var registerPresentedChat = true
         var beforeInspectionHistory: (() -> Void)?
+        var beforeResponse: ((String) -> Void)?
         var beforeSendReply: (() -> Void)?
         var profileID = "alice"
         var catalogDiscovery = false
         var rejectMethod: String?
         var requestsBeforeRejection = 0
         var widgetRefreshes = 0
+        var rosterRequests = 0
 
         init() {
             let model = NodeAppModel(audioAdmissionInitiallyAllowed: false)
@@ -58,9 +61,11 @@ struct NativeActionRouterTests {
                 relay.viewModel = chat
                 self.chat = chat
                 self.binding = binding
-                self.router.registerChat(
-                    chat, ownerID: self.model.chatViewModelOwnerID, agentID: request.session.agentID,
-                    transport: transport, presentationID: self.presentationID)
+                if self.registerPresentedChat {
+                    self.router.registerChat(
+                        chat, ownerID: self.model.chatViewModelOwnerID, agentID: request.session.agentID,
+                        transport: transport, presentationID: self.presentationID)
+                }
                 chat.load()
             }
         }
@@ -104,6 +109,7 @@ struct NativeActionRouterTests {
                         }
                         self.requestsBeforeRejection -= 1
                     }
+                    self.beforeResponse?(request["method"] as? String ?? "")
                     switch request["method"] as? String {
                     case "users.self": return .success(["profile": ["id": self.profileID]])
                     case "plugin.surface.refresh":
@@ -111,7 +117,9 @@ struct NativeActionRouterTests {
                         return .success(["pluginSurfaceUrls": [
                             "canvas": "http://native-widget.invalid/__openclaw__/cap/fixture",
                         ]])
-                    case "agents.list": return .success([
+                    case "agents.list":
+                        self.rosterRequests += 1
+                        return .success([
                             "defaultId": "main", "mainKey": "main", "scope": "per-sender",
                             "agents": [["id": "main"], ["id": "research"]],
                         ])
@@ -183,6 +191,7 @@ struct NativeActionRouterTests {
 
         func close() async {
             self.beforeInspectionHistory = nil
+            self.beforeResponse = nil
             self.beforeSendReply = nil
             if let presentationID { self.router.unregisterPresentation(presentationID) }
             self.chat?.detachTransport()
@@ -216,7 +225,8 @@ struct NativeActionRouterTests {
             #expect(await host.router.open(.session(host.session())) == .opened)
             let original = try #require(host.binding)
             let sibling = try await IOSNativeActionBinding.capture(
-                session: original.session, gateway: original.gateway, route: original.route, reusing: original)
+                session: original.session, gateway: original.gateway, route: original.route,
+                reservation: original.reserveRetirement())
             let transport = IOSGatewayChatTransport(gateway: original.gateway, nativeBinding: original)
             let scoped = try #require(transport.scoped(toAgentID: "research") as? IOSGatewayChatTransport)
             let path = "/__openclaw__/canvas/documents/test/index.html"
@@ -254,6 +264,102 @@ struct NativeActionRouterTests {
             #expect(await transport.resolveInlineWidgetResource(path: path, replacing: nil) == nil)
             #expect(await scoped.resolveInlineWidgetResource(path: path, replacing: nil) == nil)
             #expect(host.widgetRefreshes == 1)
+            #expect(host.sent.isEmpty)
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func `retained confirmations retire a different session's warm account authority`(
+        unregister: Bool) async throws
+    {
+        try await self.withHost { host in
+            let prepared = try await host.prepare()
+            let original = try #require(host.binding)
+            let originalChat = try #require(host.chat)
+            if unregister {
+                host.router.unregisterChat(originalChat, presentationID: host.presentationID)
+                originalChat.detachTransport()
+            }
+            #expect(await host.router.open(.session(host.session("research"))) == .opened)
+            let current = try #require(host.binding)
+            #expect(host.chat !== originalChat)
+            #expect(original.session != current.session)
+            #expect(!original.canReuse(current))
+            let transport = IOSGatewayChatTransport(gateway: current.gateway, nativeBinding: current)
+            let scoped = try #require(transport.scoped(toAgentID: "main") as? IOSGatewayChatTransport)
+            let path = "/__openclaw__/canvas/documents/test/index.html"
+            let warm = try #require(await transport.resolveInlineWidgetResource(path: path, replacing: nil))
+            #expect(host.widgetRefreshes == 1)
+
+            host.rejectMethod = "users.self"
+            do {
+                _ = try await prepared.submit()
+                Issue.record("The retained confirmation must preserve its account refusal")
+            } catch let error as GatewayResponseError {
+                #expect(error.detailsReason == "EXPECTED_PROFILE_MISMATCH")
+                #expect(error.details["execution"]?.stringValue == "not_started")
+            }
+            #expect(host.rejectMethod == nil)
+            #expect(await original.gateway.currentRoute() == original.route)
+            #expect(await original.isCurrent() == false)
+            #expect(await current.isCurrent() == false)
+            #expect(await transport.resolveInlineWidgetResource(path: path, replacing: nil) == nil)
+            #expect(await scoped.resolveInlineWidgetResource(path: path, replacing: nil) == nil)
+            #expect(host.widgetRefreshes == 1)
+
+            #expect(await host.router.open(.session(host.session("research"))) == .opened)
+            let fresh = try #require(host.binding)
+            #expect(fresh.profileObservationID != current.profileObservationID)
+            #expect(await fresh.isCurrent())
+            host.rejectMethod = "users.self"
+            do {
+                _ = try await prepared.submit()
+                Issue.record("The old confirmation must remain refused after a fresh capture")
+            } catch let error as GatewayResponseError {
+                #expect(error.detailsReason == "EXPECTED_PROFILE_MISMATCH")
+                #expect(error.details["execution"]?.stringValue == "not_started")
+            }
+            #expect(host.rejectMethod == nil)
+            #expect(await fresh.isCurrent())
+            let freshTransport = IOSGatewayChatTransport(gateway: fresh.gateway, nativeBinding: fresh)
+            #expect(await freshTransport.resolveInlineWidgetResource(path: path, replacing: nil)?.url == warm.url)
+            #expect(host.widgetRefreshes == 1)
+            #expect(host.sent.isEmpty)
+        }
+    }
+
+    @Test(arguments: ["users.self", "chat.history"])
+    func `retirement during initial verification cannot admit a fresh account lifetime`(method: String) async throws {
+        try await self.withHost { host in
+            #expect(await host.router.open(.session(host.session())) == .opened)
+            let original = try #require(host.binding)
+            let originalChat = try #require(host.chat)
+            let rosterRequests = host.rosterRequests
+            let retired = host.retired
+            host.beforeResponse = { received in
+                guard received == method else { return }
+                host.beforeResponse = nil
+                original.observe(.rejected(expectedProfileID: original.expectedProfileId))
+            }
+
+            let outcome = await host.router.open(.session(host.session("research")))
+            #expect(outcome == .unavailable(
+                reason: GatewayNodeSessionRequestError.routeChangedBeforeDispatch.localizedDescription))
+            #expect(host.beforeResponse == nil)
+            #expect(await original.isCurrent() == false)
+            #expect(await original.gateway.currentRoute() == original.route)
+            #expect(host.binding === original)
+            #expect(host.chat === originalChat)
+            #expect(host.model.chatDeliveryAgentId == "main")
+            #expect(host.retired == retired)
+            #expect(host.rosterRequests == rosterRequests)
+
+            #expect(await host.router.open(.session(host.session("research"))) == .opened)
+            let fresh = try #require(host.binding)
+            #expect(fresh.session == host.session("research"))
+            #expect(fresh.profileObservationID != original.profileObservationID)
+            #expect(await fresh.isCurrent())
+            #expect(host.rosterRequests == rosterRequests + 1)
             #expect(host.sent.isEmpty)
         }
     }
@@ -338,6 +444,92 @@ struct NativeActionRouterTests {
             #expect(try await research.submit().session == host.session("research"))
             #expect(host.sent.count == 1)
             #expect(host.sent.first?["agentId"] as? String == "research")
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func `confirmation exposes the captured message that submission retains`(long: Bool) async throws {
+        try await self.withHost { host in
+            let message = " \tFirst e\u{301} 🦊\n" +
+                (long ? String(repeating: "A longer captured line e\u{301}\n", count: 300) : "Second line\n")
+            let prepared = try await host.router.prepareSend(to: host.session(), message: message)
+            #expect(prepared.message.utf8.elementsEqual(message.utf8))
+            #expect(host.sent.isEmpty)
+            let chat = try #require(host.chat)
+            chat.input = "A different composer draft"
+            let run = try await prepared.submit()
+            #expect(run.session == host.session())
+            #expect(host.sent.count == 1)
+            let sent = try #require(host.sent.first?["message"] as? String)
+            #expect(sent.utf8.elementsEqual(message.trimmingCharacters(in: .whitespacesAndNewlines).utf8))
+            #expect(prepared.message.utf8.elementsEqual(message.utf8))
+            #expect(chat.input == "A different composer draft")
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func `presentation retirement clears host state in either view teardown order`(childFirst: Bool) async throws {
+        try await self.withHost { host in
+            let prepared = try await host.prepare()
+            let chat = try #require(host.chat)
+            let binding = try #require(host.binding)
+            let presentationID = try #require(host.presentationID)
+            if childFirst { host.router.unregisterChat(chat, presentationID: presentationID) }
+            host.router.unregisterPresentation(presentationID)
+            if !childFirst { host.router.unregisterChat(chat, presentationID: presentationID) }
+            #expect(host.binding == nil)
+            #expect(host.receipt == nil)
+            #expect(await binding.isCurrent())
+            do {
+                _ = try await prepared.submit()
+                Issue.record("The retired presentation must reject its retained confirmation")
+            } catch let error as OpenClawNativeActionError {
+                #expect(error.message == "The selected chat changed. Nothing was sent.")
+            }
+            #expect(host.sent.isEmpty)
+        }
+    }
+
+    @Test func `presentation retirement clears an inspection before its chat registers`() async throws {
+        try await self.withHost { host in
+            host.registerPresentedChat = false
+            let run = OpenClawNativeRunRef(session: host.session(), runID: "run-a")
+            let inspection = Task { try await host.router.inspect(run) }
+            do {
+                let receipt = try await host.waitForReceipt()
+                let binding = try #require(host.binding)
+                let presentationID = try #require(host.presentationID)
+                host.router.unregisterPresentation(presentationID)
+                #expect(host.binding == nil)
+                #expect(host.receipt == nil)
+                host.router.acknowledgeInspection(receipt, presentationID: presentationID)
+                #expect(!host.router.isInspectionPresented(receipt))
+                await #expect(throws: CancellationError.self) { _ = try await inspection.value }
+                #expect(await binding.isCurrent())
+            } catch {
+                inspection.cancel()
+                _ = try? await inspection.value
+                throw error
+            }
+            #expect(host.sent.isEmpty)
+        }
+    }
+
+    @Test func `stale and duplicate presentation departures cannot retire a successor`() async throws {
+        try await self.withHost { host in
+            let oldID = try #require(host.presentationID)
+            host.router.unregisterPresentation(oldID)
+            var successorRetirements = 0
+            let currentID = host.router.registerPresentation(onRetire: { successorRetirements += 1 }) { _, _, _ in }
+            host.presentationID = currentID
+            host.router.unregisterPresentation(oldID)
+            host.router.unregisterPresentation(oldID)
+            #expect(successorRetirements == 0)
+            host.router.unregisterPresentation(currentID)
+            #expect(successorRetirements == 1)
+            host.router.unregisterPresentation(currentID)
+            #expect(successorRetirements == 1)
+            #expect(host.sent.isEmpty)
         }
     }
 

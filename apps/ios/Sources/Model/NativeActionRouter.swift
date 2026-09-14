@@ -26,6 +26,9 @@ final class NativeActionRouter: OpenClawNativeActionHost {
     @ObservationIgnored private var chatOwnerID: String?
     @ObservationIgnored private var chatAgentID: String?
     @ObservationIgnored private var chatTransport: IOSGatewayChatTransport?
+    // Account loss must reach retained callers after the chat unregisters.
+    // Presentation departure retires selection, not this captured account lifetime.
+    @ObservationIgnored private var accountBinding: IOSNativeActionBinding?
     @ObservationIgnored private var chatPresentationID: UUID?
     @ObservationIgnored private var preparing = false
 
@@ -47,8 +50,9 @@ final class NativeActionRouter: OpenClawNativeActionHost {
 
     func unregisterPresentation(_ id: UUID) {
         guard self.presentation?.id == id else { return }
+        // Retire even before a chat registers, while its host cleanup is reachable.
+        self.unregisterChat(self.chat, presentationID: self.chatPresentationID)
         self.presentation = nil
-        self.unregisterChat(self.chat, presentationID: id)
     }
 
     func registerChat(
@@ -183,6 +187,7 @@ final class NativeActionRouter: OpenClawNativeActionHost {
     private struct CapturedGateway {
         let gateway: OpenClawChatNativeActionGateway
         let route: GatewayNodeSessionRoute
+        let retirementReservation: IOSNativeActionBinding.RetirementReservation?
         let bindingGateway: @Sendable (IOSNativeActionBinding) -> OpenClawChatNativeActionGateway
     }
 
@@ -196,7 +201,8 @@ final class NativeActionRouter: OpenClawNativeActionHost {
     }
 
     private func captureCurrentGateway() async throws -> CapturedGateway {
-        let previousBinding = self.chatTransport?.nativeBinding
+        let previousBinding = self.accountBinding
+        let retirementReservation = previousBinding?.reserveRetirement()
         guard !self.appModel.isScreenshotFixtureModeEnabled, !self.appModel.isAppleReviewDemoModeEnabled,
               let gatewayID = self.appModel.activeGatewayConnectConfig?.effectiveStableID,
               let route = await self.appModel.operatorSession.currentRoute(ifGatewayID: gatewayID)
@@ -233,6 +239,7 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         return CapturedGateway(
             gateway: makeGateway(observedBinding),
             route: route,
+            retirementReservation: retirementReservation,
             bindingGateway: { makeGateway($0) })
     }
 
@@ -280,7 +287,7 @@ final class NativeActionRouter: OpenClawNativeActionHost {
             session: session,
             gateway: self.appModel.operatorSession,
             route: captured.route,
-            reusing: self.chatTransport?.nativeBinding)
+            reservation: captured.retirementReservation)
         guard await binding.isCurrent(), generation == self.appModel.gatewayConnectGeneration,
               self.selectionID == historySelectionID, self.presentation?.id == historyPresentationID
         else { throw CancellationError() }
@@ -292,6 +299,7 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         guard let presentation = self.presentation else {
             throw OpenClawNativeActionError("Open OpenClaw before running this action.")
         }
+        self.accountBinding = binding
         try presentation.open(request, binding, receipt)
         // Selection commits inside the handler, after its modal admission guard.
         // Appearance cannot run on the main actor until this handler returns.

@@ -1137,6 +1137,7 @@ describe("scripts/test-projects changed-target routing", () => {
         "test/scripts/full-release-validation-state.test.ts",
         "test/scripts/ios-lifecycle-workflow.test.ts",
         "test/scripts/macos-native-test-launch.test.ts",
+        "test/scripts/native-visual-proof.test.ts",
         "test/scripts/npm-prepared-bundle.test.ts",
         "test/scripts/openclaw-npm-extended-stable-release.test.ts",
         "test/scripts/openclaw-npm-resume-run.test.ts",

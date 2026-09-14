@@ -243,6 +243,8 @@ public struct SendMessageIntent: AppIntent {
             dialog: """
             Send to \(prepared.session.sessionKey) with \(prepared.session.agentID) \
             as \(prepared.session.owner.profileID) on \(prepared.session.owner.gatewayID)?
+
+            \(prepared.message)
             """)
         let run = try await prepared.submit()
         return try .result(

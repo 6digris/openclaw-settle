@@ -46,6 +46,9 @@ const NATIVE_PROTOCOL_GEN_RE = /^apps\/shared\/OpenClawKit\/Sources\/OpenClawPro
 const APPLE_SWIFT_CONFIG_RE = /^config\/(?:swiftformat|swiftlint\.yml)$/;
 const APPLE_SHARED_CONTRACT_FIXTURE_RE =
   /^test\/fixtures\/(?:device-identity-coordinator|talk-config)-contract\.json$/;
+// These fixture owners drive both Apple clients, but do not build release screenshots.
+const APPLE_NATIVE_ACTION_PROOF_RE =
+  /^(?:scripts\/test-native-action-gateway\.mts|test\/fixtures\/qa-gateway-rpc-proxy\.mjs|test\/e2e\/qa-lab\/runtime\/(?:profile-binding-wire|skill-library-wire|cloud-worker-midturn-loss|paired-node-worker-wire)-fixture\.ts|test\/helpers\/qa-gateway-cleanup\.ts)$/;
 const MACOS_NATIVE_RE =
   /^(apps\/macos\/|apps\/macos-mlx-tts\/|apps\/shared\/|apps\/swabble\/|Swabble\/)/;
 const GIT_OWNER_SCOPE_RE =
@@ -153,7 +156,7 @@ const NODE_FAST_SCOPE_RE = new RegExp(
 
 /** @param {string} path Canonical repository-relative script or test path. */
 export function isMacosToolingPath(path) {
-  return MACOS_SCRIPT_SCOPE_RE.test(path);
+  return MACOS_SCRIPT_SCOPE_RE.test(path) || APPLE_NATIVE_ACTION_PROOF_RE.test(path);
 }
 
 /** @param {string} path Canonical repository-relative build input. */
@@ -240,7 +243,7 @@ export function detectChangedScope(changedPaths) {
       runMacos = true;
     }
 
-    if (IOS_BUILD_RE.test(path) || isAppleBuildInput) {
+    if (IOS_BUILD_RE.test(path) || APPLE_NATIVE_ACTION_PROOF_RE.test(path) || isAppleBuildInput) {
       runIosBuild = true;
     }
 
