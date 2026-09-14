@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import radiusPlugin from "../../extensions/radius/index.js";
 import { createWizardPrompter } from "../../test/helpers/wizard-prompter.js";
 import { createNonExitingRuntime } from "../runtime.js";
+import { loadBundledPluginFacade } from "../test-utils/bundled-plugin-public-surface.js";
 import { registerSingleProviderPlugin } from "../test-utils/plugin-registration.js";
 import { WizardSession } from "../wizard/session.js";
 import { runProviderPluginAuthMethodUnpersisted } from "./provider-auth-method.js";
@@ -13,6 +13,10 @@ const { openHostBrowser, guardedFetch } = vi.hoisted(() => ({
 }));
 vi.mock("../infra/browser-open.js", () => ({ openUrl: openHostBrowser }));
 vi.mock("openclaw/plugin-sdk/ssrf-runtime", () => ({ fetchWithSsrFGuard: guardedFetch }));
+
+const { default: radiusPlugin } = await loadBundledPluginFacade<{
+  default: Parameters<typeof registerSingleProviderPlugin>[0];
+}>({ pluginId: "radius", artifactBasename: "index.js" });
 
 afterEach(() => vi.clearAllMocks());
 
