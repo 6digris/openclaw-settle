@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadSqliteVecExtension } from "../../packages/memory-host-sdk/src/engine-storage.js";
 import { formatCliOperatorError } from "../cli/failure-output.js";
-import { backupGitCreateCommand, backupGitLogCommand } from "../commands/backup-git.js";
+import { backupGitCreateCommand } from "../commands/backup-git.js";
 import { createTestRuntime } from "../commands/test-runtime-config-helpers.js";
 import { executeGitCommand, requireGitCommand as requireGit } from "../infra/git-exec.js";
 import { readBackupRunFreshness } from "../state/backup-run-records.js";
@@ -19,10 +19,9 @@ import {
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { createPathResolutionEnv, withEnvAsync } from "../test-utils/env.js";
 import { dumpGitBackupDatabase, restoreGitBackupDirectory } from "./git-backup-codec.js";
-import { createGitBackup, initializeGitBackupRepository, readGitBackupLog } from "./git-backup.js";
+import { createGitBackup, initializeGitBackupRepository } from "./git-backup.js";
 
 const mocks = vi.hoisted(() => ({
-  logDiagnostic: undefined as { stdout: string; stderr: string } | undefined,
   pushDiagnostic: undefined as { stdout: string; stderr: string } | undefined,
   snapshotRepositoryError: undefined as Error | undefined,
 }));
@@ -38,16 +37,6 @@ vi.mock("../infra/git-exec.js", async (importOriginal) => {
         return {
           code: 1,
           ...mocks.pushDiagnostic,
-          signal: null,
-          killed: false,
-          termination: "exit",
-          timeoutMs: args[2]?.timeoutMs ?? actual.GIT_TIMEOUT_MS,
-        };
-      }
-      if (args[1][0] === "log" && mocks.logDiagnostic) {
-        return {
-          code: 1,
-          ...mocks.logDiagnostic,
           signal: null,
           killed: false,
           termination: "exit",
@@ -83,7 +72,6 @@ async function tempRoot(): Promise<string> {
 }
 
 afterEach(async () => {
-  mocks.logDiagnostic = undefined;
   mocks.pushDiagnostic = undefined;
   mocks.snapshotRepositoryError = undefined;
   vi.restoreAllMocks();
@@ -349,15 +337,15 @@ describe("Git-backed SQLite snapshots", () => {
             ...selection,
           });
           const manifest = JSON.parse(
-            await fs.readFile(path.join(repositoryPath, "agents", "main", "manifest.json"), "utf8"),
+            await requireGit(repositoryPath, ["show", "HEAD:agents/main/manifest.json"]),
           ) as { identity: { role: string; agentId: string } };
 
           expect(result.commit).toMatch(/^[a-f0-9]{40}$/u);
           expect(manifest.identity).toEqual({ role: "agent", agentId: "main" });
           if (scope === "all") {
             await expect(
-              fs.stat(path.join(repositoryPath, "global", "manifest.json")),
-            ).resolves.toBeDefined();
+              requireGit(repositoryPath, ["show", "HEAD:global/manifest.json"]),
+            ).resolves.toContain('"schemaVersion":1');
           }
         }
       },
@@ -404,6 +392,149 @@ describe("Git-backed SQLite snapshots", () => {
     expect(await requireGit(repositoryPath, ["rev-list", "--count", "HEAD"])).toBe("1");
   });
 
+  it.each([false, true])(
+    "preserves live generation and unrelated staging on rejected commit (existing=%s)",
+    async (existing) => {
+      const root = await tempRoot();
+      const { stateDir, database } = createStateDatabaseFixture(root);
+      const repositoryPath = path.join(root, "repository");
+      const params = { repositoryPath, stateDir, databases: [database] };
+      const writeGeneration = (generation: string) => {
+        const source = new DatabaseSync(database.path);
+        try {
+          source.exec("CREATE TABLE IF NOT EXISTS backup_transaction_fixture (value TEXT)");
+          source.exec("DELETE FROM backup_transaction_fixture");
+          source.prepare("INSERT INTO backup_transaction_fixture VALUES (?)").run(generation);
+        } finally {
+          source.close();
+        }
+      };
+      await initializeGitBackupRepository(params);
+      writeGeneration("baseline");
+      if (existing) {
+        await createGitBackup(params);
+      }
+      const operatorPath = path.join(repositoryPath, "operator.txt");
+      await fs.writeFile(operatorPath, "staged operator\n");
+      await requireGit(repositoryPath, ["add", "operator.txt"]);
+      await fs.writeFile(operatorPath, "unstaged operator\n");
+      const gitDir = path.resolve(
+        repositoryPath,
+        await requireGit(repositoryPath, ["rev-parse", "--git-dir"]),
+      );
+      const indexBefore = await fs.readFile(path.join(gitDir, "index"));
+      const headBefore = await executeGitCommand(repositoryPath, ["rev-parse", "--verify", "HEAD"]);
+      const before = new Map(
+        await Promise.all(
+          ["global", "agents"].map(
+            async (scope) =>
+              [
+                scope,
+                await listTree(path.join(repositoryPath, scope)).catch((error: unknown) => {
+                  if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+                    return undefined;
+                  }
+                  throw error;
+                }),
+              ] as const,
+          ),
+        ),
+      );
+      const hookPath = path.join(gitDir, "hooks", "pre-commit");
+      await fs.mkdir(path.dirname(hookPath), { recursive: true });
+      await fs.writeFile(hookPath, "#!/bin/sh\necho rejected-backup-fixture >&2\nexit 1\n", {
+        mode: 0o700,
+      });
+      writeGeneration("rejected");
+      await expect(createGitBackup(params)).rejects.toThrow(/rejected-backup-fixture/u);
+      expect(await fs.readFile(path.join(gitDir, "index"))).toEqual(indexBefore);
+      const headAfter = await executeGitCommand(repositoryPath, ["rev-parse", "--verify", "HEAD"]);
+      expect([headAfter.code, headAfter.stdout]).toEqual([headBefore.code, headBefore.stdout]);
+      for (const [scope, files] of before) {
+        if (files === undefined) {
+          await expect(fs.lstat(path.join(repositoryPath, scope))).rejects.toMatchObject({
+            code: "ENOENT",
+          });
+        } else {
+          expect(await listTree(path.join(repositoryPath, scope))).toEqual(files);
+        }
+      }
+      expect(await fs.readFile(operatorPath, "utf8")).toBe("unstaged operator\n");
+      await fs.rm(hookPath);
+      writeGeneration("retry");
+      const retry = await createGitBackup(params);
+      expect(retry.noChanges).toBe(false);
+      expect(
+        await requireGit(repositoryPath, [
+          "show",
+          "HEAD:global/tables/backup_transaction_fixture.jsonl",
+        ]),
+      ).toContain("retry");
+      expect(await requireGit(repositoryPath, ["show", ":operator.txt"])).toBe("staged operator");
+      expect(await fs.readFile(operatorPath, "utf8")).toBe("unstaged operator\n");
+    },
+  );
+
+  it.each(["external-owned-edit", "hook-staged-file"] as const)(
+    "does not publish a changed generation after %s",
+    async (failure) => {
+      const root = await tempRoot();
+      const { stateDir, database } = createStateDatabaseFixture(root);
+      const repositoryPath = path.join(root, "repository");
+      const params = { repositoryPath, stateDir, databases: [database] };
+      await createGitBackup(params);
+      // Explicit operator checkout only in this fresh fixture; production create never refreshes.
+      await requireGit(repositoryPath, ["read-tree", "--reset", "-u", "HEAD"]);
+      const headBefore = await requireGit(repositoryPath, ["rev-parse", "HEAD"]);
+      const indexBefore = await fs.readFile(path.join(repositoryPath, ".git", "index"));
+      const source = new DatabaseSync(database.path);
+      source.exec("CREATE TABLE backup_transaction_fixture (value TEXT)");
+      source.close();
+      const target = path.join(repositoryPath, "global", "manifest.json");
+      await fs.writeFile(
+        path.join(repositoryPath, ".git", "hooks", "pre-commit"),
+        failure === "external-owned-edit"
+          ? '#!/bin/sh\nprintf external-edit > "$OPENCLAW_BACKUP_FIXTURE_TARGET"\n'
+          : "#!/bin/sh\necho injected > injected.txt\ngit add injected.txt\n",
+        { mode: 0o700 },
+      );
+      await expect(
+        createGitBackup({
+          ...params,
+          gitEnv: { ...process.env, OPENCLAW_BACKUP_FIXTURE_TARGET: target },
+        }),
+      ).rejects.toThrow(/changed.*no backup published/u);
+      expect(await requireGit(repositoryPath, ["rev-parse", "HEAD"])).toBe(headBefore);
+      expect(await fs.readFile(path.join(repositoryPath, ".git", "index"))).toEqual(indexBefore);
+      if (failure === "external-owned-edit") {
+        expect(await fs.readFile(target, "utf8")).toBe("external-edit");
+      }
+      await expect(fs.lstat(path.join(repositoryPath, "injected.txt"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    },
+  );
+
+  it("serializes overlapping creates without duplicating a generation", async () => {
+    const root = await tempRoot();
+    const { stateDir, database } = createStateDatabaseFixture(root);
+    const repositoryPath = path.join(root, "repository");
+    const params = { repositoryPath, stateDir, databases: [database] };
+    await createGitBackup(params);
+    const source = new DatabaseSync(database.path);
+    source.exec("CREATE TABLE backup_transaction_fixture (value TEXT)");
+    source.close();
+    const results = await Promise.all([createGitBackup(params), createGitBackup(params)]);
+    expect(
+      results.map((result) => result.noChanges).toSorted((a, b) => Number(a) - Number(b)),
+    ).toEqual([false, true]);
+    expect(await requireGit(repositoryPath, ["rev-list", "--count", "HEAD"])).toBe("2");
+    expect(results.every((result) => !result.worktreeUpdated)).toBe(true);
+    await expect(fs.lstat(path.join(repositoryPath, "global"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
   it("preserves an unowned global namespace in an adopted repository", async () => {
     const root = await tempRoot();
     const { stateDir, database } = createStateDatabaseFixture(root);
@@ -419,17 +550,34 @@ describe("Git-backed SQLite snapshots", () => {
     await expect(fs.readFile(operatorFile, "utf8")).resolves.toBe("operator-owned\n");
   });
 
-  it("removes stale backup-owned agent scopes for an all-database backup", async () => {
+  it("omits stale backup-owned scopes from the commit without deleting the live copy", async () => {
     const root = await tempRoot();
     const { stateDir, database } = createStateDatabaseFixture(root);
     const repositoryPath = path.join(root, "repository");
     const staleAgentPath = path.join(repositoryPath, "agents", "old-agent");
     await initializeGitBackupRepository({ repositoryPath, stateDir });
     await writeBackupManifest(staleAgentPath, "old-agent");
+    await requireGit(repositoryPath, ["add", "agents"]);
+    await requireGit(repositoryPath, [
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "-m",
+      "openclaw backup seed",
+    ]);
 
     await createGitBackup({ repositoryPath, stateDir, databases: [database], all: true });
 
-    await expect(fs.lstat(staleAgentPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(
+      await requireGit(repositoryPath, ["ls-tree", "-r", "--name-only", "HEAD", "--", "agents"]),
+    ).toBe("");
+    await expect(
+      fs.readFile(path.join(staleAgentPath, "manifest.json"), "utf8"),
+    ).resolves.toContain('"schemaVersion":1');
   });
 
   it("aborts all-database cleanup before deleting an unowned agent scope", async () => {
@@ -502,27 +650,6 @@ describe("Git-backed SQLite snapshots", () => {
       repositoryPath,
     });
   });
-
-  it.skipIf(process.platform !== "win32")(
-    "initializes and reads history when Windows Git emits MSYS paths",
-    async () => {
-      const root = await tempRoot();
-      const stateDir = path.join(root, "state");
-      const repositoryPath = path.join(root, "repository");
-      await fs.mkdir(stateDir);
-
-      await initializeGitBackupRepository({ repositoryPath, stateDir });
-      await requireGit(repositoryPath, ["config", "user.name", "OpenClaw Backup Test"]);
-      await requireGit(repositoryPath, ["config", "user.email", "backup@example.invalid"]);
-      await fs.writeFile(path.join(repositoryPath, "README.md"), "backup\n");
-      await requireGit(repositoryPath, ["add", "README.md"]);
-      await requireGit(repositoryPath, ["commit", "-m", "backup history"]);
-
-      await expect(readGitBackupLog({ repositoryPath, limit: 1 })).resolves.toEqual([
-        expect.objectContaining({ message: "backup history" }),
-      ]);
-    },
-  );
 
   it("uses a commit-scoped fallback identity when Git has no configured email", async () => {
     const root = await tempRoot();
@@ -603,143 +730,6 @@ describe("Git-backed SQLite snapshots", () => {
       const persisted = (await readBackupRunFreshness(process.env)).latest?.error;
       expect(persisted).toBe(result.pushWarning);
     });
-  });
-
-  it("returns an empty log without matching localized Git diagnostics", async () => {
-    const root = await tempRoot();
-    const repositoryPath = path.join(root, "empty-repository");
-    await requireGit(root, ["init", repositoryPath]);
-    mocks.logDiagnostic = {
-      stdout: "",
-      stderr: "fatal: el historial no contiene confirmaciones",
-    };
-    const runtime = createTestRuntime();
-
-    await expect(
-      backupGitLogCommand(runtime, { repository: repositoryPath, limit: 10 }),
-    ).resolves.toEqual([]);
-    expect(runtime.log).toHaveBeenCalledWith(
-      expect.stringMatching(/No Git backup commits in .*\/empty-repository\.$/u),
-    );
-  });
-
-  it("returns bounded redacted diagnostics from both failed history streams", async () => {
-    const root = await tempRoot();
-    const repositoryPath = path.join(root, "failed-history-repository");
-    const username = ["synthetic", "history", "user"].join("-");
-    const password = ["synthetic", "history", "password"].join("-");
-    const querySecret = ["synthetic", "history", "query"].join("-");
-    const remote = `https://${username}:${password}@example.invalid/history?token=${querySecret}`;
-    await requireGit(root, ["init", repositoryPath]);
-    await requireGit(repositoryPath, [
-      "-c",
-      "user.name=OpenClaw Backup Test",
-      "-c",
-      "user.email=backup@example.invalid",
-      "commit",
-      "--allow-empty",
-      "-m",
-      "openclaw backup fixture",
-    ]);
-    await requireGit(repositoryPath, ["checkout", "--detach", "HEAD"]);
-    mocks.logDiagnostic = {
-      stderr: [
-        ...Array.from({ length: 20 }, (_, index) => `stderr-old-${index} '${remote}'`),
-        `${"🦞".repeat(400)}x stderr-tail-🦞 fatal: unable to read '${remote}'`,
-      ].join("\n"),
-      stdout: [
-        ...Array.from({ length: 20 }, (_, index) => `stdout-old-${index} '${remote}'`),
-        `stdout-tail-🐚 retry with '${remote}'`,
-      ].join("\n"),
-    };
-
-    const error = await backupGitLogCommand(createTestRuntime(), {
-      repository: repositoryPath,
-      limit: 10,
-    }).catch((cause: unknown) => cause);
-    expect(error).toBeInstanceOf(Error);
-    if (!(error instanceof Error)) {
-      throw new Error("expected failed Git history error");
-    }
-    const output = formatCliOperatorError(error, { argv: ["backup", "git", "log"], env: {} });
-
-    expect(error.message.length).toBeLessThanOrEqual(1_200);
-    expect(output).toContain("git log failed (code=1, termination=exit)");
-    expect(output).toContain("stderr:");
-    expect(output).toContain("stdout:");
-    expect(output).toContain("stderr-tail-🦞");
-    expect(output).toContain("stdout-tail-🐚");
-    expect(output).toContain("https://***:***@example.invalid/history?token=***");
-    expect(output).not.toContain(username);
-    expect(output).not.toContain(password);
-    expect(output).not.toContain(querySecret);
-    expect(output).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/u);
-    expect(output).not.toMatch(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u);
-  });
-
-  it("rejects a truncated Git history record with bounded redacted diagnostics", async () => {
-    const repositoryPath = await tempRoot();
-    await requireGit(repositoryPath, ["init"]);
-    const tree = await requireGit(repositoryPath, ["hash-object", "-w", "-t", "tree", "--stdin"], {
-      input: "",
-    });
-    const secret = ["synthetic", "history", "password"].join("-");
-    const remote = `https://synthetic:${secret}@example.invalid/history`;
-    const commit = await requireGit(
-      repositoryPath,
-      [
-        "-c",
-        "user.name=OpenClaw Backup Test",
-        "-c",
-        "user.email=backup@example.invalid",
-        "commit-tree",
-        tree,
-      ],
-      { input: `openclaw backup ${"x".repeat(17 * 1024 * 1024)} ${remote}\n` },
-    );
-    await fs.writeFile(path.join(repositoryPath, ".git", "HEAD"), `${commit}\n`);
-
-    const outcome = await readGitBackupLog({ repositoryPath, limit: 1 }).then(
-      (entries) => ({
-        kind: "returned",
-        entries: entries.map((entry) => ({
-          commitBytes: Buffer.byteLength(entry.commit),
-          date: entry.date,
-          messageBytes: Buffer.byteLength(entry.message),
-        })),
-      }),
-      (error: unknown) => ({
-        kind: "error",
-        message: error instanceof Error ? error.message : String(error),
-      }),
-    );
-    expect(outcome).toEqual({ kind: "error", message: expect.stringContaining("output-limit") });
-    if ("message" in outcome) {
-      expect(outcome.message.length).toBeLessThanOrEqual(1_200);
-      expect(outcome.message).toContain("https://***:***@example.invalid/history");
-      expect(outcome.message).not.toContain(secret);
-    }
-  });
-
-  it("does not treat a symbolic HEAD with a missing object as an empty log", async () => {
-    const root = await tempRoot();
-    const repositoryPath = path.join(root, "broken-repository");
-    await requireGit(root, ["init", repositoryPath]);
-    const headRef = await requireGit(repositoryPath, ["symbolic-ref", "HEAD"]);
-    const headRefPath = path.join(repositoryPath, ".git", ...headRef.split("/"));
-    await fs.mkdir(path.dirname(headRefPath), { recursive: true });
-    await fs.writeFile(headRefPath, `${"a".repeat(40)}\n`);
-
-    await expect(readGitBackupLog({ repositoryPath, limit: 10 })).rejects.toThrow(/git show-ref/u);
-  });
-
-  it("does not treat a missing non-branch symbolic HEAD as an unborn branch", async () => {
-    const root = await tempRoot();
-    const repositoryPath = path.join(root, "missing-symbolic-ref-repository");
-    await requireGit(root, ["init", repositoryPath]);
-    await requireGit(repositoryPath, ["symbolic-ref", "HEAD", "refs/tags/missing"]);
-
-    await expect(readGitBackupLog({ repositoryPath, limit: 10 })).rejects.toThrow(/git show-ref/u);
   });
 
   it("refuses adopted non-backup ancestry and records local push degradation", async () => {

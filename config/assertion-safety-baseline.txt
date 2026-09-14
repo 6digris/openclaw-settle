@@ -3447,7 +3447,6 @@ src/skills/workshop/store-record.ts	3
 src/skills/workshop/store-sqlite-event.ts	1
 src/skills/workshop/tool-policy-diagnostic.ts	1
 src/snapshot/git-backup-codec.ts	9
-src/snapshot/git-backup.ts	2
 src/snapshot/local-repository.ts	8
 src/snapshot/manifest.ts	1
 src/state/agent-deletion-journal.ts	15

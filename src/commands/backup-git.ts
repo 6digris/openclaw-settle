@@ -162,6 +162,9 @@ export async function backupGitCreateCommand(runtime: RuntimeEnv, options: Backu
     } else {
       runtime.log(`Git backup committed: ${result.commit}`);
     }
+    if (!options.json && !result.noChanges) {
+      runtime.log("Live worktree/index were left unchanged; any refresh remains operator-owned.");
+    }
     if (result.pushWarning) {
       runtime.error(`Warning: Git backup committed, but push failed: ${result.pushWarning}`);
     }

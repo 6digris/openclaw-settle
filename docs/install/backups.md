@@ -228,6 +228,33 @@ OpenClaw backup manifest. OpenClaw refuses to replace any other scope, and an
 `--all` run validates every existing agent scope before deleting stale
 backup-owned entries.
 
+Each create prepares and commits a private generation under a repository lease,
+then publishes the admitted branch with an expected-old-commit check. The live
+worktree and index are **not refreshed or reset**, even after successful
+publication (worktreeUpdated is false in JSON). This preserves operator edits and
+staging, including edits made during publication. Read a generation with
+Git's show command or the verify/restore commands below; any checkout refresh
+remains an operator-owned action after preserving local work. Subsequent backups
+start from the last committed generation, not stale live checkout files.
+
+Private preparation currently requires a named branch in a standalone,
+non-shallow repository. Conditional includes, custom filters, replacement refs,
+alternate-object environments, redirected GIT_CONFIG, and non-object-format
+repository extensions are refused rather than silently changing their semantics.
+Relative config-file paths, valueless entries, and working-directory-dependent
+helpers are also refused.
+Ordinary effective config precedence is retained, including signing requirements;
+required signatures must verify before publication. Private automatic maintenance
+is disabled because its ref namespace must not prune shared objects.
+
+A failed publication command reports the prepared recovery commit, admitted ref,
+previous commit, and observed outcome. A not-observed result means the ref still
+held the previous commit when inspected, not proof that it was never transiently
+changed. An unknown result requires inspection; no automatic retry or rollback is
+attempted. Keep the reported object IDs and inspect the exact ref before retrying.
+A prepared but unreferenced object has ordinary Git reachability retention, not a
+durable recovery receipt.
+
 The repository root must be owned by the current user and must not be group- or
 world-writable. This is checked during init and every create. On POSIX systems,
 confirm ownership and run `chmod 700 <repository>` to repair unsafe permissions.

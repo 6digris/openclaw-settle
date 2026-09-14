@@ -20,8 +20,7 @@ import {
   openOpenClawAgentDatabase,
 } from "../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabase } from "../state/openclaw-state-db.js";
-import { restoreGitBackupDirectory } from "./git-backup-codec.js";
-import { createGitBackup } from "./git-backup.js";
+import { createGitBackup, restoreGitBackupRef } from "./git-backup.js";
 import { createLocalSqliteSnapshotProvider } from "./local-repository.js";
 
 const tempDirs = createTempDirTracker();
@@ -125,7 +124,7 @@ async function captureFixture(
     await provider.restoreFresh(snapshot.ref, targetPath);
   } else {
     const repositoryPath = path.join(root, "git-backups");
-    await createGitBackup({
+    const backup = await createGitBackup({
       repositoryPath,
       stateDir,
       databases: [{ path: sourcePath, identity: { role: "agent", agentId: "main" } }],
@@ -137,10 +136,14 @@ async function captureFixture(
         GIT_COMMITTER_EMAIL: "backup@example.invalid",
       },
     });
-    await restoreGitBackupDirectory({
-      sourcePath: path.join(repositoryPath, "agents", "main"),
+    if (!backup.commit) {
+      throw new Error("The cold-transcript Git backup did not publish a commit");
+    }
+    await restoreGitBackupRef({
+      repositoryPath,
+      ref: backup.commit,
       targetPath,
-      expectedIdentity: { role: "agent", agentId: "main" },
+      identity: { role: "agent", agentId: "main" },
     });
   }
   return targetPath;

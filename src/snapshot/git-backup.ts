@@ -1,103 +1,37 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { redactSensitiveUrlLikeString } from "@openclaw/net-policy/redact-sensitive-url";
-import { sliceUtf16Safe, truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import { withFileLock } from "../infra/file-lock.js";
 import { canonicalPathFromExistingAncestor, isPathInside } from "../infra/fs-safe.js";
 import {
   GIT_TIMEOUT_MS,
+  enqueueGitRefMutation,
   executeGitCommand as runGit,
   normalizeGitPathForFilesystem,
   requireGitCommand as requireGit,
   requireGitCommandOutput,
 } from "../infra/git-exec.js";
 import { assertNotUpdateCapturePath } from "../infra/update-capture-paths.js";
-import { formatCommandOutput, formatCommandResult } from "../process/command-error.js";
 import { spawnCommand } from "../process/exec-spawn.js";
-import { BACKUP_RUN_ERROR_MAX_LENGTH } from "../state/backup-run-records.contract.js";
 import {
   GIT_BACKUP_MANIFEST,
   GIT_BACKUP_SCHEMA,
   GIT_BACKUP_TABLES,
-  dumpGitBackupDatabase,
   gitBackupScopePath,
-  parseGitBackupManifest,
   restoreGitBackupDirectory,
   type GitBackupIdentity,
-  type GitBackupManifest,
   type GitBackupRestoreResult,
 } from "./git-backup-codec.js";
+import {
+  formatGitBackupCommandResult,
+  sanitizeGitBackupDiagnostic,
+} from "./git-backup-diagnostics.js";
+import {
+  createGitBackupGeneration,
+  type GitBackupCreateParams,
+  type GitBackupCreateResult,
+} from "./git-backup-generation.js";
 import { ensurePrivateSnapshotRepositoryRoot } from "./local-repository.js";
-import { createOpenClawSnapshotCopy } from "./openclaw-snapshot-copy.js";
-import type { SnapshotDatabaseRef } from "./snapshot-provider.js";
-
-const GIT_BACKUP_DIAGNOSTIC_MAX_LENGTH = 500;
-const GIT_BACKUP_NON_BACKUP_HISTORY_WARNING =
-  "repository history contains non-backup commits; use a dedicated backup repository";
-
-type GitBackupCreateResult = {
-  repositoryPath: string;
-  commit?: string;
-  noChanges: boolean;
-  pushed: boolean;
-  pushWarning?: string;
-  manifests: GitBackupManifest[];
-};
-
-function redactGitBackupText(value: string): string {
-  return value
-    .split("\n")
-    .map((line) => redactSensitiveUrlLikeString(line))
-    .join("\n");
-}
-
-function sanitizeGitBackupDiagnostic(value: string): string {
-  return truncateUtf16Safe(redactGitBackupText(value), GIT_BACKUP_DIAGNOSTIC_MAX_LENGTH);
-}
-
-function formatGitBackupCommandResult(
-  command: string,
-  result: Awaited<ReturnType<typeof runGit>>,
-): string {
-  const redacted = {
-    ...result,
-    stderr: redactGitBackupText(result.stderr),
-    stdout: redactGitBackupText(result.stdout),
-  };
-  const header = formatCommandResult(command, { ...redacted, stderr: "", stdout: "" });
-  const streams = (["stderr", "stdout"] as const).flatMap((stream) => {
-    const output = formatCommandOutput(redacted[stream]);
-    return output ? [{ stream, output }] : [];
-  });
-  const fixedLength =
-    header.length + streams.reduce((total, { stream }) => total + 1 + `${stream}: `.length, 0);
-  if (streams.length === 0 || fixedLength >= BACKUP_RUN_ERROR_MAX_LENGTH) {
-    return truncateUtf16Safe(header, BACKUP_RUN_ERROR_MAX_LENGTH);
-  }
-  const outputBudget = BACKUP_RUN_ERROR_MAX_LENGTH - fixedLength;
-  const lengths = streams.map(({ output }) => output.length);
-  const first = Math.min(
-    lengths[0] ?? 0,
-    Math.max(Math.ceil(outputBudget / 2), outputBudget - (lengths[1] ?? 0)),
-  );
-  const allocations = [first, Math.min(lengths[1] ?? 0, outputBudget - first)];
-  const fit = (output: string, maxLength: number): string => {
-    if (output.length <= maxLength) {
-      return output;
-    }
-    if (maxLength <= 1) {
-      return truncateUtf16Safe("…", maxLength);
-    }
-    const source = output.startsWith("…\n") ? output.slice(2) : output;
-    return `…\n${sliceUtf16Safe(source, Math.max(0, source.length - (maxLength - 2)))}`;
-  };
-  return [
-    header,
-    ...streams.map(
-      ({ stream, output }, index) => `${stream}: ${fit(output, allocations[index] ?? 0)}`,
-    ),
-  ].join("\n");
-}
 
 function gitBackupRepositoryPrivacyRemediation(repositoryPath: string, cause: unknown): string {
   if (process.platform === "win32") {
@@ -179,103 +113,10 @@ export async function initializeGitBackupRepository(params: {
   return { repositoryPath };
 }
 
-async function isBackupOwnedScope(scopePath: string): Promise<boolean> {
-  const identity = await fs
-    .lstat(scopePath)
-    .catch((error: unknown) =>
-      (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : null,
-    );
-  if (identity === undefined) {
-    return true;
-  }
-  if (!identity?.isDirectory()) {
-    return false;
-  }
-  try {
-    const entries = await fs.readdir(scopePath);
-    if (entries.length === 0) {
-      return true;
-    }
-    parseGitBackupManifest(
-      await fs.readFile(path.join(scopePath, GIT_BACKUP_MANIFEST), "utf8"),
-      scopePath,
-    );
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function assertBackupOwnedScope(scopePath: string): Promise<void> {
-  if (!(await isBackupOwnedScope(scopePath))) {
-    throw new Error(
-      `Refusing to replace non-backup-owned path ${scopePath}; the repository must be dedicated to OpenClaw backups.`,
-    );
-  }
-}
-
-async function removeStaleAgentScopes(repositoryPath: string): Promise<void> {
-  const agentsPath = path.join(repositoryPath, "agents");
-  let entries: string[];
-  try {
-    entries = await fs.readdir(agentsPath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return;
-    }
-    throw error;
-  }
-  const scopes = entries.map((entry) => path.join(agentsPath, entry));
-  await Promise.all(scopes.map(async (scope) => await assertBackupOwnedScope(scope)));
-  await Promise.all(scopes.map(async (scope) => await fs.rm(scope, { recursive: true })));
-}
-
-async function copyStagedScope(
-  stagingRoot: string,
-  repositoryPath: string,
-  identity: GitBackupIdentity,
-): Promise<void> {
-  const relative = gitBackupScopePath(identity);
-  const source = path.join(stagingRoot, relative);
-  const target = path.join(repositoryPath, relative);
-  await assertBackupOwnedScope(target);
-  await fs.rm(target, { recursive: true, force: true });
-  await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-  await fs.cp(source, target, { recursive: true, force: false });
-}
-
-async function commitGitBackup(params: {
-  repositoryPath: string;
-  message: string;
-  scopes: string[];
-  env?: NodeJS.ProcessEnv;
-}): Promise<string> {
-  const email = await runGit(params.repositoryPath, ["config", "--get", "user.email"], {
-    env: params.env,
-  });
-  const identityArgs =
-    email.code === 0 && email.stdout.trim()
-      ? []
-      : ["-c", "user.name=OpenClaw", "-c", "user.email=backup@openclaw.local"];
-  await requireGit(
-    params.repositoryPath,
-    [...identityArgs, "commit", "-m", params.message, "--", ...params.scopes],
-    { env: params.env },
-  );
-  return await requireGit(params.repositoryPath, ["rev-parse", "HEAD"], { env: params.env });
-}
-
 /** Snapshot selected databases, update the deterministic tree, and commit one Git revision. */
-export async function createGitBackup(params: {
-  repositoryPath: string;
-  stateDir: string;
-  databases: Array<SnapshotDatabaseRef & { identity: GitBackupIdentity }>;
-  all?: boolean;
-  excludeSecrets?: boolean;
-  push?: boolean;
-  now?: Date;
-  gitEnv?: NodeJS.ProcessEnv;
-}): Promise<GitBackupCreateResult> {
+export async function createGitBackup(
+  params: GitBackupCreateParams,
+): Promise<GitBackupCreateResult> {
   for (const database of params.databases) {
     assertNotUpdateCapturePath(database.path, params.stateDir);
   }
@@ -285,106 +126,25 @@ export async function createGitBackup(params: {
     stateDir: params.stateDir,
     gitEnv: params.gitEnv,
   });
-  const stagingRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-git-backup-"));
-  await fs.chmod(stagingRoot, 0o700);
-  const manifests: GitBackupManifest[] = [];
-  try {
-    for (const database of params.databases) {
-      const outputPath = path.join(stagingRoot, gitBackupScopePath(database.identity));
-      await fs.mkdir(path.dirname(outputPath), { recursive: true, mode: 0o700 });
-      const copyPath = path.join(
-        stagingRoot,
-        `${database.identity.role}-${manifests.length}.sqlite`,
-      );
-      await createOpenClawSnapshotCopy({ database, targetPath: copyPath });
-      manifests.push(
-        await dumpGitBackupDatabase({
-          snapshotPath: copyPath,
-          outputPath,
-          identity: database.identity,
-          excludeSecrets: params.excludeSecrets,
-        }),
-      );
-      await fs.rm(copyPath, { force: true });
-    }
-    if (params.all) {
-      await removeStaleAgentScopes(repositoryPath);
-    }
-    for (const database of params.databases) {
-      await copyStagedScope(stagingRoot, repositoryPath, database.identity);
-    }
-  } finally {
-    await fs.rm(stagingRoot, { recursive: true, force: true }).catch(() => undefined);
-  }
-  // Keep both owned roots present so Git accepts both scoped pathspecs even on a first global-only
-  // or agent-only backup. Empty directories remain untracked.
-  await Promise.all(
-    ["global", "agents"].map(async (scope) =>
-      fs.mkdir(path.join(repositoryPath, scope), { recursive: true, mode: 0o700 }),
+  const commonDirectory = await fs.realpath(
+    path.resolve(
+      repositoryPath,
+      normalizeGitPathForFilesystem(
+        await requireGit(repositoryPath, ["rev-parse", "--git-common-dir"], { env: params.gitEnv }),
+      ),
     ),
   );
-  await requireGit(repositoryPath, ["add", "-A", "--", "global", "agents"], {
-    env: params.gitEnv,
-  });
-  const changed = await requireGit(
-    repositoryPath,
-    ["status", "--porcelain", "--", "global", "agents"],
-    {
-      env: params.gitEnv,
-    },
+  return await enqueueGitRefMutation(repositoryPath, commonDirectory, async () =>
+    withFileLock(
+      path.join(commonDirectory, "openclaw-backup-create"),
+      {
+        retries: { retries: 0, factor: 1, minTimeout: 0, maxTimeout: 0 },
+        stale: GIT_TIMEOUT_MS,
+        staleRecovery: "fail-closed",
+      },
+      async () => await createGitBackupGeneration(params, repositoryPath, commonDirectory),
+    ),
   );
-  let commit: string | undefined;
-  if (changed) {
-    const now = params.now ?? new Date();
-    if (!Number.isFinite(now.getTime())) {
-      throw new Error("Git backup timestamp is invalid.");
-    }
-    const stagedBackupPaths = await requireGit(
-      repositoryPath,
-      ["diff", "--cached", "--name-only", "--", "global", "agents"],
-      { env: params.gitEnv },
-    );
-    const commitScopes = ["global", "agents"].filter((scope) =>
-      stagedBackupPaths.split("\n").some((entry) => entry.startsWith(`${scope}/`)),
-    );
-    commit = await commitGitBackup({
-      repositoryPath,
-      message: `openclaw backup ${now.toISOString()}`,
-      scopes: commitScopes,
-      env: params.gitEnv,
-    });
-  }
-  let pushed = false;
-  let pushWarning: string | undefined;
-  if (params.push) {
-    // Staging is path-scoped, but push ships HEAD's full ancestry. A dedicated
-    // repository is the supported remote shape.
-    const nonBackupCommitCount = await requireGit(
-      repositoryPath,
-      ["rev-list", "HEAD", "--invert-grep", "--grep=^openclaw backup ", "--count"],
-      { env: params.gitEnv },
-    );
-    if (nonBackupCommitCount !== "0") {
-      pushWarning = GIT_BACKUP_NON_BACKUP_HISTORY_WARNING;
-    } else {
-      const pushedResult = await runGit(repositoryPath, ["push", "-u", "origin", "HEAD"], {
-        env: params.gitEnv,
-      });
-      if (pushedResult.code === 0) {
-        pushed = true;
-      } else {
-        pushWarning = formatGitBackupCommandResult("git push", pushedResult);
-      }
-    }
-  }
-  return {
-    repositoryPath,
-    ...(commit ? { commit } : {}),
-    noChanges: !changed,
-    pushed,
-    ...(pushWarning ? { pushWarning } : {}),
-    manifests,
-  };
 }
 
 async function resolveGitCommit(repositoryPath: string, ref?: string): Promise<string> {
