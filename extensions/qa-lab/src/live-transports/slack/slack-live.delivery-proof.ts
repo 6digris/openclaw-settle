@@ -389,7 +389,7 @@ export async function readSlackTerminalSendResult(params: {
   if (
     results.length !== 1 ||
     result?.toolName !== "message" ||
-    (isRecord(result.__openclaw) && result.__openclaw.truncated === true) ||
+    (isRecord(result["__openclaw"]) && result["__openclaw"].truncated === true) ||
     typeof result.isError !== "boolean" ||
     content?.type !== "text" ||
     typeof content.text !== "string"

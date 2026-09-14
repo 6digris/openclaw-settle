@@ -415,7 +415,7 @@ describe("Slack Anthropic delivery proof", () => {
       [listing, { ...history, sessionKey: "other" }],
       [listing, { ...history, hasMore: true }],
       [listing, { ...history, nextOffset: 24 }],
-      [listing, { ...history, messages: Array(24).fill(receipt) }],
+      [listing, { ...history, messages: Array.from({ length: 24 }, () => ({ ...receipt })) }],
       [listing, { ...history, messages: [] }],
       [listing, { ...history, messages: [receipt, receipt] }],
       [listing, { ...history, messages: [{ ...receipt, toolCallId: "other" }] }],
