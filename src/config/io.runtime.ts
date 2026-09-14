@@ -133,7 +133,7 @@ export function getRuntimeConfig(options?: {
 /** Capture the config source before a task read, and load only if its owner needs config facts. */
 export function captureRuntimeConfigAsyncReader(
   options: { assertCurrent?: () => void } = {},
-): () => Promise<OpenClawConfig> {
+): (() => Promise<OpenClawConfig>) & { assertCurrent: () => void } {
   const sourceEnv = process.env;
   const cwd = tryProcessCwd();
   const readSelectors = () =>
@@ -170,7 +170,7 @@ export function captureRuntimeConfigAsyncReader(
     },
   });
   let pending: Promise<OpenClawConfig> | undefined;
-  return () => {
+  const read = () => {
     assertCurrent();
     return (pending ??= loadPinnedRuntimeConfigAsync(
       async (assertPinned) => {
@@ -195,6 +195,7 @@ export function captureRuntimeConfigAsyncReader(
       { assertCurrent },
     ));
   };
+  return Object.assign(read, { assertCurrent });
 }
 
 function createCurrentConfigReader(params: { configPath?: string; env?: NodeJS.ProcessEnv }) {

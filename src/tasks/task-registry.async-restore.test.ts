@@ -5,7 +5,9 @@ import {
   findDuplicateGuardImageGenerationTaskForSession,
   IMAGE_GENERATION_TASK_KIND,
 } from "../agents/media-generation-task-status.js";
+import { getRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
+import { createPluginCache, withPluginCache } from "../plugins/plugin-cache.js";
 import { getActiveGatewayRootWorkCount } from "../process/gateway-work-admission.js";
 import { serializeAgentSchemaInspectionError } from "../state/openclaw-agent-schema-inspection-response.js";
 import * as stateDatabaseCache from "../state/openclaw-state-db-cache.js";
@@ -210,6 +212,16 @@ function identityRestoreFixture(kind: "task" | "flow", options?: { sameIdentity?
 
 describe("asynchronous registry restoration", () => {
   it("restores complete task and flow state before observers without parent SQLite through close", async () => {
+    await state.writeConfig({
+      gateway: { mode: "local" },
+      session: { scope: "global", store: state.statePath("legacy-sessions.sqlite") },
+      agents: {
+        ownership: "explicit",
+        defaults: { sessionStore: { agentId: "ops" } },
+        entries: { ops: {}, research: {} },
+      },
+    });
+    vi.spyOn(process, "cwd").mockReturnValue(state.workspaceDir);
     upsertTaskFlowRegistryRecordToSqlite({ ...flow, flowId: "flow-a", stateJson: { cursor: 3 } });
     upsertTaskWithDeliveryStateToSqlite({
       task: {
@@ -241,6 +253,18 @@ describe("asynchronous registry restoration", () => {
         task: { ...task, taskId: flowId, parentFlowId: flowId, status: "succeeded", endedAt: 20 },
       });
     }
+    upsertTaskWithDeliveryStateToSqlite({
+      task: {
+        ...task,
+        taskId: "legacy-media",
+        runId: "legacy-media-run",
+        requesterSessionKey: "global",
+        ownerKey: "global",
+        agentId: "research",
+        taskKind: IMAGE_GENERATION_TASK_KIND,
+        sourceId: "image_generate:synthetic",
+      },
+    });
     closeOpenClawStateDatabase();
     const restored: string[] = [];
     configureTaskRegistryRuntime({
@@ -291,7 +315,12 @@ describe("asynchronous registry restoration", () => {
     const scope = { taskId: "retained", flowId: "flow-a", runId: task.runId };
     const store = getTaskRegistryStore();
     const complete = await store.loadMutationSnapshotAsync(context);
-    expect([...complete.tasks.keys()]).toEqual(["legacy-mirror", "retained", "stale-mirror"]);
+    expect([...complete.tasks.keys()]).toEqual([
+      "legacy-media",
+      "legacy-mirror",
+      "retained",
+      "stale-mirror",
+    ]);
     expect(complete.deliveryStates.get("retained")?.lastNotifiedEventAt).toBe(50);
     const pendingMutation = runTaskRegistryWorkerMutation(
       { admission: context.admission, scope },
@@ -318,6 +347,19 @@ describe("asynchronous registry restoration", () => {
       mutationDone.resolve();
       await pendingMutation;
     }
+    expect(getRuntimeConfigSnapshot()).toBeNull();
+    await withPluginCache(createPluginCache(), async () => {
+      expect(
+        (await listActiveImageGenerationTasksForSession("global", "ops")).map(
+          (entry) => entry.taskId,
+        ),
+      ).toEqual(["legacy-media"]);
+      expect(await listActiveImageGenerationTasksForSession("global", "research")).toEqual([]);
+      expect(
+        (await findDuplicateGuardImageGenerationTaskForSession("global", { agentId: "ops" }))
+          ?.taskId,
+      ).toBe("legacy-media");
+    });
     await closeOpenClawStateDatabaseAsync();
     expect(counters.map((counter) => counter.mock.calls.length)).toEqual([0, 0, 0, 0, 0, 0]);
   });
