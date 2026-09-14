@@ -1,9 +1,9 @@
 import Foundation
-import OpenClawKit
 import OpenClawProtocol
 import Testing
 @testable import OpenClaw
 @testable import OpenClawChatUI
+@testable import OpenClawKit
 
 struct IOSGatewayChatTransportTests {
     private actor ProgressRequestRecorder {
@@ -106,6 +106,7 @@ struct IOSGatewayChatTransportTests {
         let id: String
         let method: String
         let params: [String: AnyCodable]
+        let expectedProfileId: String?
     }
 
     private actor RequestRecorder {
@@ -122,11 +123,41 @@ struct IOSGatewayChatTransportTests {
         }
     }
 
+    private actor ResponseRetirement {
+        private var pending: (IOSNativeActionBinding, String)?
+
+        func arm(_ binding: IOSNativeActionBinding, method: String) {
+            self.pending = (binding, method)
+        }
+
+        func beforeResponse(_ request: RecordedRequest) async {
+            await self.retire(method: request.method)
+        }
+
+        func retire(method: String) async {
+            guard let (binding, pendingMethod) = self.pending, method == pendingMethod else { return }
+            self.pending = nil
+            #expect(await binding.accepts(EventFrame(
+                type: "event", event: "presence", payload: nil, recipientprofileid: "bob")) == false)
+        }
+    }
+
     private func withSessionTransport(
         unreadAckAdvertisement: Bool? = true,
+        gatewayID: String? = nil,
+        capabilities: [String] = [],
+        nativeProfileID: String? = nil,
+        nativeSessionKey: String = "agent:reviewer:main",
+        resolvesRequestedHistory: Bool = false,
+        sendPayload: String = #"{"runId":"submitted-run","status":"started"}"#,
+        retireOnSend: Bool = false,
+        responseError: (reason: String, execution: String)? = nil,
+        responsePayloads: [String: String] = [:],
+        beforeResponse: (@Sendable (RecordedRequest) async throws -> Void)? = nil,
         _ run: (IOSGatewayChatTransport, RequestRecorder) async throws -> Void) async throws
     {
         let recorder = RequestRecorder()
+        let gateway = GatewayNodeSession()
         let session = GatewayTestWebSocketSession(taskFactory: {
             GatewayTestWebSocketTask(sendHook: { socket, message, sendIndex in
                 guard sendIndex > 0 else { return }
@@ -139,16 +170,58 @@ struct IOSGatewayChatTransportTests {
                 let payload = switch request.method {
                 case "agents.list": GatewayWebSocketTestSupport.agentCatalogPayload
                 case "sessions.create": #"{"key":"forked"}"#
+                case "health": #"{"ok":true}"#
+                case "chat.history":
+                    if resolvesRequestedHistory {
+                        try String(decoding: JSONSerialization.data(withJSONObject: [
+                            "sessionKey": request.params["sessionKey"]?.value as? String ?? "",
+                            "messages": [],
+                            "sessionInfo": [
+                                "key": request.params["sessionKey"]?.value as? String ?? "",
+                                "agentId": request.params["agentId"]?.value as? String ?? "reviewer",
+                            ],
+                        ]), as: UTF8.self)
+                    } else {
+                        """
+                        {"sessionKey":"agent:reviewer:main","messages":[],
+                         "sessionInfo":{"key":"agent:reviewer:main","agentId":"reviewer"}}
+                        """
+                    }
+                case "sessions.list":
+                    #"{"ts":0,"count":2,"sessions":[{"key":"global"},{"key":"agent:other:main"}]}"#
+                case "chat.send": sendPayload
+                case "sessions.messages.subscribe": #"{"subscribed":true,"key":"agent:reviewer:main"}"#
                 default: #"{"entry":{}}"#
                 }
-                socket.emitReceiveSuccess(.data(Data(
-                    #"{"type":"res","id":"\#(request.id)","ok":true,"payload":\#(payload)}"#.utf8)))
+                if retireOnSend, request.method == "chat.send" {
+                    await gateway._test_handleChannelDisconnected("retired admission", socketGeneration: 1)
+                }
+                try await beforeResponse?(request)
+                if let responseError {
+                    try socket.emitReceiveSuccess(.data(JSONSerialization.data(withJSONObject: [
+                        "type": "res", "id": request.id, "ok": false,
+                        "error": ["code": "INVALID_REQUEST", "message": "Fixture refusal", "details": [
+                            "reason": responseError.reason, "execution": responseError.execution,
+                        ]],
+                    ])))
+                } else {
+                    let selectedPayload = responsePayloads[request.method] ?? payload
+                    socket.emitReceiveSuccess(.data(Data(
+                        #"{"type":"res","id":"\#(request.id)","ok":true,"payload":\#(selectedPayload)}"#.utf8)))
+                }
             }, receiveHook: { socket, receiveIndex in
                 if receiveIndex == 0 { return .data(GatewayWebSocketTestSupport.connectChallengeData()) }
                 let hello = GatewayWebSocketTestSupport.connectOkData(
                     id: socket.snapshotConnectRequestID() ?? "connect",
-                    methods: ["agents.list", "sessions.patch", "sessions.delete", "sessions.create"],
-                    capabilities: unreadAckAdvertisement == true ? ["session-unread-ack-contract"] : [])
+                    methods: [
+                        "agents.list",
+                        "sessions.patch",
+                        "sessions.delete",
+                        "sessions.create",
+                        "models.authLogin",
+                    ],
+                    capabilities: capabilities +
+                        (unreadAckAdvertisement == true ? ["session-unread-ack-contract"] : []))
                 guard unreadAckAdvertisement == nil else { return .data(hello) }
                 var frame = try #require(JSONSerialization.jsonObject(with: hello) as? [String: Any])
                 var payload = try #require(frame["payload"] as? [String: Any])
@@ -159,9 +232,9 @@ struct IOSGatewayChatTransportTests {
                 return try .data(JSONSerialization.data(withJSONObject: frame))
             })
         })
-        let gateway = GatewayNodeSession()
         var options = GatewayWebSocketTestSupport.identityFreeOperatorConnectOptions
         options.allowStoredDeviceAuth = false
+        options.deviceAuthGatewayID = gatewayID
         do {
             try await gateway.connect(
                 url: #require(URL(string: "ws://session-transport-test.invalid")),
@@ -171,11 +244,91 @@ struct IOSGatewayChatTransportTests {
                 onConnected: {},
                 onDisconnected: { _ in },
                 onInvoke: { BridgeInvokeResponse(id: $0.id, ok: true) })
-            try await run(IOSGatewayChatTransport(gateway: gateway, globalAgentId: " Reviewer "), recorder)
+            let binding: IOSNativeActionBinding?
+            if let nativeProfileID {
+                let ownerID = try #require(gatewayID)
+                binding = try IOSNativeActionBinding(
+                    session: OpenClawNativeSessionRef(
+                        owner: .init(gatewayID: ownerID, profileID: nativeProfileID),
+                        agentID: "reviewer",
+                        sessionKey: nativeSessionKey),
+                    gateway: gateway,
+                    route: #require(await gateway.currentRoute(ifGatewayID: ownerID)))
+            } else {
+                binding = nil
+            }
+            try await run(IOSGatewayChatTransport(
+                gateway: gateway,
+                globalAgentId: " Reviewer ",
+                outboxGatewayID: gatewayID,
+                nativeBinding: binding), recorder)
             await gateway.disconnect()
         } catch {
             await gateway.disconnect()
             throw error
+        }
+    }
+
+    @Test(arguments: ["global", "Matrix:Channel:Room"])
+    func `scoped native transport retains its profile route and exact raw key`(sessionKey: String) async throws {
+        try await self.withSessionTransport(
+            gatewayID: "gateway-a", capabilities: ["profile-binding-v1"],
+            nativeProfileID: "alice", nativeSessionKey: sessionKey, resolvesRequestedHistory: true)
+        { transport, recorder in
+            let scoped = try #require(transport.scoped(toAgentID: " Research ") as? IOSGatewayChatTransport)
+            let binding = try #require(transport.nativeBinding)
+            #expect(scoped.nativeBinding === binding)
+            #expect(scoped.gateway === transport.gateway)
+            #expect(scoped.outboxGatewayID == transport.outboxGatewayID)
+            #expect(scoped.chatGatewayAgentID == "research")
+            #expect(transport.chatGatewayAgentID == "reviewer")
+            #expect(transport.sessionTarget(for: sessionKey).agentID == "reviewer")
+            #expect(scoped.sessionTarget(for: sessionKey).agentID == "research")
+            #expect(scoped.sessionTarget(for: sessionKey, overrideAgentID: "third").agentID == "third")
+            #expect(try await scoped.requestHistory(sessionKey: sessionKey).sessionInfo?.agentId == "research")
+            let rows = try await scoped.listSessions(limit: nil, search: nil, archived: false)
+            #expect(rows.sessions.map(\.agentId) == ["research", "other"])
+            let requests = await recorder.all()
+            #expect(requests.map(\.method) == ["chat.history", "sessions.list"])
+            #expect((requests.first?.params["sessionKey"]?.value as? String)?.utf8
+                .elementsEqual(sessionKey.utf8) == true)
+            #expect(scoped.sessionTarget(for: sessionKey, overrideAgentID: "third").sessionKey.utf8
+                .elementsEqual(sessionKey.utf8))
+            #expect(requests.allSatisfy { $0.expectedProfileId == "alice" })
+            #expect(requests.allSatisfy { $0.params["agentId"]?.value as? String == "research" })
+            await transport.gateway.disconnect()
+            await #expect(throws: Error.self) { _ = try await scoped.requestHistory(sessionKey: sessionKey) }
+            #expect(await recorder.all().count == requests.count)
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func `native send lease retains actual CAS support and refuses a retired socket`(supportsCAS: Bool) async throws {
+        try await self.withSessionTransport(
+            gatewayID: "gateway-a",
+            capabilities: ["chat-send-routing-contract"] + (supportsCAS ? ["session-settings-cas-v1"] : []))
+        { transport, recorder in
+            let captured = try #require(await transport.gateway.currentRoute(ifGatewayID: "gateway-a"))
+            guard case let .available(lease) = await transport.acquireOutboxRouteLease(ifCurrentRoute: captured) else {
+                Issue.record("Expected a lease from the selected socket")
+                return
+            }
+            #expect(lease.supportsSessionSettingsCAS == supportsCAS)
+            await transport.gateway.disconnect()
+            guard case .unavailable = await transport.acquireOutboxRouteLease(ifCurrentRoute: captured) else {
+                Issue.record("A retired socket must not acquire a successor lease")
+                return
+            }
+            await #expect(throws: Error.self) {
+                try await lease.sendMessage(
+                    sessionKey: "agent:reviewer:main",
+                    agentID: "reviewer",
+                    message: "intentional message",
+                    thinking: "auto",
+                    idempotencyKey: "test-invocation",
+                    attachments: [])
+            }
+            #expect(await recorder.all().map(\.method) == ["agents.list"])
         }
     }
 
@@ -839,6 +992,876 @@ struct IOSGatewayChatTransportTests {
             stateversion: nil)
         let mapped = OpenClawChatGatewayPayloadCodec.event(from: frame)
         #expect(mapped == nil)
+    }
+}
+
+extension IOSGatewayChatTransportTests {
+    @Test(arguments: [nil, " profile-a ", "profile-e\u{301}", "profile-\u{E9}"] as [String?])
+    func `sign-in requests preserve the captured native profile and ordinary requests stay unbound`(
+        profileID: String?) async throws
+    {
+        try await self.withSessionTransport(
+            gatewayID: "gateway-a",
+            capabilities: ["profile-binding-v1"],
+            nativeProfileID: profileID)
+        { transport, recorder in
+            let context = try #require(await transport.acquireModelSignInContext(agentID: "reviewer"))
+            #expect(await context.isCurrent())
+            let calls: [(String, [String: AnyCodable])] = [
+                ("models.authStatus", ["agentId": AnyCodable(context.agentID)]),
+                ("models.authLogin", [
+                    "agentId": AnyCodable(context.agentID), "sessionId": AnyCodable("fixture-login"),
+                    "authChoice": AnyCodable("fixture/device"),
+                ]),
+                ("wizard.next", ["sessionId": AnyCodable("fixture-login")]),
+            ]
+            for (method, params) in calls {
+                _ = try await context.request(method, params)
+            }
+            let requests = await recorder.all()
+            #expect(requests.map(\.method) == calls.map(\.0))
+            for request in requests {
+                #expect(request.expectedProfileId.map { Array($0.utf8) } == profileID.map { Array($0.utf8) })
+                #expect(request.params["expectedProfileId"] == nil)
+            }
+
+            _ = try await context.closeWizard("fixture-login")
+            let cleanup = try #require(await recorder.all().last)
+            #expect(cleanup.method == "wizard.cancel")
+            #expect(cleanup.expectedProfileId == nil)
+            #expect(Set(cleanup.params.keys) == ["sessionId", "closeInput"])
+            #expect(cleanup.params["sessionId"]?.stringValue == "fixture-login")
+            #expect(cleanup.params["closeInput"]?.value as? Bool == true)
+        }
+    }
+
+    @Test
+    func `sign-in cleanup cannot cross onto a replacement physical socket`() async throws {
+        try await self.withSessionTransport(
+            gatewayID: "gateway-a",
+            capabilities: ["profile-binding-v1"],
+            nativeProfileID: "profile-a")
+        { transport, recorder in
+            let context = try #require(await transport.acquireModelSignInContext(agentID: "reviewer"))
+            await transport.gateway.disconnect()
+            let socket = GatewayTestWebSocketTask(sendHook: { socket, message, index in
+                guard index > 0 else { return }
+                let id = try #require(GatewayWebSocketTestSupport.requestID(from: message))
+                socket.emitReceiveSuccess(.data(GatewayWebSocketTestSupport.okResponseData(id: id)))
+            }, receiveHook: { socket, index in
+                if index == 0 { return .data(GatewayWebSocketTestSupport.connectChallengeData()) }
+                return .data(GatewayWebSocketTestSupport.connectOkData(
+                    id: socket.snapshotConnectRequestID() ?? "connect",
+                    methods: ["models.authLogin"],
+                    capabilities: ["profile-binding-v1"]))
+            })
+            var options = GatewayWebSocketTestSupport.identityFreeOperatorConnectOptions
+            options.allowStoredDeviceAuth = false
+            options.deviceAuthGatewayID = "gateway-a"
+            try await transport.gateway.connect(
+                url: #require(URL(string: "ws://session-transport-test.invalid")),
+                credentials: .init(),
+                connectOptions: options,
+                sessionBox: WebSocketSessionBox(session: GatewayTestWebSocketSession(taskFactory: { socket })),
+                onConnected: {},
+                onDisconnected: { _ in },
+                onInvoke: { .init(id: $0.id, ok: true) })
+
+            #expect(await context.isCurrent() == false)
+            await #expect(throws: CancellationError.self) {
+                _ = try await context.closeWizard("original-login")
+            }
+            await #expect(throws: GatewayNodeSessionRequestError.self) {
+                _ = try await context.request("models.authLogin", [
+                    "agentId": AnyCodable("reviewer"),
+                    "sessionId": AnyCodable("stale-login"),
+                    "authChoice": AnyCodable("fixture/device"),
+                ])
+            }
+            #expect(await recorder.all().isEmpty)
+            #expect(socket.snapshotSendCount() == 1)
+
+            let fresh = IOSGatewayChatTransport(gateway: transport.gateway, globalAgentId: "reviewer")
+            let freshContext = try #require(await fresh.acquireModelSignInContext(agentID: "reviewer"))
+            #expect(await freshContext.isCurrent())
+            _ = try await freshContext.request("models.authStatus", ["agentId": AnyCodable("reviewer")])
+            #expect(socket.snapshotSendCount() == 2)
+        }
+    }
+
+    private actor WidgetFixture {
+        var profileID: String
+        private var responseCount = 0
+        private var holdNext = false
+        private var held: (GatewayTestWebSocketTask, Data)?
+        private var heldWaiters: [CheckedContinuation<Void, Never>] = []
+
+        init(profileID: String) {
+            self.profileID = profileID
+        }
+
+        func setProfile(_ profileID: String) {
+            self.profileID = profileID
+        }
+
+        func holdNextRefresh() {
+            self.holdNext = true
+        }
+
+        func waitForHeldRefresh() async {
+            if self.held != nil { return }
+            await withCheckedContinuation { self.heldWaiters.append($0) }
+        }
+
+        func release() {
+            if let (socket, data) = self.held { socket.emitReceiveSuccess(.data(data)) }
+            self.held = nil
+            let waiters = self.heldWaiters
+            self.heldWaiters.removeAll()
+            for waiter in waiters {
+                waiter.resume()
+            }
+        }
+
+        func respond(_ socket: GatewayTestWebSocketTask, request: RecordedRequest) throws {
+            try #require(["plugin.surface.refresh", "agents.list"].contains(request.method))
+            if request.method == "plugin.surface.refresh" { self.responseCount += 1 }
+            let allowed = request.expectedProfileId.map { $0.utf8.elementsEqual(self.profileID.utf8) } ?? true
+            var frame: [String: Any] = ["type": "res", "id": request.id, "ok": allowed]
+            if allowed {
+                if request.method == "agents.list" {
+                    frame["payload"] = try JSONSerialization.jsonObject(
+                        with: Data(GatewayWebSocketTestSupport.agentCatalogPayload.utf8))
+                } else {
+                    frame["payload"] = ["pluginSurfaceUrls": [
+                        "canvas": "http://widget-test.invalid:9443/__openclaw__/cap/refresh-\(self.responseCount)",
+                    ]]
+                }
+            } else {
+                frame["error"] = [
+                    "code": "INVALID_REQUEST", "message": "Selected profile changed",
+                    "details": ["reason": "EXPECTED_PROFILE_MISMATCH"],
+                ]
+            }
+            let data = try JSONSerialization.data(withJSONObject: frame)
+            if self.holdNext, request.method == "plugin.surface.refresh" {
+                self.holdNext = false
+                self.held = (socket, data)
+                let waiters = self.heldWaiters
+                self.heldWaiters.removeAll()
+                for waiter in waiters {
+                    waiter.resume()
+                }
+            } else {
+                socket.emitReceiveSuccess(.data(data))
+            }
+        }
+    }
+
+    private func connectWidgetTransport(
+        gateway: GatewayNodeSession, fixture: WidgetFixture, recorder: RequestRecorder, profileID: String)
+        async throws -> IOSGatewayChatTransport
+    {
+        let session = GatewayTestWebSocketSession(taskFactory: {
+            GatewayTestWebSocketTask(sendHook: { socket, message, index in
+                guard index > 0 else { return }
+                let data: Data = switch message {
+                case let .data(value): value
+                case let .string(value): Data(value.utf8)
+                @unknown default: throw URLError(.cannotParseResponse)
+                }
+                try await fixture.respond(socket, request: recorder.record(data))
+            }, receiveHook: { socket, index in
+                if index == 0 { return .data(GatewayWebSocketTestSupport.connectChallengeData()) }
+                return .data(GatewayWebSocketTestSupport.connectOkData(
+                    id: socket.snapshotConnectRequestID() ?? "connect",
+                    canvasPluginSurfaceURL: "http://widget-test.invalid:9443/__openclaw__/cap/hello",
+                    methods: ["plugin.surface.refresh", "agents.list"], capabilities: ["profile-binding-v1"]))
+            })
+        })
+        var options = GatewayWebSocketTestSupport.identityFreeOperatorConnectOptions
+        options.allowStoredDeviceAuth = false
+        options.deviceAuthGatewayID = "widget-gateway"
+        try await gateway.connect(
+            url: #require(URL(string: "ws://widget-test.invalid")),
+            credentials: .init(), connectOptions: options, sessionBox: WebSocketSessionBox(session: session),
+            onConnected: {}, onDisconnected: { _ in }, onInvoke: { .init(id: $0.id, ok: true) })
+        let binding = try IOSNativeActionBinding(
+            session: .init(
+                owner: .init(gatewayID: "widget-gateway", profileID: profileID),
+                agentID: "main", sessionKey: "agent:main:main"),
+            gateway: gateway, route: #require(await gateway.currentRoute()))
+        return IOSGatewayChatTransport(gateway: gateway, nativeBinding: binding)
+    }
+
+    private func withWidgetTransport(
+        profileID: String = "alice",
+        _ run: (IOSGatewayChatTransport, WidgetFixture, RequestRecorder) async throws -> Void) async throws
+    {
+        let gateway = GatewayNodeSession()
+        let fixture = WidgetFixture(profileID: profileID)
+        let recorder = RequestRecorder()
+        do {
+            let transport = try await self.connectWidgetTransport(
+                gateway: gateway, fixture: fixture, recorder: recorder, profileID: profileID)
+            try await run(transport, fixture, recorder)
+        } catch {
+            await fixture.release()
+            await gateway.disconnect()
+            throw error
+        }
+        await fixture.release()
+        await gateway.disconnect()
+    }
+
+    @Test(arguments: [" alice ", "profile-e\u{301}", "profile-\u{E9}"])
+    func `native widget acquisition and denial preserve exact owners before ordinary chat resumes`(
+        profileID: String) async throws
+    {
+        try await self.withWidgetTransport(profileID: profileID) { transport, fixture, recorder in
+            let path = "/__openclaw__/canvas/documents/test/index.html"
+            let initial = try #require(await transport.resolveInlineWidgetResource(path: path, replacing: nil))
+            #expect(initial.url.path.contains("/cap/refresh-1/"))
+            #expect(initial.url.scheme == "http")
+            #expect(initial.url.host == "widget-test.invalid")
+            #expect(initial.url.port == 9443)
+            let recovered = try #require(await transport.resolveInlineWidgetResource(path: path, replacing: initial))
+            #expect(recovered.url.path.contains("/cap/refresh-2/"))
+            // Clear the resolver's recovery-attempt history before the next failure.
+            let current = try #require(await transport.resolveInlineWidgetResource(path: path, replacing: nil))
+            await fixture.setProfile("bob")
+            #expect(await transport.resolveInlineWidgetResource(path: path, replacing: current) == nil)
+            let denied = await recorder.all()
+            #expect(denied.count == 3)
+            #expect(denied.allSatisfy { $0.expectedProfileId?.utf8.elementsEqual(profileID.utf8) == true })
+            #expect(denied.allSatisfy { $0.params["expectedProfileId"] == nil })
+            let binding = try #require(transport.nativeBinding)
+            let scoped = try #require(transport.scoped(toAgentID: "research") as? IOSGatewayChatTransport)
+            #expect(await binding.isCurrent() == false)
+            #expect(await transport.resolveInlineWidgetResource(path: path, replacing: nil) == nil)
+            #expect(await scoped.resolveInlineWidgetResource(path: path, replacing: nil) == nil)
+            #expect(await recorder.all().count == 3)
+            #expect(await transport.gateway.currentCanvasHostRoute(
+                ifCurrentRoute: binding.route, expectedProfileId: profileID) == nil)
+            let bobBinding = IOSNativeActionBinding(
+                session: .init(
+                    owner: .init(gatewayID: "widget-gateway", profileID: "bob"),
+                    agentID: "main", sessionKey: "agent:main:main"),
+                gateway: transport.gateway, route: binding.route)
+            let bob = IOSGatewayChatTransport(gateway: transport.gateway, nativeBinding: bobBinding)
+            #expect(await bob.resolveInlineWidgetResource(path: path, replacing: nil) != nil)
+            let ordinary = IOSGatewayChatTransport(gateway: transport.gateway)
+            let unbound = try #require(await ordinary.resolveInlineWidgetResource(path: path, replacing: nil))
+            #expect(unbound.url.path.contains("/cap/refresh-5/"))
+            let requests = await recorder.all()
+            try #require(requests.count == 5)
+            #expect(requests[3].expectedProfileId == "bob")
+            #expect(requests[4].expectedProfileId == nil)
+        }
+    }
+
+    @Test func `same-lifetime widget waiters share one denial and both observe it`() async throws {
+        try await self.withWidgetTransport { transport, fixture, recorder in
+            let original = try #require(transport.nativeBinding)
+            let sibling = try await IOSNativeActionBinding.capture(
+                session: original.session, gateway: original.gateway, route: original.route, reusing: original)
+            #expect(original.profileObservationID == sibling.profileObservationID)
+            await fixture.setProfile("bob")
+            await fixture.holdNextRefresh()
+            let observations = AsyncStream<String>.makeStream(bufferingPolicy: .bufferingNewest(4))
+            let first = Task {
+                await original.gateway.refreshCanvasHostRoute(
+                    replacing: nil, ifCurrentRoute: original.route, expectedProfileId: original.expectedProfileId,
+                    profileObservationID: original.profileObservationID,
+                    onProfileObservation: {
+                        #expect($0 == .rejected(expectedProfileID: "alice"))
+                        original.observe($0)
+                        observations.continuation.yield("original")
+                    })
+            }
+            let second = Task {
+                await sibling.gateway.refreshCanvasHostRoute(
+                    replacing: nil, ifCurrentRoute: sibling.route, expectedProfileId: sibling.expectedProfileId,
+                    profileObservationID: sibling.profileObservationID,
+                    onProfileObservation: {
+                        #expect($0 == .rejected(expectedProfileID: "alice"))
+                        sibling.observe($0)
+                        observations.continuation.yield("sibling")
+                    })
+            }
+            do {
+                try await AsyncTimeout.withTimeout(seconds: 2, onTimeout: { URLError(.timedOut) }) {
+                    await fixture.waitForHeldRefresh()
+                    while await original.gateway._test_pluginSurfaceWaiterCounts() != (2, 0) {
+                        try await Task.sleep(for: .milliseconds(1))
+                    }
+                }
+                await fixture.release()
+                #expect(await first.value == nil)
+                #expect(await second.value == nil)
+                observations.continuation.finish()
+                var received: [String] = []
+                for await value in observations.stream {
+                    received.append(value)
+                }
+                #expect(received.sorted() == ["original", "sibling"])
+                #expect(await original.isCurrent() == false)
+                #expect(await sibling.isCurrent() == false)
+                #expect(await recorder.all().map(\.method) == ["agents.list", "plugin.surface.refresh"])
+            } catch {
+                await fixture.release()
+                first.cancel()
+                second.cancel()
+                _ = await first.value
+                _ = await second.value
+                observations.continuation.finish()
+                throw error
+            }
+        }
+    }
+
+    @Test func `fresh widget capture cannot join a retired lifetime's held denial`() async throws {
+        try await self.withWidgetTransport { transport, fixture, recorder in
+            let path = "/__openclaw__/canvas/documents/test/index.html"
+            let original = try #require(transport.nativeBinding)
+            let sibling = try await IOSNativeActionBinding.capture(
+                session: original.session, gateway: original.gateway, route: original.route, reusing: original)
+            await fixture.setProfile("bob")
+            await fixture.holdNextRefresh()
+            let old = Task { await transport.resolveInlineWidgetResource(path: path, replacing: nil) }
+            var loading: Task<OpenClawChatWidgetResource?, Never>?
+            do {
+                try await AsyncTimeout.withTimeout(seconds: 2, onTimeout: { URLError(.timedOut) }) {
+                    await fixture.waitForHeldRefresh()
+                }
+                #expect(await original.accepts(EventFrame(
+                    type: "event", event: "presence", payload: nil, recipientprofileid: "bob")) == false)
+                await fixture.setProfile("alice")
+                let fresh = try await IOSNativeActionBinding.capture(
+                    session: original.session, gateway: original.gateway, route: original.route, reusing: sibling)
+                #expect(fresh.profileObservationID != original.profileObservationID)
+                let freshTransport = IOSGatewayChatTransport(gateway: fresh.gateway, nativeBinding: fresh)
+                let current = Task { await freshTransport.resolveInlineWidgetResource(path: path, replacing: nil) }
+                loading = current
+                try await AsyncTimeout.withTimeout(seconds: 2, onTimeout: { URLError(.timedOut) }) {
+                    while await original.gateway._test_pluginSurfaceWaiterCounts() != (1, 1) {
+                        try await Task.sleep(for: .milliseconds(1))
+                    }
+                }
+                #expect(await recorder.all().filter { $0.method == "plugin.surface.refresh" }.count == 1)
+                await fixture.release()
+                #expect(await old.value == nil)
+                let resource = try #require(await current.value)
+                #expect(resource.url.path.contains("/cap/refresh-2/"))
+                #expect(await original.isCurrent() == false)
+                #expect(await sibling.isCurrent() == false)
+                #expect(await fresh.isCurrent())
+                #expect(await freshTransport.resolveInlineWidgetResource(path: path, replacing: nil)?.url == resource
+                    .url)
+                #expect(await transport.resolveInlineWidgetResource(path: path, replacing: nil) == nil)
+                #expect(await recorder.all().map(\.method) == [
+                    "agents.list", "plugin.surface.refresh", "agents.list", "plugin.surface.refresh",
+                ])
+            } catch {
+                await fixture.release()
+                old.cancel()
+                loading?.cancel()
+                _ = await old.value
+                _ = await loading?.value
+                throw error
+            }
+        }
+    }
+
+    @Test(arguments: ["changed owner", "matching owner", "typed rejection"])
+    func `late captured account observations cannot retire a fresh verified successor`(result: String) async throws {
+        try await self.withSessionTransport(
+            gatewayID: "native-observation", capabilities: [GatewayServerCapability.profileBinding.rawValue],
+            nativeProfileID: "alice")
+        { transport, recorder in
+            let original = try #require(transport.nativeBinding)
+            let sibling = try await IOSNativeActionBinding.capture(
+                session: original.session, gateway: original.gateway, route: original.route, reusing: original)
+            original.observe(.rejected(expectedProfileID: "another-profile"))
+            #expect(await original.isCurrent())
+            let entered = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+            let release = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+            let gateway = OpenClawChatNativeActionGateway(
+                gatewayID: original.session.owner.gatewayID, gatewayName: "Observation fixture",
+                supportsProfileBinding: { true },
+                request: { request, expected in
+                    #expect(request.method == "users.self")
+                    #expect(expected == "alice")
+                    entered.continuation.yield(())
+                    entered.continuation.finish()
+                    for await _ in release.stream {
+                        break
+                    }
+                    if result == "typed rejection" {
+                        throw GatewayResponseError(
+                            method: request.method, code: "INVALID_REQUEST", message: "Selected profile changed",
+                            details: [
+                                "reason": AnyCodable("EXPECTED_PROFILE_MISMATCH"),
+                                "execution": AnyCodable("may_have_executed"),
+                            ])
+                    }
+                    return Data((result == "changed owner" ? #"{"profile":{"id":"bob"}}"#
+                            : #"{"profile":{"id":"alice"}}"#).utf8)
+                },
+                isCurrent: { await original.gateway.currentRoute() == original.route },
+                onProfileObservation: { original.observe($0) })
+            let pending = Task { try await gateway.owner(expected: original.session.owner) }
+            do {
+                try await AsyncTimeout.withTimeout(seconds: 2, onTimeout: { URLError(.timedOut) }) {
+                    for await _ in entered.stream {
+                        return
+                    }
+                    throw CancellationError()
+                }
+                #expect(await original.accepts(EventFrame(
+                    type: "event", event: "presence", payload: nil, recipientprofileid: "bob")) == false)
+                let fresh = try await IOSNativeActionBinding.capture(
+                    session: original.session, gateway: original.gateway, route: original.route, reusing: sibling)
+                #expect(await fresh.isCurrent())
+                #expect(!original.canReuse(fresh))
+                release.continuation.yield(())
+                release.continuation.finish()
+                if result == "matching owner" {
+                    #expect(try await pending.value == original.session.owner)
+                } else if result == "typed rejection" {
+                    do {
+                        _ = try await pending.value
+                        Issue.record("The original typed refusal must survive observation")
+                    } catch let error as GatewayResponseError {
+                        #expect(error.detailsReason == "EXPECTED_PROFILE_MISMATCH")
+                        #expect(error.details["execution"]?.stringValue == "may_have_executed")
+                    }
+                } else {
+                    await #expect(throws: OpenClawNativeActionError.self) { _ = try await pending.value }
+                }
+                #expect(await original.isCurrent() == false)
+                #expect(await sibling.isCurrent() == false)
+                #expect(await fresh.isCurrent())
+                #expect(await recorder.all().map(\.method) == ["agents.list", "agents.list"])
+            } catch {
+                release.continuation.finish()
+                pending.cancel()
+                _ = try? await pending.value
+                throw error
+            }
+        }
+    }
+
+    @Test func `retired widget lookup and held recovery cannot use a successor socket`() async throws {
+        try await self.withWidgetTransport { transport, fixture, recorder in
+            let path = "/__openclaw__/canvas/documents/test/index.html"
+            let initial = try #require(await transport.resolveInlineWidgetResource(path: path, replacing: nil))
+            await fixture.holdNextRefresh()
+            async let loading = transport.resolveInlineWidgetResource(path: path, replacing: initial)
+            try await AsyncTimeout.withTimeout(
+                seconds: 2, onTimeout: { URLError(.timedOut) },
+                operation: { await fixture.waitForHeldRefresh() })
+            await transport.gateway.disconnect()
+            let successorRecorder = RequestRecorder()
+            let successor = try await self.connectWidgetTransport(
+                gateway: transport.gateway, fixture: fixture, recorder: successorRecorder, profileID: "alice")
+            await fixture.release()
+            #expect(await loading == nil)
+            #expect(await transport.resolveInlineWidgetResource(path: path, replacing: nil) == nil)
+            #expect(await recorder.all().count == 2)
+            #expect(await successorRecorder.all().isEmpty)
+            #expect(await successor.resolveInlineWidgetResource(path: path, replacing: nil) != nil)
+            #expect(await successorRecorder.all().map(\.expectedProfileId) == ["alice"])
+        }
+    }
+
+    @Test(arguments: [nil, "bob"] as [String?])
+    func `account retirement invalidates warm widgets across copies until a fresh verified capture`(
+        recipient: String?) async throws
+    {
+        try await self.withWidgetTransport { transport, fixture, recorder in
+            let path = "/__openclaw__/canvas/documents/test/index.html"
+            let binding = try #require(transport.nativeBinding)
+            let scoped = try #require(transport.scoped(toAgentID: "research") as? IOSGatewayChatTransport)
+            let initial = try #require(await transport.resolveInlineWidgetResource(path: path, replacing: nil))
+            #expect(await scoped.resolveInlineWidgetResource(path: path, replacing: nil)?.url == initial.url)
+            #expect(await recorder.all().map(\.method) == ["plugin.surface.refresh"])
+            let reused = try await IOSNativeActionBinding.capture(
+                session: binding.session, gateway: binding.gateway, route: binding.route, reusing: binding)
+            #expect(reused !== binding && binding.canReuse(reused))
+            #expect(reused.sessionRoutingContract == "per-sender|main|system")
+            #expect(reused.mediaConnection?.nativeBinding === reused)
+            let reusedTransport = IOSGatewayChatTransport(gateway: transport.gateway, nativeBinding: reused)
+            let stream = transport.events()
+            try await AsyncTimeout.withTimeout(seconds: 2, onTimeout: { URLError(.timedOut) }) {
+                while await transport.gateway._test_serverEventSubscriberCount() != 1 {
+                    try await Task.sleep(for: .milliseconds(1))
+                }
+            }
+            await fixture.setProfile("bob")
+            try await AsyncTimeout.withTimeout(seconds: 2, onTimeout: { URLError(.timedOut) }) {
+                var iterator = stream.makeAsyncIterator()
+                await transport.gateway._test_broadcastServerEvent(EventFrame(
+                    type: "event", event: "presence", payload: nil, recipientprofileid: recipient))
+                guard case let .routeUnavailable(reason) = await iterator.next() else {
+                    Issue.record("The account departure must visibly terminate this captured transport")
+                    return
+                }
+                #expect(reason == IOSNativeActionBinding.unavailableReason)
+                #expect(await iterator.next() == nil)
+            }
+            #expect(await transport.gateway.currentRoute() == binding.route)
+            #expect(await reused.isCurrent() == false)
+            for retained in [transport, scoped, reusedTransport] {
+                #expect(await retained.resolveInlineWidgetResource(path: path, replacing: nil) == nil)
+            }
+            #expect(await recorder.all().map(\.method) == ["plugin.surface.refresh", "agents.list"])
+            await fixture.setProfile("alice")
+            #expect(await binding.accepts(EventFrame(
+                type: "event", event: "presence", payload: nil, recipientprofileid: "alice")) == false)
+            let fresh = try await IOSNativeActionBinding.capture(
+                session: binding.session, gateway: binding.gateway, route: binding.route, reusing: reused)
+            #expect(fresh !== binding)
+            #expect(await fresh.isCurrent())
+            #expect(!binding.canReuse(fresh))
+            let reopened = IOSGatewayChatTransport(gateway: transport.gateway, nativeBinding: fresh)
+            #expect(await reopened.resolveInlineWidgetResource(path: path, replacing: nil)?.url == initial.url)
+            for retained in [transport, scoped, reusedTransport] {
+                #expect(await retained.resolveInlineWidgetResource(path: path, replacing: nil) == nil)
+            }
+            let requests = await recorder.all()
+            #expect(requests.map(\.method) == ["plugin.surface.refresh", "agents.list", "agents.list"])
+            #expect(requests.allSatisfy { $0.expectedProfileId == "alice" })
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func `native send receipt crosses retired postresponse fences but malformed data does not`(
+        malformed: Bool) async throws
+    {
+        try await self.withSessionTransport(
+            gatewayID: "gateway-a",
+            capabilities: ["profile-binding-v1"],
+            nativeProfileID: "profile-a",
+            sendPayload: malformed ? #"{"status":"started"}"# : #"{"runId":"original-run","status":"started"}"#,
+            retireOnSend: true)
+        { transport, recorder in
+            let binding = try #require(transport.nativeBinding)
+            do {
+                let response = try await transport.sendMessage(
+                    sessionKey: binding.session.sessionKey,
+                    message: "one invocation",
+                    thinking: nil,
+                    idempotencyKey: "original-invocation",
+                    attachments: [],
+                    ifCurrentRoute: binding.route)
+                #expect(!malformed)
+                #expect(response.runId == "original-run")
+            } catch is CancellationError {
+                #expect(malformed)
+            }
+            #expect(await binding.isCurrent() == false)
+            #expect(await recorder.all().filter { $0.method == "chat.send" }.count == 1)
+        }
+    }
+
+    @Test func `retirement during reused capture verification cannot mint a fresh owner`() async throws {
+        let retirement = ResponseRetirement()
+        try await self.withSessionTransport(
+            gatewayID: "gateway-a", capabilities: ["profile-binding-v1"], nativeProfileID: "alice",
+            beforeResponse: { await retirement.beforeResponse($0) })
+        { transport, recorder in
+            let original = try #require(transport.nativeBinding)
+            await retirement.arm(original, method: "agents.list")
+            await #expect(throws: CancellationError.self) {
+                _ = try await IOSNativeActionBinding.capture(
+                    session: original.session, gateway: original.gateway, route: original.route, reusing: original)
+            }
+            #expect(await original.isCurrent() == false)
+            let fresh = try await IOSNativeActionBinding.capture(
+                session: original.session, gateway: original.gateway, route: original.route, reusing: original)
+            #expect(await fresh.isCurrent())
+            #expect(!original.canReuse(fresh))
+            #expect(fresh.sessionRoutingContract == "per-sender|main|system")
+            #expect(fresh.mediaConnection?.nativeBinding === fresh)
+            #expect(await recorder.all().map(\.method) == ["agents.list", "agents.list"])
+        }
+    }
+
+    @Test(arguments: [
+        ("EXPECTED_PROFILE_MISMATCH", "not_started"),
+        ("EXPECTED_PROFILE_MISMATCH", "may_have_executed"),
+        ("FIXTURE_UNAVAILABLE", "not_started"),
+    ])
+    func `typed profile refusal retires shared authority without rewriting execution facts`(
+        reason: String, execution: String) async throws
+    {
+        try await self.withSessionTransport(
+            gatewayID: "gateway-a", capabilities: ["profile-binding-v1"], nativeProfileID: "alice",
+            responseError: (reason, execution))
+        { transport, recorder in
+            let binding = try #require(transport.nativeBinding)
+            let scoped = try #require(transport.scoped(toAgentID: "research") as? IOSGatewayChatTransport)
+            do {
+                _ = try await transport.requestHealth(timeoutMs: 250)
+                Issue.record("The fixture refusal must propagate")
+            } catch let error as GatewayResponseError {
+                #expect(error.method == "health")
+                #expect(error.code == "INVALID_REQUEST")
+                #expect(error.message == "Fixture refusal")
+                #expect(error.detailsReason == reason)
+                #expect(error.details["execution"]?.stringValue == execution)
+            }
+            let retired = reason == "EXPECTED_PROFILE_MISMATCH"
+            #expect(await binding.isCurrent() == !retired)
+            #expect(scoped.nativeBinding === binding)
+            #expect(await scoped.currentSessionMutationRoute() == (retired ? nil : binding.route))
+            if retired {
+                await #expect(throws: GatewayNodeSessionRequestError.self) {
+                    _ = try await scoped.requestHealth(timeoutMs: 250)
+                }
+                #expect(await binding.accepts(EventFrame(
+                    type: "event", event: "presence", payload: nil, recipientprofileid: "alice")) == false)
+            }
+            #expect(await recorder.all().map(\.method) == ["health"])
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func `account retirement suppresses held reads but preserves the accepted send receipt`(send: Bool) async throws {
+        let retirement = ResponseRetirement()
+        try await self.withSessionTransport(
+            gatewayID: "gateway-a", capabilities: ["profile-binding-v1", "chat-send-routing-contract"],
+            nativeProfileID: "alice", beforeResponse: { await retirement.beforeResponse($0) })
+        { transport, recorder in
+            let binding = try #require(transport.nativeBinding)
+            #expect(try await transport.requestHealth(timeoutMs: 250))
+            if send {
+                guard case let .available(lease) = await transport.acquireOutboxRouteLease() else {
+                    Issue.record("Expected the healthy captured send lease")
+                    return
+                }
+                await retirement.arm(binding, method: "chat.send")
+                let accepted = try await lease.sendMessage(
+                    sessionKey: binding.session.sessionKey, agentID: binding.session.agentID,
+                    message: "one accepted invocation", thinking: "auto",
+                    idempotencyKey: "retirement-invocation", attachments: [])
+                #expect(accepted.runId == "submitted-run")
+                await #expect(throws: OpenClawChatTransportSendError.self) {
+                    _ = try await lease.sendMessage(
+                        sessionKey: binding.session.sessionKey, agentID: binding.session.agentID,
+                        message: "must not send", thinking: "auto",
+                        idempotencyKey: "retired-invocation", attachments: [])
+                }
+            } else {
+                await retirement.arm(binding, method: "health")
+                await #expect(throws: CancellationError.self) { _ = try await transport.requestHealth(timeoutMs: 250) }
+            }
+            #expect(await binding.isCurrent() == false)
+            #expect(await transport.gateway.currentRoute() == binding.route)
+            await #expect(throws: GatewayNodeSessionRequestError.self) {
+                _ = try await transport.requestHealth(timeoutMs: 250)
+            }
+            #expect(await recorder.all().map(\.method) == (send
+                    ? ["health", "agents.list", "chat.send"] : ["health", "health"]))
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func `retired account cannot publish held HTTP or inline artifact bytes`(inline: Bool) async throws {
+        let retirement = ResponseRetirement()
+        let bytes = Data([1, 2, 3])
+        let artifactID = "artifact_managed_image_retirement"
+        let response = ArtifactsDownloadResult(
+            artifact: .init(id: artifactID, type: "image", title: "Fixture", mimetype: "image/png", download: [:]),
+            encoding: inline ? "base64" : nil, data: inline ? bytes.base64EncodedString() : nil,
+            url: inline ? nil : "/api/chat/media/outgoing/main/fixture/full?mediaTicket=fixture")
+        let payload = try String(decoding: JSONEncoder().encode(response), as: UTF8.self)
+        try await self.withSessionTransport(
+            gatewayID: "gateway-a", capabilities: ["profile-binding-v1"], nativeProfileID: "alice",
+            responsePayloads: ["artifacts.download": payload],
+            beforeResponse: { await retirement.beforeResponse($0) })
+        { transport, recorder in
+            let binding = try #require(transport.nativeBinding)
+            let reused = try await IOSNativeActionBinding.capture(
+                session: binding.session, gateway: binding.gateway, route: binding.route, reusing: binding)
+            let connection = try #require(reused.mediaConnection)
+            let loader = IOSMediaArtifactLoader(connectionProvider: { connection }, requestFactory: { captured, _ in
+                #expect(captured.nativeBinding === reused)
+                return { request in
+                    #expect(!inline)
+                    await retirement.retire(method: "http")
+                    return try (bytes, #require(HTTPURLResponse(
+                        url: #require(request.url), statusCode: 200, httpVersion: nil,
+                        headerFields: ["Content-Type": "image/png"])))
+                }
+            })
+            let mediaTransport = IOSGatewayChatTransport(
+                gateway: transport.gateway, mediaArtifactLoader: loader, nativeBinding: reused)
+            guard case let .data(warm) = try await mediaTransport.loadMediaArtifact(
+                sessionKey: binding.session.sessionKey, artifactId: artifactID, kind: .image, playback: nil)
+            else {
+                Issue.record("The healthy fixture must load the actual media bytes first")
+                return
+            }
+            #expect(warm.data == bytes && warm.mimeType == "image/png")
+            await retirement.arm(binding, method: inline ? "artifacts.download" : "http")
+            await #expect(throws: CancellationError.self) {
+                _ = try await mediaTransport.loadMediaArtifact(
+                    sessionKey: binding.session.sessionKey, artifactId: artifactID, kind: .image, playback: nil)
+            }
+            #expect(await binding.isCurrent() == false)
+            #expect(await reused.isCurrent() == false)
+            #expect(await transport.gateway.currentRoute() == binding.route)
+            #expect(try await mediaTransport.loadMediaArtifact(
+                sessionKey: binding.session.sessionKey, artifactId: artifactID, kind: .image, playback: nil) == nil)
+            #expect(await recorder.all().map(\.method) == ["agents.list", "artifacts.download", "artifacts.download"])
+        }
+    }
+
+    @Test(arguments: [nil, "profile-e\u{301}", "profile-\u{E9}"] as [String?])
+    func `native chat forwards one exact profile through reads subscriptions and the existing send lease`(
+        profileID: String?) async throws
+    {
+        try await self.withSessionTransport(
+            gatewayID: "gateway-a",
+            capabilities: ["profile-binding-v1", "chat-send-routing-contract"],
+            nativeProfileID: profileID)
+        { transport, recorder in
+            let history = try await transport.requestHistory(sessionKey: "agent:reviewer:main")
+            #expect(history.sessionInfo?.key == "agent:reviewer:main")
+            #expect(try await transport.requestHealth(timeoutMs: 250))
+            try await transport.setActiveSessionKey("agent:reviewer:main")
+            guard case let .available(lease) = await transport.acquireOutboxRouteLease() else {
+                Issue.record("Expected the current transport's canonical send lease")
+                return
+            }
+            let sent = try await lease.sendMessage(
+                sessionKey: "agent:reviewer:main",
+                agentID: "reviewer",
+                message: "intentional message",
+                thinking: "auto",
+                idempotencyKey: "native-invocation",
+                attachments: [])
+            #expect(sent.runId == "submitted-run")
+            let requests = await recorder.all()
+            #expect(requests.map(\.method) == [
+                "chat.history", "health", "sessions.messages.subscribe", "agents.list", "chat.send",
+            ])
+            for request in requests {
+                #expect(request.expectedProfileId.map { Array($0.utf8) } == profileID.map { Array($0.utf8) })
+                #expect(request.params["expectedProfileId"] == nil)
+            }
+            await transport.gateway.disconnect()
+            await #expect(throws: Error.self) {
+                _ = try await transport.requestHistory(sessionKey: "agent:reviewer:main")
+            }
+            #expect(await recorder.all().count == requests.count)
+        }
+    }
+
+    @Test func `native chat without binding capability reports unavailable before any RPC`() async throws {
+        try await self.withSessionTransport(
+            gatewayID: "gateway-a",
+            nativeProfileID: "profile-a")
+        { transport, recorder in
+            await #expect(throws: OpenClawNativeActionError.self) {
+                _ = try await transport.requestHealth(timeoutMs: 250)
+            }
+            let event = try await AsyncTimeout.withTimeout(
+                seconds: 2,
+                onTimeout: { URLError(.timedOut) },
+                operation: {
+                    var iterator = transport.events().makeAsyncIterator()
+                    return await iterator.next()
+                })
+            guard case let .routeUnavailable(reason) = event else {
+                Issue.record("Missing profile binding must visibly detach the native transport")
+                return
+            }
+            #expect(reason.contains("Update the selected Gateway"))
+            #expect(await recorder.all().isEmpty)
+        }
+    }
+
+    @Test func `native history rejects a different canonical session before presentation`() async throws {
+        try await self.withSessionTransport(
+            gatewayID: "gateway-a",
+            capabilities: ["profile-binding-v1"],
+            nativeProfileID: "profile-a")
+        { transport, recorder in
+            await #expect(throws: OpenClawNativeActionError.self) {
+                _ = try await transport.requestHistory(sessionKey: "agent:reviewer:other")
+            }
+            #expect(await recorder.all().map(\.method) == ["chat.history"])
+        }
+    }
+
+    @Test(arguments: ["current", "missing profile", "different profile", "retired route"])
+    func `native event stream distinguishes unrelated payloads from account retirement`(scenario: String) async throws {
+        try await self.withSessionTransport(
+            gatewayID: "gateway-a", capabilities: ["profile-binding-v1"], nativeProfileID: "profile-a")
+        { transport, _ in
+            let stream = transport.events()
+            try await AsyncTimeout.withTimeout(seconds: 2, onTimeout: { URLError(.timedOut) }) {
+                while await transport.gateway._test_serverEventSubscriberCount() != 1 {
+                    try await Task.sleep(for: .milliseconds(1))
+                }
+            }
+            try await AsyncTimeout.withTimeout(seconds: 2, onTimeout: { URLError(.timedOut) }) {
+                var iterator = stream.makeAsyncIterator()
+                if scenario == "current" {
+                    // Unmapped payloads still carry the operator's current recipient stamp.
+                    await transport.gateway._test_broadcastServerEvent(EventFrame(
+                        type: "event", event: "presence", payload: AnyCodable([:]), recipientprofileid: "profile-a"))
+                }
+                await transport.gateway._test_broadcastServerEvent(EventFrame(
+                    type: "event", event: "chat", payload: AnyCodable([
+                        "runId": "accepted-run", "sessionKey": "agent:reviewer:main", "state": "final",
+                    ]), recipientprofileid: "profile-a"))
+                guard case let .chat(chat) = await iterator.next() else {
+                    Issue.record("Current-account chat must remain deliverable before authority retires")
+                    return
+                }
+                #expect(chat.runId == "accepted-run")
+                if scenario == "current" || scenario == "retired route" {
+                    await transport.gateway.disconnect()
+                }
+                let recipient = scenario == "missing profile" ? nil :
+                    scenario == "different profile" ? "profile-b" : "profile-a"
+                await transport.gateway._test_broadcastServerEvent(EventFrame(
+                    type: "event", event: "chat", payload: AnyCodable([
+                        "runId": "must-not-surface", "sessionKey": "agent:reviewer:main", "state": "final",
+                    ]), recipientprofileid: recipient))
+                guard case let .routeUnavailable(reason) = await iterator.next() else {
+                    Issue.record("Lost account or route authority must terminate without exposing the payload")
+                    return
+                }
+                #expect(reason == IOSNativeActionBinding.unavailableReason)
+                #expect(await iterator.next() == nil)
+            }
+        }
+    }
+
+    @Test(arguments: ["profile-e\u{301}", "profile-\u{E9}", nil] as [String?])
+    func `native event admission requires exact recipient and captured socket`(recipient: String?) async throws {
+        try await self.withSessionTransport(
+            gatewayID: "gateway-a",
+            capabilities: ["profile-binding-v1"],
+            nativeProfileID: "profile-e\u{301}")
+        { transport, _ in
+            let binding = try #require(transport.nativeBinding)
+            let frame = EventFrame(
+                type: "event",
+                event: "session.message",
+                payload: AnyCodable(["sessionKey": "agent:reviewer:main"]),
+                seq: 1,
+                stateversion: nil,
+                recipientprofileid: recipient)
+            #expect(await binding.accepts(frame) == (recipient?.utf8.elementsEqual("profile-e\u{301}".utf8) == true))
+            await transport.gateway.disconnect()
+            #expect(await binding.accepts(frame) == false)
+        }
     }
 }
 

@@ -548,6 +548,48 @@ struct ChatViewModelAgentNavigationTests {
         #expect(vm.input == "Send once")
     }
 
+    @Test func `late global composer acknowledgement consumes only its captured agent draft`() async throws {
+        let sendGate = AgentNavigationGate()
+        let transport = AgentNavigationTransport(
+            catalogs: [.success(self.catalog(contract: "per-sender|inbox|main"))], sendGate: sendGate)
+        let fixture = AgentNavigationFixture(transport: transport, routingContract: "per-sender|inbox|main")
+        defer { fixture.close() }
+        let vm = fixture.viewModel
+        do {
+            await vm.refreshAgents()
+            vm.switchSession(to: "global", agentID: "research")
+            let sentText = "Research message sent once"
+            let originalKey = vm.composerSessionKey(for: "global", agentID: "research")
+            vm.input = sentText
+            vm.send()
+            try await waitUntil("research global send reaches held acknowledgement") {
+                await transport.sentTargets == [.init(sessionKey: "global", agentID: "research")]
+            }
+            vm.switchSession(to: "global", agentID: "main")
+            vm.input = "Keep the main agent draft"
+            vm.setReplyTarget(messageID: UUID(), text: "Keep the main quote", senderLabel: "User")
+            let mainReply = vm.replyTarget
+            let mainKey = vm.composerSessionKey(for: "global", agentID: "main")
+            #expect(mainKey != originalKey)
+            let mainHistory = vm.inputHistoriesBySession[mainKey]?.entries ?? []
+            await sendGate.release()
+            try await waitUntil("accepted input is recorded under its original canonical owner") {
+                await MainActor.run { vm.inputHistoriesBySession[originalKey]?.entries == [sentText] }
+            }
+            #expect(vm.input == "Keep the main agent draft")
+            #expect(vm.replyTarget == mainReply)
+            #expect((vm.inputHistoriesBySession[mainKey]?.entries ?? []) == mainHistory)
+            vm.switchSession(to: "global", agentID: "research")
+            #expect(vm.input.isEmpty)
+            #expect(vm.recallPreviousInput(caretOnFirstLine: true))
+            #expect(vm.input == sentText)
+            #expect(await transport.sentTargets == [.init(sessionKey: "global", agentID: "research")])
+        } catch {
+            await sendGate.release()
+            throw error
+        }
+    }
+
     @Test func `agent selection preserves an attachment owned by the current chat`() async {
         let transport = AgentNavigationTransport(catalogs: [.success(self.catalog())])
         let fixture = AgentNavigationFixture(transport: transport)

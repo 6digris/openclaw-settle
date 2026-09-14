@@ -5115,6 +5115,14 @@ jobs:
         if: matrix.phase == 'smoke' || matrix.phase == 'tests'
         run: pnpm ios:build
 
+      - name: Prove native iOS actions against a real Gateway
+        if: (matrix.phase == 'smoke' || matrix.phase == 'tests') && needs.preflight.outputs.compatibility_target != 'true'
+        env:
+          OPENCLAW_BUILD_PRIVATE_QA: "1"
+        run: |
+          pnpm build qaRuntime
+          node --import ./scripts/tsx.mjs scripts/test-native-action-gateway.mts ios
+
       # Debug's incremental compilation can miss actor-isolation diagnostics
       # that Swift's optimized whole-module Release build enforces.
       - name: Build iOS app (Release)
@@ -5167,6 +5175,8 @@ jobs:
             -only-testing:OpenClawLogicTests/WatchVoiceTurnTrackerTests \
             -only-testing:OpenClawTests/DelayedActionGateTests \
             -only-testing:OpenClawTests/IOSGatewayChatTransportTests \
+            -only-testing:OpenClawTests/NativeActionRouterTests \
+            -only-testing:OpenClawTests/NativeActionVisualProofTests \
             -only-testing:OpenClawTests/LocationServiceCallbackTests \
             -only-testing:OpenClawTests/LocationServiceOrderingTests \
             -only-testing:OpenClawTests/NodeAppModelInvokeTests \
@@ -5176,6 +5186,7 @@ jobs:
             -only-testing:OpenClawTests/OpenClawTypographyTests \
             -only-testing:OpenClawTests/NotificationServingPreferenceTests \
             -only-testing:OpenClawTests/RootTabsSourceGuardTests \
+            -only-testing:OpenClawTests/SwiftUIRenderSmokeTests \
             -only-testing:OpenClawTests/TraceHeadingVisualProofTests \
             test
           xcodebuild \
@@ -5246,6 +5257,80 @@ jobs:
           xcodebuild "${xcodebuild_args[@]}" "${test_args[@]}" \
             -resultBundlePath apps/ios/build/LifecycleTestResults/OpenClawWatchOperationTests.xcresult \
             test-without-building
+
+      - name: Export native action visual proof
+        id: native_action_visual_proof
+        if: ${{ always() && steps.ios_lifecycle_tests.outcome != '' && steps.ios_lifecycle_tests.outcome != 'skipped' }}
+        env:
+          PROOF_SOURCE_SHA: ${{ needs.preflight.outputs.checkout_revision }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, struct, subprocess
+          bundle = "apps/ios/build/LifecycleTestResults/OpenClawLifecycleTests.xcresult"
+          result = json.loads(subprocess.check_output([
+              "xcrun", "xcresulttool", "get", "test-results", "tests", "--path", bundle]))
+          def walk(nodes):
+              for node in nodes:
+                  yield node
+                  yield from walk(node.get("children", []))
+          matches = [node for node in walk(result["testNodes"])
+                     if node["nodeType"] == "Test Case"
+                     and node.get("nodeIdentifier", "").rstrip("()").endswith(
+                         "NativeActionVisualProofTests/testInspectionRetiresWhenSelectedAgentChanges")]
+          assert len(matches) == 1 and matches[0]["result"] == "Passed", "Native visual case must pass exactly once"
+          test_id = matches[0]["nodeIdentifier"]
+          test_url = matches[0]["nodeIdentifierURL"]
+          raw = pathlib.Path(os.environ["RUNNER_TEMP"]) / "native-action-visual-attachments"
+          approved = pathlib.Path("apps/ios/build/NativeActionVisualProof")
+          raw.mkdir(exist_ok=False)
+          approved.mkdir(exist_ok=False)
+          subprocess.run(["xcrun", "xcresulttool", "export", "attachments", "--path", bundle,
+                          "--test-id", test_url, "--output-path", str(raw)], check=True)
+          exported = json.loads((raw / "manifest.json").read_text())
+          expected = {"native-action-before-inspection", "native-action-after-inspection",
+                      "native-action-after-agent-change"}
+          images = []
+          for test in exported:
+              assert test["testIdentifierURL"] == test_url, "Unexpected attachment test owner"
+              for attachment in test["attachments"]:
+                  # Our attachment names contain no underscores; export metadata suffixes do.
+                  label = attachment["suggestedHumanReadableName"].removesuffix(".png").split("_", 1)[0]
+                  if label not in expected:
+                      continue
+                  assert not attachment["isAssociatedWithFailure"], "Failure image is not accepted proof"
+                  source_name = attachment["exportedFileName"]
+                  assert pathlib.Path(source_name).name == source_name, "Attachment path must be a basename"
+                  source = raw / source_name
+                  assert source.is_file() and not source.is_symlink() and source.stat().st_size <= 8 * 1024 * 1024
+                  data = source.read_bytes()
+                  assert data[:8] == b"\x89PNG\r\n\x1a\n" and data[12:16] == b"IHDR", "Expected PNG image"
+                  width, height = struct.unpack(">II", data[16:24])
+                  assert 0 < width <= 2000 and 0 < height <= 4000, "Unexpected image bounds"
+                  name = label + ".png"
+                  assert not (approved / name).exists(), "Duplicate proof image"
+                  (approved / name).write_bytes(data)
+                  images.append({"name": name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+                                 "width": width, "height": height})
+          assert {image["name"][:-4] for image in images} == expected and len(images) == 3
+          # Publish no xcresult manifest, device identifiers, paths, or diagnostic attachments.
+          manifest = {"sourceSha": os.environ["PROOF_SOURCE_SHA"], "runId": os.environ["GITHUB_RUN_ID"],
+                      "attempt": os.environ["GITHUB_RUN_ATTEMPT"], "test": test_id, "result": "Passed",
+                      "comparison": "same-candidate action states", "images": sorted(images, key=lambda row: row["name"])}
+          (approved / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          PY
+
+      - name: Upload native action visual proof
+        if: ${{ steps.native_action_visual_proof.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ios-native-action-visual-proof-${{ needs.preflight.outputs.checkout_revision }}
+          path: |
+            apps/ios/build/NativeActionVisualProof/native-action-before-inspection.png
+            apps/ios/build/NativeActionVisualProof/native-action-after-inspection.png
+            apps/ios/build/NativeActionVisualProof/native-action-after-agent-change.png
+            apps/ios/build/NativeActionVisualProof/manifest.json
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Upload iOS lifecycle simulator evidence
         if: ${{ always() && steps.ios_lifecycle_tests.outcome != '' && steps.ios_lifecycle_tests.outcome != 'skipped' }}

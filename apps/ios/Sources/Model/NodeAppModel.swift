@@ -624,7 +624,19 @@ final class NodeAppModel {
         return self.isOperatorGatewayConnected ? "operator" : "offline"
     }
 
-    func makeChatTransport(outboxGatewayID: String? = nil) -> any OpenClawChatTransport {
+    func makeChatTransport(
+        outboxGatewayID: String? = nil,
+        nativeBinding: IOSNativeActionBinding? = nil) -> any OpenClawChatTransport
+    {
+        if let nativeBinding {
+            return IOSGatewayChatTransport(
+                gateway: nativeBinding.gateway,
+                globalAgentId: nativeBinding.session.agentID,
+                outboxGatewayID: nativeBinding.session.owner.gatewayID,
+                mediaArtifactLoader: IOSMediaArtifactLoader(
+                    connectionProvider: { nativeBinding.mediaConnection }),
+                nativeBinding: nativeBinding)
+        }
         if self.isScreenshotFixtureModeEnabled {
             return LocalFixtureChatTransport(fixture: .appScreenshots)
         }
@@ -1726,7 +1738,17 @@ final class NodeAppModel {
         await self.refreshAgentsFromGateway()
     }
 
+    @ObservationIgnored var chatSelectionDidChange: (@MainActor () -> Void)?
+
+    private var chatSelectionTarget: OpenClawChatSessionTarget {
+        OpenClawChatSessionTarget(sessionKey: self.chatSessionKey, agentID: self.chatDeliveryAgentId)
+    }
+
     func setSelectedAgentId(_ agentId: String?) {
+        let previousTarget = self.chatSelectionTarget
+        defer {
+            if self.chatSelectionTarget != previousTarget { self.chatSelectionDidChange?() }
+        }
         let trimmed = (agentId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let nextSelectedAgentId = trimmed.isEmpty ? nil : trimmed
         let currentSelectedAgentId = self.selectedAgentId?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3509,7 +3531,19 @@ extension NodeAppModel {
         return true
     }
 
+    func focusChatSession(_ target: OpenClawChatSessionTarget) {
+        let agentID = OpenClawChatSessionKey.agentID(from: target.sessionKey) ?? target.agentID
+        if let agentID, self.chatDeliveryAgentId != agentID {
+            self.setSelectedAgentId(agentID)
+        }
+        self.focusChatSession(target.sessionKey)
+    }
+
     func focusChatSession(_ sessionKey: String?) {
+        let previousTarget = self.chatSelectionTarget
+        defer {
+            if self.chatSelectionTarget != previousTarget { self.chatSelectionDidChange?() }
+        }
         let trimmed = (sessionKey ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         self.focusedChatSessionKey = trimmed.isEmpty ? nil : trimmed
         self.synchronizeTalkSessionKey()

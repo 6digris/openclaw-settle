@@ -17,6 +17,7 @@ struct RootTabs: View {
     @Environment(NodeAppModel.self) private var appModel
     @Environment(VoiceWakeManager.self) private var voiceWake
     @Environment(GatewayConnectionController.self) private var gatewayController
+    @Environment(NativeActionRouter.self) private var nativeActions: NativeActionRouter?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.displayScale) private var displayScale
     @Environment(\.scenePhase) private var scenePhase
@@ -58,6 +59,9 @@ struct RootTabs: View {
     @State private var didApplyInitialChatSession: Bool = false
     @State private var gatewaySetupRequest: GatewaySetupRequest?
     @State private var suppressedExecApprovalForNotificationSettings: NodeAppModel.ExecApprovalInboxKey?
+    @State private var nativeRunInspection: NativeActionRouter.RunPresentation?
+    @State private var nativeChatBinding: IOSNativeActionBinding?
+    @State private var nativePresentationID: UUID?
 
     init(initialSidebarVisibility: Bool? = nil) {
         let resolvedVisibility = initialSidebarVisibility ?? Self.initialSidebarVisibility
@@ -304,6 +308,8 @@ struct RootTabs: View {
             // Agent identity pill owns the chat header (prototype parity).
             ChatProTab(
                 headerSidebarAction: self.sidebarHeaderAction,
+                nativeBinding: self.nativeChatBinding,
+                nativePresentationID: self.nativePresentationID,
                 openSettings: { self.selectSidebarDestination(.gateway) })
         case .overview:
             CommandCenterTab(
@@ -601,6 +607,80 @@ struct RootTabs: View {
                 self.applyInitialChatSessionIfNeeded()
                 self.handleLiveVoiceStartRequest()
                 self.handleOpenChatRequest(self.appModel.openChatRequestID)
+                self.nativePresentationID = self.nativeActions?.registerPresentation(onRetire: {
+                    self.nativeChatBinding = nil
+                    self.nativeRunInspection = nil
+                }) { request, binding, receipt in
+                    guard UIApplication.shared.applicationState == .active,
+                          !self.showOnboarding, self.presentedSheet == nil
+                    else {
+                        throw OpenClawNativeActionError("Finish the current screen in OpenClaw, then try again.")
+                    }
+                    if let existing = self.nativeRunInspection {
+                        guard case let .inspect(run) = request, existing.inspection.run == run else {
+                            throw OpenClawNativeActionError("Close the current run inspection, then try again.")
+                        }
+                    }
+                    let session = request.session
+                    self.appModel.setSelectedAgentId(session.agentID)
+                    self.appModel.focusChatSession(session.sessionKey)
+                    self.nativeChatBinding = binding
+                    self.selectSidebarDestination(.chat)
+                    self.nativeRunInspection = receipt
+                }
+            }
+            .sheet(item: self.$nativeRunInspection) { presentation in
+                NavigationStack {
+                    Form {
+                        LabeledContent {
+                            Text(presentation.inspection.run.runID).font(OpenClawType.body)
+                        } label: {
+                            Text("Run").font(OpenClawType.body)
+                        }
+                        LabeledContent {
+                            Text(presentation.inspection.run.session.sessionKey).font(OpenClawType.body)
+                        } label: {
+                            Text("Session").font(OpenClawType.body)
+                        }
+                        LabeledContent {
+                            Text(presentation.inspection.run.session.agentID).font(OpenClawType.body)
+                        } label: {
+                            Text("Agent").font(OpenClawType.body)
+                        }
+                        LabeledContent {
+                            Text(presentation.inspection.run.session.owner.profileID).font(OpenClawType.body)
+                        } label: {
+                            Text("Account").font(OpenClawType.body)
+                        }
+                        LabeledContent {
+                            Text(presentation.inspection.run.session.owner.gatewayID).font(OpenClawType.body)
+                        } label: {
+                            Text("Gateway").font(OpenClawType.body)
+                        }
+                        Text(presentation.inspection.summary)
+                            .font(OpenClawType.body)
+                            .textSelection(.enabled)
+                    }
+                    .navigationTitle("Run")
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button {
+                                self.nativeRunInspection = nil
+                            } label: {
+                                Text("Done").font(OpenClawType.body)
+                            }
+                        }
+                    }
+                }
+                .onAppear {
+                    self.nativeActions?.acknowledgeInspection(
+                        presentation, presentationID: self.nativePresentationID)
+                }
+            }
+            .onChange(of: self.appModel.chatSessionKey) { _, _ in self.clearChangedNativeChatSelection() }
+            .onChange(of: self.appModel.chatDeliveryAgentId) { _, _ in self.clearChangedNativeChatSelection() }
+            .onChange(of: self.appModel.chatTranscriptCacheGatewayID) { _, _ in
+                self.clearChangedNativeChatSelection()
             }
             .onChange(of: self.preventSleep) { _, _ in self.updateIdleTimer() }
             .onChange(of: self.appModel.talkMode.isEnabled) { _, _ in self.updateIdleTimer() }
@@ -617,9 +697,26 @@ struct RootTabs: View {
                 }
             }
             .onDisappear {
+                if let id = self.nativePresentationID {
+                    self.nativeActions?.unregisterPresentation(id)
+                    self.nativePresentationID = nil
+                }
                 UIApplication.shared.isIdleTimerDisabled = false
                 self.clearVoiceWakeToast()
             }
+    }
+
+    private func clearChangedNativeChatSelection() {
+        guard let binding = self.nativeChatBinding else { return }
+        let session = binding.session
+        guard self.appModel.chatSessionKey.utf8.elementsEqual(session.sessionKey.utf8),
+              self.appModel.chatDeliveryAgentId?.utf8.elementsEqual(session.agentID.utf8) == true,
+              self.appModel.chatTranscriptCacheGatewayID?.utf8
+                  .elementsEqual(session.owner.gatewayID.utf8) == true
+        else {
+            self.nativeActions?.retireChatSelection(presentationID: self.nativePresentationID)
+            return
+        }
     }
 
     private func clearVoiceWakeToast() {
