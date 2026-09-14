@@ -146,6 +146,7 @@ const FENCED_PROVIDER_READ_ACTIONS = new Set<ChannelMessageActionName>([
   "channel-list",
   "voice-status",
   "event-list",
+  "sticker-search",
 ]);
 
 function resolveMessageActionReadEnforcement(params: {
