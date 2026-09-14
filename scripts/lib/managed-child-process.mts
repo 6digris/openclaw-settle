@@ -1,6 +1,6 @@
 // Runs child commands with process-group signal forwarding and Windows shell normalization.
 import { spawn, spawnSync } from "node:child_process";
-import type { ChildProcess, StdioOptions } from "node:child_process";
+import type { ChildProcess, SpawnSyncReturns, StdioOptions } from "node:child_process";
 import { constants as osConstants, tmpdir } from "node:os";
 import { Writable } from "node:stream";
 import { buildCmdExeCommandLine, resolveWindowsCmdExePath } from "../windows-cmd-helpers.mjs";
@@ -23,9 +23,28 @@ type ManagedProcessGroupChild = {
 type ManagedProcessGroupOptions = {
   deadlineAt?: number;
   errorPolicy: ManagedProcessGroupErrorPolicy;
+  inspection?: { snapshot?: LinuxGroupSnapshot };
   inspectLeaderWhenNoGroup?: boolean;
   platform?: NodeJS.Platform;
   useProcessGroup?: boolean;
+};
+type LinuxGroupSnapshot = {
+  snapshotStatus: "not-run" | "budget-exhausted" | "ok" | "failed";
+  psExitCode: number | null;
+  errorCategory: "timeout" | "missing" | "denied" | "buffer" | "other" | null;
+  truncated: boolean;
+  zombieRows: number | null;
+  nonZombieRows: number | null;
+  malformedOrOtherGroupRows: number | null;
+};
+const EMPTY_LINUX_GROUP_SNAPSHOT: LinuxGroupSnapshot = {
+  snapshotStatus: "not-run",
+  psExitCode: null,
+  errorCategory: null,
+  truncated: false,
+  zombieRows: null,
+  nonZombieRows: null,
+  malformedOrOtherGroupRows: null,
 };
 type TaskkillRunner = (
   command: string,
@@ -205,6 +224,7 @@ export function inspectManagedProcessGroup(
   {
     deadlineAt,
     errorPolicy,
+    inspection,
     inspectLeaderWhenNoGroup = false,
     platform = process.platform,
     useProcessGroup = platform !== "win32",
@@ -225,7 +245,7 @@ export function inspectManagedProcessGroup(
   try {
     process.kill(-pid, 0);
     if (platform === "linux" && (child.exitCode != null || child.signalCode != null)) {
-      if (isLinuxZombieProcessGroup(pid, deadlineAt)) {
+      if (isLinuxZombieProcessGroup(pid, deadlineAt, inspection)) {
         return "dead";
       }
       // The group may be reaped while ps runs. Recheck kernel existence without
@@ -258,7 +278,11 @@ export function inspectManagedProcessGroup(
   }
 }
 
-function isLinuxZombieProcessGroup(pid: number, deadlineAt?: number): boolean {
+function isLinuxZombieProcessGroup(
+  pid: number,
+  deadlineAt?: number,
+  inspection?: ManagedProcessGroupOptions["inspection"],
+): boolean {
   const timeout =
     deadlineAt === undefined
       ? PROCESS_GROUP_DRAIN_TIMEOUT_MS
@@ -266,6 +290,9 @@ function isLinuxZombieProcessGroup(pid: number, deadlineAt?: number): boolean {
   // Snapshot work shares its owner's deadline. Exhaustion is not death, and
   // timeout: 0 would silently remove Node's subprocess timeout.
   if (timeout <= 0) {
+    if (inspection) {
+      inspection.snapshot = { ...EMPTY_LINUX_GROUP_SNAPSHOT, snapshotStatus: "budget-exhausted" };
+    }
     return false;
   }
   // Detached children lead their own session. Linux kill(0) includes zombies,
@@ -278,6 +305,9 @@ function isLinuxZombieProcessGroup(pid: number, deadlineAt?: number): boolean {
     timeout,
     killSignal: "SIGKILL",
   });
+  if (inspection) {
+    inspection.snapshot = summarizeLinuxGroupSnapshot(pid, result);
+  }
   const zombie = new RegExp(`^\\s*${pid}\\s+Z\\s*$`, "u");
   // Missing, failed or unrecognized snapshots never certify completion.
   return (
@@ -288,6 +318,60 @@ function isLinuxZombieProcessGroup(pid: number, deadlineAt?: number): boolean {
       .split("\n")
       .every((row) => zombie.test(row))
   );
+}
+
+function summarizeLinuxGroupSnapshot(
+  pid: number,
+  result: SpawnSyncReturns<string>,
+): LinuxGroupSnapshot {
+  const snapshot: LinuxGroupSnapshot = { ...EMPTY_LINUX_GROUP_SNAPSHOT, snapshotStatus: "failed" };
+  try {
+    const { status, error, stdout } = result;
+    const code = error && "code" in error ? error.code : undefined;
+    snapshot.psExitCode =
+      Number.isInteger(status) && status !== null && status >= 0 && status <= 255 ? status : null;
+    snapshot.errorCategory = !error
+      ? null
+      : code === "ETIMEDOUT"
+        ? "timeout"
+        : code === "ENOENT"
+          ? "missing"
+          : code === "EACCES" || code === "EPERM"
+            ? "denied"
+            : code === "ENOBUFS"
+              ? "buffer"
+              : "other";
+    if (error || status !== 0 || typeof stdout !== "string") {
+      return snapshot;
+    }
+    snapshot.snapshotStatus = "ok";
+    // Bound only this diagnostic pass; the original zombie decision stays authoritative.
+    // ps -L reports thread-state rows, not a count or identity of live processes.
+    snapshot.truncated = stdout.length > 16 * 1024;
+    const rows = snapshot.truncated ? [] : stdout.trim().split("\n", 1_025);
+    snapshot.truncated ||= rows.length > 1_024;
+    if (!snapshot.truncated) {
+      snapshot.zombieRows = snapshot.nonZombieRows = snapshot.malformedOrOtherGroupRows = 0;
+      for (const row of rows) {
+        const match = /^\s*(\d+)\s+([A-Zt])\s*$/u.exec(row);
+        if (!match || Number(match[1]) !== pid) {
+          snapshot.malformedOrOtherGroupRows += 1;
+        } else if (match[2] === "Z") {
+          snapshot.zombieRows += 1;
+        } else {
+          snapshot.nonZombieRows += 1;
+        }
+      }
+    }
+  } catch {
+    // Optional diagnostics must not change cleanup's result, error, or deadline.
+    return {
+      ...EMPTY_LINUX_GROUP_SNAPSHOT,
+      snapshotStatus: "failed",
+      errorCategory: "other",
+    };
+  }
+  return snapshot;
 }
 
 export async function waitForManagedProcessGroupExit(
@@ -534,13 +618,21 @@ async function finalizeManagedChild(
   // Normal exit has no grace period: surviving group members are a failure.
   const startedAt = Date.now();
   const forceDelay = signal ? forceKillDelayMs : 0;
+  const inspection: NonNullable<ManagedProcessGroupOptions["inspection"]> = {};
+  // Retain the pre-signal facts; later polls cannot explain the original refusal.
+  const initialGroupInspection = signal
+    ? undefined
+    : {
+        initialState: inspectManagedProcessGroup(child, {
+          deadlineAt: startedAt + forceDelay + PROCESS_GROUP_DRAIN_TIMEOUT_MS,
+          errorPolicy: "indeterminate",
+          inspection,
+          platform,
+        }),
+        ...(inspection.snapshot ?? EMPTY_LINUX_GROUP_SNAPSHOT),
+      };
   const termination =
-    !signal &&
-    inspectManagedProcessGroup(child, {
-      deadlineAt: startedAt + forceDelay + PROCESS_GROUP_DRAIN_TIMEOUT_MS,
-      errorPolicy: "indeterminate",
-      platform,
-    }) === "dead"
+    initialGroupInspection?.initialState === "dead"
       ? { processTreeState: "terminated" }
       : terminateManagedChild(child, signal ?? "SIGKILL", { platform, runTaskkill });
   if (platform === "win32" && termination?.processTreeState !== "terminated") {
@@ -549,6 +641,7 @@ async function finalizeManagedChild(
       child,
       platform,
       "indeterminate",
+      initialGroupInspection,
     );
   }
   // POSIX probes share the original budget; Windows retains its existing
@@ -584,6 +677,7 @@ async function finalizeManagedChild(
           child,
           platform,
           "terminated",
+          initialGroupInspection,
         );
       }
       return;
@@ -613,6 +707,7 @@ async function finalizeManagedChild(
     child,
     platform,
     groupState === "live" ? "live" : "indeterminate",
+    initialGroupInspection,
   );
 }
 
@@ -629,6 +724,9 @@ function createManagedCommandCleanupError(
   child: ChildProcess,
   platform: NodeJS.Platform,
   processTreeState: ProcessTreeState,
+  initialGroupInspection?: LinuxGroupSnapshot & {
+    initialState: ReturnType<typeof inspectManagedProcessGroup>;
+  },
 ) {
   const processGroupId =
     platform !== "win32" &&
@@ -642,6 +740,7 @@ function createManagedCommandCleanupError(
     ...(platform === "win32" ? { manualRecoveryRequired: true } : {}),
     ...(processGroupId === undefined ? {} : { processGroupId }),
     processTreeState,
+    ...(initialGroupInspection ? { initialGroupInspection } : {}),
   });
 }
 
