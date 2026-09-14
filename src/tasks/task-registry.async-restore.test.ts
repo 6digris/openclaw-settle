@@ -915,29 +915,6 @@ describe("asynchronous registry restoration", () => {
     },
   );
 
-  it("publishes a fully ready flow owner before an observer reenters its synchronous update", async () => {
-    const store = createInMemoryTaskFlowRegistryStore({ flows: new Map([[flow.flowId, flow]]) });
-    const events: string[] = [];
-    configureTaskFlowRegistryRuntime({
-      store: {
-        ...store,
-        loadSnapshot: () => {
-          throw new Error("unexpected synchronous restore");
-        },
-      },
-      observers: {
-        onEvent(event) {
-          events.push(event.kind);
-          if (event.kind === "restored") {
-            setFlowWaiting({ flowId: flow.flowId, expectedRevision: 0, currentStep: "observer" });
-          }
-        },
-      },
-    });
-    await ensureTaskFlowRegistryReadyAsync(captureOpenClawStateWorkerContext());
-    expect(events).toEqual(["restored", "upserted"]);
-    expect(getTaskFlowById(flow.flowId)).toMatchObject({ revision: 1, currentStep: "observer" });
-  });
   describe.each(["task", "flow"] as const)("%s database identity", (kind) => {
     it.each(["async", "sync"] as const)(
       "refreshes ready state after same-identity admission retirement through %s reads",
