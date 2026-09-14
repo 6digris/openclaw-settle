@@ -5289,7 +5289,7 @@ jobs:
           exported = json.loads((raw / "manifest.json").read_text())
           expected = {"native-action-before-inspection", "native-action-after-inspection",
                       "native-action-after-agent-change"}
-          images = []
+          sources = []
           for test in exported:
               assert test["testIdentifierURL"] == test_url, "Unexpected attachment test owner"
               for attachment in test["attachments"]:
@@ -5307,11 +5307,26 @@ jobs:
                   width, height = struct.unpack(">II", data[16:24])
                   assert 0 < width <= 2000 and 0 < height <= 4000, "Unexpected image bounds"
                   name = label + ".png"
-                  assert not (approved / name).exists(), "Duplicate proof image"
-                  (approved / name).write_bytes(data)
-                  images.append({"name": name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
-                                 "width": width, "height": height})
-          assert {image["name"][:-4] for image in images} == expected and len(images) == 3
+                  assert all(row[1] != name for row in sources), "Duplicate proof image"
+                  sources.append((source, name, width, height))
+          assert {name[:-4] for _, name, _, _ in sources} == expected and len(sources) == 3
+          # Strip source-container data through lossless encoding in private staging.
+          normalized = raw / "normalized"
+          subprocess.run(["xcrun", "--sdk", "macosx", "swift", "scripts/validate-native-visual-proof.swift",
+                          str(normalized), *[str(source) for source, _, _, _ in sources]], check=True, timeout=30)
+          images = []
+          prepared = []
+          for source, name, width, height in sources:
+              encoded = normalized / source.name
+              assert encoded.is_file() and not encoded.is_symlink() and 0 < encoded.stat().st_size <= 8 * 1024 * 1024
+              data = encoded.read_bytes()
+              assert struct.unpack(">II", data[16:24]) == (width, height), "Encoded dimensions changed"
+              prepared.append((name, data))
+              images.append({"name": name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+                             "width": width, "height": height})
+          # All three encoded readbacks must succeed before any public image is written.
+          for name, data in prepared:
+              (approved / name).write_bytes(data)
           # Publish no xcresult manifest, device identifiers, paths, or diagnostic attachments.
           manifest = {"sourceSha": os.environ["PROOF_SOURCE_SHA"], "runId": os.environ["GITHUB_RUN_ID"],
                       "attempt": os.environ["GITHUB_RUN_ATTEMPT"], "test": test_id, "result": "Passed",
