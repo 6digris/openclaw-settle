@@ -5105,6 +5105,9 @@ describe("scripts/test-projects full-suite sharding", () => {
         const unitFastPlans = targetedPlans("test/vitest/vitest.unit-fast.config.ts");
         expect(unitFastPlans.length).toBeGreaterThan(1);
         expect(unitFastPlans.every((plan) => plan.forwardedArgs.length <= 70)).toBe(true);
+        const unitSrcPlans = targetedPlans("test/vitest/vitest.unit-src.config.ts");
+        expect(unitSrcPlans.length).toBeGreaterThan(1);
+        expect(unitSrcPlans.every((plan) => plan.forwardedArgs.length <= 150)).toBe(true);
         const toolingPlans = targetedPlans("test/vitest/vitest.tooling.config.ts");
         expect(toolingPlans.length).toBeGreaterThan(1);
         expect(toolingPlans.every((plan) => plan.forwardedArgs.length <= 2)).toBe(true);
