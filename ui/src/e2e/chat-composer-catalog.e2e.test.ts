@@ -50,8 +50,12 @@ suite.define(() => {
         });
         await page.goto(`${suite.server.baseUrl}chat`);
         await gateway.waitForRequest("chat.startup");
-        const textarea = page.locator("openclaw-chat-pane .agent-chat__composer-combobox > textarea");
-        const send = page.locator("openclaw-chat-pane").getByRole("button", { name: "Send message", exact: true });
+        const textarea = page.locator(
+          "openclaw-chat-pane .agent-chat__composer-combobox > textarea",
+        );
+        const send = page
+          .locator("openclaw-chat-pane")
+          .getByRole("button", { name: "Send message", exact: true });
         const draft = "Continue our conversation.";
         await expect.poll(() => textarea.isDisabled()).toBe(false);
         await textarea.fill(draft);

@@ -1,3 +1,5 @@
+import "../../styles/connect-command.css";
+import "../../styles/device-pair-setup.css";
 // Devices page renders the mobile device pairing setup dialog.
 import { html, nothing } from "lit";
 import { handleCopyButton, renderCopyButton } from "../../components/copy-button.ts";

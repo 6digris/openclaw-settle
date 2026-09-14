@@ -1,14 +1,11 @@
 import { html, nothing } from "lit";
 import { isSettingsNavigationRoute, isSettingsTakeover } from "../app-navigation.ts";
-import { isSessionRouteId } from "../app-route-paths.ts";
+import { isSessionRouteId, pluginSlugCandidate } from "../app-route-paths.ts";
 import { isRouteId, type RouteId } from "../app-routes.ts";
-import { renderLoadingState } from "../components/loading-state.ts";
 import { icons } from "../components/icons.ts";
+import { renderLoadingState } from "../components/loading-state.ts";
 import { renderNewSessionLink } from "../components/new-session-link.ts";
-import {
-  renderLazySettingsSidebar,
-  type SettingsSidebarModule,
-} from "../components/settings-sidebar-lazy.ts";
+import { renderLazySettingsSidebar } from "../components/settings-sidebar-lazy.ts";
 import { renderStartupChatSkeleton } from "../components/startup-chat-skeleton.ts";
 import { renderStartupSidebarSkeleton } from "../components/startup-sidebar-skeleton.ts";
 import type { ThemeModeChangeDetail } from "../components/theme-mode-toggle.ts";
@@ -74,7 +71,9 @@ import { createUpdateProgressWatcher } from "./update-confirmation.ts";
 
 const EMPTY_SESSION_HAS_DRAFT = () => false;
 
-export interface ShellViewHost extends DevicePairSetupHost {
+type SettingsSidebarHost = Parameters<typeof renderLazySettingsSidebar>[0];
+
+export interface ShellViewHost extends DevicePairSetupHost, SettingsSidebarHost {
   readonly context: ApplicationContext<RouteId> | undefined;
   readonly runtime: ApplicationRuntime | undefined;
   readonly activeSessionKey: string;
@@ -95,11 +94,7 @@ export interface ShellViewHost extends DevicePairSetupHost {
   readonly startupSnapshot?: StartupPresentation;
   readonly startupPresentation?: StartupPresentationController;
   readonly settingsPreloadTimers: Map<EventTarget, ReturnType<typeof globalThis.setTimeout>>;
-  readonly settingsSidebarRenderer: SettingsSidebarModule["renderSettingsSidebar"] | null;
-  readonly settingsSidebarLoadFailed: boolean;
   readonly settingsSearchQuery: string;
-  loadSettingsSidebarRenderer(): void;
-  retrySettingsSidebarRenderer(): void;
   closeNavDrawer(options?: { restoreFocus?: boolean }): void;
   newSessionRouteAgentId(): string;
   enabledRouteIds(): readonly RouteId[];
@@ -127,7 +122,14 @@ export function renderApplicationShell(host: ShellViewHost) {
   if (!context || !runtime) {
     return nothing;
   }
-  if (host.routeState.routeId === undefined && !host.routeState.routeFailed) {
+  if (
+    host.routeState.routeId === undefined &&
+    !host.routeState.routeFailed &&
+    pluginSlugCandidate(
+      host.routeState.location?.pathname ?? globalThis.location.pathname,
+      context.basePath,
+    )
+  ) {
     return renderLoadingState();
   }
   const gatewaySnapshot = context.gateway.snapshot;
@@ -137,8 +139,6 @@ export function renderApplicationShell(host: ShellViewHost) {
   const gatewayConnected = gatewaySnapshot.phase === "connected";
   const operatorAccess = readGatewayOperatorAccess(gatewaySnapshot);
   const canUpdate = canCallGatewayMethod(gatewaySnapshot, "update.run", "operator.admin");
-  const canHoldUpdate =
-    canUpdate && canCallGatewayMethod(gatewaySnapshot, "update.hold", "operator.admin");
   const outboxScopeHost = host.storedOutboxScopeHost(context);
   const storedOutboxes = host.outboxStoreRuntime?.summarizeStoredChatOutboxes(outboxScopeHost);
   const navigationSnapshot = context.navigation.snapshot;
@@ -247,6 +247,7 @@ export function renderApplicationShell(host: ShellViewHost) {
     method: "sessions.create",
     params: {},
   });
+  const newSessionDisabledReason = newSessionAccess.allowed ? undefined : newSessionAccess.reason;
   const openNewSession = (agentId: string, target?: NewSessionTarget) => {
     const access = readSessionMethodAccess(context.gateway.snapshot, {
       method: "sessions.create",
@@ -264,19 +265,38 @@ export function renderApplicationShell(host: ShellViewHost) {
   // The new-session draft shares the chat layout: full-height pane that owns
   // its scrolling and pins the composer dock to the bottom.
   const chatLikeRoute = sessionRoute || activeRoute === "new-session";
+  const updateControls = {
+    heldUpdateCampaignId: overlaySnapshot.heldUpdateCampaignId,
+    updateBusy,
+    watchUpdateProgress,
+    canUpdate,
+    canHoldUpdate:
+      canUpdate && canCallGatewayMethod(gatewaySnapshot, "update.hold", "operator.admin"),
+    onUpdate: () => void context.overlays.runUpdate(),
+    onRefresh: host.refreshControlUi,
+    onHoldUpdate: () => context.overlays.holdUpdate(),
+    onReviewUpdate: () => host.navigate("updates"),
+    onOpenApprovals: () => host.openApprovals(),
+  };
+  const navigationProps = {
+    basePath: context.basePath,
+    activeRouteId: activeRoute,
+    offline: gatewaySnapshot.offlineStable,
+    suspensionPhase: gatewaySnapshot.suspensionPhase,
+    queuedOutboxCount: storedOutboxes?.total ?? 0,
+    lastError: gatewaySnapshot.lastError,
+    onRetryConnect: () => context.gateway.connect(),
+    onNavigate: (routeId: string, options?: ApplicationNavigationOptions) =>
+      host.navigate(routeId, options),
+  };
   if (!settingsTakeover && !nativeEmbed) {
     Object.assign(host.navigationSidebar, {
-      basePath: context.basePath,
-      activeRouteId: activeRoute,
+      ...navigationProps,
       activePluginTabId: activePluginRef ? pluginTabKey(activePluginRef) : "",
       enabledRouteIds: host.enabledRouteIds(),
       sessionKey: host.activeSessionKey,
       connected: gatewayConnected,
-      offline: gatewaySnapshot.offlineStable,
       restartPending: gatewaySnapshot.restartPending === true,
-      suspensionPhase: gatewaySnapshot.suspensionPhase,
-      queuedOutboxCount: storedOutboxes?.total ?? 0,
-      lastError: gatewaySnapshot.lastError,
       outboxAttentionCountForSession: storedOutboxes?.attentionCountForSession ?? (() => 0),
       hasSessionDraft: storedOutboxes?.hasSessionDraft ?? EMPTY_SESSION_HAS_DRAFT,
       terminalAvailable,
@@ -296,14 +316,11 @@ export function renderApplicationShell(host: ShellViewHost) {
       watchUpdateProgress,
       onOpenApprovals: () => host.openApprovals(),
       onOpenPalette: () => host.openPalette(),
-      onRetryConnect: () => context.gateway.connect(),
       onToggleSidebar: () => host.toggleNavigationSurface(),
       onOpenNewSession: openNewSession,
       onUpdateSidebarEntries: (entries: string[]) =>
         context.navigation.update({ sidebarEntries: entries }),
       onPairMobile: () => void context.overlays.openDevicePairSetup(),
-      onNavigate: (routeId: string, options?: ApplicationNavigationOptions) =>
-        host.navigate(routeId, options),
       onPreloadRoute: (routeId: string) =>
         isRouteId(routeId) ? context.preload(routeId) : Promise.resolve(),
     });
@@ -311,32 +328,19 @@ export function renderApplicationShell(host: ShellViewHost) {
   const navigationContent =
     settingsTakeover || nativeEmbed
       ? renderLazySettingsSidebar(host, {
+          ...navigationProps,
+          ...updateControls,
           presentation: nativeEmbed ? (embedSettingsRoot ? "embed-list" : "embed-page") : "sidebar",
-          basePath: context.basePath,
-          activeRouteId: activeRoute,
           activePathname: host.routeState.location?.pathname ?? "",
           activeSearch: host.routeState.location?.search ?? "",
           activeHash: host.routeState.location?.hash ?? "",
-          offline: gatewaySnapshot.offlineStable,
           phase: gatewaySnapshot.phase,
           restartPending: gatewaySnapshot.restartPending,
-          suspensionPhase: gatewaySnapshot.suspensionPhase,
-          queuedOutboxCount: storedOutboxes?.total ?? 0,
-          lastError: gatewaySnapshot.lastError,
           gatewayVersion: config.serverVersion ?? gatewaySnapshot.hello?.server?.version ?? "",
           updateAvailable: navigationSurfaceHidden ? null : overlaySnapshot.updateAvailable,
           updateSchedule: navigationSurfaceHidden ? null : overlaySnapshot.updateSchedule,
-          heldUpdateCampaignId: overlaySnapshot.heldUpdateCampaignId,
-          updateBusy,
           updateStatusBanner: overlaySnapshot.updateStatusBanner,
-          watchUpdateProgress,
-          canUpdate,
-          canHoldUpdate,
-          onUpdate: () => void context.overlays.runUpdate(),
           refreshRequired: navigationSurfaceHidden ? false : controlUiRefreshRequired,
-          onRefresh: host.refreshControlUi,
-          onHoldUpdate: () => context.overlays.holdUpdate(),
-          onReviewUpdate: () => host.navigate("updates"),
           searchQuery: embedSettingsRoot ? "" : host.settingsSearchQuery,
           searchParams: {
             query: host.settingsSearchQuery,
@@ -359,9 +363,6 @@ export function renderApplicationShell(host: ShellViewHost) {
               host.navigate("settings");
             }
           },
-          onRetryConnect: () => context.gateway.connect(),
-          onNavigate: (routeId, options) => host.navigate(routeId, options),
-          onOpenApprovals: () => host.openApprovals(),
           onPreload: (routeId) => context.preload(routeId),
           onSearchQueryChange: (nextQuery) => void host.handleSettingsSearchQueryChange(nextQuery),
           preloadTimers: host.settingsPreloadTimers,
@@ -441,9 +442,7 @@ export function renderApplicationShell(host: ShellViewHost) {
                 .historyOnly=${settingsTakeover}
                 .canGoBack=${host.nativeHistoryState.canGoBack}
                 .canGoForward=${host.nativeHistoryState.canGoForward}
-                .newSessionDisabledReason=${
-                  newSessionAccess.allowed ? undefined : newSessionAccess.reason
-                }
+                .newSessionDisabledReason=${newSessionDisabledReason}
                 .onToggleSidebar=${() => host.toggleNavigationSurface()}
                 .onOpenPalette=${() => host.openPalette()}
                 .onOpenNewSession=${() => host.handleNativeNewSession()}
@@ -486,7 +485,7 @@ export function renderApplicationShell(host: ShellViewHost) {
                   agentId: selectedAgentId,
                   className: "shell-chrome-controls__button shell-chrome-controls__new-thread",
                   label: t("chat.runControls.newSession"),
-                  disabledReason: newSessionAccess.allowed ? undefined : newSessionAccess.reason,
+                  disabledReason: newSessionDisabledReason,
                   onOpen: openNewSession,
                 })}
                 <openclaw-tooltip
@@ -577,30 +576,21 @@ export function renderApplicationShell(host: ShellViewHost) {
             : nothing
         }
         ${renderFloatingUpdateCard({
+          ...updateControls,
           navigationSurfaceHidden,
           mobileNavLayout,
           onboarding,
           compact: mergedChatChrome && !controlUiRefreshRequired,
           updateAvailable: overlaySnapshot.updateAvailable,
           updateSchedule: overlaySnapshot.updateSchedule,
-          heldUpdateCampaignId: overlaySnapshot.heldUpdateCampaignId,
-          updateBusy,
           statusBanner: overlaySnapshot.updateStatusBanner,
           updateRun: overlaySnapshot.updateRun,
           updateRunAcknowledged: overlaySnapshot.updateRunAcknowledged,
           connected: gatewayConnected,
           onAcknowledge: () => context.overlays.acknowledgeUpdateRun(),
           onCheckStatus: () => context.overlays.refreshUpdateStatus(),
-          watchUpdateProgress,
-          canUpdate,
-          canHoldUpdate,
-          onUpdate: () => void context.overlays.runUpdate(),
           refreshRequired: controlUiRefreshRequired,
-          onRefresh: host.refreshControlUi,
-          onHoldUpdate: () => context.overlays.holdUpdate(),
-          onReviewUpdate: () => host.navigate("updates"),
           onNavigate: (routeId) => host.navigate(routeId),
-          onOpenApprovals: () => host.openApprovals(),
         })}
         ${nativeEmbed ? navigationContent : nothing}
         ${

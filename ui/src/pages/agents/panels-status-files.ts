@@ -1,3 +1,4 @@
+import "../../styles/agent-file-preview.css";
 // Control UI view renders agents panels status files screen content.
 import { html, nothing } from "lit";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";

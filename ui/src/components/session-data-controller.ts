@@ -281,15 +281,11 @@ export class SessionDataController implements ReactiveController, SessionCatalog
     const nextCatalogAgentId =
       resolveSessionCatalogAgentId(this) ??
       (context?.gateway.snapshot.phase !== "connected" ? this.sessionCatalogAgentId : null);
-    if (
-      nextAgentId === this.sessionScopeAgentId &&
-      nextCatalogAgentId === this.sessionCatalogAgentId
-    ) {
-      return;
-    }
-
     const previousAgentId = this.sessionScopeAgentId;
     const previousCatalogAgentId = this.sessionCatalogAgentId;
+    if (nextAgentId === previousAgentId && nextCatalogAgentId === previousCatalogAgentId) {
+      return;
+    }
     const agentChanged = previousAgentId !== null && previousAgentId !== nextAgentId;
     const catalogAgentChanged =
       previousCatalogAgentId !== null && previousCatalogAgentId !== nextCatalogAgentId;
@@ -338,13 +334,10 @@ export class SessionDataController implements ReactiveController, SessionCatalog
 
   private readonly handleCatalogSessionContinued = (
     event: CustomEvent<CatalogSessionContinuedDetail>,
-  ) => {
-    applySessionCatalogContinuation(this, event.detail);
-  };
+  ) => applySessionCatalogContinuation(this, event.detail);
 
-  private readonly handleSessionCatalogPageActivation = (event: Event) => {
+  private readonly handleSessionCatalogPageActivation = (event: Event) =>
     scheduleSessionCatalogRefresh(this, event.type === "visibilitychange");
-  };
 
   invalidateSessionCatalogs(): void {
     invalidateSessionCatalogData(this);
@@ -404,7 +397,6 @@ export class SessionDataController implements ReactiveController, SessionCatalog
     }
     const gateway = this.context?.gateway;
     const sameGatewayDisconnected =
-      gateway !== undefined &&
       gateway === this.gatewaySource &&
       gateway.snapshot.client !== null &&
       gateway.snapshot.phase !== "connected";

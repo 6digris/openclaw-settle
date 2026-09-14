@@ -1,3 +1,4 @@
+import "../styles/connect-command.css";
 // Control UI component renders a copyable gateway connection command.
 import { html } from "lit";
 import { t } from "../i18n/index.ts";

@@ -658,9 +658,8 @@ export class ChatPane extends ChatPaneLayoutRender {
       agentsList: state.agentsList,
       currentAgentId,
       ...chatProps,
-      onAgentChange: (agentId) => {
-        this.onPaneSessionChange?.(this.paneId, buildAgentMainSessionKey({ agentId }));
-      },
+      onAgentChange: (agentId) =>
+        void this.onPaneSessionChange?.(this.paneId, buildAgentMainSessionKey({ agentId })),
       onSessionSelect: (next) => this.onPaneSessionChange?.(this.paneId, next),
       canvasPluginSurfaceUrl: state.canvasPluginSurfaceUrl,
       boardProvider: board.provider,

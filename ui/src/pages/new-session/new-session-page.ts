@@ -3,6 +3,10 @@ import { html, nothing } from "lit";
 import { property, state } from "lit/decorators.js";
 import { selectApplicationSession } from "../../app/agent-selection.ts";
 import { applicationContext, type ApplicationContext } from "../../app/context.ts";
+import {
+  startupPresentationContext,
+  READY_STARTUP_PRESENTATION,
+} from "../../app/startup-presentation.ts";
 import { readPresenceEntries } from "../../app/user-profile.ts";
 import type { ImageLightboxItem } from "../../components/image-lightbox.ts";
 import { t } from "../../i18n/index.ts";
@@ -50,6 +54,9 @@ export class NewSessionPage extends OpenClawLightDomElement {
 
   @consume({ context: applicationContext, subscribe: true })
   private context?: ApplicationContext;
+
+  @consume({ context: startupPresentationContext, subscribe: true })
+  private startupPresentation = READY_STARTUP_PRESENTATION;
 
   private openedFor: string | null = null;
   private openedGroupDefaults = "";
@@ -171,6 +178,7 @@ export class NewSessionPage extends OpenClawLightDomElement {
       textarea: this.submission.composerTextarea,
       getClient: () => this.gateway.client,
       isConnected: () => this.gateway.connected,
+      isPresentationReady: () => this.startupPresentation.stage === "ready",
       canCommit: () => !this.submission.submitting && !this.submission.pendingPlacement.sessionKey,
       onMessage: (message) => this.setMessageFromUser(message),
       onError: (message) => this.submission.setError(message),

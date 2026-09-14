@@ -253,21 +253,23 @@ describeControlUiE2e("Control UI initial connection skeleton E2E", () => {
       for (const size of [viewport, { width: 1440, height: 1440 }, { width: 390, height: 844 }]) {
         await page.setViewportSize(size);
         const content = await page.locator(".content--chat").boundingBox();
-        const header = await skeleton.locator(".loading-skeleton__header").boundingBox();
-        const composer = await skeleton.locator(".loading-skeleton__composer").boundingBox();
+        const header = await loadingState.locator(".chat-pane__header").boundingBox();
+        const composerBounds = await loadingState
+          .locator(".agent-chat__composer-shell")
+          .boundingBox();
         expect(content).not.toBeNull();
         expect(header).not.toBeNull();
-        expect(composer).not.toBeNull();
+        expect(composerBounds).not.toBeNull();
         expect(header!.y - content!.y, "loading header stays at the top").toBeGreaterThanOrEqual(0);
         expect(header!.y - content!.y, "loading header stays at the top").toBeLessThan(48);
-        const bottomGap = content!.y + content!.height - composer!.y - composer!.height;
+        const bottomGap = content!.y + content!.height - composerBounds!.y - composerBounds!.height;
         expect(bottomGap, "loading composer stays inside the content area").toBeGreaterThanOrEqual(
           0,
         );
         expect(bottomGap, "loading composer stays near the bottom").toBeLessThan(64);
         await captureProof(page, `03-pending-chat-${size.width}x${size.height}`, [
-          skeleton.locator(".loading-skeleton__header"),
-          skeleton.locator(".loading-skeleton__composer"),
+          loadingState.locator(".chat-pane__header"),
+          loadingState.locator(".agent-chat__composer-shell"),
         ]);
       }
       await page.setViewportSize(viewport);

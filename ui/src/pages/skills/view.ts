@@ -1,3 +1,4 @@
+import "../../styles/skill-reader.css";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 // Control UI page renders skills screen content. The list surfaces follow the
 // settings design language (ui/docs/design-system/settings-design.md): section

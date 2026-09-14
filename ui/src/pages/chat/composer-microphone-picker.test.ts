@@ -24,7 +24,14 @@ describe("composer voice readiness", () => {
     const request = vi.fn().mockResolvedValueOnce(catalog(false)).mockResolvedValue(catalog(true));
     const client = { request } as unknown as GatewayBrowserClient;
     picker = new ComposerMicrophonePicker(vi.fn());
-    picker.syncCatalog(client, true);
+    picker.syncCatalog(client, true, false);
+    window.dispatchEvent(new Event("focus"));
+    expect(request).not.toHaveBeenCalled();
+    expect(picker.realtimeStatus).toBe("unknown");
+
+    picker.syncCatalog(client, true, true);
+    picker.syncCatalog(client, true, true);
+    expect(request).toHaveBeenCalledOnce();
     await vi.waitFor(() => expect(picker.realtimeStatus).toBe("unavailable"));
 
     window.dispatchEvent(new Event("focus"));
@@ -36,6 +43,43 @@ describe("composer voice readiness", () => {
     expect(picker.open).toBe(false);
   });
 
+  it.each([false, true])(
+    "keeps explicit discovery and focus available across reconnect while automatic loading is held (connected=%s)",
+    async (initiallyConnected) => {
+      vi.spyOn(realtimeTalkInput, "discoverRealtimeTalkInputs").mockResolvedValue({
+        devices: [],
+        permissionRequired: false,
+        issue: null,
+      });
+      vi.spyOn(realtimeTalkInput, "observeRealtimeTalkDevices").mockReturnValue(() => {});
+      const request = vi.fn().mockResolvedValue(catalog(true));
+      const client = { request } as unknown as GatewayBrowserClient;
+      picker = new ComposerMicrophonePicker(vi.fn());
+      picker.syncCatalog(client, initiallyConnected, false);
+      expect(request).not.toHaveBeenCalled();
+
+      picker.handleOpen();
+      expect(request).toHaveBeenCalledTimes(initiallyConnected ? 1 : 0);
+      picker.syncCatalog(client, true, false);
+      expect(request).toHaveBeenCalledOnce();
+      await vi.waitFor(() => expect(picker.dictationStatus).toBe("ready"));
+
+      window.dispatchEvent(new Event("focus"));
+      expect(request).toHaveBeenCalledTimes(2);
+      picker.syncCatalog(client, false, false);
+      window.dispatchEvent(new Event("focus"));
+      expect(request).toHaveBeenCalledTimes(2);
+      picker.syncCatalog(client, true, false);
+      expect(request).toHaveBeenCalledTimes(3);
+      expect(picker.open).toBe(true);
+
+      picker.syncCatalog(client, true, true);
+      expect(request).toHaveBeenCalledTimes(3);
+      await vi.waitFor(() => expect(picker.dictationStatus).toBe("ready"));
+      expect(request).toHaveBeenLastCalledWith("talk.catalog", {});
+    },
+  );
+
   it("retires focus requests on disposal and reconnects a reused picker without stale results", async () => {
     const stale = createDeferred<ReturnType<typeof catalog>>();
     const request = vi
@@ -46,7 +90,7 @@ describe("composer voice readiness", () => {
     const client = { request } as unknown as GatewayBrowserClient;
     const requestUpdate = vi.fn();
     picker = new ComposerMicrophonePicker(requestUpdate);
-    picker.syncCatalog(client, true);
+    picker.syncCatalog(client, true, true);
     await vi.waitFor(() => expect(picker.realtimeStatus).toBe("unavailable"));
     window.dispatchEvent(new Event("focus"));
     expect(request).toHaveBeenCalledTimes(2);
@@ -56,7 +100,7 @@ describe("composer voice readiness", () => {
     expect(request).toHaveBeenCalledTimes(2);
     expect(picker.realtimeStatus).toBe("unknown");
 
-    picker.syncCatalog(client, true);
+    picker.syncCatalog(client, true, true);
     await vi.waitFor(() => expect(picker.realtimeStatus).toBe("ready"));
     requestUpdate.mockClear();
     stale.resolve(catalog(false));
@@ -67,7 +111,7 @@ describe("composer voice readiness", () => {
 
     window.dispatchEvent(new Event("focus"));
     expect(request).toHaveBeenCalledTimes(4);
-    picker.syncCatalog(client, false);
+    picker.syncCatalog(client, false, true);
     window.dispatchEvent(new Event("focus"));
     expect(request).toHaveBeenCalledTimes(4);
   });

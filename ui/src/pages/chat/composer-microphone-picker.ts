@@ -28,10 +28,16 @@ export class ComposerMicrophonePicker {
   private catalogClient: GatewayBrowserClient | null = null;
   private catalogConnected = false;
   private catalogRequest = 0;
+  private automaticLoadAllowed = false;
+  private catalogIssued = false;
   private realtimeStatusValue: ComposerTalkCapabilityStatus = "unknown";
   private dictationStatusValue: ComposerTalkCapabilityStatus = "unknown";
   // Terminal login changes credentials without replacing the Gateway connection.
-  private readonly refreshOnFocus = (): void => this.loadCatalog();
+  private readonly refreshOnFocus = (): void => {
+    if (this.automaticLoadAllowed || this.openValue) {
+      this.loadCatalog();
+    }
+  };
 
   constructor(private readonly requestUpdate: () => void) {}
 
@@ -59,21 +65,33 @@ export class ComposerMicrophonePicker {
     return this.dictationStatusValue;
   }
 
-  syncCatalog(client: GatewayBrowserClient | null, connected: boolean): void {
-    if (client === this.catalogClient && connected === this.catalogConnected) {
+  syncCatalog(
+    client: GatewayBrowserClient | null,
+    connected: boolean,
+    automaticLoadAllowed: boolean,
+  ): void {
+    const connectionChanged = client !== this.catalogClient || connected !== this.catalogConnected;
+    if (!connectionChanged && automaticLoadAllowed === this.automaticLoadAllowed) {
       return;
     }
-    window.removeEventListener("focus", this.refreshOnFocus);
-    this.catalogClient = client;
-    this.catalogConnected = connected;
-    this.catalogRequest++;
-    if (!client || !connected) {
-      this.realtimeStatusValue = "unknown";
-      this.dictationStatusValue = "unknown";
-      return;
+    this.automaticLoadAllowed = automaticLoadAllowed;
+    if (connectionChanged) {
+      window.removeEventListener("focus", this.refreshOnFocus);
+      this.catalogClient = client;
+      this.catalogConnected = connected;
+      this.catalogRequest++;
+      this.catalogIssued = false;
+      if (!client || !connected) {
+        this.realtimeStatusValue = "unknown";
+        this.dictationStatusValue = "unknown";
+        return;
+      }
+      window.addEventListener("focus", this.refreshOnFocus);
     }
-    window.addEventListener("focus", this.refreshOnFocus);
-    this.loadCatalog(false);
+    // A gesture can request capabilities during startup; the later reveal must not repeat it.
+    if (!this.catalogIssued && (automaticLoadAllowed || this.openValue)) {
+      this.loadCatalog(false);
+    }
   }
 
   readonly handleOpen = (): void => {
@@ -109,6 +127,8 @@ export class ComposerMicrophonePicker {
     this.catalogRequest++;
     this.catalogClient = null;
     this.catalogConnected = false;
+    this.automaticLoadAllowed = false;
+    this.catalogIssued = false;
     this.realtimeStatusValue = "unknown";
     this.dictationStatusValue = "unknown";
     this.openValue = false;
@@ -150,6 +170,7 @@ export class ComposerMicrophonePicker {
     if (!client || !this.catalogConnected) {
       return;
     }
+    this.catalogIssued = true;
     const request = ++this.catalogRequest;
     if (this.realtimeStatusValue === "unknown") {
       this.realtimeStatusValue = "checking";

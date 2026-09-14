@@ -657,14 +657,6 @@ suite.define(() => {
         attach.boundingBox(),
         voice.boundingBox(),
       ]);
-      expect(chatContentBox).not.toBeNull();
-      expect(chatMainBox).not.toBeNull();
-      expect(composerShellBox).not.toBeNull();
-      expect(composerBox).not.toBeNull();
-      expect(modelBox).not.toBeNull();
-      expect(textareaBox).not.toBeNull();
-      expect(attachBox).not.toBeNull();
-      expect(voiceBox).not.toBeNull();
       if (
         !chatContentBox ||
         !chatMainBox ||

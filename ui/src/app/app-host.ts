@@ -567,11 +567,7 @@ class OpenClawShell
   };
 
   readonly handleThemeChange = (event: CustomEvent<ThemeModeChangeDetail>) => {
-    const context = this.context;
-    if (!context) {
-      return;
-    }
-    context.theme.setMode(event.detail.mode, event.detail.element);
+    this.context?.theme.setMode(event.detail.mode, event.detail.element);
   };
 
   async handleSettingsSearchQueryChange(nextQuery: string): Promise<void> {

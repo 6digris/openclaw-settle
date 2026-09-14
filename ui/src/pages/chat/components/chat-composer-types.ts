@@ -143,6 +143,7 @@ export type ChatComposerProps = ChatAttachmentControlsProps & {
   typingActors?: readonly { id: string; label: string; preview?: string }[];
   onTypingChange?: (typing: boolean, preview?: string) => void;
   composerControls?: TemplateResult | typeof nothing;
+  startupLoading?: boolean;
   initialMetadataPending?: boolean;
   initialAssistantName?: string;
   anchoredNotices?: TemplateResult | typeof nothing;

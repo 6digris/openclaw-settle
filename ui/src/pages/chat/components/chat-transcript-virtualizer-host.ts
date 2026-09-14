@@ -400,7 +400,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
       this.endAnchorFrame = requestAnimationFrame(() => {
         this.endAnchorFrame = null;
         if (this.connected && !this.offsetState.pendingInteractionAnchor) {
-          this.reconcileImplicitEndAnchor();
+          this.initialLayout.update();
           this.reconcileEndAnchor();
         }
       });

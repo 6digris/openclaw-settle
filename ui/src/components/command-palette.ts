@@ -1,3 +1,4 @@
+import "../styles/command-palette.css";
 // Control UI component renders the command palette.
 import { consume } from "@lit/context";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";

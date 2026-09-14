@@ -52,8 +52,37 @@ async function installStartupGateway(page: Page) {
 
 type Gateway = Awaited<ReturnType<typeof installStartupGateway>>;
 
-async function openPendingChat(page: Page, gateway: Gateway) {
-  await page.goto(`${suite.server.baseUrl}chat/research/selected-conversation-12345678`);
+async function openPendingChat(page: Page, gateway: Gateway, presentedShell = false) {
+  const pathname = new URL("chat/research/selected-conversation-12345678", suite.server.baseUrl)
+    .pathname;
+  if (presentedShell) {
+    await page.goto(`${suite.server.baseUrl}new`);
+    for (const method of bulkMethods) {
+      await gateway.waitForRequest(method, { match: { agentId: "main" } });
+      await gateway.resolveDeferred(
+        method,
+        method === "sessions.list"
+          ? {
+              ts: 1,
+              path: "",
+              count: 0,
+              defaults: { model: null, modelProvider: null, contextTokens: null },
+              sessions: [],
+            }
+          : undefined,
+      );
+      await gateway.deferNext(method, { agentId: "research" });
+    }
+    await page.locator(".new-session-page__message").waitFor();
+    await page.evaluate((targetPath) => {
+      const app = document.querySelector("openclaw-app") as HTMLElement & {
+        runtime: { context: { navigate: (route: string, options: { pathname: string }) => void } };
+      };
+      app.runtime.context.navigate("chat", { pathname: targetPath });
+    }, pathname);
+  } else {
+    await page.goto(new URL(pathname, suite.server.baseUrl).href);
+  }
   const resolution = await gateway.waitForRequest("sessions.resolve");
   expect(resolution.params).toMatchObject({ agentId: "research", shortId: "12345678" });
   const startup = await gateway.waitForRequest("chat.startup");
@@ -61,18 +90,23 @@ async function openPendingChat(page: Page, gateway: Gateway) {
   const subscription = await gateway.waitForRequest("sessions.subscribe");
   expect(subscription.params).toEqual({});
   await page
-    .locator(".chat-pane-cache__pane--active .chat-thread .lazy-view-state--loading")
+    .locator(
+      presentedShell
+        ? ".chat-pane-cache__pane--active .chat-thread .lazy-view-state--loading"
+        : ".startup-chat-skeleton",
+    )
     .waitFor();
 }
 
-async function expectBulkReadsHeld(gateway: Gateway) {
+async function expectBulkReadsHeld(gateway: Gateway, agentId?: string) {
   // Cover the event refresh debounce as well as immediate mount requests.
   const deadline = Date.now() + 500;
   do {
     for (const method of bulkMethods) {
-      expect(await gateway.getRequests(method), `${method} before chat startup settled`).toEqual(
-        [],
-      );
+      expect(
+        await gateway.getRequests(method, agentId ? { agentId } : undefined),
+        `${method} before chat startup settled`,
+      ).toEqual([]);
     }
     await new Promise((resolve) => {
       setTimeout(resolve, 50);
@@ -104,6 +138,7 @@ suite.define(() => {
         });
         await expectBulkReadsHeld(gateway);
         expect(await gateway.getRequests("sessions.list", { spawnedBy: sessionKey })).toEqual([]);
+        expect(await gateway.getRequests("talk.catalog")).toEqual([]);
 
         if (process.env.OPENCLAW_CAPTURE_UI_PROOF === "1") {
           await page.screenshot({
@@ -112,16 +147,21 @@ suite.define(() => {
         }
 
         await gateway.resolveDeferred("chat.startup");
+        // RPC admission follows history; initial presentation also waits for the roster.
+        await page.locator(".startup-chat-skeleton").waitFor();
+        expect(await gateway.getRequests("talk.catalog")).toEqual([]);
+        await expectBulkReadsReleased(gateway);
         const transcript = page.locator(".chat-pane-cache__pane--active .chat-thread");
         await transcript.getByText(historyText, { exact: true }).waitFor();
+        await gateway.waitForRequest("talk.catalog");
         const composer = page.locator(
           ".chat-pane-cache__pane--active .agent-chat__composer-combobox textarea",
         );
-        const draft = "Synthetic draft while background lists are pending.";
+        const draft = "Synthetic draft after coordinated startup.";
         await expect.poll(() => composer.isEnabled()).toBe(true);
         await composer.fill(draft);
         await gateway.waitForRequest("sessions.messages.subscribe", { match: { key: sessionKey } });
-        // Bulk replies are still held: the selected transcript and its live stream must work alone.
+        // A live history refresh must preserve the presented transcript and draft.
         await gateway.deferNext("chat.history");
         await gateway.emitGatewayEvent("session.message", {
           sessionKey,
@@ -145,7 +185,6 @@ suite.define(() => {
             path: path.join(suite.artifactDir, "02-selected-chat-completed.png"),
           });
         }
-        await expectBulkReadsReleased(gateway);
         await gateway.waitForRequest("sessions.list", { match: { spawnedBy: sessionKey } });
       } finally {
         await writeFile(
@@ -159,8 +198,8 @@ suite.define(() => {
   it("lets an explicit sidebar filter load while the selected transcript is still pending", async () => {
     await suite.withPage(createControlUiE2eContextOptions(), async ({ page }) => {
       const gateway = await installStartupGateway(page);
-      await openPendingChat(page, gateway);
-      await expectBulkReadsHeld(gateway);
+      await openPendingChat(page, gateway, true);
+      await expectBulkReadsHeld(gateway, "research");
       await gateway.setSessionsListResponse({
         ts: 2,
         path: "",
@@ -189,7 +228,9 @@ suite.define(() => {
         .locator("openclaw-app-sidebar")
         .getByText("Archived fixture", { exact: true })
         .waitFor();
-      expect(await gateway.getRequests("sessions.catalog.list")).toEqual([]);
+      expect(await gateway.getRequests("sessions.catalog.list", { agentId: "research" })).toEqual(
+        [],
+      );
       expect(await gateway.getRequests("sessions.list", { spawnedBy: sessionKey })).toEqual([]);
       expect(await page.getByText(historyText, { exact: true }).count()).toBe(0);
       expect(await gateway.getRequests("chat.startup")).toHaveLength(1);
@@ -206,20 +247,23 @@ suite.define(() => {
     async (outcome) => {
       await suite.withPage(createControlUiE2eContextOptions(), async ({ page }) => {
         const gateway = await installStartupGateway(page);
-        await openPendingChat(page, gateway);
-        await expectBulkReadsHeld(gateway);
+        const presentedShell = outcome === "New Session navigation";
+        await openPendingChat(page, gateway, presentedShell);
+        await expectBulkReadsHeld(gateway, presentedShell ? "research" : undefined);
         if (outcome === "failed startup") {
           await gateway.rejectDeferred("chat.startup", {
             code: "GATEWAY_UNAVAILABLE",
             message: "Synthetic history unavailable.",
           });
-          await page.getByRole("alert").getByText("Synthetic history unavailable.").waitFor();
         } else {
           await page.locator("openclaw-app-sidebar .sidebar-brand__new-thread").click();
           await page.waitForURL((url) => url.pathname === "/new");
           await page.locator("openclaw-new-session-page").waitFor();
         }
         await expectBulkReadsReleased(gateway);
+        if (outcome === "failed startup") {
+          await page.getByRole("alert").getByText("Synthetic history unavailable.").waitFor();
+        }
         if (outcome === "New Session navigation") {
           await gateway.resolveDeferred("chat.startup");
           expect(new URL(page.url()).pathname).toBe("/new");

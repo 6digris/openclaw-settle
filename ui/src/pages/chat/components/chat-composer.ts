@@ -482,7 +482,7 @@ export function renderChatComposer(props: ChatComposerProps) {
   };
   state.microphonePicker ??= new ComposerMicrophonePicker(requestUpdate);
   const devicePicker = state.microphonePicker;
-  devicePicker.syncCatalog(props.gatewayClient ?? null, props.connected);
+  devicePicker.syncCatalog(props.gatewayClient ?? null, props.connected, !props.startupLoading);
   const startRealtimeTalk = () => {
     if (props.submitDisabledReason) {
       return;

@@ -169,26 +169,37 @@ class PluginsPage extends OpenClawLightDomElement {
     },
   });
 
-  private readonly subscriptions = new SubscriptionsController(this).effect(
-    () => this.context?.runtimeConfig,
-    (runtimeConfig) => {
-      if (this.surface === "settings" || this.installWizard?.stage === "configuring") {
+  private readonly subscriptions = new SubscriptionsController(this)
+    .effect(
+      () => this.context?.runtimeConfig,
+      (runtimeConfig) => {
+        this.configAutoSaveStatus = runtimeConfig.state.configAutoSaveStatus;
+        return runtimeConfig.subscribe(() => {
+          const nextStatus = runtimeConfig.state.configAutoSaveStatus;
+          const completedSave = this.configAutoSaveStatus === "saving" && nextStatus === "saved";
+          this.configAutoSaveStatus = nextStatus;
+          this.requestUpdate();
+          if (completedSave && this.pluginConfigEditPending) {
+            this.pluginConfigEditPending = false;
+            void this.refreshCatalog();
+          }
+        });
+      },
+    )
+    .effect(
+      () => {
+        const runtimeConfig = this.context?.runtimeConfig;
+        return runtimeConfig?.state.connected &&
+          (this.surface === "settings" || this.installWizard?.stage === "configuring")
+          ? runtimeConfig
+          : undefined;
+      },
+      (runtimeConfig) => {
         void runtimeConfig.ensureLoaded();
         void runtimeConfig.ensureSchemaLoaded();
-      }
-      this.configAutoSaveStatus = runtimeConfig.state.configAutoSaveStatus;
-      return runtimeConfig.subscribe(() => {
-        const nextStatus = runtimeConfig.state.configAutoSaveStatus;
-        const completedSave = this.configAutoSaveStatus === "saving" && nextStatus === "saved";
-        this.configAutoSaveStatus = nextStatus;
-        this.requestUpdate();
-        if (completedSave && this.pluginConfigEditPending) {
-          this.pluginConfigEditPending = false;
-          void this.refreshCatalog();
-        }
-      });
-    },
-  );
+        return undefined;
+      },
+    );
 
   override willUpdate(changed: PropertyValues<this>) {
     if (changed.has("routeData")) {

@@ -188,9 +188,11 @@ suite.define(() => {
             const disabledReason = async (deviceId: string) => tooltipTitleText(row(deviceId));
 
             await row(undeclaredIdentity.deviceId).waitFor();
-            expect(await disabledReason(undeclaredIdentity.deviceId)).toContain(
-              `Make ${COMMAND} available on this device, then reconnect, or pick another device.`,
-            );
+            await expect
+              .poll(() => disabledReason(undeclaredIdentity.deviceId))
+              .toContain(
+                `Make ${COMMAND} available on this device, then reconnect, or pick another device.`,
+              );
             await expect
               .poll(() => disabledReason(pendingIdentity.deviceId))
               .toContain(

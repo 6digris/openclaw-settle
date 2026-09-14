@@ -1,3 +1,4 @@
+import "../styles/login-gate.css";
 // Control UI component renders the login gate.
 import { html, nothing, type TemplateResult } from "lit";
 import { property } from "lit/decorators.js";

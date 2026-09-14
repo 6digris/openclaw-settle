@@ -403,9 +403,8 @@ suite.define(() => {
           )
           .toBe(selectedKey);
         await selectedPane
-          .locator(".chat-thread", {
-            hasText: "Synthetic loading proof message 900.",
-          })
+          .locator(".chat-thread")
+          .getByText("Synthetic loading proof message 900.", { exact: false })
           .waitFor();
         await selectedPane.locator(".agent-chat__composer-combobox textarea").waitFor();
         await page.locator("openclaw-app-sidebar .sidebar-footer-bar__home").click();
@@ -427,9 +426,8 @@ suite.define(() => {
           page.locator("openclaw-assistant-panel openclaw-chat-pane"),
         );
         await selectedPane
-          .locator(".chat-thread", {
-            hasText: "Synthetic loading proof message 900.",
-          })
+          .locator(".chat-thread")
+          .getByText("Synthetic loading proof message 900.", { exact: false })
           .waitFor();
         const selectedVisibleMs = Date.now() - startedAt;
         await selectedPane.locator(".agent-chat__composer-combobox textarea").waitFor();
@@ -536,9 +534,8 @@ suite.define(() => {
         // The prepend preserves the reader's anchor; a second gesture reaches the new start.
         await page.mouse.wheel(0, -1_000_000);
         await selectedPane
-          .locator(".chat-thread", {
-            hasText: "Synthetic loading proof message 1.",
-          })
+          .locator(".chat-thread")
+          .getByText("Synthetic loading proof message 1.", { exact: false })
           .waitFor();
         if (captureUiProof) {
           await page.screenshot({ path: path.join(artifactDir, "03-older-history-loaded.png") });
@@ -564,9 +561,8 @@ suite.define(() => {
               )
             : Promise.resolve(null);
           await selectedPane
-            .locator(".chat-thread", {
-              hasText: "Synthetic loading proof message 900.",
-            })
+            .locator(".chat-thread")
+            .getByText("Synthetic loading proof message 900.", { exact: false })
             .waitFor();
           const selectedMs = Date.now() - startedAt;
           await selectedPane.locator(".agent-chat__composer-combobox textarea").waitFor();

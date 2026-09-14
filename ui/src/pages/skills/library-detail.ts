@@ -1,3 +1,4 @@
+import "../../styles/skill-reader.css";
 import { html } from "lit";
 import type {
   SkillLibraryEntry,

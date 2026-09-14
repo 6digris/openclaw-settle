@@ -73,7 +73,7 @@ suite.define(() => {
           await expect.poll(() => composer.inputValue()).toBe("");
           await pane.locator(".chat-queue").getByText(submittedMessage, { exact: true }).waitFor();
           expect(await gateway.getRequests("chat.send")).toHaveLength(0);
-          expect(await pane.locator(".loading-skeleton").isVisible()).toBe(true);
+          expect(await skeleton.isVisible()).toBe(true);
           if (artifactDir) {
             await page.screenshot({
               path: path.join(artifactDir, "02-accepted-while-loading.png"),

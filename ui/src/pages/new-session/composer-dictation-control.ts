@@ -16,6 +16,7 @@ type NewSessionDictationOptions = {
   textarea: NewSessionComposerTextareaController;
   getClient: () => GatewayBrowserClient | null;
   isConnected: () => boolean;
+  isPresentationReady: () => boolean;
   canCommit: () => boolean;
   onMessage: (message: string) => void;
   onError: (message: string) => void;
@@ -68,7 +69,7 @@ export class NewSessionDictationControl {
     const ownsDraft = () => this.owner === owner;
     const client = this.options.getClient();
     const connected = this.options.isConnected() && client !== null;
-    this.devicePicker.syncCatalog(client, connected);
+    this.devicePicker.syncCatalog(client, connected, this.options.isPresentationReady());
     const enabled = this.options.canCommit();
     const dictationOptions = {
       client,

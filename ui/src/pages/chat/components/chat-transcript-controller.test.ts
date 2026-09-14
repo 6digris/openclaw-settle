@@ -999,16 +999,11 @@ describe("chat transcript controller", () => {
         container.scrollTo = scrollTo;
         const bubbles = [...container.querySelectorAll<HTMLElement>(".chat-bubble")];
         const reveals = bubbles.map((bubble) => (bubble.scrollIntoView = vi.fn()));
-        session.syncMessageRows(
-          new Map([
-            ["first", "first"],
-            ["second", "second"],
-          ]),
-          new Map([
-            ["first", "first"],
-            ["second", "second"],
-          ]),
-        );
+        const messageRows = new Map([
+          ["first", "first"],
+          ["second", "second"],
+        ]);
+        session.syncMessageRows(messageRows, new Map(messageRows));
         renderRows(rows);
         if (interruption === "idle at end") {
           vi.useFakeTimers();
