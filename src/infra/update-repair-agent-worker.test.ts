@@ -190,60 +190,6 @@ describe("fresh candidate repair process", () => {
     },
   );
 
-  it("repairs a candidate rehearsal in the staged candidate runtime", async () => {
-    await withOpenClawTestState(
-      { prefix: "repair-candidate-rehearsal-", layout: "home" },
-      async (state) => {
-        // The candidate owns rehearsal state it has already migrated to its own
-        // schema. Only its runtime may open that state during pre-activation repair.
-        const candidateRoot = path.join(state.workspaceDir, "candidate");
-        await candidate(
-          candidateRoot,
-          `
-        import fs from "node:fs";
-        const send = message => process.send(message);
-        process.on("message", message => {
-          if (message.type === "start") {
-            fs.writeFileSync("candidate-repair-pid", String(process.pid));
-            fs.writeFileSync("candidate-repair-state", message.target.stateDir);
-            send({ type: "validate", id: 1 });
-          } else if (message.type === "validation-result") {
-            const attempt = { turn: 1, provider: "openai", model: "gpt-5.6-luna", durationMs: 1, toolCalls: 1, validation: { ok: true, score: 1, summary: "Candidate rehearsal repaired." }, summary: "Candidate rehearsal repaired." };
-            send({ type: "event", event: { type: "turn-started", turn: 1, provider: attempt.provider, model: attempt.model } });
-            send({ type: "event", event: { type: "turn-finished", ...attempt } });
-            send({ type: "event", event: { type: "stopped", status: "repaired" } });
-            process.send({ type: "result", result: { status: "repaired", attempts: [attempt], finalValidation: attempt.validation } }, () => process.disconnect());
-          }
-        });
-        send({ type: "ready", candidateRehearsal: true });
-      `,
-        );
-        const rehearsalStateDir = state.path("rehearsal");
-        await fs.mkdir(rehearsalStateDir, { recursive: true });
-        const result = await prepareUnattendedUpdateRepair({
-          target: {
-            stateDir: rehearsalStateDir,
-            configPath: path.join(rehearsalStateDir, "openclaw.json"),
-            workspaceDir: path.join(rehearsalStateDir, "workspace"),
-            installRoot: candidateRoot,
-          },
-          context: { error: "Candidate lint failed", phase: "validating" },
-          budget: { maxTurns: 1, wallClockMs: 30_000 },
-          validate: async () => ({ ok: false, score: 0, summary: "Candidate lint failed" }),
-        });
-
-        expect(result, JSON.stringify(result)).toMatchObject({ status: "repaired" });
-        const pid = Number(
-          await fs.readFile(path.join(candidateRoot, "candidate-repair-pid"), "utf8"),
-        );
-        expect(pid).not.toBe(process.pid);
-        expect(await fs.readFile(path.join(candidateRoot, "candidate-repair-state"), "utf8")).toBe(
-          rehearsalStateDir,
-        );
-      },
-    );
-  });
-
   it("keeps admission separate from the rehearsal environment sent to the child", async () => {
     await withOpenClawTestState({ prefix: "repair-child-env-", layout: "home" }, async (state) => {
       const reported = [

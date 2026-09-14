@@ -2,7 +2,7 @@ import { z } from "zod";
 import { redactSupportString } from "../logging/diagnostic-support-redaction.js";
 import { truncateUtf8Suffix } from "../utils/utf8-truncate.js";
 import type { runUpdateRepairTurn } from "./update-repair-agent.runtime.js";
-import type { UpdateRepairTarget } from "./update-repair-protocol.js";
+import type { UpdateRepairTarget, UpdateRepairTurnRunner } from "./update-repair-protocol.js";
 
 const resultLineSchema = z.object({
   status: z.enum(["fixed", "partial", "not-fixed"]),
@@ -50,5 +50,39 @@ export async function runLocalUpdateRepairTurn(params: Parameters<typeof runUpda
       params.target,
     ),
     timedOut: outcome.envelope.status === "timeout",
+  };
+}
+
+/** Manual triage retains its route; unattended turns prepare it in the target process. */
+export function createLocalUpdateRepairTurn(target: UpdateRepairTarget): UpdateRepairTurnRunner {
+  let selected:
+    | Awaited<
+        ReturnType<typeof import("./update-repair-agent.runtime.js").prepareUpdateRepairInference>
+      >
+    | undefined;
+  return async (params) => {
+    const deadline = Date.now() + params.wallClockMs;
+    const runtime = await import("./update-repair-agent.runtime.js");
+    params.isCurrent();
+    selected ??= await runtime.withUpdateRepairEnvironment(target, () =>
+      runtime.prepareUpdateRepairInference(params.signal, Math.max(1, deadline - Date.now())),
+    );
+    params.isCurrent();
+    if (!selected.ok) {
+      return { status: "unavailable", reason: repairSummary(selected.reason, target) };
+    }
+    const { route, modelFallbacks } = selected;
+    const timeoutMs = Math.min(params.timeoutMs, deadline - Date.now());
+    if (timeoutMs <= 0) {
+      throw new Error("wall-clock-budget");
+    }
+    params.onRoute({ model: route.model, provider: route.provider });
+    return runLocalUpdateRepairTurn({
+      ...params,
+      target,
+      route,
+      modelFallbacks,
+      timeoutMs,
+    });
   };
 }

@@ -10,7 +10,7 @@ import {
   type UpdateRepairResult,
   type UpdateRepairValidation,
 } from "./update-repair-protocol.js";
-import { repairSummary, runLocalUpdateRepairTurn } from "./update-repair-turn.js";
+import { repairSummary, createLocalUpdateRepairTurn } from "./update-repair-turn.js";
 import { runUpdateRepairWorker } from "./update-repair-worker.js";
 import { UpdateRequesterRevokedError } from "./update-requester-authority.js";
 
@@ -84,6 +84,7 @@ let repairActive = false;
 
 /** The caller retains activation, service lifecycle, snapshots, and rollback ownership. */
 export async function runUpdateRepairLoop(params: UpdateRepairParams): Promise<UpdateRepairResult> {
+  const runTurn = createLocalUpdateRepairTurn(params.target);
   const attempts: RepairAttempt[] = [];
   let finalValidation: UpdateRepairValidation = {
     ok: false,
@@ -115,7 +116,6 @@ export async function runUpdateRepairLoop(params: UpdateRepairParams): Promise<U
   const cleanup = createAgentCleanupScope();
   repairActive = true;
   try {
-    const runtime = await import("./update-repair-agent.runtime.js");
     assertCurrent();
     finalValidation = await validateRepair(params, signal);
     assertCurrent();
@@ -133,15 +133,7 @@ export async function runUpdateRepairLoop(params: UpdateRepairParams): Promise<U
       return stop("aborted", "tool-call-budget");
     }
     const baselineScore = finalValidation.score;
-    const selected = await runtime.withUpdateRepairEnvironment(params.target, () =>
-      runtime.prepareUpdateRepairInference(signal, Math.max(1, deadline - Date.now())),
-    );
-    assertCurrent();
-    if (!selected.ok) {
-      return stop("unavailable", repairSummary(selected.reason, params.target));
-    }
-    const { route, modelFallbacks } = selected;
-    params.onEvent?.({ type: "route-selected", model: route.model, provider: route.provider });
+    let routeSelected = false;
     let remainingToolCalls = budget.maxToolCalls;
     for (let turn = 1; turn <= budget.maxTurns; turn += 1) {
       assertCurrent();
@@ -151,29 +143,29 @@ export async function runUpdateRepairLoop(params: UpdateRepairParams): Promise<U
       if (timeoutMs <= 0) {
         return stop("aborted", "wall-clock-budget");
       }
-      params.onEvent?.({
-        type: "turn-started",
-        turn,
-        model: route.model,
-        provider: route.provider,
-      });
       const turnController = new AbortController();
-      const turnTimer = setTimeout(
-        () => turnController.abort(new Error("per-turn-budget")),
-        timeoutMs,
-      );
+      let turnTimer: ReturnType<typeof setTimeout> | undefined;
       const turnSignal = AbortSignal.any([signal, turnController.signal]);
       let outcome;
       try {
         outcome = await cleanup.run(() =>
-          runLocalUpdateRepairTurn({
-            target: params.target,
-            route,
-            modelFallbacks,
+          runTurn({
+            wallClockMs: Math.max(1, deadline - Date.now()),
             prompt: repairPrompt(params, finalValidation),
             timeoutMs,
             maxToolCalls: remainingToolCalls,
             signal: turnSignal,
+            onRoute: (route) => {
+              if (!routeSelected) {
+                params.onEvent?.({ type: "route-selected", ...route });
+                routeSelected = true;
+              }
+              turnTimer = setTimeout(
+                () => turnController.abort(new Error("per-turn-budget")),
+                timeoutMs,
+              );
+              params.onEvent?.({ type: "turn-started", turn, ...route });
+            },
             isCurrent: () => {
               assertCurrent();
               return true;
@@ -183,8 +175,8 @@ export async function runUpdateRepairLoop(params: UpdateRepairParams): Promise<U
       } finally {
         clearTimeout(turnTimer);
       }
-      if (outcome.status === "unavailable") {
-        return stop("unavailable", outcome.reason);
+      if (outcome.status !== "completed") {
+        return stop(outcome.status, outcome.reason);
       }
       const attempt: RepairAttempt = {
         turn,

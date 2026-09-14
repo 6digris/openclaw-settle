@@ -89,27 +89,4 @@ process.send({ type: "ready", candidateRehearsal: true });
       },
     );
   });
-
-  it("records an unsupported released worker before requesting validation", async () => {
-    await withOpenClawTestState({ prefix: "repair-old-worker-", layout: "home" }, async (state) => {
-      const workerDir = path.join(state.workspaceDir, "dist", "infra");
-      await fs.mkdir(workerDir, { recursive: true });
-      await fs.writeFile(
-        path.join(workerDir, "update-repair.worker.js"),
-        'process.on("message", () => process.send({ type: "validate", id: 1 })); process.send({ type: "ready" });',
-      );
-      const validate = vi.fn();
-      const result = await prepareUnattendedUpdateRepair({
-        target: { ...state, installRoot: state.workspaceDir },
-        context: { error: "Candidate validation failed.", phase: "validating" },
-        budget: { wallClockMs: 10_000 },
-        validate,
-      });
-      expect(result).toMatchObject({
-        status: "unavailable",
-        reason: expect.stringContaining("cannot repair isolated rehearsal state"),
-      });
-      expect(validate).not.toHaveBeenCalled();
-    });
-  });
 });

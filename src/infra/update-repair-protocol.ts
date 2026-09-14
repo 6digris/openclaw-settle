@@ -149,3 +149,13 @@ export type UpdateRepairParams = {
 
 export type UpdateRepairTurnResult = z.infer<typeof turnResult>;
 export type UpdateRepairTurnMessage = Extract<UpdateRepairParentMessage, { type: "turn" }>;
+
+export type UpdateRepairTurnRunner = (params: {
+  prompt: string;
+  wallClockMs: number;
+  timeoutMs: number;
+  maxToolCalls: number;
+  signal: AbortSignal;
+  isCurrent: () => boolean;
+  onRoute: (route: { model: string; provider: string }) => void;
+}) => Promise<UpdateRepairTurnResult>;
