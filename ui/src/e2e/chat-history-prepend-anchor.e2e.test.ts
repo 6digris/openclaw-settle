@@ -162,10 +162,10 @@ suite.define(() => {
         expect(before).not.toBeNull();
         await page.screenshot({ path: path.join(artifactDir, "before-prepend.png") });
         await page.evaluate(
-          ({ messageKey, momentum, baselineY }) => {
+          ({ messageKey, momentum: observeMomentum, baselineY }) => {
             const frames: AnchorFrames = { frame: 0, positions: [], readerDelta: 0 };
             (window as AnchorWindow).prependFrames = frames;
-            if (momentum) {
+            if (observeMomentum) {
               try {
                 // Diagnostic only: observe the real owner without changing its scheduling.
                 // These TS-private fields must exist in the bundled page before any hook is installed.
@@ -175,10 +175,10 @@ suite.define(() => {
                   }
                   return value as Record<string, unknown>;
                 };
-                const pane = document.querySelector(".chat-pane-cache__pane--active");
-                const controller = object(object(pane, "pane").transcript, "controller");
+                const diagnosticPane = document.querySelector(".chat-pane-cache__pane--active");
+                const controller = object(object(diagnosticPane, "pane").transcript, "controller");
                 const owner = object(controller.sessionVirtualizer, "sessionVirtualizer");
-                const anchor = object(owner.prependAnchor, "prependAnchor");
+                const prependAnchor = object(owner.prependAnchor, "prependAnchor");
                 const offset = object(owner.offsetState, "offsetState");
                 const adapter = object(owner.virtualizerController, "virtualizerController");
                 if (typeof adapter.getVirtualizer !== "function") {
@@ -188,7 +188,7 @@ suite.define(() => {
                   Reflect.apply(adapter.getVirtualizer, adapter, []),
                   "virtualizer",
                 );
-                const scroller = pane?.querySelector(".chat-thread");
+                const scroller = diagnosticPane?.querySelector(".chat-thread");
                 if (!(scroller instanceof HTMLElement)) {
                   throw new Error("Missing prepend diagnostic scroller");
                 }
@@ -202,7 +202,11 @@ suite.define(() => {
                   if (value === null || value === undefined) {
                     return null;
                   }
-                  if (!["string", "number", "bigint"].includes(typeof value)) {
+                  if (
+                    typeof value !== "string" &&
+                    typeof value !== "number" &&
+                    typeof value !== "bigint"
+                  ) {
                     throw new Error("Unsupported prepend diagnostic key");
                   }
                   const text = String(value);
@@ -224,12 +228,12 @@ suite.define(() => {
                     touching: offset.touching,
                     touchScrolling: offset.touchScrolling,
                     isScrolling: virtualizer.isScrolling,
-                    iosTouching: virtualizer._iosTouching,
-                    iosJustTouchEnded: virtualizer._iosJustTouchEnded,
+                    iosTouching: virtualizer["_iosTouching"],
+                    iosJustTouchEnded: virtualizer["_iosJustTouchEnded"],
                   };
                   const numbers = {
                     adjustments: virtualizer.scrollAdjustments,
-                    iosDeferred: virtualizer._iosDeferredAdjustment,
+                    iosDeferred: virtualizer["_iosDeferredAdjustment"],
                     count: options.count,
                     margin: options.scrollMargin,
                   };
@@ -253,7 +257,9 @@ suite.define(() => {
                     }
                   }
                   const pending =
-                    anchor.pending === null ? null : object(anchor.pending, "pending anchor");
+                    prependAnchor.pending === null
+                      ? null
+                      : object(prependAnchor.pending, "pending anchor");
                   if (
                     pending &&
                     (typeof pending.top !== "number" ||
@@ -368,7 +374,7 @@ suite.define(() => {
                       return;
                     }
                     stopped = true;
-                    for (const restore of undo.reverse()) {
+                    for (const restore of undo.toReversed()) {
                       try {
                         restore();
                       } catch (error) {
@@ -409,7 +415,7 @@ suite.define(() => {
                   }
                   Object.defineProperty(target, name, {
                     ...(descriptor ?? { configurable: true, enumerable: false, writable: true }),
-                    value: function (this: unknown, ...args: unknown[]) {
+                    value(this: unknown, ...args: unknown[]) {
                       mark(label + ":before", args[0]);
                       let threw = true;
                       try {
@@ -435,10 +441,10 @@ suite.define(() => {
                 hook(owner, "syncRows", "syncRows");
                 hook(owner, "update", "host.update");
                 hook(owner, "measureConnectedRows", "measureRows");
-                hook(anchor, "capture", "capture");
-                hook(anchor, "update", "anchor.update");
-                hook(anchor, "moveWithReader", "moveWithReader");
-                hook(anchor, "clear", "clear");
+                hook(prependAnchor, "capture", "capture");
+                hook(prependAnchor, "update", "anchor.update");
+                hook(prependAnchor, "moveWithReader", "moveWithReader");
+                hook(prependAnchor, "clear", "clear");
                 hook(virtualizer, "scrollToOffset", "scrollToOffset");
                 for (const type of [
                   "touchstart",
@@ -540,17 +546,17 @@ suite.define(() => {
           .poll(() => thread.evaluate((element) => element.scrollTop))
           .toBeGreaterThan(heldOffset + (momentum ? 40 : 0) + 100);
         await page.screenshot({ path: path.join(artifactDir, "after-prepend.png") });
-        const { positions: frames, ...diagnostic } = await page.evaluate((momentum) => {
+        const { positions: frames, ...diagnostic } = await page.evaluate((captureMomentum) => {
           const probe = (window as AnchorWindow).prependFrames;
           cancelAnimationFrame(probe.frame);
           probe.trace?.stop();
           const snapshot: PrependDiagnostic = {
             diagnostic: null,
-            diagnosticUnavailable: momentum
+            diagnosticUnavailable: captureMomentum
               ? (probe.diagnosticUnavailable ?? "trace unavailable")
               : null,
           };
-          if (momentum) {
+          if (captureMomentum) {
             try {
               const trace = probe.trace;
               if (trace) {
@@ -612,22 +618,23 @@ suite.define(() => {
               omittedForSize: { samples: 0, events: 0 },
             };
             let json = JSON.stringify(report);
-            while (
-              Buffer.byteLength(json, "utf8") + 1 > 256 * 1024 &&
-              diagnostic &&
-              (diagnostic.samples.length || diagnostic.events.length)
-            ) {
-              // Keep the latest bounded window and the first bad frame; report every dropped record.
-              for (const kind of ["samples", "events"] as const) {
-                report.omittedForSize[kind] += diagnostic[kind].splice(
-                  0,
-                  Math.ceil(diagnostic[kind].length / 2),
-                ).length;
+            if (diagnostic) {
+              while (
+                Buffer.byteLength(json, "utf8") + 1 > 256 * 1024 &&
+                (diagnostic.samples.length || diagnostic.events.length)
+              ) {
+                // Keep the latest bounded window and the first bad frame; report every dropped record.
+                for (const kind of ["samples", "events"] as const) {
+                  report.omittedForSize[kind] += diagnostic[kind].splice(
+                    0,
+                    Math.ceil(diagnostic[kind].length / 2),
+                  ).length;
+                }
+                json = JSON.stringify(report);
               }
-              json = JSON.stringify(report);
             }
             if (Buffer.byteLength(json, "utf8") + 1 > 256 * 1024) {
-              throw new Error("Prepend diagnostic metadata exceeds 256 KiB");
+              throw new Error("Prepend diagnostic metadata exceeds 256 KiB", { cause: error });
             }
             const failureDir = createControlUiE2eArtifactDir(
               "chat-history-prepend-failure",
