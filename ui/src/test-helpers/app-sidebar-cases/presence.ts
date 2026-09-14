@@ -7,7 +7,7 @@ import {
   createSessionsHarness,
   mountSidebar,
 } from "../app-sidebar.ts";
-import { selectSessionMenuValue } from "./session-ownership.ts";
+import { selectSessionMenuValue } from "./session-menu.ts";
 import "../../components/app-sidebar.ts";
 
 await import("../../components/viewer-facepile.ts");
