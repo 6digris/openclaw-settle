@@ -223,10 +223,17 @@ function collectTrace(params: {
     if (!request || incompletePayload(event)) {
       issues.push(`${eventId}:incomplete-request`);
     }
-    if (!terminal || incompletePayload(terminal) || !response) {
+    if (!terminal || incompletePayload(terminal) || typeof response?.ok !== "boolean") {
       issues.push(`${eventId}:incomplete-response`);
     }
-    if (status !== "acknowledged") {
+    // Session lifecycle metadata is best-effort and cannot carry assistant replies.
+    // A fully observed rejection is an outcome, not missing reply-content capture.
+    const observedMetadataRejection =
+      classification === "metadata" &&
+      terminal?.kind === "response" &&
+      terminal.status === 200 &&
+      response?.ok === false;
+    if (status !== "acknowledged" && !observedMetadataRejection) {
       issues.push(`${eventId}:${status}`);
     }
     const { content, nativeMarkdown } = request

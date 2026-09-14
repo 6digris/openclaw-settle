@@ -276,8 +276,10 @@ describe("Slack QA complete write trace", () => {
         ...buildMessageRequest({ flowId: "f", method: "agents.sessions.setStatus", text: "TITLE" }),
       },
     ]);
-    expect(result.complete).toBe(false);
-    expect(result.issues).toContain("1:rejected");
+    expect(result.complete).toBe(typeof ok === "boolean");
+    expect(result.issues).toEqual(
+      typeof ok === "boolean" ? [] : ["1:incomplete-response", "1:rejected"],
+    );
     expect(result.writes[0]).toMatchObject({
       eventId: 1,
       method: "agents.sessions.setStatus",
@@ -288,6 +290,18 @@ describe("Slack QA complete write trace", () => {
       errorCode: expected,
     });
     expect(JSON.stringify(result)).not.toContain("PRIVATE_");
+  });
+
+  it("keeps rejected unknown write methods outside complete reply proof", async () => {
+    const result = await trace([
+      buildResponse("f", false, { error: "not_authorized" }),
+      {
+        id: 1,
+        ...buildMessageRequest({ flowId: "f", method: "chat.postEphemeral", text: "TEXT" }),
+      },
+    ]);
+    expect(result.complete).toBe(false);
+    expect(result.issues).toEqual(["1:rejected"]);
   });
 
   it.each<Array<{ name: string; response?: Record<string, unknown>; metaJson?: string }>[number]>([

@@ -5,6 +5,7 @@ import {
   type DebugProxyCaptureReader,
 } from "openclaw/plugin-sdk/proxy-capture";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { createQaGatewayCliError } from "../../gateway-log-redaction.js";
 import type { SlackQaScenarioEnvironment } from "./scenario-environment.js";
 import { runSlackScenario } from "./scenario-runtime.js";
 import {
@@ -26,7 +27,7 @@ type LogTail = {
 type ProviderBlock =
   | { type: "text"; text: string }
   | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> };
-type ProviderToolResult = { id: string; isError: boolean; text: string };
+type ProviderToolResult = { id: string; isError: boolean; text: string; textParts?: number };
 type ProviderMessage = {
   model: string;
   text: string;
@@ -35,9 +36,27 @@ type ProviderMessage = {
   toolResults: ProviderToolResult[];
   maxTokens: number;
   outputTokens: number;
+  request?: {
+    eventId: number;
+    sameRequestAsPrevious?: boolean;
+    sameResponseIdAsPrevious?: boolean;
+    messageCount: number;
+    toolCount: number;
+    lastRole: "user" | "assistant" | "other";
+    lastUserText: string;
+  };
 };
 const MODEL = "claude-opus-4-8";
 const OBSERVATION_LIMIT = 5000;
+const CONTINUATION_EVENT_PREFIXES = [
+  "settled post-tool turn ",
+  "settled-turn finalization ",
+  "reasoning-only assistant turn ",
+  "missing assistant terminal message ",
+  "empty response ",
+  "compaction interrupted visible final answer:",
+  "before_agent_finalize requested one more pass:",
+];
 
 function object(value: unknown): Record<string, unknown> {
   if (!isRecord(value)) {
@@ -83,6 +102,8 @@ export function readSlackDeliveryProviderMessages(params: {
   if (relevant.some((event) => event.kind === "error")) {
     throw new Error("Slack delivery proof provider transport failed");
   }
+  let previousRequest: string | undefined;
+  let previousResponseId: string | undefined;
   return relevant
     .filter((event) => event.kind === "request")
     .toSorted((a, b) => Number(a.id) - Number(b.id))
@@ -93,7 +114,8 @@ export function readSlackDeliveryProviderMessages(params: {
       if (!response || response.status !== 200 || typeof request.flowId !== "string") {
         throw new Error("Slack delivery proof provider acknowledgement is missing");
       }
-      const body = object(JSON.parse(completePayload(params.store, request)));
+      const requestText = completePayload(params.store, request);
+      const body = object(JSON.parse(requestText));
       if (
         body.model !== MODEL ||
         !Array.isArray(body.messages) ||
@@ -210,11 +232,24 @@ export function readSlackDeliveryProviderMessages(params: {
                     })
                     .join("\n")
                 : "";
-          return { id: result.tool_use_id, isError: result.is_error === true, text: content };
+          return {
+            id: result.tool_use_id,
+            isError: result.is_error === true,
+            text: content,
+            textParts: Array.isArray(result.content) ? result.content.length : 1,
+          };
         });
       if (typeof stopReason !== "string" || typeof outputTokens !== "number") {
         throw new Error("Slack delivery proof provider terminal metadata is missing");
       }
+      const sameRequestAsPrevious =
+        previousRequest === undefined ? undefined : requestText === previousRequest;
+      const sameResponseIdAsPrevious =
+        previousResponseId === undefined || typeof message.id !== "string"
+          ? undefined
+          : message.id === previousResponseId;
+      previousRequest = requestText;
+      previousResponseId = typeof message.id === "string" ? message.id : undefined;
       return {
         model: MODEL,
         text,
@@ -223,6 +258,38 @@ export function readSlackDeliveryProviderMessages(params: {
         toolResults,
         maxTokens: body.max_tokens,
         outputTokens,
+        request: {
+          eventId: Number(request.id),
+          sameRequestAsPrevious,
+          sameResponseIdAsPrevious,
+          messageCount: body.messages.length,
+          toolCount: Array.isArray(body.tools) ? body.tools.length : 0,
+          lastRole:
+            object(body.messages.at(-1) ?? {}).role === "user"
+              ? "user"
+              : object(body.messages.at(-1) ?? {}).role === "assistant"
+                ? "assistant"
+                : "other",
+          // Keep only the final user request part for private failure diagnosis,
+          // never system instructions, headers, or the full conversation.
+          lastUserText: body.messages
+            .filter((entry) => object(entry).role === "user")
+            .slice(-1)
+            .flatMap((entry) => {
+              const content = object(entry).content;
+              return typeof content === "string"
+                ? [content]
+                : Array.isArray(content)
+                  ? content.flatMap((part) => {
+                      const block = object(part);
+                      return block.type === "text" && typeof block.text === "string"
+                        ? [block.text]
+                        : [];
+                    })
+                  : [];
+            })
+            .join("\n"),
+        },
       };
     });
 }
@@ -239,6 +306,7 @@ export function verifySlackDeliveryObservations(params: {
   retainedMessages: Array<{ ts: string; text: string }>;
   messages: ProviderMessage[];
   trace: SlackQaWriteTrace;
+  ownerEvents?: string[];
 }) {
   const { messages, trace } = params;
   const expectedCalls = params.mode === "message-tool" ? 4 : 3;
@@ -269,14 +337,31 @@ export function verifySlackDeliveryObservations(params: {
   );
   const send = tools[2]?.[0];
   let sendResultMatches = false;
+  let sendEnvelope: Record<string, unknown> | undefined;
+  let sendReceipt: Record<string, unknown> | undefined;
+  let coreTarget: Record<string, unknown> | undefined;
+  let pluginSuccess = false;
+  let coreSuccess = false;
+  const sendResult = messages[3]?.toolResults[2];
   if (params.mode === "message-tool") {
     try {
-      const result = object(JSON.parse(messages[3]?.toolResults[2]?.text ?? ""));
-      const sent = object(result.result);
+      sendEnvelope = object(JSON.parse(sendResult?.text ?? ""));
+      sendReceipt = object(sendEnvelope.result);
+      // Slack's prepared payload uses core delivery; workspace-aware actions
+      // retain the plugin envelope. Each owner has explicit success semantics.
+      coreTarget = isRecord(sendReceipt.target) ? sendReceipt.target : undefined;
+      pluginSuccess = sendEnvelope.ok === true && sendReceipt.channelId === params.channelId;
+      coreSuccess =
+        sendEnvelope.channel === "slack" &&
+        sendEnvelope.via === "direct" &&
+        sendEnvelope.deliveryStatus === "sent" &&
+        sendReceipt.channel === "slack" &&
+        coreTarget?.kind === "channel" &&
+        coreTarget.id === params.channelId;
       sendResultMatches =
-        result.ok === true &&
-        sent.channelId === params.channelId &&
-        sent.messageId === params.finalMessageId;
+        sendResult?.isError === false &&
+        (pluginSuccess || coreSuccess) &&
+        sendReceipt.messageId === params.finalMessageId;
     } catch {
       /* A missing or non-JSON result cannot establish an explicit send. */
     }
@@ -344,15 +429,56 @@ export function verifySlackDeliveryObservations(params: {
     providerShapeExercised: shape,
     provider: messages.map((message) => ({
       textChars: message.text.length,
+      preamble: message.text === params.preamble,
+      final: message.text === params.final,
+      privateFinal: message.text === params.privateFinal,
       blocks: message.blocks.map((block) => block.type),
       tools: message.blocks.filter((block) => block.type === "tool_use").length,
       stopReason: message.stopReason,
       toolResults: message.toolResults.length,
       maxTokens: message.maxTokens,
       outputTokens: message.outputTokens,
+      request: message.request
+        ? {
+            eventId: message.request.eventId,
+            sameRequestAsPrevious: message.request.sameRequestAsPrevious,
+            sameResponseIdAsPrevious: message.request.sameResponseIdAsPrevious,
+            messageCount: message.request.messageCount,
+            toolCount: message.request.toolCount,
+            lastRole: message.request.lastRole,
+            lastUserTextChars: message.request.lastUserText.length,
+          }
+        : undefined,
     })),
     toolResultsCorrelated: resultsCorrelated,
     explicitSendCorrelated: params.mode === "message-tool" ? sendResultMatches : undefined,
+    ownerEventKinds: params.ownerEvents?.map(
+      (message) =>
+        CONTINUATION_EVENT_PREFIXES.find((prefix) => message.startsWith(prefix))?.trim() ??
+        "unclassified-owner-event",
+    ),
+    explicitSendDiagnostics:
+      params.mode === "message-tool"
+        ? {
+            toolName: send?.name === "message",
+            action: send?.input.action === "send",
+            channel: send?.input.channel === "slack",
+            target: send?.input.target === `channel:${params.channelId}`,
+            content: send?.input.message === params.final,
+            nonterminal: send?.input.final === false,
+            resultPresent: sendResult !== undefined,
+            resultError: sendResult?.isError,
+            resultTextParts: sendResult?.textParts,
+            envelopeObject: sendEnvelope !== undefined,
+            receiptObject: sendReceipt !== undefined,
+            pluginSuccess,
+            coreSuccess,
+            pluginChannelMatches: sendReceipt?.channelId === params.channelId,
+            coreChannelMatches:
+              coreTarget?.kind === "channel" && coreTarget.id === params.channelId,
+            messageMatches: sendReceipt?.messageId === params.finalMessageId,
+          }
+        : undefined,
     retainedMessages: params.retainedMessages.map((message) => ({
       finalIdentity: message.ts === params.finalMessageId,
       final: message.text.includes(params.final),
@@ -395,8 +521,24 @@ export function verifySlackDeliveryObservations(params: {
     metadataWrites: trace.writes.filter((write) => write.classification === "metadata").length,
   };
   const details = JSON.stringify(facts);
+  const finalRequest = messages.at(-1)?.request;
+  const failure = (reason: string) =>
+    new Error(
+      `${reason}; ${JSON.stringify({
+        ...facts,
+        privateDiagnostics: {
+          // Reuse QA's redacted, bounded error excerpt before any collector sees it.
+          finalUserInput: finalRequest
+            ? createQaGatewayCliError(finalRequest.lastUserText).message
+            : undefined,
+          ownerEvents: params.ownerEvents
+            ?.slice(0, 16)
+            .map((message) => createQaGatewayCliError(message).message),
+        },
+      })}`,
+    );
   if (!shape) {
-    throw new Error(`Slack delivery proof inconclusive: provider sequence unexercised; ${details}`);
+    throw failure("Slack delivery proof inconclusive: provider sequence unexercised");
   }
   const matchedFinal = replies.some(
     (write) =>
@@ -406,8 +548,13 @@ export function verifySlackDeliveryObservations(params: {
       (write.content.some((text) => text.includes(params.final)) ||
         nativeText.get(`${params.channelId}/${params.finalMessageId}`)?.includes(params.final)),
   );
-  if (!trace.complete || unexpected.length > 0 || !matchedFinal) {
-    throw new Error(`Slack delivery proof inconclusive: capture incomplete; ${details}`);
+  if (
+    !trace.complete ||
+    unexpected.length > 0 ||
+    replies.some((write) => write.status !== "acknowledged") ||
+    !matchedFinal
+  ) {
+    throw failure("Slack delivery proof inconclusive: capture incomplete");
   }
   const retainedFinal = params.retainedMessages.find(
     (message) => message.ts === params.finalMessageId,
@@ -420,13 +567,13 @@ export function verifySlackDeliveryObservations(params: {
     !visibleContent.some((text) => text.includes(params.final)) ||
     visibleContent.some((text) => text.includes(params.privateFinal))
   ) {
-    throw new Error(`Slack delivery proof failed: visible final policy; ${details}`);
+    throw failure("Slack delivery proof failed: visible final policy");
   }
   if (
     params.mode !== "progress" &&
     (replies.length !== 1 || content.some((text) => text !== params.final))
   ) {
-    throw new Error(`Slack delivery proof failed: intermediate reply content; ${details}`);
+    throw failure("Slack delivery proof failed: intermediate reply content");
   }
   // Progress is an intentional status mode, not a claim that narration was never visible.
   if (
@@ -435,9 +582,7 @@ export function verifySlackDeliveryObservations(params: {
       !replies.some((write) => write.method === "chat.startStream") ||
       !replies.some((write) => write.method === "chat.stopStream"))
   ) {
-    throw new Error(
-      `Slack delivery proof inconclusive: progress presentation unexercised; ${details}`,
-    );
+    throw failure("Slack delivery proof inconclusive: progress presentation unexercised");
   }
   return details;
 }
@@ -466,6 +611,7 @@ async function tail(environment: SlackQaScenarioEnvironment, cursor?: number): P
 async function waitForDelivery(environment: SlackQaScenarioEnvironment, initial: LogTail) {
   const deadline = Date.now() + environment.scenario.timeoutMs;
   let cursor = initial.cursor;
+  const ownerEvents: string[] = [];
   const target = ` to channel:${environment.channelId}`;
   while (Date.now() < deadline) {
     const observed = await tail(environment, cursor);
@@ -482,12 +628,22 @@ async function waitForDelivery(environment: SlackQaScenarioEnvironment, initial:
       const payload = record["0"];
       // This is the existing dispatch owner's post-cleanup log, not the earlier agent terminal event.
       const message = isRecord(payload) ? payload.message : record.message;
+      // One isolated inbound turn owns this cursor interval. Retain only named
+      // retry/finalization events with their run identity in private failure data.
+      if (
+        typeof message === "string" &&
+        message.includes("runId=") &&
+        CONTINUATION_EVENT_PREFIXES.some((prefix) => message.startsWith(prefix)) &&
+        ownerEvents.length < 16
+      ) {
+        ownerEvents.push(message);
+      }
       if (
         typeof message === "string" &&
         /^slack: delivered \d+ reply(?:ies)? to channel:/u.test(message) &&
         message.endsWith(target)
       ) {
-        return;
+        return ownerEvents;
       }
     }
     cursor = observed.cursor;
@@ -587,7 +743,7 @@ export async function runSlackDeliveryProof(
         if (!initialLog) {
           throw new Error("Slack delivery proof did not establish a pre-send boundary");
         }
-        await waitForDelivery(environment, initialLog);
+        const ownerEvents = await waitForDelivery(environment, initialLog);
         // The first matched reply may precede cleanup. Read the complete bounded
         // thread after the owner finishes; a deleted final must not qualify.
         const history = await context.sutReadClient.conversations.replies({
@@ -630,6 +786,7 @@ export async function runSlackDeliveryProof(
           retainedMessages,
           messages,
           trace,
+          ownerEvents,
         });
         return JSON.stringify({
           ...JSON.parse(details),

@@ -68,6 +68,45 @@ function fixture(): Parameters<typeof verifySlackDeliveryObservations>[0] {
   };
 }
 
+function messageToolFixture(): Parameters<typeof verifySlackDeliveryObservations>[0] {
+  const observed = fixture();
+  observed.mode = "message-tool";
+  observed.messages[2] = {
+    ...observed.messages[2]!,
+    text: "",
+    blocks: [
+      {
+        type: "tool_use",
+        id: "call-3",
+        name: "message",
+        input: {
+          action: "send",
+          channel: "slack",
+          target: "channel:C123",
+          message: "FINAL",
+          final: false,
+        },
+      },
+    ],
+    stopReason: "tool_use",
+  };
+  observed.messages.push({
+    ...observed.messages[0]!,
+    text: "PRIVATE",
+    toolResults: [
+      ...observed.messages[2]!.toolResults,
+      {
+        id: "call-3",
+        isError: false,
+        text: JSON.stringify({ ok: true, result: { channelId: "C123", messageId: "2.000000" } }),
+      },
+    ],
+    blocks: [{ type: "text", text: "PRIVATE" }],
+    stopReason: "end_turn",
+  });
+  return observed;
+}
+
 describe("Slack Anthropic delivery proof", () => {
   it("qualifies only the realized sequence and the observed final identity", () => {
     expect(JSON.parse(verifySlackDeliveryObservations(fixture())).providerShapeExercised).toBe(
@@ -159,10 +198,8 @@ describe("Slack Anthropic delivery proof", () => {
     );
   });
 
-  it("keeps negative-ACK diagnostics in an inconclusive verdict without private content", () => {
+  it("keeps observed negative-ACK metadata separate from reply qualification without private content", () => {
     const observed = fixture();
-    observed.trace.complete = false;
-    observed.trace.issues = ["2:rejected"];
     observed.trace.writes.push({
       eventId: 2,
       method: "agents.sessions.setStatus",
@@ -173,26 +210,22 @@ describe("Slack Anthropic delivery proof", () => {
       errorCode: "feature_disabled",
       content: ["PRIVATE_TITLE"],
     });
-    try {
-      verifySlackDeliveryObservations(observed);
-      expect.fail("rejected metadata must remain inconclusive");
-    } catch (error) {
-      expect(error).toBeInstanceOf(Error);
-      const message = String(error);
-      expect(message).toContain("inconclusive: capture incomplete");
-      expect(message).not.toContain("PRIVATE_TITLE");
-      expect(JSON.parse(message.split("; ")[1]!).nonAcknowledgedWrites).toEqual([
-        {
-          eventId: 2,
-          method: "agents.sessions.setStatus",
-          classification: "metadata",
-          status: "rejected",
-          responseStatus: 200,
-          responseOk: false,
-          errorCode: "feature_disabled",
-        },
-      ]);
-    }
+    const details = verifySlackDeliveryObservations(observed);
+    expect(details).not.toContain("PRIVATE_TITLE");
+    expect(JSON.parse(details).nonAcknowledgedWrites).toEqual([
+      {
+        eventId: 2,
+        method: "agents.sessions.setStatus",
+        classification: "metadata",
+        status: "rejected",
+        responseStatus: 200,
+        responseOk: false,
+        errorCode: "feature_disabled",
+      },
+    ]);
+    observed.trace.writes[1]!.classification = "reply";
+    observed.trace.writes[1]!.method = "chat.postMessage";
+    expect(() => verifySlackDeliveryObservations(observed)).toThrow("capture incomplete");
     observed.trace.writes[1]!.classification = "other";
     observed.trace.writes[1]!.method = "PRIVATE_METHOD";
     expect(() => verifySlackDeliveryObservations(observed)).toThrow("unexpected-method");
@@ -234,40 +267,7 @@ describe("Slack Anthropic delivery proof", () => {
   });
 
   it("requires explicit-send success with the subsequent ordinary answer hidden", () => {
-    const observed = fixture();
-    observed.messages[2] = {
-      ...observed.messages[2]!,
-      text: "",
-      blocks: [
-        {
-          type: "tool_use",
-          id: "call-3",
-          name: "message",
-          input: {
-            action: "send",
-            channel: "slack",
-            target: "channel:C123",
-            message: "FINAL",
-            final: false,
-          },
-        },
-      ],
-      stopReason: "tool_use",
-    };
-    observed.messages.push({
-      ...observed.messages[0]!,
-      text: "PRIVATE",
-      toolResults: [
-        ...observed.messages[2]!.toolResults,
-        {
-          id: "call-3",
-          isError: false,
-          text: JSON.stringify({ ok: true, result: { channelId: "C123", messageId: "2.000000" } }),
-        },
-      ],
-      blocks: [{ type: "text", text: "PRIVATE" }],
-      stopReason: "end_turn",
-    });
+    const observed = messageToolFixture();
     expect(
       JSON.parse(verifySlackDeliveryObservations({ ...observed, mode: "message-tool" }))
         .providerShapeExercised,
@@ -288,10 +288,109 @@ describe("Slack Anthropic delivery proof", () => {
       "provider sequence unexercised",
     );
     send.input.target = "channel:C123";
+    const toolResult = observed.messages[3]!.toolResults[2]!;
+    for (const text of [
+      "not-json",
+      JSON.stringify({ ok: false, result: { channelId: "C123", messageId: "2.000000" } }),
+      JSON.stringify({ result: { channelId: "C123", messageId: "2.000000" } }),
+    ]) {
+      toolResult.text = text;
+      expect(() => verifySlackDeliveryObservations(observed)).toThrow(
+        "provider sequence unexercised",
+      );
+    }
+    const coreResult = {
+      channel: "slack",
+      to: "channel:C123",
+      via: "direct",
+      deliveryStatus: "sent",
+      mediaUrl: null,
+      result: { channel: "slack", target: { kind: "channel", id: "C123" }, messageId: "2.000000" },
+    };
+    toolResult.text = JSON.stringify(coreResult);
+    expect(
+      JSON.parse(verifySlackDeliveryObservations(observed)).explicitSendDiagnostics.coreSuccess,
+    ).toBe(true);
+    for (const deliveryStatus of [undefined, "failed", "partial_failed", "suppressed", "queued"]) {
+      toolResult.text = JSON.stringify({ ...coreResult, deliveryStatus });
+      expect(() => verifySlackDeliveryObservations(observed)).toThrow(
+        "provider sequence unexercised",
+      );
+    }
+    for (const result of [
+      null,
+      {},
+      { ...coreResult.result, target: { kind: "channel", id: "OTHER" } },
+      { ...coreResult.result, messageId: "OTHER" },
+    ]) {
+      toolResult.text = JSON.stringify({ ...coreResult, result });
+      expect(() => verifySlackDeliveryObservations(observed)).toThrow(
+        "provider sequence unexercised",
+      );
+    }
+    toolResult.text = JSON.stringify(coreResult);
     observed.trace.writes[0]!.content.push("PRIVATE");
     expect(() => verifySlackDeliveryObservations({ ...observed, mode: "message-tool" })).toThrow(
       "failed: visible final policy",
     );
+  });
+
+  it("retains fifth-response provenance without qualifying an extra provider turn", () => {
+    const observed = messageToolFixture();
+    observed.messages.push({
+      ...observed.messages[3]!,
+      text: "DIFFERENT",
+      blocks: [{ type: "text", text: "DIFFERENT" }],
+      request: {
+        eventId: 20,
+        messageCount: 9,
+        toolCount: 0,
+        lastRole: "user",
+        lastUserText: "PRIVATE_CONTINUATION_INPUT",
+      },
+    });
+    observed.ownerEvents = [
+      "settled post-tool turn lacked a final answer: runId=PRIVATE_RUN — running isolated finalization",
+    ];
+    try {
+      verifySlackDeliveryObservations(observed);
+      expect.fail("a fifth response must remain unqualified");
+    } catch (error) {
+      expect(String(error)).toContain("provider sequence unexercised");
+      const facts = JSON.parse(String(error).split("; ")[1]!);
+      expect(facts.provider[3].privateFinal).toBe(true);
+      expect(facts.provider[4].privateFinal).toBe(false);
+      expect(facts.explicitSendDiagnostics).toMatchObject({
+        envelopeObject: true,
+        receiptObject: true,
+        pluginSuccess: true,
+        messageMatches: true,
+      });
+      expect(facts.ownerEventKinds).toEqual(["settled post-tool turn"]);
+      expect(facts.privateDiagnostics).toEqual({
+        finalUserInput: "PRIVATE_CONTINUATION_INPUT",
+        ownerEvents: observed.ownerEvents,
+      });
+      expect(
+        JSON.stringify({
+          provider: facts.provider,
+          send: facts.explicitSendDiagnostics,
+          owner: facts.ownerEventKinds,
+        }),
+      ).not.toContain("PRIVATE_");
+    }
+    const secret = "synthetic-secret-".repeat(20);
+    observed.messages[4]!.request!.lastUserText =
+      "prefix ".repeat(290) + ` Bearer ${secret} ` + "suffix ".repeat(500);
+    try {
+      verifySlackDeliveryObservations(observed);
+      expect.fail("a fifth response must remain unqualified");
+    } catch (error) {
+      expect(String(error)).not.toContain(secret);
+      const facts = JSON.parse(String(error).split("; ")[1]!);
+      expect(facts.privateDiagnostics.finalUserInput.length).toBeLessThanOrEqual(2_048);
+      expect(facts.privateDiagnostics.finalUserInput).toContain("output omitted");
+    }
   });
 
   it.each(["final-only", "progress", "message-tool"] as const)(
@@ -338,7 +437,7 @@ describe("Slack Anthropic delivery proof", () => {
 
   it("requires a completed authenticated-model response within the token bound", () => {
     const data = [
-      { type: "message_start", message: { model: "claude-opus-4-8" } },
+      { type: "message_start", message: { id: "provider-message-1", model: "claude-opus-4-8" } },
       { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
       { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "FINAL" } },
       { type: "content_block_stop", index: 0 },
@@ -373,8 +472,29 @@ describe("Slack Anthropic delivery proof", () => {
       stopReason: "end_turn",
       maxTokens: 2048,
     });
+    const duplicateRequest = { ...request, id: 3, flowId: "duplicate" };
+    const duplicateResponse = { ...response, id: 4, flowId: "duplicate" };
+    const repeated = {
+      ...store,
+      getSessionEvents: () => [duplicateResponse, duplicateRequest, response, request],
+    };
+    expect(
+      readSlackDeliveryProviderMessages({ store: repeated, sessionId: "qa", cursor: 0 })[1],
+    ).toMatchObject({
+      request: { sameRequestAsPrevious: true, sameResponseIdAsPrevious: true },
+    });
+    duplicateRequest.dataText = request.dataText.replace(
+      '"messages":[]',
+      '"messages":[{"role":"user","content":"continuation"}]',
+    );
+    duplicateResponse.dataText = data.replace("provider-message-1", "provider-message-2");
+    expect(
+      readSlackDeliveryProviderMessages({ store: repeated, sessionId: "qa", cursor: 0 })[1],
+    ).toMatchObject({
+      request: { sameRequestAsPrevious: false, sameResponseIdAsPrevious: false },
+    });
     const toolFrames = [
-      { type: "message_start", message: { model: "claude-opus-4-8" } },
+      { type: "message_start", message: { id: "provider-message-1", model: "claude-opus-4-8" } },
       {
         type: "content_block_start",
         index: 0,
