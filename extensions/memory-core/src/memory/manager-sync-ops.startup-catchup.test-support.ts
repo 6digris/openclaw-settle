@@ -96,6 +96,7 @@ export function emitSessionTranscriptUpdate(update: MemorySessionTranscriptUpdat
 }
 
 export class SessionStartupCatchupHarness extends MemoryManagerSyncOps {
+  protected readonly purpose = "default" as const;
   protected readonly createProvider = (): never => {
     throw new Error("Startup catch-up harness does not acquire embedding providers");
   };
