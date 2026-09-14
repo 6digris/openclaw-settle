@@ -153,7 +153,7 @@ export async function writeGatewayTaskSupervisorProbe(params: {
       '  "USERPROFILE", "HOME", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA",',
       '  "OPENCLAW_PROFILE", "OPENCLAW_STATE_DIR", "OPENCLAW_CONFIG_PATH",',
       '  "OPENCLAW_GATEWAY_PORT", "OPENCLAW_SERVICE_KIND", "OPENCLAW_SERVICE_MARKER",',
-      '  "OPENCLAW_WINDOWS_TASK_HIDDEN_LAUNCHER",',
+      '  "OPENCLAW_WINDOWS_TASK_NAME", "OPENCLAW_WINDOWS_TASK_HIDDEN_LAUNCHER",',
       "]);",
       "for (const key of Object.keys(process.env)) if (!allowedEnv.has(key.toUpperCase())) delete process.env[key];",
       "const eventsPath = process.argv[5];",
