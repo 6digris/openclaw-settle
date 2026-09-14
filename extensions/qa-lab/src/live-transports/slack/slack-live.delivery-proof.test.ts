@@ -1,8 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { buildQaGatewayConfig } from "../../qa-gateway-config.js";
 import type { SlackQaWriteTrace } from "./slack-live.capture.js";
 import { buildSlackQaConfig } from "./slack-live.config.js";
-import { verifySlackDeliveryObservations } from "./slack-live.delivery-proof.js";
+import {
+  readSlackTerminalSendResult,
+  verifySlackDeliveryObservations,
+} from "./slack-live.delivery-proof.js";
 import { readSlackDeliveryProviderMessages } from "./slack-live.provider-capture.js";
 
 function fixture(): Parameters<typeof verifySlackDeliveryObservations>[0] {
@@ -82,26 +85,17 @@ function messageToolFixture(): Parameters<typeof verifySlackDeliveryObservations
           channel: "slack",
           target: "channel:C123",
           message: "FINAL",
-          final: false,
+          final: true,
         },
       },
     ],
     stopReason: "tool_use",
   };
-  observed.messages.push({
-    ...observed.messages[0]!,
-    text: "PRIVATE",
-    toolResults: [
-      ...observed.messages[2]!.toolResults,
-      {
-        id: "call-3",
-        isError: false,
-        text: JSON.stringify({ ok: true, result: { channelId: "C123", messageId: "2.000000" } }),
-      },
-    ],
-    blocks: [{ type: "text", text: "PRIVATE" }],
-    stopReason: "end_turn",
-  });
+  observed.terminalSendResult = {
+    id: "call-3",
+    isError: false,
+    text: JSON.stringify({ ok: true, result: { channelId: "C123", messageId: "2.000000" } }),
+  };
   return observed;
 }
 
@@ -264,7 +258,7 @@ describe("Slack Anthropic delivery proof", () => {
     expect(verify).toThrow("failed: visible final policy");
   });
 
-  it("requires explicit-send success with the subsequent ordinary answer hidden", () => {
+  it("requires a completed explicit send and its correlated terminal receipt", () => {
     const observed = messageToolFixture();
     expect(
       JSON.parse(verifySlackDeliveryObservations({ ...observed, mode: "message-tool" }))
@@ -274,19 +268,34 @@ describe("Slack Anthropic delivery proof", () => {
     if (send.type !== "tool_use") {
       throw new Error("missing fixture send");
     }
-    for (const final of [undefined, true]) {
+    for (const final of [undefined, false]) {
       send.input.final = final;
       expect(() => verifySlackDeliveryObservations({ ...observed, mode: "message-tool" })).toThrow(
         "provider sequence unexercised",
       );
     }
-    send.input.final = false;
+    send.input.final = true;
     send.input.target = "channel:OTHER";
     expect(() => verifySlackDeliveryObservations({ ...observed, mode: "message-tool" })).toThrow(
       "provider sequence unexercised",
     );
     send.input.target = "channel:C123";
-    const toolResult = observed.messages[3]!.toolResults[2]!;
+    const toolResult = observed.terminalSendResult!;
+    observed.terminalSendResult = undefined;
+    expect(() => verifySlackDeliveryObservations(observed)).toThrow(
+      "provider sequence unexercised",
+    );
+    observed.terminalSendResult = toolResult;
+    toolResult.id = "unrelated-call";
+    expect(() => verifySlackDeliveryObservations(observed)).toThrow(
+      "provider sequence unexercised",
+    );
+    toolResult.id = "call-3";
+    toolResult.isError = true;
+    expect(() => verifySlackDeliveryObservations(observed)).toThrow(
+      "provider sequence unexercised",
+    );
+    toolResult.isError = false;
     for (const text of [
       "not-json",
       JSON.stringify({ ok: false, result: { channelId: "C123", messageId: "2.000000" } }),
@@ -333,8 +342,114 @@ describe("Slack Anthropic delivery proof", () => {
     );
   });
 
+  it("reads the completed tool receipt from the exact owned thread without another provider call", async () => {
+    const session = { key: "agent:qa:slack:channel:c123:thread:1.000000", sessionId: "session-1" };
+    const receipt = {
+      role: "toolResult",
+      toolCallId: "call-3",
+      toolName: "message",
+      isError: false,
+      content: [{ type: "text", text: messageToolFixture().terminalSendResult!.text }],
+    };
+    const listing = { hasMore: false, sessions: [session] };
+    const history = {
+      sessionKey: session.key,
+      sessionId: session.sessionId,
+      hasMore: false,
+      messages: [receipt],
+    };
+    const call = vi.fn().mockResolvedValueOnce(listing).mockResolvedValueOnce(history);
+    await expect(
+      readSlackTerminalSendResult({
+        gateway: { call },
+        channelId: "C123",
+        sentTs: "1.000000",
+        toolCallId: "call-3",
+      }),
+    ).resolves.toEqual({ ...messageToolFixture().terminalSendResult, textParts: 1 });
+    expect(call.mock.calls).toEqual([
+      ["sessions.list", { agentId: "qa", search: ":channel:c123:thread:1.000000", limit: 2 }],
+      ["chat.history", { agentId: "qa", sessionKey: session.key, limit: 24 }],
+    ]);
+  });
+
+  it("rejects ambiguous ownership and missing, truncated, duplicate or mismatched terminal receipts", async () => {
+    const session = { key: "agent:qa:slack:channel:c123:thread:1.000000", sessionId: "session-1" };
+    const receipt = {
+      role: "toolResult",
+      toolCallId: "call-3",
+      toolName: "message",
+      isError: false,
+      content: [{ type: "text", text: "{}" }],
+    };
+    const listing = { hasMore: false, sessions: [session] };
+    const history = {
+      sessionKey: session.key,
+      sessionId: session.sessionId,
+      hasMore: false,
+      messages: [receipt],
+    };
+    for (const [list, transcript] of [
+      [{ ...listing, hasMore: true }, history],
+      [{ ...listing, sessions: [] }, history],
+      [{ ...listing, sessions: [session, session] }, history],
+      [
+        {
+          ...listing,
+          sessions: [{ ...session, key: "agent:other:slack:channel:c123:thread:1.000000" }],
+        },
+        history,
+      ],
+      [
+        {
+          ...listing,
+          sessions: [{ ...session, key: "agent:qa:slack:channel:other:thread:1.000000" }],
+        },
+        history,
+      ],
+      [
+        { ...listing, sessions: [{ ...session, key: "agent:qa:slack:channel:c123:thread:other" }] },
+        history,
+      ],
+      [listing, { ...history, sessionId: "other" }],
+      [listing, { ...history, sessionKey: "other" }],
+      [listing, { ...history, hasMore: true }],
+      [listing, { ...history, nextOffset: 24 }],
+      [listing, { ...history, messages: Array(24).fill(receipt) }],
+      [listing, { ...history, messages: [] }],
+      [listing, { ...history, messages: [receipt, receipt] }],
+      [listing, { ...history, messages: [{ ...receipt, toolCallId: "other" }] }],
+      [listing, { ...history, messages: [{ ...receipt, toolName: "exec" }] }],
+      [listing, { ...history, messages: [{ ...receipt, isError: undefined }] }],
+      [listing, { ...history, messages: [{ ...receipt, __openclaw: { truncated: true } }] }],
+      [listing, { ...history, messages: [{ ...receipt, content: [{ type: "omitted" }] }] }],
+    ]) {
+      const call = vi.fn().mockResolvedValueOnce(list).mockResolvedValueOnce(transcript);
+      await expect(
+        readSlackTerminalSendResult({
+          gateway: { call },
+          channelId: "C123",
+          sentTs: "1.000000",
+          toolCallId: "call-3",
+        }),
+      ).rejects.toThrow(
+        /Slack delivery proof terminal (session identity|transcript|tool result) is incomplete/,
+      );
+    }
+  });
+
   it("retains fifth-response provenance without qualifying an extra provider turn", () => {
     const observed = messageToolFixture();
+    observed.messages.push({
+      ...observed.messages[0]!,
+      text: "PRIVATE",
+      blocks: [{ type: "text", text: "PRIVATE" }],
+      toolResults: [...observed.messages[2]!.toolResults, observed.terminalSendResult!],
+      stopReason: "end_turn",
+    });
+    expect(() => verifySlackDeliveryObservations(observed)).toThrow(
+      "provider sequence unexercised",
+    );
     observed.messages.push({
       ...observed.messages[3]!,
       text: "DIFFERENT",

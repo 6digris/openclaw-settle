@@ -48,11 +48,11 @@ export function verifySlackDeliveryObservations(params: {
   outputs: [string, string];
   retainedMessages: Array<{ ts: string; text: string }>;
   messages: ProviderMessage[];
+  terminalSendResult?: ProviderMessage["toolResults"][number];
   trace: SlackQaWriteTrace;
   ownerEvents?: string[];
 }) {
   const { messages, trace } = params;
-  const expectedCalls = params.mode === "message-tool" ? 4 : 3;
   const tools = messages.map((message) =>
     message.blocks.filter((block) => block.type === "tool_use"),
   );
@@ -85,7 +85,7 @@ export function verifySlackDeliveryObservations(params: {
   let coreTarget: Record<string, unknown> | undefined;
   let pluginSuccess = false;
   let coreSuccess = false;
-  const sendResult = messages[3]?.toolResults[2];
+  const sendResult = params.terminalSendResult;
   if (params.mode === "message-tool") {
     try {
       sendEnvelope = object(JSON.parse(sendResult?.text ?? ""));
@@ -102,6 +102,7 @@ export function verifySlackDeliveryObservations(params: {
         coreTarget?.kind === "channel" &&
         coreTarget.id === params.channelId;
       sendResultMatches =
+        sendResult?.id === send?.id &&
         sendResult?.isError === false &&
         (pluginSuccess || coreSuccess) &&
         sendReceipt.messageId === params.finalMessageId;
@@ -110,7 +111,7 @@ export function verifySlackDeliveryObservations(params: {
     }
   }
   const shape =
-    messages.length === expectedCalls &&
+    messages.length === 3 &&
     resultsCorrelated &&
     orderedBlocks &&
     execCallsMatch &&
@@ -118,21 +119,20 @@ export function verifySlackDeliveryObservations(params: {
     messages[0]?.stopReason === "tool_use" &&
     messages[1]?.text === "" &&
     messages[1]?.stopReason === "tool_use" &&
-    tools.at(-1)?.length === 0 &&
-    messages.at(-1)?.stopReason === "end_turn" &&
-    messages.at(-1)?.text ===
-      (params.mode === "message-tool" ? params.privateFinal : params.final) &&
-    (params.mode !== "message-tool" ||
-      (tools[2]?.length === 1 &&
+    (params.mode === "message-tool"
+      ? tools[2]?.length === 1 &&
         send?.name === "message" &&
         send.input.action === "send" &&
         send.input.channel === "slack" &&
         send.input.target === `channel:${params.channelId}` &&
         send.input.message === params.final &&
-        send.input.final === false &&
+        send.input.final === true &&
         messages[2]?.text === "" &&
         messages[2]?.stopReason === "tool_use" &&
-        sendResultMatches));
+        sendResultMatches
+      : tools[2]?.length === 0 &&
+        messages[2]?.stopReason === "end_turn" &&
+        messages[2]?.text === params.final);
   const safeOtherMethods = new Set([
     "auth.test",
     "conversations.info",
@@ -208,7 +208,9 @@ export function verifySlackDeliveryObservations(params: {
             channel: send?.input.channel === "slack",
             target: send?.input.target === `channel:${params.channelId}`,
             content: send?.input.message === params.final,
-            nonterminal: send?.input.final === false,
+            terminal: send?.input.final === true,
+            resultSource: "gateway-transcript",
+            resultIdMatches: sendResult?.id === send?.id,
             resultPresent: sendResult !== undefined,
             resultError: sendResult?.isError,
             resultTextParts: sendResult?.textParts,
@@ -330,6 +332,73 @@ export function verifySlackDeliveryObservations(params: {
   return details;
 }
 
+export async function readSlackTerminalSendResult(params: {
+  gateway: Pick<SlackQaScenarioEnvironment["context"]["gateway"], "call">;
+  channelId: string;
+  sentTs: string;
+  toolCallId: string;
+}): Promise<ProviderMessage["toolResults"][number]> {
+  // A completed message send terminates before another provider request. Read
+  // its persisted result through the Gateway, scoped to this owned Slack thread.
+  const route = `:channel:${params.channelId.toLowerCase()}:thread:${params.sentTs}`;
+  const listing = object(
+    await params.gateway.call("sessions.list", { agentId: "qa", search: route, limit: 2 }),
+  );
+  if (
+    listing.hasMore !== false ||
+    !Array.isArray(listing.sessions) ||
+    listing.sessions.length !== 1
+  ) {
+    throw new Error("Slack delivery proof terminal session identity is incomplete");
+  }
+  const session = object(listing.sessions[0]);
+  if (
+    typeof session.key !== "string" ||
+    !session.key.startsWith("agent:qa:slack:") ||
+    !session.key.endsWith(route) ||
+    typeof session.sessionId !== "string" ||
+    !session.sessionId
+  ) {
+    throw new Error("Slack delivery proof terminal session identity is incomplete");
+  }
+  const history = object(
+    await params.gateway.call("chat.history", {
+      sessionKey: session.key,
+      agentId: "qa",
+      limit: 24,
+    }),
+  );
+  if (
+    history.sessionKey !== session.key ||
+    history.sessionId !== session.sessionId ||
+    history.hasMore !== false ||
+    history.nextOffset !== undefined ||
+    !Array.isArray(history.messages) ||
+    history.messages.length >= 24
+  ) {
+    throw new Error("Slack delivery proof terminal transcript is incomplete");
+  }
+  const results = history.messages
+    .map(object)
+    .filter((message) => message.role === "toolResult" && message.toolCallId === params.toolCallId);
+  const result = results[0];
+  const content =
+    Array.isArray(result?.content) && result.content.length === 1
+      ? object(result.content[0])
+      : undefined;
+  if (
+    results.length !== 1 ||
+    result?.toolName !== "message" ||
+    (isRecord(result.__openclaw) && result.__openclaw.truncated === true) ||
+    typeof result.isError !== "boolean" ||
+    content?.type !== "text" ||
+    typeof content.text !== "string"
+  ) {
+    throw new Error("Slack delivery proof terminal tool result is incomplete");
+  }
+  return { id: params.toolCallId, isError: result.isError, text: content.text, textParts: 1 };
+}
+
 async function tail(environment: SlackQaScenarioEnvironment, cursor?: number): Promise<LogTail> {
   const value = object(
     await environment.context.gateway.call("logs.tail", {
@@ -425,7 +494,7 @@ export async function runSlackDeliveryProof(
         "Wait for that result. In your second model response emit NO text; only call the execution tool again to run:",
         `${commands[1]}. Do not combine these calls. Do not call any other tools.`,
         mode === "message-tool"
-          ? `After the second result, use only the message tool with action="send", channel="slack", target="channel:${environment.channelId}", message="${final}", and final=false so the turn continues after the send. Emit no ordinary text in this tool-call response. After that send completes, finish with ordinary assistant text exactly ${privateFinal}. That final text is private under the configured message-tool-only policy.`
+          ? `After the second result, use only the message tool with action="send", channel="slack", target="channel:${environment.channelId}", message="${final}", and final=true to complete this reply. Emit no ordinary text in this tool-call response. Do not produce any further assistant response or tool call after the send.`
           : `After the second result, finish with ordinary assistant text exactly ${final}. Do not use the message tool.`,
       ].join(" "),
       matchText: final,
@@ -517,6 +586,16 @@ export async function runSlackDeliveryProof(
           afterRequestEventId: cursor,
         });
         const messages = readSlackDeliveryProviderMessages({ store, sessionId, cursor });
+        const send = messages[2]?.blocks.find((block) => block.type === "tool_use");
+        const terminalSendResult =
+          mode === "message-tool" && send?.type === "tool_use"
+            ? await readSlackTerminalSendResult({
+                gateway: environment.context.gateway,
+                channelId: environment.channelId,
+                sentTs: context.sentTs,
+                toolCallId: send.id,
+              })
+            : undefined;
         const details = verifySlackDeliveryObservations({
           mode,
           preamble,
@@ -528,6 +607,7 @@ export async function runSlackDeliveryProof(
           outputs,
           retainedMessages,
           messages,
+          terminalSendResult,
           trace,
           ownerEvents,
         });
