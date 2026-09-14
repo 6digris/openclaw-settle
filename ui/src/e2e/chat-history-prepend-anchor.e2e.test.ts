@@ -1,5 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { CDPSession, Page } from "playwright";
 import { expect, it } from "vitest";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import {
@@ -46,6 +47,256 @@ type AnchorFrames = {
   diagnosticUnavailable?: string;
 };
 type AnchorWindow = typeof window & { prependFrames: AnchorFrames };
+
+type PrependProbeOriginal = {
+  label: string;
+  target: Record<string, unknown>;
+  name: string;
+  descriptor: PropertyDescriptor | undefined;
+  value: unknown;
+};
+type PrependProbeWindow = AnchorWindow & {
+  prependDiagnosticProbe?: {
+    pane: Element;
+    scroller: Element;
+    controller: Record<string, unknown>;
+    owner: Record<string, unknown>;
+    originals: PrependProbeOriginal[];
+  };
+};
+
+const prependProbeSentinel = "HISTORY_PREPEND_DIAGNOSTIC_PROBE_82e9e59";
+const prependProbeHookLabels = [
+  "syncRows",
+  "host.update",
+  "measureRows",
+  "capture",
+  "anchor.update",
+  "moveWithReader",
+  "clear",
+  "scrollToOffset",
+];
+
+// Disposable proof only: inspect the same listener registrations as the picker
+// contract test. The observer and the ordinary failure writer stay unchanged.
+async function prependProbeListeners(protocol: CDPSession) {
+  const objectGroup = "history-prepend-diagnostic-probe";
+  try {
+    const { result } = await protocol.send("Runtime.evaluate", {
+      expression: 'document.querySelector(".chat-pane-cache__pane--active .chat-thread")',
+      objectGroup,
+    });
+    if (!result.objectId) {
+      throw new Error("Prepend probe scroller is unavailable");
+    }
+    const { listeners } = await protocol.send("DOMDebugger.getEventListeners", {
+      objectId: result.objectId,
+    });
+    return listeners
+      .filter((listener) =>
+        ["touchstart", "touchend", "touchcancel", "scroll", "scrollend"].includes(listener.type),
+      )
+      .map((listener) =>
+        JSON.stringify({
+          type: listener.type,
+          capture: listener.useCapture,
+          passive: listener.passive,
+          once: listener.once,
+          script: listener.scriptId,
+          line: listener.lineNumber,
+          column: listener.columnNumber,
+        }),
+      )
+      .toSorted();
+  } finally {
+    await protocol.send("Runtime.releaseObjectGroup", { objectGroup });
+  }
+}
+
+function prependProbeAddedListeners(before: string[], after: string[]) {
+  const added = [...after];
+  for (const listener of before) {
+    const index = added.indexOf(listener);
+    expect(
+      index,
+      "the same scroller must retain its pre-existing listeners",
+    ).toBeGreaterThanOrEqual(0);
+    added.splice(index, 1);
+  }
+  return added;
+}
+
+async function startPrependDiagnosticProbe(page: Page, protocol: CDPSession) {
+  const baselineListeners = await prependProbeListeners(protocol);
+  await page.evaluate(() => {
+    // This closure runs inside Chromium and cannot import the Node-side guard.
+    const record = (value: unknown): Record<string, unknown> => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("Prepend probe owner is unavailable");
+      }
+      return value as Record<string, unknown>;
+    };
+    const pane = document.querySelector(".chat-pane-cache__pane--active");
+    const scroller = pane?.querySelector(".chat-thread");
+    if (!(pane instanceof HTMLElement) || !(scroller instanceof HTMLElement)) {
+      throw new Error("Prepend probe pane or scroller is unavailable");
+    }
+    const controller = record(Reflect.get(pane, "transcript"));
+    const owner = record(controller.sessionVirtualizer);
+    const anchor = record(owner.prependAnchor);
+    const adapter = record(owner.virtualizerController);
+    if (typeof adapter.getVirtualizer !== "function") {
+      throw new Error("Prepend probe virtualizer getter is unavailable");
+    }
+    const virtualizer = record(Reflect.apply(adapter.getVirtualizer, adapter, []));
+    const targets: Array<[Record<string, unknown>, string, string]> = [
+      [owner, "syncRows", "syncRows"],
+      [owner, "update", "host.update"],
+      [owner, "measureConnectedRows", "measureRows"],
+      [anchor, "capture", "capture"],
+      [anchor, "update", "anchor.update"],
+      [anchor, "moveWithReader", "moveWithReader"],
+      [anchor, "clear", "clear"],
+      [virtualizer, "scrollToOffset", "scrollToOffset"],
+    ];
+    const originals = targets.map(([target, name, label]) => {
+      const value = target[name];
+      if (typeof value !== "function") {
+        throw new Error("Prepend probe method is unavailable: " + label);
+      }
+      return {
+        target,
+        name,
+        label,
+        value,
+        descriptor: Object.getOwnPropertyDescriptor(target, name),
+      };
+    });
+    (window as PrependProbeWindow).prependDiagnosticProbe = {
+      pane,
+      scroller,
+      controller,
+      owner,
+      originals,
+    };
+  });
+  let armedState:
+    | {
+        installed: string[];
+        diagnosticUnavailable: string | null;
+        issue: string | null;
+        armed: boolean;
+        sampleCount: number;
+      }
+    | undefined;
+  let armedListeners: string[] | undefined;
+  let fixtureListeners: string[] | undefined;
+  return {
+    async recordArmed() {
+      armedState = await page.evaluate(() => {
+        const state = (window as PrependProbeWindow).prependDiagnosticProbe;
+        if (!state) {
+          throw new Error("Prepend probe original descriptors are unavailable");
+        }
+        const frames = (window as AnchorWindow).prependFrames;
+        return {
+          installed: state.originals
+            .filter(({ target, name, value }) => {
+              const descriptor = Object.getOwnPropertyDescriptor(target, name);
+              return typeof descriptor?.value === "function" && descriptor.value !== value;
+            })
+            .map(({ label }) => label),
+          diagnosticUnavailable: frames.diagnosticUnavailable ?? null,
+          issue: frames.trace?.issue ?? null,
+          armed: frames.trace?.events.some((entry) => entry.phase === "armed") ?? false,
+          sampleCount: frames.trace?.sampleCount ?? 0,
+        };
+      });
+      armedListeners = await prependProbeListeners(protocol);
+    },
+    async recordFixtureListener() {
+      fixtureListeners = await prependProbeListeners(protocol);
+    },
+    async verify() {
+      expect(armedState).toMatchObject({
+        installed: prependProbeHookLabels,
+        diagnosticUnavailable: null,
+        issue: null,
+        armed: true,
+      });
+      expect(armedState?.sampleCount).toBeGreaterThan(0);
+      expect(armedListeners).toBeDefined();
+      expect(fixtureListeners).toBeDefined();
+      const observerListeners = prependProbeAddedListeners(baselineListeners, armedListeners!);
+      expect(observerListeners.map((entry) => JSON.parse(entry).type).toSorted()).toEqual([
+        "scroll",
+        "scrollend",
+        "touchcancel",
+        "touchend",
+        "touchstart",
+      ]);
+      const fixtureOnly = prependProbeAddedListeners(armedListeners!, fixtureListeners!);
+      expect(fixtureOnly).toHaveLength(1);
+      expect(JSON.parse(fixtureOnly[0]!)).toMatchObject({ type: "scrollend", capture: true });
+      const restored = await page.evaluate(async () => {
+        const state = (window as PrependProbeWindow).prependDiagnosticProbe;
+        if (!state) {
+          throw new Error("Prepend probe original descriptors are unavailable");
+        }
+        const frames = (window as AnchorWindow).prependFrames;
+        const positionCount = frames.positions.length;
+        const frame = frames.frame;
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        );
+        const methods = state.originals.map(({ target, name, label, value, descriptor }) => {
+          const current = Object.getOwnPropertyDescriptor(target, name);
+          return {
+            label,
+            restored:
+              target[name] === value &&
+              (descriptor === undefined
+                ? current === undefined
+                : current !== undefined &&
+                  Reflect.ownKeys(current).length === Reflect.ownKeys(descriptor).length &&
+                  Reflect.ownKeys(descriptor).every(
+                    (key) => Reflect.get(current, key) === Reflect.get(descriptor, key),
+                  )),
+          };
+        });
+        const result = {
+          sameOwner:
+            document.querySelector(".chat-pane-cache__pane--active") === state.pane &&
+            state.pane.querySelector(".chat-thread") === state.scroller &&
+            Reflect.get(state.pane, "transcript") === state.controller &&
+            state.controller.sessionVirtualizer === state.owner,
+          methods,
+          rafStopped: frames.frame === frame && frames.positions.length === positionCount,
+          positionCount,
+          restoreErrors: frames.trace?.restoreErrors,
+        };
+        delete (window as PrependProbeWindow).prependDiagnosticProbe;
+        return result;
+      });
+      expect(restored.sameOwner).toBe(true);
+      expect(restored.methods).toEqual(
+        prependProbeHookLabels.map((label) => ({ label, restored: true })),
+      );
+      expect(restored.rafStopped).toBe(true);
+      expect(restored.restoreErrors).toEqual([]);
+      const finalListeners = await prependProbeListeners(protocol);
+      expect(finalListeners).toEqual([...baselineListeners, ...fixtureOnly].toSorted());
+      return {
+        armed: armedState,
+        restoration: restored,
+        baselineListeners,
+        observerListeners,
+        fixtureOnly,
+        finalListeners,
+      };
+    },
+  };
+}
 
 suite.define(() => {
   it.each([
@@ -133,6 +384,9 @@ suite.define(() => {
         diagnostic: null,
         diagnosticUnavailable: "original sampler did not complete",
       };
+      let diagnosticProtocol: CDPSession | undefined;
+      let diagnosticProbe: Awaited<ReturnType<typeof startPrependDiagnosticProbe>> | undefined;
+      let diagnosticProbeSentinelIssued = false;
       try {
         await page.goto(`${suite.server.baseUrl}chat`);
         const pane = page.locator(".chat-pane-cache__pane--active");
@@ -161,6 +415,10 @@ suite.define(() => {
         const before = await anchor.boundingBox();
         expect(before).not.toBeNull();
         await page.screenshot({ path: path.join(artifactDir, "before-prepend.png") });
+        if (momentum) {
+          diagnosticProtocol = await context.newCDPSession(page);
+          diagnosticProbe = await startPrependDiagnosticProbe(page, diagnosticProtocol);
+        }
         await page.evaluate(
           ({ messageKey, momentum: observeMomentum, baselineY }) => {
             const frames: AnchorFrames = { frame: 0, positions: [], readerDelta: 0 };
@@ -484,6 +742,7 @@ suite.define(() => {
             baselineY: before!.y,
           },
         );
+        await diagnosticProbe?.recordArmed();
         const heldOffset = await thread.evaluate((element) => element.scrollTop);
         if (activeTouch) {
           if (momentum) {
@@ -494,6 +753,7 @@ suite.define(() => {
                 capture: true,
               }),
             );
+            await diagnosticProbe?.recordFixtureListener();
           }
           await thread.dispatchEvent("touchstart");
           if (momentum) {
@@ -605,6 +865,21 @@ suite.define(() => {
           frames.every((top) => top !== null && Math.abs(top - before!.y) <= 2),
           "the message must stay anchored at every animation frame, not just after settling",
         ).toBe(true);
+        if (momentum) {
+          expect(diagnosticProbe).toBeDefined();
+          const proof = await diagnosticProbe!.verify();
+          expect(capturedDiagnostic.diagnosticUnavailable).toBeNull();
+          expect(capturedDiagnostic.diagnostic).not.toBeNull();
+          expect(capturedDiagnostic.diagnostic?.issue).toBeNull();
+          expect(capturedDiagnostic.diagnostic?.restoreErrors).toEqual([]);
+          expect(capturedDiagnostic.diagnostic?.sampleCount).toBeGreaterThan(1);
+          const phases = capturedDiagnostic.diagnostic!.events.map((entry) => entry.phase);
+          expect(phases.some((phase) => phase.endsWith(":before"))).toBe(true);
+          expect(phases.some((phase) => phase.endsWith(":after"))).toBe(true);
+          console.info("[history-prepend-diagnostic-probe] oracles passed", JSON.stringify(proof));
+          diagnosticProbeSentinelIssued = true;
+          throw new Error(prependProbeSentinel);
+        }
       } catch (error) {
         if (momentum) {
           try {
@@ -647,7 +922,15 @@ suite.define(() => {
         }
         throw error;
       } finally {
-        await suite.closeBrowserContext(context);
+        try {
+          await diagnosticProtocol?.detach();
+        } finally {
+          await suite.closeBrowserContext(context);
+        }
+        if (diagnosticProbeSentinelIssued) {
+          expect(suite.browser.contexts()).not.toContain(context);
+          console.info("[history-prepend-diagnostic-probe] context closed", prependProbeSentinel);
+        }
       }
     },
   );
