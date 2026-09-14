@@ -536,28 +536,33 @@ export async function runSlackDeliveryProof(
           qaIdentityAbsent: qa.identity === undefined,
         };
         const streaming = object(account.streaming);
-        if (
-          streaming.mode !== (mode === "progress" ? "progress" : "off") ||
-          streaming.nativeTransport !== (mode === "progress") ||
-          object(streaming.block).enabled !== false ||
-          defaults.blockStreamingDefault !== "off" ||
-          defaults.verboseDefault !== "off" ||
-          defaults.reasoningDefault !== "off" ||
-          defaults.thinkingDefault !== "off" ||
-          qa.identity !== undefined ||
-          selections.some(
+        const checks = {
+          streamingMode: streaming.mode === (mode === "progress" ? "progress" : "off"),
+          nativeTransport: streaming.nativeTransport === (mode === "progress"),
+          blockStreamingDisabled: object(streaming.block).enabled === false,
+          blockStreamingDefault: defaults.blockStreamingDefault === "off",
+          verboseDefault: defaults.verboseDefault === "off",
+          reasoningDefault: defaults.reasoningDefault === "off",
+          thinkingDefault: defaults.thinkingDefault === "off",
+          qaIdentityAbsent: qa.identity === undefined,
+          modelSelections: selections.every(
             (selection) =>
-              selection.primary !== `anthropic/${MODEL}` ||
-              (selection.fallbacks !== undefined &&
-                (!Array.isArray(selection.fallbacks) || selection.fallbacks.length !== 0)),
-          ) ||
-          resolvedSettings.visibleReplies !==
-            (mode === "message-tool" ? "message_tool" : "automatic") ||
-          resolvedSettings.loggingLevel !== "debug" ||
-          account.replyToMode !== "all"
-        ) {
+              selection.primary === `anthropic/${MODEL}` &&
+              (selection.fallbacks === undefined ||
+                (Array.isArray(selection.fallbacks) && selection.fallbacks.length === 0)),
+          ),
+          visibleReplies:
+            resolvedSettings.visibleReplies ===
+            (mode === "message-tool" ? "message_tool" : "automatic"),
+          loggingLevel: resolvedSettings.loggingLevel === "debug",
+          replyToMode: account.replyToMode === "all",
+        };
+        const failed = Object.entries(checks)
+          .filter(([, passed]) => !passed)
+          .map(([name]) => name);
+        if (failed.length > 0) {
           throw new Error(
-            "Slack delivery proof runtime configuration differs from the selected mode",
+            `Slack delivery proof runtime configuration differs from the selected mode; failed checks: ${failed.join(",")}`,
           );
         }
         initialLog = await tail(environment);

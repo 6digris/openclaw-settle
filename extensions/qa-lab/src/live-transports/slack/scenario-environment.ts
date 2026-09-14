@@ -103,7 +103,8 @@ export function createSlackQaScenarioEnvironment(params: {
             assertSlackCodexApprovalModelSupported(primaryModel);
           }
           const snapshot = await readLiveQaGatewayConfig(input.gateway);
-          const cfg = buildSlackQaConfig(snapshot.config as OpenClawConfig, {
+          const current = snapshot.config as OpenClawConfig;
+          const cfg = buildSlackQaConfig(current, {
             channelId: params.channelId,
             driverBotUserId: params.driverBotUserId,
             overrides: implementation.configOverrides,
@@ -112,9 +113,22 @@ export function createSlackQaScenarioEnvironment(params: {
             sutAppToken: params.sutAppToken,
             sutBotToken: params.sutBotToken,
           });
+          const qa = cfg.agents?.entries?.qa;
+          // Merge patches retain omitted object fields. Transmit the deliberate
+          // identity removal without putting a tombstone in the desired config.
+          const patch =
+            current.agents?.entries?.qa?.identity !== undefined && qa && qa.identity === undefined
+              ? {
+                  ...cfg,
+                  agents: {
+                    ...cfg.agents,
+                    entries: { ...cfg.agents?.entries, qa: { ...qa, identity: null } },
+                  },
+                }
+              : cfg;
           await patchLiveQaGatewayConfig({
             gateway: input.gateway,
-            patch: cfg as Record<string, unknown>,
+            patch,
             replacePaths: resolveSlackQaReplacePaths(params.accountId, params.channelId),
             timeoutMs: input.timeoutMs,
             waitForConfigRestartSettle: input.waitForConfigRestartSettle,
