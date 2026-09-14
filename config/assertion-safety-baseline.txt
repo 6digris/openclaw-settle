@@ -1510,7 +1510,6 @@ packages/memory-host-sdk/src/host/read-file.ts	1
 packages/memory-host-sdk/src/host/read-retry.ts	4
 packages/memory-host-sdk/src/host/session-files.ts	9
 packages/memory-host-sdk/src/host/session-reset-recall.ts	3
-packages/memory-host-sdk/src/host/session-transcript-corpus.ts	1
 packages/memory-host-sdk/src/host/sqlite-vec.ts	3
 packages/memory-host-sdk/src/host/sqlite.ts	1
 packages/model-catalog-core/src/model-catalog-normalize.ts	6
@@ -2225,7 +2224,6 @@ src/cli/cron-cli/register.cron-scratch.ts	2
 src/cli/cron-cli/register.cron-simple.ts	2
 src/cli/cron-cli/shared.ts	8
 src/cli/daemon-cli/launchd-recovery.ts	1
-src/cli/daemon-cli/restart-health-probe.ts	7
 src/cli/daemon-cli/start-repair.ts	1
 src/cli/deps.ts	2
 src/cli/devices-cli.runtime.ts	10

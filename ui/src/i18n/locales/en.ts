@@ -5,8 +5,22 @@ import * as agentEn from "./en-agents.ts";
 
 export const en: TranslationMap & {
   board: TranslationMap & { widget: TranslationMap };
-  chat: TranslationMap & { backgroundTasks: TranslationMap };
   browser: TranslationMap & { errors: TranslationMap };
+  chat: TranslationMap & {
+    backgroundTasks: TranslationMap;
+    messages: TranslationMap &
+      Record<
+        | "copySelection"
+        | "replyingTo"
+        | "message"
+        | "showLess"
+        | "showMore"
+        | "tooLargeToDisplay"
+        | "toolSender"
+        | "errorSender",
+        string
+      >;
+  };
   configPage: TranslationMap;
   connection: TranslationMap;
   configView: TranslationMap;
@@ -34,6 +48,7 @@ export const en: TranslationMap & {
     Record<"title" | "openWindow" | "unavailable" | "toggle" | "reconnect" | "connecting", string>;
   updates: TranslationMap;
   login: TranslationMap;
+  newSession: TranslationMap;
   skillWorkshop: TranslationMap;
 } = {
   pluginUi: {
@@ -963,138 +978,32 @@ export const en: TranslationMap & {
   newSession: {
     title: "New session",
     hint: "Pick where this session works, then say what to do.",
-    agent: "Agent",
-    agents: "Agents",
-    where: "Where",
     environments: "Environments",
     gateway: "Gateway · local",
-    gatewayNamed: "Gateway · {name}",
-    cloudWorker: "Cloud · {profile}",
     cloudWorkerMachine: "{profile} · {machine}",
     cloudWorkerOsMachine: "{profile} · {os} · {machine}",
     cloudWorkerOs: "{profile} · {os}",
-    cloudWorkerProvider: "Cloud worker provider: {provider}",
     cloudRuntimeUnsupported: "The {runtime} runtime does not support cloud workers.",
     cloudProfileRuntimeUnsupported:
       "The {runtime} runtime cannot use this cloud worker. Choose a compatible cloud worker or run locally.",
     deviceRuntimeUnsupported: "This runtime does not support paired devices",
-    cloudRecoveryUnavailable:
-      "Cloud workers are unavailable because this connection does not support task recovery. Reconnect or update the Gateway.",
     placementStartFailed: "The session was created, but runner startup failed: {error}",
     placementReloadBlocked: "Recovery needs a reload. Unsaved starts will be lost.",
     discardUnsavedAndReload: "Discard unsaved starts and reload",
-    placementSyncsFolder: "Syncs {folder} to the selected runner",
-    placementClonesRepository:
-      "Clones {folder} on the selected runner. No Gateway checkout is created.",
-    folder: "Folder",
-    folderPlaceholder: "Agent workspace",
     yourDevices: "Your devices",
-    autoDevice: "Auto",
     autoDeviceSub: "Least-busy device",
     autoDeviceSubEligible: "First eligible device",
-    neverConnected: "Never connected",
-    offlineFor: "Offline for {duration}",
-    lastSeen: "Last seen {time}",
-    nodeUpdateRequired:
-      "Update required: run {updateCommand}, then reconnect. For a headless node, run {restartCommand}.",
-    nodeCommandPendingApproval:
-      "Ask an administrator to approve the pending {command} request, or pick another device.",
-    nodeCommandUndeclared:
-      "Make {command} available on this device, then reconnect, or pick another device.",
-    nodeCommandUnauthorized:
-      "Authorize {command} in the Gateway node command policy, or pick another device.",
-    capabilityCamera: "Camera",
-    capabilityLocation: "Location",
-    capabilityTalk: "Talk",
-    capabilityScreenCapture: "Screen capture",
-    capabilityCanvas: "Canvas",
-    capabilityVoice: "Voice",
-    environmentDisposable: "Disposable",
-    environmentPersistent: "Persistent",
-    projects: "Projects",
-    projectsAdminHint: "Admins can register projects from Browse folders",
-    projectSearchPlaceholder: "Search projects or paste a Git URL",
-    githubProjects: "GitHub",
-    githubTokenHint:
-      "No Control UI GitHub credential or shared Gateway environment token is configured; public GitHub results only.",
-    cloneProject: "Clone",
-    registerProject: "Register as project",
     cloud: "Cloud",
     machine: "Machine",
     operatingSystem: "Operating system",
-    machineShape: "{cpu} vCPU · {memory} GB",
-    machineCpu: "{cpu} vCPU",
-    machineMemory: "{memory} GB",
-    machineDefault: "Default",
-    recentFolders: "Recent",
     runsOn: "Runs on {place}",
     browse: "Browse folders",
-    browseRequiresAdmin:
-      "To browse outside agent workspaces, open Inbox, select Limited access, request admin, then approve in Devices.",
-    connectMachine: "Connect a device",
-    browserUp: "Parent folder",
-    browserUse: "Use this folder",
-    browserEmpty: "No subfolders",
-    browserNoMatches: "No matching folders",
-    browserLoadFailed: "Couldn't list that folder.",
-    hiddenFolder: "Hidden folder",
     worktree: "Worktree",
-    newWorkspace: "New workspace",
-    newWorkspaceDescription: "Start in an empty folder for this session.",
-    remoteSourceUnavailable:
-      "This folder cannot provide a Git checkout. Select New workspace to start empty, or choose a repository.",
     checkingGit: "Checking Git availability…",
     gitCheckUnavailable: "Couldn't verify Git for this folder. Choose it again to retry.",
-    worktreeUnavailable: "Selected folder is not a Git checkout",
-    worktreeBaseRef: "From",
-    worktreeBranchesLimited: "Suggestions are limited. Enter any branch or commit.",
-    worktreeBranchesUnavailable: "Branch suggestions are unavailable. Enter a branch or commit.",
-    worktreeName: "Name",
-    worktreeNamePlaceholder: "Named from the session title",
-    worktreeBranchNote: "Creates branch openclaw/<name> in a separate checkout.",
-    worktreeNameInvalid: "Use lowercase letters, digits, and dashes.",
-    incognito: "Incognito",
-    incognitoDescription: "Keep this session only until the Gateway restarts",
-    draft: "Draft",
-    draftDescription: "Keep this session to yourself until you publish it",
-    messagePlaceholder: "What should this session work on?",
-    dictate: "Dictate",
-    readingAttachment: "Reading attachment",
-    start: "Start session",
-    startInTerminal: "Start in terminal",
-    nativeTerminalHint:
-      "Start the native CLI on the selected machine using its own account and configuration. This does not create an OpenClaw Chat.",
-    chooseNativeHost: "Choose a native CLI host",
-    nativeHostsUnavailable:
-      "No native CLI is available. Install it on the Gateway or connect a machine with CLI access, then reconnect to the Gateway.",
-    nativeTerminalPrompt: "Optional initial prompt for the native CLI",
-    terminalNodeFolder: "Existing absolute folder on this node",
-    terminalAttachmentsUnsupported:
-      "Remove attachments before starting a native CLI. Add files from the terminal after it opens.",
     starting: "Starting…",
     createFailed: "Couldn't create the session.",
-    createOutcomeUnknown:
-      "The Gateway changed while this session was starting. Check recent sessions before starting this task again.",
-    cliAgentsGroup: "CLI agents",
-    cliAgentsUnavailable: "CLI agents unavailable",
-    placementSetupInterrupted:
-      "This session's runner setup was interrupted. Check recent sessions before starting this task again.",
-    catalogUnavailable: "This session target is unavailable.",
-    placementNotReady: "The selected runner isn't ready yet. Try again in a moment.",
-    nodeUnavailable: "The selected device is unavailable. Pick another place.",
-    terminalCapabilityOverridesUnsupported:
-      "Clear session capability overrides before starting in a terminal.",
-    what: "What",
-    checkout: "Checkout",
-    checkoutCurrent: "Current checkout",
     checkoutCurrentNote: "Works in the selected folder on its current branch.",
-    checkoutWorktree: "New worktree",
-    checkoutWorktreeSub: "Isolated copy of the repo",
-    checkoutWorktreeFrom: "New worktree from {branch}",
-    checkoutRepository: "Remote checkout",
-    checkoutRepositoryFrom: "Remote checkout from {branch}",
-    checkoutRemoteLocked: "Devices and cloud run in a worktree",
-    local: "Local",
   },
   dashboardsPage: {
     emptyTitle: "No dashboards yet",
@@ -4822,38 +4731,13 @@ export const en: TranslationMap & {
     },
     messages: {
       copySelection: "Copy",
-      copyLink: "Copy link",
-      copyFileName: "Copy file name",
-      forkFromHere: "Fork from here",
-      reply: "Reply",
-      replyToMessage: "Reply to message",
       replyingTo: "Replying to {name}",
-      originalUnavailable: "The original message is unavailable.",
       message: "message",
-      currentMessage: "current message",
-      actions: "Message actions",
-      selectionActions: "Selection actions",
-      askInSideChat: "Ask in side chat",
-      addToChat: "Add to chat",
-      rewind: "Rewind",
-      rewindConfirm: "Rewind to before this message?",
-      dontAskAgain: "Don't ask again",
-      rewindToHere: "Rewind to here",
-      rewindUnavailable: "Rewind is unavailable while the agent is working",
-      forkUnavailable: "Fork is unavailable while the agent is working",
       showLess: "Show less",
       showMore: "Show more",
       tooLargeToDisplay: "This message is too large to display here.",
-      unknownDate: "Unknown date",
       toolSender: "Tool",
       errorSender: "Error",
-      forwardedFrom: "From",
-      forwardedFromAgent: "Forwarded from {agentId}",
-      forwardedMessage: "Forwarded message",
-      fullContentLoadExhausted: "Could not load the full message.",
-      voiceNote: "Voice note",
-      duplicatesCollapsed: "{count} consecutive identical messages collapsed",
-      contextFor: "Message context for {timestamp}",
     },
     mediaPlayer: {
       play: "Play",

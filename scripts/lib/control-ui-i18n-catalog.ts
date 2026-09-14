@@ -9,6 +9,7 @@ import { registerAppsEnglish } from "../../ui/src/i18n/locales/en-apps.ts";
 import { registerBackgroundTasksEnglish } from "../../ui/src/i18n/locales/en-background-tasks.ts";
 import { registerBoardWebsiteEnglish } from "../../ui/src/i18n/locales/en-board-website.ts";
 import { registerBrowserEnglish } from "../../ui/src/i18n/locales/en-browser.ts";
+import { registerChatMessageMetadataEnglish } from "../../ui/src/i18n/locales/en-chat-message-metadata.ts";
 import { registerCronEnglish } from "../../ui/src/i18n/locales/en-cron.ts";
 import { registerDebugEnglish } from "../../ui/src/i18n/locales/en-debug.ts";
 import { registerDesktopEnglish } from "../../ui/src/i18n/locales/en-desktop.ts";
@@ -48,6 +49,7 @@ const sourceFiles = [
   "en-background-tasks.ts",
   "en-board-website.ts",
   "en-browser.ts",
+  "en-chat-message-metadata.ts",
   "en-cron.ts",
   "en-debug.ts",
   "en-desktop.ts",
@@ -68,6 +70,19 @@ const sourceFiles = [
 ];
 
 export function loadControlUiSourceCatalog(): TranslationMap {
+  const newSession: TranslationMap = {};
+  for (const [key, value] of Object.entries(en.newSession)) {
+    newSession[key] = value;
+    if (key === "worktree") {
+      for (const workspaceKey of [
+        "newWorkspace",
+        "newWorkspaceDescription",
+        "remoteSourceUnavailable",
+      ] as const) {
+        newSession[workspaceKey] = registerNewSessionSetupEnglish.catalog.newSession[workspaceKey];
+      }
+    }
+  }
   const boardWidget: TranslationMap = {};
   for (const [key, value] of Object.entries(en.board.widget)) {
     boardWidget[key] = value;
@@ -82,7 +97,9 @@ export function loadControlUiSourceCatalog(): TranslationMap {
     // Preserve partial-fragment key order while keeping shared labels eager.
     {
       ...en,
+      chat: { ...en.chat, messages: registerChatMessageMetadataEnglish.catalog.chat.messages },
       board: { ...en.board, widget: boardWidget },
+      newSession,
       debug: registerDebugEnglish.catalog.debug,
       desktop: registerDesktopEnglish.catalog.desktop,
     },
