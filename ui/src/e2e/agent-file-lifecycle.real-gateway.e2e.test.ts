@@ -371,7 +371,10 @@ catalogSuite.define(() => {
                 // Pending replies remain deliverable. Gate only the completed old
                 // publication and its queued replacement to prove single-flight reads.
                 heldCatalogs.push(() => socket.send(message));
-                heldInventoryPublished ||= containsPublishedInventory(frame.payload, "inventory-held");
+                heldInventoryPublished ||= containsPublishedInventory(
+                  frame.payload,
+                  "inventory-held",
+                );
               } else if (catalogReply && rejectCatalog) {
                 socket.send(
                   JSON.stringify({
