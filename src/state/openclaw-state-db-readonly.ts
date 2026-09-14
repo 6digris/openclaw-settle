@@ -38,11 +38,11 @@ import { assertSupportedStateSchemaVersion } from "./openclaw-state-db-schema-ve
 import { resolveOpenClawStateSqlitePath } from "./openclaw-state-db.paths.js";
 import { createOpenClawStateReadTransport } from "./openclaw-state-read-worker.js";
 import type {
+  OpenClawStateReadAuthority,
   OpenClawStateReadCommand,
   OpenClawStateReadReply,
 } from "./openclaw-state-read.types.js";
 import { captureOpenClawStateWorkerContext } from "./openclaw-state-worker-context.js";
-import type { OpenClawStateWorkerContext } from "./openclaw-state-worker-context.types.js";
 
 type ReadResource = { close(): Promise<void> };
 type RetainedReadScope = {
@@ -161,10 +161,10 @@ export async function withOpenClawStateDatabaseReadSnapshot<T>(
   }
   const env = options.env ?? process.env;
   openClawStateDatabaseCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(pathname, env);
-  const admission = captureOpenClawStateDatabaseReadAdmission(pathname);
-  const identity = admission.identity;
+  let admission: ReturnType<typeof captureOpenClawStateDatabaseReadAdmission>;
   let prepared: PreparedSqliteReadOnlyLocation;
   try {
+    admission = captureOpenClawStateDatabaseReadAdmission(pathname);
     prepared = await prepareSqliteReadOnlyLocation(pathname, {
       preserveSourceArtifacts: isArtifactPreservingStateRead(),
     });
@@ -175,7 +175,7 @@ export async function withOpenClawStateDatabaseReadSnapshot<T>(
     );
   }
   const scope = Object.assign(
-    createRetainedReadScope(pathname, identity, async () => {
+    createRetainedReadScope(pathname, admission.identity, async () => {
       if (!(await prepared.cleanupAsync())) {
         throw new Error(
           `Shared-state discovery snapshot cleanup failed: ${prepared.cleanupRoot ?? pathname}`,
@@ -185,8 +185,8 @@ export async function withOpenClawStateDatabaseReadSnapshot<T>(
     { location: prepared.location, env },
   );
   return await runRetainedReadScope(scope, async () => {
-    admission.assertCurrent();
     openClawStateDatabaseCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(pathname, env);
+    admission.assertCurrent();
     return await stateSnapshotReads.run(scope, operation);
   });
 }
@@ -514,17 +514,6 @@ export function withExistingOpenClawStateDatabaseReadOnly<T>(
     ? undefined
     : withFreshOpenClawStateDatabaseReadOnly(operation, options, existingPath);
 }
-
-export type OpenClawStateReadLocation = {
-  context: OpenClawStateWorkerContext;
-  location: string;
-  checkFreshAdmission: boolean;
-};
-
-export type OpenClawStateReadAuthority = {
-  signal: AbortSignal;
-  assertCurrent(this: void): void;
-};
 
 /** Execute a fixed read command while retaining source selection and cleanup. */
 export function executeExistingOpenClawStateRead(

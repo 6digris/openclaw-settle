@@ -3,10 +3,8 @@ import { WorkerTaskPool } from "../infra/worker-task-pool.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import type {
   OpenClawStateReadAuthority,
-  OpenClawStateReadLocation,
-} from "./openclaw-state-db-readonly.js";
-import type {
   OpenClawStateReadCommand,
+  OpenClawStateReadLocation,
   OpenClawStateReadReply,
   OpenClawStateReadRequest,
 } from "./openclaw-state-read.types.js";

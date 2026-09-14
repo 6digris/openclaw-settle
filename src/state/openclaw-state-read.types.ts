@@ -1,6 +1,18 @@
 import type { FleetCellRecord } from "../fleet/registry.types.js";
 import type { SqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
+import type { OpenClawStateWorkerContext } from "./openclaw-state-worker-context.types.js";
 import type { OpenClawStateWorkerErrorPayload } from "./openclaw-state-worker-error.js";
+
+export type OpenClawStateReadLocation = {
+  context: OpenClawStateWorkerContext;
+  location: string;
+  checkFreshAdmission: boolean;
+};
+
+export type OpenClawStateReadAuthority = {
+  signal: AbortSignal;
+  assertCurrent(this: void): void;
+};
 
 export type OpenClawStateReadCommand =
   | { type: "fleet.list" }
