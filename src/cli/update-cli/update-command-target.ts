@@ -97,31 +97,52 @@ async function prepareDirtyGitRelocation(
     );
   }
   const launcher = installer?.launcher ?? invocation;
+  const windows = process.platform === "win32";
   if (
-    process.platform === "win32" ||
     !launcher ||
-    path.basename(launcher) !== "openclaw" ||
-    path.basename(path.dirname(launcher)) !== "bin"
+    (windows
+      ? path.basename(launcher) !== "openclaw.mjs" ||
+        path.basename(path.dirname(launcher)) !== "openclaw" ||
+        path.basename(path.dirname(path.dirname(launcher))) !== "node_modules"
+      : path.basename(launcher) !== "openclaw" || path.basename(path.dirname(launcher)) !== "bin")
   ) {
     return refuse("The dirty Git installation does not have a recognized npm launcher.");
   }
-  const packageRoot = path.resolve(path.dirname(launcher), "../lib/node_modules/openclaw");
+  const packageRoot = windows
+    ? path.dirname(launcher)
+    : path.resolve(path.dirname(launcher), "../lib/node_modules/openclaw");
   const { createPackageIntegrityReader } = await import("../../infra/package-update-integrity.js");
+  const captureWindowsLaunchers = async (ownerRoot: string) => {
+    const reader = createPackageIntegrityReader(timeoutMs);
+    const family = [];
+    for (const suffix of ["", ".cmd", ".ps1"]) {
+      const file = path.resolve(ownerRoot, "../..", `openclaw${suffix}`);
+      if (!(await fs.lstat(file)).isFile()) {
+        return refuse("The Windows npm launcher family contains an unsupported entry.");
+      }
+      family.push(await reader.launcher(file));
+    }
+    return family;
+  };
   const capture = async () => {
     const reader = createPackageIntegrityReader(timeoutMs);
-    return [
-      await reader.rootEntry(packageRoot, packageRoot, "link"),
-      await reader.launcher(launcher),
-    ];
+    return {
+      root: await reader.rootEntry(packageRoot, packageRoot, "link"),
+      launchers: windows
+        ? await captureWindowsLaunchers(packageRoot)
+        : [await reader.launcher(launcher)],
+    };
   };
   const baseline = installer ? undefined : await capture();
+  let validatedStagedRoot: string | undefined;
   if (!installer) {
     if ((await fs.realpath(launcher)) !== path.join(originalRoot, "openclaw.mjs")) {
       return refuse("The dirty Git installation does not have a recognized npm launcher.");
     }
     if (
+      !windows &&
       path.resolve(path.dirname(launcher), await fs.readlink(launcher)) !==
-      path.join(packageRoot, "openclaw.mjs")
+        path.join(packageRoot, "openclaw.mjs")
     ) {
       return refuse("The launcher does not follow the npm installation.");
     }
@@ -164,12 +185,33 @@ async function prepareDirtyGitRelocation(
     directory,
     installTarget,
     installer,
+    validateCandidate:
+      windows && baseline
+        ? async (stagedRoot) => {
+            // npm owns the wrapper format. Compare its isolated staged output instead of
+            // accepting a script by a target-path regex or copying generator templates.
+            if (
+              path.basename(stagedRoot) !== "openclaw" ||
+              path.basename(path.dirname(stagedRoot)) !== "node_modules" ||
+              !isDeepStrictEqual(baseline.launchers, await captureWindowsLaunchers(stagedRoot))
+            ) {
+              refuse("The Windows launcher family does not match the staged npm installation.");
+            }
+            validatedStagedRoot = stagedRoot;
+            return [];
+          }
+        : undefined,
     assertCurrent:
       installer?.assertCurrent ??
       (async () => {
         if (
           !isDeepStrictEqual(baseline, await capture()) ||
-          (await fs.realpath(packageRoot)) !== originalRoot
+          (await fs.realpath(packageRoot)) !== originalRoot ||
+          (validatedStagedRoot !== undefined &&
+            !isDeepStrictEqual(
+              baseline?.launchers,
+              await captureWindowsLaunchers(validatedStagedRoot),
+            ))
         ) {
           refuse("The npm launcher or installation changed while preparing the update.");
         }

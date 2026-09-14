@@ -443,6 +443,7 @@ export type GitInstallRelocation = {
   directory: string;
   installTarget: ResolvedGlobalInstallTarget;
   assertCurrent: () => Promise<void>;
+  validateCandidate?: Parameters<typeof prepareGitPackageExposure>[0]["validateCandidate"];
 };
 
 export async function updateGitInstall(params: {
@@ -557,6 +558,7 @@ export async function updateGitInstall(params: {
               onTransaction: params.onTransaction,
               beforeActivate: params.gitRelocation?.assertCurrent,
               retainedInstaller: params.gitRelocation?.installer,
+              validateCandidate: params.gitRelocation?.validateCandidate,
               postVerifyStep: (root: string) =>
                 runPackageUpdateDoctor({
                   ...params,
