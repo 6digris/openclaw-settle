@@ -22,6 +22,7 @@ import {
   reconcileClientPluginNodeCapabilities,
 } from "./plugin-node-capability.js";
 import { collectGatewayProcessMemoryUsageMb, finishGatewayRestartTrace } from "./restart-trace.js";
+import { startGatewayRuntimeGenerationMonitor } from "./runtime-generation-monitor.js";
 import type { GatewayKernelRuntime } from "./server-kernel-request-runtime.js";
 import { GATEWAY_EVENTS } from "./server-methods-list.js";
 import { refreshConnectedNodeSurfaceCaches } from "./server-methods/nodes.read.js";
@@ -381,6 +382,10 @@ export async function finishGatewayStartup(params: {
     const { startOpenClawDatabaseIntegrityVerifier } =
       await import("../state/openclaw-database-verify.js");
     registerGatewayLifetimeSidecars(startOpenClawDatabaseIntegrityVerifier({ env: process.env }));
+    const runtimeGenerationMonitor = startGatewayRuntimeGenerationMonitor({ log });
+    if (runtimeGenerationMonitor) {
+      registerGatewayLifetimeSidecars(runtimeGenerationMonitor);
+    }
   }
   postAttachRuntimeReturned = true;
   activateScheduledServicesWhenReady();
