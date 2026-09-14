@@ -174,12 +174,48 @@ describe("OpenClawTerminalPanel", () => {
 
     panel.toggle();
 
-    await waitForFast(() => {
-      expect(requests[0]).toEqual({
-        method: "terminal.open",
-        params: { agentId: "ops", cols: 100, rows: 30 },
+    try {
+      await waitForFast(() => {
+        expect(requests[0]).toEqual({
+          method: "terminal.open",
+          params: { agentId: "ops", cols: 100, rows: 30 },
+        });
       });
-    });
+    } catch (error) {
+      try {
+        const sessions = (panel as unknown as {
+          terminalSessions: {
+            activeClient: TerminalGatewayClient | null;
+            booting: boolean;
+            error: { retryAction?: unknown } | null;
+          };
+        }).terminalSessions;
+        const viewport = panel.findTerminalPanelViewport();
+        console.error(
+          "[terminal-selected-agent-failure]",
+          JSON.stringify({
+            isConnected: panel.isConnected,
+            open: panel.terminalPanelOpen,
+            available: panel.available,
+            clientMatches: panel.client === client,
+            activeClientMatches: sessions.activeClient === client,
+            booting: sessions.booting,
+            viewportPresent: Boolean(viewport),
+            hostPresent: Boolean(viewport?.querySelector(".tp-host")),
+            factoryCalls: createGhosttyTerminalMock.mock.calls.length,
+            requestsCount: requests.length,
+            errorKind: sessions.error
+              ? sessions.error.retryAction
+                ? "retryable-open"
+                : "reported"
+              : "none",
+          }),
+        );
+      } catch {
+        // Observation must never replace the original assertion failure.
+      }
+      throw error;
+    }
     expect(createOptions?.terminalOptions?.fontSize).toBe(11);
     expect(createOptions?.terminalOptions?.fontFamily).toContain("MesloLGLDZ Nerd Font Mono");
     expect(getComputedStyle(createOptions!.parent).caretColor).toBe("rgba(0, 0, 0, 0)");
