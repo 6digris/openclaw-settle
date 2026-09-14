@@ -80,6 +80,55 @@ function createRegistry(
 }
 
 describe("ModelRegistry source composition", () => {
+  it.each(["authored", "generated", "registered"] as const)(
+    "preserves active input separately from native capacity through %s snapshots",
+    (source) => {
+      const model = {
+        id: "shared",
+        name: "Budget fixture",
+        reasoning: false,
+        input: ["text" as const],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 400_000,
+        contextTokens: 80_000,
+        contextWindows: [{ id: "small", label: "Small", contextWindow: 40_000 }],
+        contextWindowDefault: "small",
+        maxTokens: 16_000,
+      };
+      const definition = {
+        api: "openai-completions" as const,
+        baseUrl: catalogUrl,
+        models: [model],
+      };
+      const registry = createRegistry({
+        authored: source === "authored" ? definition : null,
+        generated: source === "generated" ? definition : { ...generated, models: [] },
+      });
+      if (source === "registered") {
+        registry.registerProvider(provider, definition);
+      }
+      expect(registry.getError()).toBeUndefined();
+
+      // Forks replay registrations; refresh restores captured catalogs before replay.
+      const fork = registry.fork(AuthStorage.inMemory({}));
+      for (const snapshot of [registry, fork]) {
+        expect(snapshot.find(provider, model.id)).toMatchObject(model);
+        snapshot.refresh();
+        expect(snapshot.find(provider, model.id)).toMatchObject(model);
+      }
+    },
+  );
+
+  it("leaves native-only catalog rows without an active input cap", () => {
+    const registry = createRegistry({
+      authored: null,
+      generated: { ...generated, models: [{ id: "shared", contextWindow: 400_000 }] },
+    });
+    const model = registry.find(provider, "shared");
+    expect(model?.contextWindow).toBe(400_000);
+    expect(model?.contextTokens).toBeUndefined();
+  });
+
   it("preserves captured context choices in runtime rows", () => {
     const contextWindows = [
       { id: "200k", label: "200K", contextWindow: 200000 },
