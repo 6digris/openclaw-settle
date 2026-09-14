@@ -16,6 +16,12 @@ struct NativeActionGatewayWireTests {
             let message: String
         }
 
+        struct Files: Decodable {
+            let filename: String
+            let sha256: String
+            let sizeBytes: Int
+        }
+
         struct Media: Decodable {
             struct Session: Decodable {
                 let sessionKey: String
@@ -35,6 +41,7 @@ struct NativeActionGatewayWireTests {
         let aliceProfileID: String
         let bobProfileID: String
         let cases: [String: Case]
+        let files: Files
         let media: Media
 
         func control(_ action: String, fields: [String: String] = [:]) async throws -> ControlResponse {
@@ -257,6 +264,15 @@ struct NativeActionGatewayWireTests {
             let replay = try await prepared.submitAndWaitForReply()
             try #require(replay == reply)
             try await fixture.verify("allowed", runID: replay.run.runID)
+
+            let files = try await presentation.prepare("files").submitAndWaitForFiles()
+            try #require(files.files.count == 1)
+            let file = try #require(files.files.first)
+            try #require(file.filename == fixture.files.filename)
+            try #require(file.data.count == fixture.files.sizeBytes)
+            let hash = SHA256.hash(data: file.data).map { String(format: "%02x", $0) }.joined()
+            try #require(hash == fixture.files.sha256)
+            try await fixture.verify("files", runID: files.run.runID)
 
             let distinct = try await presentation.prepare("distinct").submit()
             try #require(distinct.runID != accepted.runID)

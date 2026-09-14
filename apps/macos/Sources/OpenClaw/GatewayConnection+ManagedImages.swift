@@ -33,15 +33,58 @@ extension GatewayConnection {
             expectedProfileId: expectedProfileId)
         guard authorityIsCurrent() else { throw OpenClawChatTransportSendError.notDispatched }
         let response = try JSONDecoder().decode(ArtifactsDownloadResult.self, from: responseData)
-        let maximumBytes = Self.maximumManagedMediaBytes(for: kind)
-        let declaredMIME = response.artifact.mimetype?.lowercased()
+        return try await self.loadArtifact(
+            response: response,
+            kind: kind,
+            playback: playback,
+            maximumBytes: Self.maximumManagedMediaBytes(for: kind),
+            lease: lease,
+            expectedProfileId: expectedProfileId,
+            authorityIsCurrent: authorityIsCurrent)
+    }
+
+    func loadFileArtifact(
+        response: ArtifactsDownloadResult,
+        maximumBytes: Int,
+        ifCurrentServerLease lease: ServerLease,
+        expectedProfileId: String) async throws -> Data
+    {
+        let current: @Sendable () -> Bool = { [weak self] in
+            self?.serverLeaseMatchesCurrentState(lease) == true
+        }
+        guard current() else { throw OpenClawChatTransportSendError.notDispatched }
+        let result = try await self.loadArtifact(
+            response: response,
+            kind: nil,
+            playback: nil,
+            maximumBytes: maximumBytes,
+            lease: lease,
+            expectedProfileId: expectedProfileId,
+            authorityIsCurrent: current)
+        try Task.checkCancellation()
+        guard current(), case let .data(file) = result else {
+            throw OpenClawNativeActionError("The complete file could not be downloaded. Open the run's chat.")
+        }
+        return file.data
+    }
+
+    private func loadArtifact(
+        response: ArtifactsDownloadResult,
+        kind: OpenClawChatMediaKind?,
+        playback: OpenClawChatPlaybackMode?,
+        maximumBytes: Int,
+        lease: ServerLease,
+        expectedProfileId: String?,
+        authorityIsCurrent: @escaping @Sendable () -> Bool) async throws -> OpenClawChatLoadedMedia?
+    {
+        let declaredMIME = response.artifact.mimetype?.lowercased() ?? (kind == nil ? "application/octet-stream" : nil)
         if playback != .transcode,
            let encoded = response.data?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !encoded.isEmpty
+           !encoded.isEmpty || kind == nil
         {
             guard response.encoding == "base64",
                   let declaredMIME,
-                  declaredMIME.hasPrefix(kind.mimeTypePrefix),
+                  kind.map({ declaredMIME.hasPrefix($0.mimeTypePrefix) }) ?? true,
                   let data = Data(base64Encoded: encoded),
                   data.count <= maximumBytes
             else { return nil }
@@ -72,7 +115,7 @@ extension GatewayConnection {
             url.scheme?.lowercased() == "https" &&
             lease.route.browserSession == nil &&
             lease.route.tls == nil &&
-            declaredMIME?.hasPrefix(kind.mimeTypePrefix) == true
+            declaredMIME?.hasPrefix("video/") == true
         if canStreamDirectly, playback != .transcode, let declaredMIME {
             guard await self.isCurrentServerLease(lease), authorityIsCurrent() else {
                 throw OpenClawChatTransportSendError.notDispatched
@@ -85,7 +128,7 @@ extension GatewayConnection {
 
         var urlRequest = URLRequest(url: url)
         urlRequest.timeoutInterval = kind == .video ? 60 : 20
-        urlRequest.setValue("\(kind.rawValue)/*", forHTTPHeaderField: "Accept")
+        urlRequest.setValue(kind.map { "\($0.rawValue)/*" } ?? "*/*", forHTTPHeaderField: "Accept")
         if canStreamDirectly {
             urlRequest.setValue("bytes=0-0", forHTTPHeaderField: "Range")
         }
@@ -118,12 +161,12 @@ extension GatewayConnection {
             throw OpenClawChatTransportSendError.notDispatched
         }
         guard let http = urlResponse as? HTTPURLResponse else { return nil }
-        if http.statusCode == 202 {
+        if http.statusCode == 202, kind != nil {
             return .preparing
         }
-        guard (200..<300).contains(http.statusCode),
+        guard kind == nil ? http.statusCode == 200 : (200..<300).contains(http.statusCode),
               let mimeType = http.mimeType?.lowercased(),
-              mimeType.hasPrefix(kind.mimeTypePrefix)
+              kind.map({ mimeType.hasPrefix($0.mimeTypePrefix) }) ?? true
         else { return nil }
         if canStreamDirectly {
             return .stream(OpenClawChatMediaStream(

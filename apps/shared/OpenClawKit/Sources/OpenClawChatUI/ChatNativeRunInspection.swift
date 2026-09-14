@@ -1,5 +1,6 @@
 import Foundation
 import OpenClawKit
+import OpenClawProtocol
 
 /// A bounded projection, not a scheduler. Receipts establish input ownership;
 /// only an exact active/terminal run fact establishes execution state.
@@ -165,6 +166,7 @@ public struct OpenClawChatNativeActionGateway: Sendable {
         session: OpenClawNativeSessionRef,
         message: String,
         lease: OpenClawChatTransportRouteLease,
+        loadFile: @escaping @Sendable (ArtifactsDownloadResult, Int) async throws -> Data,
         presentationIsCurrent: @escaping @MainActor @Sendable () -> Bool) async throws -> OpenClawNativePreparedSend
     {
         guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -198,10 +200,111 @@ public struct OpenClawChatNativeActionGateway: Sendable {
                 throw CancellationError()
             }
         }
-        return OpenClawNativePreparedSend(session: session, submit: submit) {
+        let submitAndWait: @MainActor () async throws -> OpenClawNativeRunReply = {
             let run = try await submit()
             return try await self.waitForReply(run)
         }
+        return OpenClawNativePreparedSend(
+            session: session,
+            submit: submit,
+            submitAndWaitForReply: submitAndWait,
+            submitAndWaitForFiles: {
+                try await self.files(for: submitAndWait(), load: loadFile)
+            })
+    }
+
+    func files(
+        for reply: OpenClawNativeRunReply,
+        load: @Sendable (ArtifactsDownloadResult, Int) async throws -> Data) async throws -> OpenClawNativeRunFiles
+    {
+        try Task.checkCancellation()
+        let run = reply.run
+        guard reply.completedSuccessfully else {
+            return .init(run: run, files: [], dialog: reply.dialog)
+        }
+        do {
+            try await self.requireFileRoute(run)
+            let data = try await self.request(
+                OpenClawChatGatewayRequests.artifactsList(
+                    sessionKey: run.session.sessionKey, agentID: run.session.agentID, runID: run.runID),
+                run.session.owner.profileID)
+            try await self.requireFileRoute(run)
+            let artifacts = try JSONDecoder().decode(ArtifactsListResult.self, from: data).artifacts
+            guard !artifacts.isEmpty else {
+                return .init(run: run, files: [], dialog: "The run completed without delivered files. Open its chat.")
+            }
+            guard artifacts.count <= 4 else {
+                throw OpenClawNativeActionError(
+                    "This run returned more than four files. Open its chat to download them.")
+            }
+            var files: [OpenClawNativeFile] = []
+            var remainingBytes = 16 * 1024 * 1024
+            var ids = Set<String>()
+            for artifact in artifacts {
+                try self.requireFileIdentity(artifact, run: run)
+                guard ids.insert(artifact.id).inserted else {
+                    throw OpenClawNativeActionError("The file list could not be verified. Open the run's chat.")
+                }
+                let request = OpenClawChatGatewayRequests.artifactDownload(
+                    sessionKey: run.session.sessionKey,
+                    agentID: run.session.agentID,
+                    artifactId: artifact.id,
+                    runID: run.runID,
+                    assistantOnly: true)
+                let response = try await JSONDecoder().decode(
+                    ArtifactsDownloadResult.self,
+                    from: self.request(request, run.session.owner.profileID))
+                try await self.requireFileRoute(run)
+                try self.requireFileIdentity(response.artifact, run: run)
+                guard response.artifact.id.utf8.elementsEqual(artifact.id.utf8) else {
+                    throw OpenClawNativeActionError("The requested file changed. Open the run's chat.")
+                }
+                if let size = response.artifact.sizebytes, size > remainingBytes {
+                    throw OpenClawNativeActionError("The files exceed the 16 MB shortcut limit. Open the run's chat.")
+                }
+                let bytes = try await load(response, remainingBytes)
+                try await self.requireFileRoute(run)
+                guard bytes.count <= remainingBytes,
+                      response.artifact.sizebytes.map({ $0 == bytes.count }) ?? true
+                else {
+                    throw OpenClawNativeActionError("File download was incomplete. Open the run's chat.")
+                }
+                remainingBytes -= bytes.count
+                let filename = response.artifact.title
+                    .replacingOccurrences(of: "\\", with: "/")
+                    .split(separator: "/").last.map(String.init) ?? "attachment"
+                guard !filename.isEmpty, filename != ".", filename != "..",
+                      filename.rangeOfCharacter(from: .controlCharacters) == nil
+                else { throw OpenClawNativeActionError("The file name is invalid. Open the run's chat.") }
+                files.append(.init(
+                    data: bytes,
+                    filename: String(filename.prefix(200)),
+                    mimeType: response.artifact.mimetype))
+            }
+            return .init(run: run, files: files, dialog: "Returned \(files.count) file(s). Open the chat for details.")
+        } catch {
+            try Task.checkCancellation()
+            let reason = if let error = error as? OpenClawNativeActionError {
+                error.message
+            } else {
+                "Files are unavailable. Open the run's chat to check access or update Gateway file support."
+            }
+            return .init(run: run, files: [], dialog: reason)
+        }
+    }
+
+    private func requireFileRoute(_ run: OpenClawNativeRunRef) async throws {
+        let current = await self.isCurrent()
+        try Task.checkCancellation()
+        guard current, run.session.owner.gatewayID.utf8.elementsEqual(self.gatewayID.utf8) else {
+            throw OpenClawNativeActionError("The original Gateway connection is unavailable. Open the run's chat.")
+        }
+    }
+
+    private func requireFileIdentity(_ artifact: ArtifactSummary, run: OpenClawNativeRunRef) throws {
+        guard artifact.sessionkey?.utf8.elementsEqual(run.session.sessionKey.utf8) == true,
+              artifact.runid?.utf8.elementsEqual(run.runID.utf8) == true
+        else { throw OpenClawNativeActionError("The file's run could not be verified. Open the run's chat.") }
     }
 
     public func waitForReply(_ run: OpenClawNativeRunRef) async throws -> OpenClawNativeRunReply {

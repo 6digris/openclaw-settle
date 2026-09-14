@@ -14,6 +14,12 @@ private struct MacNativeWireDescriptor: Decodable, Sendable {
         let message: String
     }
 
+    struct Files: Decodable, Sendable {
+        let filename: String
+        let sha256: String
+        let sizeBytes: Int
+    }
+
     struct Media: Decodable, Sendable {
         struct Session: Decodable, Sendable {
             let sessionKey: String
@@ -43,6 +49,7 @@ private struct MacNativeWireDescriptor: Decodable, Sendable {
     let aliceProfileID: String
     let bobProfileID: String
     let cases: [String: Case]
+    let files: Files
     let media: Media
     let approvals: Approvals
 }
@@ -234,6 +241,15 @@ struct NativeActionGatewayWireTests {
                 let marker = try #require(descriptor.cases[id]?.marker)
                 try #require(reply.outcome == .answer(marker))
                 run = reply.run
+            } else if id == "files" {
+                let result = try await prepared.submitAndWaitForFiles()
+                try #require(result.files.count == 1)
+                let file = try #require(result.files.first)
+                try #require(file.filename == descriptor.files.filename)
+                try #require(file.data.count == descriptor.files.sizeBytes)
+                let hash = SHA256.hash(data: file.data).map { String(format: "%02x", $0) }.joined()
+                try #require(hash == descriptor.files.sha256)
+                run = result.run
             } else {
                 run = try await prepared.submit()
             }
@@ -251,6 +267,7 @@ struct NativeActionGatewayWireTests {
         }
 
         let first = try await allowed("allowed")
+        _ = try await allowed("files")
         let distinct = try await allowed("distinct")
         try #require(first.runID != distinct.runID)
         try await self.requireVisibleRejection {

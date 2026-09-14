@@ -640,6 +640,8 @@ In a build that includes the actions:
   **Run** with a continuation to that exact chat.
 - **Ask OpenClaw** sends a question and returns its recorded reply preview as
   text, with a spoken summary and a continuation to the exact run's chat.
+- **Ask OpenClaw for Files** returns delivered files for the completed run, ready
+  for another Shortcuts action such as **Save File**.
 - **Inspect Run** reads facts for the selected run and can open its chat.
 
 A saved Session selection includes the Gateway, canonical account ID, agent,
@@ -659,6 +661,13 @@ preview capped by the Gateway at 4,096 UTF-16 characters; open the returned chat
 for the full response. Longer tasks, silent replies, missing output, and failures
 return an explicit status instead. A wait deadline or cancelled shortcut does
 not abort the accepted run or send the question again.
+
+**Ask OpenClaw for Files** uses the same confirmation and 25-second wait, then
+returns up to four assistant-delivered files totaling at most 16 MB. File bytes
+are separate from the text preview, so a file-only reply can succeed. If files
+are missing, exceed the limits, cannot be verified, or need newer Gateway
+support, the action explains the outcome and opens the exact run's chat. It
+returns no partial file collection and never substitutes input attachments.
 
 Native sends do **not** enter the durable offline chat outbox. An uncertain
 send is never automatically repeated. The same in-flight submission is

@@ -135,6 +135,13 @@ final class NativeActionRouter: OpenClawNativeActionHost {
             session: session,
             message: message,
             lease: lease,
+            loadFile: { [binding = presented.binding] response, maximumBytes in
+                let loader = IOSMediaArtifactLoader { binding.mediaConnection }
+                return try await loader.loadFile(
+                    response: response,
+                    maximumBytes: maximumBytes,
+                    expectedGatewayID: session.owner.gatewayID)
+            },
             presentationIsCurrent: { [weak self] in self?.isCurrent(presented) == true })
     }
 

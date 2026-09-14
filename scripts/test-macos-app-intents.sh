@@ -85,9 +85,10 @@ const contracts = {
   OpenRunIntent: { target: entity("OpenClawRunEntity") },
   SendMessageIntent: { session: entity("OpenClawSessionEntity"), message: string() },
   AskOpenClawIntent: { session: entity("OpenClawSessionEntity"), question: string() },
+  AskOpenClawForFilesIntent: { session: entity("OpenClawSessionEntity"), question: string() },
   InspectRunIntent: { run: entity("OpenClawRunEntity") },
 };
-const shortcutNames = ["OpenSessionIntent", "OpenComposeIntent", "SendMessageIntent", "AskOpenClawIntent", "InspectRunIntent"];
+const shortcutNames = ["OpenSessionIntent", "OpenComposeIntent", "SendMessageIntent", "AskOpenClawIntent", "AskOpenClawForFilesIntent", "InspectRunIntent"];
 const select = (values, name) => {
   const matches = Object.values(values).filter(
     (value) => value.fullyQualifiedTypeName === `OpenClawKit.${name}`,
@@ -166,6 +167,20 @@ function validate(file, expectShortcuts) {
     "Ask in a conversation and return a recorded reply preview or run status. Open the chat for full results.",
     "Ask description must reach extracted metadata",
   );
+  const files = actions.AskOpenClawForFilesIntent;
+  assert.equal(
+    files.outputType.array?.wrapper.memberValueType.intents?.wrapper.typeIdentifier,
+    12,
+    "Ask for Files must return an IntentFile array",
+  );
+  assert.equal(files.authenticationPolicy, 2, "Ask for Files must require local device authentication");
+  assert.equal(files.isAuthPolExplicit, true, "Ask for Files authentication must be explicit");
+  assert.equal(files.openAppWhenRun, true, "Ask for Files must start its app host");
+  assert.equal(
+    files.descriptionMetadata?.descriptionText?.key,
+    "Ask in a conversation and return up to four delivered files, totaling at most 16 MB. Open the chat for more.",
+    "Ask for Files description must reach extracted metadata",
+  );
   if (expectShortcuts) {
     assert.ok(Array.isArray(metadata.autoShortcuts), "Missing app Shortcut declarations");
     for (const name of shortcutNames) {
@@ -198,6 +213,12 @@ function validate(file, expectShortcuts) {
       opensApp: ask.openAppWhenRun,
       description: ask.descriptionMetadata.descriptionText.key,
     },
+    files: {
+      output: "IntentFile[]",
+      authentication: "requiresLocalDeviceAuthentication",
+      opensApp: files.openAppWhenRun,
+      description: files.descriptionMetadata.descriptionText.key,
+    },
   };
 }
 const report = {
@@ -211,5 +232,5 @@ const report = {
   installedDiscoveryVerified: false,
 };
 fs.writeFileSync(reportPath, JSON.stringify(report, null, 2) + "\n", { flag: "wx", mode: 0o600 });
-console.log("App Intents metadata passed: 6 intents, 2 entities/queries, 1 enum, 5 app Shortcuts.");
+console.log("App Intents metadata passed: 7 intents, 2 entities/queries, 1 enum, 6 app Shortcuts.");
 NODE

@@ -82,15 +82,48 @@ struct IOSMediaArtifactLoader: Sendable {
         playback: OpenClawChatPlaybackMode? = nil,
         expectedGatewayID: String) async throws -> OpenClawChatLoadedMedia
     {
-        let maximumBytes = Self.maximumBytes(for: kind)
-        let declaredMIME = response.artifact.mimetype?.lowercased()
+        try await self.load(
+            response: response,
+            kind: kind,
+            playback: playback,
+            maximumBytes: Self.maximumBytes(for: kind),
+            expectedGatewayID: expectedGatewayID)
+    }
+
+    func loadFile(
+        response: ArtifactsDownloadResult,
+        maximumBytes: Int,
+        expectedGatewayID: String) async throws -> Data
+    {
+        guard let binding = await self.connectionProvider()?.nativeBinding else { throw LoadError.invalidSource }
+        try await binding.requireAvailable()
+        let result = try await self.load(
+            response: response,
+            kind: nil,
+            playback: nil,
+            maximumBytes: maximumBytes,
+            expectedGatewayID: expectedGatewayID)
+        let current = await binding.isCurrent()
+        try Task.checkCancellation()
+        guard current, case let .data(file) = result else { throw LoadError.invalidResponse }
+        return file.data
+    }
+
+    private func load(
+        response: ArtifactsDownloadResult,
+        kind: OpenClawChatMediaKind?,
+        playback: OpenClawChatPlaybackMode?,
+        maximumBytes: Int,
+        expectedGatewayID: String) async throws -> OpenClawChatLoadedMedia
+    {
+        let declaredMIME = response.artifact.mimetype?.lowercased() ?? (kind == nil ? "application/octet-stream" : nil)
         if playback != .transcode,
            let encoded = response.data?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !encoded.isEmpty
+           !encoded.isEmpty || kind == nil
         {
             guard response.encoding == "base64",
                   let declaredMIME,
-                  declaredMIME.hasPrefix(kind.mimeTypePrefix),
+                  kind.map({ declaredMIME.hasPrefix($0.mimeTypePrefix) }) ?? true,
                   let data = Data(base64Encoded: encoded)
             else { throw LoadError.invalidResponse }
             guard data.count <= maximumBytes else { throw LoadError.payloadTooLarge }
@@ -117,7 +150,7 @@ struct IOSMediaArtifactLoader: Sendable {
             connection.nativeBinding == nil &&
             connection.tls == nil &&
             headers.isEmpty &&
-            declaredMIME?.hasPrefix(kind.mimeTypePrefix) == true
+            declaredMIME?.hasPrefix("video/") == true
         if canStreamDirectly, playback != .transcode, let declaredMIME {
             return .stream(OpenClawChatMediaStream(
                 url: url,
@@ -127,7 +160,7 @@ struct IOSMediaArtifactLoader: Sendable {
 
         var request = URLRequest(url: url)
         request.timeoutInterval = kind == .video ? 60 : 20
-        request.setValue("\(kind.rawValue)/*", forHTTPHeaderField: "Accept")
+        request.setValue(kind.map { "\($0.rawValue)/*" } ?? "*/*", forHTTPHeaderField: "Accept")
         if canStreamDirectly {
             request.setValue("bytes=0-0", forHTTPHeaderField: "Range")
         }
@@ -145,14 +178,14 @@ struct IOSMediaArtifactLoader: Sendable {
             throw CancellationError()
         }
         guard let http = urlResponse as? HTTPURLResponse else { throw LoadError.invalidResponse }
-        if http.statusCode == 202 {
+        if http.statusCode == 202, kind != nil {
             return .preparing
         }
-        guard (200..<300).contains(http.statusCode) else {
+        guard kind == nil ? http.statusCode == 200 : (200..<300).contains(http.statusCode) else {
             throw LoadError.requestFailed(statusCode: http.statusCode)
         }
         guard let mimeType = http.mimeType?.lowercased(),
-              mimeType.hasPrefix(kind.mimeTypePrefix)
+              kind.map({ mimeType.hasPrefix($0.mimeTypePrefix) }) ?? true
         else { throw LoadError.unsupportedMediaType }
         if canStreamDirectly {
             return .stream(OpenClawChatMediaStream(

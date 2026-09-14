@@ -1,6 +1,7 @@
 #if os(iOS) || os(macOS)
 import AppIntents
 import Foundation
+import UniformTypeIdentifiers
 
 public struct OpenClawNativeAppIntents: AppIntentsPackage {}
 
@@ -281,6 +282,42 @@ public struct AskOpenClawIntent: AppIntent {
             value: reply.text,
             opensIntent: OpenRunIntent(target: OpenClawRunEntity(run: reply.run)),
             dialog: "\(reply.dialog)")
+    }
+}
+
+public struct AskOpenClawForFilesIntent: AppIntent {
+    public static let title: LocalizedStringResource = "Ask OpenClaw for Files"
+    public static let description: IntentDescription? = IntentDescription(
+        "Ask in a conversation and return up to four delivered files, totaling at most 16 MB. Open the chat for more.")
+    public static let openAppWhenRun = true
+    public static let authenticationPolicy: IntentAuthenticationPolicy = .requiresLocalDeviceAuthentication
+    @Parameter(title: "Session") public var session: OpenClawSessionEntity
+    @Parameter(title: "Question") public var question: String
+    public static var parameterSummary: some ParameterSummary {
+        Summary("Ask \(\.$question) for files in \(\.$session)")
+    }
+
+    public init() {}
+
+    @MainActor
+    public func perform() async throws -> some IntentResult & ReturnsValue<[IntentFile]> & ProvidesDialog &
+    OpensIntent {
+        let prepared = try await OpenClawNativeActionServices.host().prepareSend(
+            to: self.session.session, message: self.question)
+        try await requestConfirmation(
+            actionName: .send,
+            dialog: """
+            Send to \(prepared.session.sessionKey) with \(prepared.session.agentID) \
+            as \(prepared.session.owner.profileID) on \(prepared.session.owner.gatewayID)?
+            """)
+        let result = try await prepared.submitAndWaitForFiles()
+        let files = result.files.map { file in
+            IntentFile(data: file.data, filename: file.filename, type: file.mimeType.flatMap { UTType(mimeType: $0) })
+        }
+        return try .result(
+            value: files,
+            opensIntent: OpenRunIntent(target: OpenClawRunEntity(run: result.run)),
+            dialog: "\(result.dialog)")
     }
 }
 

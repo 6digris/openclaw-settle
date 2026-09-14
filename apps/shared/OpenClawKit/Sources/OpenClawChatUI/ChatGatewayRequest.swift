@@ -136,16 +136,36 @@ public enum OpenClawChatGatewayRequests {
             timeoutMs: self.defaultTimeoutMs)
     }
 
+    public static func artifactsList(
+        sessionKey: String,
+        agentID: String,
+        runID: String) -> OpenClawChatGatewayRequest
+    {
+        OpenClawChatGatewayRequest(
+            method: "artifacts.list",
+            params: [
+                "sessionKey": AnyCodable(sessionKey),
+                "agentId": AnyCodable(agentID),
+                "runId": AnyCodable(runID),
+                "messageRole": AnyCodable("assistant"),
+            ],
+            timeoutMs: self.defaultTimeoutMs)
+    }
+
     public static func artifactDownload(
         sessionKey: String,
         agentID: String?,
-        artifactId: String) -> OpenClawChatGatewayRequest
+        artifactId: String,
+        runID: String? = nil,
+        assistantOnly: Bool = false) -> OpenClawChatGatewayRequest
     {
         var params: [String: AnyCodable] = [
             "sessionKey": AnyCodable(sessionKey),
             "artifactId": AnyCodable(artifactId),
         ]
         self.add(agentID, to: &params, key: "agentId")
+        self.add(runID, to: &params, key: "runId")
+        if assistantOnly { params["messageRole"] = AnyCodable("assistant") }
         return OpenClawChatGatewayRequest(
             method: "artifacts.download",
             params: params,

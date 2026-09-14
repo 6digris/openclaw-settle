@@ -12,6 +12,11 @@ extension OpenClawApp: AppIntentsPackage {
 struct OpenClawShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
+            intent: AskOpenClawForFilesIntent(),
+            phrases: ["Ask \(.applicationName) for files"],
+            shortTitle: "Ask for Files",
+            systemImageName: "doc")
+        AppShortcut(
             intent: AskOpenClawIntent(),
             phrases: ["Ask \(.applicationName)"],
             shortTitle: "Ask OpenClaw",
@@ -91,6 +96,13 @@ final class NativeActionRouter: OpenClawNativeActionHost {
             session: session,
             message: message,
             lease: lease,
+            loadFile: { response, maximumBytes in
+                try await gateway.connection.loadFileArtifact(
+                    response: response,
+                    maximumBytes: maximumBytes,
+                    ifCurrentServerLease: gateway.lease,
+                    expectedProfileId: session.owner.profileID)
+            },
             presentationIsCurrent: { [weak windows = self.windows, weak controller] in
                 guard let windows, let controller else { return false }
                 return windows.nativePresentationIsCurrent(controller, gateway: gateway, session: session) &&

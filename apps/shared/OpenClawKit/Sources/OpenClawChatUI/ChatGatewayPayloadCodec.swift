@@ -113,7 +113,14 @@ public enum OpenClawChatGatewayPayloadCodec {
         case .checkAgain: .pending
         case .unavailable: .unavailable
         }
-        return .init(run: run, outcome: outcome)
+        // File-only replies can complete successfully without recorded text.
+        // Keep the canonical run outcome separate from preview availability.
+        let completedSuccessfully = if case .terminal(.completed) = decoded.observation {
+            true
+        } else {
+            false
+        }
+        return .init(run: run, outcome: outcome, completedSuccessfully: completedSuccessfully)
     }
 
     public static func decodeModelChoices(_ data: Data) throws -> [OpenClawChatModelChoice] {

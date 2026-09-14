@@ -29,6 +29,11 @@ struct OpenClawShortcuts: AppShortcutsProvider {
             shortTitle: "Start Live Voice",
             systemImageName: "waveform")
         AppShortcut(
+            intent: AskOpenClawForFilesIntent(),
+            phrases: ["Ask \(.applicationName) for files"],
+            shortTitle: "Ask for Files",
+            systemImageName: "doc")
+        AppShortcut(
             intent: AskOpenClawIntent(),
             phrases: ["Ask \(.applicationName)"],
             shortTitle: "Ask OpenClaw",

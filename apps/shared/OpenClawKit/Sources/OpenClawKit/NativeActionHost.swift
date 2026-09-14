@@ -91,10 +91,12 @@ public struct OpenClawNativeRunReply: Equatable, Sendable {
 
     public let run: OpenClawNativeRunRef
     public let outcome: Outcome
+    public let completedSuccessfully: Bool
 
-    public init(run: OpenClawNativeRunRef, outcome: Outcome) {
+    public init(run: OpenClawNativeRunRef, outcome: Outcome, completedSuccessfully: Bool = false) {
         self.run = run
         self.outcome = outcome
+        self.completedSuccessfully = completedSuccessfully
     }
 
     public var text: String {
@@ -114,6 +116,30 @@ public struct OpenClawNativeRunReply: Equatable, Sendable {
     }
 }
 
+public struct OpenClawNativeFile: Sendable {
+    public let data: Data
+    public let filename: String
+    public let mimeType: String?
+
+    public init(data: Data, filename: String, mimeType: String?) {
+        self.data = data
+        self.filename = filename
+        self.mimeType = mimeType
+    }
+}
+
+public struct OpenClawNativeRunFiles: Sendable {
+    public let run: OpenClawNativeRunRef
+    public let files: [OpenClawNativeFile]
+    public let dialog: String
+
+    public init(run: OpenClawNativeRunRef, files: [OpenClawNativeFile], dialog: String) {
+        self.run = run
+        self.files = files
+        self.dialog = dialog
+    }
+}
+
 /// Prepared by the app before system confirmation. The closure retains one
 /// invocation object and one physical connection; it must not reacquire either.
 @MainActor
@@ -121,15 +147,18 @@ public struct OpenClawNativePreparedSend {
     public let session: OpenClawNativeSessionRef
     public let submit: @MainActor () async throws -> OpenClawNativeRunRef
     public let submitAndWaitForReply: @MainActor () async throws -> OpenClawNativeRunReply
+    public let submitAndWaitForFiles: @MainActor () async throws -> OpenClawNativeRunFiles
 
     public init(
         session: OpenClawNativeSessionRef,
         submit: @escaping @MainActor () async throws -> OpenClawNativeRunRef,
-        submitAndWaitForReply: @escaping @MainActor () async throws -> OpenClawNativeRunReply)
+        submitAndWaitForReply: @escaping @MainActor () async throws -> OpenClawNativeRunReply,
+        submitAndWaitForFiles: @escaping @MainActor () async throws -> OpenClawNativeRunFiles)
     {
         self.session = session
         self.submit = submit
         self.submitAndWaitForReply = submitAndWaitForReply
+        self.submitAndWaitForFiles = submitAndWaitForFiles
     }
 }
 

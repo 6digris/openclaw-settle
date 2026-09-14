@@ -31,6 +31,7 @@ import { runManagedCommand } from "./lib/managed-child-process.mts";
 const CASES = {
   allowed: "allowed",
   distinct: "allowed",
+  files: "allowed",
   foreign: "rejected",
   acl: "rejected",
   aclSuspended: "rejected",
@@ -159,6 +160,7 @@ export type NativeActionFixtureDescriptor = {
   aliceProfileID: string;
   bobProfileID: string;
   cases: Record<CaseID, WireCase>;
+  files: { filename: string; sha256: string; sizeBytes: number };
   media: {
     pngBase64: string;
     sha256: string;
@@ -356,6 +358,12 @@ export async function withNativeActionGateway(
       let widgetAttempt:
         | { id: IOSWidgetCaseID; before: ReturnType<typeof proxy.snapshot> }
         | undefined;
+      const csv = Buffer.from(`row,value\n${"1,native-file-output\n".repeat(512)}`);
+      const files = {
+        filename: "native-report.csv",
+        sha256: createHash("sha256").update(csv).digest("hex"),
+        sizeBytes: csv.byteLength,
+      };
       const png = Buffer.from(TINY_PNG_BASE64, "base64");
       const media = {
         pngBase64: TINY_PNG_BASE64,
@@ -431,14 +439,24 @@ export async function withNativeActionGateway(
             PROOF_TIMEOUT_MS + 5000,
           );
           assert.equal(terminal.status, "ok");
-          await waitFor(`native ${id} final transcript`, async () => {
-            const messages = await history(spec.sessionKey);
-            return messages.some(
-              (message) => message.role === "assistant" && wireMessageText(message) === spec.marker,
-            )
-              ? true
-              : undefined;
-          });
+          if (id === "files") {
+            const result = await admin.request<{ artifacts: Array<{ runId?: string }> }>(
+              "artifacts.list",
+              { sessionKey: spec.sessionKey, agentId: "qa", runId, messageRole: "assistant" },
+            );
+            assert.equal(result.artifacts.length, 1);
+            assert.equal(result.artifacts[0]?.runId, runId);
+          } else {
+            await waitFor(`native ${id} final transcript`, async () => {
+              const messages = await history(spec.sessionKey);
+              return messages.some(
+                (message) =>
+                  message.role === "assistant" && wireMessageText(message) === spec.marker,
+              )
+                ? true
+                : undefined;
+            });
+          }
         }
         const messages = await history(spec.sessionKey);
         const requests = await journal();
@@ -870,6 +888,7 @@ export async function withNativeActionGateway(
       });
       await runQaGatewayFixture(
         async () => {
+          await fs.writeFile(path.join(instance.state.workspaceDir, files.filename), csv);
           for (const id of caseKeys) {
             const group =
               id === "aclSuspended" ? "acl" : id === "profileSuspended" ? "profile" : id;
@@ -892,7 +911,7 @@ export async function withNativeActionGateway(
               message: [
                 "Tool progress QA check.",
                 `Call the exec tool exactly once with this exact command before answering: \`${command}\`.`,
-                `Reply exactly \`${marker}\`.`,
+                `Reply exactly \`${id === "files" ? `MEDIA:./${files.filename}` : marker}\`.`,
               ].join(" "),
             };
           }
@@ -1003,6 +1022,7 @@ export async function withNativeActionGateway(
               aliceProfileID: aliceId,
               bobProfileID: bobId,
               cases,
+              files,
               media,
               approvals,
             });
