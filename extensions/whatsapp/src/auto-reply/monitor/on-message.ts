@@ -98,7 +98,6 @@ export function createWebOnMessageHandler(params: {
       msg,
       route,
       groupHistoryKey,
-      groupHistoryLimit: params.groupHistoryLimit,
       groupHistories: params.groupHistories,
       groupHistoryLimit: params.groupHistoryLimit,
       groupMemberNames: params.groupMemberNames,
@@ -138,10 +137,7 @@ export function createWebOnMessageHandler(params: {
     const peerId = resolvePeerId(normalizedMsg);
     const msg = withDirectSenderPeer(normalizedMsg, peerId);
     const admission = requireWhatsAppInboundAdmission(msg);
-    if (
-      admission.turnAdmission.kind !== "dispatch" &&
-      admission.turnAdmission.kind !== "observeOnly"
-    ) {
+    if (admission.ingress.admission !== "dispatch" && admission.ingress.admission !== "observe") {
       return;
     }
     const conversationId = admission.conversation.id;

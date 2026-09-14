@@ -1,5 +1,4 @@
 // Whatsapp tests cover process message plugin behavior.
-import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAcceptedWhatsAppSendResult } from "../../inbound/send-result.test-helper.js";
 import { createTestWebInboundMessage } from "../../inbound/test-message.test-helper.js";
@@ -69,10 +68,10 @@ vi.mock("./inbound-dispatch.js", async (importOriginal) => {
       void dispatchBufferedReplyMock(params);
       return {
         dispatcherOptions: {},
-        delivery: { deliver: deliverReplyMock },
+        delivery: { deliver: async () => {} },
         replyOptions: {},
         replyResolver: params.replyResolver,
-        finalize: (result: { queuedFinal?: boolean }) => result.queuedFinal === true,
+        finalize: () => true,
       };
     },
     resolveWhatsAppDmRouteTarget: () => null,
@@ -265,6 +264,7 @@ function callProcessMessage(
     dispatchReplyFromConfig?: Parameters<typeof processMessage>[0]["dispatchReplyFromConfig"];
     groupHistories?: Map<string, unknown[]>;
     msg?: unknown;
+    suppressGroupHistoryClear?: boolean;
   } = {},
 ) {
   return processMessage({
@@ -279,6 +279,9 @@ function callProcessMessage(
     verbose: false,
     maxMediaBytes: 1024,
     dispatchReplyFromConfig: overrides.dispatchReplyFromConfig,
+    ...(overrides.suppressGroupHistoryClear === undefined
+      ? {}
+      : { suppressGroupHistoryClear: overrides.suppressGroupHistoryClear }),
     replyResolver: (async () => undefined) as never,
     replyLogger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } as never,
     backgroundTasks: new Set(),
@@ -303,9 +306,7 @@ function mockCallArg(mockFn: ReturnType<typeof vi.fn>, label: string, callIndex 
 describe("processMessage group system prompt wiring", () => {
   beforeEach(() => {
     buildContextMock.mockReset();
-    deliverReplyMock.mockClear();
-    replyResolverMock.mockReset();
-    replyResolverMock.mockResolvedValue(undefined);
+    dispatchBufferedReplyMock.mockClear();
     isControlCommandMessageMock.mockReset();
     isControlCommandMessageMock.mockReturnValue(false);
     resolvePolicyMock.mockReset();
@@ -435,6 +436,29 @@ describe("processMessage group system prompt wiring", () => {
         },
       ],
     });
+  });
+
+  it("lets the core turn owner clear group history after dispatch", async () => {
+    resolvePolicyMock.mockReturnValue(makePolicy(makeAccount()));
+    const historyKey = "whatsapp:default:group:123@g.us";
+    const groupHistories = new Map<string, unknown[]>([
+      [historyKey, [{ sender: "Alice (+15550002222)", body: "pending context" }]],
+    ]);
+
+    await callProcessMessage({ groupHistories });
+
+    expect(groupHistories.get(historyKey)).toEqual([]);
+  });
+
+  it("preserves group history when the caller suppresses finalization", async () => {
+    resolvePolicyMock.mockReturnValue(makePolicy(makeAccount()));
+    const historyKey = "whatsapp:default:group:123@g.us";
+    const entries = [{ sender: "Alice (+15550002222)", body: "pending context" }];
+    const groupHistories = new Map<string, unknown[]>([[historyKey, entries]]);
+
+    await callProcessMessage({ groupHistories, suppressGroupHistoryClear: true });
+
+    expect(groupHistories.get(historyKey)).toEqual(entries);
   });
 
   it("fires message_received hooks with canonical WhatsApp correlation fields", async () => {
@@ -655,7 +679,7 @@ describe("processMessage group system prompt wiring", () => {
     expect(result).toBe(false);
     expect(buildContextMock).not.toHaveBeenCalled();
     expect(trackBackgroundTaskMock).not.toHaveBeenCalled();
-    expect(replyResolverMock).not.toHaveBeenCalled();
+    expect(dispatchBufferedReplyMock).not.toHaveBeenCalled();
     expect(runMessageReceivedMock).not.toHaveBeenCalled();
   });
 });

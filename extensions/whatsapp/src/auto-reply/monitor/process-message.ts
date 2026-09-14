@@ -85,6 +85,22 @@ const WHATSAPP_MESSAGE_RECEIVED_HOOK_LIMITS = {
   timeoutMs: 2_000,
 };
 
+function mapWhatsAppIngressToTurnAdmission(
+  ingress: ReturnType<typeof requireWhatsAppInboundAdmission>["ingress"],
+) {
+  const reason = ingress.reasonCode;
+  if (ingress.admission === "dispatch") {
+    return { kind: "dispatch" as const, reason };
+  }
+  if (ingress.admission === "observe") {
+    return { kind: "observeOnly" as const, reason };
+  }
+  if (ingress.admission === "skip") {
+    return { kind: "handled" as const, reason };
+  }
+  return { kind: "drop" as const, reason, recordHistory: false };
+}
+
 type WhatsAppMessageReceivedHookConfig = {
   pluginHooks?: {
     messageReceived?: boolean;
@@ -193,7 +209,6 @@ export async function processMessage(params: {
   msg: AdmittedWebInboundMessage;
   route: ReturnType<typeof resolveAgentRoute>;
   groupHistoryKey: string;
-  groupHistoryLimit: number;
   groupHistories: Map<string, GroupHistoryEntry[]>;
   groupMemberNames: Map<string, Map<string, string>>;
   connectionId: string;
@@ -219,8 +234,7 @@ export async function processMessage(params: {
   dispatchReplyFromConfig?: NonNullable<ChannelInboundTurnPlan["dispatchReplyFromConfig"]>;
 }) {
   const admission = requireWhatsAppInboundAdmission(params.msg);
-  const turnAdmission = admission.turnAdmission;
-  if (turnAdmission.kind !== "dispatch" && turnAdmission.kind !== "observeOnly") {
+  if (admission.ingress.admission !== "dispatch" && admission.ingress.admission !== "observe") {
     return false;
   }
   const conversationId = admission.conversation.id;
@@ -501,6 +515,9 @@ export async function processMessage(params: {
     suppressMessageReceivedHooks: true,
   });
   const { inbound, turnInput, ctxPayload } = prepared;
+  const turnAdmission = mapWhatsAppIngressToTurnAdmission(
+    inbound.channelIngress?.ingress ?? admission.ingress,
+  );
   const transport = buildWhatsAppInboundTransportContext(params.msg);
   const ingressLifecycle = resolveWhatsAppIngressLifecycle(params.msg);
   const turnAdoptionLifecycle = ingressLifecycle
@@ -536,25 +553,7 @@ export async function processMessage(params: {
     ...(turnAdoptionLifecycle ? { turnAdoptionLifecycle } : {}),
     adapter: {
       ingest: () => turnInput,
-      preflight: () => {
-        const reason = admission.ingress.reasonCode;
-        if (admission.ingress.admission === "dispatch") {
-          return { admission: { kind: "dispatch", reason } };
-        }
-        if (admission.ingress.admission === "observe") {
-          return { admission: { kind: "observeOnly", reason } };
-        }
-        if (admission.ingress.admission === "skip") {
-          return { admission: { kind: "handled", reason } };
-        }
-        return {
-          admission: {
-            kind: "drop",
-            reason,
-            recordHistory: false,
-          },
-        };
-      },
+      preflight: () => ({ admission: turnAdmission }),
       resolveTurn: () => {
         const { finalize, ...replyPlan } = createWhatsAppReplyPlan({
           cfg: params.cfg,
