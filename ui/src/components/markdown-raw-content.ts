@@ -8,6 +8,30 @@ const PROGRESS_CARD_RAW_CONTENT_TAGS = [
 const PROGRESS_CARD_RAW_CONTENT_WORD_CHARACTER_RE = /^\w$/iu;
 const PROGRESS_CARD_RAW_CONTENT_WHITESPACE_RE = /^\s$/u;
 
+function isProgressCardRawContentWordCharacter(value: string | undefined): boolean {
+  if (!value) {
+    return false;
+  }
+  const code = value.charCodeAt(0);
+  return (
+    (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    code === 95 ||
+    (code >= 97 && code <= 122) ||
+    PROGRESS_CARD_RAW_CONTENT_WORD_CHARACTER_RE.test(value)
+  );
+}
+
+function isProgressCardRawContentWhitespace(value: string | undefined): boolean {
+  if (!value) {
+    return false;
+  }
+  const code = value.charCodeAt(0);
+  return (
+    code === 32 || (code >= 9 && code <= 13) || PROGRESS_CARD_RAW_CONTENT_WHITESPACE_RE.test(value)
+  );
+}
+
 interface ProgressCardRawContentTag {
   end: number;
   isClosing: boolean;
@@ -25,13 +49,21 @@ function readProgressCardRawContentTag(
   if (isClosing) {
     nameStart += 1;
   }
-  const candidate = PROGRESS_CARD_RAW_CONTENT_TAGS.find((entry) => {
-    const nameEnd = nameStart + entry.name.length;
-    return (
-      entry.pattern.test(input.slice(nameStart, nameEnd)) &&
-      !PROGRESS_CARD_RAW_CONTENT_WORD_CHARACTER_RE.test(input[nameEnd] ?? "")
-    );
-  });
+  const candidate =
+    PROGRESS_CARD_RAW_CONTENT_TAGS.find((entry) => {
+      const nameEnd = nameStart + entry.name.length;
+      return (
+        input.startsWith(entry.name, nameStart) &&
+        !isProgressCardRawContentWordCharacter(input[nameEnd])
+      );
+    }) ??
+    PROGRESS_CARD_RAW_CONTENT_TAGS.find((entry) => {
+      const nameEnd = nameStart + entry.name.length;
+      return (
+        entry.pattern.test(input.slice(nameStart, nameEnd)) &&
+        !isProgressCardRawContentWordCharacter(input[nameEnd])
+      );
+    });
   if (!candidate) {
     return null;
   }
@@ -39,7 +71,7 @@ function readProgressCardRawContentTag(
   const nameEnd = nameStart + name.length;
   if (isClosing) {
     for (let index = nameEnd; index < close; index += 1) {
-      if (!PROGRESS_CARD_RAW_CONTENT_WHITESPACE_RE.test(input[index] ?? "")) {
+      if (!isProgressCardRawContentWhitespace(input[index])) {
         return null;
       }
     }
