@@ -8,6 +8,7 @@ import {
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import { getActiveGatewayRootWorkCount } from "../process/gateway-work-admission.js";
 import { serializeAgentSchemaInspectionError } from "../state/openclaw-agent-schema-inspection-response.js";
+import { createOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
 import * as stateDatabaseCache from "../state/openclaw-state-db-cache.js";
 import {
   closeOpenClawStateDatabase,
@@ -51,6 +52,7 @@ import {
 } from "./task-registry.js";
 import {
   configureTaskRegistryRuntime,
+  type TaskRegistryStore,
   getTaskRegistryStore,
   type TaskRegistryStoreSnapshot,
 } from "./task-registry.store.js";
@@ -573,12 +575,24 @@ describe("asynchronous registry restoration", () => {
     },
   );
 
-  it.each(["superseded store", "earlier receipt error"] as const)(
+  it.each(["superseded store", "earlier receipt error", "closed maintenance scope"] as const)(
     "retains durable flow repair obligations across %s",
     async (boundary) => {
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const maintenance =
+        boundary === "closed maintenance scope"
+          ? createOpenClawDatabaseMaintenanceScope(() => {
+              throw new Error("Unexpected schema delegation in memory fixture");
+            })
+          : undefined;
+      if (!maintenance) {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      }
       const started = createDeferred();
       const release = createDeferred();
+      const retried = createDeferred<{
+        context: OpenClawStateWorkerContext;
+        error: unknown;
+      }>();
       const current = { ...flow, syncMode: "task_mirrored" as const };
       const createStore = () => {
         const flows = createInMemoryTaskFlowRegistryStore({
@@ -623,10 +637,22 @@ describe("asynchronous registry restoration", () => {
           error: serializeAgentSchemaInspectionError(new Error("earlier receipt unavailable")),
         });
       }
-      configureTaskFlowRegistryRuntime({ store: second.flows });
+      configureTaskFlowRegistryRuntime({ store: maintenance ? first.flows : second.flows });
       configureTaskRegistryRuntime({
         store: {
           ...first.store,
+          async syncTaskFlowAsync(this: TaskRegistryStore, context, params) {
+            let failure: unknown;
+            try {
+              context.maintenanceScope?.assertAdmission();
+              return await first.store.syncTaskFlowAsync.call(this, context, params);
+            } catch (error) {
+              failure = error;
+              throw error;
+            } finally {
+              retried.resolve({ context, error: failure });
+            }
+          },
           async withSnapshotAsync(_context, consume) {
             started.resolve();
             await release.promise;
@@ -634,7 +660,8 @@ describe("asynchronous registry restoration", () => {
           },
         },
       });
-      const pending = ensureTaskRegistryReadyAsync(captureOpenClawStateWorkerContext());
+      const restore = () => ensureTaskRegistryReadyAsync(captureOpenClawStateWorkerContext());
+      const pending = maintenance ? maintenance.run(restore) : restore();
       await started.promise;
       if (boundary === "superseded store") {
         configureTaskRegistryRuntime({
@@ -651,7 +678,17 @@ describe("asynchronous registry restoration", () => {
         } else {
           await pending;
         }
-        await vi.advanceTimersByTimeAsync(1_000);
+        if (maintenance) {
+          await maintenance.close();
+          expect(() => maintenance.assertAdmission()).toThrow(
+            "maintenance resource scope is closed",
+          );
+          const retry = await retried.promise;
+          expect(retry.error).toBeUndefined();
+          expect(retry.context.maintenanceScope).toBeUndefined();
+        } else {
+          await vi.advanceTimersByTimeAsync(1_000);
+        }
         await vi.waitFor(() => {
           expect(first.flows.loadSnapshot().flows.get(flow.flowId)?.status).toBe("succeeded");
           if (boundary === "superseded store") {
@@ -660,6 +697,7 @@ describe("asynchronous registry restoration", () => {
           expect(getActiveGatewayRootWorkCount()).toBe(0);
         });
       } finally {
+        await maintenance?.close();
         vi.useRealTimers();
       }
     },
