@@ -55,6 +55,7 @@ import {
   resolveMemoryIndexProviderIdentities,
   type MemoryIndexProviderIdentity,
 } from "./manager-reindex-state.js";
+import type { MemorySourceIndexReplacement } from "./manager-source-index-kernel.js";
 import {
   MemoryManagerSyncOps,
   type MemoryIndexWorkItem,
@@ -933,70 +934,109 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
     vectorReady: boolean,
   ): Promise<void> {
     await withMemoryWorkspaceLock(this.workspaceDir, async () => {
-      const published = await runSqliteImmediateTransaction(
-        this.db,
-        async () => {
-          if (source === "memory") {
-            // The lock excludes purge and promotion writers while the exact file
-            // snapshot is validated and its derived index records are committed.
-            const current = await buildFileEntry(
-              entry.absPath,
-              this.workspaceDir,
-              this.settings.multimodal,
-            );
-            if (current?.hash !== entry.hash) {
-              this.dirty = true;
-              log.debug("memory source changed while indexing; queued incremental retry", {
-                path: entry.path,
-              });
-              return undefined;
+      const database = this.database;
+      const shadowDeadline =
+        database.isShadow && source === "sessions"
+          ? database.captureShadowWriteDeadline()
+          : undefined;
+      const assertCurrent = () => {
+        if (
+          this.closed ||
+          database.closed ||
+          !database.db.isOpen ||
+          this.database !== database ||
+          (generation &&
+            (generation.database !== this.publishedDatabase ||
+              generation.database.closed ||
+              !generation.database.db.isOpen ||
+              this.syncProviderGeneration !== generation))
+        ) {
+          throw new Error("Memory source owner changed before replacement");
+        }
+        // The workspace lock remains held through the Worker reply. Forget's
+        // tombstone writer uses this same lock and bumps the publication revision.
+        if (
+          source === "sessions" &&
+          hasMemorySessionTombstone(
+            (generation?.database ?? database).db,
+            this.agentId,
+            expectDefined(entry.sessionId, "memory index session identity"),
+          )
+        ) {
+          this.markFailedFullReindexRetry({ memory: false, sessions: true });
+          throw new Error(
+            "A session was forgotten while memory indexing was running; retry the memory index.",
+          );
+        }
+      };
+      const createReplacement = (): MemorySourceIndexReplacement => ({
+        entry: { path: entry.path, hash: entry.hash, mtimeMs: entry.mtimeMs, size: entry.size },
+        chunks,
+        embeddings,
+        model: generation?.provider?.model ?? "fts-only",
+        now: Date.now(),
+        vectorReady,
+        ...(source === "sessions"
+          ? {
+              source,
+              agentId: this.agentId,
+              sessionId: expectDefined(entry.sessionId, "memory index session identity"),
             }
+          : { source }),
+      });
+      const prepare = async (): Promise<MemorySourceIndexReplacement | undefined> => {
+        if (source === "memory") {
+          const current = await buildFileEntry(
+            entry.absPath,
+            this.workspaceDir,
+            this.settings.multimodal,
+          );
+          if (current?.hash !== entry.hash) {
+            this.dirty = true;
+            log.debug("memory source changed while indexing; queued incremental retry", {
+              path: entry.path,
+            });
+            return undefined;
           }
-          const now = Date.now();
-          const model = generation?.provider?.model ?? "fts-only";
-          return () => {
-            if (
-              generation &&
-              this.db === generation.database.db &&
-              readMemoryDatabaseRevision(this.db) !== generation.databaseRevision
-            ) {
-              generation.cacheWritesInvalidated = true;
-            }
-            const result = this.database.sourceIndex.replace(
-              {
-                entry,
-                chunks,
-                embeddings,
-                model,
-                now,
-                vectorReady,
-                ...(source === "sessions"
-                  ? {
-                      source,
-                      agentId: this.agentId,
-                      sessionId: expectDefined(entry.sessionId, "memory index session identity"),
-                    }
-                  : { source }),
+        }
+        return createReplacement();
+      };
+      const sessionReplacement = source === "sessions" ? createReplacement() : undefined;
+      const staging =
+        shadowDeadline !== undefined && sessionReplacement?.source === "sessions"
+          ? await database.replaceShadowSession(sessionReplacement, assertCurrent, shadowDeadline)
+          : undefined;
+      const published =
+        staging?.kind === "staged"
+          ? { databaseRevision: undefined }
+          : await runSqliteImmediateTransaction(
+              database.db,
+              async () => {
+                const replacement = await prepare();
+                if (!replacement) {
+                  return undefined;
+                }
+                return () => {
+                  assertCurrent();
+                  if (
+                    generation &&
+                    database.db === generation.database.db &&
+                    readMemoryDatabaseRevision(database.db) !== generation.databaseRevision
+                  ) {
+                    generation.cacheWritesInvalidated = true;
+                  }
+                  database.sourceIndex.replace(replacement);
+                  return {
+                    databaseRevision:
+                      generation && database.db === generation.database.db
+                        ? readMemoryDatabaseRevision(database.db)
+                        : undefined,
+                  };
+                };
               },
-              (generation?.database ?? this.database).sourceIndex,
+              staging?.kind === "caller" ? { beginDeadlineNs: staging.beginDeadlineNs } : undefined,
+              (write) => this.withDatabaseWrite(write),
             );
-            if (result === "forgotten") {
-              this.markFailedFullReindexRetry({ memory: false, sessions: true });
-              throw new Error(
-                "A session was forgotten while memory indexing was running; retry the memory index.",
-              );
-            }
-            return {
-              databaseRevision:
-                generation && this.db === generation.database.db
-                  ? readMemoryDatabaseRevision(generation.database.db)
-                  : undefined,
-            };
-          };
-        },
-        undefined,
-        (write) => this.withDatabaseWrite(write),
-      );
       if (!published) {
         return;
       }
