@@ -135,6 +135,7 @@ async function main() {
   const report = {
     diagnosticOnly: true,
     releaseQualification: false,
+    experiment: "archive-pinned-attributes-v2",
     case: mode,
     tooling: TOOLING,
     target: TARGET,
@@ -157,7 +158,7 @@ async function main() {
       "Manual fixture provisioning reproduces the recorded all-branch/all-tag blob:none fetch, sparse cone setup, and pinned checkout. Only initial full-history provisioning fetch gets 600s (recorded checkout took >120s); measured fetch/archive deadlines remain 120s.",
       "Node execFileSync retains UTF-8, 8MiB stdout pipe, inherited stderr, default SIGTERM, and 120s timeout. Worker stderr inherits a bounded regular log descriptor rather than the Actions log pipe.",
       "Only the Node supervisor worker starts a new session/process group. If synchronous timeout does not return, the external guard starts owned-group cleanup after 120s plus 2s grace, then SIGKILL after 1s. Bounds/cancellation also clean that group; no broad kills. The runner tracking marker is retained for last-resort runner cleanup after an uncatchable supervisor SIGKILL.",
-      "Local metadata probes set GIT_NO_LAZY_FETCH=1; cat-file batch-check alone uses piped stdin. Actual archives may lazy-fetch missing objects, and traces record that. No pre-archive object hydration is added.",
+      "Both cases repeat the same depth-33 fetch. Local metadata probes set GIT_NO_LAZY_FETCH=1; cat-file batch-check alone uses piped stdin. Only the control whole-scripts archive uses --worktree-attributes with GIT_ATTR_SOURCE pinned to the same immutable Tooling SHA. Ordinary lazy fetching remains enabled for every archive; traces test whether committed attribute sourcing avoids eager whole-tree prefetch. No pre-archive object hydration is added.",
       "The seven-file comparison inventory is not a validated executable cutter replacement. Whole-scripts archive runs before the seven-file closure in the same fixture. Checkout/probes/first fetch/first archive warm state. Matrix cases use independent runners. Timings do not establish a causal fix.",
       "External attribute files must be absent. Empty init template, disabled hooks/fsmonitor and skipped LFS smudge prevent candidate execution. Disk/trace watchdog samples every 250ms; ceilings can overshoot between samples. No archives are extracted or uploaded.",
     ],
@@ -188,6 +189,7 @@ async function main() {
     const commandEnv = {
       ...env,
       ...(options.noLazy ? { GIT_NO_LAZY_FETCH: "1" } : {}),
+      ...(options.attributeSource ? { GIT_ATTR_SOURCE: TOOLING } : {}),
       ...(options.trace ? { GIT_TRACE2_EVENT: files[0], GIT_TRACE2_PERF: files[1] } : {}),
     };
     const fd = fs.openSync(files[2], "wx", 0o600);
@@ -200,6 +202,7 @@ async function main() {
       label,
       args: spec.args,
       noLazyFetch: !!options.noLazy,
+      attributeSource: options.attributeSource ? TOOLING : null,
       timeoutMs: options.provisioning ? 600_000 : DEADLINE,
       stdin: options.input === undefined ? "ignore" : "pipe (metadata probe only)",
       trace: options.trace ? files.slice(0, 2).map((file) => path.basename(file)) : [],
@@ -445,9 +448,7 @@ async function main() {
     const first = await git("fetch-1-depth33", fetchArgs, { trace: true, allowFailure: true });
     if (first.ok) {
       await pin("target-after-first", REF, TARGET);
-      const secondArgs =
-        mode === "baseline" ? fetchArgs : fetchArgs.filter((arg) => arg !== "--depth=33");
-      await git(mode === "baseline" ? "fetch-2-depth33" : "fetch-2-no-depth", secondArgs, {
+      await git("fetch-2-depth33", fetchArgs, {
         trace: true,
         allowFailure: true,
       });
@@ -515,10 +516,24 @@ async function main() {
       if (name === "seven-file-closure")
         report.objectsBeforeClosure = await availability("availability-before-closure");
       const archive = path.join(root, name === "whole-scripts" ? "scripts.tar" : "closure.tar");
+      const pinnedAttributes = mode === "control" && name === "whole-scripts";
       const measured = await git(
         `archive-${name}`,
-        ["archive", "--format=tar", `--output=${archive}`, TOOLING, "--", ...paths],
-        { trace: true, allowFailure: true, archive },
+        [
+          "archive",
+          ...(pinnedAttributes ? ["--worktree-attributes"] : []),
+          "--format=tar",
+          `--output=${archive}`,
+          TOOLING,
+          "--",
+          ...paths,
+        ],
+        {
+          trace: true,
+          allowFailure: true,
+          archive,
+          attributeSource: pinnedAttributes,
+        },
       );
       const bytes = size(archive);
       assert.ok(bytes <= 128 * MiB, "Archive bound exceeded");
