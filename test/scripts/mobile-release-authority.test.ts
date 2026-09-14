@@ -3417,7 +3417,7 @@ fi
         string,
         {
           environment?: string;
-          steps: Array<{
+          steps?: Array<{
             env?: Record<string, string>;
             name: string;
             run?: string;
@@ -3426,7 +3426,7 @@ fi
       >;
     };
     const placements = Object.entries(workflow.jobs).flatMap(([jobName, job]) =>
-      job.steps.flatMap((step) =>
+      (job.steps ?? []).flatMap((step) =>
         Object.entries(step.env ?? {})
           .filter(([, value]) => value.includes("TESTFLIGHT_INTERNAL_GROUP"))
           .map(([envName, value]) => ({
@@ -3450,7 +3450,7 @@ fi
       },
     ]);
 
-    const uploadStep = workflow.jobs.release?.steps.find((step) =>
+    const uploadStep = workflow.jobs.release?.steps?.find((step) =>
       step.run?.includes("pnpm ios:release:upload"),
     );
     expect(uploadStep?.env).toMatchObject({
@@ -3458,7 +3458,7 @@ fi
       SCAN_DEPLOYMENT_TARGET_VERSION: project.options?.deploymentTarget?.iOS,
     });
     const scanPlacements = Object.entries(workflow.jobs).flatMap(([jobName, job]) =>
-      job.steps.flatMap((step) =>
+      (job.steps ?? []).flatMap((step) =>
         Object.entries(step.env ?? {})
           .filter(([envName]) => envName.startsWith("SCAN_"))
           .map(([envName, value]) => ({ envName, jobName, stepName: step.name, value })),

@@ -14,10 +14,10 @@ import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 type Command = { tool: string; args: string[] };
 
-const workflow: { jobs: Record<string, { steps: { name?: string; run?: string }[] }> } = parse(
+const workflow: { jobs: Record<string, { steps?: { name?: string; run?: string }[] }> } = parse(
   readFileSync(".github/workflows/ci.yml", "utf8"),
 );
-const watchStep = workflow.jobs["ios-build"]?.steps.find(
+const watchStep = workflow.jobs["ios-build"]?.steps?.find(
   (step) => step.name === "Run focused Apple Watch operation simulator tests",
 );
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -71,7 +71,7 @@ if (tool === "installer") {
     );
   }
   const step = Object.values(workflow.jobs)
-    .flatMap((job) => job.steps)
+    .flatMap((job) => job.steps ?? [])
     .find((entry) => entry.name === stepName);
   if (!step?.run) {
     throw new Error(`Missing iOS workflow step ${stepName}`);
