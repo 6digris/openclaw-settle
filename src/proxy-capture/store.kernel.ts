@@ -6,6 +6,7 @@ import { gunzipSync, gzipSync } from "node:zlib";
 import { normalizeUniqueStringEntries } from "@openclaw/normalization-core/string-normalization";
 import type { InferResult } from "kysely";
 import { sha256Hex } from "../infra/crypto-digest.js";
+import { executeWithCachedStatement } from "../infra/kysely-sync-cache-state.js";
 import { compileSqliteQueryBindings, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import { applyPrivateModeSync } from "../infra/private-mode.js";
 import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
@@ -115,7 +116,12 @@ export class DebugProxyCaptureKernel {
           })),
         );
     });
-    const upsert = () => this.db.prepare(compiled.sql).run(...bind(session));
+    const upsert = () => {
+      const parameters = bind(session);
+      return executeWithCachedStatement(this.db, compiled.sql, parameters, (statement) =>
+        statement.run(...parameters),
+      );
+    };
     if (pathBased) {
       upsert();
       return;
@@ -130,7 +136,12 @@ export class DebugProxyCaptureKernel {
         .set({ ended_at: endedAt })
         .where("id", "=", sessionId),
     );
-    const update = () => this.db.prepare(compiled.sql).run(...bind());
+    const update = () => {
+      const parameters = bind();
+      return executeWithCachedStatement(this.db, compiled.sql, parameters, (statement) =>
+        statement.run(...parameters),
+      );
+    };
     if (this.capturePathBased) {
       update();
       return;
@@ -177,7 +188,15 @@ export class DebugProxyCaptureKernel {
         }),
     );
     // Prepare errors must precede payload compression and its creation timestamp.
-    this.runWrite(() => this.db.prepare(compiled.sql).run(...bind(data)));
+    // Size cache admission with source bytes so large payloads never retain a cached binding.
+    this.runWrite(() =>
+      executeWithCachedStatement(
+        this.db,
+        compiled.sql,
+        [data, contentType ?? null, blobId, sha256],
+        (statement) => statement.run(...bind(data)),
+      ),
+    );
     return {
       blobId,
       encoding: "gzip",
@@ -208,7 +227,13 @@ export class DebugProxyCaptureKernel {
             source_process: parameter((value) => value.sourceProcess),
           }),
       );
-      this.db.prepare(implicitSession.compiled.sql).run(...implicitSession.bind(event));
+      const sessionParameters = implicitSession.bind(event);
+      executeWithCachedStatement(
+        this.db,
+        implicitSession.compiled.sql,
+        sessionParameters,
+        (statement) => statement.run(...sessionParameters),
+      );
       // A concurrent purge can remove a payload before its event is recorded.
       // Keep the inline preview instead of failing the observed request.
       let dataBlobId: string | null = null;
@@ -223,7 +248,13 @@ export class DebugProxyCaptureKernel {
               parameter((value) => value),
             ),
         );
-        dataBlobId = this.db.prepare(blob.compiled.sql).get(...blob.bind(event.dataBlobId))
+        const blobParameters = blob.bind(event.dataBlobId);
+        dataBlobId = executeWithCachedStatement(
+          this.db,
+          blob.compiled.sql,
+          blobParameters,
+          (statement) => statement.get(...blobParameters),
+        )
           ? event.dataBlobId
           : null;
       }
@@ -258,7 +289,10 @@ export class DebugProxyCaptureKernel {
           meta_json: parameter((value) => value.metaJson ?? null),
         }),
     );
-    this.db.prepare(compiled.sql).run(...bind(event));
+    const parameters = bind(event);
+    executeWithCachedStatement(this.db, compiled.sql, parameters, (statement) =>
+      statement.run(...parameters),
+    );
   }
 
   listSessions(limit = 50): CaptureSessionSummary[] {
@@ -302,7 +336,9 @@ export class DebugProxyCaptureKernel {
       const sessionCount = this.countCaptureRows("capture_sessions");
       const eventCount = this.countCaptureRows("capture_events");
       runSqliteImmediateTransactionSync(this.db, () => {
-        this.db.exec(metadataDeletes.join(";") + ";");
+        for (const sql of metadataDeletes) {
+          executeWithCachedStatement(this.db, sql, [], (statement) => statement.run());
+        }
       });
       let blobs = 0;
       if (fs.existsSync(this.capturePathBased.blobDir)) {
@@ -317,9 +353,9 @@ export class DebugProxyCaptureKernel {
       const sessionCount = this.countCaptureRows("capture_sessions");
       const eventCount = this.countCaptureRows("capture_events");
       const blobCount = this.countCaptureRows("capture_blobs");
-      this.db.exec(
-        [...metadataDeletes, kysely.deleteFrom("capture_blobs").compile().sql].join(";") + ";",
-      );
+      for (const sql of [...metadataDeletes, kysely.deleteFrom("capture_blobs").compile().sql]) {
+        executeWithCachedStatement(this.db, sql, [], (statement) => statement.run());
+      }
       return { sessions: sessionCount, events: eventCount, blobs: blobCount };
     });
   }
@@ -348,18 +384,25 @@ export class DebugProxyCaptureKernel {
             parameter((blobId) => blobId),
           ),
       );
-      let blobs = 0;
       // Prepare even without victims so native authorization failures still roll back metadata.
-      const deleteBlob = this.db.prepare(compiled.sql);
-      for (const blobId of candidateBlobIds) {
-        if (remainingBlobRefs.has(blobId)) {
-          continue;
-        }
-        const result = deleteBlob.run(...bind(blobId));
-        if (Number(result.changes) > 0) {
-          blobs += 1;
-        }
-      }
+      const blobs = executeWithCachedStatement(
+        this.db,
+        compiled.sql,
+        candidateBlobIds,
+        (statement) => {
+          let deleted = 0;
+          for (const blobId of candidateBlobIds) {
+            if (remainingBlobRefs.has(blobId)) {
+              continue;
+            }
+            const result = statement.run(...bind(blobId));
+            if (Number(result.changes) > 0) {
+              deleted += 1;
+            }
+          }
+          return deleted;
+        },
+      );
       return { sessions: sessionCount, events: eventCount, blobs };
     });
   }
@@ -394,12 +437,14 @@ export class DebugProxyCaptureKernel {
     return { sessions: sessionCount, events: eventCount, blobs };
   }
 
-  // Native statements leave corruption recovery with the shared write owner or legacy caller.
+  // The statement executor leaves corruption recovery with the shared write owner or legacy caller.
   private countCaptureRows(table: keyof CaptureDatabase): number {
     const query = getNodeSqliteKysely<CaptureDatabase>(this.db)
       .selectFrom(table)
       .select((eb) => eb.fn.countAll<number>().as("count"));
-    const row = this.db.prepare(query.compile().sql).get() as InferResult<typeof query>[number]; // SAFETY: COUNT(*) always returns the generated numeric count projection.
+    const row = executeWithCachedStatement(this.db, query.compile().sql, [], (statement) =>
+      statement.get(),
+    ) as InferResult<typeof query>[number]; // SAFETY: COUNT(*) always returns the generated numeric count projection.
     return row.count ?? 0;
   }
 
@@ -410,24 +455,36 @@ export class DebugProxyCaptureKernel {
     const blobs = compileSqliteQueryBindings(() =>
       events.select("data_blob_id as blobId").distinct().where("data_blob_id", "is not", null),
     );
-    const blobRows = this.db
-      .prepare(blobs.compiled.sql)
-      .all(...blobs.bind(undefined)) as InferResult<typeof blobs.compiled>; // SAFETY: Native rows follow the generated nullable blob-id projection.
+    const blobParameters = blobs.bind(undefined);
+    const blobRows = executeWithCachedStatement(
+      this.db,
+      blobs.compiled.sql,
+      blobParameters,
+      (statement) => statement.all(...blobParameters),
+    ) as InferResult<typeof blobs.compiled>; // SAFETY: Native rows follow the generated nullable blob-id projection.
     const eventQuery = compileSqliteQueryBindings(() =>
       events.select((eb) => eb.fn.countAll<number>().as("count")),
     );
-    const eventRow = this.db
-      .prepare(eventQuery.compiled.sql)
-      .get(...eventQuery.bind(undefined)) as InferResult<typeof eventQuery.compiled>[number]; // SAFETY: COUNT(*) always returns the generated numeric count projection.
+    const eventParameters = eventQuery.bind(undefined);
+    const eventRow = executeWithCachedStatement(
+      this.db,
+      eventQuery.compiled.sql,
+      eventParameters,
+      (statement) => statement.get(...eventParameters),
+    ) as InferResult<typeof eventQuery.compiled>[number]; // SAFETY: COUNT(*) always returns the generated numeric count projection.
     const sessionQuery = compileSqliteQueryBindings(() =>
       kysely
         .selectFrom("capture_sessions")
         .select((eb) => eb.fn.countAll<number>().as("count"))
         .where("id", "in", sessionIds),
     );
-    const sessionRow = this.db
-      .prepare(sessionQuery.compiled.sql)
-      .get(...sessionQuery.bind(undefined)) as InferResult<typeof sessionQuery.compiled>[number]; // SAFETY: COUNT(*) always returns the generated numeric count projection.
+    const sessionParameters = sessionQuery.bind(undefined);
+    const sessionRow = executeWithCachedStatement(
+      this.db,
+      sessionQuery.compiled.sql,
+      sessionParameters,
+      (statement) => statement.get(...sessionParameters),
+    ) as InferResult<typeof sessionQuery.compiled>[number]; // SAFETY: COUNT(*) always returns the generated numeric count projection.
     return { blobRows, eventCount: eventRow.count ?? 0, sessionCount: sessionRow.count ?? 0 };
   }
 
@@ -436,11 +493,17 @@ export class DebugProxyCaptureKernel {
     const events = compileSqliteQueryBindings(() =>
       kysely.deleteFrom("capture_events").where("session_id", "in", sessionIds),
     );
-    this.db.prepare(events.compiled.sql).run(...events.bind(undefined));
+    const eventParameters = events.bind(undefined);
+    executeWithCachedStatement(this.db, events.compiled.sql, eventParameters, (statement) =>
+      statement.run(...eventParameters),
+    );
     const sessions = compileSqliteQueryBindings(() =>
       kysely.deleteFrom("capture_sessions").where("id", "in", sessionIds),
     );
-    this.db.prepare(sessions.compiled.sql).run(...sessions.bind(undefined));
+    const sessionParameters = sessions.bind(undefined);
+    executeWithCachedStatement(this.db, sessions.compiled.sql, sessionParameters, (statement) =>
+      statement.run(...sessionParameters),
+    );
   }
 
   private findRemainingBlobReferences(candidateBlobIds: string[]): Set<string> {
@@ -455,10 +518,10 @@ export class DebugProxyCaptureKernel {
         .where("data_blob_id", "in", candidateBlobIds)
         .where("data_blob_id", "is not", null),
     );
-    // SAFETY: Native rows follow the generated nullable blob-id projection.
-    const rows = this.db.prepare(compiled.sql).all(...bind(undefined)) as InferResult<
-      typeof compiled
-    >;
+    const parameters = bind(undefined);
+    const rows = executeWithCachedStatement(this.db, compiled.sql, parameters, (statement) =>
+      statement.all(...parameters),
+    ) as InferResult<typeof compiled>; // SAFETY: Native rows follow the generated nullable blob-id projection.
     return new Set(
       rows.map((row) => row.blobId?.trim()).filter((blobId): blobId is string => Boolean(blobId)),
     );
