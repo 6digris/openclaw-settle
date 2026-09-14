@@ -30,6 +30,7 @@ import {
 } from "../dashboard-session-title.js";
 import { ADMIN_SCOPE, authorizeOperatorScopesForRequiredScope } from "../method-scopes.js";
 import { ModelAccountConnectAuthorityError } from "../model-account-connect.js";
+import { resolveSessionCreateCatalogSelectionError } from "../session-create-model-selection.js";
 import { buildDashboardSessionKey, createGatewaySession } from "../session-create-service.js";
 import type { PreparedGatewaySessionLifecycle } from "../session-lifecycle-preparation.js";
 import { resolveRequestedSessionAgentId as resolveRequestedGlobalAgentId } from "../session-request-agent.js";
@@ -138,16 +139,9 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       personalAccountDefaults?.assertCurrent();
     };
     const catalogId = normalizeOptionalString(p.catalogId);
-    const catalogConflict = p.model ? "model" : p.key ? "key" : undefined;
-    if (catalogId && catalogConflict) {
-      respond(
-        false,
-        undefined,
-        errorShape(
-          ErrorCodes.INVALID_REQUEST,
-          `sessions.create catalogId cannot include ${catalogConflict}`,
-        ),
-      );
+    const catalogError = resolveSessionCreateCatalogSelectionError(p);
+    if (catalogError) {
+      respond(false, undefined, catalogError);
       return;
     }
     const explicitlyRequestedKey = normalizeOptionalString(p.key);
@@ -559,7 +553,9 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       label: p.label,
       displayName: preparedDisplayName,
       category: p.category,
-      ...(catalogTarget ? { catalogTarget: catalogTarget.target } : { model: requestedModel }),
+      ...(catalogTarget
+        ? { catalogTarget: catalogTarget.target }
+        : { model: requestedModel, agentRuntime: p.agentRuntime }),
       personalModelSelection,
       personalAccountDefaults,
       contextWindow: p.contextWindow,
@@ -613,7 +609,8 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       creation: sessionCreation,
       authorizedPluginId: normalizeOptionalString(client?.internal?.pluginRuntimeOwnerId),
       armSessionDiffBaselineCapture: !repository,
-      loadGatewayModelCatalog: () => context.loadGatewayModelCatalog({ agentId: sessionAgentId }),
+      loadGatewayModelCatalogSnapshot: () =>
+        context.loadGatewayModelCatalogSnapshot({ agentId: sessionAgentId }),
       commitGuard,
       afterCreate: async (session) => {
         const { key, agentId } = session;

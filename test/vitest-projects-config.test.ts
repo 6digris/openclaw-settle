@@ -131,7 +131,7 @@ describe("projects vitest config", () => {
     async (selection) => {
       const [workerFile] = gatewayDatabaseWorkerTestFiles;
       assert(workerFile);
-      const ordinaryFile = "src/gateway/config-reload.test.ts";
+      const ordinaryFile = "src/gateway/config-reload.telegram-policy.test.ts";
       const selected = selection === "worker" ? [workerFile] : [workerFile, ordinaryFile];
       const env = {
         OPENCLAW_GATEWAY_PROJECT_SHARDS: "0",

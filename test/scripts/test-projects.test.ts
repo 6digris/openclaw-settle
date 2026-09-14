@@ -1361,6 +1361,7 @@ describe("scripts/test-projects changed-target routing", () => {
         "test/scripts/clawhub-postpublish.test.ts",
         "test/scripts/frv.test.ts",
         "test/scripts/full-release-publication-admission.test.ts",
+        "test/scripts/linux-app-channel.test.ts",
         "test/scripts/linux-updater-manifest.test.ts",
         "test/scripts/openclaw-release-ready.test.ts",
         "test/scripts/plugin-npm-extended-stable-workflow.test.ts",
@@ -2213,9 +2214,10 @@ describe("scripts/test-projects changed-target routing", () => {
   );
 
   it.each(
-    ["test/vitest/vitest.gateway.config.ts", "src/gateway/config-reload.test.ts"].flatMap(
-      (target) => [true, false].map((workerFirst) => ({ target, workerFirst })),
-    ),
+    [
+      "test/vitest/vitest.gateway.config.ts",
+      "src/gateway/config-reload.telegram-policy.test.ts",
+    ].flatMap((target) => [true, false].map((workerFirst) => ({ target, workerFirst }))),
   )(
     "coalesces Gateway worker config with $target (worker first: $workerFirst)",
     ({ target, workerFirst }) => {
@@ -5102,6 +5104,9 @@ describe("scripts/test-projects full-suite sharding", () => {
         const unitFastPlans = targetedPlans("test/vitest/vitest.unit-fast.config.ts");
         expect(unitFastPlans.length).toBeGreaterThan(1);
         expect(unitFastPlans.every((plan) => plan.forwardedArgs.length <= 70)).toBe(true);
+        const unitSrcPlans = targetedPlans("test/vitest/vitest.unit-src.config.ts");
+        expect(unitSrcPlans.length).toBeGreaterThan(1);
+        expect(unitSrcPlans.every((plan) => plan.forwardedArgs.length <= 150)).toBe(true);
         const toolingPlans = targetedPlans("test/vitest/vitest.tooling.config.ts");
         expect(toolingPlans.length).toBeGreaterThan(1);
         expect(toolingPlans.every((plan) => plan.forwardedArgs.length <= 2)).toBe(true);

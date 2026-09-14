@@ -7,6 +7,7 @@ import type { FleetRegistryWriteOperations } from "../fleet/registry.types.js";
 import type { SessionDeliveryWorkerOperations } from "../infra/session-delivery-queue.worker-contract.js";
 import type { PreparedSqliteAuditRecord } from "../infra/sqlite-audit-record.kernel.js";
 import type { SqliteFileGeneration } from "../infra/sqlite-file-generation.js";
+import type { PluginMetadataStateSelector } from "../plugins/installed-plugin-index-row.js";
 import type { TaskFlowView } from "../plugins/runtime/task-domain-types.js";
 import type { ManagedTaskInFlowInput } from "../tasks/task-flow-managed-run-task.kernel.js";
 import type { RunTaskInFlowResult } from "../tasks/task-flow-managed-run-task.types.js";
@@ -44,6 +45,10 @@ type TaskFlowReadQuery = {
 export type OpenClawStateWorkerOperations = UserPreferenceWorkerOperations &
   FleetRegistryWriteOperations &
   SessionDeliveryWorkerOperations & {
+    "plugins.metadata.read": {
+      input: { selector: PluginMetadataStateSelector; artifactPreservingReadOnly?: boolean };
+      output: { value_json: string } | undefined;
+    };
     "tasks.statusSummary": {
       input: { now: number; preserveSourceArtifacts: boolean };
       output: TaskRegistryStatusSnapshot | undefined;
