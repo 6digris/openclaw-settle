@@ -1,5 +1,4 @@
 import { isDeepStrictEqual } from "node:util";
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { formatErrorMessage } from "../infra/errors.js";
 import { stageSqliteTransactionState } from "../infra/sqlite-post-commit.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
@@ -21,7 +20,6 @@ import {
 import {
   listTasksFromIndex,
   cloneTaskRecordForObserver,
-  getTaskRelatedSessionIndexKeys,
   normalizeTaskTimestamps,
   filterTasksByRunScope,
 } from "./task-registry-records.js";
@@ -29,6 +27,14 @@ import { createAsyncRegistryRestore } from "./task-registry-restore.js";
 import type { TaskRegistryRestoreResult } from "./task-registry-restore.worker.js";
 import {
   getTaskRegistryProcessState,
+  addRunIdIndex,
+  deleteRunIdIndex,
+  addOwnerKeyIndex,
+  deleteOwnerKeyIndex,
+  addParentFlowIdIndex,
+  deleteParentFlowIdIndex,
+  addRelatedSessionKeyIndex,
+  deleteRelatedSessionKeyIndex,
   clearTaskProgressBatches,
   type PendingTaskRegistryMutation,
 } from "./task-registry.process-state.js";
@@ -133,98 +139,6 @@ export function clearTaskRegistryMemory(): void {
   taskIdsByParentFlowId.clear();
   taskIdsByRelatedSessionKey.clear();
   tasksWithPendingDelivery.clear();
-}
-
-export function addRunIdIndex(taskId: string, runId?: string) {
-  const trimmed = runId?.trim();
-  if (!trimmed) {
-    return;
-  }
-  let ids = taskIdsByRunId.get(trimmed);
-  if (!ids) {
-    ids = new Set<string>();
-    taskIdsByRunId.set(trimmed, ids);
-  }
-  ids.add(taskId);
-}
-
-function deleteRunIdIndex(taskId: string, runId?: string): void {
-  if (runId?.trim()) {
-    deleteIndexedKey(taskIdsByRunId, runId.trim(), taskId);
-  }
-}
-
-function addIndexedKey(index: Map<string, Set<string>>, key: string, taskId: string) {
-  let ids = index.get(key);
-  if (!ids) {
-    ids = new Set<string>();
-    index.set(key, ids);
-  }
-  ids.add(taskId);
-}
-
-function deleteIndexedKey(index: Map<string, Set<string>>, key: string, taskId: string) {
-  const ids = index.get(key);
-  if (!ids) {
-    return;
-  }
-  ids.delete(taskId);
-  if (ids.size === 0) {
-    index.delete(key);
-  }
-}
-
-type TaskSessionKeys = Pick<TaskRecord, "requesterSessionKey" | "ownerKey" | "childSessionKey">;
-
-export function addOwnerKeyIndex(taskId: string, task: Pick<TaskRecord, "ownerKey">) {
-  const key = normalizeOptionalString(task.ownerKey);
-  if (!key) {
-    return;
-  }
-  addIndexedKey(taskIdsByOwnerKey, key, taskId);
-}
-
-export function deleteOwnerKeyIndex(taskId: string, task: Pick<TaskRecord, "ownerKey">) {
-  const key = normalizeOptionalString(task.ownerKey);
-  if (!key) {
-    return;
-  }
-  deleteIndexedKey(taskIdsByOwnerKey, key, taskId);
-}
-
-export function addParentFlowIdIndex(taskId: string, task: Pick<TaskRecord, "parentFlowId">) {
-  const key = task.parentFlowId?.trim();
-  if (!key) {
-    return;
-  }
-  addIndexedKey(taskIdsByParentFlowId, key, taskId);
-}
-
-export function deleteParentFlowIdIndex(taskId: string, task: Pick<TaskRecord, "parentFlowId">) {
-  const key = task.parentFlowId?.trim();
-  if (!key) {
-    return;
-  }
-  deleteIndexedKey(taskIdsByParentFlowId, key, taskId);
-}
-
-export function addRelatedSessionKeyIndex(taskId: string, task: TaskSessionKeys) {
-  for (const sessionKey of getTaskRelatedSessionIndexKeys(task)) {
-    addIndexedKey(taskIdsByRelatedSessionKey, sessionKey, taskId);
-  }
-}
-
-export function deleteRelatedSessionKeyIndex(taskId: string, task: TaskSessionKeys) {
-  for (const sessionKey of getTaskRelatedSessionIndexKeys(task)) {
-    deleteIndexedKey(taskIdsByRelatedSessionKey, sessionKey, taskId);
-  }
-}
-
-export function rebuildRunIdIndex() {
-  taskIdsByRunId.clear();
-  for (const [taskId, task] of tasks.entries()) {
-    addRunIdIndex(taskId, task.runId);
-  }
 }
 
 export function getTasksByRunId(runId: string): TaskRecord[] {
@@ -417,6 +331,45 @@ export const ensureTaskRegistryReadyAsync = createAsyncRegistryRestore<
   },
   fail: failTaskRegistryRestore,
 });
+
+export function assertTaskRegistryOwnerCurrent(
+  context: OpenClawStateWorkerContext,
+  store: TaskRegistryStore,
+): void {
+  context.admission.assertCurrent();
+  if (getTaskRegistryStore() !== store || !isCurrentTaskRegistryDatabase(context.admission)) {
+    throw new Error("Task registry read owner is no longer current.");
+  }
+}
+
+export async function prepareTaskRegistryProjectionAsync(
+  context: OpenClawStateWorkerContext,
+  store: TaskRegistryStore,
+): Promise<void> {
+  assertTaskRegistryOwnerCurrent(context, store);
+  await ensureTaskRegistryReadyAsync(context);
+  assertTaskRegistryOwnerCurrent(context, store);
+  while (projection.mutationDepth === 0 && (projection.dirty || dirtyScopes.size > 0)) {
+    const epoch = projection.epoch;
+    const scopes = projection.dirty ? [undefined] : [...dirtyScopes];
+    const snapshots = await Promise.all(
+      scopes.map(async (scope) => ({
+        scope,
+        snapshot: await store.loadMutationSnapshotAsync(context, scope),
+      })),
+    );
+    assertTaskRegistryOwnerCurrent(context, store);
+    if (epoch !== projection.epoch) {
+      continue;
+    }
+    for (const { snapshot, scope } of snapshots) {
+      installSnapshot(snapshot, scope);
+    }
+    // In-flight mutations retain their publication obligations after this read.
+    markTaskRegistryProjectionRestored();
+    return;
+  }
+}
 
 function failTaskRegistryRestore(
   error: unknown,

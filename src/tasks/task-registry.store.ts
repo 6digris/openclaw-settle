@@ -11,7 +11,6 @@ import {
   deleteTaskAndDeliveryStateFromSqlite,
   loadTaskRegistryStateFromSqlite,
   loadTaskRegistryMutationStateFromSqlite,
-  listTaskRegistryRecordsByOwnerKeyFromSqlite,
   upsertTaskWithDeliveryStateToSqlite,
   upsertTaskDeliveryStateToSqlite,
   withTaskRegistrySqliteMutation,
@@ -34,9 +33,16 @@ export type TaskRegistryStore = {
     params: { taskId: string; expectedParentFlowId?: string },
   ) => Promise<TaskMirroredFlowSyncOutcome>;
   loadSnapshot: () => TaskRegistryStoreSnapshot;
+  loadMutationSnapshotAsync: (
+    context: OpenClawStateWorkerContext,
+    scope?: TaskRegistryMutationScope,
+  ) => Promise<TaskRegistryStoreSnapshot>;
   loadMutationSnapshot?: (scope: TaskRegistryMutationScope) => TaskRegistryStoreSnapshot;
   withMutation?: <T>(operation: () => T) => T;
-  listTasksForOwnerKey?: (ownerKey: string) => Promise<TaskRecord[]>;
+  listTasksForOwnerKey?: (
+    context: OpenClawStateWorkerContext,
+    ownerKey: string,
+  ) => Promise<TaskRecord[]>;
   upsertTaskWithDeliveryState: (params: {
     task: TaskRecord;
     deliveryState?: TaskDeliveryState;
@@ -86,9 +92,23 @@ const defaultTaskRegistryStore: TaskRegistryStore = {
     );
   },
   loadSnapshot: loadTaskRegistryStateFromSqlite,
+  async loadMutationSnapshotAsync(context, scope) {
+    const { executeOpenClawStateWorker } = await import("../state/openclaw-state-worker-store.js");
+    return executeOpenClawStateWorker(context, { type: "tasks.mutationSnapshot", input: scope });
+  },
   loadMutationSnapshot: loadTaskRegistryMutationStateFromSqlite,
   withMutation: withTaskRegistrySqliteMutation,
-  listTasksForOwnerKey: listTaskRegistryRecordsByOwnerKeyFromSqlite,
+  async listTasksForOwnerKey(context, ownerKey) {
+    const key = ownerKey.trim();
+    if (!key) {
+      return [];
+    }
+    const { executeOpenClawStateWorker } = await import("../state/openclaw-state-worker-store.js");
+    return executeOpenClawStateWorker(context, {
+      type: "tasks.list",
+      input: { ownerKey: key, mode: "full-record" },
+    });
+  },
   upsertTaskWithDeliveryState: upsertTaskWithDeliveryStateToSqlite,
   deleteTaskWithDeliveryState: deleteTaskAndDeliveryStateFromSqlite,
   upsertDeliveryState: upsertTaskDeliveryStateToSqlite,

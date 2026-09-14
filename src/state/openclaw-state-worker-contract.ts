@@ -69,7 +69,7 @@ export type OpenClawStateWorkerOperations = UserPreferenceWorkerOperations &
     };
     "flows.runTask": { input: ManagedTaskInFlowInput; output: RunTaskInFlowResult };
     "tasks.mutationSnapshot": {
-      input: TaskRegistryMutationScope;
+      input: TaskRegistryMutationScope | undefined;
       output: TaskRegistryStoreSnapshot;
     };
     "flows.createManaged": {
@@ -101,7 +101,10 @@ export type OpenClawStateWorkerOperations = UserPreferenceWorkerOperations &
       output: void;
     };
     "tasks.get": { input: { taskId: string }; output: TaskRecord | undefined };
-    "tasks.list": { input: { ownerKey: string }; output: TaskRecord[] };
+    "tasks.list": {
+      input: { ownerKey: string; mode?: "full-record" };
+      output: TaskRecord[];
+    };
     "tasks.resolve": {
       input: { ownerKey: string; token: string };
       output: TaskLookupRecords;
