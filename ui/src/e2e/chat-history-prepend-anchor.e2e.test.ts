@@ -1,3 +1,4 @@
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, it } from "vitest";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
@@ -9,7 +10,31 @@ import {
 } from "./chat-flow.test-support.ts";
 
 const suite = createChatFlowE2eSuite();
-type AnchorFrames = { frame: number; positions: Array<number | null>; readerDelta: number };
+type PrependTraceEntry = {
+  sequence: number;
+  at: number;
+  phase: string;
+  state: Record<string, unknown>;
+};
+type PrependTrace = {
+  baselineY: number;
+  samples: PrependTraceEntry[];
+  events: PrependTraceEntry[];
+  sampleCount: number;
+  eventCount: number;
+  firstBad: PrependTraceEntry | null;
+  issue: string | null;
+  restoreErrors: string[];
+  sample(bubble: HTMLElement | undefined, top: number | null): void;
+  stop(): void;
+};
+type AnchorFrames = {
+  frame: number;
+  positions: Array<number | null>;
+  readerDelta: number;
+  trace?: PrependTrace;
+  diagnosticUnavailable?: string;
+};
 type AnchorWindow = typeof window & { prependFrames: AnchorFrames };
 
 suite.define(() => {
@@ -123,23 +148,321 @@ suite.define(() => {
         expect(before).not.toBeNull();
         await page.screenshot({ path: path.join(artifactDir, "before-prepend.png") });
         await page.evaluate(
-          (messageKey) => {
+          ({ messageKey, momentum, baselineY }) => {
             const frames: AnchorFrames = { frame: 0, positions: [], readerDelta: 0 };
             (window as AnchorWindow).prependFrames = frames;
+            if (momentum) {
+              try {
+                // Diagnostic only: observe the real owner without changing its scheduling.
+                // These TS-private fields must exist in the bundled page before any hook is installed.
+                const object = (value: unknown, label: string): Record<string, unknown> => {
+                  if (!value || typeof value !== "object" || Array.isArray(value)) {
+                    throw new Error("Missing prepend diagnostic owner: " + label);
+                  }
+                  return value as Record<string, unknown>;
+                };
+                const pane = document.querySelector(".chat-pane-cache__pane--active");
+                const controller = object(object(pane, "pane").transcript, "controller");
+                const owner = object(controller.sessionVirtualizer, "sessionVirtualizer");
+                const anchor = object(owner.prependAnchor, "prependAnchor");
+                const offset = object(owner.offsetState, "offsetState");
+                const adapter = object(owner.virtualizerController, "virtualizerController");
+                if (typeof adapter.getVirtualizer !== "function") {
+                  throw new Error("Missing prepend diagnostic virtualizer getter");
+                }
+                const virtualizer = object(
+                  Reflect.apply(adapter.getVirtualizer, adapter, []),
+                  "virtualizer",
+                );
+                const scroller = pane?.querySelector(".chat-thread");
+                if (!(scroller instanceof HTMLElement)) {
+                  throw new Error("Missing prepend diagnostic scroller");
+                }
+                if (typeof messageKey !== "string" || !messageKey) {
+                  throw new Error("Missing prepend diagnostic message key");
+                }
+                let sequence = 0;
+                let stopped = false;
+                const undo: Array<() => void> = [];
+                const short = (value: unknown): string | null => {
+                  if (value === null || value === undefined) {
+                    return null;
+                  }
+                  if (!["string", "number", "bigint"].includes(typeof value)) {
+                    throw new Error("Unsupported prepend diagnostic key");
+                  }
+                  const text = String(value);
+                  if (text.length > 128) {
+                    throw new Error("Prepend diagnostic key exceeds 128 characters");
+                  }
+                  return text;
+                };
+                const readState = (): Record<string, unknown> => {
+                  if (
+                    controller.sessionVirtualizer !== owner ||
+                    owner.scrollElement !== scroller ||
+                    virtualizer.scrollElement !== scroller
+                  ) {
+                    throw new Error("Prepend diagnostic owner changed");
+                  }
+                  const options = object(virtualizer.options, "options");
+                  const flags = {
+                    touching: offset.touching,
+                    touchScrolling: offset.touchScrolling,
+                    isScrolling: virtualizer.isScrolling,
+                    iosTouching: virtualizer._iosTouching,
+                    iosJustTouchEnded: virtualizer._iosJustTouchEnded,
+                  };
+                  const numbers = {
+                    adjustments: virtualizer.scrollAdjustments,
+                    iosDeferred: virtualizer._iosDeferredAdjustment,
+                    count: options.count,
+                    margin: options.scrollMargin,
+                  };
+                  if (
+                    Object.values(flags).some((value) => typeof value !== "boolean") ||
+                    Object.values(numbers).some(
+                      (value) => typeof value !== "number" || !Number.isFinite(value),
+                    ) ||
+                    (virtualizer.scrollOffset !== null &&
+                      (typeof virtualizer.scrollOffset !== "number" ||
+                        !Number.isFinite(virtualizer.scrollOffset))) ||
+                    !Array.isArray(owner.rowKeys) ||
+                    !(owner.committedMessageRowsByKey instanceof Map) ||
+                    !(virtualizer.itemSizeCache instanceof Map)
+                  ) {
+                    throw new Error("Unsupported prepend diagnostic state");
+                  }
+                  for (const name of ["pendingScrollOffset", "scrollCommand"]) {
+                    if (offset[name] !== null) {
+                      object(offset[name], name);
+                    }
+                  }
+                  const pending =
+                    anchor.pending === null ? null : object(anchor.pending, "pending anchor");
+                  if (
+                    pending &&
+                    (typeof pending.top !== "number" ||
+                      !Number.isFinite(pending.top) ||
+                      typeof pending.measured !== "boolean" ||
+                      typeof pending.messageKey !== "string" ||
+                      (pending.rowKey !== null && typeof pending.rowKey !== "string"))
+                  ) {
+                    throw new Error("Unsupported prepend diagnostic anchor");
+                  }
+                  const virtualAnchor = virtualizer.pendingScrollAnchor;
+                  if (
+                    virtualAnchor !== null &&
+                    (!Array.isArray(virtualAnchor) ||
+                      virtualAnchor.length !== 4 ||
+                      (virtualAnchor[0] !== null &&
+                        !["string", "number", "bigint"].includes(typeof virtualAnchor[0])) ||
+                      typeof virtualAnchor[1] !== "number" ||
+                      !Number.isFinite(virtualAnchor[1]) ||
+                      typeof virtualAnchor[3] !== "number" ||
+                      !Number.isFinite(virtualAnchor[3]) ||
+                      (virtualAnchor[2] !== null && typeof virtualAnchor[2] !== "string"))
+                  ) {
+                    throw new Error("Unsupported prepend diagnostic virtual anchor");
+                  }
+                  return {
+                    ...flags,
+                    ...numbers,
+                    virtualOffset: virtualizer.scrollOffset,
+                    pendingOffset: offset.pendingScrollOffset !== null,
+                    command: offset.scrollCommand !== null,
+                    rows: owner.rowKeys.length,
+                    committedRow: short(owner.committedMessageRowsByKey.get(messageKey)),
+                    pending: pending
+                      ? {
+                          message: short(pending.messageKey),
+                          row: short(pending.rowKey),
+                          top: pending.top,
+                          measured: pending.measured,
+                        }
+                      : null,
+                    virtualAnchor: Array.isArray(virtualAnchor)
+                      ? [
+                          short(virtualAnchor[0]),
+                          virtualAnchor[1],
+                          short(virtualAnchor[2]),
+                          virtualAnchor[3],
+                        ]
+                      : null,
+                  };
+                };
+                const trace: PrependTrace = {
+                  baselineY,
+                  samples: [],
+                  events: [],
+                  sampleCount: 0,
+                  eventCount: 0,
+                  firstBad: null,
+                  issue: null,
+                  restoreErrors: [],
+                  sample(bubble, top) {
+                    if (stopped || trace.issue) {
+                      return;
+                    }
+                    try {
+                      const state = readState();
+                      const row = bubble?.closest<HTMLElement>(".chat-virtual-row");
+                      const rect = row?.getBoundingClientRect();
+                      const cached = (virtualizer.itemSizeCache as Map<string, number>).get(
+                        row?.dataset.virtualRowKey ?? "",
+                      );
+                      if (cached !== undefined && !Number.isFinite(cached)) {
+                        throw new Error("Unsupported prepend diagnostic row size");
+                      }
+                      const entry = {
+                        sequence: sequence++,
+                        at: performance.now(),
+                        phase: "frame",
+                        state: {
+                          ...state,
+                          frame: frames.positions.length - 1,
+                          top,
+                          readerDelta: frames.readerDelta,
+                          nativeOffset: scroller.scrollTop,
+                          scrollHeight: scroller.scrollHeight,
+                          clientHeight: scroller.clientHeight,
+                          row: short(row?.dataset.virtualRowKey),
+                          rowIndex: short(row?.dataset.index),
+                          rowTop: rect?.top ?? null,
+                          rowHeight: rect?.height ?? null,
+                          bubbleInRow:
+                            top !== null && rect ? top - frames.readerDelta - rect.top : null,
+                          cachedRowSize: cached ?? null,
+                          blockTransform: short(
+                            row?.closest<HTMLElement>(".chat-virtual-block")?.style.transform,
+                          ),
+                          sizerHeight: short(
+                            row?.closest<HTMLElement>(".chat-virtual-sizer")?.style.height,
+                          ),
+                        },
+                      };
+                      trace.samples[trace.sampleCount++ % 256] = entry;
+                      if (!trace.firstBad && (top === null || Math.abs(top - baselineY) > 2)) {
+                        trace.firstBad = entry;
+                      }
+                    } catch (error) {
+                      trace.issue = String(error).slice(0, 256);
+                    }
+                  },
+                  stop() {
+                    if (stopped) {
+                      return;
+                    }
+                    stopped = true;
+                    for (const restore of undo.reverse()) {
+                      try {
+                        restore();
+                      } catch (error) {
+                        trace.restoreErrors.push(String(error).slice(0, 256));
+                      }
+                    }
+                  },
+                };
+                frames.trace = trace;
+                const mark = (phase: string, argument?: unknown) => {
+                  if (stopped || trace.issue) {
+                    return;
+                  }
+                  try {
+                    const entry = {
+                      sequence: sequence++,
+                      at: performance.now(),
+                      phase,
+                      state: {
+                        ...readState(),
+                        argument: typeof argument === "number" ? short(argument) : null,
+                      },
+                    };
+                    trace.events[trace.eventCount++ % 512] = entry;
+                  } catch (error) {
+                    trace.issue = String(error).slice(0, 256);
+                  }
+                };
+                const hook = (target: Record<string, unknown>, name: string, label: string) => {
+                  const descriptor = Object.getOwnPropertyDescriptor(target, name);
+                  const original = target[name];
+                  if (
+                    typeof original !== "function" ||
+                    (descriptor && (!descriptor.configurable || !("value" in descriptor))) ||
+                    (!descriptor && !Object.isExtensible(target))
+                  ) {
+                    throw new Error("Unsupported prepend diagnostic method: " + label);
+                  }
+                  Object.defineProperty(target, name, {
+                    ...(descriptor ?? { configurable: true, enumerable: false, writable: true }),
+                    value: function (this: unknown, ...args: unknown[]) {
+                      mark(label + ":before", args[0]);
+                      let threw = true;
+                      try {
+                        const result: unknown = Reflect.apply(original, this, args);
+                        threw = false;
+                        return result;
+                      } finally {
+                        // Recording must never replace a return value or an original exception.
+                        mark(label + (threw ? ":throw" : ":after"), args[0]);
+                      }
+                    },
+                  });
+                  undo.push(() => {
+                    if (descriptor) {
+                      Object.defineProperty(target, name, descriptor);
+                    } else if (!Reflect.deleteProperty(target, name)) {
+                      throw new Error("Could not restore prepend diagnostic method: " + label);
+                    }
+                  });
+                };
+                readState();
+                // capture/syncRows run inside the permitted projection callback, not just render entry.
+                hook(owner, "syncRows", "syncRows");
+                hook(owner, "update", "host.update");
+                hook(owner, "measureConnectedRows", "measureRows");
+                hook(anchor, "capture", "capture");
+                hook(anchor, "update", "anchor.update");
+                hook(anchor, "moveWithReader", "moveWithReader");
+                hook(anchor, "clear", "clear");
+                hook(virtualizer, "scrollToOffset", "scrollToOffset");
+                for (const type of [
+                  "touchstart",
+                  "touchend",
+                  "touchcancel",
+                  "scroll",
+                  "scrollend",
+                ]) {
+                  // The fixture suppresses scrollend delivery; capture observes dispatch only.
+                  const capture = type === "scrollend";
+                  const listener = () => mark(type + (capture ? ":dispatch" : ":after-listeners"));
+                  scroller.addEventListener(type, listener, { passive: true, capture });
+                  undo.push(() => scroller.removeEventListener(type, listener, { capture }));
+                }
+                mark("armed");
+              } catch (error) {
+                frames.diagnosticUnavailable = String(error).slice(0, 256);
+                frames.trace?.stop();
+              }
+            }
             const sample = () => {
               const bubble = [
                 ...document.querySelectorAll<HTMLElement>(
                   ".chat-pane-cache__pane--active .chat-bubble[data-message-id]",
                 ),
               ].find((element) => element.dataset.messageId === messageKey);
-              frames.positions.push(
-                bubble ? bubble.getBoundingClientRect().top + frames.readerDelta : null,
-              );
+              const top = bubble ? bubble.getBoundingClientRect().top + frames.readerDelta : null;
+              frames.positions.push(top);
+              frames.trace?.sample(bubble, top);
               frames.frame = requestAnimationFrame(sample);
             };
             sample();
           },
-          await anchor.getAttribute("data-message-id"),
+          {
+            messageKey: await anchor.getAttribute("data-message-id"),
+            momentum,
+            baselineY: before!.y,
+          },
         );
         const heldOffset = await thread.evaluate((element) => element.scrollTop);
         if (activeTouch) {
@@ -206,6 +529,7 @@ suite.define(() => {
         const frames = await page.evaluate(() => {
           const probe = (window as AnchorWindow).prependFrames;
           cancelAnimationFrame(probe.frame);
+          probe.trace?.stop();
           return probe.positions;
         });
         const after = await anchor.boundingBox();
@@ -231,6 +555,72 @@ suite.define(() => {
           frames.every((top) => top !== null && Math.abs(top - before!.y) <= 2),
           "the message must stay anchored at every animation frame, not just after settling",
         ).toBe(true);
+      } catch (error) {
+        if (momentum) {
+          try {
+            const { diagnostic, diagnosticUnavailable } = await page.evaluate(() => {
+              const probe = (window as Partial<AnchorWindow>).prependFrames;
+              if (!probe) {
+                return { diagnostic: null, diagnosticUnavailable: "sampler unavailable" };
+              }
+              cancelAnimationFrame(probe.frame);
+              probe.trace?.stop();
+              const trace = probe.trace;
+              return {
+                diagnosticUnavailable: probe.diagnosticUnavailable ?? null,
+                diagnostic: trace
+                  ? {
+                      baselineY: trace.baselineY,
+                      samples: trace.samples.toSorted((a, b) => a.sequence - b.sequence),
+                      events: trace.events.toSorted((a, b) => a.sequence - b.sequence),
+                      sampleCount: trace.sampleCount,
+                      eventCount: trace.eventCount,
+                      positionCount: probe.positions.length,
+                      overwrittenSamples: Math.max(0, trace.sampleCount - 256),
+                      overwrittenEvents: Math.max(0, trace.eventCount - 512),
+                      firstBad: trace.firstBad,
+                      issue: trace.issue,
+                      restoreErrors: trace.restoreErrors,
+                    }
+                  : null,
+              };
+            });
+            const report = {
+              schemaVersion: 1,
+              case: { sharedGroup, manual, onlyGroup, more, persisted, activeTouch, momentum },
+              failure: String(error).slice(0, 1024),
+              diagnostic,
+              diagnosticUnavailable,
+              omittedForSize: { samples: 0, events: 0 },
+            };
+            let json = JSON.stringify(report);
+            while (
+              Buffer.byteLength(json, "utf8") + 1 > 256 * 1024 &&
+              diagnostic &&
+              (diagnostic.samples.length || diagnostic.events.length)
+            ) {
+              // Keep the latest bounded window and the first bad frame; report every dropped record.
+              for (const kind of ["samples", "events"] as const) {
+                report.omittedForSize[kind] += diagnostic[kind].splice(
+                  0,
+                  Math.ceil(diagnostic[kind].length / 2),
+                ).length;
+              }
+              json = JSON.stringify(report);
+            }
+            if (Buffer.byteLength(json, "utf8") + 1 > 256 * 1024) {
+              throw new Error("Prepend diagnostic metadata exceeds 256 KiB");
+            }
+            const failureDir = createControlUiE2eArtifactDir(
+              "chat-history-prepend-failure",
+              process.env.OPENCLAW_UI_E2E_DIAGNOSTIC_DIR?.trim() || artifactDir,
+            );
+            await writeFile(path.join(failureDir, "prepend-trace.json"), json + "\n", "utf8");
+          } catch (diagnosticError) {
+            console.error("[history-prepend] diagnostic capture failed:", String(diagnosticError));
+          }
+        }
+        throw error;
       } finally {
         await suite.closeBrowserContext(context);
       }
