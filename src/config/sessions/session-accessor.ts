@@ -232,9 +232,9 @@ export {
   rollbackAgentHarnessSessionEntryLifecycle,
   rollbackPluginOwnedSessionEntryLifecycle,
 } from "./session-accessor.lifecycle.js";
+export { listSessionBranches } from "./session-accessor.sqlite-branches.js";
 export {
   forkSessionAtMessage,
-  listSessionBranches,
   resolveSessionTranscriptActiveLeafEntryId,
   rewindSessionToMessage,
   switchSessionBranch,
