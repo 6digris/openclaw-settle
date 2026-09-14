@@ -28,6 +28,16 @@ type PrependTrace = {
   sample(bubble: HTMLElement | undefined, top: number | null): void;
   stop(): void;
 };
+type PrependDiagnostic = {
+  diagnostic:
+    | (Omit<PrependTrace, "sample" | "stop"> & {
+        positionCount: number;
+        overwrittenSamples: number;
+        overwrittenEvents: number;
+      })
+    | null;
+  diagnosticUnavailable: string | null;
+};
 type AnchorFrames = {
   frame: number;
   positions: Array<number | null>;
@@ -119,6 +129,10 @@ suite.define(() => {
           },
         },
       });
+      let capturedDiagnostic: PrependDiagnostic = {
+        diagnostic: null,
+        diagnosticUnavailable: "original sampler did not complete",
+      };
       try {
         await page.goto(`${suite.server.baseUrl}chat`);
         const pane = page.locator(".chat-pane-cache__pane--active");
@@ -526,12 +540,42 @@ suite.define(() => {
           .poll(() => thread.evaluate((element) => element.scrollTop))
           .toBeGreaterThan(heldOffset + (momentum ? 40 : 0) + 100);
         await page.screenshot({ path: path.join(artifactDir, "after-prepend.png") });
-        const frames = await page.evaluate(() => {
+        const { positions: frames, ...diagnostic } = await page.evaluate((momentum) => {
           const probe = (window as AnchorWindow).prependFrames;
           cancelAnimationFrame(probe.frame);
           probe.trace?.stop();
-          return probe.positions;
-        });
+          const snapshot: PrependDiagnostic = {
+            diagnostic: null,
+            diagnosticUnavailable: momentum
+              ? (probe.diagnosticUnavailable ?? "trace unavailable")
+              : null,
+          };
+          if (momentum) {
+            try {
+              const trace = probe.trace;
+              if (trace) {
+                snapshot.diagnostic = {
+                  baselineY: trace.baselineY,
+                  samples: trace.samples.toSorted((a, b) => a.sequence - b.sequence),
+                  events: trace.events.toSorted((a, b) => a.sequence - b.sequence),
+                  sampleCount: trace.sampleCount,
+                  eventCount: trace.eventCount,
+                  positionCount: probe.positions.length,
+                  overwrittenSamples: Math.max(0, trace.sampleCount - 256),
+                  overwrittenEvents: Math.max(0, trace.eventCount - 512),
+                  firstBad: trace.firstBad,
+                  issue: trace.issue,
+                  restoreErrors: trace.restoreErrors,
+                };
+                snapshot.diagnosticUnavailable = probe.diagnosticUnavailable ?? null;
+              }
+            } catch (diagnosticError) {
+              snapshot.diagnosticUnavailable = String(diagnosticError).slice(0, 256);
+            }
+          }
+          return { positions: probe.positions, ...snapshot };
+        }, momentum);
+        capturedDiagnostic = diagnostic;
         const after = await anchor.boundingBox();
         console.log(
           JSON.stringify({
@@ -558,33 +602,7 @@ suite.define(() => {
       } catch (error) {
         if (momentum) {
           try {
-            const { diagnostic, diagnosticUnavailable } = await page.evaluate(() => {
-              const probe = (window as Partial<AnchorWindow>).prependFrames;
-              if (!probe) {
-                return { diagnostic: null, diagnosticUnavailable: "sampler unavailable" };
-              }
-              cancelAnimationFrame(probe.frame);
-              probe.trace?.stop();
-              const trace = probe.trace;
-              return {
-                diagnosticUnavailable: probe.diagnosticUnavailable ?? null,
-                diagnostic: trace
-                  ? {
-                      baselineY: trace.baselineY,
-                      samples: trace.samples.toSorted((a, b) => a.sequence - b.sequence),
-                      events: trace.events.toSorted((a, b) => a.sequence - b.sequence),
-                      sampleCount: trace.sampleCount,
-                      eventCount: trace.eventCount,
-                      positionCount: probe.positions.length,
-                      overwrittenSamples: Math.max(0, trace.sampleCount - 256),
-                      overwrittenEvents: Math.max(0, trace.eventCount - 512),
-                      firstBad: trace.firstBad,
-                      issue: trace.issue,
-                      restoreErrors: trace.restoreErrors,
-                    }
-                  : null,
-              };
-            });
+            const { diagnostic, diagnosticUnavailable } = capturedDiagnostic;
             const report = {
               schemaVersion: 1,
               case: { sharedGroup, manual, onlyGroup, more, persisted, activeTouch, momentum },
