@@ -1,6 +1,10 @@
+import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { theme } from "../../../packages/terminal-core/src/theme.js";
 import { formatConfigIssueLines } from "../../config/issue-format.js";
-import { formatErrorMessage } from "../../infra/errors.js";
+import { formatErrorMessage, hasErrnoCode } from "../../infra/errors.js";
 import {
   channelToNpmTag,
   DEFAULT_GIT_CHANNEL,
@@ -32,6 +36,7 @@ import {
   readPackageName,
   readPackageVersion,
   resolveGlobalManager,
+  resolveGitInstallDir,
   resolveTargetVersion,
   UpdatePreMutationError,
   type UpdateCommandOptions,
@@ -41,6 +46,7 @@ import {
   captureUpdateCommandExecutorAuthority,
   type UpdateCommandExecutor,
 } from "./update-command-executor.js";
+import type { GitInstallRelocation } from "./update-command-git.js";
 import { UnreportedUpdateAdmissionOutcome, type RefuseUpdate } from "./update-command-result.js";
 import {
   failUpdateCommandRun,
@@ -55,6 +61,103 @@ import {
 } from "./update-command-service-plan.js";
 import type { UpdateCommandRecoveryState } from "./update-command-service.js";
 import { reportPreMutationUpdateResult } from "./update-command-terminal.js";
+
+// Resolve the invoking launcher before reusing the package-to-Git transaction.
+// The original checkout is operator-owned; only its npm exposure may move.
+async function prepareDirtyGitRelocation(
+  root: string,
+  timeoutMs: number,
+): Promise<GitInstallRelocation | undefined> {
+  const { gitCleanCheckArgs } = await import("../../infra/update-runner-git-commands.js");
+  const status = await runCommandWithTimeout(gitCleanCheckArgs(root), {
+    timeoutMs,
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+  });
+  if (status.code !== 0 || !status.stdout.trim()) {
+    return undefined;
+  }
+  const refuse = (message: string): never => {
+    throw new UpdatePreMutationError(
+      "dirty",
+      `${message} The original checkout was preserved. Commit your changes and retry, or run openclaw triage.`,
+    );
+  };
+  const launcher = process.argv[1] ? path.resolve(process.argv[1]) : undefined;
+  const originalRoot = await fs.realpath(root);
+  if (
+    process.platform === "win32" ||
+    !launcher ||
+    path.basename(launcher) !== "openclaw" ||
+    path.basename(path.dirname(launcher)) !== "bin"
+  ) {
+    return refuse("The dirty Git installation does not have a recognized npm launcher.");
+  }
+  const packageRoot = path.resolve(path.dirname(launcher), "../lib/node_modules/openclaw");
+  const { createPackageIntegrityReader } = await import("../../infra/package-update-integrity.js");
+  const capture = async () => {
+    const reader = createPackageIntegrityReader(timeoutMs);
+    return [
+      await reader.rootEntry(packageRoot, packageRoot, "link"),
+      await reader.launcher(launcher),
+    ];
+  };
+  const baseline = await capture();
+  if ((await fs.realpath(launcher)) !== path.join(originalRoot, "openclaw.mjs")) {
+    return refuse("The dirty Git installation does not have a recognized npm launcher.");
+  }
+  if (
+    path.resolve(path.dirname(launcher), await fs.readlink(launcher)) !==
+    path.join(packageRoot, "openclaw.mjs")
+  ) {
+    return refuse("The launcher does not follow the npm installation.");
+  }
+  if ((await fs.realpath(packageRoot)) !== originalRoot) {
+    return refuse("The npm launcher belongs to another installation.");
+  }
+  const installTarget = await resolveGlobalInstallTarget({
+    manager: "npm",
+    pkgRoot: packageRoot,
+    timeoutMs,
+    runCommand: runCommandWithTimeout,
+  });
+  if (installTarget.manager !== "npm" || installTarget.packageRoot !== packageRoot) {
+    return refuse("The npm installation owner could not be verified.");
+  }
+  const { resolvePathViaExistingAncestorSync } = await import("../../infra/boundary-path.js");
+  const { isPathInside } = await import("../../infra/path-guards.js");
+  let directory = resolveGitInstallDir();
+  const entries = await fs.readdir(directory).catch((error: unknown) => {
+    if (hasErrnoCode(error, "ENOENT")) {
+      return [];
+    }
+    throw error;
+  });
+  if (entries.length && !process.env.OPENCLAW_GIT_DIR?.trim()) {
+    directory = `${directory}-${randomUUID()}`;
+  } else if (entries.length) {
+    return refuse("OPENCLAW_GIT_DIR must name an empty directory for this update.");
+  }
+  directory = resolvePathViaExistingAncestorSync(directory);
+  if (
+    [originalRoot, packageRoot].some(
+      (owned) => isPathInside(owned, directory) || isPathInside(directory, owned),
+    )
+  ) {
+    return refuse("The fresh checkout must be outside the existing installation.");
+  }
+  return {
+    directory,
+    installTarget,
+    assertCurrent: async () => {
+      if (
+        !isDeepStrictEqual(baseline, await capture()) ||
+        (await fs.realpath(packageRoot)) !== originalRoot
+      ) {
+        refuse("The npm launcher or installation changed while preparing the update.");
+      }
+    },
+  };
+}
 
 export async function resolveUpdateCommandTarget(
   opts: UpdateCommandOptions,
@@ -126,9 +229,22 @@ export async function resolveUpdateCommandTarget(
   // package-target override, so it keeps a stored-dev package install on the
   // package path; only an explicitly requested dev channel outranks it.
   const explicitTag = normalizeTag(opts.tag);
+  let gitRelocation: GitInstallRelocation | undefined;
+  if (installKind === "git" && requestedChannel === "dev") {
+    try {
+      gitRelocation = await prepareDirtyGitRelocation(root, updateStepTimeoutMs);
+    } catch (error) {
+      if (!(error instanceof UpdatePreMutationError)) {
+        throw error;
+      }
+      await refuseUpdate(error.reason, error.message, error.failureFacts);
+      return undefined;
+    }
+  }
   const switchToGit =
-    installKind !== "git" &&
-    (requestedChannel === "dev" || (channel === "dev" && explicitTag === null));
+    Boolean(gitRelocation) ||
+    (installKind !== "git" &&
+      (requestedChannel === "dev" || (channel === "dev" && explicitTag === null)));
   const switchToPackage =
     requestedChannel !== null && requestedChannel !== "dev" && installKind === "git";
   updateInstallKind = switchToGit ? "git" : switchToPackage ? "package" : installKind;
@@ -349,6 +465,7 @@ export async function resolveUpdateCommandTarget(
     channel,
     explicitTag,
     switchToGit,
+    gitRelocation,
     switchToPackage,
     tag,
     currentVersion,

@@ -18,6 +18,7 @@ import {
   resolveGlobalInstallTarget,
   resolveNpmLifecyclePolicyGate,
   type CommandRunner as GlobalCommandRunner,
+  type ResolvedGlobalInstallTarget,
 } from "../../infra/update-global.js";
 import { recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import { normalizeFallbackFailureReason } from "../../infra/update-runner-command.js";
@@ -436,9 +437,17 @@ export function createBeforeGitMutation(params: {
   };
 }
 
+export type GitInstallRelocation = {
+  directory: string;
+  installTarget: ResolvedGlobalInstallTarget;
+  assertCurrent: () => Promise<void>;
+};
+
 export async function updateGitInstall(params: {
   root: string;
+  jsonMode: boolean;
   switchToGit: boolean;
+  gitRelocation?: GitInstallRelocation;
   installKind: "git" | "package" | "unknown";
   timeoutMs: number | undefined;
   startedAt: number;
@@ -458,11 +467,14 @@ export async function updateGitInstall(params: {
   allowGatewayServiceRepair: boolean;
   allowGatewayActivation: boolean;
 }): Promise<UpdateRunResult> {
-  let updateRoot = params.switchToGit ? resolveGitInstallDir() : params.root;
+  let updateRoot = params.switchToGit
+    ? (params.gitRelocation?.directory ?? resolveGitInstallDir())
+    : params.root;
   const effectiveTimeout = params.timeoutMs ?? DEFAULT_UPDATE_STEP_TIMEOUT_MS;
   const installEnv = await createGlobalInstallEnv();
   const installTarget = params.switchToGit
-    ? await resolveGlobalInstallTarget({
+    ? (params.gitRelocation?.installTarget ??
+      (await resolveGlobalInstallTarget({
         manager: await resolveGlobalManager({
           root: params.root,
           installKind: params.installKind,
@@ -471,7 +483,7 @@ export async function updateGitInstall(params: {
         runCommand: runCommandWithTimeout,
         timeoutMs: effectiveTimeout,
         pkgRoot: params.root,
-      })
+      })))
     : null;
   const npmLifecycleGate = installTarget
     ? resolveNpmLifecyclePolicyGate(installTarget)
@@ -541,6 +553,7 @@ export async function updateGitInstall(params: {
               expectedGitCheckout: { root: candidateRoot, sha: candidateSha },
               activateGitRoot: updateRoot,
               onTransaction: params.onTransaction,
+              beforeActivate: params.gitRelocation?.assertCurrent,
               postVerifyStep: (root: string) =>
                 runPackageUpdateDoctor({
                   ...params,
@@ -552,6 +565,11 @@ export async function updateGitInstall(params: {
           }
         : undefined,
     });
+  if (params.gitRelocation && !params.jsonMode) {
+    defaultRuntime.log(
+      `Local changes found. Installing in ${updateRoot}; preserving ${params.root}.`,
+    );
+  }
   let stagedUpdateResult: UpdateRunResult | undefined;
   try {
     const checkout = params.switchToGit
@@ -569,7 +587,9 @@ export async function updateGitInstall(params: {
               stagedUpdateResult = {
                 ...stagedUpdateResult,
                 root: params.root,
-                recovery: await verifyPackageUpdateRecovery(params.root),
+                recovery: await (params.installKind === "git"
+                  ? readCurrentGitUpdateRecovery(params.root, effectiveTimeout)
+                  : verifyPackageUpdateRecovery(params.root)),
               };
             }
           },
@@ -599,6 +619,11 @@ export async function updateGitInstall(params: {
       const packageUpdate = await exposure.activate();
       return {
         ...updateResult,
+        ...(params.gitRelocation && {
+          root: packageUpdate.activePackageRoot
+            ? await fs.realpath(packageUpdate.activePackageRoot)
+            : undefined,
+        }),
         before,
         status: packageUpdate.failedStep ? "error" : "ok",
         reason:

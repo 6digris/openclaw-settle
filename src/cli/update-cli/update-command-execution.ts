@@ -192,7 +192,7 @@ export async function executeMutableUpdate(
   const gitMutationRoots =
     params.updateInstallKind === "git"
       ? params.switchToGit
-        ? [params.root, resolveGitInstallDir()]
+        ? [params.root, params.gitRelocation?.directory ?? resolveGitInstallDir()]
         : [params.root]
       : null;
   const stopManagedServiceBeforeMutableUpdate = async (
@@ -607,7 +607,9 @@ export async function executeMutableUpdate(
     } else {
       result = await updateGitInstall({
         root: params.root,
+        jsonMode: params.opts.json === true,
         switchToGit: params.switchToGit,
+        gitRelocation: params.gitRelocation,
         installKind: params.installKind,
         timeoutMs: params.timeoutMs,
         startedAt: params.startedAt,

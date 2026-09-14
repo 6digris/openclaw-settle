@@ -414,6 +414,7 @@ async function updateCommandInternal(
     storedChannel,
     channel,
     switchToGit,
+    gitRelocation,
     switchToPackage,
     tag,
     currentVersion,
@@ -454,21 +455,13 @@ async function updateCommandInternal(
     { env: run.env },
   );
   const schemaPreflight = await preflightUpdateCommandSchemas({
-    legacyConfigPlan,
-    root,
-    updateInstallKind,
-    switchToGit,
+    ...target,
+    refuseUpdate,
     shouldRestart,
     updateStepTimeoutMs,
     invocationCwd,
-    managedServiceRootRedirect,
-    channel,
-    devTarget,
-    packageTargetSchemaVersions,
     packageTargetVersion: targetVersion ?? undefined,
-    packageInstallSpec,
     opts,
-    refuseUpdate,
   });
   if (!schemaPreflight) {
     return;
@@ -618,6 +611,7 @@ async function updateCommandInternal(
     installKind,
     updateInstallKind,
     switchToGit,
+    gitRelocation,
     timeoutMs,
     updateStepTimeoutMs,
     startedAt,
@@ -675,6 +669,7 @@ async function updateCommandInternal(
     root,
     previousInstallRoot: discoveredRoot,
     installKindChanged: switchToGit || switchToPackage,
+    relocatedGit: Boolean(gitRelocation),
     configSnapshot: ownedManagedUpdateContext?.configSnapshot ?? configSnapshot,
     requestedChannel,
     storedChannel,
