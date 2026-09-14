@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeControlUiBuildInfo } from "../ui/src/build-info-normalizers.ts";
 import { isDirectRunUrl } from "./lib/direct-run.mjs";
+import { applyRuntimeActivationPolicy } from "./lib/package-lifecycle-marker.mjs";
 
 const defaultRootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const FULL_GIT_COMMIT_RE = /^[0-9a-f]{40}$/iu;
@@ -136,6 +137,7 @@ export function writeBuildInfo(options: ResolveBuildInfoOptions = {}): string {
   const buildInfo = resolveBuildInfo({ ...options, rootDir });
 
   fs.mkdirSync(distDir, { recursive: true });
+  applyRuntimeActivationPolicy({ packageRoot: rootDir, env: options.env ?? process.env });
   fs.writeFileSync(outputPath, `${JSON.stringify(buildInfo, null, 2)}\n`);
   return outputPath;
 }

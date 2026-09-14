@@ -7,8 +7,12 @@ import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { writePackageDistInventory } from "../../scripts/lib/package-dist-inventory.ts";
-import { PACKAGE_LIFECYCLE_PENDING_RELATIVE_PATH } from "../../scripts/lib/package-lifecycle-marker.mjs";
 import {
+  PACKAGE_LIFECYCLE_PENDING_RELATIVE_PATH,
+  RUNTIME_ACTIVATION_MANUAL_RELATIVE_PATH,
+} from "../../scripts/lib/package-lifecycle-marker.mjs";
+import {
+  applyPackagedRuntimeActivationPolicy,
   completePackageLifecycle,
   isSourceCheckoutRoot,
   isDirectPostinstallInvocation,
@@ -29,6 +33,32 @@ async function expectPathMissing(filePath: string) {
 }
 
 describe("bundled plugin postinstall", () => {
+  it.each([
+    { policy: "0", initiallyManual: false, expectedManual: true },
+    { policy: "1", initiallyManual: true, expectedManual: false },
+  ])(
+    "applies packaged runtime activation policy $policy",
+    async ({ policy, initiallyManual, expectedManual }) => {
+      const packageRoot = await createTempDirAsync("openclaw-postinstall-activation-");
+      const markerPath = path.join(packageRoot, RUNTIME_ACTIVATION_MANUAL_RELATIVE_PATH);
+      if (initiallyManual) {
+        await fs.mkdir(path.dirname(markerPath), { recursive: true });
+        await fs.writeFile(markerPath, "manual\n");
+      }
+
+      applyPackagedRuntimeActivationPolicy({
+        env: { OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION: policy },
+        packageRoot,
+      });
+
+      if (expectedManual) {
+        await expect(fs.readFile(markerPath, "utf8")).resolves.toBe("manual\n");
+      } else {
+        await expectPathMissing(markerPath);
+      }
+    },
+  );
+
   it("recognizes direct invocation through symlinked temp prefixes", () => {
     const realpathSync = vi.fn((value: string) =>
       value.replace(/^\/var\/folders\//u, "/private/var/folders/"),

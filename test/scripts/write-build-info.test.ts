@@ -97,6 +97,38 @@ describe("write-build-info", () => {
     ).toBe("2026.7.10-release-aaaaaaaaaaaa-2026-07-10T01-02-03.000Z");
   });
 
+  it("records manual activation outside immutable build provenance", () => {
+    const rootDir = createPackage();
+    const base = {
+      rootDir,
+      env: {
+        GIT_COMMIT: "a".repeat(40),
+        OPENCLAW_BUILD_TIMESTAMP: "2026-07-10T01:02:03.000Z",
+      },
+    };
+
+    const expected = resolveBuildInfo(base);
+    writeBuildInfo({
+      ...base,
+      env: { ...base.env, OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION: "0" },
+    });
+    expect(
+      JSON.parse(fs.readFileSync(path.join(rootDir, "dist", "build-info.json"), "utf8")),
+    ).toEqual(expected);
+    expect(
+      fs.readFileSync(
+        path.join(rootDir, "node_modules/.openclaw-runtime-activation-manual"),
+        "utf8",
+      ),
+    ).toBe("manual\n");
+    expect(() =>
+      writeBuildInfo({
+        ...base,
+        env: { ...base.env, OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION: "unexpected" },
+      }),
+    ).toThrow("OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION must be 0 or 1 when set");
+  });
+
   it("preserves GIT_COMMIT then GIT_SHA explicit input precedence", () => {
     const rootDir = createPackage();
     const fallbackSha = "1234567890abcdef1234567890abcdef12345678";

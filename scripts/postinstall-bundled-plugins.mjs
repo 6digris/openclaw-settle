@@ -14,7 +14,10 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { PACKAGE_LIFECYCLE_PENDING_RELATIVE_PATH } from "./lib/package-lifecycle-marker.mjs";
+import {
+  applyRuntimeActivationPolicy,
+  PACKAGE_LIFECYCLE_PENDING_RELATIVE_PATH,
+} from "./lib/package-lifecycle-marker.mjs";
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PACKAGE_ROOT = join(scriptDir, "..");
 const DISABLE_POSTINSTALL_ENV = "OPENCLAW_DISABLE_BUNDLED_PLUGIN_POSTINSTALL";
@@ -354,6 +357,15 @@ export function isSourceCheckoutRoot(params) {
   );
 }
 
+export function applyPackagedRuntimeActivationPolicy(params = {}) {
+  return applyRuntimeActivationPolicy({
+    packageRoot: params.packageRoot ?? DEFAULT_PACKAGE_ROOT,
+    env: params.env ?? process.env,
+    rmSync: params.rmSync,
+    writeFileSync: params.writeFileSync,
+  });
+}
+
 export function runBundledPluginPostinstall(params = {}) {
   const env = params.env ?? process.env;
   const packageRoot = params.packageRoot ?? DEFAULT_PACKAGE_ROOT;
@@ -374,6 +386,12 @@ export function runBundledPluginPostinstall(params = {}) {
     readdirSync: params.readdirSync,
     rmSync: params.rmSync,
     log,
+  });
+  applyPackagedRuntimeActivationPolicy({
+    env,
+    packageRoot,
+    rmSync: params.rmSync,
+    writeFileSync: params.writeFileSync,
   });
 }
 
