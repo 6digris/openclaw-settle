@@ -97,6 +97,9 @@ suite.define(() => {
         ).toHaveLength(1);
         await content.getByRole("textbox", { name: "Status note" }).fill("Keep this note");
         const originalFrame = await frame.elementHandle();
+        if (!originalFrame) {
+          throw new Error("Website iframe was not found");
+        }
         expect(
           await frame.evaluate((element: HTMLIFrameElement) => {
             try {
@@ -126,6 +129,9 @@ suite.define(() => {
         expect(await content.getByRole("textbox", { name: "Status note" }).inputValue()).toBe(
           "Keep this note",
         );
+        // Child scrolling can move the outer iframe; settle its parent coordinates before input.
+        await content.getByRole("button", { name: "Refresh status" }).scrollIntoViewIfNeeded();
+        await originalFrame.waitForElementState("stable");
         await content.getByRole("button", { name: "Refresh status" }).click();
         await content.getByText("Status refreshed", { exact: true }).waitFor();
         expect(requests).toBe(2);
@@ -173,6 +179,8 @@ suite.define(() => {
         expect(await content.getByRole("textbox", { name: "Status note" }).inputValue()).toBe(
           "Keep this note",
         );
+        await content.getByRole("link", { name: "View details" }).scrollIntoViewIfNeeded();
+        await originalFrame.waitForElementState("stable");
         await content.getByRole("link", { name: "View details" }).click();
         await content.getByRole("heading", { name: "Service details" }).waitFor();
         const opened = context.waitForEvent("page");
