@@ -25,7 +25,38 @@ export class ShellStartupOwner {
   private startupIdentityReady = false;
   private releasingSkeletons = false;
 
-  constructor(private readonly host: ShellStartupHost) {}
+  constructor(private readonly host: ShellStartupHost) {
+    host.addEventListener("animationstart", (event) => {
+      if (
+        event.animationName !== "startup-shimmer" ||
+        !(event.target instanceof Element) ||
+        host.startupPresentation?.snapshot.stage === "ready"
+      ) {
+        return;
+      }
+      const isShimmer = (animation: Animation) =>
+        animation instanceof CSSAnimation && animation.animationName === event.animationName;
+      const clock = host.closest("openclaw-app")?.getAnimations().find(isShimmer);
+      const animation = event.target.getAnimations().find(isShimmer);
+      // A newly mounted mask joins the document clock without restarting its peers.
+      if (
+        clock?.playState === "running" &&
+        typeof clock.startTime === "number" &&
+        animation?.playState === "running"
+      ) {
+        const timing = clock.effect?.getTiming();
+        if (
+          timing &&
+          (typeof timing.duration === "number" || typeof timing.duration === "string")
+        ) {
+          animation.effect?.updateTiming({ ...timing, duration: timing.duration });
+        }
+        if (animation.startTime !== clock.startTime) {
+          animation.startTime = clock.startTime;
+        }
+      }
+    });
+  }
 
   synchronize(sidebarFailed: boolean) {
     const host = this.host;

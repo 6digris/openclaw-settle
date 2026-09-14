@@ -5,18 +5,25 @@
 }
 
 @keyframes startup-shimmer {
+  from {
+    --startup-shimmer: -100%;
+  }
   to {
     --startup-shimmer: 100%;
   }
 }
 
-openclaw-app:has(.shell:not([data-startup-stage="ready"])) {
+openclaw-app:has(.shell:not([data-startup-stage="ready"])),
+.shell:not([data-startup-stage="ready"])
+  :is(.startup-chat-skeleton, .assistant-panel-header, .custodian__startup, .skeleton) {
   animation: startup-shimmer var(--skeleton-duration, 1.5s) ease-in-out infinite;
 }
 
 /* Keep this stamp after reveal so the shell's entrance cannot restart. */
 .shell[data-startup-managed] {
   animation: none;
+  /* Local masks join the clock without carrying it into live content. */
+  --startup-shimmer: -100%;
 }
 
 .shell[data-startup-managed] > .content--chat {
@@ -53,7 +60,8 @@ openclaw-app:has(.shell:not([data-startup-stage="ready"])) {
   visibility: hidden;
 }
 
-.shell[data-startup-stage] .startup-chat-skeleton .skeleton::after {
+.shell[data-startup-stage]
+  :is(.startup-chat-skeleton .skeleton, .startup-transcript-lines > .skeleton-line)::after {
   animation: none;
   transform: none;
 }
@@ -62,16 +70,14 @@ openclaw-app:has(.shell:not([data-startup-stage="ready"])) {
   visibility: hidden;
 }
 
-.startup-sidebar-skeleton .sidebar-agent-card {
-  flex: 1;
-  min-width: 0;
-}
-
-.startup-sidebar-skeleton :is(.nav-item__text, .sidebar-recent-session__name) {
-  flex: 1;
-}
-
-.startup-sidebar-skeleton .sidebar-recent-sessions__label-text {
+.startup-sidebar-skeleton
+  :is(
+    .sidebar-agent-card,
+    .nav-item__text,
+    .sidebar-recent-session__name,
+    .sidebar-recent-sessions__label-text,
+    .sidebar-identity-card__name
+  ) {
   flex: 1;
 }
 
@@ -201,10 +207,6 @@ openclaw-app:has(.shell:not([data-startup-stage="ready"])) {
   --startup-bar-radius: var(--radius-full);
 }
 
-.startup-sidebar-skeleton .sidebar-identity-card__name {
-  flex: 1;
-}
-
 .startup-sidebar-skeleton :is(.sidebar-session-indicator, .sidebar-footer-actions) .skeleton {
   border-radius: var(--radius-sm);
 }
@@ -258,7 +260,9 @@ openclaw-app:has(.shell:not([data-startup-stage="ready"])) {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  openclaw-app:has(.shell:not([data-startup-stage="ready"])) {
+  openclaw-app:has(.shell:not([data-startup-stage="ready"])),
+  .shell:not([data-startup-stage="ready"])
+    :is(.startup-chat-skeleton, .assistant-panel-header, .custodian__startup, .skeleton) {
     animation: none;
   }
 
@@ -290,11 +294,6 @@ openclaw-app:has(.shell:not([data-startup-stage="ready"])) {
 
 .startup-transcript-line--short {
   width: 45%;
-}
-
-.shell[data-startup-stage] .startup-transcript-lines > .skeleton-line::after {
-  animation: none;
-  transform: none;
 }
 
 .shell[data-startup-stage] .startup-transcript-skeleton .assistant .chat-bubble::after {

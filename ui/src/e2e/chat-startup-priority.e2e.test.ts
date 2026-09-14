@@ -2,13 +2,16 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Page } from "playwright";
 import { expect, it } from "vitest";
+import { HOME_PANEL_TOGGLE_EVENT } from "../components/panel-toggle-contract.ts";
 import {
+  controlUiBundledSettingsStorageKey,
   defaultControlUiFeatureMethods,
   installMockGateway,
 } from "../test-helpers/control-ui-e2e.ts";
 import {
   createControlUiE2eContextOptions,
   createControlUiE2eSuite,
+  holdModuleResponse,
 } from "./control-ui-e2e-suite.test-support.ts";
 
 const suite = createControlUiE2eSuite({ name: "Chat startup request priority" });
@@ -27,7 +30,12 @@ async function installStartupGateway(page: Page) {
     historyMessages: [{ role: "assistant", content: historyText }],
     deferredMethods: ["chat.startup"],
     heldMethods: bulkMethods,
-    featureMethods: [...defaultControlUiFeatureMethods, "sessions.catalog.list"],
+    featureMethods: [
+      ...defaultControlUiFeatureMethods,
+      "chat.history",
+      "chat.send",
+      "sessions.catalog.list",
+    ],
     methodResponses: {
       "agents.list": {
         defaultId: "main",
@@ -119,6 +127,75 @@ async function expectBulkReadsReleased(gateway: Gateway) {
     await gateway.waitForRequest(method, { match: { agentId: "research" } });
     await gateway.resolveDeferred(method);
   }
+}
+
+async function readStartupShimmer(page: Page) {
+  return page.evaluate(() => {
+    const shell = document.querySelector(".shell")!;
+    const masks = [
+      ...shell.querySelectorAll(
+        ".startup-chat-skeleton .startup-transcript-lines > .skeleton-line:first-child, .startup-chat-skeleton .user .chat-bubble, .assistant-panel-title",
+      ),
+    ];
+    return {
+      stage: shell.getAttribute("data-startup-stage"),
+      clockPhase: Number.parseFloat(
+        getComputedStyle(document.querySelector("openclaw-app")!).getPropertyValue(
+          "--startup-shimmer",
+        ),
+      ),
+      shellPhase: getComputedStyle(shell).getPropertyValue("--startup-shimmer").trim(),
+      transcriptPhases: [...shell.querySelectorAll("openclaw-chat-pane .chat-thread")].map(
+        (element) => getComputedStyle(element).getPropertyValue("--startup-shimmer").trim(),
+      ),
+      // Read the painted gradient, not the synchronizer's internal bookkeeping.
+      maskPositions: masks.map((element) =>
+        Number.parseFloat(getComputedStyle(element, "::after").backgroundPositionX),
+      ),
+    };
+  });
+}
+
+async function expectAlignedStartupMasks(page: Page) {
+  // A style read can precede the first animation frame of a newly mounted region.
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      }),
+  );
+  let sample = await readStartupShimmer(page);
+  // Endpoints can hide drift between nested animations. Compare mid-pulse.
+  await expect
+    .poll(async () => {
+      sample = await readStartupShimmer(page);
+      return Math.abs(sample.clockPhase) < 60;
+    })
+    .toBe(true);
+  expect(sample.maskPositions.length).toBeGreaterThan(1);
+  for (const position of sample.maskPositions) {
+    expect(Number.isFinite(position)).toBe(true);
+    expect(Math.abs(position - sample.maskPositions[0]!)).toBeLessThan(0.1);
+  }
+}
+
+async function expectStartupShimmerRetired(page: Page) {
+  await page.locator(".shell[data-startup-stage='ready']").waitFor();
+  await page.locator(".startup-chat-skeleton").waitFor({ state: "detached" });
+  await page.locator(".startup-sidebar-skeleton").waitFor({ state: "detached" });
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          document
+            .getAnimations()
+            .filter(
+              (animation) =>
+                animation instanceof CSSAnimation && animation.animationName === "startup-shimmer",
+            ).length,
+      ),
+    )
+    .toBe(0);
 }
 
 suite.define(() => {
@@ -272,4 +349,173 @@ suite.define(() => {
       });
     },
   );
+  it.each([false, true])(
+    "isolates the live transcript while delayed Home joins the startup phase (split=%s)",
+    async (split) => {
+      await suite.withPage(createControlUiE2eContextOptions(), async ({ page }) => {
+        await page.emulateMedia({ reducedMotion: "no-preference" });
+        if (split) {
+          await page.addInitScript(
+            ({ key, selected }) => {
+              localStorage.setItem(
+                key,
+                JSON.stringify({
+                  sessionKey: selected,
+                  chatSplitLayout: {
+                    activePaneId: "p1",
+                    columns: [
+                      { id: "c1", panes: [{ id: "p1", sessionKey: selected }], paneWeights: [1] },
+                      { id: "c2", panes: [{ id: "p2", sessionKey: selected }], paneWeights: [1] },
+                    ],
+                    columnWeights: [0.5, 0.5],
+                  },
+                }),
+              );
+            },
+            { key: controlUiBundledSettingsStorageKey(suite.server.baseUrl), selected: sessionKey },
+          );
+        }
+        const gateway = await installStartupGateway(page);
+        await openPendingChat(page, gateway);
+        await page.locator(".shell[data-startup-placeholder='true']").waitFor();
+        const placeholders = page.locator(".startup-chat-skeleton openclaw-startup-chat-pane");
+        await expect.poll(() => placeholders.count()).toBe(split ? 2 : 1);
+        await page
+          .locator("openclaw-router-outlet openclaw-chat-pane .chat-thread")
+          .first()
+          .waitFor({ state: "attached" });
+        await expectAlignedStartupMasks(page);
+        const first = await readStartupShimmer(page);
+        expect(first.transcriptPhases.length).toBeGreaterThan(0);
+        expect(first.transcriptPhases.every((phase) => phase === "-100%")).toBe(true);
+        // Observe actual motion while the Gateway keeps startup pending.
+        await expect
+          .poll(async () => {
+            const current = await readStartupShimmer(page);
+            return Math.abs(current.maskPositions[0]! - first.maskPositions[0]!);
+          })
+          .toBeGreaterThan(1);
+
+        // Hold the real Home import to cover its ordinary loading bar as well as its header mask.
+        // Components such as the model trigger override the ordinary skeleton duration.
+        await page.addStyleTag({
+          content: "openclaw-assistant-panel .skeleton { --skeleton-duration: 1.45s; }",
+        });
+        const homeModule = await holdModuleResponse(
+          page,
+          /\/home-session\.runtime(?:-[^/?]+)?\.(?:ts|js)(?:\?|$)/u,
+        );
+        try {
+          await page.evaluate((eventName) => {
+            window.dispatchEvent(new CustomEvent(eventName, { detail: { open: true } }));
+          }, HOME_PANEL_TOGGLE_EVENT);
+          await homeModule.request;
+          await page.locator("openclaw-assistant-panel .assistant-panel-header").waitFor();
+          await expectAlignedStartupMasks(page);
+          const loadingBar = page.locator("openclaw-assistant-panel .lazy-view-state .skeleton");
+          await loadingBar.waitFor();
+          const readLoadingBar = () =>
+            loadingBar.evaluate((element) => {
+              const style = getComputedStyle(element, "::after");
+              const shift = new DOMMatrixReadOnly(style.transform).m41;
+              const mainMask = document.querySelector(
+                ".startup-chat-skeleton .startup-transcript-lines > .skeleton-line",
+              )!;
+              return {
+                position: (100 * shift) / element.getBoundingClientRect().width,
+                mainPosition:
+                  Number.parseFloat(getComputedStyle(mainMask, "::after").backgroundPositionX) -
+                  100,
+              };
+            });
+          let barSample = await readLoadingBar();
+          await expect
+            .poll(async () => {
+              barSample = await readLoadingBar();
+              return Math.abs(barSample.mainPosition) < 60;
+            })
+            .toBe(true);
+          expect(Math.abs(barSample.position - barSample.mainPosition)).toBeLessThan(0.1);
+          const firstBar = await readLoadingBar();
+          await expect
+            .poll(async () => Math.abs((await readLoadingBar()).position - firstBar.position))
+            .toBeGreaterThan(1);
+        } finally {
+          homeModule.release();
+        }
+        await expectAlignedStartupMasks(page);
+        const withHome = await readStartupShimmer(page);
+        expect(withHome.stage).toBe("pending");
+        expect(withHome.transcriptPhases.every((phase) => phase === "-100%")).toBe(true);
+        await expect
+          .poll(async () => {
+            const current = await readStartupShimmer(page);
+            return Math.abs(current.maskPositions[0]! - withHome.maskPositions[0]!);
+          })
+          .toBeGreaterThan(1);
+        await expectAlignedStartupMasks(page);
+
+        const composer = page.locator(
+          "openclaw-assistant-panel .agent-chat__composer-combobox textarea",
+        );
+        await expect.poll(() => composer.isEditable()).toBe(true);
+        const draft = "Keep this Home draft through the coordinated reveal.";
+        await composer.fill(draft);
+        expect(await composer.evaluate((element) => document.activeElement === element)).toBe(true);
+        await gateway.resolveDeferred("chat.startup");
+        await expectBulkReadsReleased(gateway);
+        await expectStartupShimmerRetired(page);
+        expect(await composer.inputValue()).toBe(draft);
+        expect(await composer.evaluate((element) => document.activeElement === element)).toBe(true);
+        await composer.press("End");
+        await composer.press("!");
+        expect(await composer.inputValue()).toBe(`${draft}!`);
+        expect(await gateway.getRequests("chat.send")).toEqual([]);
+      });
+    },
+  );
+
+  it("removes all startup pulses for reduced motion and still releases the placeholders", async () => {
+    await suite.withPage(createControlUiE2eContextOptions(), async ({ page }) => {
+      await page.emulateMedia({ reducedMotion: "no-preference" });
+      const gateway = await installStartupGateway(page);
+      await openPendingChat(page, gateway);
+      await expectAlignedStartupMasks(page);
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () =>
+              document
+                .getAnimations()
+                .filter(
+                  (animation) =>
+                    animation instanceof CSSAnimation &&
+                    animation.animationName === "startup-shimmer",
+                ).length,
+          ),
+        )
+        .toBe(0);
+      const reduced = await readStartupShimmer(page);
+      expect(reduced.maskPositions.every((position) => position === 0)).toBe(true);
+      expect(reduced.shellPhase).toBe("-100%");
+
+      // New CSS players must rejoin the shared phase when motion is enabled again.
+      await page.emulateMedia({ reducedMotion: "no-preference" });
+      await expectAlignedStartupMasks(page);
+      await expect
+        .poll(async () => (await readStartupShimmer(page)).maskPositions[0])
+        .toBeGreaterThan(1);
+      await expectAlignedStartupMasks(page);
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      await gateway.resolveDeferred("chat.startup");
+      await expectBulkReadsReleased(gateway);
+      await expectStartupShimmerRetired(page);
+      expect(
+        await page
+          .locator(".chat-pane-cache__pane--active .agent-chat__composer-combobox textarea")
+          .isEditable(),
+      ).toBe(true);
+    });
+  });
 });
