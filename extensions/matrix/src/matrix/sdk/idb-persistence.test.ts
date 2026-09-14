@@ -10,6 +10,7 @@ import {
   openOpenClawStateDatabase,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getMatrixRuntime } from "../../runtime.js";
 import { installMatrixTestRuntime } from "../../test-runtime.js";
@@ -53,6 +54,7 @@ describe("Matrix IndexedDB persistence", () => {
   afterEach(async () => {
     warnSpy.mockRestore();
     await clearTestIndexedDbState();
+    await closeOpenClawStateDatabaseAsync();
     resetFileLockStateForTest();
     resetPluginStateStoreForTests();
     fs.rmSync(tmpDir, { recursive: true, force: true });

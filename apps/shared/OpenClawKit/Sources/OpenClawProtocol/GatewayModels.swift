@@ -8454,9 +8454,10 @@ public struct ModelChoice: Codable, Sendable {
     public let effectivefastmode: AnyCodable?
     public let supportsfastmode: Bool?
     public let supportstools: Bool?
+    public let input: [AnyCodable]?
     public let agentruntime: [String: AnyCodable]?
     public let apikeysupported: Bool?
-    public let input: [AnyCodable]?
+    public let runtimechoices: [ModelRuntimeChoice]?
 
     public init(
         id: String,
@@ -8478,9 +8479,10 @@ public struct ModelChoice: Codable, Sendable {
         effectivefastmode: AnyCodable? = nil,
         supportsfastmode: Bool? = nil,
         supportstools: Bool? = nil,
+        input: [AnyCodable]? = nil,
         agentruntime: [String: AnyCodable]? = nil,
         apikeysupported: Bool? = nil,
-        input: [AnyCodable]? = nil)
+        runtimechoices: [ModelRuntimeChoice]? = nil)
     {
         self.id = id
         self.name = name
@@ -8501,9 +8503,10 @@ public struct ModelChoice: Codable, Sendable {
         self.effectivefastmode = effectivefastmode
         self.supportsfastmode = supportsfastmode
         self.supportstools = supportstools
+        self.input = input
         self.agentruntime = agentruntime
         self.apikeysupported = apikeysupported
-        self.input = input
+        self.runtimechoices = runtimechoices
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -8526,8 +8529,83 @@ public struct ModelChoice: Codable, Sendable {
         case effectivefastmode = "effectiveFastMode"
         case supportsfastmode = "supportsFastMode"
         case supportstools = "supportsTools"
+        case input
         case agentruntime = "agentRuntime"
         case apikeysupported = "apiKeySupported"
+        case runtimechoices = "runtimeChoices"
+    }
+}
+
+public struct ModelRuntimeChoice: Codable, Sendable {
+    public let agentruntime: [String: AnyCodable]
+    public let available: Bool?
+    public let unavailablereason: AnyCodable?
+    public let unavailableuntil: Int?
+    public let contextwindow: Int?
+    public let contexttokens: Int?
+    public let local: Bool?
+    public let contextwindows: [[String: AnyCodable]]?
+    public let contextwindowdefault: String?
+    public let reasoning: Bool?
+    public let thinkinglevels: [[String: AnyCodable]]?
+    public let thinkingdefault: String?
+    public let effectivefastmode: AnyCodable?
+    public let supportsfastmode: Bool?
+    public let supportstools: Bool?
+    public let input: [AnyCodable]?
+
+    public init(
+        agentruntime: [String: AnyCodable],
+        available: Bool? = nil,
+        unavailablereason: AnyCodable? = nil,
+        unavailableuntil: Int? = nil,
+        contextwindow: Int? = nil,
+        contexttokens: Int? = nil,
+        local: Bool? = nil,
+        contextwindows: [[String: AnyCodable]]? = nil,
+        contextwindowdefault: String? = nil,
+        reasoning: Bool? = nil,
+        thinkinglevels: [[String: AnyCodable]]? = nil,
+        thinkingdefault: String? = nil,
+        effectivefastmode: AnyCodable? = nil,
+        supportsfastmode: Bool? = nil,
+        supportstools: Bool? = nil,
+        input: [AnyCodable]? = nil)
+    {
+        self.agentruntime = agentruntime
+        self.available = available
+        self.unavailablereason = unavailablereason
+        self.unavailableuntil = unavailableuntil
+        self.contextwindow = contextwindow
+        self.contexttokens = contexttokens
+        self.local = local
+        self.contextwindows = contextwindows
+        self.contextwindowdefault = contextwindowdefault
+        self.reasoning = reasoning
+        self.thinkinglevels = thinkinglevels
+        self.thinkingdefault = thinkingdefault
+        self.effectivefastmode = effectivefastmode
+        self.supportsfastmode = supportsfastmode
+        self.supportstools = supportstools
+        self.input = input
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case agentruntime = "agentRuntime"
+        case available
+        case unavailablereason = "unavailableReason"
+        case unavailableuntil = "unavailableUntil"
+        case contextwindow = "contextWindow"
+        case contexttokens = "contextTokens"
+        case local
+        case contextwindows = "contextWindows"
+        case contextwindowdefault = "contextWindowDefault"
+        case reasoning
+        case thinkinglevels = "thinkingLevels"
+        case thinkingdefault = "thinkingDefault"
+        case effectivefastmode = "effectiveFastMode"
+        case supportsfastmode = "supportsFastMode"
+        case supportstools = "supportsTools"
         case input
     }
 }
@@ -8595,6 +8673,50 @@ public struct ModelsAuthRefreshParams: Codable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case operation
         case agentid = "agentId"
+    }
+}
+
+public struct ModelsAuthSetApiKeyParams: Codable, Sendable {
+    public let provider: String
+    public let apikey: String
+    public let agentid: String?
+
+    public init(
+        provider: String,
+        apikey: String,
+        agentid: String? = nil)
+    {
+        self.provider = provider
+        self.apikey = apikey
+        self.agentid = agentid
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case provider
+        case apikey = "apiKey"
+        case agentid = "agentId"
+    }
+}
+
+public struct ModelsAuthSetApiKeyResult: Codable, Sendable {
+    public let provider: String
+    public let profileid: String
+    public let warning: String?
+
+    public init(
+        provider: String,
+        profileid: String,
+        warning: String? = nil)
+    {
+        self.provider = provider
+        self.profileid = profileid
+        self.warning = warning
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case provider
+        case profileid = "profileId"
+        case warning
     }
 }
 
@@ -15048,6 +15170,36 @@ public struct SessionVisibilitySetResult: Codable, Sendable {
     }
 }
 
+public struct SessionWorkspaceRecoveryRequiredErrorDetails: Codable, Sendable {
+    public let code: String
+    public let cause: String
+    public let recoveryaction: String
+    public let sessionid: String
+    public let source: [String: AnyCodable]
+
+    public init(
+        code: String,
+        cause: String,
+        recoveryaction: String,
+        sessionid: String,
+        source: [String: AnyCodable])
+    {
+        self.code = code
+        self.cause = cause
+        self.recoveryaction = recoveryaction
+        self.sessionid = sessionid
+        self.source = source
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case code
+        case cause
+        case recoveryaction = "recoveryAction"
+        case sessionid = "sessionId"
+        case source
+    }
+}
+
 public struct SessionWorktreeInfo: Codable, Sendable {
     public let id: String
     public let path: String
@@ -15766,6 +15918,7 @@ public struct SessionsCreateParams: Codable, Sendable {
     public let titlesource: String?
     public let category: String?
     public let model: String?
+    public let agentruntime: String?
     public let contextwindow: String?
     public let thinkinglevel: String?
     public let fastmode: AnyCodable?
@@ -15804,6 +15957,7 @@ public struct SessionsCreateParams: Codable, Sendable {
         titlesource: String? = nil,
         category: String? = nil,
         model: String? = nil,
+        agentruntime: String? = nil,
         contextwindow: String? = nil,
         thinkinglevel: String? = nil,
         fastmode: AnyCodable? = nil,
@@ -15841,6 +15995,7 @@ public struct SessionsCreateParams: Codable, Sendable {
         self.titlesource = titlesource
         self.category = category
         self.model = model
+        self.agentruntime = agentruntime
         self.contextwindow = contextwindow
         self.thinkinglevel = thinkinglevel
         self.fastmode = fastmode
@@ -15880,6 +16035,7 @@ public struct SessionsCreateParams: Codable, Sendable {
         case titlesource = "titleSource"
         case category
         case model
+        case agentruntime = "agentRuntime"
         case contextwindow = "contextWindow"
         case thinkinglevel = "thinkingLevel"
         case fastmode = "fastMode"
@@ -16825,6 +16981,7 @@ public struct SessionsPatchMutation: Codable, Sendable {
     public let execnode: AnyCodable?
     public let permissionmode: AnyCodable?
     public let model: AnyCodable?
+    public let agentruntime: AnyCodable?
     public let completionownersessionkey: AnyCodable?
     public let inheritedtoolpolicyversion: AnyCodable?
     public let inheritedtoolallow: AnyCodable?
@@ -16861,6 +17018,7 @@ public struct SessionsPatchMutation: Codable, Sendable {
         execnode: AnyCodable? = nil,
         permissionmode: AnyCodable? = nil,
         model: AnyCodable? = nil,
+        agentruntime: AnyCodable? = nil,
         completionownersessionkey: AnyCodable? = nil,
         inheritedtoolpolicyversion: AnyCodable? = nil,
         inheritedtoolallow: AnyCodable? = nil,
@@ -16896,6 +17054,7 @@ public struct SessionsPatchMutation: Codable, Sendable {
         self.execnode = execnode
         self.permissionmode = permissionmode
         self.model = model
+        self.agentruntime = agentruntime
         self.completionownersessionkey = completionownersessionkey
         self.inheritedtoolpolicyversion = inheritedtoolpolicyversion
         self.inheritedtoolallow = inheritedtoolallow
@@ -16933,6 +17092,7 @@ public struct SessionsPatchMutation: Codable, Sendable {
         case execnode = "execNode"
         case permissionmode = "permissionMode"
         case model
+        case agentruntime = "agentRuntime"
         case completionownersessionkey = "completionOwnerSessionKey"
         case inheritedtoolpolicyversion = "inheritedToolPolicyVersion"
         case inheritedtoolallow = "inheritedToolAllow"
@@ -16978,6 +17138,7 @@ public struct SessionsPatchParams: Codable, Sendable {
     public let execnode: AnyCodable?
     public let permissionmode: AnyCodable?
     public let model: AnyCodable?
+    public let agentruntime: AnyCodable?
     public let completionownersessionkey: AnyCodable?
     public let inheritedtoolpolicyversion: AnyCodable?
     public let inheritedtoolallow: AnyCodable?
@@ -17021,6 +17182,7 @@ public struct SessionsPatchParams: Codable, Sendable {
         execnode: AnyCodable? = nil,
         permissionmode: AnyCodable? = nil,
         model: AnyCodable? = nil,
+        agentruntime: AnyCodable? = nil,
         completionownersessionkey: AnyCodable? = nil,
         inheritedtoolpolicyversion: AnyCodable? = nil,
         inheritedtoolallow: AnyCodable? = nil,
@@ -17063,6 +17225,7 @@ public struct SessionsPatchParams: Codable, Sendable {
         self.execnode = execnode
         self.permissionmode = permissionmode
         self.model = model
+        self.agentruntime = agentruntime
         self.completionownersessionkey = completionownersessionkey
         self.inheritedtoolpolicyversion = inheritedtoolpolicyversion
         self.inheritedtoolallow = inheritedtoolallow
@@ -17107,6 +17270,7 @@ public struct SessionsPatchParams: Codable, Sendable {
         case execnode = "execNode"
         case permissionmode = "permissionMode"
         case model
+        case agentruntime = "agentRuntime"
         case completionownersessionkey = "completionOwnerSessionKey"
         case inheritedtoolpolicyversion = "inheritedToolPolicyVersion"
         case inheritedtoolallow = "inheritedToolAllow"
@@ -26397,6 +26561,7 @@ public enum GatewayErrorDetails: Codable, Sendable {
     case wizardNotFound(WizardNotFoundErrorDetails)
     case setupAdmissionBusy(SetupAdmissionBusyErrorDetails)
     case githubPublicationSelectionRejected(GitHubPublicationSelectionRejectedErrorDetails)
+    case sessionWorkspaceRecoveryRequired(SessionWorkspaceRecoveryRequiredErrorDetails)
 
     public init(code: String, missingscope: String, requiredscopes: [String]) {
         self = .missingScope(
@@ -26421,6 +26586,7 @@ public enum GatewayErrorDetails: Codable, Sendable {
         case .wizardNotFound(let value): value.code
         case .setupAdmissionBusy(let value): value.code
         case .githubPublicationSelectionRejected(let value): value.code
+        case .sessionWorkspaceRecoveryRequired(let value): value.code
         }
     }
 
@@ -26453,6 +26619,7 @@ public enum GatewayErrorDetails: Codable, Sendable {
         case "WIZARD_NOT_FOUND": self = try .wizardNotFound(WizardNotFoundErrorDetails(from: decoder))
         case "SETUP_ADMISSION_BUSY": self = try .setupAdmissionBusy(SetupAdmissionBusyErrorDetails(from: decoder))
         case "GITHUB_PUBLICATION_SELECTION_REJECTED": self = try .githubPublicationSelectionRejected(GitHubPublicationSelectionRejectedErrorDetails(from: decoder))
+        case "SESSION_WORKSPACE_RECOVERY_REQUIRED": self = try .sessionWorkspaceRecoveryRequired(SessionWorkspaceRecoveryRequiredErrorDetails(from: decoder))
         default:
             throw DecodingError.dataCorruptedError(
                 forKey: .discriminator,
@@ -26475,6 +26642,7 @@ public enum GatewayErrorDetails: Codable, Sendable {
         case .wizardNotFound(let value): try value.encode(to: encoder)
         case .setupAdmissionBusy(let value): try value.encode(to: encoder)
         case .githubPublicationSelectionRejected(let value): try value.encode(to: encoder)
+        case .sessionWorkspaceRecoveryRequired(let value): try value.encode(to: encoder)
         }
     }
 }

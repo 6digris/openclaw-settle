@@ -8257,7 +8257,15 @@ describe("gateway server chat", () => {
       let aborted = false;
       await connectOk(ws);
 
-      await createSessionDir();
+      const sessionDir = await createSessionDir();
+      // Keep ACK timing independent of earlier custom-store fixture registrations.
+      testState.sessionStorePath = path.join(
+        sessionDir,
+        "agents",
+        "main",
+        "agent",
+        "openclaw-agent.sqlite",
+      );
       await writeMainSessionStore();
 
       mockGetReplyFromConfigOnce(async (_ctx, opts) => {
@@ -8288,7 +8296,6 @@ describe("gateway server chat", () => {
           idempotencyKey: "idem-abort-1",
           timeoutMs: 30_000,
         }),
-        2_000,
       );
 
       expect(sendRes.ok).toBe(true);
