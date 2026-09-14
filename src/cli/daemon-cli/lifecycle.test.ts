@@ -988,19 +988,7 @@ describe("runDaemonRestart health checks", () => {
       message: "Gateway LaunchAgent was installed but not loaded; re-bootstrapped launchd service.",
     });
     findVerifiedGatewayListenerPidsOnPortSync.mockReturnValue([]);
-    runServiceRestart.mockImplementation(
-      async (params: RestartParams & { onNotLoaded?: () => Promise<unknown> }) => {
-        const activationAccepted = Boolean(await params.onNotLoaded?.());
-        await params.postRestartCheck?.({
-          activationAccepted,
-          json: Boolean(params.opts?.json),
-          stdout: process.stdout,
-          warnings: [],
-          fail: failRestartCheck,
-        });
-        return true;
-      },
-    );
+    mockUnmanagedRestart({ runPostRestartCheck: true });
 
     await runDaemonRestart({ json: true });
 
