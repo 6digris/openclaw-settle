@@ -504,9 +504,9 @@ export const buildTelegramMessageContext = async ({
   }
 
   await options?.recordHistoryEligible?.();
-  if (options?.readPromptContext) {
-    promptContext = await options.readPromptContext(threadSpec);
-  }
+  const selectedPromptContext = options?.readPromptContext
+    ? await options.readPromptContext(threadSpec)
+    : promptContext;
 
   const { ctxPayload, skillFilter, turn } = await buildTelegramInboundContextPayload({
     cfg,
@@ -515,7 +515,7 @@ export const buildTelegramMessageContext = async ({
     allMedia,
     replyMedia,
     replyChain,
-    promptContext,
+    promptContext: selectedPromptContext,
     isGroup,
     isForum,
     chatId,
