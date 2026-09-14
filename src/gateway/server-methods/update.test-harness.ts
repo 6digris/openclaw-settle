@@ -61,6 +61,9 @@ type UpdateCampaignAdoption = ReturnType<
 export const adoptUpdateCampaignMock = vi.fn<() => UpdateCampaignAdoption>(() => ({
   status: "absent",
 }));
+export const getUpdateCampaignStateMock =
+  vi.fn<import("../../infra/update-campaign.js").UpdateCampaignController["getState"]>();
+export const clearUpdateCampaignMock = vi.fn();
 export const readConfigFileSnapshotMock = vi.fn<() => Promise<ConfigFileSnapshot>>();
 export const startManagedServiceUpdateHandoffMock = vi.fn<
   typeof import("../../infra/update-managed-service-handoff.js").startManagedServiceUpdateHandoff
@@ -317,7 +320,11 @@ vi.mock("../../infra/update-startup.js", () => ({
 }));
 
 vi.mock("../../infra/update-campaign.js", () => ({
-  gatewayUpdateCampaign: { adopt: adoptUpdateCampaignMock },
+  gatewayUpdateCampaign: {
+    adopt: adoptUpdateCampaignMock,
+    getState: getUpdateCampaignStateMock,
+    clear: clearUpdateCampaignMock,
+  },
 }));
 
 vi.mock("../../infra/update-runner.js", () => ({
@@ -400,6 +407,8 @@ beforeEach(() => {
   getUpdateScheduleMock.mockReturnValue(null);
   adoptUpdateCampaignMock.mockReset();
   adoptUpdateCampaignMock.mockReturnValue({ status: "absent" });
+  getUpdateCampaignStateMock.mockReset();
+  clearUpdateCampaignMock.mockReset();
   readConfigFileSnapshotMock.mockReset();
   readConfigFileSnapshotMock.mockResolvedValue({
     path: "/tmp/openclaw.json",

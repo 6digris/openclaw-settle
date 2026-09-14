@@ -8,17 +8,25 @@ import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import type { GatewayRequestHandlerOptions, RespondFn } from "./types.js";
 import {
+  adoptUpdateCampaignMock,
+  cancelManagedServiceUpdateHandoffMock,
   captureUpdateRunPayload,
+  clearUpdateCampaignMock,
   detectRespawnSupervisorMock,
+  getUpdateCampaignStateMock,
   initializeGatewayUpdateStatusMock,
   mockGlobalInstallSurface,
   normalizeUpdateChannelMock,
+  recordLatestUpdateRestartSentinelMock,
   resolveUpdateInstallSurfaceMock,
   runGatewayUpdateMock,
   runGatewayUpdatePreflightMock,
   runPostCoreFinalizeAfterGatewayUpdateMock,
   scheduleGatewaySigusr1RestartMock,
+  sendGatewayLifecycleNoticeMock,
+  sentinelState,
   startManagedServiceUpdateHandoffMock,
+  transferManagedServiceUpdateHandoffMock,
 } from "./update.test-harness.js";
 
 async function previewFailureReport(runId: string) {
@@ -47,8 +55,8 @@ async function previewFailureReport(runId: string) {
   return respond;
 }
 
-async function captureFailure() {
-  const payload = expectDefined(await captureUpdateRunPayload(), "update response");
+async function captureFailure(params: Record<string, unknown> = {}) {
+  const payload = expectDefined(await captureUpdateRunPayload(params), "update response");
   const result = expectDefined(payload.result, "failed update result");
   expect(payload).toMatchObject({ ok: false, restart: null });
   expect(result.status).toBe("error");
@@ -68,7 +76,7 @@ async function captureFailure() {
   if (!isRecord(preview) || typeof preview.body !== "string") {
     throw new Error("Missing failure report preview");
   }
-  return { result, run, localReport, publicReport: preview.body };
+  return { payload, result, run, localReport, publicReport: preview.body };
 }
 
 describe("Gateway update failure evidence", () => {
@@ -312,6 +320,217 @@ describe("Gateway update failure evidence", () => {
     }
   });
 
+  it("retains both admission-record and transfer failures without sentinel enrichment", async () => {
+    mockGlobalInstallSurface();
+    detectRespawnSupervisorMock.mockReturnValue("launchd");
+    const ledger = await import("../../infra/update-run-ledger.js");
+    const write = vi.spyOn(ledger, "recordUpdateRunStep").mockImplementationOnce(() => {
+      throw Object.assign(new Error("Accepted handoff could not be recorded"), { code: "EIO" });
+    });
+    transferManagedServiceUpdateHandoffMock.mockRejectedValueOnce(
+      Object.assign(new Error("Broken pipe transferring update"), { code: "EPIPE" }),
+    );
+    const sentinel = await import("../server-restart-sentinel.js");
+    const refresh = vi
+      .spyOn(sentinel, "refreshLatestUpdateRestartSentinel")
+      .mockResolvedValue(null);
+    try {
+      const { payload, result, run, localReport, publicReport } = await captureFailure();
+      expect(write).toHaveBeenNthCalledWith(
+        1,
+        payload.runId,
+        expect.objectContaining({ step: "managed-service update handoff", status: "completed" }),
+      );
+      expect(result.steps).toMatchObject([
+        { name: "managed-service", failureFacts: [{ check: "managed-service", code: "EIO" }] },
+        {
+          name: "managed-service-handoff-finalization",
+          failureFacts: [{ check: "managed-service", code: "EPIPE" }],
+        },
+      ]);
+      // The first write failed: no accepted-custody row may be fabricated during finalization.
+      expect(run.steps.filter((step) => step.step.startsWith("managed-service"))).toEqual([
+        expect.objectContaining({
+          step: "managed-service",
+          status: "failed",
+          failureFacts: result.steps[0]?.failureFacts,
+        }),
+        expect.objectContaining({
+          step: "managed-service-handoff-finalization",
+          status: "failed",
+          failureFacts: result.steps[1]?.failureFacts,
+        }),
+      ]);
+      for (const text of [JSON.stringify(result), JSON.stringify(run), localReport, publicReport]) {
+        expect(text).toContain("EIO");
+        expect(text).toContain("EPIPE");
+      }
+      expect(localReport).toContain("Accepted handoff could not be recorded");
+      expect(localReport).toContain("Broken pipe transferring update");
+      expect(publicReport).toContain("Failing check managed-service (EIO)");
+      expect(publicReport).toContain("Failing check managed-service (EPIPE)");
+      expect(payload.handoff).toBeUndefined();
+      expect(transferManagedServiceUpdateHandoffMock).toHaveBeenCalledOnce();
+      expect(cancelManagedServiceUpdateHandoffMock).toHaveBeenCalledOnce();
+      expect(refresh).toHaveBeenCalledOnce();
+      await expect(refresh.mock.results[0]?.value).resolves.toBeNull();
+    } finally {
+      refresh.mockRestore();
+      write.mockRestore();
+    }
+  });
+
+  it.each(["sentinel-write", "transfer-rejected", "transfer-error", "ownership-lost"] as const)(
+    "retains %s evidence after cancellation without changing accepted custody",
+    async (failure) => {
+      mockGlobalInstallSurface();
+      detectRespawnSupervisorMock.mockReturnValue("launchd");
+      const code =
+        failure === "sentinel-write" ? "EACCES" : failure === "transfer-error" ? "EPIPE" : "Error";
+      if (failure === "sentinel-write") {
+        sentinelState.restartSentinelWriteError = Object.assign(
+          new Error(
+            "Permission denied saving restart notice; token=handoff-fixture-secret; /tmp/handoff-private-canary/notice",
+          ),
+          { code },
+        );
+      } else if (failure === "transfer-rejected") {
+        transferManagedServiceUpdateHandoffMock.mockResolvedValueOnce(false);
+      } else if (failure === "transfer-error") {
+        transferManagedServiceUpdateHandoffMock.mockRejectedValueOnce(
+          Object.assign(
+            new Error(
+              "Broken pipe transferring update; token=handoff-fixture-secret; /tmp/handoff-private-canary/pipe",
+            ),
+            { code },
+          ),
+        );
+      } else {
+        adoptUpdateCampaignMock.mockReturnValueOnce({
+          status: "adopted",
+          campaignId: "retired-campaign",
+          target: { kind: "package", version: "2.0.0" },
+        });
+        getUpdateCampaignStateMock.mockReturnValue({
+          id: "replacement-campaign",
+          state: "waiting-for-idle",
+          announcedAtMs: 1,
+          forceAtMs: 2,
+          updatedAtMs: 1,
+        });
+      }
+      const sentinel = await import("../../infra/restart-sentinel.js");
+      const persist = vi.spyOn(sentinel, "writeRestartSentinel");
+      const ledger = await import("../../infra/update-run-ledger.js");
+      const recordStep = ledger.recordUpdateRunStep;
+      let cancellationCompleted = false;
+      const write = vi.spyOn(ledger, "recordUpdateRunStep").mockImplementation((...args) => {
+        if (args[1].step === "managed-service-handoff-finalization") {
+          expect(cancellationCompleted).toBe(true);
+        }
+        return recordStep(...args);
+      });
+      cancelManagedServiceUpdateHandoffMock.mockImplementationOnce(async () => {
+        const runId = expectDefined(
+          startManagedServiceUpdateHandoffMock.mock.calls[0]?.[0].runId,
+          "accepted handoff run",
+        );
+        const run = expectDefined(getUpdateRun(runId), "run before cancellation");
+        expect(run.status).toBe("running");
+        expect(run.steps.filter((step) => step.step.startsWith("managed-service"))).toEqual([
+          expect.objectContaining({ step: "managed-service update handoff", status: "completed" }),
+        ]);
+        await Promise.resolve();
+        cancellationCompleted = true;
+        return failure === "transfer-rejected" ? false : "restored-in-process";
+      });
+      try {
+        const { payload, result, run, localReport, publicReport } = await captureFailure({
+          sessionKey: "agent:main:slack:dm:C0123ABC:thread:1234567890.123456",
+        });
+        const started = expectDefined(
+          startManagedServiceUpdateHandoffMock.mock.calls[0]?.[0],
+          "accepted handoff parameters",
+        );
+        expect(cancelManagedServiceUpdateHandoffMock).toHaveBeenCalledExactlyOnceWith({
+          kind: "managed-update-handoff",
+          handoffId: started.handoffId,
+          installRoot: "/tmp/openclaw-global",
+        });
+        expect(persist).toHaveBeenCalledTimes(failure === "ownership-lost" ? 0 : 1);
+        expect(transferManagedServiceUpdateHandoffMock).toHaveBeenCalledTimes(
+          failure === "sentinel-write" || failure === "ownership-lost" ? 0 : 1,
+        );
+        expect(payload.handoff).toBeUndefined();
+        expect(payload.sentinel?.persisted).toBe(
+          failure === "transfer-rejected" || failure === "transfer-error",
+        );
+        if (payload.sentinel?.persisted) {
+          expect(sentinelState.capturedPayload).toMatchObject({
+            status: "skipped",
+            stats: {
+              reason: "managed-service-handoff-started",
+              steps: [{ name: "managed-service update handoff" }],
+            },
+          });
+        } else {
+          expect(sentinelState.capturedPayload).toBeUndefined();
+        }
+        expect(result).toMatchObject({
+          reason: "managed-service-handoff-failed",
+          mode: "npm",
+          root: "/tmp/openclaw-global",
+          before: { version: "1.0.0" },
+          steps: [
+            { name: "managed-service update handoff", exitCode: null },
+            {
+              name: "managed-service-handoff-finalization",
+              failureFacts: [{ check: "managed-service", code }],
+            },
+          ],
+        });
+        expect(result.recovery).toBeUndefined();
+        expect(run.steps.filter((step) => step.step.startsWith("managed-service"))).toEqual([
+          expect.objectContaining({ step: "managed-service update handoff", status: "completed" }),
+          expect.objectContaining({
+            step: "managed-service-handoff-finalization",
+            status: "failed",
+            failureFacts: result.steps.at(-1)?.failureFacts,
+          }),
+        ]);
+        expect(localReport).toContain(
+          failure === "sentinel-write"
+            ? "Permission denied saving restart notice"
+            : failure === "transfer-error"
+              ? "Broken pipe transferring update"
+              : failure === "transfer-rejected"
+                ? "ownership transfer was not acknowledged"
+                : "no longer owns restart notice persistence",
+        );
+        expect(publicReport).toContain(`Failing check managed-service (${code})`);
+        for (const text of [JSON.stringify(result), localReport, publicReport]) {
+          expect(text).not.toContain("handoff-fixture-secret");
+          expect(text).not.toContain("handoff-private-canary");
+          if (code === "Error") {
+            expect(text).not.toMatch(/EACCES|EPIPE/);
+          }
+        }
+        expect(clearUpdateCampaignMock).not.toHaveBeenCalled();
+        expect(runGatewayUpdateMock).not.toHaveBeenCalled();
+        expect(sendGatewayLifecycleNoticeMock).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            message: expect.stringContaining(
+              "OpenClaw update failed: managed-service-handoff-failed",
+            ),
+          }),
+        );
+      } finally {
+        write.mockRestore();
+        persist.mockRestore();
+      }
+    },
+  );
+
   it("projects result-only facts, snapshot capacity and config refusal without progress events", async () => {
     const snapshot: UpdateStepResult = {
       name: "snapshot",
@@ -432,29 +651,40 @@ describe("Gateway update failure evidence", () => {
     },
   );
 
-  it("keeps an accepted managed handoff with no child exit code completed", async () => {
-    mockGlobalInstallSurface();
-    detectRespawnSupervisorMock.mockReturnValue("launchd");
-    const payload = expectDefined(await captureUpdateRunPayload(), "managed handoff response");
-    expect(payload).toMatchObject({
-      ok: true,
-      result: {
-        status: "skipped",
-        reason: "managed-service-handoff-started",
-        steps: [{ name: "managed-service update handoff", exitCode: null }],
-      },
-      handoff: { status: "started" },
-    });
-    closeOpenClawStateDatabaseForTest();
-    const run = expectDefined(getUpdateRun(payload.runId), "persisted managed handoff");
-    expect(run.status).toBe("running");
-    const handoff = expectDefined(
-      run.steps.find((step) => step.step === "managed-service update handoff"),
-      "accepted handoff step",
-    );
-    expect(handoff.status).toBe("completed");
-    expect(handoff.detail).toBeUndefined();
-    expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
-    expect(runGatewayUpdateMock).not.toHaveBeenCalled();
-  });
+  it.each(["persisted notice", "failed notice cache"] as const)(
+    "keeps an accepted managed handoff with no child exit code completed after %s",
+    async (notice) => {
+      mockGlobalInstallSurface();
+      detectRespawnSupervisorMock.mockReturnValue("launchd");
+      if (notice === "failed notice cache") {
+        recordLatestUpdateRestartSentinelMock.mockImplementationOnce(() => {
+          throw new Error("Notice cache refresh failed after persistence");
+        });
+      }
+      const payload = expectDefined(await captureUpdateRunPayload(), "managed handoff response");
+      expect(payload).toMatchObject({
+        ok: true,
+        result: {
+          status: "skipped",
+          reason: "managed-service-handoff-started",
+          steps: [{ name: "managed-service update handoff", exitCode: null }],
+        },
+        handoff: { status: "started" },
+      });
+      closeOpenClawStateDatabaseForTest();
+      const run = expectDefined(getUpdateRun(payload.runId), "persisted managed handoff");
+      expect(run.status).toBe("running");
+      const handoff = expectDefined(
+        run.steps.find((step) => step.step === "managed-service update handoff"),
+        "accepted handoff step",
+      );
+      expect(handoff.status).toBe("completed");
+      expect(handoff.detail).toBeUndefined();
+      expect(payload.sentinel?.persisted).toBe(true);
+      expect(transferManagedServiceUpdateHandoffMock).toHaveBeenCalledOnce();
+      expect(cancelManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
+      expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+      expect(runGatewayUpdateMock).not.toHaveBeenCalled();
+    },
+  );
 });

@@ -173,14 +173,18 @@ export const updateHandlers: GatewayRequestHandlers = {
       durationMs: 0,
     };
     // A later orchestration error must not erase facts already returned by the updater.
-    const failedUpdate = (error: unknown, reason = "unexpected-error"): UpdateRunResult => ({
+    const failedUpdate = (
+      error: unknown,
+      reason = "unexpected-error",
+      stepName = failureCheck,
+    ): UpdateRunResult => ({
       ...result,
       status: "error",
       reason,
       steps: [
         ...result.steps,
         {
-          name: failureCheck,
+          name: stepName,
           command: "",
           cwd: result.root ?? "",
           durationMs: 0,
@@ -659,13 +663,15 @@ export const updateHandlers: GatewayRequestHandlers = {
       ownsUpdateOutcome = gatewayUpdateCampaign.getState()?.id === adoptedCampaignId;
     }
     let sentinelPersisted = false;
+    let sentinelFailure: { error: unknown } | undefined;
     let noticeFailureMessage: string | undefined;
     if (ownsUpdateOutcome) {
       try {
         await writeRestartSentinel(payload);
         sentinelPersisted = true;
         recordLatestUpdateRestartSentinel(payload);
-      } catch {
+      } catch (error) {
+        sentinelFailure = { error };
         if (result.status === "ok" && handoff?.status !== "started") {
           noticeFailureMessage =
             "The update was installed, but its restart notice could not be saved. Run openclaw update status after the gateway restarts.";
@@ -683,16 +689,30 @@ export const updateHandlers: GatewayRequestHandlers = {
 
     if (managedHandoffOwner) {
       try {
-        if (
-          !sentinelPersisted ||
-          !(await transferManagedServiceUpdateHandoff(managedHandoffOwner))
-        ) {
-          throw new Error("managed update ownership transfer failed");
+        if (!sentinelPersisted) {
+          // A retired campaign never attempted persistence; do not invent a storage error.
+          throw sentinelFailure
+            ? sentinelFailure.error
+            : new Error("Managed update no longer owns restart notice persistence");
+        }
+        if (!(await transferManagedServiceUpdateHandoff(managedHandoffOwner))) {
+          throw new Error("Managed update ownership transfer was not acknowledged");
         }
       } catch (error) {
         await cancelManagedServiceUpdateHandoff(managedHandoffOwner);
-        result = { ...result, status: "error", reason: "managed-service-handoff-failed" };
+        // Ledger and report rows key by step name; retain any earlier admission failure.
+        result = failedUpdate(
+          error,
+          "managed-service-handoff-failed",
+          "managed-service-handoff-finalization",
+        );
         handoff = null;
+        // Only project the late failure; accepted handoff custody remains completed.
+        for (const step of result.steps.slice(-1)) {
+          for (const entry of updateRunStepsFromResultStep(step)) {
+            recordUpdateRunStep(runId, entry);
+          }
+        }
         outcomeRun = finishUpdateRun(runId, { status: "failed", reason: result.reason });
         context?.logGateway?.warn(
           `update.run handoff transfer failed: ${formatErrorMessage(error)}`,
