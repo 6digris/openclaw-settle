@@ -1,14 +1,114 @@
 import path from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import type { acquireStateDatabaseCoordinator } from "../infra/state-database-coordinator.js";
+import {
+  getOpenClawDatabaseMaintenanceScope,
+  isOpenClawDatabaseMaintenanceResourceOwned,
+  observeOpenClawDatabaseMaintenanceResource,
+} from "./openclaw-state-db-async-lifecycle.js";
 import type { OpenClawStateDatabase } from "./openclaw-state-db-contract.js";
+
+type RetirementIntent = {
+  ordinary: boolean;
+  isCurrent(): boolean;
+  retire(): void;
+};
 
 export type StateDatabaseBorrowers = {
   references: Set<object>;
   retiring: boolean;
   cleanupComplete: boolean;
-  retirementRequested?: boolean;
+  retirement?: RetirementIntent;
   closeCoordinator?: ReturnType<typeof acquireStateDatabaseCoordinator>;
 };
+
+/** The canonical cache supplies identity and custody; this owner manages its native references. */
+export function createStateDatabaseRetainer(
+  state: {
+    borrowers: WeakMap<DatabaseSync, StateDatabaseBorrowers>;
+    cachedDatabases: Map<string, OpenClawStateDatabase>;
+  },
+  operations: {
+    assertOpen(pathname: string): void;
+    capture(pathname: string): { assertCurrent(): void };
+    retire(database: OpenClawStateDatabase, retireAdmission: boolean): void;
+    retainFailed(database: OpenClawStateDatabase): void;
+  },
+) {
+  const retain = (database: OpenClawStateDatabase, readOnly = false) => {
+    const scope = getOpenClawDatabaseMaintenanceScope();
+    scope?.assertAdmission();
+    operations.assertOpen(database.path);
+    operations.capture(database.path).assertCurrent();
+    if (state.cachedDatabases.get(database.path) !== database || !database.db.isOpen) {
+      throw new Error("OpenClaw state database borrow requires its current canonical handle");
+    }
+    const owner: StateDatabaseBorrowers = state.borrowers.get(database.db) ?? {
+      references: new Set<object>(),
+      retiring: false,
+      cleanupComplete: false,
+    };
+    if (owner.retiring) {
+      throw new Error("OpenClaw state database native owner is retiring");
+    }
+    if (!readOnly) {
+      observeOpenClawDatabaseMaintenanceResource(database.db);
+    }
+    state.borrowers.set(database.db, owner);
+    const isCurrent = () =>
+      !scope || isOpenClawDatabaseMaintenanceResourceOwned(database.db, scope);
+    const retirement: RetirementIntent | undefined = readOnly
+      ? undefined
+      : {
+          ordinary: scope === undefined,
+          isCurrent,
+          retire: () => {
+            if (!isCurrent()) {
+              owner.retiring = false;
+              return;
+            }
+            operations.retire(database, scope === undefined);
+          },
+        };
+    const reference = retainStateDatabaseReference({
+      owner,
+      retirement,
+      retainFailedClose: () => operations.retainFailed(database),
+    });
+    scope?.own(reference, "shared-references", () => reference.release());
+    return reference;
+  };
+  return {
+    retain: (database: OpenClawStateDatabase) => retain(database),
+    borrowForRead(this: void, pathname: string) {
+      getOpenClawDatabaseMaintenanceScope()?.assertAdmission();
+      operations.assertOpen(pathname);
+      const database = state.cachedDatabases.get(path.resolve(pathname));
+      if (!database?.db.isOpen) {
+        return undefined;
+      }
+      if (database.db.isTransaction) {
+        throw new Error("Asynchronous shared-state reads cannot run inside a native transaction");
+      }
+      const reference = retain(database, true);
+      const assertCurrent = () => {
+        if (state.cachedDatabases.get(database.path) !== database || !database.db.isOpen) {
+          throw new Error("Shared-state read lost its original native owner");
+        }
+      };
+      return {
+        database,
+        assertCurrent,
+        observe() {
+          assertCurrent();
+          // Failed schema admission must not transfer a maintenance-owned handle.
+          observeOpenClawDatabaseMaintenanceResource(database.db);
+        },
+        release: () => reference.release(),
+      };
+    },
+  };
+}
 
 export function assertStateDatabaseBorrowersReleased(
   owner: StateDatabaseBorrowers | undefined,
@@ -19,11 +119,10 @@ export function assertStateDatabaseBorrowersReleased(
   }
 }
 
-/** The cache supplies native retirement; each reference owns only its release protocol. */
+/** Preserve the requesting owner's retirement when the last reference is only a read pin. */
 function retainStateDatabaseReference(params: {
   owner: StateDatabaseBorrowers;
-  retireOnRelease?: boolean;
-  retire(): void;
+  retirement?: RetirementIntent;
   retainFailedClose(): void;
 }): { release(): void } {
   const { owner } = params;
@@ -37,80 +136,27 @@ function retainStateDatabaseReference(params: {
         return;
       }
       owner.references.delete(reference);
-      owner.retirementRequested ||= params.retireOnRelease !== false;
-      if (owner.references.size > 0) {
-        released = true;
-        return;
+      if (owner.retirement && !owner.retirement.isCurrent()) {
+        owner.retirement = undefined;
+        owner.retiring = false;
       }
-      if (!owner.retirementRequested && !owner.retiring) {
+      if (params.retirement?.isCurrent() && !owner.retirement?.ordinary) {
+        owner.retirement = params.retirement;
+      }
+      if (owner.references.size > 0 || !owner.retirement) {
         released = true;
         return;
       }
       owner.retiring = true;
       try {
-        params.retire();
+        owner.retirement.retire();
       } catch (error) {
         // The released reference transfers failed cleanup to the canonical cache.
         params.retainFailedClose();
         throw error;
       }
+      owner.retirement = undefined;
       released = true;
-    },
-  };
-}
-
-/** Borrow references share the cache's maps and native retirement decisions. */
-export function createStateDatabaseBorrowOwner(params: {
-  borrowers: WeakMap<OpenClawStateDatabase["db"], StateDatabaseBorrowers>;
-  cachedDatabases: Map<string, OpenClawStateDatabase>;
-  assertOpenAllowed(pathname: string): void;
-  assertReadCurrent(pathname: string): void;
-  retire(database: OpenClawStateDatabase): void;
-  retainFailedClose(database: OpenClawStateDatabase): void;
-}) {
-  const retain = (database: OpenClawStateDatabase, retireOnRelease = true) => {
-    params.assertOpenAllowed(database.path);
-    params.assertReadCurrent(database.path);
-    if (params.cachedDatabases.get(database.path) !== database || !database.db.isOpen) {
-      throw new Error("OpenClaw state database borrow requires its current canonical handle");
-    }
-    const owner = params.borrowers.get(database.db) ?? {
-      references: new Set<object>(),
-      retiring: false,
-      cleanupComplete: false,
-    };
-    if (owner.retiring) {
-      throw new Error("OpenClaw state database native owner is retiring");
-    }
-    params.borrowers.set(database.db, owner);
-    return retainStateDatabaseReference({
-      owner,
-      retireOnRelease,
-      retire: () => params.retire(database),
-      retainFailedClose: () => params.retainFailedClose(database),
-    });
-  };
-  return {
-    retain,
-    borrowForRead(this: void, pathname: string) {
-      params.assertOpenAllowed(pathname);
-      const database = params.cachedDatabases.get(path.resolve(pathname));
-      if (!database?.db.isOpen) {
-        return undefined;
-      }
-      if (database.db.isTransaction) {
-        throw new Error("Asynchronous shared-state reads cannot run inside a native transaction");
-      }
-      const retained = retain(database, false);
-      return {
-        database,
-        assertCurrent() {
-          if (params.cachedDatabases.get(database.path) !== database || !database.db.isOpen) {
-            throw new Error("Shared-state read lost its original native owner");
-          }
-        },
-        release: () => retained.release(),
-      };
     },
   };
 }

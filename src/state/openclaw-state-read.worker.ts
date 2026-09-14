@@ -34,6 +34,7 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
 }
 
 serveWorkerTasks((input): OpenClawStateReadReply => {
+  let sourceAdmitted: true | undefined;
   try {
     if (!isReadRequest(input)) {
       throw new Error("Fleet registry reader requires a captured state location and read command");
@@ -50,10 +51,17 @@ serveWorkerTasks((input): OpenClawStateReadReply => {
         return { ok: true, type: "admit" };
       }
       return withOpenClawStateReadOnlyLocation(
-        ({ db }) =>
-          command.type === "fleet.list"
-            ? { ok: true, type: "fleet.list", cells: listFleetCellsInDatabase(db) }
-            : { ok: true, type: "fleet.get", cell: getFleetCellInDatabase(db, command.tenantId) },
+        ({ db }) => {
+          sourceAdmitted = true;
+          return command.type === "fleet.list"
+            ? { ok: true, type: "fleet.list", sourceAdmitted, cells: listFleetCellsInDatabase(db) }
+            : {
+                ok: true,
+                type: "fleet.get",
+                sourceAdmitted,
+                cell: getFleetCellInDatabase(db, command.tenantId),
+              };
+        },
         input.databasePath,
         input.location,
       );
@@ -62,6 +70,7 @@ serveWorkerTasks((input): OpenClawStateReadReply => {
     const error = toStringifiedError(value);
     return {
       ok: false,
+      sourceAdmitted,
       message: error.message,
       error: encodeOpenClawStateWorkerError(error, { includeGenericErrors: true }),
     };

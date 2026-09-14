@@ -70,13 +70,6 @@ type SessionTranscriptMutationResult =
 type SessionTranscriptMutationMode = "fork" | "rewind" | "switch";
 type SessionEntryExpectedState = Pick<SessionEntry, "lifecycleRevision" | "sessionId">;
 
-/** Resolves the active branch leaf from the same transcript tree used by branch listing. */
-export function resolveSessionTranscriptActiveLeafEntryId(
-  events: readonly TranscriptEvent[],
-): string | undefined {
-  return scanSessionTranscriptTree(events).leafId ?? undefined;
-}
-
 export async function rewindSessionToMessage(
   params: SessionMessageCutMutationParams,
   expectedState?: SessionEntryExpectedState,

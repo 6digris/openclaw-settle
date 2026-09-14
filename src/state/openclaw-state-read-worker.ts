@@ -5,6 +5,7 @@ import type {
   OpenClawStateReadAuthority,
   OpenClawStateReadCommand,
   OpenClawStateReadLocation,
+  OpenClawStateReadOutcome,
   OpenClawStateReadReply,
   OpenClawStateReadRequest,
 } from "./openclaw-state-read.types.js";
@@ -14,15 +15,16 @@ import {
   retainOpenClawStateWorkerErrorPayload,
 } from "./openclaw-state-worker-error.js";
 
-type ReadTaskOutcome = { value: OpenClawStateReadReply } | { error: unknown };
-
-function decodeTaskReply(reply: OpenClawStateReadReply): ReadTaskOutcome {
+function decodeTaskReply(reply: OpenClawStateReadReply): OpenClawStateReadOutcome {
   if (reply.ok) {
     return { value: reply };
   }
   const error = new Error(reply.message);
   retainOpenClawStateWorkerErrorPayload(error, reply.error);
-  return { error: hydrateOpenClawStateWorkerError(error, { includeGenericErrors: true }) };
+  return {
+    error: hydrateOpenClawStateWorkerError(error, { includeGenericErrors: true }),
+    sourceAdmitted: reply.sourceAdmitted,
+  };
 }
 
 export function createOpenClawStateReadTransport(
@@ -32,8 +34,8 @@ export function createOpenClawStateReadTransport(
   const failedRetirement = createDeferredCore<never>();
   void failedRetirement.promise.catch(() => undefined);
   let pool: WorkerTaskPool<OpenClawStateReadRequest, OpenClawStateReadReply> | undefined;
-  let currentTask: Promise<ReadTaskOutcome> | undefined;
-  let interruptedTask: Promise<ReadTaskOutcome> | undefined;
+  let currentTask: Promise<OpenClawStateReadOutcome> | undefined;
+  let interruptedTask: Promise<OpenClawStateReadOutcome> | undefined;
   const run = async (
     context: OpenClawStateWorkerContext,
     location: string,
@@ -66,30 +68,36 @@ export function createOpenClawStateReadTransport(
         { signal: authority.signal },
       )
       .then(
-        (reply): ReadTaskOutcome => {
+        (reply): OpenClawStateReadOutcome => {
           try {
             return decodeTaskReply(reply);
           } catch (error) {
             return { error };
           }
         },
-        (error: unknown): ReadTaskOutcome => ({ error }),
+        (error: unknown): OpenClawStateReadOutcome => ({ error }),
       );
     currentTask = task;
     const outcome = await Promise.race([task, failedRetirement.promise]);
     currentTask = undefined;
-    if ("error" in outcome) {
-      throw outcome.error;
-    }
-    authority.assertCurrent();
-    return outcome.value;
+    return outcome;
   };
   return {
     async validateFresh(
       context: OpenClawStateWorkerContext,
       authority: OpenClawStateReadAuthority,
     ) {
-      await run(context, context.admission.databasePath, true, { type: "admit" }, authority);
+      const outcome = await run(
+        context,
+        context.admission.databasePath,
+        true,
+        { type: "admit" },
+        authority,
+      );
+      if ("error" in outcome) {
+        throw outcome.error;
+      }
+      authority.assertCurrent();
     },
     read: (source: OpenClawStateReadLocation, authority: OpenClawStateReadAuthority) =>
       run(source.context, source.location, source.checkFreshAdmission, command, authority),

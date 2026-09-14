@@ -5,6 +5,7 @@ import { isMainThread } from "node:worker_threads";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
+import { createOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
 import { withDisposableOpenClawStateReads } from "../state/openclaw-state-db-readonly.js";
 import {
   closeOpenClawStateDatabaseAsync,
@@ -147,4 +148,25 @@ it("joins an admitted read before its disposable source scope exits", async () =
     );
   });
   expect(outcome).toEqual(record);
+});
+
+it("preserves a maintenance-created cached writer after an independent admitted registry read", async () => {
+  const { root, env } = fixture();
+  const record = await seed(env, root);
+  const maintenance = createOpenClawDatabaseMaintenanceScope(() => undefined);
+  const source = maintenance.run(() => openOpenClawStateDatabase({ env }));
+  try {
+    const calls = watchNativeSql();
+    try {
+      expect(await getFleetCell(env, record.tenantId)).toEqual(record);
+      expect(calls.reduce((total, call) => total + call.mock.calls.length, 0)).toBe(0);
+    } finally {
+      vi.restoreAllMocks();
+    }
+    await maintenance.close();
+    expect(source.db.isOpen).toBe(true);
+    expect(await listFleetCells(env)).toEqual([record]);
+  } finally {
+    await maintenance.close();
+  }
 });

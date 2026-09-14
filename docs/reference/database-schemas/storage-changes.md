@@ -79,7 +79,11 @@ Cell mutations inside an operation retain its original worker scope and check
 the matching lease owner and expiry in the same transaction as the mutation.
 That scope spans lease acquisition through final renewal and release. Failed
 read cleanup remains registered for canonical retry; source snapshots and pins
-stay owned until worker termination is acknowledged.
+stay owned until worker termination is acknowledged. Maintenance scopes join
+admitted reads before their resource, reference, and handle cleanup phases.
+A cached reader records shared maintenance ownership only after the worker enters
+its schema-validated query callback, including when that query later fails.
+Startup and schema refusals do not transfer ownership.
 
 Model-context reads and session transcript preparation use the session-transcript
 worker with separate bounded queues. Background preparation cannot occupy the
@@ -233,6 +237,10 @@ Artifact cleanup resolves session paths only when its file inventory contains
 candidate transcript, compaction checkpoint, or trajectory files. Prompt-reference
 projection runs only when prompt blobs exist. Age, exclusion, and containment
 checks still govern every removal.
+
+Automatic session-entry maintenance reads its protection-key inventory once per
+plan, only when age or cap candidates exist, within the same write transaction.
+Retention rules and active-work, ancestor, and lifecycle protection remain unchanged.
 
 After archive preparation, session deletion rereads its target before admitting
 the final reclamation worker. A missing or changed target returns the existing
