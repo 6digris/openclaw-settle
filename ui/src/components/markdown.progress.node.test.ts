@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { threadCpuUsage } from "node:process";
 import { describe, expect, it } from "vitest";
 import { stripProgressCardRawContentBlocks } from "./markdown-raw-content.ts";
 import { toSanitizedMarkdownHtml } from "./markdown.ts";
@@ -60,22 +61,26 @@ describe("progress-card markdown", () => {
     expect(embeddedCloserHtml).toContain("beforeafter");
   });
 
-  it("keeps raw-content preprocessing bounded for repeated unclosed tags", () => {
+  // Charge synchronous rendering to this worker, excluding CPU spent by sibling
+  // test threads and time the OS deschedules it on shared CI runners.
+  it("keeps raw-content preprocessing CPU bounded for repeated unclosed tags", () => {
     const markdown = "<script>".repeat(17_500);
-    const startedAt = performance.now();
+    const startedCpu = threadCpuUsage();
 
     const progressHtml = toSanitizedMarkdownHtml(markdown, { progressBars: true });
 
+    const cpu = threadCpuUsage(startedCpu);
     expect(progressHtml).not.toContain("<script");
-    expect(performance.now() - startedAt).toBeLessThan(100);
+    expect((cpu.user + cpu.system) / 1_000).toBeLessThan(100);
   });
 
-  it("keeps malformed closing-tag validation bounded", () => {
+  it("keeps malformed closing-tag validation CPU bounded", () => {
     const markdown = "</script ".repeat(7_000) + " ".repeat(70_000) + ">";
-    const startedAt = performance.now();
+    const startedCpu = threadCpuUsage();
 
     toSanitizedMarkdownHtml(markdown, { progressBars: true });
 
-    expect(performance.now() - startedAt).toBeLessThan(100);
+    const cpu = threadCpuUsage(startedCpu);
+    expect((cpu.user + cpu.system) / 1_000).toBeLessThan(100);
   });
 });
