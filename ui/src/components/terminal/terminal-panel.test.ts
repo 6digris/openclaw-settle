@@ -173,6 +173,7 @@ describe("OpenClawTerminalPanel", () => {
     document.body.append(panel);
 
     panel.toggle();
+    await vi.dynamicImportSettled();
 
     await waitForFast(() => {
       expect(requests[0]).toEqual({
