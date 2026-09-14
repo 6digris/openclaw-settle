@@ -227,6 +227,56 @@ type OpenClawStateReadOnlyDatabase = {
   path: string;
 };
 
+type ScopedRead = ReturnType<typeof openOpenClawStateReadOnlyLocation>;
+const synchronousReadSnapshots = resolveGlobalSingleton(
+  Symbol.for("openclaw.synchronousStateReadSnapshots"),
+  (): { current: Map<string, ScopedRead> | undefined } => ({ current: undefined }),
+);
+
+/** One synchronous metadata operation shares private bytes, never later admission reads. */
+export function withSynchronousArtifactPreservingStateSnapshot<T>(operation: () => T): T {
+  if (!isArtifactPreservingStateRead() || synchronousReadSnapshots.current) {
+    return operation();
+  }
+  const readers = new Map<string, ScopedRead>();
+  synchronousReadSnapshots.current = readers;
+  let result!: T;
+  let failed = false;
+  let failure: unknown;
+  const cleanupErrors: unknown[] = [];
+  try {
+    result = operation();
+    if (isPromiseLike(result)) {
+      throw new SqliteCoordinatorError("SQLite metadata snapshot scope must remain synchronous");
+    }
+  } catch (error) {
+    failed = true;
+    failure = error;
+  } finally {
+    synchronousReadSnapshots.current = undefined;
+    for (const reader of readers.values()) {
+      try {
+        if (!reader.close()) {
+          cleanupErrors.push(new Error("Shared-state metadata snapshot cleanup is incomplete."));
+        }
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    readers.clear();
+  }
+  if (cleanupErrors.length) {
+    throw new AggregateError(
+      failed ? [failure, ...cleanupErrors] : cleanupErrors,
+      "Shared-state metadata snapshot cleanup failed.",
+    );
+  }
+  if (failed) {
+    throw failure;
+  }
+  return result;
+}
+
 type ReusedOpenClawStateReadOnlyDatabase<T> = { reused: false } | { reused: true; value: T };
 
 /** Missing runtime tables are empty only before state grows beyond checkpoint bootstrap. */
@@ -302,6 +352,25 @@ function withFreshOpenClawStateDatabaseReadOnly<T>(
   openClawStateDatabaseCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(pathname, env);
   // Even read-only SQLite opens can create a missing WAL. The existing worker
   // snapshots committed WAL pages without touching source sidecars or caller-held locks.
+  // One consistent snapshot per synchronous scope avoids mixed reads and duplicate copies.
+  // Concurrent commits become visible in the next scope; this reader closes at scope end.
+  const readers = synchronousReadSnapshots.current;
+  if (readers && requiresArtifactPreservingSnapshot(pathname)) {
+    let opened = readers.get(pathname);
+    if (!opened) {
+      opened = openOpenClawStateReadOnlyLocation(
+        pathname,
+        prepareSqliteReadOnlyLocationSync(pathname),
+      );
+      readers.set(pathname, opened);
+    }
+    assertSupportedStateSchemaVersion(opened.database.db, pathname);
+    const result = operation(opened.database);
+    if (isPromiseLike(result)) {
+      throw new SqliteCoordinatorError("SQLite metadata snapshot read must remain synchronous");
+    }
+    return result;
+  }
   const prepared = requiresArtifactPreservingSnapshot(pathname)
     ? prepareSqliteReadOnlyLocationSync(pathname)
     : undefined;
@@ -317,13 +386,14 @@ function openOpenClawStateReadOnlyLocation(
   let closeSchemaReadAdmission: (() => void) | undefined;
   const close = () => {
     const errors: unknown[] = [];
+    let closed = false;
     try {
       closeSchemaReadAdmission?.();
     } catch (error) {
       errors.push(error);
     }
     try {
-      connection.close();
+      closed = connection.close();
     } catch (error) {
       errors.push(error);
     }
@@ -333,12 +403,17 @@ function openOpenClawStateReadOnlyLocation(
     if (errors.length > 1) {
       throw new AggregateError(errors, "Shared-state reader cleanup failed.");
     }
+    return closed;
   };
   try {
     closeSchemaReadAdmission = openDanglingWorkshopIndexReadAdmission(db);
     assertSupportedStateSchemaVersion(db, pathname);
   } catch (error) {
-    close();
+    try {
+      close();
+    } catch (cleanupError) {
+      throwReadErrors([error, cleanupError], "Shared-state reader admission and cleanup failed.");
+    }
     throw error;
   }
   return { database: connection.database, close };
@@ -350,16 +425,24 @@ export function withOpenClawStateReadOnlyLocation<T>(
   source: string | PreparedSqliteReadOnlyLocation,
 ): T {
   const opened = openOpenClawStateReadOnlyLocation(pathname, source);
+  const errors: unknown[] = [];
+  let result!: T;
   try {
-    const result = operation(opened.database);
+    result = operation(opened.database);
     const location = typeof source === "string" ? source : source.location;
     if (location === pathname && isPromiseLike(result)) {
       throw new SqliteCoordinatorError("SQLite source read must remain synchronous");
     }
-    return result;
-  } finally {
-    opened.close();
+  } catch (error) {
+    errors.push(error);
   }
+  try {
+    opened.close();
+  } catch (error) {
+    errors.push(error);
+  }
+  throwReadErrors(errors, "Shared-state read and reader cleanup failed.");
+  return result;
 }
 
 /** Keep streamed rows on one private reader while callers yield or close the shared writer. */
@@ -403,6 +486,9 @@ export function withOpenClawStateDatabaseReadOnly<T>(
   // and closing a connection per call made shared-state reads scale with row
   // count. An in-flight transaction is skipped so callers never observe
   // uncommitted rows a fresh read-only connection could not have seen.
+  if (synchronousReadSnapshots.current?.has(pathname)) {
+    return withFreshOpenClawStateDatabaseReadOnly(operation, options, pathname);
+  }
   const reused = withOpenClawStateDatabaseReadOnlyIfOpen(operation, pathname);
   if (reused.reused) {
     return reused.value;
@@ -416,6 +502,9 @@ export function withExistingOpenClawStateDatabaseReadOnly<T>(
   options: OpenClawStateDatabaseOptions = {},
 ): T | undefined {
   const pathname = resolveReadOnlyPath(options);
+  if (synchronousReadSnapshots.current?.has(pathname)) {
+    return withFreshOpenClawStateDatabaseReadOnly(operation, options, pathname);
+  }
   const reused = withOpenClawStateDatabaseReadOnlyIfOpen(operation, pathname);
   if (reused.reused) {
     return reused.value;

@@ -1499,6 +1499,7 @@ describe("scripts/test-projects changed-target routing", () => {
         [
           "test/scripts/ci-workflow-guards.test.ts",
           "test/scripts/package-acceptance-workflow.test.ts",
+          "test/scripts/crabbox-hydrate-dependencies.test.ts",
           "test/scripts/setup-pnpm-store-cache-image.test.ts",
         ],
       ],
@@ -4058,6 +4059,7 @@ describe("scripts/test-projects changed-target routing", () => {
       "test/vitest/vitest.ui.config.ts",
       "test/vitest/vitest.ui-isolated.config.ts",
       "test/vitest/vitest.ui-browser.config.ts",
+      "test/vitest/vitest.ui-timing.config.ts",
     ]);
   });
 
@@ -4086,18 +4088,20 @@ describe("scripts/test-projects changed-target routing", () => {
     });
   });
 
-  it("adds the isolated and Chromium projects for broad ui targets", () => {
+  it("adds isolated and Chromium projects before timing budgets for broad ui targets", () => {
     const plans = buildVitestRunPlans(["ui/src"]);
 
     expect(plans.map((plan) => plan.config)).toEqual([
       "test/vitest/vitest.ui.config.ts",
       "test/vitest/vitest.ui-isolated.config.ts",
       "test/vitest/vitest.ui-browser.config.ts",
+      "test/vitest/vitest.ui-timing.config.ts",
     ]);
     expect(plans[1]?.includePatterns).toContain("ui/src/pages/chat/chat-pane.test.ts");
     expect(plans[2]?.includePatterns).toContain(
       "ui/src/components/markdown-mermaid.runtime.browser.test.ts",
     );
+    expect(plans[3]?.includePatterns).toEqual(["ui/src/components/markdown.progress.node.test.ts"]);
   });
 
   it.each([
