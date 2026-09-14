@@ -3,8 +3,10 @@ package ai.openclaw.wear
 import ai.openclaw.app.gateway.DeviceAuthStore
 import ai.openclaw.app.gateway.DeviceIdentity
 import ai.openclaw.app.gateway.normalizeGatewayTlsFingerprintInput
+import android.app.KeyguardManager
 import android.content.Intent
 import android.os.Bundle
+import android.os.PowerManager
 import android.os.Process
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityNodeInfo
@@ -22,6 +24,10 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -85,8 +91,41 @@ class WearDirectGatewayFlowTest {
         ) as MainActivity
       if (previous == null) {
         // Connection is an ordinary Phone Proxy control, not a test-only launch route.
-        findText(app.getString(R.string.watch_connection)).click()
-        findText(app.getString(R.string.watch_setup_code)).click()
+        var preTap: JsonObject? = null
+        var navigationStage = "connection-lookup"
+        try {
+          val connection = findText(app.getString(R.string.watch_connection))
+          preTap = runCatching { navigationSnapshot(activity, runtime) }.getOrNull()
+          navigationStage = "connection-click"
+          connection.click()
+          navigationStage = "setup-lookup"
+          val setup = findText(app.getString(R.string.watch_setup_code))
+          navigationStage = "setup-click"
+          setup.click()
+        } catch (error: Throwable) {
+          // This bracket ends before credential entry. Diagnostics must neither expose
+          // later screens nor replace the original failure or the outer cleanup.
+          runCatching {
+            val failed = runCatching { navigationSnapshot(activity, runtime) }.getOrNull()
+            val diagnostic =
+              buildJsonObject {
+                put("schema", "wear-bootstrap-navigation-v1")
+                put("runId", input.runId)
+                put("phase", input.phase)
+                put("sourceCommit", input.sourceCommit)
+                put("sourceTree", input.sourceTree)
+                put("apkSha256", input.apkSha256)
+                put("testApkSha256", input.testApkSha256)
+                put("nonceSha256", sha256(input.nonce.toByteArray()))
+                put("stage", navigationStage)
+                put("preTap", preTap ?: JsonNull)
+                put("failure", failed ?: JsonNull)
+              }
+            check(Json.encodeToString(diagnostic).toByteArray().size <= 32_768)
+            writeProof(File(app.filesDir, "wear-direct-bootstrap-navigation.json"), diagnostic)
+          }.onFailure { error.addSuppressed(AssertionError("Private navigation diagnostics could not be retained")) }
+          throw error
+        }
         setAccessibleText(uniqueEditor(password = true), requireNotNull(input.setupCode))
         findText(app.getString(R.string.watch_connect)).click()
         awaitState("current certificate prompt") { runtime.state.value.trust != null }
@@ -457,6 +496,34 @@ class WearDirectGatewayFlowTest {
     // UiAutomator 2.4.0 setText logs its argument; invoke the public node action directly.
     val arguments = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value) }
     assertTrue("native editor accepted input", editor.accessibilityNodeInfo.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments))
+  }
+
+  private fun navigationSnapshot(
+    activity: MainActivity?,
+    runtime: WearDirectRuntime,
+  ): JsonObject {
+    val state = runtime.state.value
+    val interactive = app.getSystemService(PowerManager::class.java).isInteractive
+    val keyguard = app.getSystemService(KeyguardManager::class.java)
+    val showing = keyguard.isKeyguardLocked
+    val locked = keyguard.isDeviceLocked
+    val lifecycle = activity?.lifecycle?.currentState?.name ?: "UNKNOWN"
+    val focused = activity?.hasWindowFocus() == true
+    // These non-atomic facts avoid accessibility queries and screenshots, which
+    // can add hidden waits. Compose's local management state stays unknown.
+    return buildJsonObject {
+      put("elapsedRealtimeMs", SystemClock.elapsedRealtime())
+      put("screenInteractive", interactive)
+      put("keyguardShowing", showing)
+      put("deviceLocked", locked)
+      put("activityLifecycle", lifecycle)
+      put("activityFocused", focused)
+      put("selected", state.selected != null)
+      put("busy", state.busy)
+      put("trust", state.trust != null)
+      put("managementRequired", state.connectionManagementRequired)
+      put("composeManage", "UNKNOWN")
+    }
   }
 
   private fun findText(
