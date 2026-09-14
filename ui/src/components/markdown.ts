@@ -564,15 +564,15 @@ function renderSanitizedMarkdown(renderInput: string, renderOptions: MarkdownRen
     // Large plain-text replies should stay readable without inheriting the
     // capped code-block chrome, while still preserving whitespace for logs
     // and other structured text that commonly trips the parse guard.
-    return DOMPurify.sanitize(toEscapedPlainTextHtml(input, renderOptions), activeSanitizeOptions);
+    return DOMPurify.sanitize(toPlainTextFallbackNode(input, renderOptions), activeSanitizeOptions);
   }
-  let rendered: string;
+  let rendered: string | HTMLDivElement;
   try {
     rendered = markdownParser.render(input, renderOptions);
   } catch (err) {
     // Fall back to escaped plain text when md.render() throws (#36213).
     console.warn("[markdown] md.render failed, falling back to plain text:", err);
-    rendered = toEscapedPlainTextHtml(input, renderOptions);
+    rendered = toPlainTextFallbackNode(input, renderOptions);
   }
   return DOMPurify.sanitize(rendered, activeSanitizeOptions);
 }
@@ -601,7 +601,7 @@ export function toSanitizedMarkdownHtml(
   return sanitized;
 }
 
-function toEscapedPlainTextHtml(value: string, options: MarkdownRenderEnv): string {
+function toPlainTextFallbackNode(value: string, options: MarkdownRenderEnv): HTMLDivElement {
   return renderAssistantTranscriptPlainTextFallback(
     normalizeMarkdownLineBreaks(value),
     options.assistantTranscriptRoleHeaders,

@@ -126,11 +126,17 @@ export function renderAssistantTranscriptPlainTextFallback(
   enabled: boolean,
   assistantLabel: () => string,
   escapeHtml: (value: string) => string,
-): string {
-  const escaped = escapeHtml(text);
+): HTMLDivElement {
+  const fallback = document.createElement("div");
+  fallback.className = "markdown-plain-text-fallback";
+  // HTML parsing drops literal NULs. Preserve that behavior without parsing the source as markup.
+  const source = text.replaceAll("\0", "");
   if (!enabled) {
-    return `<div class="markdown-plain-text-fallback">${escaped}</div>`;
+    fallback.textContent = source;
+    return fallback;
   }
   const marker = renderAssistantTranscriptRoleMarker(`${assistantLabel()}:`, escapeHtml);
-  return `<div class="markdown-plain-text-fallback">${marker}\n<span class="markdown-plain-text-source">${escaped}</span></div>`;
+  fallback.innerHTML = `${marker}\n<span class="markdown-plain-text-source"></span>`;
+  fallback.lastElementChild!.textContent = source;
+  return fallback;
 }

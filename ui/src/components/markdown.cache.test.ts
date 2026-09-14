@@ -92,6 +92,28 @@ describe("toSanitizedMarkdownHtml", () => {
       expect(fallback?.textContent).toBe(input);
     });
 
+    it.each([false, true])(
+      "preserves literal markup and text normalization with role headers %s",
+      (assistantTranscriptRoleHeaders) => {
+        const padding = "x".repeat(40_001);
+        const input = `&lt;b&gt;<img src=x onerror=alert(1)> "' \u00a0\0\r\n\u2028${padding}`;
+        const escaped = `&amp;lt;b&amp;gt;&lt;img src=x onerror=alert(1)&gt; "' &nbsp;\n\n${padding}`;
+        const translate = vi.spyOn(i18n, "t").mockReturnValue("Helper &\0\r\n<");
+
+        try {
+          const html = toSanitizedMarkdownHtml(input, { assistantTranscriptRoleHeaders });
+          expect(html).toBe(
+            assistantTranscriptRoleHeaders
+              ? `<div class="markdown-plain-text-fallback"><code class="assistant-transcript-role">Helper &amp;\n&lt;:</code>\n<span class="markdown-plain-text-source">${escaped}</span></div>`
+              : `<div class="markdown-plain-text-fallback">${escaped}</div>`,
+          );
+          expect(htmlFragment(html).querySelector("img")).toBeNull();
+        } finally {
+          translate.mockRestore();
+        }
+      },
+    );
+
     it("caches oversized fallback results", () => {
       const input =
         Array.from({ length: 240 }, (_, i) => `P${i}`).join("\n\n") + "x".repeat(45_000);
