@@ -234,6 +234,11 @@ describe("test-projects args", () => {
       config: "test/vitest/vitest.unit-fast.config.ts",
     },
     {
+      title: "routes the Git backup outcome consumer to the infra config",
+      target: "src/snapshot/git-backup.test.ts",
+      config: "test/vitest/vitest.infra.config.ts",
+    },
+    {
       title: "routes the worker-backed task registry to the infra config",
       target: "src/tasks/task-registry.test.ts",
       config: "test/vitest/vitest.infra.config.ts",
