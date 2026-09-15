@@ -513,7 +513,7 @@ export function createFullModelCatalogAccess(params: {
             nativeDiscoveryStarted = true;
             nativeCatalogAcquired = false;
             current.authoritative = false;
-            attempt.started([normalizeProvider(provider)], "native");
+            attempt.started(provider ? [normalizeProvider(provider)] : [], "native");
           },
           onDiscoveryCompleted: (rows) => {
             discoveredProviders = [

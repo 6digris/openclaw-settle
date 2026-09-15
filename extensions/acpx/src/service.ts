@@ -72,6 +72,7 @@ type CreateAcpxRuntimeServiceParams = {
   openKeyedStore?: <T>(options: OpenKeyedStoreOptions) => PluginStateKeyedStore<T>;
   runtimeFactory?: (params: AcpxRuntimeFactoryParams) => AcpxRuntimeLike | Promise<AcpxRuntimeLike>;
   processCleanupDeps?: AcpxProcessCleanupDeps;
+  startupProbe?: boolean;
 };
 
 const loadRuntimeModule = createLazyRuntimeModule(() => import("./runtime.js"));
@@ -420,7 +421,7 @@ export function createAcpxRuntimeService(
       );
       runtime = startedRuntime;
 
-      const shouldProbeRuntime = shouldProbeRuntimeAtStartup();
+      const shouldProbeRuntime = params.startupProbe !== false && shouldProbeRuntimeAtStartup();
       detailAcpxStartup(ctx, "probe-policy", [
         ["startupProbeEnabledCount", shouldProbeRuntime ? 1 : 0],
         ["probeAgent", pluginConfig.probeAgent ?? "default"],

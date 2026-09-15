@@ -6,6 +6,10 @@ import {
   resetPreparedModelRuntimeHarness,
 } from "./prepared-model-runtime.test-harness.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  createPluginMetadataSnapshot,
+  makeRegistry,
+} from "../config/plugin-auto-enable.test-helpers.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { createDeferredCore } from "../shared/deferred.js";
@@ -32,6 +36,123 @@ afterEach(async ({ task }) => {
 });
 
 describe("native picker acquisition failures", () => {
+  it("acquires an unconfigured harness once and retires its inventory on refresh or disablement", async () => {
+    const config: OpenClawConfig = { agents: { entries: { pro: {} } } };
+    const native = {
+      provider: "example",
+      id: "model",
+      name: "Installed model",
+      nativeRuntime: "native",
+    };
+    const loadModelCatalog = vi.fn(async () => [native]);
+    const manifests = makeRegistry([{ id: "native", origin: "bundled", channels: [] }]);
+    Object.assign(manifests.plugins[0]!, {
+      enabledByDefault: true,
+      activation: { onModelCatalog: true, onAgentHarnesses: ["native"] },
+    });
+    const metadata = createPluginMetadataSnapshot({ config, manifestRegistry: manifests });
+    mocks.configuredAgentIds = ["pro"];
+    mocks.loadAgentRuntimePluginRegistryHandle.mockImplementation(() => {
+      const registry = createEmptyPluginRegistry();
+      registry.agentHarnesses.push({
+        pluginId: "native",
+        source: "fixture",
+        harness: {
+          id: "native",
+          label: "Native",
+          supports: () => ({ supported: true }),
+          async runAttempt() {
+            throw new Error("catalog-only fixture");
+          },
+          loadModelCatalog,
+        },
+      });
+      return registry;
+    });
+    const refresh = (nextConfig: OpenClawConfig) =>
+      refreshPreparedModelRuntimeSnapshots(nextConfig, {
+        gatewayLifecycle: true,
+        catalogMode: "static",
+        allowGatewaySubagentBinding: true,
+        pluginMetadataSnapshot: metadata,
+      });
+    const read = (currentConfig: OpenClawConfig) =>
+      getPreparedModelRuntimeSnapshot({
+        config: currentConfig,
+        agentId: "pro",
+        agentDir: state.agentDir("pro"),
+      })!;
+    await refresh(config);
+    const owner = read(config);
+    expect(loadModelCatalog).not.toHaveBeenCalled();
+    loadModelCatalog.mockRejectedValueOnce(new Error("Native inventory unavailable"));
+    await expect(owner.loadFullModelCatalog!()).rejects.toThrow("Native inventory unavailable");
+    expect(owner.readFullModelCatalog!()).toMatchObject({
+      authoritative: false,
+      refreshFailed: true,
+    });
+    const catalog = await owner.loadFullModelCatalog!({ refresh: true });
+    expect(catalog.entries).toContainEqual(expect.objectContaining(native));
+    expect(catalog.routeVariants).toContainEqual(expect.objectContaining(native));
+    expect(catalog.authoritative).not.toBe(false);
+    expect(catalog.refreshFailed).toBeUndefined();
+    expect(await owner.loadFullModelCatalog!()).toBe(catalog);
+    expect(owner.readFullModelCatalog!()).toBe(catalog);
+    expect(loadModelCatalog).toHaveBeenCalledTimes(2);
+
+    const unrelated = await owner.loadFullModelCatalog!({
+      refresh: true,
+      providerIds: ["unrelated"],
+    });
+    expect(unrelated.routeVariants).toContainEqual(expect.objectContaining(native));
+    expect(loadModelCatalog).toHaveBeenCalledTimes(2);
+
+    loadModelCatalog.mockRejectedValueOnce(new Error("Known native inventory unavailable"));
+    await expect(owner.loadFullModelCatalog!({ refresh: true })).rejects.toThrow(
+      "Known native inventory unavailable",
+    );
+    expect(owner.readFullModelCatalog!()).toMatchObject({ refreshFailed: true });
+    const recovered = await owner.loadFullModelCatalog!({
+      refresh: true,
+      providerIds: ["example"],
+    });
+    expect(recovered.routeVariants).toContainEqual(expect.objectContaining(native));
+    expect(recovered.refreshFailed).toBeUndefined();
+    expect(loadModelCatalog).toHaveBeenCalledTimes(4);
+
+    loadModelCatalog.mockResolvedValue([]);
+    const removed = await owner.loadFullModelCatalog!({ refresh: true, providerIds: ["example"] });
+    expect(removed.entries).not.toContainEqual(expect.objectContaining(native));
+    expect(removed.routeVariants).not.toContainEqual(expect.objectContaining(native));
+    expect(loadModelCatalog).toHaveBeenCalledTimes(5);
+    await owner.loadFullModelCatalog!({ refresh: true, providerIds: ["unrelated"] });
+    expect(loadModelCatalog).toHaveBeenCalledTimes(5);
+
+    const started = createDeferredCore();
+    const release = createDeferredCore();
+    loadModelCatalog.mockImplementation(async () => {
+      started.resolve();
+      await release.promise;
+      return [native];
+    });
+    const loading = owner.loadFullModelCatalog!({ refresh: true });
+    const rejected = expect(loading).rejects.toThrow("superseded");
+    const disabled: OpenClawConfig = {
+      ...config,
+      plugins: { entries: { native: { enabled: false } } },
+    };
+    try {
+      await started.promise;
+      await refresh(disabled);
+    } finally {
+      release.resolve();
+    }
+    await rejected;
+    const replacement = await read(disabled).loadFullModelCatalog!();
+    expect(replacement.entries).not.toContainEqual(expect.objectContaining(native));
+    expect(loadModelCatalog).toHaveBeenCalledTimes(6);
+  });
+
   async function prepareNativePickerOwner() {
     const { resolveAgentEffectiveModelPrimary } =
       await vi.importActual<typeof import("./agent-scope.js")>("./agent-scope.js");

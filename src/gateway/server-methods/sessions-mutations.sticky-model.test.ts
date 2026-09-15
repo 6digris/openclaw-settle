@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelCatalogEntry } from "../../agents/model-catalog.js";
+import { resolveSessionRuntimeOverrideForProvider } from "../../agents/session-runtime-compat.js";
 import { clearFollowupQueue, getFollowupQueue } from "../../auto-reply/reply/queue/state.js";
 import {
   loadSessionEntry,
@@ -10,6 +11,8 @@ import type { GatewayOperatorRoleDefinition } from "../../config/types.gateway.j
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
+import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
+import { withPluginRuntimeRegistryScope } from "../../plugins/runtime/gateway-request-scope.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import * as userModelAccounts from "../../state/user-model-accounts.js";
@@ -200,6 +203,9 @@ function queueRuntimeSelection(sessionKey: string) {
     config: cfg,
     provider: "anthropic",
     model: "claude-opus-4-6",
+    authProfileId: "anthropic:previous",
+    authProfileIdSource: "user" as const,
+    thinkLevel: "high" as const,
     timeoutMs: 30_000,
     blockReplyBreak: "message_end" as const,
   };
@@ -225,7 +231,10 @@ beforeAll(async () => {
   // Sticky selections still pass real harness admission; this fixture supplies
   // the installed owner required by its OpenAI route without loading runtime code.
   pluginMetadata.snapshot = createPluginMetadataSnapshotFixture({
-    plugins: [{ id: "codex", activation: { onAgentHarnesses: ["codex"] } }],
+    plugins: ["codex", "native", "previous-native"].map((id) => ({
+      id,
+      activation: { onAgentHarnesses: [id] },
+    })),
   });
 });
 
@@ -686,6 +695,124 @@ describe("sessions.patch personal model-account ownership", () => {
 });
 
 describe("explicit session model runtimes", () => {
+  it.each([
+    { previous: undefined, runtime: "native", provider: "native-provider", operation: "patch" },
+    {
+      previous: "previous-native",
+      runtime: "native",
+      provider: "native-provider",
+      operation: "patch",
+    },
+    {
+      previous: "previous-native",
+      runtime: "claude-cli",
+      provider: "claude-cli",
+      operation: "patch",
+    },
+    { previous: "claude-cli", runtime: "native", provider: "native-provider", operation: "patch" },
+    {
+      previous: "previous-native",
+      runtime: "native",
+      provider: "native-provider",
+      operation: "create",
+    },
+  ])(
+    "selects $runtime from $previous with a model-only sessions.$operation",
+    async ({ previous, runtime, provider, operation }) => {
+      const sessionKey = "agent:main:native-default";
+      await upsertSessionEntryCore(
+        { agentId: "main", sessionKey },
+        {
+          sessionId: sessionKey,
+          updatedAt: 1,
+          agentHarnessId: previous,
+          agentRuntimeOverride: previous,
+        },
+      );
+      const requestContext = context();
+      requestContext.loadGatewayModelCatalogSnapshot.mockResolvedValue(
+        catalogSnapshot([
+          {
+            provider,
+            id: "model",
+            name: "Selected model",
+            reasoning: false,
+            ...(runtime === "native" ? { nativeRuntime: runtime } : {}),
+          },
+        ]),
+      );
+      runtimeChoice.prepare.mockResolvedValue({
+        kind: "ready",
+        runtimeId: runtime,
+        validate: () => undefined,
+      });
+      const registry = createEmptyPluginRegistry();
+      for (const id of ["native", "previous-native"]) {
+        registry.agentHarnesses.push({
+          pluginId: id,
+          source: "fixture",
+          harness: {
+            id,
+            label: id,
+            supports: ({ requestedRuntime }) => ({ supported: requestedRuntime === id }),
+            async runAttempt() {
+              throw new Error("Session selection must not run a prompt");
+            },
+          },
+        });
+      }
+      registry.cliBackends.push({
+        pluginId: "anthropic",
+        source: "fixture",
+        backend: { id: "claude-cli", modelProvider: "anthropic", config: { command: "claude" } },
+      });
+      const queued = queueRuntimeSelection(sessionKey);
+      try {
+        await withPluginRuntimeRegistryScope(registry, async () => {
+          if (operation === "create") {
+            expect(
+              await createGatewaySession({
+                cfg,
+                key: sessionKey,
+                model: `${provider}/model`,
+                commandSource: "test",
+                allowExistingModelSelection: true,
+                operatorRoleActor: { kind: "system" },
+                loadGatewayModelCatalogSnapshot: requestContext.loadGatewayModelCatalogSnapshot,
+              }),
+            ).toMatchObject({ ok: true });
+          } else {
+            const response = await patchSession(
+              { key: sessionKey, model: `${provider}/model` },
+              ["operator.admin"],
+              requestContext,
+            );
+            expect(response[0], JSON.stringify(response)).toBe(true);
+          }
+          expect(queued).toMatchObject({
+            provider,
+            model: "model",
+            requestedRouteResolution: "resolved",
+            authProfileId: undefined,
+            authProfileIdSource: undefined,
+            thinkLevel: "off",
+          });
+          const stored = loadSessionEntry({ agentId: "main", sessionKey });
+          expect(stored).toMatchObject({
+            providerOverride: provider,
+            modelOverride: "model",
+            agentRuntimeOverride: runtime,
+          });
+          expect(resolveSessionRuntimeOverrideForProvider({ provider, entry: stored, cfg })).toBe(
+            runtime,
+          );
+        });
+      } finally {
+        clearFollowupQueue(sessionKey);
+      }
+    },
+  );
+
   it.each(["codex", "openclaw"])(
     "pins %s without changing the configured default",
     async (agentRuntime) => {
@@ -782,17 +909,24 @@ describe("explicit session model runtimes", () => {
         .mockReturnValueOnce(undefined)
         .mockReturnValue("The selected runtime is no longer available."),
     });
-    const response = await patchSession({
-      key: sessionKey,
-      label: "Wrong",
-      model: "openai/gpt-5.6-sol",
-      agentRuntime: "codex",
-    });
-    expect(response[0]).toBe(false);
-    expect(response[2]?.message).toContain("no longer available");
-    const stored = loadSessionEntry({ agentId: "main", sessionKey });
-    expect(stored).toMatchObject({ label: "Original" });
-    expect(stored).not.toHaveProperty("agentRuntimeOverride");
+    const queued = queueRuntimeSelection(sessionKey);
+    const initialQueued = structuredClone(queued);
+    try {
+      const response = await patchSession({
+        key: sessionKey,
+        label: "Wrong",
+        model: "openai/gpt-5.6-sol",
+        agentRuntime: "codex",
+      });
+      expect(response[0]).toBe(false);
+      expect(response[2]?.message).toContain("no longer available");
+      const stored = loadSessionEntry({ agentId: "main", sessionKey });
+      expect(stored).toMatchObject({ label: "Original" });
+      expect(stored).not.toHaveProperty("agentRuntimeOverride");
+      expect(queued).toEqual(initialQueued);
+    } finally {
+      clearFollowupQueue(sessionKey);
+    }
   });
 
   it("does not overwrite a replaced session while runtime preparation awaits", async () => {

@@ -20,6 +20,7 @@ type InnerAcpxRuntimeServiceParams = NonNullable<
 type CreateAcpxRuntimeServiceParams = Omit<InnerAcpxRuntimeServiceParams, "backendLifecycle">;
 
 type DeferredServiceState = {
+  published: boolean;
   ctx: OpenClawPluginServiceContext | null;
   lifecycleRevision: number;
   ownedRuntime: CompleteAcpRuntime | null;
@@ -58,17 +59,23 @@ async function startRealService(
     const { createAcpxRuntimeService: createAcpxRuntimeServiceLocal } = await loadServiceModule();
     const service = createAcpxRuntimeServiceLocal({
       ...state.params,
+      ...(!state.published ? { startupProbe: false } : {}),
       backendLifecycle: {
         publish(backend) {
           if (state.lifecycleRevision !== lifecycleRevision || state.ctx !== ctx) {
             throw new Error("ACPX runtime service stopped during activation");
           }
-          if (getAcpRuntimeBackend(ACPX_BACKEND_ID)?.runtime !== deferredRuntime) {
+          if (
+            state.published &&
+            getAcpRuntimeBackend(ACPX_BACKEND_ID)?.runtime !== deferredRuntime
+          ) {
             throw new Error("ACPX runtime service lost registry ownership during activation");
           }
           // Publication is a synchronous compare-and-replace: another plugin
           // generation cannot be adopted between the ownership check and write.
-          registerAcpRuntimeBackend({ id: ACPX_BACKEND_ID, ...backend });
+          if (state.published) {
+            registerAcpRuntimeBackend({ id: ACPX_BACKEND_ID, ...backend });
+          }
           publishedRuntime = backend.runtime;
           state.ownedRuntime = backend.runtime;
         },
@@ -85,7 +92,7 @@ async function startRealService(
     if (!publishedRuntime) {
       throw new Error("ACPX runtime service did not register an ACP backend");
     }
-    if (getAcpRuntimeBackend(ACPX_BACKEND_ID)?.runtime !== publishedRuntime) {
+    if (state.published && getAcpRuntimeBackend(ACPX_BACKEND_ID)?.runtime !== publishedRuntime) {
       throw new Error("ACPX runtime service lost registry ownership during activation");
     }
     // Registry publication intentionally precedes the startup probe, but callers
@@ -117,8 +124,11 @@ function createDeferredRuntime(
 /** Creates the plugin service that registers ACPX as an ACP runtime backend. */
 export function createAcpxRuntimeService(
   params: CreateAcpxRuntimeServiceParams = {},
-): OpenClawPluginService {
+): OpenClawPluginService & {
+  getRuntime: (ctx: OpenClawPluginServiceContext) => Promise<CompleteAcpRuntime>;
+} {
   const state: DeferredServiceState = {
+    published: false,
     ctx: null,
     lifecycleRevision: 0,
     ownedRuntime: null,
@@ -131,6 +141,14 @@ export function createAcpxRuntimeService(
 
   return {
     id: "acpx-runtime",
+    async getRuntime(ctx) {
+      if (!state.ctx) {
+        state.ctx = ctx;
+        state.lifecycleRevision += 1;
+        state.ownedRuntime = createDeferredRuntime(state, state.lifecycleRevision);
+      }
+      return startRealService(state, state.lifecycleRevision, state.ownedRuntime!);
+    },
     async start(ctx) {
       if (process.env.OPENCLAW_SKIP_ACPX_RUNTIME === "1") {
         ctx.logger.info("skipping embedded acpx runtime backend (OPENCLAW_SKIP_ACPX_RUNTIME=1)");
@@ -138,6 +156,12 @@ export function createAcpxRuntimeService(
       }
       if (state.stopPromise) {
         await state.stopPromise;
+      }
+
+      state.published = true;
+      if (state.ctx && state.ownedRuntime) {
+        registerAcpRuntimeBackend({ id: ACPX_BACKEND_ID, runtime: state.ownedRuntime });
+        return;
       }
 
       state.lifecycleRevision += 1;
@@ -160,6 +184,7 @@ export function createAcpxRuntimeService(
       // service still owns cleanup, but it can no longer become the active runtime.
       state.lifecycleRevision += 1;
       state.ctx = null;
+      state.published = false;
       const ownedRuntime = state.ownedRuntime;
       unregisterOwnedRuntime(ownedRuntime);
       const startPromise = state.startPromise;

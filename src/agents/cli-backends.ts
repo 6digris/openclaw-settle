@@ -222,7 +222,8 @@ export function resolveCliRuntimeModelBackendBinding(params: {
     return undefined;
   }
   const runtimeBinding = listCliRuntimeModelBackendBindings().find(
-    (binding) => binding.provider === provider && binding.runtime === runtime,
+    (binding) =>
+      binding.runtime === runtime && (binding.provider === provider || runtime === provider),
   );
   if (runtimeBinding) {
     return runtimeBinding;
@@ -240,7 +241,7 @@ export function resolveCliRuntimeModelBackendBinding(params: {
     return undefined;
   }
   const setupProvider = resolveCliBackendModelProvider(setupBackend.backend);
-  return setupProvider === provider
+  return setupProvider === provider || runtime === provider
     ? {
         provider,
         runtime,

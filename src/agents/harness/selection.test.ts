@@ -2636,6 +2636,166 @@ describe("selectAgentHarness", () => {
     );
   });
 
+  it.each([
+    { label: "provider API", provider: { api: "openai-completions" as const } },
+    { label: "provider endpoint", provider: { baseUrl: "https://proxy.example/v1" } },
+    { label: "selected-model API", model: { api: "openai-completions" as const } },
+    { label: "selected-model endpoint", model: { baseUrl: "https://model.example/v1" } },
+  ])("projects authored $label into registered harness endpoint checks", ({ provider, model }) => {
+    const config: OpenClawConfig = {
+      models: {
+        providers: {
+          "native-test": {
+            baseUrl: "",
+            ...provider,
+            models: [
+              {
+                id: "model-a",
+                name: "Model A",
+                reasoning: false,
+                input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                maxTokens: 100,
+                ...model,
+              },
+            ],
+          },
+        },
+      },
+    };
+    const supports = vi.fn<AgentHarness["supports"]>((context) =>
+      context.modelProvider?.endpointOverrides === "present"
+        ? { supported: false, reason: "native runtime cannot use this endpoint" }
+        : { supported: true },
+    );
+    registerAgentHarness({
+      id: "opencode",
+      label: "OpenCode",
+      supports,
+      runAttempt: agentRunAttempt,
+    });
+
+    expect(() =>
+      selectAgentHarness({
+        provider: "native-test",
+        modelId: "model-a",
+        config,
+        agentHarnessRuntimeOverride: "opencode",
+      }),
+    ).toThrow("native runtime cannot use this endpoint");
+    expect(supports).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelProvider: expect.objectContaining({
+          endpointOverrides: "present",
+          requestTransportOverrides: "none",
+        }),
+      }),
+    );
+  });
+
+  it("excludes synthesized runtime endpoints from registered harness endpoint checks", () => {
+    const sourceConfig: OpenClawConfig = {};
+    const runtimeConfig: OpenClawConfig = {
+      models: {
+        providers: {
+          "native-test": {
+            api: "openai-responses",
+            baseUrl: "https://native.example/v1",
+            models: [],
+          },
+        },
+      },
+    };
+    setRuntimeConfigSnapshot(runtimeConfig, sourceConfig);
+    const supports = vi.fn<AgentHarness["supports"]>((context) =>
+      context.modelProvider?.endpointOverrides === "none"
+        ? { supported: true }
+        : { supported: false, reason: "unexpected authored endpoint" },
+    );
+    registerAgentHarness({
+      id: "opencode",
+      label: "OpenCode",
+      supports,
+      runAttempt: agentRunAttempt,
+    });
+
+    expect(
+      selectAgentHarness({
+        provider: "native-test",
+        modelId: "model-a",
+        config: runtimeConfig,
+        agentHarnessRuntimeOverride: "opencode",
+      }).id,
+    ).toBe("opencode");
+    expect(supports).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelProvider: expect.objectContaining({
+          api: "openai-responses",
+          baseUrl: "https://native.example/v1",
+          endpointOverrides: "none",
+        }),
+      }),
+    );
+  });
+
+  it("uses only the exact selected model for authored endpoint checks", () => {
+    const model = {
+      name: "Test model",
+      reasoning: false,
+      input: ["text" as const],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      maxTokens: 100,
+    };
+    const config: OpenClawConfig = {
+      models: {
+        providers: {
+          "native-test": {
+            baseUrl: "",
+            models: [
+              { ...model, id: "model-a" },
+              { ...model, id: "native-test/model-a", baseUrl: "https://legacy.example/v1" },
+              { ...model, id: "model-b", baseUrl: "https://other.example/v1" },
+            ],
+          },
+        },
+      },
+    };
+    const context = (modelId: string) =>
+      buildAgentHarnessSupportContext({
+        provider: "native-test",
+        modelId,
+        requestedRuntime: "opencode",
+        config,
+      });
+    expect(context("model-a").modelProvider?.endpointOverrides).toBe("none");
+    expect(context("model-b").modelProvider?.endpointOverrides).toBe("present");
+  });
+
+  it.each(["none", "present"] as const)(
+    "preserves prepared endpoint override fact %s",
+    (endpointOverrides) => {
+      expect(
+        buildAgentHarnessSupportContext({
+          provider: "native-test",
+          modelId: "model-a",
+          requestedRuntime: "opencode",
+          modelProvider: { endpointOverrides },
+          config: {
+            models: {
+              providers: {
+                "native-test": {
+                  api: "openai-responses",
+                  baseUrl: "https://authored.example/v1",
+                  models: [],
+                },
+              },
+            },
+          },
+        }).modelProvider?.endpointOverrides,
+      ).toBe(endpointOverrides);
+    },
+  );
+
   it("projects a self-qualified model adapter and transport into harness capability checks", () => {
     const config = {
       models: {

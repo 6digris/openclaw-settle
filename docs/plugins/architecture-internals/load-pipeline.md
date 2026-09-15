@@ -76,6 +76,8 @@ loading before broader registry materialization:
   requested provider id
 - agent-runtime planning narrows to plugins that declare the selected embedded
   harness runtime id in `activation.onAgentHarnesses`
+- model catalog planning also includes enabled harness owners that declare
+  `activation.onModelCatalog`, without requiring a configured model selection
 - startup plugin selection adds plugins whose `activation.onConfigPaths`
   entries are present and enabled in config
 - Gateway startup planning uses `activation.onStartup` for explicit startup
@@ -92,6 +94,7 @@ separating explicit `activation.*` hints from manifest-ownership fallback:
 | `activation-capability-hint`         | —                                                                                            |
 | `activation-channel-hint`            | `manifest-channel-owner` (`channels`)                                                        |
 | `activation-command-hint`            | `manifest-cli-command-owner` (`cliCommands`), `manifest-command-alias` (`commandAliases`)    |
+| `activation-model-catalog-hint`      | —                                                                                            |
 | `activation-provider-hint`           | `manifest-provider-owner` (`providers`), `manifest-setup-provider-owner` (`setup.providers`) |
 | `activation-route-hint`              | —                                                                                            |
 | — (hook trigger has no hint variant) | `manifest-hook-owner` (`hooks`), `manifest-tool-contract` (`contracts.tools`)                |

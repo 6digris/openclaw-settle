@@ -32,6 +32,8 @@ import { sliceUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import { AcpRuntimeError, type AcpRuntime, type AcpRuntimeErrorCode } from "../runtime-api.js";
 import { CODEX_ACP_PACKAGE, OPENCLAW_CODEX_CONFIG_ARG } from "./codex-adapter.js";
 import { renderAgentCommand, splitCommandParts, type AcpxAgentCommand } from "./command-line.js";
+import { createAcpxNativeRuntime, type AcpxSessionDelegate } from "./native-session.js";
+import type { AcpxNativeRuntime } from "./native-types.js";
 import {
   ACPX_PROBE_LEASE_SESSION_KEY,
   hashAcpxProcessCommand,
@@ -755,7 +757,7 @@ export class AcpxRuntime implements CompleteAcpRuntime {
   private readonly pluginToolsMcpBridgeEnabled: boolean;
   private readonly openclawToolsMcpBridgeEnabled: boolean;
   private readonly managedToolsMcpBridgeEnabled: boolean;
-  private readonly managedToolsSessionDelegates = new Map<string, BaseAcpxRuntime>();
+  private readonly managedToolsSessionDelegates = new Map<string, AcpxSessionDelegate>();
   private readonly processCleanupDeps: AcpxProcessCleanupDeps | undefined;
   private readonly wrapperRoot: string | undefined;
   private readonly gatewayInstanceId: string | undefined;
@@ -766,6 +768,8 @@ export class AcpxRuntime implements CompleteAcpRuntime {
   private readonly processLeaseOperationCounts = new Map<string, number>();
   private readonly uncertainProcessLeaseIds = new Set<string>();
   private readonly cwd: string;
+
+  readonly native: AcpxNativeRuntime;
 
   constructor(options: OpenClawAcpxRuntimeOptions, testOptions?: AcpxRuntimeTestOptions) {
     this.legacyBareSessionKeys = new Set(options.openclawLegacyBareSessionKeys);
@@ -803,6 +807,82 @@ export class AcpxRuntime implements CompleteAcpRuntime {
     this.delegateOptions = sharedOptions;
     this.delegateTestOptions = delegateTestOptions as BaseAcpxRuntimeTestOptions;
     this.delegate = new BaseAcpxRuntime(sharedOptions, this.delegateTestOptions);
+    this.native = createAcpxNativeRuntime({
+      runtime: this,
+      sessionStore: this.sessionStore,
+      options: sharedOptions,
+      testOptions: this.delegateTestOptions,
+      delegates: this.managedToolsSessionDelegates,
+      serialize: (key, run) => this.sessionEnsureQueue.enqueue(key, run),
+      ensure: (input) => this.ensureSessionUnlocked(input),
+      setModel: async (handle, value) =>
+        this.setConfigOptionUnlocked(
+          { handle, key: "model", value },
+          await this.loadOperationSnapshotForHandle(handle),
+        ),
+      getStatus: async (handle) =>
+        this.resolveDelegateForOperationSnapshot(
+          handle,
+          await this.loadOperationSnapshotForHandle(handle),
+        ).getStatus(toAcpxResourceInput({ handle })),
+      transient: async (input, run) => {
+        const records = new Map<string, AcpSessionRecord>();
+        let active = true;
+        const assertStoreActive = () => {
+          if (!active) {
+            throw new Error("Native catalog session store is closed");
+          }
+        };
+        const runtime = new AcpxRuntime(
+          {
+            ...options,
+            sessionStore: {
+              async load(id) {
+                assertStoreActive();
+                return records.get(id);
+              },
+              async save(record) {
+                assertStoreActive();
+                records.set(record.acpxRecordId, record);
+              },
+            },
+          },
+          testOptions,
+        );
+        let failure: unknown;
+        try {
+          return await runtime.native.withSession({ ...input, transient: false }, run);
+        } catch (error) {
+          failure = error;
+          throw error;
+        } finally {
+          try {
+            await runtime.native.closeSession(input, () => {});
+          } catch (error) {
+            if (failure) {
+              throw new AggregateError(
+                [failure, error],
+                "Native catalog failed and cleanup failed",
+              );
+            }
+            throw error;
+          } finally {
+            active = false;
+            records.clear();
+          }
+        }
+      },
+      mcpServers: (input) =>
+        input.sessionKey
+          ? withManagedToolsMcpSessionEnv({
+              pluginToolsEnabled: this.pluginToolsMcpBridgeEnabled,
+              openclawToolsEnabled: this.openclawToolsMcpBridgeEnabled,
+              mcpServers: this.delegateOptions.mcpServers,
+              sessionKey: input.sessionKey,
+              agentId: input.agentId,
+            })
+          : [],
+    });
     this.bridgeSafeDelegate = shouldUseDistinctBridgeDelegate(options)
       ? new BaseAcpxRuntime(
           {
@@ -838,13 +918,13 @@ export class AcpxRuntime implements CompleteAcpRuntime {
     sessionKey: string;
     agentId?: string;
   }): BaseAcpxRuntime {
-    if (!this.managedToolsMcpBridgeEnabled) {
-      return this.delegate;
-    }
     const normalizedSessionKey = resolveAcpxSessionResource(target);
     const cached = this.managedToolsSessionDelegates.get(normalizedSessionKey);
     if (cached) {
-      return cached;
+      return cached.delegate;
+    }
+    if (!this.managedToolsMcpBridgeEnabled) {
+      return this.delegate;
     }
     // Upstream acpx captures mcpServers at runtime construction. Managed tool
     // bridges need per-session identity, so cache one delegate
@@ -862,7 +942,7 @@ export class AcpxRuntime implements CompleteAcpRuntime {
       },
       this.delegateTestOptions,
     );
-    this.managedToolsSessionDelegates.set(normalizedSessionKey, delegate);
+    this.managedToolsSessionDelegates.set(normalizedSessionKey, { delegate });
     return delegate;
   }
 
@@ -1415,10 +1495,13 @@ export class AcpxRuntime implements CompleteAcpRuntime {
     logicalInput: Parameters<AcpRuntime["ensureSession"]>[0],
   ): Promise<OpenClawRuntimeHandle> {
     assertSupportedRuntimeSessionMode(logicalInput.mode);
-    const command = resolveAgentCommand({
-      agentName: logicalInput.agent,
-      agentRegistry: this.agentRegistry,
-    });
+    const command =
+      this.managedToolsSessionDelegates.get(resolveAcpxSessionResource(logicalInput))?.native
+        ?.command ??
+      resolveAgentCommand({
+        agentName: logicalInput.agent,
+        agentRegistry: this.agentRegistry,
+      });
     const delegate = this.resolveDelegateForSession({
       command,
       sessionKey: logicalInput.sessionKey,
@@ -1727,7 +1810,7 @@ export class AcpxRuntime implements CompleteAcpRuntime {
         });
         // Delegate retirement does not depend on process cleanup. A delayed close
         // must not evict a replacement created by another completed close.
-        if (this.managedToolsSessionDelegates.get(handle.sessionKey) === delegate) {
+        if (this.managedToolsSessionDelegates.get(handle.sessionKey)?.delegate === delegate) {
           this.managedToolsSessionDelegates.delete(handle.sessionKey);
         }
       } finally {

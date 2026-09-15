@@ -1,5 +1,11 @@
+import {
+  isDefaultAgentRuntimeId,
+  normalizeOptionalAgentRuntimeId,
+} from "../../agents/agent-runtime-id.js";
+import { resolveCliRuntimeModelBackendBinding } from "../../agents/cli-backends.js";
 /** Prepared plugin metadata handoff for runtime model normalization. */
 import type { ModelCatalogEntry } from "../../agents/model-catalog.js";
+import { resolveModelRuntimePolicy } from "../../agents/model-runtime-policy.js";
 import {
   findNormalizedProviderKey,
   modelKey,
@@ -105,7 +111,7 @@ export async function prepareModelSelectionRuntime(params: {
         authProfileOverrideSource: "user" as const,
       }
     : params.sessionEntry;
-  const runtime = resolveModelRuntimeDirective(params);
+  let runtime = resolveModelRuntimeDirective(params);
   if (runtime.kind === "invalid") {
     return { status: "rejected", reason: "invalid-runtime", message: runtime.errorText };
   }
@@ -118,20 +124,48 @@ export async function prepareModelSelectionRuntime(params: {
     };
   }
   let validateRuntimeSelection: (() => string | undefined) | undefined;
-  if (runtime.kind === "set") {
+  const hasRuntimeOwner =
+    selected?.nativeRuntime ||
+    resolveCliRuntimeModelBackendBinding({
+      provider: params.provider,
+      runtime: params.provider,
+    });
+  const configuredRuntime = hasRuntimeOwner
+    ? normalizeOptionalAgentRuntimeId(
+        resolveModelRuntimePolicy({
+          config: params.cfg,
+          agentId: params.agentId,
+          provider: params.provider,
+          modelId: params.model,
+        }).policy?.id,
+      )
+    : undefined;
+  const useModelRuntime =
+    hasRuntimeOwner && runtime.kind !== "set" && isDefaultAgentRuntimeId(configuredRuntime);
+  const retainRuntime = runtime.kind === "unchanged" && sessionEntry?.agentRuntimeOverride;
+  if (runtime.kind === "set" || useModelRuntime || retainRuntime) {
     const { preparePublishedModelRuntimeChoice } =
       await import("../../agents/model-runtime-choice.js");
     const choice = await preparePublishedModelRuntimeChoice({
       ...params,
       sessionEntry,
-      runtimeId: runtime.runtime,
+      runtimeId: runtime.kind === "set" ? runtime.runtime : undefined,
+      preferredRuntimeId: retainRuntime || undefined,
     });
     if (choice.kind === "unavailable") {
       return { status: "rejected", reason: "invalid-runtime", message: choice.message };
     }
     validateRuntimeSelection = choice.validate;
+    if (useModelRuntime || retainRuntime) {
+      runtime =
+        choice.runtimeId === retainRuntime
+          ? { kind: "unchanged" }
+          : choice.runtimeId
+            ? { kind: "set", runtime: choice.runtimeId }
+            : { kind: "clear" };
+    }
   }
-  if (selected?.reasoning !== undefined) {
+  if (selected?.nativeRuntime || selected?.reasoning !== undefined) {
     return { status: "ready", runtime, catalog: [...params.catalog], validateRuntimeSelection };
   }
   // The selected route owns its capabilities. A prepared default-provider row cannot

@@ -6,6 +6,7 @@ import type { OpenClawConfig } from "../config/types.js";
 import { normalizePluginsConfig, type NormalizedPluginsConfig } from "./config-state.js";
 import {
   hasExplicitManifestOwnerTrust,
+  isActivatedManifestOwner,
   isBundledManifestOwner,
   passesManifestOwnerBasePolicy,
 } from "./manifest-owner-policy.js";
@@ -21,12 +22,14 @@ type PluginActivationPlannerTrigger =
   | { kind: "command"; command: string }
   | { kind: "provider"; provider: string }
   | { kind: "agentHarness"; runtime: string }
+  | { kind: "modelCatalog" }
   | { kind: "channel"; channel: string }
   | { kind: "route"; route: string }
   | { kind: "capability"; capability: PluginManifestActivationCapability };
 
 type PluginActivationPlannerHintReason =
   | "activation-agent-harness-hint"
+  | "activation-model-catalog-hint"
   | "activation-capability-hint"
   | "activation-channel-hint"
   | "activation-command-hint"
@@ -117,6 +120,12 @@ export function resolveManifestActivationPlan(
       if (reasons.length === 0) {
         return [];
       }
+      if (
+        params.trigger.kind === "modelCatalog" &&
+        !isActivatedManifestOwner({ plugin, normalizedConfig, rootConfig: params.config })
+      ) {
+        return [];
+      }
       return [
         {
           pluginId: plugin.id,
@@ -170,6 +179,10 @@ function listManifestActivationTriggerReasons(
       return listProviderTriggerReasons(plugin, normalizeProviderId(trigger.provider));
     case "agentHarness":
       return listAgentHarnessTriggerReasons(plugin, normalizeCommandId(trigger.runtime));
+    case "modelCatalog":
+      return plugin.activation?.onModelCatalog && hasValues(plugin.activation.onAgentHarnesses)
+        ? ["activation-model-catalog-hint"]
+        : [];
     case "channel":
       return listChannelTriggerReasons(plugin, normalizeCommandId(trigger.channel));
     case "route":

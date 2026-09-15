@@ -221,6 +221,14 @@ openclaw config set agents.defaults.modelPolicy.allow '["openai/gpt-5.4","anthro
 
 ### Choose the same model with different runtimes
 
+Installed OpenCode agents contribute their models through the enabled ACPX plugin.
+Catalog preparation and explicit Refresh discover these models automatically.
+Select them through the normal model picker or `/model`; OpenCode owns sign-in
+and credentials. If a model has one native route, selection uses that runtime.
+An available hosted route keeps its existing default. Multiple native routes
+require an explicit runtime choice. Configured and explicit session runtimes
+take precedence.
+
 Set `pickerRuntimes` on an exact model entry to offer additional runtime choices
 in the Control UI. The entries share the model name and differ by their harness
 label. The configured `agentRuntime` remains the default:

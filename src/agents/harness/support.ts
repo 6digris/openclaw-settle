@@ -124,6 +124,25 @@ export function buildAgentHarnessSupportContext(
         canonicalizeProviderModelId(params.provider, configuredModelId),
       )
     : undefined;
+  const authoredProviderConfig = resolveMergedModelProviderConfig(authoredConfig, params.provider);
+  const authoredModelConfig = modelId
+    ? findConfiguredProviderModel(
+        authoredProviderConfig,
+        params.provider,
+        modelId,
+        (configuredModelId) => canonicalizeProviderModelId(params.provider, configuredModelId),
+      )
+    : undefined;
+  const endpointOverrides: ProviderRouteOverridePresence =
+    params.modelProvider?.endpointOverrides ??
+    ([
+      authoredProviderConfig?.api,
+      authoredProviderConfig?.baseUrl,
+      authoredModelConfig?.api,
+      authoredModelConfig?.baseUrl,
+    ].some((value) => readStringParam(value) !== undefined)
+      ? "present"
+      : "none");
   const agentId = resolveAgentRuntimePolicyAgentId(params);
   const hasConfiguredProviderRequestParams = hasAuthoredProviderRequestParams({
     config: params.config,
@@ -163,6 +182,7 @@ export function buildAgentHarnessSupportContext(
           request: params.modelProvider?.request ?? configuredModelProvider?.request,
           preparedAuth: params.modelProvider?.preparedAuth,
           requestTransportOverrides,
+          endpointOverrides,
         }
       : undefined;
   // Finalized routes carry the owner decision. Earlier selection resolves the same provider

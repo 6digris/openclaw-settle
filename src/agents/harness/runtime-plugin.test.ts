@@ -527,6 +527,55 @@ describe("harness runtime plugins", () => {
     expect(plan.config?.plugins?.entries?.openai).toEqual({ enabled: true });
   });
 
+  it("prepares automatic harness owners while excluding them from the provider worker", async () => {
+    const config: OpenClawConfig = { plugins: { slots: { memory: "none" } } };
+    const manifestRegistry = makeRegistry([{ id: "native", channels: [], origin: "bundled" }]);
+    Object.assign(manifestRegistry.plugins[0]!, {
+      enabledByDefault: true,
+      activation: { onModelCatalog: true, onAgentHarnesses: ["native"] },
+    });
+    const metadataSnapshot = createPluginMetadataSnapshot({ config, manifestRegistry });
+    const { resolveManifestActivationPlan } = await vi.importActual<
+      typeof import("../../plugins/activation-planner.js")
+    >("../../plugins/activation-planner.js");
+    mocks.resolveManifestActivationPlan.mockImplementation(resolveManifestActivationPlan);
+    const input = {
+      config,
+      metadataSnapshot,
+      workspaceDir: "/tmp/workspace",
+      basePluginIds: [],
+      selections: [],
+    };
+    expect(resolveAgentRuntimePluginLoadPlan(input).pluginIds).toEqual(["native"]);
+    expect(
+      resolveAgentRuntimePluginLoadPlan({ ...input, purpose: "model-catalog" }).pluginIds,
+    ).toEqual([]);
+
+    const index = {
+      ...metadataSnapshot.index,
+      plugins: ["native", "unrelated"].map((pluginId) => ({
+        ...installedProviderRecord(pluginId),
+        origin: "bundled" as const,
+        rootDir: `/plugins/${pluginId}`,
+        source: `/plugins/${pluginId}/index.js`,
+        manifestPath: `/plugins/${pluginId}/openclaw.plugin.json`,
+        manifestHash: pluginId,
+        enabled: true,
+        startup: {
+          sidecar: false,
+          memory: false,
+          agentHarnesses: pluginId === "native" ? ["native"] : [],
+        },
+      })),
+    };
+    const scope = createAgentRuntimeMetadataPluginIdScope({
+      ...input,
+      includeCatalogHarnesses: true,
+    });
+    expect(scope.resolve({ index })).toEqual(["native"]);
+    expect(createAgentRuntimeMetadataPluginIdScope(input).resolve({ index })).toEqual([]);
+  });
+
   it("scopes cold metadata to selected runtime candidates from the installed index", () => {
     const scope = createAgentRuntimeMetadataPluginIdScope({
       config: { plugins: { slots: { memory: "none" } } },

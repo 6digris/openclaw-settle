@@ -1,7 +1,9 @@
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { resolveManifestActivationPlan } from "../../plugins/activation-planner.js";
 import type { PluginRegistry } from "../../plugins/registry-types.js";
 import { getActivePluginRegistry } from "../../plugins/runtime.js";
 import { withPluginRuntimeRegistryScope } from "../../plugins/runtime/gateway-request-scope.js";
+import { getPluginRuntimeLoadContext } from "../../plugins/runtime/load-context.js";
 import { dedupeByKey } from "../../shared/dedupe-by-key.js";
 import { normalizeOptionalAgentRuntimeId, isDefaultAgentRuntimeId } from "../agent-runtime-id.js";
 import {
@@ -135,11 +137,17 @@ export async function augmentModelCatalogWithAgentHarness(params: {
   isCurrent?: () => boolean;
   observationConfig?: OpenClawConfig;
   includesProvider?: (provider: string) => boolean;
-  onDiscoveryStarted?: (provider: string) => void;
+  onDiscoveryStarted?: (provider?: string) => void;
   onDiscoveryCompleted?: (rows: readonly ModelCatalogEntry[]) => void;
   onError?: (error: unknown, providers?: readonly string[]) => void;
 }): Promise<ModelCatalogSnapshot> {
   const prepared = params.preparedSnapshot ?? params.snapshot;
+  const pluginRegistry = params.observationConfig
+    ? params.pluginRegistry
+    : (params.pluginRegistry ?? getActivePluginRegistry());
+  if (!pluginRegistry || params.isCurrent?.() === false) {
+    return params.snapshot;
+  }
   const runtimeProviders = new Map<string, Set<string>>();
   const addRuntime = (value: string, provider: string) => {
     const runtime = normalizeOptionalAgentRuntimeId(value);
@@ -193,14 +201,41 @@ export async function augmentModelCatalogWithAgentHarness(params: {
         addRuntime(runtime, entry.ref.provider);
       }
     }
+    const metadata = getPluginRuntimeLoadContext(pluginRegistry)?.metadataSnapshot;
+    if (metadata) {
+      const automaticOwners = new Set(
+        resolveManifestActivationPlan({
+          trigger: { kind: "modelCatalog" },
+          config: params.cfg,
+          manifestRecords: metadata.plugins,
+          requireExplicitManifestOwnerTrust: true,
+        }).pluginIds,
+      );
+      for (const plugin of metadata.plugins) {
+        if (!automaticOwners.has(plugin.id)) {
+          continue;
+        }
+        for (const runtime of plugin.activation?.onAgentHarnesses ?? []) {
+          const id = normalizeOptionalAgentRuntimeId(runtime);
+          if (!id) {
+            continue;
+          }
+          for (const entries of [prepared.entries, prepared.routeVariants]) {
+            for (const entry of entries) {
+              if (entry.nativeRuntime === id) {
+                addRuntime(id, entry.provider);
+              }
+            }
+          }
+          // Unknown native scopes join full discovery, never an unrelated provider refresh.
+          if (!params.includesProvider && !runtimeProviders.has(id)) {
+            runtimeProviders.set(id, new Set());
+          }
+        }
+      }
+    }
   }
   if (runtimeProviders.size === 0) {
-    return params.snapshot;
-  }
-  const pluginRegistry = params.observationConfig
-    ? params.pluginRegistry
-    : (params.pluginRegistry ?? getActivePluginRegistry());
-  if (!pluginRegistry || params.isCurrent?.() === false) {
     return params.snapshot;
   }
   let configuredModelRefs: ModelRef[];
@@ -240,6 +275,10 @@ export async function augmentModelCatalogWithAgentHarness(params: {
     }
     for (const provider of providers) {
       params.onDiscoveryStarted?.(provider);
+    }
+    if (providers.size === 0) {
+      // An unconfigured harness discovers its provider scope with its first inventory.
+      params.onDiscoveryStarted?.();
     }
     let listedRows: readonly ModelCatalogEntry[];
     try {
@@ -318,7 +357,7 @@ export function augmentPreparedModelCatalogWithAgentHarness(params: {
   pluginRegistry?: PluginRegistry;
   isCurrent?: () => boolean;
   includesProvider?: (provider: string) => boolean;
-  onDiscoveryStarted?: (provider: string) => void;
+  onDiscoveryStarted?: (provider?: string) => void;
   onDiscoveryCompleted?: (rows: readonly ModelCatalogEntry[]) => void;
   onError?: (error: unknown, providers?: readonly string[]) => void;
 }): Promise<ModelCatalogSnapshot> {

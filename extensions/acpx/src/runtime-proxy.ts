@@ -3,6 +3,7 @@
  * the first ACP call while preserving the SDK runtime shape.
  */
 import type { AcpRuntime, AcpRuntimeTurn, AcpRuntimeTurnInput } from "../runtime-api.js";
+import type { AcpxNativeRuntime } from "./native-types.js";
 
 export type CompleteAcpRuntimeTurn = AcpRuntimeTurn &
   Required<Pick<AcpRuntimeTurn, "promptStarted">>;
@@ -26,6 +27,7 @@ export type CompleteAcpRuntime = Omit<AcpRuntime, "startTurn"> &
       | "prepareFreshSession"
     >
   > & {
+    native?: AcpxNativeRuntime;
     startTurn(input: AcpRuntimeTurnInput): CompleteAcpRuntimeTurn;
   };
 
@@ -61,6 +63,29 @@ export function createLazyAcpRuntimeProxy(
 ): CompleteAcpRuntime {
   return {
     ownerAwareSessions: 1,
+    native: {
+      async withSession(input, run) {
+        const native = (await resolveRuntime()).native;
+        if (!native) {
+          throw new Error("ACPX runtime does not support native harness sessions");
+        }
+        return native.withSession(input, run);
+      },
+      async closeSession(target, assertCurrent, discardPersistentState) {
+        const native = (await resolveRuntime()).native;
+        if (!native) {
+          throw new Error("ACPX runtime does not support native harness sessions");
+        }
+        return native.closeSession(target, assertCurrent, discardPersistentState);
+      },
+      async getStatus(handle) {
+        const native = (await resolveRuntime()).native;
+        if (!native) {
+          throw new Error("ACPX runtime does not support native harness sessions");
+        }
+        return native.getStatus(handle);
+      },
+    },
     async ensureSession(input) {
       return await (await resolveRuntime()).ensureSession(input);
     },

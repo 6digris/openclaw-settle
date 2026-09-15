@@ -13,6 +13,7 @@ import type { PluginRegistry } from "../plugins/registry-types.js";
 import { getActivePluginRegistry } from "../plugins/runtime.js";
 import { dedupeByKey } from "../shared/dedupe-by-key.js";
 import { modelKey as pickerModelKey } from "../shared/model-key.js";
+import { isDefaultAgentRuntimeId } from "./agent-runtime-id.js";
 import {
   resolveAgentDir,
   resolveAgentEffectiveModelPrimary,
@@ -43,6 +44,14 @@ import {
   openAIModelCatalogRoutePolicy,
   resolveModelCatalogIdentityKey,
 } from "./openai-model-routes.js";
+
+/** A native default exists only when every physical route has the same native owner. */
+export function resolveUniqueNativeModelRuntime(
+  routes: readonly ModelCatalogEntry[],
+): string | undefined {
+  const runtime = routes[0]?.nativeRuntime;
+  return runtime && routes.every((route) => route.nativeRuntime === runtime) ? runtime : undefined;
+}
 
 /** Keep capability donors bound to one model and runtime without merging sibling metadata. */
 export function selectModelCatalogRuntimeEntry(params: {
@@ -171,6 +180,11 @@ export function prepareModelCatalogView(params: ModelCatalogViewFacts) {
       }
     }
   }
+  const routes = createModelCatalogView({
+    cfg: params.cfg,
+    catalog,
+    routeVariants: params.snapshot.routeVariants.length ? params.snapshot.routeVariants : catalog,
+  });
   const isCurrent = () => params.isCurrent?.() ?? params.observationConfig === undefined;
   const providerEndpoints = new Map<string, { endpoint?: string; api?: string }>();
   for (const [id, configured] of Object.entries(params.cfg.models?.providers ?? {})) {
@@ -194,17 +208,21 @@ export function prepareModelCatalogView(params: ModelCatalogViewFacts) {
       host: ModelAuthAvailabilityEvaluation,
       runtimeId?: string,
     ): ModelAuthAvailabilityEvaluation => {
-      const runtime =
-        runtimeId ??
-        host.requestedRuntimeId ??
-        resolveAgentHarnessPolicy({
+      let runtime = runtimeId ?? host.requestedRuntimeId;
+      if (!runtime || isDefaultAgentRuntimeId(runtime)) {
+        const policy = resolveAgentHarnessPolicy({
           provider: entry.provider,
           modelId: entry.id,
           modelApi: entry.api,
           modelBaseUrl: entry.baseUrl,
           config: params.cfg,
           agentId: params.agentId,
-        }).runtime;
+        });
+        runtime = policy.runtime;
+        if (policy.runtimeSource === "implicit" && !policy.forcedByEnvironment) {
+          runtime = resolveUniqueNativeModelRuntime(routes.variantsOf(entry) ?? []) ?? runtime;
+        }
+      }
       if (runtime === "auto" || runtime === "openclaw") {
         return host;
       }
@@ -282,7 +300,14 @@ export function prepareModelCatalogView(params: ModelCatalogViewFacts) {
               modelId: entry.id,
             })
           : undefined;
-        ready = ready && observation !== undefined && isCurrent() && resolveRegistry() === registry;
+        // Native routes can delegate auth entirely; an account reader, when present, owns readiness.
+        ready =
+          ready &&
+          (harness?.readModelCatalogReadiness
+            ? observation !== undefined
+            : entry.nativeRuntime === runtime) &&
+          isCurrent() &&
+          resolveRegistry() === registry;
         authMode = ready ? observation?.authMode : undefined;
       } catch {
         // A failed/disposed owner supplies no account observation; do not infer host readiness.

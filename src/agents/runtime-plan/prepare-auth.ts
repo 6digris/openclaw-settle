@@ -392,11 +392,12 @@ export function prepareAgentRuntimeAuth(
         },
       )
     : null;
-  // OpenAI native account discovery is harness-owned synthetic auth, not a
-  // bearer credential for an OpenClaw request route.
+  // A deferred setup hint is not a credential for a harness that owns login.
+  // OpenAI account discovery likewise cannot authorize an OpenClaw bearer route.
   const directPlanningEvidence =
     directPlanningCandidate?.kind === "setup-provider" &&
-    authProfileSelectionProvider.trim().toLowerCase() === "openai"
+    (params.harnessAuthBootstrap === "harness" ||
+      authProfileSelectionProvider.trim().toLowerCase() === "openai")
       ? null
       : directPlanningCandidate;
   const directPlanningMode = directPlanningEvidence

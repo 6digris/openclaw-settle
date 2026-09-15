@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
+import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-request-scope.js";
 import { testing as cliBackendsTesting } from "./cli-backends.test-support.js";
 import {
   resolveManualCompactionCliTarget,
@@ -42,6 +44,46 @@ describe("resolvePersistedSessionRuntimeId", () => {
 });
 
 describe("resolveSessionRuntimeOverrideForProvider", () => {
+  it("preserves a registered native runtime only for providers its owner supports", () => {
+    const registry = createEmptyPluginRegistry();
+    registry.agentHarnesses.push({
+      pluginId: "native",
+      source: "fixture",
+      harness: {
+        id: "native",
+        label: "Native",
+        supports: ({ provider, requestedRuntime }) => ({
+          supported: provider === "fixture" && requestedRuntime === "native",
+        }),
+        async runAttempt() {
+          throw new Error("Compatibility must not run a prompt");
+        },
+      },
+    });
+    withPluginRuntimeRegistryScope(registry, () => {
+      expect(
+        resolveSessionRuntimeOverrideForProvider({
+          provider: "fixture",
+          entry: { agentRuntimeOverride: "native" },
+        }),
+      ).toBe("native");
+      expect(
+        resolveSessionRuntimeOverrideForProvider({
+          provider: "other",
+          entry: { agentRuntimeOverride: "native" },
+        }),
+      ).toBeUndefined();
+    });
+    withPluginRuntimeRegistryScope(createEmptyPluginRegistry(), () => {
+      expect(
+        resolveSessionRuntimeOverrideForProvider({
+          provider: "fixture",
+          entry: { agentRuntimeOverride: "native" },
+        }),
+      ).toBeUndefined();
+    });
+  });
+
   it("keeps a locked harness across a conflicting provider runtime alias", () => {
     expect(
       resolveSessionRuntimeOverrideForProvider({

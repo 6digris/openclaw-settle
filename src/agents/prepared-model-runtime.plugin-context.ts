@@ -43,6 +43,7 @@ export function prepareOwnedPluginLoadContext(
               config: input.config,
               workspaceDir: input.workspaceDir,
               selections: input.runtimePluginSelections,
+              includeCatalogHarnesses: true,
             }),
           }
         : {}),

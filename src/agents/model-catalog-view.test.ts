@@ -366,6 +366,28 @@ function nativeRegistry(readiness: () => { accountType: string; authMode: string
 }
 
 describe("prepared native catalog readiness", () => {
+  it("allows a native route to own authentication without inventing account evidence", () => {
+    let current = true;
+    const cfg: OpenClawConfig = {};
+    const registry = nativeRegistry(() => undefined);
+    delete registry.agentHarnesses[0]!.harness.readModelCatalogReadiness;
+    const view = prepareModelCatalogView({
+      ...facts(cfg),
+      snapshot: snapshot([nativeEntry]),
+      observationConfig: cfg,
+      pluginRegistry: registry,
+      isCurrent: () => current,
+    });
+    const available = view.evaluateNative(nativeEntry, host, "native-test");
+    expect(available.availability).toBe(true);
+    expect(available.selectedAuthMode).toBeUndefined();
+    expect(
+      view.evaluateNative({ ...nativeEntry, nativeRuntime: undefined }, host, "native-test"),
+    ).toEqual(host);
+    current = false;
+    expect(view.evaluateNative(nativeEntry, host, "native-test").availability).toBe(false);
+  });
+
   it("reads prepared native rows without discovering a harness catalog", async () => {
     const cfg: OpenClawConfig = {
       agents: {

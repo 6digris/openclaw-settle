@@ -4,6 +4,7 @@ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js"
 import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-support.js";
 import type { ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
 import * as preparedModelCatalog from "../../agents/prepared-model-catalog.js";
+import { resolveSessionRuntimeOverrideForProvider } from "../../agents/session-runtime-compat.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import {
   loadExactSessionEntry,
@@ -11,6 +12,8 @@ import {
   replaceSessionEntry,
 } from "../../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
+import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
+import { withPluginRuntimeRegistryScope } from "../../plugins/runtime/gateway-request-scope.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
 import { getReplyPayloadMetadata } from "../reply-payload.js";
 import { markCompleteReplyConfig } from "./get-reply-fast-path.test-support.js";
@@ -18,17 +21,15 @@ import * as sessionPersistence from "./session-entry-persistence.js";
 import { buildTestCtx } from "./test-ctx.js";
 import type { TypingController } from "./typing.js";
 
-const { handleCommandsMock, buildStatusReplyMock } = vi.hoisted(() => ({
+const { handleCommandsMock, buildStatusReplyMock, runtimeChoiceMock } = vi.hoisted(() => ({
   handleCommandsMock: vi.fn(),
   buildStatusReplyMock: vi.fn(),
+  runtimeChoiceMock: vi.fn(),
 }));
 
 // Runtime eligibility belongs to the published-owner tests; these cases exercise its consumers.
 vi.mock("../../agents/model-runtime-choice.js", () => ({
-  preparePublishedModelRuntimeChoice: vi.fn(async () => ({
-    kind: "ready",
-    validate: () => undefined,
-  })),
+  preparePublishedModelRuntimeChoice: runtimeChoiceMock,
 }));
 
 vi.mock("./commands.runtime.js", () => ({
@@ -121,6 +122,7 @@ describe("maybeResolveNativeSlashCommandFastReply", () => {
       catalogSnapshot.entries,
     );
     handleCommandsMock.mockReset();
+    runtimeChoiceMock.mockReset().mockResolvedValue({ kind: "ready", validate: () => undefined });
     buildStatusReplyMock.mockReset();
     buildStatusReplyMock.mockResolvedValue({ text: "selected model status" });
   });
@@ -188,6 +190,57 @@ describe("maybeResolveNativeSlashCommandFastReply", () => {
         storePath: storePath ?? "",
       })?.entry,
     ).toMatchObject({ execHost: "node", execNode: "worker-1" });
+  });
+
+  it("selects the advertised native-only runtime through a Telegram model command", async () => {
+    const entry = {
+      provider: "fixture",
+      id: "native-model",
+      name: "Native model",
+      nativeRuntime: "native",
+      reasoning: false,
+    };
+    runtimeChoiceMock.mockResolvedValueOnce({
+      kind: "ready",
+      runtimeId: "native",
+      validate: () => undefined,
+    });
+    const registry = createEmptyPluginRegistry();
+    registry.agentHarnesses.push({
+      pluginId: "native",
+      source: "fixture",
+      harness: {
+        id: "native",
+        label: "Native",
+        supports: ({ provider, requestedRuntime }) => ({
+          supported: provider === "fixture" && requestedRuntime === "native",
+        }),
+        async runAttempt() {
+          throw new Error("Model command must not run a prompt");
+        },
+      },
+    });
+    await withPluginRuntimeRegistryScope(registry, async () => {
+      const { result, storePath } = await resolveNativeDirectiveCommand(
+        "/model fixture/native-model",
+        undefined,
+        { shouldContinue: true },
+        { entries: [entry], routeVariants: [entry] },
+      );
+      expect(result).toMatchObject({ handled: true });
+      const persisted = loadExactSessionEntry({
+        sessionKey: "agent:main:telegram:123",
+        storePath: storePath ?? "",
+      })?.entry;
+      expect(persisted).toMatchObject({
+        providerOverride: "fixture",
+        modelOverride: "native-model",
+        agentRuntimeOverride: "native",
+      });
+      expect(
+        resolveSessionRuntimeOverrideForProvider({ provider: "fixture", entry: persisted }),
+      ).toBe("native");
+    });
   });
 
   it.each([

@@ -1,6 +1,6 @@
-// Runtime bridge for plugin-provided CLI backends.
-import { getActiveRuntimePluginRegistry } from "./active-runtime-registry.js";
 import type { CliBackendPlugin } from "./cli-backend.types.js";
+// Runtime bridge for plugin-provided CLI backends.
+import { getPluginRegistryForContext } from "./runtime/gateway-request-scope.js";
 
 /** Runtime CLI backend registration with owning plugin id. */
 type PluginCliBackendEntry = CliBackendPlugin & {
@@ -17,7 +17,7 @@ type PluginCliBackendMetadata = Pick<
 export function resolveRuntimeCliBackends(mode: "metadata"): PluginCliBackendMetadata[];
 export function resolveRuntimeCliBackends(): PluginCliBackendEntry[];
 export function resolveRuntimeCliBackends(mode?: "metadata"): PluginCliBackendMetadata[] {
-  return (getActiveRuntimePluginRegistry()?.cliBackends ?? []).map((entry) =>
+  return (getPluginRegistryForContext()?.cliBackends ?? []).map((entry) =>
     mode === "metadata"
       ? {
           id: entry.backend.id,

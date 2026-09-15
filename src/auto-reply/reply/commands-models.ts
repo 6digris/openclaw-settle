@@ -193,9 +193,8 @@ async function buildPreparedModelsProviderDataWithContext(
       "Model catalog is not ready. Retry after Gateway startup or refresh finishes.",
     );
   }
-  // Browse uses the completed generation and its paired auth. Selection and turn-path
-  // capability discovery remain with their own runtime owners.
-  const published = preparedModelCatalog.materializePreparedModelCatalogOwner(owner);
+  const catalog = owner.readFullModelCatalog?.() ?? (await owner.loadFullModelCatalog?.());
+  const published = preparedModelCatalog.materializePreparedModelCatalogOwner(owner, catalog);
   return projectPreparedModelsProviderData(published.config, agentId, options, published);
 }
 

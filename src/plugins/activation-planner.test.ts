@@ -1,5 +1,6 @@
 /** Tests manifest activation planning for commands, providers, channels, and capabilities. */
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 
 const mocks = vi.hoisted(() => ({
   loadPluginManifestRegistryForPluginRegistry: vi.fn(),
@@ -200,6 +201,64 @@ describe("activation planner", () => {
         },
       }),
     ).toEqual([]);
+  });
+
+  it.each<{
+    name: string;
+    config: OpenClawConfig;
+    enabledByDefault: boolean;
+    expected: string[];
+  }>([
+    { name: "enabled default", config: {}, enabledByDefault: true, expected: ["native"] },
+    { name: "disabled default", config: {}, enabledByDefault: false, expected: [] },
+    {
+      name: "disabled plugins",
+      config: { plugins: { enabled: false } },
+      enabledByDefault: true,
+      expected: [],
+    },
+    {
+      name: "disabled entry",
+      config: { plugins: { entries: { native: { enabled: false } } } },
+      enabledByDefault: true,
+      expected: [],
+    },
+    {
+      name: "allowlist exclusion",
+      config: { plugins: { allow: ["other"] } },
+      enabledByDefault: true,
+      expected: [],
+    },
+    {
+      name: "denylist exclusion",
+      config: { plugins: { deny: ["native"] } },
+      enabledByDefault: true,
+      expected: [],
+    },
+  ])("plans automatic model discovery under $name", ({ config, enabledByDefault, expected }) => {
+    const plugin = {
+      id: "native",
+      channels: [],
+      providers: [],
+      cliBackends: [],
+      skills: [],
+      hooks: [],
+      origin: "bundled" as const,
+      rootDir: "/plugins/native",
+      source: "/plugins/native/index.js",
+      manifestPath: "/plugins/native/openclaw.plugin.json",
+      activation: { onModelCatalog: true, onAgentHarnesses: ["native"] },
+      enabledByDefault,
+    };
+    expect(
+      resolveManifestActivationPluginIds({
+        config,
+        trigger: { kind: "modelCatalog" },
+        manifestRecords: [plugin],
+        requireExplicitManifestOwnerTrust: true,
+      }),
+    ).toEqual(expected);
+    expect(mocks.loadPluginManifestRegistryForPluginRegistry).not.toHaveBeenCalled();
   });
 
   it("requires canonical ids for explicit manifest owner trust", () => {

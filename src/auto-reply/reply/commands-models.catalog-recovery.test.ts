@@ -9,12 +9,14 @@ import type { ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
 import * as preparedCatalog from "../../agents/prepared-model-catalog.js";
 import {
   getPreparedModelRuntimeAuthStore,
+  setPreparedModelFullCatalogAuth,
   setPreparedModelRuntimeAuthStore,
 } from "../../agents/prepared-model-runtime-auth.js";
 import { PreparedModelRuntimePublicationSupersededError } from "../../agents/prepared-model-runtime.errors.js";
 import type { PreparedModelRuntimeSnapshot } from "../../agents/prepared-model-runtime.types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
+import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { buildCommandTestParams } from "./commands.test-harness.js";
 
 const catalogMocks = vi.hoisted(() => ({
@@ -91,6 +93,59 @@ afterEach(() => {
 });
 
 describe("/models browse catalog recovery", () => {
+  it("waits for the first native inventory before replying to an unscoped /models command", async () => {
+    const native = {
+      provider: "native-provider",
+      id: "model",
+      name: "Native model",
+      nativeRuntime: "native",
+    };
+    const complete: ModelCatalogSnapshot = { entries: [native], routeVariants: [native] };
+    setPreparedModelFullCatalogAuth(complete, {
+      authStore: catalogMocks.authStore,
+      authModes: {},
+      providerAuthLabels: new Map(),
+    });
+    const started = createDeferred();
+    const release = createDeferred();
+    let published: ModelCatalogSnapshot | undefined;
+    const loadFullModelCatalog = vi.fn(async () => {
+      started.resolve();
+      await release.promise;
+      published = complete;
+      return complete;
+    });
+    const registry = createEmptyPluginRegistry();
+    registry.agentHarnesses.push({
+      pluginId: "native",
+      source: "fixture",
+      harness: {
+        id: "native",
+        label: "Native",
+        authBootstrap: "harness",
+        supports: () => ({ supported: true }),
+        async runAttempt() {
+          throw new Error("Browse must not run a prompt");
+        },
+      },
+    });
+    catalogMocks.getPreparedOwner.mockReturnValue({
+      modelCatalog: { entries: [], routeVariants: [] },
+      pluginRegistry: registry,
+      readFullModelCatalog: () => published,
+      loadFullModelCatalog,
+    });
+    const params = buildCommandTestParams("/models", staleCfg);
+    const reply = handleModelsCommand(params, true);
+    await started.promise;
+    release.resolve();
+    expect((await reply)?.reply?.text).toContain("- native-provider (1)");
+    expect((await handleModelsCommand(params, true))?.reply?.text).toContain(
+      "- native-provider (1)",
+    );
+    expect(loadFullModelCatalog).toHaveBeenCalledOnce();
+  });
+
   it.each([
     { commandBodyNormalized: "/models", choice: "- anthropic (1)" },
     { commandBodyNormalized: "/models anthropic", choice: "- anthropic/claude-opus-4-5" },

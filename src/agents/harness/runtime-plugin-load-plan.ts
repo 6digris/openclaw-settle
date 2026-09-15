@@ -116,6 +116,7 @@ function resolveAgentRuntimeMetadataPluginIds(params: {
   config?: OpenClawConfig;
   selections: readonly AgentHarnessPluginSelection[];
   shorthandModelIds?: readonly string[];
+  includeCatalogHarnesses?: boolean;
   index: InstalledPluginIndex;
 }): string[] | undefined {
   const lookup = createInstalledPluginIndexScopeLookup(params.index);
@@ -124,6 +125,14 @@ function resolveAgentRuntimeMetadataPluginIds(params: {
     return [];
   }
   const pluginIds = new Set<string>();
+  if (params.includeCatalogHarnesses) {
+    // The installed index narrows metadata reads; manifests decide catalog activation.
+    for (const plugin of params.index.plugins) {
+      if (plugin.startup.agentHarnesses.length > 0) {
+        pluginIds.add(plugin.pluginId);
+      }
+    }
+  }
   lookup.addShorthandModelOwners(pluginIds, params.shorthandModelIds ?? []);
   const selections = resolveAgentRuntimePluginSelections(params.config, params.selections);
   const providerIds = dedupePluginIds(selections.map((selection) => selection.provider));
@@ -168,6 +177,7 @@ export function createAgentRuntimeMetadataPluginIdScope(params: {
   workspaceDir: string;
   selections: readonly AgentHarnessPluginSelection[];
   shorthandModelIds?: readonly string[];
+  includeCatalogHarnesses?: boolean;
 }): PluginMetadataSnapshotPluginIdScope & { key: string } {
   return {
     key: hashJson({
@@ -176,12 +186,14 @@ export function createAgentRuntimeMetadataPluginIdScope(params: {
       workspaceDir: params.workspaceDir,
       selections: params.selections,
       shorthandModelIds: params.shorthandModelIds ?? [],
+      includeCatalogHarnesses: params.includeCatalogHarnesses === true,
     }),
     resolve: ({ index }) =>
       resolveAgentRuntimeMetadataPluginIds({
         config: params.config,
         selections: params.selections,
         shorthandModelIds: params.shorthandModelIds,
+        includeCatalogHarnesses: params.includeCatalogHarnesses,
         index,
       }),
   };
@@ -334,6 +346,20 @@ export function resolveAgentRuntimePluginLoadPlan(params: {
   );
   const pluginIds = [...basePluginIds, ...memoryPluginIds, ...contextEnginePluginIds];
   const forceActivatedPluginIds = [...memoryPluginIds, ...contextEnginePluginIds];
+  if (
+    includeAgentOwners &&
+    params.metadataSnapshot.plugins.some((plugin) => plugin.activation?.onModelCatalog)
+  ) {
+    const catalogPluginIds = resolveManifestActivationPlan({
+      trigger: { kind: "modelCatalog" },
+      config,
+      workspaceDir: params.workspaceDir,
+      manifestRecords: params.metadataSnapshot.plugins,
+      requireExplicitManifestOwnerTrust: true,
+    }).pluginIds;
+    pluginIds.push(...catalogPluginIds);
+    forceActivatedPluginIds.push(...catalogPluginIds);
+  }
   for (const selection of includeAgentOwners ? params.selections : []) {
     const runtime = resolveSelectedAgentHarnessRuntime(selection, config);
     const providerOwnerPluginIds = resolveSelectedProviderOwnerPluginIds({

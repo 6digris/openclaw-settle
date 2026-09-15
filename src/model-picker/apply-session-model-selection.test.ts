@@ -4,6 +4,7 @@ import { createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.js";
 import { loadProviderScopedThinkingCatalog } from "../agents/model-catalog.runtime.js";
+import { preparePublishedModelRuntimeChoice } from "../agents/model-runtime-choice.js";
 import {
   loadSessionEntryReadOnly,
   replaceSessionEntry,
@@ -11,6 +12,8 @@ import {
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { ModelDefinitionConfig } from "../config/types.models.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
+import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-request-scope.js";
 import {
   onSessionLifecycleEvent,
   type SessionLifecycleEvent,
@@ -18,8 +21,9 @@ import {
 
 // Runtime eligibility belongs to the published-owner tests; these cases exercise its consumers.
 vi.mock("../agents/model-runtime-choice.js", () => ({
-  preparePublishedModelRuntimeChoice: vi.fn(async () => ({
+  preparePublishedModelRuntimeChoice: vi.fn(async (params: { preferredRuntimeId?: string }) => ({
     kind: "ready",
+    runtimeId: params.preferredRuntimeId,
     validate: () => undefined,
   })),
 }));
@@ -136,6 +140,7 @@ function createParams(overrides: Partial<ApplySessionModelSelectionParams> = {})
 }
 
 beforeEach(() => {
+  vi.mocked(preparePublishedModelRuntimeChoice).mockClear();
   vi.mocked(loadProviderScopedThinkingCatalog).mockReset().mockResolvedValue([]);
   lifecycleEvents = [];
   unsubscribeLifecycle = onSessionLifecycleEvent((event) => lifecycleEvents.push(event));
@@ -155,6 +160,88 @@ beforeEach(() => {
 afterEach(() => unsubscribeLifecycle());
 
 describe("applySessionModelSelection", () => {
+  it.each([
+    {
+      name: "configured runtime",
+      configured: "openclaw",
+      persisted: undefined,
+      request: { kind: "clear" } as const,
+      expected: undefined,
+      explicit: false,
+    },
+    {
+      name: "session runtime",
+      configured: undefined,
+      persisted: "openclaw",
+      request: { kind: "unchanged" } as const,
+      expected: "openclaw",
+      explicit: false,
+    },
+    {
+      name: "explicit hosted runtime",
+      configured: undefined,
+      persisted: undefined,
+      request: { kind: "set", runtime: "openclaw" } as const,
+      expected: "openclaw",
+      explicit: true,
+    },
+    {
+      name: "explicit native runtime",
+      configured: undefined,
+      persisted: undefined,
+      request: { kind: "set", runtime: "other-native" } as const,
+      expected: "other-native",
+      explicit: true,
+    },
+  ])(
+    "preserves $name over an advertised native default",
+    async ({ configured, persisted, request, expected, explicit }) => {
+      const entry = {
+        provider: "fixture",
+        id: "model",
+        name: "Model",
+        nativeRuntime: "native",
+        reasoning: false,
+      };
+      const sessionEntry = createEntry({ agentRuntimeOverride: persisted });
+      const registry = createEmptyPluginRegistry();
+      registry.agentHarnesses.push({
+        pluginId: "other-native",
+        source: "fixture",
+        harness: {
+          id: "other-native",
+          label: "Other native",
+          supports: ({ requestedRuntime }) => ({ supported: requestedRuntime === "other-native" }),
+          async runAttempt() {
+            throw new Error("Selection must not run a prompt");
+          },
+        },
+      });
+      const result = await withPluginRuntimeRegistryScope(registry, () =>
+        applySessionModelSelection(
+          createParams({
+            cfg: configured
+              ? {
+                  agents: {
+                    defaults: { models: { "fixture/model": { agentRuntime: { id: configured } } } },
+                  },
+                }
+              : {},
+            sessionEntry,
+            modelCatalog: [entry],
+            thinkingCatalog: [entry],
+            request: { provider: "fixture", model: "model", isDefault: false, runtime: request },
+          }),
+        ),
+      );
+      expect(result.status).toBe("applied");
+      expect(sessionEntry.agentRuntimeOverride).toBe(expected);
+      expect(preparePublishedModelRuntimeChoice).toHaveBeenCalledTimes(
+        explicit || persisted ? 1 : 0,
+      );
+    },
+  );
+
   it.each([false, true])("uses configured default only with reset intent=%s", async (reset) => {
     const modelCatalog = [
       { provider: "fixture", id: "automatic", name: "Automatic" },

@@ -46,6 +46,8 @@ export function normalizeManifestActivation(value: unknown): PluginManifestActiv
   const onRoutes = normalizeTrimmedStringList(value.onRoutes);
   const onConfigPaths = normalizeTrimmedStringList(value.onConfigPaths);
   const onStartup = typeof value.onStartup === "boolean" ? value.onStartup : undefined;
+  const onModelCatalog =
+    typeof value.onModelCatalog === "boolean" ? value.onModelCatalog : undefined;
   const onCapabilities = normalizeTrimmedStringList(value.onCapabilities).filter(
     (capability): capability is PluginManifestActivationCapability =>
       capability === "provider" ||
@@ -56,6 +58,7 @@ export function normalizeManifestActivation(value: unknown): PluginManifestActiv
 
   const activation = {
     ...(onStartup !== undefined ? { onStartup } : {}),
+    ...(onModelCatalog !== undefined ? { onModelCatalog } : {}),
     ...(onProviders.length > 0 ? { onProviders } : {}),
     ...(onAgentHarnesses.length > 0 ? { onAgentHarnesses } : {}),
     ...(onCommands.length > 0 ? { onCommands } : {}),

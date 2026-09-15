@@ -6602,7 +6602,7 @@ describe("createTelegramBot", () => {
     expect(editMessageTextSpy).toHaveBeenCalledTimes(1);
     const finalEditMessageText = editMessageTextSpy.mock.calls.at(-1)?.[2];
     expect(typeof finalEditMessageText === "string" ? finalEditMessageText : "").toContain(
-      "Session-only model selection. Runtime set to <b>codex</b> from configured policy.",
+      "Session-only model selection. Runtime set to <b>codex</b>.",
     );
     expect(
       editMessageTextSpy.mock.calls.some((call) =>

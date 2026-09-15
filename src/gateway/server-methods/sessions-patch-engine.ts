@@ -496,6 +496,7 @@ export async function executeSessionPatchMutations(params: {
                           agentId: target.targetAgentId,
                           patch: target.fullPatch,
                           entry: projected.entry,
+                          catalog: (await catalogs.available(target.targetAgentId))?.entries,
                           placement: { context: params.context, sessionKey: primaryKey },
                         });
                         if (!runtimeSelection.ok) {
@@ -650,7 +651,7 @@ export async function executeSessionPatchMutations(params: {
                   for (const [groupIndex, target] of group.entries()) {
                     const outcome = groupOutcomes[groupIndex]!;
                     outcomes[target.index] = outcome;
-                    if (outcome.ok && outcome.applied && "agentRuntime" in target.fullPatch) {
+                    if (outcome.ok && outcome.applied) {
                       refreshSessionPatchQueuedSelection({
                         cfg,
                         entry: outcome.entry,

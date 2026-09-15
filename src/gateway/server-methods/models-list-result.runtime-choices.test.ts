@@ -15,6 +15,76 @@ import {
 import { WITHOUT_OPENAI_ENV_AUTH } from "./models-list-result.openai-routes.test-support.js";
 
 describe("models.list configured runtime choices", () => {
+  it.each(["default", "configured", "all"] as const)(
+    "lists an unconfigured native-only model in the %s Gateway view without host auth",
+    async (view) => {
+      await withOpenClawTestState(
+        {
+          layout: "state-only",
+          prefix: "native-picker-discovery-",
+          agentEnv: "main",
+          env: WITHOUT_OPENAI_ENV_AUTH,
+        },
+        async (state) => {
+          const cfg: OpenClawConfig = { agents: { defaults: { workspace: state.workspaceDir } } };
+          const entry: ModelCatalogEntry = {
+            provider: "native-provider",
+            id: "model",
+            name: "Native model",
+            nativeRuntime: "native",
+          };
+          const snapshot: ModelCatalogSnapshot = { entries: [entry], routeVariants: [entry] };
+          const pluginRegistry = createEmptyPluginRegistry();
+          pluginRegistry.agentHarnesses.push({
+            pluginId: "native",
+            source: "fixture",
+            harness: {
+              id: "native",
+              label: "Native",
+              autoSelection: { providerIds: [] },
+              authBootstrap: "harness",
+              supports: ({ requestedRuntime }) => ({ supported: requestedRuntime === "native" }),
+              async runAttempt() {
+                throw new Error("models.list must not run a prompt");
+              },
+            },
+          });
+          const projector = createGatewayAgentModelCatalogProjector({
+            cfg,
+            agentId: "main",
+            snapshot,
+            metadataSnapshot: createPluginMetadataSnapshotFixture({ plugins: [] }),
+            preparedAuthStore: { version: 1, profiles: {} },
+            pluginRegistry,
+          });
+          const prepared = await prepareModelsListResult({
+            source: {
+              kind: "gateway",
+              context: {
+                getRuntimeConfig: () => cfg,
+                loadGatewayModelCatalogSnapshot: vi.fn(),
+                logGateway: { debug: vi.fn() },
+              },
+            },
+            agentId: "main",
+            params: { view, includeDetails: true },
+            preloadedCatalog: { agentId: "main", config: cfg, snapshot },
+            preloadedOnly: true,
+            catalogProjector: projector,
+          });
+          expect(prepared.read().models).toEqual([
+            expect.objectContaining({
+              provider: entry.provider,
+              id: entry.id,
+              available: true,
+              agentRuntime: expect.objectContaining({ id: "native", source: "implicit" }),
+            }),
+          ]);
+        },
+      );
+    },
+  );
+
   it.each([true, false])(
     "isolates an OpenClaw alternative from native-first metadata (host donor: %s)",
     async (hostDonor) => {
@@ -200,7 +270,6 @@ describe("models.list configured runtime choices", () => {
         },
         async (state) => {
           const model = "gpt-5.6-sol";
-          const selectable = provider === "openai";
           const cfg: OpenClawConfig = {
             agents: {
               defaults: {
@@ -325,7 +394,7 @@ describe("models.list configured runtime choices", () => {
             "missing-runtime",
           ]);
           const nativeChoice = rows[0]?.runtimeChoices?.[0];
-          if (selectable && initialReadiness === "ready") {
+          if (initialReadiness === "ready") {
             expect(nativeChoice).toMatchObject({
               agentRuntime: { id: runtime },
               available: true,
@@ -342,11 +411,7 @@ describe("models.list configured runtime choices", () => {
             expect(thinkingIds).not.toContain("off");
           } else {
             expect(nativeChoice).toMatchObject({ agentRuntime: { id: runtime }, available: false });
-            if (selectable) {
-              expect(nativeChoice).not.toHaveProperty("unavailableReason");
-            } else {
-              expect(nativeChoice?.unavailableReason).toBe("unsupported-runtime");
-            }
+            expect(nativeChoice).not.toHaveProperty("unavailableReason");
             expect(nativeChoice).not.toHaveProperty("contextWindow");
             expect(nativeChoice).not.toHaveProperty("thinkingLevels");
           }
@@ -360,11 +425,7 @@ describe("models.list configured runtime choices", () => {
           readiness = "missing";
           const revokedChoice = prepared.read().models[0]?.runtimeChoices?.[0];
           expect(revokedChoice?.available).toBe(false);
-          if (selectable) {
-            expect(revokedChoice).not.toHaveProperty("unavailableReason");
-          } else {
-            expect(revokedChoice?.unavailableReason).toBe("unsupported-runtime");
-          }
+          expect(revokedChoice).not.toHaveProperty("unavailableReason");
           expect(loadModelCatalog).toHaveBeenCalledTimes(acquireNative ? 1 : 0);
           expect(loadGatewayModelCatalogSnapshot).not.toHaveBeenCalled();
           expect(cfg.agents?.defaults?.models?.[`${provider}/${model}`]?.agentRuntime?.id).toBe(

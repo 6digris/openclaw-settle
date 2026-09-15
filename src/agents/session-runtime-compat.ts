@@ -8,6 +8,7 @@ import { getCliSessionBinding } from "../config/sessions/cli-session-binding.js"
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveSessionPinnedHarnessId } from "../sessions/agent-harness-session-key.js";
 import { isDefaultAgentRuntimeId, normalizeOptionalAgentRuntimeId } from "./agent-runtime-id.js";
+import { getRegisteredAgentHarness } from "./harness/registry.js";
 import { isCliRuntimeAliasForProvider } from "./model-runtime-aliases.js";
 
 /** Persisted runtime fields used to recover session runtime compatibility. */
@@ -61,6 +62,10 @@ export function resolveCompatibleAgentRuntimeForProvider(params: {
   const provider = params.provider?.trim().toLowerCase() ?? "";
   // The Codex harness owns both OpenClaw's virtual Codex namespace and canonical OpenAI routes.
   if (runtime === "codex" && (provider === "codex" || provider === "openai")) {
+    return runtime;
+  }
+  const harness = getRegisteredAgentHarness(runtime)?.harness;
+  if (harness?.supports({ provider, requestedRuntime: runtime }).supported) {
     return runtime;
   }
   return isCliRuntimeAliasForProvider({ provider, runtime, cfg: params.cfg }) ? runtime : undefined;

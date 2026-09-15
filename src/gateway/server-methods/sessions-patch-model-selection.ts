@@ -12,6 +12,8 @@ import { resolveAllowedModelRef } from "../../agents/model-selection.js";
 import { resolveSessionModelRef } from "../../agents/session-model-ref.js";
 import { persistStickyModelSelectionBestEffort } from "../../agents/sticky-model-selection.js";
 import { resolveEffectiveAgentRuntime } from "../../agents/thinking-runtime.js";
+import { applyModelRuntimeDirective } from "../../auto-reply/reply/directive-handling.model-runtime.js";
+import { prepareModelSelectionRuntime } from "../../auto-reply/reply/model-runtime-normalization.js";
 import { refreshQueuedFollowupSession } from "../../auto-reply/reply/queue.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { resolveCollapsedSessionAuthPinSource } from "../../config/sessions/auth-profile-override-provenance.js";
@@ -60,7 +62,7 @@ export function refreshSessionPatchQueuedSelection(params: {
   agentId: string;
   catalog?: ModelCatalogEntry[];
 }): void {
-  if (!("agentRuntime" in params.patch)) {
+  if (params.patch.model === undefined && params.patch.agentRuntime === undefined) {
     return;
   }
   const { cfg, entry, sessionKey, agentId } = params;
@@ -129,6 +131,7 @@ export async function prepareSessionPatchRuntimeSelection(params: {
   agentId: string;
   patch: SessionsPatchParams;
   entry: SessionEntry;
+  catalog?: readonly ModelCatalogEntry[];
   placement?: { context: SessionWorkerPlacementContext; sessionKey: string };
 }): Promise<
   { ok: true; validate?: () => ErrorShape | undefined } | { ok: false; error: ErrorShape }
@@ -138,8 +141,34 @@ export async function prepareSessionPatchRuntimeSelection(params: {
     error: errorShape(ErrorCodes.INVALID_REQUEST, message),
   });
   let validateRuntime: (() => string | undefined) | undefined;
+  const model = resolveSessionModelRef(params.cfg, params.entry, params.agentId);
+  if (
+    typeof params.patch.model === "string" &&
+    typeof params.patch.agentRuntime !== "string" &&
+    params.catalog
+  ) {
+    const prepared = await prepareModelSelectionRuntime({
+      cfg: params.cfg,
+      agentId: params.agentId,
+      workspaceDir: params.entry.spawnedWorkspaceDir,
+      ...model,
+      catalog: params.catalog,
+      rawRuntime: params.patch.agentRuntime === null ? "default" : undefined,
+      sessionEntry: {
+        ...params.entry,
+        authProfileOverrideSource: resolveCollapsedSessionAuthPinSource(params.entry),
+      },
+    });
+    if (prepared.status === "rejected") return invalid(prepared.message);
+    if (applyModelRuntimeDirective(params.entry, prepared.runtime).updated) {
+      delete params.entry.contextTokens;
+      delete params.entry.contextTokensSource;
+      delete params.entry.contextBudgetStatus;
+      params.entry.liveModelSwitchPending = true;
+    }
+    validateRuntime = prepared.validateRuntimeSelection;
+  }
   if (typeof params.patch.agentRuntime === "string") {
-    const model = resolveSessionModelRef(params.cfg, params.entry, params.agentId);
     const choice = await preparePublishedModelRuntimeChoice({
       cfg: params.cfg,
       agentId: params.agentId,
@@ -176,5 +205,8 @@ export async function prepareSessionPatchRuntimeSelection(params: {
   const error = validate();
   return error
     ? { ok: false, error }
-    : { ok: true, ...(params.patch.agentRuntime !== undefined ? { validate } : {}) };
+    : {
+        ok: true,
+        ...(validateRuntime || params.patch.agentRuntime !== undefined ? { validate } : {}),
+      };
 }

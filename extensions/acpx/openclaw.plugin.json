@@ -25,7 +25,9 @@
     ]
   },
   "activation": {
-    "onStartup": true
+    "onStartup": true,
+    "onModelCatalog": true,
+    "onAgentHarnesses": ["opencode"]
   },
   "enabledByDefault": true,
   "name": "ACPX Runtime",

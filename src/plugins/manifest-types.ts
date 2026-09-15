@@ -157,6 +157,8 @@ export type PluginManifestActivation = {
    * triggers should load it on demand.
    */
   onStartup?: boolean;
+  /** Acquire declared harness inventories for the model picker without a configured model. */
+  onModelCatalog?: boolean;
   /**
    * Provider ids that should include this plugin in activation/load plans.
    * This is planner metadata only; runtime behavior still comes from register().

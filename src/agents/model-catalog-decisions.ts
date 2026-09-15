@@ -16,7 +16,10 @@ import { resolveExternalCliAuthScopeFromConfig } from "./auth-profiles/external-
 import { materializePersonalAuthProfile } from "./auth-profiles/personal-profiles.js";
 import type { RuntimeAuthMaterialization } from "./auth-profiles/runtime-materializations.js";
 import type { AuthProfileStore } from "./auth-profiles/types.js";
-import { listCliRuntimeModelBackendBindings } from "./cli-backends.js";
+import {
+  listCliRuntimeModelBackendBindings,
+  resolveCliRuntimeModelBackendBinding,
+} from "./cli-backends.js";
 import { resolveAgentHarnessAvailabilityDecision } from "./harness/availability.js";
 import { resolveAgentHarnessPolicy } from "./harness/policy.js";
 import { buildAgentHarnessSupportContext, resolveAutoAgentHarnessId } from "./harness/support.js";
@@ -26,7 +29,7 @@ import {
   type ModelAuthAvailabilityResolver,
   type ModelAuthAvailabilityEvaluation,
 } from "./model-auth-availability.js";
-import { prepareModelCatalogView } from "./model-catalog-view.js";
+import { prepareModelCatalogView, selectModelCatalogRuntimeEntry } from "./model-catalog-view.js";
 import { loadManifestModelCatalog } from "./model-catalog.js";
 import type { ModelCatalogEntry, ModelCatalogSnapshot } from "./model-catalog.types.js";
 import { dedupeModelCatalogEntries } from "./model-selection-shared.js";
@@ -377,15 +380,21 @@ export function createModelCatalogDecisions(params: ModelCatalogDecisionParams) 
         ...listCliRuntimeModelBackendBindings()
           .filter(
             (binding) =>
-              normalizeProviderId(binding.provider) === normalizeProviderId(entry.provider),
+              normalizeProviderId(binding.provider) === normalizeProviderId(entry.provider) ||
+              binding.runtime === normalizeProviderId(entry.provider),
           )
           .map((binding) => binding.runtime),
       ]);
       const choices: string[] = [];
       let unknown = false;
       for (const runtimeId of candidates) {
-        const host = await evaluateEntry(entry, variants, runtimeId);
-        const evaluation = evaluateNative(entry, host, runtimeId);
+        const { entry: runtimeEntry } = selectModelCatalogRuntimeEntry({
+          entry,
+          routeVariants: variants,
+          runtimeId,
+        });
+        const host = await evaluateEntry(runtimeEntry, variants, runtimeId);
+        const evaluation = evaluateNative(runtimeEntry, host, runtimeId);
         if (evaluation.availability === undefined) {
           unknown = true;
         }
@@ -398,8 +407,8 @@ export function createModelCatalogDecisions(params: ModelCatalogDecisionParams) 
           agentId: params.agentId,
           provider: entry.provider,
           modelId: entry.id,
-          modelApi: route?.api ?? entry.api,
-          modelBaseUrl: route?.baseUrl ?? entry.baseUrl,
+          modelApi: route?.api ?? runtimeEntry.api,
+          modelBaseUrl: route?.baseUrl ?? runtimeEntry.baseUrl,
           requestTransportOverrides: route?.requestTransportOverrides,
         });
         if (policy.forcedByEnvironment && policy.runtime !== runtimeId) {
@@ -414,11 +423,7 @@ export function createModelCatalogDecisions(params: ModelCatalogDecisionParams) 
         }
         if (
           runtimeId !== "openclaw" &&
-          !listCliRuntimeModelBackendBindings().some(
-            (binding) =>
-              binding.runtime === runtimeId &&
-              normalizeProviderId(binding.provider) === normalizeProviderId(entry.provider),
-          )
+          !resolveCliRuntimeModelBackendBinding({ provider: entry.provider, runtime: runtimeId })
         ) {
           const harness = params.pluginRegistry?.agentHarnesses.find(
             (registration) => registration.harness.id === runtimeId,
@@ -434,9 +439,10 @@ export function createModelCatalogDecisions(params: ModelCatalogDecisionParams) 
               provider: entry.provider,
               modelId: entry.id,
               requestedRuntime: runtimeId,
+              preparedModelProvider: true,
               modelProvider: {
-                api: route?.api ?? entry.api,
-                baseUrl: route?.baseUrl ?? entry.baseUrl,
+                api: route?.api ?? runtimeEntry.api,
+                baseUrl: route?.baseUrl ?? runtimeEntry.baseUrl,
                 runtimePolicy: route?.runtimePolicy,
                 requestTransportOverrides: route?.requestTransportOverrides,
                 // Native observations select a route but do not supply host credentials.

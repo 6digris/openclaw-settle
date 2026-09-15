@@ -1513,8 +1513,13 @@ export async function createGatewaySession(params: {
         const runtimeSelection = await prepareSessionPatchRuntimeSelection({
           cfg: params.cfg,
           agentId: target.agentId,
-          patch: { key: target.canonicalKey, agentRuntime: params.agentRuntime },
+          patch: {
+            key: target.canonicalKey,
+            model: params.model,
+            agentRuntime: params.agentRuntime,
+          },
           entry,
+          catalog: preparedModelCatalog?.entries,
           ...(params.agentRuntime !== undefined
             ? {
                 placement: {
@@ -1654,11 +1659,15 @@ export async function createGatewaySession(params: {
       isNew: createdNewEntry,
     };
     lifecyclePreparationCommitted = true;
-    if (!createdNewEntry && params.agentRuntime !== undefined) {
+    if (!createdNewEntry) {
       refreshSessionPatchQueuedSelection({
         cfg: params.cfg,
         entry: created.entry,
-        patch: { key: target.canonicalKey, agentRuntime: params.agentRuntime },
+        patch: {
+          key: target.canonicalKey,
+          model: catalogModel ?? normalizeOptionalString(params.model),
+          agentRuntime: params.agentRuntime,
+        },
         sessionKey: target.canonicalKey,
         agentId: target.agentId,
         catalog: preparedModelCatalog?.entries,

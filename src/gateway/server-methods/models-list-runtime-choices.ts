@@ -16,6 +16,7 @@ import {
 import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
 import { resolveCompatibleAgentRuntimeForProvider } from "../../agents/session-runtime-compat.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { withPluginRuntimeRegistryScope } from "../../plugins/runtime/gateway-request-scope.js";
 
 type CatalogDecisions = ReturnType<typeof createModelCatalogDecisions>;
 
@@ -58,12 +59,15 @@ export async function prepareModelPickerRuntimeChoices(params: {
     requestedRuntimes
       .filter((runtimeId) => runtimeId !== (selected?.id ?? "openclaw"))
       .map(async (runtimeId) => {
-        const selectable =
-          resolveCompatibleAgentRuntimeForProvider({
-            provider: entry.provider,
-            runtime: runtimeId,
-            cfg,
-          }) === runtimeId;
+        const selectable = withPluginRuntimeRegistryScope(
+          decisions.pluginRegistry,
+          () =>
+            resolveCompatibleAgentRuntimeForProvider({
+              provider: entry.provider,
+              runtime: runtimeId,
+              cfg,
+            }) === runtimeId,
+        );
         const { entry: runtimeEntry, variants: runtimeVariants } = selectModelCatalogRuntimeEntry({
           entry,
           routeVariants: variants,

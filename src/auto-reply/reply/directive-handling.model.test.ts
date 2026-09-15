@@ -62,8 +62,9 @@ function hasAllowedPluginForAuthTest(cfg: unknown, pluginId: string): boolean {
 
 // Runtime eligibility belongs to the published-owner tests; these cases exercise its consumers.
 vi.mock("../../agents/model-runtime-choice.js", () => ({
-  preparePublishedModelRuntimeChoice: vi.fn(async () => ({
+  preparePublishedModelRuntimeChoice: vi.fn(async (params: { preferredRuntimeId?: string }) => ({
     kind: "ready",
+    runtimeId: params.preferredRuntimeId,
     validate: () => undefined,
   })),
 }));
