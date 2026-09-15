@@ -12,7 +12,7 @@ import {
   upsertPluginStateEntry,
   type PluginStateDatabase,
   type PluginStateRegisterEntryParams,
-  type PluginStateRow,
+  type PluginStateReadRow,
 } from "./plugin-state-store.kernel.js";
 import type {
   PluginStateCompareResult,
@@ -60,7 +60,7 @@ function comparisonScope(storeIdentity: string, key: Key): string {
 function observation(
   store: PluginStateDatabase,
   scope: string,
-  row: PluginStateRow | undefined,
+  row: PluginStateReadRow | undefined,
   operation: PluginStateStoreOperation,
 ): PluginStateObservation<unknown> {
   // Preserve the stored JSON image; caller reserialization can change legacy whitespace/key order.
