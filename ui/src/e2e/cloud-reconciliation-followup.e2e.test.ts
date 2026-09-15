@@ -151,6 +151,7 @@ suite.define(() => {
           sessionInfo: queued,
         };
         await gateway.setMethodResponse("chat.history", queuedHistory);
+        await gateway.setMethodResponse("chat.startup", queuedHistory);
         await gateway.setSessionsListResponse(chatSessionListResponse([queued]));
         await gateway.emitGatewayEvent("sessions.changed", {
           agentId: "main",
@@ -203,6 +204,7 @@ suite.define(() => {
           thinkingLevel: null,
         };
         await gateway.setMethodResponse("chat.history", activeHistory);
+        await gateway.setMethodResponse("chat.startup", activeHistory);
         await gateway.setSessionsListResponse(chatSessionListResponse([active]));
         await gateway.emitGatewayEvent("sessions.changed", {
           ...active,
@@ -269,7 +271,9 @@ suite.define(() => {
 
         const failed = session("failed");
         expect(completedUpdatedAt).toBeLessThanOrEqual(failed.updatedAt);
-        await gateway.setMethodResponse("chat.history", { ...activeHistory, sessionInfo: failed });
+        const failedHistory = { ...activeHistory, sessionInfo: failed };
+        await gateway.setMethodResponse("chat.history", failedHistory);
+        await gateway.setMethodResponse("chat.startup", failedHistory);
         await gateway.setSessionsListResponse(chatSessionListResponse([failed]));
         await gateway.emitGatewayEvent("sessions.changed", {
           agentId: "main",
