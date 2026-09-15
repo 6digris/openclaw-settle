@@ -20,27 +20,34 @@ export function normalizeConfigMachineStateKey(key: string): string {
 }
 
 // oxlint-disable-next-line typescript/no-unnecessary-type-parameters -- Callers own the JSON shape for open-ended state keys.
+export function readConfigMachineStateWithMetadataInDatabase<T>(
+  database: DatabaseSync,
+  key: string,
+): { value: T; updatedAtMs: number } | undefined {
+  if (!tableExists(database, "config_machine_state")) {
+    return undefined;
+  }
+  const db = getNodeSqliteKysely<ConfigMachineStateDatabase>(database);
+  const row = executeSqliteQueryTakeFirstSync(
+    database,
+    db
+      .selectFrom("config_machine_state")
+      .select(["value_json", "updated_at_ms"])
+      .where("state_key", "=", normalizeConfigMachineStateKey(key)),
+  );
+  return row
+    ? { value: JSON.parse(row.value_json) as T, updatedAtMs: row.updated_at_ms }
+    : undefined;
+}
+
+// oxlint-disable-next-line typescript/no-unnecessary-type-parameters -- Callers own the JSON shape for open-ended state keys.
 export function readConfigMachineStateWithMetadata<T>(
   key: string,
   options: OpenClawStateDatabaseOptions = {},
   behavior: { artifactPreservingReadOnly?: boolean } = {},
 ): { value: T; updatedAtMs: number } | undefined {
-  const read = ({ db: database }: { db: DatabaseSync }) => {
-    if (!tableExists(database, "config_machine_state")) {
-      return undefined;
-    }
-    const db = getNodeSqliteKysely<ConfigMachineStateDatabase>(database);
-    const row = executeSqliteQueryTakeFirstSync(
-      database,
-      db
-        .selectFrom("config_machine_state")
-        .select(["value_json", "updated_at_ms"])
-        .where("state_key", "=", normalizeConfigMachineStateKey(key)),
-    );
-    return row
-      ? { value: JSON.parse(row.value_json) as T, updatedAtMs: row.updated_at_ms }
-      : undefined;
-  };
+  const read = ({ db }: { db: DatabaseSync }) =>
+    readConfigMachineStateWithMetadataInDatabase<T>(db, key);
   return behavior.artifactPreservingReadOnly
     ? withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(read, options)
     : withExistingOpenClawStateDatabaseReadOnly(read, options);
