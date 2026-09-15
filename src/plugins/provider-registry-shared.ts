@@ -61,9 +61,8 @@ export function matchesProviderPluginRef(
   return Boolean(
     normalized &&
     (normalizeProviderId(provider.id) === normalized ||
-      [...(provider.aliases ?? []), ...(provider.hookAliases ?? [])].some(
-        (alias) => normalizeProviderId(alias) === normalized,
-      )),
+      provider.aliases?.some((alias) => normalizeProviderId(alias) === normalized) ||
+      provider.hookAliases?.some((alias) => normalizeProviderId(alias) === normalized)),
   );
 }
 
