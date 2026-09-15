@@ -457,6 +457,7 @@ describe("waitForOutbound expected failures", () => {
       label: "Live",
       accountId: "sut",
       requiredPluginIds: [],
+      supportedActions: [],
       assertTransportHealthy,
       sendInbound: async (input) => state.addInboundMessage(input),
       createGatewayConfig: () => ({}),
