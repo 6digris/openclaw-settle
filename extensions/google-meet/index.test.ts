@@ -6818,7 +6818,7 @@ describe("google-meet plugin", () => {
     expect(bridge.close).not.toHaveBeenCalled();
     expect(bridge.acknowledgeMark).toHaveBeenCalled();
     expect(bridge.triggerGreeting).not.toHaveBeenCalled();
-    handle.speak("Say exactly: hello from the meeting.");
+    void handle.speak("Say exactly: hello from the meeting.");
     expect(bridge.triggerGreeting).toHaveBeenLastCalledWith("Say exactly: hello from the meeting.");
     const health = handle.getHealth();
     expect(health.providerConnected).toBe(true);
@@ -7307,7 +7307,7 @@ describe("google-meet plugin", () => {
       );
     });
     expect(bridge.triggerGreeting).not.toHaveBeenCalled();
-    handle.speak("Say exactly: hello from the node.");
+    void handle.speak("Say exactly: hello from the node.");
     expect(bridge.triggerGreeting).toHaveBeenLastCalledWith("Say exactly: hello from the node.");
     expect(callbacks.audioFormat).toStrictEqual({
       encoding: "pcm16",

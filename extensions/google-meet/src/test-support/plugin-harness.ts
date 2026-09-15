@@ -343,3 +343,23 @@ export function createGoogleMeetToolGatewayForTest(
     requireRecord(await invokeGoogleMeetGatewayMethodForTest(methods, method, params), resultLabel),
   );
 }
+
+export function createGoogleMeetBrowserRequestHandlersForTest(
+  pinnedNodeId: string,
+  browserRequest: (params: unknown) => Promise<unknown>,
+) {
+  return {
+    gatewayRequestHandler: async (method: string, params?: Record<string, unknown>) => {
+      if (method !== "browser.request") {
+        throw new Error(`Unexpected in-process Gateway method: ${method}`);
+      }
+      return await browserRequest(params);
+    },
+    nodesInvokeHandler: async (request: { nodeId: string; command: string; params?: unknown }) => {
+      if (request.nodeId !== pinnedNodeId || request.command !== "browser.proxy") {
+        throw new Error("Browser participation did not use the session's pinned node.");
+      }
+      return { payload: { result: await browserRequest(request.params) } };
+    },
+  };
+}

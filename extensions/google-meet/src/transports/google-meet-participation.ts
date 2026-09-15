@@ -30,7 +30,7 @@ const actionResultSchema = z.union([
   }),
 ]);
 
-export function validateGoogleMeetParticipationAction(
+function validateGoogleMeetParticipationAction(
   action: MeetingParticipationAction,
 ): string | undefined {
   return chatActionSchema.safeParse(action).success

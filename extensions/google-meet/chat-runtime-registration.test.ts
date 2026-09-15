@@ -3,7 +3,6 @@ import {
   createPluginStateKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
-import type { OpenKeyedStoreOptions } from "openclaw/plugin-sdk/runtime-doctor-migrations";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { withOpenClawTestState } from "openclaw/plugin-sdk/test-state";
@@ -12,6 +11,8 @@ import plugin from "./index.js";
 import { MEET_URL } from "./src/test-support/fixtures.test-helpers.js";
 import { createGoogleMeetChatPage } from "./src/test-support/google-meet-chat.test-helpers.js";
 import {
+  createGoogleMeetBrowserRequestHandlersForTest,
+  createGoogleMeetToolGatewayForTest,
   getMeetTool,
   invokeGoogleMeetGatewayMethodForTest,
   setupGoogleMeetPlugin,
@@ -57,7 +58,7 @@ function setupRegisteredChat(env: NodeJS.ProcessEnv, transport: BrowserTransport
   const launch = vi
     .spyOn(chromeTransport, "launchChromeMeet")
     .mockImplementation(async ({ meetingSessionId }) => {
-      page.window.__openclawMeetAudioSession = meetingSessionId;
+      page.window["__openclawMeetAudioSession"] = meetingSessionId;
       return {
         launched: true,
         tab: { targetId: TAB_ID, openedByPlugin: true },
@@ -67,7 +68,7 @@ function setupRegisteredChat(env: NodeJS.ProcessEnv, transport: BrowserTransport
   const launchOnNode = vi
     .spyOn(chromeTransport, "launchChromeMeetOnNode")
     .mockImplementation(async ({ meetingSessionId }) => {
-      page.window.__openclawMeetAudioSession = meetingSessionId;
+      page.window["__openclawMeetAudioSession"] = meetingSessionId;
       return {
         launched: true,
         nodeId: PINNED_NODE,
@@ -84,22 +85,7 @@ function setupRegisteredChat(env: NodeJS.ProcessEnv, transport: BrowserTransport
     lines: [],
   });
   const harness = setupGoogleMeetPlugin(
-    {
-      register(api) {
-        plugin.register({
-          ...api,
-          runtime: {
-            ...api.runtime,
-            state: {
-              ...api.runtime.state,
-              openKeyedStore<T>(options: OpenKeyedStoreOptions) {
-                return createPluginStateKeyedStoreForTests<T>("google-meet", { ...options, env });
-              },
-            },
-          },
-        });
-      },
-    },
+    plugin,
     {
       defaultTransport: transport,
       defaultMode: "transcribe",
@@ -107,20 +93,10 @@ function setupRegisteredChat(env: NodeJS.ProcessEnv, transport: BrowserTransport
       chromeNode: { node: "configured-other-node" },
     },
     {
+      stateEnv: env,
       fullConfig: { transcripts: { enabled: false } },
       gatewayAvailable: true,
-      gatewayRequestHandler: async (method, params) => {
-        if (method !== "browser.request") {
-          throw new Error(`Unexpected in-process Gateway method: ${method}`);
-        }
-        return await browserRequest(params);
-      },
-      nodesInvokeHandler: async ({ nodeId, command, params }) => {
-        if (nodeId !== PINNED_NODE || command !== "browser.proxy") {
-          throw new Error("Browser participation did not use the session's pinned node.");
-        }
-        return { payload: { result: await browserRequest(params) } };
-      },
+      ...createGoogleMeetBrowserRequestHandlersForTest(PINNED_NODE, browserRequest),
     },
   );
   const tool = harness.tools[0];
@@ -129,9 +105,7 @@ function setupRegisteredChat(env: NodeJS.ProcessEnv, transport: BrowserTransport
   }
   const invoke = async (method: string, params: unknown) =>
     await invokeGoogleMeetGatewayMethodForTest(harness.methods, method, params);
-  const toolGateway = vi.fn(async (method: string, _options: unknown, params?: unknown) =>
-    requireRecord(await invoke(method, params), "Google Meet Gateway result"),
-  );
+  const toolGateway = createGoogleMeetToolGatewayForTest(harness.methods);
   testing.setCallGatewayFromCliForTests(toolGateway);
   let sessionId: string | undefined;
   const join = async () => {
@@ -141,7 +115,7 @@ function setupRegisteredChat(env: NodeJS.ProcessEnv, transport: BrowserTransport
     });
     sessionId = joined.details.session.id;
     expect(joined.details.session.state).toBe("active");
-    expect(page.window.__openclawMeetAudioSession).toBe(sessionId);
+    expect(page.window["__openclawMeetAudioSession"]).toBe(sessionId);
     if (transport === "chrome-node") {
       expect(launchOnNode).toHaveBeenCalledOnce();
       expect(launch).not.toHaveBeenCalled();

@@ -6,6 +6,7 @@ import {
   resolveMeetingBrowserNode,
   resolveMeetingBrowserNodeInfo,
   type MeetingBrowserCandidateTab,
+  type MeetingBrowserRequestCaller,
 } from "openclaw/plugin-sdk/meeting-runtime";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import { GOOGLE_MEET_BROWSER_NODE_ADAPTER } from "./google-meet-platform-constants.js";
@@ -44,6 +45,13 @@ export async function callBrowserProxyOnNode(params: {
     ...params,
     adapter: GOOGLE_MEET_BROWSER_NODE_ADAPTER,
   });
+}
+
+export function chromeNodeBrowserRequest(
+  runtime: PluginRuntime,
+  nodeId: string,
+): MeetingBrowserRequestCaller {
+  return async (request) => await callBrowserProxyOnNode({ ...request, runtime, nodeId });
 }
 
 export const asBrowserTabs = asMeetingBrowserTabs;

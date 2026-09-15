@@ -1,3 +1,4 @@
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   explicitlyRequestsMeetChatVoice,
@@ -41,14 +42,6 @@ function sourceHandle(source: GoogleMeetChatSource): string {
 
 function chatSnapshot(sources: GoogleMeetChatSource[]): GoogleMeetChatSnapshot {
   return { epoch: sources[0]?.epoch ?? "chat-epoch-1", sources };
-}
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((accept) => {
-    resolve = accept;
-  });
-  return { promise, resolve };
 }
 
 function observerFixture(sources = [chatSource()]) {
@@ -279,7 +272,7 @@ describe("GoogleMeetChatObserver", () => {
     const original = chatSource();
     const revised = chatSource({ revision: "2", text: "What is the next step after approval?" });
     const page = observerFixture([original]);
-    const originalAnswer = deferred<string>();
+    const originalAnswer = createDeferred<string>();
     page.consult
       .mockReturnValueOnce(originalAnswer.promise)
       .mockResolvedValueOnce("Begin the rollout.");
@@ -309,7 +302,7 @@ describe("GoogleMeetChatObserver", () => {
   it("aborts a pending answer when an empty snapshot arrives from a new page epoch", async () => {
     const original = chatSource();
     const page = observerFixture([original]);
-    const answer = deferred<string>();
+    const answer = createDeferred<string>();
     page.consult.mockReturnValueOnce(answer.promise);
     await page.start();
     const signal = page.consult.mock.calls[0]?.[0].signal;
@@ -335,7 +328,7 @@ describe("GoogleMeetChatObserver", () => {
     const original = chatSource();
     const invalidated = chatSource({ revision: "2", finalized: false, text: "", ownEcho });
     const page = observerFixture([original]);
-    const answer = deferred<string>();
+    const answer = createDeferred<string>();
     page.consult.mockReturnValueOnce(answer.promise);
     await page.start();
     const signal = page.consult.mock.calls[0]?.[0].signal;
@@ -359,8 +352,8 @@ describe("GoogleMeetChatObserver", () => {
     const first = chatSource();
     const second = chatSource({ id: "native-message-2", text: "Who owns the rollout?" });
     const page = observerFixture([first, second]);
-    const firstAnswer = deferred<string>();
-    const firstEffect = deferred<ReplyResult>();
+    const firstAnswer = createDeferred<string>();
+    const firstEffect = createDeferred<ReplyResult>();
     page.consult
       .mockReturnValueOnce(firstAnswer.promise)
       .mockResolvedValueOnce("The release owner.");
@@ -394,7 +387,7 @@ describe("GoogleMeetChatObserver", () => {
 
   it("rechecks the owner after a model answer even without another observer poll", async () => {
     const page = observerFixture();
-    const answer = deferred<string>();
+    const answer = createDeferred<string>();
     page.consult.mockReturnValueOnce(answer.promise);
     await page.start();
 
@@ -431,7 +424,7 @@ describe("GoogleMeetChatObserver", () => {
 
   it("stops pending and queued consultations before they can reply", async () => {
     const page = observerFixture([chatSource(), chatSource({ id: "native-message-2" })]);
-    const answer = deferred<string>();
+    const answer = createDeferred<string>();
     page.consult.mockReturnValueOnce(answer.promise);
     await page.start();
     const signal = page.consult.mock.calls[0]?.[0].signal;
@@ -449,7 +442,7 @@ describe("GoogleMeetChatObserver", () => {
 
   it("ignores an in-flight read that finishes after the observer stops", async () => {
     const page = observerFixture();
-    const read = deferred<GoogleMeetChatSnapshot>();
+    const read = createDeferred<GoogleMeetChatSnapshot>();
     page.read.mockReturnValueOnce(read.promise);
     await page.start();
 
@@ -466,7 +459,7 @@ describe("GoogleMeetChatObserver", () => {
 
   it("stops itself when the session retires during an in-flight read", async () => {
     const page = observerFixture();
-    const read = deferred<GoogleMeetChatSnapshot>();
+    const read = createDeferred<GoogleMeetChatSnapshot>();
     page.read.mockReturnValueOnce(read.promise);
     await page.start();
 
@@ -485,7 +478,7 @@ describe("GoogleMeetChatObserver", () => {
   it("does not let a stopped read cancel an observer restarted with the same session ID", async () => {
     const current = chatSource({ id: "current-message" });
     const page = observerFixture([current]);
-    const oldRead = deferred<GoogleMeetChatSnapshot>();
+    const oldRead = createDeferred<GoogleMeetChatSnapshot>();
     page.read.mockReturnValueOnce(oldRead.promise);
     await page.start();
 

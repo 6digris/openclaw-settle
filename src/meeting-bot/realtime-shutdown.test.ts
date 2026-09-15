@@ -99,6 +99,7 @@ async function createFixture(
   const sendAudio = vi.fn();
   const disposed = createDeferredCore();
   const writeOutput = vi.fn(async (_audio: Buffer) => {});
+  const beginOutput = vi.fn();
   const sendUserMessage = vi.fn();
   const triggerGreeting = vi.fn();
   const transport: MeetingRealtimeAudioTransport = {
@@ -112,7 +113,7 @@ async function createFixture(
     startBargeInMonitor: (handler) => {
       interrupt = () => handler(Buffer.from([1]));
     },
-    beginOutput: vi.fn(),
+    beginOutput,
     stop: vi.fn(async () => {}),
     dispose: vi.fn(async () => {
       disposed.resolve();
@@ -174,7 +175,7 @@ async function createFixture(
     runEmbeddedAgent,
     textToSpeechTelephony,
     writeOutput,
-    beginOutput: transport.beginOutput,
+    beginOutput,
     sendUserMessage,
     triggerGreeting,
     logger,
@@ -315,7 +316,7 @@ describe("meeting shutdown", () => {
     const fixture = await createFixture();
     let current = true;
     try {
-      fixture.handle.speak("A queued response.", () => {
+      void fixture.handle.speak("A queued response.", () => {
         if (!current) {
           throw new Error("Meeting chat source changed");
         }
@@ -342,7 +343,7 @@ describe("meeting shutdown", () => {
         return synthesis.promise;
       });
       try {
-        fixture.handle.speak("A pending response.", () => {
+        void fixture.handle.speak("A pending response.", () => {
           if (!current) {
             throw new Error("Meeting chat source changed");
           }
@@ -375,7 +376,7 @@ describe("meeting shutdown", () => {
       return convert(...args);
     });
     try {
-      fixture.handle.speak("A converted response.", () => {
+      void fixture.handle.speak("A converted response.", () => {
         if (!current) {
           throw new Error("Meeting chat source changed");
         }
@@ -461,7 +462,7 @@ describe("meeting shutdown", () => {
   it("submits current native speech once and rejects speech after stop", async () => {
     const fixture = await createFixture("voice");
     try {
-      fixture.handle.speak("A current response.", () => {});
+      void fixture.handle.speak("A current response.", () => {});
       expect(fixture.triggerGreeting).toHaveBeenCalledExactlyOnceWith("A current response.");
       await fixture.handle.stop();
       expect(() => fixture.handle.speak("A late response.")).toThrow(
@@ -619,7 +620,7 @@ describe("meeting shutdown", () => {
     fixture.textToSpeechTelephony.mockReturnValueOnce(synthesis.promise);
     fixture.writeOutput.mockReturnValueOnce(sink.promise);
     try {
-      fixture.handle.speak("A synthetic spoken answer.");
+      void fixture.handle.speak("A synthetic spoken answer.");
       await setImmediate();
       if (stage === "sink") {
         synthesis.resolve(spokenResult);
@@ -675,7 +676,7 @@ describe("meeting shutdown", () => {
         fixture.writeOutput.mockRejectedValueOnce(new Error("active sink failed"));
       }
       try {
-        fixture.handle.speak("A synthetic answer.");
+        void fixture.handle.speak("A synthetic answer.");
         await setImmediate();
         expect(fixture.eventTypes()).toEqual([
           "session.started",

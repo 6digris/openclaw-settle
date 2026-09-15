@@ -31,7 +31,9 @@ function setupWithSqlite(env: NodeJS.ProcessEnv) {
       fullConfig: { transcripts: { enabled: false } },
       gatewayAvailable: true,
       gatewayRequestHandler: async (method, params) => {
-        if (method === "browser.request" && params?.path === "/tabs") return { tabs: [] };
+        if (method === "browser.request" && params?.path === "/tabs") {
+          return { tabs: [] };
+        }
         throw new Error(`Unexpected browser request in participation lifecycle fixture: ${method}`);
       },
     },

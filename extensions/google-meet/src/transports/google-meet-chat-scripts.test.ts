@@ -151,7 +151,7 @@ describe("meetSendChatScript", () => {
     async (mismatch) => {
       const page = chatPage();
       if (mismatch === "session") {
-        page.window.__openclawMeetAudioSession = "other-session";
+        page.window["__openclawMeetAudioSession"] = "other-session";
       } else if (mismatch === "url") {
         page.location.href = "https://meet.google.com/klm-nopq-rst";
       } else {
@@ -169,7 +169,7 @@ describe("meetSendChatScript", () => {
     const page = chatPage();
     page.composer.focus.mockImplementation(() => {
       page.document.activeElement = page.composer;
-      page.window.__openclawMeetAudioSession = "other-session";
+      page.window["__openclawMeetAudioSession"] = "other-session";
     });
 
     expect((await page.send()).status).toBe("rejected");
@@ -180,7 +180,7 @@ describe("meetSendChatScript", () => {
   it("rechecks page ownership between preparation and the final send evaluation", async () => {
     const page = chatPage();
     page.beforeSend.mockImplementation(() => {
-      page.window.__openclawMeetAudioSession = "other-session";
+      page.window["__openclawMeetAudioSession"] = "other-session";
     });
 
     expect((await page.send()).status).toBe("rejected");
@@ -192,7 +192,7 @@ describe("meetSendChatScript", () => {
     const page = chatPage();
     page.composer.dispatchEvent.mockImplementation((event) => {
       if (event.type === "input") {
-        page.window.__openclawMeetAudioSession = "other-session";
+        page.window["__openclawMeetAudioSession"] = "other-session";
       }
       return true;
     });
@@ -208,9 +208,9 @@ describe("meetSendChatScript", () => {
       page.onWait.mockImplementationOnce(() => {
         page.composer.value = "";
         if (ownership === "session") {
-          page.window.__openclawMeetAudioSession = "other-session";
+          page.window["__openclawMeetAudioSession"] = "other-session";
         } else {
-          page.window.__openclawMeetChat = {};
+          page.window["__openclawMeetChat"] = {};
         }
       });
 
@@ -516,7 +516,7 @@ describe("meetReadChatScript", () => {
       }
       await readChat(page);
     }
-    const state = page.window.__openclawMeetChat as { messages: Map<string, unknown> };
+    const state = page.window["__openclawMeetChat"] as { messages: Map<string, unknown> };
     expect(state.messages.has(futureId)).toBe(false);
     for (const id of oldIds) {
       page.removeMessage(id);
@@ -559,7 +559,7 @@ describe("meetReadChatScript", () => {
     page.addMessage({ id: admittedId, text: "An already admitted question" });
     const admitted = (await readChat(page)).sources[0];
     expect(admitted).toMatchObject({ id: admittedId, historical: false });
-    const state = page.window.__openclawMeetChat as { historicalIds: Set<string> };
+    const state = page.window["__openclawMeetChat"] as { historicalIds: Set<string> };
     for (let index = 0; index < 1_024; index += 1) {
       state.historicalIds.add(nativeMessageId(STARTED_AT_MS + 100 + index));
     }
@@ -813,13 +813,13 @@ describe("meetReadChatScript", () => {
     const page = chatPage();
     page.addMessage({ id: FIRST_NATIVE_ID, text: "Do not observe this" });
     if (change === "session") {
-      page.window.__openclawMeetAudioSession = "another-session";
+      page.window["__openclawMeetAudioSession"] = "another-session";
     } else {
       page.location.href = "https://meet.google.com/klm-nopq-rst";
     }
 
     expect((await page.read()).status).toBe("rejected");
-    expect(page.window.__openclawMeetChat).toBeUndefined();
+    expect(page.window["__openclawMeetChat"]).toBeUndefined();
     expect(page.toggle.click).not.toHaveBeenCalled();
     expect(page.sendButton.click).not.toHaveBeenCalled();
   });

@@ -1,11 +1,14 @@
-import type { MeetingBrowserRequestParams } from "openclaw/plugin-sdk/meeting-runtime";
+import type {
+  MeetingBrowserRequestCaller,
+  MeetingBrowserRequestParams,
+} from "openclaw/plugin-sdk/meeting-runtime";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import { createMeetingBrowserFixture } from "openclaw/plugin-sdk/test-fixtures";
 import { describe, expect, it, vi } from "vitest";
 import { resolveGoogleMeetConfig } from "../config.js";
 import type { GoogleMeetChatSource } from "../google-meet-chat.js";
 import { MEET_URL, MEET_URL_EN, meetSession } from "../test-support/fixtures.test-helpers.js";
-import { parseGoogleMeetChatRead, readChromeMeetChat } from "./chrome-chat.js";
+import { readChromeMeetChat } from "./chrome-chat.js";
 
 const source: GoogleMeetChatSource = {
   kind: "chat",
@@ -27,30 +30,34 @@ const snapshot = {
 };
 const wire = (value: unknown) => ({ result: JSON.stringify(value) });
 
+function readChatSnapshot(actResult: unknown) {
+  return createChatReadFixture("chrome", { actResult }).read();
+}
+
 describe("parseGoogleMeetChatRead", () => {
-  it("preserves native message identity, metadata, and delivery state", () => {
-    expect(parseGoogleMeetChatRead(wire(snapshot))).toEqual({
+  it("preserves native message identity, metadata, and delivery state", async () => {
+    await expect(readChatSnapshot(wire(snapshot))).resolves.toEqual({
       epoch: source.epoch,
       sources: [source],
     });
   });
 
-  it("accepts an unfinished row with empty text and unknown echo ownership", () => {
+  it("accepts an unfinished row with empty text and unknown echo ownership", async () => {
     const pending = { ...source, text: "", ownEcho: undefined, finalized: false };
-    expect(parseGoogleMeetChatRead(wire({ ...snapshot, sources: [pending] }))).toEqual({
+    await expect(readChatSnapshot(wire({ ...snapshot, sources: [pending] }))).resolves.toEqual({
       epoch: source.epoch,
       sources: [{ ...source, text: "", finalized: false, ownEcho: undefined }],
     });
   });
 
-  it("accepts a nonnumeric native ID only as historical context", () => {
+  it("accepts a nonnumeric native ID only as historical context", async () => {
     const historical = {
       ...source,
       id: "spaces/room-1/messages/message-1",
       historical: true,
     };
 
-    expect(parseGoogleMeetChatRead(wire({ ...snapshot, sources: [historical] }))).toEqual({
+    await expect(readChatSnapshot(wire({ ...snapshot, sources: [historical] }))).resolves.toEqual({
       epoch: source.epoch,
       sources: [historical],
     });
@@ -98,24 +105,33 @@ describe("parseGoogleMeetChatRead", () => {
     ],
     ["missing finalized text", wire({ ...snapshot, sources: [{ ...source, text: undefined }] })],
     ["blank finalized text", wire({ ...snapshot, sources: [{ ...source, text: " \n " }] })],
-  ])("rejects %s with a native snapshot error", (_name, value) => {
-    expect(() => parseGoogleMeetChatRead(value)).toThrow(
+  ])("rejects %s with a native snapshot error", async (_name, value) => {
+    await expect(readChatSnapshot(value)).rejects.toThrow(
       "Meet returned an invalid native chat snapshot.",
     );
   });
 });
 
-function createChatReadFixture(transport: "chrome" | "chrome-node" = "chrome-node") {
+function createChatReadFixture(
+  transport: "chrome" | "chrome-node" = "chrome-node",
+  options?: { actResult: unknown },
+) {
   const browser = createMeetingBrowserFixture({
     url: MEET_URL_EN,
     tabId: "chat-tab",
     title: "Meet",
     tabOpen: true,
   });
-  const browserRequest = vi.fn(async (request: Record<string, unknown>) =>
-    request.path === "/act" ? wire(snapshot) : browser.browserResult(request),
-  );
-  browser.gatewayRequest.mockImplementation(async (_method, request) => browserRequest(request));
+  const actResult = options ? options.actResult : wire(snapshot);
+  const browserRequest = vi.fn<
+    (request: Record<string, unknown>) => ReturnType<MeetingBrowserRequestCaller>
+  >(async (request) => (request.path === "/act" ? actResult : browser.browserResult(request)));
+  vi.spyOn(browser.runtime.gateway, "request").mockImplementation(async (_method, request) => {
+    if (!request) {
+      throw new Error("Expected a browser request.");
+    }
+    return browserRequest(request);
+  });
   const invoke = vi.fn<PluginRuntime["nodes"]["invoke"]>(async ({ params }) => ({
     payload: { result: await browserRequest(params as MeetingBrowserRequestParams) },
   }));

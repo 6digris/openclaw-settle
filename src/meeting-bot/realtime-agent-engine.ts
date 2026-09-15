@@ -120,13 +120,13 @@ export async function startMeetingAgentRealtimeEngine(params: {
     text: string | undefined,
     assertCurrent?: () => void,
     refreshCurrent?: () => Promise<void>,
-  ) => {
+  ): undefined | Promise<void> => {
     const normalized = refreshCurrent ? text?.trim() : normalizeMeetingTtsPromptText(text);
     if (stopped && refreshCurrent) {
       throw new Error("Meeting realtime session is closed");
     }
     if (!normalized || stopped) {
-      return;
+      return undefined;
     }
     assertCurrent?.();
     const assertSpeechCurrent = () => {
@@ -185,6 +185,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
     if (refreshCurrent) {
       return speaking;
     }
+    return undefined;
   };
 
   // The closures above only run after harness creation; they capture this later `const`.

@@ -149,12 +149,7 @@ class PageNode {
   }
 
   closest(selector: string): PageNode | null {
-    for (let node: PageNode | null = this; node; node = node.parentElement) {
-      if (node.matches(selector)) {
-        return node;
-      }
-    }
-    return null;
+    return closestPageNode(this, selector);
   }
 
   getBoundingClientRect() {
@@ -377,4 +372,13 @@ export function createGoogleMeetChatPage({
     sendEvents,
     acceptSend,
   };
+}
+
+function closestPageNode(startNode: PageNode | null, selector: string): PageNode | null {
+  for (let node = startNode; node; node = node.parentElement) {
+    if (node.matches(selector)) {
+      return node;
+    }
+  }
+  return null;
 }

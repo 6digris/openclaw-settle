@@ -3,9 +3,8 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import type { PluginRuntime, RuntimeLogger } from "../plugins/runtime/types.js";
 import type { RealtimeVoiceProviderPlugin } from "../plugins/types.js";
-import type { RealtimeVoiceAgentConsultToolPolicy } from "../talk/agent-consult-tool.js";
 import { isRealtimeVoiceAudioAudible } from "../talk/audio-energy.js";
-import type { RealtimeVoiceTool, RealtimeVoiceToolCallEvent } from "../talk/provider-types.js";
+import type { RealtimeVoiceTool } from "../talk/provider-types.js";
 import {
   createRealtimeVoiceSessionHarness,
   type RealtimeVoiceSessionHarness,
@@ -15,15 +14,8 @@ import type {
   RealtimeVoiceBridgeSession,
   RealtimeVoiceBridgeSessionParams,
 } from "../talk/session-runtime.js";
-import type { TalkEventInput } from "../talk/talk-events.js";
-import {
-  resolveMeetingRealtimeAudioFormat,
-  type MeetingRealtimeAudioFormat,
-} from "./realtime-audio-format.js";
-import type {
-  MeetingRealtimeAudioTransport,
-  MeetingRealtimeAudioTransportHealth,
-} from "./realtime-audio-transport.js";
+import { resolveMeetingRealtimeAudioFormat } from "./realtime-audio-format.js";
+import type { MeetingRealtimeAudioTransport } from "./realtime-audio-transport.js";
 import {
   buildMeetingSpeakExactUserMessage,
   createMeetingRealtimeLifecycleHandlers,
@@ -34,6 +26,13 @@ import {
   resolveMeetingRealtimeProvider,
   synthesizeMeetingSpeech,
 } from "./realtime-engine-support.js";
+import type {
+  MeetingAgentConsultParams,
+  MeetingRealtimeAudioEngineHandle,
+  MeetingRealtimeEngineConfig,
+  MeetingRealtimeToolCallParams,
+  MeetingRuntimePlatform,
+} from "./realtime-engine-types.js";
 import {
   createMeetingRealtimeOutputOwner,
   createMeetingRealtimeOutputQueue,
@@ -48,67 +47,14 @@ export {
   normalizeMeetingTtsPromptText,
   resolveMeetingRealtimeTranscriptionProvider,
 } from "./realtime-engine-support.js";
-export type MeetingRuntimePlatform = {
-  /** Adapter-owned identity keeps platform names and log prefixes out of core. */
-  displayName: string;
-  logScope: string;
-  sessionIdPrefix: string;
-};
-
-export type MeetingRealtimeEngineConfig = {
-  chrome: { audioFormat: MeetingRealtimeAudioFormat };
-  realtime: {
-    strategy: string;
-    agentId?: string;
-    provider?: string;
-    transcriptionProvider?: string;
-    voiceProvider?: string;
-    model?: string;
-    instructions?: string;
-    introMessage?: string;
-    toolPolicy?: RealtimeVoiceAgentConsultToolPolicy;
-    providers: Record<string, Record<string, unknown>>;
-  };
-};
-
-export type MeetingAgentConsultParams = {
-  meetingSessionId: string;
-  requesterSessionKey?: string;
-  args: unknown;
-  transcript: Array<{ role: "user" | "assistant"; text: string }>;
-  /** Meeting-owned cancellation for the active consult. */
-  abortSignal?: AbortSignal;
-};
-
-export type MeetingRealtimeToolCallParams = {
-  strategy: string;
-  session: RealtimeVoiceBridgeSession;
-  event: RealtimeVoiceToolCallEvent;
-  meetingSessionId: string;
-  requesterSessionKey?: string;
-  transcript: Array<{ role: "user" | "assistant"; text: string }>;
-  onTalkEvent: (event: TalkEventInput) => void;
-};
-
-export type MeetingRealtimeAudioEngineHealth = ReturnType<
-  RealtimeVoiceSessionHarness["getHealth"]
-> &
-  MeetingRealtimeAudioTransportHealth & {
-    lastClearAt?: string;
-    clearCount?: number;
-    bridgeClosed: boolean;
-  };
-
-export type MeetingRealtimeAudioEngineHandle = {
-  providerId: string;
-  speak: (
-    instructions?: string,
-    assertCurrent?: () => void,
-    refreshCurrent?: () => Promise<void>,
-  ) => void | Promise<void>;
-  getHealth: () => MeetingRealtimeAudioEngineHealth;
-  stop: () => Promise<void>;
-};
+export type {
+  MeetingAgentConsultParams,
+  MeetingRealtimeAudioEngineHandle,
+  MeetingRealtimeAudioEngineHealth,
+  MeetingRealtimeEngineConfig,
+  MeetingRealtimeToolCallParams,
+  MeetingRuntimePlatform,
+} from "./realtime-engine-types.js";
 
 export const MEETING_AGENT_TRANSCRIPT_DEBOUNCE_MS = 900;
 // Playback duration plus a tail blocks live loopback; transcript lookback catches delayed echo.
@@ -252,7 +198,7 @@ export async function startMeetingRealtimeEngine(params: {
     if (!block) {
       invalidateOutputPlayback();
     }
-    harness.flushOutput(outputQueue.clear);
+    harness.flushOutput(() => outputQueue.clear());
     harness.finishOutputAudio("output-backpressure");
     if (!block) {
       return;
@@ -396,7 +342,7 @@ export async function startMeetingRealtimeEngine(params: {
     );
   }
   const lifecycleHandlers = createMeetingRealtimeLifecycleHandlers({
-    clearOutputPlayback: outputQueue.clear,
+    clearOutputPlayback: () => outputQueue.clear(),
     lifecycle,
     harness,
     invalidateOutputPlayback,
@@ -491,7 +437,7 @@ export async function startMeetingRealtimeEngine(params: {
             outputOwner.reset();
           }
           invalidateOutputPlayback();
-          harness.flushOutput(outputQueue.clear);
+          harness.flushOutput(() => outputQueue.clear());
           harness.finishOutputAudio("clear");
         },
       },
@@ -643,14 +589,14 @@ export async function startMeetingRealtimeEngine(params: {
 
   return {
     providerId: resolved.provider.id,
-    speak: (instructions, assertCurrent, refreshCurrent) => {
+    speak: (instructions, assertCurrent, refreshCurrent): undefined | Promise<void> => {
       if (stopped) {
         throw new Error("Meeting realtime session is closed");
       }
       assertCurrent?.();
       if (!refreshCurrent) {
         bridge?.triggerGreeting(instructions);
-        return;
+        return undefined;
       }
       const text = instructions?.trim();
       if (!text) {

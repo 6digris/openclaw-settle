@@ -77,7 +77,9 @@ function createEventlessResponseFixture(
 function createLifecycleGatedFixture() {
   const harness = createHarness();
   let callbacks!: Parameters<RealtimeVoiceProviderPlugin["createBridge"]>[0];
-  const bridge = makeBridge({ sendUserMessage: vi.fn() });
+  const sendAudio = vi.fn();
+  const close = vi.fn();
+  const bridge = makeBridge({ sendUserMessage: vi.fn(), sendAudio, close });
   const observers = {
     onEvent: vi.fn(),
     onResponseDone: vi.fn(),
@@ -106,13 +108,21 @@ function createLifecycleGatedFixture() {
     },
     { shouldHandleResponseLifecycle },
   );
-  return { harness, session, callbacks, bridge, observers, shouldHandleResponseLifecycle };
+  return {
+    harness,
+    session,
+    callbacks,
+    sendAudio,
+    close,
+    observers,
+    shouldHandleResponseLifecycle,
+  };
 }
 
 describe("realtime voice session harness", () => {
   it.each(["typed", "legacy"] as const)(
     "fences %s provider lifecycle callbacks during and after local speech",
-    (completion) => {
+    async (completion) => {
       const { harness, session, callbacks, observers, shouldHandleResponseLifecycle } =
         createLifecycleGatedFixture();
       shouldHandleResponseLifecycle.mockReturnValue(false);
@@ -167,12 +177,12 @@ describe("realtime voice session harness", () => {
       });
       expect(harness.transcript).toMatchObject([{ role: "assistant", text: "Fresh response" }]);
       expect(harness.talk.activeTurnId).toBeUndefined();
-      session.close();
+      await session.close();
       harness.close();
     },
   );
 
-  it("allows fresh unkeyed audio responses after local speech releases", () => {
+  it("allows fresh unkeyed audio responses after local speech releases", async () => {
     const { harness, session, callbacks, observers, shouldHandleResponseLifecycle } =
       createLifecycleGatedFixture();
     shouldHandleResponseLifecycle.mockReturnValue(false);
@@ -189,11 +199,11 @@ describe("realtime voice session harness", () => {
     callbacks.onResponseDone?.({ status: "completed" });
     expect(harness.talk.activeTurnId).toBeUndefined();
     expect(observers.onResponseDone).toHaveBeenCalledExactlyOnceWith({ status: "completed" });
-    session.close();
+    await session.close();
     harness.close();
   });
 
-  it("retains provider terminal fencing after an active response is retired for local speech", () => {
+  it("retains provider terminal fencing after an active response is retired for local speech", async () => {
     const { harness, session, callbacks, observers, shouldHandleResponseLifecycle } =
       createLifecycleGatedFixture();
     callbacks.onEvent?.({ direction: "server", type: "response.created", responseId: "old" });
@@ -210,13 +220,20 @@ describe("realtime voice session harness", () => {
     callbacks.onEvent?.({ direction: "server", type: "response.done", responseId: "old" });
     expect(harness.talk.activeTurnId).toBe(nextTurn);
     expect(observers.onResponseDone).not.toHaveBeenCalled();
-    session.close();
+    await session.close();
     harness.close();
   });
 
-  it("keeps user input and terminal cleanup observable while assistant lifecycle is reserved", () => {
-    const { harness, session, callbacks, bridge, observers, shouldHandleResponseLifecycle } =
-      createLifecycleGatedFixture();
+  it("keeps user input and terminal cleanup observable while assistant lifecycle is reserved", async () => {
+    const {
+      harness,
+      session,
+      callbacks,
+      sendAudio,
+      close,
+      observers,
+      shouldHandleResponseLifecycle,
+    } = createLifecycleGatedFixture();
     shouldHandleResponseLifecycle.mockReturnValue(false);
     const audio = Buffer.from([1, 2]);
     harness.recordOutputAudio(audio);
@@ -232,12 +249,12 @@ describe("realtime voice session harness", () => {
     );
     expect(harness.recordInputAudio(audio)).toBe(true);
     session.sendAudio(audio);
-    expect(bridge.sendAudio).toHaveBeenCalledWith(audio);
+    expect(sendAudio).toHaveBeenCalledWith(audio);
     callbacks.onClose?.("completed");
     expect(observers.onClose).toHaveBeenCalledOnce();
     expect(harness.talk.activeTurnId).toBeUndefined();
-    session.close();
-    expect(bridge.close).toHaveBeenCalledOnce();
+    await session.close();
+    expect(close).toHaveBeenCalledOnce();
   });
 
   it.each(["capabilities", "continuous"] as const)(

@@ -7,8 +7,8 @@ import {
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import { z } from "zod";
 import type { GoogleMeetConfig } from "../config.js";
-import type { GoogleMeetChatSource } from "../google-meet-chat.js";
-import { callBrowserProxyOnNode } from "./chrome-browser-proxy.js";
+import type { GoogleMeetChatSnapshot } from "../google-meet-chat.js";
+import { chromeNodeBrowserRequest } from "./chrome-browser-proxy.js";
 import { meetReadChatScript } from "./google-meet-chat-scripts.js";
 import { isSameMeetUrlForReuse } from "./google-meet-urls.js";
 import type { GoogleMeetSession } from "./types.js";
@@ -49,10 +49,7 @@ const chatReadSchema = z.object({
   unrecognizedRows: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
 });
 
-export function parseGoogleMeetChatRead(result: unknown): {
-  epoch: string;
-  sources: GoogleMeetChatSource[];
-} {
+function parseGoogleMeetChatRead(result: unknown): GoogleMeetChatSnapshot {
   const invalid = () => new Error("Meet returned an invalid native chat snapshot.");
   // The bound accommodates the source limit even when JSON escapes every character.
   const wire = z.object({ result: z.string().max(32 * 1024 * 1024) }).safeParse(result);
@@ -92,7 +89,7 @@ export async function readChromeMeetChat(params: {
   config: GoogleMeetConfig;
   session: GoogleMeetSession;
   assertCurrent?: () => void;
-}): Promise<{ epoch: string; sources: GoogleMeetChatSource[] }> {
+}): Promise<GoogleMeetChatSnapshot> {
   const { session } = params;
   const transport = session.transport;
   const targetId = session.chrome?.browserTab?.targetId;
@@ -125,8 +122,7 @@ export async function readChromeMeetChat(params: {
     if (!nodeId?.trim()) {
       throw new Error("The meeting has no pinned browser node for chat capture.");
     }
-    callBrowser = (request) =>
-      callBrowserProxyOnNode({ ...request, runtime: params.runtime, nodeId });
+    callBrowser = chromeNodeBrowserRequest(params.runtime, nodeId);
   } else {
     callBrowser = await resolveLocalMeetingBrowserRequest(params.runtime);
   }

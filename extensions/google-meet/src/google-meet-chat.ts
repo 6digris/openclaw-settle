@@ -110,30 +110,36 @@ export class GoogleMeetChatObserver {
         this.stop(sessionId);
         return;
       }
-      if (!this.options.observeEpoch(sessionId, epoch)) return;
+      if (!this.options.observeEpoch(sessionId, epoch)) {
+        return;
+      }
       if (state.epoch !== epoch) {
-        for (const job of state.jobs.values()) job.abort();
+        for (const job of state.jobs.values()) {
+          job.abort();
+        }
         state.epoch = epoch;
       }
       const observed: ObservedChatSource[] = [];
       // Observe every revision before starting any consult. A corrected source
       // revokes the previous source handle while its model call is still running.
       for (const source of sources) {
-        if (source.historical) continue;
+        if (source.historical) {
+          continue;
+        }
         const sourceId = this.options.observe(sessionId, source);
         observed.push({ source, sourceId });
       }
-      for (const entry of observed) {
-        const key = JSON.stringify([entry.source.epoch, entry.source.id]);
-        if (state.versions.get(key) === entry.source.revision) {
+      for (const { source, sourceId } of observed) {
+        const key = JSON.stringify([source.epoch, source.id]);
+        if (state.versions.get(key) === source.revision) {
           continue;
         }
-        state.versions.set(key, entry.source.revision);
+        state.versions.set(key, source.revision);
         state.jobs.get(key)?.abort();
         if (
-          !entry.sourceId ||
+          !sourceId ||
           !this.options.autoReply(sessionId) ||
-          entry.source.ownEcho !== false ||
+          source.ownEcho !== false ||
           state.attempted.has(key)
         ) {
           continue;
@@ -141,18 +147,13 @@ export class GoogleMeetChatObserver {
         const job = new AbortController();
         state.jobs.set(key, job);
         state.answers = state.answers.then(() =>
-          this.#answer(
-            sessionId,
-            state,
-            key,
-            { source: entry.source, sourceId: entry.sourceId! },
-            sources,
-            job,
-          ),
+          this.#answer(sessionId, state, key, { source, sourceId }, sources, job),
         );
       }
       for (const key of state.versions.keys()) {
-        if (state.versions.size <= 512) break;
+        if (state.versions.size <= 512) {
+          break;
+        }
         if (!state.jobs.has(key)) {
           state.versions.delete(key);
           state.attempted.delete(key);
@@ -197,7 +198,8 @@ export class GoogleMeetChatObserver {
         signal: job.signal,
       });
       assertCurrent();
-      if (!answer.trim() || answer.trim() === "NO_REPLY") {
+      const trimmed = answer.trim();
+      if (!trimmed || trimmed === "NO_REPLY") {
         return;
       }
       // An edited native message can supersede a pending answer, but it cannot

@@ -1,22 +1,25 @@
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import * as meetingRuntime from "openclaw/plugin-sdk/meeting-runtime";
 import type { MeetingParticipationAttempt } from "openclaw/plugin-sdk/meeting-runtime";
 import {
   createPluginStateKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
-import type { OpenKeyedStoreOptions } from "openclaw/plugin-sdk/runtime-doctor-migrations";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { withOpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import plugin from "./index.js";
 import type { GoogleMeetConfig, GoogleMeetMode } from "./src/config.js";
+import { GoogleMeetRuntime } from "./src/runtime.js";
 import { meetAudioBridge, MEET_URL } from "./src/test-support/fixtures.test-helpers.js";
 import {
   createGoogleMeetChatPage,
   nativeGoogleMeetChatMessageId,
 } from "./src/test-support/google-meet-chat.test-helpers.js";
 import {
+  createGoogleMeetBrowserRequestHandlersForTest,
+  createGoogleMeetToolGatewayForTest,
   getMeetTool,
   invokeGoogleMeetGatewayMethodForTest,
   setupGoogleMeetPlugin,
@@ -43,19 +46,12 @@ type FixtureOptions = {
   toolPolicy?: GoogleMeetConfig["realtime"]["toolPolicy"];
 };
 
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((accept) => {
-    resolve = accept;
-  });
-  return { promise, resolve };
-}
-
 // Registration, the observer, source admission, SQLite claims, and browser scripts
 // are real. Only the browser/audio services and agent consultation are simulated.
 function setupRegisteredObserver(env: NodeJS.ProcessEnv, options: FixtureOptions) {
   vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
   vi.setSystemTime(OBSERVATION_TIME_MS);
+  const participate = vi.spyOn(GoogleMeetRuntime.prototype, "participate");
   const page = createGoogleMeetChatPage();
   const sent: string[] = [];
   page.sendButton.click.mockImplementation(() => {
@@ -68,7 +64,9 @@ function setupRegisteredObserver(env: NodeJS.ProcessEnv, options: FixtureOptions
     async (text?: string, assertCurrent?: () => void, refreshCurrent?: () => Promise<void>) => {
       await refreshCurrent?.();
       assertCurrent?.();
-      if (text) spoken.push(text);
+      if (text) {
+        spoken.push(text);
+      }
     },
   );
   const audioBridge = { ...meetAudioBridge(), speak };
@@ -79,7 +77,7 @@ function setupRegisteredObserver(env: NodeJS.ProcessEnv, options: FixtureOptions
     .spyOn(meetingRuntime, "createMeetingRealtimeEngineBindings")
     .mockImplementation((params) => ({ ...createBindings(params), consultAgent: consult }));
   const launchResult = (meetingSessionId: string) => {
-    page.window.__openclawMeetAudioSession = meetingSessionId;
+    page.window["__openclawMeetAudioSession"] = meetingSessionId;
     return {
       launched: true,
       tab: { targetId: TAB_ID, openedByPlugin: true },
@@ -91,7 +89,19 @@ function setupRegisteredObserver(env: NodeJS.ProcessEnv, options: FixtureOptions
     launchResult(meetingSessionId),
   );
   vi.spyOn(chromeTransport, "launchChromeMeetOnNode").mockImplementation(
-    async ({ meetingSessionId }) => ({ ...launchResult(meetingSessionId), nodeId: PINNED_NODE }),
+    async ({ meetingSessionId }) => ({
+      ...launchResult(meetingSessionId),
+      nodeId: PINNED_NODE,
+      audioBridge: {
+        type: "node-command-pair",
+        nodeId: PINNED_NODE,
+        bridgeId: "observed-chat-bridge",
+        providerId: audioBridge.providerId,
+        speak,
+        getHealth: audioBridge.getHealth,
+        stop: audioBridge.stop,
+      },
+    }),
   );
   const leave = vi.spyOn(chromeTransport, "leaveChromeMeet").mockResolvedValue({
     left: true,
@@ -102,7 +112,9 @@ function setupRegisteredObserver(env: NodeJS.ProcessEnv, options: FixtureOptions
     lines: [],
   });
   vi.spyOn(chromeTransport, "recoverCurrentMeetTab").mockResolvedValue({
-    transport: options.transport,
+    ...(options.transport === "chrome-node"
+      ? { transport: options.transport, nodeId: PINNED_NODE }
+      : { transport: options.transport }),
     found: true,
     targetId: TAB_ID,
     message: "The fixture meeting is active.",
@@ -125,25 +137,7 @@ function setupRegisteredObserver(env: NodeJS.ProcessEnv, options: FixtureOptions
     );
   });
   const harness = setupGoogleMeetPlugin(
-    {
-      register(api) {
-        plugin.register({
-          ...api,
-          runtime: {
-            ...api.runtime,
-            state: {
-              ...api.runtime.state,
-              openKeyedStore<T>(storeOptions: OpenKeyedStoreOptions) {
-                return createPluginStateKeyedStoreForTests<T>("google-meet", {
-                  ...storeOptions,
-                  env,
-                });
-              },
-            },
-          },
-        });
-      },
-    },
+    plugin,
     {
       defaultTransport: options.transport,
       defaultMode: options.mode,
@@ -154,28 +148,16 @@ function setupRegisteredObserver(env: NodeJS.ProcessEnv, options: FixtureOptions
       chromeNode: { node: "configured-other-node" },
     },
     {
+      stateEnv: env,
       fullConfig: { transcripts: { enabled: false } },
       toolContext: { sessionKey: "agent:main:observer-requester" },
       gatewayAvailable: true,
-      gatewayRequestHandler: async (method, params) => {
-        if (method !== "browser.request") {
-          throw new Error(`Unexpected in-process Gateway method: ${method}`);
-        }
-        return await browserRequest(params);
-      },
-      nodesInvokeHandler: async ({ nodeId, command, params }) => {
-        if (nodeId !== PINNED_NODE || command !== "browser.proxy") {
-          throw new Error("Native chat did not use the session's pinned browser node.");
-        }
-        return { payload: { result: await browserRequest(params) } };
-      },
+      ...createGoogleMeetBrowserRequestHandlersForTest(PINNED_NODE, browserRequest),
     },
   );
   const invoke = async (method: string, params: unknown) =>
     await invokeGoogleMeetGatewayMethodForTest(harness.methods, method, params);
-  testing.setCallGatewayFromCliForTests(async (method, _options, params) =>
-    requireRecord(await invoke(method, params), "Google Meet Gateway result"),
-  );
+  testing.setCallGatewayFromCliForTests(createGoogleMeetToolGatewayForTest(harness.methods));
   const ledger = createPluginStateKeyedStoreForTests<MeetingParticipationAttempt>("google-meet", {
     namespace: "meeting-participation",
     maxEntries: 10_000,
@@ -186,8 +168,17 @@ function setupRegisteredObserver(env: NodeJS.ProcessEnv, options: FixtureOptions
     (await ledger.entries())
       .filter(({ key }) => key.includes(":request:"))
       .map(({ value }) => value);
+  const awaitReply = async (index = 0) => {
+    // Admit the next serialized reply, then await its real SQLite receipt write.
+    await vi.advanceTimersByTimeAsync(0);
+    const reply = participate.mock.results[index];
+    if (reply?.type !== "return") {
+      throw new Error(`Expected automatic chat reply ${index + 1} to be admitted.`);
+    }
+    return await reply.value;
+  };
   let sessionId: string | undefined;
-  const join = async () => {
+  const joinMeeting = async () => {
     const result = await getMeetTool(harness).execute("join-observed-chat", {
       action: "join",
       url: MEET_URL,
@@ -205,7 +196,9 @@ function setupRegisteredObserver(env: NodeJS.ProcessEnv, options: FixtureOptions
   };
   const cleanup = async () => {
     try {
-      if (sessionId) await invoke("googlemeet.leave", { sessionId });
+      if (sessionId) {
+        await invoke("googlemeet.leave", { sessionId });
+      }
     } finally {
       vi.useRealTimers();
       await closeOpenClawStateDatabaseAsync();
@@ -221,8 +214,9 @@ function setupRegisteredObserver(env: NodeJS.ProcessEnv, options: FixtureOptions
     bindings,
     harness,
     invoke,
-    join,
+    joinMeeting,
     replies,
+    awaitReply,
     leave,
     cleanup,
   };
@@ -261,7 +255,7 @@ describe("Google Meet registered automatic chat", () => {
     await withRegisteredObserver(options, async (fixture) => {
       const { page, sent, consult, bindings, speak, harness, invoke, replies } = fixture;
       page.addMessage({ id: HISTORY_ID, text: "OpenClaw, answer this earlier question." });
-      const sessionId = await fixture.join();
+      const sessionId = await fixture.joinMeeting();
       expect(consult).not.toHaveBeenCalled();
       expect(await invoke("googlemeet.participationContext", { sessionId })).toMatchObject({
         sources: [],
@@ -272,20 +266,21 @@ describe("Google Meet registered automatic chat", () => {
       page.addMessage({ id: FIRST_ID, text: QUESTION, speaker: "Guest" });
 
       await vi.advanceTimersByTimeAsync(1_000);
-      await vi.waitFor(async () => {
-        expect(sent).toEqual([answer]);
-        expect(await replies()).toEqual([
-          expect.objectContaining({
-            sessionId,
-            actionType: "chat.send",
-            result: {
-              requestId: expect.any(String),
-              status: "succeeded",
-              observed: { confirmation: "composer_cleared" },
-            },
-          }),
-        ]);
+      await expect(fixture.awaitReply()).resolves.toMatchObject({
+        status: "succeeded",
       });
+      expect(sent).toEqual([answer]);
+      expect(await replies()).toEqual([
+        expect.objectContaining({
+          sessionId,
+          actionType: "chat.send",
+          result: {
+            requestId: expect.any(String),
+            status: "succeeded",
+            observed: { confirmation: "composer_cleared" },
+          },
+        }),
+      ]);
 
       expect(consult).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({
@@ -321,12 +316,14 @@ describe("Google Meet registered automatic chat", () => {
 
   it("answers identical text with distinct native IDs once each", async () => {
     await withRegisteredObserver({ transport: "chrome", mode: "agent" }, async (fixture) => {
-      await fixture.join();
+      await fixture.joinMeeting();
       fixture.page.addMessage({ id: FIRST_ID, text: QUESTION, groupId: "same-speaker" });
       fixture.page.addMessage({ id: SECOND_ID, text: QUESTION, groupId: "same-speaker" });
 
       await vi.advanceTimersByTimeAsync(1_000);
-      await vi.waitFor(() => expect(fixture.sent).toEqual([ANSWER, ANSWER]));
+      await expect(fixture.awaitReply(0)).resolves.toMatchObject({ status: "succeeded" });
+      await expect(fixture.awaitReply(1)).resolves.toMatchObject({ status: "succeeded" });
+      expect(fixture.sent).toEqual([ANSWER, ANSWER]);
       await vi.advanceTimersByTimeAsync(2_000);
 
       expect(fixture.consult).toHaveBeenCalledTimes(2);
@@ -344,7 +341,7 @@ describe("Google Meet registered automatic chat", () => {
 
   it("ignores delayed backlog after an empty initial capture but answers a newer request", async () => {
     await withRegisteredObserver({ transport: "chrome", mode: "agent" }, async (fixture) => {
-      const sessionId = await fixture.join();
+      const sessionId = await fixture.joinMeeting();
       fixture.page.addMessage({ id: HISTORY_ID, text: "OpenClaw, answer this old question." });
 
       await vi.advanceTimersByTimeAsync(1_000);
@@ -356,12 +353,11 @@ describe("Google Meet registered automatic chat", () => {
       });
       fixture.page.addMessage({ id: FIRST_ID, text: QUESTION });
       await vi.advanceTimersByTimeAsync(1_000);
-      await vi.waitFor(async () => {
-        expect(fixture.sent).toEqual([ANSWER]);
-        expect(await fixture.replies()).toEqual([
-          expect.objectContaining({ result: expect.objectContaining({ status: "succeeded" }) }),
-        ]);
-      });
+      await expect(fixture.awaitReply()).resolves.toMatchObject({ status: "succeeded" });
+      expect(fixture.sent).toEqual([ANSWER]);
+      expect(await fixture.replies()).toEqual([
+        expect.objectContaining({ result: expect.objectContaining({ status: "succeeded" }) }),
+      ]);
 
       expect(fixture.consult).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({
@@ -382,7 +378,7 @@ describe("Google Meet registered automatic chat", () => {
         { transport: "chrome", mode: "agent", toolPolicy },
         async (fixture) => {
           fixture.consult.mockResolvedValue({ text: "NO_REPLY" });
-          await fixture.join();
+          await fixture.joinMeeting();
           fixture.page.addMessage({ id: FIRST_ID, text: QUESTION });
 
           await vi.advanceTimersByTimeAsync(1_000);
@@ -404,11 +400,11 @@ describe("Google Meet registered automatic chat", () => {
 
   it("aborts a pending original question and sends only the corrected answer", async () => {
     await withRegisteredObserver({ transport: "chrome-node", mode: "bidi" }, async (fixture) => {
-      const original = deferred<{ text: string }>();
+      const original = createDeferred<{ text: string }>();
       fixture.consult
         .mockReturnValueOnce(original.promise)
         .mockResolvedValueOnce({ text: "Begin the rollout." });
-      await fixture.join();
+      await fixture.joinMeeting();
       fixture.page.addMessage({ id: FIRST_ID, text: QUESTION });
       await vi.advanceTimersByTimeAsync(1_000);
       expect(fixture.consult).toHaveBeenCalledOnce();
@@ -421,13 +417,11 @@ describe("Google Meet registered automatic chat", () => {
       expect(signal?.aborted).toBe(true);
       expect(fixture.sent).toEqual([]);
       original.resolve({ text: "An obsolete answer." });
-      await vi.advanceTimersByTimeAsync(0);
-      await vi.waitFor(async () => {
-        expect(fixture.sent).toEqual(["Begin the rollout."]);
-        expect(await fixture.replies()).toEqual([
-          expect.objectContaining({ result: expect.objectContaining({ status: "succeeded" }) }),
-        ]);
-      });
+      await expect(fixture.awaitReply()).resolves.toMatchObject({ status: "succeeded" });
+      expect(fixture.sent).toEqual(["Begin the rollout."]);
+      expect(await fixture.replies()).toEqual([
+        expect.objectContaining({ result: expect.objectContaining({ status: "succeeded" }) }),
+      ]);
 
       expect(
         fixture.consult.mock.calls.map(
@@ -441,7 +435,7 @@ describe("Google Meet registered automatic chat", () => {
 
   it("observes transcribe-mode chat without answering even an explicit voice request", async () => {
     await withRegisteredObserver({ transport: "chrome", mode: "transcribe" }, async (fixture) => {
-      const sessionId = await fixture.join();
+      const sessionId = await fixture.joinMeeting();
       fixture.page.addMessage({ id: FIRST_ID, text: "OpenClaw, please answer out loud." });
 
       await vi.advanceTimersByTimeAsync(3_000);
@@ -458,9 +452,9 @@ describe("Google Meet registered automatic chat", () => {
 
   it("revokes a pending answer when the registered leave action ends the session", async () => {
     await withRegisteredObserver({ transport: "chrome-node", mode: "agent" }, async (fixture) => {
-      const answer = deferred<{ text: string }>();
+      const answer = createDeferred<{ text: string }>();
       fixture.consult.mockReturnValueOnce(answer.promise);
-      const sessionId = await fixture.join();
+      const sessionId = await fixture.joinMeeting();
       fixture.page.addMessage({ id: FIRST_ID, text: QUESTION });
       await vi.advanceTimersByTimeAsync(1_000);
       expect(fixture.consult).toHaveBeenCalledOnce();
@@ -482,14 +476,15 @@ describe("Google Meet registered automatic chat", () => {
     await withRegisteredObserver(
       { transport: "chrome-node", mode: "bidi", micMuted: false },
       async (fixture) => {
-        await fixture.join();
+        await fixture.joinMeeting();
         fixture.page.addMessage({
           id: FIRST_ID,
           text: "OpenClaw, please reply out loud with the next step.",
         });
 
         await vi.advanceTimersByTimeAsync(1_000);
-        await vi.waitFor(() => expect(fixture.spoken).toEqual([ANSWER]));
+        await expect(fixture.awaitReply()).resolves.toMatchObject({ status: "uncertain" });
+        expect(fixture.spoken).toEqual([ANSWER]);
         await vi.advanceTimersByTimeAsync(2_000);
 
         expect(fixture.consult).toHaveBeenCalledOnce();

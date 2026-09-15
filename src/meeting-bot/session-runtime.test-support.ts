@@ -1,7 +1,11 @@
 import { coerceErrorMessage } from "@openclaw/normalization-core/error-coercion";
 import { vi } from "vitest";
 import type { MeetingParticipationOptions } from "./participation-types.js";
-import { MeetingSessionRuntime, type MeetingSessionRuntimeJoinContext } from "./session-runtime.js";
+import {
+  MeetingSessionRuntime,
+  type MeetingSessionRuntimeHandles,
+  type MeetingSessionRuntimeJoinContext,
+} from "./session-runtime.js";
 import type {
   MeetingBrowserHealth,
   MeetingBrowserTab,
@@ -36,6 +40,10 @@ export function createTestRuntime(params: {
   participation?: MeetingParticipationOptions<TestSession>;
   talkBack?: boolean;
   transcribe?: boolean;
+  refreshBrowserHealth?(session: TestSession): Promise<void>;
+  ensureRealtimeBridge?(
+    session: TestSession,
+  ): Promise<MeetingSessionRuntimeHandles<MeetingBrowserHealth> | undefined>;
   refreshReusableSession?(
     session: TestSession,
     request: TestRequest,
@@ -132,11 +140,11 @@ export function createTestRuntime(params: {
     },
     joinTransport: (input) => params.joinTransport(input),
     releaseBrowserTab: (session) => params.releaseBrowserTab(session),
-    refreshBrowserHealth: async () => {},
+    refreshBrowserHealth: async (session) => await params.refreshBrowserHealth?.(session),
     refreshStatus: async () => {},
     refreshReusableSession: async (session, request, resolved) =>
       await params.refreshReusableSession?.(session, request, resolved),
-    ensureRealtimeBridge: async () => undefined,
+    ensureRealtimeBridge: async (session) => await params.ensureRealtimeBridge?.(session),
     captureTranscript: async (_session, options) => await params.captureTranscript?.(options),
     speakViaTransport: async () => undefined,
     ...(params.durableTranscripts
