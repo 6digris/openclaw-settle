@@ -8,6 +8,7 @@ import {
   clearRuntimeConfigSnapshot,
   type OpenClawConfig,
 } from "../../../config/config.js";
+import { createPluginMetadataSnapshot } from "../../../config/plugin-auto-enable.test-helpers.js";
 import {
   loadSessionEntry,
   upsertSessionEntryCore,
@@ -372,6 +373,13 @@ async function createBoundGateway(bound: Awaited<ReturnType<typeof createBoundPa
     gatewayLifecycle: true,
     catalogMode: "static",
     defaultWorkspaceDir: stateDir,
+    // This fixture owns synthetic models and an empty runtime registry. Supply its metadata
+    // through the publication owner too, rather than discovering the checkout's providers.
+    pluginMetadataSnapshot: createPluginMetadataSnapshot({
+      config: bound.cfg,
+      manifestRegistry: { plugins: [], diagnostics: [] },
+      workspaceDir: stateDir,
+    }),
   });
   const context = bound.context as unknown as GatewayRequestContext;
   const validateRuntimeAuthority = createAgentRuntimeApprovalAuthorityValidator();

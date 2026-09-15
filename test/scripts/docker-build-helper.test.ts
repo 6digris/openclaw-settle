@@ -4584,7 +4584,7 @@ update_candidate 1
   );
 
   it.each(["sqlite", "wal", "historical"])(
-    "captures persisted plugin identity without changing application data (%s)",
+    "observes or explicitly omits persisted plugin identity without changing source artifacts (%s)",
     (storage) => {
       const { workDir, artifacts, env } = survivorPostCoreFixture();
       const state = join(workDir, "state-root");
@@ -4675,7 +4675,7 @@ ${storage === "wal" ? 'process.kill(process.pid, "SIGKILL");' : ""}`,
       }
       const stateFiles = () =>
         readdirSync(state, { recursive: true, withFileTypes: true })
-          .filter((entry) => entry.isFile() && entry.name !== "openclaw.sqlite-shm")
+          .filter((entry) => entry.isFile())
           .map((entry) => {
             const file = join(entry.parentPath, entry.name);
             const stat = statSync(file);
@@ -4716,7 +4716,16 @@ ${storage === "wal" ? 'process.kill(process.pid, "SIGKILL");' : ""}`,
       expect(published.status, published.stderr).toBe(0);
       const text = readFileSync(join(workDir, "public", "failure.json"), "utf8");
       expect(text).not.toContain("PRIVATE_");
-      const identity = JSON.parse(text).pluginIdentity;
+      const report = JSON.parse(text);
+      const identity = report.pluginIdentity;
+      // Native WAL reads alter SHM marks. This bootstrap observer must not copy or change state.
+      if (storage === "wal") {
+        expect(identity.availability).toBe("unknown");
+        expect(identity.plugins).toEqual([]);
+        expect(report.omissions["plugin identity"]).toContain("omitted before native open");
+        expect(readdirSync(join(workDir, "public"))).toEqual(["failure.json"]);
+        return;
+      }
       expect(identity.availability).toBe("observed");
       expect(identity.reader).toContain("historical fallback");
       expect(identity.evidence).toContain("not observed loaded modules");

@@ -21,6 +21,9 @@ export default defineConfig({
     // Live suites need immediate provider/gateway progress output rather than
     // Vitest's buffered per-test console capture.
     disableConsoleIntercept: true,
+    // Live fixtures host Gateway services and inspect shared state; broker admission belongs
+    // to the process main thread, not a Vitest worker thread.
+    pool: "forks",
     maxWorkers: 1,
     setupFiles: [
       ...new Set(

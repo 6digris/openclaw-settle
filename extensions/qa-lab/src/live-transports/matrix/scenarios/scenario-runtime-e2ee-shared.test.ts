@@ -10,7 +10,16 @@ import {
   waitForMatrixQaVerificationSummary,
   withMatrixQaE2eeDriverAndObserver,
 } from "./scenario-runtime-e2ee-shared.js";
-import { createMatrixQaE2eeTestContext } from "./scenario-runtime-e2ee.test-helpers.js";
+import { runMatrixQaE2eeStaleDeviceHygieneScenario } from "./scenario-runtime-e2ee-verification.js";
+import {
+  createMatrixQaBootstrapFailure,
+  createMatrixQaE2eeTestContext,
+} from "./scenario-runtime-e2ee.test-helpers.js";
+
+const matrixApiMocks = vi.hoisted(() => ({ loginWithPassword: vi.fn() }));
+vi.mock("../substrate/client.js", () => ({
+  createMatrixQaClient: () => matrixApiMocks,
+}));
 
 vi.mock("../substrate/e2ee-client.js", () => ({
   createMatrixQaE2eeScenarioClient: vi.fn(),
@@ -183,6 +192,86 @@ describe("Matrix E2EE scenario client ownership", () => {
     expect(resolved).not.toHaveBeenCalled();
     expect(rejected).toHaveBeenCalledExactlyOnceWith(undefined);
   });
+});
+
+describe("Matrix stale-device hygiene lifetime", () => {
+  it.each(["success", "delete-fails", "stale-remains", "current-missing"] as const)(
+    "finishes device operations before the owning wrapper stops the client (%s)",
+    async (outcome) => {
+      const context = createMatrixQaE2eeTestContext({ driverPassword: "synthetic-password" });
+      const events: string[] = [];
+      let stopped = false;
+      const deletionFailure = new Error("synthetic device deletion failure");
+      const current = { deviceId: "CURRENT" };
+      const secondary = { deviceId: "STALE" };
+      const bootstrap = createMatrixQaBootstrapFailure();
+      bootstrap.success = true;
+      bootstrap.error = undefined;
+      bootstrap.crossSigning.published = true;
+      Object.assign(bootstrap.verification, {
+        encryptionEnabled: true,
+        verified: true,
+        signedByOwner: true,
+        crossSigningVerified: true,
+        recoveryKeyStored: true,
+        backupVersion: "1",
+      });
+      const stop = vi.fn(async () => {
+        events.push("stop");
+        stopped = true;
+      });
+      const deleteOwnDevices = vi.fn(async (ids: string[]) => {
+        events.push("delete");
+        if (stopped) {
+          throw new Error("Matrix client generation is no longer active.");
+        }
+        expect(ids).toEqual([secondary.deviceId]);
+        if (outcome === "delete-fails") {
+          throw deletionFailure;
+        }
+        return {
+          currentDeviceId: current.deviceId,
+          deletedDeviceIds: [secondary.deviceId],
+          remainingDevices:
+            outcome === "stale-remains"
+              ? [current, secondary]
+              : outcome === "current-missing"
+                ? []
+                : [current],
+        };
+      });
+      const driver = {
+        bootstrapOwnDeviceVerification: vi.fn(async () => bootstrap),
+        getRecoveryKey: vi.fn(async () => "synthetic-recovery"),
+        listOwnDevices: vi.fn(async () => [current, secondary]),
+        deleteOwnDevices,
+        stop,
+      } as unknown as MatrixQaE2eeScenarioClient;
+      vi.mocked(createMatrixQaE2eeScenarioClient).mockResolvedValueOnce(driver);
+      matrixApiMocks.loginWithPassword.mockResolvedValueOnce({ deviceId: secondary.deviceId });
+      const operation = runMatrixQaE2eeStaleDeviceHygieneScenario(context);
+      if (outcome === "success") {
+        await expect(operation).resolves.toMatchObject({
+          artifacts: {
+            currentDeviceId: current.deviceId,
+            deletedDeviceIds: [secondary.deviceId],
+            remainingDeviceIds: [current.deviceId],
+          },
+        });
+      } else if (outcome === "delete-fails") {
+        await expect(operation).rejects.toBe(deletionFailure);
+      } else {
+        await expect(operation).rejects.toThrow(
+          outcome === "stale-remains"
+            ? "left the secondary device in the device list"
+            : "removed the current device",
+        );
+      }
+      expect(deleteOwnDevices).toHaveBeenCalledOnce();
+      expect(stop).toHaveBeenCalledOnce();
+      expect(events).toEqual(["delete", "stop"]);
+    },
+  );
 });
 
 describe("Matrix verification wait diagnostics", () => {

@@ -7,6 +7,7 @@ import { releaseChatMediaResourceSubscriber } from "./chat-message-media.ts";
 import baseCss from "../../../styles/base.css?inline";
 import layoutCss from "../../../styles/chat/layout.css?inline";
 import messageCss from "../../../styles/chat/message-layout.css?inline";
+import startupCss from "../../../styles/chat/startup-layout.css?inline";
 
 const browserMode = "__vitest_browser__" in globalThis;
 const containers: HTMLElement[] = [];
@@ -25,6 +26,8 @@ afterEach(() => {
 
 function mount(width: number) {
   const container = document.createElement("div");
+  // Exercise the allocated image lane without transcript avatar gutters.
+  container.className = "chat-thread--direct";
   container.style.width = `${width}px`;
   document.body.append(container);
   containers.push(container);
@@ -115,12 +118,12 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
       const draw = () =>
         render(
           html`<style>
-              ${baseCss}${layoutCss}${messageCss}
+              ${baseCss}${startupCss}${layoutCss}${messageCss}
             </style>
             <div class="chat-group ${role}" style="--chat-user-content-align: end">
               ${renderMessageImages(images)}
-              <p data-next-message>Next message</p>
-            </div>`,
+            </div>
+            <p data-next-message>Next message</p>`,
           container,
         );
       draw();
@@ -128,6 +131,7 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
       const before = geometry(container);
       expect(before.width).toBeCloseTo(scenario.expectedWidth, 1);
       expect(before.height).toBeCloseTo(scenario.expectedHeight, 1);
+      expect(before.nextTop).toBeGreaterThanOrEqual(originalFrame.getBoundingClientRect().bottom);
       expect(getComputedStyle(originalFrame).backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
       expect(originalFrame.getAttribute("aria-busy")).toBe("true");
       expect(originalFrame.textContent?.trim()).toBe("");
@@ -166,7 +170,7 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
       const draw = () =>
         render(
           html`<style>
-              ${baseCss}${layoutCss}${messageCss}</style
+              ${baseCss}${startupCss}${layoutCss}${messageCss}</style
             >${
               kind === "attachment"
                 ? renderAssistantAttachments(
@@ -242,12 +246,12 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
       }));
       render(
         html`<style>
-            ${baseCss}${layoutCss}${messageCss}
+            ${baseCss}${startupCss}${layoutCss}${messageCss}
           </style>
           <div class="chat-group user" style="--chat-user-content-align: end">
             ${renderMessageImages(images)}
-            <p data-next-message>Next message</p>
-          </div>`,
+          </div>
+          <p data-next-message>Next message</p>`,
         container,
       );
       const rectangles = () =>
@@ -262,6 +266,9 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
         expect(rect.height).toBe(tile);
       }
       const nextTop = container.querySelector("[data-next-message]")!.getBoundingClientRect().top;
+      expect(nextTop).toBeGreaterThanOrEqual(
+        Math.max(...before.map((rect) => rect.y + rect.height)),
+      );
       ready.resolve();
       await vi.waitFor(() => expect(container.querySelectorAll("img")).toHaveLength(count));
       await Promise.all([...container.querySelectorAll("img")].map((image) => image.decode()));
@@ -299,7 +306,7 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
     ];
     render(
       html`<style>
-          ${baseCss}${layoutCss}${messageCss}
+          ${baseCss}${startupCss}${layoutCss}${messageCss}
         </style>
         <div class="chat-group assistant">${renderMessageImages(images)}</div>`,
       container,
@@ -344,7 +351,7 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
     const source = `/api/chat/media/outgoing/agent%3Amain%3Amain/${crypto.randomUUID()}/full`;
     render(
       html`<style>
-          ${baseCss}${layoutCss}${messageCss}</style
+          ${baseCss}${startupCss}${layoutCss}${messageCss}</style
         >${renderMessageImages([{ url: source, width: 1200, height: 800 }])}
         <p data-next-message>Next message</p>`,
       container,

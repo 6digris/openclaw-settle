@@ -21,33 +21,42 @@ import {
 afterEach(resetPluginLoaderTestStateForTest);
 afterAll(cleanupPluginLoaderFixturesForTest);
 
-it.each(["retained-agent", "install-roots", "install-state"] as const)(
+function createWorkspaceCliFixture(params: { legacy?: boolean; owner?: string } = {}) {
+  const root = fs.realpathSync(makePluginLoaderTempDir());
+  for (const id of ["alpha", "beta"]) {
+    writePlugin({
+      id,
+      dir: path.join(root, id, ".openclaw", "extensions", id),
+      filename: "index.cjs",
+      registration: `api.registerCli(({ program }) => program.command(${JSON.stringify(id)}), { descriptors: [{ name: ${JSON.stringify(id)}, description: "Scope", hasSubcommands: false }] });`,
+    });
+  }
+  const cfg: OpenClawConfig = {
+    agents: {
+      // Private migration provenance selects only a pre-explicit compatibility owner.
+      ...(params.legacy ? {} : { ownership: "explicit" as const }),
+      entries: {
+        alpha: { workspace: path.join(root, "alpha") },
+        beta: { workspace: path.join(root, "beta") },
+      },
+      ...(params.owner ? { defaults: { systemAgent: { agentId: params.owner } } } : {}),
+    },
+    plugins: { allow: ["alpha", "beta"] },
+  };
+  const env = {
+    HOME: root,
+    OPENCLAW_STATE_DIR: path.join(root, "state"),
+    OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
+  };
+  return { root, cfg, env };
+}
+
+it.each(["retained-legacy-agent", "install-roots", "install-state"] as const)(
   "fences hidden %s changes with unchanged serialized config and env",
   async (kind) => {
-    const root = fs.realpathSync(makePluginLoaderTempDir());
-    for (const id of ["alpha", "beta"]) {
-      writePlugin({
-        id,
-        dir: path.join(root, id, ".openclaw", "extensions", id),
-        filename: "index.cjs",
-        body: `module.exports = { id: ${JSON.stringify(id)}, register(api) { api.registerCli(({ program }) => program.command(${JSON.stringify(id)}), { descriptors: [{ name: ${JSON.stringify(id)}, description: "Scope", hasSubcommands: false }] }); } };`,
-      });
-    }
-    const cfg: OpenClawConfig = {
-      agents: {
-        ownership: "explicit",
-        entries: {
-          alpha: { workspace: path.join(root, "alpha") },
-          beta: { workspace: path.join(root, "beta") },
-        },
-      },
-      plugins: { allow: ["alpha", "beta"] },
-    };
-    const env = {
-      HOME: root,
-      OPENCLAW_STATE_DIR: path.join(root, "state"),
-      OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
-    };
+    const { root, cfg, env } = createWorkspaceCliFixture({
+      legacy: kind === "retained-legacy-agent",
+    });
     if (kind === "install-state") {
       for (const id of ["alpha", "beta"]) {
         const installPath = path.join(root, id, ".openclaw", "extensions", id);
@@ -93,7 +102,7 @@ it.each(["retained-agent", "install-roots", "install-state"] as const)(
         expect(program.commands.map((command) => command.name())).toEqual([id]);
         expect(JSON.stringify([cfg, env])).toBe(serialized);
       };
-      if (kind === "retained-agent") {
+      if (kind === "retained-legacy-agent") {
         retainLegacyDefaultAgentId(cfg, id);
         await run();
       } else {
@@ -140,3 +149,29 @@ it("retains the exact new config object when a fresh read has identical serializ
   expect(() => next.assertCurrent()).toThrow(/preparation inputs changed/);
   session.close();
 });
+
+it.each([undefined, "alpha"])(
+  "keeps explicit CLI ownership independent of retained provenance (system owner: %s)",
+  async (owner) => {
+    const { cfg, env } = createWorkspaceCliFixture({ owner });
+    const serialized = JSON.stringify([cfg, env]);
+    const session = createPluginCliLoadSession();
+    try {
+      for (const retained of ["alpha", "beta"]) {
+        retainLegacyDefaultAgentId(cfg, retained);
+        expect(
+          (await loadPluginCliDescriptors({ cfg, env, session })).map(({ name }) => name),
+        ).toEqual(owner ? [owner] : []);
+        const entries = await loadPluginCliRegistrationEntriesWithDefaults({ cfg, env, session });
+        const program = new Command();
+        for (const entry of entries) {
+          await entry.register(program);
+        }
+        expect(program.commands.map((command) => command.name())).toEqual(owner ? [owner] : []);
+        expect(JSON.stringify([cfg, env])).toBe(serialized);
+      }
+    } finally {
+      session.close();
+    }
+  },
+);

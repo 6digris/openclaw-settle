@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { isMainThread } from "node:worker_threads";
 
 // Capture and snapshot validation stay plain Node. The host entrypoint owns
@@ -65,6 +66,7 @@ const reasons = [
   "input exceeds cap; omitted whole",
   "input changed while reading; omitted whole",
   "invalid observation; omitted",
+  "SQLite journal state requires an artifact-preserving reader; omitted before native open",
 ];
 const omissions = {};
 
@@ -245,6 +247,350 @@ export function readPostCoreSnapshot(artifactRoot) {
   return { childExitCode: snapshot.childExitCode, result: postCoreResult(snapshot.result) };
 }
 
+// Project only the existing Doctor IPC contract, never config changes or receipt payloads.
+function doctorIpcResult(value, sanitize = (text) => text) {
+  if (!["ok", "error", "advisory"].includes(value?.status)) {
+    throw new Error();
+  }
+  return {
+    status: value.status,
+    warnings: boundedList(value.warnings ?? []).map(
+      (text) => textFields({ text }, ["text"], sanitize).text,
+    ),
+    failureFacts: boundedList(value.failureFacts ?? []).map((fact) =>
+      textFields(fact, ["check", "code", "message", "affectedKey", "pluginId"], sanitize),
+    ),
+  };
+}
+
+function captureDoctorIpc(artifactRoot, resultPath, exitCode) {
+  if (
+    !resultPath ||
+    !path.isAbsolute(resultPath) ||
+    !/^openclaw-update-doctor-\d+-[0-9a-f-]{36}\.json$/iu.test(path.basename(resultPath))
+  ) {
+    return;
+  }
+  // The published owner uses its secure /tmp/openclaw root or the isolated TMPDIR.
+  const root = [process.env.TMPDIR, "/tmp/openclaw"].find(
+    (base) =>
+      base &&
+      path.isAbsolute(base) &&
+      !path.relative(base, resultPath).startsWith("..") &&
+      !path.isAbsolute(path.relative(base, resultPath)),
+  );
+  if (!root) {
+    return;
+  }
+  const raw = readOwned(root, path.relative(root, resultPath), "migration-doctor");
+  if (raw !== null) {
+    writeReport(
+      artifactRoot,
+      path.join(artifactRoot, "diagnostics"),
+      `doctor-${process.pid}.json`,
+      {
+        artifactRoot: fs.realpathSync(artifactRoot),
+        pid: process.pid,
+        stateDir: process.env.OPENCLAW_STATE_DIR,
+        exitCode,
+        result: doctorIpcResult(JSON.parse(raw)),
+      },
+      inputLimit,
+    );
+  }
+}
+
+function migrationProjection(section, value, sanitize = (text) => text) {
+  const fields = (entry, names) => textFields(entry, names, sanitize);
+  if (section === "doctor") {
+    return {
+      processes: boundedList(value.processes).map((observation) => {
+        if (
+          !Number.isInteger(observation.exitCode) ||
+          observation.exitCode < 0 ||
+          observation.exitCode > 255
+        ) {
+          throw new Error();
+        }
+        return Object.assign(fields(observation, ["stateDir"]), {
+          exitCode: observation.exitCode,
+          result: doctorIpcResult(observation.result, sanitize),
+        });
+      }),
+    };
+  }
+  if (section === "sessions") {
+    return {
+      deferred: boundedList(value.deferred).map((row) =>
+        fields(row, ["pluginId", "status", "reason"]),
+      ),
+      imports: boundedList(value.imports).map((row) => {
+        if (typeof row.removedSource !== "boolean") {
+          throw new Error();
+        }
+        return Object.assign(fields(row, ["sourcePath", "sourceSha256", "status"]), {
+          removedSource: row.removedSource,
+          pluginIds: boundedList(row.pluginIds).map((text) => fields({ text }, ["text"]).text),
+          sources: boundedList(row.sources).map((source) => fields(source, ["path", "sha256"])),
+        });
+      }),
+    };
+  }
+  if (section === "archives") {
+    return {
+      runs: boundedList(value.runs).map((run) =>
+        Object.assign(fields(run, ["runId", "completedAt", "failedAt"]), {
+          targets: boundedList(run.targets).map((target) => {
+            if (
+              !Number.isInteger(target.plannedMoveCount) ||
+              target.plannedMoveCount < 0 ||
+              !["not_run", "passed", "failed"].includes(target.validationBeforeArchive)
+            ) {
+              throw new Error();
+            }
+            return Object.assign(
+              fields(target, ["agentId", "storePath", "sqlitePath", "validationBeforeArchive"]),
+              {
+                plannedMoveCount: target.plannedMoveCount,
+                completedMoves: boundedList(target.completedMoves).map((move) =>
+                  fields(move, ["kind", "sourcePath", "archivePath"]),
+                ),
+                issues: boundedList(target.issues).map((issue) =>
+                  fields(issue, ["code", "message"]),
+                ),
+              },
+            );
+          }),
+        }),
+      ),
+    };
+  }
+  if (section === "sibling") {
+    return {
+      registrations: boundedList(value.registrations).map((event) => {
+        if (
+          !["runtime", "doctor-module", "doctor-contract"].includes(event.surface) ||
+          typeof event.updateCanary !== "boolean"
+        ) {
+          throw new Error();
+        }
+        return Object.assign(
+          fields(event, ["surface", "stateDir", "source", "sharedSource"]),
+          {
+            updateCanary: event.updateCanary,
+          },
+          Object.fromEntries(
+            ["sourceSha256", "sharedSourceSha256"].flatMap((key) =>
+              typeof event[key] === "string" && /^[a-f0-9]{64}$/u.test(event[key])
+                ? [[key, event[key]]]
+                : [],
+            ),
+          ),
+        );
+      }),
+    };
+  }
+  throw new Error();
+}
+
+// A native read-only open can create missing WAL sidecars or require journal recovery.
+// This bootstrap observer never copies operator databases or imports a migrating runtime reader.
+function assertNativeSqliteObservationSafe(handles, label) {
+  const database = handles.find(({ file }) =>
+    file.endsWith(`${path.sep}state${path.sep}openclaw.sqlite`),
+  );
+  if (!database) {
+    return;
+  }
+  const header = Buffer.alloc(20);
+  if (
+    fs.readSync(database.fd, header, 0, header.length, 0) !== header.length ||
+    header.subarray(0, 16).toString("utf8") !== "SQLite format 3\0" ||
+    !unchangedFile(database.stat, fs.fstatSync(database.fd))
+  ) {
+    throw new Error();
+  }
+  const has = (suffix) => handles.some(({ file }) => file === database.file + suffix);
+  // Even a complete WAL family can change SHM read marks. Preserve every source byte;
+  // richer inspection belongs to the existing artifact-preserving runtime owner, not a new dump.
+  if (header[18] !== 1 || header[19] !== 1 || ["-wal", "-shm", "-journal"].some(has)) {
+    omissions[label] = reasons[4];
+    throw new Error();
+  }
+}
+
+function readMigrationSessions(stateRoot) {
+  const handles = [];
+  let db;
+  try {
+    for (const relative of [
+      "state/openclaw.sqlite",
+      "state/openclaw.sqlite-wal",
+      "state/openclaw.sqlite-shm",
+      "state/openclaw.sqlite-journal",
+    ]) {
+      try {
+        const handle = openOwned(stateRoot, relative);
+        handles.push(handle);
+        if (handle.stat.size > 64 * 1024 * 1024) {
+          throw new Error();
+        }
+      } catch (error) {
+        if (relative.endsWith(".sqlite") || error.code !== "ENOENT") {
+          throw error;
+        }
+      }
+    }
+    assertNativeSqliteObservationSafe(handles, "migration-sessions");
+    db = new DatabaseSync(handles[0].file, { readOnly: true });
+    db.exec("BEGIN");
+    // Read only these two existing receipt owners. No runtime store imports or state bootstrap.
+    const read = (table, predicate, columns, parameter) => {
+      const lengths = boundedList(
+        db
+          .prepare(
+            `SELECT length(CAST(report_json AS BLOB)) AS bytes FROM ${table} WHERE ${predicate} LIMIT 129`,
+          )
+          .all(parameter),
+      );
+      if (
+        lengths.some(({ bytes }) => !Number.isInteger(bytes) || bytes < 0 || bytes > inputLimit) ||
+        lengths.reduce((sum, row) => sum + row.bytes, 0) > indexLimit
+      ) {
+        throw new Error();
+      }
+      return boundedList(
+        db
+          .prepare(`SELECT ${columns}, report_json FROM ${table} WHERE ${predicate} LIMIT 129`)
+          .all(parameter),
+      );
+    };
+    const deferred = read(
+      "migration_runs",
+      "id LIKE ?",
+      "status",
+      "deferred-plugin-migration:%",
+    ).map(({ status, report_json }) =>
+      Object.assign(
+        textFields(JSON.parse(report_json), ["pluginId", "reason"], (text) => text),
+        { status },
+      ),
+    );
+    const imports = read(
+      "migration_sources",
+      "migration_kind = ?",
+      "source_path, source_sha256, status, removed_source",
+      "deferred-plugin-session-import",
+    ).map((row) => {
+      const value = JSON.parse(row.report_json);
+      return {
+        sourcePath: row.source_path,
+        sourceSha256: row.source_sha256 ?? undefined,
+        status: row.status,
+        removedSource: row.removed_source === 1,
+        pluginIds: value.pluginIds,
+        sources: boundedList(value.sources).map((source) => ({
+          path: source.path,
+          sha256: source.identity?.sha256,
+        })),
+      };
+    });
+    db.exec("COMMIT");
+    db.close();
+    db = undefined;
+    for (const { fd, stat, file } of handles) {
+      const matches = file.endsWith("-shm") ? sameFileIdentity : unchangedFile;
+      if (!matches(stat, fs.fstatSync(fd)) || !matches(stat, fs.lstatSync(file))) {
+        throw new Error();
+      }
+    }
+    return { deferred, imports };
+  } finally {
+    db?.close();
+    for (const { fd } of handles) {
+      fs.closeSync(fd);
+    }
+  }
+}
+
+function captureMigrationEvidence(stateRoot, artifactRoot, observationRoot) {
+  const readJson = (root, relative, label) => {
+    const raw = readOwned(root, relative, label);
+    if (raw === null) {
+      throw new Error();
+    }
+    return JSON.parse(raw);
+  };
+  const names = (root, relative, pattern) =>
+    boundedList(
+      fs.readdirSync(ownedPath(root, relative)).filter((name) => pattern.test(name)),
+    ).toSorted((left, right) => left.localeCompare(right));
+  const sources = {
+    doctor: () => {
+      const root = observationRoot || artifactRoot;
+      const processes = names(root, "diagnostics", /^doctor-\d+\.json$/u).map((name) => {
+        const value = readJson(root, `diagnostics/${name}`, "migration-doctor");
+        if (value.artifactRoot !== fs.realpathSync(root) || name !== `doctor-${value.pid}.json`) {
+          throw new Error();
+        }
+        return value;
+      });
+      if (!processes.length) {
+        throw new Error();
+      }
+      return { processes };
+    },
+    sessions: () => readMigrationSessions(stateRoot),
+    archives: () => ({
+      runs: names(
+        stateRoot,
+        "session-sqlite-migration-runs",
+        /^(?!.*\.failure\.json$).*\.json$/u,
+      ).map((name) => {
+        const value = readJson(
+          stateRoot,
+          `session-sqlite-migration-runs/${name}`,
+          "migration-archives",
+        );
+        return Object.assign(
+          textFields(value, ["runId", "completedAt", "failedAt"], (text) => text),
+          {
+            targets: boundedList(value.targets).map((target) =>
+              Object.assign(target, {
+                plannedMoveCount: boundedList(target.plannedMoves).length,
+              }),
+            ),
+          },
+        );
+      }),
+    }),
+    sibling: () => {
+      const raw = readOwned(artifactRoot, "sibling-registrations.jsonl", "migration-sibling");
+      if (raw === null) {
+        throw new Error();
+      }
+      return {
+        registrations: boundedList(raw.split(/\r?\n/u).filter(Boolean)).map((line) => {
+          const event = JSON.parse(line);
+          return Object.assign(event, {
+            updateCanary: boundedList(event.argv).includes("--update-canary"),
+          });
+        }),
+      };
+    },
+  };
+  return Object.fromEntries(
+    Object.entries(sources).map(([section, read]) => {
+      try {
+        return [section, { availability: "captured", ...migrationProjection(section, read()) }];
+      } catch {
+        omissions[`migration-${section}`] ??= reasons[3];
+        return [section, { availability: "unavailable" }];
+      }
+    }),
+  );
+}
+
 function armUpgradeProcessCapture() {
   const command = process.argv[2];
   const artifactRoot = process.env.OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT;
@@ -290,7 +636,16 @@ function armUpgradeProcessCapture() {
       { ...identity, event: "started" },
       1024,
     );
+    const doctorResultPath =
+      command === "doctor"
+        ? process.env.OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH
+        : undefined;
     process.once("exit", (exitCode) => {
+      try {
+        captureDoctorIpc(artifactRoot, doctorResultPath, exitCode);
+      } catch {
+        // The parent still owns consumption; observation must not alter Doctor exit.
+      }
       try {
         writeReport(
           artifactRoot,
@@ -378,6 +733,7 @@ async function pluginIdentities(stateRoot, artifactRoot) {
       "state/openclaw.sqlite",
       "state/openclaw.sqlite-wal",
       "state/openclaw.sqlite-shm",
+      "state/openclaw.sqlite-journal",
       "plugins/installs.json",
     ]) {
       try {
@@ -392,6 +748,7 @@ async function pluginIdentities(stateRoot, artifactRoot) {
         }
       }
     }
+    assertNativeSqliteObservationSafe(handles, "plugin identity");
     const { readPluginInstallIndex } = await import("../plugin-index-sqlite.mjs");
     const index = readPluginInstallIndex({ stateDir: stateRoot, configPath: null });
     for (const { fd, stat, file } of handles) {
@@ -525,7 +882,7 @@ async function pluginIdentities(stateRoot, artifactRoot) {
       .filter(Boolean);
     return { ...unavailable, availability: plugins.length ? "observed" : "unknown", plugins };
   } catch {
-    omissions["plugin identity"] = reasons[3];
+    omissions["plugin identity"] ??= reasons[3];
     return unavailable;
   } finally {
     for (const { fd } of handles) {
@@ -634,6 +991,7 @@ async function capture(artifactRoot, phase, exitStatus, signal = "", observation
   }
   const stateRoot = process.env.OPENCLAW_STATE_DIR;
   report.pluginIdentity = await pluginIdentities(stateRoot, artifactRoot);
+  report.migration = captureMigrationEvidence(stateRoot, artifactRoot, observationRoot);
   report.postCore = {
     availability: "unavailable",
     reason: "No complete exit snapshot; original outcome unknown",
@@ -851,6 +1209,7 @@ export function publishDiagnostics(
     "child exit",
     "post-core",
     "plugin identity",
+    ...["doctor", "sessions", "archives", "sibling"].map((section) => `migration-${section}`),
   ]) {
     if (reasons.includes(snapshot.omissions?.[label])) {
       omissions[label] = snapshot.omissions[label];
@@ -956,6 +1315,23 @@ export function publishDiagnostics(
       omissions["plugin identity"] = reasons[3];
     }
   }
+  report.migration = Object.fromEntries(
+    ["doctor", "sessions", "archives", "sibling"].map((section) => {
+      try {
+        const value = snapshot.migration?.[section];
+        if (value?.availability !== "captured") {
+          throw new Error();
+        }
+        return [
+          section,
+          { availability: "captured", ...migrationProjection(section, value, sanitize) },
+        ];
+      } catch {
+        omissions[`migration-${section}`] ??= reasons[3];
+        return [section, { availability: "unavailable" }];
+      }
+    }),
+  );
   writeReport(artifactRoot, destination, "failure.json", report, publicLimit);
   if (Object.keys(omissions).length) {
     process.stderr.write(

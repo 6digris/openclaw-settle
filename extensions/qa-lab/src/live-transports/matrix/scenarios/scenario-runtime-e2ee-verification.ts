@@ -225,7 +225,7 @@ export async function runMatrixQaE2eeStaleDeviceHygieneScenario(
       if (!before.some((device) => device.deviceId === secondary.deviceId)) {
         throw new Error("Matrix stale-device list did not include the secondary login");
       }
-      await client.stop().catch(() => undefined);
+      // The owning wrapper stops the client after these device requests finish.
       const deleted = await client.deleteOwnDevices([secondary.deviceId]);
       const remainingDeviceIds = deleted.remainingDevices.map((device) => device.deviceId);
       if (remainingDeviceIds.includes(secondary.deviceId)) {

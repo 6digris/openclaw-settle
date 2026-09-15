@@ -1,4 +1,5 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { OpenKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
   createPluginStateKeyedStoreForTests,
@@ -81,8 +82,14 @@ describe("voice-call realtime route ownership", () => {
     const sockets: WebSocket[] = [];
     const servers: Array<Awaited<ReturnType<typeof startUpgradeWsServer>>> = [];
     let runtime: VoiceCallRuntime | undefined;
-    const salesConnect = vi.fn(async () => {});
-    const supportConnect = vi.fn(async () => {});
+    const salesConnected = createDeferred<void>();
+    const supportConnected = createDeferred<void>();
+    const salesConnect = vi.fn(async () => {
+      salesConnected.resolve();
+    });
+    const supportConnect = vi.fn(async () => {
+      supportConnected.resolve();
+    });
     const salesRequests: RealtimeVoiceBridgeCreateRequest[] = [];
     const salesProvider = createRealtimeProvider({
       id: "openai",
@@ -176,12 +183,13 @@ describe("voice-call realtime route ownership", () => {
         );
       }
 
-      await vi.waitFor(() => {
-        expect(salesProvider.createBridge).toHaveBeenCalledTimes(1);
-        expect(supportProvider.createBridge).toHaveBeenCalledTimes(1);
-        expect(salesConnect).toHaveBeenCalledTimes(1);
-        expect(supportConnect).toHaveBeenCalledTimes(1);
-      });
+      // Persisted call admission precedes provider selection and connection.
+      // Observe that boundary instead of spending a polling deadline on state startup.
+      await Promise.all([salesConnected.promise, supportConnected.promise]);
+      expect(salesProvider.createBridge).toHaveBeenCalledTimes(1);
+      expect(supportProvider.createBridge).toHaveBeenCalledTimes(1);
+      expect(salesConnect).toHaveBeenCalledTimes(1);
+      expect(supportConnect).toHaveBeenCalledTimes(1);
       expect(salesProvider.createBridge).toHaveBeenCalledWith(
         expect.objectContaining({
           agentId: "sales",

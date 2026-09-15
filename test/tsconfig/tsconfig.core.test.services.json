@@ -10,6 +10,8 @@
     "../../src/cron/**/*.test.tsx",
     "../../src/daemon/**/*.test.ts",
     "../../src/daemon/**/*.test.tsx",
+    "../../src/media/**/*.test.ts",
+    "../../src/media/**/*.test.tsx",
     "../../src/process/**/*.test.ts",
     "../../src/process/**/*.test.tsx",
     "../../src/skills/**/*.test.ts",

@@ -156,6 +156,37 @@ describe("scripts/test-live-shard", () => {
     );
   });
 
+  it("keeps yield/resume stress selected without enabling its expensive opt-in", () => {
+    const stressFile = "src/agents/subagents/announce/subagent-yield-resume.live.test.ts";
+    const selected = selectLiveShardFiles("native-live-src-agents", allFiles);
+    expect(selected).toContain(stressFile);
+    expect(buildLiveShardPnpmArgs(selected, [])).toContain(stressFile);
+    expect(
+      buildLiveShardSpawnParams({}, "linux").env.OPENCLAW_LIVE_SUBAGENT_STRESS,
+    ).toBeUndefined();
+    expect(
+      buildLiveShardSpawnParams({ OPENCLAW_LIVE_SUBAGENT_STRESS: "1" }, "linux").env
+        .OPENCLAW_LIVE_SUBAGENT_STRESS,
+    ).toBe("1");
+    expect(
+      validateLiveShardReportPayload(
+        {
+          numPassedTests: 0,
+          numTotalTests: 4,
+          testResults: [
+            {
+              name: path.join(process.cwd(), stressFile),
+              assertionResults: Array.from({ length: 4 }, () => ({ status: "skipped" })),
+            },
+          ],
+        },
+        [stressFile],
+        process.cwd(),
+        {},
+      ).ok,
+    ).toBe(false);
+  });
+
   it("rejects unknown shard names", () => {
     expect(() => selectLiveShardFiles("native-live-missing")).toThrow(/Unknown live test shard/u);
     expect(() => selectLiveShardFiles("native-live-extensions-l-z")).toThrow(
@@ -508,6 +539,10 @@ describe("scripts/test-live-shard", () => {
     ["src/skills/workshop/experience-review.live.test.ts", "OPENCLAW_LIVE_SKILL_EXPERIENCE_REVIEW"],
     ["src/agents/subagent-announce.live.test.ts", "OPENCLAW_LIVE_SUBAGENT_E2E"],
     ["src/agents/subagents/announce/subagent-announce.live.test.ts", "OPENCLAW_LIVE_SUBAGENT_E2E"],
+    [
+      "src/agents/subagents/announce/subagent-yield-resume.live.test.ts",
+      "OPENCLAW_LIVE_SUBAGENT_STRESS",
+    ],
     [
       "src/agents/sessions/agent-session.openai-compaction.live.test.ts",
       "OPENCLAW_LIVE_OPENAI_COMPACTION",
