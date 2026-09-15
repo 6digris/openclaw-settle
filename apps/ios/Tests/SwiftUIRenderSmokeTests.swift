@@ -307,6 +307,9 @@ struct SwiftUIRenderSmokeTests {
             var callbackViolationCount = 0
             weak var diagnosticAppModel: NodeAppModel?
             weak var diagnosticCreatingModel: OpenClawChatViewModel?
+            weak var ordinaryReplacementModel: OpenClawChatViewModel?
+            var hasObservedOrdinaryReplacement = false
+            var hasObservedOrdinaryCommands = false
             var creatingAtResponse: Bool?
             @MainActor func modelFacts(_ model: OpenClawChatViewModel?) -> String {
                 "present=\(model != nil),detached=\(model?.isTransportDetached == true)," +
@@ -363,6 +366,45 @@ struct SwiftUIRenderSmokeTests {
                          "sessions.create", "agent.wait": method
                     default: "unknown"
                     }
+                    var ordinaryReplacementBootstrap = false
+                    if retiresDuringCreate, frame["expectedProfileId"] == nil,
+                       let appModel = diagnosticAppModel,
+                       let creating = diagnosticCreatingModel,
+                       let published = appModel.presentedChatViewModel,
+                       !hasObservedOrdinaryReplacement || ordinaryReplacementModel === published,
+                       creating !== published, creating.isTransportDetached, !published.isTransportDetached,
+                       let creatingTransport = creating.transport as? IOSGatewayChatTransport,
+                       let publishedTransport = published.transport as? IOSGatewayChatTransport,
+                       let binding = creatingTransport.nativeBinding, binding.session == session,
+                       publishedTransport.nativeBinding == nil,
+                       creatingTransport.gateway === appModel.operatorSession,
+                       publishedTransport.gateway === appModel.operatorSession,
+                       creating.sessionKey.utf8.elementsEqual(session.sessionKey.utf8),
+                       published.sessionKey.utf8.elementsEqual(session.sessionKey.utf8),
+                       creating.activeAgentId?.utf8.elementsEqual(session.agentID.utf8) == true,
+                       published.activeAgentId?.utf8.elementsEqual(session.agentID.utf8) == true
+                    {
+                        // Retiring the mounted native presentation can publish an ordinary
+                        // replacement. Only its two initial read shapes may omit the profile;
+                        // the detached native capture and every mutation remain pinned.
+                        ordinaryReplacementBootstrap = switch method {
+                        case "commands.list":
+                            !hasObservedOrdinaryCommands && Set(params.keys) == ["scope", "includeArgs", "agentId"] &&
+                                params["scope"] as? String == "text" && params["includeArgs"] as? Bool == true &&
+                                (params["agentId"] as? String)?.utf8.elementsEqual(session.agentID.utf8) == true
+                        case "sessions.messages.subscribe":
+                            Set(params.keys) == ["key"] &&
+                                (params["key"] as? String)?.utf8.elementsEqual(session.sessionKey.utf8) == true
+                        default: false
+                        }
+                        if ordinaryReplacementBootstrap {
+                            ordinaryReplacementModel = published
+                            hasObservedOrdinaryReplacement = true
+                            // The fixture returns a successful catalog and never requests a refresh.
+                            // A duplicate unpinned command read must still fail the native oracle.
+                            if method == "commands.list" { hasObservedOrdinaryCommands = true }
+                        }
+                    }
                     if method == "sessions.list", params["limit"] as? Int == 80 {
                         // This is the ordinary share-route refresh scheduled by agent selection.
                         observeCallback(
@@ -397,7 +439,7 @@ struct SwiftUIRenderSmokeTests {
                             params: params)
                     } else {
                         observeCallback(
-                            profile == expectedProfile,
+                            profile == expectedProfile || ordinaryReplacementBootstrap,
                             rule: "selected-profile",
                             method: methodLabel,
                             profile: profile,
