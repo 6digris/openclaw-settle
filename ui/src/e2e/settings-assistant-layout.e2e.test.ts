@@ -54,7 +54,7 @@ suite.define(() => {
       });
       for (const width of [1440, 1100]) {
         await page.setViewportSize({ width, height: 900 });
-        for (const route of ["memory", "profile", "mcp"] as const) {
+        for (const route of ["memory", "profile", "mcp", "advanced"] as const) {
           const pathname = pathForRoute(route);
           await page.goto(new URL(pathname, suite.server.baseUrl).toString());
           await waitForControlUiRoute(page, { pathname, routeId: route });
@@ -91,6 +91,20 @@ suite.define(() => {
                 { message: `Memory introduction clears tabs at ${width}px` },
               )
               .toBe(true);
+          } else if (route === "advanced") {
+            await expect
+              .poll(() =>
+                page.getByRole("button", { name: "Form", exact: true }).evaluate((element) => {
+                  const range = document.createRange();
+                  range.selectNodeContents(element);
+                  return new Set(
+                    [...range.getClientRects()]
+                      .filter((rect) => rect.width > 0)
+                      .map((rect) => rect.y),
+                  ).size;
+                }),
+              )
+              .toBe(1);
           } else {
             const input =
               route === "profile"
