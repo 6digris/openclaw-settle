@@ -8809,6 +8809,7 @@ server.listen(0, "127.0.0.1", () => {
     const reports = [
       "apps/android/app/build/test-results/testPlayDebugUnitTest/TEST-Play.xml",
       "apps/android/app/build/test-results/testThirdPartyDebugUnitTest/TEST-ThirdParty.xml",
+      "apps/android/gateway-client/build/test-results/testDebugUnitTest/TEST-GatewaySession.xml",
       "apps/android/wear/build/test-results/testDebugUnitTest/TEST-Wear.xml",
       "apps/android/wear-shared/build/test-results/testDebugUnitTest/TEST-Shared.xml",
     ];

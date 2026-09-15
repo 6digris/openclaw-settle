@@ -5721,6 +5721,7 @@ jobs:
           name: android-test-reports-${{ matrix.task }}-${{ needs.preflight.outputs.checkout_revision }}-${{ github.run_attempt }}
           path: |
             apps/android/app/build/test-results/test*UnitTest/TEST-*.xml
+            apps/android/gateway-client/build/test-results/test*UnitTest/TEST-*.xml
             apps/android/wear/build/test-results/test*UnitTest/TEST-*.xml
             apps/android/wear-shared/build/test-results/test*UnitTest/TEST-*.xml
           if-no-files-found: warn
