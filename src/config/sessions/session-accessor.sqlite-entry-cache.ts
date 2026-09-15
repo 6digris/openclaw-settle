@@ -367,13 +367,19 @@ function publishSqliteSessionEntryCacheUpsert(
     return;
   }
   const { sessionKey } = update;
-  const sideMetadata =
-    update.entry || !owner.selectedKeys || owner.selectedKeys.has(sessionKey)
-      ? readSessionEntrySideMetadata(database, sessionKey)
-      : undefined;
-  const entry = update.entry
-    ? projectSessionEntryCacheUpdate(update.entry, sideMetadata)
-    : undefined;
+  let sideMetadata: SessionEntrySideMetadata | undefined;
+  let entry: SessionEntry | undefined;
+  try {
+    sideMetadata =
+      update.entry || !owner.selectedKeys || owner.selectedKeys.has(sessionKey)
+        ? readSessionEntrySideMetadata(database, sessionKey)
+        : undefined;
+    entry = update.entry ? projectSessionEntryCacheUpdate(update.entry, sideMetadata) : undefined;
+  } catch {
+    // A failed derived projection must not roll back an authoritative write.
+    publishTrackedCacheUpdate(database, () => sessionEntryCaches.delete(database.db));
+    return;
+  }
   publishTrackedCacheUpdate(database, () => {
     const cached = sessionEntryCaches.get(database.db);
     if (!cached) {
@@ -422,15 +428,8 @@ export function publishSessionEntryCacheInvalidation(
   writeGeneration?: SqliteSessionEntryCacheWriteGeneration,
 ): void {
   if (update && writeGeneration) {
-    try {
-      publishSqliteSessionEntryCacheUpsert(database, update, writeGeneration);
-      return;
-    } catch (error) {
-      if (update.entry) {
-        throw error;
-      }
-      // Relational writes stay durable when their derived cache projection is damaged.
-    }
+    publishSqliteSessionEntryCacheUpsert(database, update, writeGeneration);
+    return;
   }
   // A cold write has no snapshot to patch; do not hydrate owner/participants or prompt JSON.
   publishTrackedCacheUpdate(database, () => sessionEntryCaches.delete(database.db));

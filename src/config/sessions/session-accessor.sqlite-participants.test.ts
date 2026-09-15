@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import {
   closeOpenClawAgentDatabasesForTest,
@@ -18,6 +19,7 @@ import {
   loadExactSessionEntryCandidatesReadOnlyBatch,
   loadSessionEntry,
   MAX_SESSION_PARTICIPANTS,
+  patchSessionEntryCore,
   recordSessionParticipant,
   upsertSessionEntryCore,
 } from "./session-accessor.js";
@@ -37,6 +39,49 @@ const remote = (id: string, domain = "workspace"): SessionParticipantIdentity =>
 afterEach(() => closeOpenClawAgentDatabasesForTest());
 
 describe("SQLite session participants", () => {
+  it("commits a prepared node patch without newly decoding invalid participant rows", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const scope = {
+        agentId: "main",
+        env: state.env,
+        sessionKey: "agent:main:prepared",
+        projection: "list" as const,
+      };
+      await upsertSessionEntryCore(scope, { sessionId: "prepared", updatedAt: 1 });
+      recordSessionParticipant(scope, { identity: remote("before"), promptedAt: 1 });
+      expect(listSessionEntriesCore(scope)).toHaveLength(1);
+      const prepared = createDeferred();
+      const resume = createDeferred();
+      const patch = patchSessionEntryCore(
+        scope,
+        async () => {
+          prepared.resolve();
+          await resume.promise;
+          return { label: "committed" };
+        },
+        { skipMaintenance: true },
+      );
+      try {
+        await prepared.promise;
+        recordSessionParticipant(scope, { identity: remote("before"), promptedAt: 2 });
+        const database = openOpenClawAgentDatabase(scope);
+        database.db
+          .prepare("UPDATE session_participants SET identity_namespace = ? WHERE session_key = ?")
+          .run('{"type":"profile","extra":true}', scope.sessionKey);
+        resume.resolve();
+        await expect(patch).resolves.toMatchObject({ sessionId: "prepared", label: "committed" });
+        expect(() => listSessionEntriesCore(scope)).toThrow(
+          "Session participant identity is invalid; run openclaw doctor --fix.",
+        );
+        database.db.prepare("DELETE FROM session_participants").run();
+        expect(listSessionEntriesCore(scope)[0]?.entry.label).toBe("committed");
+      } finally {
+        resume.resolve();
+        await patch.catch(() => {});
+      }
+    });
+  });
+
   it.each(["participant", "entry", "external-entry"] as const)(
     "keeps a reentrant observer's newer cached state after an outer %s write",
     async (kind) => {

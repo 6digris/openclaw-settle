@@ -144,9 +144,10 @@ describe("projects vitest config", () => {
         timeout: DEFAULT_VITEST_TEST_TIMEOUT_MS,
       },
     );
-    expect(result.error, result.stderr).toBeUndefined();
-    expect(result.signal, result.stderr).toBeNull();
-    expect(result.status, result.stderr).toBe(0);
+    const output = JSON.stringify({ stdout: result.stdout, stderr: result.stderr });
+    expect(result.error, output).toBeUndefined();
+    expect(result.signal, output).toBeNull();
+    expect(result.status, output).toBe(0);
     const report = result.stdout
       .split("\n")
       .find((line) => line.startsWith("ROOT_PROJECT_RESOLUTION "));
