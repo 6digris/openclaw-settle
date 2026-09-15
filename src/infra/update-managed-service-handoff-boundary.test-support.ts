@@ -483,7 +483,6 @@ export function createManagedServiceManagerBoundary({
           // the updater's validation signal permits revocation or activation below.
           await waitForFile(validationStartedPath, DEFAULT_VITEST_TEST_TIMEOUT_MS);
           await expect(pathExists(commandsPath)).resolves.toBe(false);
-          await expect(pathExists(validationStartedPath)).resolves.toBe(true);
           const validationClockAdvanceMs = options.validationClockAdvanceMs;
           if (validationClockAdvanceMs) {
             await vi.waitFor(async () => {
