@@ -2,6 +2,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readlinkSync,
@@ -129,6 +130,7 @@ it("renders Windows observations only into the reviewed private owner", () => {
   const options = {
     realClock: true,
     windowsDiagnosticsRoot: String.raw`C:\checkout proof\owner's directory\case`,
+    windowsMembershipProbe: true,
   };
   const shell = renderGitTestClock(readCiCheckoutStep("checks-windows").run, options);
   const embedded = expectDefined(
@@ -149,7 +151,8 @@ compile(source, "<private-owner>", "exec")
 calls = [node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Call)
          and isinstance(node.func, ast.Subscript)
          and isinstance(node.func.value, ast.Name) and node.func.value.id == "_ci_observer"]
-assert len(calls) == 1 and ast.literal_eval(calls[0].args[1]) == sys.argv[1]
+assert len(calls) == 2 and all(ast.literal_eval(call.args[1]) == sys.argv[1] for call in calls)
+assert {ast.literal_eval(call.func.slice) for call in calls} == {"install_owner_observer", "install_membership_probe"}
 command_line = subprocess.list2cmdline([r"C:\Program Files\Python\python.exe", "-I", "-S", "-c", source])
 print(len(command_line.encode("utf-16-le")) // 2 + 1)
 `,
@@ -381,6 +384,100 @@ with tempfile.TemporaryDirectory(prefix="checkout-observation-") as directory:
     assert sum(row["phase"] == "overflow" for row in capped_rows) == 1
     assert capped_rows[-1]["phase"] == "overflow"
 
+# Model the observed 13-command schedule, not native Windows execution.
+# Keep all five lifecycle phases and all retained actors, including exited ones.
+registered, live = set(), set()
+def model_opened(access, inherit, pid):
+    if pid in registered and pid not in live:
+        state["error"] = 87
+        return 0
+    return opened(access, inherit, pid)
+def model_times(handle, *values):
+    assert handle in handles
+    birth = 134000000000000000 + handle * 10
+    values[0]._obj.dwHighDateTime, values[0]._obj.dwLowDateTime = birth >> 32, birth & 0xffffffff
+    return 1
+def model_frequency(value):
+    value._obj.value = 10000000
+    return 1
+def model_membership(handle, job, value):
+    assert handle in handles and job == 777
+    value._obj.value = int(handle not in (2000, 2001))
+    return 1
+kernel.OpenProcess.callback = model_opened
+kernel.GetProcessTimes.callback = model_times
+kernel.QueryPerformanceFrequency.callback = model_frequency
+kernel.IsProcessInJob.callback = model_membership
+state.update(error=0, clock=1000000000)
+scope["install_owner_observer"].__globals__["os"] = types.SimpleNamespace(
+    name="nt", path=os.path, listdir=os.listdir, getpid=lambda: 2000)
+def model_drain(child, job):
+    assert not handles
+    accounting = Accounting()
+    model_owner["query_job"](job, 1, c.byref(accounting), c.sizeof(accounting), None)
+    assert not handles
+with tempfile.TemporaryDirectory(prefix="checkout-budget-") as directory:
+    root = pathlib.Path(directory)
+    (root / "pids").mkdir()
+    (root / "pids" / "2001.json").write_text(json.dumps(dict(
+        pid=2001, role="sentinel", attempt=0, instance="fixture-sentinel",
+        creationTime=str(134000000000020010))))
+    model_owner = dict(Accounting=Accounting, create_job=lambda *_: 777,
+                       close_handle=lambda _: 1, query_job=Function(query), drain=model_drain)
+    model_owner["query_job"].errcheck = lambda value, function, args: value
+    scope["install_owner_observer"](model_owner, directory)
+    registrations = {4: 1, 5: 2, 6: 3, 12: 4}
+    phases = ["job-created", "before-drain", "accounting", "after-drain", "before-job-close"]
+    expected_actor_counts = []
+    for generation in range(1, 14):
+        expected_actor_counts.append(len(registered))
+        job = model_owner["create_job"](None, None)
+        attempt = registrations.get(generation)
+        if attempt is not None:
+            for offset, role in enumerate(("parent", "child", "grandchild")):
+                pid = 2010 + attempt * 10 + offset
+                registered.add(pid)
+                if attempt <= 2:
+                    live.add(pid)
+                (root / "pids" / f"{pid}.json").write_text(json.dumps(dict(
+                    pid=pid, role=role, attempt=attempt, instance=f"fixture-{pid}",
+                    creationTime=str(134000000000000000 + pid * 10))))
+        expected_actor_counts.extend([len(registered)] * 4)
+        model_owner["drain"](types.SimpleNamespace(pid=2002), job)
+        model_owner["close_handle"](job)
+        live.clear()
+    assert len(registered) == 12 and not handles
+    filename = root / "windows-owner-diagnostic.jsonl"
+    recovery_bytes = filename.read_bytes()
+    recovery_rows = [json.loads(line) for line in recovery_bytes.splitlines()]
+    assert [row["phase"] for row in recovery_rows] == phases * 13, (
+        "full 13-command recovery must retain all 65 lifecycle records", len(recovery_rows))
+    assert [row["sequence"] for row in recovery_rows] == list(range(1, 66))
+    assert [row["jobGeneration"] for row in recovery_rows] == [
+        generation for generation in range(1, 14) for _ in phases]
+    assert [len(row["actors"]) for row in recovery_rows] == expected_actor_counts
+    assert len(recovery_bytes) <= 256 * 1024 - 1024
+    assert all(row["sentinel"] is not None and row["owner"] is not None for row in recovery_rows)
+    assert all(row["bootstrap"] is not None for row in recovery_rows if row["phase"] != "job-created")
+    # Reopening the owner must charge actual prior bytes, not census metadata.
+    model_owner = dict(Accounting=Accounting, create_job=lambda *_: 777,
+                       close_handle=lambda _: 1, query_job=Function(query), drain=model_drain)
+    model_owner["query_job"].errcheck = lambda value, function, args: value
+    scope["install_owner_observer"](model_owner, directory)
+    model_owner["create_job"](None, None)
+    reseeded_bytes = filename.read_bytes()
+    reseeded_rows = [json.loads(line) for line in reseeded_bytes.splitlines()]
+    assert reseeded_bytes.startswith(recovery_bytes) and len(reseeded_bytes) <= 256 * 1024
+    assert len(reseeded_rows) == 66 and reseeded_rows[-1]["phase"] == "job-created", (
+        "sequential owner must retain the fitting next record", len(reseeded_rows))
+    assert not handles
+
+for emitter, allowance in (("owner", 0), ("census", 512)):
+    payload = dict(emitter=emitter, phase="sample")
+    raw = scope["encoded_record"](payload)
+    record, count, size, overflow = scope["bounded_record"](payload, 0, 0, False)
+    assert record == payload and count == 1 and size == len(raw) + allowance and not overflow
+
 for payload in (dict(emitter="census", phase="sample"), dict(emitter="owner", phase="sample", value="x" * 20000)):
     count, size, overflow, encoded = 0, 0, False, []
     for _ in range(1024):
@@ -389,7 +486,9 @@ for payload in (dict(emitter="census", phase="sample"), dict(emitter="owner", ph
     assert len(encoded) <= 256 and sum(map(len, encoded)) <= 256 * 1024
     assert json.loads(encoded[-1])["phase"] == "overflow"
 print(json.dumps(dict(api="emulated", transientHandles=True, primaryExceptionPreserved=True,
-                     capRecords=512, capBytes=512*1024, completeRows=complete_rows, ownerRows=rows)))
+                     capRecords=512, capBytes=512*1024, completeRows=complete_rows, ownerRows=rows,
+                     recoveryRows=recovery_rows, recoveryBytes=len(recovery_bytes),
+                     reseededBytes=len(reseeded_bytes))))
 `,
       fileURLToPath(new URL("./fixtures/ci-windows-process-census.py", import.meta.url)),
     ],
@@ -424,6 +523,12 @@ print(json.dumps(dict(api="emulated", transientHandles=True, primaryExceptionPre
       records: JSON.parse(result.stdout).ownerRows,
     }).status,
   ).toBe("unavailable");
+  const recovery = projectWindowsCheckoutDiagnostics({
+    status: "complete",
+    records: JSON.parse(result.stdout).recoveryRows,
+  });
+  expect(recovery.status).toBe("complete");
+  expect(recovery.records).toHaveLength(65);
 });
 
 it.skipIf(process.platform === "win32").each(["missing", "partial", "oversized"])(
@@ -455,6 +560,246 @@ it.skipIf(process.platform === "win32").each(["missing", "partial", "oversized"]
   },
   55_000,
 );
+
+it("bounds membership probes without changing the original Windows drain", () => {
+  const result = spawnSync(
+    process.platform === "win32" ? "python" : "python3",
+    [
+      "-I",
+      "-S",
+      "-c",
+      String.raw`
+import ctypes as c, json, os, pathlib, runpy, sys, tempfile, time, types
+scope = runpy.run_path(sys.argv[1])
+install = scope["install_membership_probe"]
+install.__globals__["os"] = types.SimpleNamespace(**{**vars(os), "name": "nt"})
+class Function:
+    def __init__(self, callback): self.callback = callback
+    def __call__(self, *args): return self.callback(*args)
+class Accounting(c.Structure):
+    _fields_ = [(name, c.c_uint32) for name in ("ActiveProcesses", "TotalProcesses", "TotalTerminatedProcesses")]
+class ProcessList(c.Structure):
+    _fields_ = [("assigned", c.c_uint32), ("count", c.c_uint32), ("pids", c.c_size_t * 256)]
+summaries, close_failures = [], []
+for fault in ("omitted", "covered", "no-interval", "signals-during-query", "truncated", "query",
+              "birth", "sentinel-member", "open", "duplicate", "kill", "wait", "terminate",
+              "count-cap", "short-buffer", "duplicate-pid", "zero-pid", "later-query-error",
+              "close-normal", "close-open", "close-multiple", "close-kill", "close-wait", "close-terminate"):
+    state = dict(error=73, clock=0, phase=0, reads=0, queried=False, ordinary=0)
+    handles, calls, opened_pids, close_attempts, acquired_handles = {}, [], [], [], []
+    close_fault = fault.startswith("close-")
+    operation_fault = fault.removeprefix("close-")
+    primary = OSError(123, "PRIMARY_CANARY")
+    primary.winerror = 123
+    c.get_last_error = lambda: state["error"]
+    c.set_last_error = lambda value: state.update(error=value)
+    def win_error(code):
+        error = OSError(code, "PRIVATE_CANARY")
+        error.winerror = code
+        return error
+    c.WinError = win_error
+    def opened(access, inherit, pid):
+        assert access == 0x101000 and inherit is False and pid != 102
+        opened_pids.append(pid)
+        if operation_fault == "open" and pid == 104:
+            state["error"] = 5
+            return 0
+        handle = pid + 1000
+        handles[handle] = pid
+        acquired_handles.append(handle)
+        return handle
+    def duplicate(source_process, source, target_process, target, access, inherit, flags):
+        assert (source_process, source, target_process, access, inherit, flags) == (900, 9999, 900, 0, False, 2)
+        if fault == "duplicate": return 0
+        target._obj.value = 1102
+        handles[1102] = 102
+        acquired_handles.append(1102)
+        return 1
+    def close(handle):
+        assert handle != 9999
+        close_attempts.append(handle)
+        if close_fault and (handle == 1102 or fault == "close-multiple" and handle == 1103):
+            state["error"] = 6 if handle == 1102 else 7
+            return 0
+        del handles[handle]
+        state["error"] = 99
+        return 1
+    def waited(handle, timeout):
+        assert timeout == 0 and handle in handles
+        state["reads"] += 1
+        if fault == "no-interval" and state["reads"] > 5: return 0
+        if fault == "signals-during-query" and state["queried"]: return 0
+        return 0 if handles[handle] == 102 and state["phase"] > 0 else 258
+    def times(handle, *values):
+        values[0]._obj.dwHighDateTime = 0
+        values[0]._obj.dwLowDateTime = handles[handle] * 10 + int(fault == "birth")
+        return 1
+    def member(handle, job, value):
+        assert job == 77
+        value._obj.value = int(handles[handle] != 103 or fault == "sentinel-member")
+        return 1
+    def clock(value):
+        state["clock"] += 1
+        value._obj.value = state["clock"]
+        return 1
+    def frequency(value):
+        value._obj.value = 1000
+        return 1
+    def query(job, kind, pointer, size, returned):
+        assert job == 77
+        if kind == 1:
+            pointer._obj.ActiveProcesses = 0
+            pointer._obj.TotalProcesses = 5
+            return 1
+        assert kind == 3 and size == c.sizeof(ProcessList)
+        state["queried"] = True
+        if fault == "query" or fault == "later-query-error" and state["phase"] == 2:
+            state["error"] = 234
+            return 0
+        pids = [101, 102, 104, 105]
+        if (fault == "signals-during-query" or fault == "omitted" and state["phase"] == 2
+                or fault == "later-query-error" and state["phase"] == 1):
+            pids.remove(101)
+        if fault == "duplicate-pid": pids[0] = pids[1]
+        if fault == "zero-pid": pids[0] = 0
+        listing = pointer._obj
+        listing.assigned = len(pids) + int(fault == "truncated")
+        listing.count = len(pids)
+        listing.pids[:len(pids)] = pids
+        returned._obj.value = 8 + len(pids) * c.sizeof(c.c_size_t)
+        if fault == "short-buffer": returned._obj.value -= 1
+        if fault == "count-cap": listing.count = listing.assigned = 257
+        return 1
+    kernel = types.SimpleNamespace(**{name: Function(callback) for name, callback in {
+        "GetCurrentProcess": lambda: 900, "DuplicateHandle": duplicate, "OpenProcess": opened,
+        "CloseHandle": close, "WaitForSingleObject": waited, "GetProcessTimes": times,
+        "IsProcessInJob": member, "QueryPerformanceCounter": clock,
+        "QueryPerformanceFrequency": frequency, "QueryInformationJobObject": query,
+    }.items()})
+    c.WinDLL = lambda *_args, **_kwargs: kernel
+    def operation(name, expected_error, result):
+        assert state["error"] == expected_error, (fault, name, state)
+        calls.append(name)
+        state["error"] = {"kill": 74, "wait": 75, "terminate": 76}[name]
+        if operation_fault == name: raise primary
+        return result
+    class Child:
+        pid, _handle = 102, 9999
+        def kill(self): return operation("kill", 73, "kill-result")
+        def wait(self, *, timeout):
+            assert 0 < timeout <= 10
+            state["phase"] = 1
+            return operation("wait", 74, "wait-result")
+    child = Child()
+    def terminate(job, code):
+        assert (job, code) == (77, 1)
+        state["phase"] = 2
+        return operation("terminate", 75, "terminate-result")
+    def original_drain(child, job):
+        assert child.kill() == "kill-result"
+        assert child.wait(timeout=10) == "wait-result"
+        assert namespace["terminate_job"](job, 1) == "terminate-result"
+        state["ordinary"] += 1
+        assert not handles, "oracles survived into ordinary Accounting"
+        assert state["error"] == 76
+        return "original-result"
+    with tempfile.TemporaryDirectory(prefix="membership-probe-") as directory:
+        root = pathlib.Path(directory)
+        (root / "pids").mkdir()
+        (root / "ready-2.json").write_text("2")
+        for pid, role, attempt in [(101, "parent", 2), (104, "child", 2), (105, "grandchild", 2),
+                                   (103, "sentinel", 0), (106, "git", 0), (107, "shell", 0)]:
+            (root / "pids" / f"{pid}.json").write_text(json.dumps(dict(
+                pid=pid, role=role, attempt=attempt, creationTime=str(pid * 10))))
+        namespace = dict(drain=original_drain, terminate_job=terminate, Accounting=Accounting,
+                         time=time, cleanup_seconds=10)
+        install(namespace, directory)
+        caught = None
+        try:
+            assert namespace["drain"](child, 77) == "original-result"
+        except BaseException as error:
+            caught = error
+        if close_fault:
+            raw = (root / "windows-membership-probe.json").read_bytes()
+            report = json.loads(raw)
+            owner_failed = operation_fault in ("kill", "wait", "terminate")
+            expected_calls = ["kill", "wait", "terminate"][:{"kill": 1, "wait": 2}.get(operation_fault, 3)]
+            checks = {
+                "ordinary-accounting-with-unreleased-oracle": state["ordinary"] == 0,
+                "one-close-attempt-per-acquired-oracle": (
+                    len(close_attempts) == len(set(close_attempts))
+                    and set(close_attempts) == set(acquired_handles)
+                ),
+                "first-native-close-error": report.get("releaseErrorCode") == 6,
+                "primary-exception-or-probe-gate": (
+                    caught is primary if owner_failed else isinstance(caught, OSError) and caught.winerror == 6
+                ),
+                "exception-provenance": report.get("probeGateException") is (not owner_failed),
+                "remaining-oracles": set(handles) == ({1102, 1103} if fault == "close-multiple" else {1102}),
+                "original-calls-and-last-error": calls == expected_calls and state["error"] == 73 + len(calls),
+                "source-handle-and-methods": child._handle == 9999 and not child.__dict__ and namespace["terminate_job"] is terminate,
+                "bounded-invalid-report": (
+                    len(raw) <= 65536 and "CANARY" not in raw.decode()
+                    and report["status"] == "invalid" and report["released"] is False
+                    and report["originalReturnPath"] == "exception"
+                    and len(report["snapshots"]) + len(report["errors"]) + 2 <= 8
+                ),
+            }
+            violations = [name for name, passed in checks.items() if not passed]
+            summaries.append(dict(fault=fault, status=report["status"], calls=calls,
+                                  ordinary=state["ordinary"], violations=violations, bytes=len(raw)))
+            if violations:
+                close_failures.append(dict(fault=fault, violations=violations))
+            handles.clear()
+            continue
+        if operation_fault in ("kill", "wait", "terminate"):
+            assert caught is primary
+        else:
+            assert caught is None, (fault, caught)
+        assert not handles and child._handle == 9999 and not child.__dict__
+        assert namespace["terminate_job"] is terminate
+        assert calls == ["kill", "wait", "terminate"][:{"kill": 1, "wait": 2}.get(fault, 3)]
+        expected_error = 73 + len(calls)
+        assert state["error"] == expected_error
+        raw = (root / "windows-membership-probe.json").read_bytes()
+        report = json.loads(raw)
+        assert len(raw) <= 65536 and report["released"] and "CANARY" not in raw.decode()
+        assert len(report["snapshots"]) + len(report["errors"]) + 2 <= 8
+        assert report["originalReturnPath"] == ("exception" if fault in ("kill", "wait", "terminate") else "normal")
+        if fault == "omitted":
+            assert report["status"] == "falsified" and report["snapshots"][-1]["active"] == 0
+        elif fault in ("truncated", "query", "birth", "sentinel-member", "open", "duplicate",
+                       "count-cap", "short-buffer", "duplicate-pid", "zero-pid", "later-query-error"):
+            assert report["status"] == "invalid"
+        else:
+            assert report["status"] == "inconclusive", (fault, report)
+        if fault in ("omitted", "covered", "no-interval", "signals-during-query"):
+            assert len(report["snapshots"]) == 3
+        if fault == "later-query-error":
+            assert report["snapshots"][1]["status"] == "falsified"
+        if fault in ("covered", "omitted"):
+            assert report["pendingExitObserved"] is True
+        if fault in ("no-interval", "signals-during-query"):
+            assert report["pendingExitObserved"] is False and report["reason"] == "no-pending-interval"
+        if fault == "covered":
+            before = (root / "windows-membership-probe.json").read_bytes()
+            # The same owner never repeats the probe for subsequent commands.
+            state.update(error=73, phase=0)
+            assert namespace["drain"](child, 77) == "original-result"
+            assert (root / "windows-membership-probe.json").read_bytes() == before
+        summaries.append(dict(fault=fault, status=report["status"], calls=calls, bytes=len(raw)))
+print(json.dumps(summaries))
+assert not close_failures, ("membership-close-regressions", close_failures)
+`,
+      fileURLToPath(new URL("./fixtures/ci-windows-process-census.py", import.meta.url)),
+    ],
+    { encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024, killSignal: "SIGKILL" },
+  );
+  expect(result.error, result.stderr).toBeUndefined();
+  expect(result.status, result.stderr).toBe(0);
+  expect(JSON.parse(result.stdout)).toHaveLength(24);
+  console.log(`membership-probe emulation: ${result.stdout.trim()}`);
+});
 
 // Execute both workflow policies against the same owned tree fixture. A leader's
 // exit must not authorize workspace deletion, Git reuse, or final success.
@@ -537,7 +882,12 @@ it.concurrent.each([
         }
         const accelerated = renderGitTestClock(run, {
           realDrain: scenario.startsWith("cancel-"),
-          ...(windowsDiagnostics ? { windowsDiagnosticsRoot: root } : {}),
+          ...(windowsDiagnostics
+            ? {
+                windowsDiagnosticsRoot: root,
+                windowsMembershipProbe: scenario === "harness-timeout",
+              }
+            : {}),
         });
         expect(accelerated).not.toBe(run);
         // A broken preflight must never let these negative fixture tests run real Git.
@@ -568,6 +918,20 @@ syncFixtureBuiltinExports();
         const workspace = path.join(root, "workspace");
         // Emit evidence before assertions; it remains available even for this deliberately red test.
         console.log(`${scenario}: ${JSON.stringify(report)}`);
+        let membershipProbe: { status?: string; released?: boolean } | undefined;
+        if (windowsDiagnostics && scenario === "harness-timeout") {
+          try {
+            const filename = path.join(root, "windows-membership-probe.json");
+            const info = lstatSync(filename);
+            if (!info.isFile() || info.isSymbolicLink() || info.size > 64 * 1024) {
+              throw new Error("invalid probe file");
+            }
+            membershipProbe = JSON.parse(readFileSync(filename, "utf8"));
+            console.log(`Windows membership probe: ${JSON.stringify(membershipProbe)}`);
+          } catch {
+            membershipProbe = { status: "invalid", released: false };
+          }
+        }
         if (setupFailure) {
           expect(report.cleanupRemaining, "fixture cleanup left owned processes").toEqual([]);
           expect(report.error, report.output).toContain(
@@ -705,6 +1069,11 @@ syncFixtureBuiltinExports();
             ),
           ).toBe(true);
           expect(diagnosticRecords.filter((entry) => "python" in entry)).toHaveLength(1);
+        }
+        if (windowsDiagnostics && scenario === "harness-timeout") {
+          // Neither a covered sample nor an absent pending interval proves universal coverage.
+          expect(["falsified", "inconclusive"]).toContain(membershipProbe?.status);
+          expect(membershipProbe?.released).toBe(true);
         }
       },
     );

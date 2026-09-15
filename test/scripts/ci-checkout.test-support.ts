@@ -227,7 +227,12 @@ export function readCiCheckoutStep(job: string, name = "Checkout"): Step & { run
 
 export function renderGitTestClock(
   source: string,
-  options: { realClock?: boolean; realDrain?: boolean; windowsDiagnosticsRoot?: string } = {},
+  options: {
+    realClock?: boolean;
+    realDrain?: boolean;
+    windowsDiagnosticsRoot?: string;
+    windowsMembershipProbe?: boolean;
+  } = {},
 ): string {
   // Change Python before shell quoting, so injected clock literals cannot alter
   // the generated argument or reintroduce a pipe-backed source transport.
@@ -267,6 +272,7 @@ if os.name == "nt":
         with open(${JSON.stringify(observer)}, encoding="utf-8") as _ci_observer_file:
             exec(_ci_observer_file.read(), _ci_observer)
         _ci_observer["install_owner_observer"](globals(), ${JSON.stringify(options.windowsDiagnosticsRoot)})
+${options.windowsMembershipProbe ? `        _ci_observer["install_membership_probe"](globals(), ${JSON.stringify(options.windowsDiagnosticsRoot)})\n` : ""}\
     except BaseException:
         pass  # Missing observations cannot change the original owner outcome.
 ${marker}`,
