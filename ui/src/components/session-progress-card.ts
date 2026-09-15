@@ -10,7 +10,7 @@ import { formatRelativeTimestamp } from "../lib/format.ts";
 import { icons } from "./icons.ts";
 import { toSanitizedMarkdownHtml } from "./markdown.ts";
 
-type SessionProgressCardPlacement = "board" | "composer";
+type SessionProgressCardPlacement = "board" | "chat";
 type PresentedProgressStepStatus = ProgressCardStep["status"] | "paused";
 
 const STATUS_LABEL_KEYS: Record<ProgressCardStep["status"], Parameters<typeof t>[0]> = {
@@ -93,13 +93,13 @@ class ProgressActivityTimeDirective extends AsyncDirective {
 
 const progressActivityTime = directive(ProgressActivityTimeDirective);
 
-type ComposerProgressRunLifecycle = {
+type ChatProgressRunLifecycle = {
   activeRunId?: string | null;
   completedRunId?: string | null;
   readingHistory?: boolean;
 };
 
-type ComposerDisclosureOwner = {
+type ChatDisclosureOwner = {
   activeRunId: string | null;
   handledCompletedRunId: string | null;
   sessionKey: string;
@@ -107,21 +107,21 @@ type ComposerDisclosureOwner = {
   manualOpen?: boolean;
 };
 
-const composerDisclosureOwners = new WeakMap<HTMLDetailsElement, ComposerDisclosureOwner>();
+const chatDisclosureOwners = new WeakMap<HTMLDetailsElement, ChatDisclosureOwner>();
 
-function reconcileComposerDisclosure(
+function reconcileChatDisclosure(
   element: Element | undefined,
   sessionKey: string,
   initialOpen: boolean,
   collapseByDefault: boolean,
-  lifecycle?: ComposerProgressRunLifecycle,
+  lifecycle?: ChatProgressRunLifecycle,
 ): void {
   if (!(element instanceof HTMLDetailsElement)) {
     return;
   }
   const activeRunId = lifecycle?.activeRunId ?? null;
   const completedRunId = lifecycle?.completedRunId ?? null;
-  let owner = composerDisclosureOwners.get(element);
+  let owner = chatDisclosureOwners.get(element);
   if (!owner || owner.sessionKey !== sessionKey) {
     owner = {
       activeRunId,
@@ -129,7 +129,7 @@ function reconcileComposerDisclosure(
       sessionKey,
       automaticOpen: initialOpen,
     };
-    composerDisclosureOwners.set(element, owner);
+    chatDisclosureOwners.set(element, owner);
   } else if (activeRunId && activeRunId !== owner.activeRunId) {
     // A new run starts a fresh task choice. Revisions and completion belong
     // to the same task and must not discard an explicit disclosure choice.
@@ -149,13 +149,13 @@ function reconcileComposerDisclosure(
   element.open = owner.manualOpen ?? (owner.automaticOpen && !lifecycle?.readingHistory);
 }
 
-function handleComposerDisclosureClick(event: MouseEvent): void {
+function handleChatDisclosureClick(event: MouseEvent): void {
   const summary = event.currentTarget;
   const element = summary instanceof HTMLElement ? summary.parentElement : null;
   if (!(element instanceof HTMLDetailsElement) || event.defaultPrevented) {
     return;
   }
-  const owner = composerDisclosureOwners.get(element);
+  const owner = chatDisclosureOwners.get(element);
   if (owner) {
     // Summary activation covers pointer and keyboard input. A toggle event also
     // fires for automatic changes, so it cannot establish operator intent.
@@ -349,8 +349,8 @@ export function renderSessionProgressCard(
   startedAt?: number,
   endedAt?: number,
   hasActiveRun = true,
-  collapseComposerByDefault = false,
-  composerRunLifecycle?: ComposerProgressRunLifecycle,
+  collapseChatByDefault = false,
+  chatRunLifecycle?: ChatProgressRunLifecycle,
 ) {
   if (!card) {
     return nothing;
@@ -411,12 +411,12 @@ export function renderSessionProgressCard(
         ${icons.x}
       </button>`
     : nothing;
-  if (placement === "composer") {
+  if (placement === "chat") {
     const steps = card.steps ?? [];
     const currentStep = currentProgressStep(steps);
     const currentPosition = currentProgressPosition(steps);
     const complete = steps.length > 0 && steps.every((step) => step.status === "completed");
-    const composerCountLabel = counts
+    const chatCountLabel = counts
       ? t("sessionProgressCard.countLabel", {
           completed: String(counts.completed),
           total: String(counts.total),
@@ -450,23 +450,23 @@ export function renderSessionProgressCard(
               ? progressStepMarker(presentedCurrentStatus ?? "pending")
               : icons.clock;
     return html`<details
-      class="session-progress-card session-progress-card--composer"
-      data-progress-card-placement="composer"
+      class="session-progress-card session-progress-card--chat"
+      data-progress-card-placement="chat"
       data-complete=${String(complete)}
       ${ref((element) =>
-        reconcileComposerDisclosure(
+        reconcileChatDisclosure(
           element,
           card.sessionKey,
-          !complete && !collapseComposerByDefault,
-          collapseComposerByDefault,
-          composerRunLifecycle,
+          !complete && !collapseChatByDefault,
+          collapseChatByDefault,
+          chatRunLifecycle,
         ),
       )}
     >
       <summary
         class="session-progress-card__summary"
         aria-label=${summaryLabel}
-        @click=${handleComposerDisclosureClick}
+        @click=${handleChatDisclosureClick}
       >
         <span
           class="session-progress-card__summary-indicator session-progress-card__current-marker${
@@ -509,7 +509,7 @@ export function renderSessionProgressCard(
           >${icons.chevronDown}</span
         >
       </summary>
-      <div class="session-progress-card__body" role="region" aria-label=${composerCountLabel}>
+      <div class="session-progress-card__body" role="region" aria-label=${chatCountLabel}>
         ${renderProgressCardMarkdown(card.markdown)}
         ${renderSteps(card, hasCurrentRunActivity, effectiveSessionStatus)}
       </div>

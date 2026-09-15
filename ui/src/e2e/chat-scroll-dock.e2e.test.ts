@@ -116,7 +116,7 @@ suite.define(() => {
           },
         },
       });
-      const card = page.locator('[data-progress-card-placement="composer"]');
+      const card = page.locator('[data-progress-card-placement="chat"]');
       const thread = page.locator(".chat-pane-cache__pane--active .chat-thread");
       const samples: Array<{ open: boolean; top: number; height: number; distance: number }> = [];
       const sample = async () => {
@@ -262,7 +262,7 @@ suite.define(() => {
       await waitForChatScrollIdle(page);
       report.afterPr = await dockGeometry(page);
 
-      const card = page.locator('[data-progress-card-placement="composer"]');
+      const card = page.locator('[data-progress-card-placement="chat"]');
       await gateway.setMethodResponse("progressCard.get", {
         card: {
           markdown:

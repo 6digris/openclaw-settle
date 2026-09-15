@@ -1,4 +1,3 @@
-import type { ProgressCard } from "@openclaw/gateway-protocol";
 import type { TemplateResult, nothing } from "lit";
 import type { GatewayBrowserClient } from "../../../api/gateway.ts";
 import type {
@@ -90,12 +89,8 @@ export type ChatComposerProps = ChatAttachmentControlsProps & {
   runStatus?: ChatRunUiStatus | null;
   waitingApproval?: boolean;
   fallbackStatus?: FallbackStatus | null;
-  progressCard?: ProgressCard | null;
   runActive?: boolean;
-  collapseTaskProgress?: boolean;
-  readingHistory?: boolean;
   runId?: string | null;
-  onDismissProgressCard?: (card: ProgressCard) => void;
   gatewayQuestionPrompts?: readonly QuestionPrompt[];
   messages: unknown[];
   stream: string | null;

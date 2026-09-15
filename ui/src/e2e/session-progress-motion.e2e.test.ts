@@ -54,7 +54,7 @@ suite.define(() => {
           },
         },
       });
-      const card = page.locator('[data-progress-card-placement="composer"]');
+      const card = page.locator('[data-progress-card-placement="chat"]');
       const cardHeight = () => card.evaluate((element) => element.getBoundingClientRect().height);
       try {
         await page.goto(`${suite.server.baseUrl}chat`);
@@ -90,7 +90,7 @@ suite.define(() => {
         const { root } = await inspector.send("DOM.getDocument");
         const { nodeId } = await inspector.send("DOM.querySelector", {
           nodeId: root.nodeId,
-          selector: '[data-progress-card-placement="composer"] .session-progress-card__body',
+          selector: '[data-progress-card-placement="chat"] .session-progress-card__body',
         });
         const { node } = await inspector.send("DOM.describeNode", { nodeId });
         const { object } = await inspector.send("DOM.resolveNode", {

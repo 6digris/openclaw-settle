@@ -49,18 +49,12 @@ suite.define(() => {
         const pane = page.locator("openclaw-chat-pane.chat-pane-cache__pane--active");
         const shell = pane.locator(".agent-chat__composer-shell");
         const notice = shell.locator(".agent-chat__disabled-banner--replacement");
-        const progress = shell.locator(".session-progress-card--composer");
+        const progress = pane.locator(".session-progress-card--chat");
         const body = progress.locator(".session-progress-card__body");
         await notice.getByText("View-only subagent", { exact: true }).waitFor();
         await progress.waitFor();
         expect(await shell.locator("textarea").count()).toBe(0);
-        expect(
-          await notice.evaluate((element) =>
-            Boolean(
-              element.previousElementSibling?.classList.contains("agent-chat__progress-float"),
-            ),
-          ),
-        ).toBe(true);
+        expect(await shell.locator(".session-progress-card").count()).toBe(0);
         expect(
           await notice.evaluate((element) => element === element.parentElement?.lastElementChild),
         ).toBe(true);
@@ -72,7 +66,7 @@ suite.define(() => {
             body.evaluate((element) => {
               const bounds = element.getBoundingClientRect();
               const footer = element
-                .closest(".agent-chat__composer-shell")!
+                .closest(".chat-main__conversation-column")!
                 .querySelector(".agent-chat__disabled-banner--replacement")!
                 .getBoundingClientRect();
               return (
@@ -100,13 +94,7 @@ suite.define(() => {
         const input = shell.locator(".agent-chat__input");
         await input.locator("textarea").fill("Continue the review");
         await progress.waitFor();
-        expect(
-          await input.evaluate((element) =>
-            Boolean(
-              element.previousElementSibling?.classList.contains("agent-chat__progress-float"),
-            ),
-          ),
-        ).toBe(true);
+        expect(await shell.locator(".session-progress-card").count()).toBe(0);
         expect(
           await input.evaluate((element) => element === element.parentElement?.lastElementChild),
         ).toBe(true);

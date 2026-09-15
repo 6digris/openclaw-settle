@@ -384,8 +384,9 @@ The core [`show_widget`](/tools/show-widget) tool renders self-contained SVG or 
 
 ## Chat transcript layout
 
-Scrolling up to read earlier messages collapses the task progress card above the
-composer. Streaming output and layout adjustments keep that reading mode intact.
+Task progress appears in the upper-right corner of the conversation, separate
+from the composer. Expand it to read the plan; long plans scroll inside the card.
+Scrolling up to read earlier messages collapses the card. Streaming output and layout adjustments keep that reading mode intact.
 Scroll back to the end or select **Latest** to resume following the conversation;
 an explicit choice to expand or collapse the card stays in effect for that task.
 

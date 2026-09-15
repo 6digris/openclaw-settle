@@ -606,7 +606,7 @@ suite.define(() => {
       const replyPreview = activePane.locator(".chat-reply-preview", {
         hasText: "Replying to current message",
       });
-      const progressCard = activePane.locator('[data-progress-card-placement="composer"]');
+      const progressCard = activePane.locator('[data-progress-card-placement="chat"]');
       await replyPreview.waitFor({ state: "visible" });
       await progressCard.waitFor({ state: "visible" });
       await page.evaluate((sessionKey) => {

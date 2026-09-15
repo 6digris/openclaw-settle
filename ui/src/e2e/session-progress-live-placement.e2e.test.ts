@@ -88,7 +88,7 @@ suite.define(() => {
       },
       sessionKey,
     });
-    const card = page.locator('[data-progress-card-placement="composer"]');
+    const card = page.locator('[data-progress-card-placement="chat"]');
     const captureLifecycleState = async (fileName: string, surface = card) => {
       if (captureUiProofEnabled) {
         await page.waitForTimeout(250);
@@ -283,7 +283,7 @@ suite.define(() => {
         await expect.poll(() => gateway.getRequests("progressCard.get")).toHaveLength(1);
 
         const visiblePane = page.locator("openclaw-chat-pane.chat-pane-cache__pane--visible");
-        const expectVisibleLastActivity = async (placement: "composer") => {
+        const expectVisibleLastActivity = async (placement: "chat") => {
           const card = visiblePane.locator(`[data-progress-card-placement="${placement}"]`);
           const timestamp = card.locator("time");
           await expect
@@ -292,7 +292,7 @@ suite.define(() => {
           await expect.poll(() => timestamp.getAttribute("aria-label")).toMatch(/^Updated /);
           await expect.poll(() => timestamp.textContent()).toMatch(/^Updated /);
           await expect.poll(() => timestamp.isVisible()).toBe(true);
-          const accessibleCard = placement === "composer" ? card.locator("summary") : card;
+          const accessibleCard = placement === "chat" ? card.locator("summary") : card;
           await expect
             .poll(() => accessibleCard.getAttribute("aria-label"))
             .not.toContain("Updated");
@@ -307,12 +307,39 @@ suite.define(() => {
         };
         await page.setViewportSize({ height: 900, width: 1600 });
         await expect
-          .poll(() => visiblePane.locator('[data-progress-card-placement="composer"]').count())
+          .poll(() => visiblePane.locator('[data-progress-card-placement="chat"]').count())
           .toBe(1);
+        const expectTopRightProgress = async () => {
+          await expect
+            .poll(() =>
+              visiblePane.locator(".session-progress-card").evaluate((card) => {
+                const column = card.closest(".chat-main__conversation-column")!;
+                const bounds = card.getBoundingClientRect();
+                const columnBounds = column.getBoundingClientRect();
+                const threadBounds = column.querySelector(".chat-thread")!.getBoundingClientRect();
+                return {
+                  inComposer: Boolean(card.closest(".agent-chat__composer-shell")),
+                  nearTop: bounds.top - columnBounds.top <= 16,
+                  nearRight: columnBounds.right - bounds.right <= 16,
+                  beforeTranscript: bounds.bottom <= threadBounds.top + 1,
+                  insidePane:
+                    bounds.left >= columnBounds.left && bounds.right <= columnBounds.right,
+                };
+              }),
+            )
+            .toEqual({
+              inComposer: false,
+              nearTop: true,
+              nearRight: true,
+              beforeTranscript: true,
+              insidePane: true,
+            });
+        };
+        await expectTopRightProgress();
         const pausedStep = visiblePane.locator(".session-progress-card__step--paused");
         await expect
           .poll(() =>
-            visiblePane.locator('[data-progress-card-placement="composer"]').getAttribute("open"),
+            visiblePane.locator('[data-progress-card-placement="chat"]').getAttribute("open"),
           )
           .toBe("");
         await page.evaluate(
@@ -328,24 +355,25 @@ suite.define(() => {
           },
         );
         await page.reload();
-        const composerCard = visiblePane.locator('[data-progress-card-placement="composer"]');
-        await expect.poll(() => composerCard.getAttribute("open")).toBeNull();
+        const chatCard = visiblePane.locator('[data-progress-card-placement="chat"]');
+        await expect.poll(() => chatCard.getAttribute("open")).toBeNull();
         await expect
-          .poll(() => composerCard.locator(".session-progress-card__current").textContent())
+          .poll(() => chatCard.locator(".session-progress-card__current").textContent())
           .toBe("Implement");
-        await composerCard.locator("summary").click();
-        await expect.poll(() => composerCard.getAttribute("open")).toBe("");
+        await chatCard.locator("summary").focus();
+        await page.keyboard.press("Enter");
+        await expect.poll(() => chatCard.getAttribute("open")).toBe("");
         await expect.poll(() => pausedStep.getAttribute("aria-label")).toBe("Implement, paused");
         await expect
           .poll(() => visiblePane.locator(".session-progress-card .session-run-spinner").count())
           .toBe(0);
-        await expectVisibleLastActivity("composer");
-        await captureProof(page, "composer-attached-wide.png");
+        await expectVisibleLastActivity("chat");
+        await captureProof(page, "progress-top-right-wide.png");
 
         await page.setViewportSize({ height: 900, width: 1280 });
         await openChatSidePanelType(page, "Side chat");
         await expect
-          .poll(() => visiblePane.locator('[data-progress-card-placement="composer"]').count())
+          .poll(() => visiblePane.locator('[data-progress-card-placement="chat"]').count())
           .toBe(1);
         await expect
           .poll(() => visiblePane.locator('[data-progress-card-placement="rail"]').count())
@@ -360,13 +388,13 @@ suite.define(() => {
         await expect
           .poll(() => visiblePane.locator(".chat-thread").textContent())
           .not.toContain("Implementation is moving.");
-        await expectVisibleLastActivity("composer");
-        await captureProof(page, "composer-with-side-chat.png");
+        await expectVisibleLastActivity("chat");
+        await captureProof(page, "progress-with-side-chat.png");
 
         const sidePanel = visiblePane.locator(".sidebar-region__right-runtime .side-panel");
         await focusChatSidePanel(page);
         await expect
-          .poll(() => visiblePane.locator('[data-progress-card-placement="composer"]').count())
+          .poll(() => visiblePane.locator('[data-progress-card-placement="chat"]').count())
           .toBe(1);
         await expect
           .poll(() => visiblePane.locator('[data-progress-card-placement="rail"]').count())
@@ -379,7 +407,7 @@ suite.define(() => {
 
         await page.setViewportSize({ height: 900, width: 560 });
         await expect
-          .poll(() => visiblePane.locator('[data-progress-card-placement="composer"]').count())
+          .poll(() => visiblePane.locator('[data-progress-card-placement="chat"]').count())
           .toBe(1);
         await expect
           .poll(() => visiblePane.locator('[data-progress-card-placement="rail"]').count())
@@ -389,10 +417,22 @@ suite.define(() => {
         await sideHeader.waitFor({ state: "hidden" });
         await expect.poll(() => visiblePane.locator(".session-progress-card").count()).toBe(1);
         await expect
-          .poll(() => visiblePane.locator('[data-progress-card-placement="composer"]').isVisible())
+          .poll(() => visiblePane.locator('[data-progress-card-placement="chat"]').isVisible())
           .toBe(true);
-        await expectVisibleLastActivity("composer");
-        await captureProof(page, "composer-adjacent.png");
+        await expectVisibleLastActivity("chat");
+        await captureProof(page, "progress-top-right-narrow.png");
+        for (const [width, height] of [
+          [1440, 900],
+          [1366, 768],
+          [768, 1024],
+          [390, 844],
+          [844, 390],
+        ] as const) {
+          await page.setViewportSize({ width, height });
+          await expectTopRightProgress();
+          await expectVisibleLastActivity("chat");
+          await captureProof(page, `progress-${width}x${height}.png`);
+        }
       },
     );
   });
@@ -453,7 +493,7 @@ suite.define(() => {
 
           await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
           await expect.poll(() => gateway.getRequests("progressCard.get")).toHaveLength(1);
-          const card = page.locator('[data-progress-card-placement="composer"]');
+          const card = page.locator('[data-progress-card-placement="chat"]');
           const body = card.locator(".session-progress-card__body");
           await expect.poll(() => card.isVisible()).toBe(true);
           await expect.poll(() => card.getAttribute("open")).toBe("");
@@ -468,7 +508,7 @@ suite.define(() => {
 
           if (captureUiProofEnabled && variant.name === "markdown-only") {
             const parentStyle = await page.addStyleTag({
-              content: `.session-progress-card--composer .session-progress-card__body {
+              content: `.session-progress-card--chat .session-progress-card__body {
                 overflow: hidden !important;
                 overscroll-behavior: auto !important;
                 scrollbar-width: auto !important;
@@ -551,12 +591,12 @@ suite.define(() => {
 
           await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
           await expect.poll(() => gateway.getRequests("progressCard.get")).toHaveLength(1);
-          const card = page.locator('[data-progress-card-placement="composer"]');
+          const card = page.locator('[data-progress-card-placement="chat"]');
           await expect.poll(() => card.isVisible()).toBe(true);
           const composerFade = await page
             .locator(".agent-chat__composer-shell")
             .evaluate((node) => getComputedStyle(node, "::before").backgroundImage);
-          expect(composerFade).toBe("none");
+          expect(composerFade).toContain("linear-gradient");
           const expectMarkerCentered = async () => {
             await expect
               .poll(async () => {
@@ -599,6 +639,11 @@ suite.define(() => {
             .poll(() => card.locator("time").getAttribute("datetime"))
             .toBe(new Date(3).toISOString());
 
+          await page
+            .locator(".app-toast")
+            .filter({ hasText: "Could not dismiss the progress card. Try again." })
+            .getByRole("button", { name: "Dismiss", exact: true })
+            .click();
           await gateway.setMethodResponse("progressCard.put", { card: null });
           await card.getByRole("button", { name: "Dismiss progress card" }).click();
           const dismissRequest = await gateway.waitForRequest("progressCard.put", { after: 1 });
@@ -654,7 +699,7 @@ suite.define(() => {
         });
 
         await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
-        const card = page.locator('[data-progress-card-placement="composer"]');
+        const card = page.locator('[data-progress-card-placement="chat"]');
         await expect.poll(() => card.isVisible()).toBe(true);
         await expect
           .poll(() => card.getByRole("button", { name: "Dismiss progress card" }).count())

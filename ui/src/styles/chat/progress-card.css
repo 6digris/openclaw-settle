@@ -6,7 +6,7 @@
   color: var(--text);
 }
 
-.session-progress-card--composer {
+.session-progress-card--chat {
   flex: 1 1 100%;
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
@@ -89,7 +89,7 @@
   height: 14px;
 }
 
-.session-progress-card--composer:not([open]) .session-progress-card__chevron {
+.session-progress-card--chat:not([open]) .session-progress-card__chevron {
   transform: rotate(-90deg);
 }
 
@@ -151,7 +151,7 @@
   min-height: 22px;
 }
 
-.session-progress-card--composer .session-progress-card__body {
+.session-progress-card--chat .session-progress-card__body {
   padding: 7px 9px 8px;
   border-top: 1px solid color-mix(in srgb, var(--accent) 16%, var(--border));
 }
@@ -234,7 +234,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .session-progress-card--composer,
+  .session-progress-card--chat,
   .session-progress-card--dock {
     animation: none;
     transition: none;

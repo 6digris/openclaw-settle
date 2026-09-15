@@ -7,7 +7,6 @@ import { live } from "lit/directives/live.js";
 import { ref } from "lit/directives/ref.js";
 import type { GatewaySessionRow } from "../../../api/types.ts";
 import { icons } from "../../../components/icons.ts";
-import { renderSessionProgressCard } from "../../../components/session-progress-card.ts";
 import { t } from "../../../i18n/index.ts";
 import { detectTextDirection } from "../../../lib/text-direction.ts";
 import "../../../styles/chat/reply-preview.css";
@@ -275,25 +274,6 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
     ? nothing
     : renderChatRunStatusIndicator(composerRunStatus);
   const fallbackStatus = renderFallbackIndicator(props.fallbackStatus);
-  const progressCard = props.progressCard
-    ? html`<div class="agent-chat__progress-float">
-        ${renderSessionProgressCard(
-          props.progressCard,
-          "composer",
-          props.onDismissProgressCard,
-          activeSession?.status,
-          activeSession?.startedAt,
-          activeSession?.endedAt,
-          props.runActive,
-          props.collapseTaskProgress,
-          {
-            activeRunId: props.runId,
-            readingHistory: props.readingHistory,
-            completedRunId: props.runStatus?.phase === "done" ? props.runStatus.runId : null,
-          },
-        )}
-      </div>`
-    : nothing;
   const queue = renderChatQueue({
     queue: props.queue,
     displayQueue: props.displayQueue,
@@ -352,8 +332,8 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
             `
           : nothing
       }
-      ${props.disabledBanner?.kind === "above-composer" ? disabledBanner : nothing} ${progressCard}
-      ${queue} ${goalCard}
+      ${props.disabledBanner?.kind === "above-composer" ? disabledBanner : nothing} ${queue}
+      ${goalCard}
       ${
         showComposerInput
           ? html`<div

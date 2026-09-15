@@ -1439,7 +1439,7 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
     });
   });
 
-  it("keeps the composer task-state panel full width when hovered", async () => {
+  it("keeps the top-right task-state panel width stable when hovered", async () => {
     await withBrowserPage(openBrowserPage(1024, 480), async (page) => {
       const progressCss = [
         readStyleSheet("ui/src/styles/chat/progress-card.css"),
@@ -1447,25 +1447,28 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
       ].join("\n");
       await page.setContent(
         `<!doctype html><html><head><style>${readUiCss()}\n${progressCss}</style></head><body>
-          <div class="agent-chat__progress-float" style="width: 800px">
-            <details class="session-progress-card session-progress-card--composer" open>
-              <summary class="session-progress-card__summary">
-                <span class="session-progress-card__summary-indicator"></span>
-                <span class="session-progress-card__summary-expanded">Task progress</span>
-                <span class="session-progress-card__summary-chevron">${iconSvg()}</span>
-              </summary>
-              <div class="session-progress-card__body">Current task state</div>
-            </details>
+          <div class="chat-main__conversation-column" style="width: 800px">
+            <div class="chat-progress">
+              <details class="session-progress-card session-progress-card--chat" open>
+                <summary class="session-progress-card__summary">
+                  <span class="session-progress-card__summary-indicator"></span>
+                  <span class="session-progress-card__summary-expanded">Task progress</span>
+                  <span class="session-progress-card__summary-chevron">${iconSvg()}</span>
+                </summary>
+                <div class="session-progress-card__body">Current task state</div>
+              </details>
+            </div>
+            <div class="agent-chat__composer-shell">Composer</div>
           </div>
         </body></html>`,
       );
 
-      const card = page.locator(".session-progress-card--composer");
-      const resting = await getBoundingBox(page, ".session-progress-card--composer");
+      const card = page.locator(".session-progress-card--chat");
+      const resting = await getBoundingBox(page, ".session-progress-card--chat");
       await card.hover();
-      const hovered = await getBoundingBox(page, ".session-progress-card--composer");
+      const hovered = await getBoundingBox(page, ".session-progress-card--chat");
 
-      expect(resting.width).toBeCloseTo(800, 0);
+      expect(resting.width).toBeCloseTo(360, 0);
       expect(hovered.width).toBeCloseTo(resting.width, 0);
     });
   });
@@ -4661,7 +4664,7 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
     }
   });
 
-  it("keeps a long task panel full-width with a fixed header and an internal body scroll", async () => {
+  it("keeps a long task panel header fixed above its scrolling body", async () => {
     const page = await openBrowserPage(980, 844);
     const stepCount = 14;
     const steps = Array.from(
@@ -4677,7 +4680,7 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
     try {
       await page.setContent(`<!doctype html><html><head><style>${readUiCss()}
         body { margin: 0; padding: 32px; background: var(--bg); }
-        .agent-chat__composer-shell { width: 760px; margin: 0 auto; }
+        .chat-main__conversation-column { width: 760px; margin: 0 auto; }
         .session-progress-card__summary :is(
           .session-progress-card__summary-title,
           .session-progress-card__heading-actions,
@@ -4686,9 +4689,9 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
           .session-progress-card__summary-chevron
         ) { transition: none; }
       </style></head><body>
-        <div class="agent-chat__composer-shell">
-          <div class="agent-chat__progress-float">
-            <details class="session-progress-card session-progress-card--composer" open>
+        <div class="chat-main__conversation-column">
+          <div class="chat-progress">
+            <details class="session-progress-card session-progress-card--chat" open>
               <summary class="session-progress-card__summary">
                 <span class="session-progress-card__summary-indicator">
                   <span class="session-run-spinner"></span>
@@ -4706,31 +4709,9 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
               <div class="session-progress-card__body"><ol class="session-progress-card__steps">${steps}</ol></div>
             </details>
           </div>
-          <div class="chat-queue">
-            <div class="chat-queue__scroll">
-              <div class="chat-queue__item chat-queue__item--no-avatar">
-                <span class="chat-queue__leading">${iconSvg()}</span>
-                <span class="chat-queue__copy"><span class="chat-queue__text">Queued after the plan</span></span>
-                <span class="chat-queue__actions"><button class="chat-queue__remove">${iconSvg()}</button></span>
-              </div>
-            </div>
+          <div class="agent-chat__composer-shell">
+            <div class="agent-chat__input">Composer</div>
           </div>
-          <div class="agent-chat__goal-float">
-            <div class="agent-chat__goal agent-chat__goal--active" data-expanded="false">
-              <div class="agent-chat__goal-row">
-                <span class="agent-chat__goal-icon">${iconSvg()}</span>
-                <span class="agent-chat__goal-copy">
-                  <span class="agent-chat__goal-label">Pursuing goal</span>
-                  <span class="agent-chat__goal-objective">Ship the aligned stack</span>
-                </span>
-                <span class="agent-chat__goal-elapsed">14m</span>
-                <span class="agent-chat__goal-actions">
-                  <button class="agent-chat__goal-action agent-chat__goal-expand">${iconSvg()}</button>
-                </span>
-              </div>
-            </div>
-          </div>
-          <div class="agent-chat__input">Composer</div>
         </div>
         <span id="failed-outcome-probe" class="session-progress-card__summary-count" data-outcome="failed">Failed</span>
         <span id="danger-color-probe" style="color: var(--danger)">Danger</span>
@@ -4740,7 +4721,7 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
       });
 
       const summary = page.locator(".session-progress-card__summary");
-      const card = page.locator(".session-progress-card--composer");
+      const card = page.locator(".session-progress-card--chat");
       const body = page.locator(".session-progress-card__body");
       const list = page.locator(".session-progress-card__steps");
       const widthBefore = (await card.boundingBox())?.width;
@@ -4752,7 +4733,7 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
             document.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
           const spinner = style(".session-progress-card__summary-indicator .session-run-spinner");
           return {
-            cardBackground: style(".session-progress-card--composer").backgroundColor,
+            cardBackground: style(".session-progress-card--chat").backgroundColor,
             summaryBackground: style(".session-progress-card__summary").backgroundColor,
             titleColor: style(".session-progress-card__summary-title").color,
             actionsColor: style(".session-progress-card__heading-actions").color,
@@ -4782,76 +4763,11 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
         await state.dispose();
       };
       const expandedBefore = await readSummaryState();
-      const { shellBounds, stackSurfaces, warnGoalSurfaces } = await page.evaluate(() => {
-        const snapshot = (selector: string) => {
-          const node = document.querySelector<HTMLElement>(selector)!;
-          const bounds = node.getBoundingClientRect();
-          return {
-            background: getComputedStyle(node).backgroundColor,
-            borderColor: getComputedStyle(node).borderColor,
-            boxShadow: getComputedStyle(node).boxShadow,
-            left: bounds.left,
-            right: bounds.right,
-            topLeftRadius: getComputedStyle(node).borderTopLeftRadius,
-            topRightRadius: getComputedStyle(node).borderTopRightRadius,
-          };
-        };
-        const goal = document.querySelector<HTMLElement>(".agent-chat__goal")!;
-        const activeSurface = snapshot(".agent-chat__goal");
-        const warnSurfaces = ["blocked", "budget_limited", "usage_limited"].map((state) => {
-          goal.className = `agent-chat__goal agent-chat__goal--${state}`;
-          return { state, surface: snapshot(".agent-chat__goal") };
-        });
-        goal.className = "agent-chat__goal agent-chat__goal--active";
-        const shell = document
-          .querySelector<HTMLElement>(".agent-chat__composer-shell")!
-          .getBoundingClientRect();
-        return {
-          shellBounds: { left: shell.left, right: shell.right },
-          stackSurfaces: [
-            snapshot(".session-progress-card--composer"),
-            snapshot(".chat-queue"),
-            activeSurface,
-            snapshot(".agent-chat__input"),
-          ],
-          warnGoalSurfaces: warnSurfaces,
-        };
-      });
       await setSummaryHover(true);
       const widthAfter = (await card.boundingBox())?.width;
       const expandedAfter = await readSummaryState();
-      expect(widthBefore).toBeCloseTo(760, 1);
+      expect(widthBefore).toBeCloseTo(360, 1);
       expect(widthAfter).toBeCloseTo(widthBefore ?? 0, 1);
-      for (const surface of stackSurfaces) {
-        expect(surface.left).toBeCloseTo(shellBounds.left, 1);
-        expect(surface.right).toBeCloseTo(shellBounds.right, 1);
-      }
-      expect(new Set(stackSurfaces.slice(0, 3).map(({ background }) => background))).toHaveProperty(
-        "size",
-        1,
-      );
-      expect(stackSurfaces.map(({ topLeftRadius }) => topLeftRadius)).toEqual([
-        "25px",
-        "25px",
-        "0px",
-        "25px",
-      ]);
-      expect(stackSurfaces.map(({ topRightRadius }) => topRightRadius)).toEqual([
-        "25px",
-        "25px",
-        "0px",
-        "25px",
-      ]);
-      expect(stackSurfaces[2]?.borderColor).toBe(stackSurfaces[1]?.borderColor);
-      expect(stackSurfaces[2]?.boxShadow).toBe(stackSurfaces[1]?.boxShadow.split(", rgba")[0]);
-      for (const { state, surface } of warnGoalSurfaces) {
-        expect(surface.background, state).not.toBe(stackSurfaces[2]?.background);
-        expect(surface.borderColor, state).not.toBe(stackSurfaces[2]?.borderColor);
-      }
-      expect(new Set(warnGoalSurfaces.map(({ surface }) => surface.borderColor))).toHaveProperty(
-        "size",
-        1,
-      );
       expect(expandedBefore.titleLeft).toBeCloseTo(expandedBefore.firstMarkerLeft, 1);
       expect(expandedAfter.cardBackground).toBe(expandedBefore.cardBackground);
       expect(expandedAfter.summaryBackground).toBe(expandedBefore.summaryBackground);
@@ -4879,41 +4795,6 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
       expect(bodyLayout.visibleItems).toBeGreaterThan(0);
       expect(bodyLayout.visibleItems).toBeLessThan(stepCount);
       expect(await list.evaluate((node) => getComputedStyle(node).overflowY)).toBe("visible");
-      const openStackAxes = await page.evaluate(() => {
-        const centerX = (selector: string) => {
-          const rect = document.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
-          return rect.left + rect.width / 2;
-        };
-        const left = (selector: string) =>
-          document.querySelector<HTMLElement>(selector)!.getBoundingClientRect().left;
-        return {
-          iconCenters: [
-            ...[
-              ...document.querySelectorAll<HTMLElement>(".session-progress-card__step-marker > *"),
-            ].map((icon) => {
-              const rect = icon.getBoundingClientRect();
-              return rect.left + rect.width / 2;
-            }),
-            centerX(".chat-queue__leading svg"),
-            centerX(".agent-chat__goal-icon svg"),
-          ],
-          contentLefts: [
-            left(".session-progress-card__step-text"),
-            left(".chat-queue__copy"),
-            left(".agent-chat__goal-label"),
-          ],
-          trailingCenterDelta:
-            centerX(".session-progress-card__summary-chevron svg") -
-            centerX(".agent-chat__goal-expand svg"),
-        };
-      });
-      expect(
-        Math.max(...openStackAxes.iconCenters) - Math.min(...openStackAxes.iconCenters),
-      ).toBeLessThan(0.5);
-      expect(
-        Math.max(...openStackAxes.contentLefts) - Math.min(...openStackAxes.contentLefts),
-      ).toBeLessThan(0.5);
-      expect(Math.abs(openStackAxes.trailingCenterDelta)).toBeLessThan(0.5);
       await body.evaluate((node) => {
         node.scrollTop = node.scrollHeight;
       });
@@ -4926,9 +4807,9 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
         await body.evaluate((node) => {
           node.scrollTop = 0;
         });
-        await page.locator(".agent-chat__composer-shell").screenshot({
+        await card.screenshot({
           animations: "disabled",
-          path: path.join(artifactDir, "task-progress-expanded-with-queue.png"),
+          path: path.join(artifactDir, "task-progress-expanded.png"),
         });
       }
 
@@ -4936,7 +4817,7 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
       await card.evaluate((node) => node.removeAttribute("open"));
       const collapsedState = await page.waitForFunction(
         () =>
-          !document.querySelector(".session-progress-card--composer")!.hasAttribute("open") &&
+          !document.querySelector(".session-progress-card--chat")!.hasAttribute("open") &&
           getComputedStyle(
             document.querySelector<HTMLElement>(".session-progress-card__summary-collapsed")!,
           ).display !== "none",
@@ -4958,31 +4839,15 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
         const current = rect(".session-progress-card__current");
         const count = rect(".session-progress-card__summary-count--collapsed");
         const chevron = rect(".session-progress-card__summary-chevron");
-        const iconCenter = (selector: string) => {
-          const bounds = rect(selector);
-          return bounds.left + bounds.width / 2;
-        };
         return {
           countLeft: count.left,
           countRight: count.right,
           currentRight: current.right,
           chevronLeft: chevron.left,
-          iconCenters: [
-            iconCenter(".session-progress-card__summary-indicator > *"),
-            iconCenter(".chat-queue__leading svg"),
-            iconCenter(".agent-chat__goal-icon svg"),
-          ],
-          trailingCenterDelta:
-            iconCenter(".session-progress-card__summary-chevron svg") -
-            iconCenter(".agent-chat__goal-expand svg"),
         };
       });
       expect(collapsed.countLeft).toBeGreaterThan(collapsed.currentRight);
       expect(collapsed.countRight).toBeLessThanOrEqual(collapsed.chevronLeft);
-      expect(Math.max(...collapsed.iconCenters) - Math.min(...collapsed.iconCenters)).toBeLessThan(
-        0.5,
-      );
-      expect(Math.abs(collapsed.trailingCenterDelta)).toBeLessThan(0.5);
       const closedRowCenters = await page.evaluate(() => {
         const centerY = (selector: string) => {
           const bounds = document.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
@@ -5003,9 +4868,9 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
       }));
       expect(outcomeColors.failed).toBe(outcomeColors.danger);
       if (artifactDir) {
-        await page.locator(".agent-chat__composer-shell").screenshot({
+        await card.screenshot({
           animations: "disabled",
-          path: path.join(artifactDir, "task-progress-collapsed-with-queue.png"),
+          path: path.join(artifactDir, "task-progress-collapsed.png"),
         });
       }
     } finally {

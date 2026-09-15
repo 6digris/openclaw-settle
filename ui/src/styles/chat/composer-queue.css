@@ -37,8 +37,7 @@
 }
 
 .chat-queue + .agent-chat__goal-float,
-.chat-queue + :is(.agent-chat__composer-errors, .agent-chat__input),
-.agent-chat__progress-float + .chat-queue {
+.chat-queue + :is(.agent-chat__composer-errors, .agent-chat__input) {
   position: relative;
   z-index: 1;
 }
@@ -120,10 +119,7 @@
 
 /* Connected rows share one outline contract. An opaque Goal border or a
    side-only shadow makes its edge read independently from the queue above. */
-:root[data-theme-mode="light"]
-  :is(.chat-queue, .agent-chat__progress-float)
-  + .agent-chat__goal-float
-  .agent-chat__goal--active {
+:root[data-theme-mode="light"] .chat-queue + .agent-chat__goal-float .agent-chat__goal--active {
   border-color: transparent;
   box-shadow: 0 0 0 1px var(--chat-composer-light-outline);
 }

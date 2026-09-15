@@ -1,3 +1,4 @@
+import type { ProgressCard } from "@openclaw/gateway-protocol";
 import { html, nothing, type TemplateResult } from "lit";
 import { styleMap } from "lit/directives/style-map.js";
 import type {
@@ -16,6 +17,7 @@ import type { ApplicationGateway } from "../../app/gateway.ts";
 import { renderExecApprovalCard } from "../../components/exec-approval-card.ts";
 import { icons } from "../../components/icons.ts";
 import type { ImageLightboxItem } from "../../components/image-lightbox.ts";
+import { renderSessionProgressCard } from "../../components/session-progress-card.ts";
 import { t } from "../../i18n/index.ts";
 import {
   KEYBOARD_SHORTCUT_COMBOS,
@@ -78,6 +80,10 @@ export type ChatProps = Omit<
   Omit<ChatComposerProps, "anchoredNotices" | "disabled" | "onOpenImage"> &
   ChatTaskSuggestionTrayProps &
   ChatPlacementStartupNoticeProps & {
+    progressCard?: ProgressCard | null;
+    collapseTaskProgress?: boolean;
+    readingHistory?: boolean;
+    onDismissProgressCard?: (card: ProgressCard) => void;
     transcript: ChatTranscriptController;
     presented?: boolean;
     historyState?: ChatState;
@@ -257,6 +263,25 @@ export function renderChat(props: ChatProps) {
     defaultComposer,
     props.presented ?? true,
   );
+  const progressCard = props.progressCard
+    ? html`<div class="chat-progress">
+        ${renderSessionProgressCard(
+          props.progressCard,
+          "chat",
+          props.onDismissProgressCard,
+          props.selectedSession?.status,
+          props.selectedSession?.startedAt,
+          props.selectedSession?.endedAt,
+          props.runActive,
+          props.collapseTaskProgress,
+          {
+            activeRunId: props.runId,
+            readingHistory: props.readingHistory,
+            completedRunId: props.runStatus?.phase === "done" ? props.runStatus.runId : null,
+          },
+        )}
+      </div>`
+    : nothing;
   const taskSuggestionTray = renderChatTaskSuggestionTray(props);
   const gutterStack =
     taskSuggestionTray === nothing
@@ -375,7 +400,7 @@ export function renderChat(props: ChatProps) {
                   .agentId=${props.currentAgentId}
                   .presented=${props.presented ?? true}
                 ></openclaw-plugin-contributions>
-                ${renderTranscriptSearch(props.paneId, requestUpdate)}
+                ${progressCard} ${renderTranscriptSearch(props.paneId, requestUpdate)}
                 <div class="chat-main__conversation">
                   ${historyRefreshNotice} ${historyError === nothing ? thread : historyError}
                   ${

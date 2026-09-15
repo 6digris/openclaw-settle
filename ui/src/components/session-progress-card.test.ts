@@ -32,7 +32,7 @@ describe("renderSessionProgressCard", () => {
     vi.useRealTimers();
   });
 
-  it.each(["board", "composer"] as const)(
+  it.each(["board", "chat"] as const)(
     "shows relative activity for %s cards with and without checklist steps",
     (placement) => {
       const container = document.createElement("div");
@@ -48,7 +48,7 @@ describe("renderSessionProgressCard", () => {
         expect(timestamp?.getAttribute("aria-label")).toBe("Updated 2m ago");
         expect(timestamp?.getAttribute("title")).toBe(timestamp?.getAttribute("aria-label"));
         const accessibleCard =
-          placement === "composer"
+          placement === "chat"
             ? timestamp?.closest("summary")
             : timestamp?.closest(".session-progress-card");
         expect(accessibleCard?.getAttribute("aria-label")).not.toContain("Updated");
@@ -67,7 +67,7 @@ describe("renderSessionProgressCard", () => {
   ] as const)("maps canonical session status %s to %s", (status, expected) => {
     const container = document.createElement("div");
 
-    render(renderSessionProgressCard(progressCard, "composer", undefined, status), container);
+    render(renderSessionProgressCard(progressCard, "chat", undefined, status), container);
 
     expect(container.querySelector("time")?.textContent).toBe(expected);
   });
@@ -77,7 +77,7 @@ describe("renderSessionProgressCard", () => {
     render(
       renderSessionProgressCard(
         progressCard,
-        "composer",
+        "chat",
         undefined,
         "done",
         RUN_STARTED_MS,
@@ -90,14 +90,14 @@ describe("renderSessionProgressCard", () => {
       new Date(RUN_ENDED_MS).toISOString(),
     );
 
-    render(renderSessionProgressCard(progressCard, "composer", undefined, "done"), container);
+    render(renderSessionProgressCard(progressCard, "chat", undefined, "done"), container);
     expect(container.querySelector("time")?.textContent).toBe("Updated 2m ago");
   });
 
   it("refreshes relative time while connected and stops after disconnect", () => {
     const container = document.createElement("div");
     const part = render(
-      renderSessionProgressCard({ ...progressCard, updatedAt: NOW_MS - 10_000 }, "composer"),
+      renderSessionProgressCard({ ...progressCard, updatedAt: NOW_MS - 10_000 }, "chat"),
       container,
     );
     expect(container.querySelector("time")?.textContent).toBe("Updated just now");
@@ -118,7 +118,7 @@ describe("renderSessionProgressCard", () => {
     render(
       renderSessionProgressCard(
         { ...progressCard, updatedAt: NOW_MS - 10_000 },
-        "composer",
+        "chat",
         undefined,
         "running",
       ),
@@ -188,7 +188,7 @@ describe("renderSessionProgressCard", () => {
       ...progressCard,
       steps: [{ step: "Current step", status }],
     };
-    render(renderSessionProgressCard(card, "composer"), container);
+    render(renderSessionProgressCard(card, "chat"), container);
 
     expect(
       container.querySelector(
@@ -202,7 +202,7 @@ describe("renderSessionProgressCard", () => {
     render(
       renderSessionProgressCard(
         progressCard,
-        "composer",
+        "chat",
         undefined,
         undefined,
         undefined,
@@ -231,7 +231,7 @@ describe("renderSessionProgressCard", () => {
       render(
         renderSessionProgressCard(
           { ...progressCard, updatedAt },
-          "composer",
+          "chat",
           undefined,
           "running",
           RUN_STARTED_MS,
@@ -260,7 +260,7 @@ describe("renderSessionProgressCard", () => {
       render(
         renderSessionProgressCard(
           { ...progressCard, updatedAt: RUN_STARTED_MS - 1 },
-          "composer",
+          "chat",
           undefined,
           "queued",
           startedAt,
@@ -288,7 +288,7 @@ describe("renderSessionProgressCard", () => {
       render(
         renderSessionProgressCard(
           { ...progressCard, updatedAt },
-          "composer",
+          "chat",
           undefined,
           undefined,
           RUN_STARTED_MS,
@@ -314,7 +314,7 @@ describe("renderSessionProgressCard", () => {
       steps: progressCard.steps?.map(({ step }) => ({ step, status: "completed" as const })),
     };
     render(
-      renderSessionProgressCard(completed, "composer", () => undefined),
+      renderSessionProgressCard(completed, "chat", () => undefined),
       container,
     );
 
@@ -325,15 +325,12 @@ describe("renderSessionProgressCard", () => {
   it("opens active composer progress as a native disclosure without a progress bar", () => {
     const container = document.createElement("div");
     render(
-      renderSessionProgressCard(
-        { ...progressCard, markdown: "Working through the task." },
-        "composer",
-      ),
+      renderSessionProgressCard({ ...progressCard, markdown: "Working through the task." }, "chat"),
       container,
     );
 
     const card = container.querySelector<HTMLDetailsElement>(
-      '[data-progress-card-placement="composer"]',
+      '[data-progress-card-placement="chat"]',
     );
     expect(card?.open).toBe(true);
     expect(card?.dataset.complete).toBe("false");
@@ -359,7 +356,7 @@ describe("renderSessionProgressCard", () => {
     render(
       renderSessionProgressCard(
         progressCard,
-        "composer",
+        "chat",
         undefined,
         undefined,
         undefined,
@@ -371,7 +368,7 @@ describe("renderSessionProgressCard", () => {
     );
 
     const card = container.querySelector<HTMLDetailsElement>(
-      '[data-progress-card-placement="composer"]',
+      '[data-progress-card-placement="chat"]',
     );
     expect(card?.open).toBe(false);
     card!.querySelector("summary")!.click();
@@ -379,7 +376,7 @@ describe("renderSessionProgressCard", () => {
     render(
       renderSessionProgressCard(
         { ...progressCard, revision: progressCard.revision + 1 },
-        "composer",
+        "chat",
         undefined,
         undefined,
         undefined,
@@ -398,7 +395,7 @@ describe("renderSessionProgressCard", () => {
       render(
         renderSessionProgressCard(
           progressCard,
-          "composer",
+          "chat",
           undefined,
           activeRunId ? "running" : completedRunId ? "done" : undefined,
           RUN_STARTED_MS,
@@ -412,7 +409,7 @@ describe("renderSessionProgressCard", () => {
 
     renderRun("run-1", null);
     const card = container.querySelector<HTMLDetailsElement>(
-      '[data-progress-card-placement="composer"]',
+      '[data-progress-card-placement="chat"]',
     );
     expect(card?.open).toBe(false);
 
@@ -435,7 +432,7 @@ describe("renderSessionProgressCard", () => {
       render(
         renderSessionProgressCard(
           progressCard,
-          "composer",
+          "chat",
           undefined,
           activeRunId ? "running" : completedRunId ? "done" : undefined,
           RUN_STARTED_MS,
@@ -449,7 +446,7 @@ describe("renderSessionProgressCard", () => {
 
     renderRun("run-1", null);
     const card = container.querySelector<HTMLDetailsElement>(
-      '[data-progress-card-placement="composer"]',
+      '[data-progress-card-placement="chat"]',
     );
     expect(card?.open).toBe(true);
 
@@ -468,7 +465,7 @@ describe("renderSessionProgressCard", () => {
         render(
           renderSessionProgressCard(
             { ...progressCard, revision },
-            "composer",
+            "chat",
             undefined,
             "running",
             RUN_STARTED_MS,
@@ -510,7 +507,7 @@ describe("renderSessionProgressCard", () => {
       render(
         renderSessionProgressCard(
           progressCard,
-          "composer",
+          "chat",
           undefined,
           undefined,
           undefined,
@@ -536,7 +533,7 @@ describe("renderSessionProgressCard", () => {
 
   it("keeps the collapsed counter in the summary action column", () => {
     const container = document.createElement("div");
-    render(renderSessionProgressCard(progressCard, "composer"), container);
+    render(renderSessionProgressCard(progressCard, "chat"), container);
 
     const summary = container.querySelector(".session-progress-card__summary");
     const count = summary?.querySelector(".session-progress-card__summary-count--collapsed");
@@ -561,7 +558,7 @@ describe("renderSessionProgressCard", () => {
     render(
       renderSessionProgressCard(
         progressCard,
-        "composer",
+        "chat",
         undefined,
         status,
         RUN_STARTED_MS,
@@ -580,7 +577,7 @@ describe("renderSessionProgressCard", () => {
     render(
       renderSessionProgressCard(
         progressCard,
-        "composer",
+        "chat",
         undefined,
         "killed",
         RUN_STARTED_MS,
@@ -611,7 +608,7 @@ describe("renderSessionProgressCard", () => {
     render(
       renderSessionProgressCard(
         { ...progressCard, updatedAt: RUN_STARTED_MS - 1 },
-        "composer",
+        "chat",
         undefined,
         "failed",
         RUN_STARTED_MS,
@@ -652,7 +649,7 @@ describe("renderSessionProgressCard", () => {
     render(
       renderSessionProgressCard(
         { ...progressCard, updatedAt: MAX_DATE_TIMESTAMP_MS + 1 },
-        "composer",
+        "chat",
         undefined,
         "failed",
         RUN_STARTED_MS,
@@ -677,7 +674,7 @@ describe("renderSessionProgressCard", () => {
             Object.assign({}, step, { status: "completed" as const }),
           ),
         },
-        "composer",
+        "chat",
         undefined,
         "done",
         RUN_STARTED_MS,
@@ -690,7 +687,7 @@ describe("renderSessionProgressCard", () => {
     );
 
     const card = container.querySelector<HTMLDetailsElement>(
-      '[data-progress-card-placement="composer"]',
+      '[data-progress-card-placement="chat"]',
     );
     expect(card?.open).toBe(false);
     expect(card?.dataset.complete).toBe("true");
@@ -698,9 +695,9 @@ describe("renderSessionProgressCard", () => {
 
   it("preserves the operator disclosure choice across progress updates", () => {
     const container = document.createElement("div");
-    render(renderSessionProgressCard(progressCard, "composer"), container);
+    render(renderSessionProgressCard(progressCard, "chat"), container);
     const card = container.querySelector<HTMLDetailsElement>(
-      '[data-progress-card-placement="composer"]',
+      '[data-progress-card-placement="chat"]',
     );
     expect(card?.open).toBe(true);
     card!.querySelector("summary")!.click();
@@ -714,33 +711,31 @@ describe("renderSessionProgressCard", () => {
             index === 1 ? { ...step, step: "Wire the updated checklist" } : step,
           ),
         },
-        "composer",
+        "chat",
       ),
       container,
     );
 
     expect(
-      container.querySelector<HTMLDetailsElement>('[data-progress-card-placement="composer"]')
-        ?.open,
+      container.querySelector<HTMLDetailsElement>('[data-progress-card-placement="chat"]')?.open,
     ).toBe(false);
   });
 
   it("uses the default disclosure state for a different session", () => {
     const container = document.createElement("div");
-    render(renderSessionProgressCard(progressCard, "composer"), container);
+    render(renderSessionProgressCard(progressCard, "chat"), container);
     const first = container.querySelector<HTMLDetailsElement>(
-      '[data-progress-card-placement="composer"]',
+      '[data-progress-card-placement="chat"]',
     );
     first!.querySelector("summary")!.click();
 
     render(
-      renderSessionProgressCard({ ...progressCard, sessionKey: "agent:main:next" }, "composer"),
+      renderSessionProgressCard({ ...progressCard, sessionKey: "agent:main:next" }, "chat"),
       container,
     );
 
     expect(
-      container.querySelector<HTMLDetailsElement>('[data-progress-card-placement="composer"]')
-        ?.open,
+      container.querySelector<HTMLDetailsElement>('[data-progress-card-placement="chat"]')?.open,
     ).toBe(true);
   });
 });

@@ -141,7 +141,7 @@ suite.define(() => {
     try {
       await page.goto(`${suite.server.baseUrl}chat`);
       await page.getByText("History message 49").waitFor({ timeout: 10_000 });
-      const progress = page.locator('[data-progress-card-placement="composer"]');
+      const progress = page.locator('[data-progress-card-placement="chat"]');
       await expect.poll(() => progress.getAttribute("open")).toBe("");
       await progress.locator("summary").click();
       await expect.poll(() => progress.getAttribute("open")).toBeNull();
