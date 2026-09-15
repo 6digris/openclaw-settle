@@ -1,5 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
+import type { WebSocket } from "playwright";
 import { expect, it } from "vitest";
 import config from "../../../test/fixtures/config-corpus/provider-partially-unavailable.json" with { type: "json" };
 import {
@@ -13,6 +15,15 @@ import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts"
 
 let instance: OpenClawTestInstance;
 const tempDirs = createTempDirTracker();
+
+function readFrame(payload: string | Buffer) {
+  try {
+    return asNullableRecord(JSON.parse(payload.toString()));
+  } catch {
+    return null;
+  }
+}
+
 const suite = createControlUiE2eSuite({
   name: "Partial refresh with a real Gateway",
   startServerBeforeBrowser: true,
@@ -116,6 +127,55 @@ suite.define(() => {
       await suite.withPage(
         { locale: "en-US", viewport: { width: 1280, height: 900 } },
         async ({ page }) => {
+          let gatewaySocket: WebSocket | undefined;
+          let latestCatalogRead: { id: string; succeeded: boolean } | undefined;
+          if (route === "new") {
+            const gatewayUrl = new URL(suite.server.baseUrl);
+            gatewayUrl.protocol = gatewayUrl.protocol === "https:" ? "wss:" : "ws:";
+            page.on("websocket", (socket) => {
+              if (socket.url() !== gatewayUrl.href) {
+                return;
+              }
+              gatewaySocket = socket;
+              latestCatalogRead = undefined;
+              socket.on("framesent", ({ payload }) => {
+                if (gatewaySocket !== socket) {
+                  return;
+                }
+                const frame = readFrame(payload);
+                const params = asNullableRecord(frame?.params);
+                if (
+                  frame?.type === "req" &&
+                  frame.method === "sessions.catalog.list" &&
+                  typeof frame.id === "string" &&
+                  params?.agentId === "main" &&
+                  params.limitPerHost === 1 &&
+                  Object.keys(params).length === 2
+                ) {
+                  latestCatalogRead = { id: frame.id, succeeded: false };
+                }
+              });
+              socket.on("framereceived", ({ payload }) => {
+                if (gatewaySocket !== socket) {
+                  return;
+                }
+                const frame = readFrame(payload);
+                if (
+                  frame?.type === "res" &&
+                  latestCatalogRead &&
+                  frame.id === latestCatalogRead.id
+                ) {
+                  latestCatalogRead.succeeded = frame.ok === true;
+                }
+              });
+              socket.on("close", () => {
+                if (gatewaySocket === socket) {
+                  gatewaySocket = undefined;
+                  latestCatalogRead = undefined;
+                }
+              });
+            });
+          }
           await page.addInitScript(() => {
             localStorage.setItem(
               "openclaw:control-ui:community-invite",
@@ -136,6 +196,11 @@ suite.define(() => {
           await model.click();
           // A failed background refresh must not add chrome above a usable list.
           await composer.locator('[data-chat-model-option="openai/gpt-5.4"]').waitFor();
+          // An absent loading row can also mean discovery has not started yet.
+          // Only the latest matching read on this Gateway connection can settle it.
+          if (route === "new") {
+            await expect.poll(() => latestCatalogRead?.succeeded === true).toBe(true);
+          }
           // CLI discovery starts with agent hydration and can outlive model loading.
           await composer
             .locator(
