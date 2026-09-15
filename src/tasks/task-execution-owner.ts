@@ -4,13 +4,11 @@ import { AGENT_RUN_RESTART_ABORT_STOP_REASON } from "../agents/run-termination.j
 import { getFileLockProcessStartTime, isPidDefinitelyDead } from "../shared/pid-alive.js";
 import { mapAgentRunTerminalOutcomeToTaskStatus } from "./task-registry-common.js";
 import { applyTaskRecordPatch, normalizeTaskTimestamps } from "./task-registry-records.js";
-import type { TaskRegistryStore, TaskRegistryStoreSnapshot } from "./task-registry.store.js";
+import type {
+  TaskExecutionRestoreStore,
+  TaskRegistryStoreSnapshot,
+} from "./task-registry.store.types.js";
 import type { TaskExecutionOwner, TaskRecord } from "./task-registry.types.js";
-
-type TaskExecutionRestoreStore = Pick<
-  TaskRegistryStore,
-  "loadSnapshot" | "withMutation" | "upsertTaskWithDeliveryState"
->;
 
 export type TaskExecutionRestoreResult = {
   snapshot: TaskRegistryStoreSnapshot;
