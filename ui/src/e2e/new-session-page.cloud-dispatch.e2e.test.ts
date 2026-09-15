@@ -371,13 +371,13 @@ suite.define(() => {
         .poll(async () => (await gateway.getRequests("environments.list")).length)
         .toBeGreaterThan(profileRequests);
       await expect.poll(() => trigger.getAttribute("data-cloud-profile")).toBe("aws");
-      await expect.poll(() => startButton.isDisabled()).toBe(true);
+      await expect.poll(() => startButton.isDisabled()).toBe(false);
       await gateway.rejectDeferred("environments.list", {
         code: "UNAVAILABLE",
         message: "profile lookup unavailable",
       });
       await expect.poll(() => trigger.getAttribute("data-cloud-profile")).toBe("aws");
-      await expect.poll(() => startButton.isDisabled()).toBe(true);
+      await expect.poll(() => startButton.isDisabled()).toBe(false);
       const failedProfileRequests = (await gateway.getRequests("environments.list")).length;
       await expect
         .poll(async () => (await gateway.getRequests("environments.list")).length)
@@ -415,7 +415,7 @@ suite.define(() => {
       await gateway.waitForRequest("environments.list", {
         after: requestsBeforePersistentFailure,
       });
-      await expect.poll(() => startButton.isDisabled()).toBe(true);
+      await expect.poll(() => startButton.isDisabled()).toBe(false);
       if (captureUiProofEnabled) {
         await writeFile(
           path.join(suite.artifactDir, "cloud-profile-refresh-retention", "02-refresh-pending.png"),
@@ -424,8 +424,8 @@ suite.define(() => {
       }
       await gateway.rejectDeferred("environments.list", profileCatalogError);
 
-      // Failed current cloud validation remains blocked until a successful retry.
-      await expect.poll(() => startButton.isDisabled()).toBe(true);
+      // A failed read is not an authoritative removal; retained choices remain usable.
+      await expect.poll(() => startButton.isDisabled()).toBe(false);
       for (const delayMs of CLOUD_PROFILE_RETRY_DELAYS_MS) {
         await gateway.deferNext("environments.list", { includeProfiles: undefined });
         const requestsBeforeRetry = (
@@ -436,9 +436,9 @@ suite.define(() => {
           after: requestsBeforeRetry,
           match: { includeProfiles: undefined },
         });
-        await expect.poll(() => startButton.isDisabled()).toBe(true);
+        await expect.poll(() => startButton.isDisabled()).toBe(false);
         await gateway.rejectDeferred("environments.list", profileCatalogError);
-        await expect.poll(() => startButton.isDisabled()).toBe(true);
+        await expect.poll(() => startButton.isDisabled()).toBe(false);
       }
       await page.clock.resume();
       expect(
@@ -448,24 +448,9 @@ suite.define(() => {
       await expect.poll(() => trigger.getAttribute("data-machine-class")).toBe("fast");
       await pollLocatorText(trigger.locator(".new-session-page__trigger-label")).toBe("aws");
       expect(await trigger.getAttribute("aria-label")).toContain("aws, Fast");
-      await expect.poll(() => startButton.isDisabled()).toBe(true);
-      expect(await gateway.getRequests("sessions.create")).toHaveLength(0);
-      // Restore a successful catalog before dispatch, retaining the exact profile/machine.
-      await gateway.setMethodResponse("environments.list", {
-        environments: [],
-        profiles: [
-          {
-            id: "aws",
-            providerId: "crabbox",
-            machines: [
-              { id: "standard", label: "Standard", default: true },
-              { id: "fast", label: "Fast" },
-            ],
-          },
-        ],
-      });
-      await gateway.emitGatewayEvent("config.changed");
       await expect.poll(() => startButton.isDisabled()).toBe(false);
+      expect(await gateway.getRequests("sessions.create")).toHaveLength(0);
+      // Dispatch while discovery is still failed: Gateway owns final profile/machine validation.
       await trigger.click();
       const retainedCloudProfile = place.locator('[data-value="cloud:aws"]');
       await expect.poll(() => retainedCloudProfile.isDisabled()).toBe(false);
@@ -473,6 +458,7 @@ suite.define(() => {
       const retainedMachine = place.locator('[data-value="machine:fast"]');
       await expect.poll(() => retainedMachine.isVisible()).toBe(true);
       expect(await retainedMachine.getAttribute("aria-pressed")).toBe("true");
+      await place.locator('[data-cloud-catalog-status="error"]').waitFor();
       if (captureUiProofEnabled) {
         await writeFile(
           path.join(

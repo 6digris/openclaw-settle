@@ -67,7 +67,6 @@ type DraftGatewayCallbacks = {
 export class DraftGatewayState {
   private cloudProfilesValue: DraftCloudProfile[] = [];
   private environmentsValue: DraftEnvironment[] | null = null;
-  private cloudProfilesReadyValue = false;
   private cloudProfilesErrorValue = false;
   private environmentsRuntimeId = "";
   private environmentRefresh: Promise<void> | null = null;
@@ -184,7 +183,6 @@ export class DraftGatewayState {
         this.resetCloudProfileRetry();
         this.cloudProfilesErrorValue = false;
         this.applyCloudProfiles(placeCatalog.profiles);
-        this.cloudProfilesReadyValue = true;
       },
       onError: () => {
         // Retain known choices, but never treat failed metadata as a successful empty catalog.
@@ -207,10 +205,6 @@ export class DraftGatewayState {
 
   get environments(): readonly DraftEnvironment[] | null {
     return this.environmentsValue;
-  }
-
-  get cloudProfilesReady(): boolean {
-    return this.cloudProfilesReadyValue;
   }
 
   get cloudProfilesPending(): boolean {
@@ -409,10 +403,10 @@ export class DraftGatewayState {
     this.environmentRetryAttempt = 0;
     // Retire pending results synchronously; Lit may not run hostUpdate before they settle.
     void this.cloudProfileTask.run([null, -1, false, false, ""]);
-    this.cloudProfilesValue = [];
-    this.cloudProfilesReadyValue = false;
-    this.cloudProfilesErrorValue = false;
+    // Retire requests on reconnect; only a different authenticated owner retires its cached catalog.
     if (resetHostSelection) {
+      this.cloudProfilesValue = [];
+      this.cloudProfilesErrorValue = false;
       this.environmentsValue = null;
     }
     this.resetCloudProfileRetry();

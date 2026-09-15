@@ -139,11 +139,7 @@ export function renderNewSessionPlaceControls({
           cloudProfilesPending: gateway.cloudProfilesPending,
           cloudProfilesError: gateway.cloudProfilesError,
           onRetryCloudProfiles: () => void gateway.refreshCloudProfiles(),
-          cloudDisabledReason: gateway.cloudProfilesPending
-            ? t("newSession.cloudOptionsLoading")
-            : gateway.cloudProfilesError
-              ? t("newSession.cloudOptionsFailed")
-              : place.modelControl.cloudRuntimeUnsupportedReason(),
+          cloudDisabledReason: place.modelControl.cloudRuntimeUnsupportedReason(),
           cloudProfileDisabledReason: (profile) =>
             place.modelControl.cloudRuntimeUnsupportedReason(profile),
           submitting,

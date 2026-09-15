@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.ts";
 import { CHAT_ROUTE_READY_EVENT } from "../chat/chat-history-events.ts";
+import { CLOUD_PROFILE_RETRY_DELAYS_MS } from "./cloud-profile-discovery.ts";
+import { resolveDraftSessionPlacement } from "./draft-session-placement.ts";
 import { createDraftFixture } from "./draft-submission-flow.test-support.ts";
 import { renderControl } from "./model-control.test-support.ts";
 import { patchNewSessionPreference } from "./preferences.ts";
@@ -44,6 +46,106 @@ describe("DraftSubmissionFlow submit gates", () => {
     } finally {
       migration.resolve({ status: "ok" });
       fixture.gateway.disconnect();
+    }
+  });
+
+  it("keeps a retained Cloud target usable through pending refresh, retry exhaustion and recovery", async () => {
+    const profiles = [
+      {
+        id: "aws",
+        providerId: "crabbox",
+        machines: [
+          { id: "standard", label: "Standard", default: true },
+          { id: "fast", label: "Fast" },
+        ],
+      },
+    ];
+    const pending = createDeferred<{ environments: []; profiles: typeof profiles }>();
+    let outcome: "ready" | "pending" | "failed" | "missing" = "ready";
+    let reads = 0;
+    const fixture = createDraftFixture({
+      methods: ["environments.list", "sessions.create", "sessions.dispatch"],
+      scopes: ["operator.admin", "operator.read", "operator.write"],
+      request: async (method, params) => {
+        if (method !== "environments.list") {
+          return {};
+        }
+        if ((params as { includeProfiles?: boolean }).includeProfiles === false) {
+          return {
+            environments: [
+              {
+                id: "node:ready",
+                type: "node",
+                status: "available",
+                sessionHost: true,
+                workerSlots: { total: 2, available: 1 },
+              },
+            ],
+          };
+        }
+        reads += 1;
+        if (outcome === "pending") {
+          return pending.promise;
+        }
+        if (outcome === "failed") {
+          throw new Error("catalog outage");
+        }
+        return { environments: [], profiles: outcome === "missing" ? [] : profiles };
+      },
+    });
+    try {
+      await fixture.gateway.refreshCloudProfiles();
+      await fixture.gateway.refreshEnvironments();
+      fixture.place.selectCloudProfile("aws");
+      expect(fixture.place.cloudMachines.select("aws", "fast", fixture.gateway.cloudProfiles)).toBe(
+        true,
+      );
+      fixture.flow.setMessage("Keep exactly this Cloud destination");
+      const placement = () =>
+        resolveDraftSessionPlacement(fixture.flow.pendingPlacement, fixture.place).target;
+      const target = placement();
+      expect(target).toMatchObject({ kind: "profile", profileId: "aws", machineClass: "fast" });
+      expect(fixture.flow.submitBlock()).toBeUndefined();
+
+      outcome = "pending";
+      const refresh = fixture.gateway.refreshCloudProfiles();
+      expect(fixture.gateway.cloudProfilesPending).toBe(true);
+      expect(fixture.flow.submitBlock()).toBeUndefined();
+      vi.useFakeTimers();
+      outcome = "failed";
+      pending.reject(new Error("catalog outage"));
+      await refresh;
+      for (const delay of CLOUD_PROFILE_RETRY_DELAYS_MS) {
+        await vi.advanceTimersByTimeAsync(delay);
+        expect(fixture.gateway.cloudProfilesError).toBe(true);
+        expect(fixture.gateway.cloudProfiles).toEqual(profiles);
+        expect(placement()).toEqual(target);
+        expect(fixture.flow.submitBlock()).toBeUndefined();
+      }
+      const exhaustedReads = reads;
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(reads).toBe(exhaustedReads);
+      fixture.place.selectDevice("ready");
+      expect(fixture.flow.submitBlock()).toBeUndefined();
+      fixture.place.selectDevice("");
+      expect(fixture.flow.submitBlock()).toBeUndefined();
+      fixture.place.selectCloudProfile("aws");
+      expect(placement()).toEqual(target);
+
+      outcome = "ready";
+      await fixture.gateway.refreshCloudProfiles();
+      expect(fixture.gateway.cloudProfilesError).toBe(false);
+      expect(fixture.flow.submitBlock()).toBeUndefined();
+      outcome = "missing";
+      await fixture.gateway.refreshCloudProfiles();
+      expect(fixture.place.cloudProfileId).toBe("aws");
+      expect(placement()).toEqual(target);
+      expect(fixture.flow.submitBlock()?.gate).toBe("cloud");
+      expect(fixture.context.sessions.createResult).not.toHaveBeenCalled();
+    } finally {
+      pending.resolve({ environments: [], profiles });
+      fixture.gateway.disconnect();
+      vi.useRealTimers();
     }
   });
 

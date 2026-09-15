@@ -725,8 +725,8 @@ export class DraftPlaceState {
       this.preferredWhereRestore = null;
       changed = true;
     } else if (preferredWhere?.kind === "cloud") {
-      // Restore intent independently of discovery. Missing or failed cloud metadata
-      // blocks that target; it must never silently turn a remembered cloud start local.
+      // Restore intent independently of discovery. A missing profile still blocks the target;
+      // failed refreshes retain known choices and must never turn a Cloud start local.
       this.deviceIdValue = "";
       this.autoDeviceValue = false;
       this.cloudProfileIdValue = preferredWhere.id;

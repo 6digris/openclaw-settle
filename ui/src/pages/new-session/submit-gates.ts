@@ -277,10 +277,8 @@ export function resolveNewSessionSubmitBlock(
   const cloudProfileId = placementTarget?.kind === "profile" ? placementTarget.profileId : "";
   if (
     cloudProfileId &&
-    (gateway.cloudProfilesPending ||
-      gateway.cloudProfilesError ||
-      !gateway.cloudProfilesReady ||
-      !gateway.cloudProfiles.some((profile) => profile.id === cloudProfileId) ||
+    // Refresh state is not destination validity: retained choices still go to Gateway validation.
+    (!gateway.cloudProfiles.some((profile) => profile.id === cloudProfileId) ||
       Boolean(host.cloudRuntimeUnsupportedReason()))
   ) {
     const reason = host.cloudRuntimeUnsupportedReason() ?? t("newSession.placementNotReady");
