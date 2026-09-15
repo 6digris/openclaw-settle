@@ -1,7 +1,8 @@
 // Plugin integration tests retain Gateway runtime setup outside core source.
 export const gatewayPluginTestFiles = ["test/plugins/codex-model-catalog.gateway.test.ts"];
 
-// Native database consumers retain the Gateway runner and setup in forked processes.
+// This curated cohort retains serial forks and the extended database-worker watchdog,
+// even though ordinary Gateway methods also use forks.
 export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/config-reload.test.ts",
   "src/gateway/gateway-code-mode-clock.test.ts",
@@ -30,7 +31,6 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/server-methods/worktrees.authorization.test.ts",
   "src/gateway/server-methods/worktrees.test.ts",
   "src/gateway/session-delivery-clock-jump.integration.test.ts",
-  "test/plugins/codex-model-catalog.gateway.test.ts",
 ];
 
 // Canonical file ownership for the non-isolated Gateway server Vitest project.

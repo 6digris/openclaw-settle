@@ -14,6 +14,7 @@ import {
 import { resolveVitestNodeArgs } from "../../scripts/lib/vitest-process-env.mts";
 import { withEnv } from "../../src/test-utils/env.js";
 import { createGatewayDatabaseWorkersVitestConfig } from "../vitest/vitest.gateway-database-workers.config.ts";
+import { createGatewayMethodsVitestConfig } from "../vitest/vitest.gateway-methods.config.ts";
 import { gatewayDatabaseWorkerTestFiles } from "../vitest/vitest.gateway-server-paths.mjs";
 import { packageContractTestFiles } from "../vitest/vitest.package-contract-paths.mjs";
 import { collectVitestExcludePatterns, matchesVitestGlob } from "../vitest/vitest.pattern-file.ts";
@@ -50,24 +51,23 @@ describe("test-projects args", () => {
   });
 
   const gatewayWorkerFile = "src/gateway/server-methods/cron.runs.test.ts";
-  const catalogWorkerFile = "test/plugins/codex-model-catalog.gateway.test.ts";
+  const catalogFile = "test/plugins/codex-model-catalog.gateway.test.ts";
   it.each<[string, string, string | undefined, boolean]>([
     ["server-methods/cron.runs.test.ts", gatewayWorkerFile, undefined, true],
     [gatewayWorkerFile, gatewayWorkerFile, undefined, true],
-    [catalogWorkerFile, catalogWorkerFile, undefined, true],
+    [catalogFile, catalogFile, undefined, true],
     [
       "server-methods/cron.runs.test.ts",
       gatewayWorkerFile,
       "server-methods/cron.runs.test.ts",
       false,
     ],
-    [catalogWorkerFile, catalogWorkerFile, `../../${catalogWorkerFile}`, false],
     ["server-methods/cron.runs.test.ts", gatewayWorkerFile, "server-methods/*.test.ts", false],
-    [catalogWorkerFile, catalogWorkerFile, catalogWorkerFile, false],
-    [catalogWorkerFile, catalogWorkerFile, "test/plugins/**/*.test.ts", false],
-    [catalogWorkerFile, catalogWorkerFile, "unrelated.test.ts", true],
+    [catalogFile, catalogFile, catalogFile, false],
+    [catalogFile, catalogFile, "test/plugins/**/*.test.ts", false],
+    [catalogFile, catalogFile, "unrelated.test.ts", true],
   ])(
-    "discovers Gateway worker selector %s for %s (exclude %s)",
+    "discovers Gateway owner selector %s for %s (exclude %s)",
     (selector, expected, exclude, visible) => {
       const previousArgv = process.argv;
       try {
@@ -76,12 +76,17 @@ describe("test-projects args", () => {
           "vitest",
           "run",
           "--config",
-          "test/vitest/vitest.gateway-database-workers.config.ts",
+          expected === catalogFile
+            ? "test/vitest/vitest.gateway-methods.config.ts"
+            : "test/vitest/vitest.gateway-database-workers.config.ts",
           selector,
           ...(exclude ? ["--exclude", exclude] : []),
         ];
-        const config = createGatewayDatabaseWorkersVitestConfig({});
-        const testConfig = expectDefined(config.test, "Gateway worker test config");
+        const config =
+          expected === catalogFile
+            ? createGatewayMethodsVitestConfig({})
+            : createGatewayDatabaseWorkersVitestConfig({});
+        const testConfig = expectDefined(config.test, "Gateway owner test config");
         const dir = path.resolve(config.root ?? process.cwd(), testConfig.dir ?? ".");
         const relative = path.relative(dir, path.resolve(expected)).replaceAll("\\", "/");
         const excludes = [
@@ -226,7 +231,7 @@ describe("test-projects args", () => {
     {
       title: "test-projects routes the bundled native Gateway test to its Gateway owner",
       target: "test/plugins/codex-model-catalog.gateway.test.ts",
-      config: "test/vitest/vitest.gateway-database-workers.config.ts",
+      config: "test/vitest/vitest.gateway-methods.config.ts",
     },
     {
       title: "routes script tests to the tooling config",
