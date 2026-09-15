@@ -1,6 +1,8 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
   "src/tasks/task-registry.async-restore.test.ts",
+  "src/tasks/task-registry.restore-ownership.test.ts",
+  "src/agents/embedded-agent-runner/context-engine-maintenance.lifecycle.test.ts",
   "src/agents/subagents/registry/subagent-registry-recovery-acceptance.test.ts",
   "src/agents/subagents/registry/subagent-registry-task-replacement.test.ts",
   "src/tasks/task-registry-session-index.test.ts",
@@ -77,6 +79,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/plugin-state/plugin-state-store.retention.test.ts",
   "src/plugin-state/plugin-state-store.runtime.test.ts",
   "src/plugin-state/plugin-state-store.schema.test.ts",
+  "test/e2e/qa-lab/runtime/gateway-tls-pinning.test.ts",
   "src/agents/tools/cron-tool.output-contract.test.ts",
   "src/plugins/services.cron.test.ts",
   "src/state/creator-namespace-migration.test.ts",

@@ -17,6 +17,7 @@ import {
   withTaskRegistrySqliteMutation,
 } from "./task-registry.store.sqlite.js";
 import type {
+  TaskExecutionRestoreStore,
   TaskRegistryMutationScope,
   TaskRegistryStoreSnapshot,
 } from "./task-registry.store.types.js";
@@ -24,7 +25,7 @@ import type { TaskDeliveryState, TaskRecord } from "./task-registry.types.js";
 
 export type { TaskRegistryStoreSnapshot } from "./task-registry.store.types.js";
 
-export type TaskRegistryStore = {
+export type TaskRegistryStore = TaskExecutionRestoreStore & {
   withSnapshotAsync<T>(
     context: OpenClawStateWorkerContext,
     consume: (snapshot: TaskRegistryRestoreResult) => T,
@@ -33,14 +34,8 @@ export type TaskRegistryStore = {
     context: OpenClawStateWorkerContext,
     params: { taskId: string; expectedParentFlowId?: string },
   ) => Promise<TaskMirroredFlowSyncOutcome>;
-  loadSnapshot: () => TaskRegistryStoreSnapshot;
   loadMutationSnapshot?: (scope: TaskRegistryMutationScope) => TaskRegistryStoreSnapshot;
-  withMutation?: <T>(operation: () => T) => T;
   listTasksForOwnerKey?: (ownerKey: string) => Promise<TaskRecord[]>;
-  upsertTaskWithDeliveryState: (params: {
-    task: TaskRecord;
-    deliveryState?: TaskDeliveryState;
-  }) => void;
   deleteTaskWithDeliveryState: (taskId: string) => void;
   upsertDeliveryState: (state: TaskDeliveryState) => void;
   close?: () => void;

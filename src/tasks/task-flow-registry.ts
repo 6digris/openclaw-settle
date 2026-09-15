@@ -249,7 +249,6 @@ export async function reloadTaskFlowRegistryFromStoreAsync(
     return;
   }
   projectionEpoch += 1;
-  flows = new Map();
   taskFlowRegistryRestoreState = { status: "uninitialized" };
   await ensureTaskFlowRegistryReadyAsync(context);
 }

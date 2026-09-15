@@ -116,7 +116,7 @@ export function onTaskRegistryChange(listener: () => void): () => void {
   return () => taskRegistryProcessState.changeListeners.delete(listener);
 }
 
-export function clearTaskRegistryMemory(): void {
+function clearTaskRegistryEphemeralState(): void {
   clearTaskFlowSyncRetries();
   clearTaskProgressBatches();
   for (const activity of taskActivityByTaskId.values()) {
@@ -125,6 +125,11 @@ export function clearTaskRegistryMemory(): void {
     }
   }
   taskActivityByTaskId.clear();
+  tasksWithPendingDelivery.clear();
+}
+
+export function clearTaskRegistryMemory(): void {
+  clearTaskRegistryEphemeralState();
   tasks.clear();
   bumpTaskRegistryRevision();
   taskDeliveryStates.clear();
@@ -132,7 +137,6 @@ export function clearTaskRegistryMemory(): void {
   taskIdsByOwnerKey.clear();
   taskIdsByParentFlowId.clear();
   taskIdsByRelatedSessionKey.clear();
-  tasksWithPendingDelivery.clear();
 }
 
 export function addRunIdIndex(taskId: string, runId?: string) {
@@ -447,8 +451,10 @@ export async function reloadTaskRegistryFromStoreAsync(
   if (!isCurrentTaskRegistryDatabase(context.admission)) {
     return;
   }
-  clearTaskRegistryMemory();
-  taskRegistryRestoreState = { status: "uninitialized" };
+  // Keep the published rows current until the replacement snapshot is installed.
+  clearTaskRegistryEphemeralState();
+  bumpTaskRegistryRevision();
+  taskRegistryRestoreState = { status: "uninitialized", admission: context.admission };
   await ensureTaskRegistryReadyAsync(context);
 }
 
