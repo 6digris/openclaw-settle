@@ -240,10 +240,22 @@ suite.define(() => {
             text: `Manage the other conversation's reminder. [automation-proof:${marker}]`,
           });
           const reply = await transport.waitForOutbound({
-            textIncludes: `${marker}:`,
+            expectedFailure: {
+              conversation: { id: "100002", kind: "direct" },
+              senderId: "openclaw",
+              threadId: null,
+              text: `${marker}: Tool automations not found`,
+            },
             sinceIndex: outboundIndex,
             timeoutMs: 60_000,
           });
+          expect(reply).toMatchObject({
+            accountId: transport.accountId,
+            conversation: { id: "100002", kind: "direct" },
+            senderId: "openclaw",
+            text: `${marker}: Tool automations not found`,
+          });
+          expect(reply.threadId).toBeUndefined();
           const output = provider.results.get(marker) ?? "";
           expect(provider.advertisedSessionStatus.get(marker)).toBe(true);
           expect(provider.advertisedAutomations.get(marker)).toBe(false);
