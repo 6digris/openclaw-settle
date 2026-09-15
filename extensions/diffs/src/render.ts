@@ -700,32 +700,26 @@ export async function renderDiffDocument(
       : await renderPatchDiff(input, options, target);
   const viewerRuntime = rendered.usesLanguagePack ? "language-pack" : "base";
   const imageTypography = resolveDiffTypography(buildImageRenderOptions(options).presentation);
+  const renderHtml = (bodyHtml: string, runtimeMode: "viewer" | "image") =>
+    buildHtmlDocument({
+      title,
+      bodyHtml,
+      theme: options.presentation.theme,
+      imageMaxWidth: options.image.maxWidth,
+      imageTypography,
+      runtimeMode,
+      viewerRuntime,
+    });
 
   return {
     ...(rendered.viewerBodyHtml
       ? {
-          html: buildHtmlDocument({
-            title,
-            bodyHtml: rendered.viewerBodyHtml,
-            theme: options.presentation.theme,
-            imageMaxWidth: options.image.maxWidth,
-            imageTypography,
-            runtimeMode: "viewer",
-            viewerRuntime,
-          }),
+          html: renderHtml(rendered.viewerBodyHtml, "viewer"),
         }
       : {}),
     ...(rendered.imageBodyHtml
       ? {
-          imageHtml: buildHtmlDocument({
-            title,
-            bodyHtml: rendered.imageBodyHtml,
-            theme: options.presentation.theme,
-            imageMaxWidth: options.image.maxWidth,
-            imageTypography,
-            runtimeMode: "image",
-            viewerRuntime,
-          }),
+          imageHtml: renderHtml(rendered.imageBodyHtml, "image"),
         }
       : {}),
     title,
