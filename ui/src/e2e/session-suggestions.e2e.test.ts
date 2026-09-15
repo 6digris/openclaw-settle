@@ -199,6 +199,11 @@ suite.define(() => {
     await composer.fill("Keep this /sta");
     await gateway.waitForRequest("commands.list");
     await expect(page.getByRole("option", { name: /\/status/u })).toHaveCount(0);
+    await composer.fill("/bt");
+    await page.getByRole("option").filter({ hasText: "/btw" }).click();
+    expect(await gateway.getRequests("session.suggestions.add")).toHaveLength(0);
+    await expect(composer).toHaveValue("/btw ");
+    expect(await gateway.getRequests("chat.send")).toHaveLength(0);
     await context.close();
   });
 
