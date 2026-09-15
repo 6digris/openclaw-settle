@@ -11,6 +11,7 @@ import {
   desktopResizeStages,
   exportDesktopResizeProof,
   inspectDesktopSshdRuntimeDirectory,
+  readDesktopCloseLog,
   readDesktopProofPhase,
   readDesktopProofTestReport,
   sanitizeDesktopResizeProof,
@@ -343,7 +344,12 @@ describe("desktop proof identity and public evidence", () => {
   });
 
   it("leaves successful reporter output unchanged even with failure metadata", () => {
-    const report = rawTestReport(undefined, { desktopViewerResizeFailure: viewerFailure });
+    const report = rawTestReport(undefined, {
+      desktopViewerResizeFailure: {
+        ...viewerFailure,
+        ownerCloses: { private: "must not be read on success" },
+      },
+    });
     report.numFailedTests = 0;
     report.numFailedTestSuites = 0;
     report.testResults[0]!.status = "passed";
@@ -356,6 +362,209 @@ describe("desktop proof identity and public evidence", () => {
       declarationLocation: { line: 120, column: 3 },
       failures: [],
     });
+  });
+
+  it("retains child-owner close categories without private log metadata", () => {
+    const ownerCloses = {
+      gateway: {
+        status: "available",
+        partial: false,
+        truncated: false,
+        records: [
+          {
+            emitter: "gateway/desktop",
+            event: "desktop observer closed",
+            trigger: "stream-close",
+            cleanupCode: 1000,
+            closeCode: 1000,
+          },
+        ],
+      },
+      node: {
+        status: "available",
+        partial: false,
+        truncated: false,
+        records: [
+          {
+            emitter: "node-host/stream",
+            event: "node stream closed",
+            trigger: "target-close",
+            closeCode: 1000,
+          },
+        ],
+      },
+    };
+    const report = rawTestReport(undefined, {
+      desktopViewerResizeFailure: { ...viewerFailure, ownerCloses },
+    });
+    expect(desktopProofTestReport(report).files[0]?.assertions[0]).toMatchObject({
+      viewerResize: { ownerCloses },
+    });
+  });
+
+  it("reads canonical child logger files without rendering or exporting their metadata", async () => {
+    const root = dirs.make("desktop-close-logs-");
+    const gateway = path.join(root, "gateway.log");
+    const node = path.join(root, "node.log");
+    // Use a child so the proof does not repoint the test worker's logger.
+    execFileSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "--input-type=module",
+        "-e",
+        `
+          import { applyLoggingConfig, flushLogger } from "./src/logging/logger.ts";
+          import { createSubsystemLogger } from "./src/logging/subsystem.ts";
+          applyLoggingConfig({file: process.argv[1], level: "info", consoleLevel: "silent"});
+          createSubsystemLogger("gateway/desktop").info("desktop observer closed", {
+            sourceKey: "private-source", ownerEpoch: 42, streamId: "private-stream",
+            trigger: "stream-close", cleanupCode: 1000, closeCode: 1000
+          });
+          await flushLogger();
+          applyLoggingConfig({file: process.argv[2], level: "info", consoleLevel: "silent"});
+          const log = createSubsystemLogger("node-host/stream");
+          log.info("node stream closed", {streamKind: "desktop", trigger: "target-close", closeCode: 1000});
+          log.info("node stream closed", {streamKind: "terminal", trigger: "owner-abort", closeCode: 1006});
+          log.info('unrelated {"trigger":"target-error"}');
+          await flushLogger();
+        `,
+        gateway,
+        node,
+      ],
+      {
+        env: { ...process.env, VITEST: "1", OPENCLAW_LOG_LEVEL: "info" },
+        timeout: 10_000,
+        maxBuffer: 64 * 1024,
+        stdio: "pipe",
+      },
+    );
+    const ownerCloses = {
+      gateway: await readDesktopCloseLog(gateway, "gateway"),
+      node: await readDesktopCloseLog(node, "node"),
+    };
+    expect(ownerCloses.gateway).toMatchObject({
+      status: "available",
+      partial: false,
+      truncated: false,
+      records: [{ trigger: "stream-close", closeCode: 1000, cleanupCode: 1000 }],
+    });
+    expect(ownerCloses.gateway.records).toHaveLength(1);
+    expect(ownerCloses.node.records).toEqual([
+      {
+        emitter: "node-host/stream",
+        event: "node stream closed",
+        trigger: "target-close",
+        closeCode: 1000,
+      },
+    ]);
+    expect((await readDesktopCloseLog(gateway, "node")).records).toEqual([]);
+    const raw = rawTestReport(undefined, {
+      desktopViewerResizeFailure: { ...viewerFailure, ownerCloses },
+    });
+    const result = desktopProofTestReport(raw);
+    expect(result.files[0]?.assertions[0]?.viewerResize?.ownerCloses).toEqual(ownerCloses);
+    expect(JSON.stringify(result)).not.toMatch(
+      /private|sourceKey|ownerEpoch|streamId|hostname|raw|filePath|correlation/u,
+    );
+  });
+
+  it("bounds child close records and reports partial, invalid, and incomplete input explicitly", async () => {
+    const root = dirs.make("desktop-close-bounds-");
+    const file = path.join(root, "node.log");
+    const line = (fields: Record<string, unknown> = {}) =>
+      JSON.stringify({
+        "0": JSON.stringify({ subsystem: "node-host/stream" }),
+        "1": { streamKind: "desktop", trigger: "target-close", closeCode: 1000, ...fields },
+        "2": "node stream closed",
+        _meta: { name: JSON.stringify({ subsystem: "node-host/stream" }) },
+        message: "node stream closed",
+      }) + "\n";
+    const absent = { partial: false, truncated: false, records: [] };
+    expect(await readDesktopCloseLog(file, "node")).toEqual({ status: "missing", ...absent });
+    await writeFile(file, "");
+    expect(await readDesktopCloseLog(file, "node")).toEqual({ status: "available", ...absent });
+    await writeFile(file, line() + '{"unfinished":');
+    expect(await readDesktopCloseLog(file, "node")).toMatchObject({
+      status: "available",
+      partial: true,
+      truncated: false,
+      records: [{ trigger: "target-close" }],
+    });
+    for (const content of [
+      "{\n",
+      line({ trigger: "private-unknown-trigger" }),
+      line({ closeCode: -1 }),
+      line({ closeCode: 65_536 }),
+      line({ closeCode: 1000.5 }),
+      line({ streamKind: null }),
+      '{"0":"node stream closed","message":"node stream closed","_meta":{"name":"{\\"subsystem\\":\\"node-host/stream\\"}"}}\n',
+    ]) {
+      await writeFile(file, content);
+      expect(await readDesktopCloseLog(file, "node")).toEqual({ status: "invalid", ...absent });
+    }
+    await writeFile(file, line().repeat(17));
+    const truncated = await readDesktopCloseLog(file, "node");
+    expect(truncated).toMatchObject({ status: "available", partial: false, truncated: true });
+    expect(truncated.records).toHaveLength(16);
+    await writeFile(file, `${JSON.stringify({ dropped: 1, message: "log queue overflow" })}\n`);
+    expect(await readDesktopCloseLog(file, "node")).toEqual({
+      status: "available",
+      partial: false,
+      truncated: true,
+      records: [],
+    });
+    await writeFile(file, Buffer.alloc(1024 * 1024 + 1));
+    expect(await readDesktopCloseLog(file, "node")).toEqual({ status: "oversized", ...absent });
+    const link = path.join(root, "link.log");
+    await symlink(file, link);
+    expect(await readDesktopCloseLog(link, "node")).toEqual({ status: "unavailable", ...absent });
+    expect(await readDesktopCloseLog(root, "node")).toEqual({ status: "unavailable", ...absent });
+  });
+
+  it("rejects malformed projected owner records and drops arbitrary metadata", () => {
+    const record = {
+      emitter: "node-host/stream",
+      event: "node stream closed",
+      trigger: "target-close",
+      closeCode: 1006,
+    };
+    const log = { status: "available", partial: false, truncated: false, records: [record] };
+    const project = (node: unknown) =>
+      desktopProofTestReport(
+        rawTestReport(undefined, {
+          desktopViewerResizeFailure: {
+            ...viewerFailure,
+            ownerCloses: {
+              gateway: { ...log, status: "missing", records: [] },
+              node,
+              private: "ignored",
+            },
+          },
+        }),
+      );
+    const invalidLogs = [
+      { ...log, status: "private" },
+      { ...log, status: "missing" },
+      { ...log, partial: 1 },
+      { ...log, records: Array.from({ length: 17 }, () => record) },
+    ];
+    for (const override of [
+      { emitter: "gateway/desktop" },
+      { event: "private" },
+      { trigger: "private" },
+      { closeCode: 1000.5 },
+    ]) {
+      invalidLogs.push({ ...log, records: [{ ...record, ...override }] });
+    }
+    for (const node of invalidLogs) {
+      expect(() => project(node)).toThrow();
+    }
+    expect(
+      JSON.stringify(project({ ...log, records: [{ ...record, raw: "private" }] })),
+    ).not.toMatch(/private|raw/u);
+    expect(project(null).files[0]?.assertions[0]?.viewerResize?.ownerCloses?.node).toBeNull();
   });
 
   it("rejects unknown report files and excessive counts, and ignores unknown metadata phases", () => {

@@ -7,9 +7,10 @@ import { buildControlUiFocusPath } from "@openclaw/session-url-contract";
 import type { Locator, Page } from "playwright";
 import { createServer } from "vite";
 import { expect, it } from "vitest";
-import type {
-  desktopProofTestReport,
-  readDesktopProofPhase,
+import {
+  type desktopProofTestReport,
+  readDesktopCloseLog,
+  type readDesktopProofPhase,
 } from "../../../scripts/lib/desktop-resize-proof.mts";
 import { getFreePort } from "../../../src/test-utils/ports.ts";
 import { startSkillLibraryNodeProcess } from "../../../test/e2e/qa-lab/runtime/skill-library-node-process.ts";
@@ -207,6 +208,7 @@ suite.define(() => {
         },
       });
       const state = gateway.state;
+      const gatewayLogFile = path.join(gateway.stateDir, "desktop-gateway.log");
       state.applyEnv();
       let guest: Awaited<ReturnType<typeof createDesktopResizeGuest>> | undefined;
       let node: Awaited<ReturnType<typeof startSkillLibraryNodeProcess>> | undefined;
@@ -238,6 +240,7 @@ suite.define(() => {
             userHeader: "x-forwarded-user",
           };
           await state.writeConfig({
+            logging: { file: gatewayLogFile, level: "info" },
             agents: {
               defaults: {
                 workspace: state.workspaceDir,
@@ -642,6 +645,13 @@ suite.define(() => {
             };
             // Retain known facts even if the one read-only browser snapshot cannot settle.
             context.task.meta.desktopViewerResizeFailure = diagnostic;
+            // Snapshot before close/abort adds teardown records. These are per-owner
+            // observations, not correlations with a browser socket or another stream.
+            const [gatewayCloses, nodeCloses] = await Promise.all([
+              readDesktopCloseLog(gatewayLogFile, "gateway"),
+              node ? readDesktopCloseLog(node.logFile, "node") : Promise.resolve(null),
+            ]);
+            diagnostic.ownerCloses = { gateway: gatewayCloses, node: nodeCloses };
             let snapshotTimer: ReturnType<typeof setTimeout> | undefined;
             try {
               const snapshot = await Promise.race([

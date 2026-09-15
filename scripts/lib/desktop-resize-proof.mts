@@ -1,7 +1,9 @@
 import { lstat, mkdir, readFile, readdir, stat as fsStat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { stripVTControlCharacters } from "node:util";
+import { readRegularFile } from "@openclaw/fs-safe/advanced";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { parseLogLine } from "../../src/logging/parse-log-line.ts";
 
 export const desktopResizeStages = [
   "02-panel",
@@ -100,6 +102,155 @@ function desktopSocketCloses(value: unknown) {
   });
 }
 
+const desktopCloseEmitters = {
+  gateway: {
+    emitter: "gateway/desktop",
+    event: "desktop observer closed",
+    triggers: [
+      "owner-close",
+      "browser-close",
+      "browser-error",
+      "stream-close",
+      "stream-error",
+      "authority-revoked",
+      "invalid-view-only-stream",
+      "authentication-failed",
+    ],
+  },
+  node: {
+    emitter: "node-host/stream",
+    event: "node stream closed",
+    triggers: [
+      "owner-abort",
+      "target-close",
+      "target-error",
+      "websocket-close",
+      "websocket-error",
+      "send-error",
+      "invalid-frame",
+      "splice-unavailable",
+      "startup-error",
+    ],
+  },
+} as const;
+type DesktopCloseOwner = keyof typeof desktopCloseEmitters;
+const desktopCloseLogStatuses = [
+  "available",
+  "missing",
+  "oversized",
+  "invalid",
+  "unavailable",
+] as const;
+const maxDesktopCloseRecords = 16;
+
+function desktopCloseRecord(value: unknown, owner: DesktopCloseOwner) {
+  const contract = desktopCloseEmitters[owner];
+  const trigger = contract.triggers.find((entry) => isRecord(value) && entry === value.trigger);
+  if (
+    !isRecord(value) ||
+    value.emitter !== contract.emitter ||
+    value.event !== contract.event ||
+    !trigger
+  ) {
+    throw new Error("Invalid desktop owner close record");
+  }
+  return {
+    emitter: contract.emitter,
+    event: contract.event,
+    trigger,
+    closeCode: reportInteger(value.closeCode, 65_535),
+    ...(owner === "gateway" ? { cleanupCode: reportInteger(value.cleanupCode, 65_535) } : {}),
+  };
+}
+
+function desktopCloseLog(value: unknown, owner: DesktopCloseOwner) {
+  const status = desktopCloseLogStatuses.find((entry) => isRecord(value) && entry === value.status);
+  if (
+    !isRecord(value) ||
+    !status ||
+    typeof value.partial !== "boolean" ||
+    typeof value.truncated !== "boolean" ||
+    !Array.isArray(value.records) ||
+    value.records.length > maxDesktopCloseRecords ||
+    (status !== "available" && (value.records.length > 0 || value.partial || value.truncated))
+  ) {
+    throw new Error("Invalid desktop owner close log");
+  }
+  return {
+    status,
+    partial: value.partial,
+    truncated: value.truncated,
+    records: value.records.map((entry) => desktopCloseRecord(entry, owner)),
+  };
+}
+
+/** Read only the caller's explicit child-owned file, never this process's configured logger. */
+export async function readDesktopCloseLog(file: string, owner: DesktopCloseOwner) {
+  const result: ReturnType<typeof desktopCloseLog> = {
+    status: "available",
+    partial: false,
+    truncated: false,
+    records: [],
+  };
+  let readComplete = false;
+  try {
+    const { buffer } = await readRegularFile({ filePath: file, maxBytes: 1024 * 1024 });
+    readComplete = true;
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+    result.partial = text.length > 0 && !text.endsWith("\n");
+    const lines = text.split("\n");
+    lines.pop();
+    const contract = desktopCloseEmitters[owner];
+    for (const line of lines) {
+      const value: unknown = JSON.parse(line);
+      const parsed = parseLogLine(line);
+      if (!isRecord(value) || !parsed) {
+        throw new Error("Invalid structured desktop log");
+      }
+      // A canonical queue-overflow marker means even this bounded file is incomplete.
+      if (Number.isSafeInteger(value.dropped) && Number(value.dropped) > 0) {
+        result.truncated = true;
+      }
+      if (parsed.subsystem !== contract.emitter || parsed.message !== contract.event) {
+        continue;
+      }
+      const fields = value["1"];
+      if (!isRecord(fields)) {
+        throw new Error("Missing structured desktop close fields");
+      }
+      if (owner === "node" && fields.streamKind !== "desktop") {
+        if (typeof fields.streamKind !== "string") {
+          throw new Error("Missing node stream kind");
+        }
+        continue;
+      }
+      result.records.push(
+        desktopCloseRecord({ ...fields, emitter: contract.emitter, event: contract.event }, owner),
+      );
+      if (result.records.length > maxDesktopCloseRecords) {
+        result.records.shift();
+        result.truncated = true;
+      }
+    }
+    return result;
+  } catch (error) {
+    const code = error instanceof Error && "code" in error ? error.code : undefined;
+    return {
+      status:
+        code === "ENOENT"
+          ? ("missing" as const)
+          : code === "too-large"
+            ? ("oversized" as const)
+            : readComplete
+              ? ("invalid" as const)
+              : ("unavailable" as const),
+      partial: false,
+      truncated: false,
+      records: [],
+    };
+  }
+}
+
 function desktopViewerResizeFailure(value: unknown) {
   if (!isRecord(value) || typeof value.pageClosed !== "boolean") {
     throw new Error("Invalid desktop viewer diagnostic");
@@ -118,6 +269,10 @@ function desktopViewerResizeFailure(value: unknown) {
   ) {
     throw new Error("Invalid desktop viewer snapshot state");
   }
+  const ownerCloses = value.ownerCloses;
+  if (ownerCloses !== undefined && !isRecord(ownerCloses)) {
+    throw new Error("Invalid desktop close owners");
+  }
   return {
     expected: geometry(value.expected),
     lastFramebuffer: nullableFramebuffer(value.lastFramebuffer),
@@ -128,6 +283,14 @@ function desktopViewerResizeFailure(value: unknown) {
     socketCount: value.socketCount === null ? null : reportInteger(value.socketCount, 10_000),
     latestReadyState,
     socketCloses: desktopSocketCloses(value.socketCloses),
+    ...(isRecord(ownerCloses)
+      ? {
+          ownerCloses: {
+            gateway: desktopCloseLog(ownerCloses.gateway, "gateway"),
+            node: ownerCloses.node === null ? null : desktopCloseLog(ownerCloses.node, "node"),
+          },
+        }
+      : {}),
   };
 }
 
