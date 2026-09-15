@@ -161,6 +161,7 @@ async function readPendingTriageUpdateFailure(
   return sanitizeTriageUpdateFailure(
     {
       result: {
+        ...(stats?.runId ? { runId: stats.runId } : {}),
         status: payload.status,
         mode: stats?.mode ?? "unknown",
         root: stats?.root,
@@ -617,7 +618,6 @@ export async function triageCommand(
       ...(updateFailure ?? { error: "Operator requested installation triage" }),
       phase: "verifying",
       beforeVersion: failedResult?.before?.version ?? undefined,
-      targetVersion: failedResult?.after?.version ?? undefined,
       symptoms: findings
         .slice(0, 20)
         .map((finding) =>
@@ -637,68 +637,91 @@ export async function triageCommand(
     },
     validate: async (signal): Promise<UpdateRepairValidation> => {
       try {
-        const [{ resolveGatewayInstallEntrypoint }, { runUtf8CommandWithTimeout }] =
-          await Promise.all([
-            import("../daemon/gateway-entrypoint.js"),
-            import("../process/exec.js"),
-          ]);
-        const entrypoint = await resolveGatewayInstallEntrypoint(installRoot);
-        signal.throwIfAborted();
-        if (!entrypoint) {
-          throw new Error("The installed OpenClaw entrypoint is unavailable.");
-        }
-        // A fresh child reads the repaired installation and can be cancelled without
-        // leaving Doctor's temporary process-global state active in this CLI.
-        const doctorCommand = await runUtf8CommandWithTimeout(
-          [
-            isNodeRuntime(process.execPath) ? process.execPath : "node",
-            entrypoint,
-            "doctor",
-            "--lint",
-            "--json",
-            "--severity-min",
-            "error",
-          ],
-          {
-            cwd: installRoot,
-            baseEnv: {},
-            env: targetEnv,
-            input: "",
-            signal,
-            killProcessTree: true,
-            maxOutputBytes: { stdout: 1024 * 1024, stderr: 16 * 1024 },
-            terminateOnOutputLimit: true,
-          },
-        );
-        signal.throwIfAborted();
-        if (doctorCommand.termination !== "exit" || doctorCommand.outputLimitExceeded) {
-          throw new Error("Doctor lint did not complete within its execution or output budget.");
-        }
-        const doctorReport = triageDoctorReportSchema.parse(JSON.parse(doctorCommand.stdout));
-        const errors = doctorReport.findings.filter((finding) => finding.severity === "error");
-        if (errors.length === 0 && (doctorCommand.code !== 0 || !doctorReport.ok)) {
-          throw new Error("Doctor lint failed without reporting an error finding.");
-        }
-        return {
-          ok: errors.length === 0,
-          score: errors.length === 0 ? 0 : -errors.length,
-          summary:
-            errors.length === 0
-              ? "Doctor lint reports no errors."
-              : `${errors.length} Doctor lint error(s): ${errors
-                  .slice(0, 3)
-                  .map((finding) =>
-                    redactSupportString(finding.message, redaction, { maxLength: 200 }),
-                  )
-                  .join("; ")}`,
+        const validateDoctor = async (): Promise<UpdateRepairValidation> => {
+          const [{ resolveGatewayInstallEntrypoint }, { runUtf8CommandWithTimeout }] =
+            await Promise.all([
+              import("../daemon/gateway-entrypoint.js"),
+              import("../process/exec.js"),
+            ]);
+          const entrypoint = await resolveGatewayInstallEntrypoint(installRoot);
+          signal.throwIfAborted();
+          if (!entrypoint) {
+            throw new Error("The installed OpenClaw entrypoint is unavailable.");
+          }
+          // A fresh child reads the repaired installation and can be cancelled without
+          // leaving Doctor's temporary process-global state active in this CLI.
+          const doctorCommand = await runUtf8CommandWithTimeout(
+            [
+              isNodeRuntime(process.execPath) ? process.execPath : "node",
+              entrypoint,
+              "doctor",
+              "--lint",
+              "--json",
+              "--severity-min",
+              "error",
+            ],
+            {
+              cwd: installRoot,
+              baseEnv: {},
+              env: targetEnv,
+              input: "",
+              signal,
+              killProcessTree: true,
+              maxOutputBytes: { stdout: 1024 * 1024, stderr: 16 * 1024 },
+              terminateOnOutputLimit: true,
+            },
+          );
+          signal.throwIfAborted();
+          if (doctorCommand.termination !== "exit" || doctorCommand.outputLimitExceeded) {
+            throw new Error("Doctor lint did not complete within its execution or output budget.");
+          }
+          const doctorReport = triageDoctorReportSchema.parse(JSON.parse(doctorCommand.stdout));
+          const errors = doctorReport.findings.filter((finding) => finding.severity === "error");
+          if (errors.length === 0 && (doctorCommand.code !== 0 || !doctorReport.ok)) {
+            throw new Error("Doctor lint failed without reporting an error finding.");
+          }
+          return {
+            ok: errors.length === 0,
+            score: errors.length === 0 ? 0 : -errors.length,
+            summary:
+              errors.length === 0
+                ? "Doctor lint reports no errors."
+                : `${errors.length} Doctor lint error(s): ${errors
+                    .slice(0, 3)
+                    .map((finding) =>
+                      redactSupportString(finding.message, redaction, { maxLength: 200 }),
+                    )
+                    .join("; ")}`,
+          };
         };
+        if (updateFailure) {
+          const { validateTriageUpdateResolution } =
+            await import("../infra/update-triage-resolution.js");
+          const resolution = await validateTriageUpdateResolution({
+            failure: updateFailure,
+            installRoot,
+            env: targetEnv,
+            signal,
+            validateDoctor,
+          });
+          return {
+            ...resolution,
+            summary: triageCollectionError(resolution.summary, redaction),
+            ...(resolution.stopReason
+              ? { stopReason: triageCollectionError(resolution.stopReason, redaction) }
+              : {}),
+          };
+        }
+        return await validateDoctor();
       } catch (error) {
         signal.throwIfAborted();
+        const summary = `${updateFailure ? "Update resolution checks" : "Doctor checks"} unavailable: ${triageCollectionError(error, redaction)}${updateFailure ? " Next step: run `openclaw update status --json`, then retry `openclaw update`." : ""}`;
         return {
           ok: false,
           // An unavailable oracle must never appear better than known Doctor errors.
           score: Number.MIN_SAFE_INTEGER,
-          summary: `Doctor checks unavailable: ${triageCollectionError(error, redaction)}`,
+          summary,
+          ...(updateFailure ? { stopReason: summary } : {}),
         };
       }
     },
@@ -719,7 +742,11 @@ export async function triageCommand(
   for (const attempt of result.attempts) {
     runtime.log(attempt.summary);
   }
-  runtime.log(`Embedded repair ${result.status}: ${result.finalValidation.summary}`);
+  const verdict =
+    result.status === "repaired" && result.attempts.length === 0
+      ? "already resolved"
+      : result.status;
+  runtime.log(`Embedded repair ${verdict}: ${result.finalValidation.summary}`);
   if (result.status !== "repaired") {
     if (result.reason) {
       runtime.error(result.reason);

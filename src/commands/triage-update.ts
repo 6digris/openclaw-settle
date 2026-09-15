@@ -26,6 +26,7 @@ export const updateFailureSchema = z
   .union([
     z.object({
       result: z.object({
+        runId: z.string().max(128).optional(),
         status: z.enum(["ok", "error", "skipped"]),
         mode: z.enum(["git", "pnpm", "bun", "npm", "unknown"]),
         root: z.string().optional(),
@@ -272,6 +273,7 @@ export function sanitizeTriageUpdateFailure(
   const sanitized = {
     ...(error ? { error } : {}),
     result: {
+      ...(result.runId ? { runId: text(result.runId, 128) } : {}),
       status: result.status,
       mode: result.mode,
       reason: text(result.reason, 128),

@@ -24,6 +24,7 @@ vi.mock("./doctor-lint.js", () => ({ collectDoctorFindings: mocks.collectDoctorF
 vi.mock("../infra/update-repair-agent.js", () => ({
   runUpdateRepairLoop: mocks.runUpdateRepairLoop,
 }));
+vi.mock("../infra/update-repair-agent.runtime.js", () => ({}));
 vi.mock("../infra/executable-path.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../infra/executable-path.js")>()),
   resolveExecutablePath: () => undefined,
@@ -64,6 +65,52 @@ describe("triage --run", () => {
     vi.unstubAllEnvs();
   });
 
+  it("does not report a saved unresolved global install failure as repaired when Doctor passes", async () => {
+    const failure = {
+      result: {
+        status: "error",
+        mode: "npm",
+        reason: "global-install-failed",
+        before: { version: "2026.9.3" },
+        after: { version: "2026.9.3" },
+        recovery: { serviceRestartSafe: false, packageRollbackVerified: false },
+        steps: [
+          {
+            name: "global install swap",
+            exitCode: 1,
+            stderrTail: "retained package tree changed; Installation recovery is unverified",
+          },
+        ],
+      },
+    };
+    const failurePath = path.join(stateDir, "failure.json");
+    const failureJson = JSON.stringify(failure);
+    await fs.writeFile(failurePath, failureJson);
+    const { runUpdateRepairLoop } = await vi.importActual<
+      typeof import("../infra/update-repair-agent.js")
+    >("../infra/update-repair-agent.js");
+    mocks.runUpdateRepairLoop.mockImplementation(runUpdateRepairLoop);
+    const runtime = createTriageRuntime();
+    let exitCode = 0;
+    try {
+      await withTriageTerminal(true, () =>
+        triageCommand(runtime, { run: true, noExport: true, updateResult: failurePath }),
+      );
+    } catch (error) {
+      if (!(error instanceof Error) || !("code" in error) || typeof error.code !== "number") {
+        throw error;
+      }
+      exitCode = error.code;
+    }
+    expect(await fs.readFile(failurePath, "utf8")).toBe(failureJson);
+    const result = await mocks.runUpdateRepairLoop.mock.results[0]?.value;
+    expect({ exitCode, result, output: runtime.log.mock.calls.flat().join("\n") }).toMatchObject({
+      exitCode: 1,
+      result: { status: "unrepaired", finalValidation: { ok: false } },
+      output: expect.stringContaining("Next step"),
+    });
+  });
+
   it("confirms an interactive owned update continuation before embedded execution", async () => {
     await fs.writeFile(
       path.join(stateDir, "openclaw.json"),
@@ -92,6 +139,19 @@ describe("triage --run", () => {
     expect(runtime.log).toHaveBeenCalledWith("No repair agent was started.");
   });
 
+  it("labels an evidence-backed zero-attempt repair as already resolved", async () => {
+    const summary =
+      "Update to 2026.9.4 recorded by the updater; installed runtime and managed Gateway readiness verified.";
+    mocks.runUpdateRepairLoop.mockResolvedValue({
+      status: "repaired",
+      attempts: [],
+      finalValidation: { ok: true, score: 0, summary },
+    });
+    const runtime = createTriageRuntime();
+    await withTriageTerminal(true, () => triageCommand(runtime, { run: true, noExport: true }));
+    expect(runtime.log).toHaveBeenCalledWith(`Embedded repair already resolved: ${summary}`);
+  });
+
   it("keeps the onboarding hint when embedded repair has no usable inference", async () => {
     mocks.runUpdateRepairLoop.mockResolvedValue({
       status: "unavailable",
@@ -112,8 +172,6 @@ describe("triage --run", () => {
   it("runs one shared repair turn with fresh Doctor severity validation and the captured target", async () => {
     const runtime = createTriageRuntime();
     const signal = new AbortController().signal;
-    // A captured cwd can be another checkout; repair must stay with the running CLI's package.
-    await fs.writeFile(path.join(stateDir, "package.json"), JSON.stringify({ name: "openclaw" }));
     mocks.runUtf8CommandWithTimeout
       .mockResolvedValueOnce({
         code: 1,
@@ -143,18 +201,17 @@ describe("triage --run", () => {
         score: 0,
         summary: "Doctor lint reports no errors.",
       });
-      return { status: "repaired", attempts: [], finalValidation };
+      return {
+        status: "repaired",
+        attempts: [{ summary: "Doctor errors repaired." }],
+        finalValidation,
+      };
     });
 
     await withTriageTerminal(true, () =>
       triageCommand(runtime, {
         noExport: true,
         run: true,
-        recovery: {
-          target: resolveInstallationTarget(),
-          cwd: stateDir,
-          updateFailure: { error: "Captured update failure" },
-        },
       }),
     );
 
@@ -166,11 +223,14 @@ describe("triage --run", () => {
           workspaceDir: path.join(stateDir, "workspace"),
           installRoot: path.resolve(import.meta.dirname, "../.."),
         },
-        context: expect.objectContaining({ error: "Captured update failure", phase: "verifying" }),
+        context: expect.objectContaining({
+          error: "Operator requested installation triage",
+          phase: "verifying",
+        }),
         budget: { maxTurns: 1 },
       }),
     );
-    expect(mocks.collectDoctorFindings).not.toHaveBeenCalled();
+    expect(mocks.collectDoctorFindings).toHaveBeenCalledOnce();
     expect(mocks.runUtf8CommandWithTimeout).toHaveBeenCalledTimes(2);
     expect(mocks.runUtf8CommandWithTimeout).toHaveBeenCalledWith(
       [
