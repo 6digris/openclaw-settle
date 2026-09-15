@@ -59,12 +59,18 @@ export function nodeWorkerEnvironmentMatches(
   );
 }
 
-export function createNodeWorkerActiveTurn(claim: NodeWorkerLaunchClaim) {
+type NodeWorkerActiveTurn = {
+  claim: NodeWorkerLaunchClaim;
+  done: Promise<void>;
+  settle: () => void;
+  cancelled: boolean;
+  settling?: Promise<void>;
+};
+
+export function createNodeWorkerActiveTurn(claim: NodeWorkerLaunchClaim): NodeWorkerActiveTurn {
   const { promise, resolve } = createDeferredCore();
   return { claim, done: promise, settle: resolve, cancelled: false };
 }
-
-type NodeWorkerActiveTurn = ReturnType<typeof createNodeWorkerActiveTurn>;
 
 type NodeWorkerActiveBase = {
   binding: NodeWorkerEnvironmentBinding;
@@ -93,7 +99,9 @@ export type NodeWorkerRunningChild = NodeWorkerActiveBase & {
 export type NodeWorkerObservedTerminal = NodeWorkerActiveBase & {
   state: "observed";
   outcome: NodeWorkerTerminalOutcome;
+  turn?: NodeWorkerActiveTurn;
   cancelledTurn?: NodeWorkerLaunchClaim;
+  reconciliation?: Promise<NodeWorkerLaunchReceipt>;
 };
 
 export type NodeWorkerActiveOwnership = NodeWorkerRunningChild | NodeWorkerObservedTerminal;

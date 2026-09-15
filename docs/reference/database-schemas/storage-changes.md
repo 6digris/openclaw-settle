@@ -63,6 +63,23 @@ Reads use the existing-only worker path and do not create a missing database.
 Public event helpers and exports await durable completion. Cursor eviction,
 namespace-wide append ordering, sibling row budgets, and rollback remain unchanged.
 
+Node-host launch and turn journals execute on the same shared-state worker.
+Launch admission retains its separate observation and admission transactions;
+process inspection remains outside SQLite, and admission rereads the observed
+owner before adoption. Turn claims read their physical owner in the insertion
+transaction, and physical settlement closes unfinished turns atomically.
+Supervisor cancellation closes local admission before waiting for the journal.
+Ordered, bounded result processing joins turn persistence before publishing a
+physical outcome or releasing its slot. Shutdown joins accepted journal work
+and native settlement; failed cleanup remains retryable, and unknown write
+outcomes cannot release ownership. Schema, receipt retention, and update
+migrations are unchanged. Prepared-workspace persistence and the synchronous
+plugin workspace-acquisition contract retain their existing owners. Node-host
+stdout consumption uses native pipe backpressure while persistence waits;
+the existing pre-journal aggregate limit and individual frame limit are unchanged.
+Consumption failure requests the existing adapter stop, drains the failed stream,
+and joins native completion before returning the original error.
+
 Use Kysely for ordinary queries and mutations. The current
 `getNodeSqliteKysely` facade compiles queries; `executeSqliteQuerySync` runs them
 on the supplied `node:sqlite` connection. Calling Kysely's asynchronous

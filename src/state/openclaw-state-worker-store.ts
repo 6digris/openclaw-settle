@@ -2,6 +2,7 @@ import { runtimeProcessEntrypoints } from "../infra/runtime-process-entrypoints.
 import { resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import type { SqliteWorkerAdmissionCleanup } from "../infra/sqlite-worker-broker.types.js";
 import type { DatabasePathIdentity } from "../infra/sqlite-worker-identity.js";
+import type { SqliteWorkerAdmissionFactory } from "../infra/sqlite-worker-operation-admission.js";
 import {
   openSharedStateSqliteWorkerStore,
   closeUnclaimedSharedStateSqliteWorkers,
@@ -28,6 +29,10 @@ import { hydrateOpenClawStateWorkerError } from "./openclaw-state-worker-error.j
 type StoreOperations = OpenClawStateWorkerOperations & OpenClawStateWorkerInspectionOperations;
 type Store = SqliteWorkerStore<StoreOperations>;
 type DomainScope = Pick<SqliteWorkerStore<OpenClawStateWorkerOperations>, "execute">;
+type OperationOptions = {
+  assertCurrent?: (commandType?: PropertyKey) => void;
+  createAdmission?: SqliteWorkerAdmissionFactory;
+};
 const log = createSubsystemLogger("state/worker");
 
 function createSharedStateWorkerOwner() {
@@ -217,17 +222,17 @@ export async function executeOpenClawStateWorker<Key extends keyof OpenClawState
 export function runOpenClawStateWorkerOperation<T>(
   context: OpenClawStateWorkerContext,
   operation: (scope: DomainScope) => Promise<T>,
-  options: { existingOnly: true; assertCurrent?: () => void },
+  options: OperationOptions & { existingOnly: true },
 ): Promise<T | undefined>;
 export function runOpenClawStateWorkerOperation<T>(
   context: OpenClawStateWorkerContext,
   operation: (scope: DomainScope) => Promise<T>,
-  options?: { existingOnly?: false; assertCurrent?: () => void },
+  options?: OperationOptions & { existingOnly?: false },
 ): Promise<T>;
 export async function runOpenClawStateWorkerOperation<T>(
   context: OpenClawStateWorkerContext,
   operation: (scope: DomainScope) => Promise<T>,
-  options?: { existingOnly?: boolean; assertCurrent?: () => void },
+  options?: OperationOptions & { existingOnly?: boolean },
 ): Promise<T | undefined> {
   const run = () => runAdmittedOpenClawStateWorkerOperation(context, operation, options);
   const maintenance = context.maintenanceScope;
@@ -237,7 +242,7 @@ export async function runOpenClawStateWorkerOperation<T>(
 async function runAdmittedOpenClawStateWorkerOperation<T>(
   context: OpenClawStateWorkerContext,
   operation: (scope: DomainScope) => Promise<T>,
-  options?: { existingOnly?: boolean; assertCurrent?: () => void },
+  options?: OperationOptions & { existingOnly?: boolean },
 ): Promise<T | undefined> {
   try {
     context.admission.assertCurrent();
@@ -257,7 +262,13 @@ async function runAdmittedOpenClawStateWorkerOperation<T>(
       throw new Error("Canonical shared-state worker did not open its database");
     }
     options?.assertCurrent?.();
-    return await runWithOpenClawStateWorkerStore(store, context, operation, options?.assertCurrent);
+    return await runWithOpenClawStateWorkerStore(
+      store,
+      context,
+      operation,
+      options?.assertCurrent,
+      options?.createAdmission,
+    );
   } catch (error) {
     if (error instanceof Error) {
       throw hydrateOpenClawStateWorkerError(error);
@@ -310,7 +321,8 @@ async function runWithOpenClawStateWorkerStore<T>(
   store: Store,
   context: OpenClawStateWorkerContext,
   operation: (scope: Pick<Store, "execute">) => Promise<T>,
-  assertCurrent?: () => void,
+  assertCurrent?: (commandType?: PropertyKey) => void,
+  createAdmission?: SqliteWorkerAdmissionFactory,
 ): Promise<T> {
   const { admission } = context;
   try {
@@ -318,10 +330,11 @@ async function runWithOpenClawStateWorkerStore<T>(
       store,
       operation,
       context,
-      () => {
+      (commandType) => {
         admission.assertCurrent();
-        assertCurrent?.();
+        assertCurrent?.(commandType);
       },
+      createAdmission,
     );
   } catch (error) {
     if (!isSqliteWorkerStoreAvailable(store)) {

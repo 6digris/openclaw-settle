@@ -93,6 +93,15 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/tools/cron-tool.output-contract.test.ts",
   "src/plugins/services.cron.test.ts",
   "src/state/creator-namespace-migration.test.ts",
+  "src/node-host/node-worker-launch-store.test.ts",
+  "src/node-host/node-worker-turn-store.test.ts",
+  "src/node-host/node-worker-supervisor.test.ts",
+  "src/node-host/node-worker-supervisor.admission.test.ts",
+  "src/node-host/node-worker-supervisor.container.test.ts",
+  "src/node-host/node-worker-supervisor.lifetime.test.ts",
+  "src/node-host/node-worker-supervisor.recovery.test.ts",
+  "src/node-host/runtime.worker-supervisor.test.ts",
+  "src/node-host/node-worker-workspace-retention.test.ts",
 ];
 
 const databaseWorkerCoreTestFileSet = new Set(databaseWorkerCoreTestFiles);
