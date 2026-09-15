@@ -236,16 +236,17 @@ describe("saved update failure resolution", () => {
     },
   );
 
-  it("allows a correlated Doctor repair without inventing a missing update target", async () => {
+  it("rejects a correlated Doctor repair without a recorded update target", async () => {
     failedRun.reason = "post-update-failed";
     failedRun.target = {};
     failedRun.steps = [{ step: "doctor", status: "failed" }];
     latestRun = failedRun;
-    validateDoctor.mockResolvedValue({ ok: false, score: -1, summary: "Configuration error." });
-    expect(await validate(failure("post-update-failed"))).toMatchObject({ ok: false, score: -1 });
-    expect(await validate(failure("post-update-failed"))).not.toHaveProperty("stopReason");
-    validateDoctor.mockResolvedValue({ ok: true, score: 0, summary: "Clean." });
-    expect(await validate(failure("post-update-failed"))).toMatchObject({ ok: true });
+    expect(await validate(failure("post-update-failed"))).toMatchObject({
+      ok: false,
+      summary: MISSING_TARGET,
+      stopReason: MISSING_TARGET,
+    });
+    expect(validateDoctor).not.toHaveBeenCalled();
   });
 
   it("resolves the attributed Doctor blocker after a later preview without rewriting either run", async () => {

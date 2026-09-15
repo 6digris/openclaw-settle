@@ -137,16 +137,21 @@ describe("triage --run", () => {
     },
   );
 
-  it.each([false, true])(
-    "repairs an attributed post-update Doctor failure only with run identity: %s",
-    async (correlated) => {
+  it.each(["missing run", "missing target", "recorded target"])(
+    "repairs an attributed post-update Doctor failure only with recorded identity: %s",
+    async (identity) => {
       const targetVersion = await readPackageVersion(path.resolve(import.meta.dirname, "../.."));
       if (!targetVersion) {
         throw new Error("Fixture installation version missing");
       }
-      const run = correlated
-        ? createUpdateRun({ trigger: "cli", target: { kind: "package", version: targetVersion } })
-        : undefined;
+      const run =
+        identity === "missing run"
+          ? undefined
+          : createUpdateRun({
+              trigger: "cli",
+              target:
+                identity === "recorded target" ? { kind: "package", version: targetVersion } : {},
+            });
       if (run) {
         recordUpdateRunStep(run.runId, {
           step: "finalize:doctor",
@@ -183,7 +188,7 @@ describe("triage --run", () => {
       const command = withTriageTerminal(true, () =>
         triageCommand(runtime, { run: true, noExport: true, updateResult: failurePath }),
       );
-      if (run) {
+      if (run && identity === "recorded target") {
         await command;
         const result = await mocks.runUpdateRepairLoop.mock.results[0]?.value;
         expect(result).toMatchObject({ status: "repaired", finalValidation: { ok: true } });
@@ -193,6 +198,11 @@ describe("triage --run", () => {
         expect(getUpdateRun(run.runId)?.status).toBe("failed");
       } else {
         await expect(command).rejects.toMatchObject({ code: 1 });
+        const result = await mocks.runUpdateRepairLoop.mock.results[0]?.value;
+        expect(result).toMatchObject({ status: "unrepaired", finalValidation: { ok: false } });
+        expect(runtime.log).toHaveBeenCalledWith(
+          "Embedded repair unrepaired: Cannot establish the update target. Next step: run `openclaw update status --json`, then retry `openclaw update`.",
+        );
         expect(mocks.runUpdateRepairTurn).not.toHaveBeenCalled();
       }
       expect(await fs.readFile(failurePath, "utf8")).toBe(saved);

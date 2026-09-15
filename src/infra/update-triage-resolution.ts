@@ -178,7 +178,7 @@ export async function validateTriageUpdateResolution(params: {
   const options = { env };
   const original = runId ? getUpdateRun(runId, options) : undefined;
   const target = original?.target;
-  if (!original) {
+  if (!original || !target?.kind || !(target.version || (target.kind === "git" && target.sha))) {
     return unresolved("Cannot establish the update target.");
   }
   const completion = listUpdateRuns({ limit: 1 }, options)[0];
@@ -187,8 +187,8 @@ export async function validateTriageUpdateResolution(params: {
   }
   if (completion && doctorFailure(failure, original)) {
     const identityMatches = async () =>
-      (!target?.version || (await readPackageVersion(installRoot)) === target.version) &&
-      (!target?.sha || (target.kind === "git" && (await readGitHead(params)) === target.sha));
+      (!target.version || (await readPackageVersion(installRoot)) === target.version) &&
+      (!target.sha || (target.kind === "git" && (await readGitHead(params)) === target.sha));
     if (!(await identityMatches())) {
       return unresolved("The installed identity does not match the recorded Doctor repair target.");
     }
@@ -208,12 +208,9 @@ export async function validateTriageUpdateResolution(params: {
       ? {
           ok: true,
           score: 0,
-          summary: `Doctor/config blocker resolved${target?.version ? `; installed version ${target.version} verified` : ""}${target?.sha ? `; Git commit ${target.sha} verified` : ""}.`,
+          summary: `Doctor/config blocker resolved${target.version ? `; installed version ${target.version} verified` : ""}${target.sha ? `; Git commit ${target.sha} verified` : ""}.`,
         }
       : { ...doctor, summary: `${doctor.summary} ${nextUpdate}` };
-  }
-  if (!target?.kind || !(target.version || (target.kind === "git" && target.sha))) {
-    return unresolved("Cannot establish the update target.");
   }
   const reason = "result" in failure ? failure.result.reason : undefined;
   const family = Object.entries(failureFamilies).find(
