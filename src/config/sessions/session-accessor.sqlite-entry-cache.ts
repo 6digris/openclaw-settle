@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { executeWithCachedStatement } from "../../infra/kysely-sync-cache-state.js";
 import { executeSqliteQuerySync, iterateSqliteQuerySync } from "../../infra/kysely-sync.js";
 import { readSqliteDataVersion } from "../../infra/node-sqlite.js";
 import { stageSqliteTransactionState } from "../../infra/sqlite-post-commit.js";
@@ -55,7 +56,9 @@ const sessionEntryCaches = new WeakMap<DatabaseSync, SqliteSessionEntryCache>();
 const sessionNodesGenerationTrackerSchemaVersions = new WeakMap<DatabaseSync, number>();
 
 function ensureSessionNodesGenerationTracker(database: DatabaseSync): void {
-  const schemaRow = database.prepare("PRAGMA schema_version").get() as {
+  const schemaRow = executeWithCachedStatement(database, "PRAGMA schema_version", [], (statement) =>
+    statement.get(),
+  ) as {
     schema_version?: unknown;
   };
   if (typeof schemaRow.schema_version !== "number") {
@@ -106,9 +109,12 @@ function ensureSessionNodesGenerationTracker(database: DatabaseSync): void {
 
 function readSessionNodesGeneration(database: DatabaseSync): number {
   ensureSessionNodesGenerationTracker(database);
-  const row = database
-    .prepare("SELECT generation FROM temp.openclaw_session_nodes_cache_generation WHERE id = 1")
-    .get() as { generation?: unknown };
+  const row = executeWithCachedStatement(
+    database,
+    "SELECT generation FROM temp.openclaw_session_nodes_cache_generation WHERE id = 1",
+    [],
+    (statement) => statement.get(),
+  ) as { generation?: unknown };
   if (typeof row.generation !== "number") {
     throw new Error("SQLite session_nodes cache generation is unavailable");
   }

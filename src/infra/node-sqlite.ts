@@ -4,6 +4,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { ensureSqliteLibrarySelected } from "./bun-sqlite-library.js";
 import { formatErrorMessage } from "./errors.js";
+import { executeWithCachedStatement } from "./kysely-sync-cache-state.js";
 import { isSqliteWalResetSafeVersion } from "./sqlite-runtime-version.js";
 import { installProcessWarningFilter } from "./warning-filter.js";
 
@@ -141,8 +142,10 @@ export function openNodeSqliteDatabase(
 
 /** Compare versions only across reads on the same connection. */
 export function readSqliteDataVersion(database: import("node:sqlite").DatabaseSync): number {
-  // SAFETY: SQLite names this PRAGMA's column data_version; its numeric value is checked below.
-  const row = database.prepare("PRAGMA data_version").get() as { data_version?: unknown };
+  // This PRAGMA reads the connection cookie when stepped; only its statement is retained.
+  const row = executeWithCachedStatement(database, "PRAGMA data_version", [], (statement) =>
+    statement.get(),
+  ) as { data_version?: unknown }; // SAFETY: SQLite's numeric value is checked below.
   if (typeof row.data_version !== "number") {
     throw new Error("SQLite did not return a numeric PRAGMA data_version");
   }

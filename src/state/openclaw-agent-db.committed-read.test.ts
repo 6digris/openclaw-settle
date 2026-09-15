@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it, vi } from "vitest";
+import { readSqliteDataVersion } from "../infra/node-sqlite.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "./openclaw-agent-db-contract.js";
 import { closeCachedOpenClawAgentDatabase } from "./openclaw-agent-db-lifecycle.js";
@@ -17,7 +18,11 @@ const stampQuery = "SELECT updated_at FROM schema_meta WHERE meta_key = 'primary
 
 function readStamp(options: OpenClawAgentDatabaseOptions, behavior?: { allowExtension?: boolean }) {
   const result = withOpenClawAgentDatabaseReadOnly(
-    ({ db }) => ({ db, stamp: db.prepare(stampQuery).get()?.updated_at }),
+    ({ db }) => ({
+      db,
+      stamp: db.prepare(stampQuery).get()?.updated_at,
+      dataVersion: readSqliteDataVersion(db),
+    }),
     options,
     behavior,
   );
@@ -53,16 +58,18 @@ describe("committed agent database reads", () => {
         const second = readStamp(options);
         expect(second.db === first.db).toBe(true);
         expect(second.stamp).toBe(101);
+        expect(second.dataVersion).toBe(first.dataVersion);
         expect(owner.db.isTransaction).toBe(true);
-        return first.db;
+        return first;
       });
 
       owner.db.exec("UPDATE schema_meta SET updated_at = 303 WHERE meta_key = 'primary'");
       inWriterTransaction(owner.db, () => {
         owner.db.exec("UPDATE schema_meta SET updated_at = 404 WHERE meta_key = 'primary'");
         const current = readStamp(options);
-        expect(current.db === reader).toBe(true);
+        expect(current.db === reader.db).toBe(true);
         expect(current.stamp).toBe(303);
+        expect(current.dataVersion).not.toBe(reader.dataVersion);
       });
       expect(readStamp(options).db === owner.db).toBe(true);
       expect(readStamp(options).stamp).toBe(303);

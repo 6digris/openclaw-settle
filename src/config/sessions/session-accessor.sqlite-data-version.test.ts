@@ -1,6 +1,7 @@
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { clearNodeSqliteKyselyCacheForDatabase } from "../../infra/kysely-sync.js";
 import { listUsageCountedTranscriptStats } from "../../infra/session-cost-usage-collection.js";
@@ -129,6 +130,29 @@ function createSessionScope(label: string) {
 }
 
 describe("exact session entry read lifetimes", () => {
+  it("invalidates a warm selected read after a main-schema change", async () => {
+    const scope = createSessionScope("selected-schema-change");
+    await upsertSessionEntryCore(scope, { sessionId: "selected-schema-change", updatedAt: 1 });
+    const database = openOpenClawAgentDatabase(scope);
+    const read = captureSessionEntryCacheRead(database, scope.sessionKey);
+    try {
+      for (let index = 0; index < 4; index += 1) {
+        expect(read.isCurrent()).toBe(true);
+      }
+      database.db.exec("CREATE TABLE scalar_schema_probe (value INTEGER) STRICT");
+      expect(read.isCurrent()).toBe(false);
+      const next = captureSessionEntryCacheRead(database, scope.sessionKey);
+      try {
+        expect(next.entry).toEqual(read.entry);
+        expect(next.isCurrent()).toBe(true);
+      } finally {
+        next.release();
+      }
+    } finally {
+      read.release();
+    }
+  });
+
   it("keeps a selected read through sibling writes and full-list expansion", async () => {
     const scope = createSessionScope("selected-read");
     const sibling = { ...scope, sessionKey: "agent:main:unrelated" };
@@ -526,6 +550,58 @@ describe("SQLite session entry cache", () => {
     expect(firstParseCount).toBe(2);
     expect(parseSessionEntryCalls).toHaveBeenCalledTimes(firstParseCount);
     expect(second).toEqual(first);
+  });
+
+  it("executes all three validity scalars on warm public reads without preparing them again", async () => {
+    const scope = createSessionScope("scalar-statements");
+    await upsertSessionEntryCore(scope, {
+      label: "original",
+      sessionId: "scalar-statements",
+      updatedAt: 1,
+    });
+    const database = openOpenClawAgentDatabase(scope);
+    const expected = listSessionEntriesCore(scope);
+    const keys = ["dataVersion", "schemaVersion", "generation"] as const;
+    const queries = new Map<string, (typeof keys)[number]>([
+      ["PRAGMA data_version", "dataVersion"],
+      ["PRAGMA schema_version", "schemaVersion"],
+      [
+        "SELECT generation FROM temp.openclaw_session_nodes_cache_generation WHERE id = 1",
+        "generation",
+      ],
+    ]);
+    const prepares = { dataVersion: 0, schemaVersion: 0, generation: 0 };
+    const executions = trackSqliteStatementExecutions(database.db, keys, (sql) => {
+      const key = queries.get(sql);
+      if (!key) {
+        return null;
+      }
+      prepares[key] += 1;
+      return key;
+    });
+    try {
+      for (let index = 0; index < 4; index += 1) {
+        expect(listSessionEntriesCore(scope)).toEqual(expected);
+      }
+      expect(prepares).toEqual({ dataVersion: 2, schemaVersion: 2, generation: 2 });
+      const before = { ...executions.counts };
+      const copy = listSessionEntriesCore(scope);
+      copy[0]!.entry.label = "caller mutation";
+      expect(listSessionEntriesCore(scope)).toEqual(expected);
+      for (const key of keys) {
+        expect(executions.counts[key]).toBeGreaterThan(before[key]);
+        expect(prepares[key]).toBe(2);
+      }
+
+      database.db
+        .prepare(
+          "UPDATE session_nodes SET entry_json = json_set(entry_json, '$.label', ?) WHERE session_key = ?",
+        )
+        .run("raw same-timestamp write", scope.sessionKey);
+      expect(listSessionEntriesCore(scope)[0]?.entry.label).toBe("raw same-timestamp write");
+    } finally {
+      executions.restore();
+    }
   });
 
   it("keeps same-path caches isolated by live connection", async () => {
