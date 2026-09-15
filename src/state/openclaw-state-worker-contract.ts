@@ -1,3 +1,4 @@
+import type { McpOAuthReadOperations } from "../agents/mcp-oauth-store.kernel.js";
 import type { ClawInstallSchemaVersionRow } from "../claws/provenance-runtime-read.kernel.js";
 import type { ConfigHealthPatch } from "../config/io.health-state.kernel.js";
 import type {
@@ -50,7 +51,8 @@ export type OpenClawStateWorkerOperations = PluginStateWorkerOperations &
   UserPreferenceWorkerOperations &
   CronStoreWorkerOperations &
   FleetRegistryWriteOperations &
-  SessionDeliveryWorkerOperations & {
+  SessionDeliveryWorkerOperations &
+  McpOAuthReadOperations & {
     "backup.recordOutcome": { input: PreparedBackupRunRecord; output: void };
     "projects.findRoot": { input: { repoRoot: string }; output: string | undefined };
     "plugins.metadata.read": {
