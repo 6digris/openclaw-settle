@@ -57,6 +57,7 @@ import {
   summarizeTaskRecordsForFlowInDatabase,
 } from "../tasks/task-registry.store.kernel.js";
 import { readTaskRegistryStatusSnapshot } from "../tasks/task-registry.store.status.js";
+import { recordBackupRunInDatabase } from "./backup-run-records.kernel.js";
 import {
   openClawStateDatabaseCache,
   retainOpenClawStateDatabase,
@@ -366,6 +367,12 @@ function createSharedStateWorkerBackend(
               return releaseFleetCellOperationInDatabase(db, command.input);
           }
         }, writeOptions);
+      }
+      if (command.type === "backup.recordOutcome") {
+        return runOpenClawStateWriteTransaction(
+          ({ db }) => recordBackupRunInDatabase(db, command.input),
+          writeOptions,
+        );
       }
       if (command.type === "projects.findRoot") {
         ensureProjectRegistrySchema(writeOptions);

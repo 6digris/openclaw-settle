@@ -11,6 +11,7 @@ import {
 import { ensureProfileForEmail, linkEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import {
+  assignSessionOwner,
   deleteSessionEntryLifecycle,
   listSessionParticipantsReadOnly,
   listSessionEntriesCore,
@@ -213,27 +214,49 @@ describe("SQLite session participants", () => {
     },
   );
 
-  it("keeps cache projection errors from rolling back a recorded participant", async () => {
-    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      const scope = { agentId: "main", env: state.env, sessionKey: "agent:main:projection-error" };
-      await upsertSessionEntryCore(scope, { sessionId: "projection-error", updatedAt: 1 });
-      recordSessionParticipant(scope, { identity: profile("a"), promptedAt: 10 });
-      listSessionEntriesCore({ ...scope, projection: "list" });
-      const database = openOpenClawAgentDatabase(scope);
-      database.db
-        .prepare("UPDATE session_participants SET identity_namespace = ?")
-        .run('{"type":"profile","extra":true}');
-      expect(recordSessionParticipant(scope, { identity: profile("b"), promptedAt: 20 })).toBe(
-        "inserted",
-      );
-      expect(() => listSessionEntriesCore({ ...scope, projection: "list" })).toThrow(
-        "Session participant identity is invalid",
-      );
-      expect(
-        database.db.prepare("SELECT count(*) AS count FROM session_participants").get()?.count,
-      ).toBe(2);
-    });
-  });
+  it.each(["participant", "owner"] as const)(
+    "keeps cache projection errors from rolling back a recorded %s",
+    async (mutation) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+        const scope = {
+          agentId: "main",
+          env: state.env,
+          sessionKey: "agent:main:projection-error",
+        };
+        await upsertSessionEntryCore(scope, { sessionId: "projection-error", updatedAt: 1 });
+        recordSessionParticipant(scope, { identity: profile("a"), promptedAt: 10 });
+        listSessionEntriesCore({ ...scope, projection: "list" });
+        const database = openOpenClawAgentDatabase(scope);
+        database.db
+          .prepare("UPDATE session_participants SET identity_namespace = ?")
+          .run('{"type":"profile","extra":true}');
+        if (mutation === "participant") {
+          expect(recordSessionParticipant(scope, { identity: profile("b"), promptedAt: 20 })).toBe(
+            "inserted",
+          );
+        } else {
+          expect(
+            assignSessionOwner(scope, {
+              owner: { type: "agent", id: "assigned" },
+              assignedBy: { type: "agent", id: "main" },
+              assignedAt: 20,
+            }),
+          ).toMatchObject({ actor: { type: "agent", id: "assigned" } });
+          expect(
+            database.db
+              .prepare("SELECT owner_actor_id FROM session_nodes WHERE session_key = ?")
+              .get(scope.sessionKey)?.owner_actor_id,
+          ).toBe("assigned");
+        }
+        expect(() => listSessionEntriesCore({ ...scope, projection: "list" })).toThrow(
+          "Session participant identity is invalid",
+        );
+        expect(
+          database.db.prepare("SELECT count(*) AS count FROM session_participants").get()?.count,
+        ).toBe(mutation === "participant" ? 2 : 1);
+      });
+    },
+  );
 
   it.each([false, true])(
     "refreshes participant order without reloading sibling metadata (selected: %s)",

@@ -7,6 +7,7 @@ import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { ensureOpenClawAgentProgressCardSchemaInTransaction } from "../../state/openclaw-agent-progress-card-schema.js";
 import { ensureSessionParticipantsSchema } from "../../state/openclaw-agent-session-participants-schema.js";
 import {
+  copySessionInputCompletionsForRepair,
   copySessionPendingInputsForRepair,
   deleteSessionPendingInputs,
 } from "./session-accessor.sqlite-pending-inputs.js";
@@ -52,6 +53,9 @@ export function copySessionNodeArtifactsForRepair(
   const destinationDb = getSessionKysely(destination.db);
   const sourceKeyReferences = new Set(keys.flatMap((key) => [key, key.trim()]));
   const sourceTables = readSessionNodeArtifactTables(source);
+  if (sourceTables.has("session_input_completions")) {
+    copySessionInputCompletionsForRepair(source, destination, keys, canonicalKey);
+  }
   let destinationTables = readSessionNodeArtifactTables(destination);
   if (
     options.includeParticipants !== false &&
@@ -368,6 +372,7 @@ function readSessionNodeArtifactTables(database: OpenClawAgentDatabase): Set<str
           "board_tabs",
           "board_widgets",
           "heartbeat_outcomes",
+          "session_input_completions",
           "session_members",
           "session_participants",
           "session_progress_cards",
