@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
 import {
+  closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
   isOpenClawAgentDatabaseOpen,
   openOpenClawAgentDatabase,
@@ -13,7 +14,10 @@ import {
   resolveOpenClawAgentSqlitePath,
   runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseAsync,
+  closeOpenClawStateDatabaseForTest,
+} from "../../state/openclaw-state-db.js";
 import { readSessionTranscriptWatermark, type TranscriptEvent } from "./session-accessor.js";
 import { replaceSessionEntry } from "./session-accessor.sqlite-entry.js";
 import {
@@ -100,6 +104,8 @@ async function waitForSearchReconcile(query: string): Promise<void> {
 
 afterEach(async () => {
   await waitForSearchReconcile("cleanup-probe");
+  await closeOpenClawAgentDatabasesAsync();
+  await closeOpenClawStateDatabaseAsync();
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
   fs.rmSync(paths.tempDir, { recursive: true, force: true });
