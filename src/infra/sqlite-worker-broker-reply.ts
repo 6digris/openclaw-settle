@@ -168,7 +168,7 @@ export function decodeSqliteWorkerReplyError(
 }
 
 /** Keep the original failure and outcome classification when retirement also fails. */
-function withSqliteWorkerCleanupFailure(failure: Error, cleanupError: unknown): Error {
+export function withSqliteWorkerCleanupFailure(failure: Error, cleanupError: unknown): Error {
   if (cleanupError === undefined) {
     return failure;
   }
