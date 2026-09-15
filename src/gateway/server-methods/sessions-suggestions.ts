@@ -198,7 +198,7 @@ async function dispatchSuggestion(params: {
     isWebchatConnect: params.isWebchatConnect,
     respond: captureResponse,
     sessionMutationAuthorization: chatAuthorization,
-    sessionMutationCommitGuard: assertAdmittedCurrent,
+    sessionMutationCommitGuard: assertRequestCurrent,
     context: params.context,
   });
   return response?.[0] === true ? { ok: true } : { ok: false, error: response?.[2] };
