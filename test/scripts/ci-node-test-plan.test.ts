@@ -3086,11 +3086,13 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     const server = createGatewayServerVitestConfig({});
     const methods = createGatewayMethodsVitestConfig({});
     expect(worker.test?.pool).toBe("forks");
-    expect(worker.test?.isolate).toBe(false);
+    expect(core.test?.isolate).toBe(true);
+    for (const shared of [worker, server, methods]) {
+      expect(shared.test?.isolate).toBe(false);
+    }
     for (const previous of [core, server, methods]) {
       expect(worker.test?.runner).toBe(previous.test?.runner);
       expect(worker.test?.setupFiles).toEqual(previous.test?.setupFiles);
-      expect(worker.test?.isolate).toBe(previous.test?.isolate);
     }
     expect(listMatchedTestFiles(worker)).toEqual(gatewayDatabaseWorkerTestFiles);
     const former = new Set([core, server, methods].flatMap(listMatchedTestFiles));
