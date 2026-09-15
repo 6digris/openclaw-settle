@@ -5,6 +5,7 @@ import { Socket } from "node:net";
 import { pipeline, type Readable } from "node:stream";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { createCleanupDiagnostic } from "../cleanup-diagnostic.js";
 import { GRACEFUL_CANCEL_TIMEOUT_MS } from "./cancellation-policy.js";
 import { hasLiveOwnedProcessGroupMembers } from "./service-child-group-ownership.js";
 import {
@@ -48,6 +49,8 @@ function delay(ms: number): Promise<void> {
 }
 
 export function runServiceChildGroupAnchor(): void {
+  const trace = createCleanupDiagnostic("group-anchor");
+  trace("started");
   let start: ServiceChildStart | undefined;
   let state: AnchorState = "starting";
   let sequence = 0;
@@ -83,7 +86,12 @@ export function runServiceChildGroupAnchor(): void {
       };
       control!.write(
         encodeServiceChildMessage(framed as ServiceChildAnchorMessage), // SAFETY: typed payload plus live envelope forms the protocol union.
-        () => resolve(),
+        () => {
+          if (message.type === "closing") {
+            trace("closing-receipt-write-complete");
+          }
+          resolve();
+        },
       );
     });
   };
@@ -97,9 +105,18 @@ export function runServiceChildGroupAnchor(): void {
       return;
     }
     state = "closed";
+    trace("authority-retiring", {
+      hardKill,
+      lineageClosed,
+      stdoutDrained,
+      stderrDrained,
+      rootExited: Boolean(rootExit),
+      remainingMs: deadline - Date.now(),
+    });
     // Retained hosts have no observer outside this group. Killing the local
     // reader with unresolved lineage must not certify escaped descendants gone.
     if (hardKill && start.lineageFd === undefined && !lineageClosed) {
+      trace("kill-with-unresolved-retained-lineage");
       process.kill(0, "SIGKILL");
       return;
     }
@@ -108,6 +125,7 @@ export function runServiceChildGroupAnchor(): void {
     const requiresAcknowledgement = start.acknowledgeClosing === true;
     closingSequence = requiresAcknowledgement ? sequence + 1 : undefined;
     const remainingMs = deadline - Date.now();
+    trace("closing-ack-join-start", { remainingMs, requiresAcknowledgement });
     if (remainingMs > 0) {
       void send({ type: "closing", reason }).then(
         () => {
@@ -126,10 +144,15 @@ export function runServiceChildGroupAnchor(): void {
       Date.now() >= deadline ||
       hardKill
     ) {
+      trace("retirement-kill", { hardKill, remainingMs: deadline - Date.now() });
       process.kill(0, "SIGKILL");
       return;
     }
-    control?.end(() => process.exit(0));
+    trace("retirement-normal-exit-request");
+    control?.end(() => {
+      trace("retirement-normal-exit");
+      process.exit(0);
+    });
   };
 
   const reportStartupFailure = async (error: string) => {
@@ -144,6 +167,11 @@ export function runServiceChildGroupAnchor(): void {
     reason: "cancel" | "lineage-lost" | "parent-lost",
     signal: "SIGTERM" | "SIGKILL" = "SIGTERM",
   ) => {
+    trace("cleanup-request", {
+      force: signal === "SIGKILL",
+      closing: state === "closing",
+      closed: state === "closed",
+    });
     if (!start || state === "closed") {
       return;
     }
@@ -157,11 +185,18 @@ export function runServiceChildGroupAnchor(): void {
     state = "closing";
     forceCleanup = signal === "SIGKILL";
     const cleanupDeadline = Date.now() + GRACEFUL_CANCEL_TIMEOUT_MS;
+    trace("cleanup-start", { forceCleanup, remainingMs: cleanupDeadline - Date.now() });
     const termGraceDone = delay(GRACEFUL_CANCEL_TIMEOUT_MS);
     if (!forceCleanup) {
       // The anchor catches its own signal while every command-group member receives it.
+      trace("group-term");
       process.kill(0, "SIGTERM");
       await Promise.race([lineageDone.promise, termGraceDone, forceCleanupRequested.promise]);
+      trace("term-lineage-join-end", {
+        forceCleanup,
+        lineageClosed,
+        remainingMs: cleanupDeadline - Date.now(),
+      });
     }
     if (state !== "closing" || !start) {
       return;
@@ -177,7 +212,14 @@ export function runServiceChildGroupAnchor(): void {
     if (rootExit && !forceCleanup) {
       // Output can outlive lineage and the root. It may preserve the authentic root
       // result only within the existing TERM grace, and KILL must wake this wait.
+      trace("root-output-join-start", { stdoutDrained, stderrDrained });
       await Promise.race([rootSettledDone.promise, termGraceDone, forceCleanupRequested.promise]);
+      trace("root-output-join-end", {
+        stdoutDrained,
+        stderrDrained,
+        forceCleanup,
+        remainingMs: cleanupDeadline - Date.now(),
+      });
       if (state !== "closing" || !start) {
         return;
       }
@@ -194,6 +236,7 @@ export function runServiceChildGroupAnchor(): void {
       // This census only schedules retirement or escalation; it cannot certify closure.
       // The outside-group host must observe kernel group disappearance after we exit.
       if (hasLiveOwnedProcessGroupMembers(remainingMs) === false) {
+        trace("group-census-idle", { remainingMs: cleanupDeadline - Date.now() });
         await closeAuthority(reason, false, cleanupDeadline);
         return;
       }
@@ -224,6 +267,7 @@ export function runServiceChildGroupAnchor(): void {
         message.closingSequence === closingSequence
       ) {
         lastHostSequence = message.sequence;
+        trace("exact-closing-ack-consumed");
         retirementReady.resolve(true);
       }
       return;
@@ -281,6 +325,7 @@ export function runServiceChildGroupAnchor(): void {
       }
     });
     const onControlLoss = () => {
+      trace("control-loss", { closed: state === "closed" });
       if (state === "closed") {
         retirementReady.resolve(false);
       } else {
@@ -318,6 +363,7 @@ export function runServiceChildGroupAnchor(): void {
         return;
       }
       lineageClosed = true;
+      trace("lineage-eof");
       lineageDone.resolve();
       if (state === "active") {
         // Programs can close inherited descriptors while still running. Keep this
@@ -362,6 +408,7 @@ export function runServiceChildGroupAnchor(): void {
         return;
       }
       rootSettlementStarted = true;
+      trace("root-output-drained");
       await rootResultDelivery;
       rootSettledDone.resolve();
       if (lineageClosed && state === "active") {
@@ -377,10 +424,12 @@ export function runServiceChildGroupAnchor(): void {
       ? createWriteStream("", { fd: 2, autoClose: true })
       : process.stderr;
     pipeline(command.stdout!, stdout, () => {
+      trace("stdout-drained");
       stdoutDrained = true;
       void settleRoot();
     });
     pipeline(command.stderr!, stderr, () => {
+      trace("stderr-drained");
       stderrDrained = true;
       void settleRoot();
     });
@@ -411,6 +460,7 @@ export function runServiceChildGroupAnchor(): void {
       });
     }
     command.once("exit", (code, signal) => {
+      trace("root-exited");
       rootExit = { code, signal };
       // The host gates public settlement on output EOF, so record the authentic root
       // result before cleanup can hard-close an output-holding descendant.

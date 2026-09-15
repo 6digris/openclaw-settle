@@ -1,0 +1,151 @@
+name: Temporary CUA cleanup diagnostic
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - .github/workflows/cua-cleanup-diagnostic.yml
+      - src/process/cleanup-diagnostic.ts
+      - src/process/owned-stdio.ts
+      - src/process/supervisor/service-child-*.ts
+      - extensions/cua-computer/src/mcp-driver-client.test.ts
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cua-cleanup-diagnostic-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  original-order:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'diag/cua-cleanup-confirmation'
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 40
+    env:
+      NODE_OPTIONS: --max-old-space-size=8192
+      OPENCLAW_VITEST_MAX_WORKERS: "2"
+    steps:
+      - &checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify exact candidate
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git show --no-patch --format='%H %P'
+          sha256sum pnpm-lock.yaml test/vitest/vitest.extensions.config.ts scripts/ci-run-node-test-shard.mts
+          sha256sum src/process/cleanup-diagnostic.ts src/process/owned-stdio.ts src/process/supervisor/service-child-{relay-host,relay,group-anchor}.ts
+          sha256sum extensions/cua-computer/src/mcp-driver-client.test.ts
+      - &setup
+        name: Setup frozen Node environment
+        uses: ./.github/actions/setup-node-env
+        with:
+          node-version: "24.19.0"
+          install-bun: "false"
+          cache-mode: "off"
+      - name: Build original Node test runtime
+        env:
+          OPENCLAW_BUILD_PRIVATE_QA: "0"
+          VITEST: "1"
+        run: pnpm build qaRuntime
+      - name: Run original extensions shard 4 of 6
+        env:
+          OPENCLAW_NODE_TEST_CONFIGS_JSON: '["test/vitest/vitest.extensions.config.ts"]'
+          OPENCLAW_NODE_TEST_ENV_JSON: '{"OPENCLAW_NODE_TEST_VITEST_ARGS_JSON":"[\"--shard=4/6\"]"}'
+          OPENCLAW_NODE_TEST_INCLUDE_PATTERNS_JSON: "null"
+          OPENCLAW_NODE_TEST_TARGETS_JSON: "null"
+          OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: "[]"
+          OPENCLAW_VITEST_SHARD_NAME: changed-extensions-config-4
+          OPENCLAW_VITEST_NO_OUTPUT_TIMEOUT_MS: "300000"
+          OPENCLAW_VITEST_NO_OUTPUT_RETRY: "1"
+          OPENCLAW_NODE_TEST_PLAN_CONCURRENCY: "1"
+          OPENCLAW_CUA_CLEANUP_DIAGNOSTIC_PATH: ${{ runner.temp }}/cua-cleanup.jsonl
+        run: |
+          set -euo pipefail
+          umask 077
+          test ! -e "$OPENCLAW_CUA_CLEANUP_DIAGNOSTIC_PATH"
+          time -p node --import tsx scripts/ci-run-node-test-shard.mts
+      - name: Snapshot bounded trace after shard termination
+        id: trace-snapshot
+        if: always()
+        env:
+          TRACE_PATH: ${{ runner.temp }}/cua-cleanup.jsonl
+          SNAPSHOT_PATH: ${{ runner.temp }}/cua-cleanup-export.jsonl
+        run: |
+          node --input-type=module <<'NODE'
+          import { constants, openSync, closeSync, readSync, fstatSync, writeFileSync, appendFileSync } from 'node:fs';
+          const max = 1024 * 1024;
+          const fd = openSync(process.env.TRACE_PATH, constants.O_RDONLY | constants.O_NOFOLLOW);
+          let snapshot;
+          try {
+            const before = fstatSync(fd, { bigint: true });
+            if (!before.isFile() || before.size > BigInt(max)) throw new Error('Diagnostic incomplete: invalid or oversized trace');
+            const bytes = Buffer.alloc(max + 1);
+            let length = 0;
+            while (length < bytes.length) {
+              const count = readSync(fd, bytes, length, bytes.length - length, null);
+              if (count === 0) break;
+              length += count;
+            }
+            const after = fstatSync(fd, { bigint: true });
+            if (length > max || BigInt(length) !== before.size ||
+                ['dev', 'ino', 'size', 'mtimeNs'].some(key => before[key] !== after[key])) {
+              throw new Error('Diagnostic incomplete: trace changed during bounded snapshot');
+            }
+            snapshot = bytes.subarray(0, length);
+          } finally {
+            closeSync(fd);
+          }
+          writeFileSync(process.env.SNAPSHOT_PATH, snapshot, { flag: 'wx', mode: 0o600 });
+          appendFileSync(process.env.GITHUB_OUTPUT, 'snapshot_ready=true\n');
+          console.log(`Snapshot bytes=${snapshot.length}; this cutoff does not certify unresolved owners completed.`);
+          NODE
+      - name: Inspect retained snapshot
+        if: always() && steps.trace-snapshot.outputs.snapshot_ready == 'true'
+        env:
+          TRACE_PATH: ${{ runner.temp }}/cua-cleanup-export.jsonl
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, statSync } from 'node:fs';
+          const file = process.env.TRACE_PATH;
+          if (statSync(file).size > 1024 * 1024) throw new Error('Trace exceeds 1 MiB');
+          const records = readFileSync(file, 'utf8').trim().split('\n').map(JSON.parse);
+          const groups = Map.groupBy(records, record => record.component);
+          for (const [component, rows] of groups) {
+            console.log(JSON.stringify({ component, records: rows.length, first: rows[0].event, last: rows.at(-1).event }));
+          }
+          if (records.some(record => record.event === 'trace-cap-reached')) throw new Error('Diagnostic incomplete: trace cap');
+          for (const component of ['owned-stdio', 'relay-host', 'relay', 'group-anchor']) {
+            if (!groups.has(component)) throw new Error(`Diagnostic incomplete: missing ${component}`);
+          }
+          console.log('Trace presence only; lifecycle completion requires reading the actual events.');
+          NODE
+          sha256sum "$TRACE_PATH"
+      - name: Retain diagnostic trace
+        if: always() && steps.trace-snapshot.outputs.snapshot_ready == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: cua-cleanup-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/cua-cleanup-export.jsonl
+          if-no-files-found: error
+          retention-days: 7
+
+  deterministic-owner:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'diag/cua-cleanup-confirmation'
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 25
+    env:
+      NODE_OPTIONS: --max-old-space-size=8192
+      OPENCLAW_VITEST_MAX_WORKERS: "2"
+    steps:
+      - *checkout
+      - *setup
+      - name: Characterize confirmation deadline without changing it
+        run: >-
+          node scripts/run-vitest.mjs src/process/supervisor/service-child-relay-host.test.ts
+          -t 'characterizes the stdio confirmation deadline before a later relay exit'

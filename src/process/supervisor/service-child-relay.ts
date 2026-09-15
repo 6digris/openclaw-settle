@@ -5,6 +5,7 @@ import {
   resolveRuntimeWorkerArgv,
   resolveRuntimeWorkerUrl,
 } from "../../infra/runtime-worker-url.js";
+import { createCleanupDiagnostic } from "../cleanup-diagnostic.js";
 import type { ServiceChildRelayMessage, ServiceChildStart } from "./service-child-protocol.js";
 
 type StdioEntry = "ignore" | "inherit" | "ipc" | number;
@@ -21,6 +22,8 @@ function reserveIpcFd(stdio: StdioEntry[]): void {
 }
 
 function runServiceChildRelay(): void {
+  const trace = createCleanupDiagnostic("relay");
+  trace("started");
   let generation: string | undefined;
   let anchor: ChildProcess | undefined;
   let parentLost = false;
@@ -40,6 +43,7 @@ function runServiceChildRelay(): void {
       return;
     }
     parentLost = true;
+    trace("parent-loss");
     if (anchor?.connected) {
       anchor.send({ type: "parent-loss", generation });
     }
@@ -103,6 +107,7 @@ function runServiceChildRelay(): void {
       return;
     }
     anchor.once("spawn", () => {
+      trace("anchor-spawned");
       // Only the anchor and command may retain the host's lineage writer.
       if (start.lineageFd !== undefined) {
         closeSync(start.lineageFd);
@@ -128,9 +133,11 @@ function runServiceChildRelay(): void {
       }
     });
     anchor.once("error", (error) => {
+      trace("anchor-error");
       report({ type: "relay-error", generation: generation!, error: error.message });
     });
     anchor.once("exit", (code, signal) => {
+      trace("anchor-exited-relay-exiting", { success: code === 0, killed: signal === "SIGKILL" });
       process.exit(code === 0 || signal === "SIGKILL" ? 0 : 1);
     });
   });

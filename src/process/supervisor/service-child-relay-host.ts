@@ -11,6 +11,7 @@ import {
   resolveRuntimeWorkerUrl,
 } from "../../infra/runtime-worker-url.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { createCleanupDiagnostic } from "../cleanup-diagnostic.js";
 import { onDecodedOutput } from "../decoded-output.js";
 import { pipeProcessOutput } from "../pipe-output.js";
 import { prepareSecretInputStdio } from "../spawn-secret-input.js";
@@ -146,6 +147,8 @@ export async function createServiceChildRelayAdapter(
     windowsShellCommand?: string;
   },
 ): Promise<ServiceChildRelayAdapter> {
+  const trace = createCleanupDiagnostic("relay-host");
+  trace("construction-start");
   const generation = randomUUID();
   const useWindowsJobAnchor =
     process.platform === "win32" && params.windowsShellCommand !== undefined;
@@ -241,12 +244,27 @@ export async function createServiceChildRelayAdapter(
   const constructionAbort = createDeferredCore<never>();
   void constructionAbort.promise.catch(() => {});
   let startupErrorAckDelivery: Promise<void> | undefined;
+  let previousWaitFacts = "";
 
   const settleWait = () => {
+    const waitFacts = `${Boolean(rootResult)}:${stdoutRelay.ended}:${stderrRelay.ended}:${state}:${Boolean(requestedSignal)}`;
+    if (waitFacts !== previousWaitFacts) {
+      previousWaitFacts = waitFacts;
+      trace("root-output-state", {
+        rootResult: Boolean(rootResult),
+        stdoutEnded: stdoutRelay.ended,
+        stderrEnded: stderrRelay.ended,
+        closing: state === "closing",
+        closed: state === "closed",
+        identityLost: state === "identity-lost",
+        cancelRequested: Boolean(requestedSignal),
+      });
+    }
     // Authority loss cannot erase an already observed root result. Output must
     // still drain, while the independent extinction join keeps the failure.
     const error = resultError ?? (rootResult ? undefined : waitError);
     if (error) {
+      trace("root-output-rejected");
       resultCompletion.reject(error);
       return;
     }
@@ -257,6 +275,7 @@ export async function createServiceChildRelayAdapter(
       return;
     }
     resultCompletion.resolve(rootResult);
+    trace("root-output-resolved");
   };
 
   // Root result and output EOF cross different channels. Decoder flush listeners were
@@ -271,6 +290,14 @@ export async function createServiceChildRelayAdapter(
       return;
     }
     state = "identity-lost";
+    trace("identity-lost", {
+      rootResult: Boolean(rootResult),
+      closingReceipt,
+      childExited,
+      lineageEnded: lineage?.readableEnded === true,
+      stdoutEnded: stdoutRelay.ended,
+      stderrEnded: stderrRelay.ended,
+    });
     waitError = new Error(`service child cleanup identity lost: ${message}`, options);
     events.emitError(waitError, "process");
     if (!commandPid) {
@@ -308,6 +335,9 @@ export async function createServiceChildRelayAdapter(
         return;
       }
       control.write(encodeServiceChildMessage(message), "utf8", (error) => {
+        if (message.type === "closing-ack") {
+          trace(error ? "closing-ack-write-failed" : "closing-ack-write-complete");
+        }
         if (error) {
           reject(error);
         } else {
@@ -318,6 +348,7 @@ export async function createServiceChildRelayAdapter(
   };
 
   lineage?.once("end", () => {
+    trace("lineage-eof");
     lineageEnd.resolve();
     if (state !== "starting" && state !== "active") {
       return;
@@ -360,6 +391,7 @@ export async function createServiceChildRelayAdapter(
       return;
     }
     state = "closed";
+    trace("authority-closed");
     if (!rootResult && !resultError && !waitError) {
       rootResult = { code: null, signal: requestedSignal ?? null };
     }
@@ -378,6 +410,11 @@ export async function createServiceChildRelayAdapter(
     // Closure requires lineage EOF outside the group as well as kernel group
     // disappearance; an escaped writer survives the anchor's group-wide KILL.
     const deadline = Date.now() + GRACEFUL_CANCEL_TIMEOUT_MS;
+    trace("native-join-start", {
+      childExited,
+      lineageEnded: lineage?.readableEnded === true,
+      remainingMs: deadline - Date.now(),
+    });
     if (!childExited) {
       // Control EOF can precede the relay reaping its anchor. Darwin reports
       // EPERM for that unreaped zombie group, so join before observing it.
@@ -387,15 +424,18 @@ export async function createServiceChildRelayAdapter(
         return;
       }
       try {
+        trace("relay-exit-join-start", { remainingMs });
         await withTimeout(
           Promise.race([relayExit.promise, extinctionCompletion.promise]),
           remainingMs,
           { message: "service child relay did not exit before cleanup deadline" },
         );
       } catch {
+        trace("relay-exit-join-failed", { remainingMs: deadline - Date.now() });
         loseIdentity("service child relay did not exit before cleanup deadline");
         return;
       }
+      trace("relay-exit-join-end", { childExited, remainingMs: deadline - Date.now() });
       if (state !== "closing") {
         return;
       }
@@ -407,34 +447,52 @@ export async function createServiceChildRelayAdapter(
         return;
       }
       try {
+        trace("lineage-join-start", { remainingMs });
         await withTimeout(
           Promise.race([lineageEnd.promise, extinctionCompletion.promise]),
           remainingMs,
           { message: "command lineage remained open after its anchor closed" },
         );
       } catch {
+        trace("lineage-join-failed", { remainingMs: deadline - Date.now() });
         loseIdentity("command lineage remained open after its anchor closed");
         return;
       }
+      trace("lineage-join-end", {
+        lineageEnded: lineage?.readableEnded === true,
+        remainingMs: deadline - Date.now(),
+      });
     }
     if (state !== "closing") {
       return;
     }
+    let probes = 0;
+    trace("kernel-group-join-start", { remainingMs: deadline - Date.now() });
     for (;;) {
       try {
         // Observation only: signalling a retired numeric PGID could hit a reused group.
         process.kill(-anchorPid, 0);
+        probes += 1;
+        if (probes === 1) {
+          trace("kernel-group-present", { remainingMs: deadline - Date.now() });
+        }
       } catch (cause) {
         // SAFETY: process.kill throws Node system errors; only the exact ESRCH code certifies absence.
         if ((cause as NodeJS.ErrnoException).code === "ESRCH") {
+          trace("kernel-group-esrch", { probes, remainingMs: deadline - Date.now() });
           finishAuthorityClose(missingReceiptError);
         } else {
+          trace("kernel-group-error", {
+            probes,
+            permissionDenied: (cause as NodeJS.ErrnoException).code === "EPERM",
+          });
           loseIdentity("owned process group disappearance could not be confirmed", { cause });
         }
         return;
       }
       const remainingMs = deadline - Date.now();
       if (remainingMs <= 0) {
+        trace("kernel-group-join-expired", { probes });
         loseIdentity("owned process group remained after its anchor closed");
         return;
       }
@@ -457,8 +515,10 @@ export async function createServiceChildRelayAdapter(
       commandPid = message.commandPid;
       anchorPid = message.anchorPid;
       state = "active";
+      trace("ready");
       startup.resolve();
     } else if (message.type === "root-result") {
+      trace("root-result-received");
       if (!resultError && !rootResult) {
         rootResult = { code: message.code, signal: message.signal };
         events.emitExit(message.code, message.signal);
@@ -478,6 +538,7 @@ export async function createServiceChildRelayAdapter(
       (message.stream === "stdout" ? stdoutRelay : stderrRelay).end();
       settleWait();
     } else if (message.type === "closing") {
+      trace("closing-receipt");
       closingReceipt = true;
       state = "closing";
       if (control) {
@@ -562,6 +623,7 @@ export async function createServiceChildRelayAdapter(
       }
     });
     control.once("close", () => {
+      trace("control-closed", { closingReceipt, childExited });
       void finishPosixAuthority(
         childError?.message ??
           controlError?.message ??
@@ -569,6 +631,7 @@ export async function createServiceChildRelayAdapter(
       );
     });
     control.on("error", (error) => {
+      trace("control-error");
       controlError ??= error;
     });
   }
@@ -597,6 +660,7 @@ export async function createServiceChildRelayAdapter(
     }
   });
   child.once("error", (error) => {
+    trace("relay-error");
     // The direct control pipe may still contain the anchor's authoritative closing receipt.
     childError ??= error;
     events.emitError(error, "process");
@@ -610,10 +674,12 @@ export async function createServiceChildRelayAdapter(
     );
   };
   child.once("disconnect", () => {
+    trace("relay-disconnected");
     childDisconnected = true;
     finishWindowsAuthority();
   });
   child.once("exit", () => {
+    trace("relay-exited");
     childExited = true;
     relayExit.resolve();
     removeConstructionAbortListener();
@@ -685,9 +751,15 @@ export async function createServiceChildRelayAdapter(
   const kill = (signal: NodeJS.Signals = "SIGKILL") => {
     // A closing receipt retires cancellation; channel/anchor exit still owns extinction.
     if (state !== "active") {
+      trace("cancel-ignored-retired", {
+        closing: state === "closing",
+        closed: state === "closed",
+        identityLost: state === "identity-lost",
+      });
       return;
     }
     const normalized = signal === "SIGTERM" ? "SIGTERM" : "SIGKILL";
+    trace("cancel-send", { force: normalized === "SIGKILL" });
     requestedSignal = normalized;
     outboundSequence += 1;
     // The host never converts the diagnostic command PID into group authority.
@@ -697,6 +769,7 @@ export async function createServiceChildRelayAdapter(
       sequence: outboundSequence,
       signal: normalized,
     }).catch((error: unknown) => {
+      trace("cancel-write-failed", { active: state === "active" });
       // Delivery can fail after the anchor has already sent its closing receipt.
       if (state === "active") {
         loseIdentity(toErrorObject(error, "service child cancellation failed").message);
@@ -723,6 +796,7 @@ export async function createServiceChildRelayAdapter(
     waitForExtinction: async () => await extinctionCompletion.promise,
     kill,
     dispose: () => {
+      trace("dispose", { closed: state === "closed", identityLost: state === "identity-lost" });
       if (unpipeStderr) {
         unpipeStderr();
         child.stderr?.destroy();

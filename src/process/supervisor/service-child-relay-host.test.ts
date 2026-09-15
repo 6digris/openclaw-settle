@@ -3,6 +3,7 @@ import { Duplex, PassThrough } from "node:stream";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mockProcessPlatform } from "../../test-utils/vitest-spies.js";
+import { closeOwnedStdioProcess } from "../owned-stdio.js";
 import * as childAdapter from "./adapters/child.js";
 import { createStubChild, firstMockArg } from "./adapters/child.test-support.js";
 import { GRACEFUL_CANCEL_TIMEOUT_MS } from "./cancellation-policy.js";
@@ -599,6 +600,49 @@ it("waits for relay reaping before observing POSIX group extinction", async () =
   exitRelay();
   await expect(extinction).resolves.toBeUndefined();
   expect(groupProbe).toHaveBeenCalledExactlyOnceWith(-1235, 0);
+});
+
+it("characterizes the stdio confirmation deadline before a later relay exit", async () => {
+  const {
+    adapter,
+    completeRoot,
+    emit,
+    closeControl,
+    exitRelay,
+    groupProbe,
+    lineage,
+    acknowledgements,
+    cancellations,
+  } = await createRelay("linux");
+  completeRoot();
+  await adapter.wait();
+  lineage.end();
+  emit({ type: "closing", reason: "lineage-closed" });
+  await nextTurn();
+  expect(acknowledgements).toContainEqual(expect.objectContaining({ type: "closing-ack" }));
+  const extinct = vi.fn();
+  const extinction = adapter.waitForExtinction();
+  void extinction.then(extinct, extinct);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  try {
+    closeControl();
+    await nextTurn();
+    const rejected = expect(closeOwnedStdioProcess(adapter, { force: true })).rejects.toThrow(
+      "stdio process cleanup did not confirm descendant extinction",
+    );
+    await vi.advanceTimersByTimeAsync(500);
+    await rejected;
+    expect(extinct).not.toHaveBeenCalled();
+    expect(groupProbe).not.toHaveBeenCalled();
+    expect(cancellations).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(100);
+    exitRelay();
+    await expect(extinction).resolves.toBeUndefined();
+    expect(groupProbe).toHaveBeenCalledExactlyOnceWith(-1235, 0);
+    expect(cancellations).toHaveLength(0);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("does not renew the group disappearance deadline after joining the relay", async () => {

@@ -589,40 +589,53 @@ describe.runIf(process.platform !== "win32")("CUA MCP proxy transport", () => {
   });
 
   it("rejects an unfinished CUA frame beyond 256 MiB as a line-size overflow", async () => {
-    function* overflowChunks(): Iterable<Buffer> {
-      const chunk = Buffer.alloc(64 * 1024, 0x20);
-      for (let index = 0; index < 4096; index += 1) {
-        yield chunk;
-      }
-      yield Buffer.from([0x20]);
+    const priorTrace = process.env.OPENCLAW_CUA_CLEANUP_TRACE;
+    const diagnosticPath = process.env.OPENCLAW_CUA_CLEANUP_DIAGNOSTIC_PATH;
+    if (diagnosticPath) {
+      process.env.OPENCLAW_CUA_CLEANUP_TRACE = diagnosticPath;
     }
-    let streaming: Promise<void> | undefined;
-    const endpoint = await createFakeEndpoint((request, fake) => {
-      if (request.method === "initialize") {
-        fake.respond(request, { protocolVersion: "2025-06-18" });
-      } else if (request.params?.name === "start_session") {
-        fake.respond(request, sessionState("window"));
-      } else if (request.params?.name === "get_desktop_state") {
-        streaming = fake.writeRawStream(request, overflowChunks());
-        // Observe producer errors until the test checks them after the expected proxy retirement.
-        void streaming.catch(() => {});
+    try {
+      function* overflowChunks(): Iterable<Buffer> {
+        const chunk = Buffer.alloc(64 * 1024, 0x20);
+        for (let index = 0; index < 4096; index += 1) {
+          yield chunk;
+        }
+        yield Buffer.from([0x20]);
       }
-    });
-    const driver = createCuaMcpDriver(endpoint);
-    onTestFinished(() => driver.dispose());
-    await expect(driver.getDesktopState()).rejects.toThrow(
-      "COMPUTER_DRIVER_ERROR: CUA MCP response exceeded the line-size limit",
-    );
-    expect(driver.isAvailable()).toBe(false);
-    if (!streaming) {
-      throw new Error("expected overflow stream to start");
-    }
-    await streaming.catch((error: unknown) => {
-      expect(error).toMatchObject({
-        code: expect.stringMatching(/^(?:EPIPE|ECONNRESET|ERR_STREAM_PREMATURE_CLOSE)$/),
+      let streaming: Promise<void> | undefined;
+      const endpoint = await createFakeEndpoint((request, fake) => {
+        if (request.method === "initialize") {
+          fake.respond(request, { protocolVersion: "2025-06-18" });
+        } else if (request.params?.name === "start_session") {
+          fake.respond(request, sessionState("window"));
+        } else if (request.params?.name === "get_desktop_state") {
+          streaming = fake.writeRawStream(request, overflowChunks());
+          // Observe producer errors until the test checks them after the expected proxy retirement.
+          void streaming.catch(() => {});
+        }
       });
-    });
-    await driver.dispose();
+      const driver = createCuaMcpDriver(endpoint);
+      onTestFinished(() => driver.dispose());
+      await expect(driver.getDesktopState()).rejects.toThrow(
+        "COMPUTER_DRIVER_ERROR: CUA MCP response exceeded the line-size limit",
+      );
+      expect(driver.isAvailable()).toBe(false);
+      if (!streaming) {
+        throw new Error("expected overflow stream to start");
+      }
+      await streaming.catch((error: unknown) => {
+        expect(error).toMatchObject({
+          code: expect.stringMatching(/^(?:EPIPE|ECONNRESET|ERR_STREAM_PREMATURE_CLOSE)$/),
+        });
+      });
+      await driver.dispose();
+    } finally {
+      if (priorTrace === undefined) {
+        delete process.env.OPENCLAW_CUA_CLEANUP_TRACE;
+      } else {
+        process.env.OPENCLAW_CUA_CLEANUP_TRACE = priorTrace;
+      }
+    }
   });
 
   it("retires a pending initialize at the shared startup deadline", async () => {
