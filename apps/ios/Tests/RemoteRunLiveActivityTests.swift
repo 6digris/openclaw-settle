@@ -39,10 +39,16 @@ private final class RunActivityBarrier {
 
 @MainActor
 private final class RunActivityLifecycleFixture {
+    enum LifecycleEvent: Equatable {
+        case requested(activityID: String, runID: String)
+        case endCompleted(activityID: String)
+    }
+
     let run: OpenClawNativeRunRef
     let activityID: String
     var created = 0
     var ended = 0
+    var lifecycleEvents: [LifecycleEvent] = []
     var immediateDismissals: [Bool] = []
     var current = true
     var activitiesEnabled = true
@@ -69,6 +75,7 @@ private final class RunActivityLifecycleFixture {
 
     var onRelayCreate: (() -> Void)?
     var onPrepare: (() -> Void)?
+    var identityBarrier: RunActivityBarrier?
     var prepareBarrier: RunActivityBarrier?
     var relayBarrier: RunActivityBarrier?
     var revokeBarrier: RunActivityBarrier?
@@ -99,6 +106,7 @@ private final class RunActivityLifecycleFixture {
                 self.created += 1
                 self.activityState = .active
                 let id = self.created == 1 ? self.activityID : "\(self.activityID)-\(self.created)"
+                self.lifecycleEvents.append(.requested(activityID: id, runID: attributes.runId))
                 let handle = RemoteRunLiveActivity.Handle(
                     id: id,
                     attributes: attributes,
@@ -129,6 +137,7 @@ private final class RunActivityLifecycleFixture {
                             self.activityState = .ended
                             self.handle = nil
                         }
+                        self.lifecycleEvents.append(.endCompleted(activityID: id))
                     })
                 self.handle = handle
                 return handle
@@ -162,6 +171,10 @@ private final class RunActivityLifecycleFixture {
         self.gatewayRequests.append(request)
         switch request.method {
         case "gateway.identity.get":
+            if let barrier = self.identityBarrier {
+                self.identityBarrier = nil
+                await barrier.pause()
+            }
             return Data(#"{"deviceId":"gateway","publicKey":"public-key"}"#.utf8)
         case "push.liveActivity.prepare":
             if let barrier = self.prepareBarrier {
@@ -394,6 +407,212 @@ struct RemoteRunLiveActivityTests {
         #expect(fixture.relayOperations.suffix(2) == ["discover", "rotate"])
         #expect(fixture.gatewayOperations.contains("push.liveActivity.discover"))
         #expect(fixture.gatewayRevision == 1)
+        await fixture.close()
+    }
+
+    @Test(arguments: ["active", "stale"])
+    func `accepted replacement during cold identity recovery retires the old binding before requesting`(
+        state: String) async throws
+    {
+        let fixture = RunActivityLifecycleFixture()
+        await fixture.start()
+        fixture.controller.receiveToken(Data(repeating: 19, count: 32), activityID: "activity")
+        await fixture.controller.finishPendingOperations()
+        #expect(fixture.registered)
+        let old = try #require(fixture.handle)
+        await fixture.suspendAndJoin()
+        fixture.activityState = state == "active" ? .active : .stale
+        fixture.controller = RemoteRunLiveActivity(system: fixture.system)
+        let gatewayCount = fixture.gatewayRequests.count
+        let relayCount = fixture.relayOperations.count
+        let identity = RunActivityBarrier()
+        fixture.identityBarrier = identity
+        fixture.controller.resume(gateway: fixture.gateway, relay: fixture.relay)
+        await identity.waitUntilPaused()
+        fixture.controller.observeAcceptedRun(
+            .init(session: fixture.run.session, runID: "next-run"),
+            sessionID: "generation",
+            gateway: fixture.gateway,
+            relay: fixture.relay)
+        identity.resume()
+        await fixture.controller.finishPendingOperations()
+
+        #expect(fixture.lifecycleEvents == [
+            .requested(activityID: old.id, runID: "run"),
+            .endCompleted(activityID: old.id),
+            .requested(activityID: "activity-2", runID: "next-run"),
+        ])
+        #expect(fixture.ended == 1)
+        #expect(fixture.created == 2)
+        #expect(fixture.handle?.id == "activity-2")
+        #expect(fixture.handle?.attributes.runId == "next-run")
+        let requests = fixture.gatewayRequests.dropFirst(gatewayCount)
+        let discoveries = requests.filter { $0.method == "push.liveActivity.discover" }
+        #expect(!discoveries.isEmpty)
+        for request in discoveries {
+            #expect(request.params["activityId"]?.value as? String == old.id)
+            let selectors = request.params["selectors"]?.value as? [String: AnyCodable]
+            #expect(selectors?["gatewayDeviceId"]?.value as? String == old.attributes.gatewayDeviceId)
+            #expect(selectors?["deviceId"]?.value as? String == old.attributes.deviceId)
+            #expect(selectors?["profileId"]?.value as? String == old.attributes.profileId)
+            #expect(selectors?["agentId"]?.value as? String == old.attributes.agentId)
+            #expect(selectors?["sessionKey"]?.value as? String == old.attributes.sessionKey)
+            #expect(selectors?["sessionId"]?.value as? String == old.attributes.sessionId)
+            #expect(selectors?["runId"]?.value as? String == old.attributes.runId)
+        }
+        let revocations = requests.filter { $0.method == "push.liveActivity.revoke" }
+        #expect(revocations.count == 1)
+        #expect(revocations.first?.params["registrationId"]?.value as? String == "registration")
+        #expect(revocations.first?.params["expectedRevision"]?.value as? Int == 0)
+        #expect(!requests.contains {
+            $0.method == "push.liveActivity.register" || $0.method == "push.liveActivity.rotate"
+        })
+        #expect(fixture.relayOperations.filter { $0 == "create" }.count == 1)
+        #expect(fixture.relayOperations.dropFirst(relayCount) == ["discover", "revoke"])
+        for owner in fixture.relayOwners.dropFirst(relayCount) {
+            #expect(owner.activityId == old.id)
+            #expect(owner.profileId == old.attributes.profileId)
+            #expect(owner.gatewayIdentity.deviceId == old.attributes.gatewayDeviceId)
+            #expect(owner.gatewayIdentity.publicKey == "public-key")
+        }
+        let settledEvents = fixture.lifecycleEvents
+        let settledGatewayOperations = fixture.gatewayOperations
+        let settledRelayOperations = fixture.relayOperations
+        fixture.controller.receiveState(.ended, activityID: old.id)
+        fixture.controller.receiveToken(Data(repeating: 20, count: 32), activityID: old.id)
+        await fixture.controller.finishPendingOperations()
+        #expect(fixture.lifecycleEvents == settledEvents)
+        #expect(fixture.gatewayOperations == settledGatewayOperations)
+        #expect(fixture.relayOperations == settledRelayOperations)
+        #expect(fixture.handle?.attributes.runId == "next-run")
+        await fixture.close()
+    }
+
+    @Test func `accepted work leaves an unrelated cold owner handle untouched`() async throws {
+        let unrelated = RunActivityLifecycleFixture(
+            owner: .init(gatewayID: "local", profileID: "other-profile"))
+        await unrelated.start()
+        unrelated.controller.receiveToken(Data(repeating: 21, count: 32), activityID: "activity")
+        await unrelated.controller.finishPendingOperations()
+        #expect(unrelated.registered)
+        await unrelated.suspendAndJoin()
+        let old = try #require(unrelated.handle)
+        let oldGatewayOperations = unrelated.gatewayOperations
+        let oldRelayOperations = unrelated.relayOperations
+        let fixture = RunActivityLifecycleFixture(activityID: "selected")
+        fixture.additionalActivities = [old]
+        fixture.controller.resume(gateway: fixture.gateway, relay: fixture.relay)
+        await fixture.controller.finishPendingOperations()
+        fixture.controller.observeAcceptedRun(
+            .init(session: fixture.run.session, runID: "next-run"),
+            sessionID: "generation",
+            gateway: fixture.gateway,
+            relay: fixture.relay)
+        await fixture.controller.finishPendingOperations()
+        #expect(fixture.lifecycleEvents == [.requested(activityID: "selected", runID: "next-run")])
+        #expect(fixture.relayOperations.isEmpty)
+        #expect(unrelated.lifecycleEvents == [.requested(activityID: old.id, runID: "run")])
+        #expect(unrelated.ended == 0)
+        #expect(unrelated.handle?.id == old.id)
+        #expect(unrelated.gatewayOperations == oldGatewayOperations)
+        #expect(unrelated.relayOperations == oldRelayOperations)
+        await fixture.close()
+        await unrelated.close()
+    }
+
+    @Test func `cold gateway identity mismatch cannot end or replace a same owner handle`() async throws {
+        let fixture = RunActivityLifecycleFixture()
+        await fixture.start()
+        fixture.controller.receiveToken(Data(repeating: 22, count: 32), activityID: "activity")
+        await fixture.controller.finishPendingOperations()
+        await fixture.suspendAndJoin()
+        let old = try #require(fixture.handle)
+        let attributes = old.attributes
+        fixture.handle = try .init(
+            id: old.id,
+            attributes: .init(
+                gatewayId: attributes.gatewayId,
+                gatewayDeviceId: "different-gateway",
+                deviceId: attributes.deviceId,
+                profileId: attributes.profileId,
+                agentId: attributes.agentId,
+                sessionKey: attributes.sessionKey,
+                sessionId: attributes.sessionId,
+                runId: attributes.runId),
+            state: old.state,
+            token: old.token,
+            tokens: old.tokens,
+            states: old.states,
+            end: old.end)
+        let next = OpenClawNativeRunRef(session: fixture.run.session, runID: "next-run")
+        let prepared = try await fixture.gateway.prepare(run: next, sessionID: "generation")
+        #expect(prepared.gatewayIdentity.deviceId == attributes.gatewayDeviceId)
+        #expect(prepared.selection.attributes.gatewayDeviceId == attributes.gatewayDeviceId)
+        #expect(prepared.selection.attributes.runId == next.runID)
+        let gatewayCount = fixture.gatewayRequests.count
+        let relayOperations = fixture.relayOperations
+        fixture.controller = RemoteRunLiveActivity(system: fixture.system)
+        let identity = RunActivityBarrier()
+        fixture.identityBarrier = identity
+        fixture.controller.resume(gateway: fixture.gateway, relay: fixture.relay)
+        await identity.waitUntilPaused()
+        fixture.controller.observeAcceptedRun(
+            next, sessionID: "generation", gateway: fixture.gateway, relay: fixture.relay)
+        identity.resume()
+        await fixture.controller.finishPendingOperations()
+        #expect(fixture.lifecycleEvents == [.requested(activityID: old.id, runID: "run")])
+        #expect(fixture.created == 1)
+        #expect(fixture.ended == 0)
+        #expect(fixture.handle?.attributes.gatewayDeviceId == "different-gateway")
+        #expect(fixture.relayOperations == relayOperations)
+        #expect(!fixture.gatewayRequests.dropFirst(gatewayCount).contains {
+            [
+                "push.liveActivity.discover", "push.liveActivity.revoke",
+                "push.liveActivity.register", "push.liveActivity.rotate",
+            ].contains($0.method)
+        })
+        await fixture.close()
+    }
+
+    @Test func `suspension during cold replacement preparation leaves the surviving handle untouched`() async throws {
+        let fixture = RunActivityLifecycleFixture()
+        await fixture.start()
+        fixture.controller.receiveToken(Data(repeating: 23, count: 32), activityID: "activity")
+        await fixture.controller.finishPendingOperations()
+        await fixture.suspendAndJoin()
+        let old = try #require(fixture.handle)
+        let gatewayCount = fixture.gatewayRequests.count
+        let relayOperations = fixture.relayOperations
+        fixture.controller = RemoteRunLiveActivity(system: fixture.system)
+        let identity = RunActivityBarrier()
+        let preparation = RunActivityBarrier()
+        fixture.identityBarrier = identity
+        fixture.prepareBarrier = preparation
+        fixture.controller.resume(gateway: fixture.gateway, relay: fixture.relay)
+        await identity.waitUntilPaused()
+        fixture.controller.observeAcceptedRun(
+            .init(session: fixture.run.session, runID: "next-run"),
+            sessionID: "generation",
+            gateway: fixture.gateway,
+            relay: fixture.relay)
+        identity.resume()
+        await preparation.waitUntilPaused()
+        fixture.controller.suspend()
+        preparation.resume()
+        await fixture.controller.finishPendingOperations()
+        #expect(fixture.lifecycleEvents == [.requested(activityID: old.id, runID: "run")])
+        #expect(fixture.created == 1)
+        #expect(fixture.ended == 0)
+        #expect(fixture.handle?.id == old.id)
+        #expect(fixture.handle?.attributes.runId == "run")
+        #expect(fixture.registered)
+        #expect(fixture.relayOperations == relayOperations)
+        #expect(!fixture.gatewayRequests.dropFirst(gatewayCount).contains {
+            [
+                "push.liveActivity.discover", "push.liveActivity.revoke",
+                "push.liveActivity.register", "push.liveActivity.rotate",
+            ].contains($0.method)
+        })
         await fixture.close()
     }
 
