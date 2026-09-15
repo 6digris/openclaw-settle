@@ -622,17 +622,16 @@ type SecretCaptureSelection = {
 };
 
 function selectSecretCapture(match: string, groups: string[]): SecretCaptureSelection {
-  const tokens = groups
-    .map((value, index) => ({ index, value }))
-    .filter(({ value }) => typeof value === "string" && value.length > 0);
-  const selected = (tokens.length > 1 ? tokens[tokens.length - 1] : tokens[0]) ?? {
-    index: -1,
-    value: match,
-  };
-  return {
-    ...selected,
-    captureCount: tokens.length,
-  };
+  const selected = { index: -1, value: match, captureCount: 0 };
+  for (let index = 0; index < groups.length; index++) {
+    const value = groups[index];
+    if (typeof value === "string" && value.length > 0) {
+      selected.index = index;
+      selected.value = value;
+      selected.captureCount++;
+    }
+  }
+  return selected;
 }
 
 function getIndexedCaptureStart(
@@ -679,15 +678,15 @@ function getSecretCaptureStart(
     matchOffset,
     selected.index,
   );
+  if (indexedTokenStart !== null) {
+    return indexedTokenStart;
+  }
   const preferFirstCapture =
     pattern instanceof RegExp &&
     selected.captureCount === 1 &&
     selected.index >= 0 &&
     hasBackreferenceToGroup(pattern, selected.index + 1);
-  return (
-    indexedTokenStart ??
-    (preferFirstCapture ? match.indexOf(selected.value) : match.lastIndexOf(selected.value))
-  );
+  return preferFirstCapture ? match.indexOf(selected.value) : match.lastIndexOf(selected.value);
 }
 
 function getRedactionEdit(
@@ -1325,10 +1324,10 @@ function getTextRecordEdits(
 
 function getLegacyFieldRecordEdits(
   field: RedactionField,
-  original: string,
+  value: string,
   beforeConversion = false,
 ): RedactionEdit[] {
-  const { key, value, path, objectPath } = field;
+  const { key, value: original, path, objectPath } = field;
   if (field.isKey || !field.origin.structured || !field.string) {
     return [];
   }
@@ -1457,10 +1456,7 @@ function prepareFileToJsonReceivers(
           );
         }
       }
-      return applyRedactionEdits(
-        current,
-        getLegacyFieldRecordEdits({ ...field, value: current }, value, true),
-      );
+      return applyRedactionEdits(current, getLegacyFieldRecordEdits(field, current, true));
     }
     if (value === null || typeof value !== "object") {
       return decode &&
