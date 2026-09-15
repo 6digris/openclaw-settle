@@ -471,7 +471,6 @@ const enSettings = {
         "Sets the global default for new sessions. Auto starts in fast mode and returns to standard mode after the model's configured interval; On and Off keep that behavior fixed.",
       fastModeDefaultHelp:
         "Uses the selected model's fast-mode policy. Unlike Auto, Default does not enable fast mode by itself.",
-      saved: "Defaults saved.",
     },
     readOnly: {
       disconnected: "Connect to the gateway to change model settings.",
@@ -536,6 +535,9 @@ const enSettings = {
       gitFetchFailed: "Could not fetch the tracked upstream",
       gitNoUpstream: "No tracked upstream is configured",
       gitComparisonFailed: "Could not compare this checkout with its tracked upstream",
+      checking: "Checking for updates…",
+      checkRequired: "Check for updates successfully before starting an update.",
+      updating: "Updating…",
       updateNow: "Update now",
       updateNowDescription: "Install the available update and restart the Gateway.",
       latestAttempt: "Latest update attempt",

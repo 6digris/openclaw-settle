@@ -148,6 +148,7 @@ export function renderNewSessionPlaceControls({
             place.modelControl.cloudRuntimeUnsupportedReason(profile),
           submitting,
           pendingPlacement,
+          catalogLoading: place.canWrite() && gateway.environments === null,
           isAdmin: place.isAdmin(),
           ...browser.popoverCallbacks("where"),
           onSelectDevice: (deviceId) => place.selectDevice(deviceId),

@@ -224,6 +224,8 @@ describe.skipIf(process.platform === "win32")("onboarding assertion attribution"
       expect(written.entries).toEqual(result.evidence.entries);
       expect(written.evidenceMode).toBe(evidenceMode);
 
+      const docsRoot = path.join(tempRoot, "docs");
+      await fs.mkdir(docsRoot);
       const taxonomyPath = path.join(tempRoot, "taxonomy.json");
       const scoresPath = path.join(tempRoot, "scores.json");
       const surface = { id: "cli", name: "CLI", family: "core", level: "experimental" };
@@ -280,6 +282,8 @@ describe.skipIf(process.platform === "win32")("onboarding assertion attribution"
         "--import",
         "tsx",
         "scripts/qa/render-maturity-docs.ts",
+        "--docs-root",
+        docsRoot,
         "--taxonomy",
         taxonomyPath,
         "--scores",

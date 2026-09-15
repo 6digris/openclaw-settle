@@ -94,6 +94,23 @@ function renderPicker(
 }
 
 describe("Where chip", () => {
+  it.each([true, false])(
+    "keeps device loading independent of the Cloud spinner (inventory pending: %s)",
+    (pending) => {
+      const container = renderPicker(
+        true,
+        undefined,
+        { environments: pending ? null : [], cloudProfiles: [] },
+        { catalogLoading: pending, cloudProfilesPending: true },
+      );
+      expect(container.querySelectorAll('[data-section="devices"]')).toHaveLength(pending ? 1 : 0);
+      expect(container.querySelector('[data-section="cloud"]')).toBeNull();
+      expect(
+        container.querySelector('[data-cloud-catalog-status="loading"] .btn__spinner'),
+      ).not.toBeNull();
+    },
+  );
+
   it("shows a Cloud-only spinner without disabling ready devices", () => {
     const container = renderPicker(
       true,
@@ -135,6 +152,19 @@ describe("Where chip", () => {
       ),
     ).toBeNull();
   });
+
+  it("shows device and cloud skeletons while the catalog loads", () => {
+    const container = renderPicker(
+      true,
+      undefined,
+      { environments: null, cloudProfiles: [] },
+      { catalogLoading: true },
+    );
+    expect(container.querySelectorAll(".new-session-page__environment-skeletons")).toHaveLength(2);
+    expect(container.querySelector('[data-section="devices"]')).not.toBeNull();
+    expect(container.querySelector('[data-section="cloud"]')).not.toBeNull();
+  });
+
   it.each([
     { label: "Work MacBook Pro", platform: "darwin", icon: deviceIcons.laptop, form: "laptop" },
     {

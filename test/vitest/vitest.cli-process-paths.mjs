@@ -7,6 +7,8 @@ export const cliProcessTestFiles = [
   "src/cli/update-cli/update-command-plugins.persistence.test.ts",
   "src/cli/plugins-cli.install.test.ts",
   "src/cli/acp-cli-exit.process.test.ts",
+  "src/cli/capability-local-audio-path.process.test.ts",
+  "src/cli/capability-web-output.process.test.ts",
   "src/cli/cli-process-child.test-helpers.test.ts",
   "src/cli/completion-cli.runner.process.test.ts",
   "src/cli/cron-output.process.test.ts",
@@ -41,6 +43,7 @@ export const cliProcessTestFiles = [
   "src/cli/program/subcli-descriptors.test.ts",
   "src/cli/state-dir-gateway-check.process.test.ts",
   "src/cli/state-dir-gateway-check.server.test.ts",
+  "src/cli/cron-cli/cron-suppression.gateway.test.ts",
 ];
 
 const cliProcessTestFileSet = new Set(cliProcessTestFiles);

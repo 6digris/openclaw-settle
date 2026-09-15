@@ -21,6 +21,7 @@ import {
   parseAgentSessionKey,
 } from "../routing/session-key.js";
 import { isCronRunSessionKey, isSubagentSessionKey } from "../sessions/session-key-utils.js";
+import { sessionActivityTimestamp } from "../shared/session-activity-timestamp.js";
 import { SESSIONS_LIST_OWNER_LIMIT } from "../shared/session-list-limits.js";
 import type { SessionOwnerFacetIdentity } from "../shared/session-types.js";
 import { runSynchronousWork, type SynchronousWork } from "../shared/synchronous-work.js";
@@ -309,10 +310,12 @@ function* filterSessionEntries(params: {
       yield;
     }
     const [key, entry] = pair;
-    if (matchesSearch && !matchesSearch(key, entry)) {
-      continue;
-    }
-    if (activeCutoff !== undefined && (entry.updatedAt ?? 0) < activeCutoff) {
+    if (
+      (matchesSearch && !matchesSearch(key, entry)) ||
+      (activeCutoff !== undefined &&
+        (opts.sortBy === "activity" ? sessionActivityTimestamp(entry) : (entry.updatedAt ?? 0)) <
+          activeCutoff)
+    ) {
       continue;
     }
     const effectiveOwner = projectSessionOwner(entry, identities, cfg, configuredAgentIds)?.actor;
@@ -478,9 +481,7 @@ function* prepareSessionList(params: ListSessionsFromStoreParams, shouldYield: (
     restrictProfileReferences: params.entryFilter !== undefined,
     defaultLimit: SESSIONS_LIST_DEFAULT_LIMIT,
     getRowContext:
-      hasSpawnedByFilter || Boolean(normalizeOptionalString(opts.search))
-        ? getRowContext
-        : undefined,
+      hasSpawnedByFilter || normalizeOptionalString(opts.search) ? getRowContext : undefined,
     userProfileIdentityById,
     configuredAgentIds,
     involvingActorId: params.involvingActorId,
@@ -654,10 +655,11 @@ export async function listSessionsFromStoreAsync(
       }
       const list = step.value;
       const sessions: GatewaySessionRow[] = [];
+      const includeTranscriptFields = list.includeDerivedTitles || list.includeLastMessage;
       const transcriptScopes = list.entries
         .slice(0, list.transcriptFieldRows)
         .flatMap(([key, entry]) => {
-          if (!entry.sessionId || (!list.includeDerivedTitles && !list.includeLastMessage)) {
+          if (!entry.sessionId || !includeTranscriptFields) {
             return [];
           }
           const target = expectDefined(targetsBySessionKey.get(key), "transcript row target");
@@ -683,52 +685,52 @@ export async function listSessionsFromStoreAsync(
         await preparationPause;
       }
       let transcriptFieldIndex = 0;
-      for (let i = 0; i < list.entries.length; i++) {
-        const [key, entry] = expectDefined(list.entries[i], "entries entry at i");
-        const target = expectDefined(targetsBySessionKey.get(key), "session row owner");
-        const includeTranscriptFields = i < list.transcriptFieldRows;
-        const row = buildGatewaySessionRow({
-          cfg,
-          storePath: target.storeTarget.storePath, // Aggregate paths are display-only.
-          store,
-          modelSource: target.modelSource,
-          key: target.storeKey ?? key,
-          entry,
-          agentId: target.agentId,
-          modelCatalog: params.modelCatalog,
-          now: list.now,
-          includeDerivedTitles: false,
-          includeLastMessage: false,
-          storeChildSessionsByKey: list.storeChildSessionsByKey,
-          rowContext: list.rowContext,
-          configuredAgentIds: list.configuredAgentIds,
-          skipTranscriptUsageFallback: true,
-          lightweightListRow: true,
+      for (let nextRowIndex = 0; nextRowIndex < list.entries.length;) {
+        // Release roster facts before a pause so resumed rows observe current entries.
+        const pause = withAgentRosterFactsBatch(cfg, () => {
+          while (nextRowIndex < list.entries.length) {
+            const i = nextRowIndex++;
+            const [key, entry] = expectDefined(list.entries[i], "entries entry at i");
+            const target = expectDefined(targetsBySessionKey.get(key), "session row owner");
+            const row = buildGatewaySessionRow({
+              cfg,
+              storePath: target.storeTarget.storePath, // Aggregate paths are display-only.
+              store,
+              modelSource: target.modelSource,
+              key: target.storeKey ?? key,
+              entry,
+              agentId: target.agentId,
+              modelCatalog: params.modelCatalog,
+              now: list.now,
+              storeChildSessionsByKey: list.storeChildSessionsByKey,
+              rowContext: list.rowContext,
+              configuredAgentIds: list.configuredAgentIds,
+              skipTranscriptUsageFallback: true,
+              lightweightListRow: true,
+            });
+            row.key = key;
+            if (entry?.sessionId && i < list.transcriptFieldRows && includeTranscriptFields) {
+              const { firstUserMessage, lastMessagePreview } = expectDefined(
+                transcriptFields[transcriptFieldIndex++],
+                "batched transcript fields at transcriptFieldIndex",
+              );
+              if (list.includeDerivedTitles) {
+                row.derivedTitle = deriveSessionTitle(entry, firstUserMessage, row.displayName);
+              }
+              if (list.includeLastMessage && lastMessagePreview) {
+                row.lastMessagePreview = lastMessagePreview;
+              }
+            }
+            sessions.push(row);
+            const rowPause = nextRowIndex < list.entries.length ? yieldIfNeeded() : undefined;
+            if (rowPause) {
+              return rowPause;
+            }
+          }
+          return undefined;
         });
-        row.key = key;
-        if (
-          entry?.sessionId &&
-          includeTranscriptFields &&
-          (list.includeDerivedTitles || list.includeLastMessage)
-        ) {
-          const fields = expectDefined(
-            transcriptFields[transcriptFieldIndex],
-            "batched transcript fields at transcriptFieldIndex",
-          );
-          transcriptFieldIndex += 1;
-          if (list.includeDerivedTitles) {
-            row.derivedTitle = deriveSessionTitle(entry, fields.firstUserMessage, row.displayName);
-          }
-          if (list.includeLastMessage && fields.lastMessagePreview) {
-            row.lastMessagePreview = fields.lastMessagePreview;
-          }
-        }
-        sessions.push(row);
-        if (i + 1 < list.entries.length) {
-          const pause = yieldIfNeeded();
-          if (pause) {
-            await pause;
-          }
+        if (pause) {
+          await pause;
         }
       }
 

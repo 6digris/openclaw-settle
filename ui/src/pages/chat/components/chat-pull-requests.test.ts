@@ -235,33 +235,158 @@ describe("renderChatPullRequests", () => {
     expect(container.querySelector(".chat-prs__more")).toBeNull();
   });
 
-  it("renders merged PRs with a state label and without live-work signals", () => {
+  it.each([null, "read"] as const)(
+    "renders merged PRs without a redundant card while publication activity is %s",
+    (activity) => {
+      const onDismiss = vi.fn();
+      const onNewAction = vi.fn();
+      render(
+        renderChatPullRequests({
+          pullRequests: [
+            pullRequest({
+              state: "merged",
+              additions: undefined,
+              deletions: undefined,
+              checks: undefined,
+              checksUrl: undefined,
+            }),
+          ],
+          status: "rate-limited",
+          expanded: false,
+          onExpand: () => {},
+          onDismiss,
+          publication: publication({
+            activity,
+            result: {
+              requestId: "publication-merged",
+              status: "published",
+              url: pullRequest().url,
+              repository: "openclaw/openclaw",
+              branch: pullRequest().branch,
+              headCommit: "a".repeat(40),
+              publisher: { source: "agent-override", accountId: 3, login: "agent-bot" },
+            },
+            onNewAction,
+          }),
+        }),
+        container,
+      );
+      const chip = container.querySelector(".chat-pr");
+      expect(chip?.getAttribute("data-state")).toBe("merged");
+      expect(chip?.querySelector(".chat-pr__state")?.textContent?.trim()).toBe("Merged");
+      expect(chip?.querySelector(".chat-pr__diff")).toBeNull();
+      expect(chip?.querySelector(".chat-pr__checks")).toBeNull();
+      // Merged is terminal, so the stale-data warning stays off merged chips.
+      expect(chip?.querySelector(".chat-pr__warning")).toBeNull();
+      expect(container.querySelectorAll(".chat-pr")).toHaveLength(1);
+      expect(container.textContent).not.toContain("Choose a new publication");
+      expect(container.textContent).not.toContain("Publish as");
+      const dismiss = chip?.querySelector<HTMLButtonElement>(".chat-pr__dismiss");
+      expect(dismiss?.disabled).toBe(activity !== null);
+      dismiss?.click();
+      expect(onNewAction).toHaveBeenCalledTimes(activity === null ? 1 : 0);
+      expect(onDismiss).toHaveBeenCalledTimes(activity === null ? 1 : 0);
+    },
+  );
+
+  it.each([sessionBranch().branch, pullRequest().branch])(
+    "shows unpublished changes on %s instead of merged PR history",
+    (branch) => {
+      render(
+        renderChatPullRequests({
+          pullRequests: [pullRequest({ state: "merged" })],
+          branch: sessionBranch({ branch }),
+          status: "ready",
+          expanded: false,
+          onExpand: () => {},
+          onDismiss: () => {},
+          publication: publication(),
+        }),
+        container,
+      );
+      expect(container.querySelectorAll(".chat-pr")).toHaveLength(1);
+      expect(container.querySelector(".chat-pr__number")).toBeNull();
+      expect(container.querySelector(".chat-pr__branch")?.textContent).toBe(branch);
+      expect(container.querySelector(".chat-pr__create")?.textContent).toContain("Publish PR");
+    },
+  );
+
+  it("keeps the current PR and CI visible when an older receipt falls out of the PR snapshot", () => {
+    const onNewAction = vi.fn();
+    const onDismiss = vi.fn();
     render(
       renderChatPullRequests({
-        pullRequests: [
-          pullRequest({
-            state: "merged",
-            additions: undefined,
-            deletions: undefined,
-            checks: undefined,
-            checksUrl: undefined,
-          }),
-        ],
-        status: "rate-limited",
+        pullRequests: [pullRequest()],
+        status: "ready",
         expanded: false,
         onExpand: () => {},
-        onDismiss: () => {},
+        onDismiss,
+        publication: publication({
+          result: {
+            requestId: "old-publication",
+            status: "published",
+            url: "https://github.com/openclaw/openclaw/pull/1",
+            repository: "openclaw/openclaw",
+            branch: pullRequest().branch,
+            headCommit: "a".repeat(40),
+          },
+          onNewAction,
+        }),
       }),
       container,
     );
-    const chip = container.querySelector(".chat-pr");
-    expect(chip?.getAttribute("data-state")).toBe("merged");
-    expect(chip?.querySelector(".chat-pr__state")?.textContent?.trim()).toBe("Merged");
-    expect(chip?.querySelector(".chat-pr__diff")).toBeNull();
-    expect(chip?.querySelector(".chat-pr__checks")).toBeNull();
-    // Merged is terminal, so the stale-data warning stays off merged chips.
-    expect(chip?.querySelector(".chat-pr__warning")).toBeNull();
+    expect(container.querySelectorAll(".chat-pr")).toHaveLength(1);
+    expect(container.querySelector(".chat-pr__number")?.textContent).toBe("#103469");
+    expect(container.querySelector(".chat-pr__checks")).not.toBeNull();
+    container.querySelector<HTMLButtonElement>(".chat-pr__dismiss")?.click();
+    expect(onNewAction).toHaveBeenCalledOnce();
+    expect(onDismiss).toHaveBeenCalledOnce();
   });
+
+  it.each([false, true])(
+    "keeps publication recovery inside the PR row after publication completed: %s",
+    (completed) => {
+      const onPublish = vi.fn();
+      const onRefresh = vi.fn();
+      render(
+        renderChatPullRequests({
+          pullRequests: [pullRequest()],
+          status: "ready",
+          expanded: false,
+          onExpand: () => {},
+          onDismiss: () => {},
+          publication: publication({
+            locked: !completed,
+            error: "Response lost.",
+            onPublish,
+            onRefresh,
+            result: completed
+              ? {
+                  requestId: "published-with-refresh-error",
+                  status: "published",
+                  url: pullRequest().url,
+                  repository: "openclaw/openclaw",
+                  branch: pullRequest().branch,
+                  headCommit: "a".repeat(40),
+                }
+              : null,
+          }),
+        }),
+        container,
+      );
+      expect(container.querySelectorAll(".chat-pr")).toHaveLength(1);
+      expect(container.textContent).toContain("#103469");
+      expect(container.textContent).toContain("Response lost.");
+      const action = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+        (button) =>
+          button.textContent?.trim() === (completed ? "Refresh publication" : "Retry publication"),
+      );
+      expect(action).toBeDefined();
+      action?.click();
+      expect(completed ? onRefresh : onPublish).toHaveBeenCalledOnce();
+      expect(container.querySelectorAll(".chat-pr__dismiss")).toHaveLength(1);
+    },
+  );
 
   it("marks open chips stale when GitHub is rate limited", () => {
     render(
@@ -390,6 +515,9 @@ describe("renderChatPullRequests", () => {
     expect(container.querySelector<HTMLAnchorElement>(".chat-pr__create")?.href).toBe(
       "https://github.com/openclaw/openclaw/pull/125200",
     );
+    expect(container.querySelector(".chat-pr__branch")?.textContent).toBe(props.branch?.branch);
+    expect(container.querySelector(".chat-pr__diff")).not.toBeNull();
+    expect(container.querySelector(".chat-pr__publication-outcome")).toBeNull();
 
     render(
       renderChatPullRequests({

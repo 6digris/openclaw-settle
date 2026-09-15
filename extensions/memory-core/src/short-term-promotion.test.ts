@@ -206,13 +206,10 @@ describe("short-term promotion", () => {
   }
 
   type WorkspaceTest = (title: string, run: (workspaceDir: string) => Promise<void>) => void;
-  const it: WorkspaceTest & Pick<typeof baseIt, "runIf"> = Object.assign(
-    (title: string, run: (workspaceDir: string) => Promise<void>) =>
-      baseIt(title, async () => {
-        await withTempWorkspace(run);
-      }),
-    { runIf: baseIt.runIf },
-  );
+  const it: WorkspaceTest = (title, run) =>
+    baseIt(title, async () => {
+      await withTempWorkspace(run);
+    });
 
   async function writeDailyMemoryNote(
     workspaceDir: string,
@@ -1349,7 +1346,7 @@ describe("short-term promotion", () => {
     }
   });
 
-  it("keeps recent valid recall stats ahead of malformed timestamps at the entry cap", async (workspaceDir) => {
+  it("keeps valid recall and promotion stats with malformed timestamps at the entry cap", async (workspaceDir) => {
     const nowMs = Date.parse("2026-04-05T10:00:00.000Z");
     const malformedEntries = Object.fromEntries(
       Array.from({ length: 8 }, (_, index) => {
@@ -1382,6 +1379,26 @@ describe("short-term promotion", () => {
       updatedAt: "2026-04-05T10:00:00.000Z",
       entries: {
         ...malformedEntries,
+        malformedPromotion: recallStoreEntryFixture({
+          key: "malformedPromotion",
+          path: "memory/2026-04-01-malformed-promotion.md",
+          promotedAt: "not-a-timestamp",
+        }),
+        previousDay: recallStoreEntryFixture({
+          key: "previousDay",
+          path: "memory/2026-04-04-previous-day.md",
+          promotedAt: "2026-04-04T18:00:00.000Z",
+        }),
+        utcDay: recallStoreEntryFixture({
+          key: "utcDay",
+          path: "memory/2026-04-05-utc-day.md",
+          promotedAt: "2026-04-05T06:00:00.000Z",
+        }),
+        today: recallStoreEntryFixture({
+          key: "today",
+          path: "memory/2026-04-05-today.md",
+          promotedAt: "2026-04-05T09:00:00.000Z",
+        }),
         recent: {
           key: "recent",
           path: "memory/2026-04-05-recent.md",
@@ -1411,6 +1428,26 @@ describe("short-term promotion", () => {
     expect(stats.shortTermEntries.map((entry) => entry.path)).not.toContain(
       "memory/2026-04-01-malformed-7.md",
     );
+    expect(stats.promotedEntries).toHaveLength(4);
+    expect(stats.promotedEntries).toContainEqual(
+      expect.objectContaining({ key: "malformedPromotion", promotedAt: "not-a-timestamp" }),
+    );
+    for (const [timezone, promotedToday] of [
+      ["America/Los_Angeles", 1],
+      ["UTC", 2],
+      ["America/Los_Angeles", 1],
+    ] as const) {
+      const zonedStats = await loadShortTermPromotionDreamingStats({
+        workspaceDir,
+        nowMs,
+        timezone,
+      });
+      expect(zonedStats).toMatchObject({
+        promotedTotal: 4,
+        promotedToday,
+        lastPromotedAt: "2026-04-05T09:00:00.000Z",
+      });
+    }
   });
 
   it("reconciles existing promotion markers instead of appending duplicates", async (workspaceDir) => {
@@ -2383,6 +2420,17 @@ describe("short-term promotion", () => {
     expect(applied.applied).toBe(1);
     const memoryText = await fs.readFile(path.join(workspaceDir, "MEMORY.md"), "utf-8");
     expect(memoryText).toContain("Promoted From Short-Term Memory (2026-04-01)");
+    for (const [now, promotedToday] of [
+      ["2026-04-02T06:59:59.000Z", 1],
+      ["2026-04-02T07:00:00.000Z", 0],
+    ] as const) {
+      const stats = await loadShortTermPromotionDreamingStats({
+        workspaceDir,
+        nowMs: Date.parse(now),
+        timezone: "America/Los_Angeles",
+      });
+      expect(stats).toMatchObject({ promotedTotal: 1, promotedToday });
+    }
   });
 
   it("audits and repairs invalid store metadata plus stale locks", async (workspaceDir) => {
@@ -2792,26 +2840,46 @@ describe("short-term promotion", () => {
       acquiredAt: Date.now(),
     });
 
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const blocked = createDeferred<void>();
+    const lockKey = memoryCoreWorkspaceStateKey(workspaceDir);
+    configureMemoryCoreDreamingState(<T>(options: OpenKeyedStoreOptions) => {
+      const store = createPluginStateKeyedStoreForTests<T>("memory-core", options);
+      return {
+        ...store,
+        async registerIfAbsent(...args: Parameters<typeof store.registerIfAbsent>) {
+          const acquired = await store.registerIfAbsent(...args);
+          if (options.namespace === SHORT_TERM_LOCK_NAMESPACE && args[0] === lockKey && !acquired) {
+            blocked.resolve();
+          }
+          return acquired;
+        },
+      };
+    });
+    let settled = false;
+    const repairPromise = repairShortTermPromotionArtifacts({ workspaceDir }).then((result) => {
+      settled = true;
+      return result;
+    });
     try {
-      let settled = false;
-      const repairPromise = repairShortTermPromotionArtifacts({ workspaceDir }).then((result) => {
-        settled = true;
-        return result;
-      });
-
-      await vi.advanceTimersByTimeAsync(41);
+      // Real worker replies establish contention before the fixture releases its row.
+      await Promise.race([
+        blocked.promise,
+        repairPromise.then(() => {
+          throw new Error("Repair completed before observing the active lock");
+        }),
+      ]);
       expect(settled).toBe(false);
 
       await testing.deleteShortTermLock(workspaceDir);
-      await vi.advanceTimersByTimeAsync(40);
       const repair = await repairPromise;
 
       expect(repair.changed).toBe(true);
       expect(repair.rewroteStore).toBe(true);
       expect(repair.removedInvalidEntries).toBe(1);
     } finally {
-      vi.useRealTimers();
+      await testing.deleteShortTermLock(workspaceDir);
+      await Promise.allSettled([repairPromise]);
+      await configureMemoryCoreDreamingStateForTests();
     }
   });
 
@@ -3261,7 +3329,7 @@ describe("short-term promotion", () => {
   });
 
   describe("MEMORY.md atomic promotion write", () => {
-    it.runIf(process.platform !== "win32")(
+    baseIt.runIf(process.platform !== "win32")(
       "preserves a dangling MEMORY.md symlink and its target directory mode",
       async () => {
         await withTempWorkspace(async (workspaceDir) => {
