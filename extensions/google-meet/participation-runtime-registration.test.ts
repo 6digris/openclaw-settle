@@ -3,7 +3,6 @@ import {
   createPluginStateKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
-import type { OpenKeyedStoreOptions } from "openclaw/plugin-sdk/runtime-doctor-migrations";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { withOpenClawTestState } from "openclaw/plugin-sdk/test-state";
@@ -11,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import plugin from "./index.js";
 import { MEET_URL } from "./src/test-support/fixtures.test-helpers.js";
 import {
+  createGoogleMeetToolGatewayForTest,
   getMeetTool,
   invokeGoogleMeetGatewayMethodForTest,
   setupGoogleMeetPlugin,
@@ -24,31 +24,11 @@ const requireRecord = createRequireRecord("record", "expected-label-object-capit
 // current-session ownership, and the plugin's SQLite store run unchanged.
 function setupWithSqlite(env: NodeJS.ProcessEnv) {
   const harness = setupGoogleMeetPlugin(
-    {
-      register(api) {
-        plugin.register({
-          ...api,
-          runtime: {
-            ...api.runtime,
-            state: {
-              ...api.runtime.state,
-              openKeyedStore<T>(options: OpenKeyedStoreOptions) {
-                return createPluginStateKeyedStoreForTests<T>("google-meet", { ...options, env });
-              },
-            },
-          },
-        });
-      },
-    },
+    plugin,
     { defaultTransport: "chrome", defaultMode: "transcribe" },
-    { fullConfig: { transcripts: { enabled: false } } },
+    { stateEnv: env, fullConfig: { transcripts: { enabled: false } } },
   );
-  testing.setCallGatewayFromCliForTests(async (method, _options, params) => {
-    return (await invokeGoogleMeetGatewayMethodForTest(harness.methods, method, params)) as Record<
-      string,
-      unknown
-    >;
-  });
+  testing.setCallGatewayFromCliForTests(createGoogleMeetToolGatewayForTest(harness.methods));
   const tool = harness.tools[0];
   if (!tool) {
     throw new Error("Expected Google Meet tool registration");

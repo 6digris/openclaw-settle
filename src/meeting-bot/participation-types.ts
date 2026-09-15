@@ -50,7 +50,7 @@ export type MeetingParticipationAttempt = {
   correctionOf?: string;
   result?: MeetingParticipationResult;
 };
-export type MeetingParticipationStore = Pick<
+type MeetingParticipationStore = Pick<
   PluginStateKeyedStore<MeetingParticipationAttempt>,
   "lookup" | "registerIfAbsent" | "register" | "entries" | "delete"
 >;

@@ -512,6 +512,14 @@ describe("google meet chrome transport", () => {
       );
       const now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
       try {
+        // Finalization replaces the source inside the page VM; expect an independent wire value.
+        const expectedLines =
+          finalize === true
+            ? [
+                committed,
+                { ...visible, source: { ...visible.source, revision: "2", finalized: true } },
+              ]
+            : [committed];
         const result = await readChromeMeetTranscript({
           runtime,
           config: resolveGoogleMeetConfig({ chrome: { joinTimeoutMs } }),
@@ -521,7 +529,6 @@ describe("google meet chrome transport", () => {
           meetingSessionId: "transcript-session",
           tab: { targetId: "transcript-tab", openedByPlugin: false },
         });
-        const expectedLines = finalize === true ? [committed, visible] : [committed];
         expect(result).toStrictEqual({
           droppedLines: 0,
           epoch: "caption-epoch",

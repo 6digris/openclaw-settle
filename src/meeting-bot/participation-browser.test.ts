@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createDeferredCore } from "../shared/deferred.js";
 import { runMeetingBrowserAct } from "./browser-act-lock.js";
 import { runMeetingParticipationWithBrowser } from "./participation-browser.js";
 import type { MeetingBrowserParticipationAdapter } from "./participation-types.js";
@@ -88,10 +89,7 @@ describe("meeting participation browser dispatch", () => {
   });
 
   it("uses the existing browser lock and rejects a session that leaves while queued", async () => {
-    let release: (() => void) | undefined;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
+    const { promise: gate, resolve: release } = createDeferredCore();
     const blocker = runMeetingBrowserAct({
       targetId,
       deadline: Date.now() + 10_000,
@@ -220,14 +218,8 @@ describe("meeting participation browser dispatch", () => {
   });
 
   it("rejects a session that leaves during preparation while retaining the browser lock", async () => {
-    let release: (() => void) | undefined;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    let markPreparing: (() => void) | undefined;
-    const preparing = new Promise<void>((resolve) => {
-      markPreparing = resolve;
-    });
+    const { promise: gate, resolve: release } = createDeferredCore();
+    const { promise: preparing, resolve: markPreparing } = createDeferredCore();
     let current = true;
     const adapter = createPreparingAdapter();
     const build = vi.spyOn(adapter, "buildActionScript");

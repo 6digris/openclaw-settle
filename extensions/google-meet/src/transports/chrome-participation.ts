@@ -49,8 +49,8 @@ export async function participateInChromeMeet(params: {
     targetId,
     requestId: params.request.requestId,
     action: params.request.action,
-    assertCurrent: params.assertCurrent,
-    isSameMeetingUrl: GOOGLE_MEET_PLATFORM_ADAPTER.urls.isSameMeeting,
+    assertCurrent: () => params.assertCurrent(),
+    isSameMeetingUrl: (left, right) => GOOGLE_MEET_PLATFORM_ADAPTER.urls.isSameMeeting(left, right),
     timeoutMs: Math.min(10_000, params.config.chrome.joinTimeoutMs),
   });
 }

@@ -120,6 +120,13 @@ const optionalBrowserString = z.string().optional().catch(undefined);
 const optionalBrowserBoolean = z.boolean().optional().catch(undefined);
 const optionalBrowserNumber = z.number().optional().catch(undefined);
 const invalidBrowserArrayItemSchema = z.unknown().transform(() => null);
+const meetingCaptionSourceSchema = z.object({
+  id: z.string().min(1).max(512),
+  epoch: z.string().min(1).max(512),
+  revision: z.string().min(1).max(128),
+  finalized: z.boolean(),
+  ownEcho: z.boolean().optional(),
+});
 const meetingTranscriptLineSchema = z
   .object({
     at: optionalBrowserString,
@@ -290,32 +297,9 @@ function parseMeetingTranscript<Transcript extends MeetingTranscriptSnapshot>(
           if (typeof line.text !== "string" || !line.text.trim()) {
             return [];
           }
-          const source =
-            line.source && typeof line.source === "object"
-              ? (line.source as Record<string, unknown>)
-              : undefined;
+          const source = meetingCaptionSourceSchema.safeParse(line.source);
           const identity =
-            source &&
-            typeof source.id === "string" &&
-            source.id.length > 0 &&
-            source.id.length <= 512 &&
-            typeof source.epoch === "string" &&
-            source.epoch.length > 0 &&
-            source.epoch.length <= 512 &&
-            source.epoch === payload.epoch &&
-            typeof source.revision === "string" &&
-            source.revision.length > 0 &&
-            source.revision.length <= 128 &&
-            typeof source.finalized === "boolean" &&
-            (source.ownEcho === undefined || typeof source.ownEcho === "boolean")
-              ? {
-                  id: source.id,
-                  epoch: source.epoch,
-                  revision: source.revision,
-                  finalized: source.finalized,
-                  ...(typeof source.ownEcho === "boolean" ? { ownEcho: source.ownEcho } : {}),
-                }
-              : undefined;
+            source.success && source.data.epoch === payload.epoch ? source.data : undefined;
           return [
             {
               ...(typeof line.at === "string" ? { at: line.at } : {}),

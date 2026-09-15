@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import plugin from "./index.js";
 import {
+  createGoogleMeetToolGatewayForTest,
   invokeGoogleMeetGatewayMethodForTest,
   setupGoogleMeetPlugin,
 } from "./src/test-support/plugin-harness.js";
@@ -20,12 +21,7 @@ vi.mock("./src/runtime.js", () => ({
 
 function setup() {
   const harness = setupGoogleMeetPlugin(plugin);
-  testing.setCallGatewayFromCliForTests(async (method, _options, params) => {
-    return (await invokeGoogleMeetGatewayMethodForTest(harness.methods, method, params)) as Record<
-      string,
-      unknown
-    >;
-  });
+  testing.setCallGatewayFromCliForTests(createGoogleMeetToolGatewayForTest(harness.methods));
   const tool = harness.tools[0];
   if (!tool) {
     throw new Error("Expected Google Meet tool");

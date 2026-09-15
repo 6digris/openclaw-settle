@@ -1,6 +1,7 @@
 import { createContext, Script } from "node:vm";
 import { describe, expect, it } from "vitest";
-import { meetStatusScript, meetTranscriptScript } from "./google-meet-page-scripts.js";
+import { meetTranscriptScript } from "./google-meet-caption-scripts.js";
+import { meetStatusScript } from "./google-meet-page-scripts.js";
 import { GOOGLE_MEET_TRANSCRIPT_MAX_LINES } from "./types.js";
 
 const MEETING_URL = "https://meet.google.com/abc-defg-hij";
@@ -29,13 +30,13 @@ type Transcript = {
 
 class CaptionNode {
   constructor(
-    public innerText: string,
+    public textContent: string,
     private attributes: Record<string, string> = {},
     public parentElement: CaptionNode | null = null,
   ) {}
 
-  get textContent() {
-    return this.innerText;
+  get innerText() {
+    return this.textContent;
   }
 
   getAttribute(name: string) {
@@ -43,12 +44,7 @@ class CaptionNode {
   }
 
   closest(selector: string): CaptionNode | null {
-    for (let node: CaptionNode | null = this; node; node = node.parentElement) {
-      if (selector === "[data-is-self]" && node.getAttribute("data-is-self") !== null) {
-        return node;
-      }
-    }
-    return null;
+    return closestCaptionNode(this, selector);
   }
 }
 
@@ -136,7 +132,9 @@ function createCaptionPage(initialRows: CaptionNode[]) {
     },
     settle() {
       expect(timers.size).toBeGreaterThan(0);
-      for (const [id, timer] of [...timers]) {
+      // Callbacks may schedule another timer; settle only the current snapshot.
+      const pendingTimers = Array.from(timers);
+      for (const [id, timer] of pendingTimers) {
         timers.delete(id);
         now += timer.delay;
         timer.callback();
@@ -145,7 +143,7 @@ function createCaptionPage(initialRows: CaptionNode[]) {
     reload() {
       timers.clear();
       observers.clear();
-      delete windowState.__openclawMeetCaptions;
+      delete windowState["__openclawMeetCaptions"];
     },
   };
 }
@@ -185,7 +183,7 @@ describe("Google Meet caption source identity", () => {
     await page.poll();
     expect(onlySourcedLine(page.read().pendingLines).source).toEqual(source);
 
-    row.innerText = "Alice\nActually, use the green version";
+    row.textContent = "Alice\nActually, use the green version";
     page.show([row]);
     const corrected = page.read();
     const previous = onlySourcedLine(corrected.lines);
@@ -231,7 +229,7 @@ describe("Google Meet caption source identity", () => {
         page.settle();
       }
       const committed = onlySourcedLine(page.read(method === "explicit").lines);
-      row.innerText = "Alice (guest)\nPlease share the recap after the meeting";
+      row.textContent = "Alice (guest)\nPlease share the recap after the meeting";
       page.show([row]);
       const extended = page.read();
       const pending = onlySourcedLine(extended.pendingLines);
@@ -280,7 +278,7 @@ describe("Google Meet caption source identity", () => {
     const row = new CaptionNode(originalText);
     const page = createCaptionPage([row]);
     await page.poll();
-    row.innerText = "Alice\nActually, use the green version";
+    row.textContent = "Alice\nActually, use the green version";
     page.show([row]);
     const corrected = page.read();
     const previous = onlySourcedLine(corrected.lines);
@@ -314,7 +312,7 @@ describe("Google Meet caption source identity", () => {
     expect(initial.pendingLines.map((line) => line.source)).toEqual([source, source]);
     expect(source.revision).toBe("1");
 
-    firstRow.innerText = "Alice\nPlease share after review";
+    firstRow.textContent = "Alice\nPlease share after review";
     page.show([firstRow, staleRow]);
     const extended = page.read();
     expect(onlySourcedLine(extended.pendingLines.slice(0, 1)).source).toEqual({
@@ -348,12 +346,12 @@ describe("Google Meet caption source identity", () => {
     const page = createCaptionPage([row]);
     await page.poll();
     const original = onlySourcedLine(page.read().pendingLines).source;
-    row.innerText = "Alice\nPlease share after review";
+    row.textContent = "Alice\nPlease share after review";
     page.show([row]);
     const committed = onlySourcedLine(page.read(true).lines);
     expect(committed.source).toEqual({ ...original, revision: "3", finalized: true });
 
-    row.innerText = "Alice\nPlease share";
+    row.textContent = "Alice\nPlease share";
     page.show([row]);
     const returning = page.read();
     expect(returning.lines).toEqual([committed]);
@@ -423,7 +421,7 @@ describe("Google Meet caption source identity", () => {
     page.show([]);
     page.settle();
     const committed = onlySourcedLine(page.read().lines);
-    row.innerText = `Alice\n${text}`;
+    row.textContent = `Alice\n${text}`;
     page.show([row]);
     const returning = page.read();
     const pending = onlySourcedLine(returning.pendingLines);
@@ -497,3 +495,12 @@ describe("Google Meet caption source identity", () => {
     },
   );
 });
+
+function closestCaptionNode(startNode: CaptionNode | null, selector: string): CaptionNode | null {
+  for (let node = startNode; node; node = node.parentElement) {
+    if (selector === "[data-is-self]" && node.getAttribute("data-is-self") !== null) {
+      return node;
+    }
+  }
+  return null;
+}

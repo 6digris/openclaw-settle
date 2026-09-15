@@ -170,7 +170,7 @@ export default definePluginEntry({
         return;
       }
       const runtime = await ensureRuntime();
-      respond(true, await runtime.participationContext(sessionId));
+      respond(true, runtime.participationContext(sessionId));
     });
 
     registerGatewayMethod("googlemeet.participate", async ({ params, respond }) => {

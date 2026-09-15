@@ -1,4 +1,3 @@
-import type { RuntimeLogger } from "../plugins/runtime/types.js";
 import type {
   TranscriptStartRequest,
   TranscriptsStartResult,
@@ -6,7 +5,6 @@ import type {
   TranscriptsStopResult,
 } from "../transcripts/provider-types.js";
 import type {
-  MeetingParticipationOptions,
   MeetingParticipationRequest,
   MeetingParticipationSource,
 } from "./participation-types.js";
@@ -14,10 +12,15 @@ import { MeetingParticipation } from "./participation.js";
 import { MeetingSessionCleanupTracker } from "./session-cleanup-tracker.js";
 import { MeetingSessionDurableTranscripts } from "./session-durable-transcripts.js";
 import { MeetingSessionJoinLock } from "./session-join-lock.js";
+import {
+  inheritMeetingBrowserTabOwnership,
+  settleMeetingRetainedBrowserTabs,
+  settleMeetingRetainedBrowserTabsAfterFailure,
+} from "./session-runtime-browser-tabs.js";
 import type {
-  MeetingBrowserSessionView,
+  MeetingSessionLeaveResult,
   MeetingSessionRuntimeHandles,
-  MeetingSessionRuntimeJoinContext,
+  MeetingSessionRuntimeOptions,
 } from "./session-runtime-types.js";
 import { evaluateMeetingSpeechReadiness } from "./session-speech-readiness.js";
 import { MeetingSessionTranscriptStore } from "./session-transcript-store.js";
@@ -26,103 +29,15 @@ import type {
   MeetingBrowserTab,
   MeetingResolvedJoin,
   MeetingSessionRecord,
-  MeetingTranscriptSnapshot,
 } from "./session-types.js";
-import type { MeetingDurableTranscriptsOptions } from "./transcripts-bridge.js";
 export type {
+  MeetingSessionLeaveResult,
+  MeetingSessionRuntimeMessages,
+  MeetingSessionRuntimeOptions,
   MeetingBrowserSessionView,
   MeetingSessionRuntimeHandles,
   MeetingSessionRuntimeJoinContext,
 } from "./session-runtime-types.js";
-
-export type MeetingSessionRuntimeMessages<TSpeechBlockedReason extends string> = {
-  previousBrowserLeaveFailed: string;
-  reassignedSessionNote: string;
-  reusedSessionNote: string;
-  replacementBrowserLeaveFailed: string;
-  speechBlockedFallback: string;
-  speech: {
-    audioBridgeUnavailable: string;
-    browserUnverified: string;
-    microphoneMuted: string;
-    microphoneMutedReason: TSpeechBlockedReason;
-    notInCall: string;
-    notInCallReason: TSpeechBlockedReason;
-    browserUnverifiedReason: TSpeechBlockedReason;
-    audioBridgeUnavailableReason: TSpeechBlockedReason;
-  };
-};
-
-export type MeetingSessionRuntimeOptions<
-  TSession extends MeetingSessionRecord<TTransport, TMode>,
-  TRequest,
-  TTransport extends string,
-  TMode extends string,
-  THealth extends MeetingBrowserHealth<TManualReason, TSpeechBlockedReason>,
-  TTab extends MeetingBrowserTab,
-  TManualReason extends string,
-  TSpeechBlockedReason extends string,
-> = {
-  logger: RuntimeLogger;
-  logScope: string;
-  formatError(error: unknown): string;
-  messages: MeetingSessionRuntimeMessages<TSpeechBlockedReason>;
-  reuseExistingBrowserTab: boolean;
-  waitForInCallMs: number;
-  joinTimeoutMs: number;
-  transientSpeechBlockedReasons: ReadonlySet<TSpeechBlockedReason>;
-  resolveJoin(request: TRequest): MeetingResolvedJoin<TTransport, TMode>;
-  createSession(params: {
-    request: TRequest;
-    resolved: MeetingResolvedJoin<TTransport, TMode>;
-    createdAt: string;
-  }): TSession;
-  resolveSpeechInstructions(request: TRequest): string | undefined;
-  isBrowserTransport(transport: TTransport): boolean;
-  isTalkBackMode(mode: TMode): boolean;
-  isTranscribeMode(mode: TMode): boolean;
-  sameMeetingUrl(left: string | undefined, right: string | undefined): boolean;
-  normalizeMeetingUrlForReuse(url: string): string | undefined;
-  getBrowser(session: TSession): MeetingBrowserSessionView<THealth, TTab> | undefined;
-  setBrowserTab(session: TSession, tab: TTab | undefined): void;
-  setBrowserHealth(session: TSession, health: THealth | undefined): void;
-  joinTransport(params: {
-    request: TRequest;
-    session: TSession;
-    context: MeetingSessionRuntimeJoinContext<TSession, TTransport, TMode, THealth, TTab>;
-  }): Promise<{ delegatedSpoken?: boolean }>;
-  releaseBrowserTab(session: TSession): Promise<boolean | undefined>;
-  refreshBrowserHealth(
-    session: TSession,
-    options?: { force?: boolean; readOnly?: boolean },
-  ): Promise<void>;
-  refreshStatus(session: TSession): Promise<void>;
-  refreshReusableSession(
-    session: TSession,
-    request: TRequest,
-    resolved: MeetingResolvedJoin<TTransport, TMode>,
-  ): Promise<{ keepBrowserTab: boolean } | void>;
-  ensureRealtimeBridge(
-    session: TSession,
-  ): Promise<MeetingSessionRuntimeHandles<THealth> | undefined>;
-  captureTranscript(
-    session: TSession,
-    options?: { finalize?: boolean },
-  ): Promise<MeetingTranscriptSnapshot | undefined>;
-  speakViaTransport(
-    session: TSession,
-    instructions?: string,
-  ): Promise<{ handled: boolean; spoken: boolean } | undefined>;
-  defaultSpeechInstructions?: string;
-  durableTranscripts?: MeetingDurableTranscriptsOptions;
-  participation?: MeetingParticipationOptions<TSession>;
-};
-
-export type MeetingSessionLeaveResult<TSession> = {
-  found: boolean;
-  session?: TSession;
-  browserLeft?: boolean;
-};
 
 const nowIso = () => new Date().toISOString();
 
@@ -165,24 +80,19 @@ export class MeetingSessionRuntime<
         ...options.participation,
         current: (sessionId) => {
           const session = this.#sessions.get(sessionId);
-          const browser = session ? options.getBrowser(session) : undefined;
-          if (!session || session.state !== "active") return undefined;
-          const targetId = browser?.tab?.targetId;
-          const nodeId = browser?.nodeId;
-          const { url, transport } = session;
+          if (!session) {
+            return undefined;
+          }
+          const isCurrent = this.#captureSessionOwnership(session);
+          if (session.state !== "active") {
+            return undefined;
+          }
           return {
             session,
             assertCurrent: () => {
-              const latest = options.getBrowser(session);
-              if (
-                this.#sessions.get(sessionId) !== session ||
-                session.state !== "active" ||
-                session.url !== url ||
-                session.transport !== transport ||
-                latest?.nodeId !== nodeId ||
-                latest?.tab?.targetId !== targetId
-              )
+              if (!isCurrent(sessionId)) {
                 throw new Error("The meeting session no longer owns this browser tab and route.");
+              }
             },
           };
         },
@@ -194,20 +104,9 @@ export class MeetingSessionRuntime<
       isTranscribeSession: (session) => this.options.isTranscribeMode(session.mode),
       hasBrowserTab: (session) => Boolean(this.options.getBrowser(session)?.tab),
       capture: async (session, captureOptions) => {
-        const browser = this.options.getBrowser(session);
-        const targetId = browser?.tab?.targetId;
-        const nodeId = browser?.nodeId;
-        const { url, transport, state } = session;
+        const isCurrent = this.#captureSessionOwnership(session);
         const snapshot = await this.options.captureTranscript(session, captureOptions);
-        const latest = this.options.getBrowser(session);
-        if (
-          this.#sessions.get(session.id) !== session ||
-          session.state !== state ||
-          session.url !== url ||
-          session.transport !== transport ||
-          latest?.nodeId !== nodeId ||
-          latest?.tab?.targetId !== targetId
-        ) {
+        if (!isCurrent(session.id)) {
           throw new Error("The meeting session no longer owns the captured browser tab and route.");
         }
         return snapshot;
@@ -519,6 +418,25 @@ export class MeetingSessionRuntime<
     this.#noteSession(session, reason);
   }
 
+  #captureSessionOwnership(session: TSession): (sessionId: string) => boolean {
+    const browser = this.options.getBrowser(session);
+    const targetId = browser?.tab?.targetId;
+    const nodeId = browser?.nodeId;
+    // Transcript finalization can capture an ended session; preserve the state at capture.
+    const { url, transport, state } = session;
+    return (sessionId) => {
+      const latest = this.options.getBrowser(session);
+      return (
+        this.#sessions.get(sessionId) === session &&
+        session.state === state &&
+        session.url === url &&
+        session.transport === transport &&
+        latest?.nodeId === nodeId &&
+        latest?.tab?.targetId === targetId
+      );
+    };
+  }
+
   async #joinUnlocked(
     request: TRequest,
     resolved: MeetingResolvedJoin<TTransport, TMode>,
@@ -552,7 +470,7 @@ export class MeetingSessionRuntime<
             throw new Error(this.options.messages.previousBrowserLeaveFailed);
           }
         } catch (error) {
-          await this.#settleRetainedBrowserTabsAfterFailure(retained);
+          await settleMeetingRetainedBrowserTabsAfterFailure(this.options, retained);
           throw error;
         }
         this.#noteSession(session, this.options.messages.reassignedSessionNote);
@@ -591,12 +509,14 @@ export class MeetingSessionRuntime<
         session,
         context: {
           attachRuntimeHandles: (target, handles) => this.#attachRuntimeHandles(target, handles),
-          inheritedBrowserTab: (params) => this.#inheritBrowserTabOwnership(params),
+          inheritedBrowserTab: (params) =>
+            inheritMeetingBrowserTabOwnership(this.#sessions.values(), this.options, params),
         },
       });
       delegatedSpoken = result.delegatedSpoken === true;
       const browser = this.options.getBrowser(session);
-      const settled = await this.#settleRetainedBrowserTabs(
+      const settled = await settleMeetingRetainedBrowserTabs(
+        this.options,
         retained,
         browser?.tab
           ? { transport: session.transport, nodeId: browser.nodeId, tab: browser.tab }
@@ -609,7 +529,7 @@ export class MeetingSessionRuntime<
       // Failed joins are never published, so this catch is their only cleanup owner.
       // Stop attached transports and release the new browser participant before rethrowing.
       await this.#rollbackFailedJoinSession(session);
-      await this.#settleRetainedBrowserTabsAfterFailure(retained);
+      await settleMeetingRetainedBrowserTabsAfterFailure(this.options, retained);
       this.options.logger.warn(
         `${this.options.logScope} join failed: ${this.options.formatError(error)}`,
       );
@@ -723,63 +643,6 @@ export class MeetingSessionRuntime<
     return `${transport}:${meeting}`;
   }
 
-  #inheritBrowserTabOwnership(params: {
-    session: TSession;
-    transport: TTransport;
-    nodeId?: string;
-    meetingUrl: string;
-    tab?: TTab;
-  }): TTab | undefined {
-    if (!params.tab) {
-      return undefined;
-    }
-    const inherited = [...this.#sessions.values()].some((session) => {
-      const browser = this.options.getBrowser(session);
-      const browserTab = browser?.tab;
-      return (
-        session.transport === params.transport &&
-        this.options.sameMeetingUrl(session.url, params.meetingUrl) &&
-        browser?.nodeId === params.nodeId &&
-        browserTab?.targetId === params.tab?.targetId &&
-        browserTab?.openedByPlugin === true
-      );
-    });
-    return inherited ? { ...params.tab, openedByPlugin: true } : params.tab;
-  }
-
-  async #settleRetainedBrowserTabs(
-    retained: Array<{ session: TSession; tab: TTab }>,
-    adopted?: { transport: TTransport; nodeId?: string; tab: TTab },
-  ): Promise<boolean> {
-    let settled = true;
-    for (let index = 0; index < retained.length;) {
-      const retainedTab = retained[index];
-      if (!retainedTab) {
-        break;
-      }
-      const { session, tab } = retainedTab;
-      const browser = this.options.getBrowser(session);
-      const adoptedThisTab =
-        adopted?.transport === session.transport &&
-        adopted.nodeId === browser?.nodeId &&
-        adopted.tab.targetId === tab.targetId;
-      if (adoptedThisTab) {
-        this.options.setBrowserTab(session, undefined);
-        retained.splice(index, 1);
-        continue;
-      }
-      if ((await this.options.releaseBrowserTab(session)) === false) {
-        settled = false;
-        index += 1;
-        continue;
-      }
-      // Consume only after settlement succeeds. A rejection leaves this entry and the
-      // remaining tail available to the failed-join rollback path for another attempt.
-      retained.splice(index, 1);
-    }
-    return settled;
-  }
-
   async #rollbackFailedJoinSession(session: TSession): Promise<void> {
     await this.#sessionCleanup.rollbackFailedJoin({
       sessionId: session.id,
@@ -792,29 +655,6 @@ export class MeetingSessionRuntime<
       onBrowserResult: (left) => (session.browserLeft = left),
       onComplete: () => this.#dropRuntimeHandles(session.id),
     });
-  }
-
-  async #settleRetainedBrowserTabsAfterFailure(
-    retained: Array<{ session: TSession; tab: TTab }>,
-  ): Promise<void> {
-    // Failed reassignment has no future owner for retained tabs. Try twice while
-    // preserving entries between attempts, but never replace the original join error.
-    for (let attempt = 0; attempt < 2 && retained.length > 0; attempt += 1) {
-      try {
-        if (await this.#settleRetainedBrowserTabs(retained)) {
-          return;
-        }
-      } catch (error) {
-        this.options.logger.warn(
-          `${this.options.logScope} retained browser cleanup failed: ${this.options.formatError(error)}`,
-        );
-      }
-    }
-    if (retained.length > 0) {
-      this.options.logger.warn(
-        `${this.options.logScope} retained browser cleanup incomplete after failed join`,
-      );
-    }
   }
 
   #attachRuntimeHandles(session: TSession, handles: MeetingSessionRuntimeHandles<THealth>): void {

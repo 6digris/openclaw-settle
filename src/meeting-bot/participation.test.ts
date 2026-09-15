@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PluginStateStoreError } from "../plugin-state/plugin-state-store.types.js";
 import { serializePluginStoreJson } from "../plugin-state/plugin-store-validation.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import type {
   MeetingParticipationAttempt,
   MeetingParticipationOptions,
   MeetingParticipationRequest,
   MeetingParticipationSource,
-  MeetingParticipationStore,
 } from "./participation-types.js";
 import { MeetingParticipation } from "./participation.js";
 
@@ -24,7 +24,7 @@ const source: MeetingParticipationSource = {
   finalized: true,
 };
 
-function memoryStore(maxEntries = Infinity): MeetingParticipationStore {
+function memoryStore(maxEntries = Infinity): MeetingParticipationOptions<object>["store"] {
   const rows = new Map<string, MeetingParticipationAttempt>();
   const createdAt = new Map<string, number>();
   let clock = 0;
@@ -84,10 +84,7 @@ function memoryStore(maxEntries = Infinity): MeetingParticipationStore {
 }
 
 function gate() {
-  let release!: () => void;
-  const promise = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+  const { promise, resolve: release } = createDeferredCore();
   return { promise, release };
 }
 
@@ -362,6 +359,37 @@ describe("meeting participation authority and durable attempts", () => {
 });
 
 describe("meeting participation observed source identities", () => {
+  it("keeps the source authority callback bound to its original owner", () => {
+    const { store, effect } = harness();
+    const current = {
+      session: {},
+      active: true,
+      assertCurrent() {
+        if (!this.active) {
+          throw new Error("Session replaced.");
+        }
+      },
+    };
+    const owner = new MeetingParticipation({
+      store,
+      capabilities: () => ["chat"],
+      validateAction: () => undefined,
+      execute: effect,
+      current: () => current,
+    });
+    const sourceId = owner.observe(sessionId, source);
+    expect(sourceId).toBeTruthy();
+    expect(owner.context(sessionId).sources).toHaveLength(1);
+    const inspection = owner.inspect(sessionId, sourceId!);
+    expect(inspection).toBeDefined();
+    expect(() => inspection?.assertCurrent()).not.toThrow();
+
+    current.active = false;
+    expect(owner.context(sessionId).sources).toEqual([]);
+    expect(() => inspection?.assertCurrent()).toThrow();
+    expect(owner.inspect(sessionId, sourceId!)).toBeUndefined();
+  });
+
   it.each([
     { label: "new document", update: { epoch: "document-2" } },
     { label: "corrected revision", update: { revision: "2", text: "Corrected request." } },
@@ -667,7 +695,7 @@ describe("meeting participation native correction feedback", () => {
 });
 
 describe("meeting participation ledger capacity", () => {
-  async function verifyClosedSessionCleanup(store: MeetingParticipationStore) {
+  async function verifyClosedSessionCleanup(store: MeetingParticipationOptions<object>["store"]) {
     const { owner, effect } = harness({ store }, ["closed", "active", "next"]);
     const original = await owner.execute("closed", request);
     await owner.execute("active", request);
@@ -716,7 +744,9 @@ describe("meeting participation ledger capacity", () => {
     );
   });
 
-  async function verifyInvalidIdentifiersPreserveClosedLedger(store: MeetingParticipationStore) {
+  async function verifyInvalidIdentifiersPreserveClosedLedger(
+    store: MeetingParticipationOptions<object>["store"],
+  ) {
     const { owner, effect } = harness({ store }, ["closed", sessionId]);
     await owner.execute("closed", request);
     owner.close("closed");
