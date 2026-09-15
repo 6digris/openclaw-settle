@@ -8,7 +8,7 @@ import {
   runCodeModeModelMatrix,
   validateQaEvidenceSummaryJson,
 } from "../../../scripts/code-mode-model-matrix.ts";
-import { stubBunVersion } from "./runtime-identity.test-helper.js";
+import { stubBunVersion } from "./runtime-identity.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 

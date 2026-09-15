@@ -9,7 +9,7 @@ import {
   validateQaEvidenceSummaryJson,
   type QaEvidenceIdentity,
 } from "./evidence-summary.js";
-import { stubBunVersion } from "./runtime-identity.test-helper.js";
+import { stubBunVersion } from "./runtime-identity.test-support.js";
 import { createQaSuiteEvidenceInvocation, rebaseQaSuiteEvidence } from "./suite-evidence.js";
 import { makeQaSuiteTestScenario } from "./suite-test-helpers.js";
 import { createTempDirHarness } from "./temp-dir.test-helper.js";
