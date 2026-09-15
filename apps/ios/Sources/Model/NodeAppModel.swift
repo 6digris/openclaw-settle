@@ -5236,6 +5236,7 @@ extension NodeAppModel {
             caps: [
                 OpenClawGatewayClientCapability.agentKind,
                 OpenClawGatewayClientCapability.inlineWidgets,
+                OpenClawGatewayClientCapability.modelSelectionPolicy,
             ],
             commands: [],
             permissions: [:],

@@ -878,61 +878,65 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
           expect(result?.reply?.text).toContain('"status": "loaded"');
           expect(process.listenerCount(event)).toBe(before);
         } catch (error) {
-          const readCount = snapshotRead.mock.results.length - firstRead;
-          const settled = snapshotRead.mock.settledResults[firstRead];
-          const snapshot =
-            readCount === 1 && settled?.type === "fulfilled" ? settled.value : undefined;
-          const safeCode = (code: string | null | undefined) =>
-            code == null
-              ? null
-              : [
-                    "ENOENT",
-                    "EACCES",
-                    "EPERM",
-                    "ENOSPC",
-                    "EIO",
-                    "EMFILE",
-                    "SQLITE_BUSY",
-                    "SQLITE_LOCKED",
-                    "SQLITE_ERROR",
-                  ].includes(code)
-                ? code
-                : "other";
-          console.error(
-            JSON.stringify({
-              event: "chat-inspect-config-failure",
-              selector: name === id ? "single" : "all",
-              readCount,
-              snapshotPresent: snapshot !== undefined,
-              fixturePathMatches: snapshot ? snapshot.path === state.configPath : null,
-              exists: snapshot?.exists ?? null,
-              valid: snapshot?.valid ?? null,
-              rawPresent: snapshot ? snapshot.raw !== null : null,
-              readErrorCode: safeCode(snapshot?.readError?.code),
-              issueCount: snapshot?.issues.length ?? null,
-              issuesTruncated: (snapshot?.issues.length ?? 0) > 8,
-              issues:
-                snapshot?.issues.slice(0, 8).map((issue) => ({
-                  // Only fixed schema families and categories escape; validator messages
-                  // can contain runner paths, authored values, or environment information.
-                  field:
-                    ["agents", "plugins", "commands"].find(
-                      (key) => issue.path === key || issue.path.startsWith(`${key}.`),
-                    ) ?? (issue.path ? "other" : "root"),
-                  category: issue.message.startsWith("JSON5 parse failed:")
-                    ? "parse"
-                    : issue.message.startsWith("read failed:")
-                      ? "read-or-observe"
-                      : /include/i.test(issue.message)
-                        ? "include"
-                        : "validation-or-other",
-                  errorName:
-                    /^read failed: (TypeError|RangeError|SyntaxError|Error):/.exec(
-                      issue.message,
-                    )?.[1] ?? null,
-                })) ?? [],
-            }),
-          );
+          try {
+            const readCount = snapshotRead.mock.results.length - firstRead;
+            const settled = snapshotRead.mock.settledResults[firstRead];
+            const snapshot =
+              readCount === 1 && settled?.type === "fulfilled" ? settled.value : undefined;
+            const safeCode = (code: string | null | undefined) =>
+              code == null
+                ? null
+                : [
+                      "ENOENT",
+                      "EACCES",
+                      "EPERM",
+                      "ENOSPC",
+                      "EIO",
+                      "EMFILE",
+                      "SQLITE_BUSY",
+                      "SQLITE_LOCKED",
+                      "SQLITE_ERROR",
+                    ].includes(code)
+                  ? code
+                  : "other";
+            console.error(
+              JSON.stringify({
+                event: "chat-inspect-config-failure",
+                selector: name === id ? "single" : "all",
+                readCount,
+                snapshotPresent: snapshot !== undefined,
+                fixturePathMatches: snapshot ? snapshot.path === state.configPath : null,
+                exists: snapshot?.exists ?? null,
+                valid: snapshot?.valid ?? null,
+                rawPresent: snapshot ? snapshot.raw !== null : null,
+                readErrorCode: safeCode(snapshot?.readError?.code),
+                issueCount: snapshot?.issues.length ?? null,
+                issuesTruncated: (snapshot?.issues.length ?? 0) > 8,
+                issues:
+                  snapshot?.issues.slice(0, 8).map((issue) => ({
+                    // Only fixed schema families and categories escape; validator messages
+                    // can contain runner paths, authored values, or environment information.
+                    field:
+                      ["agents", "plugins", "commands"].find(
+                        (key) => issue.path === key || issue.path.startsWith(`${key}.`),
+                      ) ?? (issue.path ? "other" : "root"),
+                    category: issue.message.startsWith("JSON5 parse failed:")
+                      ? "parse"
+                      : issue.message.startsWith("read failed:")
+                        ? "read-or-observe"
+                        : /include/i.test(issue.message)
+                          ? "include"
+                          : "validation-or-other",
+                    errorName:
+                      /^read failed: (TypeError|RangeError|SyntaxError|Error):/.exec(
+                        issue.message,
+                      )?.[1] ?? null,
+                  })) ?? [],
+              }),
+            );
+          } catch {
+            // Diagnostics must not replace the original failure.
+          }
           throw error;
         }
       }
