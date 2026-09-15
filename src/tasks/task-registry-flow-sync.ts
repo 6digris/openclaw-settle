@@ -99,6 +99,7 @@ function scheduleTaskFlowSyncRetry(
       // The durable row, link and latest-task order are reread by the same owner.
       const outcome = await store.syncTaskFlowAsync(current, { taskId: id });
       if (outcome.kind === "error") {
+        scheduleTaskFlowSyncRetry(current, store, id, operation, selection, attempt + 1);
         throw restoreAgentSchemaInspectionError(outcome.error);
       }
       if (!outcome.result.ok) {
@@ -149,6 +150,7 @@ export function receiveTaskRegistryRestoreResult(
   let firstError: Error | undefined;
   for (const outcome of result.flowSyncs) {
     if (outcome.kind === "error") {
+      scheduleTaskFlowSyncRetry(context, store, outcome.taskId, "restore", { kind: "restored" });
       firstError ??= restoreAgentSchemaInspectionError(outcome.error);
       continue;
     }

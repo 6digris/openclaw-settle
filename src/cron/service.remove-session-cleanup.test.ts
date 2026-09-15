@@ -243,6 +243,7 @@ describe("CronService.remove session cleanup", () => {
 
     try {
       await vi.advanceTimersByTimeAsync(50);
+      await unrelatedAdd;
       expect(unrelatedAdded).toBe(true);
     } finally {
       releaseWriter.resolve();
