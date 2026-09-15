@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { discoverConfigWidePluginManifestRegistry } from "../config/io.plugin-metadata.js";
+import { resolveStateDir } from "../config/paths.js";
 import { writeOpenClawConfig } from "../config/test-helpers.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { executeSqliteQueryTakeFirstSync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
@@ -13,6 +14,7 @@ import {
   withPluginMetadataSnapshotScope,
 } from "../plugins/current-plugin-metadata-snapshot.js";
 import { resolveInstalledPluginIndexPolicyHash } from "../plugins/installed-plugin-index-policy.js";
+import { writePersistedInstalledPluginIndexInstallRecordsWithLease } from "../plugins/installed-plugin-index-records.js";
 import { writePersistedInstalledPluginIndexWithLeaseSync } from "../plugins/installed-plugin-index-store-write.js";
 import { readPersistedInstalledPluginIndexSync } from "../plugins/installed-plugin-index-store.js";
 import {
@@ -22,13 +24,19 @@ import {
   runOutsidePluginCache,
   withPluginCache,
 } from "../plugins/plugin-cache.js";
+import {
+  runOutsidePluginLifecycleLease,
+  withPluginLifecycleLease,
+} from "../plugins/plugin-lifecycle-lease.js";
 import { resolvePluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
+import { writeManagedNpmPlugin } from "../plugins/test-helpers/managed-npm-plugin.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
 import { resolveMigrationCheckpointIdentity } from "./doctor-config-preflight-checkpoint.js";
+import * as pluginIndexPersistence from "./doctor-config-preflight-plugin-index.js";
 import {
   persistRefreshedPluginIndex,
   readDoctorConfigPreflightSnapshot,
@@ -632,6 +640,167 @@ describe("Doctor plugin persistence", () => {
     },
   );
 
+  it("refuses a captured registry after an installer commits, without overwriting its row or checkpoint", async () => {
+    await withPreflightPluginFixture(async (_writeVersion, config) => {
+      const packageName = "@fixture/managed-preflight";
+      const pluginId = "managed-preflight";
+      const packageDir = writeManagedNpmPlugin({
+        stateDir: resolveStateDir(process.env),
+        packageName,
+        pluginId,
+        version: "1.0.0",
+      });
+      const initial = await readPluginPreflight();
+      config.plugins!.allow!.push(pluginId);
+      config.plugins!.entries = {
+        [pluginId]: { enabled: false },
+        "preflight-fixture": { enabled: false },
+      };
+      await fs.writeFile(initial.snapshot.path, JSON.stringify(config));
+      const buildIdentity = "2026-08-28T00:00:00.000Z";
+      const realNeedsCheckpoint = migrationCheckpoint.readMigrationCheckpointStatus;
+      const realRecordCheckpoint = migrationCheckpoint.recordSuccessfulStateMigrations;
+      const needsCheckpoint = vi
+        .spyOn(migrationCheckpoint, "readMigrationCheckpointStatus")
+        .mockImplementation((params) => realNeedsCheckpoint({ ...params, buildIdentity }));
+      const recordCheckpoint = vi
+        .spyOn(migrationCheckpoint, "recordSuccessfulStateMigrations")
+        .mockImplementation((params) => realRecordCheckpoint({ ...params, buildIdentity }));
+      const readRows = () => {
+        const { db } = openOpenClawStateDatabase({ env: process.env });
+        const kysely =
+          getNodeSqliteKysely<
+            Pick<OpenClawStateKyselyDatabase, "config_machine_state" | "schema_meta">
+          >(db);
+        return {
+          index: executeSqliteQueryTakeFirstSync(
+            db,
+            kysely
+              .selectFrom("config_machine_state")
+              .select(["value_json", "updated_at_ms"])
+              .where("state_key", "=", "plugins.installedIndex"),
+          ),
+          checkpoint: executeSqliteQueryTakeFirstSync(
+            db,
+            kysely
+              .selectFrom("schema_meta")
+              .select("app_version")
+              .where("meta_key", "=", "state-migrations"),
+          ),
+        };
+      };
+      let committed: ReturnType<typeof readRows> | undefined;
+      const realPersist = pluginIndexPersistence.persistRefreshedPluginIndex;
+      const publisher = vi
+        .spyOn(pluginIndexPersistence, "persistRefreshedPluginIndex")
+        .mockImplementationOnce(async (params) => {
+          const captured = params.snapshotRead.pluginMetadataSnapshot!;
+          expect(captured.registrySource).toBe("derived");
+          expect(captured.registryIndex.installRecords[pluginId]).toMatchObject({
+            installPath: packageDir,
+          });
+          const richRecord = {
+            source: "npm" as const,
+            spec: packageName + "@1.0.0",
+            installPath: packageDir,
+            version: "1.0.0",
+            resolvedName: packageName,
+            resolvedVersion: "1.0.0",
+            resolvedSpec: packageName + "@1.0.0",
+            integrity: "sha512-" + Buffer.alloc(64, 1).toString("base64"),
+            shasum: "1".repeat(40),
+            resolvedAt: "2026-08-28T00:00:00.000Z",
+            installedAt: "2026-08-28T00:00:01.000Z",
+          };
+          // Commit at the actual migration-to-publication boundary, under an independent
+          // real installer lease; the captured Doctor object must stay stale.
+          await runOutsidePluginLifecycleLease(() =>
+            withPluginLifecycleLease({ env: process.env, waitMs: 0 }, async (lease) => {
+              await writePersistedInstalledPluginIndexInstallRecordsWithLease(
+                { ...captured.registryIndex.installRecords, [pluginId]: richRecord },
+                { env: process.env, config, lease },
+              );
+            }),
+          );
+          committed = readRows();
+          expect(committed.index).toBeDefined();
+          expect(committed.index!.value_json).toContain(richRecord.integrity);
+          expect(committed.checkpoint).toBeUndefined();
+          return realPersist(params);
+        });
+      onTestFinished(() => {
+        publisher.mockRestore();
+        needsCheckpoint.mockRestore();
+        recordCheckpoint.mockRestore();
+      });
+      const measured: string[] = [];
+      const operation = withPluginCache(createPluginCache(), () =>
+        runDoctorConfigPreflight({
+          migrateLegacyConfig: false,
+          requireStateMigrationCheckpoint: true,
+          preparePluginMetadataSnapshot: true,
+          observe: false,
+          invalidConfigNote: false,
+          measure: async (name, run) => {
+            measured.push(name);
+            return await run();
+          },
+        }),
+      );
+      await expect(operation.then(() => undefined)).rejects.toThrow(
+        "config or plugin identity changed before persistence",
+      );
+      expect(publisher).toHaveBeenCalledOnce();
+      expect(committed).toBeDefined();
+      expect(readRows()).toEqual(committed);
+      expect(recordCheckpoint).not.toHaveBeenCalled();
+      await withPluginLifecycleLease({ env: process.env, waitMs: 0 }, async (lease) =>
+        lease.assertOwned(),
+      );
+      expect(measured).not.toContain("doctor.config-preflight.plugin-index-persistence");
+      expect(migrationCheckpoint.hasActiveStartupMigrationLease({ env: process.env })).toBe(false);
+    });
+  });
+
+  it("holds the plugin lease through fresh read and verification, then releases it", async () => {
+    await withPreflightPluginFixture(async () => {
+      const snapshotRead = await readPluginPreflight();
+      const lease = migrationCheckpoint.acquireStartupMigrationLease();
+      const contender = vi.fn(async () => {});
+      let reads = 0;
+      try {
+        const result = await persistRefreshedPluginIndex({
+          env: process.env,
+          lease,
+          snapshotRead,
+          measure: async (_name, operation) => await operation(),
+          readPersistedSnapshot: async () => {
+            reads++;
+            await expect(
+              runOutsidePluginLifecycleLease(() =>
+                withPluginLifecycleLease({ env: process.env, waitMs: 0 }, contender),
+              ),
+            ).rejects.toMatchObject({ code: "OPENCLAW_STATE_LEASE_TIMEOUT" });
+            return readDoctorConfigPreflightSnapshot({
+              allowCurrentPluginMetadata: false,
+              includePluginMetadata: true,
+              preparePluginMetadataSnapshot: true,
+              skipPluginValidation: false,
+              observe: false,
+            });
+          },
+        });
+        expect(result.pluginMetadataSnapshot?.registrySource).toBe("persisted");
+        expect(reads).toBe(2);
+        expect(contender).not.toHaveBeenCalled();
+        await withPluginLifecycleLease({ env: process.env, waitMs: 0 }, contender);
+        expect(contender).toHaveBeenCalledOnce();
+      } finally {
+        lease.release();
+      }
+    });
+  });
+
   it("refuses persistence verification when package facts change before the durable reread", async () => {
     const fixturePluginId = "preflight-\u001b[31mfixture";
     await withPreflightPluginFixture(
@@ -640,14 +809,23 @@ describe("Doctor plugin persistence", () => {
         const lease = migrationCheckpoint.acquireStartupMigrationLease();
         try {
           let failure: unknown;
+          let persisted = false;
           try {
             await persistRefreshedPluginIndex({
               env: process.env,
               lease,
               snapshotRead,
-              measure: async (_name, operation) => await operation(),
+              measure: async (name, operation) => {
+                const result = await operation();
+                if (name === "plugin-index-persistence") {
+                  persisted = true;
+                }
+                return result;
+              },
               readPersistedSnapshot: async () => {
-                await writeVersion("2.0.0");
+                if (persisted) {
+                  await writeVersion("2.0.0");
+                }
                 return readDoctorConfigPreflightSnapshot({
                   allowCurrentPluginMetadata: false,
                   includePluginMetadata: true,

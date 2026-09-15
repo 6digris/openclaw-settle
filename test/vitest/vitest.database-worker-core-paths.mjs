@@ -26,11 +26,13 @@ export const databaseWorkerCoreTestFiles = [
   "src/commands/doctor/auth-alias-import-recovery.test.ts",
   "src/commands/doctor/auth-alias-preservation.test.ts",
   "src/commands/doctor/shared/missing-configured-plugin-install.test.ts",
+  "src/cli/plugins-update-command.authority.test.ts",
   "src/plugins/registry-refresh.test.ts",
   "src/plugins/loader.trust-diagnostics.test.ts",
   "src/plugins/setup-registry.lifecycle.test.ts",
   "src/plugins/installed-plugin-index-store-write.receipt.test.ts",
   "src/plugins/install-record-commit.retention.test.ts",
+  "src/plugins/install-transaction.test.ts",
   "src/plugins/management-service.policy-imports.test.ts",
 
   "src/plugins/installed-plugin-index-generation-precedence.test.ts",

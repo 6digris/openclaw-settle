@@ -10,7 +10,9 @@ import {
 } from "../../../plugins/config-state.js";
 import { formatSourceBundledPluginNotice } from "../../../plugins/dev-source-root.js";
 import {
+  attachPluginInstallTransaction,
   copyPluginInstallTransactionRequest,
+  retainPluginInstallTransaction,
   withPluginInstallTransactions,
 } from "../../../plugins/install-transaction.js";
 import { PLUGIN_INSTALL_ERROR_CODE } from "../../../plugins/install-types.js";
@@ -454,19 +456,31 @@ async function repairMissingPluginInstallsWithLease(
         (!installedRecord?.installPath ||
           !installPathsEqual(resolveUserPath(installedRecord.installPath, env), removalPath))
       ) {
-        await params.beforePersistentEffect?.();
-        // Authority refusal is not a package-cleanup warning. Planning may
-        // yield, so both owners must still hold at dispatch without another await.
-        lease.assertOwned();
-        try {
-          await rm(removalPath, { recursive: true, force: true });
-        } catch (error) {
-          await params.beforePersistentEffect?.();
-          lease.assertOwned();
-          warn(
-            `Failed to remove broken installed plugin "${candidate.pluginId}" at ${removalPath}: ${String(error)}`,
-          );
-        }
+        // The old path is outside the replacement transaction. Retire it only
+        // after the index commits, so a failed write can roll back to the old payload.
+        retainPluginInstallTransaction(
+          params,
+          attachPluginInstallTransaction(
+            {},
+            {
+              commit: async () => {
+                await params.beforePersistentEffect?.();
+                // Planning may yield; authority refusal must not become a cleanup warning.
+                lease.assertOwned();
+                try {
+                  await rm(removalPath, { recursive: true, force: true });
+                } catch (error) {
+                  await params.beforePersistentEffect?.();
+                  lease.assertOwned();
+                  warn(
+                    `Failed to remove broken installed plugin "${candidate.pluginId}" at ${removalPath}: ${String(error)}`,
+                  );
+                }
+              },
+              rollback: async () => {},
+            },
+          ),
+        );
       }
     }
     nextRecords = installed.records;

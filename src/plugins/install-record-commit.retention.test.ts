@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it, vi } from "vitest";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
 import * as leaseStore from "../state/openclaw-state-lease-store.js";
@@ -52,6 +53,7 @@ describe("retained managed npm record commits", () => {
         errcode: 5,
       });
       const readExpiry = leaseStore.readOpenClawStateLeaseExpiry;
+      let refusedDatabase: Parameters<typeof readExpiry>[0] | undefined;
       let failNextRead = false;
       let failedReads = 0;
       const readSpy = vi
@@ -60,6 +62,7 @@ describe("retained managed npm record commits", () => {
           if (failNextRead) {
             failNextRead = false;
             failedReads += 1;
+            refusedDatabase = args[0];
             throw readFailure;
           }
           return readExpiry(...args);
@@ -75,24 +78,22 @@ describe("retained managed npm record commits", () => {
       });
       try {
         await withPluginLifecycleLease({ env: state.env }, async (lease) => {
-          await expect(
-            commitPluginInstallRecordsWithConfig({
-              previousInstallRecords: {},
-              nextInstallRecords: records,
-              nextConfig: { ...config, gateway: { port: 18792 } },
-            }),
-          ).rejects.toMatchObject({
+          const refusal = await commitPluginInstallRecordsWithConfig({
+            previousInstallRecords: {},
+            nextInstallRecords: records,
+            nextConfig: { ...config, gateway: { port: 18792 } },
+          }).catch((error: unknown) => error);
+          expect(refusal).toMatchObject({
             code: "OPENCLAW_STATE_LEASE_STORAGE_FAILED",
             cause: readFailure,
           });
           expect(failedReads).toBe(1);
           expect(lease.signal.aborted).toBe(false);
-          expect(() => lease.assertOwned()).toThrowError(
-            expect.objectContaining({
-              code: "OPENCLAW_STATE_LEASE_STORAGE_FAILED",
-              cause: readFailure,
-            }),
-          );
+          await expect(Promise.resolve().then(() => lease.assertOwned())).rejects.toBe(refusal);
+          const database = expectDefined(refusedDatabase, "refused lease verification database");
+          await expect(
+            Promise.resolve().then(() => lease.assertOwnedInTransaction(database)),
+          ).rejects.toBe(refusal);
           expect(tentativeRow).toBeDefined();
           expect(tentativeRow).not.toEqual(previousRow);
           expect(readPersistedInstalledPluginIndexRowSync({ env: state.env })).toEqual(

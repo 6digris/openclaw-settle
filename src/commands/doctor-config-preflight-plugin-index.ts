@@ -15,6 +15,10 @@ import { loadInstalledPluginIndexInstallRecordsSync } from "../plugins/installed
 import { createPluginCache, getPluginCache, withPluginCache } from "../plugins/plugin-cache.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
+import {
+  migrationCheckpointIdentitiesMatch,
+  resolveMigrationCheckpointIdentity,
+} from "./doctor-config-preflight-checkpoint.js";
 import { addDoctorLegacyIssues } from "./doctor/shared/legacy-config-issues.js";
 import { completeDoctorPluginMetadataSnapshot } from "./doctor/shared/plugin-metadata-snapshot-scope.js";
 
@@ -191,33 +195,67 @@ export async function persistRefreshedPluginIndex(params: {
   if (!lease) {
     throwPluginRegistryPersistenceFailed("startup migration lease was not acquired");
   }
-  const { writePersistedInstalledPluginIndexWithLeaseSync } = await params.measure(
-    "plugin-index-store-import",
-    loadInstalledPluginIndexStoreWrite,
-  );
-  // The checkpoint certifies the persisted inventory, not a process-local replacement.
-  // Persist the original workspace scope; a config-wide union cannot pass scoped freshness checks.
-  await params.measure("plugin-index-persistence", () =>
-    writePersistedInstalledPluginIndexWithLeaseSync(derivedPluginMetadataSnapshot.registryIndex, {
-      env: params.env,
-      lease,
-    }),
-  );
-  const persistedSnapshotRead = await params.readPersistedSnapshot();
-  const persistedPluginMetadataSnapshot = persistedSnapshotRead.pluginMetadataSnapshot;
-  // The registry selector owns freshness and returns "persisted" only after accepting the
-  // durable index. Persisted parsing intentionally canonicalizes non-runtime package metadata.
-  if (persistedPluginMetadataSnapshot?.registrySource !== "persisted") {
-    const diagnosticCodes = persistedPluginMetadataSnapshot?.registryDiagnostics.map(
-      (diagnostic) => diagnostic.code,
+  const [{ writePersistedInstalledPluginIndexWithLeaseSync }, { withPluginLifecycleLease }] =
+    await params.measure("plugin-index-store-import", () =>
+      Promise.all([
+        loadInstalledPluginIndexStoreWrite(),
+        import("../plugins/plugin-lifecycle-lease.js"),
+      ]),
     );
-    const differences = formatPluginRegistryDifferences(persistedPluginMetadataSnapshot);
-    throwPluginRegistryPersistenceFailed(
-      `reread source was ${persistedPluginMetadataSnapshot?.registrySource ?? "missing"}${
-        differences ? `; differences: ${differences}` : ""
-      }${diagnosticCodes?.length ? `; diagnostics: ${diagnosticCodes.join(", ")}` : ""}`,
-      'Stop plugin package changes, run "openclaw plugins registry --refresh", then retry.',
+  lease.heartbeat();
+  // Doctor maintenance may already own the state coordinator needed by a plugin
+  // writer. One acquisition attempt avoids waiting with those locks reversed.
+  return await withPluginLifecycleLease({ env: params.env, waitMs: 0 }, async (pluginLease) => {
+    lease.heartbeat();
+    const refreshed = await params.readPersistedSnapshot();
+    const refreshedMetadata = refreshed.pluginMetadataSnapshot;
+    const identity = (read: DoctorConfigPreflightPluginSnapshotRead) =>
+      resolveMigrationCheckpointIdentity({
+        snapshot: read.snapshot,
+        baseConfig: read.snapshot.sourceConfig ?? read.snapshot.config ?? {},
+        pluginMigrationFingerprint: read.pluginMigrationFingerprint,
+      });
+    if (
+      !refreshedMetadata ||
+      refreshed.snapshot.path !== params.snapshotRead.snapshot.path ||
+      !migrationCheckpointIdentitiesMatch(identity(params.snapshotRead), identity(refreshed))
+    ) {
+      throwPluginRegistryPersistenceFailed(
+        "config or plugin identity changed before persistence",
+        'Run "openclaw doctor --fix" again so migrations use the current plugin inventory.',
+      );
+    }
+    lease.heartbeat();
+    pluginLease.assertOwned();
+    // Publish only facts read under plugin ownership. Both leases must still own
+    // the same transaction; a heartbeat here would open a nested SQLite write.
+    await params.measure("plugin-index-persistence", () =>
+      writePersistedInstalledPluginIndexWithLeaseSync(refreshedMetadata.registryIndex, {
+        env: params.env,
+        lease: {
+          assertOwnedInTransaction(database) {
+            lease.assertOwnedInTransaction(database);
+            pluginLease.assertOwnedInTransaction(database);
+          },
+        },
+      }),
     );
-  }
-  return persistedSnapshotRead;
+    const persistedSnapshotRead = await params.readPersistedSnapshot();
+    const persistedPluginMetadataSnapshot = persistedSnapshotRead.pluginMetadataSnapshot;
+    // The registry selector owns freshness and returns "persisted" only after accepting the
+    // durable index. Persisted parsing intentionally canonicalizes non-runtime package metadata.
+    if (persistedPluginMetadataSnapshot?.registrySource !== "persisted") {
+      const diagnosticCodes = persistedPluginMetadataSnapshot?.registryDiagnostics.map(
+        (diagnostic) => diagnostic.code,
+      );
+      const differences = formatPluginRegistryDifferences(persistedPluginMetadataSnapshot);
+      throwPluginRegistryPersistenceFailed(
+        `reread source was ${persistedPluginMetadataSnapshot?.registrySource ?? "missing"}${
+          differences ? `; differences: ${differences}` : ""
+        }${diagnosticCodes?.length ? `; diagnostics: ${diagnosticCodes.join(", ")}` : ""}`,
+        'Stop plugin package changes, run "openclaw plugins registry --refresh", then retry.',
+      );
+    }
+    return persistedSnapshotRead;
+  });
 }

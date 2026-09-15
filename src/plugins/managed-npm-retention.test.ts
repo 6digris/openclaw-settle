@@ -17,6 +17,16 @@ import {
 
 const retentionTempDirs = useAutoCleanupTempDirTracker(afterEach);
 
+function writeProjectManifest(projectRoot: string, packageName: string): void {
+  fs.writeFileSync(
+    path.join(projectRoot, "package.json"),
+    JSON.stringify({
+      private: true,
+      dependencies: { [packageName]: "1.0.0" },
+    }),
+  );
+}
+
 describe("managed npm retention", () => {
   it.each(["stat", "mkdir"] as const)(
     "fences marker creation after authority is revoked during %s",
@@ -154,6 +164,8 @@ describe("managed npm retention", () => {
       const activePackageDir = path.join(activeProjectRoot, "node_modules", "@openclaw", "codex");
       fs.mkdirSync(oldPackageDir, { recursive: true });
       fs.mkdirSync(activePackageDir, { recursive: true });
+      writeProjectManifest(oldProjectRoot, packageName);
+      writeProjectManifest(activeProjectRoot, packageName);
       await markRetainedManagedNpmInstall({
         packageDir: oldPackageDir,
         pluginId: "codex",
@@ -199,6 +211,7 @@ describe("managed npm retention", () => {
     const packageDir = path.join(projectRoot, "node_modules", "@openclaw", "codex");
     const siblingFile = path.join(projectRoot, "must-remain.txt");
     fs.mkdirSync(packageDir, { recursive: true });
+    writeProjectManifest(projectRoot, "@openclaw/codex");
     fs.writeFileSync(siblingFile, "preserve me", "utf8");
     await markRetainedManagedNpmInstall({
       packageDir,
@@ -223,6 +236,7 @@ describe("managed npm retention", () => {
     const packageDir = path.join(projectRoot, "node_modules", "@openclaw", "codex");
     const sentinel = path.join(projectRoot, "must-remain.txt");
     fs.mkdirSync(packageDir, { recursive: true });
+    writeProjectManifest(projectRoot, "@openclaw/codex");
     fs.writeFileSync(sentinel, "preserve me", "utf8");
     await markRetainedManagedNpmInstall({
       packageDir,
@@ -249,6 +263,7 @@ describe("managed npm retention", () => {
             });
       const packageDir = path.join(projectRoot, "node_modules", "@openclaw", "kept-plugin");
       fs.mkdirSync(packageDir, { recursive: true });
+      writeProjectManifest(projectRoot, "@openclaw/kept-plugin");
       await markRetainedManagedNpmInstall({
         packageDir,
         pluginId: "kept-plugin",

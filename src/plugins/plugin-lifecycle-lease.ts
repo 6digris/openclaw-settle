@@ -24,12 +24,9 @@ export type PluginLifecycleLeaseContext = OpenClawStateLeaseContext & {
   databasePath: string;
 };
 
-type PluginLifecycleRefusal = { current?: { error: unknown } };
-
 type ActivePluginLifecycleLease = {
   databasePath: string;
   lease: PluginLifecycleLeaseContext;
-  refusal: PluginLifecycleRefusal;
 };
 
 type PluginLifecycleLeaseOptions = Pick<
@@ -68,53 +65,54 @@ function resolveLifecycleLeaseEnv(env: NodeJS.ProcessEnv | undefined): NodeJS.Pr
   };
 }
 
+function retainPluginLifecycleAuthority(
+  lease: PluginLifecycleLeaseContext,
+  assertCurrent?: () => void,
+): PluginLifecycleLeaseContext {
+  let refusal: { error: unknown } | undefined;
+  const assertAuthority = (assertLease: () => void) => {
+    if (refusal) {
+      throw refusal.error;
+    }
+    try {
+      assertCurrent?.();
+      assertLease();
+    } catch (error) {
+      refusal ??= { error };
+      throw refusal.error;
+    }
+  };
+  // Index commits and retained package transactions share this owner. A later
+  // successful lease read cannot authorize settlement after either check refused.
+  return {
+    ...lease,
+    assertOwned: () => assertAuthority(() => lease.assertOwned()),
+    assertOwnedInTransaction: (database) =>
+      assertAuthority(() => lease.assertOwnedInTransaction(database)),
+  };
+}
+
 /** Serialize plugin artifact, install-index, and config mutations across processes. */
 export async function withPluginLifecycleLease<T>(
   options: PluginLifecycleLeaseOptions,
   run: (lease: PluginLifecycleLeaseContext) => Promise<T>,
 ): Promise<T> {
-  const active = activePluginLifecycleLease.getStore();
-  const refusal: PluginLifecycleRefusal = active?.refusal ?? {};
-  const assertAuthority = (check: () => void) => {
-    if (refusal.current) {
-      throw refusal.current.error;
-    }
-    try {
-      check();
-    } catch (error) {
-      refusal.current = { error };
-      throw error;
-    }
-  };
   const assertCurrent = options.assertCurrent;
-  assertAuthority(() => assertCurrent?.());
+  assertCurrent?.();
   const runWithLease = async (lease: PluginLifecycleLeaseContext) => {
-    const owned: PluginLifecycleLeaseContext =
-      !assertCurrent && lease === active?.lease
-        ? lease
-        : {
-            ...lease,
-            assertOwned: () =>
-              assertAuthority(() => {
-                assertCurrent?.();
-                lease.assertOwned();
-              }),
-            assertOwnedInTransaction: (database) =>
-              assertAuthority(() => {
-                assertCurrent?.();
-                lease.assertOwnedInTransaction(database);
-              }),
-          };
+    const owned: PluginLifecycleLeaseContext = assertCurrent
+      ? retainPluginLifecycleAuthority(lease, assertCurrent)
+      : lease;
     if (assertCurrent) {
       owned.assertOwned();
     }
-    // Package settlement and nested metadata writers share the first refusal.
-    // A recovered read cannot authorize rollback beneath retained inventory.
-    return activePluginLifecycleLease.run(
-      { databasePath: owned.databasePath, lease: owned, refusal },
-      () => run(owned),
+    // Nested writers inherit both authorities, including the synchronous
+    // install-index commit. Releasing the plugin lease still owns its cleanup.
+    return activePluginLifecycleLease.run({ databasePath: owned.databasePath, lease: owned }, () =>
+      run(owned),
     );
   };
+  const active = activePluginLifecycleLease.getStore();
   if (
     active &&
     options.env === undefined &&
@@ -162,12 +160,12 @@ export async function withPluginLifecycleLease<T>(
       operationLabel: "plugins.lifecycle.lease",
     },
     async (lease) => {
-      const pluginLease: PluginLifecycleLeaseContext = {
+      const pluginLease = retainPluginLifecycleAuthority({
         databasePath,
         signal: lease.signal,
         assertOwned: () => lease.assertOwned(),
         assertOwnedInTransaction: (database) => lease.assertOwnedInTransaction(database),
-      };
+      });
       // Capture fresh facts only after ownership: another process may have committed while we waited.
       const cache = createPluginCache();
       const failures: unknown[] = [];
