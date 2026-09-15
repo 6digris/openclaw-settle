@@ -12,6 +12,61 @@ type SnapshotStore<Snapshot> = {
   ): Promise<T>;
 };
 
+/** One synchronous restore may reread once; settlement and publication stay with its owner. */
+export function createSyncRegistryReader<Snapshot>(owner: {
+  admission: OpenClawStateDatabaseReadAdmission;
+  captureAdmission: () => OpenClawStateDatabaseReadAdmission;
+  isCurrent: () => boolean;
+  isCurrentDatabase: (admission: OpenClawStateDatabaseReadAdmission) => boolean;
+  loadSnapshot: () => Snapshot;
+  changedMessage: string;
+}) {
+  let admission = owner.admission;
+  let invalidated = false;
+  let retried = false;
+  const assertCurrent = () => {
+    try {
+      admission.assertCurrent();
+      if (!owner.isCurrent() || !owner.isCurrentDatabase(admission)) {
+        throw new Error(owner.changedMessage);
+      }
+    } catch (error) {
+      invalidated = true;
+      throw error;
+    }
+  };
+  return {
+    get admission() {
+      return admission;
+    },
+    get invalidated() {
+      return invalidated;
+    },
+    assertCurrent,
+    loadSnapshot(this: void) {
+      if (!owner.isCurrent()) {
+        assertCurrent();
+      }
+      const snapshot = owner.loadSnapshot();
+      try {
+        assertCurrent();
+        return snapshot;
+      } catch (error) {
+        if (retried || !owner.isCurrent()) {
+          throw error;
+        }
+        retried = true;
+        admission = owner.captureAdmission();
+        assertCurrent();
+        invalidated = false;
+        const current = owner.loadSnapshot();
+        assertCurrent();
+        return current;
+      }
+    },
+  };
+}
+
 /** Coalesce preparation; each registry retains its authoritative state and publication. */
 export function createAsyncRegistryRestore<Snapshot, Store extends SnapshotStore<Snapshot>>(owner: {
   isCurrentDatabase: (admission: OpenClawStateDatabaseReadAdmission) => boolean;

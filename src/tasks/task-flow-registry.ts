@@ -47,7 +47,7 @@ import {
   type TaskFlowUpdateResult,
   type TaskFlowSyncResult,
 } from "./task-flow-registry.types.js";
-import { createAsyncRegistryRestore } from "./task-registry-restore.js";
+import { createAsyncRegistryRestore, createSyncRegistryReader } from "./task-registry-restore.js";
 
 export type { TaskFlowUpdateResult } from "./task-flow-registry.types.js";
 
@@ -140,7 +140,8 @@ function getTaskFlowRegistryRestoreState(admission: OpenClawStateDatabaseReadAdm
 }
 
 function restoreTaskFlowRegistryOnce(): void {
-  const admission = captureOpenClawStateDatabaseReadAdmission(resolveOpenClawStateSqlitePath());
+  const databasePath = resolveOpenClawStateSqlitePath();
+  const admission = captureOpenClawStateDatabaseReadAdmission(databasePath);
   const state = getTaskFlowRegistryRestoreState(admission);
   switch (state.status) {
     case "ready":
@@ -152,18 +153,40 @@ function restoreTaskFlowRegistryOnce(): void {
     case "uninitialized":
       break;
   }
-  taskFlowRegistryRestoreState = { status: "restoring", admission };
+  const store = getTaskFlowRegistryStore();
+  const restoring = (taskFlowRegistryRestoreState = { status: "restoring", admission });
+  const epoch = projectionEpoch;
+  const ownsRestore = () =>
+    taskFlowRegistryRestoreState === restoring &&
+    getTaskFlowRegistryStore() === store &&
+    resolveOpenClawStateSqlitePath() === databasePath;
+  const reader = createSyncRegistryReader({
+    admission,
+    captureAdmission: () => captureOpenClawStateDatabaseReadAdmission(databasePath),
+    isCurrent: () => ownsRestore() && projectionEpoch === epoch,
+    isCurrentDatabase: isCurrentTaskFlowDatabase,
+    loadSnapshot: () => store.loadSnapshot(),
+    changedMessage: "Task-flow registry restore changed before publication.",
+  });
+  let installing = false;
   try {
-    const restored = getTaskFlowRegistryStore().loadSnapshot();
+    const restored = reader.loadSnapshot();
+    installing = true;
     const restoredFlows = new Map<string, TaskFlowRecord>();
     for (const [flowId, flow] of restored.flows) {
       restoredFlows.set(flowId, normalizeRestoredFlowRecord(flow));
     }
     flows = restoredFlows;
     projectionEpoch += 1;
-    taskFlowRegistryRestoreState = { status: "ready", admission };
+    taskFlowRegistryRestoreState = { status: "ready", admission: reader.admission };
   } catch (error) {
-    failTaskFlowRegistryRestore(error, admission);
+    if (!installing && (reader.invalidated || !ownsRestore())) {
+      if (taskFlowRegistryRestoreState === restoring) {
+        taskFlowRegistryRestoreState = state;
+      }
+      throw error;
+    }
+    failTaskFlowRegistryRestore(error, reader.admission);
   }
   emitFlowRegistryObserverEvent(() => ({
     kind: "restored",
