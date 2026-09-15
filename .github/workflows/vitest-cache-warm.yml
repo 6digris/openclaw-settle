@@ -1,215 +1,73 @@
-name: Vitest Cache Warm
+name: Vitest Cache Fingerprint Probe (temporary branch)
 
+# Replace this already registered workflow only on the reviewed probe branch.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
-  repository_dispatch:
-    types: [vitest-cache-warm]
-  schedule:
-    - cron: "17 8 * * *"
 
 permissions:
   contents: read
 
 concurrency:
-  group: vitest-cache-warm-${{ github.ref }}
+  group: vitest-cache-fingerprint-probe
   cancel-in-progress: false
 
 jobs:
-  warm:
-    # Shared CI cache publication is isolated from pull-request execution.
-    # Trusted release/proof workflows may save only through the same authority contract.
+  fingerprint:
     if: github.repository == 'openclaw/openclaw'
-    runs-on: ${{ matrix.platform == 'macos' && 'macos-15' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || 'blacksmith-8vcpu-ubuntu-2404') }}
-    timeout-minutes: 60
-    strategy:
-      # Each platform publishes its own cache namespace independently.
-      fail-fast: false
-      matrix:
-        platform: [linux, macos]
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 15
     steps:
-      - name: Checkout
+      - name: Checkout reviewed probe tooling
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Setup Node environment
-        id: setup-node-env
-        uses: ./.github/actions/setup-node-env
         with:
-          build-all-cache-scope: ${{ matrix.platform == 'linux' && 'full' || '' }}
-          cache-mode: read-write
-          dependency-cache: ${{ matrix.platform == 'linux' && 'true' || 'false' }}
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          path: .probe-tooling
+          sparse-checkout: scripts/ci-vitest-cache-fingerprint-probe.py
+          sparse-checkout-cone-mode: false
+
+      - name: Retain and bind probe tooling outside the source checkout
+        working-directory: .probe-tooling
+        env:
+          PROBE_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/transform-fingerprint-probe"
+          cp scripts/ci-vitest-cache-fingerprint-probe.py "$RUNNER_TEMP/transform-fingerprint-probe/helper.py"
+          python3 "$RUNNER_TEMP/transform-fingerprint-probe/helper.py" tooling
+
+      - name: Checkout reviewed main source snapshot
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 13198711efbe769c7ff090067a2be6d4a954340a
+          persist-credentials: false
+          sparse-checkout: ""
+          clean: true
+
+      - name: Prepare isolated observations in the normal sparse harness
+        run: python3 "$RUNNER_TEMP/transform-fingerprint-probe/helper.py" prepare
+
+      - name: Normal restore-only Node setup with boundary observations
+        id: setup
+        uses: ./.ci-harness/.github/actions/setup-node-env
+        with:
+          cache-mode: restore
+          dependency-cache: "true"
           install-bun: "false"
-          node-compile-cache: ${{ matrix.platform == 'linux' && 'true' || 'false' }}
-          node-compile-cache-scope: "test"
-          vitest-fs-cache: ${{ matrix.platform == 'linux' && 'true' || 'false' }}
+          vitest-fs-cache: "true"
+          node-compile-cache: "true"
+          node-compile-cache-scope: test
 
-      # Setup owns the completed toolchain and dependency trees. Publish them
-      # before build and transform warming delay unrelated readers.
-      - name: Save Node toolchain cache
-        if: ${{ steps.setup-node-env.outputs.cache-mode == 'read-write' && runner.os != 'Windows' && runner.environment != 'github-hosted' && steps.setup-node-env.outputs.node-toolchain-populated == 'true' && steps.setup-node-env.outputs.node-toolchain-cache-matched-key != steps.setup-node-env.outputs.node-toolchain-cache-key }}
-        continue-on-error: true
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ steps.setup-node-env.outputs.node-toolchain-cache-path }}
-          key: ${{ steps.setup-node-env.outputs.node-toolchain-cache-key }}
-
-      - name: Save exact dependency cache
-        if: ${{ steps.setup-node-env.outputs.cache-mode == 'read-write' && steps.setup-node-env.outputs.dependency-cache-key != '' && steps.setup-node-env.outputs.dependency-cache-hit != 'true' }}
-        continue-on-error: true
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            node_modules
-            ui/node_modules
-            packages/*/node_modules
-            extensions/*/node_modules
-            examples/*/node_modules
-            .cache/openclaw-pnpm-store
-          key: ${{ steps.setup-node-env.outputs.dependency-cache-key }}
-
-      # Seal this owner before the full build creates sibling package dist trees.
-      # Those trees are resolution topology, but intentionally are not in this payload.
-      - name: Restore native SDK boundary cache
-        id: extension-package-boundary-cache
-        if: ${{ matrix.platform == 'linux' && steps.setup-node-env.outputs.cache-mode == 'read-write' }}
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            packages/plugin-sdk/dist
-            .artifacts/extension-package-boundary/plugins
-            .artifacts/extension-package-boundary/*.json
-            .artifacts/extension-package-boundary/compile
-          key: ${{ runner.os }}-extension-package-boundary-v4-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-extension-package-boundary-v4-
-
-      - name: Prepare native SDK boundary cache
-        if: ${{ matrix.platform == 'linux' }}
-        run: node --import ./scripts/tsx.mjs scripts/prepare-extension-package-boundary-artifacts.mts --mode=package-boundary
-
-      - name: Save native SDK boundary cache
-        if: ${{ matrix.platform == 'linux' && steps.setup-node-env.outputs.cache-mode == 'read-write' && steps.extension-package-boundary-cache.outputs.cache-hit != 'true' }}
-        continue-on-error: true
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            packages/plugin-sdk/dist
-            .artifacts/extension-package-boundary/plugins
-            .artifacts/extension-package-boundary/*.json
-            .artifacts/extension-package-boundary/compile
-          key: ${{ runner.os }}-extension-package-boundary-v4-${{ github.sha }}
-
-      # Packaged declarations must see the same tree as ordinary build consumers.
-      # The native lint output belongs only in its completed cache archive.
-      - name: Clear native SDK boundary output before build
-        if: ${{ matrix.platform == 'linux' }}
-        run: rm -rf packages/plugin-sdk/dist
-
-      - name: Warm build cache
-        if: ${{ matrix.platform == 'linux' }}
+      - name: Record parity or explicit inconclusive outcome
+        if: ${{ always() && steps.setup.outcome != '' }}
         env:
-          NODE_OPTIONS: --max-old-space-size=8192
-        run: pnpm build
+          PROBE_SETUP_OUTCOME: ${{ steps.setup.outcome }}
+        run: python3 "$RUNNER_TEMP/transform-fingerprint-probe/helper.py" finish
 
-      - name: Save build-all cache
-        if: ${{ steps.setup-node-env.outputs.cache-mode == 'read-write' && steps.setup-node-env.outputs.build-all-cache-key != '' }}
-        continue-on-error: true
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Upload diagnostic receipts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          path: .artifacts/build-all-cache
-          key: ${{ steps.setup-node-env.outputs.build-all-cache-key }}
-
-      - name: Save dist build cache
-        if: ${{ matrix.platform == 'linux' && steps.setup-node-env.outputs.cache-mode == 'read-write' }}
-        continue-on-error: true
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            dist/
-            dist-runtime/
-            packages/*/dist/
-            extensions/*/src/host/**/.bundle.hash
-            extensions/*/src/host/**/*.bundle.js
-          key: ${{ runner.os }}-dist-build-v3-${{ github.sha }}
-
-      - name: Select broad cache seed
-        if: ${{ matrix.platform == 'linux' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          node --import tsx --input-type=module <<'EOF'
-          import { appendFileSync } from "node:fs";
-          import { createVitestCacheWarmGroups } from "./scripts/lib/ci-node-test-plan.mts";
-
-          // Warm the selected planner envelopes for the striped unit-fast graph
-          // plus import-bound graphs that remained cold in protected-cache readers.
-          const groups = createVitestCacheWarmGroups();
-          appendFileSync(
-            process.env.GITHUB_ENV,
-            [
-              `OPENCLAW_NODE_TEST_GROUPS_JSON=${JSON.stringify(groups)}`,
-              "OPENCLAW_NODE_TEST_PLAN_CONCURRENCY=1",
-              "OPENCLAW_NODE_TEST_PLAN_CONTINUE_ON_FAILURE=1",
-            ].join("\n") + "\n",
-          );
-          EOF
-
-      - name: Warm transform and compile caches
-        id: warm-caches
-        if: ${{ matrix.platform == 'linux' }}
-        continue-on-error: true
-        env:
-          # Match the CI shard lanes running the same envelopes: without the
-          # raised ceiling a heavy suite's worker can die under default heap
-          # (run 31874567859), skipping every cache save for the day.
-          NODE_OPTIONS: --max-old-space-size=8192
-          # Only the publisher prunes restored entries before saving a new seed.
-          OPENCLAW_VITEST_FS_MODULE_CACHE_WRITER: "1"
-          OPENCLAW_NODE_COMPILE_CACHE_WRITER: "1"
-          # Keep compiled imports and per-file cleanup in the normal runner;
-          # ordinary CI owns test-body validation.
-          OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: '["--testNamePattern=(?!)"]'
-        run: node --import tsx scripts/ci-run-node-test-shard.mts
-
-      # Let pnpm prune its owned store and record the remaining size; this does
-      # not guarantee a bound on accumulated content-addressed files.
-      - name: Prune pnpm store before save
-        if: ${{ steps.setup-node-env.outputs.cache-mode == 'read-write' && steps.setup-node-env.outputs.pnpm-store-cache-key != '' && steps.setup-node-env.outputs.pnpm-store-cache-hit != 'true' }}
-        shell: bash
-        run: |
-          du -sh "${{ steps.setup-node-env.outputs.pnpm-store-cache-path }}" || true
-          pnpm store prune
-          du -sh "${{ steps.setup-node-env.outputs.pnpm-store-cache-path }}" || true
-
-      - name: Save pnpm store cache
-        if: ${{ steps.setup-node-env.outputs.cache-mode == 'read-write' && steps.setup-node-env.outputs.pnpm-store-cache-key != '' && steps.setup-node-env.outputs.pnpm-store-cache-hit != 'true' }}
-        continue-on-error: true
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ steps.setup-node-env.outputs.pnpm-store-cache-path }}
-          key: ${{ steps.setup-node-env.outputs.pnpm-store-cache-key }}
-
-      - name: Save Vitest transform cache
-        if: ${{ steps.setup-node-env.outputs.cache-mode == 'read-write' && steps.setup-node-env.outputs.vitest-cache-key != '' }}
-        continue-on-error: true
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: /var/tmp/openclaw-vitest-fs-cache
-          key: ${{ steps.setup-node-env.outputs.vitest-cache-key }}
-
-      - name: Save Node compile cache
-        if: ${{ steps.setup-node-env.outputs.cache-mode == 'read-write' && steps.setup-node-env.outputs.node-compile-cache-key != '' }}
-        continue-on-error: true
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: /var/tmp/openclaw-node-compile-cache
-          key: ${{ steps.setup-node-env.outputs.node-compile-cache-key }}
-
-      - name: Assert cache warming succeeded
-        if: ${{ always() && matrix.platform == 'linux' }}
-        run: |
-          if [ "${{ steps.warm-caches.outcome }}" != "success" ]; then
-            echo "::error::Vitest cache warming failed"
-            exit 1
-          fi
+          name: transform-fingerprint-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/transform-fingerprint-probe
+          if-no-files-found: error
+          retention-days: 7
