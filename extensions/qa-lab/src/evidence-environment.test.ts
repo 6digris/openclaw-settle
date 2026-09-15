@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mockBunVersion } from "./runtime-version.test-support.js";
 
 const execFileSyncMock = vi.hoisted(() => vi.fn());
 const execFileMock = vi.hoisted(() => vi.fn());
@@ -107,39 +108,30 @@ describe("captured evidence source identity", () => {
     { label: "Node", bun: undefined, runtime: { id: "node", version: process.version } },
     { label: "simulated Bun", bun: "1.3.14", runtime: { id: "bun", version: "1.3.14" } },
   ])("captures $label independently of available source identity", async ({ bun, runtime }) => {
-    const bunVersionDescriptor = Object.getOwnPropertyDescriptor(process.versions, "bun");
-    Object.defineProperty(process.versions, "bun", { configurable: true, value: bun });
-    try {
-      execFileMock.mockImplementation((_command, args, _options, callback) =>
-        callback(null, args[0] === "rev-parse" ? "actual-head\n" : "", ""),
-      );
-      expect(await captureQaEvidenceLaunchIdentity("fixture-checkout")).toEqual({
-        source: { ref: "actual-head", integrity: "git:actual-head" },
-        runtime,
-        package: null,
-        protocol: null,
-        accountRef: null,
-        proofClass: null,
-      });
+    using _ = mockBunVersion(bun);
+    execFileMock.mockImplementation((_command, args, _options, callback) =>
+      callback(null, args[0] === "rev-parse" ? "actual-head\n" : "", ""),
+    );
+    expect(await captureQaEvidenceLaunchIdentity("fixture-checkout")).toEqual({
+      source: { ref: "actual-head", integrity: "git:actual-head" },
+      runtime,
+      package: null,
+      protocol: null,
+      accountRef: null,
+      proofClass: null,
+    });
 
-      execFileMock.mockImplementation((_command, _args, _options, callback) =>
-        callback(new Error("source unavailable"), "", ""),
-      );
-      expect(await captureQaEvidenceLaunchIdentity("unavailable-checkout")).toEqual({
-        source: { ref: null, integrity: null },
-        runtime,
-        package: null,
-        protocol: null,
-        accountRef: null,
-        proofClass: null,
-      });
-    } finally {
-      if (bunVersionDescriptor) {
-        Object.defineProperty(process.versions, "bun", bunVersionDescriptor);
-      } else {
-        Reflect.deleteProperty(process.versions, "bun");
-      }
-    }
+    execFileMock.mockImplementation((_command, _args, _options, callback) =>
+      callback(new Error("source unavailable"), "", ""),
+    );
+    expect(await captureQaEvidenceLaunchIdentity("unavailable-checkout")).toEqual({
+      source: { ref: null, integrity: null },
+      runtime,
+      package: null,
+      protocol: null,
+      accountRef: null,
+      proofClass: null,
+    });
   });
 });
 

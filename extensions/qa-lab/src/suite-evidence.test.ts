@@ -9,6 +9,7 @@ import {
   validateQaEvidenceSummaryJson,
   type QaEvidenceIdentity,
 } from "./evidence-summary.js";
+import { mockBunVersion } from "./runtime-version.test-support.js";
 import { createQaSuiteEvidenceInvocation, rebaseQaSuiteEvidence } from "./suite-evidence.js";
 import { makeQaSuiteTestScenario } from "./suite-test-helpers.js";
 import { createTempDirHarness } from "./temp-dir.test-helper.js";
@@ -51,45 +52,32 @@ async function setup() {
 
 describe("flow occurrence artifacts", () => {
   it("carries simulated Bun capture into prepared receipts and preserves explicit anchors", async () => {
-    const bunVersionDescriptor = Object.getOwnPropertyDescriptor(process.versions, "bun");
-    Object.defineProperty(process.versions, "bun", { configurable: true, value: "1.3.14" });
-    try {
-      const outputDir = await tempDirs.makeTempDir("qa-captured-launch-");
-      const evidence = await createQaSuiteEvidenceInvocation(undefined, {
-        repoRoot: outputDir,
-        outputDir,
-        selectedScenarios: [makeQaSuiteTestScenario("captured")],
-        primaryModel: "mock-openai/test",
-        providerMode: "mock-openai",
-        transportId: "qa-channel",
-      });
-      const id = evidence.invocation.begin(0);
-      await evidence.record(0, id, { name: "captured", status: "pass", steps: [] });
-      const occurrence = evidence.snapshot().occurrences.find((item) => item.id === id)!;
-      expect(occurrence.launch.runtime).toEqual({ id: "bun", version: "1.3.14" });
-      expect(occurrence.receipts).toEqual([
-        expect.objectContaining({ phase: "prepared", identity: occurrence.launch }),
-      ]);
+    using _ = mockBunVersion("1.3.14");
+    const outputDir = await tempDirs.makeTempDir("qa-captured-launch-");
+    const evidence = await createQaSuiteEvidenceInvocation(undefined, {
+      repoRoot: outputDir,
+      outputDir,
+      selectedScenarios: [makeQaSuiteTestScenario("captured")],
+      primaryModel: "mock-openai/test",
+      providerMode: "mock-openai",
+      transportId: "qa-channel",
+    });
+    const id = evidence.invocation.begin(0);
+    await evidence.record(0, id, { name: "captured", status: "pass", steps: [] });
+    const occurrence = evidence.snapshot().occurrences.find((item) => item.id === id)!;
+    expect(occurrence.launch.runtime).toEqual({ id: "bun", version: "1.3.14" });
+    expect(occurrence.receipts).toEqual([
+      expect.objectContaining({ phase: "prepared", identity: occurrence.launch }),
+    ]);
 
-      const supplied = await setup();
-      const explicitId = supplied.evidence.invocation.begin(0);
-      await supplied.evidence.record(0, explicitId, {
-        name: "explicit",
-        status: "pass",
-        steps: [],
-      });
-      const explicit = supplied.evidence
-        .snapshot()
-        .occurrences.find((item) => item.id === explicitId)!;
-      expect(explicit.launch).toEqual(launch);
-      expect(explicit.receipts[0]?.identity).toEqual(launch);
-    } finally {
-      if (bunVersionDescriptor) {
-        Object.defineProperty(process.versions, "bun", bunVersionDescriptor);
-      } else {
-        Reflect.deleteProperty(process.versions, "bun");
-      }
-    }
+    const supplied = await setup();
+    const explicitId = supplied.evidence.invocation.begin(0);
+    await supplied.evidence.record(0, explicitId, { name: "explicit", status: "pass", steps: [] });
+    const explicit = supplied.evidence
+      .snapshot()
+      .occurrences.find((item) => item.id === explicitId)!;
+    expect(explicit.launch).toEqual(launch);
+    expect(explicit.receipts[0]?.identity).toEqual(launch);
   });
 
   it.each(["full", "slim"] as const)(
