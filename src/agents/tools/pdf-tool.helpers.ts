@@ -59,26 +59,7 @@ export function parsePageRange(
   range: string,
   maxPages: number,
 ): { pages: number[]; truncated: boolean } {
-  const pages = new Set<number>();
-  let truncated = false;
-  const addPage = (page: number): boolean => {
-    if (pages.has(page)) {
-      return true;
-    }
-    if (pages.size >= maxPages) {
-      truncated = true;
-      let largest = 0;
-      for (const selected of pages) {
-        largest = Math.max(largest, selected);
-      }
-      if (page >= largest) {
-        return false;
-      }
-      pages.delete(largest);
-    }
-    pages.add(page);
-    return true;
-  };
+  const ranges: [number, number][] = [];
   const parts = range.split(",").map((p) => p.trim());
   for (const part of parts) {
     if (!part) {
@@ -91,24 +72,29 @@ export function parsePageRange(
       if (end < start) {
         throw new Error(`Invalid page range: "${part}"`);
       }
-      for (let i = start; i <= end; i++) {
-        if (!addPage(i)) {
-          break;
-        }
-      }
+      ranges.push([start, end]);
     } else {
       if (!/^\d+$/.test(part)) {
         throw new Error(`Invalid page number: "${part}"`);
       }
       const num = readPageNumber(part, "Invalid page number");
-      addPage(num);
+      ranges.push([num, num]);
     }
   }
-  const parsedPages = Array.from(pages).toSorted((a, b) => a - b);
-  if (parsedPages.length === 0) {
+  ranges.sort(([left], [right]) => left - right);
+  const pages: number[] = [];
+  for (const [start, end] of ranges) {
+    for (let page = Math.max(start, (pages.at(-1) ?? 0) + 1); page <= end; page++) {
+      if (pages.length >= maxPages) {
+        return { pages, truncated: true };
+      }
+      pages.push(page);
+    }
+  }
+  if (pages.length === 0) {
     throw new Error(`No PDF pages matched requested range "${range}"`);
   }
-  return { pages: parsedPages, truncated };
+  return { pages, truncated: false };
 }
 
 /** Converts a provider assistant message into PDF text or throws a model-labelled failure. */

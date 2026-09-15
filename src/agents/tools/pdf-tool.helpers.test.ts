@@ -80,23 +80,32 @@ describe("parsePageRange", () => {
     });
   });
 
-  it("does not report truncation for duplicate pages at the limit", () => {
-    expect(parsePageRange("1-5,1-5", 5)).toEqual({
-      pages: [1, 2, 3, 4, 5],
-      truncated: false,
-    });
-  });
+  it.each(["1-5,1-5", "3-5,1-4,2-3"])(
+    "does not report truncation for overlapping ranges: %s",
+    (range) => {
+      expect(parsePageRange(range, 5)).toEqual({
+        pages: [1, 2, 3, 4, 5],
+        truncated: false,
+      });
+    },
+  );
 
-  it("keeps the lowest sorted pages regardless of range order", () => {
-    expect(parsePageRange("100,101,1-3", 2)).toEqual({
-      pages: [1, 2],
+  it.each([
+    ["100,101,1-3", 2],
+    ["40001-80000,1-40000", 40_000],
+  ])("keeps the lowest sorted pages regardless of range order: %s", (range, maxPages) => {
+    expect(parsePageRange(range, maxPages)).toEqual({
+      pages: Array.from({ length: maxPages }, (_, index) => index + 1),
       truncated: true,
     });
   });
 
-  it("throws on invalid page number", () => {
-    expect(() => parsePageRange("abc", 20)).toThrow("Invalid page number");
-  });
+  it.each(["abc", "1-100,abc"])(
+    "validates page numbers even beyond the selected budget: %s",
+    (range) => {
+      expect(() => parsePageRange(range, 20)).toThrow("Invalid page number");
+    },
+  );
 
   it("throws on fractional page numbers", () => {
     expect(() => parsePageRange("1.5", 20)).toThrow('Invalid page number: "1.5"');
