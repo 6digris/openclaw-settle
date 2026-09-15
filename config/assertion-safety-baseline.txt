@@ -832,7 +832,7 @@ extensions/nextcloud-talk/src/policy.ts	2
 extensions/nextcloud-talk/src/send.ts	1
 extensions/nextcloud-talk/src/setup-core.ts	10
 extensions/nextcloud-talk/src/setup-surface.ts	11
-extensions/nostr/doctor-contract-api.ts	4
+extensions/nostr/doctor-contract-api.ts	2
 extensions/nostr/index.ts	4
 extensions/nostr/src/channel.setup.ts	2
 extensions/nostr/src/gateway.ts	2
@@ -3603,7 +3603,6 @@ ui/src/app/settings.ts	9
 ui/src/app/stale-chunk-reload.ts	1
 ui/src/app/startup-settings.ts	1
 ui/src/app/theme.ts	4
-ui/src/app/update-schedule-dto.ts	2
 ui/src/app/user-profile.ts	2
 ui/src/app/web-push.runtime.ts	2
 ui/src/components/agent-select.ts	3
