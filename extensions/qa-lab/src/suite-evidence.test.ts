@@ -9,18 +9,13 @@ import {
   validateQaEvidenceSummaryJson,
   type QaEvidenceIdentity,
 } from "./evidence-summary.js";
+import { mockBunVersion } from "./runtime-version.test-support.js";
 import { createQaSuiteEvidenceInvocation, rebaseQaSuiteEvidence } from "./suite-evidence.js";
 import { makeQaSuiteTestScenario } from "./suite-test-helpers.js";
 import { createTempDirHarness } from "./temp-dir.test-helper.js";
 
 const tempDirs = createTempDirHarness();
-const bunVersionDescriptor = Object.getOwnPropertyDescriptor(process.versions, "bun");
 afterEach(async () => {
-  if (bunVersionDescriptor) {
-    Object.defineProperty(process.versions, "bun", bunVersionDescriptor);
-  } else {
-    Reflect.deleteProperty(process.versions, "bun");
-  }
   await tempDirs.cleanup();
 });
 const launch: QaEvidenceIdentity = {
@@ -57,7 +52,7 @@ async function setup() {
 
 describe("flow occurrence artifacts", () => {
   it("carries simulated Bun capture into prepared receipts and preserves explicit anchors", async () => {
-    Object.defineProperty(process.versions, "bun", { value: "1.3.14", configurable: true });
+    using _ = mockBunVersion("1.3.14");
     const outputDir = await tempDirs.makeTempDir("qa-captured-launch-");
     const evidence = await createQaSuiteEvidenceInvocation(undefined, {
       repoRoot: outputDir,

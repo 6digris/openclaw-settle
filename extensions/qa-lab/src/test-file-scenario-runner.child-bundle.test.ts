@@ -182,7 +182,10 @@ process.exitCode = Number(value("--exit"));
       const firstId = first.results[0]!.evidenceOccurrenceId!;
       const captured = first.evidence.occurrences.find((item) => item.id === firstId)!;
       const receipt = captured.receipts.find((item) => item.artifact.kind === "producer-evidence")!;
-      expect(receipt, await fs.readFile(first.results[0]!.logPath, "utf8")).toBeDefined();
+      expect(
+        receipt,
+        `${first.results[0]?.failureMessage ?? ""}\n${await fs.readFile(first.results[0]!.logPath, "utf8")}`,
+      ).toBeDefined();
       const originalPath = resolveQaArtifactPath(
         process.cwd(),
         process.cwd(),

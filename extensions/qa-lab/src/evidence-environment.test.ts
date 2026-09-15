@@ -3,10 +3,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mockBunVersion } from "./runtime-version.test-support.js";
 
 const execFileSyncMock = vi.hoisted(() => vi.fn());
 const execFileMock = vi.hoisted(() => vi.fn());
-const bunVersionDescriptor = Object.getOwnPropertyDescriptor(process.versions, "bun");
 
 vi.mock("node:child_process", async () => {
   const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
@@ -33,11 +33,6 @@ import {
 } from "./evidence-environment.js";
 
 afterEach(() => {
-  if (bunVersionDescriptor) {
-    Object.defineProperty(process.versions, "bun", bunVersionDescriptor);
-  } else {
-    Reflect.deleteProperty(process.versions, "bun");
-  }
   vi.restoreAllMocks();
   execFileSyncMock.mockReset();
   execFileMock.mockReset();
@@ -113,7 +108,7 @@ describe("captured evidence source identity", () => {
     { label: "Node", bun: undefined, runtime: { id: "node", version: process.version } },
     { label: "simulated Bun", bun: "1.3.14", runtime: { id: "bun", version: "1.3.14" } },
   ])("captures $label independently of available source identity", async ({ bun, runtime }) => {
-    Object.defineProperty(process.versions, "bun", { value: bun, configurable: true });
+    using _ = mockBunVersion(bun);
     execFileMock.mockImplementation((_command, args, _options, callback) =>
       callback(null, args[0] === "rev-parse" ? "actual-head\n" : "", ""),
     );

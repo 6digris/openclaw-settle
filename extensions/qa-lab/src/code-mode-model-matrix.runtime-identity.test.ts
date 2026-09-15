@@ -8,23 +8,16 @@ import {
   runCodeModeModelMatrix,
   validateQaEvidenceSummaryJson,
 } from "../../../scripts/code-mode-model-matrix.ts";
+import { mockBunVersion } from "./runtime-version.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-const bunVersionDescriptor = Object.getOwnPropertyDescriptor(process.versions, "bun");
-afterEach(() => {
-  if (bunVersionDescriptor) {
-    Object.defineProperty(process.versions, "bun", bunVersionDescriptor);
-  } else {
-    Reflect.deleteProperty(process.versions, "bun");
-  }
-});
 
 describe("Code Mode matrix runtime identity", () => {
   it.each([
     { label: "Node", bun: undefined, runtime: { id: "node", version: process.version } },
     { label: "simulated Bun", bun: "1.3.14", runtime: { id: "bun", version: "1.3.14" } },
   ])("records $label with the selected source after a cell failure", async ({ bun, runtime }) => {
-    Object.defineProperty(process.versions, "bun", { value: bun, configurable: true });
+    using _ = mockBunVersion(bun);
     const repoRoot = tempDirs.make("openclaw-matrix-runtime-identity-");
     const sourceIdentity = {
       gitSha: "fixture-selected-source",
