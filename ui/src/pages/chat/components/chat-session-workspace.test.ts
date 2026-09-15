@@ -163,7 +163,7 @@ describe("session workspace state", () => {
     );
 
     expect(mount.querySelector("openclaw-panel-loading-skeleton")).toBeNull();
-    expect(mount.textContent).toContain("src/slow.ts");
+    expect(mount.querySelector('button[aria-label="src/slow.ts"]')).not.toBeNull();
   });
 
   it("rotates Files and Review ownership across a same-client reconnect", async () => {
@@ -806,11 +806,11 @@ describe("openSessionWorkspaceFile", () => {
         );
         expect(Boolean(browserSelected)).toBe(selectedPath === "src/readme.md");
         const selectedSessionRows = container.querySelectorAll(
-          ".chat-workspace-rail__list:not(.chat-workspace-rail__list--browser) .chat-workspace-rail__file--active .chat-workspace-rail__file-name",
+          ".chat-workspace-rail__list:not(.chat-workspace-rail__list--browser) .chat-workspace-rail__file--active .chat-workspace-rail__file-open",
         );
-        expect(Array.from(selectedSessionRows, (selectedRow) => selectedRow.textContent)).toEqual([
-          selectedPath === "src/readme.md" ? expected : "src/readme.md",
-        ]);
+        expect(
+          Array.from(selectedSessionRows, (selectedRow) => selectedRow.getAttribute("aria-label")),
+        ).toEqual([selectedPath === "src/readme.md" ? expected : "src/readme.md"]);
       };
       await vi.waitFor(() => expectSelectedRow());
       const changedRow = container.querySelector<HTMLButtonElement>(

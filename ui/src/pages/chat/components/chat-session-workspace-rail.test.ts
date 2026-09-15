@@ -80,6 +80,61 @@ describe("session workspace path actions", () => {
     );
   });
 
+  it.each(["/synthetic/very-long-workspace-prefix", "C:\\synthetic\\very-long-workspace-prefix"])(
+    "keeps session file labels readable and distinct under %s",
+    async (root) => {
+      const separator = root.includes("\\") ? "\\" : "/";
+      const path = (...parts: string[]) => [root, ...parts].join(separator);
+      const paths = [path("inventory.csv"), path("ui", "index.ts"), path("api", "index.ts")];
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      vi.stubGlobal("navigator", { clipboard: { writeText } });
+      const onOpenFile = vi.fn();
+      const workspace = createWorkspace({
+        list: {
+          sessionKey: "agent:main:workspace",
+          root,
+          files: paths.map((filePath, index) => ({
+            kind: index === 2 ? "read" : "modified",
+            path: filePath,
+            name: index === 0 ? "inventory.csv" : "index.ts",
+            missing: false,
+          })),
+        },
+        activeId: `file:${paths[1]}`,
+        onOpenFile,
+      });
+      const mount = document.body.appendChild(document.createElement("div"));
+      const renderRows = () => render(renderSessionWorkspaceRail(workspace), mount);
+      const labels = () =>
+        [...mount.querySelectorAll(".chat-workspace-rail__file-name")].map(
+          (row) => row.textContent,
+        );
+      renderRows();
+      expect(labels()).toEqual([
+        "inventory.csv",
+        `ui${separator}index.ts`,
+        `api${separator}index.ts`,
+      ]);
+      const rows = [...mount.querySelectorAll(".chat-workspace-rail__file")];
+      for (const [index, row] of rows.entries()) {
+        const open = row.querySelector<HTMLButtonElement>(".chat-workspace-rail__file-open")!;
+        expect(open.getAttribute("aria-label")).toBe(paths[index]);
+        expect(row.querySelector("openclaw-tooltip")?.content).toBe(paths[index]);
+        open.click();
+        expect(onOpenFile).toHaveBeenLastCalledWith(paths[index], "session");
+        row.querySelector<HTMLButtonElement>('button[aria-label="Copy path"]')!.click();
+        await vi.waitFor(() => expect(writeText).toHaveBeenLastCalledWith(paths[index]));
+      }
+      expect(rows[1].classList.contains("chat-workspace-rail__file--active")).toBe(true);
+      workspace.filter = "changed";
+      renderRows();
+      expect(labels()).toEqual(["inventory.csv", `ui${separator}index.ts`]);
+      workspace.browserSearch = `ui${separator}index`;
+      renderRows();
+      expect(labels()).toEqual([`ui${separator}index.ts`]);
+    },
+  );
+
   it("renders file-shaped placeholders while the initial workspace list loads", async () => {
     const workspace = createWorkspace({ loading: true });
     const mount = document.body.appendChild(document.createElement("div"));
@@ -201,7 +256,7 @@ describe("session workspace path actions", () => {
     expect(mount.querySelector("summary")?.textContent).toContain("Artifacts");
     expect(mount.querySelector("details")?.open).toBe(true);
     expect(mount.textContent).toContain("Portrait");
-    expect(mount.textContent).not.toContain("src/edited.ts");
+    expect(mount.querySelector('button[aria-label="src/edited.ts"]')).toBeNull();
     expect(mount.querySelector<HTMLInputElement>('input[type="search"]')?.value).toBe("IMAGE");
 
     workspace.browserSearch = "";
@@ -212,7 +267,7 @@ describe("session workspace path actions", () => {
 
     expect(mount.querySelectorAll("details")).toHaveLength(1);
     expect(mount.querySelector("details")?.open).toBe(true);
-    expect(mount.textContent).toContain("src/edited.ts");
+    expect(mount.querySelector('button[aria-label="src/edited.ts"]')).not.toBeNull();
   });
 
   it.each(["inventory  report", "  INVENTORY  REPORT  ", "\tinventory  report\t"])(
