@@ -23,18 +23,24 @@ type TaskFlowSyncRetrySelection =
       kind: "live";
       selectCurrent: (admission: OpenClawStateDatabaseReadAdmission) => TaskRecord | undefined;
     };
-const taskFlowSyncRetryTimers = new Map<
-  TaskRegistryStore,
-  Map<string, ReturnType<typeof setTimeout>>
->();
+type TaskFlowSyncRetryTimer = {
+  timer: ReturnType<typeof setTimeout>;
+  kind: TaskFlowSyncRetrySelection["kind"];
+};
+const taskFlowSyncRetryTimers = new Map<TaskRegistryStore, Map<string, TaskFlowSyncRetryTimer>>();
 
-export function clearTaskFlowSyncRetries(): void {
-  for (const timers of taskFlowSyncRetryTimers.values()) {
-    for (const timer of timers.values()) {
-      clearTimeout(timer);
+export function clearTaskFlowSyncRetries(kind?: TaskFlowSyncRetrySelection["kind"]): void {
+  for (const [store, timers] of taskFlowSyncRetryTimers) {
+    for (const [key, retry] of timers) {
+      if (kind === undefined || retry.kind === kind) {
+        clearTimeout(retry.timer);
+        timers.delete(key);
+      }
+    }
+    if (timers.size === 0) {
+      taskFlowSyncRetryTimers.delete(store);
     }
   }
-  taskFlowSyncRetryTimers.clear();
 }
 
 function scheduleTaskFlowSyncRetry(
@@ -48,8 +54,7 @@ function scheduleTaskFlowSyncRetry(
   const id = taskId.trim();
   const identityKey = context.admission.identity.key;
   const key = `${identityKey}\u0000${selection.kind}\u0000${id}`;
-  const timers =
-    taskFlowSyncRetryTimers.get(store) ?? new Map<string, ReturnType<typeof setTimeout>>();
+  const timers = taskFlowSyncRetryTimers.get(store) ?? new Map<string, TaskFlowSyncRetryTimer>();
   if (!id || timers.has(key)) {
     return;
   }
@@ -118,8 +123,21 @@ function scheduleTaskFlowSyncRetry(
   };
   const timer = runOutsideOpenClawDatabaseMaintenanceScope(() => setTimeout(retry, delayMs));
   timer.unref?.();
-  timers.set(key, timer);
+  timers.set(key, { timer, kind: selection.kind });
   taskFlowSyncRetryTimers.set(store, timers);
+}
+
+/** Returned settlement remains durable even when its registry projection is superseded. */
+export function retainTaskRegistryRestoreFlowObligations(
+  context: OpenClawStateWorkerContext,
+  store: TaskRegistryStore,
+  settledTasks: readonly TaskRecord[],
+): void {
+  for (const task of settledTasks) {
+    if (task.parentFlowId?.trim()) {
+      scheduleTaskFlowSyncRetry(context, store, task.taskId, "restore", { kind: "restored" });
+    }
+  }
 }
 
 /** Register durable follow-up before a superseded projection receipt can be discarded. */

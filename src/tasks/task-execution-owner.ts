@@ -61,8 +61,10 @@ function settleOrphanedTaskAtRestore(task: TaskRecord, now: number): TaskRecord 
   });
 }
 
-function readRestoreSnapshot(store: TaskExecutionRestoreStore): TaskRegistryStoreSnapshot {
-  const snapshot = store.loadSnapshot();
+function readRestoreSnapshot(
+  loadSnapshot: () => TaskRegistryStoreSnapshot,
+): TaskRegistryStoreSnapshot {
+  const snapshot = loadSnapshot();
   return {
     tasks: new Map([...snapshot.tasks].map(([id, task]) => [id, normalizeTaskTimestamps(task)])),
     deliveryStates: snapshot.deliveryStates,
@@ -71,14 +73,15 @@ function readRestoreSnapshot(store: TaskExecutionRestoreStore): TaskRegistryStor
 
 export function restoreTaskExecutionSnapshot(
   store: TaskExecutionRestoreStore,
+  loadSnapshot: () => TaskRegistryStoreSnapshot = () => store.loadSnapshot(),
 ): TaskExecutionRestoreResult {
-  const snapshot = readRestoreSnapshot(store);
+  const snapshot = readRestoreSnapshot(loadSnapshot);
   if (![...snapshot.tasks.values()].some(hasOrphanedExecution)) {
     return { snapshot, settledTasks: [] };
   }
   const settle = () => {
     // Admission can yield to another writer; only its current rows authorize settlement.
-    const current = readRestoreSnapshot(store);
+    const current = readRestoreSnapshot(loadSnapshot);
     const settledTasks: TaskRecord[] = [];
     const now = Date.now();
     for (const [taskId, task] of current.tasks) {

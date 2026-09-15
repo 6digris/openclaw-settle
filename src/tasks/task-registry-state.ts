@@ -1,5 +1,4 @@
 import { isDeepStrictEqual } from "node:util";
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { formatErrorMessage } from "../infra/errors.js";
 import { stageSqliteTransactionState } from "../infra/sqlite-post-commit.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
@@ -10,24 +9,33 @@ import {
   registerOpenClawStateDatabaseLifecycleListener,
 } from "../state/openclaw-state-db-cache.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
+import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import { restoreTaskExecutionSnapshot } from "./task-execution-owner.js";
 import { reconcileTaskFlowWorkerReceipts } from "./task-flow-runtime-internal.js";
 import {
   clearTaskFlowSyncRetries,
   receiveTaskRegistryRestoreResult,
+  retainTaskRegistryRestoreFlowObligations,
   syncTaskFlowWithLiveRetry,
 } from "./task-registry-flow-sync.js";
 import {
   listTasksFromIndex,
   cloneTaskRecordForObserver,
-  getTaskRelatedSessionIndexKeys,
   normalizeTaskTimestamps,
   filterTasksByRunScope,
 } from "./task-registry-records.js";
-import { createAsyncRegistryRestore } from "./task-registry-restore.js";
+import { createAsyncRegistryRestore, createSyncRegistryReader } from "./task-registry-restore.js";
 import type { TaskRegistryRestoreResult } from "./task-registry-restore.worker.js";
 import {
+  addRunIdIndex,
+  deleteRunIdIndex,
+  addOwnerKeyIndex,
+  deleteOwnerKeyIndex,
+  addParentFlowIdIndex,
+  deleteParentFlowIdIndex,
+  addRelatedSessionKeyIndex,
+  deleteRelatedSessionKeyIndex,
   getTaskRegistryProcessState,
   clearTaskProgressBatches,
   type PendingTaskRegistryMutation,
@@ -117,7 +125,8 @@ export function onTaskRegistryChange(listener: () => void): () => void {
 }
 
 function clearTaskRegistryEphemeralState(): void {
-  clearTaskFlowSyncRetries();
+  // Committed restore obligations outlive replacement of their in-memory projection.
+  clearTaskFlowSyncRetries("live");
   clearTaskProgressBatches();
   for (const activity of taskActivityByTaskId.values()) {
     if (activity.flushTimer) {
@@ -137,98 +146,6 @@ export function clearTaskRegistryMemory(): void {
   taskIdsByOwnerKey.clear();
   taskIdsByParentFlowId.clear();
   taskIdsByRelatedSessionKey.clear();
-}
-
-export function addRunIdIndex(taskId: string, runId?: string) {
-  const trimmed = runId?.trim();
-  if (!trimmed) {
-    return;
-  }
-  let ids = taskIdsByRunId.get(trimmed);
-  if (!ids) {
-    ids = new Set<string>();
-    taskIdsByRunId.set(trimmed, ids);
-  }
-  ids.add(taskId);
-}
-
-function deleteRunIdIndex(taskId: string, runId?: string): void {
-  if (runId?.trim()) {
-    deleteIndexedKey(taskIdsByRunId, runId.trim(), taskId);
-  }
-}
-
-function addIndexedKey(index: Map<string, Set<string>>, key: string, taskId: string) {
-  let ids = index.get(key);
-  if (!ids) {
-    ids = new Set<string>();
-    index.set(key, ids);
-  }
-  ids.add(taskId);
-}
-
-function deleteIndexedKey(index: Map<string, Set<string>>, key: string, taskId: string) {
-  const ids = index.get(key);
-  if (!ids) {
-    return;
-  }
-  ids.delete(taskId);
-  if (ids.size === 0) {
-    index.delete(key);
-  }
-}
-
-type TaskSessionKeys = Pick<TaskRecord, "requesterSessionKey" | "ownerKey" | "childSessionKey">;
-
-export function addOwnerKeyIndex(taskId: string, task: Pick<TaskRecord, "ownerKey">) {
-  const key = normalizeOptionalString(task.ownerKey);
-  if (!key) {
-    return;
-  }
-  addIndexedKey(taskIdsByOwnerKey, key, taskId);
-}
-
-export function deleteOwnerKeyIndex(taskId: string, task: Pick<TaskRecord, "ownerKey">) {
-  const key = normalizeOptionalString(task.ownerKey);
-  if (!key) {
-    return;
-  }
-  deleteIndexedKey(taskIdsByOwnerKey, key, taskId);
-}
-
-export function addParentFlowIdIndex(taskId: string, task: Pick<TaskRecord, "parentFlowId">) {
-  const key = task.parentFlowId?.trim();
-  if (!key) {
-    return;
-  }
-  addIndexedKey(taskIdsByParentFlowId, key, taskId);
-}
-
-export function deleteParentFlowIdIndex(taskId: string, task: Pick<TaskRecord, "parentFlowId">) {
-  const key = task.parentFlowId?.trim();
-  if (!key) {
-    return;
-  }
-  deleteIndexedKey(taskIdsByParentFlowId, key, taskId);
-}
-
-export function addRelatedSessionKeyIndex(taskId: string, task: TaskSessionKeys) {
-  for (const sessionKey of getTaskRelatedSessionIndexKeys(task)) {
-    addIndexedKey(taskIdsByRelatedSessionKey, sessionKey, taskId);
-  }
-}
-
-export function deleteRelatedSessionKeyIndex(taskId: string, task: TaskSessionKeys) {
-  for (const sessionKey of getTaskRelatedSessionIndexKeys(task)) {
-    deleteIndexedKey(taskIdsByRelatedSessionKey, sessionKey, taskId);
-  }
-}
-
-export function rebuildRunIdIndex() {
-  taskIdsByRunId.clear();
-  for (const [taskId, task] of tasks.entries()) {
-    addRunIdIndex(taskId, task.runId);
-  }
 }
 
 export function getTasksByRunId(runId: string): TaskRecord[] {
@@ -312,7 +229,8 @@ export function syncFlowFromTaskAfterTaskMutation(task: TaskRecord, operation: s
 }
 
 export function restoreTaskRegistryOnce() {
-  const admission = captureOpenClawStateDatabaseReadAdmission(resolveOpenClawStateSqlitePath());
+  const databasePath = resolveOpenClawStateSqlitePath();
+  const admission = captureOpenClawStateDatabaseReadAdmission(databasePath);
   const state = getTaskRegistryRestoreState(admission);
   if (state.status === "ready") {
     return;
@@ -323,17 +241,40 @@ export function restoreTaskRegistryOnce() {
   if (state.status === "restoring") {
     throw new Error("Task registry restore is already in progress.");
   }
-  taskRegistryRestoreState = { status: "restoring", admission };
+  const store = getTaskRegistryStore();
+  const workerContext = captureOpenClawStateWorkerContext({ path: databasePath });
+  const restoring = (taskRegistryRestoreState = { status: "restoring", admission });
+  const revision = readTaskRegistryRevision();
+  const epoch = taskRegistryProcessState.projection.epoch;
+  const ownsRestore = () =>
+    taskRegistryRestoreState === restoring &&
+    getTaskRegistryStore() === store &&
+    resolveOpenClawStateSqlitePath() === databasePath;
+  const reader = createSyncRegistryReader({
+    admission,
+    captureAdmission: () => captureOpenClawStateDatabaseReadAdmission(databasePath),
+    isCurrent: () =>
+      ownsRestore() &&
+      readTaskRegistryRevision() === revision &&
+      taskRegistryProcessState.projection.epoch === epoch,
+    isCurrentDatabase: isCurrentTaskRegistryDatabase,
+    loadSnapshot: () => store.loadSnapshot(),
+    changedMessage: "Task registry restore changed before publication.",
+  });
+  let installing = false;
+  let restoreResult: ReturnType<typeof restoreTaskExecutionSnapshot> | undefined;
   try {
-    const { snapshot: restored, settledTasks } =
-      restoreTaskExecutionSnapshot(getTaskRegistryStore());
+    restoreResult = restoreTaskExecutionSnapshot(store, reader.loadSnapshot);
+    reader.assertCurrent();
+    const { snapshot: restored, settledTasks } = restoreResult;
+    installing = true;
     if (state.admission) {
       bumpTaskRegistryRevision();
     } else {
       clearTaskRegistryMemory();
     }
     installRestoredTaskRegistrySnapshot(restored);
-    taskRegistryRestoreState = { status: "ready", admission };
+    taskRegistryRestoreState = { status: "ready", admission: reader.admission };
     markTaskRegistryProjectionRestored();
     for (const task of settledTasks) {
       const flowId = task.parentFlowId?.trim();
@@ -348,7 +289,23 @@ export function restoreTaskRegistryOnce() {
       emitTaskRegistryObserverEvent(() => ({ kind: "restored" }));
     }
   } catch (error) {
-    failTaskRegistryRestore(error, admission, Boolean(state.admission));
+    try {
+      if (!installing && (reader.invalidated || !ownsRestore())) {
+        if (taskRegistryRestoreState === restoring) {
+          taskRegistryRestoreState = state;
+        }
+        throw error;
+      }
+      failTaskRegistryRestore(error, reader.admission, Boolean(state.admission));
+    } finally {
+      if (restoreResult) {
+        retainTaskRegistryRestoreFlowObligations(
+          { ...workerContext, admission: reader.admission },
+          store,
+          restoreResult.settledTasks,
+        );
+      }
+    }
   }
 }
 
