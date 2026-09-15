@@ -125,12 +125,21 @@ catalog-confirmed public check and plugin IDs are included; unknown IDs and code
 remain complete locally and are redacted publicly. Older runs cannot recover facts that their updater did not record. Existing history
 and report size limits still apply.
 
+When a managed-service handoff cannot start or transfer ownership, the Gateway
+records the refusal on the failed `requested` step. Status includes the recorded
+diagnostic after the reason code; chat and failure reports use the same facts.
+Public reports preserve recognized handoff diagnostics, including the instruction
+to run `openclaw doctor` when the installed updater cannot be found. This applies
+once the Gateway runs the updated code; older reports cannot recover missing facts.
+
 Failed finalization steps record their reason code before failure reporting starts.
 Standalone finalization also records the package or Git install kind. For package
 installs it records that package rollback is unnecessary because finalization does
 not replace the core package; this does not claim that Doctor left config or state
-unchanged, or that Gateway health was verified. Failure reports include the failing
-step's first recognized diagnostic line when no process exit code was recorded.
+unchanged, or that Gateway health was verified. Failure reports include recognized
+error codes and causes from the failing step's retained diagnostics, including beside
+a process exit code (for example, `exit 1 (EACCES; Permission denied)`). Arbitrary
+log text stays private; steps without a recognized diagnostic show only their exit.
 
 Recoverable maintenance failures appear as recorded warnings even when the update
 succeeds. Each warning names the skipped work, the cause, and a repair command.
