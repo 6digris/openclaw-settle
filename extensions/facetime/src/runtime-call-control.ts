@@ -274,19 +274,11 @@ export function createFaceTimeCallControl(params: {
       await terminateCarrierProcesses(call);
       await closeCall(call, "runtime-stop-carrier-terminated");
     } catch (error) {
-      try {
-        if (!call.talk) {
-          throw new Error("native carrier watchdog is unavailable", { cause: error });
-        }
-        await call.talk.failClosed("runtime-stop-native-watchdog");
-        call.markCarrierClosed();
-        await closeCall(call, "runtime-stop-native-watchdog");
-      } catch (watchdogError) {
-        throw new Error(
-          `FaceTime fail-closed carrier termination failed: ${formatErrorMessage(error)}; native watchdog: ${formatErrorMessage(watchdogError)}`,
-          { cause: watchdogError },
-        );
-      }
+      await call.talk?.suspendMedia("runtime-stop-carrier-unconfirmed");
+      throw new Error(
+        `FaceTime fail-closed carrier termination failed: ${formatErrorMessage(error)}; carrier closure remains unconfirmed`,
+        { cause: error },
+      );
     }
   };
   const startCallTalk = async (call: ActiveFaceTimeCall) => {

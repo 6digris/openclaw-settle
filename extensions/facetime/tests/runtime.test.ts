@@ -607,12 +607,12 @@ describe("FaceTime runtime call sequencing", () => {
       await vi.waitFor(() => expect(talk.activate).toHaveBeenCalledOnce());
       mocks.helper.inspectCall.mockRejectedValue(new Error("helper inspection unavailable"));
       mocks.carrierProcessAlive = true;
-      talk.failClosed.mockRejectedValueOnce(new Error("native watchdog unavailable"));
 
       await expect(runtime.stop()).rejects.toThrow("fail-closed carrier termination failed");
       expect(mocks.systemRun).toHaveBeenCalledWith(["/bin/kill", "-KILL", "4321"], {
         timeoutMs: 500,
       });
+      expect(talk.failClosed).not.toHaveBeenCalled();
       expect(talk.close).not.toHaveBeenCalled();
       expect((await runtime.status()).calls).toMatchObject([
         { carrierMode: "closing", carrierHangupPending: true },
