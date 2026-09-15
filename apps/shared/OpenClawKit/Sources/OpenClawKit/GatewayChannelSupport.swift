@@ -2,6 +2,15 @@ import CryptoKit
 import Foundation
 import OpenClawProtocol
 
+/// Transport facts from one admitted socket, not current settings or account authority.
+public struct GatewayAdmittedHTTPContext: Sendable {
+    public let gatewayURL: URL
+    /// Nil means known unpinned policy; HTTPS consumers must still require system trust.
+    public let tlsFingerprintSHA256: String?
+    /// Sanitized credential headers actually supplied to this socket's upgrade.
+    public let customHeaders: [String: String]
+}
+
 public enum GatewayRequestCompletionPolicy: Sendable {
     case requireCurrentRoute
     case preserveChatSendSuccess
