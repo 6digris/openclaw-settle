@@ -396,6 +396,44 @@ describe("usage archive identity", () => {
     });
   }
 
+  it("counts usage separately for logical agents in a shared SQLite store", async () => {
+    const storePath = path.join(state.root, "custom", "shared.sqlite");
+    const sharedConfig = {
+      ...config,
+      agents: { ownership: "explicit" as const, entries: { main: {}, work: {} } },
+      session: { store: storePath },
+    };
+    await state.writeConfig(sharedConfig);
+    for (const [agentId, sessionId, tokens] of [
+      ["main", "main-retained", 17],
+      ["main", "main-current", 23],
+      ["work", "work-current", 29],
+    ] as const) {
+      const scope = { agentId, sessionId, sessionKey: `agent:${agentId}:usage`, storePath };
+      await upsertSessionEntryCore(scope, { sessionId, updatedAt: archiveTime });
+      await persistSessionTranscriptTurn(scope, {
+        messages: [{ message: assistant(tokens) }],
+        touchSessionEntry: false,
+      });
+    }
+
+    for (const [agentId, sessionIds, totalTokens] of [
+      ["main", ["main-current", "main-retained"], 40],
+      ["work", ["work-current"], 29],
+    ] as const) {
+      const summary = await loadCostUsageSummary({
+        agentId,
+        config: sharedConfig,
+        startMs: 0,
+        endMs: Date.now() + 86_400_000,
+      });
+      expect(summary.totals.totalTokens).toBe(totalTokens);
+      expect(
+        (await discoverAllSessions({ agentId })).map((session) => session.sessionId).toSorted(),
+      ).toEqual(sessionIds);
+    }
+  });
+
   it("resolves registered archive identity from a configured custom store", async () => {
     const storePath = path.join(state.root, "custom", "shared.sqlite");
     const sessionId = `usage-${"x".repeat(300)}`;

@@ -30,7 +30,7 @@ import { resolveSessionStorePathForScope } from "../config/sessions/session-stor
 import { streamSessionTranscriptLines } from "../config/sessions/transcript-stream.js";
 import { selectVisibleTranscriptEvents } from "../config/sessions/transcript-visible-events.js";
 import type { SessionEntry } from "../config/sessions/types.js";
-import { parseAgentSessionKey } from "../routing/session-key.js";
+import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.js";
 import { runTasksWithConcurrency } from "../utils/run-with-concurrency.js";
 
@@ -132,10 +132,14 @@ function listUsageCountedSqliteTranscriptStats(
   params: { minMtimeMs?: number; storePath: string },
 ): UsageCostTranscriptFile[] {
   const storePath = params.storePath;
+  const logicalAgentId = normalizeAgentId(agentId);
   const files: UsageCostTranscriptFile[] = [];
   // Usage needs transcript identity/timestamps, not saved prompt snapshots.
   const instances = listSessionTranscriptInstances({ agentId, storePath, projection: "list" });
   for (const instance of instances) {
+    if (instance.agentId !== logicalAgentId) {
+      continue;
+    }
     const marker = { agentId, sessionId: instance.sessionId, storePath };
     const mtimeMs = instance.updatedAtMs;
     if (params.minMtimeMs !== undefined && mtimeMs < params.minMtimeMs) {

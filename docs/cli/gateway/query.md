@@ -73,7 +73,9 @@ the `cacheStatus` object so scripts can inspect the same state.
   Number of days to include.
 </ParamField>
 <ParamField path="--agent <id>" type="string">
-  Scope the summary to one configured agent id.
+  Scope the summary to one configured agent id, including when agents share a
+  SQLite session store. Retained transcripts from that agent's previous sessions
+  remain included.
 </ParamField>
 <ParamField path="--all-agents" type="boolean">
   Aggregate across all configured agents. Cannot combine with `--agent`.
