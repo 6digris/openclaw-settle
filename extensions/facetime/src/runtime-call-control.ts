@@ -219,6 +219,7 @@ export function createFaceTimeCallControl(params: {
     call: ActiveFaceTimeCall,
     reason: string,
   ): Promise<boolean> => {
+    call.beginClosing();
     while (params.calls.active === call && call.phase === "closing") {
       if (
         await attemptCarrierHangup(call, reason, {
@@ -272,7 +273,13 @@ export function createFaceTimeCallControl(params: {
             }
             const failureReason = `talk-failed: ${formatErrorMessage(error)}`;
             if (!call.talk) {
-              return await waitForStartupCarrierHangup(call, failureReason);
+              const carrierClosed = await waitForStartupCarrierHangup(call, failureReason);
+              if (carrierClosed) {
+                queueMicrotask(() => {
+                  void closeCall(call, failureReason);
+                });
+              }
+              return carrierClosed;
             }
             const carrierClosed = await attemptCarrierHangup(call, failureReason, {
               closeLocal: false,

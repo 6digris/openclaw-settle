@@ -544,7 +544,6 @@ describe("FaceTime runtime call sequencing", () => {
   });
 
   it("accepts stable complete-topology absence when a termination request fails", async () => {
-    vi.useFakeTimers();
     let runtime: Awaited<ReturnType<typeof createRuntime>> | undefined;
     try {
       const startupError = new Error("capture failed during startup");
@@ -562,8 +561,8 @@ describe("FaceTime runtime call sequencing", () => {
       mocks.helperParams?.onMessage(incomingCall(1));
       await vi.waitFor(() => expect(mocks.helper.leaveCall).toHaveBeenCalledTimes(1));
       expect(releaseStartup).toBeDefined();
+      await vi.waitFor(() => expect(mocks.helper.inspectCall).toHaveBeenCalledTimes(1));
 
-      await vi.advanceTimersByTimeAsync(100);
       await expect(releaseStartup).resolves.toBe(true);
       await vi.waitFor(async () => {
         expect((await runtime?.status())?.calls).toEqual([]);
@@ -573,7 +572,56 @@ describe("FaceTime runtime call sequencing", () => {
       expect(mocks.helper.inspectCall).toHaveBeenCalledTimes(2);
     } finally {
       await runtime?.stop();
-      vi.useRealTimers();
+    }
+  });
+
+  it("retains startup suppression while the carrier remains present", async () => {
+    let runtime: Awaited<ReturnType<typeof createRuntime>> | undefined;
+    try {
+      const startupError = new Error("capture failed during startup");
+      let releaseStartup: Promise<boolean> | undefined;
+      let startupReleased = false;
+      mocks.helper.inspectCall.mockResolvedValue({
+        helpersContacted: 2,
+        topologyGeneration: 1,
+        topologyComplete: true,
+        helperResults: [
+          { outcome: "present", found: true, call_uuid: "call-1" },
+          { outcome: "absent", found: false },
+        ],
+      });
+      mocks.startTalk.mockImplementationOnce(
+        async (params: { onFailure(error: Error): Promise<boolean> }) => {
+          releaseStartup = params.onFailure(startupError);
+          void releaseStartup.then(() => {
+            startupReleased = true;
+          });
+          await releaseStartup;
+          throw startupError;
+        },
+      );
+      runtime = await createRuntime();
+
+      mocks.helperParams?.onMessage(incomingCall(1));
+      await vi.waitFor(() => expect(mocks.helper.leaveCall).toHaveBeenCalledTimes(1));
+      expect(releaseStartup).toBeDefined();
+      await vi.waitFor(() => expect(mocks.helper.inspectCall).toHaveBeenCalledTimes(1));
+
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 150);
+      });
+      expect(startupReleased).toBe(false);
+      expect((await runtime.status()).calls).toMatchObject([
+        { callUUID: "call-1", carrierHangupPending: true },
+      ]);
+
+      mocks.helper.inspectCall.mockResolvedValue(completeAbsence());
+      await expect(releaseStartup).resolves.toBe(true);
+      await vi.waitFor(async () => {
+        expect((await runtime?.status())?.calls).toEqual([]);
+      });
+    } finally {
+      await runtime?.stop();
     }
   });
 
