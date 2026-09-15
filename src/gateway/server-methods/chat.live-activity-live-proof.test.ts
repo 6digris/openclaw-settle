@@ -1,4 +1,3 @@
-import { createServer } from "node:http";
 import { performance } from "node:perf_hooks";
 import { expect, it } from "vitest";
 import {
@@ -31,11 +30,13 @@ import { drainAgentRunTerminalWrites } from "../../infra/agent-run-terminal-writ
 import {
   loadOrCreateDeviceIdentity,
   publicKeyRawBase64UrlFromPem,
+  verifyDeviceSignature,
 } from "../../infra/device-identity.js";
 import { approveDevicePairing } from "../../infra/device-pairing-approval.js";
 import { approveNodePairing, requestNodePairing } from "../../infra/device-pairing-node.js";
 import {
   getPairedDevice,
+  removePairedDevice,
   requestDevicePairing,
   resolveNodePairingState,
 } from "../../infra/device-pairing.js";
@@ -50,6 +51,11 @@ import {
   startGatewayWithClient,
 } from "../test-helpers.e2e.js";
 import { buildMockOpenAiResponsesProvider } from "../test-openai-responses-model.js";
+import {
+  createHeldActivityProvider,
+  withRegisteredActivityFixture,
+  type ActivityDelivery,
+} from "./chat.live-activity-live-proof.test-support.js";
 
 it(
   "prepares the first committed running fact from authenticated chat.send before provider output",
@@ -84,7 +90,6 @@ it(
           const releaseProvider = createDeferred();
           const releaseTerminalWrite = createDeferred();
           const terminalWriteEntered = createDeferred();
-          const providerWork = new Set<Promise<void>>();
           const session = { agentId: "main", sessionKey: "agent:main:activity-live-proof" };
           let internalRunId: string | undefined;
           let terminalEvent: AgentEventRuntimePayload | undefined;
@@ -115,52 +120,15 @@ it(
               { skipMaintenance: true },
             );
           });
-          const providerServer = createServer((request, response) => {
-            request.resume();
-            const work = (async () => {
+          const { server: providerServer, work: providerWork } = createHeldActivityProvider(
+            releaseProvider.promise,
+            () => {
               providerRequests++;
-              await releaseProvider.promise;
-              if (response.destroyed) {
-                return;
-              }
-              const message = {
-                type: "message",
-                id: "activity-live-proof-reply",
-                role: "assistant",
-                status: "completed",
-                content: [
-                  { type: "output_text", text: "Activity proof complete.", annotations: [] },
-                ],
-              };
+            },
+            () => {
               providerReplies++;
-              response.writeHead(200, { "content-type": "text/event-stream" });
-              response.end(
-                [
-                  {
-                    type: "response.output_item.added",
-                    output_index: 0,
-                    item: { ...message, status: "in_progress", content: [] },
-                  },
-                  { type: "response.output_item.done", output_index: 0, item: message },
-                  {
-                    type: "response.completed",
-                    response: {
-                      status: "completed",
-                      usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
-                    },
-                  },
-                ]
-                  .map((event) => `data: ${JSON.stringify(event)}\n\n`)
-                  .concat("data: [DONE]\n\n")
-                  .join(""),
-              );
-            })()
-              .catch((error: unknown) => {
-                response.destroy(error instanceof Error ? error : new Error(String(error)));
-              })
-              .finally(() => providerWork.delete(work));
-            providerWork.add(work);
-          });
+            },
+          );
 
           try {
             await runQaGatewayFixture(
@@ -509,5 +477,284 @@ it(
     } finally {
       markPhase("fixture.exit.after");
     }
+  },
+);
+
+function expectSignedDelivery(
+  delivery: ActivityDelivery | undefined,
+  gateway: { deviceId: string; publicKeyPem: string },
+): asserts delivery is ActivityDelivery {
+  expect(delivery).toBeDefined();
+  if (!delivery) {
+    throw new Error("The actual relay recipient has no recorded request");
+  }
+  expect(delivery.method).toBe("POST");
+  expect(delivery.url).toBe("/v1/push/send");
+  expect(delivery.headers["x-openclaw-gateway-device-id"]).toBe(gateway.deviceId);
+  const signature = delivery.headers["x-openclaw-gateway-signature"];
+  const signedAt = delivery.headers["x-openclaw-gateway-signed-at-ms"];
+  expect(typeof signature).toBe("string");
+  expect(typeof signedAt).toBe("string");
+  if (typeof signature !== "string" || typeof signedAt !== "string") {
+    throw new Error("Real relay request omitted its signed headers");
+  }
+  const canonical = ["openclaw-relay-send-v1", gateway.deviceId, signedAt, delivery.raw].join("\n");
+  expect(verifyDeviceSignature(gateway.publicKeyPem, canonical, signature)).toBe(true);
+  expect(verifyDeviceSignature(gateway.publicKeyPem, `${canonical} `, signature)).toBe(false);
+  expect(delivery.wire).toMatchObject({
+    purpose: "liveActivity",
+    revision: 1,
+    pushType: "liveactivity",
+  });
+  expect(Object.keys(delivery.wire).toSorted()).toEqual([
+    "payload",
+    "priority",
+    "purpose",
+    "pushType",
+    "relayHandle",
+    "revision",
+  ]);
+  const { payload } = delivery.wire;
+  expect(Object.keys(payload)).toEqual(["aps"]);
+  expect(Object.keys(payload.aps).toSorted()).toEqual([
+    "content-state",
+    "event",
+    "relevance-score",
+    "stale-date",
+    "timestamp",
+  ]);
+  expect(Object.keys(payload.aps["content-state"]).toSorted()).toEqual(
+    (payload.aps.event === "end"
+      ? ["endedAt", "observedAt", "startedAt", "status"]
+      : ["observedAt", "startedAt", "status"]
+    ).toSorted(),
+  );
+  expect(Buffer.byteLength(JSON.stringify(payload), "utf8")).toBeLessThanOrEqual(2_048);
+  expect(payload.aps["relevance-score"]).toBe(10);
+  expect(payload.aps["stale-date"]).toBe(
+    Math.floor(payload.aps["content-state"].observedAt + 978_307_200) + 240,
+  );
+}
+
+it(
+  "delivers signed registered activity updates and ends only after canonical terminal commit",
+  { timeout: 90_000 },
+  async () => {
+    await withRegisteredActivityFixture(async (fixture) => {
+      const prepared = await fixture.startRun();
+      const foreign = await fixture.connect("foreign");
+      expect(fixture.devices.foreign.profileId).not.toBe(fixture.devices.owner.profileId);
+      expect(
+        (await getPairedDevice(fixture.devices.foreign.identity.deviceId, fixture.state.stateDir))
+          ?.tokens?.operator?.scopes,
+      ).toContain("operator.write");
+      await expect(fixture.prepare("foreign")).rejects.toThrow(
+        `Session "${fixture.session.sessionKey}" was not found.`,
+      );
+      await expect(
+        foreign.request("push.liveActivity.register", {
+          activityId: "foreign-copy",
+          expected: { binding: prepared.binding, sourceIncarnation: prepared.sourceIncarnation },
+          destination: fixture.destination("owner"),
+        }),
+      ).rejects.toMatchObject({
+        message: "Live Activity session access changed; prepare again.",
+      });
+      const registration = await fixture.register("owner");
+      await expect.poll(() => fixture.deliveries.length, { timeout: 30_000 }).toBe(1);
+      const update = fixture.deliveries[0];
+      expectSignedDelivery(update, fixture.gatewayIdentity);
+      expect(update.headers.authorization).toBe("Bearer fixture-grant-owner");
+      expect(update.wire).toMatchObject({
+        relayHandle: "handle-owner",
+        priority: 5,
+        payload: { aps: { event: "update", "content-state": { status: "running" } } },
+      });
+      const startedAt = prepared.snapshot.startedAtMs;
+      if (startedAt === undefined) {
+        throw new Error("Committed running fact omitted its actual start time");
+      }
+      expect(update.wire.payload.aps["content-state"].startedAt).toBe(
+        startedAt / 1_000 - 978_307_200,
+      );
+      await expect
+        .poll(() => fixture.row(registration.registrationId))
+        .toMatchObject({ state: "active", claim_id: null, next_attempt_at_ms: null });
+      await fixture.holdTerminal();
+      expect(fixture.deliveries.map((entry) => entry.wire.payload.aps.event)).toEqual(["update"]);
+      expect(fixture.row(registration.registrationId)).toMatchObject({
+        state: "active",
+        retired_at_ms: null,
+      });
+      await fixture.commitTerminal();
+      await expect.poll(() => fixture.deliveries.length, { timeout: 30_000 }).toBe(2);
+      const end = fixture.deliveries[1];
+      expectSignedDelivery(end, fixture.gatewayIdentity);
+      expect(end.wire).toMatchObject({
+        priority: 10,
+        payload: { aps: { event: "end", "content-state": { status: "completed" } } },
+      });
+      await expect
+        .poll(() => fixture.row(registration.registrationId))
+        .toMatchObject({
+          state: "tombstone",
+          retirement_reason: "terminal-delivered",
+          destination_json: null,
+          snapshot_json: null,
+          claim_id: null,
+          claim_runtime_id: null,
+          claim_deadline_ms: null,
+          claim_authorized_at_ms: null,
+          next_attempt_at_ms: null,
+        });
+    });
+  },
+);
+
+it(
+  "retries an allowed binding beyond a removed device's retry deadline without sending to it",
+  { timeout: 90_000 },
+  async () => {
+    await withRegisteredActivityFixture(async (fixture) => {
+      fixture.replyWith(503);
+      await fixture.startRun();
+      const allowed = await fixture.register("owner");
+      const removed = await fixture.register("second");
+      await expect
+        .poll(() => fixture.deliveries.map((entry) => entry.wire.relayHandle).toSorted())
+        .toEqual(["handle-owner", "handle-second"]);
+      await expect
+        .poll(() =>
+          [allowed, removed].map((registration) => fixture.row(registration.registrationId)),
+        )
+        .toEqual([
+          expect.objectContaining({ next_attempt_at_ms: expect.any(Number), claim_id: null }),
+          expect.objectContaining({ next_attempt_at_ms: expect.any(Number), claim_id: null }),
+        ]);
+      const removedDeadline = fixture.row(removed.registrationId)?.next_attempt_at_ms;
+      if (typeof removedDeadline !== "number") {
+        throw new Error("503 did not record a retry deadline");
+      }
+      const removedAttempts = fixture.deliveries.filter(
+        (entry) => entry.wire.relayHandle === "handle-second",
+      );
+      expect(removedAttempts).toHaveLength(1);
+      const client = await fixture.connect("owner");
+      expect(
+        await client.request("device.pair.remove", {
+          deviceId: fixture.devices.second.identity.deviceId,
+        }),
+      ).toEqual({ deviceId: fixture.devices.second.identity.deviceId });
+      await expect
+        .poll(
+          () =>
+            fixture.deliveries.filter(
+              (entry) => entry.wire.relayHandle === "handle-owner" && entry.at >= removedDeadline,
+            ).length,
+          { timeout: 30_000 },
+        )
+        .toBeGreaterThan(0);
+      fixture.replyWith(200);
+      expect(
+        fixture.deliveries.filter((entry) => entry.wire.relayHandle === "handle-second"),
+      ).toEqual(removedAttempts);
+      expect(fixture.row(removed.registrationId)).toMatchObject({
+        state: "tombstone",
+        destination_json: null,
+        snapshot_json: null,
+        claim_id: null,
+      });
+      expect(fixture.row(allowed.registrationId)?.state).toBe("active");
+      for (const delivery of fixture.deliveries) {
+        expectSignedDelivery(delivery, fixture.gatewayIdentity);
+      }
+    });
+  },
+);
+
+it(
+  "restarts committed terminal retries byte-identically and retires an offline-revoked pairing",
+  { timeout: 90_000 },
+  async () => {
+    await withRegisteredActivityFixture(async (fixture) => {
+      await fixture.startRun();
+      const allowed = await fixture.register("owner");
+      const removed = await fixture.register("second");
+      await expect.poll(() => fixture.deliveries.length).toBe(2);
+      fixture.replyWith(503);
+      await fixture.holdTerminal();
+      await fixture.commitTerminal();
+      await expect
+        .poll(
+          () =>
+            fixture.deliveries
+              .filter((entry) => entry.wire.payload.aps.event === "end")
+              .map((entry) => entry.wire.relayHandle)
+              .toSorted(),
+          { timeout: 30_000 },
+        )
+        .toEqual(["handle-owner", "handle-second"]);
+      await expect
+        .poll(() =>
+          [allowed, removed].map((registration) => fixture.row(registration.registrationId)),
+        )
+        .toEqual([
+          expect.objectContaining({
+            state: "terminal_pending",
+            next_attempt_at_ms: expect.any(Number),
+            claim_id: null,
+          }),
+          expect.objectContaining({
+            state: "terminal_pending",
+            next_attempt_at_ms: expect.any(Number),
+            claim_id: null,
+          }),
+        ]);
+      const firstTerminal = fixture.deliveries.find(
+        (entry) =>
+          entry.wire.relayHandle === "handle-owner" && entry.wire.payload.aps.event === "end",
+      );
+      expect(firstTerminal).toBeDefined();
+      if (!firstTerminal) {
+        throw new Error("No committed terminal reached the actual relay transport");
+      }
+      await fixture.stop();
+      const attemptsBeforeRestart = fixture.deliveries.length;
+      const removedRow = fixture.row(removed.registrationId);
+      expect(
+        await removePairedDevice(fixture.devices.second.identity.deviceId, fixture.state.stateDir),
+      ).toEqual({ deviceId: fixture.devices.second.identity.deviceId });
+      // The offline pairing owner does not perform the coordinator's activity cleanup.
+      expect(fixture.row(removed.registrationId)).toEqual(removedRow);
+      expect(removedRow?.state).toBe("terminal_pending");
+      fixture.replyWith(200);
+      await fixture.start();
+      await expect
+        .poll(() => fixture.row(allowed.registrationId), { timeout: 30_000 })
+        .toMatchObject({
+          state: "tombstone",
+          retirement_reason: "terminal-delivered",
+          destination_json: null,
+          snapshot_json: null,
+          claim_id: null,
+        });
+      const afterRestart = fixture.deliveries.slice(attemptsBeforeRestart);
+      expect(afterRestart).toHaveLength(1);
+      expectSignedDelivery(afterRestart[0], fixture.gatewayIdentity);
+      expect(afterRestart[0].raw).toBe(firstTerminal.raw);
+      expect(afterRestart[0].wire.payload.aps.timestamp).toBe(
+        firstTerminal.wire.payload.aps.timestamp,
+      );
+      expect(fixture.row(removed.registrationId)).toMatchObject({
+        state: "tombstone",
+        retirement_reason: "owner-retired",
+        destination_json: null,
+        snapshot_json: null,
+        claim_id: null,
+      });
+      expect(
+        await getPairedDevice(fixture.devices.second.identity.deviceId, fixture.state.stateDir),
+      ).toBeNull();
+    });
   },
 );
