@@ -400,133 +400,171 @@ describe("asynchronous registry restoration", () => {
     },
   );
 
-  it.each(["superseded store", "earlier receipt error", "closed maintenance scope"] as const)(
-    "retains durable flow repair obligations across %s",
-    async (boundary) => {
-      const maintenance =
-        boundary === "closed maintenance scope"
-          ? createOpenClawDatabaseMaintenanceScope(() => {
-              throw new Error("Unexpected schema delegation in memory fixture");
-            })
-          : undefined;
-      if (!maintenance) {
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      }
-      const started = createDeferred();
-      const release = createDeferred();
-      const retried = createDeferred<{
-        context: OpenClawStateWorkerContext;
-        error: unknown;
-      }>();
-      const current = { ...flow, syncMode: "task_mirrored" as const };
-      const createStore = () => {
-        const flows = createInMemoryTaskFlowRegistryStore({
-          flows: new Map([[flow.flowId, current]]),
-        });
-        const store = createInMemoryTaskRegistryStore(
+  it.each([
+    "superseded store",
+    "earlier receipt error",
+    "closed maintenance scope",
+    "flow read error",
+    "retry flow read error",
+  ] as const)("retains durable flow repair obligations across %s", async (boundary) => {
+    const maintenance =
+      boundary === "closed maintenance scope"
+        ? createOpenClawDatabaseMaintenanceScope(() => {
+            throw new Error("Unexpected schema delegation in memory fixture");
+          })
+        : undefined;
+    if (!maintenance) {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    }
+    const started = createDeferred();
+    const release = createDeferred();
+    const retried = createDeferred<{
+      context: OpenClawStateWorkerContext;
+      error: unknown;
+    }>();
+    const current = { ...flow, syncMode: "task_mirrored" as const };
+    const createStore = () => {
+      const flows = createInMemoryTaskFlowRegistryStore({
+        flows: new Map([[flow.flowId, current]]),
+      });
+      const store = createInMemoryTaskRegistryStore(
+        {
+          tasks: new Map([
+            [
+              task.taskId,
+              {
+                ...task,
+                parentFlowId: flow.flowId,
+                status: "succeeded",
+                endedAt: 20,
+              },
+            ],
+          ]),
+          deliveryStates: new Map(),
+        },
+        flows,
+      );
+      const result: TaskRegistryRestoreResult = {
+        ...taskRestoreResult(store.loadSnapshot()),
+        flowSyncs: [
           {
-            tasks: new Map([
-              [
-                task.taskId,
-                {
-                  ...task,
-                  parentFlowId: flow.flowId,
-                  status: "succeeded",
-                  endedAt: 20,
-                },
-              ],
-            ]),
-            deliveryStates: new Map(),
+            taskId: task.taskId,
+            flowId: flow.flowId,
+            kind: "result",
+            result: { ok: false, reason: "persist_failed", current },
           },
-          flows,
-        );
-        const result: TaskRegistryRestoreResult = {
-          ...taskRestoreResult(store.loadSnapshot()),
-          flowSyncs: [
-            {
-              taskId: task.taskId,
-              flowId: flow.flowId,
-              kind: "result",
-              result: { ok: false, reason: "persist_failed", current },
-            },
-          ],
-        };
-        return { store, flows, result };
+        ],
       };
-      const first = createStore();
-      const second = createStore();
-      if (boundary === "earlier receipt error") {
-        first.result.flowSyncs.unshift({
-          taskId: "earlier-task",
+      return { store, flows, result };
+    };
+    const first = createStore();
+    const second = createStore();
+    const erroredReceipt = boundary === "flow read error" || boundary === "retry flow read error";
+    let retryErrorPending = boundary === "retry flow read error";
+    if (erroredReceipt) {
+      first.result.settledTasks = [...first.result.snapshot.tasks.values()];
+      first.result.flowSyncs = [
+        {
+          taskId: task.taskId,
+          flowId: flow.flowId,
           kind: "error",
-          error: serializeAgentSchemaInspectionError(new Error("earlier receipt unavailable")),
-        });
-      }
-      configureTaskFlowRegistryRuntime({ store: maintenance ? first.flows : second.flows });
+          error: serializeAgentSchemaInspectionError(new Error("flow read unavailable")),
+        },
+      ];
+    }
+    if (boundary === "earlier receipt error") {
+      first.result.flowSyncs.unshift({
+        taskId: "earlier-task",
+        kind: "error",
+        error: serializeAgentSchemaInspectionError(new Error("earlier receipt unavailable")),
+      });
+    }
+    configureTaskFlowRegistryRuntime({
+      store: maintenance || erroredReceipt ? first.flows : second.flows,
+    });
+    configureTaskRegistryRuntime({
+      store: {
+        ...first.store,
+        async syncTaskFlowAsync(this: TaskRegistryStore, context, params) {
+          let failure: unknown;
+          try {
+            context.maintenanceScope?.assertAdmission();
+            if (retryErrorPending) {
+              retryErrorPending = false;
+              return {
+                taskId: params.taskId,
+                flowId: flow.flowId,
+                kind: "error",
+                error: serializeAgentSchemaInspectionError(
+                  new Error("retry flow read unavailable"),
+                ),
+              };
+            }
+            return await first.store.syncTaskFlowAsync.call(this, context, params);
+          } catch (error) {
+            failure = error;
+            throw error;
+          } finally {
+            retried.resolve({ context, error: failure });
+          }
+        },
+        async withSnapshotAsync(_context, consume) {
+          started.resolve();
+          await release.promise;
+          return consume(first.result);
+        },
+      },
+    });
+    const restore = () => ensureTaskRegistryReadyAsync(captureOpenClawStateWorkerContext());
+    const pending = maintenance ? maintenance.run(restore) : restore();
+    await started.promise;
+    if (boundary === "superseded store") {
       configureTaskRegistryRuntime({
         store: {
-          ...first.store,
-          async syncTaskFlowAsync(this: TaskRegistryStore, context, params) {
-            let failure: unknown;
-            try {
-              context.maintenanceScope?.assertAdmission();
-              return await first.store.syncTaskFlowAsync.call(this, context, params);
-            } catch (error) {
-              failure = error;
-              throw error;
-            } finally {
-              retried.resolve({ context, error: failure });
-            }
-          },
-          async withSnapshotAsync(_context, consume) {
-            started.resolve();
-            await release.promise;
-            return consume(first.result);
-          },
+          ...second.store,
+          withSnapshotAsync: async (_context, consume) => consume(second.result),
         },
       });
-      const restore = () => ensureTaskRegistryReadyAsync(captureOpenClawStateWorkerContext());
-      const pending = maintenance ? maintenance.run(restore) : restore();
-      await started.promise;
-      if (boundary === "superseded store") {
-        configureTaskRegistryRuntime({
-          store: {
-            ...second.store,
-            withSnapshotAsync: async (_context, consume) => consume(second.result),
-          },
-        });
+    }
+    release.resolve();
+    try {
+      if (erroredReceipt) {
+        await expect(pending).rejects.toThrow("flow read unavailable");
+        await expect(restore()).rejects.toThrow("flow read unavailable");
+        first.result.settledTasks = [];
+        first.result.flowSyncs = [];
+        await reloadTaskRegistryFromStoreAsync(captureOpenClawStateWorkerContext());
+        expect(first.flows.loadSnapshot().flows.get(flow.flowId)?.status).toBe(current.status);
+      } else if (boundary === "earlier receipt error") {
+        await expect(pending).rejects.toThrow("earlier receipt unavailable");
+      } else {
+        await pending;
       }
-      release.resolve();
-      try {
-        if (boundary === "earlier receipt error") {
-          await expect(pending).rejects.toThrow("earlier receipt unavailable");
-        } else {
-          await pending;
+      if (maintenance) {
+        await maintenance.close();
+        expect(() => maintenance.assertAdmission()).toThrow("maintenance resource scope is closed");
+        const retry = await retried.promise;
+        expect(retry.error).toBeUndefined();
+        expect(retry.context.maintenanceScope).toBeUndefined();
+      } else {
+        await vi.advanceTimersByTimeAsync(1_000);
+        if (boundary === "retry flow read error") {
+          expect(first.flows.loadSnapshot().flows.get(flow.flowId)?.status).toBe(current.status);
+          await vi.advanceTimersByTimeAsync(5_000);
         }
-        if (maintenance) {
-          await maintenance.close();
-          expect(() => maintenance.assertAdmission()).toThrow(
-            "maintenance resource scope is closed",
-          );
-          const retry = await retried.promise;
-          expect(retry.error).toBeUndefined();
-          expect(retry.context.maintenanceScope).toBeUndefined();
-        } else {
-          await vi.advanceTimersByTimeAsync(1_000);
-        }
-        await vi.waitFor(() => {
-          expect(first.flows.loadSnapshot().flows.get(flow.flowId)?.status).toBe("succeeded");
-          if (boundary === "superseded store") {
-            expect(second.flows.loadSnapshot().flows.get(flow.flowId)?.status).toBe("succeeded");
-          }
-          expect(getActiveGatewayRootWorkCount()).toBe(0);
-        });
-      } finally {
-        await maintenance?.close();
-        vi.useRealTimers();
       }
-    },
-  );
+      await vi.waitFor(() => {
+        expect(first.flows.loadSnapshot().flows.get(flow.flowId)?.status).toBe("succeeded");
+        if (boundary === "superseded store") {
+          expect(second.flows.loadSnapshot().flows.get(flow.flowId)?.status).toBe("succeeded");
+        }
+        expect(getActiveGatewayRootWorkCount()).toBe(0);
+      });
+    } finally {
+      await maintenance?.close();
+      vi.useRealTimers();
+    }
+  });
 
   it.each(["synchronous restore", "explicit reload"] as const)(
     "reconciles committed flow state when a newer %s supersedes its snapshot",
