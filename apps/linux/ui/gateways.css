@@ -24,7 +24,7 @@
 
 /* Match the web login gate while keeping this screen available without a Gateway. */
 :root {
-  color-scheme: dark;
+  color-scheme: light dark;
   --bg: #0e1015;
   --card: #161920;
   --bg-elevated: #191c24;
@@ -39,6 +39,10 @@
   --primary-hover: #c22e2e;
   --primary-foreground: #fff;
   --danger: #ff6b6b;
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 25%);
+  --shadow-dialog: 0 8px 32px rgb(0 0 0 / 30%);
+  --input-shadow: inset 0 1px rgb(255 255 255 / 4%);
+  --dialog-backdrop: rgb(0 0 0 / 60%);
   --gateway-control-height: 38px;
   color: var(--text);
   background: var(--bg);
@@ -50,6 +54,28 @@
     sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #faf9f7;
+    --card: #ffffff;
+    --bg-elevated: #ffffff;
+    --bg-hover: #efebe4;
+    --text: #403c35;
+    --text-strong: #211e1a;
+    --muted: #6e6960;
+    --border: #e8e4dc;
+    --border-strong: #d6d0c5;
+    --accent: #bd4531;
+    --primary: #bd4531;
+    --primary-hover: #a83c29;
+    --danger: #b91c1c;
+    --shadow-sm: 0 1px 2px rgb(60 42 24 / 5%);
+    --shadow-dialog: 0 8px 32px rgb(60 42 24 / 16%);
+    --input-shadow: none;
+    --dialog-backdrop: rgb(33 30 26 / 30%);
+  }
 }
 
 * {
@@ -96,7 +122,7 @@ svg {
   border: 1px solid var(--border);
   border-radius: 14px;
   background: var(--card);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 25%);
+  box-shadow: var(--shadow-sm);
 }
 
 .gateway-header {
@@ -173,7 +199,7 @@ h1 {
   background: var(--card);
   color: var(--text-strong);
   outline: none;
-  box-shadow: inset 0 1px rgb(255 255 255 / 4%);
+  box-shadow: var(--input-shadow);
 }
 
 .field-select {
@@ -202,7 +228,7 @@ input::placeholder {
 .field input:focus-visible,
 .field select:focus-visible {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgb(255 92 92 / 14%);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
 }
 button:focus-visible,
 summary:focus-visible {
@@ -317,7 +343,7 @@ button.button-back:hover {
 }
 .gateway-profile-actions .gateway-remove:hover {
   color: var(--danger);
-  background: rgb(255 107 107 / 8%);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
 }
 .gateway-empty {
   display: grid;
@@ -415,9 +441,9 @@ button.secret-toggle:hover {
 .gateway-feedback {
   padding: 12px 14px;
   margin-bottom: 20px;
-  border: 1px solid rgb(255 107 107 / 25%);
+  border: 1px solid color-mix(in srgb, var(--danger) 25%, transparent);
   border-radius: 10px;
-  background: rgb(255 107 107 / 6%);
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
   color: var(--danger);
   font-size: 13px;
   line-height: 1.5;
@@ -433,10 +459,10 @@ button.secret-toggle:hover {
   border-radius: 14px;
   background: var(--card);
   color: var(--text);
-  box-shadow: 0 8px 32px rgb(0 0 0 / 30%);
+  box-shadow: var(--shadow-dialog);
 }
 #remove-dialog::backdrop {
-  background: rgb(0 0 0 / 60%);
+  background: var(--dialog-backdrop);
 }
 #remove-title {
   color: var(--text-strong);
