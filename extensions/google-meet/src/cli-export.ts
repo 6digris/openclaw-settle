@@ -162,6 +162,35 @@ function participantDisplayName(
   );
 }
 
+function pushDocumentsMarkdown(
+  lines: string[],
+  title: string,
+  documents: GoogleMeetArtifactsResult["artifacts"][number]["transcripts"],
+  mode: "summary" | "body",
+): void {
+  const selected =
+    mode === "body" ? documents.filter((document) => document.documentText) : documents;
+  if (selected.length === 0) {
+    return;
+  }
+  pushMarkdownLine(lines);
+  pushMarkdownLine(lines, `### ${title}`);
+  for (const document of selected) {
+    if (mode === "body") {
+      pushMarkdownLine(lines);
+      pushMarkdownLine(lines, `#### ${document.name}`);
+      pushMarkdownLine(lines, document.documentText?.trim() || "_Empty document body._");
+    } else {
+      pushMarkdownLine(lines, `- ${document.name}`);
+      if (document.documentTextError) {
+        pushMarkdownLine(lines, `  - Document body warning: ${document.documentTextError}`);
+      } else if (document.documentText) {
+        pushMarkdownLine(lines, `  - Document body: ${document.documentText.length} chars`);
+      }
+    }
+  }
+}
+
 export function renderArtifactsMarkdown(result: GoogleMeetArtifactsResult): string {
   const lines: string[] = ["# Google Meet Artifacts"];
   if (result.input) {
@@ -208,18 +237,7 @@ export function renderArtifactsMarkdown(result: GoogleMeetArtifactsResult): stri
         pushMarkdownLine(lines, `- ${recording.name}`);
       }
     }
-    if (entry.transcripts.length > 0) {
-      pushMarkdownLine(lines);
-      pushMarkdownLine(lines, "### Transcripts");
-      for (const transcript of entry.transcripts) {
-        pushMarkdownLine(lines, `- ${transcript.name}`);
-        if (transcript.documentTextError) {
-          pushMarkdownLine(lines, `  - Document body warning: ${transcript.documentTextError}`);
-        } else if (transcript.documentText) {
-          pushMarkdownLine(lines, `  - Document body: ${transcript.documentText.length} chars`);
-        }
-      }
-    }
+    pushDocumentsMarkdown(lines, "Transcripts", entry.transcripts, "summary");
     for (const transcriptEntries of entry.transcriptEntries) {
       pushMarkdownLine(lines);
       pushMarkdownLine(lines, `### Transcript Entries: ${transcriptEntries.transcript}`);
@@ -244,18 +262,7 @@ export function renderArtifactsMarkdown(result: GoogleMeetArtifactsResult): stri
         pushMarkdownLine(lines, `- ${speaker}${transcriptEntry.text ?? ""}${times}`);
       }
     }
-    if (entry.smartNotes.length > 0) {
-      pushMarkdownLine(lines);
-      pushMarkdownLine(lines, "### Smart Notes");
-      for (const smartNote of entry.smartNotes) {
-        pushMarkdownLine(lines, `- ${smartNote.name}`);
-        if (smartNote.documentTextError) {
-          pushMarkdownLine(lines, `  - Document body warning: ${smartNote.documentTextError}`);
-        } else if (smartNote.documentText) {
-          pushMarkdownLine(lines, `  - Document body: ${smartNote.documentText.length} chars`);
-        }
-      }
-    }
+    pushDocumentsMarkdown(lines, "Smart Notes", entry.smartNotes, "summary");
   }
   return `${lines.join("\n")}\n`;
 }
@@ -384,26 +391,8 @@ function renderTranscriptMarkdown(result: GoogleMeetArtifactsResult): string {
         pushMarkdownLine(lines, `- ${speaker}${time}: ${transcriptEntry.text ?? ""}`);
       }
     }
-    const docsTranscripts = entry.transcripts.filter((transcript) => transcript.documentText);
-    if (docsTranscripts.length > 0) {
-      pushMarkdownLine(lines);
-      pushMarkdownLine(lines, "### Transcript Document Bodies");
-      for (const transcript of docsTranscripts) {
-        pushMarkdownLine(lines);
-        pushMarkdownLine(lines, `#### ${transcript.name}`);
-        pushMarkdownLine(lines, transcript.documentText?.trim() || "_Empty document body._");
-      }
-    }
-    const smartNotes = entry.smartNotes.filter((smartNote) => smartNote.documentText);
-    if (smartNotes.length > 0) {
-      pushMarkdownLine(lines);
-      pushMarkdownLine(lines, "### Smart Note Document Bodies");
-      for (const smartNote of smartNotes) {
-        pushMarkdownLine(lines);
-        pushMarkdownLine(lines, `#### ${smartNote.name}`);
-        pushMarkdownLine(lines, smartNote.documentText?.trim() || "_Empty document body._");
-      }
-    }
+    pushDocumentsMarkdown(lines, "Transcript Document Bodies", entry.transcripts, "body");
+    pushDocumentsMarkdown(lines, "Smart Note Document Bodies", entry.smartNotes, "body");
   }
   return `${lines.join("\n")}\n`;
 }
