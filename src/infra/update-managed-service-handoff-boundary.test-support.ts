@@ -48,13 +48,11 @@ import {
 } from "./update-managed-service-native.test-support.js";
 import { createUpdateRun, getUpdateRun } from "./update-run-ledger.js";
 
-export async function pathExists(filePath: string): Promise<boolean> {
-  try {
-    await fs.access(filePath);
-    return true;
-  } catch {
-    return false;
-  }
+export function pathExists(filePath: string): Promise<boolean> {
+  return fs.access(filePath).then(
+    () => true,
+    () => false,
+  );
 }
 
 export function createManagedServiceManagerBoundary({
