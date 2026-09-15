@@ -214,18 +214,94 @@ describe("media generation delivery-phase prompt guard", () => {
     ]);
     expect(configMocks.readConfig).not.toHaveBeenCalled();
     expect(configMocks.assertSourceCurrent).not.toHaveBeenCalled();
+    expect(taskRuntimeInternalMocks.listFreshTasksForOwnerKey).toHaveBeenCalledOnce();
   });
 
   it("keeps known requester tasks visible when legacy config cannot be prepared", async () => {
     const known = makeTask({ taskId: "known", ownerKey: "global", requesterAgentId: "ops" });
-    taskRuntimeInternalMocks.listFreshTasksForOwnerKey.mockReturnValue([
-      makeTask({ taskId: "legacy", ownerKey: "global", agentId: "ops" }),
-      known,
-    ]);
+    const legacy = makeTask({ taskId: "legacy", ownerKey: "global", agentId: "ops" });
+    const updated = { ...known, progressSummary: "Rendering final frames" };
+    taskRuntimeInternalMocks.listFreshTasksForOwnerKey
+      .mockReturnValueOnce([legacy, known])
+      .mockReturnValue([legacy, updated]);
     configMocks.readConfig.mockRejectedValue(new Error("config unavailable"));
 
-    expect(await videoTaskStatusOwner.listActiveTasksForSession("global", "ops")).toEqual([known]);
+    expect(await videoTaskStatusOwner.listActiveTasksForSession("global", "ops")).toEqual([
+      updated,
+    ]);
   });
+
+  it.each(
+    (["active", "duplicate"] as const).flatMap((lookup) =>
+      (["completed", "deleted"] as const).flatMap((change) =>
+        (["resolves", "rejects"] as const).map((completion) => ({ lookup, change, completion })),
+      ),
+    ),
+  )(
+    "refreshes $lookup selection after a task is $change while config $completion",
+    async ({ lookup, change, completion }) => {
+      const started = createDeferred();
+      const config = createDeferred<OpenClawConfig>();
+      configMocks.readConfig.mockImplementation(() => {
+        started.resolve();
+        return config.promise;
+      });
+      const legacy = makeTask({ taskId: "legacy", ownerKey: "global", status: "succeeded" });
+      const known = makeTask({ taskId: "known", ownerKey: "global", requesterAgentId: "ops" });
+      let records = [legacy, known];
+      taskRuntimeInternalMocks.listFreshTasksForOwnerKey.mockImplementation(() => records);
+      const pending =
+        lookup === "active"
+          ? videoTaskStatusOwner.listActiveTasksForSession("global", "ops")
+          : videoTaskStatusOwner.findDuplicateGuardTaskForSession("global", { agentId: "ops" });
+      await started.promise;
+      records = change === "deleted" ? [legacy] : [legacy, { ...known, status: "succeeded" }];
+      if (completion === "resolves") {
+        config.resolve(fixedStoreConfig);
+      } else {
+        config.reject(new Error("config unavailable"));
+      }
+
+      expect(await pending).toEqual(lookup === "active" ? [] : undefined);
+      expect(taskRuntimeInternalMocks.listFreshTasksForOwnerKey).toHaveBeenNthCalledWith(
+        2,
+        ownerMocks.context,
+        "global",
+      );
+    },
+  );
+
+  it.each(
+    (["task owner", "config source"] as const).flatMap((authority) =>
+      (["resolves", "rejects"] as const).map((completion) => ({ authority, completion })),
+    ),
+  )(
+    "propagates retired $authority during refreshed selection after config $completion",
+    async ({ authority, completion }) => {
+      const retired = new Error(`${authority} retired`);
+      const assertion =
+        authority === "task owner"
+          ? ownerMocks.assertTaskRegistryOwnerCurrent
+          : configMocks.assertSourceCurrent;
+      const legacy = makeTask({ taskId: "legacy", ownerKey: "global" });
+      const known = makeTask({ taskId: "known", ownerKey: "global", requesterAgentId: "ops" });
+      taskRuntimeInternalMocks.listFreshTasksForOwnerKey
+        .mockReturnValueOnce([legacy, known])
+        .mockImplementationOnce(async () => {
+          assertion.mockImplementation(() => {
+            throw retired;
+          });
+          return [known];
+        });
+      if (completion === "rejects") {
+        configMocks.readConfig.mockRejectedValue(new Error("config unavailable"));
+      }
+
+      await expect(
+        videoTaskStatusOwner.findDuplicateGuardTaskForSession("global", { agentId: "ops" }),
+      ).rejects.toBe(retired);
+    },
+  );
 
   it.each([
     { authority: "task owner", completion: "resolves" },
