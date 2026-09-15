@@ -130,7 +130,9 @@ export async function prepareNodeWorkerWorkspaceOverlay(params: {
       params.signal?.throwIfAborted();
       // The normal workspace fence holds throughout. After a crash this row is
       // cleanup-only: no in-memory permit survives to resurrect a partial tree.
-      const mutation = store.beginMutation(row);
+      const mutation = await store.beginMutation(row, {
+        assertCurrent: () => params.signal?.throwIfAborted(),
+      });
       let rolledBack = false;
       try {
         await withWorkerWorkspaceHashMemo(
@@ -162,7 +164,7 @@ export async function prepareNodeWorkerWorkspaceOverlay(params: {
             }),
         );
         params.signal?.throwIfAborted();
-        mutation.complete();
+        await mutation.complete();
         // Acknowledge the accepted Gateway baseline; its next three-way reconciliation
         // independently captures setup output retained in the verified remote target.
         return params.manifestRef;
@@ -172,7 +174,7 @@ export async function prepareNodeWorkerWorkspaceOverlay(params: {
           !params.signal?.aborted &&
           (await capture(baseManifestRef)) === baseManifestRef
         ) {
-          mutation.complete();
+          await mutation.complete();
         }
         throw error;
       } finally {

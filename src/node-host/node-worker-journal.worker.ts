@@ -2,6 +2,7 @@ import type { SqliteWorkerCommand } from "../infra/sqlite-worker-contract.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
 import type { NodeWorkerJournalWorkerOperations } from "./node-worker-journal.worker-contract.js";
 import { NodeWorkerLaunchKernel } from "./node-worker-launch-store.kernel.js";
+import { NodeWorkerPreparedWorkspaceKernel } from "./node-worker-prepared-workspace-store.kernel.js";
 import { NodeWorkerTurnKernel } from "./node-worker-turn-store.kernel.js";
 
 export function executeNodeWorkerJournalCommand(
@@ -11,6 +12,19 @@ export function executeNodeWorkerJournalCommand(
   },
 ): NodeWorkerJournalWorkerOperations[keyof NodeWorkerJournalWorkerOperations]["output"] {
   switch (command.type) {
+    case "nodeWorker.prepared.find":
+      return new NodeWorkerPreparedWorkspaceKernel(options).find(...command.input);
+    case "nodeWorker.prepared.list":
+      return new NodeWorkerPreparedWorkspaceKernel(options).list(...command.input);
+    case "nodeWorker.prepared.register":
+      return new NodeWorkerPreparedWorkspaceKernel(options).register(...command.input);
+    case "nodeWorker.prepared.bind":
+      return new NodeWorkerPreparedWorkspaceKernel(options).bind(...command.input);
+    case "nodeWorker.prepared.retire":
+      return new NodeWorkerPreparedWorkspaceKernel(options).retire(...command.input);
+    case "nodeWorker.prepared.completeMutation":
+      return new NodeWorkerPreparedWorkspaceKernel(options).completeMutation(...command.input);
+
     case "nodeWorker.launch.claimObservation":
       return new NodeWorkerLaunchKernel(options).claimObservation(...command.input);
     case "nodeWorker.launch.claim":

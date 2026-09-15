@@ -833,13 +833,46 @@ async function dispatchInvoke(
   try {
     const { pluginCommandIo: io, pluginCommandContext: context } = runtime;
     const acquireManagedWorkspace = context?.acquireManagedWorkspace;
+    const acquireManagedWorkspaceAsync = context?.acquireManagedWorkspaceAsync;
     let pluginInvocationActive = true;
     const invokeContext =
-      context && (frame.sessionKey || runtime.signal || acquireManagedWorkspace)
+      context &&
+      (frame.sessionKey ||
+        runtime.signal ||
+        acquireManagedWorkspace ||
+        acquireManagedWorkspaceAsync)
         ? {
             ...context,
             ...(frame.sessionKey ? { sessionKey: frame.sessionKey } : {}),
             ...(runtime.signal ? { signal: runtime.signal } : {}),
+            ...(acquireManagedWorkspaceAsync
+              ? {
+                  acquireManagedWorkspaceAsync: async (
+                    request: Parameters<typeof acquireManagedWorkspaceAsync>[0],
+                  ) => {
+                    const captured = { ...request };
+                    const assertCurrent = () => {
+                      if (
+                        !pluginInvocationActive ||
+                        runtime.signal?.aborted ||
+                        !frame.sessionKey ||
+                        captured.sessionKey !== frame.sessionKey
+                      ) {
+                        throw new Error("node placement workspace invocation authority is closed");
+                      }
+                    };
+                    assertCurrent();
+                    const workspace = await acquireManagedWorkspaceAsync(captured);
+                    try {
+                      assertCurrent();
+                      return workspace;
+                    } catch (error) {
+                      workspace.release();
+                      throw error;
+                    }
+                  },
+                }
+              : {}),
             ...(acquireManagedWorkspace
               ? {
                   acquireManagedWorkspace: (

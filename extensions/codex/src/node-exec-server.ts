@@ -76,13 +76,13 @@ export function createCodexNodeExecServerCommand(): OpenClawPluginNodeHostComman
       }
       const placement = parseCodexNodePlacementWorkspace(request.placement);
       if (
-        !context?.acquireManagedWorkspace ||
+        !context?.acquireManagedWorkspaceAsync ||
         context.sessionKey !== placement.sessionKey ||
         io.signal.aborted
       ) {
         throw new Error("Codex node exec-server requires active managed placement authority.");
       }
-      const workspace = context.acquireManagedWorkspace({
+      const workspace = await context.acquireManagedWorkspaceAsync({
         workspaceDir: placement.cwd,
         environmentId: placement.environmentId,
         sessionId: placement.sessionId,
@@ -92,6 +92,8 @@ export function createCodexNodeExecServerCommand(): OpenClawPluginNodeHostComman
       const frames = io.frames;
       let unsubscribe: (() => void) | undefined;
       try {
+        io.signal.throwIfAborted();
+        context.signal?.throwIfAborted();
         if (!context.prepareExecAuthorization) {
           throw new Error(
             "Codex node execution requires node-local exec policy support; update the node.",

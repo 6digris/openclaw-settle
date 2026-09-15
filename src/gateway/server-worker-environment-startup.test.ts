@@ -15,7 +15,10 @@ import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { markPluginRegistryActive } from "../plugins/registry-lifecycle.js";
 import type { WorkerProvider } from "../plugins/types.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseAsync,
+  closeOpenClawStateDatabaseForTest,
+} from "../state/openclaw-state-db.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { createNodeDesktopStreamBroker } from "./desktop/node-stream-broker.js";
 import { createDesktopSessionRegistry } from "./desktop/session-registry.js";
@@ -35,13 +38,18 @@ import {
 } from "./worker-environments/device-provider.js";
 
 const DEVICE_ID = "revoked-device";
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    await closeOpenClawStateDatabaseAsync();
+    closeOpenClawStateDatabaseForTest();
+    cleanup();
+  }),
+);
 
 afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
   setActiveNodeContext(null);
-  closeOpenClawStateDatabaseForTest();
   resetConfigRuntimeState();
 });
 
@@ -350,14 +358,14 @@ describe("prepared node workspace ownership over the Gateway transport", () => {
         if (changed) {
           await fs.writeFile(path.join(f.prepared.workspaceDir, "source.txt"), "changed source\n");
           await expect(f.register()).rejects.toThrow("source does not match its manifest");
-          expect(f.preparedStore.find(f.record.environmentId)).toBeUndefined();
+          expect(await f.preparedStore.find(f.record.environmentId)).toBeUndefined();
           return;
         }
         await f.register();
         f.attach();
         await f.bind();
         expect(f.received.map((response) => response.ok)).toEqual([true, true]);
-        const acquired = f.workspace.acquireManagedWorkspace({
+        const acquired = await f.workspace.acquireManagedWorkspaceAsync({
           ...f.binding,
           workspaceDir: f.prepared.workspaceDir,
         });
@@ -434,7 +442,7 @@ describe("prepared node workspace ownership over the Gateway transport", () => {
         release.resolve();
         expect(await operation).toBeInstanceOf(Error);
         expect(f.invoked).toHaveLength(invokedBefore);
-        const registration = f.preparedStore.find(f.record.environmentId);
+        const registration = await f.preparedStore.find(f.record.environmentId);
         if (action === "bind") {
           expect(registration).toMatchObject({ session_id: null, bound_at_ms: null });
         } else {
@@ -471,7 +479,7 @@ describe("prepared node workspace ownership over the Gateway transport", () => {
         await f.cancelled.promise;
         release.resolve();
         await f.settleInvokes();
-        expect(f.preparedStore.find(f.record.environmentId)).toBeUndefined();
+        expect(await f.preparedStore.find(f.record.environmentId)).toBeUndefined();
       } finally {
         caller.abort();
         release.resolve();
