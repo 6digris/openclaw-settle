@@ -382,6 +382,12 @@ final class RemoteRunLiveActivity {
         try await self.requireActive(accepted.gateway, generation: generation)
         let prepared = try await accepted.gateway.prepare(run: accepted.run, sessionID: accepted.sessionID)
         try await self.requireActive(accepted.gateway, generation: generation)
+        if self.slot == nil, let activity = self.coldActivity(owner: accepted.run.session.owner) {
+            // Cold recovery may have lost its generation during the identity RPC.
+            // Adopt the surviving owner before cleanup can yield to another run.
+            _ = try self.adoptColdActivity(
+                activity, gateway: accepted.gateway, relay: accepted.relay, identity: prepared.gatewayIdentity)
+        }
         if let old = self.slot {
             old.retiring = true
             await self.cleanUp(old)
@@ -400,6 +406,36 @@ final class RemoteRunLiveActivity {
         await self.observe(slot)
     }
 
+    private func coldActivity(owner: OpenClawNativeOwnerRef) -> Handle? {
+        self.system.activities().sorted(by: { $0.id < $1.id }).first {
+            let attributes = $0.attributes
+            return owner == .init(gatewayID: attributes.gatewayId, profileID: attributes.profileId)
+                && ($0.state() == .active || $0.state() == .stale)
+        }
+    }
+
+    private func adoptColdActivity(
+        _ activity: Handle,
+        gateway: RemoteRunActivityGateway,
+        relay: Relay,
+        identity: PushRelayGatewayIdentity) throws -> Slot
+    {
+        guard identity.deviceId.utf8.elementsEqual(activity.attributes.gatewayDeviceId.utf8) else {
+            throw RemoteRunActivityGateway.Failure.ownerChanged
+        }
+        let selected = try gateway.selecting(.init(
+            owner: gateway.session.owner,
+            agentID: activity.attributes.agentId,
+            sessionKey: activity.attributes.sessionKey))
+        let slot = Slot(activity: activity, gateway: selected, relay: relay, identity: identity, selection: nil)
+        slot.discoverGateway = true
+        slot.discoverRelay = true
+        slot.requiresExistingRegistration = true
+        slot.relayMayExist = true
+        self.slot = slot
+        return slot
+    }
+
     private func recover(
         gateway: RemoteRunActivityGateway, relay: Relay, generation: UInt64) async throws
     {
@@ -414,27 +450,13 @@ final class RemoteRunLiveActivity {
             slot.gateway = try gateway.selecting(existing.gateway.session)
             slot.relay = relay
         } else {
-            guard let activity = self.system.activities().sorted(by: { $0.id < $1.id }).first(where: {
-                let attributes = $0.attributes
-                return gateway.session.owner == .init(gatewayID: attributes.gatewayId, profileID: attributes.profileId)
-                    && ($0.state() == .active || $0.state() == .stale)
-            }) else {
+            guard let activity = self.coldActivity(owner: gateway.session.owner) else {
                 self.phase = .idle
                 return
             }
-            let selected = try gateway.selecting(.init(
-                owner: gateway.session.owner,
-                agentID: activity.attributes.agentId,
-                sessionKey: activity.attributes.sessionKey))
-            let identity = try await selected.identity()
-            try await self.requireActive(selected, generation: generation)
-            guard identity.deviceId.utf8.elementsEqual(activity.attributes.gatewayDeviceId.utf8) else {
-                throw RemoteRunActivityGateway.Failure.ownerChanged
-            }
-            slot = Slot(activity: activity, gateway: selected, relay: relay, identity: identity, selection: nil)
-            slot.requiresExistingRegistration = true
-            slot.relayMayExist = true
-            self.slot = slot
+            let identity = try await gateway.identity()
+            try await self.requireActive(gateway, generation: generation)
+            slot = try self.adoptColdActivity(activity, gateway: gateway, relay: relay, identity: identity)
         }
         slot.discoverGateway = true
         slot.discoverRelay = true
