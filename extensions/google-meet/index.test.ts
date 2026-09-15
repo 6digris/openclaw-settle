@@ -1537,7 +1537,12 @@ describe("google-meet plugin", () => {
 
   it("returns structured gateway errors for missing session ids", async () => {
     const { methods } = setup();
-    for (const method of ["googlemeet.leave", "googlemeet.speak"]) {
+    for (const method of [
+      "googlemeet.leave",
+      "googlemeet.speak",
+      "googlemeet.participationContext",
+      "googlemeet.participate",
+    ]) {
       const handler = methods.get(method) as
         | ((ctx: {
             params: Record<string, unknown>;
@@ -1579,6 +1584,8 @@ describe("google-meet plugin", () => {
       "create",
       "status",
       "transcript",
+      "participation_context",
+      "participate",
       "setup_status",
       "resolve_space",
       "preflight",

@@ -14,12 +14,23 @@ export type MeetingTranscriptLine = {
   at?: string;
   speaker?: string;
   text: string;
+  /** Optional identity assigned by the provider's canonical caption observer. */
+  source?: {
+    id: string;
+    epoch: string;
+    revision: string;
+    finalized: boolean;
+    /** Undefined means the provider could not establish whether this is our own speech. */
+    ownEcho?: boolean;
+  };
 };
 
 export type MeetingTranscriptSnapshot = {
   droppedLines: number;
   epoch?: string;
   lines: MeetingTranscriptLine[];
+  /** Live caption revisions for observation only; never append these to the transcript. */
+  pendingLines?: MeetingTranscriptLine[];
 };
 
 export type MeetingBrowserTab = {

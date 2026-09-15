@@ -105,3 +105,16 @@ export {
   type MeetingBrowserNodeStartConfig,
 } from "../meeting-bot/node-invoke-policy.js";
 export { createMeetingNodeHost, type MeetingNodeHostOptions } from "../meeting-bot/node-host.js";
+
+export { runMeetingParticipationWithBrowser } from "../meeting-bot/participation-browser.js";
+export type {
+  MeetingParticipationAction,
+  MeetingParticipationRequest,
+  MeetingParticipationResult,
+  MeetingParticipationEffectResult,
+  MeetingParticipationSource,
+  MeetingParticipationContext,
+  MeetingParticipationAttempt,
+  MeetingParticipationOptions,
+  MeetingBrowserParticipationAdapter,
+} from "../meeting-bot/participation-types.js";

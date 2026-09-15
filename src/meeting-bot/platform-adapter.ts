@@ -28,7 +28,11 @@ import {
 import { createMeetingRuntimeFacade } from "./runtime-facade.js";
 import { createMeetingRuntimeProbes, resolveMeetingProbeTimeoutMs } from "./runtime-probes.js";
 import { createMeetingRuntimeSetup } from "./runtime-setup.js";
-import type { MeetingBrowserHealth, MeetingTranscriptSnapshot } from "./session-types.js";
+import type {
+  MeetingBrowserHealth,
+  MeetingTranscriptLine,
+  MeetingTranscriptSnapshot,
+} from "./session-types.js";
 import { createMeetingStatusCallSource } from "./status-call-source.js";
 import { createMeetingStatusPreludeSource } from "./status-prejoin-source.js";
 
@@ -263,6 +267,7 @@ function parseMeetingTranscript<Transcript extends MeetingTranscriptSnapshot>(
     droppedLines?: unknown;
     epoch?: unknown;
     lines?: unknown;
+    pendingLines?: unknown;
     sessionMatched?: unknown;
     urlMatched?: unknown;
   };
@@ -270,28 +275,64 @@ function parseMeetingTranscript<Transcript extends MeetingTranscriptSnapshot>(
     typeof payload.droppedLines === "number" && Number.isSafeInteger(payload.droppedLines)
       ? Math.max(0, payload.droppedLines)
       : 0;
-  const lines = Array.isArray(payload.lines)
-    ? payload.lines.flatMap((value) => {
-        if (!value || typeof value !== "object") {
-          return [];
-        }
-        const line = value as { at?: unknown; speaker?: unknown; text?: unknown };
-        if (typeof line.text !== "string" || !line.text.trim()) {
-          return [];
-        }
-        return [
-          {
-            ...(typeof line.at === "string" ? { at: line.at } : {}),
-            ...(typeof line.speaker === "string" ? { speaker: line.speaker } : {}),
-            text: line.text,
-          },
-        ];
-      })
-    : [];
+  const parseLines = (values: unknown): MeetingTranscriptLine[] =>
+    Array.isArray(values)
+      ? values.flatMap((value) => {
+          if (!value || typeof value !== "object") {
+            return [];
+          }
+          const line = value as {
+            at?: unknown;
+            speaker?: unknown;
+            text?: unknown;
+            source?: unknown;
+          };
+          if (typeof line.text !== "string" || !line.text.trim()) {
+            return [];
+          }
+          const source =
+            line.source && typeof line.source === "object"
+              ? (line.source as Record<string, unknown>)
+              : undefined;
+          const identity =
+            source &&
+            typeof source.id === "string" &&
+            source.id.length > 0 &&
+            source.id.length <= 512 &&
+            typeof source.epoch === "string" &&
+            source.epoch.length > 0 &&
+            source.epoch.length <= 512 &&
+            source.epoch === payload.epoch &&
+            typeof source.revision === "string" &&
+            source.revision.length > 0 &&
+            source.revision.length <= 128 &&
+            typeof source.finalized === "boolean" &&
+            (source.ownEcho === undefined || typeof source.ownEcho === "boolean")
+              ? {
+                  id: source.id,
+                  epoch: source.epoch,
+                  revision: source.revision,
+                  finalized: source.finalized,
+                  ...(typeof source.ownEcho === "boolean" ? { ownEcho: source.ownEcho } : {}),
+                }
+              : undefined;
+          return [
+            {
+              ...(typeof line.at === "string" ? { at: line.at } : {}),
+              ...(typeof line.speaker === "string" ? { speaker: line.speaker } : {}),
+              text: line.text,
+              ...(identity ? { source: identity } : {}),
+            },
+          ];
+        })
+      : [];
   return {
     droppedLines,
     ...(typeof payload.epoch === "string" ? { epoch: payload.epoch } : {}),
-    lines,
+    lines: parseLines(payload.lines),
+    ...(Array.isArray(payload.pendingLines)
+      ? { pendingLines: parseLines(payload.pendingLines) }
+      : {}),
     ...(typeof payload.urlMatched === "boolean" ? { urlMatched: payload.urlMatched } : {}),
     ...(typeof payload.sessionMatched === "boolean"
       ? { sessionMatched: payload.sessionMatched }

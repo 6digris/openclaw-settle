@@ -5,6 +5,12 @@ import type {
   TranscriptStopRequest,
   TranscriptsStopResult,
 } from "../transcripts/provider-types.js";
+import type {
+  MeetingParticipationOptions,
+  MeetingParticipationRequest,
+  MeetingParticipationSource,
+} from "./participation-types.js";
+import { MeetingParticipation } from "./participation.js";
 import { MeetingSessionCleanupTracker } from "./session-cleanup-tracker.js";
 import { MeetingSessionDurableTranscripts } from "./session-durable-transcripts.js";
 import { MeetingSessionJoinLock } from "./session-join-lock.js";
@@ -109,6 +115,7 @@ export type MeetingSessionRuntimeOptions<
   ): Promise<{ handled: boolean; spoken: boolean } | undefined>;
   defaultSpeechInstructions?: string;
   durableTranscripts?: MeetingDurableTranscriptsOptions;
+  participation?: MeetingParticipationOptions<TSession>;
 };
 
 export type MeetingSessionLeaveResult<TSession> = {
@@ -131,6 +138,7 @@ export class MeetingSessionRuntime<
   TSpeechBlockedReason extends string,
 > {
   readonly #sessions = new Map<string, TSession>();
+  readonly #participation?: MeetingParticipation<TSession>;
   readonly #sessionLeaves = new Map<string, Promise<MeetingSessionLeaveResult<TSession>>>();
   readonly #sessionCleanup = new MeetingSessionCleanupTracker();
   readonly #meetingLock = new MeetingSessionJoinLock();
@@ -152,13 +160,75 @@ export class MeetingSessionRuntime<
       TSpeechBlockedReason
     >,
   ) {
+    if (options.participation) {
+      this.#participation = new MeetingParticipation({
+        ...options.participation,
+        current: (sessionId) => {
+          const session = this.#sessions.get(sessionId);
+          const browser = session ? options.getBrowser(session) : undefined;
+          if (!session || session.state !== "active") return undefined;
+          const targetId = browser?.tab?.targetId;
+          const nodeId = browser?.nodeId;
+          const { url, transport } = session;
+          return {
+            session,
+            assertCurrent: () => {
+              const latest = options.getBrowser(session);
+              if (
+                this.#sessions.get(sessionId) !== session ||
+                session.state !== "active" ||
+                session.url !== url ||
+                session.transport !== transport ||
+                latest?.nodeId !== nodeId ||
+                latest?.tab?.targetId !== targetId
+              )
+                throw new Error("The meeting session no longer owns this browser tab and route.");
+            },
+          };
+        },
+      });
+    }
     this.#transcriptStore = new MeetingSessionTranscriptStore({
       getSession: (sessionId) => this.#sessions.get(sessionId),
       isBrowserSession: (session) => this.options.isBrowserTransport(session.transport),
       isTranscribeSession: (session) => this.options.isTranscribeMode(session.mode),
       hasBrowserTab: (session) => Boolean(this.options.getBrowser(session)?.tab),
-      capture: async (session, captureOptions) =>
-        await this.options.captureTranscript(session, captureOptions),
+      capture: async (session, captureOptions) => {
+        const browser = this.options.getBrowser(session);
+        const targetId = browser?.tab?.targetId;
+        const nodeId = browser?.nodeId;
+        const { url, transport, state } = session;
+        const snapshot = await this.options.captureTranscript(session, captureOptions);
+        const latest = this.options.getBrowser(session);
+        if (
+          this.#sessions.get(session.id) !== session ||
+          session.state !== state ||
+          session.url !== url ||
+          session.transport !== transport ||
+          latest?.nodeId !== nodeId ||
+          latest?.tab?.targetId !== targetId
+        ) {
+          throw new Error("The meeting session no longer owns the captured browser tab and route.");
+        }
+        return snapshot;
+      },
+      onSnapshot: (session, snapshot) => {
+        if (
+          snapshot.epoch &&
+          this.#participation?.observeEpoch(session.id, "caption", snapshot.epoch) === false
+        ) {
+          return;
+        }
+        for (const line of [...snapshot.lines, ...(snapshot.pendingLines ?? [])]) {
+          if (line.source) {
+            this.observeParticipationSource(session.id, {
+              ...line.source,
+              kind: "caption",
+              text: line.text,
+            });
+          }
+        }
+      },
       onLines: async (session, lines) => await this.#durableTranscripts.ingest(session, lines),
     });
     this.#durableTranscripts = new MeetingSessionDurableTranscripts({
@@ -203,6 +273,47 @@ export class MeetingSessionRuntime<
     return session ? { found: true, session } : { found: false };
   }
 
+  participationContext(sessionId: string) {
+    return (
+      this.#participation?.context(sessionId) ?? {
+        sessionId,
+        active: false,
+        sourceOrder: 0,
+        capabilities: [],
+        sources: [],
+      }
+    );
+  }
+
+  observeParticipationEpoch(
+    sessionId: string,
+    kind: MeetingParticipationSource["kind"],
+    epoch: string,
+  ): boolean {
+    return this.#participation?.observeEpoch(sessionId, kind, epoch) ?? false;
+  }
+
+  observeParticipationSource(
+    sessionId: string,
+    source: MeetingParticipationSource,
+  ): string | undefined {
+    return this.#participation?.observe(sessionId, source);
+  }
+
+  inspectParticipationSource(sessionId: string, sourceId: string) {
+    return this.#participation?.inspect(sessionId, sourceId);
+  }
+
+  async participate(sessionId: string, request: MeetingParticipationRequest) {
+    return this.#participation
+      ? await this.#participation.execute(sessionId, request)
+      : {
+          requestId: request.requestId,
+          status: "unsupported" as const,
+          message: "This meeting platform does not support participation actions.",
+        };
+  }
+
   async transcript(sessionId: string, options: { sinceIndex?: number } = {}) {
     return await this.#transcriptStore.read(sessionId, options);
   }
@@ -243,6 +354,7 @@ export class MeetingSessionRuntime<
     if (!session) {
       return { found: false };
     }
+    this.#participation?.close(sessionId);
     // The meeting lock fences joins and leaves before terminal transcript work;
     // #sessionLeaves then coalesces retries owned by the same session.
     return await this.#meetingLock.run(
@@ -400,6 +512,7 @@ export class MeetingSessionRuntime<
   }
 
   markSessionEnded(session: TSession, reason: string): void {
+    this.#participation?.close(session.id);
     session.state = "ended";
     session.updatedAt = nowIso();
     this.#dropRuntimeHandles(session.id);
@@ -547,6 +660,7 @@ export class MeetingSessionRuntime<
     session: TSession,
     options?: { keepBrowserTab?: boolean },
   ): Promise<MeetingSessionLeaveResult<TSession>> {
+    this.#participation?.close(session.id);
     const firstAttempt = this.#sessionCleanup.begin(session.id, session.browserLeft);
     const transcribe = this.options.isTranscribeMode(session.mode);
     let transcriptStopped = false;

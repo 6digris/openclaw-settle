@@ -8,6 +8,49 @@ import { GOOGLE_MEET_TRANSCRIPT_MAX_LINES } from "./types.js";
 
 const GOOGLE_MEET_CAPTION_SETTLE_MS = 1_000;
 
+// Status observation and explicit final capture share the same line-commit owner.
+const CAPTION_LINE_COMMIT_SOURCE = `
+  const captionLine = (entry) => ({
+    at: entry.at,
+    speaker: entry.speaker,
+    text: entry.text,
+    ...(entry.source ? { source: { ...entry.source } } : {})
+  });
+  const rememberCaptionSource = (state, entry) => {
+    if (!entry.source || !state.sourceHistory) return;
+    state.sourceRevisions?.set(entry.source.id, Math.max(state.sourceRevisions.get(entry.source.id) || 0, Number(entry.source.revision)));
+    const key = entry.text;
+    if (state.sourceHistory.has(key) || state.sourceHistory.size < ${GOOGLE_MEET_TRANSCRIPT_MAX_LINES}) {
+      state.sourceHistory.set(key, { ...entry.source });
+    }
+  };
+  const reviseCaptionSource = (state, entry, changes) => {
+    if (!entry.source) return;
+    const revision = Number(entry.source.revision);
+    if (revision < (state.sourceRevisions?.get(entry.source.id) || 0)) {
+      entry.source = undefined;
+      return;
+    }
+    entry.source = { ...entry.source, ...changes, revision: String(revision + 1) };
+  };
+  const commitLines = (state, entries) => {
+    state.lines = Array.isArray(state.lines) ? state.lines : [];
+    for (const entry of entries) {
+      if (entry.source && Number(entry.source.revision) < (state.sourceRevisions?.get(entry.source.id) || 0)) entry.source = undefined;
+      if (entry.source && !entry.source.finalized) {
+        reviseCaptionSource(state, entry, { finalized: true });
+      }
+      rememberCaptionSource(state, entry);
+      state.lines.push(captionLine(entry));
+    }
+    const excess = state.lines.length - ${GOOGLE_MEET_TRANSCRIPT_MAX_LINES};
+    if (excess > 0) {
+      state.lines.splice(0, excess);
+      state.droppedLines = (state.droppedLines || 0) + excess;
+    }
+  };
+`;
+
 export function meetAudioCaptureScript(params: MeetingBrowserAudioCaptureRequest): string {
   return createMeetingBrowserAudioCaptureSource({
     ...params,
@@ -372,6 +415,10 @@ export function meetStatusScript(params: {
         observerInstalled: false,
         observer: undefined,
         droppedLines: 0,
+        nextSourceId: 0,
+        sourceNodes: new WeakMap(),
+        sourceHistory: new Map(),
+        sourceRevisions: new Map(),
         lines: [],
         settleTimer: undefined,
         visible: []
@@ -387,17 +434,38 @@ export function meetStatusScript(params: {
     if (/^(turn on captions|turn off captions|captions)$/i.test(clean)) return undefined;
     return { speaker: cleanSpeaker || undefined, text: clean };
   };
-  const commitLines = (state, entries) => {
-    state.lines.push(...entries.map((entry) => ({
-      at: entry.at,
-      speaker: entry.speaker,
-      text: entry.text
-    })));
-    const excess = state.lines.length - ${GOOGLE_MEET_TRANSCRIPT_MAX_LINES};
-    if (excess > 0) {
-      state.lines.splice(0, excess);
-      state.droppedLines = (state.droppedLines || 0) + excess;
+  ${CAPTION_LINE_COMMIT_SOURCE}
+  const captionOwnEcho = (node) => {
+    const marked = node?.closest?.('[data-is-self]') || node;
+    const value = marked?.getAttribute?.("data-is-self");
+    return value === "true" ? true : value === "false" ? false : undefined;
+  };
+  const sourceForCaption = (row, continuing) => {
+    // Text is only a replay lookup, never the minted identity. Keep the original
+    // handle for ambiguous repeated utterances; their transcript entries remain.
+    const known = captionState.sourceNodes?.get(row.node);
+    const sameLifecycle = known && (continuing || known.text === row.text ||
+      known.text.startsWith(row.text) || row.text.startsWith(known.text));
+    if (sameLifecycle && !known.source) return undefined;
+    if (sameLifecycle && known.text !== row.text && known.text.startsWith(row.text)) return undefined;
+    const remembered = sameLifecycle ? known.source : captionState.sourceHistory?.get(row.text);
+    if (remembered) {
+      if (Number(remembered.revision) < (captionState.sourceRevisions?.get(remembered.id) || 0)) return undefined;
+      return sameLifecycle && known.text !== row.text
+        ? { ...remembered, revision: String(Number(remembered.revision) + 1), finalized: false }
+        : { ...remembered };
     }
+    // Once the bounded replay history fills, preserve captions without minting
+    // authority that could belong to an older, no-longer-retained observation.
+    if (!captionState.sessionId || !captionState.sourceHistory || row.text.length > 16_384 || captionState.sourceHistory.size >= ${GOOGLE_MEET_TRANSCRIPT_MAX_LINES}) return undefined;
+    captionState.nextSourceId += 1;
+    return {
+      id: captionState.sessionId + ":" + captionState.epoch + ":" + captionState.nextSourceId,
+      epoch: captionState.epoch,
+      revision: "1",
+      finalized: false,
+      ...(row.ownEcho === undefined ? {} : { ownEcho: row.ownEcho })
+    };
   };
   const scrapeCaptions = () => {
     if (!captionState) return;
@@ -410,7 +478,7 @@ export function meetStatusScript(params: {
       const row = pieces.length >= 2
         ? normalizeCaption(pieces[0], pieces.slice(1).join(" "))
         : normalizeCaption("", pieces[0] || raw);
-      if (row) rows.push({ ...row, node: region });
+      if (row) rows.push({ ...row, node: region, ownEcho: captionOwnEcho(region) });
     }
     if (rows.length === 0) {
       // Meet briefly removes caption rows while rerendering. Keep them mutable
@@ -446,33 +514,43 @@ export function meetStatusScript(params: {
         return candidate.speaker === row.speaker && sameTextLifecycle && sameDomLifecycle;
       });
       const prior = priorIndex >= 0 ? unmatchedPrevious.splice(priorIndex, 1)[0] : undefined;
-      const sameSpeaker = Boolean(prior) && prior.speaker === row.speaker;
-      if (sameSpeaker && prior.text === row.text) {
+      if (prior) {
+        if (prior.source && Number(prior.source.revision) < (captionState.sourceRevisions?.get(prior.source.id) || 0)) prior.source = undefined;
+        // A shortening often accompanies a DOM redraw; preserve the fuller line.
+        const changed = prior.text !== row.text && !prior.text.startsWith(row.text);
+        const ownEcho = prior.source?.ownEcho === true || row.ownEcho === true
+          ? true : prior.source?.ownEcho ?? row.ownEcho;
+        if (prior.source && (changed || ownEcho !== prior.source.ownEcho)) {
+          reviseCaptionSource(captionState, prior, { finalized: changed ? false : prior.source.finalized, ...(ownEcho === undefined ? {} : { ownEcho }) });
+        }
+        if (changed) prior.text = row.text;
         prior.node = row.node;
         prior.seenAt = now;
+        captionState.sourceNodes?.set(row.node, prior);
+        rememberCaptionSource(captionState, prior);
         nextVisible.push(prior);
         continue;
       }
-      if (sameSpeaker && row.text.startsWith(prior.text)) {
-        prior.text = row.text;
-        prior.node = row.node;
-        prior.seenAt = now;
-        nextVisible.push(prior);
-        continue;
-      }
-      if (sameSpeaker && prior.text.startsWith(row.text)) {
-        prior.node = row.node;
-        prior.seenAt = now;
-        nextVisible.push(prior);
-        continue;
-      }
+      // Keep the transcript's existing non-prefix line boundary, while a reused
+      // live DOM row cannot turn a correction into a fresh participation source.
+      const continuingIndex = unmatchedPrevious.findIndex((candidate) => candidate.node === row.node);
+      const continuing = continuingIndex >= 0 ? unmatchedPrevious.splice(continuingIndex, 1)[0] : undefined;
+      if (continuing) commitLines(captionState, [continuing]);
       const entry = {
         at: new Date().toISOString(),
         node: row.node,
         seenAt: now,
         speaker: row.speaker,
-        text: row.text
+        text: row.text,
+        source: sourceForCaption(row, Boolean(continuing))
       };
+      const ownEcho = entry.source?.ownEcho === true || row.ownEcho === true
+        ? true : entry.source?.ownEcho ?? row.ownEcho;
+      if (entry.source && ownEcho !== entry.source.ownEcho) {
+        reviseCaptionSource(captionState, entry, { ownEcho });
+      }
+      captionState.sourceNodes?.set(row.node, entry);
+      rememberCaptionSource(captionState, entry);
       nextVisible.push(entry);
     }
     commitLines(captionState, unmatchedPrevious);
@@ -515,7 +593,7 @@ export function meetStatusScript(params: {
     lastCaptionAt = last?.at;
     lastCaptionSpeaker = last?.speaker;
     lastCaptionText = last?.text;
-    recentTranscript = lines.slice(-5);
+    recentTranscript = lines.slice(-5).map(captionLine);
   }
   const lobbyWaiting = !inCall && /asking to be let in|you.?ll join when someone lets you in|waiting to be let in|ask to join/i.test(pageText);
   const leaveReason = !inCall && /you left the meeting|you.?ve left the meeting|removed from the meeting|you were removed|call ended|meeting ended/i.test(pageText)
@@ -586,24 +664,15 @@ export function meetTranscriptScript(
     return JSON.stringify({ urlMatched: false });
   }
   const state = window.__openclawMeetCaptions;
+  ${CAPTION_LINE_COMMIT_SOURCE}
   if (state?.sessionId && state.sessionId !== expectedSessionId) {
     return JSON.stringify({ urlMatched: true, sessionMatched: false });
   }
   if (${JSON.stringify(finalize)} && Array.isArray(state?.visible) && state.visible.length > 0) {
     if (state.settleTimer !== undefined) clearTimeout(state.settleTimer);
     state.settleTimer = undefined;
-    state.lines = Array.isArray(state.lines) ? state.lines : [];
-    state.lines.push(...state.visible.map((entry) => ({
-      at: entry.at,
-      speaker: entry.speaker,
-      text: entry.text
-    })));
+    commitLines(state, state.visible);
     state.visible = [];
-    const excess = state.lines.length - ${GOOGLE_MEET_TRANSCRIPT_MAX_LINES};
-    if (excess > 0) {
-      state.lines.splice(0, excess);
-      state.droppedLines = (state.droppedLines || 0) + excess;
-    }
   }
   const lines = Array.isArray(state?.lines) ? state.lines : [];
   return JSON.stringify({
@@ -614,8 +683,10 @@ export function meetTranscriptScript(
     lines: lines.map((line) => ({
       at: typeof line?.at === "string" ? line.at : undefined,
       speaker: typeof line?.speaker === "string" ? line.speaker : undefined,
-      text: typeof line?.text === "string" ? line.text : ""
-    })).filter((line) => line.text)
+      text: typeof line?.text === "string" ? line.text : "",
+      ...(line?.source ? { source: { ...line.source } } : {})
+    })).filter((line) => line.text),
+    pendingLines: (Array.isArray(state?.visible) ? state.visible : []).map(captionLine)
   });
 }`;
 }

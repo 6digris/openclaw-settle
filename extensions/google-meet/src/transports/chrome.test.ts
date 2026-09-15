@@ -455,11 +455,19 @@ describe("google meet chrome transport", () => {
         at: "2026-09-01T00:00:00.000Z",
         speaker: "First",
         text: "Completed caption",
+        source: {
+          id: "caption-1",
+          epoch: "caption-epoch",
+          revision: "2",
+          finalized: true,
+          ownEcho: false,
+        },
       };
       const visible = {
         at: "2026-09-01T00:00:01.000Z",
         speaker: "Second",
         text: "Progressive caption",
+        source: { id: "caption-2", epoch: "caption-epoch", revision: "1", finalized: false },
       };
       const captionState = {
         sessionId: "transcript-session",
@@ -518,6 +526,7 @@ describe("google meet chrome transport", () => {
           droppedLines: 0,
           epoch: "caption-epoch",
           lines: expectedLines,
+          pendingLines: finalize === true ? [] : [visible],
         });
         expect(captionState.lines).toEqual(expectedLines);
         expect(captionState.visible).toEqual(finalize === true ? [] : [visible]);

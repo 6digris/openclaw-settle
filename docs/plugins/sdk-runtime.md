@@ -206,6 +206,27 @@ method, when provided, if the runtime or an embedding adapter retires. This clos
 all of that runtime's managers as best-effort cleanup; it cannot identify dependent
 managers or prevent concurrent manager acquisition.
 
+## Browser meeting participation
+
+The existing `openclaw/plugin-sdk/meeting-runtime` entry point exposes optional
+participation methods on `MeetingSessionRuntime`. Supply its `participation`
+options with an SQLite plugin keyed store, current capabilities, action
+validation, and a provider executor. Providers observe canonical source identity,
+epoch, revision, and finality through `observeParticipationSource`; never accept
+these fields from model arguments. `inspectParticipationSource` returns a
+snapshot and a live guard for work that crosses asynchronous boundaries.
+
+Browser adapters may implement `MeetingBrowserParticipationAdapter` and dispatch
+through `runMeetingParticipationWithBrowser`. The helper uses the existing tab
+lock, a pinned route, and the session guard. An optional preparation script may
+open controls and await readiness, but must not perform the requested action.
+After preparation the host revalidates authority. The final script checks the
+page session and URL and performs its effect synchronously before its first
+await; later waits may observe the result but must not produce another effect.
+Only a rejected result that proves no requested effect occurred may set
+`correctable: true`. Other meeting platforms need no adapter change and continue
+to report unsupported participation.
+
 ## Other top-level `api` fields
 
 Beyond `api.runtime`, the API object also provides:
