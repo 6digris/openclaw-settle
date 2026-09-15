@@ -5,7 +5,6 @@ import path from "node:path";
 import { confirm } from "@clack/prompts";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { Result } from "@openclaw/normalization-core/result";
-import { z } from "zod";
 import { stylePromptMessage } from "../../packages/terminal-core/src/prompt-style.js";
 import { tryResolveAmbientOwnerAgentId } from "../agents/agent-scope-config.js";
 import { resolveAgentEffectiveModelPrimary } from "../agents/agent-scope.js";
@@ -72,13 +71,6 @@ type TriageOptions = {
   agent?: TriageExternalAgent;
   recovery?: TriageRecoveryContext;
 };
-
-const triageDoctorReportSchema = z.object({
-  ok: z.boolean(),
-  findings: z.array(
-    z.object({ severity: z.enum(["error", "warning", "info"]), message: z.string() }),
-  ),
-});
 
 function triageCollectionError(error: unknown, redaction: SupportRedactionContext): string {
   const message = error instanceof Error ? error.message : String(error);
@@ -637,62 +629,9 @@ export async function triageCommand(
     },
     validate: async (signal): Promise<UpdateRepairValidation> => {
       try {
-        const validateDoctor = async (): Promise<UpdateRepairValidation> => {
-          const [{ resolveGatewayInstallEntrypoint }, { runUtf8CommandWithTimeout }] =
-            await Promise.all([
-              import("../daemon/gateway-entrypoint.js"),
-              import("../process/exec.js"),
-            ]);
-          const entrypoint = await resolveGatewayInstallEntrypoint(installRoot);
-          signal.throwIfAborted();
-          if (!entrypoint) {
-            throw new Error("The installed OpenClaw entrypoint is unavailable.");
-          }
-          // A fresh child reads the repaired installation and can be cancelled without
-          // leaving Doctor's temporary process-global state active in this CLI.
-          const doctorCommand = await runUtf8CommandWithTimeout(
-            [
-              isNodeRuntime(process.execPath) ? process.execPath : "node",
-              entrypoint,
-              "doctor",
-              "--lint",
-              "--json",
-              "--severity-min",
-              "error",
-            ],
-            {
-              cwd: installRoot,
-              baseEnv: {},
-              env: targetEnv,
-              input: "",
-              signal,
-              killProcessTree: true,
-              maxOutputBytes: { stdout: 1024 * 1024, stderr: 16 * 1024 },
-              terminateOnOutputLimit: true,
-            },
-          );
-          signal.throwIfAborted();
-          if (doctorCommand.termination !== "exit" || doctorCommand.outputLimitExceeded) {
-            throw new Error("Doctor lint did not complete within its execution or output budget.");
-          }
-          const doctorReport = triageDoctorReportSchema.parse(JSON.parse(doctorCommand.stdout));
-          const errors = doctorReport.findings.filter((finding) => finding.severity === "error");
-          if (errors.length === 0 && (doctorCommand.code !== 0 || !doctorReport.ok)) {
-            throw new Error("Doctor lint failed without reporting an error finding.");
-          }
-          return {
-            ok: errors.length === 0,
-            score: errors.length === 0 ? 0 : -errors.length,
-            summary:
-              errors.length === 0
-                ? "Doctor lint reports no errors."
-                : `${errors.length} Doctor lint error(s): ${errors
-                    .slice(0, 3)
-                    .map((finding) =>
-                      redactSupportString(finding.message, redaction, { maxLength: 200 }),
-                    )
-                    .join("; ")}`,
-          };
+        const validateDoctor = async () => {
+          const { validateTriageDoctor } = await import("./triage-doctor.js");
+          return validateTriageDoctor({ installRoot, env: targetEnv, signal, redaction });
         };
         if (updateFailure) {
           const { validateTriageUpdateResolution } =
