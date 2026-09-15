@@ -771,7 +771,6 @@ extensions/migrate-claude/source.ts	2
 extensions/migrate-hermes/apply.ts	1
 extensions/migrate-hermes/auth-config.ts	2
 extensions/migrate-hermes/auth.ts	1
-extensions/migrate-hermes/helpers.ts	1
 extensions/migrate-hermes/memory.ts	1
 extensions/migrate-hermes/model.ts	3
 extensions/minimax/model-definitions.ts	2
@@ -1015,7 +1014,7 @@ extensions/qa-lab/src/self-check-scenario.ts	2
 extensions/qa-lab/src/suite-launch.runtime.ts	2
 extensions/qa-lab/src/suite-planning.ts	2
 extensions/qa-lab/src/suite-run-standard.ts	1
-extensions/qa-lab/src/suite-runtime-agent-media.ts	4
+extensions/qa-lab/src/suite-runtime-agent-media.ts	3
 extensions/qa-lab/src/suite-runtime-agent-process.ts	7
 extensions/qa-lab/src/suite-runtime-agent-session.ts	5
 extensions/qa-lab/src/suite-runtime-agent-tools.ts	1
@@ -1960,7 +1959,7 @@ src/agents/tools/goal-tools.ts	2
 src/agents/tools/heartbeat-response-tool.ts	1
 src/agents/tools/image-generate-tool.ts	2
 src/agents/tools/image-tool.helpers.ts	2
-src/agents/tools/image-tool.ts	3
+src/agents/tools/image-tool.ts	2
 src/agents/tools/in-process-gateway.ts	1
 src/agents/tools/media-generate-tool-actions-shared.ts	1
 src/agents/tools/message-tool-discovery.ts	3
@@ -2206,7 +2205,7 @@ src/cli/claws-cli.runtime.ts	2
 src/cli/command-config-resolution.ts	2
 src/cli/command-format.ts	1
 src/cli/command-options.ts	1
-src/cli/command-secret-gateway.ts	2
+src/cli/command-secret-gateway.ts	1
 src/cli/command-secret-targets.ts	2
 src/cli/completion-runtime.ts	4
 src/cli/config-cli-input.ts	2
@@ -2421,7 +2420,7 @@ src/commands/models/shared.ts	3
 src/commands/onboard-agent.ts	1
 src/commands/onboard-config.ts	3
 src/commands/onboard-helpers.ts	2
-src/commands/onboard-non-interactive/local.ts	3
+src/commands/onboard-non-interactive/local.ts	2
 src/commands/onboard-non-interactive/local/auth-choice-inference.ts	1
 src/commands/onboard-non-interactive/local/auth-choice.plugin-providers.ts	1
 src/commands/onboard-non-interactive/local/auth-choice.ts	3
@@ -3200,7 +3199,7 @@ src/plugin-sdk/tool-payload.ts	2
 src/plugin-sdk/tool-plugin.ts	10
 src/plugin-sdk/windows-spawn.ts	1
 src/plugin-state/plugin-state-store.sqlite.ts	2
-src/plugin-state/plugin-state-store.ts	8
+src/plugin-state/plugin-state-store.ts	6
 src/plugin-state/plugin-store-validation.ts	1
 src/plugin-state/runtime-health-store.ts	1
 src/plugins/agent-tool-result-middleware.ts	1

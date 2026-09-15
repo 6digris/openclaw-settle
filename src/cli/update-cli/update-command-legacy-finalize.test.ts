@@ -7,6 +7,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createVitestResourceOwner } from "../../../scripts/lib/vitest-resource-ownership.mts";
 import { createFixtureLifetime } from "../../../test/helpers/fixture-lifetime.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
 import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
 import { resolvePreferredOpenClawTmpDir } from "../../infra/tmp-openclaw-dir.js";
 import { createManagedHandoffLeaseStore } from "../../infra/update-managed-service-handoff-lease.js";
@@ -320,6 +321,7 @@ function runLegacyFinalizationScenario(scenario: (typeof scenarios)[number], sig
           fileURLToPath(
             new URL("./update-command-legacy-finalize.test-support.ts", import.meta.url),
           ),
+          JSON.stringify(runtimeProcessEntrypoints.sqliteReadOnly),
         ],
         {
           input: JSON.stringify(input),
