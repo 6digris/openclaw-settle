@@ -18,10 +18,10 @@ import {
   listMemorySessionTombstones,
   pruneMemoryEntryOrigins,
   recordMemoryEntryOrigins,
-  recordMemorySessionTombstones,
   reserveMemoryEntryOrigins,
   type MemoryEntryOrigin,
 } from "./memory-entry-origins.js";
+import { seedMemoryForgetTombstones } from "./memory-forget.test-helpers.js";
 import { buildPromotionMarker, extractPromotionKeys } from "./short-term-promotion-memory-write.js";
 import { recordShortTermRecalls } from "./short-term-promotion-record.js";
 import {
@@ -98,7 +98,7 @@ describe("memory entry origins", () => {
     ).toBeUndefined();
 
     expect(
-      recordMemorySessionTombstones({
+      seedMemoryForgetTombstones({
         agentId: "main",
         sessionIds: ["session-2", "session-1", "session-1"],
         createdAt: 1_000,
@@ -109,7 +109,7 @@ describe("memory entry origins", () => {
       .get();
     expect(deletionRevision).not.toEqual(revisionBefore);
     expect(
-      recordMemorySessionTombstones({
+      seedMemoryForgetTombstones({
         agentId: "main",
         sessionIds: ["session-1"],
         reason: "replacement",

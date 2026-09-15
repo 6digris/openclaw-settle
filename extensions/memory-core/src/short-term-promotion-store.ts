@@ -30,15 +30,18 @@ export async function readShortTermStore(
   workspaceDir: string,
   kind: keyof typeof SHORT_TERM_STORE_NAMESPACES,
   nowIso: string,
+  env?: NodeJS.ProcessEnv,
 ) {
   const [entryRows, metaRows] = await Promise.all([
     readMemoryCoreWorkspaceEntries<unknown>({
       namespace: SHORT_TERM_STORE_NAMESPACES[kind],
       workspaceDir,
+      env,
     }),
     readMemoryCoreWorkspaceEntries<ShortTermStoreMeta>({
       namespace: SHORT_TERM_META_NAMESPACE,
       workspaceDir,
+      env,
     }),
   ]);
   return {
@@ -52,17 +55,20 @@ async function writeShortTermStore(
   workspaceDir: string,
   kind: keyof typeof SHORT_TERM_STORE_NAMESPACES,
   store: ShortTermRecallStore | ShortTermPhaseSignalStore,
+  env?: NodeJS.ProcessEnv,
 ): Promise<void> {
   // Settle row mutations before metadata can fail and release the caller's
   // workspace lock; an unfinished replacement could delete a later writer's rows.
   await writeMemoryCoreWorkspaceEntries({
     namespace: SHORT_TERM_STORE_NAMESPACES[kind],
     workspaceDir,
+    env,
     entries: Object.entries(store.entries).map(([key, value]) => ({ key, value })),
   });
   await writeMemoryCoreWorkspaceEntry({
     namespace: SHORT_TERM_META_NAMESPACE,
     workspaceDir,
+    env,
     key: kind,
     value: { updatedAt: store.updatedAt },
   });
@@ -142,9 +148,10 @@ export function normalizeShortTermPhaseSignalStore(
 export async function readPhaseSignalStore(
   workspaceDir: string,
   nowIso: string,
+  env?: NodeJS.ProcessEnv,
 ): Promise<ShortTermPhaseSignalStore> {
   return normalizeShortTermPhaseSignalStore(
-    await readShortTermStore(workspaceDir, "phase", nowIso),
+    await readShortTermStore(workspaceDir, "phase", nowIso, env),
     nowIso,
   );
 }
@@ -152,8 +159,9 @@ export async function readPhaseSignalStore(
 export async function writePhaseSignalStore(
   workspaceDir: string,
   store: ShortTermPhaseSignalStore,
+  env?: NodeJS.ProcessEnv,
 ): Promise<void> {
-  await writeShortTermStore(workspaceDir, "phase", store);
+  await writeShortTermStore(workspaceDir, "phase", store, env);
 }
 
 export async function writeStore(workspaceDir: string, store: ShortTermRecallStore): Promise<void> {

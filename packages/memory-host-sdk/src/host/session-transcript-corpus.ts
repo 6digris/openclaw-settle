@@ -33,6 +33,9 @@ type SessionTranscriptCorpusArtifactKind =
   | "archive-artifact";
 
 export type SessionTranscriptCorpusOptions = {
+  /** Retain the initiating operation's state root and configured physical store. */
+  env?: NodeJS.ProcessEnv;
+  resolvedStore?: { path: string; configuredPath?: string };
   /** Include rotated SQLite transcript identities retained behind current logical sessions. */
   includeRetainedSqlite?: boolean;
   /** Skip per-transcript revision reads when a caller only needs discovery metadata. */
@@ -351,15 +354,22 @@ function toArtifactCorpusEntry(
   };
 }
 
-function resolveSessionTranscriptCorpusScope(agentId: string) {
+function resolveSessionTranscriptCorpusScope(
+  agentId: string,
+  options: SessionTranscriptCorpusOptions,
+) {
   const normalizedAgentId = normalizeAgentId(agentId);
   const cfg = getRuntimeConfig();
-  const env = cloneEnvWithPlatformSemantics(process.env);
-  const configuredStore = cfg.session?.store;
-  const storePath = resolveStorePath(configuredStore, {
-    agentId: normalizedAgentId,
-    env,
-  });
+  const env = cloneEnvWithPlatformSemantics(options.env ?? process.env);
+  const configuredStore = options.resolvedStore
+    ? options.resolvedStore.configuredPath
+    : cfg.session?.store;
+  const storePath =
+    options.resolvedStore?.path ??
+    resolveStorePath(configuredStore, {
+      agentId: normalizedAgentId,
+      env,
+    });
   const sessionsDir = path.dirname(storePath);
   const fixedStoreOwnerAgentId = extractAgentIdFromSessionsDir(sessionsDir);
   const isAgentOwnedFixedStore =
@@ -525,7 +535,7 @@ export function listSessionTranscriptCorpusEntriesForAgentSync(
   agentId: string,
   options: SessionTranscriptCorpusOptions = {},
 ): SessionTranscriptCorpusEntry[] {
-  const scope = resolveSessionTranscriptCorpusScope(agentId);
+  const scope = resolveSessionTranscriptCorpusScope(agentId, options);
   const artifactDirs = new Map<string, string>();
   for (const dir of scope.artifactDirs) {
     artifactDirs.set(normalizeRealComparablePath(dir), dir);
@@ -561,7 +571,7 @@ export async function listSessionTranscriptCorpusEntriesForAgent(
   agentId: string,
   options: SessionTranscriptCorpusOptions = {},
 ): Promise<SessionTranscriptCorpusEntry[]> {
-  const scope = resolveSessionTranscriptCorpusScope(agentId);
+  const scope = resolveSessionTranscriptCorpusScope(agentId, options);
   const capturedOptions = { ...options };
   const artifactDirs = new Map<string, string>();
   for (const dir of scope.artifactDirs) {

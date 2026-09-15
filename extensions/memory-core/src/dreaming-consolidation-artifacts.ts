@@ -25,10 +25,11 @@ export type MemoryConsolidationResult = {
   highlights: string[];
 };
 
-export function readMemoryPreimages(workspaceDir: string) {
+export function readMemoryPreimages(workspaceDir: string, env?: NodeJS.ProcessEnv) {
   return readMemoryCoreWorkspaceEntries<ConsolidationBackup>({
     namespace: DREAMING_MEMORY_BACKUP_NAMESPACE,
     workspaceDir,
+    env,
   });
 }
 

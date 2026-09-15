@@ -30,33 +30,63 @@ function pauseDirectoryDiscovery(sessionsDir: string) {
 }
 
 describe("listSessionTranscriptCorpusEntriesForAgent", () => {
-  it.each([true, false])(
-    "preserves synchronous corpus results with content revisions %s",
-    async (includeContentRevision) => {
+  it.each([
+    { includeContentRevision: true, archiveCount: 1, aliased: false },
+    { includeContentRevision: false, archiveCount: 1, aliased: false },
+    { includeContentRevision: false, archiveCount: 128, aliased: true },
+    { includeContentRevision: false, archiveCount: 2048, aliased: true },
+  ])(
+    "preserves corpus paths and revisions for $archiveCount archives (aliased: $aliased, revisions: $includeContentRevision)",
+    async ({ includeContentRevision, archiveCount, aliased }) => {
       await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
         const sessionsDir = state.sessionsDir();
         await fs.mkdir(sessionsDir, { recursive: true });
+        let storePath = path.join(sessionsDir, "sessions.json");
+        if (aliased) {
+          const aliasRoot = state.statePath("aliases");
+          await fs.symlink(state.statePath("agents"), aliasRoot, "junction");
+          await state.writeConfig({
+            session: { store: path.join(aliasRoot, "{agentId}", "sessions", "sessions.json") },
+          });
+          clearRuntimeConfigSnapshot();
+          clearConfigCache();
+          storePath = path.join(aliasRoot, "main", "sessions", "sessions.json");
+        }
+        const archiveIds = [
+          "cron-thread",
+          ...Array.from({ length: archiveCount - 1 }, (_, index) => `archive-${index}`),
+        ];
+        const archivePaths = archiveIds.map((sessionId) =>
+          path.join(sessionsDir, `${sessionId}.jsonl.deleted.2026-02-16T22-27-33.000Z`),
+        );
         const archivePath = path.join(
           sessionsDir,
           "cron-thread.jsonl.deleted.2026-02-16T22-27-33.000Z",
         );
-        await fs.writeFile(archivePath, "retained transcript");
+        for (const filePath of archivePaths) {
+          await fs.writeFile(filePath, "retained transcript");
+        }
         await fs.writeFile(path.join(sessionsDir, "loose.jsonl"), "unowned live file");
         await upsertSessionEntryCore(
           {
             sessionKey: "agent:main:cron:job-1:run:run-1",
-            storePath: path.join(sessionsDir, "sessions.json"),
+            storePath,
           },
           { sessionId: "cron-thread", updatedAt: 1 },
         );
 
-        const options = { includeContentRevision };
+        const options = { includeContentRevision, readOnly: aliased };
         const expected = listSessionTranscriptCorpusEntriesForAgentSync("main", options);
         const actual = await listSessionTranscriptCorpusEntriesForAgent("main", options);
 
         expect(actual).toEqual(expected);
-        expect(actual).toHaveLength(2);
-        const archive = actual.find((entry) => entry.artifactKind === "archive-artifact");
+        expect(actual).toHaveLength(archiveCount + 1);
+        const archives = actual.filter((entry) => entry.artifactKind === "archive-artifact");
+        expect(archives.map((entry) => entry.sessionFile).toSorted()).toEqual(
+          archivePaths.toSorted(),
+        );
+        expect(archives.map((entry) => entry.sessionId).toSorted()).toEqual(archiveIds.toSorted());
+        const archive = archives.find((entry) => entry.sessionFile === archivePath);
         expect(archive).toMatchObject({
           sessionFile: archivePath,
           sessionId: "cron-thread",

@@ -279,7 +279,10 @@ and remain selected.
 
 Preview and apply use the same matching logic, but each reads current state;
 a preview is not an immutable plan or a lock on subsequent writes. Apply
-coordinates with the memory plugin's staging and file mutations. Indexing
+rereads matching index rows when its purge transaction starts, including rows
+published by another workspace while it waited. Its index and cache counts
+report the records actually removed. Apply coordinates with the memory plugin's
+staging and file mutations. Indexing
 discards stale results instead of restoring purged chunks or cached embeddings;
 rerun an index command that reports a source change. Direct agent edits and
 external writers do not share that lock, so pause them during a sensitive

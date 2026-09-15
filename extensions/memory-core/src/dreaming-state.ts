@@ -40,6 +40,7 @@ type MemoryCoreWorkspaceEntry<T> = { key: string; value: T };
 type MemoryCoreWorkspaceParams = {
   namespace: string;
   workspaceDir: string;
+  env?: NodeJS.ProcessEnv;
 };
 
 type WriteMemoryCoreWorkspaceEntriesParams<T> = MemoryCoreWorkspaceParams & {
@@ -83,9 +84,13 @@ export function memoryCoreStateReference(namespace: string, workspaceDir: string
   return `plugin-state:${MEMORY_CORE_PLUGIN_ID}/${namespace}/${memoryCoreWorkspaceStateKey(workspaceDir)}`;
 }
 
-function openWorkspaceStore<T>(namespace: string): PluginStateKeyedStore<WorkspaceValue<T>> {
+function openWorkspaceStore<T>(
+  namespace: string,
+  env?: NodeJS.ProcessEnv,
+): PluginStateKeyedStore<WorkspaceValue<T>> {
   return openMemoryCoreStateStore<WorkspaceValue<T>>({
     namespace,
+    env,
     maxEntries: DREAMING_WORKSPACE_STATE_MAX_ENTRIES,
   });
 }
@@ -99,7 +104,7 @@ export async function readMemoryCoreWorkspaceEntries(
 ): Promise<Array<MemoryCoreWorkspaceEntry<unknown>>> {
   const workspaceKey = memoryCoreWorkspaceStateKey(params.workspaceDir);
   const prefix = `${workspaceKey}:`;
-  const entries = await openWorkspaceStore<unknown>(params.namespace).entries();
+  const entries = await openWorkspaceStore<unknown>(params.namespace, params.env).entries();
   return entries
     .filter((entry) => entry.key.startsWith(prefix) && entry.value.workspaceKey === workspaceKey)
     .map((entry) => ({ key: entry.value.key, value: entry.value.value }));
@@ -112,7 +117,7 @@ export function writeMemoryCoreWorkspaceEntries<T>(
 export async function writeMemoryCoreWorkspaceEntries(
   params: WriteMemoryCoreWorkspaceEntriesParams<unknown>,
 ): Promise<void> {
-  const store = openWorkspaceStore<unknown>(params.namespace);
+  const store = openWorkspaceStore<unknown>(params.namespace, params.env);
   const workspaceKey = memoryCoreWorkspaceStateKey(params.workspaceDir);
   const prefix = `${workspaceKey}:`;
   const replacementKeys = new Set<string>();
@@ -150,7 +155,7 @@ export async function writeMemoryCoreWorkspaceEntry(
   params: WriteMemoryCoreWorkspaceEntryParams<unknown>,
 ): Promise<void> {
   const workspaceKey = memoryCoreWorkspaceStateKey(params.workspaceDir);
-  await openWorkspaceStore<unknown>(params.namespace).register(
+  await openWorkspaceStore<unknown>(params.namespace, params.env).register(
     memoryCoreWorkspaceEntryKey(params.workspaceDir, params.key),
     {
       version: 1,

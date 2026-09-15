@@ -17,8 +17,8 @@ import {
   closeOpenClawStateDatabaseAsync,
 } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { seedMemoryForgetTombstones } from "../memory-forget.test-helpers.js";
 import "./test-runtime-mocks.js";
-import { recordMemorySessionTombstones } from "../memory-entry-origins.js";
 import type { EmbeddingProvider } from "./embeddings.js";
 import { resetMemoryDatabase } from "./manager-db.js";
 import { waitForMemoryReindexLock } from "./manager-reindex-lock.js";
@@ -398,7 +398,7 @@ describe("memory manager reindex recovery", () => {
       vi.spyOn(harness.provider, "embedBatch").mockImplementationOnce(async (inputs) => {
         reservation = await reservePublishedWriter(() => {
           if (scenario === "purge") {
-            recordMemorySessionTombstones({
+            seedMemoryForgetTombstones({
               agentId: "main",
               sessionIds: ["forgotten-during-embedding"],
             });

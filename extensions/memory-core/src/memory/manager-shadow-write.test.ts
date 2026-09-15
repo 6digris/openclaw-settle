@@ -11,7 +11,7 @@ import {
 } from "openclaw/plugin-sdk/process-runtime";
 import * as sqliteRuntime from "openclaw/plugin-sdk/sqlite-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { recordMemorySessionTombstones } from "../memory-entry-origins.js";
+import { seedMemoryForgetTombstones } from "../memory-forget.test-helpers.js";
 import { memoryCpuProcessEntrypoints } from "./manager-cpu-entrypoints.js";
 import * as cpu from "./manager-cpu-worker-runtime.js";
 import { MemoryIndexDatabase } from "./manager-database-context.js";
@@ -119,7 +119,7 @@ describe("private session source staging", () => {
         const result = await run(input, inputBytes);
         // Deliberately bypass the workspace lock to exercise post-await authority;
         // production forget holds that lock and also advances this revision.
-        recordMemorySessionTombstones({ agentId: "main", sessionIds: ["shadow-session"] });
+        seedMemoryForgetTombstones({ agentId: "main", sessionIds: ["shadow-session"] });
         return result;
       },
     );

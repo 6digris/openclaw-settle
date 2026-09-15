@@ -422,15 +422,18 @@ export function trimTrackedSessionScopes(seenMessages: Record<string, string[]>)
 
 export async function readSessionIngestionState(
   workspaceDir: string,
+  env?: NodeJS.ProcessEnv,
 ): Promise<SessionIngestionState> {
   const [files, seenChunks] = await Promise.all([
     readMemoryCoreWorkspaceEntries<SessionIngestionFileState>({
       namespace: DREAMING_SESSION_INGESTION_FILES_NAMESPACE,
       workspaceDir,
+      env,
     }),
     readMemoryCoreWorkspaceEntries<{ scope: string; index: number; hashes: string[] }>({
       namespace: DREAMING_SESSION_INGESTION_SEEN_NAMESPACE,
       workspaceDir,
+      env,
     }),
   ]);
   const seenMessages: Record<string, string[]> = {};
@@ -450,6 +453,7 @@ export async function readSessionIngestionState(
 export async function writeSessionIngestionState(
   workspaceDir: string,
   state: SessionIngestionState,
+  env?: NodeJS.ProcessEnv,
 ): Promise<void> {
   const seenEntries = Object.entries(state.seenMessages).flatMap(([scope, hashes]) =>
     Array.from(
@@ -471,11 +475,13 @@ export async function writeSessionIngestionState(
     writeMemoryCoreWorkspaceEntries({
       namespace: DREAMING_SESSION_INGESTION_FILES_NAMESPACE,
       workspaceDir,
+      env,
       entries: Object.entries(state.files).map(([key, value]) => ({ key, value })),
     }),
     writeMemoryCoreWorkspaceEntries({
       namespace: DREAMING_SESSION_INGESTION_SEEN_NAMESPACE,
       workspaceDir,
+      env,
       entries: seenEntries,
     }),
   ]);

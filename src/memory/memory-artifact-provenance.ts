@@ -88,9 +88,10 @@ function resolveAddress(params: {
   };
 }
 
-function openStore() {
+function openStore(env?: NodeJS.ProcessEnv) {
   return createCorePluginStateKeyedStore<StoredMemoryArtifactProvenance>({
     ownerId: MEMORY_ARTIFACT_PROVENANCE_OWNER_ID,
+    env,
     namespace: MEMORY_ARTIFACT_PROVENANCE_NAMESPACE,
     maxEntries: MEMORY_ARTIFACT_PROVENANCE_MAX_ENTRIES,
     overflowPolicy: "reject-new",
@@ -206,10 +207,11 @@ export async function readMemoryArtifactProvenance(params: {
 
 export async function listMemoryArtifactProvenance(params: {
   workspaceDir: string;
+  env?: NodeJS.ProcessEnv;
 }): Promise<Array<{ relativePath: string; provenance: MemoryArtifactProvenance }>> {
   const workspaceKey = sha256(normalizeWorkspaceKey(params.workspaceDir));
   const prefix = `${workspaceKey}:`;
-  return (await openStore().entries())
+  return (await openStore(params.env).entries())
     .filter((entry) => entry.key.startsWith(prefix))
     .flatMap((entry) => {
       const address = {

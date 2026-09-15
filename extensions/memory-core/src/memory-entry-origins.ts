@@ -96,27 +96,35 @@ export function listMemoryEntryOrigins(params: {
   if (params.sessionIds?.length === 0 || params.entryKeys?.length === 0) {
     return [];
   }
-  const result = withOpenClawAgentDatabaseReadOnly(({ db }) => {
-    if (!ensuredDatabases.has(db) && !tableExists(db, "memory_entry_origins")) {
-      return [];
-    }
-    const kysely = getNodeSqliteKysely<MemoryOriginDatabase>(db);
-    let query = kysely
-      .selectFrom("memory_entry_origins")
-      .selectAll()
-      .where("agent_id", "=", params.agentId);
-    if (params.sessionIds) {
-      query = query.where("session_id", "in", params.sessionIds);
-    }
-    if (params.entryKeys) {
-      query = query.where("entry_key", "in", params.entryKeys);
-    }
-    return executeSqliteQuerySync(
-      db,
-      query.orderBy("entry_key", "asc").orderBy("session_id", "asc"),
-    ).rows.map(readOrigin);
-  }, params);
+  const result = withOpenClawAgentDatabaseReadOnly(
+    ({ db }) => readMemoryEntryOrigins(db, params),
+    params,
+  );
   return result.found ? result.value : [];
+}
+
+export function readMemoryEntryOrigins(
+  db: DatabaseSync,
+  params: Parameters<typeof listMemoryEntryOrigins>[0],
+): MemoryEntryOrigin[] {
+  if (!ensuredDatabases.has(db) && !tableExists(db, "memory_entry_origins")) {
+    return [];
+  }
+  const kysely = getNodeSqliteKysely<MemoryOriginDatabase>(db);
+  let query = kysely
+    .selectFrom("memory_entry_origins")
+    .selectAll()
+    .where("agent_id", "=", params.agentId);
+  if (params.sessionIds) {
+    query = query.where("session_id", "in", params.sessionIds);
+  }
+  if (params.entryKeys) {
+    query = query.where("entry_key", "in", params.entryKeys);
+  }
+  return executeSqliteQuerySync(
+    db,
+    query.orderBy("entry_key", "asc").orderBy("session_id", "asc"),
+  ).rows.map(readOrigin);
 }
 
 export function listMemorySessionTombstones(params: {
@@ -148,17 +156,20 @@ export function listMemorySessionTombstones(params: {
   return result.found ? result.value : [];
 }
 
-export function recordMemorySessionTombstones(params: {
-  agentId: string;
-  sessionIds: readonly string[];
-  reason?: string;
-  createdAt?: number;
-}): number {
+/** The caller holds this exact agent database's write admission. */
+export function recordMemorySessionTombstonesInDatabase(
+  db: DatabaseSync,
+  params: {
+    agentId: string;
+    sessionIds: readonly string[];
+    reason?: string;
+    createdAt?: number;
+  },
+): number {
   const sessionIds = [...new Set(params.sessionIds)];
   if (sessionIds.length === 0) {
     return 0;
   }
-  const db = openOpenClawAgentDatabase({ agentId: params.agentId }).db;
   ensureMemorySessionTombstones(db);
   const reason = params.reason ?? "forgotten";
   const createdAt = params.createdAt ?? Date.now();
@@ -262,6 +273,21 @@ export function deleteMemoryEntryOrigins(params: {
     return 0;
   }
   const db = openMemoryOriginDatabase(params.agentId);
+  return deleteMemoryEntryOriginsInDatabase(db, params);
+}
+
+/** Reuse the supplied connection for both admitted forget and synchronous lineage callers. */
+export function deleteMemoryEntryOriginsInDatabase(
+  db: DatabaseSync,
+  params: Parameters<typeof deleteMemoryEntryOrigins>[0],
+): number {
+  if (
+    params.entryKeys.length === 0 ||
+    params.sessionIds?.length === 0 ||
+    !tableExists(db, "memory_entry_origins")
+  ) {
+    return 0;
+  }
   return runSqliteImmediateTransactionSync(db, () => {
     const kysely = getNodeSqliteKysely<MemoryOriginDatabase>(db);
     let query = kysely
