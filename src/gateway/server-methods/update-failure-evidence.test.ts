@@ -4,21 +4,27 @@ import { describe, expect, it, vi } from "vitest";
 import { getUpdateRun } from "../../infra/update-run-ledger.js";
 import { renderUpdateRunReport } from "../../infra/update-run-report.js";
 import type { UpdateRunResult, UpdateStepResult } from "../../infra/update-runner.js";
+import { createDeferredCore } from "../../shared/deferred.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import type { GatewayRequestHandlerOptions, RespondFn } from "./types.js";
 import {
+  cancelManagedServiceUpdateHandoffMock,
   captureUpdateRunPayload,
   detectRespawnSupervisorMock,
   initializeGatewayUpdateStatusMock,
+  invokeUpdateRun,
   mockGlobalInstallSurface,
   normalizeUpdateChannelMock,
+  recordLatestUpdateRestartSentinelMock,
   resolveUpdateInstallSurfaceMock,
   runGatewayUpdateMock,
   runGatewayUpdatePreflightMock,
   runPostCoreFinalizeAfterGatewayUpdateMock,
   scheduleGatewaySigusr1RestartMock,
+  sentinelState,
   startManagedServiceUpdateHandoffMock,
+  transferManagedServiceUpdateHandoffMock,
 } from "./update.test-harness.js";
 
 async function previewFailureReport(runId: string) {
@@ -283,6 +289,7 @@ describe("Gateway update failure evidence", () => {
       expect(payload).toMatchObject({
         ok: true,
         restart: null,
+        sentinel: { persisted: true },
         handoff: { status: "started" },
         result: {
           status: "error",
@@ -290,6 +297,15 @@ describe("Gateway update failure evidence", () => {
           steps: [{ failureFacts: [{ check: "managed-service", code: "EIO" }] }],
         },
       });
+      expect(sentinelState.capturedPayload).toBeDefined();
+      expect(transferManagedServiceUpdateHandoffMock).toHaveBeenCalledOnce();
+      expect(recordLatestUpdateRestartSentinelMock.mock.invocationCallOrder[0]).toBeLessThan(
+        expectDefined(
+          transferManagedServiceUpdateHandoffMock.mock.invocationCallOrder[0],
+          "ownership transfer",
+        ),
+      );
+      expect(cancelManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
       closeOpenClawStateDatabaseForTest();
       const run = expectDefined(getUpdateRun(payload.runId), "persisted handoff ledger failure");
       expect(run.status).toBe("running");
@@ -309,6 +325,178 @@ describe("Gateway update failure evidence", () => {
       expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
     } finally {
       write.mockRestore();
+    }
+  });
+
+  it.each([
+    ["phase", "restored-in-process", false],
+    ["accepted-row", "restored-in-process", false],
+    ["phase", false, false],
+    ["accepted-row", "throws", false],
+    ["phase", "restart-after-exit", false],
+    ["phase", false, true],
+    ["accepted-row", "throws", true],
+  ] as const)(
+    "joins owned cancellation after final %s projection fails, with cancellation %s and warning throws %s",
+    async (failure, cancellation, warningThrows) => {
+      mockGlobalInstallSurface();
+      detectRespawnSupervisorMock.mockReturnValue("launchd");
+      const original = Object.assign(new Error("Final update result could not be recorded"), {
+        code: "EIO",
+      });
+      const ledger = await import("../../infra/update-run-ledger.js");
+      const recordPhase = ledger.recordUpdateRunPhase;
+      const recordStep = ledger.recordUpdateRunStep;
+      const events: string[] = [];
+      let acceptedWrites = 0;
+      const phaseWrite = vi.spyOn(ledger, "recordUpdateRunPhase").mockImplementation((...args) => {
+        if (
+          failure === "phase" &&
+          args[1] === "requested" &&
+          startManagedServiceUpdateHandoffMock.mock.calls.length === 1
+        ) {
+          events.push("projection-failed");
+          throw original;
+        }
+        return recordPhase(...args);
+      });
+      const stepWrite = vi.spyOn(ledger, "recordUpdateRunStep").mockImplementation((...args) => {
+        const written = recordStep(...args);
+        if (args[1].step === "managed-service update handoff") {
+          acceptedWrites += 1;
+          if (failure === "accepted-row" && acceptedWrites === 2) {
+            // Coordinator release can throw after the row has already committed.
+            events.push("projection-failed");
+            throw original;
+          }
+        }
+        return written;
+      });
+      const finish = vi.spyOn(ledger, "finishUpdateRun");
+      const sentinel = await import("../../infra/restart-sentinel.js");
+      const sentinelWrite = vi.spyOn(sentinel, "writeRestartSentinel");
+      const cancelling = createDeferredCore();
+      const releaseCancellation = createDeferredCore();
+      cancelManagedServiceUpdateHandoffMock.mockImplementationOnce(async () => {
+        events.push("cancel-started");
+        cancelling.resolve();
+        await releaseCancellation.promise;
+        events.push("cancel-finished");
+        if (cancellation === "throws") {
+          throw new Error("Cancellation control pipe failed");
+        }
+        return cancellation;
+      });
+      const context = createDirectChatContext();
+      if (warningThrows) {
+        vi.mocked(context.logGateway.warn).mockImplementationOnce(() => {
+          throw new Error("Warning sink failed");
+        });
+      }
+      const respond = vi.fn<RespondFn>();
+      const { updateHandlers } = await import("./update.js");
+      const handler = expectDefined(updateHandlers["update.run"], "update handler");
+      const rejected = Promise.resolve(
+        handler({
+          req: { type: "req", id: "projection-failure", method: "update.run", params: {} },
+          params: {},
+          client: null,
+          isWebchatConnect: () => false,
+          respond,
+          context,
+        }),
+      ).then(
+        () => {
+          events.push("resolved");
+        },
+        (error: unknown) => {
+          events.push("rejected");
+          return error;
+        },
+      );
+      try {
+        await Promise.race([cancelling.promise, rejected]);
+        expect(events).toEqual(["projection-failed", "cancel-started"]);
+        const started = expectDefined(
+          startManagedServiceUpdateHandoffMock.mock.calls[0]?.[0],
+          "accepted helper",
+        );
+        expect(cancelManagedServiceUpdateHandoffMock).toHaveBeenCalledExactlyOnceWith({
+          kind: "managed-update-handoff",
+          handoffId: started.handoffId,
+          installRoot: started.root,
+        });
+        releaseCancellation.resolve();
+        expect(await rejected).toBe(original);
+        expect(events).toEqual([
+          "projection-failed",
+          "cancel-started",
+          "cancel-finished",
+          "rejected",
+        ]);
+        expect(acceptedWrites).toBe(failure === "phase" ? 1 : 2);
+        expect(respond).not.toHaveBeenCalled();
+        expect(finish).not.toHaveBeenCalled();
+        expect(sentinelWrite).not.toHaveBeenCalled();
+        expect(transferManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
+        expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+        if (cancellation === "restored-in-process") {
+          expect(context.logGateway.warn).not.toHaveBeenCalled();
+        } else {
+          expect(context.logGateway.warn).toHaveBeenCalledExactlyOnceWith(
+            "update.run result persistence failed; handoff cancellation is unconfirmed",
+          );
+        }
+        closeOpenClawStateDatabaseForTest();
+        expect(getUpdateRun(expectDefined(started.runId, "accepted run"))).toMatchObject({
+          status: "running",
+          steps: [
+            { step: "requested", status: "in_progress" },
+            { step: "managed-service update handoff", status: "completed" },
+          ],
+        });
+      } finally {
+        releaseCancellation.resolve();
+        await rejected;
+        phaseWrite.mockRestore();
+        stepWrite.mockRestore();
+        finish.mockRestore();
+        sentinelWrite.mockRestore();
+      }
+    },
+  );
+
+  it("preserves an unmanaged projection error without cancelling another owner", async () => {
+    const original = new Error("Unmanaged update result could not be recorded");
+    runGatewayUpdateMock.mockResolvedValueOnce({
+      status: "error",
+      mode: "git",
+      reason: "build-failed",
+      steps: [],
+      durationMs: 100,
+    });
+    const ledger = await import("../../infra/update-run-ledger.js");
+    const recordPhase = ledger.recordUpdateRunPhase;
+    const write = vi.spyOn(ledger, "recordUpdateRunPhase").mockImplementation((...args) => {
+      if (args[1] === "requested" && runGatewayUpdateMock.mock.calls.length === 1) {
+        throw original;
+      }
+      return recordPhase(...args);
+    });
+    const finish = vi.spyOn(ledger, "finishUpdateRun");
+    const respond = vi.fn();
+    try {
+      await expect(invokeUpdateRun({}, respond)).rejects.toBe(original);
+      expect(startManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
+      expect(cancelManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
+      expect(transferManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
+      expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+      expect(finish).not.toHaveBeenCalled();
+      expect(sentinelState.capturedPayload).toBeUndefined();
+      expect(respond).not.toHaveBeenCalled();
+    } finally {
+      write.mockRestore();
+      finish.mockRestore();
     }
   });
 
