@@ -128,7 +128,7 @@ function runServiceChildRelay(): void {
       return;
     }
     anchor.once("spawn", () => {
-      closeSync(0);
+      // The runtime owns standard stream descriptors; only private channels close here.
       closeSync(controlFd);
       // Only the anchor and command may retain the host's lineage writer.
       if (start.lineageFd !== undefined) {

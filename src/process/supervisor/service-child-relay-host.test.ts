@@ -198,13 +198,10 @@ it
     let output = "";
     let stderr = "";
     try {
-      adapter = await createServiceChildRelayAdapter({
-        command: process.execPath,
-        args: [
-          "-e",
-          `
+      const workerArgs = [
+        "-e",
+        `
             const fs = require("node:fs");
-            ${action === "stdin-closed" ? "fs.closeSync(0);" : ""}
             process.on("message", (message) => {
               if (JSON.stringify(message) !== '{"type":"openclaw-worker-start-v1"}') {
                 process.exit(42);
@@ -216,7 +213,14 @@ it
             });
             process.send({ phase: "waiting", pid: process.pid, parentPid: process.ppid });
           `,
-        ],
+      ];
+      adapter = await createServiceChildRelayAdapter({
+        command: action === "stdin-closed" ? "/bin/sh" : process.execPath,
+        // Redirect the inherited pipe before Node initializes its standard stream handles.
+        args:
+          action === "stdin-closed"
+            ? ["-c", 'exec "$@" < /dev/null', "owned-worker-stdin", process.execPath, ...workerArgs]
+            : workerArgs,
         cwd: home,
         env: {
           HOME: home,
