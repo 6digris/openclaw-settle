@@ -2,13 +2,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { setImmediate as nextTurn } from "node:timers/promises";
-import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { handlePluginsCommand } from "../auto-reply/reply/commands-plugins.js";
 import { buildPluginsCommandParams } from "../auto-reply/reply/commands.test-harness.js";
 import { runPluginsDoctorCommand } from "../cli/plugins-cli.runtime.js";
 import { runPluginsInspectCommand } from "../cli/plugins-inspect-command.js";
 import * as configIO from "../config/config.js";
 import { readConfigFileSnapshotForWrite, writeConfigFile } from "../config/config.js";
+import * as configObserver from "../config/io.observe.js";
 import { defaultRuntime } from "../runtime.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
@@ -41,7 +42,10 @@ import { withPluginRuntimeRegistryScope } from "./runtime/gateway-request-scope.
 import { applySlotSelectionForPlugin } from "./slot-selection.js";
 import * as statusSnapshot from "./status-snapshot.js";
 import { withPluginDiagnosticsReportForInspection, withPluginDiagnosticsReport } from "./status.js";
-import { createDiagnosticsFixture } from "./status.runtime-inspection.test-helpers.js";
+import {
+  classifyConfigObservationError,
+  createDiagnosticsFixture,
+} from "./status.runtime-inspection.test-helpers.js";
 import type { OpenClawPluginService } from "./types.js";
 
 describe("plugin runtime inspection", () => {
@@ -813,28 +817,8 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
       "config.snapshot.read.materialize",
       "config.snapshot.read.observe",
     ]);
-    const errorNames = [
-      "Error",
-      "TypeError",
-      "RangeError",
-      "ReferenceError",
-      "SyntaxError",
-      "AggregateError",
-    ];
-    const errorCodes = [
-      "ERR_SQLITE_ERROR",
-      "ERR_INVALID_STATE",
-      "EACCES",
-      "EPERM",
-      "ENOENT",
-      "EBUSY",
-      "EMFILE",
-      "ENFILE",
-      "ENOSPC",
-      "EROFS",
-    ];
     let lastCompletedStage: string;
-    let measuredFailure: { stage: string; errorName: string; errorCode: string } | undefined;
+    let measuredFailure: { stage: string; error: unknown } | undefined;
     const readConfigSnapshot = configIO.readConfigFileSnapshot;
     // Observe the command's own read. A separate diagnostic read can hide transient
     // validation/observation failures and must not change this ordered lifecycle proof.
@@ -850,34 +834,20 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
               lastCompletedStage = safeStage;
               return value;
             } catch (error) {
-              measuredFailure = {
-                stage: safeStage,
-                errorName: "<other>",
-                errorCode: "<other-or-absent>",
-              };
-              try {
-                const errorName = error instanceof Error ? error.name : undefined;
-                const errorCode =
-                  typeof error === "object" && error !== null && "code" in error
-                    ? error.code
-                    : undefined;
-                measuredFailure.errorName =
-                  errorNames.find((knownName) => knownName === errorName) ?? "<other>";
-                measuredFailure.errorCode =
-                  errorCodes.find((code) => code === errorCode) ?? "<other-or-absent>";
-              } catch {
-                // Classification must not replace the caught error, including throwing getters.
-              }
+              measuredFailure = { stage: safeStage, error };
               throw error;
             }
           },
         }),
       );
+    let observation: MockInstance<typeof configObserver.observeConfigSnapshot> | undefined;
     try {
+      observation = vi.spyOn(configObserver, "observeConfigSnapshot");
       for (const name of [id, "all"]) {
         lastCompletedStage = "<none>";
         measuredFailure = undefined;
         const firstRead = snapshotRead.mock.results.length;
+        const firstObservation = observation.mock.calls.length;
         try {
           const result = await handlePluginsCommand(
             buildPluginsCommandParams({
@@ -894,6 +864,22 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
           try {
             const readCount = snapshotRead.mock.results.length - firstRead;
             const settled = snapshotRead.mock.settledResults[firstRead];
+            const read = snapshotRead.mock.results[firstRead];
+            const readFailure =
+              readCount !== 1
+                ? undefined
+                : read?.type === "throw"
+                  ? classifyConfigObservationError(read.value)
+                  : settled?.type === "rejected"
+                    ? classifyConfigObservationError(settled.value)
+                    : undefined;
+            const observations = observation.mock.calls
+              .slice(firstObservation)
+              .flatMap(([, observed], offset) =>
+                observed.path === state.configPath
+                  ? [{ index: firstObservation + offset, observed }]
+                  : [],
+              );
             const snapshot =
               readCount === 1 && settled?.type === "fulfilled" ? settled.value : undefined;
             const safeCode = (code: string | null | undefined) =>
@@ -917,9 +903,42 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
                 event: "chat-inspect-config-failure",
                 selector: name === id ? "single" : "all",
                 readCount,
+                readFailure,
+                observationCount: observations.length,
+                omittedObservations: Math.max(0, observations.length - 4),
+                observations: observations.slice(0, 4).map(({ index, observed }) => {
+                  const result = observation?.mock.results[index];
+                  const settled = observation?.mock.settledResults[index];
+                  return {
+                    index: index - firstObservation,
+                    valid: observed.valid,
+                    exists: observed.exists,
+                    snapshotKind: observed.valid
+                      ? "valid-snapshot"
+                      : observed.issues.some(
+                            (issue) =>
+                              issue.path === "" && issue.message.startsWith("read failed:"),
+                          )
+                        ? "read-failed-fallback"
+                        : "other",
+                    result: result?.type ?? "unavailable",
+                    settled: settled?.type ?? "unavailable",
+                    failure:
+                      result?.type === "throw"
+                        ? classifyConfigObservationError(result.value)
+                        : settled?.type === "rejected"
+                          ? classifyConfigObservationError(settled.value)
+                          : undefined,
+                  };
+                }),
                 snapshotPresent: snapshot !== undefined,
                 lastCompletedStage,
-                measuredFailure: measuredFailure ?? { stage: "<outside measured callback>" },
+                measuredFailure: measuredFailure
+                  ? {
+                      stage: measuredFailure.stage,
+                      ...classifyConfigObservationError(measuredFailure.error),
+                    }
+                  : { stage: "<outside measured callback>" },
                 fixturePathMatches: snapshot ? snapshot.path === state.configPath : null,
                 exists: snapshot?.exists ?? null,
                 valid: snapshot?.valid ?? null,
@@ -957,7 +976,11 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
       }
       expect(fs.readFileSync(disposed, "utf8")).toBe("disposed\ndisposed\n");
     } finally {
-      snapshotRead.mockRestore();
+      try {
+        observation?.mockRestore();
+      } finally {
+        snapshotRead.mockRestore();
+      }
     }
   });
 });
