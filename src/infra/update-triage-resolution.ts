@@ -8,6 +8,17 @@ import { collectGitRuntimeErrors } from "./update-git-runtime.js";
 import { collectInstalledGlobalPackageErrors } from "./update-global.js";
 import type { UpdateRepairValidation } from "./update-repair-protocol.js";
 import { findActiveUpdateRun, getUpdateRun, listUpdateRuns } from "./update-run-reader.js";
+import type { UpdateRunRecord } from "./update-run-record.js";
+
+function matchesIdentity(
+  expected: UpdateRunRecord["after"],
+  observed: UpdateRunRecord["after"],
+): boolean {
+  return (
+    (!expected.version || expected.version === observed.version) &&
+    (!expected.sha || expected.sha === observed.sha)
+  );
+}
 
 const failureFamilies = {
   package: ["global-install-failed", "runtime-verification-failed"],
@@ -75,7 +86,7 @@ export async function validateTriageUpdateResolution(params: {
   const options = { env };
   const original = runId ? getUpdateRun(runId, options) : undefined;
   const target = original?.target;
-  if (!original || !target?.version || !target.kind || (target.kind === "git" && !target.sha)) {
+  if (!original || !target?.kind || !(target.version || (target.kind === "git" && target.sha))) {
     return unresolved("Cannot establish the update target.");
   }
   const reason = "result" in failure ? failure.result.reason : undefined;
@@ -99,20 +110,25 @@ export async function validateTriageUpdateResolution(params: {
     completion.finishedAtMs === null ||
     completion.createdAtMs < original.createdAtMs ||
     completion.target.kind !== target.kind ||
-    completion.target.version !== target.version ||
-    completion.target.sha !== target.sha ||
     (completion.status !== "succeeded" && completion.status !== "rolled-back")
   ) {
     return unresolved(
-      `The updater has not recorded a completed resolution of the ${family} failure for ${target.version}.`,
+      `The updater has not recorded a completed resolution of the ${family} failure for ${target.sha ?? target.version}.`,
     );
   }
   const rolledBack = completion.status === "rolled-back";
-  const expected = rolledBack ? original.before : target;
+  const expected = rolledBack
+    ? original.before
+    : {
+        version: target.version ?? completion.after.version,
+        sha: target.sha ?? completion.after.sha,
+      };
   if (
-    !expected.version ||
-    completion.after.version !== expected.version ||
-    (target.kind === "git" && (!expected.sha || completion.after.sha !== expected.sha)) ||
+    !(expected.version || expected.sha) ||
+    !matchesIdentity(expected, completion.after) ||
+    !(rolledBack
+      ? matchesIdentity(target, completion.target)
+      : matchesIdentity(completion.target, completion.after)) ||
     (rolledBack &&
       !completion.steps.some(
         (step) => step.step === "package rollback" && step.status === "completed",
@@ -122,9 +138,9 @@ export async function validateTriageUpdateResolution(params: {
   }
   signal.throwIfAborted();
   const installedVersion = await readPackageVersion(installRoot);
-  if (installedVersion !== expected.version) {
+  if (!installedVersion || (expected.version && installedVersion !== expected.version)) {
     return unresolved(
-      `Expected installed version ${expected.version}; found ${installedVersion ?? "no installed version"}.`,
+      `Expected installed version ${expected.version ?? "from the verified checkout"}; found ${installedVersion ?? "no installed version"}.`,
     );
   }
   const doctor = await params.validateDoctor();
@@ -146,11 +162,12 @@ export async function validateTriageUpdateResolution(params: {
       head.code !== 0 ||
       head.termination !== "exit" ||
       head.outputLimitExceeded ||
-      head.stdout.trim() !== expected.sha
+      !head.stdout.trim() ||
+      (expected.sha && head.stdout.trim() !== expected.sha)
     ) {
       return unresolved("The checkout does not match the updater's recorded commit.");
     }
-    errors = await collectGitRuntimeErrors({ root: installRoot, sha: expected.sha ?? null });
+    errors = await collectGitRuntimeErrors({ root: installRoot, sha: head.stdout.trim() });
   } else {
     errors = await collectInstalledGlobalPackageErrors({
       packageRoot: installRoot,
@@ -175,7 +192,7 @@ export async function validateTriageUpdateResolution(params: {
     env,
     opts: {},
     signal,
-    expectedVersion: expected.version,
+    expectedVersion: installedVersion,
     requirePluginHealth: reason === "plugin-errors" || reason === "post-update-plugins",
   });
   signal.throwIfAborted();
@@ -184,7 +201,7 @@ export async function validateTriageUpdateResolution(params: {
       "The managed Gateway's installation, running version, and readiness are not verified.",
     );
   }
-  if ((await readPackageVersion(installRoot)) !== expected.version) {
+  if ((await readPackageVersion(installRoot)) !== installedVersion) {
     return unresolved("The installed version changed during verification.");
   }
   signal.throwIfAborted();
@@ -197,6 +214,6 @@ export async function validateTriageUpdateResolution(params: {
   return {
     ok: true,
     score: 0,
-    summary: `${rolledBack ? "Rollback" : "Update"} to ${expected.version} recorded by the updater; installed runtime and managed Gateway readiness verified.`,
+    summary: `${rolledBack ? "Rollback" : "Update"} to ${expected.version ?? expected.sha}${expected.version && expected.sha ? ` (${expected.sha})` : ""} recorded by the updater; installed runtime and managed Gateway readiness verified.`,
   };
 }

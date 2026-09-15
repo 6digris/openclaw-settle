@@ -164,13 +164,7 @@ export async function retireStandaloneGitWrapper(params: {
   return {};
 }
 
-type BeforeGitMutation = (target: {
-  schemaVersions?: OpenClawSchemaVersions;
-  metadataUnreadable?: string;
-}) => Promise<{
-  allowGatewayServiceRepair?: boolean;
-  allowGatewayActivation?: boolean;
-} | void>;
+type BeforeGitMutation = NonNullable<UpdateRunnerOptions["beforeGitMutation"]>;
 
 async function runReadOnlyGitCommand(params: {
   runCommand: GlobalCommandRunner;

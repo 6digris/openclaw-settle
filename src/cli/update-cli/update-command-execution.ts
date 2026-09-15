@@ -617,6 +617,21 @@ export async function executeMutableUpdate(
         devTarget: params.devTarget,
         assertCurrent: assertExecutionCurrent,
         inspectGitTarget: async (target) => {
+          assertExecutionCurrent();
+          if (opts.run) {
+            recordUpdateRunPhase(
+              opts.run.runId,
+              "staging",
+              {
+                target: {
+                  kind: "git",
+                  sha: target.sha,
+                  version: target.version,
+                },
+              },
+              { env: opts.run.env },
+            );
+          }
           if (target.metadataUnreadable) {
             throw new UpdatePreMutationError(
               "target-metadata-preflight",

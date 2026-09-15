@@ -209,6 +209,19 @@ beforeEach(() => {
 });
 
 describe("saved update failure resolution", () => {
+  it.each(["version", "sha"] as const)(
+    "verifies a Git target recorded with only its %s",
+    async (identity) => {
+      useGitTarget();
+      failedRun.target =
+        identity === "version"
+          ? { kind: "git", version: TARGET_VERSION }
+          : { kind: "git", sha: TARGET_SHA };
+      expect(await validate(failure("checkout-failed", { mode: "git" }))).toMatchObject({
+        ok: true,
+      });
+    },
+  );
   it.each([
     "global-install-failed",
     "runtime-verification-failed",
@@ -259,7 +272,7 @@ describe("saved update failure resolution", () => {
     });
   });
 
-  it.each(["missing run", "missing version", "missing install kind", "missing Git SHA"])(
+  it.each(["missing run", "missing version", "missing install kind", "missing Git identity"])(
     "cannot establish the target with %s",
     async (missing) => {
       if (missing === "missing run") {
@@ -269,7 +282,7 @@ describe("saved update failure resolution", () => {
       } else if (missing === "missing install kind") {
         failedRun.target = { version: TARGET_VERSION };
       } else {
-        failedRun.target = { kind: "git", version: TARGET_VERSION };
+        failedRun.target = { kind: "git", channel: "dev", tag: "latest" };
       }
       expect(await validate()).toMatchObject({ ok: false, summary: MISSING_TARGET });
     },

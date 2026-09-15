@@ -53,7 +53,10 @@ export async function verifyPreviousGatewayForUpdate(params: {
   expectedVersion?: string;
 }): Promise<boolean> {
   const { config, env } = params;
-  const readiness = captureUpdateGatewayReadinessOwner(params);
+  const readiness = captureUpdateGatewayReadinessOwner({
+    opts: params.opts,
+    signal: params.signal,
+  });
   const assertCurrent = () => {
     readiness.assertCurrent();
     params.assertCurrent?.();
