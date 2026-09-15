@@ -295,6 +295,8 @@ describe("session transcript reader facade", () => {
     const originalIndex = archiveIndex.readSessionTranscriptIndex;
     const originalRead = fileReads.readFileWindowFully;
     const failure = new Error("archive read fixture failure");
+    const ioOrder: Array<"header" | "index" | "payload"> = [];
+    let indexCompleted = false;
     const indexSpy = vi
       .spyOn(archiveIndex, "readSessionTranscriptIndex")
       .mockImplementation(async (...args) => {
@@ -302,16 +304,21 @@ describe("session transcript reader facade", () => {
         const index = await originalIndex(...args);
         expect(index?.entries).toHaveLength(1);
         expect(events()).toEqual(["begin"]);
+        indexCompleted = true;
+        ioOrder.push("index");
         return index;
       });
     const readSpy = vi
       .spyOn(fileReads, "readFileWindowFully")
       .mockImplementation(async (...args) => {
+        // Header rejection excludes an archive; inject only after admission and indexing.
+        const stage = indexCompleted ? "payload" : "header";
         expect(events()).toEqual(["begin"]);
         const bytes = await originalRead(...args);
         expect(bytes).toBeGreaterThan(0);
         expect(events()).toEqual(["begin"]);
-        if (fails) {
+        ioOrder.push(stage);
+        if (fails && stage === "payload") {
           throw failure;
         }
         return bytes;
@@ -339,7 +346,8 @@ describe("session transcript reader facade", () => {
         });
       }
       expect(indexSpy).toHaveBeenCalledTimes(1);
-      expect(readSpy).toHaveBeenCalledTimes(1);
+      expect(readSpy).toHaveBeenCalledTimes(2);
+      expect(ioOrder).toEqual(["header", "index", "payload"]);
       expect(events()).toEqual(["begin", fails ? "failed" : "end"]);
     } finally {
       probe.close();

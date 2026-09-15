@@ -137,9 +137,7 @@ describe("diagnostics timeline", () => {
         expect(rows.map((row) => row.ordinal)).toEqual(rows.map((_, row) => row + 1));
         expect(attributesRecord(mark).probeTask).toBe(1);
         expect(
-          events.indexOf(
-            probeMarks.filter((event) => event.parentSpanId === mark.parentSpanId).at(-1)!,
-          ),
+          events.indexOf(probeMarks.findLast((event) => event.parentSpanId === mark.parentSpanId)!),
         ).toBeLessThan(events.indexOf(mark));
       }
       for (const mark of marks) {

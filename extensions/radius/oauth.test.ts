@@ -1,3 +1,4 @@
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { ProviderAuthContext } from "openclaw/plugin-sdk/plugin-entry";
 import { registerSingleProviderPlugin } from "openclaw/plugin-sdk/plugin-test-runtime";
 import type { OAuthCredential } from "openclaw/plugin-sdk/provider-auth";
@@ -109,7 +110,7 @@ describe("Radius OAuth", () => {
       const abort = new AbortController();
       const { ctx, progress } = context({ isRemote, signal: abort.signal });
       const effects: string[] = [];
-      const waiting = Promise.withResolvers<void>();
+      const waiting = createDeferred<void>();
       ctx.openUrl = vi.fn(async () => {
         effects.push("open-url");
       });
