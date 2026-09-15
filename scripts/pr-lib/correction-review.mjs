@@ -72,7 +72,7 @@ function candidateMetadata(prMeta, incoming, head) {
   return { ...prMeta, headRefOid: head, files: [...paths].map((path) => ({ path })) };
 }
 
-export function runCorrectionReview(command, pr, incoming, head, jsonOid, markdownOid) {
+function runCorrectionReview(command, pr, incoming, head, jsonOid, markdownOid) {
   if (
     !["init", "validate"].includes(command) ||
     !Number.isSafeInteger(pr) ||
