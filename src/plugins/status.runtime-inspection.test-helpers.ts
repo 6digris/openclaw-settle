@@ -119,3 +119,21 @@ export function classifyConfigObservationError(error: unknown) {
   }
   return classified;
 }
+
+export function classifyConfigReadErrorCode(code: string | null | undefined) {
+  return code == null
+    ? null
+    : [
+          "ENOENT",
+          "EACCES",
+          "EPERM",
+          "ENOSPC",
+          "EIO",
+          "EMFILE",
+          "SQLITE_BUSY",
+          "SQLITE_LOCKED",
+          "SQLITE_ERROR",
+        ].includes(code)
+      ? code
+      : "other";
+}

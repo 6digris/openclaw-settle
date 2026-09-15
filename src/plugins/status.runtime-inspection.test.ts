@@ -44,6 +44,7 @@ import * as statusSnapshot from "./status-snapshot.js";
 import { withPluginDiagnosticsReportForInspection, withPluginDiagnosticsReport } from "./status.js";
 import {
   classifyConfigObservationError,
+  classifyConfigReadErrorCode,
   createDiagnosticsFixture,
 } from "./status.runtime-inspection.test-helpers.js";
 import type { OpenClawPluginService } from "./types.js";
@@ -882,22 +883,6 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
               );
             const snapshot =
               readCount === 1 && settled?.type === "fulfilled" ? settled.value : undefined;
-            const safeCode = (code: string | null | undefined) =>
-              code == null
-                ? null
-                : [
-                      "ENOENT",
-                      "EACCES",
-                      "EPERM",
-                      "ENOSPC",
-                      "EIO",
-                      "EMFILE",
-                      "SQLITE_BUSY",
-                      "SQLITE_LOCKED",
-                      "SQLITE_ERROR",
-                    ].includes(code)
-                  ? code
-                  : "other";
             console.error(
               JSON.stringify({
                 event: "chat-inspect-config-failure",
@@ -908,7 +893,7 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
                 omittedObservations: Math.max(0, observations.length - 4),
                 observations: observations.slice(0, 4).map(({ index, observed }) => {
                   const result = observation?.mock.results[index];
-                  const settled = observation?.mock.settledResults[index];
+                  const settledObservation = observation?.mock.settledResults[index];
                   return {
                     index: index - firstObservation,
                     valid: observed.valid,
@@ -922,12 +907,12 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
                         ? "read-failed-fallback"
                         : "other",
                     result: result?.type ?? "unavailable",
-                    settled: settled?.type ?? "unavailable",
+                    settled: settledObservation?.type ?? "unavailable",
                     failure:
                       result?.type === "throw"
                         ? classifyConfigObservationError(result.value)
-                        : settled?.type === "rejected"
-                          ? classifyConfigObservationError(settled.value)
+                        : settledObservation?.type === "rejected"
+                          ? classifyConfigObservationError(settledObservation.value)
                           : undefined,
                   };
                 }),
@@ -943,7 +928,7 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
                 exists: snapshot?.exists ?? null,
                 valid: snapshot?.valid ?? null,
                 rawPresent: snapshot ? snapshot.raw !== null : null,
-                readErrorCode: safeCode(snapshot?.readError?.code),
+                readErrorCode: classifyConfigReadErrorCode(snapshot?.readError?.code),
                 issueCount: snapshot?.issues.length ?? null,
                 issuesTruncated: (snapshot?.issues.length ?? 0) > 8,
                 issues:
