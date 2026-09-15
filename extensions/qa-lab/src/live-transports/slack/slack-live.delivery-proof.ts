@@ -585,7 +585,12 @@ export async function runSlackDeliveryProof(
           sessionId,
           afterRequestEventId: cursor,
         });
-        const messages = readSlackDeliveryProviderMessages({ store, sessionId, cursor });
+        const messages = readSlackDeliveryProviderMessages({
+          store,
+          sessionId,
+          cursor,
+          fixtureMarker: preamble,
+        });
         const send = messages[2]?.blocks.find((block) => block.type === "tool_use");
         const terminalSendResult =
           mode === "message-tool" && send?.type === "tool_use"

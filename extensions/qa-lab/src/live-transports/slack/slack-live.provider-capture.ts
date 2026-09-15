@@ -54,6 +54,7 @@ export function readSlackDeliveryProviderMessages(params: {
   store: DebugProxyCaptureReader;
   sessionId: string;
   cursor: number;
+  fixtureMarker: string;
 }): ProviderMessage[] {
   const events = params.store.getSessionEvents(params.sessionId, OBSERVATION_LIMIT);
   if (events.length >= OBSERVATION_LIMIT) {
@@ -75,7 +76,7 @@ export function readSlackDeliveryProviderMessages(params: {
   return relevant
     .filter((event) => event.kind === "request")
     .toSorted((a, b) => Number(a.id) - Number(b.id))
-    .map((request) => {
+    .map((request, requestIndex, requests) => {
       const response = relevant.find(
         (event) => event.kind === "response" && event.flowId === request.flowId,
       );
@@ -90,8 +91,44 @@ export function readSlackDeliveryProviderMessages(params: {
         typeof body.max_tokens !== "number" ||
         body.max_tokens > 2048
       ) {
+        // This guard precedes normal observation projection. Retain only bounded
+        // predicate facts and fixture correlation so failed capture remains diagnosable.
+        const facts = {
+          requestOrdinal: requestIndex + 1,
+          capturedRequests: requests.length,
+          responseCorrelated: true,
+          responseStatus: response.status,
+          modelMatches: body.model === MODEL,
+          modelType: typeof body.model,
+          messagesArray: Array.isArray(body.messages),
+          maxTokensType: typeof body.max_tokens,
+          maxTokensValue:
+            typeof body.max_tokens === "number" && Number.isFinite(body.max_tokens)
+              ? body.max_tokens
+              : null,
+          maxTokensWithinBound: typeof body.max_tokens === "number" && body.max_tokens <= 2048,
+          maxTokensLimit: 2048,
+          fixtureUserTextMatches:
+            params.fixtureMarker.length > 0 &&
+            Array.isArray(body.messages) &&
+            body.messages.some(
+              (entry) =>
+                isRecord(entry) &&
+                entry.role === "user" &&
+                (typeof entry.content === "string"
+                  ? entry.content.includes(params.fixtureMarker)
+                  : Array.isArray(entry.content) &&
+                    entry.content.some(
+                      (block) =>
+                        isRecord(block) &&
+                        block.type === "text" &&
+                        typeof block.text === "string" &&
+                        block.text.includes(params.fixtureMarker),
+                    )),
+            ),
+        };
         throw new Error(
-          "Slack delivery proof provider identity or token bound differs from the scenario",
+          `Slack delivery proof provider identity or token bound differs from the scenario; providerRequest=${JSON.stringify(facts)}`,
         );
       }
       const frames = completePayload(params.store, response)

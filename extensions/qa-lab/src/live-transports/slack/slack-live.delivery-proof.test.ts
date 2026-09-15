@@ -578,7 +578,12 @@ describe("Slack Anthropic delivery proof", () => {
     };
     const store = { getSessionEvents: () => [response, request], readBlob: () => null };
     expect(
-      readSlackDeliveryProviderMessages({ store, sessionId: "qa", cursor: 0 })[0],
+      readSlackDeliveryProviderMessages({
+        store,
+        sessionId: "qa",
+        cursor: 0,
+        fixtureMarker: "FIXTURE",
+      })[0],
     ).toMatchObject({
       text: "FINAL",
       model: "claude-opus-4-8",
@@ -592,7 +597,12 @@ describe("Slack Anthropic delivery proof", () => {
       getSessionEvents: () => [duplicateResponse, duplicateRequest, response, request],
     };
     expect(
-      readSlackDeliveryProviderMessages({ store: repeated, sessionId: "qa", cursor: 0 })[1],
+      readSlackDeliveryProviderMessages({
+        store: repeated,
+        sessionId: "qa",
+        cursor: 0,
+        fixtureMarker: "FIXTURE",
+      })[1],
     ).toMatchObject({
       request: { sameRequestAsPrevious: true, sameResponseIdAsPrevious: true },
     });
@@ -602,7 +612,12 @@ describe("Slack Anthropic delivery proof", () => {
     );
     duplicateResponse.dataText = data.replace("provider-message-1", "provider-message-2");
     expect(
-      readSlackDeliveryProviderMessages({ store: repeated, sessionId: "qa", cursor: 0 })[1],
+      readSlackDeliveryProviderMessages({
+        store: repeated,
+        sessionId: "qa",
+        cursor: 0,
+        fixtureMarker: "FIXTURE",
+      })[1],
     ).toMatchObject({
       request: { sameRequestAsPrevious: false, sameResponseIdAsPrevious: false },
     });
@@ -648,16 +663,103 @@ describe("Slack Anthropic delivery proof", () => {
     });
     response.dataText = toolFrames;
     expect(
-      readSlackDeliveryProviderMessages({ store, sessionId: "qa", cursor: 0 })[0],
+      readSlackDeliveryProviderMessages({
+        store,
+        sessionId: "qa",
+        cursor: 0,
+        fixtureMarker: "FIXTURE",
+      })[0],
     ).toMatchObject({
       blocks: [
         { type: "tool_use", id: "call-2", name: "exec", input: { command: "second-command" } },
       ],
       toolResults: [{ id: "call-1", isError: false, text: "FIRST" }],
     });
+    const privateMessages = [{ role: "user", content: "PRIVATE_INPUT FIXTURE" }];
+    for (const { overrides, expected } of [
+      { overrides: { model: "PRIVATE_MODEL" }, expected: { modelMatches: false } },
+      {
+        overrides: { messages: "PRIVATE_MESSAGES" },
+        expected: { messagesArray: false, fixtureUserTextMatches: false },
+      },
+      {
+        overrides: { max_tokens: "PRIVATE_VALUE" },
+        expected: { maxTokensType: "string", maxTokensValue: null, maxTokensWithinBound: false },
+      },
+      {
+        overrides: { max_tokens: 2049 },
+        expected: { maxTokensValue: 2049, maxTokensWithinBound: false },
+      },
+      {
+        overrides: { max_tokens: null },
+        expected: { maxTokensType: "object", maxTokensValue: null, maxTokensWithinBound: false },
+      },
+      {
+        overrides: {
+          model: "PRIVATE_MODEL",
+          messages: [{ role: "user", content: [{ type: "text", text: "PRIVATE_INPUT FIXTURE" }] }],
+        },
+        expected: { modelMatches: false },
+      },
+      {
+        overrides: {
+          model: "PRIVATE_MODEL",
+          messages: [
+            { role: "assistant", content: "PRIVATE_INPUT FIXTURE" },
+            { role: "user", content: [{ type: "tool_result", content: "FIXTURE" }] },
+          ],
+        },
+        expected: { modelMatches: false, fixtureUserTextMatches: false },
+      },
+    ]) {
+      duplicateRequest.dataText = JSON.stringify({
+        model: "claude-opus-4-8",
+        max_tokens: 2048,
+        messages: privateMessages,
+        system: "PRIVATE_SYSTEM".repeat(2048),
+        ...overrides,
+      });
+      duplicateRequest.flowId = "PRIVATE_FLOW_ID";
+      duplicateResponse.flowId = "PRIVATE_FLOW_ID";
+      let failure: unknown;
+      try {
+        readSlackDeliveryProviderMessages({
+          store: repeated,
+          sessionId: "PRIVATE_SESSION_ID",
+          cursor: 0,
+          fixtureMarker: "FIXTURE",
+        });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(Error);
+      expect(String(failure)).toContain("provider identity or token bound differs");
+      expect(String(failure)).not.toContain("PRIVATE_");
+      expect(String(failure).length).toBeLessThan(1024);
+      expect(JSON.parse(String(failure).split("providerRequest=")[1]!)).toEqual({
+        requestOrdinal: 2,
+        capturedRequests: 2,
+        responseCorrelated: true,
+        responseStatus: 200,
+        modelMatches: true,
+        modelType: "string",
+        messagesArray: true,
+        maxTokensType: "number",
+        maxTokensValue: 2048,
+        maxTokensWithinBound: true,
+        maxTokensLimit: 2048,
+        fixtureUserTextMatches: true,
+        ...expected,
+      });
+    }
     response.dataText = data.replace('data: {"type":"message_stop"}\n\n', "");
-    expect(() => readSlackDeliveryProviderMessages({ store, sessionId: "qa", cursor: 0 })).toThrow(
-      "did not complete",
-    );
+    expect(() =>
+      readSlackDeliveryProviderMessages({
+        store,
+        sessionId: "qa",
+        cursor: 0,
+        fixtureMarker: "FIXTURE",
+      }),
+    ).toThrow("did not complete");
   });
 });
