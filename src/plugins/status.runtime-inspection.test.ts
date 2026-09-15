@@ -859,8 +859,83 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
     const { id, event, config, disposed } = fixture(state);
     await state.writeConfig(config);
     const before = process.listenerCount(event);
+    const originalRead = configRuntime.readConfigFileSnapshot;
+    const stageNames = [
+      "config.snapshot.read.file",
+      "config.snapshot.read.hash",
+      "config.snapshot.read.parse",
+      "config.snapshot.read.includes",
+      "config.snapshot.read.env",
+      "config.snapshot.read.validate",
+      "config.snapshot.read.legacy-issues",
+      "config.snapshot.read.recover-suspicious",
+      "config.snapshot.read.materialize",
+      "config.snapshot.read.observe",
+    ];
     for (const name of [id, "all"]) {
-      const configRead = vi.spyOn(configRuntime, "readConfigFileSnapshot");
+      const measuredStages: Array<{
+        stage: string;
+        outcome: "pending" | "fulfilled" | "rejected";
+        error?: { name: string; code: string };
+      }> = [];
+      let omittedStages = 0;
+      const configRead = vi
+        .spyOn(configRuntime, "readConfigFileSnapshot")
+        .mockImplementation((options = {}) => {
+          const originalMeasure = options.measure;
+          return originalRead({
+            ...options,
+            measure: async <T>(stage: string, run: () => T | Promise<T>): Promise<T> => {
+              const entry: (typeof measuredStages)[number] = {
+                stage: stageNames.includes(stage) ? stage : "<unlisted stage>",
+                outcome: "pending",
+              };
+              if (measuredStages.length < 32) {
+                measuredStages.push(entry);
+              } else {
+                omittedStages++;
+              }
+              try {
+                const value = await (originalMeasure ? originalMeasure(stage, run) : run());
+                entry.outcome = "fulfilled";
+                return value;
+              } catch (error) {
+                entry.outcome = "rejected";
+                try {
+                  const candidate = error as NodeJS.ErrnoException | null | undefined;
+                  const errorName = candidate?.name;
+                  const errorCode = candidate?.code;
+                  entry.error = {
+                    name:
+                      [
+                        "Error",
+                        "TypeError",
+                        "RangeError",
+                        "ReferenceError",
+                        "SyntaxError",
+                        "AggregateError",
+                      ].find((known) => known === errorName) ?? "<other>",
+                    code:
+                      [
+                        "ENOENT",
+                        "EACCES",
+                        "EPERM",
+                        "EBUSY",
+                        "EMFILE",
+                        "ENFILE",
+                        "EIO",
+                        "ERR_INVALID_STATE",
+                        "ERR_SQLITE_ERROR",
+                      ].find((known) => known === errorCode) ?? "<other>",
+                  };
+                } catch {
+                  entry.error = { name: "<unavailable>", code: "<unavailable>" };
+                }
+                throw error;
+              }
+            },
+          });
+        });
       try {
         const result = await handlePluginsCommand(
           buildPluginsCommandParams({
@@ -909,6 +984,9 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
           console.error("diagnostics-chat config snapshot", {
             selection: name,
             readCalls: configRead.mock.calls.length,
+            measuredStages,
+            omittedStages,
+            measurementScope: "measurement boundaries only; unmeasured gaps are unknown",
             fixturePath: state.configPath,
             snapshotPath: snapshot
               ? snapshot.path === state.configPath
