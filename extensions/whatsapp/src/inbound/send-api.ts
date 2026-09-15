@@ -7,7 +7,6 @@ import type {
 } from "baileys";
 import { resolveWhatsAppDocumentFileName } from "../document-filename.js";
 import { addWhatsAppImagePreviewFields } from "../image-preview.js";
-import { isWhatsAppNewsletterJid } from "../normalize.js";
 import { buildQuotedMessageOptions } from "../quoted-message.js";
 import { requireWhatsAppTargetFacts } from "../target-facts.js";
 import { toWhatsappJid } from "../targets-runtime.js";
@@ -72,8 +71,6 @@ export function createWebSendApi(params: {
     });
   const resolveOutboundJid = (recipient: string): string =>
     resolveOutboundTargetFacts(recipient).wireDelivery.jid;
-  const resolveJidWithoutLidMapping = (recipient: string): string =>
-    requireWhatsAppTargetFacts({ target: recipient }).wireDelivery.jid;
   const resolveMentions = async (
     jid: string,
     text: string,

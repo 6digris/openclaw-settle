@@ -30,12 +30,14 @@ import {
   type WhatsAppSendResult,
 } from "./inbound/send-result.js";
 import type { ActiveWebListener, ActiveWebSendOptions } from "./inbound/types.js";
+import { isWhatsAppNewsletterJid } from "./normalize.js";
 import {
   normalizeWhatsAppPayloadText,
   prepareWhatsAppOutboundMedia,
   resolveAdditiveWhatsAppMediaUrls,
 } from "./outbound-media-contract.js";
 import type { WhatsAppQuotedMessageKey } from "./quoted-message.js";
+import { requireWhatsAppTargetFacts } from "./target-facts.js";
 import { markdownToWhatsAppChunks, toWhatsappJid } from "./text-runtime.js";
 
 const outboundLog = createSubsystemLogger("gateway/channels/whatsapp").child("outbound");

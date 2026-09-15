@@ -24,6 +24,7 @@ import {
   looksLikeWhatsAppTargetId,
   normalizeWhatsAppAllowFromEntry,
   normalizeWhatsAppMessagingTarget,
+  normalizeWhatsAppTarget,
 } from "./normalize.js";
 import { getWhatsAppRuntime } from "./runtime.js";
 import { sendTypingWhatsApp } from "./send.js";
@@ -38,8 +39,8 @@ const loadWhatsAppChannelReactAction = createLazyRuntimeModule(
 );
 
 function resolveWhatsAppTargetInfo(raw: string) {
-  const normalized = normalizeWhatsAppTarget(raw);
-  if (!normalized) {
+  const resolution = resolveWhatsAppTargetFacts({ target: raw });
+  if (!resolution.ok) {
     return null;
   }
   const facts = resolution.facts;
@@ -50,6 +51,10 @@ function resolveWhatsAppTargetInfo(raw: string) {
     to: routeTarget,
     chatType: facts.chatType,
   };
+}
+
+function looksLikeWhatsAppMessagingTarget(raw: string): boolean {
+  return looksLikeWhatsAppTargetId(raw) || resolveWhatsAppTargetInfo(raw) !== null;
 }
 
 function resolveWhatsAppMessageActionTarget(params: { args: Record<string, unknown> }) {
@@ -115,6 +120,22 @@ export const whatsappPlugin: ChannelPlugin<ResolvedWhatsAppAccount> =
         targetResolver: {
           looksLikeId: looksLikeWhatsAppMessagingTarget,
           hint: "<E.164|group JID|newsletter JID>",
+          resolveTarget: async ({ input }) => {
+            const target = resolveWhatsAppTargetInfo(input);
+            if (!target) {
+              return null;
+            }
+            return {
+              to: target.to,
+              kind:
+                target.chatType === "direct"
+                  ? ("user" as const)
+                  : target.chatType === "group"
+                    ? ("group" as const)
+                    : ("channel" as const),
+              source: "normalized" as const,
+            };
+          },
         },
       },
       message: whatsappMessageAdapter,
