@@ -514,6 +514,7 @@ inspector.Session = class extends inspector.Session {
     recordStage("disconnect-entered");
     const result = super.disconnect(...args);
     recordStage("disconnect-returned");
+    setImmediate(() => recordStage("disconnect-drained"));
     return result;
   }
 };
@@ -556,6 +557,14 @@ syncBuiltinESMExports();`,
       ).toEqual([{ tlsLoaded: false, profiling: mode === "main" }]);
       expect(result.code, result.output).toBe(0);
       expect(result.output).toContain("Usage:");
+      if (mode === "main") {
+        const completedStages = fs
+          .readFileSync(stages, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line).stage);
+        expect(completedStages, result.output).toContain("disconnect-drained");
+      }
     }),
   );
 
