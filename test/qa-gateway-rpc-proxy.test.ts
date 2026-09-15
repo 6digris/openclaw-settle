@@ -670,7 +670,7 @@ describe("QA Gateway proxy held responses", () => {
               ]);
               const trace = proxy
                 .readinessSnapshot()
-                .connections[0]?.requests.find((row) => row.method === method);
+                .connections[0]?.requests.find((row: { method: string }) => row.method === method);
               if (captureReadiness && method === "users.self") {
                 expect(trace?.frontWrite).toEqual({
                   elapsedMs: expect.any(Number),
