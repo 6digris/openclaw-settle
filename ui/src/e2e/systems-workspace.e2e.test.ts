@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { Page } from "playwright";
 import { expect, it } from "vitest";
+import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiSessionRow } from "../test-helpers/control-ui-session-fixtures.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
@@ -10,7 +11,7 @@ const suite = createControlUiE2eSuite({
   startServerBeforeBrowser: true,
 });
 
-function installSystemsGateway(page: Page) {
+function installSystemsGateway(page: Page, additionalWorkers = 20) {
   return installMockGateway(page, {
     sessions: Array.from({ length: 30 }, (_, index) =>
       createControlUiSessionRow(`agent:main:task-${index}`, `Task ${index + 1}`, 30 - index),
@@ -21,11 +22,26 @@ function installSystemsGateway(page: Page) {
         environments: [
           { id: "gateway", type: "local", label: "Gateway machine", status: "available" },
           { id: "worker-one", type: "worker", label: "Cloud worker", status: "available" },
-          ...Array.from({ length: 20 }, (_, index) => ({
+          ...Array.from({ length: additionalWorkers }, (_, index) => ({
             id: `worker-${index + 2}`,
             type: "worker",
             label: `Worker ${index + 2}`,
             status: "available",
+          })),
+          ...(["destroyed", "failed"] as const).map((state) => ({
+            id: `worker-${state}`,
+            type: "worker",
+            label: `${state} worker history`,
+            status: state === "destroyed" ? "unavailable" : "error",
+            worker: {
+              state,
+              profileId: "cloud",
+              providerId: "crabbox",
+              ...(state === "destroyed" ? { leaseId: "released-lease" } : {}),
+              ageMs: 1_000,
+              attachedSessionIds: [],
+              tunnelStatus: "stopped",
+            },
           })),
         ],
       },
@@ -111,13 +127,14 @@ suite.define(() => {
   );
 
   it("loads the lazy workspace and keeps its machine picker aligned after navigation", async () => {
+    const artifacts = createControlUiE2eArtifactDir("systems-worker-history");
     const context = await suite.browser.newContext({
       locale: "en-US",
       serviceWorkers: "block",
       viewport: { width: 1440, height: 900 },
     });
     const page = await context.newPage();
-    const gateway = await installSystemsGateway(page);
+    const gateway = await installSystemsGateway(page, 0);
     try {
       await page.goto(suite.server.baseUrl + "systems");
       await gateway.waitForRequest("environments.list");
@@ -126,6 +143,9 @@ suite.define(() => {
       await expect
         .poll(() => page.locator(".systems-heading h1").textContent())
         .toBe("Cloud worker");
+      await page.screenshot({ path: path.join(artifacts, "machine-inventory.png") });
+      expect(await inventory.getByRole("button", { name: /worker history/ }).count()).toBe(0);
+      expect(await inventory.locator(".systems-sidebar__header > span").textContent()).toBe("2");
       await page.locator('.sidebar-nav a[href$="/dashboards"]').click();
       await expect.poll(() => page.locator(".systems-sidebar").count()).toBe(0);
       await page.locator('.sidebar-nav a[href$="/systems"]').click();
@@ -136,7 +156,36 @@ suite.define(() => {
       const picker = page.locator(".systems-mobile-picker");
       await expect.poll(() => picker.isVisible()).toBe(true);
       expect(await picker.inputValue()).toBe("worker-one");
+      expect(await picker.locator("option").allTextContents()).not.toEqual(
+        expect.arrayContaining([expect.stringContaining("worker history")]),
+      );
       expect(await page.locator("openclaw-systems-page").count()).toBe(1);
+      await gateway.setMethodResponse("environments.list", {
+        environments: [
+          { id: "gateway", type: "local", label: "Gateway machine", status: "available" },
+          {
+            id: "worker-one",
+            type: "worker",
+            label: "Cloud worker",
+            status: "unavailable",
+            worker: {
+              state: "destroyed",
+              profileId: "cloud",
+              providerId: "crabbox",
+              leaseId: "released-lease",
+              ageMs: 2_000,
+              attachedSessionIds: [],
+              tunnelStatus: "stopped",
+            },
+          },
+        ],
+      });
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await inventory.getByRole("button", { name: "Refresh machines" }).click();
+      await expect.poll(() => inventory.locator(".systems-machine").count()).toBe(1);
+      expect(await inventory.locator(".systems-sidebar__header > span").textContent()).toBe("1");
+      await page.setViewportSize({ width: 640, height: 900 });
+      expect(await picker.locator('option[value="worker-one"]').count()).toBe(0);
     } finally {
       await context.close();
     }

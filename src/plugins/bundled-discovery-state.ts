@@ -79,6 +79,7 @@ function resolveBundledDiscoveryMemoKey(env: NodeJS.ProcessEnv): string {
 export function readBundledDiscoveryModeMemoized(
   env: NodeJS.ProcessEnv = process.env,
   behavior: { artifactPreservingReadOnly?: boolean } = {},
+  readPreparedValue?: (databasePath: string) => unknown,
 ): "compat" | "allowlist" | undefined {
   if (behavior.artifactPreservingReadOnly) {
     // Copied-state planning binds the observed bytes, not process-stable runtime metadata.
@@ -99,7 +100,9 @@ export function readBundledDiscoveryModeMemoized(
     } else {
       discoveryState.memoized = {
         key,
-        value: readBundledDiscoveryMode(env === process.env ? {} : { env }),
+        value: readPreparedValue
+          ? parseBundledDiscoveryMode(readPreparedValue(key))
+          : readBundledDiscoveryMode(env === process.env ? {} : { env }),
       };
     }
   }

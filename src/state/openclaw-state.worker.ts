@@ -13,6 +13,7 @@ import {
   reserveFleetCellInDatabase,
   updateFleetCellImageInDatabase,
 } from "../fleet/registry.kernel.js";
+import { readDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
 import { countFailedDeliveryQueueEntriesInDatabase } from "../infra/delivery-queue-sqlite.kernel.js";
 import { executeSessionDeliveryCommand } from "../infra/session-delivery-queue.worker.js";
 import { createSqliteAuditRecordKernel } from "../infra/sqlite-audit-record.kernel.js";
@@ -169,6 +170,12 @@ function createSharedStateWorkerBackend(
           { path: context.databasePath, env: getSqliteWorkerStateContext().environment },
           command.input.artifactPreservingReadOnly,
         );
+      }
+      if (command.type === "plugins.deferredMigrations.read") {
+        return readDeferredPluginMigrations({
+          path: context.databasePath,
+          env: getSqliteWorkerStateContext().environment,
+        });
       }
       if (command.type === "claws.install-schema-versions") {
         return withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(

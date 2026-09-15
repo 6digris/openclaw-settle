@@ -6,6 +6,7 @@ import type {
 } from "../config/io.health-state.types.js";
 import type { CronStoreWorkerOperations } from "../cron/store/load-worker.types.js";
 import type { FleetRegistryWriteOperations } from "../fleet/registry.types.js";
+import type { DeferredPluginMigration } from "../infra/deferred-plugin-migrations.js";
 import type { DeliveryQueueWorkerOperations } from "../infra/delivery-queue.worker-contract.js";
 import type { SessionDeliveryWorkerOperations } from "../infra/session-delivery-queue.worker-contract.js";
 import type { PreparedSqliteAuditRecord } from "../infra/sqlite-audit-record.kernel.js";
@@ -63,6 +64,10 @@ export type OpenClawStateWorkerOperations = PluginStateWorkerOperations &
     "plugins.metadata.read": {
       input: { selector: PluginMetadataStateSelector; artifactPreservingReadOnly?: boolean };
       output: { value_json: string } | undefined;
+    };
+    "plugins.deferredMigrations.read": {
+      input: undefined;
+      output: readonly DeferredPluginMigration[];
     };
     "claws.install-schema-versions": {
       input: undefined;
