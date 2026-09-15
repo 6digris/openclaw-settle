@@ -3863,32 +3863,29 @@ describe("task-registry", () => {
     await withTaskRegistryTempDir(async () => {
       const now = Date.now();
       configureTaskRegistryRuntime({
-        store: {
-          ...createInMemoryTaskRegistryStore(),
-          loadSnapshot: () => ({
-            tasks: new Map([
-              [
-                "task-missing-cleanup",
-                {
-                  taskId: "task-missing-cleanup",
-                  runtime: "cli",
-                  requesterSessionKey: "",
-                  ownerKey: "system:cli:task-missing-cleanup",
-                  scopeKind: "system",
-                  runId: "run-maintenance-cleanup",
-                  task: "Finished CLI task",
-                  status: "failed",
-                  deliveryStatus: "not_applicable",
-                  notifyPolicy: "silent",
-                  createdAt: now - 120_000,
-                  endedAt: now - 60_000,
-                  lastEventAt: now - 60_000,
-                },
-              ],
-            ]),
-            deliveryStates: new Map(),
-          }),
-        },
+        store: createInMemoryTaskRegistryStore({
+          tasks: new Map([
+            [
+              "task-missing-cleanup",
+              {
+                taskId: "task-missing-cleanup",
+                runtime: "cli",
+                requesterSessionKey: "",
+                ownerKey: "system:cli:task-missing-cleanup",
+                scopeKind: "system",
+                runId: "run-maintenance-cleanup",
+                task: "Finished CLI task",
+                status: "failed",
+                deliveryStatus: "not_applicable",
+                notifyPolicy: "silent",
+                createdAt: now - 120_000,
+                endedAt: now - 60_000,
+                lastEventAt: now - 60_000,
+              },
+            ],
+          ]),
+          deliveryStates: new Map(),
+        }),
       });
 
       expect(previewTaskRegistryMaintenance()).toEqual({
