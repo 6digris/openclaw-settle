@@ -1,5 +1,6 @@
 use openclaw_gateway_client::{
-    ClientError as GatewayClientError, GatewayClient, GatewayClientConfig, GatewaySession, TlsTrust,
+    ClientError as GatewayClientError, ConnectAttempt as GatewayConnectAttempt, GatewayClient,
+    GatewayClientConfig, GatewaySession, TlsTrust,
 };
 pub use openclaw_gateway_client::{Event, EventSubscription};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -23,6 +24,32 @@ const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_MAX_EVENT_BUFFER_BYTES: usize = 64 * 1024 * 1024;
+
+/// Node wire dialect selected for one Gateway session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NodeProtocolVersion {
+    /// Released legacy node envelope with direct invocation `params`.
+    V3,
+    /// Current node envelope with serialized invocation `paramsJSON`.
+    V4,
+}
+
+impl NodeProtocolVersion {
+    const fn number(self) -> u32 {
+        match self {
+            Self::V3 => MINIMUM_NODE_PROTOCOL_VERSION,
+            Self::V4 => PROTOCOL_VERSION,
+        }
+    }
+}
+
+/// Fresh Gateway challenge plus the exact node protocol envelope to sign.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConnectChallenge {
+    pub nonce: String,
+    pub issued_at_ms: u64,
+    pub protocol: NodeProtocolVersion,
+}
 
 #[derive(Clone, Debug)]
 pub struct NodeClientConfig {
@@ -367,6 +394,16 @@ impl NodeConnectOptions {
         self
     }
 
+    fn for_protocol(mut self, protocol: NodeProtocolVersion) -> Self {
+        self.min_protocol = protocol.number();
+        self.max_protocol = protocol.number();
+        if protocol == NodeProtocolVersion::V3 {
+            self.client.platform = legacy_node_platform(&self.client.platform);
+            self.client.device_family = None;
+        }
+        self
+    }
+
     fn finalize_identity(mut self, nonce: &str, issued_at_ms: u64) -> Self {
         if self.activated {
             self.advertised_caps.clone_from(&self.declared_caps);
@@ -385,6 +422,14 @@ impl NodeConnectOptions {
             issued_at_ms,
         ));
         self
+    }
+}
+
+fn legacy_node_platform(platform: &str) -> String {
+    match platform {
+        "macos" => "darwin".to_string(),
+        "windows" => "win32".to_string(),
+        _ => platform.to_string(),
     }
 }
 
@@ -538,7 +583,7 @@ impl NodeClient {
         make_options: F,
     ) -> Result<NodeSession, ClientError>
     where
-        F: FnOnce(String) -> Fut,
+        F: FnMut(ConnectChallenge) -> Fut,
         Fut: Future<Output = Result<NodeConnectOptions, E>>,
         E: Error + Send + Sync + 'static,
     {
@@ -560,20 +605,63 @@ impl NodeClient {
         }
         let activated = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let activated_for_connect = activated.clone();
-        let gateway = GatewayClient::connect(gateway_config, move |challenge| async move {
-            let options = make_options(challenge.nonce.clone())
-                .await
-                .map_err(|error| ConnectOptionsError(error.to_string()))?;
-            let options = options.finalize_identity(&challenge.nonce, challenge.issued_at_ms);
-            activated_for_connect.store(options.activated, std::sync::atomic::Ordering::Relaxed);
-            serde_json::to_value(options).map_err(|error| ConnectOptionsError(error.to_string()))
-        })
+        let protocol = Arc::new(std::sync::atomic::AtomicU32::new(
+            NodeProtocolVersion::V4.number(),
+        ));
+        let protocol_for_connect = protocol.clone();
+        let mut make_options = make_options;
+        let gateway = GatewayClient::connect_with_protocol_fallback(
+            gateway_config,
+            MINIMUM_NODE_PROTOCOL_VERSION,
+            move |challenge, attempt| {
+                let selected_protocol = match attempt {
+                    GatewayConnectAttempt::Current => NodeProtocolVersion::V4,
+                    GatewayConnectAttempt::ProtocolFallback { expected_protocol } => {
+                        debug_assert_eq!(expected_protocol, MINIMUM_NODE_PROTOCOL_VERSION);
+                        NodeProtocolVersion::V3
+                    }
+                };
+                let challenge = ConnectChallenge {
+                    nonce: challenge.nonce,
+                    issued_at_ms: challenge.issued_at_ms,
+                    protocol: selected_protocol,
+                };
+                let options = make_options(challenge.clone());
+                let activated_for_connect = activated_for_connect.clone();
+                let protocol_for_connect = protocol_for_connect.clone();
+                async move {
+                    let options = options
+                        .await
+                        .map_err(|error| ConnectOptionsError(error.to_string()))?
+                        .for_protocol(selected_protocol)
+                        .finalize_identity(&challenge.nonce, challenge.issued_at_ms);
+                    activated_for_connect
+                        .store(options.activated, std::sync::atomic::Ordering::Relaxed);
+                    protocol_for_connect.store(
+                        selected_protocol.number(),
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                    serde_json::to_value(options)
+                        .map_err(|error| ConnectOptionsError(error.to_string()))
+                }
+            },
+        )
         .await
         .map_err(map_gateway_error)?;
 
+        let protocol = match protocol.load(std::sync::atomic::Ordering::Relaxed) {
+            3 => NodeProtocolVersion::V3,
+            _ => NodeProtocolVersion::V4,
+        };
+        if gateway.hello()["protocol"].as_u64() != Some(u64::from(protocol.number())) {
+            return Err(ClientError::InvalidFrame(
+                "Gateway hello protocol did not match the node connect envelope".into(),
+            ));
+        }
         Ok(NodeSession {
             gateway,
             activated: activated.load(std::sync::atomic::Ordering::Relaxed),
+            protocol,
             runtime_marker: Arc::new(()),
         })
     }
@@ -587,6 +675,7 @@ struct ConnectOptionsError(String);
 pub struct NodeSession {
     gateway: GatewaySession,
     activated: bool,
+    protocol: NodeProtocolVersion,
     runtime_marker: Arc<()>,
 }
 
@@ -606,6 +695,12 @@ impl NodeSession {
     #[must_use]
     pub fn is_activated(&self) -> bool {
         self.activated
+    }
+
+    #[must_use]
+    /// Return the exact node wire dialect negotiated for this session.
+    pub fn protocol(&self) -> NodeProtocolVersion {
+        self.protocol
     }
 
     #[must_use]
@@ -633,7 +728,7 @@ impl NodeSession {
             let event = self.next_event().await?;
             match event.event.as_str() {
                 "node.invoke.request" => {
-                    return parse_invocation(event.payload, Instant::now())
+                    return parse_invocation(event.payload, Instant::now(), self.protocol)
                         .map(NodeSessionEvent::Invocation);
                 }
                 "node.invoke.cancel" => {
@@ -775,11 +870,55 @@ fn parse_invocation_cancel(payload: Value) -> Result<NodeSessionEvent, ClientErr
     })
 }
 
-fn parse_invocation(payload: Value, received_at: Instant) -> Result<NodeInvocation, ClientError> {
+fn parse_invocation(
+    payload: Value,
+    received_at: Instant,
+    protocol: NodeProtocolVersion,
+) -> Result<NodeInvocation, ClientError> {
+    let payload = match protocol {
+        NodeProtocolVersion::V4 => decode_v4_invocation(payload)?,
+        NodeProtocolVersion::V3 => decode_v3_invocation(payload)?,
+    };
+    let id = require_non_empty_result_field("invocation id", payload.id)?;
+    let node_id = require_non_empty_result_field("invocation node id", payload.node_id)?;
+    let command = require_non_empty_result_field("invocation command", payload.command)?;
+    let idempotency_key = payload
+        .idempotency_key
+        .map(|value| require_non_empty_result_field("invocation idempotency key", value))
+        .transpose()?;
+    let session_key = payload
+        .session_key
+        .map(|value| require_non_empty_result_field("invocation session key", value))
+        .transpose()?;
+    Ok(NodeInvocation {
+        id,
+        node_id,
+        command,
+        params: payload.params,
+        timeout_ms: payload.timeout_ms,
+        idempotency_key,
+        session_key,
+        received_params_bytes: payload.received_params_bytes,
+        received_at: Some(received_at),
+    })
+}
+
+struct DecodedInvocation {
+    id: String,
+    node_id: String,
+    command: String,
+    params: Value,
+    received_params_bytes: Option<usize>,
+    timeout_ms: Option<u64>,
+    idempotency_key: Option<String>,
+    session_key: Option<String>,
+}
+
+fn decode_v4_invocation(payload: Value) -> Result<DecodedInvocation, ClientError> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     #[serde(rename_all = "camelCase")]
-    struct Payload {
+    struct V4Payload {
         id: String,
         node_id: String,
         command: String,
@@ -797,20 +936,9 @@ fn parse_invocation(payload: Value, received_at: Instant) -> Result<NodeInvocati
         session_key: Option<String>,
     }
 
-    let payload: Payload = serde_json::from_value(payload).map_err(|error| {
-        ClientError::InvalidFrame(format!("invalid node.invoke.request: {error}"))
+    let payload: V4Payload = serde_json::from_value(payload).map_err(|error| {
+        ClientError::InvalidFrame(format!("invalid v4 node.invoke.request: {error}"))
     })?;
-    let id = require_non_empty_result_field("invocation id", payload.id)?;
-    let node_id = require_non_empty_result_field("invocation node id", payload.node_id)?;
-    let command = require_non_empty_result_field("invocation command", payload.command)?;
-    let idempotency_key = payload
-        .idempotency_key
-        .map(|value| require_non_empty_result_field("invocation idempotency key", value))
-        .transpose()?;
-    let session_key = payload
-        .session_key
-        .map(|value| require_non_empty_result_field("invocation session key", value))
-        .transpose()?;
     let (params, received_params_bytes) = match payload.params_json {
         Some(value) => {
             let received_params_bytes = value.len();
@@ -821,16 +949,53 @@ fn parse_invocation(payload: Value, received_at: Instant) -> Result<NodeInvocati
         }
         None => (Value::Null, Some(0)),
     };
-    Ok(NodeInvocation {
-        id,
-        node_id,
-        command,
+    Ok(DecodedInvocation {
+        id: payload.id,
+        node_id: payload.node_id,
+        command: payload.command,
         params,
-        timeout_ms: payload.timeout_ms,
-        idempotency_key,
-        session_key,
         received_params_bytes,
-        received_at: Some(received_at),
+        timeout_ms: payload.timeout_ms,
+        idempotency_key: payload.idempotency_key,
+        session_key: payload.session_key,
+    })
+}
+
+fn decode_v3_invocation(payload: Value) -> Result<DecodedInvocation, ClientError> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    #[serde(rename_all = "camelCase")]
+    struct V3Payload {
+        id: String,
+        node_id: String,
+        command: String,
+        #[serde(default)]
+        params: Value,
+        #[serde(default, deserialize_with = "deserialize_optional_u64")]
+        timeout_ms: Option<u64>,
+        #[serde(default, deserialize_with = "deserialize_optional_string")]
+        idempotency_key: Option<String>,
+        #[serde(default)]
+        session_key: Option<String>,
+    }
+
+    let payload: V3Payload = serde_json::from_value(payload).map_err(|error| {
+        ClientError::InvalidFrame(format!("invalid v3 node.invoke.request: {error}"))
+    })?;
+    let received_params_bytes = if payload.params.is_null() {
+        0
+    } else {
+        payload.params.to_string().len()
+    };
+    Ok(DecodedInvocation {
+        id: payload.id,
+        node_id: payload.node_id,
+        command: payload.command,
+        params: payload.params,
+        received_params_bytes: Some(received_params_bytes),
+        timeout_ms: payload.timeout_ms,
+        idempotency_key: payload.idempotency_key,
+        session_key: payload.session_key,
     })
 }
 
@@ -891,12 +1056,55 @@ mod tests {
                 "sessionKey": "agent:main:main"
             }),
             Instant::now(),
+            NodeProtocolVersion::V4,
         )
         .expect("valid Gateway invocation");
 
         assert_eq!(invocation.params, Value::Null);
         assert_eq!(invocation.input_bytes(), Some(0));
         assert_eq!(invocation.session_key.as_deref(), Some("agent:main:main"));
+    }
+
+    #[test]
+    fn invocation_params_are_strictly_selected_by_negotiated_protocol() {
+        let legacy = json!({
+            "id": "invoke-v3",
+            "nodeId": "node-1",
+            "command": "example.status",
+            "params": {"verbose": true}
+        });
+        let current = json!({
+            "id": "invoke-v4",
+            "nodeId": "node-1",
+            "command": "example.status",
+            "paramsJSON": "{\"verbose\":true}"
+        });
+        let ambiguous = json!({
+            "id": "invoke-ambiguous",
+            "nodeId": "node-1",
+            "command": "example.status",
+            "params": {"legacy": true},
+            "paramsJSON": "{\"current\":true}"
+        });
+
+        assert_eq!(
+            parse_invocation(legacy.clone(), Instant::now(), NodeProtocolVersion::V3)
+                .expect("v3 invocation")
+                .params,
+            json!({"verbose": true})
+        );
+        assert!(parse_invocation(legacy, Instant::now(), NodeProtocolVersion::V4).is_err());
+        assert_eq!(
+            parse_invocation(current.clone(), Instant::now(), NodeProtocolVersion::V4)
+                .expect("v4 invocation")
+                .params,
+            json!({"verbose": true})
+        );
+        assert!(parse_invocation(current, Instant::now(), NodeProtocolVersion::V3).is_err());
+        assert!(
+            parse_invocation(ambiguous.clone(), Instant::now(), NodeProtocolVersion::V3).is_err()
+        );
+        assert!(parse_invocation(ambiguous, Instant::now(), NodeProtocolVersion::V4).is_err());
     }
 
     #[test]
