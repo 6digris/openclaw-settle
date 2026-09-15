@@ -9,7 +9,7 @@ import {
   createSqliteLifecycleAggregateError,
   runWithSqliteCoordinator,
 } from "../infra/sqlite-coordinator.js";
-import { isSqliteLockError } from "../infra/sqlite-error-diagnostics.js";
+import { isSqliteLockError, sqlitePrimaryResultCode } from "../infra/sqlite-error-diagnostics.js";
 import { quarantineOrphanedSqliteSidecars } from "../infra/sqlite-files.js";
 import {
   prepareSqliteReadOnlyLocation,
@@ -20,7 +20,10 @@ import {
   StateDatabaseCoordinatorContentionError,
 } from "../infra/state-database-coordinator.js";
 import { OPENCLAW_SQLITE_BUSY_TIMEOUT_MS } from "./openclaw-state-db-contract.js";
-import { openDanglingWorkshopIndexReadAdmission } from "./openclaw-state-db-dangling-workshop-index.js";
+import {
+  openDanglingWorkshopIndexReadAdmission,
+  withSqliteWritableSchema,
+} from "./openclaw-state-db-dangling-workshop-index.js";
 import { tableExists } from "./openclaw-state-db-schema-helpers.js";
 
 export const STATE_SUPERVISION_KEY = "gateway.supervision";
@@ -120,9 +123,7 @@ export function inspectOpenClawStateOwnershipFromDatabase(
   databasePath: string,
   configMachineStateTableReady = false,
 ): OpenClawExternalStateOwnership | null {
-  database.enableDefensive?.(false);
-  database.exec("PRAGMA writable_schema = ON;");
-  try {
+  const readOwnership = () => {
     if (!configMachineStateTableReady && !tableExists(database, "config_machine_state")) {
       return null;
     }
@@ -136,13 +137,20 @@ export function inspectOpenClawStateOwnershipFromDatabase(
       throw new OpenClawStateOwnershipMetadataError(databasePath, "reserved value is not text");
     }
     return parseExternalOwnership(row.value_json, databasePath);
-  } finally {
-    try {
-      database.exec("PRAGMA writable_schema = OFF;");
-    } finally {
-      database.enableDefensive?.(true);
+  };
+  try {
+    return readOwnership();
+  } catch (error) {
+    if (
+      !(error instanceof Error) ||
+      sqlitePrimaryResultCode(error) !== 11 ||
+      !error.message.startsWith("malformed database schema (")
+    ) {
+      throw error;
     }
   }
+  // Doctor must read current ownership before repairing a malformed legacy catalog.
+  return withSqliteWritableSchema(database, readOwnership);
 }
 
 function inspectOwnershipThroughConnection(

@@ -248,6 +248,58 @@ describe("external shared-state ownership", () => {
     expect(inspectOpenClawStateOwnershipAtPath(database.path)).toBeNull();
   });
 
+  it("keeps healthy cached admission defensive while observing a newly committed owner", () => {
+    const env = createEnv();
+    const database = openOpenClawStateDatabase({ env });
+    const { DatabaseSync } = requireNodeSqlite();
+    const claimant = new DatabaseSync(database.path);
+    const exec = vi.spyOn(database.db, "exec");
+    const defensive = database.db.enableDefensive
+      ? vi.spyOn(database.db, "enableDefensive")
+      : undefined;
+    try {
+      expect(openOpenClawStateDatabase({ env })).toBe(database);
+      expect(openOpenClawStateDatabase({ env })).toBe(database);
+
+      claimant
+        .prepare(
+          "INSERT INTO config_machine_state (state_key, value_json, updated_at_ms) VALUES (?, ?, ?)",
+        )
+        .run(
+          STATE_SUPERVISION_KEY,
+          JSON.stringify({
+            version: 1,
+            mode: "external",
+            managerId: "late-supervisor",
+            claimedAt: 1,
+          }),
+          1,
+        );
+
+      expect(() => openOpenClawStateDatabase({ env })).toThrow(
+        /externally supervised by late-supervisor/u,
+      );
+      const write = vi.fn();
+      expect(() => runOpenClawStateWriteTransaction(write, { env })).toThrow(
+        OpenClawStateOwnershipError,
+      );
+      expect(write).not.toHaveBeenCalled();
+      expect(
+        openOpenClawStateDatabase({
+          env: { ...env, OPENCLAW_SUPERVISOR_MODE: "external" },
+        }),
+      ).toBe(database);
+      expect(
+        exec.mock.calls.filter(([sql]) => /\bPRAGMA\s+writable_schema\s*=/iu.test(sql)),
+      ).toEqual([]);
+      expect(defensive?.mock.calls ?? []).toEqual([]);
+    } finally {
+      exec.mockRestore();
+      defensive?.mockRestore();
+      claimant.close();
+    }
+  });
+
   it("checks Doctor startup admission without staging a public snapshot", async () => {
     const fixture = claimFixture();
     const home = tempDirs.make("openclaw-state-ownership-doctor-");
