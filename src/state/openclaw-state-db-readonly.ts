@@ -476,7 +476,6 @@ export function executeExistingOpenClawStateRead(
     const transport = createOpenClawStateReadTransport(command, (error) => controller.abort(error));
     let cleanupPending: Promise<void> | undefined;
     let transportStopped = false;
-    let taskFailure: { error: unknown } | undefined;
     let cleaned = false;
     let validated = false;
     const acceptanceErrors: unknown[] = [];
@@ -508,7 +507,7 @@ export function executeExistingOpenClawStateRead(
       return (cleanupPending ??= (async () => {
         // A failed stop can keep the producer pending. Retry that same transport first.
         if (!transportStopped) {
-          taskFailure = await transport.close();
+          await transport.close();
           transportStopped = true;
         }
         await producerSettled.promise;
@@ -655,6 +654,7 @@ export function executeExistingOpenClawStateRead(
     } catch (error) {
       cleanupErrors.push(error);
     }
+    const taskFailure = await transport.readFailure();
     if (taskFailure && !errors.includes(taskFailure.error)) {
       errors.unshift(taskFailure.error);
     }

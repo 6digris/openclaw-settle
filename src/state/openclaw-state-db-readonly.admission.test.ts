@@ -23,7 +23,8 @@ const mock = vi.hoisted(() => ({
     release: vi.fn<(permit: WorkerComputePermit) => void>(),
     remove: vi.fn<(resume: () => void) => void>(),
   },
-  close: vi.fn<() => Promise<{ error: unknown } | undefined>>(),
+  close: vi.fn<() => Promise<void>>(),
+  readFailure: vi.fn<() => Promise<{ error: unknown } | undefined>>(),
   read: vi.fn<
     (
       source: OpenClawStateReadLocation,
@@ -40,6 +41,7 @@ vi.mock("./openclaw-state-read-worker.js", () => ({
     read: mock.read,
     validateFresh: mock.validateFresh,
     close: mock.close,
+    readFailure: mock.readFailure,
   }),
 }));
 vi.mock("../infra/sqlite-snapshot-source.js", async (importOriginal) => ({
@@ -73,6 +75,7 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
     finishPending?.();
     finishPending = undefined;
     mock.close.mockReset().mockResolvedValue(undefined);
+    mock.readFailure.mockReset().mockResolvedValue(undefined);
     mock.cleanup.mockReset().mockResolvedValue(true);
     await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
@@ -93,6 +96,7 @@ beforeEach(() => {
   mock.capacity.admit.mockReset().mockReturnValue(true);
   mock.capacity.acquire.mockReset().mockReturnValue(permit);
   mock.close.mockReset().mockResolvedValue(undefined);
+  mock.readFailure.mockReset().mockResolvedValue(undefined);
   mock.read.mockReset().mockResolvedValue({ value: { ...reply, value: [...reply.value] } });
   mock.validateFresh.mockReset().mockResolvedValue(undefined);
   mock.cleanup.mockReset().mockResolvedValue(true);
