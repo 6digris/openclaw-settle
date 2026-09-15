@@ -55,6 +55,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/plugins/status.runtime-inspection.test.ts",
 
   "src/plugins/plugin-metadata-state-worker.test.ts",
+  "src/infra/session-cost-usage-metadata.test.ts",
   "src/plugins/installed-plugin-index-records.test.ts",
   "src/acp/runtime/session-meta-doctor.test.ts",
   "src/agents/agent-tools.at-prefixed-remote-paths.test.ts",
