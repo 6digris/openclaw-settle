@@ -98,7 +98,37 @@ export function tooltipTitleText(item: Locator) {
   });
 }
 
+type HeldModuleRoute = {
+  page: Page;
+  module: RegExp;
+  handler: Parameters<Page["route"]>[1];
+  release: () => void;
+  installed: Promise<void>;
+};
+type ControlUiContextLifetime = {
+  routes: HeldModuleRoute[];
+  invocations: Set<Promise<void>>;
+  errors: unknown[];
+  closing?: Promise<void>;
+};
+// Holds may be installed through raw contexts; their context still owns teardown.
+const contextLifetimes = new WeakMap<BrowserContext, ControlUiContextLifetime>();
+function contextLifetime(context: BrowserContext): ControlUiContextLifetime {
+  let lifetime = contextLifetimes.get(context);
+  if (!lifetime) {
+    lifetime = { routes: [], invocations: new Set(), errors: [] };
+    contextLifetimes.set(context, lifetime);
+  }
+  return lifetime;
+}
+
 export async function holdModuleResponse(page: Page, module: RegExp) {
+  const lifetime = contextLifetime(page.context());
+  if (lifetime.closing) {
+    throw new ControlUiE2eAcquisitionClosedError(
+      "Control UI E2E module route acquisition is closed",
+    );
+  }
   let release!: () => void;
   let requested!: (url: string) => void;
   const gate = new Promise<void>((resolve) => {
@@ -108,14 +138,32 @@ export async function holdModuleResponse(page: Page, module: RegExp) {
     requested = resolve;
   });
   let requests = 0;
-  await page.route(module, async (route) => {
-    requests += 1;
-    const response = await route.fetch();
-    expect(response.status()).toBe(200);
-    requested(route.request().url());
-    await gate;
-    await route.fulfill({ response });
+  const handler: HeldModuleRoute["handler"] = (route) => {
+    const invocation = (async () => {
+      requests += 1;
+      const response = await route.fetch();
+      expect(response.status()).toBe(200);
+      requested(route.request().url());
+      await gate;
+      await route.fulfill({ response });
+    })();
+    lifetime.invocations.add(invocation);
+    void invocation.then(
+      () => lifetime.invocations.delete(invocation),
+      (error: unknown) => {
+        lifetime.errors.push(error);
+        lifetime.invocations.delete(invocation);
+      },
+    );
+    return invocation;
+  };
+  // Playwright registers locally before its protocol update can reject.
+  // Publish ownership before starting installation so close joins either outcome.
+  const installed = Promise.resolve().then(async () => {
+    await page.route(module, handler);
   });
+  lifetime.routes.push({ page, module, handler, release, installed });
+  await installed;
   return { request, release, requests: () => requests };
 }
 
@@ -172,7 +220,6 @@ export function createControlUiE2eSuite(options: ControlUiE2eSuiteOptions): Cont
   const describeControlUiE2e =
     chromiumAvailable || !allowMissingChromium ? describe : describe.skip;
   const openBrowserContexts = new Map<BrowserContext, AbortController | undefined>();
-  const contextClosures = new WeakMap<BrowserContext, Promise<void>>();
   const contextAcquisitions = new Map<Promise<BrowserContext>, AbortController | undefined>();
   const acquisitionFailures: Array<{ owner: AbortController | undefined; error: unknown }> = [];
   const scenarios = new Set<Promise<unknown>>();
@@ -221,22 +268,42 @@ export function createControlUiE2eSuite(options: ControlUiE2eSuiteOptions): Cont
   };
 
   const closeBrowserContext = (context: BrowserContext): Promise<void> => {
-    let closing = contextClosures.get(context);
-    if (!closing) {
+    const lifetime = contextLifetime(context);
+    if (!lifetime.closing) {
       // Playwright's second close can return while the first is still finalizing.
-      closing = Promise.resolve().then(async () => {
-        await context.close();
-        // Requests outlive sockets; pending handlers must release their admission
-        // roots before fixture cleanup. waitFor also works in afterAll.
-        await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0), {
-          interval: 100,
-          timeout: 15_000,
-        });
+      lifetime.closing = Promise.resolve().then(async () => {
+        for (const route of lifetime.routes) {
+          route.release();
+        }
+        await runQaGatewayFixture(
+          () => settleControlUiCleanup(lifetime.routes.map((route) => route.installed)),
+          // Other handlers on the same page can have gates owned outside this fixture.
+          // Unregister only our exact pairs, then join only our own invocations.
+          () =>
+            settleControlUiCleanup(
+              lifetime.routes.map(({ page, module, handler }) =>
+                Promise.resolve().then(() => page.unroute(module, handler)),
+              ),
+            ),
+          async () => {
+            await Promise.allSettled(lifetime.invocations);
+            throwControlUiCleanupErrors(lifetime.errors);
+          },
+          async () => {
+            await context.close();
+            // Requests outlive sockets; pending handlers must release their admission
+            // roots before fixture cleanup. waitFor also works in afterAll.
+            await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0), {
+              interval: 100,
+              timeout: 15_000,
+            });
+          },
+        );
         openBrowserContexts.delete(context);
+        lifetime.routes = [];
       });
-      contextClosures.set(context, closing);
     }
-    return closing;
+    return lifetime.closing;
   };
   const closeOpenBrowserContexts = async (owner?: AbortController): Promise<void> => {
     const ownedContexts = () =>

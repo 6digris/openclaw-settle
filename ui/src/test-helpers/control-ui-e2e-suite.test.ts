@@ -18,6 +18,14 @@ type FixtureMode =
   | "tracked-close-failure"
   | "concurrent-close"
   | "held-route-drain"
+  | "held-route-mixed"
+  | "held-route-registration"
+  | "held-route-registration-failure"
+  | "held-route-fetch-failure"
+  | "held-route-status-failure"
+  | "held-route-fulfill-failure"
+  | "held-route-unroute-failure"
+  | "held-route-close-failure"
   | "close-failure"
   | "late-context"
   | "late-setup"
@@ -69,6 +77,8 @@ const state = vi.hoisted(() => {
     browserAcquired: false, browserClosed: false, serverAcquired: false, serverClosed: false,
     events: [], nativeAbortObserved: false,
     cleanupStarted: deferred(), laterFetch: deferred(), laterFetchStarted: deferred(),
+    contextClosed: deferred(), registrationStarted: deferred(), registrationGate: deferred(),
+    routeFault: new Error("synthetic held route failure"), installFault: new Error("synthetic route install failure"),
     requestDisposed: deferred(), disposalFault: new Error("synthetic request context disposed"),
     firstCleanupEvent: "", pendingCloseCalls: -1, fulfilledBeforeFetchRelease: [],
     heldBodyErrorRetained: false, callbackOutcomes: [],
@@ -88,7 +98,7 @@ vi.mock("playwright", () => ({ chromium: { launch: async () => {
         isClosed: () => true,
         url: () => "about:blank",
       };
-      if (${JSON.stringify(mode)} === "held-route-drain") {
+      if (${JSON.stringify(mode)}.startsWith("held-route-")) {
         const handlers = [];
         const pending = new Set();
         let pageClosed = false;
@@ -97,7 +107,22 @@ vi.mock("playwright", () => ({ chromium: { launch: async () => {
           ...closedPage,
           isClosed: () => pageClosed,
           context: () => context,
-          route: async (pattern, handler) => { handlers.push({ pattern, handler }); },
+          route: async (pattern, handler) => {
+            handlers.push({ pattern, handler });
+            if (${JSON.stringify(mode)}.startsWith("held-route-registration") && pattern.test("module-slow")) {
+              state.registrationStarted.resolve();
+              await state.registrationGate.promise;
+              if (${JSON.stringify(mode)} === "held-route-registration-failure") throw state.installFault;
+            }
+          },
+          unroute: async (pattern, handler) => {
+            const index = handlers.findIndex(entry => entry.pattern === pattern && entry.handler === handler);
+            if (index !== -1) handlers.splice(index, 1);
+            state.events.push("drain");
+            state.cleanupStarted.resolve("drain");
+            if (${JSON.stringify(mode)} === "held-route-unroute-failure") throw state.routeFault;
+          },
+          hasRoute: (pattern, handler) => handlers.some(entry => entry.pattern === pattern && entry.handler === handler),
           unrouteAll: async (options) => {
             expect(options).toEqual({ behavior: "wait" });
             handlers.length = 0;
@@ -113,6 +138,7 @@ vi.mock("playwright", () => ({ chromium: { launch: async () => {
               request: () => ({ url: () => url }),
               fetch: async () => {
                 if (pageClosed) throw state.disposalFault;
+                if (label === "fault" && ${JSON.stringify(mode)} === "held-route-fetch-failure") throw state.routeFault;
                 if (label === "later") {
                   state.laterFetchStarted.resolve();
                   await Promise.race([
@@ -122,9 +148,10 @@ vi.mock("playwright", () => ({ chromium: { launch: async () => {
                 }
                 if (pageClosed) throw state.disposalFault;
                 state.events.push("fetched " + label);
-                return { status: () => 200 };
+                return { status: () => label === "fault" && ${JSON.stringify(mode)} === "held-route-status-failure" ? 503 : 200 };
               },
               fulfill: async () => {
+                if (label === "fault" && ${JSON.stringify(mode)} === "held-route-fulfill-failure") throw state.routeFault;
                 if (pageClosed) throw state.disposalFault;
                 state.events.push("fulfilled " + label);
               },
@@ -149,7 +176,9 @@ vi.mock("playwright", () => ({ chromium: { launch: async () => {
             state.closeCalls++;
             state.events.push("close");
             state.cleanupStarted.resolve("close");
+            state.contextClosed.resolve();
             record();
+            if (${JSON.stringify(mode)} === "held-route-close-failure") throw state.closeFault;
           },
         };
         return context;
@@ -276,6 +305,120 @@ suite.define(() => {
         if (result.status === "rejected") expect(result.error).toBe(state.disposalFault);
       }
       expect(failure).toBe(bodyFault);
+    });
+  } else if (${JSON.stringify(mode)} === "held-route-mixed") {
+    it("leaves an externally gated handler on the same page outside the held-route drain", async () => {
+      const context = await suite.newBrowserContext({});
+      const page = await context.newPage();
+      let releaseForeign;
+      const foreignGate = new Promise(resolve => { releaseForeign = resolve; });
+      let wideDrain;
+      const wideDrainStarted = new Promise(resolve => { wideDrain = resolve; });
+      const unrouteAll = page.unrouteAll;
+      page.unrouteAll = async options => {
+        wideDrain();
+        await unrouteAll(options);
+      };
+      const pattern = /foreign/u;
+      let foreignFinished = false;
+      const handler = async () => { await foreignGate; foreignFinished = true; };
+      const callbacks = [];
+      let hold;
+      let closing;
+      try {
+        await page.route(pattern, handler);
+        callbacks.push(page.dispatchModule("foreign", "foreign"));
+        hold = await holdModuleResponse(page, /module-a/u);
+        callbacks.push(page.dispatchModule("module-a", "owned"));
+        await hold.request;
+        closing = suite.closeBrowserContext(context).then(() => undefined, error => error);
+        expect(await Promise.race([
+          state.contextClosed.promise.then(() => "close"),
+          wideDrainStarted.then(() => "foreign drain"),
+        ])).toBe("close");
+        expect(foreignFinished).toBe(false);
+        expect(page.hasRoute(pattern, handler)).toBe(true);
+        expect(await closing).toBeUndefined();
+        expect(state.events).toContain("fulfilled owned");
+        expect(state.closeCalls).toBe(1);
+      } finally {
+        hold?.release();
+        releaseForeign();
+        await Promise.all(callbacks);
+        if (closing) await closing;
+        else await suite.closeBrowserContext(context);
+      }
+      expect(foreignFinished).toBe(true);
+    });
+  } else if (${JSON.stringify(mode)}.startsWith("held-route-registration")) {
+    it("joins accepted installation and rejects registration once close begins", async () => {
+      const context = await suite.newBrowserContext({});
+      const page = await context.newPage();
+      const pattern = /module-slow/u;
+      const installing = holdModuleResponse(page, pattern).then(value => ({ value }), error => ({ error }));
+      let closing;
+      let installed;
+      let closed;
+      try {
+        await state.registrationStarted.promise;
+        closing = suite.closeBrowserContext(context).then(() => undefined, error => error);
+        await expect(holdModuleResponse(page, /late-module/u)).rejects.toThrow("module route acquisition is closed");
+        await nextTurn();
+        expect(state.closeCalls).toBe(0);
+      } finally {
+        state.registrationGate.resolve();
+        installed = await installing;
+        installed.value?.release();
+        closed = closing ? await closing : await suite.closeBrowserContext(context).catch(error => error);
+      }
+      expect(state.events).toEqual(["drain", "close"]);
+      expect(state.closeCalls).toBe(1);
+      await expect(holdModuleResponse(page, /after-close/u)).rejects.toThrow("module route acquisition is closed");
+      if (${JSON.stringify(mode)} === "held-route-registration-failure") {
+        expect(installed.error).toBe(state.installFault);
+        expect(closed).toMatchObject({ errors: [state.installFault] });
+      } else {
+        expect(installed.error).toBeUndefined();
+        expect(closed).toBeUndefined();
+      }
+    });
+  } else if (${JSON.stringify(mode)}.startsWith("held-route-")) {
+    it("retains original callback or teardown faults alongside the body error", async () => {
+      const bodyFault = new Error("synthetic held-module body failure");
+      let hold;
+      let callback;
+      let failure;
+      const flatten = error => error instanceof AggregateError ? error.errors.flatMap(flatten) : [error];
+      try {
+        failure = await suite.withPage({}, async ({ page }) => {
+          hold = await holdModuleResponse(page, /module-a/u);
+          hold.release();
+          callback = await page.dispatchModule("module-a", "fault");
+          throw bodyFault;
+        }).then(() => undefined, error => error);
+      } finally {
+        hold?.release();
+      }
+      expect(failure).toBeInstanceOf(AggregateError);
+      expect(failure.errors[0]).toBe(bodyFault);
+      const errors = flatten(failure);
+      if (${JSON.stringify(mode)} === "held-route-close-failure") {
+        expect(callback.status).toBe("fulfilled");
+        expect(errors).toEqual([bodyFault, state.closeFault]);
+      } else if (${JSON.stringify(mode)} === "held-route-unroute-failure") {
+        expect(callback.status).toBe("fulfilled");
+        expect(errors).toEqual([bodyFault, state.routeFault]);
+      } else {
+        expect(callback.status).toBe("rejected");
+        expect(errors).toEqual([bodyFault, callback.error]);
+        if (${JSON.stringify(mode)} === "held-route-status-failure") {
+          expect(callback.error.message).toContain("503");
+        } else {
+          expect(callback.error).toBe(state.routeFault);
+        }
+      }
+      expect(state.closeCalls).toBe(1);
+      expect(state.events).toContain("drain");
     });
   } else if (${JSON.stringify(mode)} === "concurrent-close") {
     it("joins the first context close", async () => {
@@ -517,6 +660,46 @@ it("drains held-module callbacks before closing the context after a body failure
       serverClosed: true,
     });
   }));
+
+it.for(["held-route-mixed", "held-route-registration"] as const)(
+  "joins only held-route ownership: %s",
+  (mode, context) =>
+    runJoinedShutdownTest(context, async () => {
+      const result = await runFixture(mode, context.signal);
+      expect(result.code, result.output).toBe(0);
+      expect(result.report.numPassedTests, result.output).toBe(1);
+      expect(result.report.numFailedTests, result.output).toBe(0);
+      expect(result.journal.closeCalls).toBe(1);
+    }),
+);
+
+it.for([
+  "held-route-registration-failure",
+  "held-route-fetch-failure",
+  "held-route-status-failure",
+  "held-route-fulfill-failure",
+  "held-route-unroute-failure",
+  "held-route-close-failure",
+] as const)("preserves held-route faults through physical context cleanup: %s", (mode, context) =>
+  runJoinedShutdownTest(context, async () => {
+    const result = await runFixture(mode, context.signal);
+    expect(result.code, result.output).toBe(1);
+    expect(result.report.numPassedTests, result.output).toBe(1);
+    expect(result.report.numFailedTests, result.output).toBe(0);
+    expect(result.journal.closeCalls).toBe(1);
+    expect(result.journal.events).toContain("drain");
+    expect(result.output).not.toContain("Unhandled Rejection");
+    expect(result.output).toContain(
+      mode === "held-route-registration-failure"
+        ? "synthetic route install failure"
+        : mode === "held-route-status-failure"
+          ? "503"
+          : mode === "held-route-close-failure"
+            ? "synthetic context close failure"
+            : "synthetic held route failure",
+    );
+  }),
+);
 
 it.for(["concurrent-close", "close-failure", "late-context"] as const)(
   "preserves native browser resource ownership: %s",

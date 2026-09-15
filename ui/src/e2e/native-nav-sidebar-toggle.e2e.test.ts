@@ -81,7 +81,9 @@ let context: BrowserContext | undefined;
 
 suite.define(() => {
   afterEach(async () => {
-    await context?.close();
+    if (context) {
+      await suite.closeBrowserContext(context);
+    }
     context = undefined;
   });
 

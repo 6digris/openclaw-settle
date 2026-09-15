@@ -1,5 +1,6 @@
 import type { BrowserContextOptions, Page } from "playwright";
 import { expect, it } from "vitest";
+import { runQaGatewayFixture } from "../../../test/helpers/qa-gateway-cleanup.ts";
 import type { ApplicationContext } from "../app/context.ts";
 import {
   waitForControlUiGatewayReady,
@@ -72,11 +73,10 @@ async function withNewSessionPage(
   run: (page: Page) => Promise<void>,
 ): Promise<void> {
   const context = await suite.browser.newContext(options);
-  try {
-    await run(await context.newPage());
-  } finally {
-    await context.close();
-  }
+  await runQaGatewayFixture(
+    async () => run(await context.newPage()),
+    () => suite.closeBrowserContext(context),
+  );
 }
 
 type MockGateway = Awaited<ReturnType<typeof installMockGateway>>;
@@ -243,7 +243,7 @@ suite.define(() => {
         workspace: WORKSPACE,
         workspaceGit: true,
         methodResponses: {
-          "fs.listDir": { path: WORKSPACE, home: "/home/peter", entries: [] },
+          "fs.listDir": { path: WORKSPACE, home: "/home/example", entries: [] },
           "worktrees.branches": branchList(),
           "sessions.create": { key: "agent:main:custom-now-direct" },
         },
@@ -292,7 +292,7 @@ suite.define(() => {
         workspace: WORKSPACE,
         workspaceGit: true,
         methodResponses: {
-          "fs.listDir": { path: WORKSPACE, home: "/home/peter", entries: [] },
+          "fs.listDir": { path: WORKSPACE, home: "/home/example", entries: [] },
           "worktrees.branches": branchList(),
           "sessions.create": { key: "agent:main:custom-worktree-cleared" },
         },
@@ -354,7 +354,7 @@ suite.define(() => {
             environments: [],
             profiles: [{ id: "aws", providerId: "crabbox" }],
           },
-          "fs.listDir": { path: WORKSPACE, home: "/home/peter", entries: [] },
+          "fs.listDir": { path: WORKSPACE, home: "/home/example", entries: [] },
           "worktrees.branches": branchList(),
           "sessions.create": { key: sessionKey },
           "sessions.list": createdSessionListResult(sessionKey),
@@ -756,7 +756,7 @@ suite.define(() => {
                 id: "research",
                 identity: { name: "Research" },
                 name: "Research",
-                workspace: "/home/peter/research",
+                workspace: "/home/example/research",
                 workspaceGit: true,
               },
             ],
@@ -792,7 +792,7 @@ suite.define(() => {
             sessionId: "claude-retarget",
             agentId: "research",
             shell: "claude",
-            cwd: "/home/peter/research",
+            cwd: "/home/example/research",
             confined: false,
           },
         },
