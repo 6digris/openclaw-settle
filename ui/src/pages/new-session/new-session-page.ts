@@ -206,7 +206,10 @@ export class NewSessionPage extends OpenClawLightDomElement {
             }
             if (isPlaceTopologyEvent(event.event)) {
               void this.gateway.refreshEnvironments();
-              void this.gateway.refreshCloudProfiles();
+              // Node topology cannot change configured cloud profiles.
+              if (event.event === "config.changed") {
+                void this.gateway.refreshCloudProfiles();
+              }
               this.gateway.handleCatalogRetry();
               return;
             }

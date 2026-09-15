@@ -347,7 +347,24 @@ suite.define(() => {
       await pastePng(composer);
       await page.getByRole("img", { name: "pixel.png" }).waitFor();
       const startButton = page.getByRole("button", { name: "Start session" });
-      await gateway.deferNext("environments.list");
+      const cloudsBeforeNodeRefresh = (
+        await gateway.getRequests("environments.list", { includeProfiles: undefined })
+      ).length;
+      const inventoryBeforeNodeRefresh = (
+        await gateway.getRequests("environments.list", { includeProfiles: false })
+      ).length;
+      await gateway.deferNext("environments.list", { includeProfiles: false });
+      await gateway.emitGatewayEvent("node.runnerInventory.changed");
+      await gateway.waitForRequest("environments.list", {
+        after: inventoryBeforeNodeRefresh,
+        match: { includeProfiles: false },
+      });
+      expect(await startButton.isEnabled()).toBe(true);
+      expect(
+        await gateway.getRequests("environments.list", { includeProfiles: undefined }),
+      ).toHaveLength(cloudsBeforeNodeRefresh);
+      await gateway.resolveDeferred("environments.list");
+      await gateway.deferNext("environments.list", { includeProfiles: undefined });
       const profileRequests = (await gateway.getRequests("environments.list")).length;
       await replaceGatewayClient(page);
       await expect
@@ -384,11 +401,17 @@ suite.define(() => {
         code: "UNAVAILABLE",
         message: "profile catalog remains unavailable",
       };
-      await gateway.setMethodResponse("environments.list", { __mockError: profileCatalogError });
-      await gateway.deferNext("environments.list");
-      const requestsBeforePersistentFailure = (await gateway.getRequests("environments.list"))
-        .length;
-      await gateway.emitGatewayEvent("node.runnerInventory.changed");
+      await gateway.setMethodResponse("environments.list", {
+        cases: [
+          { match: { includeProfiles: false }, response: { environments: [], profiles: [] } },
+          { match: {}, response: { __mockError: profileCatalogError } },
+        ],
+      });
+      await gateway.deferNext("environments.list", { includeProfiles: undefined });
+      const requestsBeforePersistentFailure = (
+        await gateway.getRequests("environments.list", { includeProfiles: undefined })
+      ).length;
+      await gateway.emitGatewayEvent("config.changed");
       await gateway.waitForRequest("environments.list", {
         after: requestsBeforePersistentFailure,
       });
@@ -401,26 +424,47 @@ suite.define(() => {
       }
       await gateway.rejectDeferred("environments.list", profileCatalogError);
 
-      // A recorded request is not a processed failure. Let the page settle and
-      // schedule its next retry before advancing the clock.
-      await expect.poll(() => startButton.isDisabled()).toBe(false);
+      // Failed current cloud validation remains blocked until a successful retry.
+      await expect.poll(() => startButton.isDisabled()).toBe(true);
       for (const delayMs of CLOUD_PROFILE_RETRY_DELAYS_MS) {
-        await gateway.deferNext("environments.list");
-        const requestsBeforeRetry = (await gateway.getRequests("environments.list")).length;
+        await gateway.deferNext("environments.list", { includeProfiles: undefined });
+        const requestsBeforeRetry = (
+          await gateway.getRequests("environments.list", { includeProfiles: undefined })
+        ).length;
         await page.clock.fastForward(delayMs + 1);
-        await gateway.waitForRequest("environments.list", { after: requestsBeforeRetry });
+        await gateway.waitForRequest("environments.list", {
+          after: requestsBeforeRetry,
+          match: { includeProfiles: undefined },
+        });
         await expect.poll(() => startButton.isDisabled()).toBe(true);
         await gateway.rejectDeferred("environments.list", profileCatalogError);
-        await expect.poll(() => startButton.isDisabled()).toBe(false);
+        await expect.poll(() => startButton.isDisabled()).toBe(true);
       }
       await page.clock.resume();
-      expect(await gateway.getRequests("environments.list")).toHaveLength(
-        requestsBeforePersistentFailure + 1 + CLOUD_PROFILE_RETRY_DELAYS_MS.length,
-      );
+      expect(
+        await gateway.getRequests("environments.list", { includeProfiles: undefined }),
+      ).toHaveLength(requestsBeforePersistentFailure + 1 + CLOUD_PROFILE_RETRY_DELAYS_MS.length);
       await expect.poll(() => trigger.getAttribute("data-cloud-profile")).toBe("aws");
       await expect.poll(() => trigger.getAttribute("data-machine-class")).toBe("fast");
       await pollLocatorText(trigger.locator(".new-session-page__trigger-label")).toBe("aws");
       expect(await trigger.getAttribute("aria-label")).toContain("aws, Fast");
+      await expect.poll(() => startButton.isDisabled()).toBe(true);
+      expect(await gateway.getRequests("sessions.create")).toHaveLength(0);
+      // Restore a successful catalog before dispatch, retaining the exact profile/machine.
+      await gateway.setMethodResponse("environments.list", {
+        environments: [],
+        profiles: [
+          {
+            id: "aws",
+            providerId: "crabbox",
+            machines: [
+              { id: "standard", label: "Standard", default: true },
+              { id: "fast", label: "Fast" },
+            ],
+          },
+        ],
+      });
+      await gateway.emitGatewayEvent("config.changed");
       await expect.poll(() => startButton.isDisabled()).toBe(false);
       await trigger.click();
       const retainedCloudProfile = place.locator('[data-value="cloud:aws"]');
