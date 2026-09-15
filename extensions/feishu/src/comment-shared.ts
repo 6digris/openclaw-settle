@@ -349,19 +349,6 @@ export function parseCommentContentElements(params: {
     }
     const element = rawElement;
     const type = normalizeString(element.type);
-    const text =
-      (type === "text_run" ? readElementTextPreservingWhitespace(element) : undefined) ||
-      (type === "text" ? readElementTextPreservingWhitespace(element) : undefined) ||
-      (type === "docs_link" || type === "link" ? readDocsLinkUrl(element) : undefined) ||
-      (type === "mention" || type === "mention_user" || type === "person"
-        ? (() => {
-            const userId = readMentionUserId(element);
-            return userId ? readMentionDisplayText(element, userId) : undefined;
-          })()
-        : undefined) ||
-      readElementTextPreservingWhitespace(element) ||
-      undefined;
-
     if (type === "mention" || type === "mention_user" || type === "person") {
       const userId = readMentionUserId(element);
       if (userId) {
@@ -404,6 +391,10 @@ export function parseCommentContentElements(params: {
       }
     }
 
+    const text =
+      (type === "text_run" || type === "text"
+        ? readElementTextPreservingWhitespace(element)
+        : undefined) || readElementTextPreservingWhitespace(element);
     if (text) {
       plainTextParts.push(text);
       semanticTextParts.push(text);
