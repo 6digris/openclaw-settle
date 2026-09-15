@@ -1,5 +1,4 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { channel as createDiagnosticsChannel } from "node:diagnostics_channel";
 import { availableParallelism } from "node:os";
 import { parentPort, Worker, type Transferable, type WorkerOptions } from "node:worker_threads";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
@@ -8,6 +7,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { createDeferredCore, type Deferred } from "../shared/deferred.js";
 import { runBestEffortCleanup } from "./non-fatal-cleanup.js";
 import { resolveRuntimeWorkerThreadExecArgv } from "./runtime-worker-url.js";
+import * as historyProbe from "./session-history-probe.js";
 import {
   DEFAULT_WORKER_PENDING_BYTES,
   DEFAULT_WORKER_PENDING_TASKS,
@@ -17,7 +17,6 @@ import {
 
 // Reusable workers must not retain the first submitting caller's async scope.
 const runInWorkerPoolContext = AsyncLocalStorage.snapshot();
-const taskDiagnostics = createDiagnosticsChannel("openclaw.worker.task");
 
 type WorkerTaskInput<Input> = Input | (() => Input | Promise<Input>);
 export type WorkerTaskResponse = {
@@ -38,6 +37,8 @@ export type WorkerTaskRequestContext = {
 };
 
 type WorkerTaskOptions<Input> = {
+  /** Temporary, passive native-history diagnostics; never an interactive exchange. */
+  historyProbe?: boolean;
   /** Known retained input bytes, including inputs captured by a factory. No serialization pass. */
   inputBytes?: number;
   /** When supplied, queueing and asynchronous preparation consume the execution deadline. */
@@ -81,8 +82,10 @@ type Task<Input, Output> = Deferred<Output> & {
   startedAt?: number;
   preparedAt?: number;
   transferMs: number;
+  probe?: historyProbe.ParentHistoryProbe;
 };
 type Slot<Input, Output> = {
+  probeMode?: historyProbe.HistoryWorkerFacts;
   worker?: Worker;
   temporaryDirectory?: string;
   task?: Task<Input, Output>;
@@ -282,9 +285,10 @@ export class WorkerTaskPool<Input, Output> {
       const prepared = this.options.prepareWorker?.();
       slot.temporaryDirectory = prepared?.temporaryDirectory;
       const workerUrl = this.options.workerUrl;
+      const defaultExecArgv = resolveRuntimeWorkerThreadExecArgv(workerUrl);
       const workerOptions = {
         // Preserve native require(ESM) and its transitive import-only exports.
-        execArgv: resolveRuntimeWorkerThreadExecArgv(workerUrl),
+        execArgv: defaultExecArgv,
         ...this.options.workerOptions,
         ...prepared?.options,
       };
@@ -292,15 +296,23 @@ export class WorkerTaskPool<Input, Output> {
       if (slot.retiring) {
         throw new WorkerTaskError("worker creation closed during preparation", "unavailable");
       }
-      return new Worker(workerUrl, workerOptions);
+      const observe = historyProbe.observeHistoryWorkerCreation(
+        workerUrl,
+        workerOptions,
+        defaultExecArgv,
+        Boolean(slot.task?.probe),
+      );
+      const created = new Worker(workerUrl, workerOptions);
+      slot.probeMode = observe();
+      return created;
     });
     slot.worker = worker;
     worker.on("message", (message: unknown) => {
       const task = slot.task;
       if (task) {
-        task.runInContext(() => this.receive(slot, message));
+        task.runInContext(() => this.receive(slot, message, worker));
       } else {
-        this.receive(slot, message);
+        this.receive(slot, message, worker);
       }
     });
     worker.on("error", (error) =>
@@ -340,13 +352,22 @@ export class WorkerTaskPool<Input, Output> {
       return;
     }
     task.preparedAt = performance.now();
+    if (task.options.historyProbe) {
+      task.probe = new historyProbe.ParentHistoryProbe(task);
+    }
     try {
       const worker = slot.worker ?? this.createWorker(slot);
+      task.probe?.started(worker, slot.probeMode);
       const transferList = task.options.transferList?.(input);
       if (!task.done) {
         const transferStartedAt = performance.now();
         worker.postMessage(
-          { input, taskId: task.id, interactive: Boolean(task.options.onRequest) },
+          {
+            input,
+            taskId: task.id,
+            interactive: Boolean(task.options.onRequest),
+            ...(task.probe ? { historyProbe: 1 } : {}),
+          },
           transferList,
         );
         task.transferMs += performance.now() - transferStartedAt;
@@ -356,7 +377,12 @@ export class WorkerTaskPool<Input, Output> {
     }
   }
 
-  private receive(slot: Slot<Input, Output>, message: unknown): void {
+  private receive(slot: Slot<Input, Output>, message: unknown, worker: Worker): void {
+    // A passive frame is never a result or an interactive consumption receipt.
+    if (isRecord(message) && message.status === "history-probe") {
+      slot.task?.probe?.receive(worker, message);
+      return;
+    }
     if (slot.retiring) {
       return;
     }
@@ -532,6 +558,7 @@ export class WorkerTaskPool<Input, Output> {
       return;
     }
     task.done = true;
+    task.probe?.stop();
     task.runInContext(() => task.controller.abort());
     clearTimeout(task.timer);
     task.options.signal?.removeEventListener("abort", task.abort);
@@ -560,20 +587,13 @@ export class WorkerTaskPool<Input, Output> {
         if (permit) {
           this.computeCapacity!.release(permit);
         }
-        if (taskDiagnostics.hasSubscribers) {
-          const now = performance.now();
-          taskDiagnostics.publish({
-            worker: this.options.workerUrl.pathname.split("/").at(-1),
-            outcome: completionError ? "failed" : "ok",
-            queueMs: (task.startedAt ?? now) - task.enqueuedAt,
-            preparationMs:
-              task.startedAt === undefined ? 0 : (task.preparedAt ?? now) - task.startedAt,
-            runMs: task.preparedAt === undefined ? 0 : now - task.preparedAt,
-            transferMs: task.transferMs,
-            pendingTasks: this.pendingTasks,
-            pendingBytes: this.pendingBytes,
-          });
-        }
+        historyProbe.publishWorkerTaskCompletion(
+          this.options.workerUrl,
+          task,
+          completionError,
+          this.pendingTasks,
+          this.pendingBytes,
+        );
         if (completionError) {
           task.reject(completionError);
         } else {
@@ -620,6 +640,7 @@ export class WorkerTaskPool<Input, Output> {
 
   private retire(slot: Slot<Input, Output>): Promise<void> {
     this.clearTimeoutFn(slot.idleTimer);
+    slot.task?.probe?.stop();
     // Retain error listeners until exit: termination can race a worker startup error.
     // Constructor observers can retire this slot before its Worker is assigned.
     return (slot.retiring ??= Promise.resolve()
@@ -669,79 +690,78 @@ export function serveWorkerTasks<Output>(
     return;
   }
   let active: WorkerConversation | undefined;
-  port.on(
-    "message",
-    (message: { input: unknown; taskId: number; interactive?: boolean; responseId?: number }) => {
-      if (message.responseId !== undefined) {
-        if (
-          !active ||
-          message.taskId !== active.taskId ||
-          message.responseId !== active.responseId ||
-          !active.pending
-        ) {
-          throw new Error("stale worker task response");
-        }
-        const pending = active.pending;
-        active.pending = undefined;
-        let consumed = false;
-        const taskId = message.taskId;
-        const id = message.responseId;
-        pending.resolve({
-          input: message.input,
-          consumed: () => {
-            if (consumed) {
-              return;
-            }
-            consumed = true;
-            port.postMessage({ status: "consumed", taskId, id });
-          },
-        });
-        return;
+  port.on("message", (message: historyProbe.WorkerEnvelope) => {
+    if (message.responseId !== undefined) {
+      if (
+        !active ||
+        message.taskId !== active.taskId ||
+        message.responseId !== active.responseId ||
+        !active.pending
+      ) {
+        throw new Error("stale worker task response");
       }
-      if (active) {
-        throw new Error("overlapping worker tasks");
-      }
-      const task: WorkerConversation = { taskId: message.taskId, responseId: 0 };
-      active = task;
-      const channel: WorkerTaskChannel | undefined = message.interactive
-        ? {
-            consumeInput: () =>
-              port.postMessage({ status: "consumed", taskId: task.taskId, id: 0 }),
-            request: (value, transferList) => {
-              if (active !== task || task.pending) {
-                throw new Error("closed or busy worker channel");
-              }
-              task.pending = createDeferredCore();
-              port.postMessage(
-                {
-                  status: "request",
-                  taskId: task.taskId,
-                  id: ++task.responseId,
-                  value,
-                },
-                transferList ? [...transferList] : [],
-              );
-              return task.pending.promise;
-            },
+      const pending = active.pending;
+      active.pending = undefined;
+      let consumed = false;
+      const taskId = message.taskId;
+      const id = message.responseId;
+      pending.resolve({
+        input: message.input,
+        consumed: () => {
+          if (consumed) {
+            return;
           }
-        : undefined;
-      void Promise.resolve()
-        .then(() => handler(message.input, channel))
-        .then((value) => {
-          active = undefined;
-          port.postMessage(
-            { status: "ok", value, taskId: task.taskId },
-            options.transferList?.(value) ?? [],
-          );
-        })
-        .catch((error: unknown) => {
-          active = undefined;
-          port.postMessage({
-            status: "failed",
-            taskId: task.taskId,
-            error: error instanceof Error ? error.message : String(error),
-          });
+          consumed = true;
+          port.postMessage({ status: "consumed", taskId, id });
+        },
+      });
+      return;
+    }
+    if (active) {
+      throw new Error("overlapping worker tasks");
+    }
+    const task: WorkerConversation = { taskId: message.taskId, responseId: 0 };
+    active = task;
+    const channel: WorkerTaskChannel | undefined = message.interactive
+      ? {
+          consumeInput: () => port.postMessage({ status: "consumed", taskId: task.taskId, id: 0 }),
+          request: (value, transferList) => {
+            if (active !== task || task.pending) {
+              throw new Error("closed or busy worker channel");
+            }
+            task.pending = createDeferredCore();
+            port.postMessage(
+              {
+                status: "request",
+                taskId: task.taskId,
+                id: ++task.responseId,
+                value,
+              },
+              transferList ? [...transferList] : [],
+            );
+            return task.pending.promise;
+          },
+        }
+      : undefined;
+    const probe = historyProbe.workerTaskProbe(message, port);
+    void Promise.resolve()
+      .then(() => probe.run(() => handler(message.input, channel)))
+      .then((value) => {
+        probe?.close();
+        active = undefined;
+        port.postMessage(
+          { status: "ok", value, taskId: task.taskId },
+          options.transferList?.(value) ?? [],
+        );
+      })
+      .catch((error: unknown) => {
+        probe?.close();
+        active = undefined;
+        port.postMessage({
+          status: "failed",
+          taskId: task.taskId,
+          error: error instanceof Error ? error.message : String(error),
         });
-    },
-  );
+      });
+  });
 }

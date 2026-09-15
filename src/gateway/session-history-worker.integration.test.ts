@@ -7,6 +7,15 @@ import {
   replaceTranscriptEvents,
   waitForSessionTranscriptProjection,
 } from "../config/sessions/session-accessor.js";
+import type {
+  SessionTranscriptHistoryWorkerInput,
+  SessionTranscriptWorkerReply,
+} from "../config/sessions/session-transcript.worker.js";
+import {
+  projectHistoryProbeRecord,
+  type HistoryProbeRecord,
+} from "../infra/session-history-probe.js";
+import { WorkerTaskPool } from "../infra/worker-task-pool.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { readChatHistoryPage } from "./server-methods/chat-history-pages.js";
 import { readSessionHistorySnapshotAsync } from "./session-history-state.js";
@@ -132,5 +141,101 @@ it("reads a new branch and reset interval after earlier worker pages settle", as
     const reset = await read();
     expect(reset.history.messages.map(readChatHistoryMessageId)).toEqual(["reset-B"]);
     expect(reset.rawTranscriptSeq).toBe(1);
+  });
+});
+
+it("observes the real RPC kernel import and readonly snapshot without changing its reply", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const target = {
+      agentId: "main",
+      sessionId: "probe-history",
+      sessionKey: "agent:main:probe-history",
+      storePath: path.join(state.sessionsDir(), "sessions.json"),
+    };
+    const entry = { sessionId: target.sessionId, updatedAt: 1 };
+    await replaceSessionEntry(target, entry);
+    await replaceTranscriptEvents(target, [
+      { type: "session", version: 3, id: target.sessionId },
+      {
+        type: "message",
+        id: "message",
+        parentId: null,
+        message: { role: "user", content: "History probe fixture" },
+      },
+    ]);
+    await waitForSessionTranscriptProjection(target);
+    const input: SessionTranscriptHistoryWorkerInput = {
+      kind: "history-page",
+      request: {
+        kind: "rpc",
+        params: {
+          entry,
+          provider: undefined,
+          sessionId: target.sessionId,
+          storePath: target.storePath,
+          sessionAgentId: target.agentId,
+          canonicalKey: target.sessionKey,
+          max: 10,
+          maxHistoryBytes: 100_000,
+          effectiveMaxChars: 8000,
+          offset: undefined,
+          messageId: undefined,
+        },
+      },
+    };
+    const pool = new WorkerTaskPool<
+      SessionTranscriptHistoryWorkerInput,
+      SessionTranscriptWorkerReply<"history-page">
+    >({
+      workerUrl: new URL("../config/sessions/session-transcript.worker.ts", import.meta.url),
+      maxWorkers: 1,
+    });
+    const rows: HistoryProbeRecord[] = [];
+    const diagnostics = channel("openclaw.worker.task");
+    const observe = (value: unknown) => {
+      if (value && typeof value === "object" && "historyProbe" in value) {
+        const row = projectHistoryProbeRecord(value.historyProbe);
+        if (row) {
+          rows.push(row);
+        }
+      }
+    };
+    diagnostics.subscribe(observe);
+    try {
+      const measured = await pool.run(input, { historyProbe: true, timeoutMs: 60_000 });
+      expect(measured.ok).toBe(true);
+      const measuredRows = rows.slice();
+      expect(measuredRows[0]).toMatchObject({
+        kind: "startup",
+        worker: "new",
+        mode: "source",
+        loader: "tsx",
+      });
+      for (const phase of [
+        "kernel-import",
+        "history-body",
+        "readonly-open",
+        "readonly-schema",
+        "projection-snapshot",
+      ]) {
+        const begin = measuredRows.findIndex(
+          (row) => row.kind === "phase" && row.phase === phase && row.event === "begin",
+        );
+        const end = measuredRows.findIndex(
+          (row) => row.kind === "phase" && row.phase === phase && row.event === "end",
+        );
+        expect(begin, phase).toBeGreaterThanOrEqual(0);
+        expect(end, phase).toBeGreaterThan(begin);
+      }
+      expect(measuredRows.length).toBeLessThanOrEqual(25);
+      expect(JSON.stringify(measuredRows)).not.toMatch(
+        /probe-history|History probe fixture|sessions.json/,
+      );
+      expect(await pool.run(input, { timeoutMs: 60_000 })).toEqual(measured);
+      expect(rows).toEqual(measuredRows);
+    } finally {
+      await pool.close();
+      diagnostics.unsubscribe(observe);
+    }
   });
 });

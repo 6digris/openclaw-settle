@@ -77,7 +77,10 @@ describe("diagnostics timeline", () => {
         label,
         async () => {
           const spanId = getActiveDiagnosticsTimelineSpan()?.spanId;
-          const result = await pool.run({ label, counters, wait }, { timeoutMs: 10_000 });
+          const result = await pool.run(
+            { label, counters, wait, probeRepeats: 3 },
+            { timeoutMs: 10_000, historyProbe: true },
+          );
           const events = await readTimeline(path);
           expect(
             events.filter((event) => event.name === "worker.task" && event.parentSpanId === spanId),
@@ -104,6 +107,41 @@ describe("diagnostics timeline", () => {
       const marks = events.filter((event) => event.name === "worker.task");
       expect(marks).toHaveLength(3);
       expect(new Set(marks.map((event) => event.parentSpanId)).size).toBe(3);
+      const probeMarks = events.filter((event) => event.name === "worker.history.probe");
+      expect(new Set(probeMarks.map((event) => event.parentSpanId)).size).toBe(3);
+      for (const [index, mark] of marks.entries()) {
+        const rows = probeMarks
+          .filter((event) => event.parentSpanId === mark.parentSpanId)
+          .map(attributesRecord);
+        expect(rows[0]).toMatchObject({
+          version: 1,
+          task: 1,
+          kind: "startup",
+          worker: index === 0 ? "new" : "reused",
+          mode: "source",
+          loader: "tsx",
+        });
+        expect(rows.filter((row) => row.kind === "online")).toHaveLength(index === 0 ? 1 : 0);
+        expect(rows.filter((row) => row.kind === "handler")).toHaveLength(1);
+        expect(
+          rows.filter((row) => row.kind === "phase").map((row) => [row.phase, row.event]),
+        ).toEqual([
+          ["history-body", "begin"],
+          ["projection-snapshot", "begin"],
+          ["projection-snapshot", "end"],
+          ["projection-snapshot", "begin"],
+          ["history-body", "end"],
+          ["projection-snapshot", "aggregate"],
+        ]);
+        expect(rows.at(-1)).toMatchObject({ count: 3, failures: 0 });
+        expect(rows.map((row) => row.ordinal)).toEqual(rows.map((_, row) => row + 1));
+        expect(attributesRecord(mark).probeTask).toBe(1);
+        expect(
+          events.indexOf(
+            probeMarks.filter((event) => event.parentSpanId === mark.parentSpanId).at(-1)!,
+          ),
+        ).toBeLessThan(events.indexOf(mark));
+      }
       for (const mark of marks) {
         expect(attributesRecord(mark)).toMatchObject({ status: "captured", outcome: "ok" });
         expect(attributesRecord(mark)).not.toHaveProperty("worker");
@@ -120,9 +158,13 @@ describe("diagnostics timeline", () => {
     const { env, path } = await createTimelineEnv();
     const workers = channel("openclaw.worker.task");
     const value = { outcome: "ok", queueMs: 1, preparationMs: 2, runMs: 3, transferMs: 0.5 };
+    const publish = () => {
+      workers.publish(value);
+      workers.publish({ taskId: 1, historyProbe: { kind: "handler", ordinal: 1, elapsedMs: 2 } });
+    };
     let late = () => {};
-    await measureDiagnosticsTimelineSpan("default", () => workers.publish(value), { env });
-    await measureDiagnosticsTimelineSpan("disabled", () => workers.publish(value), {
+    await measureDiagnosticsTimelineSpan("default", publish, { env });
+    await measureDiagnosticsTimelineSpan("disabled", publish, {
       env: { ...env, OPENCLAW_DIAGNOSTICS: "0" },
       workerTasks: true,
     });
@@ -130,17 +172,18 @@ describe("diagnostics timeline", () => {
       "owner",
       async () => {
         const restore = AsyncLocalStorage.snapshot();
-        late = () => restore(() => workers.publish(value));
-        await measureDiagnosticsTimelineSpan("descendant", () => workers.publish(value), { env });
-        workers.publish(value);
+        late = () => restore(publish);
+        await measureDiagnosticsTimelineSpan("descendant", publish, { env });
+        publish();
       },
       { env, workerTasks: true },
     );
-    workers.publish(value);
+    publish();
     await measureDiagnosticsTimelineSpan("successor", () => late(), { env, workerTasks: true });
     const events = await readTimeline(path);
     const marks = events.filter((event) => event.name === "worker.task");
     expect(marks).toHaveLength(1);
+    expect(events.filter((event) => event.name === "worker.history.probe")).toHaveLength(1);
     expect(marks[0]?.parentSpanId).toBe(events.find((event) => event.name === "owner")?.spanId);
   });
 

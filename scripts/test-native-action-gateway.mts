@@ -321,7 +321,9 @@ export async function withNativeActionGateway(
       // Retain this started child across native preparation. An absent exit is
       // only unobserved termination; it does not establish Gateway responsiveness.
       const gatewayChild = instance.child;
-      const gatewayChildSnapshot = (observation: "control-failure" | "native-child-failure") => {
+      const gatewayChildSnapshot = (
+        observation: "control-failure" | "native-child-failure" | "native-child-completion",
+      ) => {
         const signal = gatewayChild?.signalCode;
         return {
           observation,
@@ -833,6 +835,7 @@ export async function withNativeActionGateway(
           const address = control.address();
           assert(address && typeof address !== "string");
           const historyWindow = await captureNativeHistoryWindow(historyTimelinePath);
+          let nativeFailed = false;
           try {
             await executeNative({
               version: 1,
@@ -846,37 +849,48 @@ export async function withNativeActionGateway(
               media,
             });
           } catch (error) {
-            const failedAtMs = Date.now();
-            // Capture owner facts before the diagnostic file read yields or fixture cleanup starts.
-            const gatewayChildFailure = gatewayChildSnapshot("native-child-failure");
-            const readiness = proxy.readinessSnapshot();
-            let matchRequest: ReturnType<typeof proxy.captureHistoryRequestMatcher> | undefined;
-            try {
-              matchRequest = proxy.captureHistoryRequestMatcher();
-            } catch {
-              // Correlation is optional; retain the original native error and phase evidence.
-            }
-            const historyTimeline = await readNativeHistoryDiagnostic(
-              historyTimelinePath,
-              historyWindow,
-              failedAtMs,
-              matchRequest,
-            );
-            console.error(
-              JSON.stringify({
-                event: "native-child-failed",
-                platform,
-                completedCases: completed.size,
-                completedMedia: mediaCompleted.size,
-                completedWidgets: widgetsCompleted.size,
-                lastSignInCheckpoint: signInCheckpoints.at(-1) ?? "none",
-                gatewayChild: gatewayChildFailure,
-                // Native cleanup may already have closed these retained initial sockets.
-                readiness,
-                historyTimeline,
-              }),
-            );
+            nativeFailed = true;
             throw error;
+          } finally {
+            try {
+              const cutoffAtMs = Date.now();
+              // Capture owner facts before the diagnostic file read yields or fixture cleanup starts.
+              const gatewayChildFailure = gatewayChildSnapshot(
+                nativeFailed ? "native-child-failure" : "native-child-completion",
+              );
+              const readiness = proxy.readinessSnapshot();
+              let matchRequest: ReturnType<typeof proxy.captureHistoryRequestMatcher> | undefined;
+              try {
+                matchRequest = proxy.captureHistoryRequestMatcher();
+              } catch {
+                // Correlation is optional; retain the original native error and phase evidence.
+              }
+              const historyTimeline = await readNativeHistoryDiagnostic(
+                historyTimelinePath,
+                historyWindow,
+                cutoffAtMs,
+                matchRequest,
+                nativeFailed
+                  ? "through-native-process-failure"
+                  : "through-native-process-completion",
+              );
+              (nativeFailed ? console.error : console.log)(
+                JSON.stringify({
+                  event: nativeFailed ? "native-child-failed" : "native-child-completed",
+                  platform,
+                  completedCases: completed.size,
+                  completedMedia: mediaCompleted.size,
+                  completedWidgets: widgetsCompleted.size,
+                  lastSignInCheckpoint: signInCheckpoints.at(-1) ?? "none",
+                  gatewayChild: gatewayChildFailure,
+                  // Native cleanup may already have closed these retained initial sockets.
+                  readiness,
+                  historyTimeline,
+                }),
+              );
+            } catch {
+              // Best-effort capture cannot replace native success or its original error.
+            }
           }
           assert.deepEqual(
             [...completed].toSorted(),

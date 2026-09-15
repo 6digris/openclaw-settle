@@ -1,3 +1,4 @@
+import { getActiveDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
 import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
 import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
 import { WorkerTaskPool } from "../../infra/worker-task-pool.js";
@@ -110,7 +111,11 @@ export async function runSessionHistoryWorkerRequest(
   inputBytes: number,
 ) {
   return unwrapReply<"history-page">(
-    await historyPages.run(prepare, { inputBytes, timeoutMs: 60_000 }),
+    await historyPages.run(prepare, {
+      inputBytes,
+      timeoutMs: 60_000,
+      historyProbe: getActiveDiagnosticsTimelineSpan()?.workerTasks === true,
+    }),
   );
 }
 

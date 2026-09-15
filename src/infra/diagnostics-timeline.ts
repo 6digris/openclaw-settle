@@ -11,6 +11,7 @@ import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { isDiagnosticFlagEnabled } from "./diagnostic-flags.js";
 import { isTruthyEnvValue } from "./env.js";
 import { appendRegularFileSync } from "./regular-file.js";
+import { projectHistoryProbeRecord } from "./session-history-probe.js";
 
 const OPENCLAW_DIAGNOSTICS_TIMELINE_SCHEMA_VERSION = "openclaw.diagnostics.v1";
 const MAX_PENDING_TIMELINE_BYTES = 64 * 1024;
@@ -72,6 +73,7 @@ type DiagnosticsTimelineOptions = {
 
 /** Active timeline span carried through async-local scope for nested diagnostics. */
 type ActiveDiagnosticsTimelineSpan = {
+  workerTasks?: boolean;
   name: string;
   phase?: string;
   spanId: string;
@@ -310,6 +312,7 @@ function startDiagnosticsTimelineSpan(
   const parentSpanId = options.parentSpanId ?? activeSpan?.spanId;
   const span: StartedDiagnosticsTimelineSpan = {
     name,
+    workerTasks: options.workerTasks,
     env,
     ...(options.config ? { config: options.config } : {}),
     spanId: randomUUID(),
@@ -337,6 +340,7 @@ function runInDiagnosticsTimelineSpan<T>(span: StartedDiagnosticsTimelineSpan, r
   return activeDiagnosticsTimelineSpan.run(
     {
       name: span.name,
+      workerTasks: span.workerTasks,
       ...(span.phase ? { phase: span.phase } : {}),
       spanId: span.spanId,
       ...(span.parentSpanId ? { parentSpanId: span.parentSpanId } : {}),
@@ -386,6 +390,7 @@ function emitFailedDiagnosticsTimelineSpan(
 function observeSpanWorkerTasks(span: StartedDiagnosticsTimelineSpan): () => void {
   const workers = channel("openclaw.worker.task");
   let recorded = 0;
+  const probeTasks = new Map<number, { ordinal: number; records: number }>();
   let invalid = false;
   let truncated = false;
   const emit = (attributes: DiagnosticsTimelineAttributes) =>
@@ -410,6 +415,45 @@ function observeSpanWorkerTasks(span: StartedDiagnosticsTimelineSpan): () => voi
       if (!isRecord(message)) {
         return recordInvalid();
       }
+      if ("historyProbe" in message) {
+        if (
+          !Number.isSafeInteger(message.taskId) ||
+          typeof message.taskId !== "number" ||
+          message.taskId < 1
+        ) {
+          return recordInvalid();
+        }
+        let task = probeTasks.get(message.taskId);
+        if (!task) {
+          if (probeTasks.size === 4) {
+            if (!truncated) {
+              truncated = true;
+              emit({ status: "truncated" });
+            }
+            return;
+          }
+          task = { ordinal: probeTasks.size + 1, records: 0 };
+          probeTasks.set(message.taskId, task);
+        }
+        if (task.records === 25) {
+          return;
+        }
+        const row = projectHistoryProbeRecord(message.historyProbe);
+        if (!row || row.ordinal !== task.records + 1) {
+          return recordInvalid();
+        }
+        task.records++;
+        emitDiagnosticsTimelineEvent(
+          {
+            type: "mark",
+            name: "worker.history.probe",
+            parentSpanId: span.spanId,
+            attributes: { version: 1, task: task.ordinal, ...row },
+          },
+          { config: span.config, env: span.env },
+        );
+        return;
+      }
       const { outcome, queueMs, preparationMs, runMs, transferMs } = message;
       if (
         (outcome !== "ok" && outcome !== "failed") ||
@@ -433,6 +477,10 @@ function observeSpanWorkerTasks(span: StartedDiagnosticsTimelineSpan): () => voi
       recorded++;
       emit({
         status: "captured",
+        ...(typeof message.historyProbeTaskId === "number" &&
+        probeTasks.has(message.historyProbeTaskId)
+          ? { probeTask: probeTasks.get(message.historyProbeTaskId)!.ordinal }
+          : {}),
         outcome,
         queueMs,
         preparationMs,

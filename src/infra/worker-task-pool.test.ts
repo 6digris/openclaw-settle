@@ -8,9 +8,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { Worker } from "node:worker_threads";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import {
+  beginHistoryProbePhase,
+  createHistoryProbe,
+  projectHistoryProbeRecord,
+} from "./session-history-probe.js";
 import { WorkerTaskPool } from "./worker-task-pool.js";
 import type { PoolFixtureInput, PoolFixtureResult } from "./worker-task-pool.test-support.js";
 
@@ -60,6 +66,137 @@ afterEach(async () => {
 });
 
 describe("worker task pool", () => {
+  it("keeps passive history frames bounded and separate from task results, exchanges and successors", async () => {
+    const diagnostics = channel("openclaw.worker.task");
+    const rows: Record<string, unknown>[] = [];
+    const observe = (value: unknown) => {
+      if (isRecord(value) && "historyProbe" in value) {
+        rows.push(value);
+      }
+    };
+    const pool = createPool();
+    const counters = new Int32Array(new SharedArrayBuffer(8));
+    diagnostics.subscribe(observe);
+    const result = pool.run(
+      { label: "measured", counters: counters.buffer, wait: true },
+      { historyProbe: true, timeoutMs: 10_000 },
+    );
+    void result.catch(() => {});
+    try {
+      await expect.poll(() => Atomics.load(counters, 0)).toBe(1);
+      await expect
+        .poll(() =>
+          rows.some((row) => projectHistoryProbeRecord(row.historyProbe)?.kind === "phase"),
+        )
+        .toBe(true);
+      const worker = workers.at(-1);
+      assert(worker);
+      const taskId = rows[0]?.taskId;
+      assert.equal(typeof taskId, "number");
+      const phase = {
+        kind: "phase",
+        ordinal: 2,
+        phase: "history-body",
+        event: "end",
+        elapsedMs: 1,
+        wallMs: 1,
+        userUs: null,
+        systemUs: null,
+        count: 1,
+        failures: 0,
+        maxMs: 1,
+      };
+      const beforeWrongOwner = rows.length;
+      worker.emit("message", { status: "history-probe", taskId: -1, record: phase });
+      expect(rows).toHaveLength(beforeWrongOwner);
+      worker.emit("message", {
+        status: "history-probe",
+        taskId,
+        record: {
+          get kind() {
+            throw new Error("private-payload");
+          },
+          ordinal: 2,
+        },
+      });
+      for (let ordinal = 2; ordinal <= 25; ordinal++) {
+        worker.emit("message", {
+          status: "history-probe",
+          taskId,
+          record: { ...phase, ordinal, privatePayload: "private-payload" },
+        });
+      }
+      Atomics.store(counters, 1, 1);
+      Atomics.notify(counters, 1);
+      expect(await result).toMatchObject({ label: "measured" });
+      expect(worker.listenerCount("online")).toBe(0);
+      const records = rows.map((row) => projectHistoryProbeRecord(row.historyProbe));
+      expect(records).toHaveLength(25);
+      expect(records.filter((row) => row?.kind === "invalid")).toHaveLength(1);
+      expect(records.filter((row) => row?.kind === "truncated")).toHaveLength(1);
+      expect(JSON.stringify(rows)).not.toContain("private-payload");
+      const count = rows.length;
+      worker.emit("message", { status: "history-probe", taskId, record: phase });
+      expect(await pool.run({ label: "default-off" }, {})).toMatchObject({
+        label: "default-off",
+        threadId: worker.threadId,
+      });
+      expect(rows).toHaveLength(count);
+      await expect(
+        pool.run({ label: "failed", probeFailure: true }, { historyProbe: true }),
+      ).rejects.toMatchObject({ code: "failed", message: "fixture handler failure" });
+      expect(
+        rows.some((row) => {
+          const record = projectHistoryProbeRecord(row.historyProbe);
+          return record?.kind === "phase" && record.event === "failed" && record.failures === 1;
+        }),
+      ).toBe(true);
+    } finally {
+      Atomics.store(counters, 1, 1);
+      Atomics.notify(counters, 1);
+      await pool.close();
+      await Promise.allSettled([result]);
+      diagnostics.unsubscribe(observe);
+    }
+  });
+
+  it("closes diagnostic scopes and preserves synchronous values and errors when observation fails", () => {
+    const value = {};
+    const error = new Error("original operation");
+    const emitted: unknown[] = [];
+    const probe = createHistoryProbe((row) => {
+      emitted.push(row);
+      throw new Error("diagnostic failure");
+    });
+    let late: (() => void) | undefined;
+    try {
+      expect(
+        probe.run(() => {
+          late = beginHistoryProbePhase("kernel-import");
+          return value;
+        }),
+      ).toBe(value);
+      expect(() =>
+        probe.run(() => {
+          const done = beginHistoryProbePhase("readonly-open");
+          try {
+            throw error;
+          } finally {
+            done?.(true);
+          }
+        }),
+      ).toThrow(error);
+    } finally {
+      probe.close();
+    }
+    const count = emitted.length;
+    late?.();
+    probe.run(() => beginHistoryProbePhase("reset-archive")?.());
+    expect(emitted).toHaveLength(count);
+    expect(beginHistoryProbePhase("history-body")).toBeUndefined();
+    expect(emitted.map(projectHistoryProbeRecord).every(Boolean)).toBe(true);
+  });
+
   it.each(["factory", "options", "constructor"] as const)(
     "joins cancellation during worker %s preparation before removing scratch",
     async (phase) => {
@@ -90,9 +227,9 @@ describe("worker task pool", () => {
         },
       });
       try {
-        await expect(pool.run({ label: "canceled" }, { signal: controller.signal })).rejects.toBe(
-          reason,
-        );
+        await expect(
+          pool.run({ label: "canceled" }, { signal: controller.signal, historyProbe: true }),
+        ).rejects.toBe(reason);
         await pool.close();
         const created = workers.slice(createdBefore);
         expect(created).toHaveLength(phase === "constructor" ? 1 : 0);
@@ -547,7 +684,7 @@ describe("worker task pool", () => {
     const reason = new Error("cancel execution");
     const active = pool.run(
       { label: "cancelled", counters, wait: true },
-      { timeoutMs: 10_000, signal: controller.signal },
+      { timeoutMs: 10_000, signal: controller.signal, historyProbe: true },
     );
     const rejected = expect(active).rejects.toBe(reason);
     await expect.poll(() => Atomics.load(new Int32Array(counters), 0)).toBe(1);
@@ -556,6 +693,7 @@ describe("worker task pool", () => {
     controller.abort(reason);
     await rejected;
     expect(cancelledWorker?.threadId).toBe(-1);
+    expect(cancelledWorker?.listenerCount("online")).toBe(0);
     await expect(replacement).resolves.toMatchObject({ label: "replacement" });
     expect(workers).toHaveLength(2);
   });

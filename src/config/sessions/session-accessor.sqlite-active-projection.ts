@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { InferResult, RawBuilder } from "kysely";
 import type { TranscriptDisplayPosition } from "../../chat/transcript-display-position.js";
 import { getNodeSqliteKysely, prepareSqliteQuerySync } from "../../infra/kysely-sync.js";
+import { beginHistoryProbePhase } from "../../infra/session-history-probe.js";
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
@@ -179,48 +180,57 @@ export function withCurrentProjectionSnapshot<T>(
 ): T {
   const resolved = resolveSqliteTranscriptReadScope(scope);
   const databaseOptions = toDatabaseOptions(resolved);
-  const readSnapshot = (database: TranscriptReadDatabase) =>
-    runSqliteDeferredTransactionSync(
-      database.db,
-      () => {
-        const snapshot = readProjectionSnapshot(database, resolved.sessionId);
-        if (snapshot.cold) {
-          throw new SessionTranscriptColdError(resolved.sessionId);
-        }
-        if (snapshot.latestSeq === null) {
-          return {
-            kind: "value" as const,
-            value: read({
-              database,
-              generation: snapshot.generation,
-              resolved,
-              state: EMPTY_PROJECTION_STATE,
-            }),
-          };
-        }
-        if (
-          snapshot.state &&
-          !snapshot.state.needsRebuild &&
-          snapshot.state.indexedSeq === snapshot.latestSeq &&
-          !snapshot.hasUnclassified
-        ) {
-          return {
-            kind: "value" as const,
-            value: read({
-              database,
-              generation: snapshot.generation,
-              resolved,
-              state: snapshot.state,
-            }),
-          };
-        }
-        return { kind: "unavailable" as const };
-      },
-      {
-        databaseLabel: database.path,
-        operationLabel: "sessions.history.read",
-      },
-    );
+  const readSnapshot = (database: TranscriptReadDatabase) => {
+    const snapshotDone = beginHistoryProbePhase("projection-snapshot");
+    try {
+      return runSqliteDeferredTransactionSync(
+        database.db,
+        () => {
+          const snapshot = readProjectionSnapshot(database, resolved.sessionId);
+          if (snapshot.cold) {
+            throw new SessionTranscriptColdError(resolved.sessionId);
+          }
+          if (snapshot.latestSeq === null) {
+            return {
+              kind: "value" as const,
+              value: read({
+                database,
+                generation: snapshot.generation,
+                resolved,
+                state: EMPTY_PROJECTION_STATE,
+              }),
+            };
+          }
+          if (
+            snapshot.state &&
+            !snapshot.state.needsRebuild &&
+            snapshot.state.indexedSeq === snapshot.latestSeq &&
+            !snapshot.hasUnclassified
+          ) {
+            return {
+              kind: "value" as const,
+              value: read({
+                database,
+                generation: snapshot.generation,
+                resolved,
+                state: snapshot.state,
+              }),
+            };
+          }
+          return { kind: "unavailable" as const };
+        },
+        {
+          databaseLabel: database.path,
+          operationLabel: "sessions.history.read",
+        },
+      );
+    } catch (error) {
+      snapshotDone?.(true);
+      throw error;
+    } finally {
+      snapshotDone?.();
+    }
+  };
   const result = options.readOnly
     ? withOpenClawAgentDatabaseReadOnly(readSnapshot, databaseOptions, {
         throwOnMissingTable: true,

@@ -1,5 +1,9 @@
 import fs from "node:fs/promises";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import {
+  projectHistoryProbeRecord,
+  type HistoryProbeRecord,
+} from "../../src/infra/session-history-probe.js";
 
 const MAX_BYTES = 1024 * 1024;
 const MAX_SPANS = 64;
@@ -11,6 +15,7 @@ type HistoryRequest =
   | { status: "matched"; connection: number; request: number };
 type HistoryWorkerTask = {
   ordinal: number;
+  probeTask?: number;
   finishedMs: number;
   outcome: "ok" | "failed";
   queueMs: number;
@@ -29,6 +34,11 @@ type HistorySpan = {
   outcome: "pending" | "end" | "error";
   request?: HistoryRequest;
   workerTasks?: { rows: HistoryWorkerTask[]; invalid: boolean; truncated: boolean };
+  historyProbe?: {
+    version: 1;
+    tasks: { ordinal: number; rows: HistoryProbeRecord[]; invalid: boolean; truncated: boolean }[];
+    truncated: boolean;
+  };
 };
 type NativeHistoryWindow = {
   startedAtMs: number;
@@ -46,7 +56,7 @@ type NativeHistoryDiagnostic = {
     | "short-read";
   // The child buffers timeline writes. Even a complete file read cannot prove non-execution.
   writerMayBeBuffered: true;
-  cutoff: "through-native-process-failure";
+  cutoff: "through-native-process-failure" | "through-native-process-completion";
   truncated: boolean;
   incompleteLine: boolean;
   malformedLine: boolean;
@@ -97,6 +107,17 @@ function matchHistoryRequest(
 }
 
 function boundProjection(result: NativeHistoryDiagnostic): NativeHistoryDiagnostic {
+  const details = result.spans.flatMap((span) => (span.historyProbe ? [span.historyProbe] : []));
+  if (
+    Buffer.byteLength(JSON.stringify(details)) > 16 * 1024 ||
+    Buffer.byteLength(JSON.stringify(result)) > MAX_OUTPUT_BYTES
+  ) {
+    for (const detail of details) {
+      detail.tasks = [];
+      detail.truncated = true;
+    }
+    result.truncated = true;
+  }
   // All fields are fixed or numeric and counts are already bounded. If their
   // combined encoding exceeds the public cap, retain phases and omit task rows.
   if (Buffer.byteLength(JSON.stringify(result)) > MAX_OUTPUT_BYTES) {
@@ -144,17 +165,18 @@ function historyPhase(name: unknown): HistoryPhase | undefined {
   }
 }
 
-/** Reads only the private failure window; never returns raw IDs, attributes, paths, or errors. */
+/** Reads only the private native-process window; never returns raw IDs, attributes, paths, or errors. */
 export async function readNativeHistoryDiagnostic(
   file: string,
   window: NativeHistoryWindow,
-  failedAtMs: number,
+  cutoffAtMs: number,
   matchRequest?: (id: unknown) => unknown,
+  cutoff: NativeHistoryDiagnostic["cutoff"] = "through-native-process-failure",
 ): Promise<NativeHistoryDiagnostic> {
   const result: NativeHistoryDiagnostic = {
     readStatus: "start-unavailable",
     writerMayBeBuffered: true,
-    cutoff: "through-native-process-failure",
+    cutoff,
     truncated: false,
     incompleteLine: false,
     malformedLine: false,
@@ -195,6 +217,7 @@ export async function readNativeHistoryDiagnostic(
     const decoder = new TextDecoder("utf-8", { fatal: true });
     const spans = new Map<string, HistorySpan>();
     let taskCount = 0;
+    let detailedTasks = 0;
     // One bounded framing pass; never parse oversized or partial lines.
     for (let offset = 0; offset < buffer.length;) {
       const end = buffer.indexOf(10, offset);
@@ -226,7 +249,52 @@ export async function readNativeHistoryDiagnostic(
         result.malformedLine = true;
         continue;
       }
-      if (at < window.startedAtMs || at > failedAtMs) {
+      if (at < window.startedAtMs || at > cutoffAtMs) {
+        continue;
+      }
+      if (event.type === "mark" && event.name === "worker.history.probe") {
+        const span = privateKey(event.parentSpanId) ? spans.get(event.parentSpanId) : undefined;
+        if (!span?.workerTasks || span.startedMs === null || span.outcome !== "pending") {
+          result.orphanedWorkerTask = true;
+          continue;
+        }
+        const detail = (span.historyProbe ??= { version: 1, tasks: [], truncated: false });
+        const fields = event.attributes;
+        if (
+          !isRecord(fields) ||
+          fields.version !== 1 ||
+          typeof fields.task !== "number" ||
+          !Number.isInteger(fields.task) ||
+          fields.task < 1 ||
+          fields.task > 4
+        ) {
+          span.workerTasks.invalid = true;
+          continue;
+        }
+        let task = detail.tasks.find((row) => row.ordinal === fields.task);
+        if (!task) {
+          // Selection is after offset/timestamp filtering, never the first tasks in the process.
+          if (detailedTasks === 4) {
+            detail.truncated = result.truncated = true;
+            continue;
+          }
+          detailedTasks++;
+          task = { ordinal: fields.task, rows: [], invalid: false, truncated: false };
+          detail.tasks.push(task);
+        }
+        const row = projectHistoryProbeRecord(fields);
+        if (!row || row.ordinal !== task.rows.length + 1) {
+          task.invalid = true;
+          continue;
+        }
+        if (task.rows.length === 24) {
+          task.truncated = result.truncated = true;
+          continue;
+        }
+        task.invalid ||= row.kind === "invalid";
+        task.truncated ||= row.kind === "truncated";
+        result.truncated ||= task.truncated;
+        task.rows.push(row);
         continue;
       }
       if (event.type === "mark" && event.name === "worker.task") {
@@ -270,6 +338,12 @@ export async function readNativeHistoryDiagnostic(
         // no mark. Completion can also occur after the client's request timeout.
         tasks.rows.push({
           ordinal: tasks.rows.length + 1,
+          ...(typeof fields.probeTask === "number" &&
+          Number.isInteger(fields.probeTask) &&
+          fields.probeTask >= 1 &&
+          fields.probeTask <= 4
+            ? { probeTask: fields.probeTask }
+            : {}),
           finishedMs: at - window.startedAtMs,
           outcome,
           queueMs,

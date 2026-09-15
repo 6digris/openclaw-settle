@@ -307,3 +307,168 @@ it("distinguishes unavailable and changed files without claiming Gateway non-exe
     spans: [],
   });
 });
+
+it("retains bounded post-window probe phases on completion and excludes later or malformed detail", async () => {
+  const file = path.join(temps.make("native-history-probe-"), "timeline.jsonl");
+  const phase = "gateway.chat.history.history_page";
+  const detail = (owner: string, at: number, ordinal: number, fields = {}) =>
+    JSON.stringify({
+      schemaVersion: "openclaw.diagnostics.v1",
+      type: "mark",
+      name: "worker.history.probe",
+      parentSpanId: owner,
+      timestamp: new Date(at).toISOString(),
+      attributes: {
+        version: 1,
+        task: 1,
+        kind: "phase",
+        phase: "kernel-import",
+        event: "begin",
+        ordinal,
+        elapsedMs: 1,
+        wallMs: 0,
+        userUs: null,
+        systemUs: null,
+        count: 0,
+        failures: 0,
+        maxMs: 0,
+        privateText,
+        ...fields,
+      },
+    }) + "\n";
+  await fs.writeFile(
+    file,
+    Array.from(
+      { length: 6 },
+      (_, i) =>
+        event(phase, "span.start", "setup" + i, Date.now()) + detail("setup" + i, Date.now(), 1),
+    ).join(""),
+  );
+  const window = await captureNativeHistoryWindow(file);
+  const at = window.startedAtMs;
+  await fs.appendFile(
+    file,
+    Array.from(
+      { length: 5 },
+      (_, i) =>
+        event(phase, "span.start", "native" + i, at + 1) +
+        detail("native" + i, at + 2, 1) +
+        detail("native" + i, at + 3, 2, {
+          event: "end",
+          wallMs: 20,
+          count: 1,
+          maxMs: 20,
+          userUs: 10,
+          systemUs: 1,
+        }) +
+        task("native" + i, at + 4, { probeTask: 1 }) +
+        event(phase, "span.end", "native" + i, at + 5),
+    ).join("") +
+      detail("native0", at + 6, 3) +
+      event(phase, "span.start", "later", at + 20),
+  );
+  const result = await readNativeHistoryDiagnostic(
+    file,
+    window,
+    at + 10,
+    undefined,
+    "through-native-process-completion",
+  );
+  expect(result.cutoff).toBe("through-native-process-completion");
+  expect(result.spans).toHaveLength(5);
+  expect(result.spans.flatMap((span) => span.historyProbe?.tasks ?? [])).toHaveLength(4);
+  expect(result.spans[0]?.historyProbe?.tasks[0]?.rows).toMatchObject([
+    { ordinal: 1, event: "begin" },
+    { ordinal: 2, event: "end", wallMs: 20, userUs: 10 },
+  ]);
+  expect(result.spans[0]?.workerTasks?.rows[0]?.probeTask).toBe(1);
+  expect(result.spans[4]?.historyProbe?.truncated).toBe(true);
+  expect(result.spans.every((span) => span.outcome === "end")).toBe(true);
+  expect(result.orphanedWorkerTask).toBe(true);
+  expect(JSON.stringify(result)).not.toMatch(/private|native[0-9]|setup|later/);
+  expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(32 * 1024);
+});
+
+it("rejects invalid or excessive probe records while retaining the owning phase", async () => {
+  const file = path.join(temps.make("native-history-probe-cap-"), "timeline.jsonl");
+  const window = await captureNativeHistoryWindow(file);
+  const at = window.startedAtMs;
+  const phase = "gateway.chat.history.history_page";
+  const detail = (ordinal: number, extra = {}) =>
+    JSON.stringify({
+      schemaVersion: "openclaw.diagnostics.v1",
+      type: "mark",
+      name: "worker.history.probe",
+      parentSpanId: "owner",
+      timestamp: new Date(at + 2).toISOString(),
+      attributes: { version: 1, task: 1, kind: "handler", ordinal, elapsedMs: 1, ...extra },
+    }) + "\n";
+  await fs.writeFile(
+    file,
+    event(phase, "span.start", "owner", at + 1) +
+      detail(1, { elapsedMs: -1 }) +
+      Array.from({ length: 30 }, (_, i) => detail(i + 1)).join("") +
+      event(phase, "span.end", "owner", at + 3),
+  );
+  const result = await readNativeHistoryDiagnostic(file, window, at + 4);
+  expect(result.spans[0]).toMatchObject({
+    outcome: "end",
+    historyProbe: { tasks: [{ invalid: true, truncated: true }] },
+  });
+  expect(result.spans[0]?.historyProbe?.tasks[0]?.rows).toHaveLength(24);
+  expect(result.truncated).toBe(true);
+});
+
+it("omits oversized optional probe detail before sacrificing history phase evidence", async () => {
+  const file = path.join(temps.make("native-history-probe-budget-"), "timeline.jsonl");
+  const window = await captureNativeHistoryWindow(file);
+  const at = window.startedAtMs;
+  const phase = "gateway.chat.history.history_page";
+  const lines: string[] = [];
+  for (let taskIndex = 0; taskIndex < 4; taskIndex++) {
+    const owner = `private-owner-${taskIndex}`;
+    lines.push(event(phase, "span.start", owner, at + 1));
+    for (let ordinal = 1; ordinal <= 24; ordinal++) {
+      lines.push(
+        JSON.stringify({
+          schemaVersion: "openclaw.diagnostics.v1",
+          type: "mark",
+          name: "worker.history.probe",
+          parentSpanId: owner,
+          timestamp: new Date(at + 2).toISOString(),
+          attributes: {
+            version: 1,
+            task: 1,
+            kind: "phase",
+            phase: "projection-snapshot",
+            event: "aggregate",
+            ordinal,
+            elapsedMs: Number.MAX_SAFE_INTEGER,
+            wallMs: Number.MAX_SAFE_INTEGER,
+            userUs: Number.MAX_SAFE_INTEGER,
+            systemUs: Number.MAX_SAFE_INTEGER,
+            count: Number.MAX_SAFE_INTEGER,
+            failures: Number.MAX_SAFE_INTEGER,
+            maxMs: Number.MAX_SAFE_INTEGER,
+          },
+        }) + "\n",
+      );
+    }
+    lines.push(task(owner, at + 3), event(phase, "span.end", owner, at + 4));
+  }
+  await fs.writeFile(file, lines.join(""));
+  const result = await readNativeHistoryDiagnostic(file, window, at + 5);
+  expect(result.truncated).toBe(true);
+  expect(result.spans).toHaveLength(4);
+  expect(
+    result.spans.every(
+      (span) =>
+        span.outcome === "end" &&
+        span.workerTasks?.rows.length === 1 &&
+        span.historyProbe?.tasks.length === 0 &&
+        span.historyProbe.truncated,
+    ),
+  ).toBe(true);
+  expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(32 * 1024);
+  expect(JSON.stringify(result)).not.toContain("private-owner");
+});

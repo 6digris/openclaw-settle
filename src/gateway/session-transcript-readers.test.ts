@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
   persistSessionTranscriptTurn,
@@ -9,6 +9,8 @@ import {
 } from "../config/sessions/session-accessor.js";
 import { SessionTranscriptProjectionUnavailableError } from "../config/sessions/session-transcript-projection-error.js";
 import { waitForSessionTranscriptIndexReconcile } from "../config/sessions/session-transcript-reconcile.js";
+import * as fileReads from "../infra/file-read.js";
+import { createHistoryProbe, type HistoryProbeRecord } from "../infra/session-history-probe.js";
 import {
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
@@ -16,7 +18,9 @@ import {
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { readSessionMessagesAroundIdWithStatsAsync } from "./session-transcript-anchor-reader.js";
+import * as archiveIndex from "./session-transcript-index.fs.js";
 import {
+  readRecentSessionMessagesWithStatsAsync,
   readSessionMessageByIdAsync,
   readSessionMessageCountAsync,
   readSessionMessagesAsync,
@@ -266,6 +270,82 @@ describe("session transcript reader facade", () => {
         allowResetArchiveFallback: true,
       }),
     ).resolves.toMatchObject([{ content: "retained archive" }]);
+  });
+
+  test.each([
+    ["recent", false],
+    ["recent", true],
+    ["page", false],
+    ["page", true],
+  ] as const)("measures the complete %s archive read (failure=%s)", async (mode, fails) => {
+    const sessionId = `reader-probe-${mode}-${fails}`;
+    const scope = { agentId: "main", sessionId, sessionKey: `agent:main:${sessionId}`, storePath };
+    fs.writeFileSync(
+      path.join(tempDir, `${sessionId}.jsonl.reset.2026-07-12T18-00-00.000Z`),
+      `${JSON.stringify({ type: "session", version: 1, id: sessionId })}\n${JSON.stringify({
+        message: { role: "assistant", content: "retained archive" },
+      })}\n`,
+    );
+    const rows: HistoryProbeRecord[] = [];
+    const probe = createHistoryProbe((row) => rows.push(row));
+    const events = () =>
+      rows.flatMap((row) =>
+        row.kind === "phase" && row.phase === "reset-archive" ? [row.event] : [],
+      );
+    const originalIndex = archiveIndex.readSessionTranscriptIndex;
+    const originalRead = fileReads.readFileWindowFully;
+    const failure = new Error("archive read fixture failure");
+    const indexSpy = vi
+      .spyOn(archiveIndex, "readSessionTranscriptIndex")
+      .mockImplementation(async (...args) => {
+        expect(events()).toEqual(["begin"]);
+        const index = await originalIndex(...args);
+        expect(index?.entries).toHaveLength(1);
+        expect(events()).toEqual(["begin"]);
+        return index;
+      });
+    const readSpy = vi
+      .spyOn(fileReads, "readFileWindowFully")
+      .mockImplementation(async (...args) => {
+        expect(events()).toEqual(["begin"]);
+        const bytes = await originalRead(...args);
+        expect(bytes).toBeGreaterThan(0);
+        expect(events()).toEqual(["begin"]);
+        if (fails) {
+          throw failure;
+        }
+        return bytes;
+      });
+    try {
+      const result = probe.run(() =>
+        mode === "recent"
+          ? readRecentSessionMessagesWithStatsAsync(scope, {
+              maxMessages: 1,
+              allowResetArchiveFallback: true,
+            })
+          : readSessionMessagesPageWithStatsAsync(scope, {
+              offset: 0,
+              maxMessages: 1,
+              allowResetArchiveFallback: true,
+            }),
+      );
+      if (fails) {
+        await expect(result).rejects.toBe(failure);
+      } else {
+        await expect(result).resolves.toMatchObject({
+          messages: [{ content: "retained archive" }],
+          totalMessages: 1,
+          transcriptSource: "reset-archive",
+        });
+      }
+      expect(indexSpy).toHaveBeenCalledTimes(1);
+      expect(readSpy).toHaveBeenCalledTimes(1);
+      expect(events()).toEqual(["begin", fails ? "failed" : "end"]);
+    } finally {
+      probe.close();
+      readSpy.mockRestore();
+      indexSpy.mockRestore();
+    }
   });
 
   test("does not fall back to stored custom transcript paths after SQLite migration", async () => {
