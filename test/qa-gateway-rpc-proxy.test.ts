@@ -78,7 +78,9 @@ async function withProxy(
         upstream: upstream.promise,
         upgrade: upgrade.promise,
         reconnect: async () => {
-          if (front) await closeGatewayTestWebSocket(front);
+          if (front) {
+            await closeGatewayTestWebSocket(front);
+          }
           nextUpstream = createDeferred<WebSocket>();
           front = new WebSocket(proxyURL);
           await acquireGatewayTestWebSocket(front, 5000);
@@ -545,7 +547,9 @@ describe("QA Gateway proxy readiness diagnostics", () => {
               true,
             );
           }
-          if (connection < 5) pair = await reconnect();
+          if (connection < 5) {
+            pair = await reconnect();
+          }
         }
         await closeGatewayTestWebSocket(pair.front);
         await proxy.stop();

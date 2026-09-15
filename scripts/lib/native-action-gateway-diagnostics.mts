@@ -123,8 +123,11 @@ function boundProjection(result: NativeHistoryDiagnostic): NativeHistoryDiagnost
     Buffer.byteLength(JSON.stringify(result)) > MAX_OUTPUT_BYTES
   ) {
     for (const detail of details) {
-      if ("tasks" in detail) detail.tasks = [];
-      else detail.rows = [];
+      if ("tasks" in detail) {
+        detail.tasks = [];
+      } else {
+        detail.rows = [];
+      }
       detail.truncated = true;
     }
     result.truncated = true;

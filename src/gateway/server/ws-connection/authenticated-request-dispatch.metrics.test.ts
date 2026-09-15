@@ -507,7 +507,9 @@ it.each(["enabled", "disabled", "failure"] as const)(
     const file = path.join(branchProbeTemps.make("branch-dispatch-"), "timeline.jsonl");
     vi.stubEnv("OPENCLAW_DIAGNOSTICS", mode === "disabled" ? "" : "timeline");
     vi.stubEnv("OPENCLAW_DIAGNOSTICS_TIMELINE_PATH", file);
-    onTestFinished(() => vi.unstubAllEnvs());
+    onTestFinished(() => {
+      vi.unstubAllEnvs();
+    });
     const reached = createDeferredCore();
     const release = createDeferredCore();
     const handler = vi.fn<GatewayRequestHandler>(({ respond }) => respond(true, { branches: [] }));
@@ -516,7 +518,9 @@ it.each(["enabled", "disabled", "failure"] as const)(
       loadHandlers: async () => {
         reached.resolve();
         await release.promise;
-        if (mode === "failure") throw new Error("branch probe family refusal");
+        if (mode === "failure") {
+          throw new Error("branch probe family refusal");
+        }
         return { "sessions.branches.list": handler };
       },
     });

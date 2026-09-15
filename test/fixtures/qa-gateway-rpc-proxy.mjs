@@ -71,7 +71,7 @@ export async function startQaGatewayRpcProxy({
   const media = { requests: 0, matched: 0, completed: 0, succeeded: 0 };
   let events = [];
   let sequence = 0;
-  let connection = 0;
+  let connectionCount = 0;
   let dropResponse = false;
   let holdHello = false;
   let held;
@@ -149,7 +149,7 @@ export async function startQaGatewayRpcProxy({
   const captureReadinessRequestMatcher = () => {
     const incomplete =
       !captureReadiness || readinessTruncated || readiness.some((row) => row.truncated);
-    const requests = readiness.flatMap(({ connection, requests }) =>
+    const frozenRequests = readiness.flatMap(({ connection, requests }) =>
       requests.map((row) => ({
         id: row.privateRequestId,
         method: row.method,
@@ -162,7 +162,7 @@ export async function startQaGatewayRpcProxy({
       if (incomplete || typeof id !== "string" || id.length === 0 || id.length > 128) {
         return { status: "unknown" };
       }
-      const matches = requests.filter((row) => row.id === id);
+      const matches = frozenRequests.filter((row) => row.id === id);
       return matches.length === 1 && matches[0].method === method
         ? { status: "matched", connection: matches[0].connection, request: matches[0].request }
         : { status: "unknown" };
@@ -461,7 +461,7 @@ export async function startQaGatewayRpcProxy({
   });
   const sockets = new WebSocketServer({ server });
   sockets.on("connection", (front) => {
-    const id = ++connection;
+    const id = ++connectionCount;
     if (captureReadiness) {
       if (id <= 4) {
         readiness.push({
@@ -532,7 +532,9 @@ export async function startQaGatewayRpcProxy({
     const methods = new Map();
     const diagnosticRequests = new Map();
     const sendUpstream = (raw, trace) => {
-      if (trace) trace.upstreamStartedMs = readinessTime();
+      if (trace) {
+        trace.upstreamStartedMs = readinessTime();
+      }
       back.send(
         raw,
         trace
@@ -669,7 +671,9 @@ export async function startQaGatewayRpcProxy({
           });
         }
         if (holdMethod && method === holdMethod) {
-          if (trace) trace.held = true;
+          if (trace) {
+            trace.held = true;
+          }
           holdMethod = undefined;
           heldResponse = {
             release: () => {
@@ -728,7 +732,9 @@ export async function startQaGatewayRpcProxy({
         }
       }
       if (frame.type === "res" && method === "connect" && frame.ok && holdHello) {
-        if (trace) trace.held = true;
+        if (trace) {
+          trace.held = true;
+        }
         holdHello = false;
         held = { connection: id, front, frames: [raw] };
         record("hello-held", { connection: id });
@@ -747,13 +753,15 @@ export async function startQaGatewayRpcProxy({
           raw,
           firstChallenge || trace
             ? (error) => {
-                if (firstChallenge)
+                if (firstChallenge) {
                   recordFirstConnection(id, error ? "challenge-write-error" : "challenge-write-ok");
-                if (trace)
+                }
+                if (trace) {
                   trace.frontWrite = {
                     elapsedMs: readinessTime(),
                     outcome: error ? "error" : "ok",
                   };
+                }
               }
             : undefined,
         );

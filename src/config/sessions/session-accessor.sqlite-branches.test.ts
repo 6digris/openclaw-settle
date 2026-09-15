@@ -164,7 +164,9 @@ describe("SQLite session branches", () => {
     const observe = (value: unknown) => {
       if (value && typeof value === "object" && "historyProbe" in value) {
         const row = projectHistoryProbeRecord(value.historyProbe);
-        if (row) rows.push(row);
+        if (row) {
+          rows.push(row);
+        }
       }
     };
     diagnostics.subscribe(observe);

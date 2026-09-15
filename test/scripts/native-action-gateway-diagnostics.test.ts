@@ -578,7 +578,7 @@ it("caps branch request detail after the native window and rejects late parent s
       const owner = "private-branch-" + index;
       return (
         event("gateway.sessions.branches.list", "span.start", owner, at + 1) +
-        Array.from({ length: index === 0 ? 26 : 1 }, (_, i) => mark(owner, i + 1)).join("") +
+        Array.from({ length: index === 0 ? 26 : 1 }, (_row, i) => mark(owner, i + 1)).join("") +
         event("gateway.sessions.branches.list", "span.end", owner, at + 3) +
         mark(owner, 1)
       );

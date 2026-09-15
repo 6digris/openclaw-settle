@@ -72,9 +72,9 @@ export async function readRestoredSessionTranscript<T>(
     const retryDone = beginHistoryProbePhase("branch-cold-restore");
     try {
       await restoreSessionColdTranscript(scope);
-    } catch (error) {
+    } catch (restoreError) {
       retryDone?.(true);
-      throw error;
+      throw restoreError;
     } finally {
       retryDone?.();
     }
