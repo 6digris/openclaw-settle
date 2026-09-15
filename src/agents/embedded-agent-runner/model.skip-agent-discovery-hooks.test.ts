@@ -20,7 +20,7 @@ afterEach(async () => {
     workspace.verify();
     expect(auth.spy).toHaveBeenCalled();
   } finally {
-    auth.spy.mockRestore();
+    auth.restore();
     workspace.spy.mockRestore();
     await state.cleanup();
   }

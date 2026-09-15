@@ -34,7 +34,7 @@ afterEach(async () => {
   try {
     auth.verify();
   } finally {
-    auth.spy.mockRestore();
+    auth.restore();
     clearRuntimeAuthProfileStoreSnapshots();
     await state.cleanup();
   }

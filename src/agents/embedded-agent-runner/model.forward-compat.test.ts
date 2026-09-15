@@ -23,7 +23,7 @@ afterEach(async () => {
     auth.verify();
     expect(auth.spy).toHaveBeenCalled();
   } finally {
-    auth.spy.mockRestore();
+    auth.restore();
     await state.cleanup();
   }
 });

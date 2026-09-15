@@ -154,6 +154,7 @@ function readMockAuthProfileStore(agentDir?: string): {
 
 vi.mock("../auth-profiles.js", () => ({
   externalCliDiscoveryForProviderAuth: (params: { provider: string }) => params,
+  loadAuthProfileStoreForRuntime: (agentDir?: string) => readMockAuthProfileStore(agentDir),
   ensureAuthProfileStore: (agentDir?: string) => {
     const store = readMockAuthProfileStore(agentDir);
     if (process.env.OPENCLAW_TEST_CODEX_CLI_OAUTH === "1") {

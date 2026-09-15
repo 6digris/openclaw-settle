@@ -5,19 +5,35 @@ import * as authProfileStore from "../auth-profiles/store-runtime.js";
 
 export function guardModelFixtureAuth(root: string) {
   const violations: Array<string | undefined> = [];
+  const loadAuthProfileStoreForRuntime = authProfileStore.loadAuthProfileStoreForRuntime;
   const ensureAuthProfileStore = authProfileStore.ensureAuthProfileStore;
+  const verifyDirectory = (dir: string | undefined) => {
+    // Record even swallowed violations before the owner can inspect the path.
+    if (!dir || !isPathInside(root, dir)) {
+      violations.push(dir);
+      throw new Error("Auth profile request escaped the model fixture");
+    }
+  };
   const spy = vi
+    .spyOn(authProfileStore, "loadAuthProfileStoreForRuntime")
+    .mockImplementation((dir, options, env) => {
+      verifyDirectory(dir);
+      return loadAuthProfileStoreForRuntime(dir, options, env);
+    });
+  const ensureSpy = vi
     .spyOn(authProfileStore, "ensureAuthProfileStore")
     .mockImplementation((dir, options) => {
-      // Any necessary native auth reads must remain inside the fixture's owned state.
-      // Record even swallowed violations before the owner can inspect the path.
-      if (!dir || !isPathInside(root, dir)) {
-        violations.push(dir);
-        throw new Error("Auth profile request escaped the model fixture");
-      }
+      verifyDirectory(dir);
       return ensureAuthProfileStore(dir, options);
     });
-  return { spy, verify: () => expect(violations).toEqual([]) };
+  return {
+    spy,
+    verify: () => expect(violations).toEqual([]),
+    restore: () => {
+      spy.mockRestore();
+      ensureSpy.mockRestore();
+    },
+  };
 }
 
 export function guardModelFixtureWorkspace(root: string) {
