@@ -9,7 +9,6 @@ import type {
 } from "./detached-task-runtime-contract.js";
 import {
   createTaskRecord,
-  findTaskByRunId as findTaskByRunIdInRegistry,
   getTaskById,
   isParentFlowLinkError,
   linkTaskToFlowById,
@@ -51,6 +50,8 @@ import type {
   TaskRegistrySummary,
   TaskRuntime,
 } from "./task-registry.types.js";
+
+export { findTaskByRunId } from "./runtime-internal.js";
 
 const log = createSubsystemLogger("tasks/executor");
 
@@ -135,10 +136,6 @@ export function createRunningTaskRunCore(
     task,
     requesterOrigin: params.requesterOrigin,
   });
-}
-
-export function findTaskByRunId(runId: string): TaskRecord | undefined {
-  return findTaskByRunIdInRegistry(runId);
 }
 
 export function startTaskRunByRunIdCore(params: {
