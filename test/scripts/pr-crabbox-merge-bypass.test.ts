@@ -356,7 +356,7 @@ const value = JSON.parse(fs.readFileSync("input.json", "utf8"));
 const save = () => fs.writeFileSync("input.json", JSON.stringify(value));
 const fail = (message, code = 19) => { console.error(message); process.exit(code); };
 const out = (data) => console.log(typeof data === "string" ? data : JSON.stringify(data));
-const repo = {id:123,nameWithOwner:"openclaw/openclaw",url:"https://github.com/openclaw/openclaw"};
+const repo = {id:"fixture-repo",databaseId:123,nameWithOwner:"openclaw/openclaw",url:"https://github.com/openclaw/openclaw"};
 const reviewComments = ${JSON.stringify(reviewComments)};
 const pr = {id:"fixture-pr",number:131091,url:repo.url+"/pull/131091",state:"OPEN",isDraft:false,
   headRefOid:value.headSha,headRefName:"topic",baseRefName:"main",baseRefOid:"${baseSha}",
@@ -392,7 +392,13 @@ else if (endpoint === "graphql" && args.includes("query=query { viewer { login }
     if (!args.includes("--paginate") || !args.includes("--slurp")) fail("missing pagination");
   }
   const prefix = "repos/openclaw/openclaw/";
-  if (endpoint === prefix + "pulls/131091") out(value.pullRequest);
+  if (endpoint === "repos/openclaw/openclaw") out({
+    id: 123,
+    node_id: "fixture-repo",
+    full_name: repo.nameWithOwner,
+    html_url: repo.url,
+  });
+  else if (endpoint === prefix + "pulls/131091") out(value.pullRequest);
   else if (endpoint === prefix + "commits/" + value.headSha && args.includes("--jq")) out({name:"Fixture Contributor",email:"fixture@example.com",user:{login:"fixture-contributor",type:"User"}});
   else if (endpoint === prefix + "issues/131091/comments?per_page=100") out(reviewComments);
   else if (endpoint === prefix + "commits/" + value.headSha + "/check-runs?filter=latest&per_page=100") out(value.checkRuns.check_runs.map(check => ({check_runs:[check]})));
