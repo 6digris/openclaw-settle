@@ -31,10 +31,7 @@ import { isTelegramExtensionRoot } from "../../test/vitest/vitest.extension-tele
 import { isVoiceCallExtensionRoot } from "../../test/vitest/vitest.extension-voice-call-paths.mjs";
 import { isWhatsAppExtensionRoot } from "../../test/vitest/vitest.extension-whatsapp-paths.mjs";
 import { isZaloExtensionRoot } from "../../test/vitest/vitest.extension-zalo-paths.mjs";
-import {
-  matchesVitestGlob,
-  relativizeScopedPatterns,
-} from "../../test/vitest/vitest.pattern-file.ts";
+import { relativizeScopedPatterns } from "../../test/vitest/vitest.include-patterns.ts";
 import { sharedVitestExcludePatterns } from "../../test/vitest/vitest.shared-paths.mjs";
 import {
   isPluginControlUiPath,
@@ -316,8 +313,8 @@ export function selectDatabaseWorkerExtensionTestFiles(files: readonly string[])
   return files.filter((_, index) => {
     const file = scopedFiles[index]!;
     return (
-      scopedInclude.some((pattern) => matchesVitestGlob(file, pattern)) &&
-      !scopedExclude.some((pattern) => matchesVitestGlob(file, pattern))
+      scopedInclude.some((pattern) => path.matchesGlob(file, pattern)) &&
+      !scopedExclude.some((pattern) => path.matchesGlob(file, pattern))
     );
   });
 }
