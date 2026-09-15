@@ -149,3 +149,20 @@ export function countPluginStateInWorker(params: Input<"pluginState.count">): Pr
     () => 0,
   );
 }
+
+export function registerPluginStateJournalInWorker(params: Input<"pluginState.appendJournal">) {
+  const { env, ...input } = params;
+  return execute(env, "pluginState.appendJournal", (scope) =>
+    scope.execute({ type: "pluginState.appendJournal", input }),
+  );
+}
+
+export function listPluginStateInKeyRangeInWorker(params: Input<"pluginState.entriesInKeyRange">) {
+  const { env, ...input } = params;
+  return execute(
+    env,
+    "pluginState.entriesInKeyRange",
+    (scope) => scope.execute({ type: "pluginState.entriesInKeyRange", input }),
+    () => [],
+  );
+}

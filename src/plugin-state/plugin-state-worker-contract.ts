@@ -1,6 +1,8 @@
 import type { Result } from "@openclaw/normalization-core/result";
 import type { SqliteWorkerCommand } from "../infra/sqlite-worker-contract.js";
+import type { PluginStateSequencedJournalParams } from "./plugin-state-store.journal.js";
 import type { PluginStateRegisterEntryParams } from "./plugin-state-store.kernel.js";
+import type { PluginStateKeyRangeParams } from "./plugin-state-store.reads.js";
 import type {
   PluginStateEntry,
   PluginStateStoreErrorCode,
@@ -13,6 +15,14 @@ type Key = Namespace & { key: string };
 type Register = Omit<PluginStateRegisterEntryParams, "createdAtMs"> & { maxPluginEntries: number };
 
 export type PluginStateWorkerOperations = {
+  "pluginState.appendJournal": {
+    input: PluginStateSequencedJournalParams;
+    output: Result<number, PluginStateWorkerFailure>;
+  };
+  "pluginState.entriesInKeyRange": {
+    input: PluginStateKeyRangeParams;
+    output: Result<PluginStateEntry<unknown>[], PluginStateWorkerFailure>;
+  };
   "pluginState.register": { input: Register; output: Result<void, PluginStateWorkerFailure> };
   "pluginState.registerIfAbsent": {
     input: Register;
@@ -38,6 +48,16 @@ export type PluginStateWorkerOperations = {
 };
 
 export const pluginStateWorkerOperations = {
+  "pluginState.appendJournal": {
+    operation: "register",
+    code: "PLUGIN_STATE_WRITE_FAILED",
+    message: "Failed to register sequenced plugin state journal entry.",
+  },
+  "pluginState.entriesInKeyRange": {
+    operation: "entries",
+    code: "PLUGIN_STATE_READ_FAILED",
+    message: "Failed to list plugin state entries by key range.",
+  },
   "pluginState.register": {
     operation: "register",
     code: "PLUGIN_STATE_WRITE_FAILED",

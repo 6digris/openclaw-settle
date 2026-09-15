@@ -41,6 +41,7 @@ export const databaseWorkerExtensionTestFiles = [
   "extensions/matrix/src/matrix/sdk/idb-persistence.test.ts",
   "extensions/matrix/src/matrix/thread-bindings.test.ts",
   "extensions/mattermost/src/mattermost/thread-participation.test.ts",
+  "extensions/memory-lancedb/index.test.ts",
   "extensions/memory-wiki/doctor-contract-api.test.ts",
   "extensions/memory-wiki/src/chatgpt-import.test.ts",
   "extensions/memory-wiki/src/source-sync-malformed-notes.test.ts",

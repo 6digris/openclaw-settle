@@ -1,6 +1,11 @@
 // Plugin state store exposes persisted per-plugin state operations.
 import type { Result } from "@openclaw/normalization-core/result";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import { preparePluginStateJournalValue } from "./plugin-state-store.journal.js";
+import {
+  validatePluginStateKeyRange,
+  type PluginStateKeyRangeParams,
+} from "./plugin-state-store.reads.js";
 import {
   clearPluginStateDatabaseForTests,
   closePluginStateDatabase,
@@ -17,7 +22,6 @@ import {
   pluginStateLookupMany,
   pluginStateRegister,
   pluginStateRegisterIfAbsent,
-  pluginStateRegisterSequencedJournalEntry,
   pluginStateUpdate,
   resolveMaxPluginStateEntriesPerPlugin,
 } from "./plugin-state-store.sqlite.js";
@@ -37,6 +41,8 @@ import {
   deletePluginStateIfEqualInWorker,
   deletePluginStateInWorker,
   listPluginStateInWorker,
+  listPluginStateInKeyRangeInWorker,
+  registerPluginStateJournalInWorker,
   lookupManyPluginStateInWorker,
   lookupPluginStateInWorker,
   registerPluginStateIfAbsentInWorker,
@@ -68,7 +74,6 @@ export {
   MAX_PLUGIN_STATE_BULK_DELETE_ENTRIES,
   pluginStateDeleteEntriesIfUnchanged,
   pluginStateDoctorEntriesInKeyRange,
-  pluginStateEntriesInKeyRange,
   resolveMaxPluginStateEntriesPerPlugin,
   sweepExpiredPluginStateEntries,
 } from "./plugin-state-store.sqlite.js";
@@ -498,7 +503,7 @@ export async function registerPluginStateSequencedJournalEntry(params: {
     keyEndExclusive: string;
     valueKind?: string;
   };
-  journalValue: (sequence: number) => unknown;
+  journalValue: Record<string, unknown>;
 }): Promise<number> {
   if (params.pluginId.startsWith("core:")) {
     throw invalidInput("Plugin ids starting with 'core:' are reserved for core consumers.", "open");
@@ -541,38 +546,34 @@ export async function registerPluginStateSequencedJournalEntry(params: {
     overflowPolicy: journalOverflowPolicy,
     defaultTtlMs: journalDefaultTtlMs,
   });
-  return pluginStateRegisterSequencedJournalEntry({
+  const journalValueJson = preparePluginStateJournalValue(params.journalValue);
+  return registerPluginStateJournalInWorker({
     pluginId: params.pluginId,
     cursorNamespace,
     cursorKey,
     cursorMaxEntries,
     journalNamespace,
     journalMaxEntries,
-    journalKeyRange: params.journalKeyRange,
-    readCursorSequence(valueJson) {
-      try {
-        const value = JSON.parse(valueJson) as { kind?: unknown; lastSequence?: unknown };
-        return value.kind === "cursor" && Number.isSafeInteger(value.lastSequence)
-          ? (value.lastSequence as number)
-          : undefined;
-      } catch {
-        return undefined;
-      }
+    journalKeyRange: {
+      keyStartInclusive: params.journalKeyRange.keyStartInclusive,
+      keyEndExclusive: params.journalKeyRange.keyEndExclusive,
+      ...(params.journalKeyRange.valueKind === undefined
+        ? {}
+        : { valueKind: params.journalKeyRange.valueKind }),
     },
-    prepareEntry(sequence) {
-      const cursor = prepareRegisterParams(cursorKey, { kind: "cursor", lastSequence: sequence });
-      const journal = prepareRegisterParams(
-        `${journalKeyPrefix}${sequence.toString().padStart(16, "0")}`,
-        params.journalValue(sequence),
-      );
-      return {
-        cursorValueJson: cursor.valueJson,
-        journalKey: journal.key,
-        journalValueJson: journal.valueJson,
-      };
-    },
+    journalKeyPrefix,
+    journalValueJson,
+    maxPluginEntries: resolveMaxPluginStateEntriesPerPlugin(),
     ...(params.cursorOptions.env ? { env: params.cursorOptions.env } : {}),
   });
+}
+
+/** Internal bounded read through the same shared-state worker as journal writes. */
+export async function pluginStateEntriesInKeyRange(
+  params: PluginStateKeyRangeParams & { env?: NodeJS.ProcessEnv },
+): Promise<PluginStateEntry<unknown>[]> {
+  validatePluginStateKeyRange(params);
+  return listPluginStateInKeyRangeInWorker(params);
 }
 
 /** Doctor-only import that preserves source age and remaining retention. */
