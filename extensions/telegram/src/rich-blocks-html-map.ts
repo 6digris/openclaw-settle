@@ -97,6 +97,13 @@ function countChildren(nodes: readonly HtmlNode[], name: string): number {
   return nodes.filter((node) => node.kind === "element" && node.name === name).length;
 }
 
+function findClosedCitation(nodes: readonly HtmlNode[]) {
+  return nodes.find(
+    (node): node is Extract<HtmlNode, { kind: "element" }> =>
+      node.kind === "element" && node.closed && node.name === "cite",
+  );
+}
+
 function captionFromFigcaption(nodes: readonly HtmlNode[]): RichBlockCaption | undefined {
   const figcaption = nodes.find(
     (node): node is Extract<HtmlNode, { kind: "element" }> =>
@@ -105,10 +112,7 @@ function captionFromFigcaption(nodes: readonly HtmlNode[]): RichBlockCaption | u
   if (!figcaption) {
     return undefined;
   }
-  const cite = figcaption.children.find(
-    (node): node is Extract<HtmlNode, { kind: "element" }> =>
-      node.kind === "element" && node.closed && node.name === "cite",
-  );
+  const cite = findClosedCitation(figcaption.children);
   const textNodes = figcaption.children.filter((node) => node !== cite);
   const text = htmlNodesToRichText(textNodes);
   if (text === "" && !cite) {
@@ -438,10 +442,7 @@ function elementToBlock(
     case "audio":
       return mediaBlockFromElement(node);
     case "blockquote": {
-      const cite = node.children.find(
-        (child): child is Extract<HtmlNode, { kind: "element" }> =>
-          child.kind === "element" && child.closed && child.name === "cite",
-      );
+      const cite = findClosedCitation(node.children);
       const blocks = renderContent(node.children.filter((child) => child !== cite));
       if (blocks.length === 0) {
         return undefined;
@@ -452,10 +453,7 @@ function elementToBlock(
         : { type: "blockquote", blocks };
     }
     case "aside": {
-      const cite = node.children.find(
-        (child): child is Extract<HtmlNode, { kind: "element" }> =>
-          child.kind === "element" && child.closed && child.name === "cite",
-      );
+      const cite = findClosedCitation(node.children);
       const text = htmlNodesToRichText(node.children.filter((child) => child !== cite));
       if (text === "") {
         return undefined;
