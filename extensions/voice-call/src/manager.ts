@@ -4,7 +4,6 @@ import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { KeyedAsyncQueue } from "openclaw/plugin-sdk/keyed-async-queue";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { VoiceCallConfig, VoiceCallCoreSessionConfig } from "./config.js";
-import type { CallEndResult, CallManagerContext, StreamSessionIssuer } from "./manager/context.js";
 import { processEvent as processManagerEvent, type ProcessEventResult } from "./manager/events.js";
 import { getCallByProviderCallId as getCallByProviderCallIdFromMaps } from "./manager/lookup.js";
 import {
@@ -37,11 +36,21 @@ import {
 } from "./types.js";
 import { resolveUserPath } from "./utils.js";
 
+export type CallEndResult = { success: boolean; error?: string };
+
+export type StreamSessionIssuer = (
+  request: Pick<CallRecord, "callId" | "from" | "to" | "direction"> & {
+    providerName: "twilio" | "telnyx";
+  },
+) => { token: string; streamUrl: string } | undefined;
+
 function markRestoredCallSkipped(call: CallRecord, endReason: "completed" | "timeout"): void {
   call.endedAt = Date.now();
   call.endReason = endReason;
   call.state = endReason;
 }
+
+export type CallManagerContext = ReturnType<CallManager["getContext"]>;
 
 function incrementRestoreStatusCount(
   counts: Map<string, number>,
@@ -88,6 +97,7 @@ export class CallManager {
       resolve: (text: string) => void;
       reject: (err: Error) => void;
       timeout: NodeJS.Timeout;
+      turnToken?: string;
     }
   >();
   private maxDurationTimers = new Map<CallId, NodeJS.Timeout>();
@@ -483,7 +493,7 @@ export class CallManager {
     return this.runOperation(() => endCallWithContext(this.getContext(), callId, options));
   }
 
-  private getContext(): CallManagerContext {
+  private getContext() {
     return {
       mutationQueue: this.mutationQueue,
       pendingCallAdmissions: this.pendingCallAdmissions,
@@ -505,8 +515,8 @@ export class CallManager {
       transcriptWaiters: this.transcriptWaiters,
       maxDurationTimers: this.maxDurationTimers,
       initialMessageInFlight: this.initialMessageInFlight,
-      onCallerSpeech: (call) => this.invalidateAutoResponse(call),
-      onCallAnswered: (call) => {
+      onCallerSpeech: (call: CallRecord) => this.invalidateAutoResponse(call),
+      onCallAnswered: (call: CallRecord) => {
         this.maybeSpeakInitialMessageOnAnswered(call);
       },
       streamSessionIssuer: this.streamSessionIssuer,

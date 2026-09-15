@@ -12,8 +12,7 @@ import {
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { onTestFinished } from "vitest";
 import { VoiceCallConfigSchema } from "./config.js";
-import { CallManager } from "./manager.js";
-import type { CallManagerContext } from "./manager/context.js";
+import { CallManager, type CallManagerContext } from "./manager.js";
 import { persistCallRecord } from "./manager/store.js";
 import type { VoiceCallProvider } from "./providers/base.js";
 import { setVoiceCallStateRuntime, type VoiceCallStateRuntime } from "./runtime-state.js";
@@ -278,7 +277,9 @@ export function createEventManagerHarness() {
         provider: "plivo",
         fromNumber: "+15550000000",
       }),
+      coreSession: undefined,
       storePath,
+      stateRuntime: undefined,
       webhookUrl: null,
       activeTurnCalls: new Set(),
       endCallOperations: new Map(),
@@ -289,6 +290,9 @@ export function createEventManagerHarness() {
       isStopping: () => false,
       mutationQueue: new KeyedAsyncQueue(),
       pendingCallAdmissions: new Set(),
+      onCallAnswered: () => {},
+      onCallerSpeech: () => {},
+      streamSessionIssuer: undefined,
       trackCallWork(work) {
         pendingWork.add(work);
         const remove = () => pendingWork.delete(work);

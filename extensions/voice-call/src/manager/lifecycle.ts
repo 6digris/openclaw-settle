@@ -1,7 +1,7 @@
 // Voice Call plugin module implements lifecycle behavior.
 import { createSubsystemLogger } from "openclaw/plugin-sdk/runtime-env";
+import type { CallManagerContext } from "../manager.js";
 import { TerminalStates, type CallRecord, type EndReason } from "../types.js";
-import type { CallManagerContext } from "./context.js";
 import { copyCallRecord, transitionState } from "./state.js";
 import { persistCallRecord } from "./store.js";
 import { clearMaxDurationTimer, rejectTranscriptWaiter } from "./timers.js";

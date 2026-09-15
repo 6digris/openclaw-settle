@@ -1,5 +1,5 @@
+import type { CallManagerContext } from "../manager.js";
 import { TerminalStates, type CallRecord } from "../types.js";
-import type { CallManagerContext } from "./context.js";
 import { copyCallRecord } from "./state.js";
 import { persistCallRecord } from "./store.js";
 

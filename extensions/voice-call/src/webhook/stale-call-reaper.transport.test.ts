@@ -92,6 +92,7 @@ describe("stale-call reaper provider transport", () => {
           providerCallIdMap: new Map([[call.providerCallId, call.callId]]),
           provider,
           storePath: "/tmp/openclaw-voice-call-proof.json",
+          stateRuntime: undefined,
           transcriptWaiters: new Map(),
           maxDurationTimers: new Map(),
           endCallOperations: new Map(),
