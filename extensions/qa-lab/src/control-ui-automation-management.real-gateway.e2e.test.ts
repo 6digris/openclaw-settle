@@ -41,6 +41,7 @@ async function startAutomationProvider() {
   const requests = new Map<string, Record<string, unknown>>();
   const results = new Map<string, string>();
   const advertisedAutomations = new Map<string, boolean>();
+  const advertisedSessionStatus = new Map<string, boolean>();
   const server = createServer((request, response) => {
     void (async () => {
       const chunks: Buffer[] = [];
@@ -61,6 +62,7 @@ async function startAutomationProvider() {
       const output = extractToolOutput(input);
       if (marker && args && !hasToolOutput(input)) {
         advertisedAutomations.set(marker, hasToolDefinition(body, "automations"));
+        advertisedSessionStatus.set(marker, hasToolDefinition(body, "session_status"));
       }
       if (marker && args && hasToolOutput(input)) {
         results.set(marker, output);
@@ -94,6 +96,7 @@ async function startAutomationProvider() {
     requests,
     results,
     advertisedAutomations,
+    advertisedSessionStatus,
     async stop() {
       server.closeAllConnections();
       await new Promise<void>((resolve) => {
@@ -165,7 +168,13 @@ suite.define(() => {
             session: { ...cfg.session, dmScope: "per-channel-peer" },
             plugins: { ...cfg.plugins, slots: { ...cfg.plugins?.slots, memory: "none" } },
             memory: { ...cfg.memory, search: { ...cfg.memory?.search, enabled: false } },
-            tools: { profile: "full", allow: ["automations"], codeMode: false, toolSearch: false },
+            // Keep one non-owner tool callable so denial reaches the provider turn.
+            tools: {
+              profile: "full",
+              allow: ["automations", "session_status"],
+              codeMode: false,
+              toolSearch: false,
+            },
             agents: {
               ...cfg.agents,
               entries: {
@@ -173,7 +182,7 @@ suite.define(() => {
                 qa: {
                   ...cfg.agents?.entries?.qa,
                   identity: { name: "Automation proof" },
-                  tools: { profile: "full", allow: ["automations"] },
+                  tools: { profile: "full", allow: ["automations", "session_status"] },
                 },
               },
             },
@@ -236,6 +245,7 @@ suite.define(() => {
             timeoutMs: 60_000,
           });
           const output = provider.results.get(marker) ?? "";
+          expect(provider.advertisedSessionStatus.get(marker)).toBe(true);
           expect(provider.advertisedAutomations.get(marker)).toBe(false);
           expect(output).toBe("Tool automations not found");
           expect(reply.text).not.toContain(jobId);
