@@ -2,6 +2,8 @@
 export const databaseWorkerCoreTestFiles = [
   "src/agents/tools/media-generate-tool.resources.test.ts",
   "src/agents/tools/media-generate-tool.donor-resources.test.ts",
+  "src/snapshot/git-backup.test.ts",
+  "src/state/backup-run-records.test.ts",
   "src/tasks/task-registry.async-restore.test.ts",
   "src/tasks/task-registry.restore-ownership.test.ts",
   "src/agents/embedded-agent-runner/context-engine-maintenance.lifecycle.test.ts",
