@@ -29,7 +29,7 @@ function readStat(filename) {
     if (error.code === "ENOENT") {
       return null;
     }
-    fail("filesystem-inspection-failed");
+    throw new InspectionFailure("filesystem-inspection-failed");
   }
 }
 
@@ -76,11 +76,15 @@ async function readNativeConfiguration() {
     let failed = false;
     let noisy = false;
     const killGroup = () => {
-      if (!child.pid) return;
+      if (!child.pid) {
+        return;
+      }
       try {
         process.kill(-child.pid, "SIGKILL");
       } catch (error) {
-        if (error.code !== "ESRCH") failed = true;
+        if (error.code !== "ESRCH") {
+          failed = true;
+        }
       }
     };
     const abort = () => {
@@ -92,13 +96,18 @@ async function readNativeConfiguration() {
     process.once("SIGTERM", abort);
     child.stdout.on("data", (chunk) => {
       bytes += chunk.length;
-      if (bytes > MAX_OUTPUT_BYTES) abort();
-      else stdout.push(chunk);
+      if (bytes > MAX_OUTPUT_BYTES) {
+        abort();
+      } else {
+        stdout.push(chunk);
+      }
     });
     child.stderr.on("data", (chunk) => {
       noisy = true;
       bytes += chunk.length;
-      if (bytes > MAX_OUTPUT_BYTES) abort();
+      if (bytes > MAX_OUTPUT_BYTES) {
+        abort();
+      }
     });
     child.once("error", () => {
       failed = true;
@@ -161,7 +170,9 @@ async function discover() {
   }
   const startup = new Map();
   for (let index = 1; index < fields.length - 1; index += 2) {
-    if (!["0", "1"].includes(fields[index + 1])) fail("native-configuration-output-invalid");
+    if (!["0", "1"].includes(fields[index + 1])) {
+      fail("native-configuration-output-invalid");
+    }
     startup.set(fields[index], fields[index + 1] === "1");
   }
   const directories = [...startup.keys()];

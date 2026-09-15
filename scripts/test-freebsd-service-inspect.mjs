@@ -30,8 +30,8 @@ const write = (filename, contents, mode = 0o644) => {
   fs.chmodSync(fixturePath(filename), mode);
 };
 
-function run({ args = [], user, env = {} } = {}) {
-  const result = spawnSync(
+function runNode(args, { user, env = {} } = {}) {
+  return spawnSync(
     "/usr/sbin/chroot",
     [
       ...(user ? ["-u", user] : []),
@@ -42,16 +42,31 @@ function run({ args = [], user, env = {} } = {}) {
       "PATH=/sbin:/bin:/usr/sbin:/usr/bin",
       "LC_ALL=C",
       "/usr/local/bin/node",
-      helper,
       ...args,
     ],
     { encoding: "utf8", timeout: 20_000, env: { PATH: "/sbin:/bin:/usr/sbin:/usr/bin", ...env } },
   );
+}
+
+function diagnostic(result) {
+  return JSON.stringify({
+    status: result.status,
+    signal: result.signal,
+    error: result.error?.code,
+    stderr: String(result.stderr ?? "")
+      .replaceAll("private-fixture-value", "[redacted]")
+      .slice(-4096),
+  });
+}
+
+function run({ args = [], user, env = {} } = {}) {
+  const result = runNode([helper, ...args], { user, env });
   assert.ifError(result.error);
   assert.equal(result.signal, null);
   assert.ok(result.stdout.length < 64 * 1024);
   assert.ok(!result.stdout.includes("private-fixture-value"));
   assert.ok(!result.stderr.includes("private-fixture-value"));
+  assert.ok(result.stdout.trim(), `Inspector returned no JSON: ${diagnostic(result)}`);
   const output = JSON.parse(result.stdout);
   assert.equal(output.authority, "diagnostic-only");
   assert.equal(output.service, "openclaw");
@@ -104,6 +119,11 @@ try {
   execFileSync("/sbin/mount", ["-t", "devfs", "devfs", fixturePath("/dev")]);
   mounted = true;
   write("/etc/rc.conf", "");
+
+  const node = runNode(["--version"]);
+  assert.equal(node.status, 0, `Chroot Node failed: ${diagnostic(node)}`);
+  assert.match(node.stdout.trim(), /^v\d+\.\d+\.\d+$/);
+  process.stdout.write(`chroot-node=${node.stdout.trim()}\n`);
 
   check("native default absence", () => assert.equal(run().status, "absent"));
   write(
@@ -264,13 +284,29 @@ try {
   process.stderr.write(`${error.stack}\n`);
   process.exitCode = 1;
 } finally {
+  let cleanupStage = "unmount-noexec";
   try {
-    if (noexecMounted) execFileSync("/sbin/umount", [fixturePath("/noexec")]);
-    if (mounted) execFileSync("/sbin/umount", [fixturePath("/dev")]);
+    if (noexecMounted) {
+      execFileSync("/sbin/umount", [fixturePath("/noexec")]);
+    }
+    cleanupStage = "unmount-devfs";
+    if (mounted) {
+      execFileSync("/sbin/umount", [fixturePath("/dev")]);
+    }
+    cleanupStage = "remove-fixture";
     fs.rmSync(work, { recursive: true, force: true });
-  } catch {
-    process.stderr.write(`Fixture cleanup failed; retained ${work}\n`);
+  } catch (error) {
+    process.stderr.write(
+      `Fixture cleanup failed at ${cleanupStage}; retained ${work}: ${JSON.stringify({
+        code: error.code,
+        syscall: error.syscall,
+        path: error.path,
+        stderr: String(error.stderr ?? "").slice(-4096),
+      })}\n`,
+    );
     process.exitCode = 1;
   }
 }
-if (process.exitCode) process.stderr.write("[test-freebsd-service-inspect] FAILED (exit 1)\n");
+if (process.exitCode) {
+  process.stderr.write("[test-freebsd-service-inspect] FAILED (exit 1)\n");
+}
