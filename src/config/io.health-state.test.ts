@@ -4,9 +4,11 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { findStartupMaintenanceRequiredError } from "../infra/startup-maintenance-required.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../state/openclaw-state-db-contract.js";
 import {
   closeOpenClawStateDatabaseAsync,
+  closeOpenClawStateDatabaseByPathAsync,
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
@@ -146,6 +148,91 @@ describe("config health-state warnings", () => {
       hashConfigRaw(raw),
     );
   });
+
+  it.each(["valid", "invalid", "caller-cancelled"] as const)(
+    "keeps %s snapshot authority separate from retired optional health admission",
+    async (mode) => {
+      const deps = createHealthDeps();
+      const configPath = path.join(deps.env.HOME, "openclaw.json");
+      const raw = JSON.stringify(
+        mode === "invalid" ? { gateway: { port: "invalid" } } : { gateway: { mode: "local" } },
+      );
+      fs.writeFileSync(configPath, raw);
+      const options = {
+        ...deps,
+        configPath,
+        env: { ...deps.env, OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1" },
+      };
+      const expected = await createConfigIO({
+        ...options,
+        observe: false,
+      }).readConfigFileSnapshot();
+      patchConfigHealthEntryToStore(deps, configPath, {
+        lastObservedSuspiciousSignature: "before",
+      });
+      const before = readConfigHealthStateFromStore(deps);
+      const entered = createDeferredCore();
+      const release = createDeferredCore();
+      const stat = fs.promises.stat;
+      let held = false;
+      const statBarrier = vi.spyOn(fs.promises, "stat").mockImplementation(
+        new Proxy(stat, {
+          async apply(target, receiver, args) {
+            if (args[0] === configPath && !held) {
+              held = true;
+              entered.resolve();
+              await release.promise;
+            }
+            return Reflect.apply(target, receiver, args);
+          },
+        }),
+      );
+      const callerError = Object.assign(new Error("caller revoked observation"), {
+        code: "STATE_DATABASE_READ_ADMISSION_INVALIDATED",
+      });
+      let revokeCaller = false;
+      let callerRejected = false;
+      // A one-shot same-code error must retain its caller provenance even if a
+      // later assertion succeeds and the health scope was independently retired.
+      const assertCaller = () => {
+        if (revokeCaller && !callerRejected) {
+          callerRejected = true;
+          throw callerError;
+        }
+      };
+      const pending =
+        mode === "caller-cancelled"
+          ? observeConfigSnapshot(normalizeConfigIoDeps(options), expected, assertCaller)
+          : createConfigIO(options).readConfigFileSnapshot();
+      try {
+        await Promise.race([
+          entered.promise,
+          pending.then(() => {
+            throw new Error("observation stat barrier was not reached");
+          }),
+        ]);
+        // The health scope is captured, but has not dispatched a worker operation;
+        // closing its database here cannot depend on the blocked observation.
+        await closeOpenClawStateDatabaseByPathAsync(resolveOpenClawStateSqlitePath(deps.env));
+        revokeCaller = mode === "caller-cancelled";
+        if (mode === "caller-cancelled") {
+          const rejected = expect(pending).rejects.toBe(callerError);
+          release.resolve();
+          await rejected;
+          expect(callerRejected).toBe(true);
+        } else {
+          release.resolve();
+          expect(await pending).toEqual(expected);
+        }
+        expect(readConfigHealthStateFromStore(deps)).toEqual(before);
+        expect(fs.readFileSync(configPath, "utf8")).toBe(raw);
+      } finally {
+        release.resolve();
+        await Promise.allSettled([pending]);
+        statBarrier.mockRestore();
+      }
+    },
+  );
 
   it.each(["sync", "async"] as const)(
     "%s health access keeps a non-file store best-effort",

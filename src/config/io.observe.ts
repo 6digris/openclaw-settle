@@ -1,4 +1,5 @@
 import type fs from "node:fs";
+import { isStateDatabaseReadAdmissionInvalidatedError } from "../state/openclaw-state-db-async-lifecycle.js";
 import { appendConfigAuditRecord, appendConfigAuditRecordSync } from "./io.audit.js";
 import {
   captureConfigHealthStateStore,
@@ -96,66 +97,94 @@ export async function observeConfigSnapshot(
   if (!snapshot.exists || typeof snapshot.raw !== "string") {
     return;
   }
-  assertCurrent?.();
-  using health = captureConfigHealthStateStore(deps, snapshot.path, assertCurrent);
-  const stat = await deps.fs.promises.stat(snapshot.path).catch(() => null);
-  if (!health.isCurrent()) {
-    return;
-  }
-  const current = createObservedFingerprint(snapshot, stat);
-  const healthSnapshot = await health.read();
-  if (!healthSnapshot) {
-    return;
-  }
-  const healthState = healthSnapshot.state;
-  const backupPath = `${snapshot.path}.bak`;
-  const initialEntry = readConfigHealthEntry(healthState, snapshot.path);
-  const backupBaseline =
-    initialEntry.lastKnownGood ??
-    (await readConfigFingerprintForPath(deps, backupPath)) ??
-    undefined;
-  if (!health.isCurrent()) {
-    return;
-  }
-  const { entry, baseline, suspicious } = resolveObservation({
-    snapshot,
-    current,
-    healthState,
-    backupBaseline,
-  });
-  if (suspicious.length === 0) {
-    const changes = resolveHealthyObservationChanges({ snapshot, current, entry });
-    if (changes) {
-      await health.update(changes, healthSnapshot);
+  let callerAssertionFailed = false;
+  const assertCallerCurrent = assertCurrent
+    ? () => {
+        try {
+          assertCurrent();
+        } catch (error) {
+          callerAssertionFailed = true;
+          throw error;
+        }
+      }
+    : undefined;
+  assertCallerCurrent?.();
+  using health = captureConfigHealthStateStore(deps, snapshot.path, assertCallerCurrent);
+  try {
+    const stat = await deps.fs.promises.stat(snapshot.path).catch(() => null);
+    if (!health.isCurrent()) {
+      return;
     }
-    return;
+    const current = createObservedFingerprint(snapshot, stat);
+    const healthSnapshot = await health.read();
+    if (!healthSnapshot) {
+      return;
+    }
+    const healthState = healthSnapshot.state;
+    const backupPath = `${snapshot.path}.bak`;
+    const initialEntry = readConfigHealthEntry(healthState, snapshot.path);
+    const backupBaseline =
+      initialEntry.lastKnownGood ??
+      (await readConfigFingerprintForPath(deps, backupPath)) ??
+      undefined;
+    if (!health.isCurrent()) {
+      return;
+    }
+    const { entry, baseline, suspicious } = resolveObservation({
+      snapshot,
+      current,
+      healthState,
+      backupBaseline,
+    });
+    if (suspicious.length === 0) {
+      const changes = resolveHealthyObservationChanges({ snapshot, current, entry });
+      if (changes) {
+        await health.update(changes, healthSnapshot);
+      }
+      return;
+    }
+    const signature = `${current.hash}:${suspicious.join(",")}`;
+    if (entry.lastObservedSuspiciousSignature === signature) {
+      return;
+    }
+    const backup =
+      (baseline?.hash ? baseline : null) ?? (await readConfigFingerprintForPath(deps, backupPath));
+    if (!health.isCurrent()) {
+      return;
+    }
+    deps.logger.warn(`Config observe anomaly: ${snapshot.path} (${suspicious.join(", ")})`);
+    await appendConfigAuditRecord(
+      {
+        env: deps.env,
+        homedir: deps.homedir,
+        record: createConfigObserveAuditRecord({
+          configPath: snapshot.path,
+          valid: snapshot.valid,
+          current,
+          suspicious,
+          lastKnownGood: entry.lastKnownGood,
+          backup,
+        }),
+      },
+      assertCallerCurrent,
+    );
+    await health.update({ lastObservedSuspiciousSignature: signature }, healthSnapshot);
+  } catch (error) {
+    if (callerAssertionFailed || !isStateDatabaseReadAdmissionInvalidatedError(error)) {
+      throw error;
+    }
+    // Only this observation's retired state admission is optional. A caller
+    // assertion or an unrelated same-code error must still reject the read.
+    try {
+      health.isCurrent();
+    } catch (cancellation) {
+      if (callerAssertionFailed || !isStateDatabaseReadAdmissionInvalidatedError(cancellation)) {
+        throw cancellation;
+      }
+      return;
+    }
+    throw error;
   }
-  const signature = `${current.hash}:${suspicious.join(",")}`;
-  if (entry.lastObservedSuspiciousSignature === signature) {
-    return;
-  }
-  const backup =
-    (baseline?.hash ? baseline : null) ?? (await readConfigFingerprintForPath(deps, backupPath));
-  if (!health.isCurrent()) {
-    return;
-  }
-  deps.logger.warn(`Config observe anomaly: ${snapshot.path} (${suspicious.join(", ")})`);
-  await appendConfigAuditRecord(
-    {
-      env: deps.env,
-      homedir: deps.homedir,
-      record: createConfigObserveAuditRecord({
-        configPath: snapshot.path,
-        valid: snapshot.valid,
-        current,
-        suspicious,
-        lastKnownGood: entry.lastKnownGood,
-        backup,
-      }),
-    },
-    assertCurrent,
-  );
-  await health.update({ lastObservedSuspiciousSignature: signature }, healthSnapshot);
 }
 
 export function observeConfigSnapshotSync(
