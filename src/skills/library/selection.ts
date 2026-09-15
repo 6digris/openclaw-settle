@@ -45,6 +45,18 @@ export function assertPreparedSkillLibrarySelection(
 
 const selectedEntryCache = new Map<string, SkillEntry[]>();
 
+/** Async preparation retains pin values even when a caller later edits its snapshot. */
+export function captureSkillLibrarySelection(
+  selections: readonly SkillLibrarySelection[],
+): ReadonlyArray<Readonly<SkillLibrarySelection>> {
+  return selections.map(({ skillId, revision, name, ownerProfileId }) => ({
+    skillId,
+    revision,
+    name,
+    ownerProfileId,
+  }));
+}
+
 /** The session owner has already authorized this exact immutable pin. */
 export async function readSelectedSkillLibraryFiles(
   selection: SkillLibrarySelection,

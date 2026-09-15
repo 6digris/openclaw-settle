@@ -10,6 +10,7 @@ import {
 import { formatCliCommand } from "../../cli/command-format.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { assertAgentRunLifecycleGenerationCurrent } from "../../infra/agent-events.js";
 import { resolveAgentExplicitRecipientSession } from "../../infra/outbound/agent-delivery.js";
 import { buildOutboundSessionContext } from "../../infra/outbound/session-context.js";
 import { resolvePluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.js";
@@ -392,7 +393,7 @@ export async function prepareAgentCommandExecution(
       const {
         expandExplicitSkillReferences,
         hasSkillReferenceCandidate,
-        listSkillCommandsForWorkspace,
+        prepareSkillCommandsForWorkspace,
         resolveEffectiveAgentSkillFilter,
       } = await import("../../skills/discovery/chat-commands.runtime.js");
       const hasExplicitSkillCandidate =
@@ -408,9 +409,17 @@ export async function prepareAgentCommandExecution(
           ...(preparedMetadataSnapshot ? { pluginMetadataSnapshot: preparedMetadataSnapshot } : {}),
           ...(skillFilter ? { skillFilter } : {}),
         };
-        const skillCommands = listSkillCommandsForWorkspace(commandParams);
+        const lifecycleGeneration = opts.lifecycleGeneration;
+        const assertCurrent =
+          lifecycleGeneration !== undefined
+            ? () => assertAgentRunLifecycleGenerationCurrent(lifecycleGeneration)
+            : undefined;
+        const skillCommands = await prepareSkillCommandsForWorkspace(commandParams, assertCurrent);
         const allSkillCommands = skillFilter
-          ? listSkillCommandsForWorkspace({ ...commandParams, includeAllowlistHidden: true })
+          ? await prepareSkillCommandsForWorkspace(
+              { ...commandParams, includeAllowlistHidden: true },
+              assertCurrent,
+            )
           : skillCommands;
         const expansion = expandExplicitSkillReferences({
           text: message,

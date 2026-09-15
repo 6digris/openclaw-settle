@@ -30,7 +30,7 @@ export {
   resolveSkillCommandInvocation,
 } from "./chat-command-invocation.js";
 
-export function listSkillCommandsForWorkspace(params: {
+type WorkspaceSkillCommandParams = {
   workspaceDir: string;
   cfg: OpenClawConfig;
   agentId?: string;
@@ -41,7 +41,9 @@ export function listSkillCommandsForWorkspace(params: {
   execOverrides?: ExecPolicyOverrides;
   includeAllowlistHidden?: boolean;
   pluginMetadataSnapshot?: PluginMetadataSnapshot;
-}): SkillCommandSpec[] {
+};
+
+function resolveWorkspaceSkillCommandOptions(params: WorkspaceSkillCommandParams) {
   const nodeSkills = resolveNodeExecEligibility({
     cfg: params.cfg,
     agentId: params.agentId,
@@ -53,7 +55,7 @@ export function listSkillCommandsForWorkspace(params: {
     nodeSkills,
     remote: getRemoteSkillEligibility({ advertiseExecNode: nodeSkills.canExec }),
   };
-  return buildWorkspaceSkillCommandSpecs(params.workspaceDir, {
+  return {
     config: params.cfg,
     agentId: params.agentId,
     skillFilter: params.skillFilter,
@@ -62,7 +64,31 @@ export function listSkillCommandsForWorkspace(params: {
     pluginMetadataSnapshot: params.pluginMetadataSnapshot,
     librarySelections: params.sessionEntry?.skillLibrarySelections,
     reservedNames: listReservedChatSlashCommandNames(),
-  });
+  };
+}
+
+/** Synchronous SDK compatibility; internal runtime callers use preparation. */
+export function listSkillCommandsForWorkspace(
+  params: WorkspaceSkillCommandParams,
+): SkillCommandSpec[] {
+  return buildWorkspaceSkillCommandSpecs(
+    params.workspaceDir,
+    resolveWorkspaceSkillCommandOptions(params),
+  );
+}
+
+export async function prepareSkillCommandsForWorkspace(
+  params: WorkspaceSkillCommandParams,
+  assertCurrent?: () => void,
+): Promise<SkillCommandSpec[]> {
+  assertCurrent?.();
+  const commands = await prepareWorkspaceSkillCommandSpecs(
+    params.workspaceDir,
+    resolveWorkspaceSkillCommandOptions(params),
+    assertCurrent,
+  );
+  assertCurrent?.();
+  return commands;
 }
 
 /** Resolves one eligible bundled skill before normal workspace precedence is applied. */
@@ -230,18 +256,22 @@ export function listSkillCommandsForAgents(params: AgentSkillCommandParams): Ski
 
 export async function prepareSkillCommandsForAgents(
   params: AgentSkillCommandParams,
+  assertCurrent?: () => void,
 ): Promise<SkillCommandSpec[]> {
+  assertCurrent?.();
   const used = listReservedChatSlashCommandNames();
   const entries: SkillCommandSpec[] = [];
   for (const { workspaceDir, options } of resolveAgentSkillCommandWorkspaces(params)) {
-    appendSkillCommands(
-      entries,
-      used,
-      await prepareWorkspaceSkillCommandSpecs(workspaceDir, {
+    const commands = await prepareWorkspaceSkillCommandSpecs(
+      workspaceDir,
+      {
         ...options,
         reservedNames: used,
-      }),
+      },
+      assertCurrent,
     );
+    assertCurrent?.();
+    appendSkillCommands(entries, used, commands);
   }
   return finalizeSkillCommands(entries);
 }

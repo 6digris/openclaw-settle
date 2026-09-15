@@ -48,7 +48,7 @@ vi.mock("../commands-registry.runtime.js", () => ({
 }));
 
 vi.mock("../skills/discovery/chat-commands.runtime.js", () => ({
-  listSkillCommandsForWorkspace: () => [],
+  prepareSkillCommandsForWorkspace: async () => [],
 }));
 
 vi.mock("../plugins/runtime/runtime-web-channel-plugin.js", () => ({

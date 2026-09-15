@@ -35,7 +35,7 @@ const textRoutingMocks = vi.hoisted(() => ({
   shouldHandle: vi.fn(),
 }));
 const skillCommandMocks = vi.hoisted(() => ({
-  listForWorkspace: vi.fn(),
+  prepareForWorkspace: vi.fn(),
 }));
 
 const directiveModel: ModelDefinitionConfig = {
@@ -66,8 +66,8 @@ vi.mock("../commands-text-routing.js", () => ({
   shouldHandleTextCommands: (...args: unknown[]) => textRoutingMocks.shouldHandle(...args),
 }));
 vi.mock("../../skills/discovery/chat-commands.runtime.js", () => ({
-  listSkillCommandsForWorkspace: (...args: unknown[]) =>
-    skillCommandMocks.listForWorkspace(...args),
+  prepareSkillCommandsForWorkspace: async (...args: unknown[]) =>
+    skillCommandMocks.prepareForWorkspace(...args),
 }));
 
 type DirectiveApplyParams = Parameters<
@@ -211,7 +211,7 @@ describe("reply directive resolution", () => {
     textRoutingMocks.shouldHandle.mockImplementation(
       (params: { cfg: OpenClawConfig }) => params.cfg.commands?.text !== false,
     );
-    skillCommandMocks.listForWorkspace.mockReturnValue([]);
+    skillCommandMocks.prepareForWorkspace.mockReturnValue([]);
     directiveApplyMocks.apply.mockImplementation(async (params: DirectiveApplyParams) => ({
       kind: "continue",
       directives: params.directives,
@@ -277,7 +277,7 @@ describe("reply directive resolution", () => {
       skipInventory: false,
     },
   ])("preserves ordinary slash text: $body", async ({ body, skipInventory }) => {
-    skillCommandMocks.listForWorkspace.mockReturnValue([
+    skillCommandMocks.prepareForWorkspace.mockReturnValue([
       { name: "fable", skillName: "fable", description: "A colliding skill command" },
     ]);
 
@@ -298,7 +298,7 @@ describe("reply directive resolution", () => {
     expect(result.result.model).toBe("claude-opus-4-6");
     expect(sessionEntry).toEqual(createSessionEntry());
     if (skipInventory) {
-      expect(skillCommandMocks.listForWorkspace).not.toHaveBeenCalled();
+      expect(skillCommandMocks.prepareForWorkspace).not.toHaveBeenCalled();
     }
   });
 
@@ -308,7 +308,7 @@ describe("reply directive resolution", () => {
       const skillCommands = [
         { name: "fable", skillName: "fable", description: "A colliding skill command" },
       ];
-      skillCommandMocks.listForWorkspace.mockReturnValue(skillCommands);
+      skillCommandMocks.prepareForWorkspace.mockReturnValue(skillCommands);
 
       const { result, sessionEntry, sessionCtx } = await resolveModelDirective({ body });
 
@@ -336,7 +336,7 @@ describe("reply directive resolution", () => {
       },
     };
     const skillCommands = [{ name: "github", skillName: "github", description: "GitHub" }];
-    skillCommandMocks.listForWorkspace.mockReturnValue(skillCommands);
+    skillCommandMocks.prepareForWorkspace.mockReturnValue(skillCommands);
 
     const { result, sessionEntry, sessionCtx } = await resolveModelDirective({
       body: "please /github /fable now",
@@ -590,7 +590,7 @@ describe("reply directive resolution", () => {
       cfg: configWithModelAlias("fable"),
     },
   ])("keeps explicitly referenced skill payloads opaque to $label", async ({ body, cfg }) => {
-    skillCommandMocks.listForWorkspace.mockReturnValue([
+    skillCommandMocks.prepareForWorkspace.mockReturnValue([
       {
         name: "office_hours",
         skillName: "office-hours",
@@ -636,7 +636,7 @@ describe("reply directive resolution", () => {
     }));
     const references = skillCommands.map((skill) => `$${skill.name}`).join(" ");
     const body = `${references} /model openai/gpt-5.6-luna`;
-    skillCommandMocks.listForWorkspace.mockReturnValue(skillCommands);
+    skillCommandMocks.prepareForWorkspace.mockReturnValue(skillCommands);
 
     const { result, sessionEntry } = await resolveModelDirective({
       body,

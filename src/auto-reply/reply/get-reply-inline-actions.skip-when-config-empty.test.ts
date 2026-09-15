@@ -26,13 +26,13 @@ const {
   createOpenClawToolsMock,
   getChannelPluginMock,
   handleCommandsMock,
-  listSkillCommandsForWorkspaceMock,
+  prepareSkillCommandsForWorkspaceMock,
 } = vi.hoisted(() => ({
   buildStatusReplyMock: vi.fn(),
   createOpenClawToolsMock: vi.fn(),
   getChannelPluginMock: vi.fn(),
   handleCommandsMock: vi.fn(),
-  listSkillCommandsForWorkspaceMock: vi.fn(),
+  prepareSkillCommandsForWorkspaceMock: vi.fn(),
 }));
 
 type HandleInlineActionsInput = Parameters<
@@ -51,7 +51,8 @@ vi.mock("./commands.runtime.js", () => ({
 }));
 
 vi.mock("../../skills/discovery/chat-commands.runtime.js", () => ({
-  listSkillCommandsForWorkspace: (...args: unknown[]) => listSkillCommandsForWorkspaceMock(...args),
+  prepareSkillCommandsForWorkspace: async (...args: unknown[]) =>
+    prepareSkillCommandsForWorkspaceMock(...args),
 }));
 
 vi.mock("../../channels/plugins/index.js", () => ({
@@ -255,7 +256,7 @@ function mockToolDispatchedSkillCommand() {
       execute: toolExecute,
     },
   ]);
-  listSkillCommandsForWorkspaceMock.mockReturnValue([
+  prepareSkillCommandsForWorkspaceMock.mockReturnValue([
     {
       name: "send_status",
       skillName: "send-status",
@@ -308,8 +309,8 @@ describe("handleInlineActions", () => {
   beforeEach(() => {
     handleCommandsMock.mockReset();
     handleCommandsMock.mockResolvedValue({ shouldContinue: true, reply: undefined });
-    listSkillCommandsForWorkspaceMock.mockReset();
-    listSkillCommandsForWorkspaceMock.mockReturnValue([]);
+    prepareSkillCommandsForWorkspaceMock.mockReset();
+    prepareSkillCommandsForWorkspaceMock.mockReturnValue([]);
     getChannelPluginMock.mockReset();
     createOpenClawToolsMock.mockReset();
     buildStatusReplyMock.mockReset();
@@ -751,7 +752,7 @@ describe("handleInlineActions", () => {
       },
     });
 
-    expect(listSkillCommandsForWorkspaceMock).not.toHaveBeenCalled();
+    expect(prepareSkillCommandsForWorkspaceMock).not.toHaveBeenCalled();
     expect(createOpenClawToolsMock).not.toHaveBeenCalled();
     expect(toolExecute).not.toHaveBeenCalled();
   });
@@ -780,7 +781,7 @@ describe("handleInlineActions", () => {
       },
     });
 
-    expect(listSkillCommandsForWorkspaceMock).not.toHaveBeenCalled();
+    expect(prepareSkillCommandsForWorkspaceMock).not.toHaveBeenCalled();
     expect(createOpenClawToolsMock).not.toHaveBeenCalled();
     expect(toolExecute).not.toHaveBeenCalled();
   });
@@ -1095,7 +1096,7 @@ describe("handleInlineActions", () => {
       });
 
       expect(result).toMatchObject({ kind: "continue", cleanedBody: body });
-      expect(listSkillCommandsForWorkspaceMock).not.toHaveBeenCalled();
+      expect(prepareSkillCommandsForWorkspaceMock).not.toHaveBeenCalled();
     },
   );
 
@@ -1107,7 +1108,7 @@ describe("handleInlineActions", () => {
       CommandBody: "/skill office_hours build me a deployment plan",
     });
     const skillCommands = officeHoursSkillCommands();
-    listSkillCommandsForWorkspaceMock.mockReturnValue(skillCommands);
+    prepareSkillCommandsForWorkspaceMock.mockReturnValue(skillCommands);
 
     const result = await runTestInlineActions({
       ctx,
@@ -1124,7 +1125,7 @@ describe("handleInlineActions", () => {
     });
 
     expect(result).toEqual({ kind: "reply", reply: { text: "done" } });
-    expect(listSkillCommandsForWorkspaceMock).toHaveBeenCalledOnce();
+    expect(prepareSkillCommandsForWorkspaceMock).toHaveBeenCalledOnce();
     expect(ctx.Body).toBe(
       "Act as an engineering advisor.\n\nFocus on:\nbuild me a deployment plan",
     );
@@ -1393,7 +1394,7 @@ describe("handleInlineActions", () => {
     const typing = createTypingController();
     const original = "Review with $office_hours.";
     const ctx = buildTestCtx({ Body: original, CommandBody: original });
-    listSkillCommandsForWorkspaceMock.mockImplementation(
+    prepareSkillCommandsForWorkspaceMock.mockImplementation(
       (params: { includeAllowlistHidden?: boolean }) =>
         params.includeAllowlistHidden
           ? [
@@ -1447,7 +1448,7 @@ describe("handleInlineActions", () => {
       CommandBody: testCase.normalizedBody,
       BotUsername: "openclaw",
     });
-    listSkillCommandsForWorkspaceMock.mockImplementation(
+    prepareSkillCommandsForWorkspaceMock.mockImplementation(
       (params: { includeAllowlistHidden?: boolean }) =>
         params.includeAllowlistHidden
           ? [
@@ -1508,7 +1509,7 @@ describe("handleInlineActions", () => {
     });
 
     expect(result).toMatchObject({ kind: "continue", cleanedBody: original });
-    expect(listSkillCommandsForWorkspaceMock).not.toHaveBeenCalled();
+    expect(prepareSkillCommandsForWorkspaceMock).not.toHaveBeenCalled();
   });
 
   it("reloads preloaded skill commands when final exec overrides are present", async () => {
@@ -1516,7 +1517,7 @@ describe("handleInlineActions", () => {
     handleCommandsMock.mockResolvedValue({ shouldContinue: false, reply: { text: "done" } });
     const ctx = buildTestCtx({ Body: "/office_hours help", CommandBody: "/office_hours help" });
     const skillCommands = officeHoursSkillCommands();
-    listSkillCommandsForWorkspaceMock.mockReturnValue(skillCommands);
+    prepareSkillCommandsForWorkspaceMock.mockReturnValue(skillCommands);
 
     await runTestInlineActions({
       ctx,
@@ -1533,7 +1534,7 @@ describe("handleInlineActions", () => {
       },
     });
 
-    expect(listSkillCommandsForWorkspaceMock).toHaveBeenCalledWith(
+    expect(prepareSkillCommandsForWorkspaceMock).toHaveBeenCalledWith(
       expect.objectContaining({ execOverrides: { security: "deny" } }),
     );
   });
@@ -2232,8 +2233,8 @@ describe("handleInlineActions", () => {
 describe("sender command dispatch ownership", () => {
   beforeEach(() => {
     handleCommandsMock.mockReset();
-    listSkillCommandsForWorkspaceMock.mockReset();
-    listSkillCommandsForWorkspaceMock.mockReturnValue(officeHoursInlineSkillCommands());
+    prepareSkillCommandsForWorkspaceMock.mockReset();
+    prepareSkillCommandsForWorkspaceMock.mockReturnValue(officeHoursInlineSkillCommands());
     getChannelPluginMock.mockReset();
     createOpenClawToolsMock.mockReset();
     buildStatusReplyMock.mockReset();

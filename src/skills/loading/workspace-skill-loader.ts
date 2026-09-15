@@ -10,6 +10,7 @@ import { shouldRejectHardlinkedPluginFiles } from "../../plugins/hardlink-policy
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import { prepareBinaryAvailability } from "../../shared/config-eval.js";
+import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { CONFIG_DIR, resolveUserPath } from "../../utils.js";
 import {
   isSessionSkillEnabled,
@@ -17,7 +18,11 @@ import {
 } from "../discovery/agent-filter.js";
 import { normalizeSkillFilter } from "../discovery/filter.js";
 import { assertUnambiguousManagedSkillNames } from "../library/command-name.js";
-import { loadSkillLibrarySelection } from "../library/selection.js";
+import {
+  captureSkillLibrarySelection,
+  loadSkillLibrarySelection,
+  prepareSkillLibrarySelection,
+} from "../library/selection.js";
 import { getSkillsSnapshotVersion } from "../runtime/refresh-state.js";
 import { mergeRemoteNodeSkillEntries } from "../runtime/remote-skills.js";
 import { fingerprintSkillSnapshotConfig } from "../runtime/snapshot-config-fingerprint.js";
@@ -321,7 +326,10 @@ function loadLocalSkillTiers(
   return entries;
 }
 
-function loadSkillEntries(workspaceDir: string, opts?: WorkspaceSkillLoadOptions): SkillEntry[] {
+function loadLocalSkillEntries(
+  workspaceDir: string,
+  opts?: WorkspaceSkillLoadOptions,
+): SkillEntry[] {
   const tiers = loadLocalSkillTiers(workspaceDir, opts);
   const entries = mergeRemoteNodeSkillEntries(tiers.agent, opts?.eligibility?.nodeSkills);
   if (tiers.execution.length > 0) {
@@ -336,9 +344,6 @@ function loadSkillEntries(workspaceDir: string, opts?: WorkspaceSkillLoadOptions
         entries.push(entry);
       }
     }
-  }
-  if (opts?.librarySelections?.length) {
-    entries.push(...loadSkillLibrarySelection(opts.librarySelections));
   }
   return entries;
 }
@@ -375,11 +380,34 @@ export async function resolveWorkspaceSkillPromptEntries(
     assertCurrent?: () => void;
   },
 ): Promise<{ eligible: SkillEntry[]; skillFilter: string[] | undefined }> {
+  opts?.assertCurrent?.();
+  const librarySelections = opts?.entries ? undefined : opts?.librarySelections;
+  const libraryRead = librarySelections?.length
+    ? {
+        selections: captureSkillLibrarySelection(librarySelections),
+        caller: {
+          context: captureOpenClawStateWorkerContext(),
+          assertCurrent: opts?.assertCurrent,
+        },
+      }
+    : undefined;
   for (;;) {
     opts?.assertCurrent?.();
     const sourceVersion = getSkillsSnapshotVersion(workspaceDir);
     const skillFilter = resolveEffectiveWorkspaceSkillFilter(opts);
-    const skillEntries = opts?.entries ?? loadSkillEntries(workspaceDir, opts);
+    let skillEntries = opts?.entries ?? loadLocalSkillEntries(workspaceDir, opts);
+    if (libraryRead) {
+      const libraryEntries = await prepareSkillLibrarySelection(
+        libraryRead.selections,
+        { env: libraryRead.caller.context.environment },
+        libraryRead.caller,
+      );
+      opts?.assertCurrent?.();
+      if (getSkillsSnapshotVersion(workspaceDir) !== sourceVersion) {
+        continue;
+      }
+      skillEntries = [...skillEntries, ...libraryEntries];
+    }
     const probe = await prepareSkillBinaryProbe(skillEntries, opts, opts?.assertCurrent);
     if (
       probe.needsRetry() ||
@@ -452,18 +480,15 @@ async function prepareSkillBinaryProbe(
   };
 }
 
-function resolveWorkspaceSkillLoad(workspaceDir: string, opts?: WorkspaceSkillLoadOptions) {
-  const roots = normalizeWorkspaceSkillRoots({
-    agentWorkspaceDir: workspaceDir,
-    executionWorkspaceDir: opts?.executionWorkspaceDir,
-  });
-  const entries = loadSkillEntries(roots.agentWorkspaceDir, opts);
+function resolveWorkspaceSkillFiltering(
+  executionWorkspaceDir: string | undefined,
+  opts?: WorkspaceSkillLoadOptions,
+) {
   const effectiveSkillFilter = resolveEffectiveWorkspaceSkillFilter(opts);
   return {
-    entries,
     effectiveSkillFilter,
     shouldFilter:
-      Boolean(roots.executionWorkspaceDir) ||
+      Boolean(executionWorkspaceDir) ||
       effectiveSkillFilter !== undefined ||
       opts?.skillOverrides !== undefined ||
       opts?.eligibility !== undefined,
@@ -476,11 +501,36 @@ export async function prepareWorkspaceSkills(
   opts?: WorkspaceSkillLoadOptions,
   assertCurrent?: () => void,
 ): Promise<SkillEntry[]> {
+  assertCurrent?.();
+  const librarySelections = opts?.librarySelections;
+  const libraryRead = librarySelections?.length
+    ? {
+        selections: captureSkillLibrarySelection(librarySelections),
+        caller: { context: captureOpenClawStateWorkerContext(), assertCurrent },
+      }
+    : undefined;
   for (;;) {
     assertCurrent?.();
     const sourceVersion = getSkillsSnapshotVersion(workspaceDir);
-    const { entries, effectiveSkillFilter, shouldFilter } = resolveWorkspaceSkillLoad(
-      workspaceDir,
+    const roots = normalizeWorkspaceSkillRoots({
+      agentWorkspaceDir: workspaceDir,
+      executionWorkspaceDir: opts?.executionWorkspaceDir,
+    });
+    let entries = loadLocalSkillEntries(roots.agentWorkspaceDir, opts);
+    if (libraryRead) {
+      const libraryEntries = await prepareSkillLibrarySelection(
+        libraryRead.selections,
+        { env: libraryRead.caller.context.environment },
+        libraryRead.caller,
+      );
+      assertCurrent?.();
+      if (getSkillsSnapshotVersion(workspaceDir) !== sourceVersion) {
+        continue;
+      }
+      entries = [...entries, ...libraryEntries];
+    }
+    const { effectiveSkillFilter, shouldFilter } = resolveWorkspaceSkillFiltering(
+      roots.executionWorkspaceDir,
       opts,
     );
     if (!shouldFilter) {
@@ -508,10 +558,15 @@ export async function prepareWorkspaceSkills(
 
 export function loadWorkspaceSkills(
   workspaceDir: string,
-  opts?: WorkspaceSkillLoadOptions,
+  opts?: Omit<WorkspaceSkillLoadOptions, "librarySelections">,
 ): SkillEntry[] {
-  const { entries, effectiveSkillFilter, shouldFilter } = resolveWorkspaceSkillLoad(
-    workspaceDir,
+  const roots = normalizeWorkspaceSkillRoots({
+    agentWorkspaceDir: workspaceDir,
+    executionWorkspaceDir: opts?.executionWorkspaceDir,
+  });
+  const entries = loadLocalSkillEntries(roots.agentWorkspaceDir, opts);
+  const { effectiveSkillFilter, shouldFilter } = resolveWorkspaceSkillFiltering(
+    roots.executionWorkspaceDir,
     opts,
   );
   if (!shouldFilter) {
@@ -526,6 +581,7 @@ export function loadWorkspaceSkills(
   );
 }
 
+/** Compatibility inventory for the shipped synchronous skill-command SDK facades. */
 export function loadVisibleSkills(
   workspaceDir: string,
   opts?: {
@@ -541,7 +597,10 @@ export function loadVisibleSkills(
     pluginMetadataSnapshot?: PluginMetadataSnapshot;
   },
 ): SkillEntry[] {
-  const entries = loadSkillEntries(workspaceDir, opts);
+  const entries = loadLocalSkillEntries(workspaceDir, opts);
+  if (opts?.librarySelections?.length) {
+    entries.push(...loadSkillLibrarySelection(opts.librarySelections));
+  }
   const effectiveSkillFilter = resolveEffectiveWorkspaceSkillFilter(opts);
   return filterSkillEntries(
     entries,

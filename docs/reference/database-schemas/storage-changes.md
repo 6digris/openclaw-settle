@@ -144,6 +144,18 @@ current-owner checks finish. Workspace filtering still precedes appended library
 pins; workspace-only loads omit them. Workspace plugin discovery retains its
 existing synchronous metadata path.
 
+Workspace prompt and internal chat-command preparation resolve pinned library
+entries through the same read owner before applying combined inventory filters
+and binary eligibility. Captured pin values and library context survive workspace
+refresh retries, while supplied entry arrays and explicit empty selections bypass library
+reads. Existing snapshot refresh and current-caller checks remain authoritative.
+The synchronous `listSkillCommandsForAgents` and `listSkillCommandsForWorkspace`
+SDK facades retain the return contract shipped in v2026.9.4. Their deprecation
+path is to publish reviewed async SDK entrypoints, migrate native command
+consumers, and then remove synchronous pin reads after the SDK compatibility
+window. Internal callers use async preparation now; this cut adds no SDK exports.
+Unrelated plugin and bundle-command registry discovery retain their existing owners.
+
 Model-context reads and session transcript preparation use the session-transcript
 worker with separate bounded queues. Background preparation cannot occupy the
 foreground context queue. Session exports read events, statistics, and session

@@ -31,7 +31,7 @@ export function createSkillCommandLoaders(
   return {
     loadSkillCommands:
       params.loadSkillCommands ??
-      (async () => (await loadRuntime()).listSkillCommandsForWorkspace(context)),
+      (async () => (await loadRuntime()).prepareSkillCommandsForWorkspace(context)),
     loadBundledSkillCommand: async (skillName) =>
       (await loadRuntime()).findBundledSkillCommandForWorkspace({
         ...context,
