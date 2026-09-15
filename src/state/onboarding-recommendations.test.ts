@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import { OnboardingRecommendationsRecordSchema } from "./onboarding-recommendations.contract.js";
 import {
   createOnboardingRecommendationsStore,
   type OnboardingRecommendationMatch,
@@ -27,6 +28,58 @@ const matches: OnboardingRecommendationMatch[] = [
 
 afterEach(() => {
   closeOpenClawStateDatabaseForTest();
+});
+
+describe("onboarding recommendation record decoding", () => {
+  const pending = {
+    inventoryHash: "synthetic-inventory",
+    matches,
+    offeredAt: 0,
+    acceptedAt: null,
+    updatedAt: 0,
+  };
+
+  it.each([
+    pending,
+    { ...pending, acceptedAt: 1_234, updatedAt: 1_234 },
+    { ...pending, matches: [], updatedAt: 2_345 },
+    { ...pending, inventoryHash: "", offeredAt: -1, acceptedAt: 0, updatedAt: 0.5 },
+  ])("preserves valid pending, accepted, and retry headers: %j", (record) => {
+    expect(OnboardingRecommendationsRecordSchema.parse(record)).toEqual(record);
+  });
+
+  it("preserves extra record fields while normalizing matches as before", () => {
+    const record = {
+      ...pending,
+      extra: { retained: true },
+      matches: [
+        {
+          ...matches[0]!,
+          ignoredMatchField: true,
+          candidate: { ...matches[0]!.candidate, ignoredCandidateField: true },
+        },
+      ],
+    };
+    expect(OnboardingRecommendationsRecordSchema.parse(record)).toEqual({
+      ...pending,
+      extra: { retained: true },
+    });
+    expect(record.matches[0]).toHaveProperty("ignoredMatchField", true);
+  });
+
+  it.each([
+    { inventoryHash: 123 },
+    { offeredAt: "123" },
+    { offeredAt: undefined },
+    { acceptedAt: "123" },
+    { acceptedAt: undefined },
+    { updatedAt: null },
+    { updatedAt: undefined },
+  ])("rejects malformed header fields without opening a database: %j", (header) => {
+    expect(OnboardingRecommendationsRecordSchema.safeParse({ ...pending, ...header }).success).toBe(
+      false,
+    );
+  });
 });
 
 describe("onboarding recommendations store", () => {

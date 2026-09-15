@@ -6,7 +6,7 @@ import {
 } from "./config-machine-state-write.js";
 import { readConfigMachineStateWithMetadataInDatabase } from "./config-machine-state.js";
 import {
-  OnboardingRecommendationMatchesSchema,
+  OnboardingRecommendationsRecordSchema,
   type OnboardingRecommendationsRecord,
   type PreparedOnboardingRecommendationOffer,
   type AcknowledgeOnboardingRecommendationsParams,
@@ -20,13 +20,8 @@ export function readOnboardingRecommendationsInDatabase(
   db: DatabaseSync,
   configKey: string,
 ): OnboardingRecommendationsRecord | null {
-  const record = readConfigMachineStateWithMetadataInDatabase<OnboardingRecommendationsRecord>(
-    db,
-    configKey,
-  )?.value;
-  return record
-    ? { ...record, matches: OnboardingRecommendationMatchesSchema.parse(record.matches) }
-    : null;
+  const record = readConfigMachineStateWithMetadataInDatabase(db, configKey)?.value;
+  return record ? OnboardingRecommendationsRecordSchema.parse(record) : null;
 }
 
 function matchesExpectedOnboardingRecommendations(

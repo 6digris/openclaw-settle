@@ -15,17 +15,21 @@ const OnboardingRecommendationMatchSchema = z.object({
   }),
 });
 
-export const OnboardingRecommendationMatchesSchema = z.array(OnboardingRecommendationMatchSchema);
+const OnboardingRecommendationMatchesSchema = z.array(OnboardingRecommendationMatchSchema);
 
 export type OnboardingRecommendationMatch = z.infer<typeof OnboardingRecommendationMatchSchema>;
 
-export type OnboardingRecommendationsRecord = {
-  inventoryHash: string;
-  matches: OnboardingRecommendationMatch[];
-  offeredAt: number;
-  acceptedAt: number | null;
-  updatedAt: number;
-};
+export const OnboardingRecommendationsRecordSchema = z
+  .object({
+    inventoryHash: z.string(),
+    matches: OnboardingRecommendationMatchesSchema,
+    offeredAt: z.number(),
+    acceptedAt: z.number().nullable(),
+    updatedAt: z.number(),
+  })
+  .passthrough();
+
+export type OnboardingRecommendationsRecord = z.infer<typeof OnboardingRecommendationsRecordSchema>;
 
 type OnboardingRecommendationInventoryItem = {
   label: string;

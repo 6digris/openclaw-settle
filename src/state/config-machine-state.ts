@@ -19,11 +19,10 @@ export function normalizeConfigMachineStateKey(key: string): string {
   return normalized;
 }
 
-// oxlint-disable-next-line typescript/no-unnecessary-type-parameters -- Callers own the JSON shape for open-ended state keys.
-export function readConfigMachineStateWithMetadataInDatabase<T>(
+export function readConfigMachineStateWithMetadataInDatabase(
   database: DatabaseSync,
   key: string,
-): { value: T; updatedAtMs: number } | undefined {
+): { value: unknown; updatedAtMs: number } | undefined {
   if (!tableExists(database, "config_machine_state")) {
     return undefined;
   }
@@ -35,9 +34,11 @@ export function readConfigMachineStateWithMetadataInDatabase<T>(
       .select(["value_json", "updated_at_ms"])
       .where("state_key", "=", normalizeConfigMachineStateKey(key)),
   );
-  return row
-    ? { value: JSON.parse(row.value_json) as T, updatedAtMs: row.updated_at_ms }
-    : undefined;
+  if (!row) {
+    return undefined;
+  }
+  const value: unknown = JSON.parse(row.value_json);
+  return { value, updatedAtMs: row.updated_at_ms };
 }
 
 // oxlint-disable-next-line typescript/no-unnecessary-type-parameters -- Callers own the JSON shape for open-ended state keys.
@@ -46,8 +47,10 @@ export function readConfigMachineStateWithMetadata<T>(
   options: OpenClawStateDatabaseOptions = {},
   behavior: { artifactPreservingReadOnly?: boolean } = {},
 ): { value: T; updatedAtMs: number } | undefined {
-  const read = ({ db }: { db: DatabaseSync }) =>
-    readConfigMachineStateWithMetadataInDatabase<T>(db, key);
+  const read = ({ db }: { db: DatabaseSync }) => {
+    const row = readConfigMachineStateWithMetadataInDatabase(db, key);
+    return row ? { value: row.value as T, updatedAtMs: row.updatedAtMs } : undefined;
+  };
   return behavior.artifactPreservingReadOnly
     ? withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(read, options)
     : withExistingOpenClawStateDatabaseReadOnly(read, options);
