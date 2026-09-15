@@ -24,7 +24,7 @@ export {
   isNodeCommandAllowed,
   resolveNodeCommandAllowlist,
 } from "../gateway/node-command-policy.js";
-export type { NodeSession } from "../gateway/node-registry.js";
+export type { NodeSessionV2 as NodeSession } from "../gateway/node-registry.js";
 export { resolveNodeFromNodeList } from "../shared/node-resolve.js";
 export type { NodeMatchCandidate } from "../shared/node-match.js";
 export {
@@ -43,7 +43,8 @@ export { createOperatorApprovalsGatewayClient } from "../gateway/operator-approv
 
 export { ErrorCodes, errorShape } from "../../packages/gateway-protocol/src/schema/error-codes.js";
 
-export type { GatewayRequestHandlerOptions } from "../gateway/server-methods/types.js";
+// Existing public spelling explicitly selects the in-process transport-aware SDK V2.
+export type { GatewayRequestHandlerOptionsV2 as GatewayRequestHandlerOptions } from "../gateway/server-methods/types.js";
 
 export {
   channelBlockedPatch,

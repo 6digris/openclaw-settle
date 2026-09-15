@@ -67,6 +67,7 @@ import type {
 import {
   assertReloadPublicationCurrent,
   GatewayConfigReloadSupersededError,
+  type GatewayRestartRequestOptions,
 } from "./server-reload-contracts.js";
 
 export type { GatewayReloadPlan } from "./config-reload-plan.js";
@@ -102,6 +103,7 @@ type GatewayConfigReloader = {
   isReady: () => boolean;
   stop: () => Promise<void>;
   hotReloadStatus: () => GatewayHotReloadStatus | undefined;
+  notifyPluginMetadataChanged: () => void;
   applyPluginLifecycleChange: PluginLifecycleRuntimeApply;
   isReloading: () => boolean;
 };
@@ -241,6 +243,7 @@ export function startGatewayConfigReloader(opts: {
     nextConfig: OpenClawConfig,
     ownership: GatewayConfigReloadTransactionOwnership,
     sourceConfig: OpenClawConfig,
+    restartOptions?: GatewayRestartRequestOptions,
   ) => void | Promise<void>;
   /** Keeps one accepted config transaction inside the Gateway work fence. */
   runTransaction?: <T>(run: () => Promise<T>) => Promise<T>;
@@ -280,6 +283,10 @@ export function startGatewayConfigReloader(opts: {
   let running = false;
   let stopped = false;
   let initialized = false;
+  // The shipped void notification owes ordinary restart planning, not an explicit
+  // plugin application. Keep it pending across skipped/failed transactions.
+  let pluginMetadataRefreshRequests = 0;
+  let pluginMetadataRefreshApplied = 0;
   const lifecycle = new AbortController();
   const withRestartPreparation = <T>(
     ownership: GatewayConfigReloadTransactionOwnership,
@@ -420,11 +427,12 @@ export function startGatewayConfigReloader(opts: {
     nextConfig: OpenClawConfig,
     ownership: GatewayConfigReloadTransactionOwnership,
     sourceConfig: OpenClawConfig,
+    restartOptions?: GatewayRestartRequestOptions,
   ) => {
     try {
       // Every accepted restart candidate validates inside its config
       // transaction. Only downstream signal delivery may coalesce.
-      await opts.onRestart(plan, nextConfig, ownership, sourceConfig);
+      await opts.onRestart(plan, nextConfig, ownership, sourceConfig, restartOptions);
     } catch (err) {
       if (isConfigReloadSuperseded(err)) {
         opts.log.info(`config restart superseded: ${String(err)}`);
@@ -469,6 +477,9 @@ export function startGatewayConfigReloader(opts: {
     } = {},
   ) => {
     let transactionEpoch = initialEpoch;
+    const pluginMetadataRefreshToken = pluginMetadataRefreshRequests;
+    const forcePluginMetadataReload =
+      !pluginLifecycle && pluginMetadataRefreshToken !== pluginMetadataRefreshApplied;
     const { hash: persistedHash } = sourceSnapshot;
     const {
       config: candidateRuntimeConfig = sourceSnapshot.config,
@@ -488,7 +499,13 @@ export function startGatewayConfigReloader(opts: {
     let nextPluginInstallRecords = currentPluginInstallRecords;
     let committedRuntimeConfig: OpenClawConfig | null = null;
     let rejected = false;
-    const isCurrent = () => !stopped && !rejected && sourceObservation.epoch === transactionEpoch;
+    // Metadata signals can represent source edits with identical config/install
+    // bytes. Unlike watcher echoes, they cannot be adopted by an older transaction.
+    const isCurrent = () =>
+      !stopped &&
+      !rejected &&
+      sourceObservation.epoch === transactionEpoch &&
+      pluginMetadataRefreshRequests === pluginMetadataRefreshToken;
     const assertInvokerOwned = () => {
       // Published work must finish its cleanup and receipt even if its invoker closes.
       if (!committedRuntimeConfig) {
@@ -500,7 +517,7 @@ export function startGatewayConfigReloader(opts: {
       assertReloadPublicationCurrent(isCurrent(), false);
     };
     const checkpointOwned = async (assertOwned: () => void) => {
-      if (stopped || rejected) {
+      if (stopped || rejected || pluginMetadataRefreshRequests !== pluginMetadataRefreshToken) {
         throw new GatewayConfigReloadSupersededError();
       }
       assertOwned();
@@ -551,7 +568,11 @@ export function startGatewayConfigReloader(opts: {
       // Acceptance consumed this observation. A later event keeps its own scheduled work.
       if (isCurrent()) {
         clearReloadTimer();
-        pending = false;
+        // A receipt for selected plugins cannot consume the unscoped shipped
+        // notification. Replay it through ordinary policy after explicit work.
+        pending = Boolean(
+          pluginLifecycle && pluginMetadataRefreshRequests !== pluginMetadataRefreshApplied,
+        );
       }
       return { runtime, isCurrent };
     };
@@ -735,7 +756,10 @@ export function startGatewayConfigReloader(opts: {
     }
     let publishedSource: { rollback: () => Promise<void>; commit?: () => void } | undefined;
     const publishSource =
-      changedPaths.length === 0 && !pluginLifecycle && opts.onEffectiveConfigUnchanged
+      changedPaths.length === 0 &&
+      !pluginLifecycle &&
+      !forcePluginMetadataReload &&
+      opts.onEffectiveConfigUnchanged
         ? async () => {
             publishedSource ??= await opts.onEffectiveConfigUnchanged!(
               nextConfig,
@@ -819,7 +843,7 @@ export function startGatewayConfigReloader(opts: {
       }
       notifyCommitted();
     };
-    if (changedPaths.length === 0 && !pluginLifecycle) {
+    if (changedPaths.length === 0 && !pluginLifecycle && !forcePluginMetadataReload) {
       await commitReloadBaseline();
       publishedSource?.commit?.();
       opts.onConfigRevisionApplied?.(nextConfigRevisionHash);
@@ -840,7 +864,9 @@ export function startGatewayConfigReloader(opts: {
     opts.log.info(
       changedPaths.length > 0
         ? `config change detected; evaluating reload (${changedPaths.join(", ")})`
-        : "plugin metadata changed with identical config; applying plugin lifecycle",
+        : forcePluginMetadataReload
+          ? "plugin metadata changed with identical config; Gateway restart required"
+          : "plugin metadata changed with identical config; applying plugin lifecycle",
     );
     if (followUp.mode === "none") {
       opts.log.info(`config reload skipped by writer intent (${followUp.reason})`);
@@ -873,6 +899,10 @@ export function startGatewayConfigReloader(opts: {
       plan.restartGateway = false;
       plan.restartReasons = [];
     }
+    if (forcePluginMetadataReload && !plan.restartGateway) {
+      plan.restartGateway = true;
+      plan.restartReasons.push("plugin metadata changed");
+    }
     if (nextSettings.mode === "off" && !pluginLifecycle) {
       opts.log.info("config reload disabled (gateway.reload.mode=off)");
       await commitReloadBaseline({ runtimeApplied: false });
@@ -890,9 +920,18 @@ export function startGatewayConfigReloader(opts: {
     }
     if (plan.restartGateway) {
       await opts.onConfigChange?.(plan, nextConfig);
-      await prepareRestart(plan, nextConfig, ownership, nextSourceConfig);
+      // Metadata debt is not owned by any coalesced config path. Transfer it to
+      // the existing coordinator before acknowledging the captured notification.
+      await prepareRestart(
+        plan,
+        nextConfig,
+        ownership,
+        nextSourceConfig,
+        forcePluginMetadataReload ? { retainDebtAcrossConfigChanges: true } : undefined,
+      );
       await commitReloadBaseline();
       // The accepted restart owns snapshot republication at next startup.
+      pluginMetadataRefreshApplied = pluginMetadataRefreshToken;
       application?.settle("restart-pending");
       return completeApplication();
     }
@@ -1361,7 +1400,10 @@ export function startGatewayConfigReloader(opts: {
           watcherIntentCandidate = null;
           watcherIntentCameFromPendingWrite = false;
         }
-        lastAppliedWriteHash = snapshot.hash ?? null;
+        lastAppliedWriteHash =
+          pluginMetadataRefreshRequests === pluginMetadataRefreshApplied
+            ? (snapshot.hash ?? null)
+            : null;
         await acceptWatchedPaths(snapshot.includedPaths ?? []);
         if (applied.isCurrent()) {
           await promoteAcceptedSnapshot(snapshot, "plugin-lifecycle");
@@ -1748,6 +1790,18 @@ export function startGatewayConfigReloader(opts: {
   return {
     ready,
     isReady: () => initialized,
+    notifyPluginMetadataChanged: () => {
+      if (stopped) {
+        return;
+      }
+      // Do not invalidate the running inventory. The existing transaction owner
+      // reads fresh install records and validates restart publication authority.
+      pluginMetadataRefreshRequests += 1;
+      startupInternalWriteHash = null;
+      lastAppliedWriteHash = null;
+      pending = true;
+      scheduleExternalRefresh();
+    },
     applyPluginLifecycleChange,
     isReloading: () => activeReloads.size > 0,
     stop: async () => {

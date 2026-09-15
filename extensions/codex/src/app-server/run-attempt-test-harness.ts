@@ -729,7 +729,7 @@ export function setupRunAttemptTestHooks(): void {
     dynamicToolBuildState.openClawCodingToolsFactory = undefined;
     codexWorkspaceDirCache.clear();
     await nativeHookRelayUnregisterQueue.clear();
-    await nativeHookRelayTesting.clearNativeHookRelaysForTests();
+    nativeHookRelayTesting.clearNativeHookRelaysForTests();
     clearMemoryPluginState();
     clearPluginCommands();
     resetAgentEventsForTest();

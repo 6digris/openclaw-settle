@@ -13,3 +13,7 @@ export const loadDiscordVoiceTestHarness = () =>
 // Gateway capture proof keeps routing/admission real; only transport edges are substituted.
 export const loadDiscordGatewayCaptureFixture = () =>
   import("./src/voice/voice-gateway-capture.test-support.js");
+
+// Registration proof substitutes persistence, not the FIFO or managed SDK owner.
+export const loadDiscordComponentRegistryTestHarness = () =>
+  import("./src/components-registry.test-support.js");

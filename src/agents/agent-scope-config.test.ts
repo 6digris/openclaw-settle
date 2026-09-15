@@ -25,6 +25,39 @@ import {
 vi.unmock("./agent-scope-config.js");
 
 describe("agent roster resolution", () => {
+  it("keeps full-config SDK calls and readonly roster inputs source-compatible", () => {
+    const broad: typeof import("../plugin-sdk/agent-runtime.js").listAgentIds = listAgentIds;
+    const focused: typeof import("../plugin-sdk/agent-scope-runtime.js").listAgentIds =
+      listAgentIds;
+    const legacyParameter: Parameters<typeof focused>[0] = { logging: { level: "info" } };
+    const readonlyRoster = { agents: { list: [{ id: "OPS" }, { id: "ops" }] } } as const;
+
+    expect(broad({ logging: { level: "info" } })).toEqual(["main"]);
+    expect(focused({ logging: { level: "info" }, agents: { entries: { ops: {} } } })).toEqual([
+      "ops",
+    ]);
+    expect(focused(legacyParameter)).toEqual(["main"]);
+    expect(focused(readonlyRoster)).toEqual(["ops"]);
+    expect(focused({ agents: { entries: {} } })).toEqual([]);
+  });
+
+  it("keeps the deprecated default lookup compatible with full config and readonly inputs", () => {
+    const focused: typeof import("../plugin-sdk/agent-scope-runtime.js").tryResolveDefaultAgentId =
+      tryResolveDefaultAgentId;
+    const legacyParameter: Parameters<typeof focused>[0] = {
+      agents: { entries: { ops: {} }, defaults: { workspace: "/example/workspace" } },
+      gateway: { port: 18789 },
+      logging: { level: "info" },
+    };
+    const readonlyRoster = { agents: { entries: { OPS: {} } } } as const;
+
+    expect(focused({ logging: { level: "info" } })).toBe("main");
+    expect(focused({ agents: { defaults: { workspace: "/example/workspace" } } })).toBe("main");
+    expect(focused(legacyParameter)).toBe("ops");
+    expect(focused(readonlyRoster)).toBe("ops");
+    expect(focused({ agents: { entries: {} } })).toBeUndefined();
+  });
+
   it("rejects unknown configured-agent selections with canonical CLI guidance", () => {
     const cfg = { agents: { entries: { main: {}, ops: {} } } };
 

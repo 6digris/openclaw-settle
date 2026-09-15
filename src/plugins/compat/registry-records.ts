@@ -12,6 +12,42 @@ export const PLUGIN_COMPAT_RECORDS = [
   ...DEPRECATION_MARKING_COMPAT_RECORDS,
   MEDIA_LEGACY_PROJECTION_COMPAT_RECORD,
   {
+    code: "model-session-selection-legacy-policy-input",
+    status: "deprecated",
+    owner: "sdk",
+    introduced: "2026-09-15",
+    deprecated: "2026-09-15",
+    warningStarts: "2026-09-15",
+    removalGate: "next-plugin-sdk-major",
+    replacement:
+      "Use ApplySessionModelSelectionParams<2> with typed modelPolicy.allows inputs. The legacy caller-supplied allowsKey member is retained only for source compatibility and is never consulted by core admission; remove only after verified external-plugin migration and explicit breaking-release approval.",
+    docsPath: "/plugins/sdk-migration/compatibility-policy#session-model-selection-inputs",
+    surfaces: ["ApplySessionModelSelectionParams.modelPolicy.allowsKey"],
+    diagnostics: [
+      "TypeScript @deprecated annotations and compatibility registry; no runtime warnings",
+    ],
+    tests: ["src/model-picker/apply-session-model-selection.test.ts"],
+  },
+  {
+    code: "gateway-plugin-metadata-notification",
+    status: "deprecated",
+    owner: "sdk",
+    introduced: "2026-07-17",
+    deprecated: "2026-09-14",
+    warningStarts: "2026-09-14",
+    removalGate: "next-plugin-sdk-major",
+    replacement:
+      "For explicit management, await the admin plugins.refresh/plugins.reload RPC runtime receipt. The shipped void notification retains ordinary restart/off policy; remove only after verified external-plugin migration and explicit breaking-release approval.",
+    docsPath: "/plugins/sdk-migration/compatibility-policy#gateway-plugin-metadata-notification",
+    surfaces: ["GatewayRequestHandlerOptions.context.notifyPluginMetadataChanged"],
+    diagnostics: ["TypeScript @deprecated annotation and plugin compatibility registry"],
+    tests: [
+      "src/gateway/config-reload.test.ts",
+      "src/gateway/server-request-context.test.ts",
+      "src/gateway/server-reload-handlers.hot-reload-status.test.ts",
+    ],
+  },
+  {
     code: "plugin-tasks-sync-reads",
     status: "deprecated",
     owner: "sdk",

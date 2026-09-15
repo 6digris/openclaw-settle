@@ -140,9 +140,23 @@ describe("plugin compatibility registry", () => {
         "api.runtime.state.openSyncKeyedStore",
         "PluginStateSyncKeyedStore",
         "createPluginStateSyncKeyedStore",
+        "PluginStateKeyedStore.update",
+        "PluginStateKeyedStore.deleteIf",
       ],
     });
     expect(records.get("plugin-state-sync-keyed-store")?.removeAfter).toBeUndefined();
+    expect(records.get("model-session-selection-legacy-policy-input")).toMatchObject({
+      status: "deprecated",
+      owner: "sdk",
+      warningStarts: "2026-09-15",
+      removalGate: "next-plugin-sdk-major",
+      surfaces: ["ApplySessionModelSelectionParams.modelPolicy.allowsKey"],
+      docsPath: "/plugins/sdk-migration/compatibility-policy#session-model-selection-inputs",
+    });
+    expect(records.get("model-session-selection-legacy-policy-input")?.removeAfter).toBeUndefined();
+    expect(records.get("model-session-selection-legacy-policy-input")?.replacement).toMatch(
+      /never consulted by core admission/u,
+    );
     expect(records.get("agent-harness-sdk-alias")?.surfaces).toEqual([
       "openclaw/plugin-sdk/agent-harness",
       "openclaw/plugin-sdk/agent-harness-runtime",

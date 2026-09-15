@@ -1774,11 +1774,46 @@ describe("gateway/node-registry", () => {
     await expect(registry.checkConnectivity("node-1", 50)).resolves.toEqual({ ok: true });
   });
 
+  it("retains a framed client when event delivery is supplied separately", async () => {
+    const registry = createTestNodeRegistry();
+    const frames: string[] = [];
+    const client = makeClient("conn-events", "node-events", frames);
+    const send = vi.fn(() => true);
+    const sendRaw = vi.fn(() => true);
+    const checkConnectivity = vi.fn(async () => ({ ok: true as const }));
+    const session = registry.registerTransport(
+      client,
+      { pairingIdentity: "identity-events" },
+      {
+        send,
+        sendRaw,
+        checkConnectivity,
+      },
+    );
+    expect(registry.get("node-events")).toBe(session);
+    expect(session.client).toBe(client);
+    expect(session.client.socket).toBe(client.socket);
+    expect(registry.sendEvent("node-events", "test.event", { value: 1 })).toBe(true);
+    expect(send).toHaveBeenCalledWith("test.event", { value: 1 });
+    const payload = serializeEventPayload({ value: 2 });
+    expect(registry.sendEventRaw("node-events", "test.raw", payload)).toBe(true);
+    expect(sendRaw).toHaveBeenCalledWith("test.raw", payload);
+    expect(frames).toEqual([]);
+    await expect(registry.checkConnectivity("node-events")).resolves.toEqual({ ok: true });
+    expect(checkConnectivity).toHaveBeenCalledOnce();
+    registry.unregister("conn-events");
+    expect(registry.sendEvent("node-events", "retired")).toBe(false);
+  });
+
   it("does not report a replaced polling transport as connected", async () => {
     const registry = createTestNodeRegistry();
     const { promise: transportProbe, resolve: resolveProbe } = createDeferred<{ ok: true }>();
     registry.registerTransport(
-      makeClient("conn-old", "node-1"),
+      {
+        connect: makeClient("conn-old", "node-1").connect,
+        connId: "conn-old",
+        usesSharedGatewayAuth: false,
+      },
       { pairingIdentity: "identity-a" },
       {
         send: () => true,

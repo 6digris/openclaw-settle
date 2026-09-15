@@ -3,6 +3,9 @@
  * Use generic channel SDK subpaths or plugin-local API barrels instead.
  */
 
+import { formatErrorMessage } from "../infra/errors.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
+import { getLegacyPluginSdkResourceHost } from "../plugins/legacy-sdk-resource-host.js";
 import type {
   ChannelAccountSnapshot,
   ChannelGroupContext,
@@ -138,7 +141,7 @@ type EditDiscordComponentMessage = (
 type RegisterBuiltDiscordComponentMessage = (params: {
   buildResult: DiscordComponentBuildResult;
   messageId: string;
-}) => Promise<void>;
+}) => void;
 
 type DiscordApiFacadeModule = {
   collectDiscordStatusIssues: (accounts: ChannelAccountSnapshot[]) => ChannelStatusIssue[];
@@ -166,7 +169,9 @@ type DiscordApiFacadeModule = {
 
 type DiscordRuntimeFacadeModule = {
   editDiscordComponentMessage: EditDiscordComponentMessage;
-  registerBuiltDiscordComponentMessage: RegisterBuiltDiscordComponentMessage;
+  registerBuiltDiscordComponentMessage: (
+    params: Parameters<RegisterBuiltDiscordComponentMessage>[0],
+  ) => void | Promise<void>;
   autoBindSpawnedDiscordSubagent: (params: {
     cfg: OpenClawConfig;
     accountId?: string;
@@ -316,12 +321,19 @@ export const editDiscordComponentMessage: DiscordRuntimeFacadeModule["editDiscor
       ...args,
     )) as DiscordRuntimeFacadeModule["editDiscordComponentMessage"];
 
-/** Await callback registration after Discord assigns the built component message its id. */
-export const registerBuiltDiscordComponentMessage: DiscordRuntimeFacadeModule["registerBuiltDiscordComponentMessage"] =
-  ((...args) =>
-    loadDiscordRuntimeFacadeModule().registerBuiltDiscordComponentMessage(
-      ...args,
-    )) as DiscordRuntimeFacadeModule["registerBuiltDiscordComponentMessage"];
+/** Register callbacks after Discord assigns the message id; completion is host-owned. */
+export const registerBuiltDiscordComponentMessage: RegisterBuiltDiscordComponentMessage = (
+  params,
+) => {
+  getLegacyPluginSdkResourceHost().invokeDetached(
+    () => loadDiscordRuntimeFacadeModule().registerBuiltDiscordComponentMessage(params),
+    (error) => {
+      createSubsystemLogger("plugins/sdk").error(
+        `Discord SDK component registration failed: ${formatErrorMessage(error)}`,
+      );
+    },
+  );
+};
 
 /** Bind a spawned subagent session to the current Discord thread when possible. */
 export async function autoBindSpawnedDiscordSubagent(params: {

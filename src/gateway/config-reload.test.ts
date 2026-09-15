@@ -7191,6 +7191,286 @@ describe("startGatewayConfigReloader", () => {
     },
   );
 
+  describe("shipped plugin metadata notification", () => {
+    it.each([false, true])(
+      "coalesces notifications and watcher echoes (install changed: %s)",
+      async (changed) => {
+        const config = { gateway: { reload: {} } };
+        const readSnapshot = vi.fn(async () => makeSnapshot({ config, hash: "same" }));
+        const readPluginInstallRecords = vi.fn(
+          async (): Promise<Record<string, PluginInstallRecord>> => {
+            const records: Record<string, PluginInstallRecord> = {};
+            if (changed) {
+              records.notes = { source: "npm", spec: "notes@2" };
+            }
+            return records;
+          },
+        );
+        const harness = createReloaderHarness(readSnapshot, {
+          initialConfig: config,
+          initialInternalWriteHash: "same",
+          readPluginInstallRecords,
+        });
+        await harness.reloader.ready;
+        const metadata = createPluginMetadataSnapshotFixture();
+        setCurrentPluginMetadataSnapshotState(metadata, "startup");
+        try {
+          expect(harness.reloader.notifyPluginMetadataChanged()).toBeUndefined();
+          harness.reloader.notifyPluginMetadataChanged();
+          expect(readSnapshot).not.toHaveBeenCalled();
+          harness.watcher.emit("change");
+          // Advance this debounce pass, not unrelated process maintenance intervals.
+          await vi.runOnlyPendingTimersAsync();
+          await vi.waitFor(() => expect(harness.reloader.isReloading()).toBe(false));
+          const [plan] = getOnlyRestartCall(harness);
+          expect(plan.restartReasons).toContain("plugin metadata changed");
+          expect(plan.pluginLifecycle).toBeUndefined();
+          expect(plan.changedPaths).toEqual(changed ? ["plugins.installs.notes"] : []);
+          expect(readPluginInstallRecords).toHaveBeenCalledOnce();
+          expect(harness.onHotReload).not.toHaveBeenCalled();
+          expect(getCurrentPluginMetadataSnapshotState().snapshot).toBe(metadata);
+          harness.watcher.emit("change");
+          await vi.runOnlyPendingTimersAsync();
+          await vi.waitFor(() => expect(harness.reloader.isReloading()).toBe(false));
+          expect(harness.onRestart).toHaveBeenCalledOnce();
+        } finally {
+          await harness.reloader.stop();
+        }
+      },
+    );
+
+    it("honors off without publishing unchanged source and retains the notification until enabled", async () => {
+      const initialConfig: OpenClawConfig = { gateway: { reload: { mode: "off" } } };
+      let snapshot = makeSnapshot({ config: initialConfig, hash: "off" });
+      const harness = createReloaderHarness(async () => snapshot, { initialConfig });
+      await harness.reloader.ready;
+      try {
+        harness.reloader.notifyPluginMetadataChanged();
+        await vi.runAllTimersAsync();
+        expect(harness.onRestart).not.toHaveBeenCalled();
+        expect(harness.onHotReload).not.toHaveBeenCalled();
+        expect(harness.onEffectiveConfigUnchanged).not.toHaveBeenCalled();
+        expect(harness.onConfigAccepted).toHaveBeenCalledWith(
+          initialConfig,
+          expect.any(Object),
+          initialConfig,
+          { runtimeApplied: false },
+        );
+        snapshot = makeSnapshot({
+          config: { gateway: { reload: { mode: "hybrid" } } },
+          hash: "on",
+        });
+        await flushWatcherChange(harness);
+        expect(getOnlyRestartCall(harness)[0].restartReasons).toContain("plugin metadata changed");
+      } finally {
+        await harness.reloader.stop();
+      }
+    });
+
+    it.each([false, true])(
+      "owns notifications during readiness (stop before ready: %s)",
+      async (stop) => {
+        const gate = createDeferred();
+        const config = { gateway: { reload: {} } };
+        let initial = true;
+        const readSnapshot = vi.fn(async () => makeSnapshot({ config, hash: "same" }));
+        const harness = createReloaderHarness(readSnapshot, {
+          initialConfig: config,
+          prepareConfigCandidate: async ({ runtimeConfig, sourceConfig }) => {
+            if (initial) {
+              initial = false;
+              await gate.promise;
+            }
+            return { runtimeConfig, compareConfig: sourceConfig };
+          },
+        });
+        const readiness = harness.reloader.ready.catch((error: unknown) => error);
+        try {
+          harness.reloader.notifyPluginMetadataChanged();
+          await vi.runAllTimersAsync();
+          expect(readSnapshot).not.toHaveBeenCalled();
+          expect(chokidar.watch).not.toHaveBeenCalled();
+          const stopping = stop ? harness.reloader.stop() : undefined;
+          gate.resolve();
+          await readiness;
+          await stopping;
+          await vi.runAllTimersAsync();
+          expect(harness.onRestart).toHaveBeenCalledTimes(stop ? 0 : 1);
+          expect(readSnapshot).toHaveBeenCalledTimes(stop ? 0 : 1);
+        } finally {
+          gate.resolve();
+          await harness.reloader.stop();
+        }
+      },
+    );
+
+    it("ignores retained notifications after shutdown without observing or reading source", async () => {
+      const observed = vi.fn();
+      const readSnapshot = vi.fn(async () => makeSnapshot());
+      const harness = createReloaderHarness(readSnapshot, { onConfigCandidateObserved: observed });
+      await harness.reloader.ready;
+      const notify = harness.reloader.notifyPluginMetadataChanged;
+      await harness.reloader.stop();
+      expect(notify()).toBeUndefined();
+      await vi.runAllTimersAsync();
+      expect(observed).not.toHaveBeenCalled();
+      expect(readSnapshot).not.toHaveBeenCalled();
+      expect(harness.onRestart).not.toHaveBeenCalled();
+    });
+
+    it.each(["shutdown", "invalid successor"] as const)(
+      "fences awaited restart publication after %s",
+      async (boundary) => {
+        const entered = createDeferred();
+        const release = createDeferred();
+        const published = vi.fn();
+        const config = { gateway: { reload: {} } };
+        let snapshot = makeSnapshot({ config, hash: "same" });
+        const harness = createReloaderHarness(async () => snapshot, {
+          initialConfig: config,
+          onRestart: async (_plan, _config, ownership) => {
+            entered.resolve();
+            await release.promise;
+            await ownership.checkpoint();
+            published();
+          },
+        });
+        await harness.reloader.ready;
+        try {
+          harness.reloader.notifyPluginMetadataChanged();
+          await vi.advanceTimersByTimeAsync(0);
+          await entered.promise;
+          const stopping = boundary === "shutdown" ? harness.reloader.stop() : undefined;
+          if (boundary === "invalid successor") {
+            snapshot = makeSnapshot({ valid: false, hash: "invalid" });
+            harness.watcher.emit("change");
+          }
+          release.resolve();
+          await stopping;
+          await vi.runAllTimersAsync();
+          expect(published).not.toHaveBeenCalled();
+          expect(harness.onConfigAccepted).not.toHaveBeenCalled();
+        } finally {
+          release.resolve();
+          await harness.reloader.stop();
+        }
+      },
+    );
+
+    it("does not lose a newer notification while accepting an unchanged source observation", async () => {
+      const entered = createDeferred();
+      const release = createDeferred();
+      const config = { gateway: { reload: {} } };
+      const published = vi.fn();
+      let first = true;
+      const harness = createReloaderHarness(async () => makeSnapshot({ config, hash: "same" }), {
+        initialConfig: config,
+        onRestart: async (_plan, _config, ownership) => {
+          if (first) {
+            first = false;
+            entered.resolve();
+            await release.promise;
+          }
+          await ownership.checkpoint();
+          published();
+        },
+      });
+      await harness.reloader.ready;
+      try {
+        harness.reloader.notifyPluginMetadataChanged();
+        await vi.advanceTimersByTimeAsync(0);
+        await entered.promise;
+        harness.reloader.notifyPluginMetadataChanged();
+        release.resolve();
+        await vi.runAllTimersAsync();
+        expect(harness.onRestart).toHaveBeenCalledTimes(2);
+        expect(published).toHaveBeenCalledOnce();
+        await flushWatcherChange(harness);
+        expect(harness.onRestart).toHaveBeenCalledTimes(2);
+      } finally {
+        release.resolve();
+        await harness.reloader.stop();
+      }
+    });
+
+    it("keeps an explicit plugin receipt separate from a queued notification", async () => {
+      const config = { gateway: { reload: {} } };
+      const runtime = { operationId: "explicit", generation: 2, pluginIds: ["notes"] };
+      const harness = createReloaderHarness(async () => makeSnapshot({ config, hash: "same" }), {
+        initialConfig: config,
+        onHotReload: async (plan, next, ownership) => {
+          ownership.markRuntimeCommitted(next, plan);
+          return { status: "applied", runtime };
+        },
+      });
+      await harness.reloader.ready;
+      try {
+        harness.reloader.notifyPluginMetadataChanged();
+        await expect(
+          harness.reloader.applyPluginLifecycleChange({
+            config,
+            pluginIds: ["notes"],
+            reason: "reload",
+          }),
+        ).resolves.toBe(runtime);
+        expect(harness.onRestart).not.toHaveBeenCalled();
+        expect(getOnlyHotReloadCall(harness)[0].restartGateway).toBe(false);
+        await vi.runAllTimersAsync();
+        expect(getOnlyRestartCall(harness)[0].pluginLifecycle).toBeUndefined();
+      } finally {
+        await harness.reloader.stop();
+      }
+    });
+
+    it("preserves writer none intent and its unchanged watcher echo", async () => {
+      const initialConfig = { gateway: { reload: {} } };
+      const harness = createWriteReloaderHarness({ initialConfig });
+      await harness.reloader.ready;
+      try {
+        harness.reloader.notifyPluginMetadataChanged();
+        harness.emitWrite({
+          ...makeZeroDebounceHookWrite("writer-none"),
+          afterWrite: { mode: "none", reason: "caller owns application" },
+        });
+        await vi.runAllTimersAsync();
+        await flushWatcherChange(harness);
+        expect(harness.onRestart).not.toHaveBeenCalled();
+        expect(harness.onHotReload).not.toHaveBeenCalled();
+        // A new notification is a new observation, not the skipped writer's echo.
+        harness.reloader.notifyPluginMetadataChanged();
+        await vi.runAllTimersAsync();
+        expect(getOnlyRestartCall(harness)[0].restartReasons).toContain("plugin metadata changed");
+      } finally {
+        await harness.reloader.stop();
+      }
+    });
+
+    it("retains a failed restart notification for a later watcher retry", async () => {
+      const config = { gateway: { reload: {} } };
+      let reject = true;
+      const harness = createReloaderHarness(async () => makeSnapshot({ config, hash: "same" }), {
+        initialConfig: config,
+        onRestart: () => {
+          if (reject) {
+            throw new Error("restart refused");
+          }
+        },
+      });
+      await harness.reloader.ready;
+      try {
+        harness.reloader.notifyPluginMetadataChanged();
+        await vi.runAllTimersAsync();
+        expect(harness.onConfigAccepted).not.toHaveBeenCalled();
+        reject = false;
+        await flushWatcherChange(harness);
+        expect(harness.onRestart).toHaveBeenCalledTimes(2);
+        expect(harness.onConfigAccepted).toHaveBeenCalledOnce();
+      } finally {
+        await harness.reloader.stop();
+      }
+    });
+  });
+
   it("reloads explicit plugin metadata when config bytes stay identical", async () => {
     const activeConfig: OpenClawConfig = {
       gateway: { reload: {} },

@@ -26,6 +26,10 @@ import {
   setActiveEmbeddedRun,
   type EmbeddedAgentQueueMessageOptions,
 } from "../agents/embedded-agent-runner/runs.js";
+import {
+  sdkSynchronousTesting as nativeHookRelaySynchronousTesting,
+  testing as nativeHookRelaySharedTesting,
+} from "../agents/harness/native-hook-relay.js";
 import { runStructuredInput } from "../agents/harness/structured-input-execution.js";
 import {
   compileStructuredInputForm,
@@ -586,9 +590,13 @@ export {
   hasNativeHookRelayInvocation,
   invokeNativeHookRelay,
   resolveNativeHookRelayDeferredToolApproval,
-  testing as nativeHookRelayTesting,
   registerNativeHookRelay,
 } from "../agents/harness/native-hook-relay.js";
+/** The public SDK owns its synchronous projection of the relay's shared operations. */
+export const nativeHookRelayTesting = {
+  ...nativeHookRelaySharedTesting,
+  ...nativeHookRelaySynchronousTesting,
+} as const;
 
 /**
  * Derive the same compact user-facing tool detail that embedded OpenClaw uses for progress logs.

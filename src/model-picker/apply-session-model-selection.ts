@@ -50,7 +50,7 @@ export type SessionModelSelectionRequest = {
   runtime: { kind: "unchanged" } | { kind: "clear" } | { kind: "set"; runtime: string };
 };
 
-export type ApplySessionModelSelectionParams = {
+type ModernSessionModelSelectionParams = {
   cfg: OpenClawConfig;
   agentId: string;
   sessionKey: string;
@@ -73,6 +73,16 @@ export type ApplySessionModelSelectionParams = {
   patchModel?: string;
   markLiveSwitchPending: true;
 };
+
+/** Version 1 preserves shipped caller inputs; version 2 uses current typed model policies. */
+export type ApplySessionModelSelectionParams<Version extends 1 | 2 = 1> = Version extends 2
+  ? ModernSessionModelSelectionParams
+  : Omit<ModernSessionModelSelectionParams, "modelPolicy"> & {
+      modelPolicy?: NonNullable<ModernSessionModelSelectionParams["modelPolicy"]> & {
+        /** @deprecated Use parameter version 2; core admission never invokes this caller-owned callback. */
+        allowsKey: (key: string) => boolean;
+      };
+    };
 
 export type ApplySessionModelSelectionResult =
   | {
@@ -186,8 +196,15 @@ function resolveActivePlacementModelSelectionError(params: {
 }
 
 /** Applies one validated picker selection to the authoritative live session. */
-export async function applySessionModelSelection(
+export function applySessionModelSelection(
+  params: ApplySessionModelSelectionParams<2>,
+): Promise<ApplySessionModelSelectionResult>;
+// Keep the legacy signature last for Parameters extraction without deprecating the callable.
+export function applySessionModelSelection(
   params: ApplySessionModelSelectionParams,
+): Promise<ApplySessionModelSelectionResult>;
+export async function applySessionModelSelection(
+  params: ApplySessionModelSelectionParams<2>,
 ): Promise<ApplySessionModelSelectionResult> {
   const startingStoreEntry = params.sessionStore[params.sessionKey];
   const startingEntry = params.storePath

@@ -7,6 +7,7 @@ import {
   type GatewayClientId,
 } from "../../packages/gateway-protocol/src/client-info.js";
 import { getRuntimeConfig } from "../config/io.js";
+import { wrapCurrentPluginInstance } from "../plugins/plugin-instance-scope.js";
 import { getUserProfileDisplay } from "../state/user-profiles.js";
 import { NODE_DESKTOP_SERVICE_CONTEXT } from "./desktop/node-source-context.js";
 import { ScopeUpgradeCoordinator } from "./device-scope-upgrade.js";
@@ -138,7 +139,9 @@ type GatewayRequestContextRuntime = Pick<
     readinessEventLoopHealth: Pick<GatewayCoreRuntime["readinessEventLoopHealth"], "snapshot">;
     kernel: Pick<
       GatewayCoreRuntime["kernel"],
-      "applyPluginLifecycleChange" | "getConfigReloaderHotReloadStatus"
+      | "notifyPluginMetadataChanged"
+      | "applyPluginLifecycleChange"
+      | "getConfigReloaderHotReloadStatus"
     >;
     workerEnvironmentStartup:
       | Pick<NonNullable<GatewayCoreRuntime["workerEnvironmentStartup"]>, "placementStore">
@@ -263,6 +266,11 @@ export function createGatewayRequestContext(
     sessionObserver,
     sessionActivitySummaries,
     mentionInbox: runtime.mentionInbox,
+    get notifyPluginMetadataChanged() {
+      // The host context keeps its identity; only this retained capability belongs
+      // to the invoking plugin, whose existing admission also owns in-flight calls.
+      return wrapCurrentPluginInstance(runtime.kernel.notifyPluginMetadataChanged);
+    },
     applyPluginLifecycleChange: runtime.kernel.applyPluginLifecycleChange,
     getMcpAppSandboxPort: runtime.transportBridge.getMcpAppSandboxPort,
     ensureSandboxHostPort: runtime.transportBridge.ensureSandboxHostPort,
