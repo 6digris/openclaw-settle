@@ -75,12 +75,17 @@ async function readNativeConfiguration() {
     let bytes = 0;
     let failed = false;
     let noisy = false;
+    let groupCleanupAttempted = false;
     const killGroup = () => {
-      if (!child.pid) {
+      if (groupCleanupAttempted || !child.pid) {
         return;
       }
+      // Exit cleanup can precede the pipe deadline; never signal a recycled PGID.
+      groupCleanupAttempted = true;
       try {
-        process.kill(-child.pid, "SIGKILL");
+        // This fresh detached group belongs only to this configuration read.
+        // Hard termination settles children remaining in this group after a read.
+        process.kill(-child.pid, "SIGKILL"); // nosemgrep: security.opengrep.ghsa-jfv4-h8mc-jcp8.immediate-process-tree-sigkill
       } catch (error) {
         if (error.code !== "ESRCH") {
           failed = true;
@@ -90,6 +95,10 @@ async function readNativeConfiguration() {
     const abort = () => {
       failed = true;
       killGroup();
+      // Administrator configuration can daemonize a pipe holder outside our group.
+      // Close our readers so its inherited descriptors cannot defeat the deadline.
+      child.stdout.destroy();
+      child.stderr.destroy();
     };
     const timer = setTimeout(abort, 10_000);
     process.once("SIGINT", abort);

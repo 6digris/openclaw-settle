@@ -20,6 +20,11 @@ fs.chmodSync(work, 0o700);
 const root = path.join(work, "root");
 fs.mkdirSync(root, { mode: 0o755 });
 const helper = "/usr/local/libexec/openclaw-service-inspect.mjs";
+const escapedCase = "deadline closes captures held by an escaped daemon";
+const escapedOnly = process.argv[2] === "--escaped-pipe-only";
+assert.ok(process.argv.length === 2 || (escapedOnly && process.argv.length === 3));
+const escapedScript = `/pipe-holder-${path.basename(work)}.mjs`;
+let escapedLaunched = false;
 let mounted = false;
 let noexecMounted = false;
 let passed = 0;
@@ -44,7 +49,13 @@ function runNode(args, { user, env = {} } = {}) {
       "/usr/local/bin/node",
       ...args,
     ],
-    { encoding: "utf8", timeout: 20_000, env: { PATH: "/sbin:/bin:/usr/sbin:/usr/bin", ...env } },
+    {
+      encoding: "utf8",
+      timeout: 20_000,
+      // The inspector handles SIGTERM; the fixture deadline must stop its own child.
+      killSignal: "SIGKILL",
+      env: { PATH: "/sbin:/bin:/usr/sbin:/usr/bin", ...env },
+    },
   );
 }
 
@@ -82,6 +93,10 @@ function run({ args = [], user, env = {} } = {}) {
 }
 
 function check(name, test) {
+  if (escapedOnly && name !== escapedCase) {
+    return;
+  }
+  process.stdout.write(`CASE ${name}\n`);
   test();
   assert.equal(fs.existsSync(fixturePath("/service-executed")), false);
   passed++;
@@ -282,6 +297,23 @@ try {
     }
     assert.equal(alive, false, "configuration child remains live");
   });
+  write(
+    escapedScript,
+    'import fs from "node:fs"; fs.writeFileSync("/pipe-holder.pid", String(process.pid)); setTimeout(() => {}, 60_000);\n',
+  );
+  write("/etc/rc.conf", `/usr/sbin/daemon /usr/local/bin/node ${escapedScript}\n`);
+  check(escapedCase, () => {
+    escapedLaunched = true;
+    const started = performance.now();
+    assert.equal(run().reason, "native-configuration-failed");
+    process.stdout.write(`escaped-pipe elapsed-ms=${Math.round(performance.now() - started)}\n`);
+    const pid = fs.readFileSync(fixturePath("/pipe-holder.pid"), "utf8").trim();
+    assert.match(pid, /^[1-9][0-9]*$/);
+    assert.equal(
+      execFileSync("/bin/ps", ["-ww", "-p", pid, "-o", "command="], { encoding: "utf8" }).trim(),
+      `/usr/local/bin/node ${escapedScript}`,
+    );
+  });
   write("/etc/rc.conf", "");
   fs.chmodSync(fixturePath(helper), 0o666);
   check("writable helper is rejected", () => assert.equal(run().reason, "unsafe-path-ownership"));
@@ -290,8 +322,34 @@ try {
   process.stderr.write(`${error.stack}\n`);
   process.exitCode = 1;
 } finally {
-  let cleanupStage = "unmount-noexec";
+  let cleanupStage = "escaped-pipe-holder";
   try {
+    if (escapedLaunched) {
+      // This fixture owns the recorded PID and its unique script, not an argv census.
+      const pid = fs.readFileSync(fixturePath("/pipe-holder.pid"), "utf8").trim();
+      assert.match(pid, /^[1-9][0-9]*$/);
+      assert.equal(
+        execFileSync("/bin/ps", ["-ww", "-p", pid, "-o", "command="], { encoding: "utf8" }).trim(),
+        `/usr/local/bin/node ${escapedScript}`,
+      );
+      process.kill(Number(pid), "SIGTERM");
+      let alive = true;
+      for (let attempt = 0; attempt < 100; attempt++) {
+        const status = spawnSync("/bin/ps", ["-p", pid, "-o", "stat="], { encoding: "utf8" });
+        assert.ifError(status.error);
+        assert.equal(status.signal, null);
+        assert.ok(status.status === 0 || status.status === 1);
+        assert.equal(status.stderr, "");
+        if (!status.stdout.trim() || status.stdout.trim().startsWith("Z")) {
+          alive = false;
+          break;
+        }
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+      }
+      assert.equal(alive, false, "escaped pipe holder remains live");
+      process.stdout.write("escaped-pipe-holder cleanup=complete\n");
+    }
+    cleanupStage = "unmount-noexec";
     if (noexecMounted) {
       execFileSync("/sbin/umount", [fixturePath("/noexec")]);
     }
@@ -305,13 +363,14 @@ try {
       { encoding: "utf8", timeout: 20_000, maxBuffer: 4096 },
     );
     process.stdout.write(
-      `fixture-immutable-flags=${diagnostic(flags)} paths=${JSON.stringify(String(flags.stdout ?? "").slice(-4096))}\n`,
+      `fixture-immutable-flags=${diagnostic(flags)} paths=${JSON.stringify((flags.stdout ?? "").slice(-4096))}\n`,
     );
     if (flags.error || flags.status !== 0) {
       process.exitCode = 1;
     }
     cleanupStage = "remove-fixture";
     fs.rmSync(work, { recursive: true, force: true });
+    process.stdout.write("fixture-cleanup=complete\n");
   } catch (error) {
     process.stderr.write(
       `Fixture cleanup failed at ${cleanupStage}; retained ${work}: ${JSON.stringify({
