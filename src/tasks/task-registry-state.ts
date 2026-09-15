@@ -37,6 +37,7 @@ import {
   addRelatedSessionKeyIndex,
   deleteRelatedSessionKeyIndex,
   getTaskRegistryProcessState,
+  getTasksByRunId,
   clearTaskProgressBatches,
   type PendingTaskRegistryMutation,
 } from "./task-registry.process-state.js";
@@ -146,16 +147,6 @@ export function clearTaskRegistryMemory(): void {
   taskIdsByOwnerKey.clear();
   taskIdsByParentFlowId.clear();
   taskIdsByRelatedSessionKey.clear();
-}
-
-export function getTasksByRunId(runId: string): TaskRecord[] {
-  const ids = taskIdsByRunId.get(runId.trim());
-  if (!ids || ids.size === 0) {
-    return [];
-  }
-  return [...ids]
-    .map((taskId) => tasks.get(taskId))
-    .filter((task): task is TaskRecord => Boolean(task));
 }
 
 export function getTasksByRunScope(params: {

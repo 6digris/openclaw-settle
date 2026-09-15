@@ -33,7 +33,6 @@ import {
   ensureTaskRegistryReady,
   prepareTaskRegistryProjectionAsync,
   assertTaskRegistryOwnerCurrent,
-  getTasksByRunId,
   taskRegistryLog,
   readTaskRegistryRevision,
   resetTaskRegistryListenerState,
@@ -50,6 +49,7 @@ import {
   deleteRelatedSessionKeyIndex,
   rebuildRunIdIndex,
   getTaskRegistryProcessState,
+  getTasksByRunId,
 } from "./task-registry.process-state.js";
 import {
   tryPersistTaskDelete,
