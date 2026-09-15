@@ -1,0 +1,161 @@
+name: Temporary installed sentinel state proof
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - .github/workflows/update-sentinel-installed-proof.yml
+      - scripts/e2e/update-sentinel-installed-proof.sh
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: temporary-installed-sentinel-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  installed-state:
+    if: github.repository == 'openclaw/openclaw' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'diag/update-sentinel-installed-proof' && github.event.pull_request.base.ref == 'fix/update-sentinel-state-env'
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 45
+    env:
+      CANDIDATE_SOURCE: 16e3ca121ec6b91072d1b2c6c93333381e902e7d
+      PRODUCER_RUN: "34971019399"
+      EXPECTED_WORKFLOW_SHA: ${{ github.event.pull_request.head.sha }}
+      EXPECTED_PARENT_SHA: ${{ github.event.pull_request.base.sha }}
+      PACKAGE_ARTIFACT_ID: "10398412216"
+      PACKAGE_ARTIFACT_DIGEST: 3bd441dec2ce871787bed1524236ef2e64ddd3dfc6c84e04370fdae07d276770
+      EXPECTED_PACKAGE_SHA256: 1ed898aef0cc34d898e741716f335abe8a680ad710a501a2d82c63b1b95a1928
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Admit exact diagnostic and product source
+        run: |
+          set -euo pipefail
+          test "$EXPECTED_PARENT_SHA" = "$CANDIDATE_SOURCE"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_WORKFLOW_SHA"
+          test "$(git rev-parse HEAD^)" = "$CANDIDATE_SOURCE"
+          python3 - <<'PY'
+          import os, re, subprocess
+          for key in ['PACKAGE_ARTIFACT_DIGEST', 'EXPECTED_PACKAGE_SHA256']:
+              assert re.fullmatch(r'[a-f0-9]{64}', os.environ[key]), key
+          assert re.fullmatch(r'[1-9][0-9]*', os.environ['PACKAGE_ARTIFACT_ID'])
+          expected = ['.github/workflows/update-sentinel-installed-proof.yml', 'scripts/e2e/update-sentinel-installed-proof.sh']
+          actual = subprocess.check_output(['git', 'diff', '--name-only', 'HEAD^', 'HEAD'], text=True).splitlines()
+          assert sorted(actual) == expected, actual
+          PY
+      - name: Verify and fetch the existing immutable package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/sentinel-package" "$RUNNER_TEMP/sentinel-proof"
+          chmod 0777 "$RUNNER_TEMP/sentinel-proof"
+          export PROOF_PACKAGE_DIR="$RUNNER_TEMP/sentinel-package"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess, zipfile
+          root = pathlib.Path(os.environ['PROOF_PACKAGE_DIR'])
+          def api(path):
+              return json.loads(subprocess.check_output(['gh', 'api', 'repos/openclaw/openclaw/' + path]))
+          run = api('actions/runs/' + os.environ['PRODUCER_RUN'])
+          assert run['head_sha'] == os.environ['CANDIDATE_SOURCE'] and run['run_attempt'] == 1
+          assert run['event'] == 'workflow_dispatch' and run['path'] == '.github/workflows/package-acceptance.yml'
+          jobs = api('actions/runs/' + os.environ['PRODUCER_RUN'] + '/jobs?per_page=100')['jobs']
+          producer = [j for j in jobs if j['name'] == 'Resolve package candidate']
+          assert len(producer) == 1 and producer[0]['conclusion'] == 'success'
+          artifact = api('actions/artifacts/' + os.environ['PACKAGE_ARTIFACT_ID'])
+          assert artifact['workflow_run']['id'] == int(os.environ['PRODUCER_RUN'])
+          assert artifact['workflow_run']['head_sha'] == os.environ['CANDIDATE_SOURCE']
+          assert not artifact['expired'] and artifact['size_in_bytes'] <= 512 * 1024 * 1024
+          assert artifact['digest'] == 'sha256:' + os.environ['PACKAGE_ARTIFACT_DIGEST']
+          archive = root / 'package.zip'
+          with archive.open('xb') as output:
+              subprocess.run(['gh', 'api', 'repos/openclaw/openclaw/actions/artifacts/' + os.environ['PACKAGE_ARTIFACT_ID'] + '/zip'], stdout=output, check=True, timeout=300)
+          assert archive.stat().st_size <= 512 * 1024 * 1024
+          assert hashlib.file_digest(archive.open('rb'), 'sha256').hexdigest() == os.environ['PACKAGE_ARTIFACT_DIGEST']
+          with zipfile.ZipFile(archive) as z:
+              assert sorted(z.namelist()) == ['openclaw-current.tgz', 'package-candidate.json']
+              assert sum(i.file_size for i in z.infolist()) <= 512 * 1024 * 1024
+              for info in z.infolist():
+                  assert not info.is_dir() and info.file_size > 0
+                  with z.open(info) as source, (root / info.filename).open('xb') as destination:
+                      while block := source.read(1024 * 1024): destination.write(block)
+          tgz = root / 'openclaw-current.tgz'
+          actual = hashlib.file_digest(tgz.open('rb'), 'sha256').hexdigest()
+          assert actual == os.environ['EXPECTED_PACKAGE_SHA256']
+          meta = json.loads((root / 'package-candidate.json').read_text())
+          assert meta['packageSourceSha'] == os.environ['CANDIDATE_SOURCE']
+          assert meta['packageRef'] == os.environ['CANDIDATE_SOURCE'] and meta['source'] == 'ref'
+          assert meta['sha256'] == actual and meta['name'] == 'openclaw'
+          build = json.loads(subprocess.check_output(['tar', '-xOf', str(tgz), 'package/dist/build-info.json'], timeout=30))
+          assert build['commit'] == os.environ['CANDIDATE_SOURCE'] and build['buildId']
+          (root / 'expected-build-info.json').write_text(json.dumps(build))
+          receipt = {'producerRun': run['id'], 'attempt': 1, 'producerJob': producer[0]['id'], 'artifactId': artifact['id'], 'artifactDigest': artifact['digest'], 'packageSha256': actual, 'source': build['commit'], 'buildId': build['buildId'], 'version': meta['version']}
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'sentinel-proof', 'input.json').write_text(json.dumps(receipt))
+          print(json.dumps(receipt))
+          PY
+      - name: Build the existing bare runner image
+        run: |
+          set -euo pipefail
+          docker build --target bare --tag sentinel-installed-proof --file scripts/e2e/Dockerfile .
+      - name: Run one installed A/B case
+        run: |
+          set -euo pipefail
+          # Product bytes come only from the attested package; the checkout supplies the existing manager/registry fixtures.
+          docker run --rm --name "sentinel-proof-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --cap-drop=ALL --security-opt=no-new-privileges \
+            -e SENTINEL_DISPOSABLE_PROOF=1 -e CANDIDATE_SOURCE \
+            -v "$RUNNER_TEMP/sentinel-package:/candidate:ro" \
+            -v "$RUNNER_TEMP/sentinel-proof:/proof" \
+            -v "$GITHUB_WORKSPACE/scripts:/app/scripts:ro" \
+            sentinel-installed-proof timeout --kill-after=30s 1800s \
+            bash scripts/e2e/update-sentinel-installed-proof.sh
+      - name: Verify final case receipt
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib
+          root = pathlib.Path(os.environ['RUNNER_TEMP'], 'sentinel-proof')
+          result = json.loads((root / 'result.json').read_text())
+          inputs = json.loads((root / 'input.json').read_text())
+          assert result['status'] == 'passed' and result['source'] == os.environ['CANDIDATE_SOURCE']
+          assert result['buildId'] == inputs['buildId']
+          for key in ['callerNoticeUnchanged', 'selectedNoticeAbsent', 'executorLeaseAbsent']: assert result[key] is True
+          print(json.dumps(result))
+          PY
+      - name: Settle only this task container
+        id: cleanup
+        if: always()
+        run: |
+          set -euo pipefail
+          name="sentinel-proof-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          remaining="$(docker ps -aq --filter "name=^/${name}$")"
+          if [[ -n "$remaining" ]]; then docker rm --force "$name"; fi
+          remaining="$(docker ps -aq --filter "name=^/${name}$")"
+          test -z "$remaining"
+      - name: Validate bounded proof artifacts
+        id: proof
+        if: always() && steps.cleanup.outcome == 'success'
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, pathlib, stat
+          root = pathlib.Path(os.environ['RUNNER_TEMP'], 'sentinel-proof')
+          files = list(root.iterdir())
+          assert 1 <= len(files) <= 24
+          assert all(stat.S_ISREG(p.lstat().st_mode) for p in files)
+          assert sum(p.stat().st_size for p in files) <= 32 * 1024 * 1024
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output: output.write('ready=true\n')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always() && steps.proof.outputs.ready == 'true'
+        with:
+          name: installed-sentinel-state-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sentinel-proof/*
+          if-no-files-found: error
+          retention-days: 7
