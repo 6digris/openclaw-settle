@@ -818,8 +818,10 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
       "config.snapshot.read.materialize",
       "config.snapshot.read.observe",
     ]);
-    let lastCompletedStage: string;
-    let measuredFailure: { stage: string; error: unknown } | undefined;
+    let measurement: {
+      lastCompletedStage: string;
+      failure?: { stage: string; error: unknown };
+    };
     const readConfigSnapshot = configIO.readConfigFileSnapshot;
     // Observe the command's own read. A separate diagnostic read can hide transient
     // validation/observation failures and must not change this ordered lifecycle proof.
@@ -832,10 +834,10 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
             const safeStage = stageNames.has(stage) ? stage : "<other stage>";
             try {
               const value = await (options.measure ? options.measure(stage, run) : run());
-              lastCompletedStage = safeStage;
+              measurement.lastCompletedStage = safeStage;
               return value;
             } catch (error) {
-              measuredFailure = { stage: safeStage, error };
+              measurement.failure = { stage: safeStage, error };
               throw error;
             }
           },
@@ -845,8 +847,7 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
     try {
       observation = vi.spyOn(configObserver, "observeConfigSnapshot");
       for (const name of [id, "all"]) {
-        lastCompletedStage = "<none>";
-        measuredFailure = undefined;
+        measurement = { lastCompletedStage: "<none>" };
         const firstRead = snapshotRead.mock.results.length;
         const firstObservation = observation.mock.calls.length;
         try {
@@ -917,11 +918,11 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
                   };
                 }),
                 snapshotPresent: snapshot !== undefined,
-                lastCompletedStage,
-                measuredFailure: measuredFailure
+                lastCompletedStage: measurement.lastCompletedStage,
+                measuredFailure: measurement.failure
                   ? {
-                      stage: measuredFailure.stage,
-                      ...classifyConfigObservationError(measuredFailure.error),
+                      stage: measurement.failure.stage,
+                      ...classifyConfigObservationError(measurement.failure.error),
                     }
                   : { stage: "<outside measured callback>" },
                 fixturePathMatches: snapshot ? snapshot.path === state.configPath : null,
