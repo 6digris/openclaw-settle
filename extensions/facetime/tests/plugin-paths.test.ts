@@ -28,8 +28,8 @@ describe("plugin paths", () => {
   it("uses the Homebrew capture helper", async () => {
     await expect(
       ensureCaptureBinary({
-        access: installedAccess() as any,
-        readFile: installedReadFile() as any,
+        access: installedAccess() as never,
+        readFile: installedReadFile() as never,
       }),
     ).resolves.toBe(`${homebrewDir}/facetime-audio-capture`);
   });
@@ -37,14 +37,14 @@ describe("plugin paths", () => {
   it("inspects native package readiness without staging runtime artifacts", async () => {
     await expect(
       inspectFaceTimeNativePackage({
-        access: installedAccess() as any,
-        readFile: installedReadFile() as any,
+        access: installedAccess() as never,
+        readFile: installedReadFile() as never,
       }),
     ).resolves.toBe(true);
     await expect(
       inspectFaceTimeNativePackage({
-        access: vi.fn().mockRejectedValue(new Error("missing")) as any,
-        readFile: installedReadFile() as any,
+        access: vi.fn().mockRejectedValue(new Error("missing")) as never,
+        readFile: installedReadFile() as never,
       }),
     ).resolves.toBe(false);
   });
@@ -52,8 +52,8 @@ describe("plugin paths", () => {
   it("fails with the install command when no compatible package exists", async () => {
     await expect(
       ensureCaptureBinary({
-        access: vi.fn().mockRejectedValue(new Error("missing")) as any,
-        readFile: installedReadFile() as any,
+        access: vi.fn().mockRejectedValue(new Error("missing")) as never,
+        readFile: installedReadFile() as never,
       }),
     ).rejects.toThrow("brew install openclaw/tap/openclaw-facetime");
   });
@@ -63,7 +63,7 @@ describe("plugin paths", () => {
       path.endsWith("native-protocol.env") ? "NATIVE_PROTOCOL_VERSION=2\n" : `${"b".repeat(64)}\n`,
     );
     await expect(
-      ensureCaptureBinary({ access: installedAccess() as any, readFile: readFile as any }),
+      ensureCaptureBinary({ access: installedAccess() as never, readFile: readFile as never }),
     ).rejects.toThrow("Compatible FaceTime native helpers are not installed");
   });
 
@@ -72,9 +72,9 @@ describe("plugin paths", () => {
     await expect(
       ensureHelperArtifacts({
         pluginRoot: "/tmp/facetime",
-        runCommandWithTimeout: runCommandWithTimeout as any,
-        access: installedAccess() as any,
-        readFile: installedReadFile() as any,
+        runCommandWithTimeout: runCommandWithTimeout as never,
+        access: installedAccess() as never,
+        readFile: installedReadFile() as never,
       }),
     ).resolves.toMatchObject({ buildId: "b".repeat(64), ipcKey: "b".repeat(64) });
     expect(runCommandWithTimeout).toHaveBeenCalledWith(

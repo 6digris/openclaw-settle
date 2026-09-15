@@ -99,7 +99,7 @@ describe("FaceTime guided setup", () => {
       config: resolveFaceTimeConfig({ ownerHandles: ["owner@example.com"] }),
       nativePackageReady: true,
       pluginRoot: "/plugin",
-      runCommandWithTimeout: readyCommandRunner() as any,
+      runCommandWithTimeout: readyCommandRunner() as never,
       runtimeStatus: readyRuntime,
       preflight: readyPreflight,
       readAssertionsFile: async () =>
@@ -142,7 +142,7 @@ describe("FaceTime guided setup", () => {
       config: resolveFaceTimeConfig({ ownerHandles: ["owner@example.com"] }),
       nativePackageReady: true,
       pluginRoot: "/plugin",
-      runCommandWithTimeout: readyCommandRunner() as any,
+      runCommandWithTimeout: readyCommandRunner() as never,
       runtimeStatus,
       preflight: readyPreflight,
       readAssertionsFile: async () => JSON.stringify({ data: [] }),
@@ -186,7 +186,7 @@ describe("FaceTime guided setup", () => {
       config: resolveFaceTimeConfig({ ownerHandles: ["owner@example.com"] }),
       nativePackageReady: true,
       pluginRoot: "/plugin",
-      runCommandWithTimeout: runCommandWithTimeout as any,
+      runCommandWithTimeout: runCommandWithTimeout as never,
       runtimeError: "listen EADDRINUSE: address already in use 127.0.0.1:45670",
       readAssertionsFile: async () =>
         JSON.stringify({ data: [{ storeAssertionRecords: [{ assertionUUID: "active" }] }] }),
@@ -266,7 +266,7 @@ describe("FaceTime guided setup", () => {
       config: resolveFaceTimeConfig({ ownerHandles: ["owner@example.com"] }),
       nativePackageReady: true,
       pluginRoot: "/plugin",
-      runCommandWithTimeout: runCommandWithTimeout as any,
+      runCommandWithTimeout: runCommandWithTimeout as never,
       runtimeStatus: readyRuntime,
       preflight: readyPreflight,
       readAssertionsFile: async () => JSON.stringify({ data: [] }),
@@ -287,7 +287,7 @@ describe("FaceTime guided setup", () => {
       config: resolveFaceTimeConfig({ ownerHandles: ["owner@example.com"] }),
       nativePackageReady: true,
       pluginRoot: "/plugin",
-      runCommandWithTimeout: readyCommandRunner() as any,
+      runCommandWithTimeout: readyCommandRunner() as never,
       runtimeStatus: {
         ...readyRuntime,
         helperConnected: false,
@@ -325,7 +325,7 @@ describe("FaceTime guided setup", () => {
       config: resolveFaceTimeConfig({ ownerHandles: ["owner@example.com"] }),
       nativePackageReady: true,
       pluginRoot: "/plugin",
-      runCommandWithTimeout: readyCommandRunner() as any,
+      runCommandWithTimeout: readyCommandRunner() as never,
       runtimeStatus: readyRuntime,
       preflight: readyPreflight,
       readAssertionsFile: async () => {
@@ -352,7 +352,7 @@ describe("FaceTime guided setup", () => {
       config: resolveFaceTimeConfig({ ownerHandles: ["owner@example.com"] }),
       nativePackageReady: true,
       pluginRoot: "/plugin",
-      runCommandWithTimeout: readyCommandRunner() as any,
+      runCommandWithTimeout: readyCommandRunner() as never,
       runtimeStatus: {
         ...readyRuntime,
         helperTargets: [
@@ -383,7 +383,7 @@ describe("FaceTime guided setup", () => {
       config: resolveFaceTimeConfig({ ownerHandles: ["owner@example.com"] }),
       nativePackageReady: true,
       pluginRoot: "/plugin",
-      runCommandWithTimeout: readyCommandRunner() as any,
+      runCommandWithTimeout: readyCommandRunner() as never,
       runtimeStatus: {
         ...readyRuntime,
         helperConnected: false,
@@ -416,7 +416,7 @@ describe("FaceTime guided setup", () => {
       config: resolveFaceTimeConfig({ ownerHandles: ["owner@example.com"] }),
       nativePackageReady: false,
       pluginRoot: "/plugin",
-      runCommandWithTimeout: runCommandWithTimeout as any,
+      runCommandWithTimeout: runCommandWithTimeout as never,
       runtimeError:
         "Compatible FaceTime native helpers are not installed. Run: brew install openclaw/tap/openclaw-facetime",
       readAssertionsFile: async () => JSON.stringify({ data: [] }),

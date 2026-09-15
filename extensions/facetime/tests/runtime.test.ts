@@ -90,6 +90,18 @@ vi.mock("../src/talk-driver.js", () => ({
   startFaceTimeTalkDriver: mocks.startTalk,
 }));
 
+vi.mock("../src/config.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/config.js")>();
+  return {
+    ...actual,
+    validateFaceTimeConfig(config: import("../src/config.js").FaceTimeConfig) {
+      const validation = actual.validateFaceTimeConfig(config);
+      const errors = validation.errors.filter((error) => error !== "facetime requires macOS");
+      return { valid: errors.length === 0, errors };
+    },
+  };
+});
+
 import { resolveFaceTimeConfig } from "../src/config.js";
 import { createFaceTimeRuntime } from "../src/runtime.js";
 
@@ -196,7 +208,7 @@ async function createRuntime(
 ) {
   return await createFaceTimeRuntime({
     config: resolveFaceTimeConfig({ ownerHandles }),
-    fullConfig: {} as any,
+    fullConfig: {} as never,
     runtime: {
       system: {
         runCommandWithTimeout: mocks.systemRun,
@@ -204,7 +216,7 @@ async function createRuntime(
       state: {
         openSyncKeyedStore: () => state,
       },
-    } as any,
+    } as never,
     logger: {
       info: vi.fn(),
       warn: mocks.warn,

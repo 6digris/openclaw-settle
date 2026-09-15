@@ -17,7 +17,7 @@ describe("FaceTime helper supervisor", () => {
     const supervisor = new FaceTimeHelperSupervisor({
       pluginRoot: "/tmp/facetime",
       logger: console,
-      runCommandWithTimeout: runCommandWithTimeout as any,
+      runCommandWithTimeout: runCommandWithTimeout as never,
       connectedBundles: () => connectedBundles,
       targetAvailable: () => true,
       initialGraceMs: 100,
@@ -66,7 +66,7 @@ describe("FaceTime helper supervisor", () => {
     const supervisor = new FaceTimeHelperSupervisor({
       pluginRoot: "/tmp/facetime",
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
-      runCommandWithTimeout: runCommandWithTimeout as any,
+      runCommandWithTimeout: runCommandWithTimeout as never,
       connectedBundles: () => [],
       targetAvailable: () => true,
       initialGraceMs: 0,
@@ -99,7 +99,7 @@ describe("FaceTime helper supervisor", () => {
     const supervisor = new FaceTimeHelperSupervisor({
       pluginRoot: "/tmp/facetime",
       logger: console,
-      runCommandWithTimeout: runCommandWithTimeout as any,
+      runCommandWithTimeout: runCommandWithTimeout as never,
       connectedBundles: () => connectedBundles,
       targetAvailable: () => true,
       initialGraceMs: 100,
@@ -131,7 +131,7 @@ describe("FaceTime helper supervisor", () => {
     const supervisor = new FaceTimeHelperSupervisor({
       pluginRoot: "/tmp/facetime",
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
-      runCommandWithTimeout: runCommandWithTimeout as any,
+      runCommandWithTimeout: runCommandWithTimeout as never,
       connectedBundles: () => ["com.apple.mobilephone"],
       targetAvailable: () => true,
       initialGraceMs: 0,
@@ -169,7 +169,7 @@ describe("FaceTime helper supervisor", () => {
     const supervisor = new FaceTimeHelperSupervisor({
       pluginRoot: "/tmp/facetime",
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
-      runCommandWithTimeout: runCommandWithTimeout as any,
+      runCommandWithTimeout: runCommandWithTimeout as never,
       connectedBundles: () => [],
       targetAvailable: (target) => target === "FaceTime",
       initialGraceMs: 0,
@@ -202,7 +202,7 @@ describe("FaceTime helper supervisor", () => {
     const supervisor = new FaceTimeHelperSupervisor({
       pluginRoot: "/tmp/facetime",
       logger: console,
-      runCommandWithTimeout: runCommandWithTimeout as any,
+      runCommandWithTimeout: runCommandWithTimeout as never,
       connectedBundles: () => [],
       targetAvailable: (target) => target === "FaceTime",
       initialGraceMs: 0,
@@ -237,7 +237,7 @@ describe("FaceTime helper supervisor", () => {
     const supervisor = new FaceTimeHelperSupervisor({
       pluginRoot: "/tmp/facetime",
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
-      runCommandWithTimeout: runCommandWithTimeout as any,
+      runCommandWithTimeout: runCommandWithTimeout as never,
       connectedBundles: () => [],
       targetAvailable: () => true,
       processAlive: () => processAlive,
@@ -274,7 +274,7 @@ describe("FaceTime helper supervisor", () => {
     const supervisor = new FaceTimeHelperSupervisor({
       pluginRoot: "/tmp/facetime",
       logger,
-      runCommandWithTimeout: vi.fn() as any,
+      runCommandWithTimeout: vi.fn() as never,
       connectedBundles: () => [],
       targetAvailable: (target) => target === "FaceTime",
       processAlive: () => true,
@@ -333,7 +333,7 @@ describe("FaceTime helper supervisor", () => {
     const supervisor = new FaceTimeHelperSupervisor({
       pluginRoot: "/tmp/facetime",
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
-      runCommandWithTimeout: runCommandWithTimeout as any,
+      runCommandWithTimeout: runCommandWithTimeout as never,
       connectedBundles: () => [],
       targetAvailable: (target) => target === "FaceTime",
       processAlive: () => false,

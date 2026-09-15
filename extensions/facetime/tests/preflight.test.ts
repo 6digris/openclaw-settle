@@ -19,7 +19,7 @@ import { resolveFaceTimeConfig } from "../src/config.js";
 import { runFaceTimePreflight } from "../src/preflight.js";
 
 function runtimeWithCommands(runCommandWithTimeout: ReturnType<typeof vi.fn>) {
-  return { system: { runCommandWithTimeout } } as any;
+  return { system: { runCommandWithTimeout } } as never;
 }
 
 const defaults = {
@@ -60,7 +60,7 @@ describe("FaceTime preflight", () => {
         ownerHandles: ["omar@example.com"],
         realtime: { providers: { openai: { apiKey: "test-api-key" } } },
       }),
-      fullConfig: {} as any,
+      fullConfig: {} as never,
       runtime: runtimeWithCommands(runCommandWithTimeout),
       helperConnected: true,
       captureBinary: "/plugin/native/.build/release/facetime-audio-capture",
@@ -117,7 +117,7 @@ describe("FaceTime preflight", () => {
         }),
         fullConfig: {
           secrets: { providers: { default: { source: "env" } } },
-        } as any,
+        } as never,
         runtime: runtimeWithCommands(runCommandWithTimeout),
         helperConnected: true,
         captureBinary: "/plugin/native/.build/release/facetime-audio-capture",
@@ -143,7 +143,7 @@ describe("FaceTime preflight", () => {
 
     const result = await runFaceTimePreflight({
       config: resolveFaceTimeConfig({ ownerHandles: ["omar@example.com"] }),
-      fullConfig: {} as any,
+      fullConfig: {} as never,
       runtime: runtimeWithCommands(runCommandWithTimeout),
       helperConnected: false,
       captureBinary: "/missing/capture",
@@ -194,7 +194,7 @@ describe("FaceTime preflight", () => {
         ownerHandles: ["omar@example.com"],
         realtime: { providers: { openai: { apiKey: "test-api-key" } } },
       }),
-      fullConfig: {} as any,
+      fullConfig: {} as never,
       runtime: runtimeWithCommands(runCommandWithTimeout),
       helperConnected: true,
       captureBinary: "/capture",

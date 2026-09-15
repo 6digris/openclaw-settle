@@ -16,7 +16,7 @@ describe("FaceTime driver setup", () => {
     await expect(
       inspectFaceTimeDriver({
         pluginRoot: "/tmp/facetime",
-        runCommandWithTimeout: runCommandWithTimeout as any,
+        runCommandWithTimeout: runCommandWithTimeout as never,
       }),
     ).resolves.toBe("current");
     expect(runCommandWithTimeout).toHaveBeenCalledWith(
@@ -35,7 +35,7 @@ describe("FaceTime driver setup", () => {
     await expect(
       installFaceTimeDriver({
         pluginRoot: "/tmp/facetime",
-        runCommandWithTimeout: runCommandWithTimeout as any,
+        runCommandWithTimeout: runCommandWithTimeout as never,
         callActive: false,
       }),
     ).resolves.toEqual({ changed: false, status: "current" });
@@ -48,7 +48,7 @@ describe("FaceTime driver setup", () => {
     await expect(
       installFaceTimeDriver({
         pluginRoot: "/tmp/facetime",
-        runCommandWithTimeout: runCommandWithTimeout as any,
+        runCommandWithTimeout: runCommandWithTimeout as never,
         callActive: true,
       }),
     ).rejects.toThrow("during an active or pending call");
@@ -66,7 +66,7 @@ describe("FaceTime driver setup", () => {
     await expect(
       installFaceTimeDriver({
         pluginRoot: "/tmp/facetime",
-        runCommandWithTimeout: runCommandWithTimeout as any,
+        runCommandWithTimeout: runCommandWithTimeout as never,
         callActive: false,
         signal: abortController.signal,
       }),

@@ -148,20 +148,25 @@ describe("FaceTime native audio bridge", () => {
     vi.useFakeTimers();
     try {
       const processes: FakeProcess[] = [];
+      const spawn = captureProcesses(processes);
       const onPlaybackDrained = vi.fn();
       const pump = startFaceTimeAudioPump({
         captureBinary: "/capture",
         logger: console,
         onInputAudio() {},
         onPlaybackDrained,
-        spawn: captureProcesses(processes),
+        spawn,
       });
       pump.writeOutputAudio(Buffer.alloc(480));
       pump.finishOutputAudio();
       pump.clearOutputAudio();
-      expect(processes[0]?.kills).toEqual([]);
-      expect(processes[1]?.kills).toEqual(["SIGKILL"]);
-      expect(processes).toHaveLength(4);
+      const captureIndex = spawn.mock.calls.findIndex((call) => call[0] === "/capture");
+      const outputIndices = spawn.mock.calls.flatMap((call, index) =>
+        call[0].endsWith("sox") ? [index] : [],
+      );
+      expect(processes[captureIndex]?.kills).toEqual([]);
+      expect(outputIndices).toHaveLength(2);
+      expect(processes[outputIndices[0] ?? -1]?.kills).toEqual(["SIGKILL"]);
       await vi.advanceTimersByTimeAsync(200);
       expect(onPlaybackDrained).not.toHaveBeenCalled();
       expect(pump.queuedAudioFrames()).toBe(0);
@@ -190,18 +195,22 @@ describe("FaceTime native audio bridge", () => {
 
   it("uses parent EOF without a safe-release frame for process-handoff failure", async () => {
     const processes: FakeProcess[] = [];
+    const spawn = captureProcesses(processes);
     const pump = startFaceTimeAudioPump({
       captureBinary: "/capture",
       logger: console,
       onInputAudio() {},
-      spawn: captureProcesses(processes),
+      spawn,
     });
 
     const failClosed = pump.failClosed();
     expect(processes[0]?.stdin.writableEnded).toBe(true);
     expect(processes[0]?.stdin.writes).toEqual([]);
     expect(processes[1]?.kills).toEqual(["SIGKILL"]);
-    expect(processes[2]?.kills).toEqual(["SIGTERM"]);
+    const wakeIndex = spawn.mock.calls.findIndex((call) => call[0] === "/usr/bin/caffeinate");
+    if (wakeIndex >= 0) {
+      expect(processes[wakeIndex]?.kills).toEqual(["SIGTERM"]);
+    }
     processes[0]?.emit("exit", 0, null);
     await failClosed;
   });

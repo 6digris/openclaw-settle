@@ -17,6 +17,9 @@ const mocks = vi.hoisted(() => ({
   },
   createSession: vi.fn(),
   consult: vi.fn(),
+  getSessionEntry: vi.fn<() => { sessionId: string } | undefined>(() => ({
+    sessionId: "facetime-consult-session",
+  })),
   resolveBootstrapContext: vi.fn(),
   resolveProvider: vi.fn(() => ({ provider: { id: "openai" }, providerConfig: {} })),
   hangupRequested: vi.fn(async () => {}),
@@ -149,15 +152,15 @@ import { startFaceTimeTalkDriver } from "../src/talk-driver.js";
 function startParams(overrides: Record<string, unknown> = {}) {
   return {
     config: resolveFaceTimeConfig({ ownerHandles: ["caller@example.com"] }),
-    fullConfig: {} as any,
+    fullConfig: {} as never,
     runtime: {
       agent: {
         session: {
           resolveStorePath: vi.fn(() => "/store"),
-          getSessionEntry: vi.fn(() => ({ sessionId: "facetime-consult-session" })),
+          getSessionEntry: mocks.getSessionEntry,
         },
       },
-    } as any,
+    } as never,
     logger: console,
     callUUID: "call-1",
     senderId: "caller@example.com",
@@ -180,6 +183,7 @@ async function startReadyFaceTimeTalkDriver(params = startParams()) {
 describe("FaceTime talk driver lifecycle", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.getSessionEntry.mockReturnValue({ sessionId: "facetime-consult-session" });
     mocks.senderAuthVersion = 1;
     mocks.resolveBootstrapContext.mockResolvedValue(undefined);
     mocks.bridge.connect.mockResolvedValue();
@@ -689,7 +693,7 @@ describe("FaceTime talk driver lifecycle", () => {
     mocks.bridge.connect.mockResolvedValue();
     mocks.consult.mockImplementationOnce(() => new Promise<{ text: string }>(() => {}));
     const params = startParams();
-    params.runtime.agent.session.getSessionEntry.mockReturnValue(undefined);
+    mocks.getSessionEntry.mockReturnValue(undefined);
     const driver = await startReadyFaceTimeTalkDriver(params);
 
     void mocks.sessionParams?.onToolCall({
