@@ -268,9 +268,6 @@ export function createFaceTimeCallControl(params: {
             }
           },
           async onFailure(error) {
-            if (call.phase === "ringing") {
-              return true;
-            }
             const failureReason = `talk-failed: ${formatErrorMessage(error)}`;
             if (!call.talk) {
               const carrierClosed = await waitForStartupCarrierHangup(call, failureReason);

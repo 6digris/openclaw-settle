@@ -53,22 +53,29 @@ export function createFaceTimeCallEventHandler(params: {
   outboundCarrierPeers: ReadonlyMap<number, FaceTimeHelperPeer>;
   cancelPendingDial: (pending: PendingFaceTimeDial) => Promise<void>;
 }) {
+  const canPromotePendingDial = (pending: PendingFaceTimeDial) =>
+    params.getPendingDial() === pending && pending.delivery !== "cancelling";
   const authorizePendingDial = async (
     event: FaceTimeCallStatusEvent,
     pending: PendingFaceTimeDial,
   ): Promise<AuthenticatedFaceTimeOwner | undefined> => {
     retainFaceTimeDialCallUUID(pending, readCallUUID(event));
     params.persistPendingDial();
-    const owner = resolveAuthorizedFaceTimeOwner({
-      event,
-      ownerHandles: params.config.ownerHandles,
-    });
+    const owner =
+      pending.delivery === "cancelling"
+        ? undefined
+        : resolveAuthorizedFaceTimeOwner({
+            event,
+            ownerHandles: params.config.ownerHandles,
+          });
     if (owner) {
       return owner;
     }
-    params.logger.warn(
-      "[facetime] cancelling correlated outbound call because its handle is no longer authorized; add it to ownerHandles before dialing again",
-    );
+    if (pending.delivery !== "cancelling") {
+      params.logger.warn(
+        "[facetime] cancelling correlated outbound call because its handle is no longer authorized; add it to ownerHandles before dialing again",
+      );
+    }
     try {
       await params.cancelPendingDial(pending);
     } catch (error) {
@@ -238,7 +245,7 @@ export function createFaceTimeCallEventHandler(params: {
     if (isOutgoingRingingCall(event)) {
       if (verifiedTransport && pending && doesFaceTimeCallMatchPendingDial({ event, pending })) {
         const owner = await authorizePendingDial(event, pending);
-        if (!owner) {
+        if (!owner || !canPromotePendingDial(pending)) {
           return;
         }
         let ringingCall = params.calls.get(callUUID);
@@ -300,7 +307,7 @@ export function createFaceTimeCallEventHandler(params: {
               event,
               ownerHandles: params.config.ownerHandles,
             });
-      if (authorizedPending && !owner) {
+      if (authorizedPending && (!owner || !canPromotePendingDial(authorizedPending))) {
         return;
       }
       if (authorizedPending && params.calls.active) {
@@ -313,7 +320,7 @@ export function createFaceTimeCallEventHandler(params: {
       await activate(event, owner, peer);
       if (
         authorizedPending &&
-        params.getPendingDial() === authorizedPending &&
+        canPromotePendingDial(authorizedPending) &&
         params.calls.has(callUUID)
       ) {
         const activeCall = params.calls.get(callUUID);

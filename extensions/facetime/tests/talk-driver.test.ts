@@ -234,19 +234,56 @@ describe("FaceTime talk driver lifecycle", () => {
     });
   });
 
-  it("closes native audio when startup is aborted during provider connect", async () => {
-    mocks.bridge.connect.mockImplementation(() => new Promise<void>(() => {}));
-    const controller = new AbortController();
-    const driver = await startFaceTimeTalkDriver(startParams({ signal: controller.signal }));
-    const ready = driver.readyForAudio();
+  it.each([false, true])(
+    "retains aborted provider-startup suppression until carrier closure is confirmed (%s)",
+    async (carrierClosed) => {
+      let releaseConnect = () => {};
+      mocks.bridge.connect.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            releaseConnect = resolve;
+          }),
+      );
+      let releaseCarrierSafety = (_safeToClose: boolean) => {};
+      const onFailure = vi.fn(
+        () =>
+          new Promise<boolean>((resolve) => {
+            releaseCarrierSafety = resolve;
+          }),
+      );
+      const controller = new AbortController();
+      const driver = await startFaceTimeTalkDriver(
+        startParams({ signal: controller.signal, onFailure }),
+      );
+      const ready = driver.readyForAudio();
+      const failed = expect(ready).rejects.toThrow("startup aborted");
 
-    await vi.waitFor(() => expect(mocks.bridge.connect).toHaveBeenCalledOnce());
-    controller.abort();
+      await vi.waitFor(() => expect(mocks.bridge.connect).toHaveBeenCalledOnce());
+      controller.abort();
 
-    await expect(ready).rejects.toThrow("startup aborted");
-    expect(mocks.bridge.close).toHaveBeenCalledOnce();
-    expect(mocks.pump.stop).toHaveBeenCalledOnce();
-  });
+      await vi.waitFor(() => expect(onFailure).toHaveBeenCalledOnce());
+      expect(mocks.bridge.close).toHaveBeenCalledOnce();
+      expect(mocks.pump.suspendMedia).toHaveBeenCalledOnce();
+      expect(mocks.pump.stop).not.toHaveBeenCalled();
+      expect(driver.processOutputSuppressed()).toBe(true);
+
+      releaseConnect();
+      mocks.sessionParams?.onReady();
+      await Promise.resolve();
+      driver.activate();
+      expect(driver.realtimeActive()).toBe(false);
+      expect(mocks.pump.routeReady).not.toHaveBeenCalled();
+      expect(mocks.bridge.triggerGreeting).not.toHaveBeenCalled();
+      expect(mocks.pump.stop).not.toHaveBeenCalled();
+
+      releaseCarrierSafety(carrierClosed);
+      await failed;
+      expect(mocks.pump.stop).toHaveBeenCalledTimes(carrierClosed ? 1 : 0);
+
+      await driver.close("carrier-closed");
+      expect(mocks.pump.stop).toHaveBeenCalledOnce();
+    },
+  );
 
   it("fails closed when OpenClaw cannot forward authenticated sender identity", async () => {
     mocks.senderAuthVersion = undefined;

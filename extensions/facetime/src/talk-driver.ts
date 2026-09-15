@@ -640,8 +640,9 @@ export async function startFaceTimeTalkDriver(params: {
         await suspendMedia(
           params.signal?.aborted || stopped ? "startup-aborted" : "connect-failed",
         );
-        const safeToClose =
-          params.signal?.aborted || stopped ? true : await reportFailure(normalized);
+        // Lifecycle cancellation starts carrier shutdown; it does not confirm
+        // closure. Retain process-tap suppression until its owner confirms safety.
+        const safeToClose = stopped || (await reportFailure(normalized));
         if (safeToClose) {
           await close(params.signal?.aborted || stopped ? "startup-aborted" : "connect-failed");
         }
