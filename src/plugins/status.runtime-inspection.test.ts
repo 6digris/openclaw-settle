@@ -12,7 +12,10 @@ import { readConfigFileSnapshotForWrite, writeConfigFile } from "../config/confi
 import * as configObserver from "../config/io.observe.js";
 import { defaultRuntime } from "../runtime.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseAsync,
+  closeOpenClawStateDatabaseForTest,
+} from "../state/openclaw-state-db.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { setGatewayPluginMetadataSnapshot } from "./current-plugin-metadata-snapshot.js";
@@ -55,7 +58,9 @@ describe("plugin runtime inspection", () => {
     closeOpenClawStateDatabaseForTest();
   });
 
-  afterAll(() => {
+  afterAll(async () => {
+    // Worker retirement must finish before the fixture's database files disappear.
+    await closeOpenClawStateDatabaseAsync();
     cleanupPluginLoaderFixturesForTest();
   });
 
