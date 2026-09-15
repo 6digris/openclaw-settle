@@ -1,6 +1,10 @@
-import type { AcpPermissionDecision, AcpPermissionRequest, AcpRuntimeStatus } from "acpx/runtime";
+import type {
+  AcpPermissionDecision,
+  AcpPermissionRequest,
+  AcpRuntime,
+  AcpRuntimeStatus,
+} from "acpx/runtime";
 import type { AcpRuntimeHandle } from "../runtime-api.js";
-import type { CompleteAcpRuntime } from "./runtime-proxy.js";
 
 export type AcpxNativeTarget = {
   agentId: string;
@@ -26,7 +30,7 @@ export type AcpxNativeRuntime = {
   withSession<T>(
     input: AcpxNativeSessionInput,
     run: (session: {
-      runtime: Pick<CompleteAcpRuntime, "startTurn">;
+      runtime: Pick<AcpRuntime, "startTurn">;
       handle: AcpRuntimeHandle;
       lastRequestId?: string;
       getStatus: () => Promise<AcpRuntimeStatus>;
