@@ -584,19 +584,15 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
     if (!defaults) {
       return;
     }
-    const agentEpoch = this.agentEpoch;
     const result = await this.patchConfig({
       key: "defaults",
       raw: buildDefaultsPatch(defaults),
       note: t("modelProviders.notes.defaultModel"),
       replacePaths: DEFAULT_MODELS_REPLACE_PATHS,
     });
-    // Keep the draft when fresh provider data is unavailable after commit.
-    if (
-      this.agentEpoch === agentEpoch &&
-      this.defaultsDraft === defaults &&
-      (!result.ok || !result.warning)
-    ) {
+    // Global defaults outlive agent selection. Connection resets clear the draft;
+    // object identity protects newer edits. Retain committed values if refresh failed.
+    if (this.defaultsDraft === defaults && (!result.ok || !result.warning)) {
       this.defaultsDraft = null;
     }
   }
