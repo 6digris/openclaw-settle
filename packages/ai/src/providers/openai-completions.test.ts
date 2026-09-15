@@ -667,24 +667,31 @@ describe("OpenAI-compatible completions params", () => {
     expect(capturedMaxTokens).toBe(32_000);
   });
 
-  it("uses max_tokens for Z.AI requests", async () => {
-    const stream = streamOpenAICompletions(
+  it("enables thinking and uses max_tokens for the Z.AI Coding Plan simple probe", async () => {
+    const stream = streamSimpleOpenAICompletions(
       {
         ...createModel(32_000),
+        id: "glm-5.2",
         provider: "zai",
-        baseUrl: "https://api.z.ai/api/paas/v4",
+        baseUrl: "https://api.z.ai/api/coding/paas/v4",
+        reasoning: true,
       },
       context,
       {
         apiKey: "sk-test",
         maxTokens: 1_024,
+        reasoning: "max",
       },
     );
 
     await stream.result();
 
-    expect(mockOpenAIOptionsRef.payloads[0]).toMatchObject({ max_tokens: 1_024 });
+    expect(mockOpenAIOptionsRef.payloads[0]).toMatchObject({
+      max_tokens: 1_024,
+      enable_thinking: true,
+    });
     expect(mockOpenAIOptionsRef.payloads[0]).not.toHaveProperty("max_completion_tokens");
+    expect(mockOpenAIOptionsRef.payloads[0]).not.toHaveProperty("reasoning_effort");
   });
 
   it("forwards simple stop sequences to request params", async () => {
