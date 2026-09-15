@@ -3083,8 +3083,8 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       "core-runtime-infra-process",
     ]);
     expect(actual).toEqual(
-      [...listTestFiles("src/infra"), ...databaseWorkerCoreTestFiles].toSorted((a, b) =>
-        a.localeCompare(b),
+      [...new Set([...listTestFiles("src/infra"), ...databaseWorkerCoreTestFiles])].toSorted(
+        (a, b) => a.localeCompare(b),
       ),
     );
     expect(new Set(actual).size).toBe(actual.length);

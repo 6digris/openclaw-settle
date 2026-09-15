@@ -13,6 +13,7 @@ import {
   reserveFleetCellInDatabase,
   updateFleetCellImageInDatabase,
 } from "../fleet/registry.kernel.js";
+import { countFailedDeliveryQueueEntriesInDatabase } from "../infra/delivery-queue-sqlite.kernel.js";
 import { executeSessionDeliveryCommand } from "../infra/session-delivery-queue.worker.js";
 import { createSqliteAuditRecordKernel } from "../infra/sqlite-audit-record.kernel.js";
 import {
@@ -24,6 +25,7 @@ import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js
 import type { SqliteWorkerBackend } from "../infra/sqlite-worker-contract.js";
 import { getSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { readRemoteModelCatalog } from "../model-catalog/remote-store.js";
 import { isPluginStateWorkerCommand } from "../plugin-state/plugin-state-worker-contract.js";
 import { executePluginStateCommand } from "../plugin-state/plugin-state.worker.js";
 import { readPluginMetadataStateRowSync } from "../plugins/installed-plugin-index-row.js";
@@ -148,6 +150,16 @@ function createSharedStateWorkerBackend(
             { path: context.databasePath, env: getSqliteWorkerStateContext().environment },
           );
         return command.input.preserveSourceArtifacts
+          ? withArtifactPreservingStateReads(read)
+          : read();
+      }
+      if (command.type === "modelCatalog.remote.read") {
+        const read = () =>
+          readRemoteModelCatalog({
+            path: context.databasePath,
+            env: getSqliteWorkerStateContext().environment,
+          });
+        return command.input.artifactPreservingReadOnly
           ? withArtifactPreservingStateReads(read)
           : read();
       }
@@ -301,6 +313,9 @@ function createSharedStateWorkerBackend(
       const database = open();
       if (command.type === "cron.loadMutable") {
         return loadMutableCronStoreInWorker(database, command.input.storeKey);
+      }
+      if (command.type === "deliveryQueue.countFailed") {
+        return countFailedDeliveryQueueEntriesInDatabase(database);
       }
       if (
         command.type === "sessionDelivery.enqueue" ||

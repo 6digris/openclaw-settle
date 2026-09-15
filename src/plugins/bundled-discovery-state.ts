@@ -12,6 +12,7 @@ import {
   getPluginCacheRetirementSignal,
   getProcessPluginCache,
   preparePluginCacheFact,
+  PluginCacheFactInvalidatedError,
 } from "./plugin-cache.js";
 import { registerPluginMetadataProcessMemoLifecycleClear } from "./plugin-metadata-lifecycle.js";
 import { readPluginMetadataStateRow } from "./plugin-metadata-state-worker.js";
@@ -129,14 +130,18 @@ export async function prepareBundledDiscoveryMode(
       value = parseBundledDiscoveryMode(row ? JSON.parse(row.value_json) : undefined);
     }
     if (discoveryState.generation !== generation) {
-      throw new Error("Plugin discovery state changed during preparation; retry the operation.");
+      throw new PluginCacheFactInvalidatedError(
+        "Plugin discovery state changed during preparation; retry the operation.",
+      );
     }
     return { value, generation };
   });
   const activate = () => {
     prepared.assertCurrent();
     if (discoveryState.generation !== generation) {
-      throw new Error("Plugin discovery state changed during preparation; retry the operation.");
+      throw new PluginCacheFactInvalidatedError(
+        "Plugin discovery state changed during preparation; retry the operation.",
+      );
     }
     // Another root may use the single-slot memo while preparation awaits its row.
     // Reuse this operation's captured fact for the following synchronous derivation.
