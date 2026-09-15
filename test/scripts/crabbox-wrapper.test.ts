@@ -4847,9 +4847,12 @@ cp.spawnSync = (command, args, options) => {
             errno: "errno" in fault && fault.name !== "redaction" ? fault.errno : null,
             stderr: expect.any(String),
           });
-          if ("expectedStderr" in fault) expect(detail.stderr).toBe(fault.expectedStderr);
+          if ("expectedStderr" in fault) {
+            expect(detail.stderr).toBe(fault.expectedStderr);
+          }
           expect(detail.stderr.length).toBeLessThanOrEqual(512);
-          expect(detail.stderr).not.toMatch(/[\r\n\u001b]|private|PRIVATE|fd00|forged/);
+          expect(detail.stderr).not.toContain("\u001b");
+          expect(detail.stderr).not.toMatch(/[\r\n]|private|PRIVATE|fd00|forged/);
           expect(rejected.result.stdout).toBe("");
           expect(rejected.result.stderr).not.toContain("[crabbox] verified source=");
           expect(git(rejected.receiver, ["rev-parse", "HEAD"])).toBe(base);
