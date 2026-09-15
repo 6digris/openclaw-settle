@@ -728,7 +728,7 @@ impl NodeSession {
             let event = self.next_event().await?;
             match event.event.as_str() {
                 "node.invoke.request" => {
-                    return parse_invocation(event.payload, Instant::now(), self.protocol)
+                    return parse_invocation(event.payload, Instant::now())
                         .map(NodeSessionEvent::Invocation);
                 }
                 "node.invoke.cancel" => {
@@ -870,15 +870,8 @@ fn parse_invocation_cancel(payload: Value) -> Result<NodeSessionEvent, ClientErr
     })
 }
 
-fn parse_invocation(
-    payload: Value,
-    received_at: Instant,
-    protocol: NodeProtocolVersion,
-) -> Result<NodeInvocation, ClientError> {
-    let payload = match protocol {
-        NodeProtocolVersion::V4 => decode_v4_invocation(payload)?,
-        NodeProtocolVersion::V3 => decode_v3_invocation(payload)?,
-    };
+fn parse_invocation(payload: Value, received_at: Instant) -> Result<NodeInvocation, ClientError> {
+    let payload = decode_invocation(payload)?;
     let id = require_non_empty_result_field("invocation id", payload.id)?;
     let node_id = require_non_empty_result_field("invocation node id", payload.node_id)?;
     let command = require_non_empty_result_field("invocation command", payload.command)?;
@@ -914,11 +907,11 @@ struct DecodedInvocation {
     session_key: Option<String>,
 }
 
-fn decode_v4_invocation(payload: Value) -> Result<DecodedInvocation, ClientError> {
+fn decode_invocation(payload: Value) -> Result<DecodedInvocation, ClientError> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     #[serde(rename_all = "camelCase")]
-    struct V4Payload {
+    struct Payload {
         id: String,
         node_id: String,
         command: String,
@@ -936,8 +929,8 @@ fn decode_v4_invocation(payload: Value) -> Result<DecodedInvocation, ClientError
         session_key: Option<String>,
     }
 
-    let payload: V4Payload = serde_json::from_value(payload).map_err(|error| {
-        ClientError::InvalidFrame(format!("invalid v4 node.invoke.request: {error}"))
+    let payload: Payload = serde_json::from_value(payload).map_err(|error| {
+        ClientError::InvalidFrame(format!("invalid node.invoke.request: {error}"))
     })?;
     let (params, received_params_bytes) = match payload.params_json {
         Some(value) => {
@@ -955,44 +948,6 @@ fn decode_v4_invocation(payload: Value) -> Result<DecodedInvocation, ClientError
         command: payload.command,
         params,
         received_params_bytes,
-        timeout_ms: payload.timeout_ms,
-        idempotency_key: payload.idempotency_key,
-        session_key: payload.session_key,
-    })
-}
-
-fn decode_v3_invocation(payload: Value) -> Result<DecodedInvocation, ClientError> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    #[serde(rename_all = "camelCase")]
-    struct V3Payload {
-        id: String,
-        node_id: String,
-        command: String,
-        #[serde(default)]
-        params: Value,
-        #[serde(default, deserialize_with = "deserialize_optional_u64")]
-        timeout_ms: Option<u64>,
-        #[serde(default, deserialize_with = "deserialize_optional_string")]
-        idempotency_key: Option<String>,
-        #[serde(default)]
-        session_key: Option<String>,
-    }
-
-    let payload: V3Payload = serde_json::from_value(payload).map_err(|error| {
-        ClientError::InvalidFrame(format!("invalid v3 node.invoke.request: {error}"))
-    })?;
-    let received_params_bytes = if payload.params.is_null() {
-        0
-    } else {
-        payload.params.to_string().len()
-    };
-    Ok(DecodedInvocation {
-        id: payload.id,
-        node_id: payload.node_id,
-        command: payload.command,
-        params: payload.params,
-        received_params_bytes: Some(received_params_bytes),
         timeout_ms: payload.timeout_ms,
         idempotency_key: payload.idempotency_key,
         session_key: payload.session_key,
@@ -1056,7 +1011,6 @@ mod tests {
                 "sessionKey": "agent:main:main"
             }),
             Instant::now(),
-            NodeProtocolVersion::V4,
         )
         .expect("valid Gateway invocation");
 
@@ -1066,18 +1020,18 @@ mod tests {
     }
 
     #[test]
-    fn invocation_params_are_strictly_selected_by_negotiated_protocol() {
-        let legacy = json!({
-            "id": "invoke-v3",
-            "nodeId": "node-1",
-            "command": "example.status",
-            "params": {"verbose": true}
-        });
-        let current = json!({
-            "id": "invoke-v4",
+    fn invocation_params_json_is_strict_across_protocol_versions() {
+        let released = json!({
+            "id": "invoke-1",
             "nodeId": "node-1",
             "command": "example.status",
             "paramsJSON": "{\"verbose\":true}"
+        });
+        let unsupported_direct_params = json!({
+            "id": "invoke-unsupported",
+            "nodeId": "node-1",
+            "command": "example.status",
+            "params": {"verbose": true}
         });
         let ambiguous = json!({
             "id": "invoke-ambiguous",
@@ -1088,23 +1042,13 @@ mod tests {
         });
 
         assert_eq!(
-            parse_invocation(legacy.clone(), Instant::now(), NodeProtocolVersion::V3)
-                .expect("v3 invocation")
+            parse_invocation(released, Instant::now())
+                .expect("released invocation")
                 .params,
             json!({"verbose": true})
         );
-        assert!(parse_invocation(legacy, Instant::now(), NodeProtocolVersion::V4).is_err());
-        assert_eq!(
-            parse_invocation(current.clone(), Instant::now(), NodeProtocolVersion::V4)
-                .expect("v4 invocation")
-                .params,
-            json!({"verbose": true})
-        );
-        assert!(parse_invocation(current, Instant::now(), NodeProtocolVersion::V3).is_err());
-        assert!(
-            parse_invocation(ambiguous.clone(), Instant::now(), NodeProtocolVersion::V3).is_err()
-        );
-        assert!(parse_invocation(ambiguous, Instant::now(), NodeProtocolVersion::V4).is_err());
+        assert!(parse_invocation(unsupported_direct_params, Instant::now()).is_err());
+        assert!(parse_invocation(ambiguous, Instant::now()).is_err());
     }
 
     #[test]
