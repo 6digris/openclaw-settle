@@ -348,6 +348,7 @@ export function createFaceTimeCallEventHandler(params: {
       }
       const endedCall = params.calls.get(callUUID);
       if (endedCall) {
+        endedCall.markCarrierClosed();
         await params.callControl.closeCall(endedCall, "native-ended");
       }
       return;

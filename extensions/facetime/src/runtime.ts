@@ -382,7 +382,7 @@ export async function createFaceTimeRuntime(params: {
     getHelperTopologyVersion: () => helperTopologyVersion,
     retainHelperResultPeers,
   });
-  const { attemptCarrierHangup, closeCall, terminateCarrierProcesses } = callControl;
+  const { attemptCarrierHangup, stopCall } = callControl;
   callEventRef.current = createFaceTimeCallEventHandler({
     calls,
     helper,
@@ -711,26 +711,10 @@ export async function createFaceTimeRuntime(params: {
         cleanupError ??= pendingCleanupError;
       }
       for (const call of calls.values()) {
-        const closed = await attemptCarrierHangup(call, "runtime-stop", {
-          scheduleRetry: false,
-        });
-        if (!closed) {
-          try {
-            await terminateCarrierProcesses(call);
-            await closeCall(call, "runtime-stop-carrier-terminated");
-          } catch (error) {
-            try {
-              if (!call.talk) {
-                throw new Error("native carrier watchdog is unavailable", { cause: error });
-              }
-              await call.talk.failClosed("runtime-stop-native-watchdog");
-              await closeCall(call, "runtime-stop-native-watchdog");
-            } catch (watchdogError) {
-              cleanupError ??= new Error(
-                `FaceTime fail-closed carrier termination failed: ${formatErrorMessage(error)}; native watchdog: ${formatErrorMessage(watchdogError)}`,
-              );
-            }
-          }
+        try {
+          await stopCall(call);
+        } catch (error) {
+          cleanupError ??= error instanceof Error ? error : new Error(formatErrorMessage(error));
         }
       }
       await helperSupervisor.stop();

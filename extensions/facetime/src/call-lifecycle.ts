@@ -1,3 +1,5 @@
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+
 type FaceTimeCarrierMode = "ringing" | "muted" | "active" | "closing" | "closed";
 
 type FaceTimeModelMediaMode = "starting" | "ready" | "active" | "suspended" | "closed";
@@ -20,6 +22,8 @@ export class FaceTimeCallInstance {
   phase: FaceTimeCallPhase;
   carrierMode: FaceTimeCarrierMode;
   modelMediaMode: FaceTimeModelMediaMode = "starting";
+  #carrierClosure = createDeferred<void>();
+  readonly carrierClosure = this.#carrierClosure.promise;
   #commandTail: Promise<void> = Promise.resolve();
 
   constructor(
@@ -41,7 +45,7 @@ export class FaceTimeCallInstance {
 
   assertCurrent(generation: number, allowClosing = false): void {
     const phaseAllowed = allowClosing
-      ? this.phase !== "closed"
+      ? this.phase !== "closed" && this.carrierMode !== "closed"
       : this.phase !== "closing" && this.phase !== "closed";
     if (
       generation !== this.generation ||
@@ -116,6 +120,13 @@ export class FaceTimeCallInstance {
       this.lifecycleAbort.abort(new Error("FaceTime call is closing"));
     }
     return this.generation;
+  }
+
+  // Carrier proof releases startup before local media teardown can be joined.
+  markCarrierClosed(): void {
+    this.beginClosing();
+    this.carrierMode = "closed";
+    this.#carrierClosure.resolve(undefined);
   }
 
   markClosed(): void {

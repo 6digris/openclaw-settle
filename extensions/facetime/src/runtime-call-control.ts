@@ -134,6 +134,12 @@ export function createFaceTimeCallControl(params: {
     if (params.calls.active !== call) {
       return true;
     }
+    if (call.carrierMode === "closed") {
+      if (closeLocal) {
+        await closeCall(call, reason);
+      }
+      return true;
+    }
     const generation = call.beginClosing();
     call.carrierHangupPending = true;
     void call.talk?.suspendMedia(reason).catch((error: unknown) => {
@@ -199,7 +205,12 @@ export function createFaceTimeCallControl(params: {
         call.carrierHangupAttempt = undefined;
       }
     }
-    if (carrierClosed) {
+    const currentCall = params.calls.active;
+    if (currentCall !== call) {
+      return true;
+    }
+    if (carrierClosed || currentCall.carrierMode === "closed") {
+      call.markCarrierClosed();
       call.carrierHangupPending = false;
       if (closeLocal) {
         await closeCall(call, reason);
@@ -220,21 +231,30 @@ export function createFaceTimeCallControl(params: {
     reason: string,
   ): Promise<boolean> => {
     call.beginClosing();
-    while (params.calls.active === call && call.phase === "closing") {
-      if (
-        await attemptCarrierHangup(call, reason, {
-          closeLocal: false,
-          scheduleRetry: false,
-        })
-      ) {
+    return await Promise.race([
+      call.carrierClosure.then(() => true),
+      (async () => {
+        while (
+          params.calls.active === call &&
+          call.phase === "closing" &&
+          call.carrierMode !== "closed"
+        ) {
+          if (
+            await attemptCarrierHangup(call, reason, {
+              closeLocal: false,
+              scheduleRetry: false,
+            })
+          ) {
+            return true;
+          }
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, 1_000);
+            timer.unref?.();
+          });
+        }
         return true;
-      }
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, 1_000);
-        timer.unref?.();
-      });
-    }
-    return true;
+      })(),
+    ]);
   };
   const terminateCarrierProcesses = async (call: ActiveFaceTimeCall): Promise<void> => {
     const generation = call.captureGeneration();
@@ -243,6 +263,31 @@ export function createFaceTimeCallControl(params: {
       peers: call.carrierPeers,
       assertCurrent: () => call.assertCurrent(generation, true),
     });
+    call.markCarrierClosed();
+  };
+  const stopCall = async (call: ActiveFaceTimeCall): Promise<void> => {
+    const closed = await attemptCarrierHangup(call, "runtime-stop", { scheduleRetry: false });
+    if (closed) {
+      return;
+    }
+    try {
+      await terminateCarrierProcesses(call);
+      await closeCall(call, "runtime-stop-carrier-terminated");
+    } catch (error) {
+      try {
+        if (!call.talk) {
+          throw new Error("native carrier watchdog is unavailable", { cause: error });
+        }
+        await call.talk.failClosed("runtime-stop-native-watchdog");
+        call.markCarrierClosed();
+        await closeCall(call, "runtime-stop-native-watchdog");
+      } catch (watchdogError) {
+        throw new Error(
+          `FaceTime fail-closed carrier termination failed: ${formatErrorMessage(error)}; native watchdog: ${formatErrorMessage(watchdogError)}`,
+          { cause: watchdogError },
+        );
+      }
+    }
   };
   const startCallTalk = async (call: ActiveFaceTimeCall) => {
     if (call.talk) {
@@ -342,6 +387,6 @@ export function createFaceTimeCallControl(params: {
     attemptCarrierHangup,
     closeCall,
     startCallTalk,
-    terminateCarrierProcesses,
+    stopCall,
   };
 }
