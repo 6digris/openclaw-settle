@@ -86,9 +86,25 @@ serveWorkerTasks(
       | SessionBranchSummaryWorkerInput;
     try {
       if (request.kind === "branch-summaries") {
-        const { readSessionBranchSummariesInWorker } =
-          await import("./session-accessor.sqlite-branches.js");
-        return { ok: true, value: readSessionBranchSummariesInWorker(request.request) };
+        const importDone = beginHistoryProbePhase("branch-kernel-import");
+        let kernel: typeof import("./session-accessor.sqlite-branches.js");
+        try {
+          kernel = await import("./session-accessor.sqlite-branches.js");
+        } catch (error) {
+          importDone?.(true);
+          throw error;
+        } finally {
+          importDone?.();
+        }
+        const bodyDone = beginHistoryProbePhase("branch-body");
+        try {
+          return { ok: true, value: kernel.readSessionBranchSummariesInWorker(request.request) };
+        } catch (error) {
+          bodyDone?.(true);
+          throw error;
+        } finally {
+          bodyDone?.();
+        }
       }
       return await runWithSessionTranscriptReadFence(
         request.admission,

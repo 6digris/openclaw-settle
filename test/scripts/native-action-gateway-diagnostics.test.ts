@@ -472,3 +472,127 @@ it("omits oversized optional probe detail before sacrificing history phase evide
   expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(32 * 1024);
   expect(JSON.stringify(result)).not.toContain("private-owner");
 });
+
+it("keeps pending branch parent stages separate from worker ordinals and method correlation", async () => {
+  const file = path.join(temps.make("native-branch-probe-"), "timeline.jsonl");
+  const window = await captureNativeHistoryWindow(file);
+  const at = window.startedAtMs;
+  const owner = "private-branch-owner";
+  const mark = (name: string, ordinal: number, phase: string, extra = {}) =>
+    JSON.stringify({
+      schemaVersion: "openclaw.diagnostics.v1",
+      type: "mark",
+      name,
+      parentSpanId: owner,
+      timestamp: new Date(at + 2).toISOString(),
+      attributes: {
+        version: 1,
+        task: 1,
+        kind: "phase",
+        ordinal,
+        phase,
+        event: "begin",
+        elapsedMs: 1,
+        wallMs: 0,
+        userUs: null,
+        systemUs: null,
+        count: 0,
+        failures: 0,
+        maxMs: 0,
+        privateText,
+        ...extra,
+      },
+    }) + "\n";
+  await fs.writeFile(
+    file,
+    event("gateway.sessions.branches.list", "span.start", owner, at + 1, {
+      requestId: privateText,
+    }) +
+      mark("native.branch.probe", 1, "branch-handler-prepare") +
+      mark("native.branch.probe", 2, "branch-handler-prepare", { event: "end", count: 1 }) +
+      mark("native.branch.probe", 3, "branch-worker-await") +
+      mark("worker.history.probe", 1, "branch-kernel-import"),
+  );
+  const matches: unknown[][] = [];
+  const result = await readNativeHistoryDiagnostic(file, window, at + 3, (id, method) => {
+    matches.push([id, method]);
+    return { status: "matched", connection: 2, request: 7 };
+  });
+  expect(matches).toEqual([[privateText, "sessions.branches.list"]]);
+  expect(result.spans).toHaveLength(1);
+  expect(result.spans[0]).toMatchObject({
+    phase: "branches_list",
+    outcome: "pending",
+    finishedMs: null,
+    request: { status: "matched", connection: 2, request: 7 },
+    requestProbe: {
+      invalid: false,
+      truncated: false,
+      rows: [
+        { ordinal: 1, phase: "branch-handler-prepare", event: "begin" },
+        { ordinal: 2, phase: "branch-handler-prepare", event: "end" },
+        { ordinal: 3, phase: "branch-worker-await", event: "begin" },
+      ],
+    },
+    historyProbe: {
+      tasks: [
+        { ordinal: 1, invalid: false, rows: [{ ordinal: 1, phase: "branch-kernel-import" }] },
+      ],
+    },
+    workerTasks: { rows: [], invalid: false, truncated: false },
+  });
+  expect(result.malformedLine).toBe(false);
+  expect(result.orphanedWorkerTask).toBe(false);
+  expect(JSON.stringify(result)).not.toContain("private");
+});
+
+it("caps branch request detail after the native window and rejects late parent stages", async () => {
+  const file = path.join(temps.make("native-branch-cap-"), "timeline.jsonl");
+  const window = await captureNativeHistoryWindow(file);
+  const at = window.startedAtMs;
+  const mark = (owner: string, ordinal: number) =>
+    JSON.stringify({
+      schemaVersion: "openclaw.diagnostics.v1",
+      type: "mark",
+      name: "native.branch.probe",
+      parentSpanId: owner,
+      timestamp: new Date(at + 2).toISOString(),
+      attributes: {
+        version: 1,
+        kind: "phase",
+        phase: "branch-worker-await",
+        event: "begin",
+        ordinal,
+        elapsedMs: 1,
+        wallMs: 0,
+        userUs: null,
+        systemUs: null,
+        count: 0,
+        failures: 0,
+        maxMs: 0,
+      },
+    }) + "\n";
+  await fs.writeFile(
+    file,
+    Array.from({ length: 5 }, (_, index) => {
+      const owner = "private-branch-" + index;
+      return (
+        event("gateway.sessions.branches.list", "span.start", owner, at + 1) +
+        Array.from({ length: index === 0 ? 26 : 1 }, (_, i) => mark(owner, i + 1)).join("") +
+        event("gateway.sessions.branches.list", "span.end", owner, at + 3) +
+        mark(owner, 1)
+      );
+    }).join(""),
+  );
+  const result = await readNativeHistoryDiagnostic(file, window, at + 4);
+  expect(result.spans).toHaveLength(5);
+  expect(result.spans.filter((span) => span.requestProbe)).toHaveLength(4);
+  expect(result.spans[0]?.requestProbe).toMatchObject({ truncated: true });
+  expect(result.spans[0]?.requestProbe?.rows).toHaveLength(24);
+  expect(result.spans.slice(1, 4).every((span) => span.requestProbe?.rows.length === 1)).toBe(true);
+  expect(result.spans.every((span) => span.outcome === "end")).toBe(true);
+  expect(result.truncated).toBe(true);
+  expect(result.malformedLine).toBe(true);
+  expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(32 * 1024);
+  expect(JSON.stringify(result)).not.toContain("private");
+});

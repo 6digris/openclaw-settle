@@ -283,7 +283,7 @@ describe("QA Gateway proxy readiness diagnostics", () => {
         const back = await upstream;
         await exchange(front, back, 1, "connect", true);
         await exchange(front, back, 2, "chat.history", true);
-        const frozen = proxy.captureHistoryRequestMatcher();
+        const frozen = proxy.captureReadinessRequestMatcher();
         expect(frozen("private-request-2")).toEqual({
           status: "matched",
           connection: 1,
@@ -294,12 +294,12 @@ describe("QA Gateway proxy readiness diagnostics", () => {
         expect(frozen("x".repeat(129))).toEqual({ status: "unknown" });
         // A same-connection reuse and later reconnection must not mutate the old snapshot.
         await exchange(front, back, 2, "chat.history", true);
-        expect(proxy.captureHistoryRequestMatcher()("private-request-2")).toEqual({
+        expect(proxy.captureReadinessRequestMatcher()("private-request-2")).toEqual({
           status: "unknown",
         });
         const second = await reconnect();
         await exchange(second.front, await second.upstream, 3, "chat.history", true);
-        expect(proxy.captureHistoryRequestMatcher()("private-request-3")).toEqual({
+        expect(proxy.captureReadinessRequestMatcher()("private-request-3")).toEqual({
           status: "matched",
           connection: 2,
           request: 1,
@@ -312,7 +312,7 @@ describe("QA Gateway proxy readiness diagnostics", () => {
         });
         const third = await reconnect();
         await exchange(third.front, await third.upstream, 3, "chat.history", true);
-        expect(proxy.captureHistoryRequestMatcher()("private-request-3")).toEqual({
+        expect(proxy.captureReadinessRequestMatcher()("private-request-3")).toEqual({
           status: "unknown",
         });
         expect(JSON.stringify(proxy.readinessSnapshot())).not.toMatch(
@@ -333,9 +333,45 @@ describe("QA Gateway proxy readiness diagnostics", () => {
           const received = once(back, "message");
           front.send(raw);
           expect((await received)[0]).toEqual(raw);
-          expect(proxy.captureHistoryRequestMatcher()(id)).toEqual({ status: "unknown" });
+          expect(proxy.captureReadinessRequestMatcher()(id)).toEqual({ status: "unknown" });
         }
         expect(JSON.stringify(proxy.readinessSnapshot())).not.toContain("x".repeat(129));
+      },
+      true,
+    );
+  });
+
+  it("binds readiness matches to the method and rejects IDs reused by another method", async () => {
+    await withProxy(
+      false,
+      async ({ proxy, front, upstream }) => {
+        const back = await upstream;
+        await exchange(front, back, 1, "chat.history", true);
+        await exchange(front, back, 2, "sessions.branches.list", true);
+        const captured = proxy.captureReadinessRequestMatcher();
+        expect(captured("private-request-1", "chat.history")).toEqual({
+          status: "matched",
+          connection: 1,
+          request: 1,
+        });
+        expect(captured("private-request-2", "sessions.branches.list")).toEqual({
+          status: "matched",
+          connection: 1,
+          request: 2,
+        });
+        expect(captured("private-request-2", "chat.history")).toEqual({ status: "unknown" });
+        await exchange(front, back, 2, "health", true);
+        expect(
+          proxy.captureReadinessRequestMatcher()("private-request-2", "sessions.branches.list"),
+        ).toEqual({ status: "unknown" });
+        expect(captured("private-request-2", "sessions.branches.list")).toEqual({
+          status: "matched",
+          connection: 1,
+          request: 2,
+        });
+        expect(JSON.stringify(proxy.readinessSnapshot())).not.toMatch(
+          /private-|requestId|token|payload/,
+        );
       },
       true,
     );
@@ -530,7 +566,7 @@ describe("QA Gateway proxy readiness diagnostics", () => {
         expect(Buffer.byteLength(JSON.stringify(snapshot))).toBeLessThan(64 * 1024);
         expect(proxy.snapshot().events).toEqual([]);
         expect(proxy.readinessSnapshot().truncated).toBe(true);
-        expect(proxy.captureHistoryRequestMatcher()("private-request-1")).toEqual({
+        expect(proxy.captureReadinessRequestMatcher()("private-request-1")).toEqual({
           status: "unknown",
         });
       },

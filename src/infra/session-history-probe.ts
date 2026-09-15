@@ -12,6 +12,17 @@ const phases = [
   "borrowed-schema",
   "projection-snapshot",
   "reset-archive",
+  "branch-dispatch-import",
+  "branch-start-admission",
+  "branch-authorization",
+  "branch-handler-prepare",
+  "branch-handler",
+  "branch-cold-import",
+  "branch-cold-restore",
+  "branch-runtime-import",
+  "branch-worker-await",
+  "branch-kernel-import",
+  "branch-body",
 ] as const;
 type Phase = (typeof phases)[number];
 export type HistoryProbeRecord =

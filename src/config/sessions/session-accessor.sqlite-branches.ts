@@ -1,6 +1,7 @@
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import { executeSqliteQueryTakeFirstSync } from "../../infra/kysely-sync.js";
 import { pruneMapToMaxSize } from "../../infra/map-size.js";
+import { beginHistoryProbePhase } from "../../infra/session-history-probe.js";
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
@@ -231,8 +232,17 @@ export async function listSessionBranches(
             // Incognito transcripts live only in this process's in-memory database.
             snapshot = readSessionBranchSnapshot(database, expected);
           } else {
-            const { runSessionBranchSummaryWorkerRequest } =
-              await import("./session-transcript-worker-runtime.js");
+            const importDone = beginHistoryProbePhase("branch-runtime-import");
+            let runtime: typeof import("./session-transcript-worker-runtime.js");
+            try {
+              runtime = await import("./session-transcript-worker-runtime.js");
+            } catch (error) {
+              importDone?.(true);
+              throw error;
+            } finally {
+              importDone?.();
+            }
+            const { runSessionBranchSummaryWorkerRequest } = runtime;
             assertCurrent();
             snapshot = await runSessionBranchSummaryWorkerRequest(
               {

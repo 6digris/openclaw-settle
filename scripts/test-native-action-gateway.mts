@@ -859,9 +859,9 @@ export async function withNativeActionGateway(
                 nativeFailed ? "native-child-failure" : "native-child-completion",
               );
               const readiness = proxy.readinessSnapshot();
-              let matchRequest: ReturnType<typeof proxy.captureHistoryRequestMatcher> | undefined;
+              let matchRequest: ReturnType<typeof proxy.captureReadinessRequestMatcher> | undefined;
               try {
-                matchRequest = proxy.captureHistoryRequestMatcher();
+                matchRequest = proxy.captureReadinessRequestMatcher();
               } catch {
                 // Correlation is optional; retain the original native error and phase evidence.
               }

@@ -24,7 +24,12 @@ type HistoryWorkerTask = {
   // postMessage cost is inside runMs, not a fourth additive phase.
   transferMs: number;
 };
-type HistoryPhase = "session_entry" | "history_page" | "startup_projection" | "session_info";
+type HistoryPhase =
+  | "session_entry"
+  | "history_page"
+  | "startup_projection"
+  | "session_info"
+  | "branches_list";
 type HistorySpan = {
   ordinal: number;
   phase: HistoryPhase;
@@ -34,6 +39,7 @@ type HistorySpan = {
   outcome: "pending" | "end" | "error";
   request?: HistoryRequest;
   workerTasks?: { rows: HistoryWorkerTask[]; invalid: boolean; truncated: boolean };
+  requestProbe?: { rows: HistoryProbeRecord[]; invalid: boolean; truncated: boolean };
   historyProbe?: {
     version: 1;
     tasks: { ordinal: number; rows: HistoryProbeRecord[]; invalid: boolean; truncated: boolean }[];
@@ -80,10 +86,11 @@ function milliseconds(value: unknown): value is number {
 
 function matchHistoryRequest(
   id: unknown,
-  match: ((id: unknown) => unknown) | undefined,
+  match: ((id: unknown, method?: "chat.history" | "sessions.branches.list") => unknown) | undefined,
+  method: "chat.history" | "sessions.branches.list",
 ): HistoryRequest {
   try {
-    const result = privateKey(id) ? match?.(id) : undefined;
+    const result = privateKey(id) ? match?.(id, method) : undefined;
     if (
       isRecord(result) &&
       result.status === "matched" &&
@@ -107,13 +114,17 @@ function matchHistoryRequest(
 }
 
 function boundProjection(result: NativeHistoryDiagnostic): NativeHistoryDiagnostic {
-  const details = result.spans.flatMap((span) => (span.historyProbe ? [span.historyProbe] : []));
+  const details = result.spans.flatMap((span) => [
+    ...(span.historyProbe ? [span.historyProbe] : []),
+    ...(span.requestProbe ? [span.requestProbe] : []),
+  ]);
   if (
     Buffer.byteLength(JSON.stringify(details)) > 16 * 1024 ||
     Buffer.byteLength(JSON.stringify(result)) > MAX_OUTPUT_BYTES
   ) {
     for (const detail of details) {
-      detail.tasks = [];
+      if ("tasks" in detail) detail.tasks = [];
+      else detail.rows = [];
       detail.truncated = true;
     }
     result.truncated = true;
@@ -152,6 +163,8 @@ export async function captureNativeHistoryWindow(file: string): Promise<NativeHi
 
 function historyPhase(name: unknown): HistoryPhase | undefined {
   switch (name) {
+    case "gateway.sessions.branches.list":
+      return "branches_list";
     case "gateway.chat.history.session_entry":
       return "session_entry";
     case "gateway.chat.history.history_page":
@@ -170,7 +183,7 @@ export async function readNativeHistoryDiagnostic(
   file: string,
   window: NativeHistoryWindow,
   cutoffAtMs: number,
-  matchRequest?: (id: unknown) => unknown,
+  matchRequest?: (id: unknown, method?: "chat.history" | "sessions.branches.list") => unknown,
   cutoff: NativeHistoryDiagnostic["cutoff"] = "through-native-process-failure",
 ): Promise<NativeHistoryDiagnostic> {
   const result: NativeHistoryDiagnostic = {
@@ -218,6 +231,7 @@ export async function readNativeHistoryDiagnostic(
     const spans = new Map<string, HistorySpan>();
     let taskCount = 0;
     let detailedTasks = 0;
+    let detailedRequests = 0;
     // One bounded framing pass; never parse oversized or partial lines.
     for (let offset = 0; offset < buffer.length;) {
       const end = buffer.indexOf(10, offset);
@@ -250,6 +264,44 @@ export async function readNativeHistoryDiagnostic(
         continue;
       }
       if (at < window.startedAtMs || at > cutoffAtMs) {
+        continue;
+      }
+      if (event.type === "mark" && event.name === "native.branch.probe") {
+        const span = privateKey(event.parentSpanId) ? spans.get(event.parentSpanId) : undefined;
+        if (
+          !span ||
+          span.phase !== "branches_list" ||
+          span.startedMs === null ||
+          span.outcome !== "pending"
+        ) {
+          result.malformedLine = true;
+          continue;
+        }
+        if (!span.requestProbe) {
+          if (detailedRequests === 4) {
+            result.truncated = true;
+            continue;
+          }
+          detailedRequests++;
+          span.requestProbe = { rows: [], invalid: false, truncated: false };
+        }
+        const detail = span.requestProbe;
+        const fields = event.attributes;
+        const row =
+          isRecord(fields) && fields.version === 1 ? projectHistoryProbeRecord(fields) : undefined;
+        if (
+          !row ||
+          (row.kind !== "phase" && row.kind !== "truncated") ||
+          row.ordinal !== detail.rows.length + 1
+        ) {
+          detail.invalid = true;
+          continue;
+        }
+        if (detail.rows.length === 24 || row.kind === "truncated") {
+          detail.truncated = result.truncated = true;
+          continue;
+        }
+        detail.rows.push(row);
         continue;
       }
       if (event.type === "mark" && event.name === "worker.history.probe") {
@@ -376,7 +428,7 @@ export async function readNativeHistoryDiagnostic(
           startedMs: null,
           finishedMs: null,
           outcome: "pending",
-          ...(phase === "history_page"
+          ...(phase === "history_page" || phase === "branches_list"
             ? {
                 request: { status: "unknown" } as HistoryRequest,
                 workerTasks: { rows: [], invalid: false, truncated: false },
@@ -403,6 +455,7 @@ export async function readNativeHistoryDiagnostic(
           span.request = matchHistoryRequest(
             isRecord(event.attributes) ? event.attributes.requestId : undefined,
             matchRequest,
+            span.phase === "branches_list" ? "sessions.branches.list" : "chat.history",
           );
         }
       } else {

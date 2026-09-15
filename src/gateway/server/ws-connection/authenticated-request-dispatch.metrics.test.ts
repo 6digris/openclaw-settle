@@ -1,6 +1,9 @@
 import { EventEmitter } from "node:events";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.js";
 import { createOperationalRunInstanceRef } from "../../../agents/admitted-run-context.js";
 import {
   onDiagnosticEvent,
@@ -15,6 +18,7 @@ import {
   getActiveDiagnosticTraceContext,
   runWithDiagnosticTraceContext,
 } from "../../../infra/diagnostic-trace-context.js";
+import { flushDiagnosticsTimeline } from "../../../infra/diagnostics-timeline.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { createLazyCoreHandlers } from "../../server-methods/lazy-core-handlers.js";
 import type { GatewayRequestHandler, RespondFn } from "../../server-methods/types.js";
@@ -25,6 +29,8 @@ import {
 import { createGatewayRpcDiagnostics } from "./request-diagnostics.js";
 // Compile the real router before timed cases; family preparation remains controlled below.
 import "../../server-methods.js";
+
+const branchProbeTemps = useAutoCleanupTempDirTracker(afterEach);
 
 const scheduling = vi.hoisted(() => ({ start: vi.fn<() => Promise<void> | null>() }));
 vi.mock("./request-start.js", async (importOriginal) => ({
@@ -494,3 +500,96 @@ describe("authenticated Gateway RPC diagnostics", () => {
     expect(JSON.stringify(events)).not.toContain("private-");
   });
 });
+
+it.each(["enabled", "disabled", "failure"] as const)(
+  "keeps the branch request's held preparation visible with probe %s",
+  async (mode) => {
+    const file = path.join(branchProbeTemps.make("branch-dispatch-"), "timeline.jsonl");
+    vi.stubEnv("OPENCLAW_DIAGNOSTICS", mode === "disabled" ? "" : "timeline");
+    vi.stubEnv("OPENCLAW_DIAGNOSTICS_TIMELINE_PATH", file);
+    onTestFinished(() => vi.unstubAllEnvs());
+    const reached = createDeferredCore();
+    const release = createDeferredCore();
+    const handler = vi.fn<GatewayRequestHandler>(({ respond }) => respond(true, { branches: [] }));
+    const lazy = createLazyCoreHandlers({
+      methods: ["sessions.branches.list"],
+      loadHandlers: async () => {
+        reached.resolve();
+        await release.promise;
+        if (mode === "failure") throw new Error("branch probe family refusal");
+        return { "sessions.branches.list": handler };
+      },
+    });
+    const fixture = createRequest(lazy["sessions.branches.list"]!, "sessions.branches.list");
+    const dispatch = fixture.dispatch();
+    const read = async () => {
+      flushDiagnosticsTimeline();
+      return (await fs.readFile(file, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+    };
+    try {
+      await reached.promise;
+      expect(handler).not.toHaveBeenCalled();
+      if (mode === "disabled") {
+        await expect(fs.stat(file)).rejects.toMatchObject({ code: "ENOENT" });
+      } else {
+        const pending = await read();
+        expect(pending).toContainEqual(
+          expect.objectContaining({
+            name: "native.branch.probe",
+            attributes: expect.objectContaining({
+              phase: "branch-handler-prepare",
+              event: "begin",
+            }),
+          }),
+        );
+        expect(pending).not.toContainEqual(
+          expect.objectContaining({
+            name: "native.branch.probe",
+            attributes: expect.objectContaining({ phase: "branch-handler-prepare", event: "end" }),
+          }),
+        );
+      }
+      release.resolve();
+      await dispatch;
+      await fixture.finished;
+      expect(handler).toHaveBeenCalledTimes(mode === "failure" ? 0 : 1);
+      expect(fixture.send).toHaveBeenCalledTimes(1);
+      if (mode !== "disabled") {
+        const completed = await read();
+        expect(completed).toContainEqual(
+          expect.objectContaining({
+            name: "native.branch.probe",
+            attributes: expect.objectContaining({
+              phase: "branch-handler-prepare",
+              event: mode === "failure" ? "failed" : "end",
+            }),
+          }),
+        );
+        expect(completed).toContainEqual(
+          expect.objectContaining({ type: "span.end", name: "gateway.sessions.branches.list" }),
+        );
+      }
+      expect(fixture.events.at(-1)).toMatchObject({
+        phase: "dispatch",
+        outcome: mode === "failure" ? "threw" : "returned",
+      });
+      if (mode === "failure") {
+        expect(fixture.send).toHaveBeenCalledWith(
+          expect.objectContaining({
+            ok: false,
+            error: expect.objectContaining({
+              message: expect.stringContaining("branch probe family refusal"),
+            }),
+          }),
+        );
+      }
+    } finally {
+      release.resolve();
+      await dispatch;
+      flushDiagnosticsTimeline();
+    }
+  },
+);

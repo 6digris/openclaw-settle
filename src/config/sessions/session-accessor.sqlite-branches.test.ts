@@ -4,7 +4,15 @@ import path from "node:path";
 import { Worker } from "node:worker_threads";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
+import {
+  measureDiagnosticsTimelineSpan,
+  flushDiagnosticsTimeline,
+} from "../../infra/diagnostics-timeline.js";
 import * as sqliteRuntime from "../../infra/node-sqlite.js";
+import {
+  projectHistoryProbeRecord,
+  type HistoryProbeRecord,
+} from "../../infra/session-history-probe.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import {
@@ -149,6 +157,53 @@ function observeNextBranchWorker(options: { holdResponse?: boolean } = {}) {
 }
 
 describe("SQLite session branches", () => {
+  it("observes the real branch Worker import and read without changing its result", async () => {
+    const { env, scope } = await createSession();
+    const rows: HistoryProbeRecord[] = [];
+    const diagnostics = channel("openclaw.worker.task");
+    const observe = (value: unknown) => {
+      if (value && typeof value === "object" && "historyProbe" in value) {
+        const row = projectHistoryProbeRecord(value.historyProbe);
+        if (row) rows.push(row);
+      }
+    };
+    diagnostics.subscribe(observe);
+    diagnosticCleanups.push(() => diagnostics.unsubscribe(observe));
+    const result = await measureDiagnosticsTimelineSpan(
+      "gateway.sessions.branches.list",
+      () => listSessionBranches(scope),
+      {
+        workerTasks: true,
+        env: {
+          ...env,
+          OPENCLAW_DIAGNOSTICS: "timeline",
+          OPENCLAW_DIAGNOSTICS_TIMELINE_PATH: path.join(
+            env.OPENCLAW_STATE_DIR,
+            "branch-probe.jsonl",
+          ),
+        },
+      },
+    );
+    flushDiagnosticsTimeline();
+    expect(result).toMatchObject({
+      status: "ok",
+      branches: expect.arrayContaining([
+        expect.objectContaining({ active: true, leafEntryId: "assistant-2" }),
+      ]),
+    });
+    expect(
+      rows.filter(
+        (row) =>
+          row.kind === "phase" &&
+          (row.phase === "branch-kernel-import" || row.phase === "branch-body"),
+      ),
+    ).toMatchObject([
+      { phase: "branch-kernel-import", event: "begin" },
+      { phase: "branch-kernel-import", event: "end" },
+      { phase: "branch-body", event: "begin" },
+      { phase: "branch-body", event: "end" },
+    ]);
+  });
   it("reuses worker snapshot summaries across fresh readers and invalidates changed transcripts", async () => {
     const { env, scope } = await createSession();
     const database = openOpenClawAgentDatabase({ agentId, env });
