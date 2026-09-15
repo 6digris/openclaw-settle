@@ -47,29 +47,26 @@ it("keeps the selected hub tab visible after dock resizing and asynchronous coun
 
 it("labels the shadow tablist and releases resize observations when a hub strip is removed", async () => {
   const targets = new Map<ResizeObserver, Set<Element>>();
-  const { observe, unobserve, disconnect } = ResizeObserver.prototype;
-  const spies = [
-    vi
-      .spyOn(ResizeObserver.prototype, "observe")
-      .mockImplementation(function (this: ResizeObserver, target, options) {
+  const NativeResizeObserver = ResizeObserver;
+  vi.stubGlobal(
+    "ResizeObserver",
+    class extends NativeResizeObserver {
+      override observe(target: Element, options?: ResizeObserverOptions) {
         const owned = targets.get(this) ?? new Set<Element>();
         owned.add(target);
         targets.set(this, owned);
-        observe.call(this, target, options);
-      }),
-    vi
-      .spyOn(ResizeObserver.prototype, "unobserve")
-      .mockImplementation(function (this: ResizeObserver, target) {
+        super.observe(target, options);
+      }
+      override unobserve(target: Element) {
         targets.get(this)?.delete(target);
-        unobserve.call(this, target);
-      }),
-    vi
-      .spyOn(ResizeObserver.prototype, "disconnect")
-      .mockImplementation(function (this: ResizeObserver) {
+        super.unobserve(target);
+      }
+      override disconnect() {
         targets.get(this)?.clear();
-        disconnect.call(this);
-      }),
-  ];
+        super.disconnect();
+      }
+    },
+  );
   const container = document.body.appendChild(document.createElement("div"));
   const observedCount = () => [...targets.values()].reduce((count, owned) => count + owned.size, 0);
   try {
@@ -96,7 +93,7 @@ it("labels the shadow tablist and releases resize observations when a hub strip 
   } finally {
     render(null, container);
     container.remove();
-    spies.forEach((spy) => spy.mockRestore());
+    vi.unstubAllGlobals();
   }
 });
 
