@@ -186,16 +186,16 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
   before build and transform warming. Preflight and downstream Node jobs are
   restore-only consumers on eligible self-hosted runners. Exact misses and
   hosted paths, including Mac Node jobs, use the ordinary pnpm-store cache.
-- `ci-gate` always uses `ubuntu-24.04` for its Bash-only result aggregation,
-  without checkout or dependency setup. This removes one Blacksmith registration
-  from previously eligible runs; hosted assignment can still delay completion.
-  `preflight` uses GitHub-hosted Ubuntu in hybrid mode; its logical planner
-  profile and cache trust stay unchanged. Default Blacksmith preflight routing
-  remains intact. `security-fast` stays hosted outside eligible hybrid first
-  attempts. Security hooks use pinned installed packages
-  and local hook definitions, without remote Git initialization. The `github`
-  outage override remains intact. Budget one control-job registration per eligible
-  Blacksmith run or eligible hybrid first attempt.
+- `preflight` and `ci-gate` share Blacksmith-first routing for eligible canonical
+  runs, including hybrid first attempts. The `github` override, hybrid retries,
+  manual dispatches, fork retries, and untrusted-author fallbacks stay hosted.
+  The gate aggregates results without checkout or dependency setup; preflight
+  keeps its logical planner profile and cache trust. This avoids separate hosted
+  assignment waits at both ends of CI. Budget two control-job registrations per
+  eligible Blacksmith run and three per eligible hybrid first attempt.
+  `security-fast` stays hosted outside eligible hybrid first attempts. Security
+  hooks use pinned installed packages and local definitions, without remote Git
+  initialization.
   The aggregate uses `!cancelled()` to report failed prerequisites without
   holding a superseded run open after workflow cancellation.
 - Current fast plugin/channel contract families each share one checkout/setup.
@@ -232,11 +232,10 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
   shards use `macos-26` from the first attempt.
   The conservative full-tier non-Node inventory, including Control UI performance, is
   86 rows, or 87 for historical UI targets. Excluding those four hosted rows
-  plus both macOS Swift phases and the always-hosted aggregate gate leaves at
-  most 80 potentially eligible jobs. The enforced Node caps therefore give
-  144 registrations per main run and 200 per PR:
-  `4 × 144 + 21 × 200 = 4,776` in the retained peak arrival envelope.
-  The old 19-arrival estimate is obsolete. The remaining 1,224 below
+  plus both macOS Swift phases leaves at most 81 potentially eligible jobs. The enforced Node caps therefore give
+  145 registrations per main run and 201 per PR:
+  `4 × 145 + 21 × 201 = 4,801` in the retained peak arrival envelope.
+  The old 19-arrival estimate is obsolete. The remaining 1,199 below
   the 6,000 reference target must cover adjacent repositories, releases and
   carryover; the bounded 2026-09-02 census did not prove that upper bound.
   Treat a single PR concurrency trial separately from a global rollout.
