@@ -3655,10 +3655,7 @@ function classifyTarget(arg: string, cwd: string, beforeDatabaseWorkerOwnership 
   if (configTargetKind) {
     return configTargetKind;
   }
-  if (
-    gatewayPluginTestFiles.includes(relative) &&
-    (beforeDatabaseWorkerOwnership || !gatewayDatabaseWorkerTestFiles.includes(relative))
-  ) {
+  if (gatewayPluginTestFiles.includes(relative)) {
     return "gatewayMethods";
   }
   if (beforeDatabaseWorkerOwnership) {
