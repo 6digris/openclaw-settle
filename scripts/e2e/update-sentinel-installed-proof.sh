@@ -8,25 +8,31 @@ set -Eeuo pipefail
 umask 077
 export CI=true OPENCLAW_NO_ONBOARD=1 OPENCLAW_NO_PROMPT=1
 export OPENCLAW_SKIP_PROVIDERS=1 OPENCLAW_SKIP_CHANNELS=1 OPENCLAW_DISABLE_BONJOUR=1
-unset OPENCLAW_HOME OPENCLAW_PROFILE OPENCLAW_UPDATE_RUN_HANDOFF OPENCLAW_SUPERVISOR_MODE
+unset OPENCLAW_HOME OPENCLAW_PROFILE OPENCLAW_SYSTEMD_UNIT OPENCLAW_UPDATE_RUN_HANDOFF OPENCLAW_SUPERVISOR_MODE
 export npm_config_prefix="$HOME/npm-prefix" npm_config_cache="$HOME/npm-cache"
 export NPM_CONFIG_PREFIX="$npm_config_prefix" NPM_CONFIG_CACHE="$npm_config_cache"
 export npm_config_fund=false npm_config_audit=false
 export PATH="$npm_config_prefix/bin:$PATH"
 export OPENCLAW_STATE_DIR="$HOME/.openclaw" OPENCLAW_CONFIG_PATH="$HOME/.openclaw/openclaw.json"
-export CALLER_STATE="$OPENCLAW_STATE_DIR" SELECTED_STATE="$HOME/selected-state"
+export CALLER_STATE="$OPENCLAW_STATE_DIR" SELECTED_STATE="$HOME/.openclaw-service"
 export INSTALLED_ROOT="$npm_config_prefix/lib/node_modules/openclaw"
 export PROOF_ROOT=/proof
-mkdir -p "$npm_config_prefix" "$npm_config_cache" "$CALLER_STATE" "$SELECTED_STATE" /tmp/openclaw
+mkdir -p "$npm_config_prefix" "$npm_config_cache" "$CALLER_STATE" /tmp/openclaw
 chmod 700 /tmp/openclaw
 registry_pid=""
 phase=setup
+managed_unit=openclaw-gateway.service
+assert_manager_inactive() {
+  local status=0
+  systemctl --user is-active --quiet "$managed_unit" || status=$?
+  [[ "$status" == 3 ]]
+}
 cleanup() {
   local result=$?
   trap - EXIT
   if [[ -x "$npm_config_prefix/bin/systemctl" ]]; then
-    timeout --kill-after=10s 60s systemctl --user stop openclaw-gateway.service || result=1
-    assert_update_restart_probe_inactive || result=1
+    timeout --kill-after=10s 60s systemctl --user stop "$managed_unit" || result=1
+    assert_manager_inactive || result=1
   fi
   if [[ -n "$registry_pid" ]]; then
     kill "$registry_pid" 2>/dev/null || true
@@ -40,6 +46,15 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 source scripts/e2e/lib/prepublish-plugin-registry.sh
+node --input-type=module - <<'NODE'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import crypto from 'node:crypto';
+for (const [file, hash] of [
+  ['scripts/e2e/lib/upgrade-survivor/update-restart-auth.sh', 'de8aa7b0a2c720e523ad314a53be85865966e4cce9b178bbf41b3301f65ee5ab'],
+  ['scripts/e2e/lib/upgrade-survivor/systemd-fixture.mjs', '62d361939344871838d764670f38533e97f65664ebae5683bf7cfe147bfa8f73'],
+]) assert.equal(crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'), hash);
+NODE
 source scripts/e2e/lib/upgrade-survivor/update-restart-auth.sh
 
 run_cli() {
@@ -76,48 +91,39 @@ const root = process.env.INSTALLED_ROOT;
 assert.equal(JSON.parse(fs.readFileSync(`${root}/package.json`)).version, '2026.9.4');
 assert.equal(fs.realpathSync(`${process.env.npm_config_prefix}/bin/openclaw`), `${root}/openclaw.mjs`);
 fs.copyFileSync(`${root}/dist/build-info.json`, '/proof/published-build-info.json');
-for (const state of [process.env.CALLER_STATE, process.env.SELECTED_STATE]) {
-  fs.writeFileSync(`${state}/openclaw.json`, JSON.stringify({gateway: {mode: 'local', auth: {mode: 'token', token: 'disposable-sentinel-proof'}}, plugins: {enabled: false}}));
-}
+fs.writeFileSync(`${process.env.CALLER_STATE}/openclaw.json`, JSON.stringify({gateway: {mode: 'local', auth: {mode: 'token', token: 'disposable-sentinel-proof'}}, plugins: {enabled: false}}));
 NODE
 
-# Both databases are created by installed public CLI owners, before any fixture SQL.
+# The published driver first updates its ordinary canonical state and generated unit.
 run_cli caller-doctor doctor --fix --non-interactive
-OPENCLAW_STATE_DIR="$SELECTED_STATE" OPENCLAW_CONFIG_PATH="$SELECTED_STATE/openclaw.json" \
-  run_cli selected-doctor doctor --fix --non-interactive
 install_update_restart_systemctl_shim
 run_cli service-install gateway install --force --json
-timeout --kill-after=10s 60s systemctl --user stop openclaw-gateway.service
-assert_update_restart_probe_inactive
-
-# Keep the installed writer's unit and argv. Only its selected state changes.
+timeout --kill-after=10s 60s systemctl --user stop "$managed_unit"
+assert_manager_inactive
 node --input-type=module - <<'NODE'
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-const unit = `${process.env.HOME}/.config/systemd/user/openclaw-gateway.service`;
-const before = fs.readFileSync(unit, 'utf8');
 const a = process.env.CALLER_STATE;
-const b = process.env.SELECTED_STATE;
-assert(before.includes(a));
-assert(before.includes(process.env.INSTALLED_ROOT));
-const after = before.replaceAll(a, b);
-fs.writeFileSync(unit, after);
-fs.writeFileSync('/proof/loaded-unit.service', after);
-NODE
-systemctl --user daemon-reload
-node "$npm_config_prefix/bin/systemd-fixture.mjs" command >"$PROOF_ROOT/loaded-command.txt"
-node --input-type=module - <<'NODE'
-import assert from 'node:assert/strict';
-import fs from 'node:fs';
-const command = fs.readFileSync('/proof/loaded-command.txt', 'utf8');
-assert(command.includes(`OPENCLAW_STATE_DIR=${process.env.SELECTED_STATE}`));
-assert(command.includes(`OPENCLAW_CONFIG_PATH=${process.env.SELECTED_STATE}/openclaw.json`));
-assert(command.includes(process.env.INSTALLED_ROOT));
+const config = JSON.parse(fs.readFileSync(`${a}/openclaw.json`, 'utf8'));
+assert.equal(config.plugins.enabled, false);
+assert.deepEqual(Object.keys(config.agents.entries), ['main']);
+// This minimal installed cell has no shared legacy-history/unused-agent specimen.
+// The separate published survivor failure remains recorded against that migration path.
+for (const dir of [`${a}/sessions`, `${a}/agents/main/sessions`]) {
+  if (!fs.existsSync(dir)) continue;
+  for (const entry of fs.readdirSync(dir, {recursive: true})) {
+    assert(!entry.endsWith('sessions.json') && !entry.endsWith('.jsonl'), entry);
+  }
+}
+assert(!fs.existsSync(process.env.SELECTED_STATE));
+const unit = fs.readFileSync(`${process.env.HOME}/.config/systemd/user/openclaw-gateway.service`, 'utf8');
+assert(unit.includes(`OPENCLAW_STATE_DIR=${a}`));
+assert(unit.includes(process.env.INSTALLED_ROOT));
 NODE
 
 phase=published-to-candidate
 run_cli first-hop update --tag file:/candidate/openclaw-current.tgz --yes --no-restart --json
-assert_update_restart_probe_inactive
+assert_manager_inactive
 node --input-type=module - <<'NODE'
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -132,6 +138,60 @@ fs.writeFileSync('/proof/installed-build-info.json', JSON.stringify(installed));
 const text = fs.readFileSync('/proof/first-hop.json', 'utf8');
 assert.equal(JSON.parse(text.slice(text.indexOf('{'))).status, 'ok');
 NODE
+
+# Adapt only task-created manager fixtures to the canonical named-profile identity.
+# The real installed candidate writes B's unit; never rewrite its selectors or argv.
+node --input-type=module - <<'NODE'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import crypto from 'node:crypto';
+const dir = `${process.env.npm_config_prefix}/bin`;
+const hash = data => crypto.createHash('sha256').update(data).digest('hex');
+const changes = [];
+for (const [name, replacements] of [
+  ['systemctl', [['openclaw-gateway.service', 'openclaw-gateway-service.service', 13]]],
+  ['systemd-fixture.mjs', [['openclaw-gateway.service', 'openclaw-gateway-service.service', 1], ['openclaw_2dgateway_2eservice', 'openclaw_2dgateway_2dservice_2eservice', 1]]],
+]) {
+  const file = `${dir}/${name}`;
+  const stat = fs.lstatSync(file);
+  assert(stat.isFile() && stat.uid === process.getuid());
+  const before = fs.readFileSync(file, 'utf8');
+  if (name.endsWith('.mjs')) assert.equal(hash(before), '62d361939344871838d764670f38533e97f65664ebae5683bf7cfe147bfa8f73');
+  let after = before;
+  for (const [from, to, count] of replacements) {
+    assert.equal(after.split(from).length - 1, count);
+    after = after.replaceAll(from, to);
+  }
+  fs.writeFileSync(file, after);
+  assert.equal(fs.readFileSync(file, 'utf8'), after);
+  changes.push({name, before: hash(before), after: hash(after), replacements});
+}
+fs.writeFileSync('/proof/manager-adaptation.json', JSON.stringify(changes));
+fs.mkdirSync(process.env.SELECTED_STATE);
+fs.writeFileSync(`${process.env.SELECTED_STATE}/openclaw.json`, JSON.stringify({gateway: {mode: 'local', auth: {mode: 'token', token: 'disposable-sentinel-proof'}}, plugins: {enabled: false}}));
+NODE
+managed_unit=openclaw-gateway-service.service
+OPENCLAW_PROFILE=service OPENCLAW_STATE_DIR="$SELECTED_STATE" OPENCLAW_CONFIG_PATH="$SELECTED_STATE/openclaw.json" \
+  run_cli selected-doctor doctor --fix --non-interactive
+OPENCLAW_PROFILE=service OPENCLAW_STATE_DIR="$SELECTED_STATE" OPENCLAW_CONFIG_PATH="$SELECTED_STATE/openclaw.json" \
+  run_cli selected-install gateway install --force --json
+timeout --kill-after=10s 60s systemctl --user stop "$managed_unit"
+assert_manager_inactive
+systemctl --user daemon-reload
+node "$npm_config_prefix/bin/systemd-fixture.mjs" command >"$PROOF_ROOT/loaded-command.txt"
+node --input-type=module - <<'NODE'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+const unit = `${process.env.HOME}/.config/systemd/user/openclaw-gateway-service.service`;
+const definition = fs.readFileSync(unit, 'utf8');
+assert.equal(fs.readFileSync(`${unit}.loaded-unit`, 'utf8'), definition);
+fs.writeFileSync('/proof/loaded-unit.service', definition);
+const command = fs.readFileSync('/proof/loaded-command.txt', 'utf8');
+for (const value of ['OPENCLAW_PROFILE=service', `OPENCLAW_STATE_DIR=${process.env.SELECTED_STATE}`, `OPENCLAW_CONFIG_PATH=${process.env.SELECTED_STATE}/openclaw.json`, 'OPENCLAW_SYSTEMD_UNIT=openclaw-gateway-service.service', process.env.INSTALLED_ROOT]) assert(command.includes(value), value);
+assert.equal(process.env.OPENCLAW_PROFILE, undefined);
+assert.equal(process.env.OPENCLAW_STATE_DIR, process.env.CALLER_STATE);
+NODE
+export OPENCLAW_SYSTEMD_UNIT="$managed_unit"
 
 candidate_version="$(node -p 'JSON.parse(require("node:fs").readFileSync(process.env.INSTALLED_ROOT + "/package.json")).version')"
 openclaw_prepublish_plugin_registry_start "" "$CANDIDATE_SOURCE" "$candidate_version" "" \
@@ -159,7 +219,7 @@ NODE
 # A new installed candidate process must adopt B from the loaded unit and restore A before publishing.
 manager_lines="$(wc -l <"$npm_config_prefix/bin/systemctl-shim.log")"
 run_cli candidate-noop update --tag "$candidate_version" --yes --no-restart --json
-assert_update_restart_probe_inactive
+assert_manager_inactive
 if tail -n +"$((manager_lines + 1))" "$npm_config_prefix/bin/systemctl-shim.log" | grep -E -- '--user (start|restart) '; then
   echo 'Gateway activation would invalidate the no-consumer observation.' >&2
   exit 1
@@ -194,7 +254,7 @@ const control = new DatabaseSync('/tmp/openclaw/managed-update-handoffs.sqlite',
 assert.deepEqual(control.prepare('SELECT * FROM managed_update_handoffs').all(), []);
 const installed = json(`${process.env.INSTALLED_ROOT}/dist/build-info.json`);
 assert.deepEqual(installed, json('/proof/installed-build-info.json'));
-assert.equal(fs.readFileSync(`${process.env.HOME}/.config/systemd/user/openclaw-gateway.service.loaded-unit`, 'utf8'), fs.readFileSync('/proof/loaded-unit.service', 'utf8'));
+assert.equal(fs.readFileSync(`${process.env.HOME}/.config/systemd/user/openclaw-gateway-service.service.loaded-unit`, 'utf8'), fs.readFileSync('/proof/loaded-unit.service', 'utf8'));
 a.close(); b.close(); control.close();
 fs.writeFileSync('/proof/result.json', JSON.stringify({status: 'passed', source: process.env.CANDIDATE_SOURCE, buildId: installed.buildId, run, callerNoticeUnchanged: true, selectedNoticeAbsent: true, executorLeaseAbsent: true, manager: 'existing loaded-unit fixture; inactive during observation'}));
 console.log('PASS: installed candidate adopted B; caller A notice/revision unchanged; B notice absent; lease absent.');

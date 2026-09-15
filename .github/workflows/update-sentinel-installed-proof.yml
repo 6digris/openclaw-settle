@@ -33,20 +33,21 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-          fetch-depth: 2
+          fetch-depth: 3
       - name: Admit exact diagnostic and product source
         run: |
           set -euo pipefail
           test "$EXPECTED_PARENT_SHA" = "$CANDIDATE_SOURCE"
           test "$(git rev-parse HEAD)" = "$EXPECTED_WORKFLOW_SHA"
-          test "$(git rev-parse HEAD^)" = "$CANDIDATE_SOURCE"
+          test "$(git rev-parse HEAD^)" = 290a965e47fb8c924f0a2ecda5de0bdbb0be7229
+          test "$(git rev-parse HEAD^^)" = "$CANDIDATE_SOURCE"
           python3 - <<'PY'
           import os, re, subprocess
           for key in ['PACKAGE_ARTIFACT_DIGEST', 'EXPECTED_PACKAGE_SHA256']:
               assert re.fullmatch(r'[a-f0-9]{64}', os.environ[key]), key
           assert re.fullmatch(r'[1-9][0-9]*', os.environ['PACKAGE_ARTIFACT_ID'])
           expected = ['.github/workflows/update-sentinel-installed-proof.yml', 'scripts/e2e/update-sentinel-installed-proof.sh']
-          actual = subprocess.check_output(['git', 'diff', '--name-only', 'HEAD^', 'HEAD'], text=True).splitlines()
+          actual = subprocess.check_output(['git', 'diff', '--name-only', os.environ['CANDIDATE_SOURCE'], 'HEAD'], text=True).splitlines()
           assert sorted(actual) == expected, actual
           PY
       - name: Verify and fetch the existing immutable package
