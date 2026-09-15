@@ -191,6 +191,32 @@ describe("handleChatScroll", () => {
     expect(invalidate).toHaveBeenCalled();
   });
 
+  it("keeps endward intent while expanding progress temporarily moves the end", () => {
+    const { host, container } = createScrollHost({
+      scrollHeight: 2000,
+      scrollTop: 1400,
+      clientHeight: 600,
+    });
+    host.chatHasAutoScrolled = true;
+    host.chatLastScrollTop = 1400;
+    host.chatFollowLocked = true;
+    host.chatReadingHistory = true;
+
+    handleChatScrollTakeover(host, true);
+    expect(host.chatReadingHistory).toBe(false);
+
+    // The card opens after returning to the clamped end. A second endward
+    // input can arrive after layout but before resize-follow moves the offset.
+    Object.defineProperty(container, "clientHeight", { value: 550 });
+    handleChatScrollTakeover(host, true);
+    expect(host.chatReadingHistory).toBe(false);
+    expect(host.chatFollowLocked).toBe(false);
+
+    handleChatScrollTakeover(host);
+    expect(host.chatReadingHistory).toBe(true);
+    expect(host.chatFollowLocked).toBe(true);
+  });
+
   it("publishes the indicator transition when the user returns to bottom", () => {
     const { host } = createScrollHost({});
     host.chatNewMessagesBelow = true;

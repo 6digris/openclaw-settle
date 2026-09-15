@@ -280,7 +280,12 @@ function updateChatScrollPosition(
   // Ignore downward scroll events that we triggered, including intermediate
   // smooth-scroll frames. A real user scroll-up must still pass through so
   // streaming stops pinning them back to the bottom.
-  const isUserScrollUp = takeover !== false || delta < 0;
+  // Endward input must not re-enter history while an opening dock moves the
+  // end ahead of resize-follow. An unfinished manual return still has reader
+  // policy, so fresh input can interrupt it until it actually reaches the end.
+  const readerTakeover =
+    takeover === "reader" || (takeover === "toward-end" && host.chatReadingHistory);
+  const isUserScrollUp = readerTakeover || delta < 0;
   if (host.chatIsProgrammaticScroll?.() && !isUserScrollUp) {
     return;
   }
