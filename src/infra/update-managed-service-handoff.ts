@@ -501,6 +501,9 @@ function recordUpdateHandoffOutcome(reason, restored, completedStatus, expectedR
     metaFile = JSON.parse(fs.readFileSync(params.metaPath, "utf-8"));
   } catch {}
   const run = runLedger?.getUpdateRun(params.runId);
+  // Cancellation must preserve a refusal already recorded by the Gateway.
+  if (reason === "managed-service-handoff-cancelled" && run?.reason &&
+      run.steps.some((step) => step.step === "requested" && step.status === "failed")) reason = run.reason;
   const meta = resolveUpdateRestartNoticeMeta(run, metaFile && metaFile.version === 1 && metaFile.meta ? metaFile.meta : {});
   const status = (reason === "managed-service-handoff-cancelled" || completedStatus === "skipped") && restored !== false
     ? "skipped" : "error";

@@ -6,7 +6,7 @@ import {
   formatUpdateRestartStatusValue,
 } from "../../commands/status-update-restart.js";
 import { prepareUpdateFailureReport } from "../../infra/update-failure-report-prepare.js";
-import { getUpdateRun } from "../../infra/update-run-ledger.js";
+import { finishUpdateRun, getUpdateRun } from "../../infra/update-run-ledger.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import {
   sentinelState,
@@ -33,6 +33,22 @@ describe("update.run handoff refusal diagnostics", () => {
       } else {
         transferManagedServiceUpdateHandoffMock.mockRejectedValueOnce(new Error("EPIPE"));
       }
+      cancelManagedServiceUpdateHandoffMock.mockImplementationOnce(async () => {
+        const started = startManagedServiceUpdateHandoffMock.mock.calls[0]?.[0];
+        const runId = expectDefined(started?.runId, "started update run");
+        expect(getUpdateRun(runId)).toMatchObject({
+          status: "running",
+          reason: "managed-service-handoff-failed",
+          steps: expect.arrayContaining([
+            expect.objectContaining({ step: "requested", status: "failed" }),
+          ]),
+        });
+        finishUpdateRun(runId, {
+          status: "failed",
+          reason: "managed-service-handoff-failed",
+        });
+        return "restored-in-process";
+      });
 
       const payload = await captureUpdateRunPayload({
         sessionKey: "agent:main:slack:dm:C0123ABC:thread:1234567890.123456",

@@ -36,6 +36,6 @@ export function recordHandoffFailure(
     exitCode: null,
     failureFacts,
   };
-  recordUpdateRunStep(runId, { step: step.name, status: "failed", failureFacts });
+  recordUpdateRunStep(runId, { step: step.name, status: "failed", reason, failureFacts });
   return { ...previous, status: "error", reason, steps: [...previous.steps, step] };
 }

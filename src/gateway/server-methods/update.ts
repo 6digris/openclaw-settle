@@ -653,8 +653,12 @@ export const updateHandlers: GatewayRequestHandlers = {
           throw new Error("managed update ownership transfer failed");
         }
       } catch (error) {
-        await cancelManagedServiceUpdateHandoff(managedHandoffOwner);
-        result = recordHandoffFailure(runId, error, result);
+        try {
+          // Cancellation settles the helper's ledger; persist its cause first.
+          result = recordHandoffFailure(runId, error, result);
+        } finally {
+          await cancelManagedServiceUpdateHandoff(managedHandoffOwner);
+        }
         handoff = null;
         outcomeRun = finishUpdateRun(runId, { status: "failed", reason: result.reason });
         context?.logGateway?.warn(
