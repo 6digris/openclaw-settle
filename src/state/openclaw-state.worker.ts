@@ -4,6 +4,7 @@ import {
   readConfigHealthSnapshotInDatabase,
 } from "../config/io.health-state.kernel.js";
 import { loadMutableCronStoreInWorker } from "../cron/store/load.worker.js";
+import { executeCronStoreSaveCommand } from "../cron/store/save.worker.js";
 import { readDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
 import { countFailedDeliveryQueueEntriesInDatabase } from "../infra/delivery-queue-sqlite.kernel.js";
 import { executeSessionDeliveryCommand } from "../infra/session-delivery-queue.worker.js";
@@ -318,6 +319,9 @@ function createSharedStateWorkerBackend(
       const database = open();
       if (command.type === "cron.loadMutable") {
         return loadMutableCronStoreInWorker(database, command.input.storeKey);
+      }
+      if (command.type === "cron.save" || command.type === "cron.saveChanges") {
+        return executeCronStoreSaveCommand(command, database);
       }
       if (command.type === "tasks.restore") {
         return restoreTaskRegistryInDatabase(database);
