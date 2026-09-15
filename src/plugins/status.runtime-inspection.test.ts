@@ -833,7 +833,7 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
       "ENOSPC",
       "EROFS",
     ];
-    let lastCompletedStage = "<none>";
+    let lastCompletedStage: string;
     let measuredFailure: { stage: string; errorName: string; errorCode: string } | undefined;
     const readConfigSnapshot = configIO.readConfigFileSnapshot;
     // Observe the command's own read. A separate diagnostic read can hide transient
