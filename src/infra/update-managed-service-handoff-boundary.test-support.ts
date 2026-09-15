@@ -43,19 +43,11 @@ import {
 } from "./update-managed-service-handoff-state.test-support.js";
 import {
   createManagedServiceActivationScript,
+  pathExists,
   readNativeState,
   readSavedFailure,
 } from "./update-managed-service-native.test-support.js";
 import { createUpdateRun, getUpdateRun } from "./update-run-ledger.js";
-
-export async function pathExists(filePath: string): Promise<boolean> {
-  try {
-    await fs.access(filePath);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 export function createManagedServiceManagerBoundary({
   spawnMock,

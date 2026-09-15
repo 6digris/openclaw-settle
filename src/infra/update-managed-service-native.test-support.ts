@@ -1,5 +1,14 @@
 import fs from "node:fs/promises";
 
+export async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function createManagedNativeUpdaterScript(params: {
   sourceRuntimeImport: string;
   installRoot: string;
@@ -95,11 +104,7 @@ export async function readNativeState(statePath: string): Promise<Record<string,
 }
 
 export async function readSavedFailure(contextPath: string) {
-  const exists = await fs.access(contextPath).then(
-    () => true,
-    () => false,
-  );
-  if (!exists) {
+  if (!(await pathExists(contextPath))) {
     return null;
   }
   return {
