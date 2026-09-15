@@ -255,9 +255,8 @@ export function renderGitTestClock(
     ) {
       throw new Error("Windows diagnostic owner rendering drift");
     }
-    const observer = readFileSync(
+    const observer = fileURLToPath(
       new URL("./fixtures/ci-windows-process-census.py", import.meta.url),
-      "utf8",
     );
     clockSource = clockSource.replace(
       marker,
@@ -265,7 +264,8 @@ export function renderGitTestClock(
 if os.name == "nt":
     try:
         _ci_observer = {"__name__": "checkout_diagnostic"}
-        exec(${JSON.stringify(observer)}, _ci_observer)
+        with open(${JSON.stringify(observer)}, encoding="utf-8") as _ci_observer_file:
+            exec(_ci_observer_file.read(), _ci_observer)
         _ci_observer["install_owner_observer"](globals(), ${JSON.stringify(options.windowsDiagnosticsRoot)})
     except BaseException:
         pass  # Missing observations cannot change the original owner outcome.

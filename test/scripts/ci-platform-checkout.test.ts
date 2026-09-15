@@ -126,17 +126,43 @@ it("bounds and redacts Windows checkout observations without changing cleanup ev
 
 it("renders Windows observations only into the reviewed private owner", () => {
   const source = readFileSync(".github/actions/git-owner/owner.py", "utf8");
-  const rendered = renderGitTestClock(source, {
+  const options = {
     realClock: true,
-    windowsDiagnosticsRoot: "fixture-owned",
-  });
+    windowsDiagnosticsRoot: String.raw`C:\checkout proof\owner's directory\case`,
+  };
+  const shell = renderGitTestClock(readCiCheckoutStep("checks-windows").run, options);
+  const embedded = expectDefined(
+    /^run_owner '([\s\S]*?)'\n# End generated CI Git owner\.$/mu.exec(shell)?.[1],
+    "generated Python command argument",
+  );
+  const rendered = embedded.replaceAll("'\\''", "'");
+  expect(rendered).toBe(renderGitTestClock(source, options));
   const compiled = spawnSync(
     process.platform === "win32" ? "python" : "python3",
-    ["-I", "-S", "-c", "import sys; compile(sys.stdin.read(), '<private-owner>', 'exec')"],
+    [
+      "-I",
+      "-S",
+      "-c",
+      String.raw`import ast, subprocess, sys
+source = sys.stdin.read()
+compile(source, "<private-owner>", "exec")
+calls = [node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Call)
+         and isinstance(node.func, ast.Subscript)
+         and isinstance(node.func.value, ast.Name) and node.func.value.id == "_ci_observer"]
+assert len(calls) == 1 and ast.literal_eval(calls[0].args[1]) == sys.argv[1]
+command_line = subprocess.list2cmdline([r"C:\Program Files\Python\python.exe", "-I", "-S", "-c", source])
+print(len(command_line.encode("utf-16-le")) // 2 + 1)
+`,
+      options.windowsDiagnosticsRoot,
+    ],
     { input: rendered, encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024 },
   );
   expect(compiled.error, compiled.stderr).toBeUndefined();
   expect(compiled.status, compiled.stderr).toBe(0);
+  expect(
+    Number(compiled.stdout),
+    "CRT-formatted launch-size model, not captured MSYS argv (UTF-16 units including NUL)",
+  ).toBeLessThanOrEqual(32_767);
   expect(renderGitTestClock(source, { realClock: true })).toBe(source);
   expect(() =>
     renderGitTestClock(source + "\n", { windowsDiagnosticsRoot: "fixture-owned" }),
