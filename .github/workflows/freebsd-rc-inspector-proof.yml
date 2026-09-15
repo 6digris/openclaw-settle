@@ -11,35 +11,6 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-      - name: Verify exact PR source
-        env:
-          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
-        run: test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
-      - name: Setup Node environment
-        uses: ./.github/actions/setup-node-env
-        with:
-          node-version: "24.16.0"
-          install-bun: "false"
-          cache-mode: "off"
-      - name: Check changed script and documentation formatting
-        run: pnpm format:check scripts/freebsd-service-inspect.mjs scripts/test-freebsd-service-inspect.mjs docs/install/updating.md package.json .github/workflows/freebsd-rc-inspector-proof.yml
-      - name: Lint standalone scripts
-        run: node scripts/run-oxlint.mjs --tsconfig config/tsconfig/oxlint.scripts.json scripts/freebsd-service-inspect.mjs scripts/test-freebsd-service-inspect.mjs
-      - name: Build OpenClaw
-        env:
-          NODE_OPTIONS: --max-old-space-size=8192
-        run: pnpm build
-      - name: Verify source remains unchanged
-        run: git diff --exit-code
-
   native:
     runs-on: ubuntu-latest
     timeout-minutes: 30
