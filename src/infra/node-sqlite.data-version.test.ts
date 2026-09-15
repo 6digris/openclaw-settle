@@ -13,7 +13,7 @@ const databases: DatabaseSync[] = [];
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => {
   vi.restoreAllMocks();
-  for (const database of databases.splice(0).reverse()) {
+  for (const database of databases.splice(0).toReversed()) {
     if (database.isOpen) {
       database.close();
     }
