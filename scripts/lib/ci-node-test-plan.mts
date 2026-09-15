@@ -2521,7 +2521,7 @@ const WHOLE_CONFIG_SPLIT_FILE_LISTERS = new Map<string, () => string[]>([
         include: ["src/gateway/server-methods/**/*.test.ts"],
         exclude: [...databaseWorkerCoreTestFiles, ...gatewayDatabaseWorkerTestFiles],
       }),
-      ...gatewayPluginTestFiles,
+      ...gatewayPluginTestFiles.filter((file) => !gatewayDatabaseWorkerTestFiles.includes(file)),
     ],
   ],
   ["core-runtime-config", () => listTestFiles("src/config")],
