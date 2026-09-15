@@ -61,7 +61,11 @@ async function startAutomationProvider() {
       const args = marker ? requests.get(marker) : undefined;
       const output = extractToolOutput(input);
       if (marker && args && !hasToolOutput(input)) {
-        advertisedAutomations.set(marker, hasToolDefinition(body, "automations"));
+        // A retry must not erase an earlier exposure of an owner-only tool.
+        advertisedAutomations.set(
+          marker,
+          advertisedAutomations.get(marker) === true || hasToolDefinition(body, "automations"),
+        );
         advertisedSessionStatus.set(marker, hasToolDefinition(body, "session_status"));
       }
       if (marker && args && hasToolOutput(input)) {
@@ -124,7 +128,7 @@ function managementArgs(action: AutomationAction, jobId: string) {
 
 suite.define(() => {
   it(
-    "admin chat manages a Telegram-created job while another Telegram caller is denied",
+    "configured owners and admin chat manage a Telegram-created job while a non-owner cannot",
     {
       timeout: 240_000,
     },
@@ -134,6 +138,7 @@ suite.define(() => {
       const owner = createQaGatewayChild();
       const transport = await createQaCrablineTransportAdapter({
         outputDir: proofDir,
+        transportPolicy: { senderAllowlist: ["100001", "100002", "100003"] },
         selection: {
           channel: "telegram",
           channelDriver: "crabline",
@@ -163,8 +168,8 @@ suite.define(() => {
           controlUiAllowedOrigins: [new URL(suite.server.baseUrl).origin],
           mutateConfig: (cfg) => ({
             ...cfg,
-            // The creator is an owner; the other channel-admitted sender has no management authority.
-            commands: { ...cfg.commands, ownerAllowFrom: ["telegram:100001"] },
+            // Channel admission includes a non-owner; only configured owners get automation tools.
+            commands: { ...cfg.commands, ownerAllowFrom: ["telegram:100001", "telegram:100002"] },
             session: { ...cfg.session, dmScope: "per-channel-peer" },
             plugins: { ...cfg.plugins, slots: { ...cfg.plugins?.slots, memory: "none" } },
             memory: { ...cfg.memory, search: { ...cfg.memory?.search, enabled: false } },
@@ -189,6 +194,14 @@ suite.define(() => {
           }),
         });
         await transport.waitReady({ gateway });
+        const configSnapshot = await gateway.call("config.get", {});
+        expect(configSnapshot).toMatchObject({ valid: true });
+        expect(configSnapshot).toHaveProperty("config.channels.telegram.dmPolicy", "allowlist");
+        expect(configSnapshot).toHaveProperty("config.channels.telegram.allowFrom", [
+          "100001",
+          "100002",
+          "100003",
+        ]);
         provider.requests.set("create", {
           action: "add",
           job: {
@@ -225,7 +238,15 @@ suite.define(() => {
         const creatorPayload = created.payload;
         expect(typeof created.id).toBe("string");
         const jobId = String(created.id);
+        const managementAuditEvents = () =>
+          gateway
+            .logs()
+            .split("\n")
+            .filter((line) => line.includes("cron: admin management"));
+        expect(managementAuditEvents()).toHaveLength(0);
         const storedJob = await gateway.call("cron.get", { id: jobId });
+        const runsBeforeNonOwner = await gateway.call("cron.runs", { id: jobId });
+        expect(runsBeforeNonOwner).toMatchObject({ entries: [] });
         const channelResults: Record<string, string> = {};
         for (const action of actions) {
           const marker = `channel-${action}`;
@@ -235,13 +256,13 @@ suite.define(() => {
             .messages.filter((message) => message.direction === "outbound").length;
           await transport.sendInbound({
             accountId: transport.accountId,
-            conversation: { id: "100002", kind: "direct" },
-            senderId: "100002",
+            conversation: { id: "100003", kind: "direct" },
+            senderId: "100003",
             text: `Manage the other conversation's reminder. [automation-proof:${marker}]`,
           });
           const reply = await transport.waitForOutbound({
             expectedFailure: {
-              conversation: { id: "100002", kind: "direct" },
+              conversation: { id: "100003", kind: "direct" },
               senderId: "openclaw",
               threadId: null,
               text: `${marker}: Tool automations not found`,
@@ -251,7 +272,7 @@ suite.define(() => {
           });
           expect(reply).toMatchObject({
             accountId: transport.accountId,
-            conversation: { id: "100002", kind: "direct" },
+            conversation: { id: "100003", kind: "direct" },
             senderId: "openclaw",
             text: `${marker}: Tool automations not found`,
           });
@@ -265,7 +286,40 @@ suite.define(() => {
           channelResults[action] = "unavailable visibly";
         }
         expect(await gateway.call("cron.get", { id: jobId })).toEqual(storedJob);
-        expect(await gateway.call("cron.runs", { id: jobId })).toMatchObject({ entries: [] });
+        expect(await gateway.call("cron.runs", { id: jobId })).toEqual(runsBeforeNonOwner);
+        expect(managementAuditEvents()).toHaveLength(0);
+
+        const ownerResults: Record<string, string> = {};
+        for (const action of ["list", "get"] as const) {
+          const marker = `owner-${action}`;
+          provider.requests.set(marker, managementArgs(action, jobId));
+          const outboundIndex = transport.state
+            .getSnapshot()
+            .messages.filter((message) => message.direction === "outbound").length;
+          await transport.sendInbound({
+            accountId: transport.accountId,
+            conversation: { id: "100002", kind: "direct" },
+            senderId: "100002",
+            text: `Manage the other conversation's reminder. [automation-proof:${marker}]`,
+          });
+          const reply = await transport.waitForOutbound({
+            textIncludes: `${marker}:`,
+            sinceIndex: outboundIndex,
+            timeoutMs: 60_000,
+          });
+          const output = provider.results.get(marker) ?? "";
+          expect(provider.advertisedAutomations.get(marker)).toBe(true);
+          if (action === "list") {
+            expect(readResult(output).jobs).toEqual(
+              expect.arrayContaining([expect.objectContaining({ id: jobId })]),
+            );
+          } else {
+            expect(readResult(output)).toMatchObject({ id: jobId, name: automationName });
+          }
+          expect(reply.text.replace(/\s+/gu, " ")).toContain(output.replace(/\s+/gu, " "));
+          ownerResults[action] = "succeeded";
+        }
+        expect(managementAuditEvents()).toHaveLength(2);
 
         const sessionKey = `agent:qa:dashboard:automation-management-${randomUUID()}`;
         await gateway.call("sessions.create", {
@@ -354,11 +408,8 @@ suite.define(() => {
             }
           },
         );
-        const auditEvents = gateway
-          .logs()
-          .split("\n")
-          .filter((line) => line.includes("cron: admin management"));
-        expect(auditEvents).toHaveLength(actions.length);
+        const auditEvents = managementAuditEvents();
+        expect(auditEvents).toHaveLength(actions.length + 2);
         await writeFile(
           path.join(proofDir, "verdict.json"),
           `${JSON.stringify(
@@ -368,7 +419,8 @@ suite.define(() => {
               provider: "deterministic local Responses API",
               creator: "Telegram conversation",
               admin: adminResults,
-              otherTelegramConversation: channelResults,
+              configuredTelegramOwner: ownerResults,
+              nonOwnerTelegramConversation: channelResults,
               adminManagementAuditEvents: auditEvents.length,
             },
             null,

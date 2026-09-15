@@ -31,6 +31,7 @@ extension OpenClawChatViewModel {
             let reconnected = ok && !self.healthOK
             applyTransportHealth(ok)
             if reconnected {
+                self.refreshSourceContext()
                 self.refreshAgentsIfRequested()
                 let session = self.currentSessionSnapshot()
                 Task { [weak self] in await self?.fetchModels(sessionSnapshot: session) }
@@ -39,6 +40,7 @@ extension OpenClawChatViewModel {
                 Task { [weak self] in await self?.refreshSwarmCapability() }
                 Task { [weak self] in await self?.loadComposerCapabilities(force: true) }
             } else if !ok {
+                self.invalidateSourceContext()
                 self.invalidateAgentCatalog()
                 self.modelAvailabilityIsSessionScoped = false
                 self.invalidateComposerCapabilities()
@@ -47,6 +49,7 @@ extension OpenClawChatViewModel {
             let context = self.currentSessionSnapshot()
             Task { await self.pollHealthIfNeeded(force: false, sessionSnapshot: context) }
         case .chatMetadataChanged:
+            self.refreshSourceContext()
             self.refreshAgentsIfRequested()
             let session = self.currentSessionSnapshot()
             Task { [weak self] in await self?.fetchModels(sessionSnapshot: session) }
@@ -75,6 +78,7 @@ extension OpenClawChatViewModel {
             self.resolveQuestionEvent(resolved)
             self.reconcileQuestionsAfterEvent()
         case .routeChanged, .seqGap:
+            self.refreshSourceContext()
             self.invalidateAgentCatalog(clear: true)
             self.refreshAgentsIfRequested()
             if case .routeChanged = evt {

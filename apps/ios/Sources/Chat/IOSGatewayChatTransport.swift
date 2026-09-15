@@ -39,6 +39,7 @@ struct IOSGatewayChatTransport: OpenClawChatGatewayTransport {
     let outboxGatewayID: String?
     let nativeBinding: IOSNativeActionBinding?
     private let mediaArtifactLoader: IOSMediaArtifactLoader?
+    private let sourceResourceLoader: IOSSourceResourceLoader?
 
     var outboxRequiresSessionRoutingContract: Bool {
         true
@@ -59,6 +60,7 @@ struct IOSGatewayChatTransport: OpenClawChatGatewayTransport {
         globalAgentId: String? = nil,
         outboxGatewayID: String? = nil,
         mediaArtifactLoader: IOSMediaArtifactLoader? = nil,
+        sourceResourceLoader: IOSSourceResourceLoader? = nil,
         nativeBinding: IOSNativeActionBinding? = nil)
     {
         self.gateway = nativeBinding?.gateway ?? gateway
@@ -68,6 +70,7 @@ struct IOSGatewayChatTransport: OpenClawChatGatewayTransport {
         self.outboxGatewayID = nativeBinding?.session.owner.gatewayID ?? GatewayStableIdentifier.exact(outboxGatewayID)
         self.mediaArtifactLoader = mediaArtifactLoader
         self.nativeBinding = nativeBinding
+        self.sourceResourceLoader = sourceResourceLoader
     }
 
     func acquireOutboxRouteLease() async -> OpenClawChatTransportRouteLeaseResult {
@@ -616,6 +619,16 @@ struct IOSGatewayChatTransport: OpenClawChatGatewayTransport {
         return resource
     }
 
+    func loadSourceContext() async -> OpenClawChatSourceContext? {
+        guard let route = await currentSessionMutationRoute() else { return nil }
+        return await self.sourceResourceLoader?.loadContext(ifCurrentRoute: route)
+    }
+
+    func loadSourceFavicon(host: String) async -> Data? {
+        guard let route = await currentSessionMutationRoute() else { return nil }
+        return await self.sourceResourceLoader?.loadFavicon(host: host, ifCurrentRoute: route)
+    }
+
     func loadMediaArtifact(
         sessionKey: String,
         artifactId: String,
@@ -760,6 +773,12 @@ struct IOSGatewayChatTransport: OpenClawChatGatewayTransport {
                         return
                     }
                     if let mapped = OpenClawChatGatewayPayloadCodec.event(from: evt) {
+                        switch mapped {
+                        case .chatMetadataChanged, .seqGap, .routeChanged:
+                            await self.sourceResourceLoader?.invalidate()
+                        default:
+                            break
+                        }
                         continuation.yield(mapped)
                     }
                 }

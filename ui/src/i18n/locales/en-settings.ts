@@ -320,6 +320,7 @@ const enSettings = {
     login: {
       action: "Connect provider",
       title: "Connect a provider",
+      noOptions: "No account connection methods are available.",
       description: "Save credentials for this agent. Choose the active model separately.",
       done: "Provider credentials saved.",
       finishing: "Credentials are being saved. Wait for the result.",

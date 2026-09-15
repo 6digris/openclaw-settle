@@ -169,6 +169,7 @@ describe("crabline transport", () => {
           channels: {
             telegram: {
               allowFrom: ["100001"],
+              dmPolicy: "allowlist",
               groupAllowFrom: ["100001"],
               groupPolicy: "allowlist",
             },
