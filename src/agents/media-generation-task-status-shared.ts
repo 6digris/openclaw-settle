@@ -132,7 +132,7 @@ async function prepareMediaGenerationTaskLookup(params: {
   const readConfig = params.agentId
     ? captureRuntimeConfigAsyncReader({ assertCurrent })
     : undefined;
-  const tasks = await listFreshTasksForOwnerKey(context, params.sessionKey);
+  let tasks = await listFreshTasksForOwnerKey(context, params.sessionKey);
   const sourcePrefix = normalizeOptionalString(params.sourcePrefix);
   let config: OpenClawConfig | undefined;
   if (
@@ -152,6 +152,9 @@ async function prepareMediaGenerationTaskLookup(params: {
     } catch {
       // Unreadable config keeps legacy requester ownership unresolved.
     }
+    readConfig.assertCurrent();
+    // Config preparation may outlive a task's completion or deletion.
+    tasks = await listFreshTasksForOwnerKey(context, params.sessionKey);
     readConfig.assertCurrent();
   }
   assertCurrent();
