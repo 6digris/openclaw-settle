@@ -8,6 +8,7 @@ import { createControlUiE2eSuite } from "../../../ui/src/e2e/control-ui-e2e-suit
 import { controlUiSessionUrl } from "../../../ui/src/test-helpers/control-ui-e2e.ts";
 import { createQaCrablineTransportAdapter } from "./crabline-transport.ts";
 import { createQaGatewayChild } from "./gateway-child.ts";
+import { hasToolDefinition } from "./providers/mock-openai/mock-openai-directives.ts";
 import { buildAssistantEvents } from "./providers/mock-openai/mock-openai-events.ts";
 import {
   extractLastUserText,
@@ -39,6 +40,7 @@ function readResult(text: string): Record<string, unknown> {
 async function startAutomationProvider() {
   const requests = new Map<string, Record<string, unknown>>();
   const results = new Map<string, string>();
+  const advertisedAutomations = new Map<string, boolean>();
   const server = createServer((request, response) => {
     void (async () => {
       const chunks: Buffer[] = [];
@@ -57,6 +59,9 @@ async function startAutomationProvider() {
       const marker = /\[automation-proof:([a-z-]+)\]/u.exec(extractLastUserText(input))?.[1];
       const args = marker ? requests.get(marker) : undefined;
       const output = extractToolOutput(input);
+      if (marker && args && !hasToolOutput(input)) {
+        advertisedAutomations.set(marker, hasToolDefinition(body, "automations"));
+      }
       if (marker && args && hasToolOutput(input)) {
         results.set(marker, output);
       }
@@ -88,6 +93,7 @@ async function startAutomationProvider() {
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
     requests,
     results,
+    advertisedAutomations,
     async stop() {
       server.closeAllConnections();
       await new Promise<void>((resolve) => {
@@ -154,8 +160,8 @@ suite.define(() => {
           controlUiAllowedOrigins: [new URL(suite.server.baseUrl).origin],
           mutateConfig: (cfg) => ({
             ...cfg,
-            // Both channel senders may use automation tools; neither is a Control UI administrator.
-            commands: { ...cfg.commands, ownerAllowFrom: ["telegram:100001", "telegram:100002"] },
+            // The creator is an owner; the other channel-admitted sender has no management authority.
+            commands: { ...cfg.commands, ownerAllowFrom: ["telegram:100001"] },
             session: { ...cfg.session, dmScope: "per-channel-peer" },
             plugins: { ...cfg.plugins, slots: { ...cfg.plugins?.slots, memory: "none" } },
             memory: { ...cfg.memory, search: { ...cfg.memory?.search, enabled: false } },
@@ -192,6 +198,7 @@ suite.define(() => {
           text: "Create a disabled hourly reminder. [automation-proof:create]",
         });
         await transport.waitForOutbound({ textIncludes: "create:", timeoutMs: 60_000 });
+        expect(provider.advertisedAutomations.get("create")).toBe(true);
         const created = readResult(provider.results.get("create") ?? "null");
         expect(created).toMatchObject({
           name: automationName,
@@ -209,6 +216,7 @@ suite.define(() => {
         const creatorPayload = created.payload;
         expect(typeof created.id).toBe("string");
         const jobId = String(created.id);
+        const storedJob = await gateway.call("cron.get", { id: jobId });
         const channelResults: Record<string, string> = {};
         for (const action of actions) {
           const marker = `channel-${action}`;
@@ -228,17 +236,14 @@ suite.define(() => {
             timeoutMs: 60_000,
           });
           const output = provider.results.get(marker) ?? "";
-          if (action === "list") {
-            expect(readResult(output).jobs).not.toEqual(
-              expect.arrayContaining([expect.objectContaining({ id: jobId })]),
-            );
-          } else {
-            expect(output).toMatch(/not found|denied|not authorized|not accessible/iu);
-            expect(output).toMatch(/list automations|Control UI|retry/iu);
-          }
+          expect(provider.advertisedAutomations.get(marker)).toBe(false);
+          expect(output).toBe("Tool automations not found");
+          expect(reply.text).not.toContain(jobId);
           expect(reply.text.replace(/\s+/gu, " ")).toContain(output.replace(/\s+/gu, " "));
-          channelResults[action] = action === "list" ? "hidden" : "denied visibly";
+          channelResults[action] = "unavailable visibly";
         }
+        expect(await gateway.call("cron.get", { id: jobId })).toEqual(storedJob);
+        expect(await gateway.call("cron.runs", { id: jobId })).toMatchObject({ entries: [] });
 
         const sessionKey = `agent:qa:dashboard:automation-management-${randomUUID()}`;
         await gateway.call("sessions.create", {
@@ -278,6 +283,7 @@ suite.define(() => {
               }
               await page.getByRole("button", { name: "Send message" }).click();
               await expect.poll(() => provider.results.has(marker), { timeout: 60_000 }).toBe(true);
+              expect(provider.advertisedAutomations.get(marker)).toBe(true);
               const result = readResult(provider.results.get(marker) ?? "null");
               if (action === "list") {
                 expect(result.jobs).toEqual(
