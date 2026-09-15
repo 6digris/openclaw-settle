@@ -30,6 +30,7 @@ import {
   claimAgentRunDelegatedAuthority,
   releaseAgentRunDelegatedAuthority,
 } from "../../../infra/agent-run-registry.js";
+import { withTimeout } from "../../../infra/fs-safe.js";
 import {
   bindGatewayContextResolver,
   withPluginRuntimeGatewayRequestScope,
@@ -96,6 +97,8 @@ vi.mock("../../embedded-agent.js", async (importOriginal) => ({
 
 const parentSessionKey = "agent:main:subagent:production-boundary-parent";
 const parentRunId = "production-boundary-parent";
+// Two loaded exact-head CI runs reached this cold model boundary in 28–37 seconds.
+const COLD_MODEL_ENTRY_TIMEOUT_MS = 60_000;
 let state: OpenClawTestState;
 let stateDir = "";
 let runtimeConfig: OpenClawConfig;
@@ -432,9 +435,19 @@ function readBoundExecutionState(
 async function waitForEmbeddedRun(
   bound: Awaited<ReturnType<typeof createBoundParent>>,
   childRunId: string,
+  started?: Promise<void>,
 ) {
   try {
-    await vi.waitFor(() => expect(runEmbeddedAgent).toHaveBeenCalledOnce(), { timeout: 15_000 });
+    if (started) {
+      await withTimeout(started, COLD_MODEL_ENTRY_TIMEOUT_MS, {
+        message: "embedded execution entry timed out",
+      });
+      expect(runEmbeddedAgent).toHaveBeenCalledOnce();
+    } else {
+      await vi.waitFor(() => expect(runEmbeddedAgent).toHaveBeenCalledOnce(), {
+        timeout: 15_000,
+      });
+    }
   } catch (cause) {
     // Only report owner facts; terminal messages can contain workspace paths or private input.
     throw new Error(
@@ -543,7 +556,11 @@ describe("recursive spawn production boundary", () => {
     const { context, runtime, identities, readAgentRuntimeExecutionLineage } =
       await createBoundGateway(bound);
     const modelRun = createDeferred<EmbeddedAgentRunResult>();
-    runEmbeddedAgent.mockReturnValueOnce(modelRun.promise);
+    const modelRunStarted = createDeferred();
+    runEmbeddedAgent.mockImplementationOnce(() => {
+      modelRunStarted.resolve();
+      return modelRun.promise;
+    });
     let childRunId: string | undefined;
     const failures: unknown[] = [];
     try {
@@ -555,7 +572,7 @@ describe("recursive spawn production boundary", () => {
       });
       const details = result.details as { childSessionKey: string; runId: string };
       childRunId = details.runId;
-      await waitForEmbeddedRun(bound, details.runId);
+      await waitForEmbeddedRun(bound, details.runId, modelRunStarted.promise);
       const embeddedRun = runEmbeddedAgent.mock.calls[0]?.[0];
       expect(embeddedRun).toMatchObject({
         runId: details.runId,
