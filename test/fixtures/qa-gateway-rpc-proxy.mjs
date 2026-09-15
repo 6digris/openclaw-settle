@@ -680,18 +680,18 @@ export async function startQaGatewayRpcProxy({
               if (front.readyState !== WebSocket.OPEN) {
                 return false;
               }
-              front.send(
-                raw,
-                trace
-                  ? (error) => {
-                      trace.frontWrite = {
-                        elapsedMs: readinessTime(),
-                        outcome: error ? "error" : "ok",
-                      };
-                    }
-                  : undefined,
-              );
-              return true;
+              // Completion confirms a local write, not consumption by the peer.
+              return new Promise((resolve) => {
+                front.send(raw, (error) => {
+                  if (trace) {
+                    trace.frontWrite = {
+                      elapsedMs: readinessTime(),
+                      outcome: error ? "error" : "ok",
+                    };
+                  }
+                  resolve(!error);
+                });
+              });
             },
             summary: {
               method,

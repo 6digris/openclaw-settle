@@ -167,6 +167,7 @@ struct IOSGatewayChatTransportTests {
         retireOnSend: Bool = false,
         responseError: (reason: String, execution: String)? = nil,
         responsePayloads: [String: String] = [:],
+        sourceConnectionProvider: IOSSourceResourceLoader.ConnectionProvider? = nil,
         beforeResponse: (@Sendable (RecordedRequest) async throws -> Void)? = nil,
         _ run: (IOSGatewayChatTransport, RequestRecorder) async throws -> Void) async throws
     {
@@ -296,6 +297,9 @@ struct IOSGatewayChatTransportTests {
                 gateway: gateway,
                 globalAgentId: " Reviewer ",
                 outboxGatewayID: gatewayID,
+                sourceResourceLoader: sourceConnectionProvider.map {
+                    IOSSourceResourceLoader(gateway: gateway, connectionProvider: $0)
+                },
                 nativeBinding: binding), recorder)
             await gateway.disconnect()
             await nativeFixture?.stopAndWait()
@@ -310,6 +314,100 @@ struct IOSGatewayChatTransportTests {
             }
             throw error
         }
+    }
+
+    @MainActor
+    private final class SourceConnectionState {
+        var value: IOSSourceResourceLoader.Connection?
+
+        init(token: String) {
+            self.value = Self.connection(token: token)
+        }
+
+        static func connection(token: String) -> IOSSourceResourceLoader.Connection {
+            var options = GatewayWebSocketTestSupport.identityFreeOperatorConnectOptions
+            options.allowStoredDeviceAuth = false
+            options.deviceAuthGatewayID = "source-gateway"
+            let config = GatewayConnectConfig(
+                url: URL(string: "ws://session-transport-test.invalid")!,
+                stableID: "source-gateway",
+                tls: nil,
+                token: token,
+                bootstrapToken: nil,
+                password: nil,
+                nodeOptions: options)
+            return IOSSourceResourceLoader.Connection(
+                config: config, gatewayID: "source-gateway", customHeaders: [:])
+        }
+    }
+
+    @Test @MainActor func `source context reuses the snapshot until its credential changes`() async throws {
+        let connection = SourceConnectionState(token: "original")
+        try await self.withSessionTransport(
+            gatewayID: "source-gateway",
+            responsePayloads: [
+                "config.get": #"{"runtimeConfig":{"gateway":{"controlUi":{"basePath":"/control"}}}}"#,
+            ],
+            sourceConnectionProvider: { connection.value })
+        { transport, recorder in
+            let first = await transport.loadSourceContext()
+            #expect(first?.basePath == "/control")
+            #expect(await transport.loadSourceContext() == first)
+            #expect(await recorder.all().map(\.method) == ["config.get"])
+            let route = try #require(await transport.gateway.currentRoute())
+            connection.value = SourceConnectionState.connection(token: "rotated")
+            #expect(await transport.loadSourceContext() == first)
+            #expect(await transport.gateway.currentRoute() == route)
+            #expect(await recorder.all().map(\.method) == ["config.get", "config.get"])
+        }
+    }
+
+    @Test(arguments: [false, true])
+    @MainActor func `source context discards a held reply after retirement`(retireRoute: Bool) async throws {
+        let connection = SourceConnectionState(token: "original")
+        let arrival = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let release = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        defer {
+            arrival.continuation.finish()
+            release.continuation.finish()
+        }
+        try await self.withSessionTransport(
+            gatewayID: "source-gateway",
+            responsePayloads: [
+                "config.get": #"{"runtimeConfig":{"gateway":{"controlUi":{"basePath":"/retired"}}}}"#,
+            ],
+            sourceConnectionProvider: { connection.value },
+            beforeResponse: { request in
+                guard request.method == "config.get" else { return }
+                arrival.continuation.yield(())
+                for await _ in release.stream {
+                    break
+                }
+            }) { transport, recorder in
+                let loading = Task { await transport.loadSourceContext() }
+                do {
+                    try await AsyncTimeout.withTimeout(seconds: 2, onTimeout: { URLError(.timedOut) }) {
+                        for await _ in arrival.stream {
+                            return
+                        }
+                        throw CancellationError()
+                    }
+                    if retireRoute {
+                        await transport.gateway.disconnect()
+                    } else {
+                        connection.value = nil
+                    }
+                    release.continuation.yield(())
+                    release.continuation.finish()
+                    #expect(await loading.value == nil)
+                    #expect(await recorder.all().map(\.method) == ["config.get"])
+                } catch {
+                    release.continuation.finish()
+                    loading.cancel()
+                    _ = await loading.value
+                    throw error
+                }
+            }
     }
 
     @Test(arguments: ["global", "Matrix:Channel:Room"])

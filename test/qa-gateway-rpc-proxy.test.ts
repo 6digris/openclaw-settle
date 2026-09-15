@@ -4,17 +4,27 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
 import { startQaGatewayRpcProxy } from "./fixtures/qa-gateway-rpc-proxy.mjs";
 import {
   acquireGatewayTestWebSocket,
   closeGatewayTestWebSocket,
 } from "./helpers/gateway-websocket.js";
-import { createDeferred } from "./helpers/promise.js";
+import { createDeferred, withTestTimeout } from "./helpers/promise.js";
 import { runQaGatewayFixture } from "./helpers/qa-gateway-cleanup.js";
 
 type Proxy = Awaited<ReturnType<typeof startQaGatewayRpcProxy>>;
+
+async function fixtureControl(proxy: Proxy, action: string, method?: string) {
+  const response = await fetch(proxy.controlUrl, {
+    method: "POST",
+    headers: { "x-qa-fixture-token": "proxy-control-fixture" },
+    body: JSON.stringify({ action, method }),
+  });
+  expect(response.status).toBe(200);
+  return (await response.json()) as ReturnType<Proxy["snapshot"]>;
+}
 
 async function withProxy(
   holdUpgrade: boolean,
@@ -68,6 +78,7 @@ async function withProxy(
         repoRoot: fileURLToPath(new URL("../", import.meta.url)),
         upstreamHeaders: { "x-qa-private": "private-header-marker" },
         captureReadiness,
+        token: "proxy-control-fixture",
       });
       front = new WebSocket(proxy.url);
       await acquireGatewayTestWebSocket(front, 5000);
@@ -576,5 +587,128 @@ describe("QA Gateway proxy readiness diagnostics", () => {
       },
       true,
     );
+  });
+});
+
+describe("QA Gateway proxy held responses", () => {
+  it.each([
+    { method: "users.self", captureReadiness: true, writeFails: false },
+    { method: "users.self", captureReadiness: true, writeFails: true },
+    { method: "chat.send", captureReadiness: true, writeFails: false },
+    { method: "chat.send", captureReadiness: true, writeFails: true },
+    { method: "users.self", captureReadiness: false, writeFails: false },
+    { method: "users.self", captureReadiness: false, writeFails: true },
+  ])(
+    "waits for $method write completion (capture=$captureReadiness, failure=$writeFails)",
+    async ({ method, captureReadiness, writeFails }) => {
+      await withProxy(
+        false,
+        async ({ proxy, front, upstream }) => {
+          const back = await upstream;
+          await fixtureControl(proxy, "hold-response", method);
+          const request = Buffer.from(JSON.stringify({ type: "req", id: "held-write", method }));
+          const received = once(back, "message");
+          front.send(request);
+          expect((await received)[0]).toEqual(request);
+          const response = Buffer.from(
+            JSON.stringify({ type: "res", id: "held-write", ok: true, payload: {} }),
+          );
+          back.send(response);
+          await fixtureControl(proxy, "wait-held");
+
+          const sendEntered = createDeferred<void>();
+          const originalSend = WebSocket.prototype.send;
+          let complete: ((error?: Error) => void) | undefined;
+          let releasing: ReturnType<typeof fixtureControl> | undefined;
+          let writeSocket: WebSocket | undefined;
+          const send = vi.spyOn(WebSocket.prototype, "send").mockImplementation(function (
+            this: WebSocket,
+            data: Parameters<WebSocket["send"]>[0],
+            options?: Parameters<WebSocket["send"]>[1] | ((error?: Error) => void),
+            callback?: (error?: Error) => void,
+          ) {
+            if (Buffer.isBuffer(data) && data.equals(response)) {
+              writeSocket = this;
+              complete = typeof options === "function" ? options : callback;
+              sendEntered.resolve();
+              return;
+            }
+            Reflect.apply(originalSend, this, [data, options, callback]);
+          });
+          await runQaGatewayFixture(
+            async () => {
+              releasing = fixtureControl(proxy, "release-response");
+              await withTestTimeout(
+                Promise.race([
+                  sendEntered.promise,
+                  releasing.then(() => {
+                    throw new Error("release completed before its send callback");
+                  }),
+                ]),
+                5000,
+                "held response send was not reached",
+              );
+              expect(
+                (await fixtureControl(proxy, "snapshot")).events.some(
+                  ({ kind }) => kind === "response-released",
+                ),
+              ).toBe(false);
+              assert(complete);
+              assert(writeSocket);
+              const callback = complete;
+              complete = undefined;
+              if (writeFails) {
+                callback(new Error("fixture write failed"));
+              } else {
+                const returned = once(front, "message");
+                originalSend.call(writeSocket, response, {}, callback);
+                expect((await returned)[0]).toEqual(response);
+              }
+              const released = await releasing;
+              expect(released.events.filter(({ kind }) => kind === "response-released")).toEqual([
+                expect.objectContaining({ method, delivered: !writeFails }),
+              ]);
+              const trace = proxy
+                .readinessSnapshot()
+                .connections[0]?.requests.find((row) => row.method === method);
+              if (captureReadiness && method === "users.self") {
+                expect(trace?.frontWrite).toEqual({
+                  elapsedMs: expect.any(Number),
+                  outcome: writeFails ? "error" : "ok",
+                });
+              } else {
+                expect(trace).toBeUndefined();
+              }
+            },
+            () => {
+              send.mockRestore();
+              complete?.(new Error("fixture cleanup"));
+              complete = undefined;
+            },
+            async () => {
+              await releasing;
+            },
+          );
+        },
+        captureReadiness,
+      );
+    },
+  );
+
+  it("records a closed frontend as an unsuccessful held release", async () => {
+    await withProxy(false, async ({ proxy, front, upstream }) => {
+      const back = await upstream;
+      await fixtureControl(proxy, "hold-response", "chat.send");
+      const received = once(back, "message");
+      front.send(JSON.stringify({ type: "req", id: "held-close", method: "chat.send" }));
+      await received;
+      back.send(JSON.stringify({ type: "res", id: "held-close", ok: true, payload: {} }));
+      await fixtureControl(proxy, "wait-held");
+      await closeGatewayTestWebSocket(front);
+      const released = await fixtureControl(proxy, "release-response");
+      expect(released.events.filter(({ kind }) => kind === "response-released")).toEqual([
+        expect.objectContaining({ method: "chat.send", delivered: false }),
+      ]);
+    });
   });
 });

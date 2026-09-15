@@ -643,9 +643,9 @@ final class NodeAppModel {
         if self.isAppleReviewDemoModeEnabled {
             return LocalFixtureChatTransport(fixture: .appleReviewDemo)
         }
-        let connectionProvider: IOSMediaArtifactLoader.ConnectionProvider = { [weak self] in
+        let connectionProvider: IOSSourceResourceLoader.ConnectionProvider = { [weak self] in
             guard let config = self?.activeGatewayConnectConfig else { return nil }
-            return IOSMediaArtifactLoader.Connection(
+            return IOSSourceResourceLoader.Connection(
                 config: config,
                 gatewayID: config.nodeOptions.deviceAuthGatewayID ?? config.effectiveStableID,
                 customHeaders: GatewaySettingsStore.loadGatewayCustomHeaders(
@@ -656,7 +656,13 @@ final class NodeAppModel {
             widgetGateway: self.nodeGateway,
             globalAgentId: self.chatDeliveryAgentId,
             outboxGatewayID: outboxGatewayID,
-            mediaArtifactLoader: IOSMediaArtifactLoader(connectionProvider: connectionProvider),
+            mediaArtifactLoader: IOSMediaArtifactLoader(connectionProvider: {
+                guard let connection = connectionProvider() else { return nil }
+                return IOSMediaArtifactLoader.Connection(
+                    config: connection.config,
+                    gatewayID: connection.gatewayID,
+                    customHeaders: connection.customHeaders)
+            }),
             sourceResourceLoader: IOSSourceResourceLoader(
                 gateway: self.operatorSession, connectionProvider: connectionProvider))
     }
