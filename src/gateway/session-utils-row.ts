@@ -111,7 +111,9 @@ export function buildGatewaySessionRow(params: {
   const { cfg, storePath, store, key, entry } = params;
   const lightweight = params.lightweightListRow === true;
   const now = params.now ?? Date.now();
-  const rowContext = params.rowContext ?? buildSessionListRowMetadataContext({ now });
+  const rowContext =
+    params.rowContext ??
+    buildSessionListRowMetadataContext({ now, sessionKeys: [key, ...Object.keys(store)] });
   const agentStatus = resolveActiveSessionAgentStatus(entry?.agentStatus, now);
   const owner = projectSessionOwner(
     entry,
@@ -357,6 +359,8 @@ export function buildGatewaySessionRow(params: {
     swarmGroupId: entry?.swarmGroupId,
     spawnedWorkspaceDir: entry?.spawnedWorkspaceDir,
     spawnedCwd: entry?.spawnedCwd,
+    workspaceDir: entry?.spawnedCwd ?? entry?.spawnedWorkspaceDir,
+    projectId: entry?.projectId,
     permissionMode: entry?.permissionMode,
     permissionModePending: isSessionPermissionChangePending(entry?.sessionId),
     ...(entry?.permissionMode !== undefined && entry.sessionRoot !== undefined
