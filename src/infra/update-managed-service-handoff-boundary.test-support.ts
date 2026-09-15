@@ -9,6 +9,7 @@ import { writeTriageUpdateFailure } from "../commands/triage-update.js";
 import { getFileLockProcessStartTime } from "../shared/pid-alive.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
+import { resolveTestNodeExecPath } from "../test-utils/node-process.js";
 import { writeRestartSentinel } from "./restart-sentinel.js";
 import type { ManagedServiceBoundaryOptions } from "./update-managed-service-handoff-boundary-contract.test-support.js";
 import {
@@ -38,6 +39,7 @@ import {
 } from "./update-managed-service-handoff-runtime.test-support.js";
 import {
   managedServiceStateUpdateScript,
+  readManagedServiceHandoffLease,
   readRestartSentinelPayload,
 } from "./update-managed-service-handoff-state.test-support.js";
 import {
@@ -132,7 +134,7 @@ export function createManagedServiceManagerBoundary({
       await fs.mkdir(invocationCwd);
       await fs.writeFile(path.join(invocationCwd, "update-input.txt"), "selected target");
     }
-    const parent = spawn(process.execPath, ["-e", "process.stdin.resume()"], {
+    const parent = spawn(resolveTestNodeExecPath(), ["-e", "process.stdin.resume()"], {
       stdio: ["pipe", "ignore", "ignore"],
     });
     const parentClosed = new Promise<void>((resolve) => {
@@ -203,7 +205,7 @@ export function createManagedServiceManagerBoundary({
         parentPid,
         invocationCwd,
         requester: options?.requester,
-        execPath: process.execPath,
+        execPath: resolveTestNodeExecPath(),
         argv1: process.argv[1],
         handoffId: `${kind}-boundary`,
         env,
@@ -336,7 +338,7 @@ export function createManagedServiceManagerBoundary({
           ...(options?.recoveryHang ? { recoveryTimeoutMs: 1000 } : {}),
           recovery: { serviceRestartSafe: true, version: "1.0.0" },
           recoveryModulePath,
-          commandArgv: [process.execPath, "-e", updaterScript],
+          commandArgv: [resolveTestNodeExecPath(), "-e", updaterScript],
         }),
       );
       if (options?.recoverySentinel) {
@@ -412,7 +414,7 @@ export function createManagedServiceManagerBoundary({
         );
         helperEnv = { ...helperEnv, NODE_OPTIONS: `--require ${preloadPath}` };
       }
-      const runningHelper = spawn(process.execPath, [scriptPath, paramsPath], {
+      const runningHelper = spawn(resolveTestNodeExecPath(), [scriptPath, paramsPath], {
         env: helperEnv,
         stdio: ["pipe", "pipe", "pipe"],
       });
@@ -438,19 +440,7 @@ export function createManagedServiceManagerBoundary({
 
       const databasePath = String(generated.updateLeaseDatabasePath);
       const owner = String(generated.updateLeaseOwner);
-      const readLease = (): Record<string, unknown> | null => {
-        const db = new DatabaseSync(databasePath, { readOnly: true });
-        try {
-          const row = db
-            .prepare(
-              "SELECT payload_json FROM managed_update_handoffs WHERE install_root = ? AND owner = ?",
-            )
-            .get(root, owner) as { payload_json: string } | undefined;
-          return row ? (JSON.parse(row.payload_json) as Record<string, unknown>) : null;
-        } finally {
-          db.close();
-        }
-      };
+      const readLease = () => readManagedServiceHandoffLease(databasePath, root, owner);
       expect(readLease()).toEqual({
         version: 2,
         executor: { pid: runningHelper.pid, startIdentity: expect.any(String) },
@@ -459,6 +449,7 @@ export function createManagedServiceManagerBoundary({
       });
       await expect(pathExists(commandsPath)).resolves.toBe(false);
       if (options?.controlDisconnect) {
+        options.beforeDisconnect?.(run, env);
         if (options.controlDisconnect === "transferred") {
           const transferred = waitForHandoffResponse(runningHelper.stdout, "transferred");
           runningHelper.stdin?.write("transfer\n");
