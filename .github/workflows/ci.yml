@@ -2877,6 +2877,7 @@ jobs:
             ui/src/e2e/chat-project-media.real-gateway.e2e.test.ts \
             ui/src/e2e/chat-stop-finished-run.real-gateway.e2e.test.ts \
             ui/src/e2e/chat-thinking-metadata.real-gateway.e2e.test.ts \
+            ui/src/e2e/chat-tts-supplement.real-gateway.e2e.test.ts \
             ui/src/e2e/chat-widget-sandbox.real-gateway.e2e.test.ts \
             ui/src/e2e/command-palette-catalog.real-gateway.e2e.test.ts \
             ui/src/e2e/cron-duration-save.real-gateway.e2e.test.ts \
@@ -5512,6 +5513,21 @@ jobs:
         with:
           cache-mode: ${{ needs.preflight.outputs.cache_mode }}
           install-bun: "false"
+          install-deps: "false"
+
+      - name: Install Mermaid renderer dependencies
+        if: needs.preflight.outputs.use_compatible_android_ci != 'true'
+        env:
+          CI: "true"
+        # Match the native Mermaid install profile used by macOS CodeQL.
+        # Keep root tooling while avoiding unrelated plugin SDK downloads.
+        run: >-
+          pnpm install --frozen-lockfile --prefer-offline --optional
+          --filter '@openclaw/mermaid-renderer...'
+          --config.ignore-scripts=false
+          --config.engine-strict=false
+          --config.enable-pre-post-scripts=true
+          --config.side-effects-cache=true
 
       # Same-repo runs carry the Gradle user home (dependency, wrapper, and
       # build caches) on a Blacksmith sticky disk: the setup-java gradle cache
