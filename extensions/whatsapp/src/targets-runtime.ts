@@ -11,7 +11,19 @@ import {
   renderMarkdownWithMarkers,
   sliceMarkdownIR,
 } from "openclaw/plugin-sdk/text-chunking";
-import { CONFIG_DIR, resolveUserPath } from "openclaw/plugin-sdk/text-utility-runtime";
+import { normalizeWhatsAppAllowFromEntry } from "./allowlist-format.js";
+import {
+  readWhatsAppLidToPnMapping,
+  readWhatsAppPnToLidMapping,
+  type WhatsAppLidMappingFileOptions,
+} from "./lid-mapping-files.js";
+import { stripWhatsAppTargetPrefixes } from "./whatsapp-jid-syntax.js";
+import {
+  classifyWhatsAppDirectJid,
+  classifyWhatsAppJid,
+  encodeWhatsAppJid,
+  type WhatsAppDirectJid,
+} from "./whatsapp-jid.js";
 
 const WHATSAPP_FORMAT_CAPABILITIES = FormatCapabilityProfile.define({
   mechanism: "markdown",

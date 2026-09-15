@@ -1,9 +1,13 @@
+// Whatsapp helper module supports normalize target behavior.
 import { normalizeE164 } from "openclaw/plugin-sdk/account-resolution";
-import { formatNormalizedAllowFromEntries } from "openclaw/plugin-sdk/allow-from";
 import {
-  normalizeLowercaseStringOrEmpty,
-  uniqueStrings,
-} from "openclaw/plugin-sdk/string-coerce-runtime";
+  normalizeWhatsAppAllowFromEntries,
+  normalizeWhatsAppAllowFromEntry,
+} from "./allowlist-format.js";
+import { stripWhatsAppTargetPrefixes } from "./whatsapp-jid-syntax.js";
+import { classifyWhatsAppJid, type WhatsAppJid } from "./whatsapp-jid.js";
+
+export { normalizeWhatsAppAllowFromEntries, normalizeWhatsAppAllowFromEntry };
 
 const NON_WHATSAPP_PROVIDER_PREFIX_RE = /^[a-z][a-z0-9-]*:/i;
 
@@ -25,15 +29,22 @@ export function isWhatsAppNewsletterJid(value: string): boolean {
 }
 
 export function isWhatsAppUserTarget(value: string): boolean {
-  return extractUserJidPhone(stripWhatsAppTargetPrefixes(value)) !== null;
+  const classified = classifyWhatsAppTargetJid(value);
+  return classified.kind === "pn" || classified.kind === "lid";
 }
 
-function extractUserJidPhone(jid: string): string | null {
-  return (
-    (jid.match(WHATSAPP_USER_JID_RE) ??
-      jid.match(WHATSAPP_LEGACY_USER_JID_RE) ??
-      jid.match(WHATSAPP_LID_RE))?.[1] ?? null
-  );
+export function normalizeWhatsAppDirectPhone(value: string): string | null {
+  const candidate = stripWhatsAppTargetPrefixes(value);
+  const classified = classifyWhatsAppJid(candidate);
+  if (classified.kind === "pn") {
+    const normalized = normalizeE164(classified.user);
+    return normalized.length > 1 ? normalized : null;
+  }
+  if (candidate.includes("@") || NON_WHATSAPP_PROVIDER_PREFIX_RE.test(candidate)) {
+    return null;
+  }
+  const normalized = normalizeE164(candidate);
+  return normalized.length > 1 ? normalized : null;
 }
 
 export function normalizeWhatsAppTarget(value: string): string | null {
@@ -45,50 +56,34 @@ export function normalizeWhatsAppTarget(value: string): string | null {
   if (classified.kind === "unsupported") {
     return normalizeWhatsAppDirectPhone(candidate);
   }
-  const newsletterMatch = candidate.match(WHATSAPP_NEWSLETTER_JID_RE);
-  if (newsletterMatch) {
-    return `${newsletterMatch[1]}@newsletter`;
+  if (classified.kind !== "pn") {
+    return classified.jid;
   }
-  const phone = extractUserJidPhone(candidate);
-  if (phone) {
-    const normalized = normalizeE164(phone);
-    return normalized.length > 1 ? normalized : null;
-  }
-  if (candidate.includes("@")) {
-    return null;
-  }
-  if (NON_WHATSAPP_PROVIDER_PREFIX_RE.test(candidate)) {
-    return null;
-  }
-  const normalized = normalizeE164(candidate);
-  return normalized.length > 1 ? normalized : null;
+  // Hostedness affects routing, so preserve hosted PN JIDs. Standard and
+  // legacy c.us targets retain the public E.164 normalization contract.
+  return classified.server === "hosted"
+    ? classified.jid
+    : normalizeWhatsAppDirectPhone(classified.jid);
 }
 
 export function normalizeWhatsAppMessagingTarget(raw: string): string | undefined {
-  return normalizeWhatsAppTarget(raw) ?? undefined;
-}
-
-export function normalizeWhatsAppAllowFromEntries(allowFrom: Array<string | number>): string[] {
-  return uniqueStrings(
-    formatNormalizedAllowFromEntries({
-      allowFrom,
-      normalizeEntry: normalizeWhatsAppAllowFromEntry,
-    }),
-  );
-}
-
-export function normalizeWhatsAppAllowFromEntry(entry: string): string | null {
-  if (entry === "*") {
-    return entry;
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return undefined;
   }
-  const normalized = normalizeWhatsAppTarget(entry);
-  if (!normalized) {
-    return null;
-  }
-  return normalized.startsWith("+") ? normalized.slice(1) : normalized;
+  return normalizeWhatsAppTarget(trimmed) ?? undefined;
 }
 
 export function looksLikeWhatsAppTargetId(raw: string): boolean {
   const trimmed = raw.trim();
-  return /^whatsapp:/i.test(trimmed) || normalizeWhatsAppTarget(trimmed) !== null;
+  if (!trimmed) {
+    return false;
+  }
+  return (
+    /^whatsapp:/i.test(trimmed) ||
+    isWhatsAppGroupJid(trimmed) ||
+    isWhatsAppNewsletterJid(trimmed) ||
+    isWhatsAppUserTarget(trimmed) ||
+    normalizeWhatsAppTarget(trimmed) !== null
+  );
 }

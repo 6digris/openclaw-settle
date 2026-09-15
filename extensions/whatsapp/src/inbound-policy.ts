@@ -37,14 +37,6 @@ type ResolvedWhatsAppInboundPolicy = {
   resolveConversationRequireMention: (conversationId: string) => boolean;
 };
 
-function normalizeWhatsAppIngressPhone(value: string): string | null {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-  return normalizeE164(trimmed);
-}
-
 function buildResolvedWhatsAppGroupConfig(params: {
   groupPolicy: GroupPolicy;
   groups: ResolvedWhatsAppAccount["groups"];

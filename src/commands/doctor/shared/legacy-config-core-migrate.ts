@@ -148,6 +148,7 @@ export function normalizeCompatibilityConfigValues(
     contextBudgetConfig,
     options.sourceRaw,
   );
+  const warnings = [...contextBudgetWarnings];
   changes.push(...reservedMcpServerNames.changes);
   let next = normalizeBaseCompatibilityConfigValues(
     reservedMcpServerNames.config,
@@ -189,6 +190,6 @@ export function normalizeCompatibilityConfigValues(
   return {
     config: next,
     changes,
-    ...(contextBudgetWarnings.length > 0 ? { warnings: contextBudgetWarnings } : {}),
+    ...(warnings.length > 0 ? { warnings } : {}),
   };
 }

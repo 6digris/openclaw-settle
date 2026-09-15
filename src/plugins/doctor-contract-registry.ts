@@ -749,6 +749,7 @@ export function applyPluginDoctorCompatibilityMigrations(
 } {
   let nextCfg = cfg;
   const changes: string[] = [];
+  const warnings: string[] = [];
   for (const entry of resolvePluginDoctorContracts({
     ...params,
     config: params?.config ?? cfg,

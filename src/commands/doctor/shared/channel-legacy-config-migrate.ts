@@ -110,6 +110,7 @@ export function applyChannelDoctorCompatibilityMigrations(
 } {
   let nextCfg = cfg as OpenClawConfig;
   const changes: string[] = [];
+  const warnings: string[] = [];
   migrateHeartbeatVisibility(cfg, changes);
   const unresolvedChannelIds: string[] = [];
 

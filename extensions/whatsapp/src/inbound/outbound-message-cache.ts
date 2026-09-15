@@ -3,7 +3,11 @@ import type { proto, WAMessage } from "baileys";
 import { cacheInboundMessageMeta } from "../quoted-message.js";
 import { rememberRecentOutboundMessage } from "./dedupe.js";
 import { extractText } from "./extract.js";
-import type { WhatsAppPreparedOutboundIdentity } from "./send-api.js";
+
+export type WhatsAppOutboundMessageIdentity = {
+  remoteE164?: string;
+  remoteJids?: string[];
+};
 
 export function createWhatsAppOutboundMessageRecorder(params: {
   accountId: string;
@@ -16,7 +20,7 @@ export function createWhatsAppOutboundMessageRecorder(params: {
   const remember = (
     remoteJid: string,
     result: WAMessage | undefined,
-    identity?: WhatsAppPreparedOutboundIdentity,
+    identity?: WhatsAppOutboundMessageIdentity,
   ) => {
     const messageId = result?.key.id ?? "";
     if (!messageId) {
@@ -42,7 +46,7 @@ export function createWhatsAppOutboundMessageRecorder(params: {
   const trackLateAccepted = (
     jid: string,
     promise: Promise<WAMessage | undefined>,
-    identity?: WhatsAppPreparedOutboundIdentity,
+    identity?: WhatsAppOutboundMessageIdentity,
   ) => {
     // The local send has failed terminally, but Baileys may still deliver it.
     // Track a late message id only to suppress the resulting self-echo.

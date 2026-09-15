@@ -10,6 +10,10 @@ import {
   hasLegacyAccountStreamingAliases,
   stripRetiredChannelKeys,
 } from "openclaw/plugin-sdk/runtime-doctor-migrations";
+import {
+  migrateWhatsAppLidAllowlistsConfig,
+  whatsAppLidAllowlistLegacyRules,
+} from "./allowlist-doctor.js";
 import { normalizeCompatibilityConfig as normalizeAckReactionConfig } from "./doctor.js";
 
 // WhatsApp's nested streaming schema is delivery-only ({chunkMode, block});
@@ -73,8 +77,14 @@ export function normalizeCompatibilityConfig({
 }): ChannelDoctorConfigMutation {
   const ackReaction = normalizeAckReactionConfig({ cfg });
   const retiredConfig = removeExposeErrorText(ackReaction.config, ackReaction.changes);
-  return streamingAliasMigration.normalizeChannelConfig({
+  const aliases = streamingAliasMigration.normalizeChannelConfig({
     cfg: retiredConfig,
     changes: ackReaction.changes,
   });
+  const lidAllowlists = migrateWhatsAppLidAllowlistsConfig(aliases.config);
+  return {
+    config: lidAllowlists.config,
+    changes: [...aliases.changes, ...lidAllowlists.changes],
+    warnings: lidAllowlists.warnings,
+  };
 }

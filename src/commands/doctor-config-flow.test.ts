@@ -26,6 +26,9 @@ const runDoctorRepairSequenceMock = vi.hoisted(() => vi.fn());
 const createDoctorPluginMetadataSnapshotScopeParamsMock = vi.hoisted(() => vi.fn());
 const runDoctorConfigPreflightOptionsMock = vi.hoisted(() => vi.fn());
 const collectDoctorPreviewNotesParamsMock = vi.hoisted(() => vi.fn());
+const applyChannelDoctorCompatibilityMigrationsMock = vi.hoisted(() =>
+  vi.fn((cfg: Record<string, unknown>) => ({ next: cfg, changes: [], warnings: [] as string[] })),
+);
 const prepareTailscaleConfigMigrationMock = vi.hoisted(() =>
   vi.fn(({ cfg }: { cfg: OpenClawConfig }) => ({
     config: cfg,

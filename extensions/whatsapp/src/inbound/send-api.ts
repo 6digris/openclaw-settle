@@ -16,6 +16,7 @@ import {
   addWhatsAppOutboundMentionsToContent,
   type WhatsAppOutboundMentionResolution,
 } from "./outbound-mentions.js";
+import type { WhatsAppOutboundMessageIdentity } from "./outbound-message-cache.js";
 import {
   combineWhatsAppSendResults,
   mergeWhatsAppAcceptedSendError,
@@ -42,6 +43,11 @@ type StructuredStickerSendOptions = {
   mimetype?: string;
 };
 
+type WhatsAppOutboundRoute = {
+  jid: string;
+  identity?: WhatsAppOutboundMessageIdentity;
+};
+
 function supportsForcedDocumentMediaType(mediaType: string): boolean {
   return mediaType.startsWith("image/") || mediaType.startsWith("video/");
 }
@@ -50,10 +56,10 @@ function prepareOutboundIdentity(params: {
   requestedJid: string;
   routedJid: string;
   authDir?: string;
-}): WhatsAppPreparedOutboundIdentity {
+}): WhatsAppOutboundMessageIdentity | undefined {
   const requested = classifyWhatsAppJid(params.requestedJid);
   if (requested.kind !== "pn" && requested.kind !== "lid") {
-    return {};
+    return undefined;
   }
 
   let remoteE164 = requested.kind === "pn" ? `+${requested.user}` : undefined;
@@ -83,7 +89,7 @@ export function createWebSendApi(params: {
       jid: string,
       content: AnyMessageContent,
       options?: MiscMessageGenerationOptions,
-      identity?: WhatsAppPreparedOutboundIdentity,
+      identity?: WhatsAppOutboundMessageIdentity,
     ) => Promise<WAMessage | undefined>;
     sendPresenceUpdate: (presence: WAPresence, jid?: string) => Promise<unknown>;
   };
@@ -119,6 +125,18 @@ export function createWebSendApi(params: {
     params.resolveOutboundMentions
       ? await params.resolveOutboundMentions({ jid, text })
       : { text, mentionedJids: [] };
+  const sendForRoute = async (
+    route: WhatsAppOutboundRoute,
+    content: AnyMessageContent,
+    options?: MiscMessageGenerationOptions,
+  ): Promise<WAMessage | undefined> => {
+    if (route.identity) {
+      return await params.sock.sendMessage(route.jid, content, options, route.identity);
+    }
+    return options
+      ? await params.sock.sendMessage(route.jid, content, options)
+      : await params.sock.sendMessage(route.jid, content);
+  };
   const runAcceptedSend = async (
     kind: WhatsAppSendKind,
     accountId: string,
@@ -146,9 +164,9 @@ export function createWebSendApi(params: {
     content: AnyMessageContent,
     kind: WhatsAppSendKind,
   ): Promise<WhatsAppSendResult> => {
-    const jid = resolveOutboundJid(to);
+    const route = resolveOutboundRoute(to);
     return await runAcceptedSend(kind, params.defaultAccountId, async (capture) => {
-      capture(await params.sock.sendMessage(jid, content), kind);
+      capture(await sendForRoute(route, content), kind);
     });
   };
 
@@ -232,9 +250,7 @@ export function createWebSendApi(params: {
       const accountId = sendOptions?.accountId ?? params.defaultAccountId;
       return await runAcceptedSend(kind, accountId, async (capture) => {
         const sendPayload = async (content: AnyMessageContent) =>
-          quotedOpts
-            ? await params.sock.sendMessage(jid, content, quotedOpts)
-            : await params.sock.sendMessage(jid, content);
+          await sendForRoute(route, content, quotedOpts);
         capture(await sendPayload(payload), kind);
         if (shouldSendAudioText) {
           const resolvedAudioText = await resolveMentions(jid, text);
@@ -324,22 +340,17 @@ export function createWebSendApi(params: {
       // reactions land on the delivered WhatsApp message key.
       const route = resolveOutboundRoute(chatJid);
       const jid = route.jid;
-      const result = await params.sock.sendMessage(
-        jid,
-        {
-          react: {
-            text: emoji,
-            key: {
-              remoteJid: jid,
-              id: messageId,
-              fromMe,
-              participant: participant ? toWhatsappJid(participant) : undefined,
-            },
+      const result = await sendForRoute(route, {
+        react: {
+          text: emoji,
+          key: {
+            remoteJid: jid,
+            id: messageId,
+            fromMe,
+            participant: participant ? toWhatsappJid(participant) : undefined,
           },
-        } as AnyMessageContent,
-        undefined,
-        route.identity,
-      );
+        },
+      } as AnyMessageContent);
       return normalizeWhatsAppSendResult(result, "reaction");
     },
     sendComposingTo: async (to: string): Promise<void> => {

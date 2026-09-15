@@ -1,11 +1,7 @@
 import type { MediaPlaceholderTextFact } from "openclaw/plugin-sdk/channel-inbound";
 // Whatsapp plugin module implements identity behavior.
 import { jidToE164, normalizeE164 } from "./text-runtime.js";
-import {
-  areSameWhatsAppJid,
-  canonicalizeWhatsAppDirectJids,
-  classifyWhatsAppDirectJid,
-} from "./whatsapp-jid.js";
+import { areSameWhatsAppJid, classifyWhatsAppDirectJid } from "./whatsapp-jid.js";
 
 export type WhatsAppIdentity = {
   jid?: string | null;
@@ -113,60 +109,6 @@ export function prepareWhatsAppInboundActor(params: {
   return {
     transportJid,
     e164: phone ? `+${phone.user}` : null,
-  };
-}
-
-function isObservedSelfDirectJid(
-  directJid: NonNullable<ReturnType<typeof classifyWhatsAppDirectJid>>,
-  self: WhatsAppSelfIdentity,
-): boolean {
-  if (
-    canonicalizeWhatsAppDirectJids([self.jid, self.lid]).some((jid) =>
-      areSameWhatsAppJid(directJid.jid, jid),
-    )
-  ) {
-    return true;
-  }
-  return (
-    directJid.kind === "pn" &&
-    self.e164 != null &&
-    normalizeE164(self.e164) === `+${directJid.user}`
-  );
-}
-
-export function prepareWhatsAppDirectInboundActor(params: {
-  remoteJid: string | null | undefined;
-  remoteJidAlt?: string | null;
-  fromMe: boolean;
-  self: WhatsAppSelfIdentity;
-}): (PreparedWhatsAppInboundActor & { comparableJids: string[] }) | null {
-  // For incoming DMs Baileys reports two forms of the sender. For outgoing DMs,
-  // remoteJid is the recipient while remoteJidAlt is the sender; pairing those
-  // identities can make an outbound peer look like the linked account.
-  const actor = prepareWhatsAppInboundActor({
-    primaryJid: params.remoteJid,
-    alternateJid: params.fromMe ? null : params.remoteJidAlt,
-  });
-  if (!actor) {
-    return null;
-  }
-  if (!params.fromMe) {
-    return {
-      ...actor,
-      comparableJids: canonicalizeWhatsAppDirectJids([params.remoteJid, params.remoteJidAlt]),
-    };
-  }
-
-  const primary = classifyWhatsAppDirectJid(params.remoteJid);
-  const isSelfChat = primary ? isObservedSelfDirectJid(primary, params.self) : false;
-  const selfE164 = params.self.e164 != null ? normalizeE164(params.self.e164) : null;
-  return {
-    ...actor,
-    e164: actor.e164 ?? (isSelfChat ? selfE164 : null),
-    comparableJids: canonicalizeWhatsAppDirectJids([
-      params.remoteJid,
-      ...(isSelfChat ? [params.self.jid, params.self.lid] : []),
-    ]),
   };
 }
 

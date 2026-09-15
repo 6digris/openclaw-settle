@@ -11,6 +11,12 @@ import {
   defaultRuntime,
   type RuntimeEnv,
 } from "openclaw/plugin-sdk/runtime-env";
+import {
+  readWebAuthStateDetails,
+  waitForWebAuthBarrier,
+  webAuthExistsAt,
+  type WhatsAppWebAuthState,
+} from "./auth-state.js";
 import { resolveOAuthDir } from "./auth-store.runtime.js";
 import {
   assertWebCredsPathRegularFileOrMissing,

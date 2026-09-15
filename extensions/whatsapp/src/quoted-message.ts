@@ -9,7 +9,12 @@ import {
   formatMediaPlaceholderText,
   type MediaPlaceholderTextFact,
 } from "openclaw/plugin-sdk/channel-inbound";
-import { jidToE164 } from "./text-runtime.js";
+import { pruneMapToMaxSize } from "openclaw/plugin-sdk/collection-runtime";
+import {
+  areSameWhatsAppJid,
+  canonicalizeWhatsAppDirectJids,
+  classifyWhatsAppJid,
+} from "./whatsapp-jid.js";
 
 // ── Inbound message metadata cache ──────────────────────────────────────
 // Retains canonical JIDs plus identity facts prepared while mapping context is
@@ -50,7 +55,12 @@ function makeCacheKey(accountId: string, remoteJid: string, messageId: string): 
 }
 
 function toQuotedMeta(meta: QuotedMeta): QuotedMeta {
-  return { participant: meta.participant, body: meta.body, fromMe: meta.fromMe };
+  return {
+    participant: meta.participant,
+    body: meta.body,
+    media: meta.media,
+    fromMe: meta.fromMe,
+  };
 }
 
 function canonicalizeSupportedJid(jid: string | null | undefined): string | undefined {
@@ -108,18 +118,7 @@ export function lookupInboundMessageMeta(
     cache.delete(cacheKey);
     return undefined;
   }
-  return {
-    participant: entry.participant,
-    participantE164: entry.participantE164,
-    body: entry.body,
-    media: entry.media,
-    fromMe: entry.fromMe,
-  };
-}
-
-function normalizeComparableJid(jid: string | undefined): string | undefined {
-  const normalized = jid?.trim().replace(/:\d+/, "").toLowerCase();
-  return normalized || undefined;
+  return toQuotedMeta(entry);
 }
 
 function isGroupJid(jid: string | undefined): boolean {
@@ -157,14 +156,7 @@ export function lookupInboundMessageMetaForTarget(
   }
   const exact = lookupInboundMessageMeta(accountId, canonicalTargetJid, messageId);
   if (exact) {
-    return {
-      remoteJid: targetJid,
-      participant: exact.participant,
-      participantE164: exact.participantE164,
-      body: exact.body,
-      media: exact.media,
-      fromMe: exact.fromMe,
-    };
+    return { remoteJid: canonicalTargetJid, ...exact };
   }
   const prefix = `${accountId}:`;
   const suffix = `:${messageId}`;
@@ -177,16 +169,7 @@ export function lookupInboundMessageMetaForTarget(
       cache.delete(cacheKey);
       continue;
     }
-    const remoteJid = cacheKey.slice(prefix.length, cacheKey.length - suffix.length);
-    const candidate = {
-      remoteJid,
-      participant: entry.participant,
-      participantE164: entry.participantE164,
-      body: entry.body,
-      media: entry.media,
-      fromMe: entry.fromMe,
-    };
-    if (!matchesQuotedConversationTarget(targetJid, candidate)) {
+    if (!matchesQuotedConversationTarget(canonicalTargetJid, entry)) {
       continue;
     }
     if (matched) {

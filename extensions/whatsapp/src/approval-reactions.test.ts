@@ -268,6 +268,8 @@ describe("WhatsApp approval reactions", () => {
       approvalId: "exec-observed-pn",
       approvalKind: "exec",
       decision: "allow-once",
+      channel: "whatsapp",
+      accountId: "default",
       senderId: "+15551230000",
       gatewayUrl: undefined,
     });
