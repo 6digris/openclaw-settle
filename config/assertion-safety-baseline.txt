@@ -832,7 +832,7 @@ extensions/nextcloud-talk/src/policy.ts	2
 extensions/nextcloud-talk/src/send.ts	1
 extensions/nextcloud-talk/src/setup-core.ts	10
 extensions/nextcloud-talk/src/setup-surface.ts	11
-extensions/nostr/doctor-contract-api.ts	4
+extensions/nostr/doctor-contract-api.ts	2
 extensions/nostr/index.ts	4
 extensions/nostr/src/channel.setup.ts	2
 extensions/nostr/src/gateway.ts	2
@@ -1913,7 +1913,6 @@ src/agents/subagents/registry/subagent-registry.ts	2
 src/agents/subagents/registry/subagent-session-cleanup.ts	2
 src/agents/subagents/spawn/acp-spawn-admission.ts	1
 src/agents/subagents/spawn/acp-spawn-parent-stream.ts	11
-src/agents/subagents/spawn/subagent-spawn-gateway.ts	3
 src/agents/subagents/spawn/subagent-spawn-session-patch.ts	1
 src/agents/subagents/spawn/subagent-spawn.ts	2
 src/agents/subagents/swarm/swarm-output-schema.ts	1
@@ -3406,7 +3405,7 @@ src/shared/account-enabled.ts	1
 src/shared/assistant-error-format.ts	3
 src/shared/bounded-serial-queue.ts	1
 src/shared/chat-content.ts	2
-src/shared/chat-message-content.ts	9
+src/shared/chat-message-content.ts	7
 src/shared/config-eval.ts	1
 src/shared/deferred.ts	1
 src/shared/frontmatter.ts	5
@@ -3604,7 +3603,6 @@ ui/src/app/settings.ts	9
 ui/src/app/stale-chunk-reload.ts	1
 ui/src/app/startup-settings.ts	1
 ui/src/app/theme.ts	4
-ui/src/app/update-schedule-dto.ts	2
 ui/src/app/user-profile.ts	2
 ui/src/app/web-push.runtime.ts	2
 ui/src/components/agent-select.ts	3
@@ -3649,7 +3647,7 @@ ui/src/components/dock-panel-layout.ts	3
 ui/src/components/exec-approval.ts	1
 ui/src/components/file-preview-modal.ts	1
 ui/src/components/github-link-hovercard-registration.ts	1
-ui/src/components/github-link-hovercard.runtime.ts	2
+ui/src/components/github-link-hovercard.runtime.ts	1
 ui/src/components/hub-tabs.ts	1
 ui/src/components/input-dialog.ts	1
 ui/src/components/lobster-dex.ts	2

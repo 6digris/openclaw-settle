@@ -288,17 +288,27 @@ export function resolveVisibleHistoryRange(
 ) {
   const boundedStart = Math.min(Math.max(0, start), history.total);
   const boundedEnd = Math.min(Math.max(boundedStart, endExclusive), history.total);
-  const selectedBoundaries = history.boundaries.filter(
-    (boundary) => boundary.displayPosition >= boundedStart && boundary.displayPosition < boundedEnd,
-  );
-  const boundaries = new Map(
-    selectedBoundaries.map((boundary) => [boundary.displayPosition, boundary] as const),
-  );
-  const boundariesBefore = history.boundaries.filter(
-    (boundary) => boundary.displayPosition < boundedStart,
-  ).length;
+  // Projected display positions are strictly increasing, including adjacent markers.
+  let boundariesBefore = 0;
+  let end = history.boundaries.length;
+  while (boundariesBefore < end) {
+    const middle = Math.floor((boundariesBefore + end) / 2);
+    if (history.boundaries[middle]!.displayPosition < boundedStart) {
+      boundariesBefore = middle + 1;
+    } else {
+      end = middle;
+    }
+  }
+  const boundaries = new Map<number, VisibleHistoryBoundary>();
+  for (let index = boundariesBefore; index < history.boundaries.length; index += 1) {
+    const boundary = history.boundaries[index]!;
+    if (!(boundary.displayPosition < boundedEnd)) {
+      break;
+    }
+    boundaries.set(boundary.displayPosition, boundary);
+  }
   const messageStart = boundedStart - boundariesBefore;
-  const messageEnd = messageStart + boundedEnd - boundedStart - selectedBoundaries.length;
+  const messageEnd = messageStart + boundedEnd - boundedStart - boundaries.size;
   return { boundedEnd, boundedStart, boundaries, messageEnd, messageStart };
 }
 
