@@ -198,6 +198,7 @@ openclaw_prepublish_plugin_registry_start "" "$CANDIDATE_SOURCE" "$candidate_ver
   "$HOME/registry" registry_pid openclaw "$candidate_version" /candidate/openclaw-current.tgz
 
 # The old parent may have written a notice. Preserve it, then establish the second invocation's specimen.
+phase=baseline-snapshot
 node --input-type=module - <<'NODE'
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -210,7 +211,10 @@ a.prepare('DELETE FROM gateway_restart_sentinel').run();
 b.prepare('DELETE FROM gateway_restart_sentinel').run();
 const payload = JSON.stringify({kind: 'restart', status: 'ok', ts: 1, message: 'unrelated caller notice'});
 a.prepare("INSERT INTO gateway_restart_sentinel (sentinel_key,version,kind,status,ts,message,payload_json,updated_at_ms) VALUES ('current',1,'restart','ok',1,'unrelated caller notice',?,1)").run(payload);
-const baseline = {caller: rows(a), callerRuns: a.prepare('SELECT run_id FROM update_runs ORDER BY run_id').all(), selectedRuns: b.prepare('SELECT run_id FROM update_runs ORDER BY run_id').all()};
+// B has never updated; its history table is created lazily by the first update write.
+const selectedLedgerExists = b.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'update_runs'").get();
+const selectedRuns = selectedLedgerExists ? b.prepare('SELECT run_id FROM update_runs ORDER BY run_id').all() : [];
+const baseline = {caller: rows(a), callerRuns: a.prepare('SELECT run_id FROM update_runs ORDER BY run_id').all(), selectedRuns};
 assert.equal(baseline.caller.length, 1);
 fs.writeFileSync('/proof/before-noop.json', JSON.stringify(baseline));
 a.close(); b.close();
