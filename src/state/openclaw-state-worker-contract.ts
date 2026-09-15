@@ -5,6 +5,7 @@ import type {
   ConfigHealthEntryBasis,
 } from "../config/io.health-state.types.js";
 import type { CronStoreWorkerOperations } from "../cron/store/load-worker.types.js";
+import type { CronStoreSaveWorkerOperations } from "../cron/store/save-worker.types.js";
 import type { FleetRegistryWriteOperations } from "../fleet/registry.types.js";
 import type { DeferredPluginMigration } from "../infra/deferred-plugin-migrations.js";
 import type { DeliveryQueueWorkerOperations } from "../infra/delivery-queue.worker-contract.js";
@@ -52,6 +53,7 @@ type TaskFlowReadQuery = {
 export type OpenClawStateWorkerOperations = PluginStateWorkerOperations &
   UserPreferenceWorkerOperations &
   CronStoreWorkerOperations &
+  CronStoreSaveWorkerOperations &
   FleetRegistryWriteOperations &
   SessionDeliveryWorkerOperations &
   DeliveryQueueWorkerOperations & {

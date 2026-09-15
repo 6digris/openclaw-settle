@@ -36,33 +36,45 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
   }),
 );
 
-it("preserves the raw task failure when retirement fails before acknowledging stop", async () => {
-  const root = tempDirs.make("openclaw-read-task-failure-");
-  const pathname = path.join(root, "source.sqlite");
-  // Only filesystem identity is consulted; the worker pool is entirely mocked.
-  fs.writeFileSync(pathname, "mock worker source");
-  const started = createDeferredCore();
-  const task = createDeferredCore<OpenClawStateReadReply>();
-  const original = new Error("original worker task failed");
-  const retirement = new Error("first worker stop failed");
-  mock.run.mockImplementation(() => {
-    started.resolve();
-    return task.promise;
-  });
-  mock.close.mockImplementation(async () => {
-    task.reject(original);
-  });
+it.each([false, true])(
+  "preserves the raw task failure when retirement fails before acknowledging stop (retry fails=%s)",
+  async (retryFails) => {
+    mock.run.mockReset();
+    mock.close.mockReset();
+    const root = tempDirs.make("openclaw-read-task-failure-");
+    const pathname = path.join(root, "source.sqlite");
+    // Only filesystem identity is consulted; the worker pool is entirely mocked.
+    fs.writeFileSync(pathname, "mock worker source");
+    const started = createDeferredCore();
+    const task = createDeferredCore<OpenClawStateReadReply>();
+    const original = new Error("original worker task failed");
+    const retirement = new Error("first worker stop failed");
+    const retryFailure = new Error("second worker stop failed");
+    mock.run.mockImplementation(() => {
+      started.resolve();
+      return task.promise;
+    });
+    mock.close.mockResolvedValue();
+    if (retryFails) {
+      mock.close.mockRejectedValueOnce(retryFailure);
+    }
 
-  const result = executeExistingOpenClawStateRead(
-    { path: pathname, env: { OPENCLAW_STATE_DIR: root } },
-    { type: "fleet.list" },
-  );
-  const assertion = expect(result).rejects.toMatchObject({
-    cause: original,
-    errors: [original, retirement],
-  });
-  await started.promise;
-  await mock.notify?.(retirement);
-  await assertion;
-  expect(mock.close).toHaveBeenCalledTimes(1);
-});
+    const result = executeExistingOpenClawStateRead(
+      { path: pathname, env: { OPENCLAW_STATE_DIR: root } },
+      { type: "fleet.list" },
+    );
+    const assertion = expect(result).rejects.toMatchObject({
+      cause: original,
+      errors: [original, retirement, ...(retryFails ? [retryFailure] : [])],
+    });
+    await started.promise;
+    const notification = mock.notify?.(retirement);
+    task.reject(original);
+    await notification;
+    await assertion;
+    expect(mock.close).toHaveBeenCalledTimes(1);
+    await closeOpenClawStateDatabaseAsync();
+    expect(mock.close).toHaveBeenCalledTimes(retryFails ? 2 : 1);
+    expect(mock.run).toHaveBeenCalledTimes(1);
+  },
+);

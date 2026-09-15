@@ -101,9 +101,11 @@ export function createOpenClawStateReadTransport(
     },
     read: (source: OpenClawStateReadLocation, authority: OpenClawStateReadAuthority) =>
       run(source.context, source.location, source.checkFreshAdmission, command, authority),
-    async close(): Promise<{ error: unknown } | undefined> {
+    async close(): Promise<void> {
       await pool?.close();
-      // Only acknowledged stop makes the original task's delayed rejection observable.
+    },
+    async readFailure(): Promise<{ error: unknown } | undefined> {
+      // Early task rejection records failure; only close acknowledges native cleanup.
       const outcome = await interruptedTask;
       return outcome && "error" in outcome ? outcome : undefined;
     },

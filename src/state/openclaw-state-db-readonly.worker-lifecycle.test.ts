@@ -28,6 +28,7 @@ vi.mock("./openclaw-state-read-worker.js", () => ({
     read: mock.read,
     validateFresh: async () => {},
     close: mock.close,
+    readFailure: async () => undefined,
   }),
 }));
 vi.mock("../infra/sqlite-snapshot-source.js", async (importOriginal) => ({
