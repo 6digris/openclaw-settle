@@ -1182,6 +1182,12 @@ exit 99
       );
       fixture.git(fixture.canonical, ["add", "scripts/pr"]);
       fixture.git(fixture.canonical, ["commit", "-m", "test: stale canonical wrapper"]);
+      // Installed dependencies keep this fixture on the direct supervisor route.
+      symlinkSync(
+        join(fixture.canonical, "node_modules"),
+        join(fixture.linked, "node_modules"),
+        "dir",
+      );
       // Stop at the real supervisor handoff, before locks or native PR actions.
       const recorder = join(fixture.bin, "node");
       writeFileSync(recorder, '#!/bin/sh\nprintf \'%s\\0\' "$PWD" "$@"\nexit 73\n');
