@@ -6468,6 +6468,7 @@ setImmediate(() => {
       "checks-ui": "ubuntu-24.04",
       "checks-ui-e2e": "ubuntu-24.04",
       "checks-ui-e2e-real-gateway": "ubuntu-24.04",
+      "ci-gate": "ubuntu-24.04",
       "control-ui-i18n": "ubuntu-24.04",
       "control-ui-performance": "ubuntu-24.04",
       "docker-seed-e2e": "ubuntu-24.04",
@@ -6483,6 +6484,8 @@ setImmediate(() => {
     } as const;
     const expectedHybridFirstAttemptRunners = {
       ...expectedHostedRunners,
+      preflight: "blacksmith-4vcpu-ubuntu-2404",
+      "ci-gate": "blacksmith-4vcpu-ubuntu-2404",
       "security-fast": "blacksmith-4vcpu-ubuntu-2404",
       android: "blacksmith-8vcpu-ubuntu-2404",
       "build-artifacts": "blacksmith-16vcpu-ubuntu-2404",
