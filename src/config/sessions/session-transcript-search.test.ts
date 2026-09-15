@@ -118,7 +118,10 @@ function agentKysely() {
     kysely: getNodeSqliteKysely<
       Pick<
         OpenClawAgentKyselyDatabase,
-        "session_transcript_fts" | "session_transcript_index_state" | "transcript_events"
+        | "session_transcript_active_events"
+        | "session_transcript_fts"
+        | "session_transcript_index_state"
+        | "transcript_events"
       >
     >(database.db),
   };
@@ -327,14 +330,19 @@ describe("searchSessionTranscripts", () => {
     expect(search("alpha").hits).toHaveLength(1);
   });
 
-  it("filters hits to the requested session keys", async () => {
+  it.each([1, 33_000])("filters hits to %i requested session keys", async (keyCount) => {
     await appendUserMessage("session-1", "agent:main:main", "shared keyword payload");
     await appendUserMessage("session-2", "agent:main:other", "shared keyword payload");
 
     const all = search("keyword");
     expect(all.hits).toHaveLength(2);
 
-    const filtered = search("keyword", { sessionKeys: ["agent:main:other"] });
+    const sessionKeys = Array.from(
+      { length: keyCount - 1 },
+      (_, index) => `agent:main:missing-${index}`,
+    );
+    sessionKeys.push("agent:main:other");
+    const filtered = search("keyword", { sessionKeys });
     expect(filtered.hits).toHaveLength(1);
     expect(filtered.hits[0]?.sessionKey).toBe("agent:main:other");
     expect(filtered.hits[0]?.sessionId).toBe("session-2");
@@ -537,7 +545,8 @@ describe("searchSessionTranscripts", () => {
     expect(result.hits).toHaveLength(1);
   });
 
-  it("detects missing, dirty, and lagging transcript index watermarks", async () => {
+  it("detects missing, dirty, lagging, and unclassified transcript projections", async () => {
+    await appendUserMessage("session-0", "agent:main:sibling", "indexed sibling");
     await appendUserMessage("session-1", "agent:main:main", "indexed message");
     const { db, kysely } = agentKysely();
     const pending = () => listSessionsNeedingTranscriptIndexReconcile(db);
@@ -566,6 +575,21 @@ describe("searchSessionTranscripts", () => {
     expect(pending()).toEqual(["session-1"]);
     expect(search("indexed").indexing).toBe(true);
     await waitForSearchReconcile("indexed");
+
+    executeSqliteQuerySync(
+      db,
+      kysely
+        .updateTable("session_transcript_active_events")
+        .set({ context_eligible: null })
+        .where("session_id", "=", "session-1"),
+    );
+    expect(pending()).toEqual(["session-1"]);
+    expect(search("indexed", { sessionKeys: ["agent:main:sibling"] })).toMatchObject({
+      hits: [{ sessionId: "session-0", snippet: "indexed sibling" }],
+      indexing: true,
+    });
+    await waitForSearchReconcile("indexed");
+    expect(search("indexed", { sessionKeys: ["agent:main:sibling"] }).indexing).toBe(false);
 
     executeSqliteQuerySync(
       db,

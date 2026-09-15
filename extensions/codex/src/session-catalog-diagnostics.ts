@@ -167,7 +167,8 @@ export function currentCodexCatalogListDiagnostics(): CodexCatalogListDiagnostic
   return observation?.closed ? undefined : observation;
 }
 
-export function runCodexCatalogListDiagnostics<T>(run: () => Promise<T>): Promise<T> {
+/** One logical list scope survives admission pauses; finishing drops its captured context. */
+export function createCodexCatalogListScope() {
   const observation = start<ListFields>("list phases", {
     controlPageCalls: 0,
     coldStarts: 0,
@@ -178,19 +179,23 @@ export function runCodexCatalogListDiagnostics<T>(run: () => Promise<T>): Promis
     exclusionMarkCalls: 0,
     adoptionCalls: 0,
   });
-  if (!observation) {
-    return run();
-  }
-  return listScope.run(observation, async () => {
-    let outcome: "resolved" | "rejected" = "rejected";
-    try {
-      const result = await run();
-      outcome = "resolved";
-      return result;
-    } finally {
-      observation.finish(outcome);
-    }
-  });
+  let captured: ReturnType<typeof AsyncLocalStorage.snapshot> | undefined = listScope.run(
+    observation,
+    () => AsyncLocalStorage.snapshot(),
+  );
+  return {
+    run<T>(run: () => T): T {
+      if (!captured) {
+        throw new Error("Codex catalog diagnostic scope is closed");
+      }
+      return captured(run);
+    },
+    finish(outcome: "resolved" | "rejected"): void {
+      const finishInScope = captured;
+      captured = undefined;
+      finishInScope?.(() => observation?.finish(outcome));
+    },
+  };
 }
 
 export function startCodexCatalogPageDiagnostics(origin: PageFields["origin"]) {
