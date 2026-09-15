@@ -70,6 +70,12 @@ function fixture() {
   const capture = join(worktree, ".local/merge-output.log");
   writeFileSync(capture, "retained capture\n");
   const repo = { id: 123, nameWithOwner: "fixture/repo", url: "https://github.com/fixture/repo" };
+  const repoAuthority = {
+    id: repo.id,
+    node_id: "fixture-repo",
+    full_name: repo.nameWithOwner,
+    html_url: repo.url,
+  };
   const record = {
     version: 1,
     repo,
@@ -93,6 +99,8 @@ function fixture() {
     data: {
       repository: {
         ...repo,
+        id: repoAuthority.node_id,
+        databaseId: repo.id,
         ref: { target: { oid: landed } },
         pullRequest: {
           id: record.prId,
@@ -119,6 +127,11 @@ function fixture() {
     `#!/bin/sh
 printf '%s\\t%s\\n' "$(git rev-parse --show-toplevel)" "$*" >> '${calls}'
 case "$1 $2" in
+  "api --hostname")
+    if [ "$#" -ne 6 ] || [ "$3 $4 $5 $6" != 'github.com repos/fixture/repo -H Cache-Control: max-age=0' ]; then
+      echo "Unexpected repository identity request: $*" >&2; exit 99
+    fi
+    printf '%s\\n' '${JSON.stringify(repoAuthority)}' ;;
   "repo view") printf '%s\\n' '${JSON.stringify(repo)}' ;;
   "api graphql") printf '%s\\n' '${JSON.stringify(response)}' ;;
   "pr view")
@@ -187,7 +200,7 @@ describePosix("native PR wrapper repository ownership", () => {
       expect(readFileSync(f.capture, "utf8")).toBe("retained capture\n");
       expect(f.git(f.caller, ["show-ref"])).toBe(callerRefs);
       expect(f.git(f.owner, ["for-each-ref", "--format=%(refname)", lockRef])).toBe("");
-      expect(f.readCalls()).toHaveLength(3);
+      expect(f.readCalls()).toHaveLength(4);
       expect(f.readCalls().every((call) => call.startsWith(`${f.owner}\t`))).toBe(true);
       expect(f.readCalls().some((call) => call.includes("pr merge") || call.includes("POST"))).toBe(
         false,
@@ -215,7 +228,10 @@ describePosix("native PR wrapper repository ownership", () => {
     expect(f.git(f.owner, ["rev-parse", outcomeRef])).toBe(f.head);
     expect(f.git(f.caller, ["rev-parse", outcomeRef])).toBe(f.intent);
     expect(readFileSync(f.capture, "utf8")).toBe("retained capture\n");
-    expect(f.readCalls()).toEqual([`${f.owner}\trepo view --json id,nameWithOwner,url`]);
+    expect(f.readCalls()).toEqual([
+      `${f.owner}\trepo view --json nameWithOwner,url`,
+      `${f.owner}\tapi --hostname github.com repos/fixture/repo -H Cache-Control: max-age=0`,
+    ]);
   });
 
   it.each(["prepare-run", "merge-recover", "ci-dispatch", "review-init"])(
