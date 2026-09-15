@@ -127,12 +127,12 @@ function fixture() {
     `#!/bin/sh
 printf '%s\\t%s\\n' "$(git rev-parse --show-toplevel)" "$*" >> '${calls}'
 case "$1 $2" in
-  "api --hostname")
-    if [ "$#" -ne 6 ] || [ "$3 $4 $5 $6" != 'github.com repos/fixture/repo -H Cache-Control: max-age=0' ]; then
-      echo "Unexpected repository identity request: $*" >&2; exit 99
-    fi
-    printf '%s\\n' '${JSON.stringify(repoAuthority)}' ;;
   "repo view") printf '%s\\n' '${JSON.stringify(repo)}' ;;
+  "api --hostname")
+    [ "$*" = 'api --hostname github.com repos/fixture/repo -H Cache-Control: max-age=0' ] || {
+      echo "Unexpected GitHub operation: $*" >&2; exit 99;
+    }
+    printf '%s\\n' '${JSON.stringify(repoAuthority)}' ;;
   "api graphql") printf '%s\\n' '${JSON.stringify(response)}' ;;
   "pr view")
     if [ "$(git rev-parse --show-toplevel)" = '${owner}' ]; then

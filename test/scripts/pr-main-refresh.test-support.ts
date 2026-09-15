@@ -407,15 +407,7 @@ if (args[0] === 'pr' && args[1] === 'view') {
 } else if (args[0] === 'api') {
   const endpoint = args.find((arg, index) => index > 0 &&
     (arg === 'graphql' || arg === 'users/fixture' || arg.startsWith('repos/')));
-  if (endpoint === 'repos/fixture/repo') {
-    if (args[args.indexOf('--hostname') + 1] !== 'github.com' ||
-        !args.some((arg, index) => ['-H', '--header'].includes(arg) &&
-          args[index + 1] === 'Cache-Control: max-age=0')) {
-      throw new Error('Missing live repository identity routing');
-    }
-    value = { id: 123, node_id: 'fixture-repo', full_name: 'fixture/repo',
-      html_url: 'https://github.com/fixture/repo' };
-  } else if (endpoint === 'graphql') {
+  if (endpoint === 'graphql') {
     if (control.failAuth) process.exit(1);
     if (args.some(arg => arg.includes('viewer { login }'))) {
       if (control.viewerRateLimited) {
@@ -440,6 +432,8 @@ if (args[0] === 'pr' && args[1] === 'view') {
     } else {
       throw new Error('Unexpected GraphQL request');
     }
+  } else if (endpoint === 'repos/fixture/repo') {
+    value = { id: 123, node_id: 'fixture-repo', full_name: 'fixture/repo', html_url: 'https://github.com/fixture/repo' };
   } else if (endpoint === 'repos/fixture/repo/commits/${head}') {
     const [name, email] = runGit(['-C', origin, 'show', '-s', '--format=%an%n%ae', ${JSON.stringify(head)}]).split('\\n');
     value = { commit: { author: { name, email } }, author: { ...control.metadata.author, type: 'User' } };
