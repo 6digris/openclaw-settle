@@ -27,7 +27,7 @@ import {
 } from "./node-worker-output.js";
 import type { NodeWorkerLaunchInput } from "./node-worker-supervisor-contract.js";
 
-export type NodeWorkerChildAdapter = Awaited<ReturnType<typeof createChildAdapter>> & {
+export type NodeWorkerChildAdapter = Awaited<ReturnType<typeof createChildAdapter>>["adapter"] & {
   confirmExtinction?: () => boolean;
 };
 
@@ -82,21 +82,24 @@ export async function prepareNodeWorkerLaunchTransport(
           : undefined;
       },
     } as const;
-    return {
-      kind: "started",
-      adapter: !supportsNodeWorkerProcessOwner()
-        ? await createChildAdapter({
-            ...workerOptions,
-            argv: [process.execPath, ...args],
-            exactEnv: true,
-          })
-        : await createServiceChildRelayAdapter({
-            ...workerOptions,
-            command: process.execPath,
-            args,
-            oomScoreWrapperSelected: false,
-          }),
-    };
+    if (supportsNodeWorkerProcessOwner()) {
+      return {
+        kind: "started",
+        adapter: await createServiceChildRelayAdapter({
+          ...workerOptions,
+          command: process.execPath,
+          args,
+          oomScoreWrapperSelected: false,
+        }),
+      };
+    }
+    const { adapter, ready } = await createChildAdapter({
+      ...workerOptions,
+      argv: [process.execPath, ...args],
+      exactEnv: true,
+    });
+    await ready;
+    return { kind: "started", adapter };
   }
 
   const endpoint = options.descriptor.connectionEndpoint;
@@ -137,12 +140,13 @@ export async function prepareNodeWorkerLaunchTransport(
       }
       return { kind: "terminal", receipt: claimed };
     }
-    const adapter = await createChildAdapter({
+    const { adapter, ready } = await createChildAdapter({
       argv: buildNodeWorkerContainerStartArgv(options.containerEngine, container.containerId),
       env: options.containerEngine.env ?? options.engineEnv,
       exactEnv: true,
       stdinMode: "pipe-open",
     });
+    await ready;
     return { kind: "started", adapter, container };
   } catch (error) {
     if (container) {
