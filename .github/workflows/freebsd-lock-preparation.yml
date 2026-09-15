@@ -1,0 +1,134 @@
+name: FreeBSD dependency lock preparation (temporary)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - .github/workflows/freebsd-lock-preparation.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: freebsd-lock-preparation-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+env:
+  BASE_SHA: bd13c19db026d05f67d128231671ef9d26cbf039
+  BASE_PACKAGE_SHA256: 4e5b6880360fcce4a897a65da09f1eeb1e2d1be9cbff35b580563aa46296114a
+  BASE_LOCK_SHA256: 3303df640d15e55a0581f9ac647eafe00573e8bb4ee7d2e6e1ae4ac25d7d11e6
+  CANDIDATE_PACKAGE_SHA256: 7a35189f6dd562250f4d7f97a251259c98bcb8492f1dc458cc8700e4085ed7e3
+
+jobs:
+  prepare-lock:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'diag/freebsd-lock-preparation'
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 3
+          persist-credentials: false
+
+      - name: Verify trusted baseline and workflow-only delta
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git merge-base --is-ancestor "$BASE_SHA" HEAD
+          test "$(git diff --name-only "$BASE_SHA" HEAD)" = '.github/workflows/freebsd-lock-preparation.yml'
+          test -z "$(git status --porcelain)"
+          printf '%s  package.json\n%s  pnpm-lock.yaml\n' "$BASE_PACKAGE_SHA256" "$BASE_LOCK_SHA256" | sha256sum --check
+          git rev-parse HEAD
+
+      - name: Use the baseline Node and pnpm setup
+        uses: ./.github/actions/setup-node-env
+        with:
+          node-version: "24.19.0"
+          install-bun: "false"
+          install-deps: "false"
+          cache-mode: "off"
+
+      - name: Apply only the reviewed foreground manifest delta
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = v24.19.0
+          test "$(pnpm --version)" = 12.3.4
+          printf '%s  package.json\n%s  pnpm-lock.yaml\n' "$BASE_PACKAGE_SHA256" "$BASE_LOCK_SHA256" | sha256sum --check
+          python3 - <<'PY'
+          import hashlib, os, pathlib
+          path = pathlib.Path('package.json')
+          before = path.read_bytes()
+          assert hashlib.sha256(before).hexdigest() == os.environ['BASE_PACKAGE_SHA256']
+          replacements = [
+              (b'    "scripts/lib/official-external-provider-catalog.json",\n',
+               b'    "scripts/lib/official-external-provider-catalog.json",\n    "scripts/lib/freebsd-service-discovery.mjs",\n'),
+              (b'    "semver": "7.8.5",\n',
+               b'    "semver": "7.8.5",\n    "signal-exit": "4.1.0",\n'),
+          ]
+          after = before
+          for old, new in replacements:
+              assert after.count(old) == 1
+              after = after.replace(old, new, 1)
+          assert hashlib.sha256(after).hexdigest() == os.environ['CANDIDATE_PACKAGE_SHA256']
+          path.write_bytes(after)
+          print('candidate package.json', len(after), hashlib.sha256(after).hexdigest())
+          PY
+          git diff -- package.json
+
+      - name: Generate the lock without installing dependencies or running lifecycle scripts
+        run: |
+          set -euo pipefail
+          pnpm install --lockfile-only --no-frozen-lockfile --ignore-scripts
+
+      - name: Verify inputs and retain one bounded generated lock
+        id: lock
+        env:
+          LOCK_EXPORT: ${{ runner.temp }}/freebsd-lock-preparation/pnpm-lock.yaml
+        run: |
+          set -euo pipefail
+          printf '%s  package.json\n' "$CANDIDATE_PACKAGE_SHA256" | sha256sum --check
+          test "$(git diff --name-only)" = "$(printf 'package.json\npnpm-lock.yaml')"
+          test ! -e node_modules
+          git diff --stat -- pnpm-lock.yaml
+          git diff --numstat -- pnpm-lock.yaml
+          python3 - <<'PY'
+          import hashlib, os, pathlib, stat
+          cap = 2 * 1024 * 1024
+          fd = os.open('pnpm-lock.yaml', os.O_RDONLY | os.O_NOFOLLOW)
+          try:
+              before = os.fstat(fd)
+              assert stat.S_ISREG(before.st_mode) and 0 < before.st_size <= cap
+              with os.fdopen(fd, 'rb', closefd=False) as source:
+                  data = source.read(cap + 1)
+              after = os.fstat(fd)
+              identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
+              assert identity(before) == identity(after) and len(data) == before.st_size
+              digest = hashlib.sha256(data).hexdigest()
+              assert digest != os.environ['BASE_LOCK_SHA256']
+          finally:
+              os.close(fd)
+          destination = pathlib.Path(os.environ['LOCK_EXPORT'])
+          destination.parent.mkdir(mode=0o700)
+          with destination.open('xb') as output:
+              output.write(data)
+          destination.chmod(0o600)
+          assert destination.read_bytes() == data
+          print('generated pnpm-lock.yaml', len(data), digest)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('ready=true\n')
+          PY
+
+      - name: Export the generated lock for review
+        if: steps.lock.outputs.ready == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: freebsd-lock-preparation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/freebsd-lock-preparation/pnpm-lock.yaml
+          if-no-files-found: error
+          retention-days: 7
