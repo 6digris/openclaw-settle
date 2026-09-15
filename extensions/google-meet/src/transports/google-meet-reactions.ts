@@ -2,10 +2,24 @@ import type {
   MeetingBrowserParticipationAdapter,
   MeetingParticipationSource,
 } from "openclaw/plugin-sdk/meeting-runtime";
+import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { z } from "zod";
 import { meetParticipationSourceCheck } from "./google-meet-source-check.js";
 import { normalizeMeetUrlForReuse } from "./google-meet-urls.js";
 
 const MEET_REACTIONS = ["💖", "👍", "🎉", "👏", "😂", "😮", "😢", "🤔", "👎"] as const;
+
+const reactionResultSchema = z.object({
+  status: z.enum(["succeeded", "failed", "uncertain", "unsupported", "rejected"]),
+  // Malformed optional fields are ignored without discarding an otherwise valid receipt.
+  correctable: z.literal(true).optional().catch(undefined),
+  message: z.string().optional().catch(undefined),
+  observed: z.object({
+    supportedReactions: z.array(z.enum(MEET_REACTIONS)).max(MEET_REACTIONS.length),
+    emoji: z.enum(MEET_REACTIONS).optional().catch(undefined),
+    confirmation: z.literal("native_reaction_announcement").optional().catch(undefined),
+  }),
+});
 
 function reactionPageSource(params: {
   meetingSessionId: string;
@@ -57,14 +71,13 @@ function readReactionResult(result: unknown): Record<string, unknown> | undefine
     typeof result !== "object" ||
     !("result" in result) ||
     ("ok" in result && result.ok !== true)
-  )
+  ) {
     return undefined;
+  }
   try {
     const parsed: unknown =
       typeof result.result === "string" ? JSON.parse(result.result) : result.result;
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : undefined;
+    return asOptionalRecord(parsed);
   } catch {
     return undefined;
   }
@@ -128,7 +141,9 @@ export const GOOGLE_MEET_REACTIONS_ADAPTER = {
   },
   parsePreparationResult(result) {
     const parsed = readReactionResult(result);
-    if (parsed?.status === "prepared") return { status: "succeeded" };
+    if (parsed?.status === "prepared") {
+      return { status: "succeeded" };
+    }
     const status = parsed?.status;
     return {
       status: status === "rejected" || status === "unsupported" ? status : "failed",
@@ -151,7 +166,6 @@ export const GOOGLE_MEET_REACTIONS_ADAPTER = {
       const stale = () => result(sent ? 'uncertain' : 'rejected',
         'The meeting session or original request is no longer current.');
       try {
-        if (!current()) return stale();
         if (!current()) return stale();
         if (pickers().length !== 1 || supported().length === 0) {
           return result('unsupported', 'The native Meet reaction palette is unavailable.');
@@ -221,48 +235,19 @@ export const GOOGLE_MEET_REACTIONS_ADAPTER = {
       message: "Meet returned an invalid reaction receipt; do not resend it automatically.",
     };
     try {
-      const parsed = readReactionResult(result);
-      if (!parsed) return uncertain;
-      const { status } = parsed;
-      if (
-        status !== "succeeded" &&
-        status !== "failed" &&
-        status !== "uncertain" &&
-        status !== "unsupported" &&
-        status !== "rejected"
-      ) {
+      const parsed = reactionResultSchema.safeParse(readReactionResult(result));
+      if (!parsed.success) {
         return uncertain;
       }
-      const observed = "observed" in parsed ? parsed.observed : undefined;
-      if (
-        !observed ||
-        typeof observed !== "object" ||
-        !("supportedReactions" in observed) ||
-        !Array.isArray(observed.supportedReactions) ||
-        observed.supportedReactions.length > MEET_REACTIONS.length ||
-        observed.supportedReactions.some(
-          (value) => !MEET_REACTIONS.some((emoji) => emoji === value),
-        )
-      ) {
-        return uncertain;
-      }
-      const emoji =
-        "emoji" in observed &&
-        typeof observed.emoji === "string" &&
-        MEET_REACTIONS.some((value) => value === observed.emoji)
-          ? observed.emoji
-          : undefined;
-      const confirmation = "confirmation" in observed ? observed.confirmation : undefined;
+      const { status, correctable, message, observed } = parsed.data;
+      const { emoji, confirmation } = observed;
       if (status === "succeeded" && (!emoji || confirmation !== "native_reaction_announcement")) {
         return uncertain;
       }
       return {
         status,
-        ...(status === "rejected" && "correctable" in parsed && parsed.correctable === true
-          ? { correctable: true as const }
-          : {}),
-        message:
-          "message" in parsed && typeof parsed.message === "string" ? parsed.message : undefined,
+        ...(status === "rejected" && correctable === true ? { correctable: true as const } : {}),
+        message,
         observed: {
           supportedReactions: [...new Set(observed.supportedReactions)],
           ...(emoji ? { emoji } : {}),

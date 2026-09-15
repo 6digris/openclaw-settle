@@ -2,13 +2,13 @@ import {
   createPluginStateKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
-import type { OpenKeyedStoreOptions } from "openclaw/plugin-sdk/runtime-doctor-migrations";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { withOpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import plugin from "./index.js";
 import {
+  createGoogleMeetToolGatewayForTest,
   getMeetTool,
   invokeGoogleMeetGatewayMethodForTest,
   setupGoogleMeetPlugin,
@@ -38,28 +38,35 @@ describe("registered Google Meet reactions", () => {
           const page = reactionPage({ open: false });
           let afterPreparation: (() => Promise<void>) | undefined;
           const browserRequest = vi.fn(async (request: Record<string, unknown>) => {
-            if (request.path === "/tabs")
+            if (request.path === "/tabs") {
               return {
                 tabs: [
                   { targetId: "other-tab", url: MEETING_URL },
                   { targetId: "reaction-tab", url: MEETING_URL },
                 ],
               };
-            if (request.path !== "/act")
+            }
+            if (request.path !== "/act") {
               throw new Error(`Unexpected browser path: ${String(request.path)}`);
+            }
             const body = requireRecord(request.body, "browser action");
             expect(body).toMatchObject({ kind: "evaluate", targetId: "reaction-tab" });
-            if (typeof body.fn !== "string") throw new Error("Expected native page source");
+            if (typeof body.fn !== "string") {
+              throw new Error("Expected native page source");
+            }
             const result = await page.evaluate(body.fn);
             const parsed: unknown =
               typeof result.result === "string" ? JSON.parse(result.result) : result.result;
-            if (requireRecord(parsed, "page result").status === "prepared")
+            if (requireRecord(parsed, "page result").status === "prepared") {
               await afterPreparation?.();
+            }
             return { ...result, targetId: "reaction-tab" };
           });
           const launch = async ({ meetingSessionId }: { meetingSessionId?: string }) => {
-            if (!meetingSessionId) throw new Error("Expected tracked meeting session");
-            page.window.__openclawMeetAudioSession = meetingSessionId;
+            if (!meetingSessionId) {
+              throw new Error("Expected tracked meeting session");
+            }
+            page.window["__openclawMeetAudioSession"] = meetingSessionId;
             return {
               launched: true,
               tab: { targetId: "reaction-tab", openedByPlugin: false },
@@ -83,29 +90,11 @@ describe("registered Google Meet reactions", () => {
             lines: [],
           });
 
-          let harness: ReturnType<typeof setupGoogleMeetPlugin>;
-          harness = setupGoogleMeetPlugin(
-            {
-              register(api) {
-                plugin.register({
-                  ...api,
-                  runtime: {
-                    ...api.runtime,
-                    state: {
-                      ...api.runtime.state,
-                      openKeyedStore<T>(options: OpenKeyedStoreOptions) {
-                        return createPluginStateKeyedStoreForTests<T>("google-meet", {
-                          ...options,
-                          env: state.env,
-                        });
-                      },
-                    },
-                  },
-                });
-              },
-            },
+          const harness: ReturnType<typeof setupGoogleMeetPlugin> = setupGoogleMeetPlugin(
+            plugin,
             { defaultTransport: transport, defaultMode: "transcribe" },
             {
+              stateEnv: state.env,
               fullConfig: { transcripts: { enabled: false } },
               gatewayAvailable: true,
               gatewayRequestHandler: async (method, params) =>
@@ -129,13 +118,10 @@ describe("registered Google Meet reactions", () => {
             },
           );
           const tool = harness.tools[0];
-          if (!tool) throw new Error("Expected Google Meet tool registration");
-          const toolGateway = vi.fn(async (method: string, _options: unknown, params?: unknown) =>
-            requireRecord(
-              await invokeGoogleMeetGatewayMethodForTest(harness.methods, method, params),
-              "Google Meet Gateway result",
-            ),
-          );
+          if (!tool) {
+            throw new Error("Expected Google Meet tool registration");
+          }
+          const toolGateway = createGoogleMeetToolGatewayForTest(harness.methods);
           testing.setCallGatewayFromCliForTests(toolGateway);
           let sessionId: string | undefined;
           try {
@@ -217,7 +203,7 @@ describe("registered Google Meet reactions", () => {
                 })
               ).details,
             ).toMatchObject({ status: "rejected" });
-            expect(page.buttons[1].click).toHaveBeenCalledOnce();
+            expect(page.buttonAt(1).click).toHaveBeenCalledOnce();
 
             // The generic Gateway entry and public alias share the same durable claim.
             const uncertain = {
@@ -225,7 +211,7 @@ describe("registered Google Meet reactions", () => {
               requestId: "uncertain",
               participationAction: { type: "reaction.send", emoji: "👏" },
             };
-            page.buttons[3].click.mockImplementation(() => {});
+            page.buttonAt(3).click.mockImplementation(() => {});
             expect(
               await invokeGoogleMeetGatewayMethodForTest(
                 harness.methods,
@@ -254,10 +240,12 @@ describe("registered Google Meet reactions", () => {
                 })
               ).details,
             ).toMatchObject({ status: "rejected" });
-            expect(page.buttons[3].click).toHaveBeenCalledOnce();
+            expect(page.buttonAt(3).click).toHaveBeenCalledOnce();
 
             // End the runtime owner after the menu's asynchronous preparation. The
             // page marker deliberately remains unchanged: it is not enough authority.
+            // The browser refuses the click, but the session owner records uncertainty
+            // after losing authority during its awaited adapter call.
             afterPreparation = async () => {
               await invokeGoogleMeetGatewayMethodForTest(harness.methods, "googlemeet.leave", {
                 sessionId,
@@ -276,7 +264,7 @@ describe("registered Google Meet reactions", () => {
                   emoji: "🎉",
                 })
               ).details,
-            ).toMatchObject({ status: "rejected" });
+            ).toMatchObject({ status: "uncertain" });
             expect(
               page.buttons.reduce((sum, button) => sum + button.click.mock.calls.length, 0),
             ).toBe(beforeClose);
@@ -284,13 +272,17 @@ describe("registered Google Meet reactions", () => {
             expect(harness.runCommandWithTimeout).not.toHaveBeenCalled();
             expect(page.microphone.click).not.toHaveBeenCalled();
             expect(page.hand.click).not.toHaveBeenCalled();
-            if (transport === "chrome") expect(harness.nodesInvoke).not.toHaveBeenCalled();
-            else expect(harness.nodesInvoke).toHaveBeenCalled();
+            if (transport === "chrome") {
+              expect(harness.nodesInvoke).not.toHaveBeenCalled();
+            } else {
+              expect(harness.nodesInvoke).toHaveBeenCalled();
+            }
           } finally {
-            if (sessionId)
+            if (sessionId) {
               await invokeGoogleMeetGatewayMethodForTest(harness.methods, "googlemeet.leave", {
                 sessionId,
               });
+            }
             await closeOpenClawStateDatabaseAsync();
             resetPluginStateStoreForTests();
           }

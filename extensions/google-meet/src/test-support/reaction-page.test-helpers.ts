@@ -29,8 +29,9 @@ export class Element {
 
   getBoundingClientRect() {
     let hidden = this.hidden;
-    for (let parent = this.parentElement; parent; parent = parent.parentElement)
+    for (let parent = this.parentElement; parent; parent = parent.parentElement) {
       hidden ||= parent.hidden;
+    }
     return { width: hidden ? 0 : 10, height: hidden ? 0 : 10 };
   }
 
@@ -40,8 +41,9 @@ export class Element {
   }
 
   matches(selector: string): boolean {
-    if (selector.includes(","))
+    if (selector.includes(",")) {
       return selector.split(",").some((part) => this.matches(part.trim()));
+    }
     switch (selector) {
       case "button":
         return this.tag === "button";
@@ -154,8 +156,12 @@ export function reactionPage(
     "aria-orientation": "horizontal",
     "aria-label": "Send a reaction",
   });
-  if (!options.legacyDialog && !options.standaloneToolbar) picker.append(toolbar);
-  for (const node of [leave, microphone, hand, toggle, picker]) root.append(node);
+  if (!options.legacyDialog && !options.standaloneToolbar) {
+    picker.append(toolbar);
+  }
+  for (const node of [leave, microphone, hand, toggle, picker]) {
+    root.append(node);
+  }
   let callback: ((records: Mutation[]) => void) | undefined;
   let pending: Mutation[] = [];
   let observed = false;
@@ -165,13 +171,17 @@ export function reactionPage(
     observed = false;
   });
   const flush = () => {
-    if (!observed || pending.length === 0) return;
+    if (!observed || pending.length === 0) {
+      return;
+    }
     const records = pending;
     pending = [];
     callback?.(records);
   };
   const notify = (record: Mutation) => {
-    if (!observed) return;
+    if (!observed) {
+      return;
+    }
     pending.push(record);
     queueMicrotask(flush);
   };
@@ -183,14 +193,18 @@ export function reactionPage(
         "data-mdc-dom-announce": "true",
       });
     region.textContent = text;
-    if (!existing) root.append(region);
+    if (!existing) {
+      root.append(region);
+    }
     notify({ target: existing ?? root, addedNodes: existing ? [] : [region] });
     return region;
   };
   const buttons = (options.available ?? EMOJIS).map((emoji) => {
     const button = new Element("button", { "data-emoji": emoji, "aria-label": emoji });
     button.click.mockImplementation(() => {
-      if (options.receipt !== false) announce(`You reacted with ${emoji}.`);
+      if (options.receipt !== false) {
+        announce(`You reacted with ${emoji}.`);
+      }
     });
     (options.legacyDialog || options.standaloneToolbar ? picker : toolbar).append(button);
     return button;
@@ -252,10 +266,13 @@ export function reactionPage(
       action: { type: "reaction.send", emoji },
     };
     const prepare = GOOGLE_MEET_REACTIONS_ADAPTER.buildPreparationScript?.(params);
-    if (!prepare || !GOOGLE_MEET_REACTIONS_ADAPTER.parsePreparationResult)
+    if (!prepare || !GOOGLE_MEET_REACTIONS_ADAPTER.parsePreparationResult) {
       throw new Error("Expected reaction preparation");
+    }
     const prepared = GOOGLE_MEET_REACTIONS_ADAPTER.parsePreparationResult(await evaluate(prepare));
-    if (prepared.status !== "succeeded") return prepared;
+    if (prepared.status !== "succeeded") {
+      return prepared;
+    }
     return GOOGLE_MEET_REACTIONS_ADAPTER.parseActionResult(
       await evaluate(GOOGLE_MEET_REACTIONS_ADAPTER.buildActionScript(params)),
     );
@@ -268,11 +285,11 @@ export function reactionPage(
       lines: [{ text: source.text, source: { ...source } }],
       visible: [],
     };
-    window.__openclawMeetCaptions = captions;
+    window["__openclawMeetCaptions"] = captions;
     return captions;
   };
   const setChatSource = (source: MeetingParticipationSource) => {
-    window.__openclawMeetChat = {
+    window["__openclawMeetChat"] = {
       sessionId: "session-1",
       epoch: source.epoch,
       messages: new Map([[source.id, { ...source, historical: false }]]),
@@ -301,6 +318,13 @@ export function reactionPage(
     microphone,
     hand,
     buttons,
+    buttonAt(index: number): Element {
+      const button = buttons[index];
+      if (!button) {
+        throw new Error(`Expected reaction button at index ${index}.`);
+      }
+      return button;
+    },
     window,
     location,
     disconnect,

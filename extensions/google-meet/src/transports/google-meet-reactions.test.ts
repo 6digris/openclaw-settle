@@ -1,3 +1,4 @@
+import type { MeetingParticipationSource } from "openclaw/plugin-sdk/meeting-runtime";
 import { describe, expect, it } from "vitest";
 import {
   Element,
@@ -18,7 +19,9 @@ describe("native Meet reactions", () => {
   it("prepares the palette without sending a reaction", async () => {
     const page = reactionPage({ open: false });
     const source = GOOGLE_MEET_REACTIONS_ADAPTER.buildPreparationScript?.(actionParams);
-    if (!source) throw new Error("Expected reaction preparation");
+    if (!source) {
+      throw new Error("Expected reaction preparation");
+    }
     const result = await page.evaluate(source);
     expect(GOOGLE_MEET_REACTIONS_ADAPTER.parsePreparationResult?.(result)).toEqual({
       status: "succeeded",
@@ -43,7 +46,7 @@ describe("native Meet reactions", () => {
   it("performs the final guarded click before the first asynchronous yield", async () => {
     const page = reactionPage();
     const result = page.evaluate(GOOGLE_MEET_REACTIONS_ADAPTER.buildActionScript(actionParams));
-    expect(page.buttons[1].click).toHaveBeenCalledOnce();
+    expect(page.buttonAt(1).click).toHaveBeenCalledOnce();
     await result;
   });
 
@@ -63,8 +66,12 @@ describe("native Meet reactions", () => {
       const chat = kind === "chat" ? page.setChatSource(source) : undefined;
       const captions = kind === "caption" ? page.setCaptionSource(source) : undefined;
       page.beforeObserve(() => {
-        if (chat) chat.body.textContent = "Do not react.";
-        if (captions) captions.sourceRevisions.set(source.id, 2);
+        if (chat) {
+          chat.body.textContent = "Do not react.";
+        }
+        if (captions) {
+          captions.sourceRevisions.set(source.id, 2);
+        }
       });
       const result = await page.evaluate(
         GOOGLE_MEET_REACTIONS_ADAPTER.buildActionScript({ ...actionParams, source }),
@@ -89,15 +96,18 @@ describe("native Meet reactions", () => {
         ownEcho: false,
       };
       const page = reactionPage();
-      if (kind === "chat") page.setChatSource(source);
-      else page.setCaptionSource(source);
+      if (kind === "chat") {
+        page.setChatSource(source);
+      } else {
+        page.setCaptionSource(source);
+      }
       const result = await page.evaluate(
         GOOGLE_MEET_REACTIONS_ADAPTER.buildActionScript({ ...actionParams, source }),
       );
       expect(GOOGLE_MEET_REACTIONS_ADAPTER.parseActionResult(result)).toMatchObject({
         status: "succeeded",
       });
-      expect(page.buttons[1].click).toHaveBeenCalledOnce();
+      expect(page.buttonAt(1).click).toHaveBeenCalledOnce();
     },
   );
 
@@ -151,9 +161,9 @@ describe("native Meet reactions", () => {
 
   it("reports only enabled native choices and rejects an unavailable emoji without sending", async () => {
     const page = reactionPage({ available: ["👍", "🎉", "👏", "😮", "🦄"] });
-    page.buttons[0].disabled = true;
-    page.buttons[1].attributes["aria-disabled"] = "true";
-    page.buttons[2].hidden = true;
+    page.buttonAt(0).disabled = true;
+    page.buttonAt(1).attributes["aria-disabled"] = "true";
+    page.buttonAt(2).hidden = true;
     expect(await page.run("👍")).toMatchObject({
       status: "rejected",
       correctable: true,
@@ -166,8 +176,12 @@ describe("native Meet reactions", () => {
     "does not guess when the palette is %s",
     async (state) => {
       const page = reactionPage({ open: false });
-      if (state === "missing") page.toggle.isConnected = false;
-      if (state === "disabled") page.toggle.disabled = true;
+      if (state === "missing") {
+        page.toggle.isConnected = false;
+      }
+      if (state === "disabled") {
+        page.toggle.disabled = true;
+      }
       if (state === "ambiguous") {
         page.picker.hidden = false;
         page.root.append(new Element("div", { role: "dialog", "aria-label": "Send a reaction" }));
@@ -188,7 +202,9 @@ describe("native Meet reactions", () => {
     const page = reactionPage({ open: false });
     page.toggle.hidden = true;
     page.root.dispatchEvent.mockImplementation((event) => {
-      if (event.type === "mousemove") page.toggle.hidden = false;
+      if (event.type === "mousemove") {
+        page.toggle.hidden = false;
+      }
       return true;
     });
     expect(await page.run()).toMatchObject({ status: "succeeded" });
@@ -197,7 +213,7 @@ describe("native Meet reactions", () => {
       "mousemove",
     ]);
     expect(page.toggle.click).toHaveBeenCalledOnce();
-    expect(page.buttons[1].click).toHaveBeenCalledOnce();
+    expect(page.buttonAt(1).click).toHaveBeenCalledOnce();
     expect(page.microphone.click).not.toHaveBeenCalled();
     expect(page.hand.click).not.toHaveBeenCalled();
   });
@@ -206,7 +222,7 @@ describe("native Meet reactions", () => {
     const page = reactionPage({ open: false });
     page.toggle.hidden = true;
     page.root.dispatchEvent.mockImplementation(() => {
-      page.window.__openclawMeetAudioSession = "replacement";
+      page.window["__openclawMeetAudioSession"] = "replacement";
       return true;
     });
     expect(await page.run()).toMatchObject({ status: "rejected" });
@@ -219,9 +235,15 @@ describe("native Meet reactions", () => {
     "rejects stale %s before opening the palette",
     async (change) => {
       const page = reactionPage({ open: false });
-      if (change === "owner") page.window.__openclawMeetAudioSession = "replacement";
-      if (change === "room") page.location.href = "https://meet.google.com/xyz-abcd-efg";
-      if (change === "left") page.leave.isConnected = false;
+      if (change === "owner") {
+        page.window["__openclawMeetAudioSession"] = "replacement";
+      }
+      if (change === "room") {
+        page.location.href = "https://meet.google.com/xyz-abcd-efg";
+      }
+      if (change === "left") {
+        page.leave.isConnected = false;
+      }
       expect(await page.run()).toMatchObject({ status: "rejected" });
       expect(page.toggle.click).not.toHaveBeenCalled();
       expect(page.buttons.every((node) => node.click.mock.calls.length === 0)).toBe(true);
@@ -233,7 +255,7 @@ describe("native Meet reactions", () => {
     page.toggle.click.mockImplementation(() => {});
     page.beforeWait(() => {
       page.picker.hidden = false;
-      page.window.__openclawMeetAudioSession = "replacement";
+      page.window["__openclawMeetAudioSession"] = "replacement";
     });
     expect(await page.run()).toMatchObject({ status: "rejected" });
     expect(page.toggle.click).toHaveBeenCalledOnce();
@@ -253,10 +275,10 @@ describe("native Meet reactions", () => {
   it("reports uncertainty when the session changes after a click, without retrying", async () => {
     const page = reactionPage();
     page.beforeWait(() => {
-      page.window.__openclawMeetAudioSession = "replacement";
+      page.window["__openclawMeetAudioSession"] = "replacement";
     });
     expect(await page.run()).toMatchObject({ status: "uncertain" });
-    expect(page.buttons[1].click).toHaveBeenCalledOnce();
+    expect(page.buttonAt(1).click).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -269,29 +291,35 @@ describe("native Meet reactions", () => {
   ])("keeps a click uncertain for a %s announcement", async (receipt) => {
     const page = reactionPage({ receipt: false });
     const old = page.announce("You reacted with 👍.");
-    if (receipt === "reparented")
+    if (receipt === "reparented") {
       page.beforeWait(() => page.notify({ target: page.root, addedNodes: [old] }));
-    if (receipt === "other participant")
+    }
+    if (receipt === "other participant") {
       page.beforeWait(() => {
         page.announce("Alex reacted with 👍.");
       });
-    if (receipt === "other emoji")
+    }
+    if (receipt === "other emoji") {
       page.beforeWait(() => {
         page.announce("You reacted with 👏.");
       });
-    if (receipt === "before click")
+    }
+    if (receipt === "before click") {
       page.beforeObserve(() => {
         page.announce("You reacted with 👍.");
       });
-    if (receipt === "absent") old.isConnected = false;
+    }
+    if (receipt === "absent") {
+      old.isConnected = false;
+    }
     expect(await page.run()).toMatchObject({ status: "uncertain" });
-    expect(page.buttons[1].click).toHaveBeenCalledOnce();
+    expect(page.buttonAt(1).click).toHaveBeenCalledOnce();
   });
 
   it("accepts a new announcement mutation reusing an existing live region", async () => {
     const page = reactionPage({ receipt: false });
     const region = page.announce("You reacted with 👍.");
-    page.buttons[1].click.mockImplementation(() => {
+    page.buttonAt(1).click.mockImplementation(() => {
       page.announce("You reacted with 👍.", region);
     });
     expect(await page.run()).toMatchObject({ status: "succeeded" });
@@ -299,11 +327,11 @@ describe("native Meet reactions", () => {
 
   it("does not resend a click that throws after dispatch", async () => {
     const page = reactionPage();
-    page.buttons[1].click.mockImplementation(() => {
+    page.buttonAt(1).click.mockImplementation(() => {
       throw new Error("lost callback");
     });
     expect(await page.run()).toMatchObject({ status: "uncertain" });
-    expect(page.buttons[1].click).toHaveBeenCalledOnce();
+    expect(page.buttonAt(1).click).toHaveBeenCalledOnce();
     expect(page.disconnect).toHaveBeenCalledOnce();
   });
 
@@ -329,8 +357,9 @@ describe("native Meet reactions", () => {
       { type: "reaction.send", emoji: "button[data-emoji]" },
       { type: "reaction.send", emoji: "👍", selector: "button" },
       { type: "hand.raise", emoji: "👍" },
-    ])
+    ]) {
       expect(GOOGLE_MEET_REACTIONS_ADAPTER.validateAction(action)).toBeTypeOf("string");
+    }
   });
 
   it.each([
@@ -357,5 +386,75 @@ describe("native Meet reactions", () => {
       status: "uncertain",
     });
   });
+
+  it.each([
+    ["rejected", "true", {}, {}],
+    ["rejected", true, { correctable: true }, {}],
+    ["succeeded", true, {}, { emoji: "👍", confirmation: "native_reaction_announcement" }],
+  ] as const)(
+    "normalizes optional fields and duplicate reactions for %s with correctable=%j",
+    (status, correctable, expectedCorrection, confirmed) => {
+      expect(
+        GOOGLE_MEET_REACTIONS_ADAPTER.parseActionResult({
+          result: {
+            status,
+            correctable,
+            message: 42,
+            observed: {
+              supportedReactions: ["👍", "👍", "👏"],
+              emoji: "🦄",
+              confirmation: "button_clicked",
+              ...confirmed,
+            },
+          },
+        }),
+      ).toStrictEqual({
+        status,
+        ...expectedCorrection,
+        message: undefined,
+        observed: { supportedReactions: ["👍", "👏"], ...confirmed },
+      });
+    },
+  );
+
+  it.each([
+    ["too many entries before deduplication", Array<string>(10).fill("👍")],
+    ["an unknown emoji", ["🦄"]],
+  ])("rejects a receipt whose supported reactions contain %s", (_reason, supportedReactions) => {
+    expect(
+      GOOGLE_MEET_REACTIONS_ADAPTER.parseActionResult({
+        result: { status: "rejected", observed: { supportedReactions } },
+      }),
+    ).toStrictEqual({
+      status: "uncertain",
+      message: "Meet returned an invalid reaction receipt; do not resend it automatically.",
+    });
+  });
+
+  it.each(["object", "string"])(
+    "accepts a %s receipt only when ok is absent or true",
+    (encoding) => {
+      const receipt = {
+        status: "succeeded",
+        observed: {
+          supportedReactions: ["👍"],
+          emoji: "👍",
+          confirmation: "native_reaction_announcement",
+        },
+      };
+      const result = encoding === "string" ? JSON.stringify(receipt) : receipt;
+      for (const envelope of [{ result }, { ok: true, result }]) {
+        expect(GOOGLE_MEET_REACTIONS_ADAPTER.parseActionResult(envelope)).toStrictEqual({
+          ...receipt,
+          message: undefined,
+        });
+      }
+      for (const ok of [undefined, 1, "true"]) {
+        expect(GOOGLE_MEET_REACTIONS_ADAPTER.parseActionResult({ ok, result })).toStrictEqual({
+          status: "uncertain",
+          message: "Meet returned an invalid reaction receipt; do not resend it automatically.",
+        });
+      }
+    },
+  );
 });
-import type { MeetingParticipationSource } from "openclaw/plugin-sdk/meeting-runtime";
