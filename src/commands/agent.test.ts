@@ -61,6 +61,7 @@ import { resolveEffectiveAgentSkillFilter } from "../skills/discovery/agent-filt
 import {
   loadVisibleSkills,
   loadWorkspaceSkills,
+  prepareWorkspaceSkills,
 } from "../skills/loading/workspace-skill-loader.js";
 import { resolveReusableWorkspaceSkillSnapshot } from "../skills/runtime/session-snapshot.js";
 import type { SkillEntry } from "../skills/types.js";
@@ -473,12 +474,14 @@ function mockUserInvocableSkills(params: {
       },
     } satisfies SkillEntry;
   });
-  vi.mocked(loadVisibleSkills).mockImplementation((_workspaceDir, opts) => {
-    const filter = opts?.skillFilter;
-    return filter === undefined
-      ? entries
-      : entries.filter((entry) => filter.includes(entry.skill.name));
-  });
+  const filterEntries = (filter?: string[]) =>
+    filter === undefined ? entries : entries.filter((entry) => filter.includes(entry.skill.name));
+  vi.mocked(loadVisibleSkills).mockImplementation((_workspaceDir, opts) =>
+    filterEntries(opts?.skillFilter),
+  );
+  vi.mocked(prepareWorkspaceSkills).mockImplementation(async (_workspaceDir, opts) =>
+    filterEntries(opts?.skillFilter),
+  );
   vi.mocked(loadWorkspaceSkills).mockReturnValue(entries);
 }
 
@@ -606,6 +609,7 @@ beforeEach(() => {
   vi.mocked(loadManifestModelCatalog).mockReturnValue([]);
   vi.mocked(readPreparedModelCatalog).mockResolvedValue([]);
   vi.mocked(loadEnabledClaudeBundleCommands).mockReturnValue([]);
+  vi.mocked(prepareWorkspaceSkills).mockResolvedValue([]);
   vi.mocked(modelSelectionModule.isCliProvider).mockImplementation(() => false);
   configIoMocks.readConfigFileSnapshotForWrite.mockResolvedValue({
     snapshot: { valid: false, resolved: {} as OpenClawConfig },
@@ -1029,6 +1033,7 @@ describe("agentCommand", () => {
         expect(getLastEmbeddedCall()?.prompt).toBe(message);
         expect(loadVisibleSkills).not.toHaveBeenCalled();
         expect(loadWorkspaceSkills).not.toHaveBeenCalled();
+        expect(prepareWorkspaceSkills).not.toHaveBeenCalled();
       });
     },
   );

@@ -304,6 +304,7 @@ vi.mock("../skills/loading/workspace-skill-loader.js", () => {
     filterWorkspaceSkills: (entries: unknown[]) => entries,
     loadVisibleSkills: vi.fn(() => []),
     loadWorkspaceSkills: vi.fn(() => []),
+    prepareWorkspaceSkills: vi.fn(async () => []),
   };
 });
 
