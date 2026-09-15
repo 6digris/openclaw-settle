@@ -21,7 +21,7 @@ import {
 } from "./streaming-directives.js";
 import { createMockTypingController } from "./test-helpers.js";
 import { createTypingSignaler, resolveTypingMode } from "./typing-mode.js";
-import { createTypingController } from "./typing.js";
+import { createTypingController, runVisibleDeliveryTypingStart } from "./typing.js";
 
 type NormalizedReplyPayload = NonNullable<ReturnType<typeof normalizeReplyPayload>>;
 
@@ -496,6 +496,53 @@ describe("typing controller", () => {
     }
     typing.markDispatchIdle();
   }
+
+  it("stops a timed-out visible-delivery start and its late completion", async () => {
+    vi.useFakeTimers();
+    let resolveStart: (() => void) | undefined;
+    const start = vi.fn(
+      async () =>
+        await new Promise<void>((resolve) => {
+          resolveStart = resolve;
+        }),
+    );
+    const stop = vi.fn();
+
+    const run = runVisibleDeliveryTypingStart({
+      start,
+      timeoutMs: 1_000,
+      onTimeout: stop,
+      onLateCompletion: stop,
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await run;
+    expect(stop).toHaveBeenCalledTimes(1);
+
+    resolveStart?.();
+    await vi.waitFor(() => expect(stop).toHaveBeenCalledTimes(2));
+  });
+
+  it("compensates when controller cleanup overtakes an in-flight typing start", async () => {
+    let resolveStart: (() => void) | undefined;
+    const onReplyStart = vi.fn(
+      async () =>
+        await new Promise<void>((resolve) => {
+          resolveStart = resolve;
+        }),
+    );
+    const onCleanup = vi.fn();
+    const typing = createTypingController({ onReplyStart, onCleanup, keepalive: false });
+
+    const start = typing.startTypingForVisibleDelivery();
+    await vi.waitFor(() => expect(onReplyStart).toHaveBeenCalledOnce());
+    typing.cleanup();
+    expect(onCleanup).toHaveBeenCalledTimes(1);
+
+    resolveStart?.();
+    await start;
+    expect(onCleanup).toHaveBeenCalledTimes(2);
+    expect(typing.isActive()).toBe(false);
+  });
 
   it("stops only after both run completion and dispatcher idle are set (any order)", async () => {
     vi.useFakeTimers();

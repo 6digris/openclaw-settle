@@ -607,6 +607,7 @@ describe("routeReply", () => {
       payload: { text: "hello" },
       channel: "telegram",
       to: "chat-1",
+      onVisibleDeliveryStart,
     });
 
     expect(res).toEqual({
@@ -624,7 +625,7 @@ describe("routeReply", () => {
         conversationId: "chat-1",
       },
     });
-    const onPlatformSendStart = lastDelivery().onPlatformSendStart as
+    const onPlatformSendStart = lastDelivery().onPlatformSendDispatch as
       | (() => Promise<void> | void)
       | undefined;
     expect(onPlatformSendStart).toEqual(expect.any(Function));

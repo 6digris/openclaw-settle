@@ -806,12 +806,12 @@ describe("createAcpDispatchDeliveryCoordinator", () => {
 
     expect(delivered).toBe(true);
     expect(deliveryMocks.routeReply).toHaveBeenCalledTimes(1);
-    const [[routeParams]] = deliveryMocks.routeReply.mock.calls as unknown as Array<
-      [{ onVisibleDeliveryStart?: () => Promise<void> }]
-    >;
-    expect(routeParams.onVisibleDeliveryStart).toEqual(expect.any(Function));
+    const routeParams = deliveryMocks.routeReply.mock.calls[0]?.[0] as
+      | { onVisibleDeliveryStart?: () => Promise<void> }
+      | undefined;
+    expect(routeParams?.onVisibleDeliveryStart).toEqual(expect.any(Function));
     expect(onVisibleDeliveryStart).not.toHaveBeenCalled();
-    await routeParams.onVisibleDeliveryStart?.();
+    await routeParams?.onVisibleDeliveryStart?.();
     expect(onVisibleDeliveryStart).toHaveBeenCalledTimes(1);
     expect(onReplyStart).not.toHaveBeenCalled();
   });

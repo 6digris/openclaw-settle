@@ -1466,7 +1466,7 @@ describe("whatsapp inbound dispatch", () => {
         messages: { groupChat: { visibleReplies: "automatic" } },
       } as never,
       context: { Body: "incoming", ChatType: "group" },
-      msg: makeWhatsAppGroupMsg(),
+      msg: makeMsg({ admission: groupAdmission("120363000000000000@g.us") }),
     });
 
     const deliver = getCapturedDeliver();
@@ -1918,6 +1918,7 @@ describe("whatsapp inbound dispatch", () => {
       sourceReplyDeliveryMode: "automatic",
       disableBlockStreaming: false,
       suppressTyping: false,
+      typingStartPolicy: "visible_delivery",
     });
   });
 
