@@ -1,10 +1,16 @@
 use futures_util::{SinkExt, StreamExt};
 use openclaw_node_host::{
-    ConnectAuth, InvocationResult, NodeClient, NodeClientConfig, NodeConnectOptions, NodeIdentity,
-    NodeProtocolVersion,
+    CommandRuntime, ConnectAuth, InvocationResult, NodeClient, NodeClientConfig,
+    NodeConnectOptions, NodeIdentity, NodeProtocolVersion,
 };
 use serde_json::{json, Value};
-use std::io;
+use std::{
+    io,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 use tokio::net::TcpListener;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
@@ -84,6 +90,68 @@ async fn node_profile_uses_shared_session_for_invocations() {
         )
         .await
         .unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn runtime_rejects_buffered_invocation_after_session_closes() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut socket = accept_async(tcp).await.unwrap();
+        send_json(
+            &mut socket,
+            json!({"type":"event","event":"connect.challenge",
+                "payload":{"nonce":"node-nonce","ts":1_700_000_000_123_u64}}),
+        )
+        .await;
+        let connect = receive_json(&mut socket).await;
+        send_json(
+            &mut socket,
+            json!({"type":"res","id":connect["id"],"ok":true,
+                "payload":{"type":"hello-ok","protocol":4}}),
+        )
+        .await;
+        send_json(
+            &mut socket,
+            json!({"type":"event","event":"node.invoke.request",
+                "payload":{"id":"retired","nodeId":"node-1","command":"example.status"}}),
+        )
+        .await;
+        socket.close(None).await.unwrap();
+    });
+
+    let session = NodeClient::connect(
+        NodeClientConfig::new(format!("ws://{address}")),
+        |_challenge| async move {
+            Ok::<_, io::Error>(
+                NodeConnectOptions::new("test", "linux")
+                    .command("example.status")
+                    .activate()
+                    .auth(ConnectAuth::token("test-token"))
+                    .identity(NodeIdentity::from_secret_bytes([7; 32])),
+            )
+        },
+    )
+    .await
+    .unwrap();
+    assert!(session.wait_closed().await.is_err());
+    assert!(session.is_closed());
+
+    let handler_ran = Arc::new(AtomicBool::new(false));
+    let handler_state = Arc::clone(&handler_ran);
+    let runtime = CommandRuntime::builder()
+        .command("example.status", move |_context| {
+            let handler_state = Arc::clone(&handler_state);
+            handler_state.store(true, Ordering::SeqCst);
+            async { Ok(Value::Null) }
+        })
+        .build()
+        .unwrap();
+
+    assert!(runtime.run(session).await.is_err());
+    assert!(!handler_ran.load(Ordering::SeqCst));
     server.await.unwrap();
 }
 

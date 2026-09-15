@@ -307,7 +307,11 @@ impl CommandRuntime {
             return completion.map_err(Into::into);
         };
         let evaluation = tokio::select! {
-            evaluation = self.evaluate_with_scope(invocation.clone(), active.clone()) => evaluation,
+            evaluation = self.evaluate_with_scope(
+                invocation.clone(),
+                active.clone(),
+                Some(session.clone()),
+            ) => evaluation,
             closed = session.wait_closed() => {
                 active.cancel_all();
                 drop(permit);
@@ -453,7 +457,12 @@ impl CommandRuntime {
             } = match tracking {
                 Some(tracking) => {
                     runtime
-                        .evaluate_tracked(invocation.clone(), cancellation, tracking)
+                        .evaluate_tracked(
+                            invocation.clone(),
+                            cancellation,
+                            tracking,
+                            Some(task_session.clone()),
+                        )
                         .await
                 }
                 None => Evaluation::untracked(failure(
@@ -481,7 +490,7 @@ impl CommandRuntime {
             result,
             mut tracking,
         } = self
-            .evaluate_with_scope(invocation, ActiveInvocations::default())
+            .evaluate_with_scope(invocation, ActiveInvocations::default(), None)
             .await;
         if let Some(tracking) = tracking.as_mut() {
             tracking.disarm();
@@ -495,6 +504,7 @@ impl CommandRuntime {
         &self,
         invocation: NodeInvocation,
         active: ActiveInvocations,
+        session: Option<NodeSession>,
     ) -> Evaluation {
         let cancellation = CancellationToken::new();
         let Some(tracking) = active.track(&invocation.id, &cancellation) else {
@@ -503,7 +513,7 @@ impl CommandRuntime {
                 "invocation id is already executing",
             ));
         };
-        self.evaluate_tracked(invocation, cancellation, tracking)
+        self.evaluate_tracked(invocation, cancellation, tracking, session)
             .await
     }
 
@@ -512,6 +522,7 @@ impl CommandRuntime {
         invocation: NodeInvocation,
         cancellation: CancellationToken,
         tracking: ActiveInvocation,
+        session: Option<NodeSession>,
     ) -> Evaluation {
         let Some(handler) = self.inner.handlers.get(&invocation.command).cloned() else {
             return Evaluation::tracked(
@@ -542,6 +553,9 @@ impl CommandRuntime {
                 tracking,
             );
         };
+        if let Some(result) = handler_entry_rejection(&cancellation, session.as_ref()) {
+            return Evaluation::tracked(result, tracking);
+        }
         let Ok(future) = std::panic::catch_unwind(AssertUnwindSafe(|| {
             handler(InvocationContext {
                 invocation: invocation.clone(),
@@ -647,6 +661,26 @@ struct SessionScope {
     marker: Weak<()>,
     active: ActiveInvocations,
     overload_permits: Arc<Semaphore>,
+}
+
+fn handler_entry_rejection(
+    cancellation: &CancellationToken,
+    session: Option<&NodeSession>,
+) -> Option<InvocationResult> {
+    if cancellation.is_cancelled() {
+        return Some(failure(
+            "INVOCATION_CANCELLED",
+            "command invocation was cancelled before handler execution",
+        ));
+    }
+    if session.is_some_and(NodeSession::is_closed) {
+        cancellation.cancel();
+        return Some(failure(
+            "SESSION_RETIRED",
+            "command invocation belongs to a retired session",
+        ));
+    }
+    None
 }
 
 fn runtime_task_failure(
@@ -1034,12 +1068,17 @@ mod tests {
                 .evaluate_with_scope(
                     invocation("same-id", "example.block", Value::Null),
                     first_active,
+                    None,
                 )
                 .await
         });
         entered.notified().await;
         let duplicate = runtime
-            .evaluate_with_scope(invocation("same-id", "example.block", Value::Null), active)
+            .evaluate_with_scope(
+                invocation("same-id", "example.block", Value::Null),
+                active,
+                None,
+            )
             .await;
         assert_eq!(
             failure_code(&duplicate.result),
@@ -1079,6 +1118,7 @@ mod tests {
                 .evaluate_with_scope(
                     invocation("invoke-1", "example.block", Value::Null),
                     task_active,
+                    None,
                 )
                 .await
         });
@@ -1092,6 +1132,39 @@ mod tests {
             task.await.unwrap().result,
             InvocationResult::Success(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn cancellation_before_evaluation_rejects_handler_entry() {
+        let handler_ran = Arc::new(AtomicBool::new(false));
+        let handler_state = Arc::clone(&handler_ran);
+        let runtime = CommandRuntime::builder()
+            .command("example.status", move |_context| {
+                let handler_state = Arc::clone(&handler_state);
+                handler_state.store(true, Ordering::SeqCst);
+                async { Ok(Value::Null) }
+            })
+            .build()
+            .unwrap();
+        let active = ActiveInvocations::default();
+        let cancellation = CancellationToken::new();
+        let tracking = active.track("invoke-1", &cancellation).unwrap();
+        cancellation.cancel();
+
+        let evaluation = runtime
+            .evaluate_tracked(
+                invocation("invoke-1", "example.status", Value::Null),
+                cancellation,
+                tracking,
+                None,
+            )
+            .await;
+
+        assert_eq!(
+            failure_code(&evaluation.result),
+            Some("INVOCATION_CANCELLED")
+        );
+        assert!(!handler_ran.load(Ordering::SeqCst));
     }
 
     #[tokio::test]
