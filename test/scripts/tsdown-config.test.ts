@@ -9,6 +9,10 @@ import {
   collectRootPackageExcludedExtensionDirs,
   DOCKER_SELECTED_PLUGIN_BUILD_IDS_ENV,
 } from "../../scripts/lib/bundled-plugin-build-entries.mjs";
+import {
+  collectPackageDistImportErrors,
+  collectPackageDistImports,
+} from "../../scripts/lib/package-dist-imports.mjs";
 import { publicPluginSdkEntrypoints } from "../../scripts/lib/plugin-sdk-entries.mts";
 import {
   TSDOWN_PACKAGE_CONFIG_GROUP,
@@ -532,6 +536,77 @@ describe("tsdown config", () => {
       }
     }
   });
+
+  it.each(["runtime", "worker"])(
+    "keeps service relay dependencies inside the emitted %s artifact closure",
+    async (target) => {
+      const root = fs.realpathSync(createTempDir("openclaw-tsdown-service-relay-"));
+      const worker = target === "worker";
+      const prefix = worker ? "worker" : "process/supervisor";
+      const extension = worker ? "mjs" : "js";
+      const relay = `${prefix}/service-child-relay`;
+      const anchor = `${prefix}/service-child-group-anchor`;
+      const selectedConfigs = worker
+        ? [
+            configs.find(isWorkerServiceChildRelayConfig),
+            configs.find(isWorkerServiceChildGroupAnchorConfig),
+          ]
+        : [
+            configs.find((config) =>
+              hasWorkerEntry(
+                config,
+                relay,
+                path.resolve("src/process/supervisor/service-child-relay.ts"),
+              ),
+            ),
+          ];
+      const files: string[] = [];
+      for (const selected of selectedConfigs) {
+        if (!selected) {
+          throw new Error(`Missing ${target} service relay build config`);
+        }
+        const { bundles } = await build({
+          ...selected,
+          config: false,
+          entry: Object.fromEntries(
+            Object.entries(selected.entry ?? {}).filter(
+              ([name]) => name === relay || name === anchor,
+            ),
+          ),
+          outDir: path.join(root, "dist"),
+          clean: false,
+          dts: false,
+          logLevel: "silent",
+        });
+        try {
+          files.push(
+            ...bundles.flatMap((bundle) => bundle.chunks.map((chunk) => `dist/${chunk.fileName}`)),
+          );
+        } finally {
+          for (const bundle of bundles) {
+            await bundle[Symbol.asyncDispose]();
+          }
+        }
+      }
+      expect(files).toEqual(
+        expect.arrayContaining([`dist/${relay}.${extension}`, `dist/${anchor}.${extension}`]),
+      );
+      const imports = collectPackageDistImports({
+        files,
+        readText: (file) => fs.readFileSync(path.join(root, file), "utf8"),
+      });
+      expect(collectPackageDistImportErrors({ files, imports })).toEqual([]);
+      const sealedAnchorEdge = {
+        importerPath: `dist/${relay}.${extension}`,
+        importedPath: `dist/${anchor}.mjs`,
+      };
+      if (worker) {
+        expect(imports).toContainEqual(sealedAnchorEdge);
+      } else {
+        expect(imports).not.toContainEqual(sealedAnchorEdge);
+      }
+    },
+  );
 
   it.each(["runtime", "worker"])(
     "preserves fs-safe package ownership and policy in relocated %s output",

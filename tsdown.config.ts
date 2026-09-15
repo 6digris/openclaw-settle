@@ -183,6 +183,7 @@ function nodeBuildConfig(
     dts: declarations,
     hooks: createDeclarationBoundaryHooks(config.hooks),
     env,
+    define: { WORKER_DEPLOY_BUILD: "false", ...config.define },
     outExtensions: () => ({ js: ".js", dts: ".d.ts" }),
     fixedExtension: false,
     sourcemap: OUTPUT_SOURCE_MAPS,
