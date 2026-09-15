@@ -58,13 +58,7 @@ function detectFrontmatter(
   if (lines.length < 2 || lines.at(0) !== FENCE) {
     return null;
   }
-  let closeIndex = -1;
-  for (const [offset, line] of lines.slice(1).entries()) {
-    if (line === FENCE) {
-      closeIndex = offset + 1;
-      break;
-    }
-  }
+  const closeIndex = lines.indexOf(FENCE, 1);
   if (closeIndex === -1) {
     diagnostics.push({
       line: 1,
