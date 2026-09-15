@@ -345,13 +345,14 @@ export function deleteSessionNodeArtifacts(
     "heartbeat_outcomes",
     "session_participants",
     "session_progress_cards",
+    "session_members",
+    "session_suggestions",
   ] as const) {
     if (!presentTables.has(table)) {
       continue;
     }
     executeSqliteQuerySync(database.db, db.deleteFrom(table).where("session_key", "=", sessionKey));
   }
-  clearSessionCollaborationForKey(database, sessionKey);
 }
 
 function readSessionNodeArtifactTables(database: OpenClawAgentDatabase): Set<string> {

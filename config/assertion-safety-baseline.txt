@@ -2183,7 +2183,6 @@ src/claws/package-update.ts	1
 src/claws/packages.ts	1
 src/claws/project-build.ts	4
 src/claws/project.ts	4
-src/claws/provenance-runtime-read.ts	1
 src/claws/provenance.ts	6
 src/claws/reader.ts	7
 src/claws/schema.ts	3
@@ -2553,7 +2552,7 @@ src/config/validation-channel-rules.ts	1
 src/config/validation-core.ts	3
 src/config/validation-issues.ts	1
 src/config/validation-plugin-config.ts	2
-src/config/validation.ts	3
+src/config/validation.ts	1
 src/config/zod-schema.channel-messaging-common.ts	12
 src/config/zod-schema.channels-config.ts	3
 src/config/zod-schema.ts	2
@@ -2967,7 +2966,6 @@ src/infra/outbound/targets.ts	2
 src/infra/package-dist-inventory.ts	2
 src/infra/package-json.ts	1
 src/infra/pairing-files.ts	1
-src/infra/path-case.ts	3
 src/infra/ports.ts	2
 src/infra/private-mode.ts	2
 src/infra/provider-usage.auth.ts	2
