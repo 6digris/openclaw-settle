@@ -363,6 +363,7 @@ export default definePluginEntry({
                 return json(await helpers.exportGoogleMeetBundleFromParams(config, raw));
               }
               case "send_chat":
+              case "react":
               case "participate": {
                 readGoogleMeetParticipationParams(raw);
                 return json(

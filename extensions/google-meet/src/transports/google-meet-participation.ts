@@ -5,6 +5,7 @@ import type {
 } from "openclaw/plugin-sdk/meeting-runtime";
 import { z } from "zod";
 import { meetPrepareChatScript, meetSendChatScript } from "./google-meet-chat-scripts.js";
+import { GOOGLE_MEET_REACTIONS_ADAPTER } from "./google-meet-reactions.js";
 
 const chatActionSchema = z.strictObject({
   type: z.literal("chat.send"),
@@ -33,16 +34,26 @@ const actionResultSchema = z.union([
 function validateGoogleMeetParticipationAction(
   action: MeetingParticipationAction,
 ): string | undefined {
+  if (action.type === "reaction.send") {
+    return GOOGLE_MEET_REACTIONS_ADAPTER.validateAction(action);
+  }
   return chatActionSchema.safeParse(action).success
     ? undefined
     : "chat.send requires nonblank text of at most 4000 UTF-16 units and an optional chat or voice output.";
 }
 
 export const GOOGLE_MEET_PARTICIPATION: MeetingBrowserParticipationAdapter = {
-  capabilities: ["chat.send"],
+  capabilities: ["chat.send", ...GOOGLE_MEET_REACTIONS_ADAPTER.capabilities],
   validateAction: validateGoogleMeetParticipationAction,
-  buildPreparationScript: meetPrepareChatScript,
-  parsePreparationResult(result) {
+  buildPreparationScript(params) {
+    return params.action.type === "reaction.send"
+      ? GOOGLE_MEET_REACTIONS_ADAPTER.buildPreparationScript(params)
+      : meetPrepareChatScript(params);
+  },
+  parsePreparationResult(result, action) {
+    if (action.type === "reaction.send") {
+      return GOOGLE_MEET_REACTIONS_ADAPTER.parsePreparationResult(result);
+    }
     const wire = z.object({ result: z.string() }).safeParse(result);
     if (wire.success) {
       try {
@@ -59,6 +70,9 @@ export const GOOGLE_MEET_PARTICIPATION: MeetingBrowserParticipationAdapter = {
     return { status: "failed", message: "Meet chat did not become ready to compose." };
   },
   buildActionScript(params) {
+    if (params.action.type === "reaction.send") {
+      return GOOGLE_MEET_REACTIONS_ADAPTER.buildActionScript(params);
+    }
     const action = parseGoogleMeetChatAction(params.action);
     if (action.output === "voice") {
       throw new Error("Voice replies must pass through the active meeting speech owner.");
@@ -71,7 +85,10 @@ export const GOOGLE_MEET_PARTICIPATION: MeetingBrowserParticipationAdapter = {
       source: params.source,
     });
   },
-  parseActionResult(result): MeetingParticipationEffectResult {
+  parseActionResult(result, action): MeetingParticipationEffectResult {
+    if (action.type === "reaction.send") {
+      return GOOGLE_MEET_REACTIONS_ADAPTER.parseActionResult(result);
+    }
     const wire = z.object({ result: z.string() }).safeParse(result);
     if (!wire.success) {
       return { status: "uncertain", message: "Meet returned no chat action acknowledgment." };

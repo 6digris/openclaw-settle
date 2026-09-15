@@ -18,6 +18,7 @@ export const GoogleMeetToolSchema = Type.Object({
       "participation_context",
       "participate",
       "send_chat",
+      "react",
       "setup_status",
       "resolve_space",
       "preflight",
@@ -79,7 +80,7 @@ export const GoogleMeetToolSchema = Type.Object({
   requestId: Type.Optional(
     Type.String({
       description:
-        "For participate or send_chat, a unique request ID. Reuse the same ID only to retry the same action.",
+        "For participate, send_chat, or react, a unique request ID. Reuse the same ID only to retry the same action.",
     }),
   ),
   sourceId: Type.Optional(
@@ -107,8 +108,10 @@ export const GoogleMeetToolSchema = Type.Object({
             "For chat.send, default chat. Voice requires an original observed chat source explicitly requesting speech.",
         }),
       ),
-      reaction: Type.Optional(
-        Type.String({ description: "Native reaction advertised by the current capability." }),
+      emoji: Type.Optional(
+        Type.String({
+          description: "For reaction.send, an emoji available in Meet's native palette.",
+        }),
       ),
     }),
   ),
@@ -123,6 +126,12 @@ export const GoogleMeetToolSchema = Type.Object({
       enum: ["chat", "voice"],
       description:
         "For send_chat, default chat. Use voice only when the original source chat explicitly asks for speech; never send both.",
+    }),
+  ),
+  emoji: Type.Optional(
+    Type.String({
+      description:
+        "For react, one native Meet emoji: 💖 👍 🎉 👏 😂 😮 😢 🤔 👎 when available. Unavailable choices return the observed supportedReactions list.",
     }),
   ),
   sinceIndex: Type.Optional(

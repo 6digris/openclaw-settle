@@ -1593,6 +1593,7 @@ describe("google-meet plugin", () => {
       "participation_context",
       "participate",
       "send_chat",
+      "react",
       "setup_status",
       "resolve_space",
       "preflight",

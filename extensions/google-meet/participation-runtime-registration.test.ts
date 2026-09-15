@@ -88,7 +88,7 @@ describe("Google Meet registered participation lifecycle", () => {
             sessionId,
             active: true,
             sourceOrder: 0,
-            capabilities: ["chat.send"],
+            capabilities: ["chat.send", "reaction.send"],
             sources: [],
           });
 
@@ -96,7 +96,7 @@ describe("Google Meet registered participation lifecycle", () => {
             action: "participate",
             sessionId,
             requestId: "unsupported-reaction",
-            participationAction: { type: "reaction", reaction: "👍" },
+            participationAction: { type: "example.unsupported", emoji: "👍" },
           };
           const first = await harness.tool.execute("participate-call", request);
           const firstResult = requireRecord(first.details, "participation result");
@@ -115,7 +115,7 @@ describe("Google Meet registered participation lifecycle", () => {
           );
           expect(await ledger.lookup(`${sessionId}:request:${request.requestId}`)).toMatchObject({
             requestId: request.requestId,
-            actionType: "reaction",
+            actionType: "example.unsupported",
             result: first.details,
           });
 

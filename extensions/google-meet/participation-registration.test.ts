@@ -70,7 +70,7 @@ describe("Google Meet participation registration", () => {
       requestId: "request-2",
       sourceId: "source-1",
       correctionOf: "request-1",
-      participationAction: { type: "reaction", reaction: "👍" },
+      participationAction: { type: "reaction.send", emoji: "👍" },
     });
 
     expect(result.details).toEqual(resultPayload);
@@ -78,7 +78,7 @@ describe("Google Meet participation registration", () => {
       requestId: "request-2",
       sourceId: "source-1",
       correctionOf: "request-1",
-      action: { type: "reaction", reaction: "👍" },
+      action: { type: "reaction.send", emoji: "👍" },
     });
   });
 
@@ -95,8 +95,8 @@ describe("Google Meet participation registration", () => {
       "participationAction.text must be a string",
     ],
     [
-      { participationAction: { type: "reaction", reaction: false } },
-      "participationAction.reaction must be a string",
+      { participationAction: { type: "reaction.send", emoji: false } },
+      "participationAction.emoji must be a string",
     ],
   ])(
     "rejects malformed Gateway participation input before runtime dispatch: %j",

@@ -41,6 +41,7 @@ Agents use the `google_meet` tool:
 | `participation_context` | Read currently available native actions and fresh observed source references for a session        |
 | `participate`           | Execute a supported native action using a stable `requestId` and `participationAction`            |
 | `send_chat`             | Send exact native chat text using `sessionId`, `requestId`, and `text`                            |
+| `react`                 | Send one available native emoji using `sessionId`, `requestId`, and `emoji`                       |
 | `leave`                 | End a session (Chrome clicks Leave; closes only tabs it opened; Twilio hangs up)                  |
 | `end_active_conference` | End the active Google Meet conference for an API-managed space                                    |
 | `speak`                 | Make the realtime agent speak immediately, given `sessionId` and `message`                        |
@@ -128,6 +129,27 @@ Observe-only mode never replies automatically. Voice output requires a current
 incoming source that explicitly requests speech; model output cannot authorize it.
 See [native meeting chat](/plugins/google-meet#native-meeting-chat) for source,
 draft, size, and delivery guarantees.
+
+Chrome sessions also support `reaction.send`, exposed as `react`. Manual
+reactions work without a speech bridge, including in transcribe mode:
+
+```json
+{
+  "action": "react",
+  "sessionId": "meet_...",
+  "requestId": "reaction-1",
+  "emoji": "👍"
+}
+```
+
+Reactions use Meet's native palette. The supported choices are 💖 👍 🎉 👏 😂 😮
+😢 🤔 👎 only when their controls are available in that meeting. An unavailable
+choice returns the observed `supportedReactions` list without sending; a
+`correctionOf` result permits the single correction described below. A succeeded
+reaction requires a fresh native “You reacted with …” announcement, which confirms
+the local Meet UI accepted it, not delivery to every participant. Reactions never
+change the microphone or hand state. If Meet does not confirm the click, the
+result remains `uncertain` and must not be resent automatically.
 
 Pass the advertised action object in `participationAction` and reuse the same
 `requestId` when checking an unclear response. Reusing that ID never repeats the

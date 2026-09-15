@@ -187,7 +187,7 @@ describe("Google Meet registered native chat", () => {
         expect(context.details).toMatchObject({
           sessionId,
           active: true,
-          capabilities: ["chat.send"],
+          capabilities: ["chat.send", "reaction.send"],
         });
 
         const requestId = "registered-chat-write";
