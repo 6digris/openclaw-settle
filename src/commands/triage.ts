@@ -27,7 +27,6 @@ import {
   type InstallationTarget,
 } from "../infra/installation-target-context.js";
 import { resolveOpenClawPackageRoot } from "../infra/openclaw-root.js";
-import { readRestartSentinelReadOnly } from "../infra/restart-sentinel.js";
 import { acceptTriageContinuation } from "../infra/triage-continuation.js";
 import type { UpdateRepairValidation } from "../infra/update-repair-protocol.js";
 import {
@@ -36,7 +35,6 @@ import {
 } from "../logging/diagnostic-support-redaction.js";
 import { resolveWindowsSpawnProgramCandidate } from "../plugin-sdk/windows-spawn.js";
 import { ExitError, writeRuntimeJson, type RuntimeEnv } from "../runtime.js";
-import { classifyUpdateOutcome } from "../shared/update-outcome.js";
 import {
   TRIAGE_EXTERNAL_AGENTS,
   formatTriageHandoffCommands,
@@ -49,6 +47,7 @@ import {
 } from "./triage-prompt.js";
 import {
   readTriageUpdateFailure,
+  readPendingTriageUpdateFailure,
   sanitizeTriageUpdateFailure,
   writeTriageUpdateFailure,
   type TriageUpdateFailure,
@@ -130,48 +129,6 @@ async function collectTriageBundle(
   } catch (error) {
     return { kind: "unavailable", reason: triageCollectionError(error, redaction) };
   }
-}
-
-async function readPendingTriageUpdateFailure(
-  env: NodeJS.ProcessEnv,
-  redaction: SupportRedactionContext,
-): Promise<TriageUpdateFailure | undefined> {
-  // A pending update notification is evidence only. Do not consume it or create
-  // state while the Gateway is offline; delivery instructions are never projected.
-  const sentinel = await readRestartSentinelReadOnly(env);
-  if (sentinel?.payload.kind !== "update") {
-    return undefined;
-  }
-  const { payload } = sentinel;
-  const stats = payload.stats;
-  if (
-    classifyUpdateOutcome({ status: payload.status, reason: stats?.reason ?? undefined }) !==
-    "failed"
-  ) {
-    return undefined;
-  }
-  return sanitizeTriageUpdateFailure(
-    {
-      result: {
-        ...(stats?.runId ? { runId: stats.runId } : {}),
-        status: payload.status,
-        mode: stats?.mode ?? "unknown",
-        root: stats?.root,
-        reason: stats?.reason ?? undefined,
-        before: stats?.before ?? undefined,
-        after: stats?.after ?? undefined,
-        recovery: stats?.recovery,
-        steps: (stats?.steps ?? []).map((step) => ({
-          name: step.name,
-          exitCode: step.log?.exitCode ?? null,
-          stderrTail: step.log?.stderrTail,
-          stdoutTail: step.log?.stdoutTail,
-          failureFacts: step.failureFacts,
-        })),
-      },
-    },
-    redaction,
-  );
 }
 
 /** Collect read-only diagnostics and hand the local repair to an available coding agent. */
@@ -258,11 +215,24 @@ export async function triageCommand(
   const agentCwd = automatic?.failure.installationRoot ?? options.recovery?.cwd;
   const agentOptions = agentCwd ? { cwd: agentCwd } : {};
   const redaction = { env: targetEnv, stateDir: target.stateDir };
+  const pendingUpdate =
+    !options.recovery && !options.updateResult
+      ? await readPendingTriageUpdateFailure(targetEnv, redaction)
+      : undefined;
   const updateFailure = options.recovery
     ? sanitizeTriageUpdateFailure(options.recovery.updateFailure, redaction)
     : options.updateResult
       ? await readTriageUpdateFailure(options.updateResult, redaction)
-      : await readPendingTriageUpdateFailure(targetEnv, redaction);
+      : options.run && !pendingUpdate?.correlated
+        ? undefined
+        : pendingUpdate?.failure;
+  if (options.run && !options.json && pendingUpdate && !pendingUpdate.correlated) {
+    const time = new Date(pendingUpdate.recordedAtMs);
+    const when = Number.isFinite(time.getTime()) ? time.toISOString() : "an unknown time";
+    runtime.log(
+      `A saved update failure from ${when} could not be correlated; run \`openclaw update status --json\`.`,
+    );
+  }
   // Captured interactive recovery must reach the repair agent before fresh checks
   // or exports can block on the broken installation. Unattended runs still collect.
   const bundle: TriageBundle = deferDiagnostics

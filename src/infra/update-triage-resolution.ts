@@ -1,3 +1,4 @@
+import { UPDATE_RUN_PHASES } from "../../packages/gateway-protocol/src/update-run-vocabulary.js";
 import { resolveGatewayRestartProbeContext } from "../cli/daemon-cli/restart-health-probe.js";
 import { verifyPreviousGatewayForUpdate } from "../cli/update-cli/update-command-verification.js";
 import type { TriageUpdateFailure } from "../commands/triage-update.js";
@@ -47,9 +48,12 @@ const failureFamilies = {
   ],
   schema: ["database-schema-preflight"],
   doctor: [
+    "post-update-failed",
     "doctor-failed",
     "repair-requires-config-change",
     "finalize:doctor",
+    "finalize:targetConfigConvergence",
+    "post-plugin-doctor-invalid-config",
     "post-update-plugins",
   ],
   service: [
@@ -72,7 +76,95 @@ function unresolved(message: string, stop = true): UpdateRepairValidation {
   return { ok: false, score: -1, summary, ...(stop ? { stopReason: summary } : {}) };
 }
 
-/** Saved diagnostics are not a recovery receipt; only the updater can settle its failure. */
+type FailureStep = {
+  step: string;
+  failureFacts?: UpdateRunRecord["steps"][number]["failureFacts"];
+  configWriteRefusal?: UpdateRunRecord["steps"][number]["configWriteRefusal"];
+};
+
+function doctorStep(step: FailureStep): boolean {
+  if (step.configWriteRefusal) {
+    return false;
+  }
+  const facts = step.failureFacts ?? [];
+  const doctorFacts = facts.every(
+    (fact) =>
+      (fact.code === "doctor-failed" && fact.check !== "package-install") ||
+      fact.code === "post-plugin-doctor-invalid-config" ||
+      (fact.check === "doctor" && fact.code === "finalization-failed"),
+  );
+  return (
+    doctorFacts &&
+    (["doctor", "openclaw doctor", "candidate doctor", "finalize:doctor"].includes(step.step) ||
+      (step.step === "finalize:targetConfigConvergence" && facts.length > 0))
+  );
+}
+
+function phaseMarker(step: FailureStep): boolean {
+  return (
+    !step.failureFacts?.length &&
+    !step.configWriteRefusal &&
+    (UPDATE_RUN_PHASES.some((phase) => phase === step.step) ||
+      step.step === "post-update verification")
+  );
+}
+
+function doctorFailure(failure: TriageUpdateFailure, run: UpdateRunRecord): boolean {
+  if (
+    !("result" in failure) ||
+    run.status !== "failed" ||
+    !failureFamilies.doctor.includes(failure.result.reason ?? run.reason ?? "") ||
+    (run.reason !== null && !failureFamilies.doctor.includes(run.reason))
+  ) {
+    return false;
+  }
+  const plugins = failure.result.postUpdate?.plugins;
+  if (
+    plugins?.status === "error" &&
+    (!failureFamilies.doctor.includes(plugins.reason ?? "") ||
+      plugins.sync?.errors.length ||
+      plugins.npm?.outcomes.some((outcome) => outcome.status === "error") ||
+      plugins.integrityDrifts?.length ||
+      plugins.warnings?.some((warning) => !failureFamilies.doctor.includes(warning.reason)))
+  ) {
+    return false;
+  }
+  const steps = run.steps.filter((step) => step.status === "failed" && !phaseMarker(step));
+  return (
+    steps.length > 0 &&
+    steps.every(doctorStep) &&
+    failure.result.steps
+      .filter((step) => step.exitCode !== 0 && !step.advisory)
+      .every(
+        (step) =>
+          doctorStep({ ...step, step: step.name }) || phaseMarker({ ...step, step: step.name }),
+      )
+  );
+}
+
+async function readGitHead(params: {
+  installRoot: string;
+  env: NodeJS.ProcessEnv;
+  signal: AbortSignal;
+}): Promise<string | undefined> {
+  const head = await runUtf8CommandWithTimeout(
+    ["git", "-C", params.installRoot, "rev-parse", "HEAD"],
+    {
+      signal: params.signal,
+      env: params.env,
+      input: "",
+      killProcessTree: true,
+      maxOutputBytes: 4096,
+      terminateOnOutputLimit: true,
+    },
+  );
+  params.signal.throwIfAborted();
+  return head.code === 0 && head.termination === "exit" && !head.outputLimitExceeded
+    ? head.stdout.trim() || undefined
+    : undefined;
+}
+
+/** Resolve the attributed blocker without rewriting the updater's historical outcome. */
 export async function validateTriageUpdateResolution(params: {
   failure: TriageUpdateFailure;
   installRoot: string;
@@ -86,7 +178,41 @@ export async function validateTriageUpdateResolution(params: {
   const options = { env };
   const original = runId ? getUpdateRun(runId, options) : undefined;
   const target = original?.target;
-  if (!original || !target?.kind || !(target.version || (target.kind === "git" && target.sha))) {
+  if (!original) {
+    return unresolved("Cannot establish the update target.");
+  }
+  const completion = listUpdateRuns({ limit: 1 }, options)[0];
+  if (findActiveUpdateRun(options)) {
+    return unresolved("An update is still running; wait for its owner to finish.");
+  }
+  if (completion && doctorFailure(failure, original)) {
+    const identityMatches = async () =>
+      (!target?.version || (await readPackageVersion(installRoot)) === target.version) &&
+      (!target?.sha || (target.kind === "git" && (await readGitHead(params)) === target.sha));
+    if (!(await identityMatches())) {
+      return unresolved("The installed identity does not match the recorded Doctor repair target.");
+    }
+    const doctor = await params.validateDoctor();
+    signal.throwIfAborted();
+    if (!(await identityMatches())) {
+      return unresolved("The installed identity changed during Doctor verification.");
+    }
+    signal.throwIfAborted();
+    if (
+      findActiveUpdateRun(options) ||
+      listUpdateRuns({ limit: 1 }, options)[0]?.runId !== completion.runId
+    ) {
+      return unresolved("The update owner changed during Doctor verification.");
+    }
+    return doctor.ok
+      ? {
+          ok: true,
+          score: 0,
+          summary: `Doctor/config blocker resolved${target?.version ? `; installed version ${target.version} verified` : ""}${target?.sha ? `; Git commit ${target.sha} verified` : ""}.`,
+        }
+      : { ...doctor, summary: `${doctor.summary} ${nextUpdate}` };
+  }
+  if (!target?.kind || !(target.version || (target.kind === "git" && target.sha))) {
     return unresolved("Cannot establish the update target.");
   }
   const reason = "result" in failure ? failure.result.reason : undefined;
@@ -101,10 +227,6 @@ export async function validateTriageUpdateResolution(params: {
 
   // Do not reinterpret a terminal failed row. A later owner completion is the
   // evidence for acquisition, schema admission, finalization, and recovery.
-  const completion = listUpdateRuns({ limit: 1 }, options)[0];
-  if (findActiveUpdateRun(options)) {
-    return unresolved("An update is still running; wait for its owner to finish.");
-  }
   if (
     !completion ||
     completion.finishedAtMs === null ||
@@ -150,24 +272,11 @@ export async function validateTriageUpdateResolution(params: {
   }
   let errors: string[];
   if (target.kind === "git") {
-    const head = await runUtf8CommandWithTimeout(["git", "-C", installRoot, "rev-parse", "HEAD"], {
-      signal,
-      env,
-      input: "",
-      killProcessTree: true,
-      maxOutputBytes: 4096,
-      terminateOnOutputLimit: true,
-    });
-    if (
-      head.code !== 0 ||
-      head.termination !== "exit" ||
-      head.outputLimitExceeded ||
-      !head.stdout.trim() ||
-      (expected.sha && head.stdout.trim() !== expected.sha)
-    ) {
+    const head = await readGitHead(params);
+    if (!head || (expected.sha && head !== expected.sha)) {
       return unresolved("The checkout does not match the updater's recorded commit.");
     }
-    errors = await collectGitRuntimeErrors({ root: installRoot, sha: head.stdout.trim() });
+    errors = await collectGitRuntimeErrors({ root: installRoot, sha: head });
   } else {
     errors = await collectInstalledGlobalPackageErrors({
       packageRoot: installRoot,

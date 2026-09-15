@@ -209,6 +209,182 @@ beforeEach(() => {
 });
 
 describe("saved update failure resolution", () => {
+  it.each([
+    "post-update-failed",
+    "doctor-failed",
+    "finalize:doctor",
+    "repair-requires-config-change",
+    "post-plugin-doctor-invalid-config",
+  ])(
+    "resolves the attributed %s Doctor blocker without rewriting its failed run",
+    async (reason) => {
+      failedRun.reason = reason;
+      failedRun.steps = [
+        {
+          step: "finalize:doctor",
+          status: "failed",
+          failureFacts: [{ check: "doctor", code: "doctor-failed" }],
+        },
+      ];
+      latestRun = failedRun;
+      expect(await validate(failure(reason))).toMatchObject({
+        ok: true,
+        summary: expect.stringContaining("Doctor/config blocker resolved"),
+      });
+      expect(failedRun.status).toBe("failed");
+      expect(verifyPreviousGatewayForUpdate).not.toHaveBeenCalled();
+    },
+  );
+
+  it("allows a correlated Doctor repair without inventing a missing update target", async () => {
+    failedRun.reason = "post-update-failed";
+    failedRun.target = {};
+    failedRun.steps = [{ step: "doctor", status: "failed" }];
+    latestRun = failedRun;
+    validateDoctor.mockResolvedValue({ ok: false, score: -1, summary: "Configuration error." });
+    expect(await validate(failure("post-update-failed"))).toMatchObject({ ok: false, score: -1 });
+    expect(await validate(failure("post-update-failed"))).not.toHaveProperty("stopReason");
+    validateDoctor.mockResolvedValue({ ok: true, score: 0, summary: "Clean." });
+    expect(await validate(failure("post-update-failed"))).toMatchObject({ ok: true });
+  });
+
+  it("resolves the attributed Doctor blocker after a later preview without rewriting either run", async () => {
+    failedRun.reason = "post-update-failed";
+    failedRun.steps = [{ step: "finalize:doctor", status: "failed" }];
+    latestRun.status = "skipped";
+    latestRun.reason = "dry-run";
+    expect(await validate(failure("post-update-failed"))).toMatchObject({
+      ok: true,
+      summary: expect.stringContaining("Doctor/config blocker resolved"),
+    });
+    expect(failedRun.status).toBe("failed");
+    expect(latestRun.status).toBe("skipped");
+  });
+
+  it.each([
+    "wrapper-only",
+    "package step",
+    "package reason",
+    "unknown fact",
+    "revoked authority",
+    "wrong version",
+  ])("does not certify %s with a clean Doctor", async (blocker) => {
+    failedRun.reason = "post-update-failed";
+    failedRun.steps = [{ step: "finalize:doctor", status: "failed" }];
+    latestRun = failedRun;
+    if (blocker === "wrapper-only") {
+      failedRun.steps = [{ step: "post-update verification", status: "failed" }];
+    }
+    if (blocker === "package step") {
+      failedRun.steps.push({ step: "global install swap", status: "failed" });
+    }
+    if (blocker === "package reason") {
+      failedRun.reason = "global-install-failed";
+    }
+    if (blocker === "unknown fact") {
+      failedRun.steps = [
+        {
+          step: "finalize:doctor",
+          status: "failed",
+          failureFacts: [{ check: "doctor", code: "database-schema-preflight" }],
+        },
+      ];
+    }
+    if (blocker === "revoked authority") {
+      failedRun.reason = "requester-revoked";
+    }
+    if (blocker === "wrong version") {
+      vi.mocked(readPackageVersion).mockResolvedValue(BEFORE_VERSION);
+    }
+    expect(await validate(failure("post-update-failed"))).toMatchObject({ ok: false });
+  });
+
+  it.each([false, true])(
+    "requires Doctor facts for config-convergence failure: %s",
+    async (attributed) => {
+      failedRun.reason = "finalize:targetConfigConvergence";
+      failedRun.steps = [
+        {
+          step: "finalize:targetConfigConvergence",
+          status: "failed",
+          ...(attributed
+            ? { failureFacts: [{ check: "core/doctor/config-readable", code: "doctor-failed" }] }
+            : {}),
+        },
+      ];
+      latestRun = failedRun;
+      expect(await validate(failure("finalize:targetConfigConvergence"))).toMatchObject({
+        ok: attributed,
+      });
+    },
+  );
+
+  it.each(["writer refusal", "package attribution"])(
+    "keeps %s with its owner despite a clean Doctor",
+    async (blocker) => {
+      failedRun.reason = "post-update-failed";
+      failedRun.steps = [
+        {
+          step: "finalize:doctor",
+          status: "failed",
+          ...(blocker === "writer refusal"
+            ? {
+                configWriteRefusal: {
+                  reason: "include-ownership",
+                  message: "Owned include must be repaired separately",
+                  keys: ["models"],
+                },
+              }
+            : { failureFacts: [{ check: "package-install", code: "doctor-failed" }] }),
+        },
+      ];
+      latestRun = failedRun;
+      expect(await validate(failure("post-update-failed"))).toMatchObject({ ok: false });
+    },
+  );
+
+  it("keeps mixed plugin installation failures unresolved after Doctor is clean", async () => {
+    failedRun.reason = "post-update-failed";
+    failedRun.steps = [{ step: "finalize:doctor", status: "failed" }];
+    latestRun = failedRun;
+    const saved = failure("post-update-failed", {
+      postUpdate: {
+        plugins: {
+          status: "error",
+          reason: "post-plugin-doctor-invalid-config",
+          changed: false,
+          sync: {
+            changed: false,
+            switchedToBundled: [],
+            switchedToNpm: [],
+            warnings: [],
+            errors: [],
+          },
+          npm: {
+            changed: false,
+            outcomes: [{ pluginId: "sample", status: "error", message: "Package install failed" }],
+          },
+          integrityDrifts: [],
+        },
+      },
+    });
+    expect(await validate(saved)).toMatchObject({ ok: false });
+  });
+
+  it("stops Doctor repair when an update takes ownership during diagnostics", async () => {
+    failedRun.reason = "post-update-failed";
+    failedRun.steps = [{ step: "doctor", status: "failed" }];
+    latestRun = failedRun;
+    validateDoctor.mockImplementation(async () => {
+      vi.mocked(findActiveUpdateRun).mockReturnValue(run({ status: "running" }));
+      return { ok: false, score: -1, summary: "Configuration error." };
+    });
+    expect(await validate(failure("post-update-failed"))).toMatchObject({
+      ok: false,
+      stopReason: expect.stringContaining("owner changed"),
+    });
+  });
+
   it.each(["version", "sha"] as const)(
     "verifies a Git target recorded with only its %s",
     async (identity) => {
