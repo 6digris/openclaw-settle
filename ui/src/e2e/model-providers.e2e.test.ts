@@ -130,14 +130,16 @@ describeControlUiE2e("Control UI Models mocked Gateway E2E", () => {
       const response = await page.goto(`${server.baseUrl}settings/model-providers`);
       expect(response?.status()).toBe(200);
       const openaiCard = page.locator('[data-provider-id="openai"]');
+      const providerStatus = openaiCard.locator(".model-providers__head .settings-status");
       const readiness = page.locator('[data-model-readiness="model-required"]');
       await readiness.waitFor();
       await expect
         .poll(async () => readiness.textContent())
         .toContain("Connect a verified AI model");
       await expect.poll(async () => readiness.textContent()).toContain("Model required");
-      await expect.poll(async () => openaiCard.textContent()).toContain("Credentials configured");
-      await expect.poll(async () => openaiCard.textContent()).not.toContain("Signed in");
+      await expect
+        .poll(async () => (await providerStatus.textContent())?.trim())
+        .toBe("Credentials configured");
       expect(
         (await gateway.getRequests("models.list")).filter(
           (request) => (request.params as { view?: string } | undefined)?.view === "all",
@@ -179,7 +181,9 @@ describeControlUiE2e("Control UI Models mocked Gateway E2E", () => {
       }
 
       await page.getByRole("button", { name: "Refresh", exact: true }).click();
-      await expect.poll(async () => openaiCard.textContent()).toContain("Credentials rejected");
+      await expect
+        .poll(async () => (await providerStatus.textContent())?.trim())
+        .toBe("Credentials rejected");
       expect(
         (await gateway.getRequests("models.list")).filter(
           (request) => (request.params as { view?: string } | undefined)?.view === "all",

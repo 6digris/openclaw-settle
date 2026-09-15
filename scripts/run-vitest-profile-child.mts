@@ -3,24 +3,27 @@ import { fileURLToPath } from "node:url";
 import type { ViteUserConfig } from "vitest/config";
 import { isVitestProfileError, startVitestProfile } from "./lib/vitest-profiler.mts";
 
-const [mode, outputDir, ...args] = process.argv.slice(2);
-if ((mode !== "main" && mode !== "runner") || !outputDir) {
-  throw new Error("Expected profiler mode and output directory.");
-}
-// Start before importing Vitest so main capture includes Vite/Vitest startup.
-const finishMain = mode === "main" ? await startVitestProfile(outputDir, false) : undefined;
-try {
-  // Node 24's background CA loader can deadlock with Undici's first hash enumeration.
-  // Populate that cached result before TLS loads, inside main's startup capture.
-  // Remove when supported Node/OpenSSL versions make concurrent initialization safe.
-  getHashes();
-  const { parseCLI, startVitest } = await import("vitest/node");
-  const { normalizePath } = await import("vite");
-  const { filter, options } = parseCLI(["vitest", ...args]);
-  // Match native help truthiness (including repeated-flag arrays); parseCLI's type omits help.
-  if ("help" in options && options.help) {
-    await finishMain?.();
-  } else {
+async function main() {
+  const [mode, outputDir, ...args] = process.argv.slice(2);
+  if ((mode !== "main" && mode !== "runner") || !outputDir) {
+    throw new Error("Expected profiler mode and output directory.");
+  }
+  // Start before importing Vitest so main capture includes Vite/Vitest startup.
+  const finishMain = mode === "main" ? await startVitestProfile(outputDir, false) : undefined;
+  try {
+    // Node 24's background CA loader can deadlock with Undici's first hash enumeration.
+    // Populate that cached result before TLS loads, inside main's startup capture.
+    // Remove when supported Node/OpenSSL versions make concurrent initialization safe.
+    getHashes();
+    const { parseCLI, startVitest } = await import("vitest/node");
+    const { normalizePath } = await import("vite");
+    const { filter, options } = parseCLI(["vitest", ...args]);
+    // Match native help truthiness (including repeated-flag arrays); parseCLI's type omits help.
+    if ("help" in options && options.help) {
+      await finishMain?.();
+      // Let Node drain before platform shutdown, as on the error path.
+      return;
+    }
     const cliOptions = {
       config: "test/vitest/vitest.unit.config.ts",
       fileParallelism: false,
@@ -66,18 +69,20 @@ try {
         process.exitCode ||= 1;
       }
     }
-  }
-} catch (error) {
-  try {
-    await finishMain?.();
-  } catch (cleanupError) {
-    // Keep the startup error as the thrown failure while reporting a distinct
-    // finalization failure; reawaiting one failed finalizer must not report it twice.
-    if (cleanupError !== error) {
-      console.error(cleanupError);
+  } catch (error) {
+    try {
+      await finishMain?.();
+    } catch (cleanupError) {
+      // Keep the startup error as the thrown failure while reporting a distinct
+      // finalization failure; reawaiting one failed finalizer must not report it twice.
+      if (cleanupError !== error) {
+        console.error(cleanupError);
+      }
     }
+    // Node 24 can deadlock joining GC-waiting V8 workers during uncaught-exception shutdown.
+    console.error(error);
+    process.exitCode = 1;
   }
-  // Node 24 can deadlock joining GC-waiting V8 workers during uncaught-exception shutdown.
-  console.error(error);
-  process.exitCode = 1;
 }
+
+await main();
