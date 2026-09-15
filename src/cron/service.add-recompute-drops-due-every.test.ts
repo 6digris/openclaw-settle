@@ -2,9 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import { CronService } from "./service.js";
 import {
   createCronStoreHarness,
-  createFinishedBarrier,
   createNoopLogger,
   installCronTestHooks,
+  writeCronStoreSnapshot,
 } from "./service.test-harness.js";
 
 const noopLogger = createNoopLogger();
@@ -16,7 +16,28 @@ describe("add() must not drop a due every-job's pending run", () => {
     const store = await makeStorePath();
     const base = Date.parse("2025-12-13T00:00:00.000Z");
 
-    const finished = createFinishedBarrier();
+    const jobId = "due-every";
+    const lastRunAtMs = base - 10_050;
+    const dueSlot = lastRunAtMs + 10_000;
+    const nowDue = base;
+    await writeCronStoreSnapshot({
+      storePath: store.storePath,
+      jobs: [
+        {
+          id: jobId,
+          name: "every 10s",
+          enabled: true,
+          createdAtMs: base - 3_600_000,
+          updatedAtMs: lastRunAtMs,
+          schedule: { kind: "every", everyMs: 10_000 },
+          sessionTarget: "isolated",
+          wakeMode: "next-heartbeat",
+          payload: { kind: "agentTurn", message: "tick" },
+          delivery: { mode: "none" },
+          state: { lastRunAtMs, lastRunStatus: "ok", nextRunAtMs: dueSlot },
+        },
+      ],
+    });
     const enqueueSystemEvent = vi.fn();
     const requestHeartbeat = vi.fn();
     const cron = new CronService({
@@ -26,34 +47,11 @@ describe("add() must not drop a due every-job's pending run", () => {
       enqueueSystemEvent,
       requestHeartbeat,
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
-      onEvent: finished.onEvent,
     });
-
-    await cron.start();
-
-    const job = await cron.add({
-      name: "every 10s",
-      enabled: true,
-      schedule: { kind: "every", everyMs: 10_000 },
-      sessionTarget: "isolated",
-      wakeMode: "next-heartbeat",
-      payload: { kind: "agentTurn", message: "tick" },
-    });
-    const jobId = job.id;
-    expect(job.state.nextRunAtMs).toBe(base + 10_000);
-
-    vi.setSystemTime(new Date(base + 10_000 + 5));
-    const firstRun = finished.waitForOk(jobId);
-    await vi.runOnlyPendingTimersAsync();
-    await firstRun;
 
     let current = (await cron.list({ includeDisabled: true })).find((j) => j.id === jobId)!;
-    const lastRunAtMs = current.state.lastRunAtMs!;
-    const dueSlot = current.state.nextRunAtMs!;
-    expect(dueSlot).toBe(lastRunAtMs + 10_000);
-
-    vi.setSystemTime(new Date(dueSlot + 50));
-    const nowDue = dueSlot + 50;
+    expect(current.state.lastRunAtMs).toBe(lastRunAtMs);
+    expect(current.state.nextRunAtMs).toBe(dueSlot);
 
     await cron.add({
       name: "unrelated daily",

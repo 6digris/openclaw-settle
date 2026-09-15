@@ -602,6 +602,7 @@ export const startSubagentAnnounceCleanupFlow = (
     isChildSessionEffectsAllowed: childSessionEffectsAllowed,
     isCompletionDeliveryAllowed: () =>
       entry.suppressCompletionDelivery !== true &&
+      !isDeliverySuspended(entry) &&
       (entry.delivery?.status !== "delivered" || entry.delivery === committedDelivery) &&
       context.isCleanupAttemptCurrent(runId, entry, cleanupGeneration),
     isCompletionOwnedByRequesterYield: () =>
@@ -679,6 +680,21 @@ export const startSubagentAnnounceCleanupFlow = (
         deliveryState.status = "failed";
       }
       latestDeliveryError = formatAnnounceDeliveryError(delivery);
+      if (
+        delivery.reason === "message_tool_delivery_missing" &&
+        delivery.disposition === "permanent_failure" &&
+        shouldSuspendPendingFinalDelivery(entry)
+      ) {
+        // Commit the recoverable block at the execution-result edge, before
+        // best-effort mirrors or the detached announce tail can stall.
+        suspendPendingFinalDelivery(context, {
+          runId,
+          entry,
+          reason: "permanent_failure",
+          error: latestDeliveryError,
+        });
+        return;
+      }
       if (
         deliveryState.lastError !== latestDeliveryError ||
         deliveryState.lastDropReason !== previousDropReason

@@ -34,6 +34,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/server-methods/worktrees.authorization.test.ts",
   "src/gateway/server-methods/worktrees.test.ts",
   "src/gateway/session-delivery-clock-jump.integration.test.ts",
+  "src/gateway/setup-inference.first-signin.integration.test.ts",
 ];
 
 // Canonical file ownership for the non-isolated Gateway server Vitest project.
