@@ -39,6 +39,12 @@ export {
   monitorWebChannel,
 };
 
+type PreflightWebLoginWithQrStart =
+  typeof import("../login-qr-runtime.js").preflightWebLoginWithQrStart;
+type ReadExistingWebLoginWithQrResult =
+  typeof import("../login-qr-runtime.js").readExistingWebLoginWithQrResult;
+type StartWebLoginWithQrAfterPreflight =
+  typeof import("../login-qr-runtime.js").startWebLoginWithQrAfterPreflight;
 type StartWebLoginWithQr = typeof import("../login-qr-runtime.js").startWebLoginWithQr;
 type WaitForWebLogin = typeof import("../login-qr-runtime.js").waitForWebLogin;
 type WhatsAppSetupWizard = typeof import("./setup-surface.js").whatsappSetupWizard;
