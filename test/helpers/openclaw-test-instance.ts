@@ -28,6 +28,7 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../../src/test-utils/openclaw-test-state.js";
+import { getDeterministicFreePortBlock } from "../../src/test-utils/ports.js";
 import { sleep } from "../../src/utils.js";
 import { decodeUtf8Tail } from "./bounded-child-output.js";
 import { runQaGatewayFixture } from "./qa-gateway-cleanup.js";
@@ -258,6 +259,21 @@ async function reserveGatewayPort(port = 0) {
       },
       () => (server.listening ? release() : undefined),
     );
+  }
+}
+
+async function reserveInitialGatewayPort() {
+  for (let candidate = 1; ; candidate += 1) {
+    const port = await getDeterministicFreePortBlock();
+    try {
+      return await reserveGatewayPort(port);
+    } catch (error) {
+      // The block probe releases its sockets before reservation. Reselect only
+      // a lost base-port race after cleanup, never allocator or cleanup errors.
+      if (candidate === 8 || !hasErrnoCode(error, "EADDRINUSE")) {
+        throw error;
+      }
+    }
   }
 }
 
@@ -581,7 +597,7 @@ export async function createOpenClawTestInstance(
   const hookToken = options.hookToken ?? `token-${options.name}-${randomUUID()}`;
   let state: OpenClawTestState | undefined;
   try {
-    port = options.port ?? (reservation = await reserveGatewayPort()).port;
+    port = options.port ?? (reservation = await reserveInitialGatewayPort()).port;
     state = await createOpenClawTestState({
       label: options.name,
       layout: "home",

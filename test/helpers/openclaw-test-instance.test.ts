@@ -20,6 +20,7 @@ import {
 import { hasErrnoCode } from "../../src/infra/errno.js";
 import { resolveMaxOutputBytes } from "../../src/process/exec-output.js";
 import { withEnvAsync } from "../../src/test-utils/env.js";
+import { getDeterministicFreePortBlock } from "../../src/test-utils/ports.js";
 import { createBoundedChildOutput } from "./bounded-child-output.js";
 import { createFixtureLifetime } from "./fixture-lifetime.js";
 import { createOpenClawTestInstance, testing } from "./openclaw-test-instance.js";
@@ -397,6 +398,141 @@ async function isPortReserved(port: number): Promise<boolean> {
   }
 }
 
+async function withInitialReservationBoundary(
+  options: { contentions?: number; reservationFailure?: Error; allocatorFailure?: Error },
+  body: (
+    acquisition: Promise<Awaited<ReturnType<typeof createOpenClawTestInstance>>>,
+    observed: { reservations: net.Server[]; competitors: net.Server[]; bindErrors: unknown[] },
+  ) => Promise<void>,
+): Promise<void> {
+  const closedProbePorts = new Set<number>();
+  const reservations: net.Server[] = [];
+  const competitors: net.Server[] = [];
+  const bindErrors: unknown[] = [];
+  const pending: Promise<unknown>[] = [];
+  let allocatorFailure = options.allocatorFailure;
+  let instance: Awaited<ReturnType<typeof createOpenClawTestInstance>> | undefined;
+  const listenDescriptor: TypedPropertyDescriptor<net.Server["listen"]> | undefined =
+    Object.getOwnPropertyDescriptor(net.Server.prototype, "listen");
+  const listen = listenDescriptor?.value;
+  if (!listen) {
+    throw new Error("Missing original server listen method");
+  }
+  const listenSpy = vi.spyOn(net.Server.prototype, "listen").mockImplementation(function (
+    this: net.Server,
+    ...args: Parameters<typeof listen>
+  ) {
+    const port = args[0];
+    if (typeof port !== "number" || !closedProbePorts.delete(port)) {
+      if (allocatorFailure) {
+        const failure = allocatorFailure;
+        allocatorFailure = undefined;
+        throw failure;
+      }
+      if (typeof port === "number") {
+        const settled = createDeferred();
+        this.once("close", () => {
+          closedProbePorts.add(port);
+          settled.resolve();
+        });
+        this.once("error", () => settled.resolve());
+        pending.push(settled.promise);
+        try {
+          return Reflect.apply(listen, this, args);
+        } catch (error) {
+          settled.resolve();
+          throw error;
+        }
+      }
+      return Reflect.apply(listen, this, args);
+    }
+    reservations.push(this);
+    if (options.reservationFailure) {
+      throw options.reservationFailure;
+    }
+    if (reservations.length > (options.contentions ?? 0)) {
+      return Reflect.apply(listen, this, args);
+    }
+    this.once("error", (error) => bindErrors.push(error));
+    const competitor = net.createServer();
+    competitors.push(competitor);
+    // Wait for a real competing listener after probe closure, then let the
+    // original reservation hit the OS. No fabricated EADDRINUSE response.
+    pending.push(
+      new Promise<void>((resolve, reject) => {
+        competitor.once("error", reject);
+        Reflect.apply(listen, competitor, [
+          port,
+          "127.0.0.1",
+          () => {
+            competitor.off("error", reject);
+            resolve();
+          },
+        ]);
+      })
+        .then(() => {
+          Reflect.apply(listen, this, args);
+        })
+        .catch((error: unknown) => {
+          this.emit("error", error);
+        }),
+    );
+    return this;
+  });
+  const acquisition = trackOperation(
+    createOpenClawTestInstance({ name: "initial-reservation-race" })
+      .then((created) => {
+        instance = created;
+        fakeInstances.push({ instance: created });
+        return created;
+      })
+      .finally(() => listenSpy.mockRestore()),
+  );
+  await runQaGatewayFixture(
+    () => body(acquisition, { reservations, competitors, bindErrors }),
+    async () => {
+      await acquisition.catch(() => undefined);
+      listenSpy.mockRestore();
+      await Promise.all(pending);
+    },
+    () => instance?.cleanup(),
+    async () => {
+      if (instance) {
+        await expect(isPortReserved(instance.port)).resolves.toBe(false);
+      }
+      expect(reservations.every((server) => !server.listening)).toBe(true);
+      for (const competitor of competitors) {
+        expect(competitor.listening).toBe(true);
+        const address = competitor.address();
+        if (!address || typeof address === "string") {
+          throw new Error("competitor lost its bound address");
+        }
+        await expect(isPortReserved(address.port)).resolves.toBe(true);
+      }
+    },
+    async () => {
+      const results = await Promise.allSettled(
+        competitors.map(
+          (competitor) =>
+            new Promise<void>((resolve, reject) => {
+              if (!competitor.listening) {
+                resolve();
+                return;
+              }
+              competitor.close((error) => (error ? reject(error) : resolve()));
+            }),
+        ),
+      );
+      const errors = results.flatMap((result) =>
+        result.status === "rejected" ? [result.reason] : [],
+      );
+      if (errors.length) {
+        throw new AggregateError(errors, "reservation competitors failed to close");
+      }
+    },
+  );
+}
+
 function createGatewayProcessState(
   overrides: Partial<{ exitCode: number | null; signalCode: NodeJS.Signals | null }> = {},
 ) {
@@ -408,6 +544,135 @@ function createGatewayProcessState(
 }
 
 describe("openclaw test instance", () => {
+  describe("initial reservation contention", () => {
+    it("reselects after a real competitor takes the probed base", async () => {
+      await withInitialReservationBoundary({ contentions: 1 }, async (acquisition, observed) => {
+        await expect(acquisition).resolves.toHaveProperty("port");
+        const instance = await acquisition;
+        expect(observed.bindErrors).toEqual([expect.objectContaining({ code: "EADDRINUSE" })]);
+        expect(observed.competitors).toHaveLength(1);
+        expect(observed.competitors[0]?.address()).not.toMatchObject({ port: instance.port });
+        const occupied = await Promise.all(
+          [0, 1, 2, 3, 4].map((offset) => isPortReserved(instance.port + offset)),
+        );
+        expect(occupied).toEqual([true, false, false, false, false]);
+      });
+    });
+
+    it("stops after eight total contended candidates and preserves the final error", async () => {
+      await withInitialReservationBoundary({ contentions: 8 }, async (acquisition, observed) => {
+        const failure = await acquisition.catch((error: unknown) => error);
+        expect(failure).toMatchObject({ code: "EADDRINUSE" });
+        expect(observed.bindErrors).toHaveLength(8);
+        expect(failure).toBe(observed.bindErrors.at(-1));
+        expect(observed.competitors).toHaveLength(8);
+        expect(
+          new Set(observed.competitors.map((server) => JSON.stringify(server.address()))).size,
+        ).toBe(8);
+      });
+    });
+
+    it.each(["EACCES", "EPERM"])("does not reselect after reservation %s", async (code) => {
+      const failure = Object.assign(new Error("reservation denied"), { code });
+      await withInitialReservationBoundary(
+        { reservationFailure: failure },
+        async (acquisition, observed) => {
+          await expect(acquisition).rejects.toBe(failure);
+          expect(observed.reservations).toHaveLength(1);
+          expect(observed.competitors).toHaveLength(0);
+        },
+      );
+    });
+
+    it("does not reselect after an aggregate reservation cleanup failure", async () => {
+      const failure = new AggregateError(
+        [
+          Object.assign(new Error("address occupied"), { code: "EADDRINUSE" }),
+          new Error("reservation cleanup failed"),
+        ],
+        "QA gateway fixture failed",
+      );
+      await withInitialReservationBoundary(
+        { reservationFailure: failure },
+        async (acquisition, observed) => {
+          await expect(acquisition).rejects.toBe(failure);
+          expect(observed.reservations).toHaveLength(1);
+        },
+      );
+    });
+
+    it("does not reselect after an allocator failure carrying EADDRINUSE", async () => {
+      const failure = Object.assign(new Error("allocator failed"), { code: "EADDRINUSE" });
+      await withInitialReservationBoundary(
+        { allocatorFailure: failure },
+        async (acquisition, observed) => {
+          await expect(acquisition).rejects.toBe(failure);
+          expect(observed.reservations).toHaveLength(0);
+        },
+      );
+    });
+  });
+
+  it("selects a free derived port block without taking a competitor's port", async () => {
+    const base = await getDeterministicFreePortBlock();
+    const competitor = net.createServer();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        competitor.once("error", reject);
+        competitor.listen(base + 1, "127.0.0.1", resolve);
+      });
+      const listenDescriptor: TypedPropertyDescriptor<net.Server["listen"]> | undefined =
+        Object.getOwnPropertyDescriptor(net.Server.prototype, "listen");
+      const listen = listenDescriptor?.value;
+      if (!listen) {
+        throw new Error("Missing original server listen method");
+      }
+      let redirected = false;
+      // Reproduce an OS-selected base whose derived port is already owned.
+      const listenSpy = vi.spyOn(net.Server.prototype, "listen").mockImplementation(function (
+        this: net.Server,
+        ...args: Parameters<typeof listen>
+      ) {
+        if (!redirected && args[0] === 0) {
+          redirected = true;
+          args[0] = base;
+        }
+        return Reflect.apply(listen, this, args);
+      });
+      let instance: Awaited<ReturnType<typeof createOpenClawTestInstance>>;
+      try {
+        instance = await createOpenClawTestInstance({ name: "derived-port-block" });
+        fakeInstances.push({ instance });
+      } finally {
+        listenSpy.mockRestore();
+      }
+      await runQaGatewayFixture(
+        async () => {
+          const occupied = await Promise.all(
+            [0, 1, 2, 3, 4].map((offset) => isPortReserved(instance.port + offset)),
+          );
+          expect(occupied[0], "the instance owns its selected base port").toBe(true);
+          for (const offset of [1, 2, 3, 4]) {
+            expect(occupied[offset], `selected derived port +${offset} is occupied`).toBe(false);
+          }
+        },
+        () => instance.cleanup(),
+        async () => {
+          await expect(isPortReserved(instance.port)).resolves.toBe(false);
+          expect(competitor.listening).toBe(true);
+          expect(competitor.address()).toMatchObject({ port: base + 1 });
+          await expect(isPortReserved(base + 1)).resolves.toBe(true);
+        },
+      );
+    } finally {
+      if (competitor.listening) {
+        await new Promise<void>((resolve, reject) => {
+          competitor.close((error) => (error ? reject(error) : resolve()));
+        });
+      }
+    }
+  });
+
   it("reserves its idle port through refusal, CLI work, and stopped restarts", async () => {
     const { instance, readAttempts } = await createFakeGateway("unrelated,cli,ready,ready");
     const reserved = {

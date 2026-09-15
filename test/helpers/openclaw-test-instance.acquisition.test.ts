@@ -24,7 +24,11 @@ describe("createOpenClawTestInstance acquisition", () => {
       const mkdtemp = fs.mkdtemp;
       const allocationSpy = vi.spyOn(fs, "mkdtemp").mockImplementation(async (...args) => {
         if (args[0].endsWith("instance-wrapper-failure-")) {
-          const address = serverSpy.mock.results[0]?.value.address();
+          const reservations = serverSpy.mock.results.flatMap((result) =>
+            result.type === "return" && result.value.listening ? [result.value] : [],
+          );
+          expect(reservations).toHaveLength(1);
+          const address = reservations[0]?.address();
           reservedPort = address && typeof address !== "string" ? address.port : undefined;
           expect(reservedPort).toBeTypeOf("number");
           if (stage === "state") {
