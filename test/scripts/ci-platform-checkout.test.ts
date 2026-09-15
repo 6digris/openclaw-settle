@@ -20,6 +20,7 @@ import { isProcessAlive, waitForDead } from "../helpers/process-wait.js";
 import {
   ciCheckoutFixture,
   expectCiCheckoutCleanup,
+  projectWindowsCheckoutDiagnostics,
   readCiCheckoutStep,
   renderGitTestClock,
   withCiCheckoutFixture,
@@ -37,6 +38,397 @@ beforeAll(() => {
   vi.setConfig({ maxConcurrency: 2 });
   return () => vi.resetConfig();
 });
+
+it("bounds and redacts Windows checkout observations without changing cleanup evidence", () => {
+  const sample = {
+    emitter: "census",
+    phase: "sample",
+    sequence: 1,
+    pid: 101,
+    alive: true,
+    creationTime: "5001",
+    start: "10",
+    end: "12",
+    frequency: "1000",
+    clockError: null,
+    waitResult: 258,
+    openError: null,
+    inJob: null,
+    membershipError: null,
+    diagnosticError: false,
+    python: [3, 13, 7],
+    request: { callerPid: 202, purpose: "exit", start: "30", end: "40" },
+  };
+  const complete = {
+    status: "complete",
+    records: [sample],
+    runtime: { node: "24.21.0", windowsKernel: "10.0.26100" },
+  };
+  expect(projectWindowsCheckoutDiagnostics(complete)).toEqual(complete);
+  const missingFrequency = { ...complete, records: [{ ...sample, frequency: null }] };
+  expect(projectWindowsCheckoutDiagnostics(missingFrequency)).toEqual({
+    ...missingFrequency,
+    status: "unavailable",
+  });
+  for (const records of [
+    [{ ...sample, commandLine: "PRIVATE_CANARY" }],
+    [{ ...sample, creationTime: "PRIVATE_CANARY" }],
+    [{ ...sample, request: { ...sample.request, purpose: "PRIVATE_CANARY" } }],
+    [{ ...sample, waitResult: -1 }],
+    [{ ...sample, alive: false }],
+  ]) {
+    const projected = projectWindowsCheckoutDiagnostics({ ...complete, records });
+    expect(projected).toEqual({ status: "invalid", records: [] });
+    expect(JSON.stringify(projected)).not.toContain("PRIVATE_CANARY");
+  }
+  expect(
+    projectWindowsCheckoutDiagnostics({
+      ...complete,
+      records: Array.from({ length: 513 }, () => ({ ...sample })),
+    }),
+  ).toEqual({ status: "invalid", records: [] });
+  expect(
+    projectWindowsCheckoutDiagnostics({ ...complete, private: "x".repeat(512 * 1024) }),
+  ).toEqual({ status: "overflow", records: [] });
+  for (const status of ["missing", "invalid", "overflow", "unavailable"]) {
+    expect(projectWindowsCheckoutDiagnostics({ status, records: [] })).toEqual({
+      status,
+      records: [],
+    });
+  }
+  expect(
+    projectWindowsCheckoutDiagnostics({
+      ...complete,
+      records: [{ ...sample, membershipError: 5 }],
+    }).status,
+  ).toBe("unavailable");
+  const report = {
+    code: 124,
+    cancelledDuringCleanup: false,
+    readyAttempts: [],
+    commands: [],
+    output: "",
+    cleanupRemaining: [],
+    ownedProcesses: [],
+    boundaries: [
+      {
+        name: "exit",
+        alive: [{ pid: 101, role: "parent", attempt: 2, instance: "owned" }],
+        sentinelAlive: true,
+      },
+    ],
+    windowsDiagnostics: projectWindowsCheckoutDiagnostics(complete),
+  };
+  expect(() => expectCiCheckoutCleanup(report)).toThrow(
+    "Git descendants survived BEFORE deletion, reuse, consumption, or exit",
+  );
+});
+
+it("renders Windows observations only into the reviewed private owner", () => {
+  const source = readFileSync(".github/actions/git-owner/owner.py", "utf8");
+  const rendered = renderGitTestClock(source, {
+    realClock: true,
+    windowsDiagnosticsRoot: "fixture-owned",
+  });
+  const compiled = spawnSync(
+    process.platform === "win32" ? "python" : "python3",
+    ["-I", "-S", "-c", "import sys; compile(sys.stdin.read(), '<private-owner>', 'exec')"],
+    { input: rendered, encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024 },
+  );
+  expect(compiled.error, compiled.stderr).toBeUndefined();
+  expect(compiled.status, compiled.stderr).toBe(0);
+  expect(renderGitTestClock(source, { realClock: true })).toBe(source);
+  expect(() =>
+    renderGitTestClock(source + "\n", { windowsDiagnosticsRoot: "fixture-owned" }),
+  ).toThrow("Windows diagnostic owner rendering drift");
+});
+
+it("keeps Windows observation handles transient and preserves the original owner exception", () => {
+  const result = spawnSync(
+    process.platform === "win32" ? "python" : "python3",
+    [
+      "-I",
+      "-S",
+      "-c",
+      String.raw`
+import contextlib, ctypes as c, io, json, os, pathlib, runpy, sys, tempfile, types
+scope = runpy.run_path(sys.argv[1])
+state = dict(error=0, clock=0, fail_membership=False)
+handles = set()
+def failure(code):
+    error = OSError(code, "native fixture failure")
+    error.winerror = code
+    return error
+c.get_last_error = lambda: state["error"]
+c.set_last_error = lambda value: state.update(error=value)
+c.WinError = failure
+class Function:
+    def __init__(self, callback): self.callback = callback
+    def __call__(self, *args):
+        result = self.callback(*args)
+        return self.errcheck(result, self, args) if hasattr(self, "errcheck") else result
+def opened(access, inherit, pid):
+    assert access == 0x1000 | 0x100000 and not inherit
+    if pid == 999:
+        state["error"] = 87
+        return 0
+    handles.add(pid)
+    return pid
+def closed(handle):
+    handles.remove(handle)
+    return 1
+def wait(handle, timeout):
+    assert handle in handles and timeout == 0
+    return 0 if handle == 102 else 258
+def times(handle, *values):
+    assert handle in handles
+    values[0]._obj.dwHighDateTime, values[0]._obj.dwLowDateTime = 0, handle * 10
+    return 1
+def clock(value):
+    state["clock"] += 1
+    if state.pop("fail_clock_once", False):
+        state["error"] = 6
+        return 0
+    value._obj.value = state["clock"]
+    return 1
+def frequency(value):
+    value._obj.value = 1000
+    return 1
+def membership(handle, job, value):
+    assert handle in handles and job == 77
+    if state["fail_membership"]:
+        state["error"] = 5
+        return 0
+    value._obj.value = int(handle == 101)
+    return 1
+kernel = types.SimpleNamespace(**{name: Function(callback) for name, callback in {
+    "OpenProcess": opened, "CloseHandle": closed, "WaitForSingleObject": wait,
+    "GetProcessTimes": times, "IsProcessInJob": membership,
+    "QueryPerformanceCounter": clock, "QueryPerformanceFrequency": frequency,
+}.items()})
+c.WinDLL = lambda *args, **kwargs: kernel
+read = scope["read_processes"]
+plain = read([101, 102, 999])
+assert plain == [
+    dict(pid=101, alive=True, creationTime="1010"),
+    dict(pid=102, alive=False, creationTime="1020"),
+    dict(pid=999, alive=False, creationTime=None),
+]
+observed = read([101, 102, 999], 7, 77)
+assert [{k: v for k, v in row.items() if k != "native"} for row in observed] == plain
+assert not handles
+assert observed[0]["native"]["inJob"] is True
+assert observed[1]["native"]["inJob"] is False
+assert observed[2]["native"]["openError"] == 87
+assert all(int(row["native"]["start"]) < int(row["native"]["end"]) for row in observed)
+state.update(error=73, fail_membership=True)
+sample = read([101], 8, 77)[0]["native"]
+assert sample["membershipError"] == 5 and sample["waitResult"] == 258
+assert state["error"] == 73 and not handles
+state["fail_membership"] = False
+for pid in (101, 999):
+    state["fail_clock_once"] = True
+    assert read([pid], 9, 77)[0]["native"]["clockError"] == 6
+helper = pathlib.Path(sys.argv[1]).read_text()
+original_argv, original_stdin = sys.argv, sys.stdin
+for enabled in (False, True):
+    output = io.StringIO()
+    sys.stdin = io.StringIO('{"id":1,"pids":[101]}\n{"id":2,"pids":[102]}\n')
+    sys.argv = [original_argv[1], *(["--checkout-diagnostics"] if enabled else [])]
+    try:
+        with contextlib.redirect_stdout(output):
+            exec(compile(helper, "<fixture-census>", "exec"), {"__name__": "__main__"})
+    finally:
+        sys.argv, sys.stdin = original_argv, original_stdin
+    ready, *replies = map(json.loads, output.getvalue().splitlines())
+    assert ready == dict(ready=True)
+    assert all(set(reply) == {"id", "observations"} for reply in replies)
+    assert replies[0]["observations"][0]["alive"] is True
+    assert replies[1]["observations"][0]["alive"] is False
+    assert sum("python" in row.get("native", {}) for reply in replies for row in reply["observations"]) == int(enabled)
+    assert all(("native" in row) == enabled for reply in replies for row in reply["observations"])
+assert not handles
+
+def requests():
+    for sequence in range(1, 1025):
+        before = state["clock"]
+        yield json.dumps(dict(id=sequence, pids=[101])) + "\n"
+        if sequence == 1024:
+            assert state["clock"] == before, "overflow must stop diagnostic sampling"
+output = io.StringIO()
+sys.stdin, sys.argv = requests(), [original_argv[1], "--checkout-diagnostics"]
+try:
+    with contextlib.redirect_stdout(output):
+        exec(compile(helper, "<fixture-census>", "exec"), {"__name__": "__main__"})
+finally:
+    sys.argv, sys.stdin = original_argv, original_stdin
+ready, *replies = map(json.loads, output.getvalue().splitlines())
+assert ready == dict(ready=True) and len(replies) == 1024 and not handles
+assert all({k: v for k, v in reply["observations"][0].items() if k != "native"} == plain[0] for reply in replies)
+assert any(reply["observations"][0].get("native", {}).get("phase") == "overflow" for reply in replies)
+assert "native" not in replies[-1]["observations"][0]
+
+class Accounting(c.Structure):
+    _fields_ = [(name, c.c_uint32) for name in ("ActiveProcesses", "TotalProcesses", "TotalTerminatedProcesses")]
+primary = failure(123)
+namespace = dict(Accounting=Accounting, create_job=lambda *_: 77, close_handle=lambda _: 1)
+def query(*args):
+    accounting = args[2]._obj
+    accounting.ActiveProcesses, accounting.TotalProcesses, accounting.TotalTerminatedProcesses = 0, 3, 3
+    return 1
+def drain(child, job):
+    assert not handles, "observer handles must close before original drain"
+    accounting = Accounting()
+    namespace["query_job"](job, 1, c.byref(accounting), c.sizeof(accounting), None)
+    assert not handles, "query observations retained a handle"
+    raise primary
+checked_query = Function(query)
+checked_query.errcheck = lambda value, function, args: value
+namespace.update(query_job=checked_query, drain=drain)
+with tempfile.TemporaryDirectory(prefix="checkout-observation-") as directory:
+    root = pathlib.Path(directory)
+    (root / "pids").mkdir()
+    for pid, role, attempt in [(101, "parent", 2), (104, "child", 2), (105, "grandchild", 2),
+                               (103, "sentinel", 0), (106, "git", 0), (107, "shell", 0)]:
+        (root / "pids" / f"{pid}.json").write_text(json.dumps(
+            dict(pid=pid, role=role, attempt=attempt, instance=f"fixture-{pid}",
+                 creationTime=str(pid * 10))))
+    # Only this observer namespace sees the emulated Windows API, not the test host.
+    scope["install_owner_observer"].__globals__["os"] = types.SimpleNamespace(
+        name="nt", path=os.path, listdir=os.listdir, getpid=lambda: 202)
+    scope["install_owner_observer"](namespace, directory)
+    job = namespace["create_job"](None, None)
+    complete_rows = [json.loads(line) for line in (root / "windows-owner-diagnostic.jsonl").read_text().splitlines()]
+    try:
+        namespace["drain"](types.SimpleNamespace(pid=102), job)
+        raise AssertionError("original drain failure was suppressed")
+    except OSError as error:
+        assert error is primary
+    namespace["close_handle"](job)
+    rows = [json.loads(line) for line in (root / "windows-owner-diagnostic.jsonl").read_text().splitlines()]
+    after = next(row for row in rows if row["phase"] == "after-drain")
+    assert after["returnPath"] == "exception" and after["errorCode"] == 123
+    assert after["ownerCreationTime"] == "2020" and after["bootstrap"]["creationTime"] == "1020"
+    assert after["actors"][0]["native"]["inJob"] and not after["sentinel"]["native"]["inJob"]
+    assert next(row for row in rows if row["phase"] == "accounting")["accounting"] == dict(result=1, active=0, total=3, terminated=3)
+    assert not handles
+    # A failed checked API exposes the original native zero and exact exception.
+    checked_query.callback = lambda *args: 0
+    def checked_failure(value, function, args):
+        assert value == 0
+        raise primary
+    # The observer calls the retained original checker, not a replaced policy.
+    scope["install_owner_observer"].__globals__["read_processes"] = read
+    namespace2 = dict(Accounting=Accounting, create_job=lambda *_: 77, close_handle=lambda _: 1,
+                      query_job=Function(lambda *args: 0), drain=drain)
+    namespace2["query_job"].errcheck = checked_failure
+    scope["install_owner_observer"](namespace2, directory)
+    namespace2["create_job"](None, None)
+    try: namespace2["query_job"](77, 1, c.byref(Accounting()), c.sizeof(Accounting), None)
+    except OSError as error: assert error is primary
+    else: raise AssertionError("native query exception suppressed")
+    rows = [json.loads(line) for line in (root / "windows-owner-diagnostic.jsonl").read_text().splitlines()]
+    assert rows[-1]["accounting"]["result"] == 0 and rows[-1]["errorCode"] == 123
+    checked_query.callback = query
+    # An observer read failure must be recorded, never replace the same primary error.
+    def unavailable(*args): raise ValueError("PRIVATE_CANARY")
+    scope["install_owner_observer"].__globals__["read_processes"] = unavailable
+    try: namespace["drain"](types.SimpleNamespace(pid=102), job)
+    except OSError as error: assert error is primary
+    rows = [json.loads(line) for line in (root / "windows-owner-diagnostic.jsonl").read_text().splitlines()]
+    assert rows[-1]["phase"] == "observation-error" and "PRIVATE_CANARY" not in json.dumps(rows)
+    scope["install_owner_observer"].__globals__["read_processes"] = read
+    for samples in (10, 1024):
+        next_owner = dict(Accounting=Accounting, create_job=lambda *_: 77, close_handle=lambda _: 1,
+                          query_job=Function(query), drain=lambda *_: None)
+        next_owner["query_job"].errcheck = lambda value, function, args: value
+        scope["install_owner_observer"](next_owner, directory)
+        for _ in range(samples):
+            next_owner["create_job"](None, None)
+    before = state["clock"]
+    next_owner["create_job"](None, None)
+    next_owner["close_handle"](77)
+    assert state["clock"] == before and not handles
+    owner_bytes = (root / "windows-owner-diagnostic.jsonl").read_bytes()
+    capped_rows = [json.loads(line) for line in owner_bytes.splitlines()]
+    assert len(capped_rows) <= 256 and len(owner_bytes) <= 256 * 1024
+    assert sum(row["phase"] == "overflow" for row in capped_rows) == 1
+    assert capped_rows[-1]["phase"] == "overflow"
+
+for payload in (dict(emitter="census", phase="sample"), dict(emitter="owner", phase="sample", value="x" * 20000)):
+    count, size, overflow, encoded = 0, 0, False, []
+    for _ in range(1024):
+        record, count, size, overflow = scope["bounded_record"](payload, count, size, overflow)
+        if record is not None: encoded.append(scope["encoded_record"](record))
+    assert len(encoded) <= 256 and sum(map(len, encoded)) <= 256 * 1024
+    assert json.loads(encoded[-1])["phase"] == "overflow"
+print(json.dumps(dict(api="emulated", transientHandles=True, primaryExceptionPreserved=True,
+                     capRecords=512, capBytes=512*1024, completeRows=complete_rows, ownerRows=rows)))
+`,
+      fileURLToPath(new URL("./fixtures/ci-windows-process-census.py", import.meta.url)),
+    ],
+    { encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024, killSignal: "SIGKILL" },
+  );
+  expect(result.error, result.stderr).toBeUndefined();
+  expect(result.status, result.stderr).toBe(0);
+  expect(JSON.parse(result.stdout)).toMatchObject({
+    api: "emulated",
+    transientHandles: true,
+    primaryExceptionPreserved: true,
+  });
+  const complete = projectWindowsCheckoutDiagnostics({
+    status: "complete",
+    records: JSON.parse(result.stdout).completeRows,
+  });
+  expect(complete.status).toBe("complete");
+  expect(complete.records).toMatchObject([
+    {
+      actors: [
+        { pid: 101, role: "parent", attempt: 2 },
+        { pid: 104, role: "child", attempt: 2 },
+        { pid: 105, role: "grandchild", attempt: 2 },
+      ],
+      sentinel: { pid: 103, role: "sentinel", attempt: 0 },
+    },
+  ]);
+  expect(JSON.parse(result.stdout).completeRows[0].actors).toHaveLength(3);
+  expect(
+    projectWindowsCheckoutDiagnostics({
+      status: "complete",
+      records: JSON.parse(result.stdout).ownerRows,
+    }).status,
+  ).toBe("unavailable");
+});
+
+it.skipIf(process.platform === "win32").each(["missing", "partial", "oversized"])(
+  "retains original fixture outcome with %s Windows diagnostic files",
+  async (kind) => {
+    await withCiCheckoutFixture(
+      "early-leader-exit",
+      (root) => {
+        writeFileSync(path.join(root, "checkout.sh"), "exit 23\n");
+        writeFileSync(
+          path.join(root, "fixture-options.json"),
+          JSON.stringify({ windowsDiagnostics: true }),
+        );
+        if (kind !== "missing") {
+          writeFileSync(
+            path.join(root, "windows-owner-diagnostic.jsonl"),
+            kind === "partial" ? '{"emitter":"owner"' : "x".repeat(256 * 1024 + 1),
+          );
+        }
+      },
+      (report, result) => {
+        expect(result).toEqual({ code: 0, signal: null });
+        expect(report.code).toBe(23);
+        expect(report.error).toBeUndefined();
+        expectCiCheckoutCleanup(report);
+        expect(report.windowsDiagnostics?.status).toBe(kind === "missing" ? "missing" : "invalid");
+      },
+    );
+  },
+  55_000,
+);
 
 // Execute both workflow policies against the same owned tree fixture. A leader's
 // exit must not authorize workspace deletion, Git reuse, or final success.
@@ -82,6 +474,10 @@ it.concurrent.each([
   "preserves checkout ownership and fixture isolation (Linux=$linux, $scenario)",
   async ({ scenario, attempts, code, checkout, linux, deletions }) => {
     const setupFailure = scenario.startsWith("non-executable-");
+    const windowsDiagnostics =
+      process.platform === "win32" &&
+      !linux &&
+      ["recovery", "early-leader-exit", "harness-timeout"].includes(scenario);
     const run = readCiCheckoutStep(linux ? "checks-fast-core" : "checks-windows").run;
 
     const policyScenario = `${linux ? "linux:" : ""}${scenario}`;
@@ -107,7 +503,16 @@ it.concurrent.each([
           // Slow child startup must not replace Git's injected exit with a fixture timeout.
           writeFileSync(path.join(root, "tree-start-delay-1.json"), "4100");
         }
-        const accelerated = renderGitTestClock(run, { realDrain: scenario.startsWith("cancel-") });
+        if (windowsDiagnostics) {
+          writeFileSync(
+            path.join(root, "fixture-options.json"),
+            JSON.stringify({ windowsDiagnostics: true }),
+          );
+        }
+        const accelerated = renderGitTestClock(run, {
+          realDrain: scenario.startsWith("cancel-"),
+          ...(windowsDiagnostics ? { windowsDiagnosticsRoot: root } : {}),
+        });
         expect(accelerated).not.toBe(run);
         // A broken preflight must never let these negative fixture tests run real Git.
         writeFileSync(
@@ -117,7 +522,15 @@ it.concurrent.each([
         if (process.platform === "win32") {
           return censusPreload(
             root,
-            "",
+            windowsDiagnostics
+              ? `
+const diagnosticSpawn = cp.spawn;
+cp.spawn = (command, args, options) => diagnosticSpawn(command,
+  command === "python" && args?.[2]?.endsWith("ci-windows-process-census.py")
+    ? [...args, "--checkout-diagnostics"] : args, options);
+syncFixtureBuiltinExports();
+`
+              : "",
             ["timeouts-exhausted", "recovery", "early-leader-exit", "harness-timeout"].includes(
               scenario,
             ),
@@ -250,6 +663,22 @@ it.concurrent.each([
             "--detach",
             "b".repeat(40),
           ]);
+        }
+        if (windowsDiagnostics) {
+          // Cleanup and policy assertions above win over diagnostic completeness.
+          expect(report.windowsDiagnostics?.status).toBe("complete");
+          expect(report.windowsDiagnostics?.runtime).toBeDefined();
+          const diagnosticRecords = report.windowsDiagnostics?.records ?? [];
+          expect(diagnosticRecords.some((entry) => entry.phase === "after-drain")).toBe(true);
+          expect(
+            diagnosticRecords.some(
+              (entry) =>
+                entry.emitter === "census" &&
+                "request" in entry &&
+                entry.request?.purpose === "exit",
+            ),
+          ).toBe(true);
+          expect(diagnosticRecords.filter((entry) => "python" in entry)).toHaveLength(1);
         }
       },
     );

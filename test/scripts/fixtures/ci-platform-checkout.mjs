@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import { release } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -154,12 +155,77 @@ function assertActorLease() {
   }
 }
 
-function readWindowsProcessCensus(pids) {
-  return mode === "supervise"
+async function readWindowsProcessCensus(pids, purpose = "registration") {
+  const start = options.windowsDiagnostics ? process.hrtime.bigint().toString() : undefined;
+  const observations = await (mode === "supervise"
     ? census.read(pids)
-    : requestWindowsProcessCensus(root, actorLease, pids);
+    : requestWindowsProcessCensus(root, actorLease, pids));
+  if (options.windowsDiagnostics) {
+    const request = {
+      callerPid: process.pid,
+      purpose,
+      start,
+      end: process.hrtime.bigint().toString(),
+    };
+    // The single native sampler budgets these records before its stdout write.
+    // Broker requests forward each observation once, including actor requests.
+    for (const observation of observations.values()) {
+      if (observation.native !== undefined) {
+        try {
+          if (Buffer.byteLength(JSON.stringify({ request })) > 512) {
+            continue;
+          }
+          fs.appendFileSync(
+            path.join(root, "windows-census-diagnostic.jsonl"),
+            `${JSON.stringify({ ...observation.native, request })}\n`,
+          );
+        } catch {
+          // Missing evidence is reported separately, never used for liveness.
+        }
+      }
+    }
+  }
+  return observations;
 }
 
+function windowsDiagnosticReport() {
+  const diagnosticRows = [];
+  let status = "complete";
+  for (const emitter of ["owner", "census"]) {
+    try {
+      const filename = path.join(root, `windows-${emitter}-diagnostic.jsonl`);
+      const info = fs.lstatSync(filename);
+      if (!info.isFile() || info.isSymbolicLink() || info.size > 256 * 1024) {
+        return { status: "invalid", records: [] };
+      }
+      const text = fs.readFileSync(filename, "utf8");
+      if (text && !text.endsWith("\n")) {
+        return { status: "invalid", records: [] };
+      }
+      const rows = text.trim().split("\n").filter(Boolean);
+      if (rows.length > 256) {
+        return { status: "overflow", records: [] };
+      }
+      diagnosticRows.push(...rows.map(JSON.parse));
+      if (!rows.length) {
+        status = "missing";
+      }
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        return { status: "invalid", records: [] };
+      }
+      status = "missing";
+    }
+  }
+  if (diagnosticRows.some((row) => row.phase === "overflow")) {
+    status = "overflow";
+  }
+  return {
+    status,
+    records: diagnosticRows,
+    runtime: { node: process.versions.node, windowsKernel: release() },
+  };
+}
 async function record(pid, role, attempt = 0) {
   if (process.platform === "win32" && pid === process.pid && !ownWindowsCreationTime) {
     const identity = (await readWindowsProcessCensus([pid])).get(pid);
@@ -190,7 +256,7 @@ function records() {
     .map((file) => JSON.parse(fs.readFileSync(path.join(recordsDir, file), "utf8")));
 }
 
-async function liveRecords() {
+async function liveRecords(purpose = "boundary") {
   const owned = records().filter(
     (entry) =>
       !fs.existsSync(path.join(recordsDir, `${entry.instance}.dead`)) &&
@@ -203,7 +269,7 @@ async function liveRecords() {
   const alive = new Set();
   const pids = new Set(owned.map((entry) => entry.pid));
   const windowsCensus =
-    process.platform === "win32" ? await readWindowsProcessCensus([...pids]) : undefined;
+    process.platform === "win32" ? await readWindowsProcessCensus([...pids], purpose) : undefined;
   if (windowsCensus) {
     for (const entry of owned) {
       if (typeof entry.creationTime !== "string" || !/^\d+$/.test(entry.creationTime)) {
@@ -292,7 +358,7 @@ function isWorkflowDescendant(pid, shellPid) {
 }
 
 async function boundary(name) {
-  const alive = await liveRecords();
+  const alive = await liveRecords(name === "exit" ? "exit" : "boundary");
   assertActorLease();
   fs.appendFileSync(
     eventsFile,
@@ -1123,7 +1189,7 @@ async function supervise() {
         await until(() => pendingChildren.size === 0, "direct child close", actorEnd);
         await until(
           async () => {
-            report.cleanupRemaining = await liveRecords();
+            report.cleanupRemaining = await liveRecords("cleanup");
             return report.cleanupRemaining.length === 0;
           },
           "fixture cleanup",
@@ -1164,6 +1230,9 @@ async function supervise() {
           .filter(Boolean)
           .map(JSON.parse);
         report.output = fs.readFileSync(path.join(root, "workflow.log"), "utf8");
+        if (options.windowsDiagnostics) {
+          report.windowsDiagnostics = windowsDiagnosticReport();
+        }
         if (options.publisher || options.performance) {
           // Model Actions masking, including the mask-registration line itself.
           const masks = [...report.output.matchAll(/^::add-mask::(.+)$/gm)].map(

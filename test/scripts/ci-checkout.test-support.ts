@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { fork, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -19,6 +20,166 @@ const processRecord = z.object({
   instance: z.string(),
   creationTime: z.string().regex(/^\d+$/u).optional(),
 });
+const decimal = z.string().regex(/^\d{1,20}$/u);
+const requestSample = z.strictObject({
+  callerPid: z.number().int().positive(),
+  purpose: z.enum(["registration", "boundary", "exit", "cleanup"]),
+  start: decimal,
+  end: decimal,
+});
+const nativeSample = z
+  .strictObject({
+    emitter: z.literal("census"),
+    phase: z.literal("sample"),
+    sequence: z.number().int().positive(),
+    pid: z.number().int().positive(),
+    alive: z.boolean(),
+    creationTime: decimal.nullable(),
+    start: decimal.nullable(),
+    end: decimal.nullable(),
+    frequency: decimal.nullable(),
+    clockError: z.number().int().nonnegative().nullable(),
+    waitResult: z.union([z.literal(0), z.literal(258)]).nullable(),
+    openError: z.literal(87).nullable(),
+    inJob: z.boolean().nullable(),
+    membershipError: z.number().int().nonnegative().nullable(),
+    diagnosticError: z.boolean(),
+    python: z
+      .tuple([
+        z.number().int().nonnegative(),
+        z.number().int().nonnegative(),
+        z.number().int().nonnegative(),
+      ])
+      .optional(),
+    request: requestSample.optional(),
+  })
+  .refine((sample) =>
+    sample.openError === 87
+      ? !sample.alive && sample.creationTime === null && sample.waitResult === null
+      : sample.creationTime !== null &&
+        sample.alive === (sample.waitResult === 258) &&
+        sample.waitResult !== null,
+  );
+const diagnosticActor = z.strictObject({
+  pid: z.number().int().positive(),
+  creationTime: decimal.nullable(),
+  role: z.enum(["parent", "child", "grandchild", "sentinel"]),
+  attempt: z.number().int().nonnegative(),
+  native: nativeSample,
+});
+const ownerSample = z.strictObject({
+  emitter: z.literal("owner"),
+  phase: z.enum([
+    "job-created",
+    "before-drain",
+    "accounting",
+    "accounting-error",
+    "after-drain",
+    "before-job-close",
+  ]),
+  ownerPid: z.number().int().positive(),
+  ownerCreationTime: decimal,
+  jobGeneration: z.number().int().positive(),
+  jobHandle: decimal.nullable(),
+  sequence: z.number().int().positive(),
+  accounting: z
+    .strictObject({
+      result: z.number().int(),
+      active: z.number().int().nonnegative().nullable(),
+      total: z.number().int().nonnegative().nullable(),
+      terminated: z.number().int().nonnegative().nullable(),
+    })
+    .nullable(),
+  returnPath: z.enum(["normal", "exception"]).nullable(),
+  exceptionType: z
+    .enum([
+      "OSError",
+      "RuntimeError",
+      "SystemExit",
+      "KeyboardInterrupt",
+      "FetchTimeout",
+      "GitFailure",
+      "other",
+    ])
+    .nullable(),
+  errorCode: z.number().int().nonnegative().nullable(),
+  actors: z.array(diagnosticActor).max(128),
+  sentinel: diagnosticActor.nullable(),
+  owner: nativeSample,
+  bootstrap: nativeSample.nullable(),
+});
+const diagnosticRecord = z.union([
+  nativeSample,
+  ownerSample,
+  z.strictObject({
+    emitter: z.enum(["owner", "census"]),
+    phase: z.literal("overflow"),
+    request: requestSample.optional(),
+  }),
+  z.strictObject({
+    emitter: z.literal("owner"),
+    phase: z.literal("observation-error"),
+    ownerPid: z.number().int().positive(),
+    ownerCreationTime: decimal,
+    jobGeneration: z.number().int().positive(),
+    sequence: z.number().int().positive(),
+  }),
+]);
+const diagnosticReport = z.strictObject({
+  status: z.enum(["complete", "missing", "overflow", "invalid", "unavailable"]),
+  records: z.array(diagnosticRecord).max(512),
+  runtime: z
+    .strictObject({
+      node: z.string().regex(/^\d+\.\d+\.\d+$/u),
+      windowsKernel: z.string().regex(/^\d+\.\d+\.\d+$/u),
+    })
+    .optional(),
+});
+export function projectWindowsCheckoutDiagnostics(value: unknown) {
+  try {
+    if (Buffer.byteLength(JSON.stringify(value) ?? "") > 512 * 1024) {
+      return { status: "overflow" as const, records: [] };
+    }
+    const parsed = diagnosticReport.safeParse(value);
+    if (!parsed.success) {
+      return { status: "invalid" as const, records: [] };
+    }
+    const report = parsed.data;
+    if (report.records.some((row) => row.phase === "overflow")) {
+      report.status = "overflow";
+    }
+    const samples = report.records.flatMap((row) =>
+      row.phase === "sample"
+        ? [row]
+        : "actors" in row
+          ? [
+              row.owner,
+              ...row.actors.map((actor) => actor.native),
+              ...(row.bootstrap ? [row.bootstrap] : []),
+              ...(row.sentinel ? [row.sentinel.native] : []),
+            ]
+          : [],
+    );
+    if (
+      report.status === "complete" &&
+      (report.records.some((row) => row.phase === "observation-error") ||
+        samples.some(
+          (sample) =>
+            sample.diagnosticError ||
+            sample.clockError !== null ||
+            sample.membershipError !== null ||
+            sample.frequency === null ||
+            sample.start === null ||
+            sample.end === null,
+        ))
+    ) {
+      report.status = "unavailable";
+    }
+    return report;
+  } catch {
+    return { status: "invalid" as const, records: [] };
+  }
+}
 const reportSchema = z.object({
   code: z.number().nullable(),
   cancelledDuringCleanup: z.boolean(),
@@ -39,6 +200,12 @@ const reportSchema = z.object({
     }),
   ),
   output: z.string(),
+  windowsDiagnostics: z
+    .unknown()
+    .optional()
+    .transform((value) =>
+      value === undefined ? undefined : projectWindowsCheckoutDiagnostics(value),
+    ),
 });
 type Report = z.infer<typeof reportSchema>;
 type CloseResult = { code: number | null; signal: NodeJS.Signals | null };
@@ -60,7 +227,7 @@ export function readCiCheckoutStep(job: string, name = "Checkout"): Step & { run
 
 export function renderGitTestClock(
   source: string,
-  options: { realClock?: boolean; realDrain?: boolean } = {},
+  options: { realClock?: boolean; realDrain?: boolean; windowsDiagnosticsRoot?: string } = {},
 ): string {
   // Change Python before shell quoting, so injected clock literals cannot alter
   // the generated argument or reintroduce a pipe-backed source transport.
@@ -73,10 +240,38 @@ export function renderGitTestClock(
   }
   // Command deadlines and TERM grace are independent. Real-clock callers keep
   // real grace unless they explicitly opt into the fixture's immediate escalation.
-  const clockSource =
+  let clockSource =
     (options.realDrain ?? options.realClock)
       ? source
       : source.replace("kill_at = deadline - cleanup_seconds / 2", "kill_at = time.monotonic()");
+  if (options.windowsDiagnosticsRoot) {
+    const marker = "\ndef backoff(seconds):";
+    // This private instrumentation was reviewed against this exact owner, not
+    // arbitrary future ctypes bindings or a changed bootstrap/drain contract.
+    if (
+      createHash("sha256").update(source).digest("hex") !==
+        "2e7fc4f936f819e46c0305efc4e60c000c30bca91d7d708f17de5d98e269738c" ||
+      clockSource.split(marker).length !== 2
+    ) {
+      throw new Error("Windows diagnostic owner rendering drift");
+    }
+    const observer = readFileSync(
+      new URL("./fixtures/ci-windows-process-census.py", import.meta.url),
+      "utf8",
+    );
+    clockSource = clockSource.replace(
+      marker,
+      `
+if os.name == "nt":
+    try:
+        _ci_observer = {"__name__": "checkout_diagnostic"}
+        exec(${JSON.stringify(observer)}, _ci_observer)
+        _ci_observer["install_owner_observer"](globals(), ${JSON.stringify(options.windowsDiagnosticsRoot)})
+    except BaseException:
+        pass  # Missing observations cannot change the original owner outcome.
+${marker}`,
+    );
+  }
   if (options.realClock) {
     return clockSource;
   }
