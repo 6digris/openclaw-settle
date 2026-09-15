@@ -2196,7 +2196,7 @@ describe("gateway run option collisions", () => {
       expect(gatewayErrorMessages[0]).toContain(
         "uses schema 999; this build supports 998; writer build 2026.9.4",
       );
-      expect(runtimeErrors).toEqual([]);
+      expect(runtimeErrors).toEqual([`Gateway failed to start: ${error.message}`]);
     } else {
       expect(runtimeErrors.join("\n")).toContain("newer");
       expect(runtimeErrors.join("\n")).toContain("restore your pre-update backup");

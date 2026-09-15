@@ -52,6 +52,7 @@ export async function handleGatewayStartupMaintenance(error: unknown): Promise<b
     gatewayLog.error(
       `${formatErrorMessage(refusal)}${parked ? " Parked the managed LaunchAgent." : ""}`,
     );
+    defaultRuntime.error(`Gateway failed to start: ${formatErrorMessage(refusal)}`);
   } else {
     gatewayLog.error(
       `gateway requires ${reason}${parked ? "; parked the managed LaunchAgent" : ""}. ${guidance}`,
