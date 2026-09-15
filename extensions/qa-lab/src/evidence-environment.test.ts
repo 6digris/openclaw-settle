@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const execFileSyncMock = vi.hoisted(() => vi.fn());
 const execFileMock = vi.hoisted(() => vi.fn());
+const bunVersionDescriptor = Object.getOwnPropertyDescriptor(process.versions, "bun");
 
 vi.mock("node:child_process", async () => {
   const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
@@ -32,7 +33,11 @@ import {
 } from "./evidence-environment.js";
 
 afterEach(() => {
-  vi.unstubAllGlobals();
+  if (bunVersionDescriptor) {
+    Object.defineProperty(process.versions, "bun", bunVersionDescriptor);
+  } else {
+    Reflect.deleteProperty(process.versions, "bun");
+  }
   vi.restoreAllMocks();
   execFileSyncMock.mockReset();
   execFileMock.mockReset();
@@ -108,7 +113,7 @@ describe("captured evidence source identity", () => {
     { label: "Node", bun: undefined, runtime: { id: "node", version: process.version } },
     { label: "simulated Bun", bun: "1.3.14", runtime: { id: "bun", version: "1.3.14" } },
   ])("captures $label independently of available source identity", async ({ bun, runtime }) => {
-    vi.stubGlobal("process", { ...process, versions: { ...process.versions, bun } });
+    Object.defineProperty(process.versions, "bun", { value: bun, configurable: true });
     execFileMock.mockImplementation((_command, args, _options, callback) =>
       callback(null, args[0] === "rev-parse" ? "actual-head\n" : "", ""),
     );

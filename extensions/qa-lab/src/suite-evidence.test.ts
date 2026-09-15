@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { createQaEvidenceInvocation } from "./evidence-invocation.js";
 import {
   getEffectiveQaEvidenceEntries,
@@ -14,8 +14,13 @@ import { makeQaSuiteTestScenario } from "./suite-test-helpers.js";
 import { createTempDirHarness } from "./temp-dir.test-helper.js";
 
 const tempDirs = createTempDirHarness();
+const bunVersionDescriptor = Object.getOwnPropertyDescriptor(process.versions, "bun");
 afterEach(async () => {
-  vi.unstubAllGlobals();
+  if (bunVersionDescriptor) {
+    Object.defineProperty(process.versions, "bun", bunVersionDescriptor);
+  } else {
+    Reflect.deleteProperty(process.versions, "bun");
+  }
   await tempDirs.cleanup();
 });
 const launch: QaEvidenceIdentity = {
@@ -52,7 +57,7 @@ async function setup() {
 
 describe("flow occurrence artifacts", () => {
   it("carries simulated Bun capture into prepared receipts and preserves explicit anchors", async () => {
-    vi.stubGlobal("process", { ...process, versions: { ...process.versions, bun: "1.3.14" } });
+    Object.defineProperty(process.versions, "bun", { value: "1.3.14", configurable: true });
     const outputDir = await tempDirs.makeTempDir("qa-captured-launch-");
     const evidence = await createQaSuiteEvidenceInvocation(undefined, {
       repoRoot: outputDir,
