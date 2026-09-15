@@ -553,20 +553,21 @@ describe("harness runtime plugins", () => {
 
     const index = {
       ...metadataSnapshot.index,
-      plugins: ["native", "unrelated"].map((pluginId) => ({
-        ...installedProviderRecord(pluginId),
-        origin: "bundled" as const,
-        rootDir: `/plugins/${pluginId}`,
-        source: `/plugins/${pluginId}/index.js`,
-        manifestPath: `/plugins/${pluginId}/openclaw.plugin.json`,
-        manifestHash: pluginId,
-        enabled: true,
-        startup: {
-          sidecar: false,
-          memory: false,
-          agentHarnesses: pluginId === "native" ? ["native"] : [],
-        },
-      })),
+      plugins: ["native", "unrelated"].map((pluginId) =>
+        Object.assign(installedProviderRecord(pluginId), {
+          origin: "bundled" as const,
+          rootDir: `/plugins/${pluginId}`,
+          source: `/plugins/${pluginId}/index.js`,
+          manifestPath: `/plugins/${pluginId}/openclaw.plugin.json`,
+          manifestHash: pluginId,
+          enabled: true,
+          startup: {
+            sidecar: false,
+            memory: false,
+            agentHarnesses: pluginId === "native" ? ["native"] : [],
+          },
+        }),
+      ),
     };
     const scope = createAgentRuntimeMetadataPluginIdScope({
       ...input,

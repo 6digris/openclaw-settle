@@ -11,12 +11,12 @@ import type { GatewayOperatorRoleDefinition } from "../../config/types.gateway.j
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
-import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { withPluginRuntimeRegistryScope } from "../../plugins/runtime/gateway-request-scope.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import * as userModelAccounts from "../../state/user-model-accounts.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
+import { createModelSelectionRegistry } from "../../test-utils/model-selection-registry.test-support.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -746,21 +746,7 @@ describe("explicit session model runtimes", () => {
         runtimeId: runtime,
         validate: () => undefined,
       });
-      const registry = createEmptyPluginRegistry();
-      for (const id of ["native", "previous-native"]) {
-        registry.agentHarnesses.push({
-          pluginId: id,
-          source: "fixture",
-          harness: {
-            id,
-            label: id,
-            supports: ({ requestedRuntime }) => ({ supported: requestedRuntime === id }),
-            async runAttempt() {
-              throw new Error("Session selection must not run a prompt");
-            },
-          },
-        });
-      }
+      const registry = createModelSelectionRegistry([{ id: "native" }, { id: "previous-native" }]);
       registry.cliBackends.push({
         pluginId: "anthropic",
         source: "fixture",

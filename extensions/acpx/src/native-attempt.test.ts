@@ -103,7 +103,9 @@ function fixture() {
     timeoutMs: 30_000,
     hostCapabilities: {
       assertActive: vi.fn(),
-      requestApproval: vi.fn(async () => ({ decision: "deny" })),
+      requestApproval: vi.fn<AcpxNativeAttemptInput["hostCapabilities"]["requestApproval"]>(
+        async () => ({ decision: "deny" }),
+      ),
     },
     userTurnTranscriptRecorder: {
       message: user,
@@ -121,6 +123,7 @@ function fixture() {
         return undefined;
       },
       persistBlocked: async () => undefined,
+      persistFallback: async () => undefined,
     },
   };
   const active = new Map<string, () => void>();
@@ -257,9 +260,13 @@ describe("ACPX native harness attempt", () => {
 
   it("releases active registration even when transport cleanup rejects", async () => {
     const test = fixture();
-    test.turn.events = (async function* () {
-      throw new Error("stream failed");
-    })();
+    test.turn.events = {
+      [Symbol.asyncIterator]: () => ({
+        next: async () => {
+          throw new Error("stream failed");
+        },
+      }),
+    };
     vi.mocked(test.turn.cancel).mockRejectedValue(new Error("cancel failed"));
     const result = await test.run();
     expect(result.terminal).toMatchObject({ kind: "failed", error: new Error("stream failed") });

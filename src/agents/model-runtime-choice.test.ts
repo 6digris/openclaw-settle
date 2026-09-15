@@ -119,7 +119,9 @@ describe("published runtime choice", () => {
     publishNative(["native"], false, () => current);
     const choice = await preparePublishedModelRuntimeChoice({ ...request, runtimeId: undefined });
     expect(choice).toMatchObject({ kind: "ready", runtimeId: "native" });
-    if (choice.kind !== "ready") throw new Error("Expected an available native runtime");
+    if (choice.kind !== "ready") {
+      throw new Error("Expected an available native runtime");
+    }
     expect(choice.validate()).toBeUndefined();
     current = false;
     expect(choice.validate()).toBeDefined();
@@ -224,7 +226,9 @@ describe("published runtime choice", () => {
     publishNative(["native", "other-native"], true);
     const choice = await preparePublishedModelRuntimeChoice({ ...request, runtimeId: undefined });
     expect(choice.kind).toBe("ready");
-    if (choice.kind !== "ready") throw new Error("Expected the existing hosted route");
+    if (choice.kind !== "ready") {
+      throw new Error("Expected the existing hosted route");
+    }
     expect(choice.runtimeId).toBeUndefined();
     expect(choice.validate()).toBeUndefined();
   });
@@ -314,7 +318,9 @@ describe("published runtime choice", () => {
         },
       });
       const owner = publish(() => true, config, { authModes: {}, pluginRegistry: registry });
-      if (!authenticated) setPreparedModelRuntimeAuthStore(owner, { version: 1, profiles: {} });
+      if (!authenticated) {
+        setPreparedModelRuntimeAuthStore(owner, { version: 1, profiles: {} });
+      }
       const entry: SessionEntry = {
         sessionId: "off-catalog-selection",
         updatedAt: 1,

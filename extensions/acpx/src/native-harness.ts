@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentHarnessV2 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import type { OpenClawPluginApi, OpenClawPluginServiceContext } from "../runtime-api.js";
-import type { AcpxNativeTarget } from "./native-types.js";
+import type { AcpxNativeOutcome, AcpxNativeTarget } from "./native-types.js";
 import type { CompleteAcpRuntime } from "./runtime-proxy.js";
 
 export function createAcpxNativeHarness(params: {
@@ -91,9 +91,11 @@ export function createAcpxNativeHarness(params: {
         agent: params.agent,
       };
       let nativeSessionId: string | undefined;
-      let discoveryError: unknown;
+      let outcome: AcpxNativeOutcome<
+        Awaited<ReturnType<NonNullable<AgentHarnessV2["loadModelCatalog"]>>>
+      >;
       try {
-        return await native.withSession(
+        const catalog = await native.withSession(
           {
             ...target,
             transient: true,
@@ -125,27 +127,27 @@ export function createAcpxNativeHarness(params: {
             });
           },
         );
+        outcome = { ok: true, value: catalog };
       } catch (error) {
-        discoveryError = error;
-        throw error;
-      } finally {
-        const cleanupErrors: unknown[] = [];
-        if (nativeSessionId) {
-          try {
-            await params.cleanupCatalogSession(nativeSessionId, command);
-          } catch (error) {
-            cleanupErrors.push(error);
+        outcome = { ok: false, error };
+      }
+      if (nativeSessionId) {
+        try {
+          await params.cleanupCatalogSession(nativeSessionId, command);
+        } catch (error) {
+          const cleanupError = new AggregateError([error], "Native catalog cleanup failed", {
+            cause: error,
+          });
+          if (outcome.ok) {
+            throw cleanupError;
           }
-        }
-        if (cleanupErrors.length) {
-          const error = new AggregateError(cleanupErrors, "Native catalog cleanup failed");
-          if (discoveryError) {
-            params.api.logger.error(`Native catalog cleanup also failed: ${String(error)}`);
-          } else {
-            throw error;
-          }
+          params.api.logger.error(`Native catalog cleanup also failed: ${String(cleanupError)}`);
         }
       }
+      if (!outcome.ok) {
+        throw outcome.error;
+      }
+      return outcome.value;
     },
     async runAttempt(input) {
       const command = commandObserved ? observedCommand : await discoverCommand();
@@ -196,9 +198,9 @@ export function createAcpxNativeHarness(params: {
     async withSessionDeletion(input, run) {
       const target = { ...input, agent: params.agent };
       let committed = false;
-      let failed = false;
+      let outcome: AcpxNativeOutcome<Awaited<ReturnType<typeof run>>>;
       try {
-        return await run({
+        const result = await run({
           commit() {
             committed = true;
           },
@@ -206,21 +208,24 @@ export function createAcpxNativeHarness(params: {
             committed = false;
           },
         });
+        outcome = { ok: true, value: result };
       } catch (error) {
-        failed = true;
-        throw error;
-      } finally {
-        if (committed) {
-          try {
-            await retire(target, input.assertCurrent);
-          } catch (error) {
-            if (!failed) {
-              throw error;
-            }
-            params.api.logger.error(`Native session cleanup also failed: ${String(error)}`);
+        outcome = { ok: false, error };
+      }
+      if (committed) {
+        try {
+          await retire(target, input.assertCurrent);
+        } catch (error) {
+          if (outcome.ok) {
+            throw error;
           }
+          params.api.logger.error(`Native session cleanup also failed: ${String(error)}`);
         }
       }
+      if (!outcome.ok) {
+        throw outcome.error;
+      }
+      return outcome.value;
     },
     async dispose() {
       for (const cancel of active.values()) {

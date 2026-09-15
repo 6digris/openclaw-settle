@@ -33,7 +33,7 @@ import { AcpRuntimeError, type AcpRuntime, type AcpRuntimeErrorCode } from "../r
 import { CODEX_ACP_PACKAGE, OPENCLAW_CODEX_CONFIG_ARG } from "./codex-adapter.js";
 import { renderAgentCommand, splitCommandParts, type AcpxAgentCommand } from "./command-line.js";
 import { createAcpxNativeRuntime, type AcpxSessionDelegate } from "./native-session.js";
-import type { AcpxNativeRuntime } from "./native-types.js";
+import type { AcpxNativeOutcome, AcpxNativeRuntime } from "./native-types.js";
 import {
   ACPX_PROBE_LEASE_SESSION_KEY,
   hashAcpxProcessCommand,
@@ -849,28 +849,32 @@ export class AcpxRuntime implements CompleteAcpRuntime {
           },
           testOptions,
         );
-        let failure: unknown;
+        let outcome: AcpxNativeOutcome<Awaited<ReturnType<typeof run>>>;
         try {
-          return await runtime.native.withSession({ ...input, transient: false }, run);
+          const result = await runtime.native.withSession({ ...input, transient: false }, run);
+          outcome = { ok: true, value: result };
         } catch (error) {
-          failure = error;
+          outcome = { ok: false, error };
+        }
+        try {
+          await runtime.native.closeSession(input, () => {});
+        } catch (error) {
+          if (!outcome.ok) {
+            throw new AggregateError(
+              [outcome.error, error],
+              "Native catalog failed and cleanup failed",
+              { cause: error },
+            );
+          }
           throw error;
         } finally {
-          try {
-            await runtime.native.closeSession(input, () => {});
-          } catch (error) {
-            if (failure) {
-              throw new AggregateError(
-                [failure, error],
-                "Native catalog failed and cleanup failed",
-              );
-            }
-            throw error;
-          } finally {
-            active = false;
-            records.clear();
-          }
+          active = false;
+          records.clear();
         }
+        if (!outcome.ok) {
+          throw outcome.error;
+        }
+        return outcome.value;
       },
       mcpServers: (input) =>
         input.sessionKey

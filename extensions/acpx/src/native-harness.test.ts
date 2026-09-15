@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { createAcpxRuntimeService } from "../register.runtime.js";
 import type { AcpRuntimeHandle } from "../runtime-api.js";
 import type { runAcpxNativeAttempt } from "./native-attempt.js";
-import type { AcpxNativeRuntime } from "./native-types.js";
+import type { AcpxNativeRuntime, AcpxNativeSessionInput } from "./native-types.js";
 import type { CompleteAcpRuntime } from "./runtime-proxy.js";
 
 const mocks = vi.hoisted(() => ({
@@ -65,14 +65,19 @@ function registerHarness() {
     cancel: vi.fn(async () => {}),
     close: vi.fn(async () => {}),
   };
-  const withSession = vi.fn<AcpxNativeRuntime["withSession"]>(async (input, run) => {
-    input.onSessionCreated?.(handle.backendSessionId);
-    return run({ runtime, handle, getStatus: () => getStatus(handle) });
-  });
+  const withSessionCalls = vi.fn<(input: AcpxNativeSessionInput) => void>();
   const outerGetStatus = vi.fn<AcpxNativeRuntime["getStatus"]>(async () => {
     throw new Error("Catalog status must use its own native session scope");
   });
-  runtime.native = { withSession, getStatus: outerGetStatus, closeSession };
+  runtime.native = {
+    async withSession(input, run) {
+      withSessionCalls(input);
+      input.onSessionCreated?.(handle.backendSessionId);
+      return run({ runtime, handle, getStatus: () => getStatus(handle) });
+    },
+    getStatus: outerGetStatus,
+    closeSession,
+  };
   const getRuntime = vi.fn(async () => runtime);
   mocks.service.mockReturnValue({
     id: "acpx-runtime",
@@ -108,13 +113,13 @@ function registerHarness() {
   }
   return {
     harness,
-    loadCatalog: harness.loadModelCatalog,
+    loadCatalog: harness.loadModelCatalog.bind(harness),
     deleteSession: harness.withSessionDeletion,
-    dispose: harness.dispose,
+    dispose: harness.dispose.bind(harness),
     closeSession,
     getStatus,
     outerGetStatus,
-    withSession,
+    withSessionCalls,
     getRuntime,
     cleanup,
     hostRuntime,
@@ -145,16 +150,16 @@ function attemptInput(): AgentHarnessAttemptParamsV2 {
     },
     timeoutMs: 1000,
     thinkLevel: "off",
-    get authProfileStore() {
+    get authProfileStore(): never {
       throw new Error("Native dispatch must not read host auth profiles");
     },
-    get authStorage() {
+    get authStorage(): never {
       throw new Error("Native dispatch must not read host credentials");
     },
-    get modelRegistry() {
+    get modelRegistry(): never {
       throw new Error("Native dispatch must not read the host model registry");
     },
-    get hostCapabilities() {
+    get hostCapabilities(): never {
       throw new Error("Attempt implementation is isolated in this lifecycle test");
     },
   };
@@ -199,9 +204,8 @@ describe("registered OpenCode harness lifecycle", () => {
     await expect(fixture.loadCatalog(catalogInput)).resolves.toEqual([
       { provider: "vendor", id: "model-a", name: "vendor/model-a", nativeRuntime: "opencode" },
     ]);
-    expect(fixture.withSession).toHaveBeenCalledWith(
+    expect(fixture.withSessionCalls).toHaveBeenCalledWith(
       expect.objectContaining({ transient: true, command: ["/test/bin/opencode", "acp"] }),
-      expect.any(Function),
     );
     expect(fixture.cleanup).toHaveBeenCalledWith(
       ["/test/bin/opencode", "session", "delete", "native-backend-session"],

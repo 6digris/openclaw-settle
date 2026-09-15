@@ -6,6 +6,8 @@ import type {
 } from "acpx/runtime";
 import type { AcpRuntimeHandle } from "../runtime-api.js";
 
+export type AcpxNativeOutcome<T> = { ok: true; value: T } | { ok: false; error: unknown };
+
 export type AcpxNativeTarget = {
   agentId: string;
   sessionId: string;

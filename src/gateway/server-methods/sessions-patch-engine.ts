@@ -60,10 +60,9 @@ import { resolveSessionWorkerPlacementPatchError } from "./sessions-shared.js";
 import type { GatewayClient, GatewayRequestContext } from "./types.js";
 import { preparePersonalModelSelection } from "./users-model-account-access.js";
 
-type PatchTargetIdentity = sessionUnreadAck.SessionPatchTargetIdentity;
 const { resolveSessionUnreadAck, validateSessionUnreadAck } = sessionUnreadAck;
 
-type MutationTarget = PatchTargetIdentity & {
+type MutationTarget = sessionUnreadAck.SessionPatchTargetIdentity & {
   commitGuard: () => ErrorShape | undefined;
 };
 
@@ -107,7 +106,7 @@ export async function executeSessionPatchMutations(params: {
   client: GatewayClient | null;
   context: GatewayRequestContext;
   diagnostics?: SessionPatchDiagnostics;
-  patch: Omit<SessionsPatchParams, keyof PatchTargetIdentity>;
+  patch: Omit<SessionsPatchParams, keyof sessionUnreadAck.SessionPatchTargetIdentity>;
   targets: readonly MutationTarget[];
 }): Promise<MutationCoreResult> {
   const { client } = params;

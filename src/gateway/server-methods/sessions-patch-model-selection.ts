@@ -159,7 +159,9 @@ export async function prepareSessionPatchRuntimeSelection(params: {
         authProfileOverrideSource: resolveCollapsedSessionAuthPinSource(params.entry),
       },
     });
-    if (prepared.status === "rejected") return invalid(prepared.message);
+    if (prepared.status === "rejected") {
+      return invalid(prepared.message);
+    }
     if (applyModelRuntimeDirective(params.entry, prepared.runtime).updated) {
       delete params.entry.contextTokens;
       delete params.entry.contextTokensSource;

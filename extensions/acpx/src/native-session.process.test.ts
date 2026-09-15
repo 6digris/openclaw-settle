@@ -53,14 +53,14 @@ it("preserves native history when admission is revoked during session ensure", a
       );
     const entered = createDeferred<void>();
     const release = createDeferred<void>();
-    const ensure = BaseAcpxRuntime.prototype.ensureSession;
     const ensureSpy = vi.spyOn(BaseAcpxRuntime.prototype, "ensureSession");
     let cancelled: Promise<unknown> | undefined;
     try {
       const first = await prompt("previous-input");
       expect(first.reply).toMatchObject({ history: ["previous-input"] });
       ensureSpy.mockImplementationOnce(async function (this: BaseAcpxRuntime, params) {
-        const handle = await ensure.call(this, params);
+        ensureSpy.mockRestore();
+        const handle = await this.ensureSession(params);
         entered.resolve();
         await release.promise;
         return handle;

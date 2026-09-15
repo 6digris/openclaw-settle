@@ -12,8 +12,8 @@ import {
   replaceSessionEntry,
 } from "../../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
-import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { withPluginRuntimeRegistryScope } from "../../plugins/runtime/gateway-request-scope.js";
+import { createModelSelectionRegistry } from "../../test-utils/model-selection-registry.test-support.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
 import { getReplyPayloadMetadata } from "../reply-payload.js";
 import { markCompleteReplyConfig } from "./get-reply-fast-path.test-support.js";
@@ -136,13 +136,9 @@ describe("maybeResolveNativeSlashCommandFastReply", () => {
     handleCommandsMock.mockResolvedValue(response);
     const commandName = body.slice(1).split(/\s+/, 1)[0] ?? "";
     const typing = createTypingController();
-    const resolvedConfig =
-      config ??
-      ({
-        session: {
-          store: path.join(tempDirs.make("openclaw-native-directive-"), "sessions.json"),
-        },
-      } as OpenClawConfig);
+    const resolvedConfig = config ?? {
+      session: { store: path.join(tempDirs.make("openclaw-native-directive-"), "sessions.json") },
+    };
     const result = await runTestNativeSlashFastReply({
       ctx: buildTestCtx({
         Body: body,
@@ -175,6 +171,10 @@ describe("maybeResolveNativeSlashCommandFastReply", () => {
     return { result, typing, storePath: resolvedConfig.session?.store };
   }
 
+  function loadNativeDirectiveSession(storePath: string) {
+    return loadExactSessionEntry({ sessionKey: "agent:main:telegram:123", storePath })?.entry;
+  }
+
   it("persists a native exec node selection before model dispatch", async () => {
     const { result, storePath } = await resolveNativeDirectiveCommand(
       "/exec host=node node=worker-1",
@@ -184,12 +184,10 @@ describe("maybeResolveNativeSlashCommandFastReply", () => {
       handled: true,
       reply: { text: expect.stringContaining("Exec defaults set (host=node, node=worker-1).") },
     });
-    expect(
-      loadExactSessionEntry({
-        sessionKey: "agent:main:telegram:123",
-        storePath: storePath ?? "",
-      })?.entry,
-    ).toMatchObject({ execHost: "node", execNode: "worker-1" });
+    expect(loadNativeDirectiveSession(storePath ?? "")).toMatchObject({
+      execHost: "node",
+      execNode: "worker-1",
+    });
   });
 
   it("selects the advertised native-only runtime through a Telegram model command", async () => {
@@ -205,21 +203,7 @@ describe("maybeResolveNativeSlashCommandFastReply", () => {
       runtimeId: "native",
       validate: () => undefined,
     });
-    const registry = createEmptyPluginRegistry();
-    registry.agentHarnesses.push({
-      pluginId: "native",
-      source: "fixture",
-      harness: {
-        id: "native",
-        label: "Native",
-        supports: ({ provider, requestedRuntime }) => ({
-          supported: provider === "fixture" && requestedRuntime === "native",
-        }),
-        async runAttempt() {
-          throw new Error("Model command must not run a prompt");
-        },
-      },
-    });
+    const registry = createModelSelectionRegistry([{ id: "native", provider: "fixture" }]);
     await withPluginRuntimeRegistryScope(registry, async () => {
       const { result, storePath } = await resolveNativeDirectiveCommand(
         "/model fixture/native-model",
@@ -228,10 +212,7 @@ describe("maybeResolveNativeSlashCommandFastReply", () => {
         { entries: [entry], routeVariants: [entry] },
       );
       expect(result).toMatchObject({ handled: true });
-      const persisted = loadExactSessionEntry({
-        sessionKey: "agent:main:telegram:123",
-        storePath: storePath ?? "",
-      })?.entry;
+      const persisted = loadNativeDirectiveSession(storePath ?? "");
       expect(persisted).toMatchObject({
         providerOverride: "fixture",
         modelOverride: "native-model",
@@ -285,14 +266,10 @@ describe("maybeResolveNativeSlashCommandFastReply", () => {
     "applies native /model runtime and session options from %s",
     async (options) => {
       const storePath = path.join(tempDirs.make("openclaw-native-model-options-"), "sessions.json");
-      const { result } = await resolveNativeDirectiveCommand(
-        `/model openai/gpt-5.5 ${options}`,
-        {
-          session: { store: storePath },
-          agents: { defaults: { models: { "openai/gpt-5.5": {} } } },
-        },
-        { shouldContinue: true },
-      );
+      const { result } = await resolveNativeDirectiveCommand(`/model openai/gpt-5.5 ${options}`, {
+        session: { store: storePath },
+        agents: { defaults: { models: { "openai/gpt-5.5": {} } } },
+      });
 
       expect(result).toMatchObject({
         handled: true,
@@ -300,10 +277,7 @@ describe("maybeResolveNativeSlashCommandFastReply", () => {
           text: "Session model reset to configured default (openai/gpt-5.5). Runtime set to codex for this session.",
         },
       });
-      const sessionEntry = loadExactSessionEntry({
-        sessionKey: "agent:main:telegram:123",
-        storePath,
-      })?.entry;
+      const sessionEntry = loadNativeDirectiveSession(storePath);
       expect(sessionEntry).toMatchObject({ agentRuntimeOverride: "codex" });
     },
   );
@@ -338,9 +312,10 @@ describe("maybeResolveNativeSlashCommandFastReply", () => {
       handled: true,
       reply: { text: expect.stringContaining("ollama/picker-secondary") },
     });
-    expect(
-      loadExactSessionEntry({ sessionKey: "agent:main:telegram:123", storePath })?.entry,
-    ).toMatchObject({ providerOverride: "ollama", modelOverride: "picker-secondary" });
+    expect(loadNativeDirectiveSession(storePath)).toMatchObject({
+      providerOverride: "ollama",
+      modelOverride: "picker-secondary",
+    });
     expect(preparedModelCatalog.loadPreparedModelCatalogSnapshot).not.toHaveBeenCalled();
     expect(preparedModelCatalog.loadProviderScopedThinkingCatalog).not.toHaveBeenCalled();
   });

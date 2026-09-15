@@ -12,12 +12,12 @@ import {
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { ModelDefinitionConfig } from "../config/types.models.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-request-scope.js";
 import {
   onSessionLifecycleEvent,
   type SessionLifecycleEvent,
 } from "../sessions/session-lifecycle-events.js";
+import { createModelSelectionRegistry } from "../test-utils/model-selection-registry.test-support.js";
 
 // Runtime eligibility belongs to the published-owner tests; these cases exercise its consumers.
 vi.mock("../agents/model-runtime-choice.js", () => ({
@@ -161,41 +161,27 @@ afterEach(() => unsubscribeLifecycle());
 
 describe("applySessionModelSelection", () => {
   it.each([
-    {
-      name: "configured runtime",
-      configured: "openclaw",
-      persisted: undefined,
-      request: { kind: "clear" } as const,
-      expected: undefined,
-      explicit: false,
-    },
-    {
-      name: "session runtime",
-      configured: undefined,
-      persisted: "openclaw",
-      request: { kind: "unchanged" } as const,
-      expected: "openclaw",
-      explicit: false,
-    },
-    {
-      name: "explicit hosted runtime",
-      configured: undefined,
-      persisted: undefined,
-      request: { kind: "set", runtime: "openclaw" } as const,
-      expected: "openclaw",
-      explicit: true,
-    },
-    {
-      name: "explicit native runtime",
-      configured: undefined,
-      persisted: undefined,
-      request: { kind: "set", runtime: "other-native" } as const,
-      expected: "other-native",
-      explicit: true,
-    },
-  ])(
-    "preserves $name over an advertised native default",
-    async ({ configured, persisted, request, expected, explicit }) => {
+    ["configured runtime", "openclaw", undefined, { kind: "clear" }, undefined, 0],
+    ["session runtime", undefined, "openclaw", { kind: "unchanged" }, "openclaw", 1],
+    [
+      "explicit hosted runtime",
+      undefined,
+      undefined,
+      { kind: "set", runtime: "openclaw" },
+      "openclaw",
+      1,
+    ],
+    [
+      "explicit native runtime",
+      undefined,
+      undefined,
+      { kind: "set", runtime: "other-native" },
+      "other-native",
+      1,
+    ],
+  ] as const)(
+    "preserves %s over an advertised native default",
+    async (_name, configured, persisted, request, expected, validationCalls) => {
       const entry = {
         provider: "fixture",
         id: "model",
@@ -204,19 +190,7 @@ describe("applySessionModelSelection", () => {
         reasoning: false,
       };
       const sessionEntry = createEntry({ agentRuntimeOverride: persisted });
-      const registry = createEmptyPluginRegistry();
-      registry.agentHarnesses.push({
-        pluginId: "other-native",
-        source: "fixture",
-        harness: {
-          id: "other-native",
-          label: "Other native",
-          supports: ({ requestedRuntime }) => ({ supported: requestedRuntime === "other-native" }),
-          async runAttempt() {
-            throw new Error("Selection must not run a prompt");
-          },
-        },
-      });
+      const registry = createModelSelectionRegistry([{ id: "other-native" }]);
       const result = await withPluginRuntimeRegistryScope(registry, () =>
         applySessionModelSelection(
           createParams({
@@ -236,9 +210,7 @@ describe("applySessionModelSelection", () => {
       );
       expect(result.status).toBe("applied");
       expect(sessionEntry.agentRuntimeOverride).toBe(expected);
-      expect(preparePublishedModelRuntimeChoice).toHaveBeenCalledTimes(
-        explicit || persisted ? 1 : 0,
-      );
+      expect(preparePublishedModelRuntimeChoice).toHaveBeenCalledTimes(validationCalls);
     },
   );
 
