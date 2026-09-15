@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 [[ -f /.dockerenv && "${SENTINEL_DISPOSABLE_PROOF:-}" == 1 ]]
 [[ "$(id -u)" != 0 && "$HOME" == "$(getent passwd "$(id -u)" | cut -d: -f6)" ]]
-[[ "${CANDIDATE_SOURCE:?}" == 16e3ca121ec6b91072d1b2c6c93333381e902e7d ]]
+[[ "${CANDIDATE_SOURCE:?}" == cb633b2f840a6e34f783a8f72a131aa24c2a5aff ]]
 [[ ! -e "$HOME/.openclaw" && ! -e /tmp/openclaw ]]
 umask 077
 export CI=true OPENCLAW_NO_ONBOARD=1 OPENCLAW_NO_PROMPT=1

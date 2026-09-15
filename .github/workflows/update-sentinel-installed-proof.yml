@@ -21,26 +21,27 @@ jobs:
     runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 45
     env:
-      CANDIDATE_SOURCE: 16e3ca121ec6b91072d1b2c6c93333381e902e7d
-      PRODUCER_RUN: "34971019399"
+      CANDIDATE_SOURCE: cb633b2f840a6e34f783a8f72a131aa24c2a5aff
+      PRODUCER_RUN: "34980038847"
+      PRODUCER_JOB: "104417673358"
       EXPECTED_WORKFLOW_SHA: ${{ github.event.pull_request.head.sha }}
       EXPECTED_PARENT_SHA: ${{ github.event.pull_request.base.sha }}
-      PACKAGE_ARTIFACT_ID: "10398412216"
-      PACKAGE_ARTIFACT_DIGEST: 3bd441dec2ce871787bed1524236ef2e64ddd3dfc6c84e04370fdae07d276770
-      EXPECTED_PACKAGE_SHA256: 1ed898aef0cc34d898e741716f335abe8a680ad710a501a2d82c63b1b95a1928
+      PACKAGE_ARTIFACT_ID: "10402025879"
+      PACKAGE_ARTIFACT_DIGEST: 90651be221fe01c5d22e7092f97f9f58cffd8fff1056d0e50c658b2aa575d93b
+      EXPECTED_PACKAGE_SHA256: fa5a79db72ac40bb1ea7a3cdec745241f6ec9a3c6e161e74124de3ca928620c3
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-          fetch-depth: 3
+          fetch-depth: 5
       - name: Admit exact diagnostic and product source
         run: |
           set -euo pipefail
           test "$EXPECTED_PARENT_SHA" = "$CANDIDATE_SOURCE"
           test "$(git rev-parse HEAD)" = "$EXPECTED_WORKFLOW_SHA"
-          test "$(git rev-parse HEAD^)" = 290a965e47fb8c924f0a2ecda5de0bdbb0be7229
-          test "$(git rev-parse HEAD^^)" = "$CANDIDATE_SOURCE"
+          test "$(git rev-parse HEAD^)" = 76129de61384246f949989ec3b0305f21c38b407
+          test "$(git rev-parse HEAD^^^^)" = "$CANDIDATE_SOURCE"
           python3 - <<'PY'
           import os, re, subprocess
           for key in ['PACKAGE_ARTIFACT_DIGEST', 'EXPECTED_PACKAGE_SHA256']:
@@ -69,6 +70,7 @@ jobs:
           jobs = api('actions/runs/' + os.environ['PRODUCER_RUN'] + '/jobs?per_page=100')['jobs']
           producer = [j for j in jobs if j['name'] == 'Resolve package candidate']
           assert len(producer) == 1 and producer[0]['conclusion'] == 'success'
+          assert producer[0]['id'] == int(os.environ['PRODUCER_JOB'])
           artifact = api('actions/artifacts/' + os.environ['PACKAGE_ARTIFACT_ID'])
           assert artifact['workflow_run']['id'] == int(os.environ['PRODUCER_RUN'])
           assert artifact['workflow_run']['head_sha'] == os.environ['CANDIDATE_SOURCE']
