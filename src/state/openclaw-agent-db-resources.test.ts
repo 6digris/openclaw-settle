@@ -9,6 +9,7 @@ import {
   registerOpenClawAgentDatabaseAsyncResource,
 } from "./openclaw-agent-db-lifecycle.js";
 import { hasOpenClawAgentDatabaseAsyncResources } from "./openclaw-agent-db-resources.js";
+import { createOpenClawDatabaseMaintenanceScope } from "./openclaw-state-db-async-lifecycle.js";
 
 const root = path.join(os.tmpdir(), `agent-resource-lifecycle-${process.pid}`);
 
@@ -112,4 +113,32 @@ it("retains a failed close after unregistering and retries it before readmission
   expect(resource.close).toHaveBeenCalledTimes(2);
   expect(hasOpenClawAgentDatabaseAsyncResources()).toBe(false);
   registerOpenClawAgentDatabaseAsyncResource(resource)();
+});
+
+it("does not retain a registration rejected by an inherited closed maintenance scope", async () => {
+  const gate = createDeferredCore();
+  const scope = createOpenClawDatabaseMaintenanceScope(() => undefined);
+  const resource = {
+    agentId: "worker",
+    path: path.join(root, "closed-maintenance.sqlite"),
+    revoke: vi.fn(),
+    close: vi.fn(async () => {}),
+  };
+  const detached = scope.run(() => ({
+    result: gate.promise.then(() => registerOpenClawAgentDatabaseAsyncResource(resource)),
+  }));
+  try {
+    await scope.close();
+    gate.resolve();
+    await expect(detached.result).rejects.toThrow(/maintenance resource scope is closed/u);
+    expect(hasOpenClawAgentDatabaseAsyncResources()).toBe(false);
+    await closeOpenClawAgentDatabaseByPathAsync(resource.path);
+    expect(resource.revoke).not.toHaveBeenCalled();
+    expect(resource.close).not.toHaveBeenCalled();
+  } finally {
+    gate.resolve();
+    await Promise.allSettled([detached.result]);
+    await closeOpenClawAgentDatabaseByPathAsync(resource.path);
+    await scope.close();
+  }
 });

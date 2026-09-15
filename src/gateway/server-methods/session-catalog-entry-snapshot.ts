@@ -44,6 +44,7 @@ export function createSessionCatalogRequestEntrySnapshot(params: {
   fallbackAgentId: string;
   /** Bound one delivery's lookups; provider planning retains the full snapshot. */
   sessionKeys?: readonly string[];
+  listEntries?: typeof listSessionEntriesReadOnly;
 }): SessionCatalogRequestEntrySnapshot {
   const entriesByAgentId = new Map<string, readonly SessionEntrySummary[]>();
   const entryIndexByAgentId = new Map<string, ReadonlyMap<string, SessionEntry>>();
@@ -78,7 +79,7 @@ export function createSessionCatalogRequestEntrySnapshot(params: {
       }
       entriesByAgentId.set(
         agentId,
-        listSessionEntriesReadOnly({
+        (params.listEntries ?? listSessionEntriesReadOnly)({
           agentId,
           clone: false,
           projection: "list",

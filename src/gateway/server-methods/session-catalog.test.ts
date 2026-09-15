@@ -4,6 +4,7 @@ import {
   bindPluginRegistryRuntime,
   call,
   conversationBindingMocks,
+  createCatalogTestContext,
   createPluginRuntime,
   hoisted,
   provider,
@@ -62,12 +63,12 @@ describe("session catalog Gateway methods", () => {
     hoisted.activeRegistry.sessionCatalogs = [
       { provider: provider("codex", { list, read, continueSession, archive }) },
     ];
-    const config = {
+    const context = createCatalogTestContext({
       agents: {
         ownership: "explicit",
         entries: { alpha: {}, beta: {} },
       },
-    };
+    });
     const locator = {
       catalogId: "codex",
       hostId: "gateway:local",
@@ -75,10 +76,10 @@ describe("session catalog Gateway methods", () => {
       agentId: "beta",
     };
 
-    await call("sessions.catalog.list", { catalogId: "codex", agentId: "beta" }, config);
-    await call("sessions.catalog.read", locator, config);
-    await call("sessions.catalog.continue", locator, config);
-    await call("sessions.catalog.archive", { ...locator, confirmNoOtherRunner: true }, config);
+    await call("sessions.catalog.list", { catalogId: "codex", agentId: "beta" }, context);
+    await call("sessions.catalog.read", locator, context);
+    await call("sessions.catalog.continue", locator, context);
+    await call("sessions.catalog.archive", { ...locator, confirmNoOtherRunner: true }, context);
 
     for (const [request] of list.mock.calls) {
       expect(request).toEqual(expect.objectContaining({ agentId: "beta" }));
@@ -95,11 +96,11 @@ describe("session catalog Gateway methods", () => {
       return [];
     });
     hoisted.activeRegistry.sessionCatalogs = [{ provider: provider("codex", { list }) }];
-    const config = {};
+    const context = createCatalogTestContext();
 
     await Promise.all([
-      call("sessions.catalog.list", { hostIds: ["host-a", "host-b"] }, config),
-      call("sessions.catalog.list", { hostIds: ["host-b", "host-a"] }, config),
+      call("sessions.catalog.list", { hostIds: ["host-a", "host-b"] }, context),
+      call("sessions.catalog.list", { hostIds: ["host-b", "host-a"] }, context),
     ]);
 
     expect(list).toHaveBeenCalledTimes(2);
@@ -114,16 +115,16 @@ describe("session catalog Gateway methods", () => {
     const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
     const list = vi.fn(async () => []);
     hoisted.activeRegistry.sessionCatalogs = [{ provider: provider("codex", { list }) }];
-    const config = {};
+    const context = createCatalogTestContext();
     try {
-      await call("sessions.catalog.list", {}, config);
+      await call("sessions.catalog.list", {}, context);
 
       now += 2_500;
-      await call("sessions.catalog.list", {}, config);
+      await call("sessions.catalog.list", {}, context);
       expect(list).toHaveBeenCalledOnce();
 
       now += 501;
-      await call("sessions.catalog.list", {}, config);
+      await call("sessions.catalog.list", {}, context);
       expect(list).toHaveBeenCalledTimes(2);
     } finally {
       nowSpy.mockRestore();
@@ -186,9 +187,8 @@ describe("session catalog Gateway methods", () => {
     const respond = await call(
       "sessions.catalog.list",
       { progressId: "progress-creator" },
-      {},
+      createCatalogTestContext({}, { broadcastToConnIds }),
       { connId: "requester", connect: {} },
-      { broadcastToConnIds },
     );
     const projectedSessions = [
       expect.objectContaining({
@@ -250,10 +250,10 @@ describe("session catalog Gateway methods", () => {
       },
     ];
     const cloneSpy = vi.spyOn(globalThis, "structuredClone");
-    const config = {};
+    const context = createCatalogTestContext();
     try {
-      await call("sessions.catalog.list", {}, config);
-      await call("sessions.catalog.list", {}, config);
+      await call("sessions.catalog.list", {}, context);
+      await call("sessions.catalog.list", {}, context);
 
       expect(cloneSpy).not.toHaveBeenCalled();
       expect(hoisted.listSessionEntriesReadOnly).toHaveBeenCalledOnce();
@@ -480,9 +480,10 @@ describe("session catalog Gateway methods", () => {
         }),
       },
     ];
-    const config = {};
+    let config = {};
+    const context = createCatalogTestContext(config, { getRuntimeConfig: () => config });
 
-    const respond = await call("sessions.catalog.list", {}, config);
+    const respond = await call("sessions.catalog.list", {}, context);
 
     expect(respond).toHaveBeenCalledWith(true, {
       catalogs: [
@@ -498,7 +499,7 @@ describe("session catalog Gateway methods", () => {
     });
 
     createSession = undefined;
-    const cached = await call("sessions.catalog.list", {}, config);
+    const cached = await call("sessions.catalog.list", {}, context);
     expect(cached).toHaveBeenCalledWith(true, {
       catalogs: [
         expect.objectContaining({
@@ -510,7 +511,8 @@ describe("session catalog Gateway methods", () => {
     });
     expect(resolveCreateSession).toHaveBeenCalledOnce();
 
-    const refreshed = await call("sessions.catalog.list", {}, {});
+    config = {};
+    const refreshed = await call("sessions.catalog.list", {}, context);
     expect(refreshed).toHaveBeenCalledWith(true, {
       catalogs: [
         expect.objectContaining({
@@ -540,10 +542,10 @@ describe("session catalog Gateway methods", () => {
     hoisted.activeRegistry.sessionCatalogs = [
       { provider: provider("claude", { resolveCreateSession }) },
     ];
-    const config = {};
+    const context = createCatalogTestContext();
 
     try {
-      const unavailable = await call("sessions.catalog.list", {}, config);
+      const unavailable = await call("sessions.catalog.list", {}, context);
       expect(unavailable).toHaveBeenCalledWith(true, {
         catalogs: [
           expect.objectContaining({
@@ -552,7 +554,7 @@ describe("session catalog Gateway methods", () => {
         ],
       });
       now += 3_001;
-      const recovered = await call("sessions.catalog.list", {}, config);
+      const recovered = await call("sessions.catalog.list", {}, context);
       expect(recovered).toHaveBeenCalledWith(true, {
         catalogs: [
           expect.objectContaining({
@@ -619,7 +621,7 @@ describe("session catalog Gateway methods", () => {
         agentId: "research",
         catalogId: "claude",
       },
-      { agents: { list: [{ id: "main" }, { id: "research" }] } },
+      createCatalogTestContext({ agents: { list: [{ id: "main" }, { id: "research" }] } }),
     );
     expect(resolveCreateSession).toHaveBeenCalledWith({ agentId: "research" });
     expect(available).toHaveBeenCalledWith(true, {
@@ -673,7 +675,7 @@ describe("session catalog Gateway methods", () => {
         hostId: "gateway:local",
         threadId: "thread-1",
       },
-      {},
+      createCatalogTestContext(),
       { connect: { scopes: ["operator.write", "operator.admin"] } },
     );
     expect(continueSession).toHaveBeenCalledWith({

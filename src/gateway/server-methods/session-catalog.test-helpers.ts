@@ -1,7 +1,9 @@
 import { vi } from "vitest";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import type { PluginRegistry } from "../../plugins/registry-types.js";
 import type { SessionCatalogProvider } from "../../plugins/session-catalog.js";
+import type { GatewayRequestContext } from "./types.js";
 
 type TestPluginRegistry = Omit<PluginRegistry, "sessionCatalogs"> & {
   sessionCatalogs: Array<{
@@ -53,6 +55,12 @@ vi.mock("../../config/sessions/session-accessor.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../config/sessions/session-accessor.js")>();
   return { ...actual, listSessionEntriesReadOnly: hoisted.listSessionEntriesReadOnly };
 });
+vi.mock("../../config/sessions/session-accessor.sqlite-list-read-retention.js", () => ({
+  retainSessionEntryListReads: () => ({
+    list: hoisted.listSessionEntriesReadOnly,
+    release: () => {},
+  }),
+}));
 vi.mock("../../state/user-profiles.js", () => ({
   getUserProfileRole: vi.fn(() => null),
   hasMultipleSessionSharingIdentities: hoisted.hasMultipleSessionSharingIdentities,
@@ -76,14 +84,23 @@ export function provider(
   };
 }
 
+export type CatalogTestContext = Pick<GatewayRequestContext, "getRuntimeConfig"> &
+  Partial<GatewayRequestContext>;
+
+export function createCatalogTestContext(
+  config: OpenClawConfig = {},
+  overrides: Partial<GatewayRequestContext> = {},
+): CatalogTestContext {
+  return { getRuntimeConfig: () => config, ...overrides };
+}
+
 export async function call(
   method: keyof typeof sessionCatalogHandlers,
   params: unknown,
-  config: Record<string, unknown> = {},
+  context: CatalogTestContext = createCatalogTestContext(),
   client?: { connect?: { scopes?: string[] }; connId?: string; connectionSignal?: AbortSignal },
-  contextOverrides: Record<string, unknown> = {},
 ) {
-  const pending = startCall(method, params, config, client, contextOverrides);
+  const pending = startCall(method, params, context, client);
   await pending.completion;
   return pending.respond;
 }
@@ -91,9 +108,8 @@ export async function call(
 export function startCall(
   method: keyof typeof sessionCatalogHandlers,
   params: unknown,
-  config: Record<string, unknown> = {},
+  context: CatalogTestContext = createCatalogTestContext(),
   client?: { connect?: { scopes?: string[] }; connId?: string; connectionSignal?: AbortSignal },
-  contextOverrides: Record<string, unknown> = {},
 ) {
   const respond = vi.fn();
   const completion = Promise.resolve(
@@ -101,7 +117,7 @@ export function startCall(
       params,
       respond,
       client,
-      context: { getRuntimeConfig: () => config, ...contextOverrides },
+      context,
     } as never),
   );
   return { completion, respond };

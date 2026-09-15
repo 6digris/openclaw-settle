@@ -1,9 +1,14 @@
 import {
   GATEWAY_OWNER_PROFILE_ID,
+  type SessionCatalog,
   type SessionCatalogHost,
   type SessionCatalogSession,
 } from "../../../packages/gateway-protocol/src/index.js";
 import type { SessionEntry } from "../../config/sessions.js";
+import type {
+  SessionEntryListScope,
+  SessionEntrySummary,
+} from "../../config/sessions/session-accessor.types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type {
   SessionCatalogListProviderParams,
@@ -16,7 +21,10 @@ import { ADMIN_SCOPE, authorizeOperatorScopesForRequiredScope } from "../method-
 import { operatorSessionCap } from "../operator-role-policy.js";
 import { prepareSessionCreatorProfile } from "../session-creator.js";
 import { resolveSessionSharingRole, resolveSessionSharingTarget } from "../session-sharing.js";
-import { createSessionCatalogRequestEntrySnapshot } from "./session-catalog-entry-snapshot.js";
+import {
+  createSessionCatalogRequestEntrySnapshot,
+  type SessionCatalogInstances,
+} from "./session-catalog-entry-snapshot.js";
 import type { GatewayClient } from "./types.js";
 
 type SessionCatalogVisibility = { cacheKey: string } & (
@@ -94,7 +102,7 @@ function visibleCatalogSessionEntry(params: {
     : undefined;
 }
 
-export function filterSessionCatalogHost(
+function filterSessionCatalogHost(
   host: SessionCatalogHost,
   visibility: SessionCatalogVisibility,
   params: {
@@ -118,6 +126,45 @@ export function filterSessionCatalogHost(
       // OpenClaw session. Keep it private from non-admin callers on multi-identity Gateways.
       return visibleCatalogSessionEntry({ ...params, session, visibility }) !== undefined;
     }),
+  };
+}
+
+/** Each delivery projects current caller and row facts over the original provider instances. */
+export function projectSessionCatalogResult(
+  result: { catalogs: SessionCatalog[]; instances: SessionCatalogInstances },
+  params: {
+    client: GatewayClient | null;
+    config: OpenClawConfig;
+    fallbackAgentId: string;
+    providerAudiences: ReadonlyMap<string, SessionCatalogProvider["audience"]>;
+    listEntries?: (scope?: SessionEntryListScope) => SessionEntrySummary[];
+  },
+): { catalogs: SessionCatalog[] } {
+  const visibility = resolveSessionCatalogVisibility(params.client, params.config);
+  const requestEntries = createSessionCatalogRequestEntrySnapshot({
+    cfg: params.config,
+    fallbackAgentId: params.fallbackAgentId,
+    listEntries: params.listEntries,
+    sessionKeys: result.catalogs
+      .flatMap((catalog) => catalog.hosts)
+      .flatMap((host) => host.sessions)
+      .flatMap(({ sessionKey }) => (sessionKey ? [sessionKey] : [])),
+  });
+  return {
+    catalogs: result.catalogs.map((catalog) => ({
+      ...catalog,
+      hosts: catalog.hosts.map((host) =>
+        filterSessionCatalogHost(
+          requestEntries.projectHostSessions(
+            host,
+            result.instances,
+            params.providerAudiences.get(catalog.id),
+          ),
+          visibility,
+          { audience: params.providerAudiences.get(catalog.id), requestEntries },
+        ),
+      ),
+    })),
   };
 }
 

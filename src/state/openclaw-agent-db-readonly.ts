@@ -9,16 +9,14 @@ import {
 } from "./openclaw-agent-db-identity.js";
 import { withCommittedOpenClawAgentDatabaseReadOnly } from "./openclaw-agent-db-readonly-companion.js";
 import {
+  assertOpenClawAgentDatabaseReadOnlySchema,
   openOpenClawAgentDatabaseReadOnly,
   readOpenClawAgentDatabaseReadOnly,
   withFreshOpenClawAgentDatabaseReadOnly,
   type OpenClawAgentDatabaseReadOnlyResult,
   type OpenClawAgentReadOnlyDatabase,
+  type OpenClawAgentReadOnlyDatabaseHandle,
 } from "./openclaw-agent-db-readonly-open.js";
-import {
-  assertCanonicalAgentPersistenceVersion,
-  assertSupportedAgentSchemaVersion,
-} from "./openclaw-agent-db-schema-read.js";
 import {
   borrowOpenClawAgentDatabase,
   getOpenClawAgentDatabaseIfOpen,
@@ -47,7 +45,7 @@ type OpenClawAgentDatabaseReadOnlyBehavior = {
  * mismatch that only the writable lifecycle cares about; those callers fall
  * back to a fresh connection, which reports the precise reason.
  */
-function findOpenAgentDatabase(
+export function findOpenClawAgentDatabaseForReadOnly(
   options: OpenClawAgentDatabaseOptions,
 ): OpenClawAgentDatabase | undefined {
   try {
@@ -60,16 +58,29 @@ function findOpenAgentDatabase(
 /** Retain an existing store across awaits without materializing a writable database. */
 export function retainOpenClawAgentDatabaseReadOnly(
   options: OpenClawAgentDatabaseOptions,
+  behavior: { freshOnly?: boolean } = {},
 ):
-  | { found: true; database: OpenClawAgentReadOnlyDatabase; claim: OpenClawAgentDatabaseClaim }
+  | {
+      found: true;
+      database: OpenClawAgentDatabase;
+      claim: OpenClawAgentDatabaseClaim;
+      kind: "borrowed";
+    }
+  | {
+      found: true;
+      database: OpenClawAgentReadOnlyDatabaseHandle;
+      claim: OpenClawAgentDatabaseClaim;
+      kind: "read-only";
+    }
   | { found: false; reason: "database-missing" | "schema-missing" } {
-  const opened = findOpenAgentDatabase(options);
+  const opened = behavior.freshOnly ? undefined : findOpenClawAgentDatabaseForReadOnly(options);
   if (opened && !opened.db.isTransaction) {
     const borrowed = borrowOpenClawAgentDatabase(options);
     return {
       found: true,
       database: opened,
       claim: createOpenClawAgentDatabaseClaim(opened, borrowed.release),
+      kind: "borrowed",
     };
   }
   const fresh = openOpenClawAgentDatabaseReadOnly(options);
@@ -78,6 +89,7 @@ export function retainOpenClawAgentDatabaseReadOnly(
         found: true,
         database: fresh.database,
         claim: createOpenClawAgentDatabaseClaim(fresh.database, fresh.database.close),
+        kind: "read-only",
       }
     : fresh;
 }
@@ -105,7 +117,7 @@ export function withOpenClawAgentDatabaseReadOnly<T>(
   // The writer owns reused handles; this call closes only fresh connections.
   const processOpened = behavior.allowExtension
     ? undefined
-    : findOpenAgentDatabase({ ...options, agentId });
+    : findOpenClawAgentDatabaseForReadOnly({ ...options, agentId });
   if (processOpened?.db.isTransaction) {
     return withCommittedOpenClawAgentDatabaseReadOnly(
       processOpened,
@@ -119,7 +131,6 @@ export function withOpenClawAgentDatabaseReadOnly<T>(
     return withFreshOpenClawAgentDatabaseReadOnly(operation, { ...options, agentId }, behavior);
   }
   // Share only this admission's fresh value; a later read must check again.
-  const userVersion = assertSupportedAgentSchemaVersion(reusable.db, pathname);
-  assertCanonicalAgentPersistenceVersion(reusable.db, pathname, userVersion);
+  assertOpenClawAgentDatabaseReadOnlySchema(reusable);
   return readOpenClawAgentDatabaseReadOnly(reusable, operation, behavior);
 }

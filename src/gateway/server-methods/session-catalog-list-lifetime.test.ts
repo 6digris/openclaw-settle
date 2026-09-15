@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 import type { SessionCatalogHost } from "../../../packages/gateway-protocol/src/index.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { SessionCatalogListProviderParams } from "../../plugins/session-catalog.js";
 import {
   getActiveGatewayRootWorkCount,
@@ -13,7 +14,14 @@ import {
 } from "../../process/gateway-work-admission.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { GatewayConnectionWork } from "../server-connection-work.js";
-import { SessionCatalogListLifetime } from "./session-catalog-list-lifetime.js";
+import {
+  catalogListCache,
+  createSessionCatalogListLifetime,
+  invalidateSessionCatalogLists,
+  SessionCatalogListLifetime,
+} from "./session-catalog-list-lifetime.js";
+import type { CatalogRegistrationSnapshot } from "./session-catalog-provider-access.js";
+import type { GatewayRequestContext } from "./types.js";
 
 const host: SessionCatalogHost = {
   hostId: "node:late",
@@ -29,7 +37,253 @@ const catalog = {
   hosts: [host],
 };
 
+function cacheFixture(config: OpenClawConfig = {}) {
+  let currentConfig = config;
+  const context = { getRuntimeConfig: () => currentConfig } as GatewayRequestContext;
+  const registrations: CatalogRegistrationSnapshot = {
+    registry: null,
+    source: undefined,
+    registrations: [],
+    providers: [],
+    shareRoutes: new Map(),
+  };
+  return {
+    config,
+    context,
+    registrations,
+    cache: catalogListCache(context, config, registrations),
+    setConfig: (next: OpenClawConfig) => {
+      currentConfig = next;
+    },
+  };
+}
+
+describe("catalog cache lifetime custody", () => {
+  it.each([false, true])(
+    "keeps active custody across config and registration replacement and provider failure=%s",
+    async (fails) => {
+      const before = getActiveGatewayRootWorkCount();
+      const root = tryBeginGatewayRootWorkAdmission("catalog-cache-custody");
+      expect(root).not.toBeNull();
+      const { config, context, registrations, cache, setConfig } = cacheFixture();
+      const lifetime = createSessionCatalogListLifetime(cache, () => true, []);
+      const response = lifetime.joinFinalResponse(() => true)!;
+      const late = createDeferredCore();
+      const listing = root!.run(() =>
+        lifetime.runProvider(undefined, async ({ waitUntil }) => {
+          waitUntil(late.promise);
+          if (fails) {
+            throw new Error("provider failed");
+          }
+        }),
+      );
+      try {
+        if (fails) {
+          await expect(listing).rejects.toThrow("provider failed");
+        } else {
+          await listing;
+        }
+        root!.release();
+        lifetime.finishListing();
+        const nextRegistrations = { ...registrations };
+        catalogListCache(context, config, nextRegistrations);
+        const nextConfig = { ...config };
+        setConfig(nextConfig);
+        const updated = catalogListCache(context, nextConfig, nextRegistrations);
+        expect(updated.active.has(lifetime)).toBe(true);
+        expect(lifetime.invalidated).toBe(false);
+        expect(() => response.assertCurrent()).not.toThrow();
+        invalidateSessionCatalogLists(context);
+        expect(() => response.assertCurrent()).not.toThrow();
+        response.release();
+        expect(updated.active.has(lifetime)).toBe(true);
+        expect(getActiveGatewayRootWorkCount()).toBe(before + 1);
+        late.resolve();
+        await late.promise;
+        expect(updated.active.size).toBe(0);
+        expect(getActiveGatewayRootWorkCount()).toBe(before);
+        lifetime.finishListing();
+        expect(updated.active.size).toBe(0);
+      } finally {
+        late.resolve();
+        await Promise.allSettled([listing, late.promise]);
+        response.release();
+        lifetime.finishListing();
+        root!.release();
+      }
+    },
+  );
+
+  it("preserves a new config generation's listing created by an archive abort callback", async () => {
+    const { config, context, registrations, cache, setConfig } = cacheFixture();
+    const original = createSessionCatalogListLifetime(cache, () => true, []);
+    let replacement: SessionCatalogListLifetime | undefined;
+    const finished = createDeferredCore();
+    const result = Promise.resolve({ catalogs: [], instances: new Map() });
+    cache.entries.set("original", { progress: original, result });
+    const listing = original.runProvider(undefined, async ({ signal }) => {
+      signal.addEventListener(
+        "abort",
+        () => {
+          const nextConfig = { ...config };
+          setConfig(nextConfig);
+          const current = catalogListCache(context, nextConfig, registrations);
+          replacement = createSessionCatalogListLifetime(current, () => true, []);
+          current.entries.set("replacement", { progress: replacement, result });
+          finished.resolve();
+        },
+        { once: true },
+      );
+      await finished.promise;
+    });
+    try {
+      invalidateSessionCatalogLists(context);
+      expect(cache.entries.has("original")).toBe(false);
+      expect(cache.entries.has("replacement")).toBe(true);
+      expect(replacement?.invalidated).toBe(false);
+      await listing;
+      original.finishListing();
+      expect(cache.active.size).toBe(1);
+      replacement!.finishListing();
+      expect(cache.active.size).toBe(0);
+    } finally {
+      finished.resolve();
+      await listing;
+      original.finishListing();
+      replacement?.finishListing();
+    }
+  });
+
+  it("invalidates only the exact Gateway when two contexts share a config object", () => {
+    const config = {};
+    const first = cacheFixture(config);
+    const second = cacheFixture(config);
+    const original = createSessionCatalogListLifetime(first.cache, () => true, []);
+    const other = createSessionCatalogListLifetime(second.cache, () => true, []);
+    const originalResponse = original.joinFinalResponse(() => true)!;
+    const otherResponse = other.joinFinalResponse(() => true)!;
+    try {
+      original.finishListing();
+      other.finishListing();
+      invalidateSessionCatalogLists(first.context);
+      expect(original.invalidated).toBe(true);
+      expect(other.invalidated).toBe(false);
+      expect(() => otherResponse.assertCurrent()).not.toThrow();
+      expect(second.cache.active.has(other)).toBe(true);
+    } finally {
+      originalResponse.release();
+      otherResponse.release();
+      original.finishListing();
+      other.finishListing();
+    }
+  });
+});
+
 describe("catalog list completion ownership", () => {
+  it("keeps admitted final responses current until the last caller finishes", async () => {
+    const before = getActiveGatewayRootWorkHolders();
+    const root = tryBeginGatewayRootWorkAdmission("catalog-final-followers");
+    const lifetime = new SessionCatalogListLifetime(() => true, []);
+    const leader = lifetime.joinFinalResponse(() => true)!;
+    const follower = lifetime.joinFinalResponse(() => true)!;
+    let retained: SessionCatalogListProviderParams | undefined;
+    const publish = vi.fn();
+    try {
+      await root!.run(() =>
+        lifetime.runProvider(publish, async (params) => {
+          retained = params;
+          params.onHost(host);
+        }),
+      );
+      root!.release();
+      leader.release();
+      lifetime.finishListing();
+      expect(retained?.signal?.aborted).toBe(false);
+      expect(() => follower.assertCurrent()).not.toThrow();
+      expect(lifetime.joinFinalResponse(() => true)).toBeUndefined();
+      follower.release();
+      expect(retained?.signal?.aborted).toBe(true);
+      retained?.onHost?.(host);
+      expect(publish).toHaveBeenCalledOnce();
+      expect(lifetime.invalidated).toBe(false);
+      expect(getActiveGatewayRootWorkHolders()).toEqual(before);
+    } finally {
+      leader.release();
+      follower.release();
+      lifetime.finishListing();
+      root!.release();
+    }
+  });
+
+  it("invalidates final execution immediately while keeping its settlement owned", async () => {
+    const before = getActiveGatewayRootWorkCount();
+    const root = tryBeginGatewayRootWorkAdmission("catalog-retired-final");
+    const lifetime = new SessionCatalogListLifetime(() => true, []);
+    const response = lifetime.joinFinalResponse(() => true)!;
+    try {
+      await root!.run(() => lifetime.runProvider(undefined, async () => []));
+      root!.release();
+      lifetime.finishListing();
+      lifetime.retire();
+      expect(() => response.assertCurrent()).toThrow(/no longer current/);
+      expect(lifetime.invalidated).toBe(true);
+      expect(lifetime.joinFinalResponse(() => true)).toBeUndefined();
+      expect(getActiveGatewayRootWorkCount()).toBe(before + 1);
+      response.release();
+      response.release();
+      expect(getActiveGatewayRootWorkCount()).toBe(before);
+    } finally {
+      response.release();
+      lifetime.finishListing();
+      root!.release();
+    }
+  });
+
+  it("rechecks each final caller without invalidating another caller's response", () => {
+    const lifetime = new SessionCatalogListLifetime(() => true, []);
+    let current = true;
+    const revoked = lifetime.joinFinalResponse(() => current)!;
+    const live = lifetime.joinFinalResponse(() => true)!;
+    try {
+      lifetime.finishListing();
+      current = false;
+      expect(() => revoked.assertCurrent()).toThrow(/no longer current/);
+      revoked.release();
+      expect(() => live.assertCurrent()).not.toThrow();
+      expect(lifetime.invalidated).toBe(false);
+    } finally {
+      revoked.release();
+      live.release();
+      lifetime.finishListing();
+    }
+  });
+
+  it("supersedes cached progress without revoking an admitted final response", async () => {
+    const abort = new AbortController();
+    const lifetime = new SessionCatalogListLifetime(() => true, [abort.signal]);
+    const response = lifetime.joinFinalResponse(() => true)!;
+    const publish = vi.fn();
+    let retained: SessionCatalogListProviderParams | undefined;
+    try {
+      await lifetime.runProvider(publish, async (params) => {
+        retained = params;
+      });
+      lifetime.invalidateResult();
+      expect(retained?.signal?.aborted).toBe(true);
+      expect(lifetime.invalidated).toBe(true);
+      expect(lifetime.joinFinalResponse(() => true)).toBeUndefined();
+      expect(() => response.assertCurrent()).not.toThrow();
+      expect(() => lifetime.assertPublicationCurrent()).toThrow(/superseded/);
+      retained?.onHost?.(host);
+      expect(publish).not.toHaveBeenCalled();
+      abort.abort();
+      expect(() => response.assertCurrent()).toThrow(/no longer current/);
+    } finally {
+      response.release();
+      lifetime.finishListing();
+    }
+  });
+
   it("keeps work started before retirement owned when registration follows an await", async () => {
     const before = getActiveGatewayRootWorkCount();
     const root = tryBeginGatewayRootWorkAdmission("catalog-register-after-retirement");

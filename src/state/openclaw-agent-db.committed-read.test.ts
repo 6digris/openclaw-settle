@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "./openclaw-agent-db-contract.js";
 import { closeCachedOpenClawAgentDatabase } from "./openclaw-agent-db-lifecycle.js";
+import { retainOpenClawAgentDatabaseReads } from "./openclaw-agent-db-readonly-retention.js";
 import { withOpenClawAgentDatabaseReadOnly } from "./openclaw-agent-db-readonly.js";
 import {
   closeOpenClawAgentDatabaseByPath,
@@ -15,8 +16,12 @@ import {
 
 const stampQuery = "SELECT updated_at FROM schema_meta WHERE meta_key = 'primary'";
 
-function readStamp(options: OpenClawAgentDatabaseOptions, behavior?: { allowExtension?: boolean }) {
-  const result = withOpenClawAgentDatabaseReadOnly(
+function readStamp(
+  options: OpenClawAgentDatabaseOptions,
+  behavior?: { allowExtension?: boolean },
+  read: typeof withOpenClawAgentDatabaseReadOnly = withOpenClawAgentDatabaseReadOnly,
+) {
+  const result = read(
     ({ db }) => ({ db, stamp: db.prepare(stampQuery).get()?.updated_at }),
     options,
     behavior,
@@ -39,35 +44,47 @@ function inWriterTransaction<T>(db: DatabaseSync, operation: () => T): T {
 }
 
 describe("committed agent database reads", () => {
-  it("reuses a separate reader while observing committed changes between writer transactions", async () => {
-    await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
-      const options = { agentId: "main", env };
-      const owner = openOpenClawAgentDatabase(options);
-      owner.db.exec("UPDATE schema_meta SET updated_at = 101 WHERE meta_key = 'primary'");
-      const reader = inWriterTransaction(owner.db, () => {
-        owner.db.exec("UPDATE schema_meta SET updated_at = 202 WHERE meta_key = 'primary'");
-        const first = readStamp(options);
-        expect(first.stamp).toBe(101);
-        expect(first.db === owner.db).toBe(false);
-        expect(first.db.isOpen).toBe(true);
-        const second = readStamp(options);
-        expect(second.db === first.db).toBe(true);
-        expect(second.stamp).toBe(101);
-        expect(owner.db.isTransaction).toBe(true);
-        return first.db;
-      });
+  it.each(["ordinary", "retained"] as const)(
+    "reuses a separate reader for %s reads while observing committed changes between writer transactions",
+    async (kind) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
+        const options = { agentId: "main", env };
+        const owner = openOpenClawAgentDatabase(options);
+        const retained =
+          kind === "retained"
+            ? retainOpenClawAgentDatabaseReads({ onRevoked: vi.fn() })
+            : undefined;
+        const read = () => readStamp(options, undefined, retained?.read);
+        try {
+          owner.db.exec("UPDATE schema_meta SET updated_at = 101 WHERE meta_key = 'primary'");
+          const reader = inWriterTransaction(owner.db, () => {
+            owner.db.exec("UPDATE schema_meta SET updated_at = 202 WHERE meta_key = 'primary'");
+            const first = read();
+            expect(first.stamp).toBe(101);
+            expect(first.db === owner.db).toBe(false);
+            expect(first.db.isOpen).toBe(true);
+            const second = read();
+            expect(second.db === first.db).toBe(true);
+            expect(second.stamp).toBe(101);
+            expect(owner.db.isTransaction).toBe(true);
+            return first.db;
+          });
 
-      owner.db.exec("UPDATE schema_meta SET updated_at = 303 WHERE meta_key = 'primary'");
-      inWriterTransaction(owner.db, () => {
-        owner.db.exec("UPDATE schema_meta SET updated_at = 404 WHERE meta_key = 'primary'");
-        const current = readStamp(options);
-        expect(current.db === reader).toBe(true);
-        expect(current.stamp).toBe(303);
+          owner.db.exec("UPDATE schema_meta SET updated_at = 303 WHERE meta_key = 'primary'");
+          inWriterTransaction(owner.db, () => {
+            owner.db.exec("UPDATE schema_meta SET updated_at = 404 WHERE meta_key = 'primary'");
+            const current = read();
+            expect(current.db === reader).toBe(true);
+            expect(current.stamp).toBe(303);
+          });
+          expect(read().db === owner.db).toBe(true);
+          expect(read().stamp).toBe(303);
+        } finally {
+          retained?.release();
+        }
       });
-      expect(readStamp(options).db === owner.db).toBe(true);
-      expect(readStamp(options).stamp).toBe(303);
-    });
-  });
+    },
+  );
 
   it.each([
     {
@@ -221,28 +238,40 @@ describe("committed agent database reads", () => {
     });
   });
 
-  it("gives nested callbacks a one-shot reader while the outer reader stays usable", async () => {
-    await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
-      const options = { agentId: "main", env };
-      const owner = openOpenClawAgentDatabase(options);
-      owner.db.exec("UPDATE schema_meta SET updated_at = 101 WHERE meta_key = 'primary'");
-      inWriterTransaction(owner.db, () => {
-        const retained = readStamp(options).db;
-        const result = withOpenClawAgentDatabaseReadOnly(({ db }) => {
-          expect(db === retained).toBe(true);
-          const nested = readStamp(options);
-          expect(nested.db === db).toBe(false);
-          expect(nested.db === owner.db).toBe(false);
-          expect(nested.db.isOpen).toBe(false);
-          expect(nested.stamp).toBe(101);
-          expect(db.isOpen).toBe(true);
-          return db.prepare(stampQuery).get()?.updated_at;
-        }, options);
-        expect(result).toEqual({ found: true, value: 101 });
-        expect(readStamp(options).db === retained).toBe(true);
+  it.each(["ordinary", "retained"] as const)(
+    "gives nested %s callbacks a one-shot reader while the outer reader stays usable",
+    async (kind) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
+        const options = { agentId: "main", env };
+        const owner = openOpenClawAgentDatabase(options);
+        const retained =
+          kind === "retained"
+            ? retainOpenClawAgentDatabaseReads({ onRevoked: vi.fn() })
+            : undefined;
+        const read = retained?.read ?? withOpenClawAgentDatabaseReadOnly;
+        try {
+          owner.db.exec("UPDATE schema_meta SET updated_at = 101 WHERE meta_key = 'primary'");
+          inWriterTransaction(owner.db, () => {
+            const outerReader = readStamp(options, undefined, read).db;
+            const result = read(({ db }) => {
+              expect(db === outerReader).toBe(true);
+              const nested = readStamp(options, undefined, read);
+              expect(nested.db === db).toBe(false);
+              expect(nested.db === owner.db).toBe(false);
+              expect(nested.db.isOpen).toBe(false);
+              expect(nested.stamp).toBe(101);
+              expect(db.isOpen).toBe(true);
+              return db.prepare(stampQuery).get()?.updated_at;
+            }, options);
+            expect(result).toEqual({ found: true, value: 101 });
+            expect(readStamp(options, undefined, read).db === outerReader).toBe(true);
+          });
+        } finally {
+          retained?.release();
+        }
       });
-    });
-  });
+    },
+  );
 
   it.each([false, true])(
     "closes a leaked reader transaction when the callback throws=%s",

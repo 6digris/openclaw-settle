@@ -41,6 +41,12 @@ vi.mock("../../config/sessions/session-accessor.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../config/sessions/session-accessor.js")>();
   return { ...actual, listSessionEntriesReadOnly: hoisted.listSessionEntriesReadOnly };
 });
+vi.mock("../../config/sessions/session-accessor.sqlite-list-read-retention.js", () => ({
+  retainSessionEntryListReads: () => ({
+    list: hoisted.listSessionEntriesReadOnly,
+    release: () => {},
+  }),
+}));
 
 const { sessionCatalogHandlers } = await import("./session-catalog.js");
 

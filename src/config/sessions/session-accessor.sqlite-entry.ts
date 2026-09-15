@@ -292,7 +292,7 @@ export function hasSessionEntriesByStatusReadOnly(
   return result.found ? result.value : result.reason !== "database-missing";
 }
 
-function listSqliteSessionEntriesFromDatabase(
+export function listSqliteSessionEntriesFromDatabase(
   database: Pick<OpenClawAgentDatabase, "agentId" | "db" | "path">,
   resolved: ResolvedSqliteScope,
   scope: SessionEntryListScope,

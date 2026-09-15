@@ -36,10 +36,18 @@ export type OpenClawAgentDatabaseReadOnlyResult<T> =
   | { found: true; value: T }
   | { found: false; reason: "database-missing" | "schema-missing" | "table-missing" };
 
-/** Recheck committed admission facts before using an existing read-only connection. */
-export function hasOpenClawAgentReadOnlySchema(database: OpenClawAgentReadOnlyDatabase): boolean {
+/** A retained handle does not retain schema admission for a later read. */
+export function assertOpenClawAgentDatabaseReadOnlySchema(
+  database: OpenClawAgentReadOnlyDatabase,
+): number {
   const userVersion = assertSupportedAgentSchemaVersion(database.db, database.path);
   assertCanonicalAgentPersistenceVersion(database.db, database.path, userVersion);
+  return userVersion;
+}
+
+/** Recheck committed admission facts before using an existing read-only connection. */
+export function hasOpenClawAgentReadOnlySchema(database: OpenClawAgentReadOnlyDatabase): boolean {
+  assertOpenClawAgentDatabaseReadOnlySchema(database);
   const schemaMeta = readExistingAgentSchemaMeta(database.db);
   if (!schemaMeta) {
     return false;
