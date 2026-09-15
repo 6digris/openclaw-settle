@@ -181,6 +181,40 @@ private func waitUntil(
     }
 }
 
+@MainActor
+private func withGatewayModelCleanup(
+    _ appModel: NodeAppModel,
+    _ body: @MainActor () async throws -> Void) async rethrows
+{
+    do {
+        try await body()
+    } catch {
+        appModel.disconnectGateway()
+        await appModel.waitForGatewaySessionResetIfNeeded()
+        throw error
+    }
+    appModel.disconnectGateway()
+    await appModel.waitForGatewaySessionResetIfNeeded()
+}
+
+@MainActor
+private func gatewayHandoffSnapshot(
+    appModel: NodeAppModel,
+    controller: GatewayConnectionController,
+    admittedGeneration: UInt64,
+    targetStableID: String) -> Comment
+{
+    let config = appModel.activeGatewayConnectConfig
+    let loops = appModel._test_hasGatewayLoopTasks()
+    let exactTarget = GatewayStableIdentifier.matches(config?.effectiveStableID, targetStableID)
+    return Comment(rawValue:
+        "post-wait: resetPending=\(appModel.hasGatewaySessionResetInFlight) "
+            + "generationUnchanged=\(appModel.gatewayConnectGeneration == admittedGeneration) "
+            + "configPresent=\(config != nil) exactTarget=\(exactTarget) "
+            + "nodeLoop=\(loops.node) operatorLoop=\(loops.operator) "
+            + "suppressed=\(controller._test_isAutoConnectSuppressed())")
+}
+
 @Suite(.serialized) struct GatewayReconnectErrorRetentionTests {
     @Test @MainActor func `retained display problem does not control next retry`() {
         let appModel = NodeAppModel()
@@ -1054,28 +1088,35 @@ private func waitUntil(
             password: nil)
         let setupAuth = GatewayConnectionController.ManualAuthOverride.setupAuth(from: link)
         let appModel = NodeAppModel()
-        defer { appModel.disconnectGateway() }
         let controller = GatewayConnectionController(appModel: appModel, startDiscovery: false)
 
-        await controller.connectManual(
-            host: link.host,
-            port: link.port,
-            useTLS: link.tls,
-            contextPath: link.contextPath,
-            authOverride: setupAuth.manualAuthOverride)
-        await waitUntil { appModel.activeGatewayConnectConfig != nil }
+        try await withGatewayModelCleanup(appModel) {
+            await controller.connectManual(
+                host: link.host,
+                port: link.port,
+                useTLS: link.tls,
+                contextPath: link.contextPath,
+                authOverride: setupAuth.manualAuthOverride)
+            await waitUntil { appModel.activeGatewayConnectConfig != nil }
 
-        #expect(percentEncodedPath(of: appModel.activeGatewayConnectConfig?.url) == "/openclaw%2Fgateway")
-        #expect(appModel.activeGatewayConnectConfig?.effectiveStableID == setupAuth.targetStableID)
-        let stored = try #require(GatewaySettingsStore.activeGatewayEntry())
-        #expect(stored.contextPath == "/openclaw%2Fgateway")
+            #expect(percentEncodedPath(of: appModel.activeGatewayConnectConfig?.url) == "/openclaw%2Fgateway")
+            #expect(appModel.activeGatewayConnectConfig?.effectiveStableID == setupAuth.targetStableID)
+            let stored = try #require(GatewaySettingsStore.activeGatewayEntry())
+            #expect(stored.contextPath == "/openclaw%2Fgateway")
 
-        appModel.disconnectGateway()
-        await controller.connectActiveGateway()
-        await waitUntil { appModel.activeGatewayConnectConfig != nil }
+            appModel.disconnectGateway()
+            await controller.connectActiveGateway()
+            let admittedGeneration = appModel.gatewayConnectGeneration
+            await waitUntil { appModel.activeGatewayConnectConfig != nil }
+            let snapshot = gatewayHandoffSnapshot(
+                appModel: appModel,
+                controller: controller,
+                admittedGeneration: admittedGeneration,
+                targetStableID: stored.stableID)
 
-        #expect(percentEncodedPath(of: appModel.activeGatewayConnectConfig?.url) == "/openclaw%2Fgateway")
-        #expect(appModel.activeGatewayConnectConfig?.effectiveStableID == stored.stableID)
+            #expect(percentEncodedPath(of: appModel.activeGatewayConnectConfig?.url) == "/openclaw%2Fgateway", snapshot)
+            #expect(appModel.activeGatewayConnectConfig?.effectiveStableID == stored.stableID, snapshot)
+        }
     }
 
     @Test @MainActor func `legacy auth preserves proven relay credentials and otherwise requires full re-pair`() throws {
@@ -1913,33 +1954,39 @@ private func waitUntil(
         defer { registryIsolation.restore() }
         let resetRelease = AsyncStream<Void>.makeStream()
         let appModel = NodeAppModel()
-        defer {
-            appModel._test_setGatewaySessionResetTask(nil)
-            appModel.disconnectGateway()
-        }
-        let currentConfig = try Self.makeGatewayConnectConfig(
-            url: #require(URL(string: "wss://127.0.0.1:1")),
-            stableID: "manual|current.gateway.invalid|443")
-        appModel.applyGatewayConnectConfig(currentConfig)
-        let modelResetTask = Task {
-            for await _ in resetRelease.stream {
-                return
+        try await withGatewayModelCleanup(appModel) {
+            // Release the fixture barrier before the model-owned cleanup joins it.
+            defer { resetRelease.continuation.finish() }
+            let currentConfig = try Self.makeGatewayConnectConfig(
+                url: #require(URL(string: "wss://127.0.0.1:1")),
+                stableID: "manual|current.gateway.invalid|443")
+            appModel.applyGatewayConnectConfig(currentConfig)
+            let modelResetTask = Task {
+                for await _ in resetRelease.stream {
+                    return
+                }
             }
+            appModel._test_setGatewaySessionResetTask(modelResetTask)
+            let controller = GatewayConnectionController(appModel: appModel, startDiscovery: false)
+
+            await controller.connectManual(host: "192.168.1.41", port: 18789, useTLS: false)
+            let admittedGeneration = appModel.gatewayConnectGeneration
+            await Task.yield()
+
+            #expect(appModel.activeGatewayConnectConfig?.hasSameConnectionInputs(as: currentConfig) == true)
+
+            resetRelease.continuation.yield()
+            resetRelease.continuation.finish()
+            let replacementStableID = "manual|192.168.1.41|18789"
+            await waitUntil { appModel.activeGatewayConnectConfig?.stableID == replacementStableID }
+            let snapshot = gatewayHandoffSnapshot(
+                appModel: appModel,
+                controller: controller,
+                admittedGeneration: admittedGeneration,
+                targetStableID: replacementStableID)
+
+            #expect(appModel.activeGatewayConnectConfig?.stableID == replacementStableID, snapshot)
         }
-        appModel._test_setGatewaySessionResetTask(modelResetTask)
-        let controller = GatewayConnectionController(appModel: appModel, startDiscovery: false)
-
-        await controller.connectManual(host: "192.168.1.41", port: 18789, useTLS: false)
-        await Task.yield()
-
-        #expect(appModel.activeGatewayConnectConfig?.hasSameConnectionInputs(as: currentConfig) == true)
-
-        resetRelease.continuation.yield()
-        resetRelease.continuation.finish()
-        let replacementStableID = "manual|192.168.1.41|18789"
-        await waitUntil { appModel.activeGatewayConnectConfig?.stableID == replacementStableID }
-
-        #expect(appModel.activeGatewayConnectConfig?.stableID == replacementStableID)
     }
 
     enum HeldResetOutcome: CaseIterable, Sendable {
@@ -2929,19 +2976,26 @@ private func waitUntil(
         let stableID = "manual|127.0.0.1|1"
         saveActiveManualGateway(host: "127.0.0.1", port: 1, useTLS: false, stableID: stableID)
         let appModel = NodeAppModel()
-        defer { appModel.disconnectGateway() }
         let controller = GatewayConnectionController(
             appModel: appModel,
             startDiscovery: false,
             forceReconnectReset: { _ in })
 
-        let result = await controller.switchToGateway(stableID: stableID)
-        await waitUntil { appModel.activeGatewayConnectConfig != nil }
+        await withGatewayModelCleanup(appModel) {
+            let result = await controller.switchToGateway(stableID: stableID)
+            let admittedGeneration = appModel.gatewayConnectGeneration
+            await waitUntil { appModel.activeGatewayConnectConfig != nil }
+            let snapshot = gatewayHandoffSnapshot(
+                appModel: appModel,
+                controller: controller,
+                admittedGeneration: admittedGeneration,
+                targetStableID: stableID)
 
-        #expect(result == .accepted)
-        #expect(appModel.activeGatewayConnectConfig?.effectiveStableID == stableID)
-        #expect(appModel.activeGatewayConnectConfig?.url == URL(string: "ws://127.0.0.1:1"))
-        #expect(GatewaySettingsStore.activeGatewayEntry()?.stableID == stableID)
+            #expect(result == .accepted)
+            #expect(appModel.activeGatewayConnectConfig?.effectiveStableID == stableID, snapshot)
+            #expect(appModel.activeGatewayConnectConfig?.url == URL(string: "ws://127.0.0.1:1"), snapshot)
+            #expect(GatewaySettingsStore.activeGatewayEntry()?.stableID == stableID)
+        }
     }
 
     @Test @MainActor func `switch to undiscoverable gateway returns failure without changing active gateway`() async {
