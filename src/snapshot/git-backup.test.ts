@@ -31,7 +31,7 @@ import {
   createAgentFixture,
   createFormatFixture,
   writeBackupManifest,
-} from "./git-backup.test-harness.js";
+} from "./git-backup.test-support.js";
 
 const mocks = vi.hoisted(() => ({
   logDiagnostic: undefined as { stdout: string; stderr: string } | undefined,
