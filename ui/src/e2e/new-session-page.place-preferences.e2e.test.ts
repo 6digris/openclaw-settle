@@ -69,6 +69,7 @@ suite.define(() => {
       await expect.poll(() => where.getAttribute("data-cloud-profile")).toBe("aws");
       const message = page.locator(".new-session-page__message");
       await message.fill("start locally");
+      expect(await gateway.getRequests("talk.catalog")).toHaveLength(0);
       const start = page.getByRole("button", { name: "Start session" });
       await expect.poll(() => start.isEnabled()).toBe(false);
       await message.press("Enter");
