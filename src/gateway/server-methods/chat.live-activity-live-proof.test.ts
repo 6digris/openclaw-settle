@@ -13,6 +13,11 @@ import {
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { runQaGatewayFixture } from "../../../test/helpers/qa-gateway-cleanup.js";
 import {
+  createHeldActivityProvider,
+  withRegisteredActivityFixture,
+  type ActivityDelivery,
+} from "../../../test/helpers/qa-gateway-live-activity.js";
+import {
   loadExactSessionEntryReadOnly,
   patchSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
@@ -51,11 +56,6 @@ import {
   startGatewayWithClient,
 } from "../test-helpers.e2e.js";
 import { buildMockOpenAiResponsesProvider } from "../test-openai-responses-model.js";
-import {
-  createHeldActivityProvider,
-  withRegisteredActivityFixture,
-  type ActivityDelivery,
-} from "./chat.live-activity-live-proof.test-support.js";
 
 it(
   "prepares the first committed running fact from authenticated chat.send before provider output",

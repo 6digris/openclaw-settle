@@ -5,51 +5,54 @@ import { expect } from "vitest";
 import {
   GATEWAY_CLIENT_MODES,
   GATEWAY_CLIENT_NAMES,
-} from "../../../packages/gateway-protocol/src/client-info.js";
+} from "../../packages/gateway-protocol/src/client-info.js";
 import type {
   PushLiveActivityPrepareResult,
   PushLiveActivityRegisterParams,
   PushLiveActivityRegistrationResult,
   UsersSelfResult,
-} from "../../../packages/gateway-protocol/src/index.js";
-import { startQaGatewayRpcProxy } from "../../../test/fixtures/qa-gateway-rpc-proxy.mjs";
-import { createDeferred } from "../../../test/helpers/promise.js";
-import { runQaGatewayFixture } from "../../../test/helpers/qa-gateway-cleanup.js";
-import { clearConfigCache, clearRuntimeConfigSnapshot } from "../../config/config.js";
+} from "../../packages/gateway-protocol/src/index.js";
+import { clearConfigCache, clearRuntimeConfigSnapshot } from "../../src/config/config.js";
 import {
   loadExactSessionEntryReadOnly,
   patchSessionEntryCore,
-} from "../../config/sessions/session-accessor.js";
-import { clearSessionStoreCacheForTest } from "../../config/sessions/store-writer-state.js";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { onAgentRuntimeEvent, type AgentEventRuntimePayload } from "../../infra/agent-events.js";
-import { getAgentRunContext } from "../../infra/agent-run-registry.js";
-import { drainAgentRunTerminalWrites } from "../../infra/agent-run-terminal-writes.js";
+} from "../../src/config/sessions/session-accessor.js";
+import { clearSessionStoreCacheForTest } from "../../src/config/sessions/store-writer-state.js";
+import type { OpenClawConfig } from "../../src/config/types.openclaw.js";
+import type { OperatorScope } from "../../src/gateway/operator-scopes.js";
+import { startGatewayServer } from "../../src/gateway/server.js";
+import {
+  connectGatewayClient,
+  disconnectGatewayClient,
+  getGatewayE2ePortBlock,
+} from "../../src/gateway/test-helpers.e2e.js";
+import { buildMockOpenAiResponsesProvider } from "../../src/gateway/test-openai-responses-model.js";
+import {
+  onAgentRuntimeEvent,
+  type AgentEventRuntimePayload,
+} from "../../src/infra/agent-events.js";
+import { getAgentRunContext } from "../../src/infra/agent-run-registry.js";
+import { drainAgentRunTerminalWrites } from "../../src/infra/agent-run-terminal-writes.js";
 import {
   loadOrCreateDeviceIdentity,
   loadOrCreateProcessDeviceIdentity,
   publicKeyRawBase64UrlFromPem,
   type DeviceIdentity,
-} from "../../infra/device-identity.js";
-import { approveDevicePairing } from "../../infra/device-pairing-approval.js";
-import { approveNodePairing, requestNodePairing } from "../../infra/device-pairing-node.js";
-import { requestDevicePairing } from "../../infra/device-pairing.js";
-import type { ApnsLiveActivityPayload } from "../../infra/push-live-activity-payload.js";
-import { readRow, type ActivityRow } from "../../infra/push-live-activity-store-state.js";
-import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
-import { ensureProfileForEmail, setUserProfileRole } from "../../state/user-profiles.js";
+} from "../../src/infra/device-identity.js";
+import { approveDevicePairing } from "../../src/infra/device-pairing-approval.js";
+import { approveNodePairing, requestNodePairing } from "../../src/infra/device-pairing-node.js";
+import { requestDevicePairing } from "../../src/infra/device-pairing.js";
+import type { ApnsLiveActivityPayload } from "../../src/infra/push-live-activity-payload.js";
+import { readRow, type ActivityRow } from "../../src/infra/push-live-activity-store-state.js";
+import { openOpenClawStateDatabase } from "../../src/state/openclaw-state-db.js";
+import { ensureProfileForEmail, setUserProfileRole } from "../../src/state/user-profiles.js";
 import {
   withOpenClawTestState,
   type OpenClawTestState,
-} from "../../test-utils/openclaw-test-state.js";
-import type { OperatorScope } from "../operator-scopes.js";
-import { startGatewayServer } from "../server.js";
-import {
-  connectGatewayClient,
-  disconnectGatewayClient,
-  getGatewayE2ePortBlock,
-} from "../test-helpers.e2e.js";
-import { buildMockOpenAiResponsesProvider } from "../test-openai-responses-model.js";
+} from "../../src/test-utils/openclaw-test-state.js";
+import { startQaGatewayRpcProxy } from "../fixtures/qa-gateway-rpc-proxy.mjs";
+import { createDeferred } from "./promise.js";
+import { runQaGatewayFixture } from "./qa-gateway-cleanup.js";
 
 async function listen(server: Server): Promise<number> {
   await new Promise<void>((resolve, reject) => {
@@ -125,7 +128,7 @@ export function createHeldActivityProvider(
   return { server, work };
 }
 
-export type ActivityWireRequest = {
+type ActivityWireRequest = {
   relayHandle: string;
   purpose: "liveActivity";
   revision: number;
@@ -393,7 +396,7 @@ export async function withRegisteredActivityFixture(
             const device = devices[name];
             const proxy = await startQaGatewayRpcProxy({
               backendPort: port,
-              repoRoot: fileURLToPath(new URL("../../../", import.meta.url)),
+              repoRoot: fileURLToPath(new URL("../../", import.meta.url)),
               upstreamHeaders: {
                 "x-forwarded-user": device.email,
                 "x-forwarded-proto": "https",
