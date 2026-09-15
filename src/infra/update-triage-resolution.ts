@@ -302,7 +302,10 @@ export async function validateTriageUpdateResolution(params: {
     opts: {},
     signal,
     expectedVersion: installedVersion,
-    requirePluginHealth: reason === "plugin-errors" || reason === "post-update-plugins",
+    requirePluginHealth:
+      reason === "plugin-errors" ||
+      reason === "post-update-plugins" ||
+      ("result" in failure && failure.result.postUpdate?.plugins?.status === "error"),
   });
   signal.throwIfAborted();
   if (!serviceVerified) {

@@ -343,33 +343,43 @@ describe("saved update failure resolution", () => {
     },
   );
 
-  it("keeps mixed plugin installation failures unresolved after Doctor is clean", async () => {
-    failedRun.reason = "post-update-failed";
-    failedRun.steps = [{ step: "finalize:doctor", status: "failed" }];
-    latestRun = failedRun;
-    const saved = failure("post-update-failed", {
-      postUpdate: {
-        plugins: {
-          status: "error",
-          reason: "post-plugin-doctor-invalid-config",
-          changed: false,
-          sync: {
+  it.each([false, true])(
+    "keeps mixed plugin installation failures unresolved after Doctor is clean (completed update: %s)",
+    async (completed) => {
+      failedRun.reason = "post-update-failed";
+      failedRun.steps = [{ step: "finalize:doctor", status: "failed" }];
+      if (!completed) {
+        latestRun = failedRun;
+      }
+      vi.mocked(verifyPreviousGatewayForUpdate).mockImplementation(
+        async ({ requirePluginHealth }) => !requirePluginHealth,
+      );
+      const saved = failure("post-update-failed", {
+        postUpdate: {
+          plugins: {
+            status: "error",
+            reason: "post-plugin-doctor-invalid-config",
             changed: false,
-            switchedToBundled: [],
-            switchedToNpm: [],
-            warnings: [],
-            errors: [],
+            sync: {
+              changed: false,
+              switchedToBundled: [],
+              switchedToNpm: [],
+              warnings: [],
+              errors: [],
+            },
+            npm: {
+              changed: false,
+              outcomes: [
+                { pluginId: "sample", status: "error", message: "Package install failed" },
+              ],
+            },
+            integrityDrifts: [],
           },
-          npm: {
-            changed: false,
-            outcomes: [{ pluginId: "sample", status: "error", message: "Package install failed" }],
-          },
-          integrityDrifts: [],
         },
-      },
-    });
-    expect(await validate(saved)).toMatchObject({ ok: false });
-  });
+      });
+      expect(await validate(saved)).toMatchObject({ ok: false });
+    },
+  );
 
   it("stops Doctor repair when an update takes ownership during diagnostics", async () => {
     failedRun.reason = "post-update-failed";
