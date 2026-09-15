@@ -4176,14 +4176,14 @@ describe("grouped chat rendering", () => {
     renderMessage();
     expect(container.textContent).not.toContain("Outside allowed folders");
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    await flushAssistantAttachmentAvailabilityChecks();
-
-    expect(
-      container
-        .querySelector<HTMLAnchorElement>(".chat-assistant-attachment-card__download")
-        ?.getAttribute("href"),
-    ).toBe(
-      `/__openclaw__/assistant-media?source=${encodeURIComponent(source)}&mediaTicket=ticket-bootstrap-audio`,
+    await vi.waitFor(() =>
+      expect(
+        container
+          .querySelector<HTMLAnchorElement>(".chat-assistant-attachment-card__download")
+          ?.getAttribute("href"),
+      ).toBe(
+        `/__openclaw__/assistant-media?source=${encodeURIComponent(source)}&mediaTicket=ticket-bootstrap-audio`,
+      ),
     );
   });
 
@@ -5001,16 +5001,14 @@ describe("grouped chat rendering", () => {
       );
 
     rerender();
-    await flushAssistantAttachmentAvailabilityChecks();
     const download = () =>
       container
         .querySelector<HTMLAnchorElement>(".chat-assistant-attachment-card__download")
         ?.getAttribute("href");
-    expect(download()).toContain("mediaTicket=ticket-old");
+    await vi.waitFor(() => expect(download()).toContain("mediaTicket=ticket-old"));
 
     await vi.advanceTimersByTimeAsync(1_001);
-    await flushAssistantAttachmentAvailabilityChecks();
-    expect(download()).toContain("mediaTicket=ticket-new");
+    await vi.waitFor(() => expect(download()).toContain("mediaTicket=ticket-new"));
     expect(container.querySelector("openclaw-chat-audio-player")).not.toBeNull();
   });
 
