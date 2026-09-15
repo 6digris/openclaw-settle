@@ -8,6 +8,43 @@ import Testing
 @Suite(.serialized)
 @MainActor
 struct QuickChatModelTests {
+    @Test(arguments: ["main", "global", "agent:primary:main"])
+    func `roster failure preserves owned and global fallbacks only`(key: String) async {
+        let model = self.makeModel(
+            fallbackSessionKey: key,
+            agentsProvider: { throw FakeSendError.rejected })
+        await self.prepare(model)
+        model.text = "keep draft"
+        #expect(model.canSend == (key != "main"))
+        #expect(model.sessionKey == (key == "main" ? "" : key))
+    }
+
+    @Test func `ownerless per sender waits for choice and keeps that choice on reopen`() async {
+        let data = Data(
+            #"{"defaultId":"main","mainKey":"main","scope":"per-sender","selectionRequired":true,"agents":[{"id":"main"},{"id":"primary"}]}"#
+                .utf8)
+        var sentKeys: [String] = []
+        let model = self.makeModel(
+            agentsProvider: { try JSONDecoder().decode(AgentsListResult.self, from: data) },
+            sendHandler: { key, _, _, _, _, _ in
+                sentKeys.append(key)
+                return "started"
+            })
+        await self.prepare(model)
+        model.text = "keep draft"
+        #expect(model.selectedAgentID == nil)
+        #expect(!model.canSend)
+        #expect(await !model.send())
+        #expect(sentKeys.isEmpty)
+        model.selectAgent("primary")
+        #expect(model.sessionKey == "agent:primary:main")
+        model.endPresentation()
+        await self.prepare(model)
+        #expect(model.selectedAgentID == "primary")
+        #expect(await model.send())
+        #expect(sentKeys == ["agent:primary:main"])
+    }
+
     @Test(arguments: ["started", "ok", "in_flight"])
     func `accepted send clears text`(_ status: String) async {
         let model = self.makeModel(sendStatus: status)
@@ -628,6 +665,7 @@ struct QuickChatModelTests {
     }
 
     private func makeModel(
+        fallbackSessionKey: String = "agent:main:main",
         gate: QuickChatConnectionGate = .available,
         sendStatus: String = "ok",
         sendError: Error? = nil,
@@ -636,7 +674,7 @@ struct QuickChatModelTests {
         sendHandler: QuickChatModel.SendProvider? = nil) -> QuickChatModel
     {
         QuickChatModel(
-            sessionKeyProvider: { "agent:main:main" },
+            sessionKeyProvider: { fallbackSessionKey },
             agentsProvider: agentsProvider ?? {
                 Self.agentsResult(defaultID: "main", agentIDs: ["main"], names: ["Molty"])
             },

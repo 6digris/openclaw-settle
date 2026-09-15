@@ -443,6 +443,12 @@ public struct OpenClawChatSessionRoutingIdentity: Equatable, Sendable {
     public let mainSessionKey: String
     public let defaultAgentID: String
     public let contract: String
+    public let selectionRequired: Bool
+
+    /// The legacy cache stores only the display default, not selection metadata.
+    public var canPersistLegacyProjection: Bool {
+        !self.selectionRequired || self.scope != "per-sender"
+    }
 
     public init?(contract: String?) {
         guard let components = OpenClawChatSessionRoutingContract.parse(contract) else { return nil }
@@ -450,14 +456,27 @@ public struct OpenClawChatSessionRoutingIdentity: Equatable, Sendable {
         self.mainSessionKey = components.mainKey
         self.defaultAgentID = components.defaultAgentID
         self.contract = "\(components.scope)|\(components.mainKey)|\(components.defaultAgentID)"
+        self.selectionRequired = false
     }
 
-    public init?(scope: String?, mainSessionKey: String?, defaultAgentID: String?) {
-        guard let contract = OpenClawChatSessionRoutingContract.make(
-            scope: scope,
-            mainKey: mainSessionKey,
-            defaultAgentID: defaultAgentID)
+    public init?(
+        scope: String?,
+        mainSessionKey: String?,
+        defaultAgentID: String?,
+        selectionRequired: Bool = false)
+    {
+        guard let projection = OpenClawChatSessionRoutingContract.make(
+            scope: scope, mainKey: mainSessionKey, defaultAgentID: defaultAgentID),
+            let components = OpenClawChatSessionRoutingContract.parse(projection)
         else { return nil }
-        self.init(contract: contract)
+        self.scope = components.scope
+        self.mainSessionKey = components.mainKey
+        self.defaultAgentID = components.defaultAgentID
+        self.selectionRequired = selectionRequired
+        // Existing per-sender API metadata distinguishes a display default from an ambient owner.
+        // Global fixed-store ownership is a separate case; preserve its existing behavior.
+        self.contract = selectionRequired && components.scope == "per-sender"
+            ? "\(components.scope)|\(components.mainKey)|unowned"
+            : projection
     }
 }

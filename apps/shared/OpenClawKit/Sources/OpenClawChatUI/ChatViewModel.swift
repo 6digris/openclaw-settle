@@ -246,6 +246,24 @@ public final class OpenClawChatViewModel {
     @ObservationIgnored
     var pendingCacheWriteTask: Task<Void, Never>?
     private(set) var activeAgentId: String?
+    public private(set) var agentSelectionRequired = false
+
+    public var requiresExplicitAgentSelection: Bool {
+        self.agentSelectionRequired && self.activeAgentId == nil &&
+            self.explicitSessionAgentID == nil &&
+            OpenClawChatSessionKey.agentID(from: self.sessionKey) == nil
+    }
+
+    public func syncAgentSelectionRequired(_ required: Bool) {
+        guard self.agentSelectionRequired != required else { return }
+        let wasBlocked = self.requiresExplicitAgentSelection
+        self.agentSelectionRequired = required
+        guard wasBlocked != self.requiresExplicitAgentSelection else { return }
+        self.advanceSessionGeneration()
+        self.clearSessionOwnedState()
+        self.startBootstrap()
+    }
+
     private(set) var sessionRoutingContract: String?
     var sessionDefaults: OpenClawChatSessionsDefaults? {
         didSet { syncContextUsageFraction() }
@@ -508,6 +526,7 @@ public final class OpenClawChatViewModel {
         transport: any OpenClawChatTransport,
         activeAgentId: String? = nil,
         sessionRoutingContract: String? = nil,
+        agentSelectionRequired: Bool = false,
         attachmentOwnerIsActive: @escaping @MainActor () -> Bool = { false },
         haptics: OpenClawChatHaptics = OpenClawChatHaptics(),
         transcriptCache: (any OpenClawChatTranscriptCache)? = nil,
@@ -525,6 +544,7 @@ public final class OpenClawChatViewModel {
     {
         self.sessionKey = sessionKey
         self.defaultTransport = transport
+        self.agentSelectionRequired = agentSelectionRequired
         self.haptics = haptics
         self.transcriptCache = transcriptCache
         self.modelPickerStore = modelPickerStore

@@ -1667,6 +1667,23 @@ private actor SwarmCapabilityScript {
 
 @Suite(.serialized)
 struct ChatViewModelTests {
+    @Test func `explicit selection gate preserves canonical owners and drafts`() async {
+        let (_, vm) = await makeViewModel(historyResponses: [historyPayload()])
+        await MainActor.run {
+            vm.input = "keep draft"
+            vm.syncActiveAgentId(nil)
+            vm.syncAgentSelectionRequired(true)
+            #expect(vm.requiresExplicitAgentSelection)
+            #expect(!vm.canSend)
+            vm.syncActiveAgentId("primary")
+            #expect(!vm.requiresExplicitAgentSelection)
+            #expect(vm.input == "keep draft")
+            vm.switchSession(to: "agent:primary:main")
+            vm.syncActiveAgentId(nil)
+            #expect(!vm.requiresExplicitAgentSelection)
+        }
+    }
+
     @Test func `legacy plan renders only when progress card store is unavailable`() async throws {
         let (_, vm) = await makeViewModel(
             historyResponses: [historyPayload(canonicalKey: "agent:main:main", agentId: "main")],

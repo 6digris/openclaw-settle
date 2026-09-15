@@ -474,6 +474,7 @@ struct ChatProTab: View {
             currentTransportAgentID: self.viewModelTransportAgentID,
             nextTransportAgentID: transportAgentID)
         {
+            viewModel.syncAgentSelectionRequired(self.appModel.chatRequiresAgentSelection)
             if self.viewModelRoutingContract != routingContract {
                 self.viewModelRoutingContract = routingContract
                 viewModel.syncSessionRoutingContract(self.appModel.chatSessionRoutingContract)
@@ -526,6 +527,7 @@ struct ChatProTab: View {
             transport: self.appModel.makeChatTransport(outboxGatewayID: offlineStore?.gatewayID),
             activeAgentId: self.appModel.chatDeliveryAgentId,
             sessionRoutingContract: self.appModel.chatSessionRoutingContract,
+            agentSelectionRequired: self.appModel.chatRequiresAgentSelection,
             attachmentOwnerIsActive: { voiceNoteRecorder.ownsPendingChatAttachment },
             transcriptCache: offlineStore,
             outbox: offlineStore,

@@ -847,6 +847,16 @@ final class ChatTranscriptCacheStoreTests: ClientDatabaseTestSuite, @unchecked S
         #expect(await reopened.store(gatewayID: "gw-b").loadSessions().map(\.key) == ["keep"])
     }
 
+    @Test func `ownerless live metadata does not persist as an agent named unowned`() async throws {
+        let identity = try #require(OpenClawChatSessionRoutingIdentity(
+            scope: "per-sender", mainSessionKey: "main", defaultAgentID: "main", selectionRequired: true))
+        let cache = databases.store(gatewayID: "ownerless-projection")
+        await cache.storeSessionRoutingIdentity(identity)
+        #expect(await cache.loadSessionRoutingIdentity() == nil)
+        #expect(identity.defaultAgentID == "main")
+        #expect(identity.contract == "per-sender|main|unowned")
+    }
+
     @Test func `routing identity survives a cold container reopen`() async throws {
         let identity = try #require(OpenClawChatSessionRoutingIdentity(
             scope: " Per-Sender ",

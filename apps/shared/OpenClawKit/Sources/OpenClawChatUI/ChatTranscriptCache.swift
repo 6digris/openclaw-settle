@@ -366,7 +366,7 @@ public actor OpenClawChatSQLiteTranscriptCache: OpenClawChatTranscriptCache,
     }
 
     public func storeSessionRoutingIdentity(_ identity: OpenClawChatSessionRoutingIdentity) async {
-        guard !self.isRetired else { return }
+        guard !self.isRetired, identity.canPersistLegacyProjection else { return }
         let gatewayID = self.gatewayID
         do {
             try await self.databases.stateQueue.write { db in

@@ -119,7 +119,8 @@ public enum OpenClawChatGatewayPayloadCodec {
         guard let identity = OpenClawChatSessionRoutingIdentity(
             scope: decoded.scope.value as? String,
             mainSessionKey: decoded.mainkey,
-            defaultAgentID: decoded.defaultid)
+            defaultAgentID: decoded.defaultid,
+            selectionRequired: decoded.selectionrequired ?? false)
         else { throw CancellationError() }
         return identity
     }

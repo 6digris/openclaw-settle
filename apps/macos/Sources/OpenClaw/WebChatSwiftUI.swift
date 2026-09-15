@@ -1033,7 +1033,8 @@ final class WebChatSwiftUIWindowController: NSObject, NSWindowDelegate {
         let explicitAgentID = WebChatRoute.normalizedAgentID(agentID)
         let effectiveAgentID = Self.effectiveAgentID(
             explicitAgentID: explicitAgentID,
-            cachedDefaultAgentID: cachedRoutingIdentity?.defaultAgentID)
+            cachedDefaultAgentID: cachedRoutingIdentity?.scope == "global"
+                ? cachedRoutingIdentity?.defaultAgentID : nil)
         self.init(
             sessionKey: sessionKey,
             initialDraft: initialDraft,
@@ -1043,7 +1044,9 @@ final class WebChatSwiftUIWindowController: NSObject, NSWindowDelegate {
                 defaultGlobalAgentID: effectiveAgentID),
             initialActiveAgentID: effectiveAgentID,
             explicitAgentID: explicitAgentID,
-            initialSessionRoutingContract: cachedRoutingIdentity?.contract,
+            initialSessionRoutingContract: cachedRoutingIdentity?.scope == "global"
+                ? cachedRoutingIdentity?.contract : nil,
+            initialAgentSelectionRequired: cachedRoutingIdentity?.scope != "global",
             transcriptCache: store,
             outbox: store,
             windowTitle: windowTitle,
@@ -1057,6 +1060,7 @@ final class WebChatSwiftUIWindowController: NSObject, NSWindowDelegate {
         initialActiveAgentID: String? = nil,
         explicitAgentID: String? = nil,
         initialSessionRoutingContract: String? = nil,
+        initialAgentSelectionRequired: Bool = false,
         transcriptCache: (any OpenClawChatTranscriptCache)? = nil,
         outbox: (any OpenClawChatCommandOutbox)? = nil,
         windowTitle: String = "OpenClaw Chat",
@@ -1083,6 +1087,7 @@ final class WebChatSwiftUIWindowController: NSObject, NSWindowDelegate {
             transport: transport,
             activeAgentId: initialActiveAgentID,
             sessionRoutingContract: initialSessionRoutingContract,
+            agentSelectionRequired: initialAgentSelectionRequired,
             attachmentOwnerIsActive: { voiceNoteRecorder.ownsPendingChatAttachment },
             transcriptCache: transcriptCache,
             outbox: outbox,
@@ -1125,9 +1130,11 @@ final class WebChatSwiftUIWindowController: NSObject, NSWindowDelegate {
                     if let routingIdentity {
                         // An explicit navigation agent owns this window; gateway
                         // default refreshes only supply the fallback route.
+                        let needsSelection = routingIdentity.selectionRequired && routingIdentity.scope == "per-sender"
                         let effectiveAgentID = Self.effectiveAgentID(
-                            explicitAgentID: explicitAgentID,
-                            cachedDefaultAgentID: routingIdentity.defaultAgentID)
+                            explicitAgentID: OpenClawChatSessionKey.agentID(from: vm.sessionKey) ?? explicitAgentID,
+                            cachedDefaultAgentID: needsSelection ? nil : routingIdentity.defaultAgentID)
+                        vm.syncAgentSelectionRequired(needsSelection)
                         gatewayTransport.updateDefaultGlobalAgentID(effectiveAgentID)
                         // Keep request and cache ownership in lockstep before the
                         // persistence await can admit a roster refresh.
@@ -1135,11 +1142,9 @@ final class WebChatSwiftUIWindowController: NSObject, NSWindowDelegate {
                             activeAgentId: effectiveAgentID,
                             sessionRoutingContract: routingIdentity.contract)
                         if let store = transcriptCache as? OpenClawChatSQLiteTranscriptCache,
-                           !usesPrimaryAppRuntime || store.gatewayID == MacChatTranscriptCache.currentGatewayID(),
-                           let persistedIdentity = OpenClawChatSessionRoutingIdentity(
-                               contract: routingIdentity.contract)
+                           !usesPrimaryAppRuntime || store.gatewayID == MacChatTranscriptCache.currentGatewayID()
                         {
-                            await store.storeSessionRoutingIdentity(persistedIdentity)
+                            await store.storeSessionRoutingIdentity(routingIdentity)
                         }
                     }
                 }

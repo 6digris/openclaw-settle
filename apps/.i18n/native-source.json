@@ -3846,6 +3846,7 @@
     {"id":"native.apple.207443daf95ef00c","source":"You’re all set!","surface":"apple","sites":[{"kind":"ui-call","path":"apps/macos/Sources/OpenClaw/OnboardingView+Pages.swift"}]},
     {"id":"native.apple.92ccb780ba6e3791","source":"[\\(host)]","surface":"apple","sites":[{"kind":"conditional-branch","path":"apps/macos/Sources/OpenClaw/DashboardWindowController.swift"}]},
     {"id":"native.apple.d478663cdfc0e90f","source":"[\\(self.host)]","surface":"apple","sites":[{"kind":"conditional-branch","path":"apps/shared/OpenClawKit/Sources/OpenClawKit/GatewayTLSPinning.swift"}]},
+    {"id":"native.apple.6f43946be612108a","source":"\\(components.scope)|\\(components.mainKey)|unowned","surface":"apple","sites":[{"kind":"conditional-branch","path":"apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatTranscriptCacheContracts.swift"}]},
     {"id":"native.apple.867ed13624dfabd3","source":"\\(endpoint) • TLS","surface":"apple","sites":[{"kind":"conditional-branch","path":"apps/ios/Sources/Design/SettingsProTabActions.swift"}]},
     {"id":"native.apple.fca9d49f6a527692","source":"\\(hours)h","surface":"apple","sites":[{"kind":"conditional-branch","path":"apps/macos/Sources/OpenClaw/UsageData.swift"}]},
     {"id":"native.apple.dd35fda7769eb809","source":"\\(hours)h \\(mins)m","surface":"apple","sites":[{"kind":"conditional-branch","path":"apps/macos/Sources/OpenClaw/UsageData.swift"}]},

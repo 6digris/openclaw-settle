@@ -178,6 +178,7 @@ final class QuickChatModel {
     private(set) var agents: [QuickChatAgentDisplay] = []
     private(set) var defaultAgentID: String?
     private(set) var selectedAgentID: String?
+    private var selectedAgentIsExplicit = false
     private(set) var agentDisplay = QuickChatAgentDisplay.placeholder
     private(set) var missingPermissions: [Capability] = []
     private(set) var permissionsDismissedThisSession = false
@@ -470,6 +471,7 @@ final class QuickChatModel {
         // make the avatar advertise one destination while sends go somewhere else.
         self.targetSessionOverride = nil
         self.selectedAgentID = id
+        self.selectedAgentIsExplicit = true
         self.agentDisplay = display
         let target = Self.routingTarget(scope: self.agentsScope, selectedAgentID: id, mainKey: mainKey)
         self.baseRoutingTarget = target
@@ -768,10 +770,15 @@ final class QuickChatModel {
 
     private func resolveAgents(_ result: AgentsListResult) -> AgentsResolution {
         let displays = result.agents.filter(\.isSelectableAgent).map(QuickChatAgentDisplay.init(summary:))
+        let requiresSelection = result.selectionrequired == true &&
+            (result.scope.value as? String) == "per-sender"
         let selectedID: String? = if let selectedAgentID,
-                                     displays.contains(where: { $0.id == selectedAgentID })
+                                     displays.contains(where: { $0.id == selectedAgentID }),
+                                     !requiresSelection || self.selectedAgentIsExplicit
         {
             selectedAgentID
+        } else if requiresSelection {
+            nil
         } else if displays.contains(where: { $0.id == result.defaultid }) {
             result.defaultid
         } else {
@@ -793,6 +800,7 @@ final class QuickChatModel {
 
         self.agents = displays
         self.defaultAgentID = result.defaultid
+        self.selectedAgentIsExplicit = self.selectedAgentIsExplicit && self.selectedAgentID == selectedID
         self.selectedAgentID = selectedID
         self.agentsScope = result.scope.value as? String
         self.agentsMainKey = result.mainkey
@@ -814,6 +822,14 @@ final class QuickChatModel {
     private func refreshFallbackIdentity(id: UUID) async {
         let resolvedSessionKey = await self.sessionKeyProvider()
         guard self.isCurrentPresentation(id), !Task.isCancelled else { return }
+        // A failed roster lookup cannot turn an unowned alias into a selected agent.
+        guard OpenClawChatSessionKey.agentID(from: resolvedSessionKey) != nil ||
+            resolvedSessionKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "global"
+        else {
+            self.baseRoutingTarget = nil
+            self.setRoutingTarget(nil)
+            return
+        }
         let target = QuickChatRoutingTarget(sessionKey: resolvedSessionKey, agentID: nil)
         await self.awaitControlPatchSettlement(for: target)
         guard self.isCurrentPresentation(id), !Task.isCancelled else { return }
@@ -823,6 +839,7 @@ final class QuickChatModel {
         self.agents = []
         self.defaultAgentID = nil
         self.selectedAgentID = nil
+        self.selectedAgentIsExplicit = false
         self.agentsScope = nil
         self.agentsMainKey = nil
         self.agentDisplay = .placeholder

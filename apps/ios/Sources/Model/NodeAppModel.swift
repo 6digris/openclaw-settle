@@ -407,6 +407,8 @@ final class NodeAppModel {
     private var focusedChatSessionKey: String?
     var selectedAgentId: String?
     var gatewayDefaultAgentId: String?
+    var chatAgentSelectionRequired = false
+    private var chatRoutingIdentityIsCached = false
     var gatewayAgents: [AgentSummary] = []
     var lastShareEventText: String = "No share events yet."
     var openChatRequestID: Int = 0
@@ -744,6 +746,7 @@ final class NodeAppModel {
         self.gatewaySessionScope = identity.scope
         self.mainSessionBaseKey = identity.mainSessionKey
         self.gatewayDefaultAgentId = identity.defaultAgentID
+        self.chatRoutingIdentityIsCached = true
         self.synchronizeTalkSessionKey()
     }
 
@@ -1692,12 +1695,15 @@ final class NodeAppModel {
             let routingIdentity = OpenClawChatSessionRoutingIdentity(
                 scope: decoded.scope.value as? String,
                 mainSessionKey: decoded.mainkey,
-                defaultAgentID: decoded.defaultid)
+                defaultAgentID: decoded.defaultid,
+                selectionRequired: decoded.selectionrequired ?? false)
             guard shouldApply(),
                   GatewayStableIdentifier.matches(self.chatTranscriptCacheGatewayID, sourceGatewayID)
             else { return }
             await MainActor.run {
                 self.gatewayDefaultAgentId = decoded.defaultid
+                self.chatAgentSelectionRequired = decoded.selectionrequired ?? false
+                self.chatRoutingIdentityIsCached = false
                 self.gatewayAgents = decoded.agents
                 self.gatewaySessionScope = decoded.scope.value as? String
                 self.applyMainSessionKey(decoded.mainkey)
@@ -3540,21 +3546,31 @@ extension NodeAppModel {
     /// Verified routing owner for sends. Unlike `chatAgentId`, this has no
     /// display fallback: a cold offline start must wait for persisted or
     /// gateway-provided ownership before it can queue durable work.
+    var chatRequiresAgentSelection: Bool {
+        self.gatewaySessionScope != "global" &&
+            (self.chatAgentSelectionRequired || self.chatRoutingIdentityIsCached || self.gatewayDefaultAgentId == nil)
+    }
+
     var chatDeliveryAgentId: String? {
         if let sessionAgentId = SessionKey.agentId(from: chatSessionKey) {
             return sessionAgentId.lowercased()
         }
         let selected = (self.selectedAgentId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if !selected.isEmpty { return selected.lowercased() }
+        guard !self.chatRequiresAgentSelection else { return nil }
         let defaultId = (self.gatewayDefaultAgentId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return defaultId.isEmpty ? nil : defaultId.lowercased()
     }
 
     var chatSessionRoutingContract: String? {
-        OpenClawChatSessionRoutingContract.make(
+        // The unchanged cache cannot distinguish an owned default from a display-only one.
+        // Keep cold offline drafts until live metadata restores that distinction.
+        guard !self.chatRoutingIdentityIsCached || self.gatewaySessionScope == "global" else { return nil }
+        return OpenClawChatSessionRoutingIdentity(
             scope: self.gatewaySessionScope,
-            mainKey: self.mainSessionBaseKey,
-            defaultAgentID: self.gatewayDefaultAgentId)
+            mainSessionKey: self.mainSessionBaseKey,
+            defaultAgentID: self.gatewayDefaultAgentId,
+            selectionRequired: self.chatAgentSelectionRequired)?.contract
     }
 
     var chatAgentName: String {
@@ -3969,6 +3985,8 @@ extension NodeAppModel {
         self.gatewaySessionScope = nil
         self.gatewayAccentColorHex = nil
         self.gatewayDefaultAgentId = nil
+        self.chatAgentSelectionRequired = false
+        self.chatRoutingIdentityIsCached = false
         self.gatewayAgents = []
         self.selectedAgentId = GatewaySettingsStore.loadGatewaySelectedAgentId(stableID: stableID)
         // Session keys are gateway-owned: transport reconnects keep the active chat,

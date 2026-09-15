@@ -3,6 +3,34 @@ import OpenClawChatUI
 import Testing
 
 struct ChatGatewayAgentCatalogTests {
+    @Test func `ownerless roster keeps its display default separate from the existing routing guard`() throws {
+        let data = Data(
+            #"{"defaultId":"main","mainKey":"main","scope":"per-sender","ownership":"explicit","selectionRequired":true,"agents":[{"id":"main"},{"id":"primary"}]}"#
+                .utf8)
+        let catalog = try OpenClawChatGatewayPayloadCodec.decodeAgentsList(data)
+        let identity = try OpenClawChatGatewayPayloadCodec.decodeSessionRoutingIdentity(data)
+
+        #expect(catalog.defaultId == "main")
+        // Catalog projection remains navigation metadata, not the send guard.
+        #expect(catalog.sessionRoutingContract == "per-sender|main|main")
+        #expect(identity.defaultAgentID == "main")
+        #expect(identity.selectionRequired)
+        #expect(!identity.canPersistLegacyProjection)
+        #expect(identity.contract == "per-sender|main|unowned")
+    }
+
+    @Test func `owned non-first primary preserves the upstream fixed routing projection`() throws {
+        let data = Data(
+            #"{"defaultId":"primary","mainKey":"main","scope":"per-sender","ownership":"explicit","selectionRequired":false,"agents":[{"id":"main"},{"id":"primary"}]}"#
+                .utf8)
+        let catalog = try OpenClawChatGatewayPayloadCodec.decodeAgentsList(data)
+        let identity = try OpenClawChatGatewayPayloadCodec.decodeSessionRoutingIdentity(data)
+
+        #expect(catalog.defaultId == "primary")
+        #expect(catalog.sessionRoutingContract == "per-sender|main|primary")
+        #expect(identity.contract == "per-sender|main|primary")
+    }
+
     @Test func `scoped legacy session rows retain their owner without rewriting global keys`() throws {
         let data = Data(#"{"sessions":[{"key":"global"},{"key":"agent:research:global"}]}"#.utf8)
         let result = try OpenClawChatGatewayPayloadCodec.decodeSessionsList(data, agentID: "main")

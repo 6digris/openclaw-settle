@@ -68,6 +68,7 @@ import {
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
+import { listGatewayAgentsBasic } from "./agent-list.js";
 import { assertPluginMetadataSnapshotConsistency } from "./plugin-metadata.test-helpers.js";
 import {
   createDirectChatContext,
@@ -787,6 +788,73 @@ async function prepareUnconfiguredAcpHarnessSession(options?: { withMetadata?: b
 }
 
 describe("gateway server chat", () => {
+  test.each(["owned-primary", "ownerless-display", "ownerless-existing-fields"] as const)(
+    "Apple existing-API counterfactual: %s",
+    async (scenario) => {
+      const previousAgents = testState.agentsConfig;
+      openDirectChatSession();
+      const cfg: OpenClawConfig = {
+        agents: {
+          ownership: "explicit",
+          entries: { main: {}, primary: {} },
+          ...(scenario === "owned-primary"
+            ? { defaults: { systemAgent: { agentId: "primary" } } }
+            : {}),
+        },
+        session: { scope: "per-sender", mainKey: "main" },
+      };
+      testState.agentsConfig = cfg.agents;
+      try {
+        await writeGatewayConfig(cfg);
+        await writeSessionStore({
+          agentId: "primary",
+          entries: { "agent:primary:main": { sessionId: "apple-primary", updatedAt: Date.now() } },
+        });
+        const roster = listGatewayAgentsBasic(cfg);
+        expect(roster.selectionRequired).toBe(scenario !== "owned-primary");
+        expect(roster.defaultId).toBe(scenario === "owned-primary" ? "primary" : "main");
+        // Counterfactual wire inputs, not execution of the Swift serializer.
+        const owner = scenario === "ownerless-existing-fields" ? "unowned" : roster.defaultId;
+        const expectedContract = [roster.scope, roster.mainKey, owner].join("|");
+        const responses: CapturedChatResponse[] = [];
+        const context = createDirectChatContext({ getRuntimeConfig: () => cfg });
+        dispatchInboundMessageMock.mockResolvedValueOnce(undefined);
+        await callDirectChat("chat.send", {
+          id: "apple-" + scenario,
+          params: {
+            sessionKey: "agent:primary:main",
+            agentId: "primary",
+            message: "existing API ownership proof",
+            idempotencyKey: "apple-" + scenario,
+            expectedSessionRoutingContract: expectedContract,
+          },
+          client: createControlUiClient(),
+          context,
+          respond: captureChatResponse(responses),
+        });
+        if (scenario === "ownerless-display") {
+          expect(responses[0]).toMatchObject({
+            ok: false,
+            error: {
+              code: "INVALID_REQUEST",
+              message: "session routing changed; review and retry",
+            },
+          });
+          expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
+        } else {
+          expect(responses[0]?.ok, JSON.stringify(responses)).toBe(true);
+          expect(expectedContract).toBe(resolveSessionRoutingContract(cfg));
+        }
+      } finally {
+        if (process.env.OPENCLAW_CONFIG_PATH) {
+          await fs.rm(process.env.OPENCLAW_CONFIG_PATH, { force: true });
+        }
+        testState.agentsConfig = previousAgents;
+        resetDirectChatSession();
+      }
+    },
+  );
+
   test.each(["chat.history", "chat.startup"] as const)(
     "%s reads a persisted ACP harness session without configuring its harness as an ordinary agent",
     async (method) => {

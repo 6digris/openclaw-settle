@@ -2773,7 +2773,22 @@ private final class TimingOutDeviceStatusService: DeviceStatusServicing {
         #expect(appModel._test_pttVoiceWakeLeaseCaptureIds().isEmpty)
     }
 
-    @Test @MainActor func `same-route reconnect preserves routing restore before Talk admission`() async throws {
+    @Test @MainActor func `ownerless chat requires choice without replacing its display default`() {
+        let (_, appModel) = makeTalkModel()
+        appModel.gatewaySessionScope = "per-sender"
+        appModel.gatewayDefaultAgentId = "main"
+        appModel.chatAgentSelectionRequired = true
+        appModel.selectedAgentId = nil
+        #expect(appModel.chatDeliveryAgentId == nil)
+        #expect(appModel.gatewayDefaultAgentId == "main")
+        #expect(appModel.chatSessionRoutingContract == "per-sender|main|unowned")
+        appModel.selectedAgentId = "primary"
+        #expect(appModel.chatDeliveryAgentId == "primary")
+        #expect(appModel.chatSessionKey == "agent:primary:main")
+        #expect(appModel.chatSessionRoutingContract == "per-sender|main|unowned")
+    }
+
+    @Test @MainActor func `same-route reconnect restores display metadata without trusting a cached owner`() async throws {
         let (talkMode, appModel) = makeTalkModel()
         let barrier = TalkPreparationBarrier()
         let stableID = "talk-routing-restore-\(UUID().uuidString)"
@@ -2808,7 +2823,9 @@ private final class TimingOutDeviceStatusService: DeviceStatusServicing {
         await appModel._test_admitTalkAfterSessionHydration()
 
         #expect(talkMode.isGatewayConnected)
-        #expect(appModel.chatSessionRoutingContract == identity.contract)
+        #expect(appModel.gatewayDefaultAgentId == identity.defaultAgentID)
+        #expect(appModel.chatSessionRoutingContract == nil)
+        #expect(appModel.chatRequiresAgentSelection)
         #expect(talkMode.isUsingMainSessionKey(appModel.chatSessionKey))
     }
 

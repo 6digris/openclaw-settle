@@ -12,7 +12,8 @@ private let chatSendingLogger = Logger(subsystem: "ai.openclaw", category: "Open
 
 extension OpenClawChatViewModel {
     public var canSend: Bool {
-        !isSubmittingDraft &&
+        !self.requiresExplicitAgentSelection &&
+            !isSubmittingDraft &&
             !isSending &&
             self.attachmentStagingCount == 0 &&
             !self.hasBlockingRunActivity &&
@@ -391,6 +392,10 @@ extension OpenClawChatViewModel {
     }
 
     private func captureSendDraft() -> SendDraft? {
+        guard !self.requiresExplicitAgentSelection else {
+            self.errorText = "Choose an agent before sending."
+            return nil
+        }
         guard !isSubmittingDraft, !isSending else {
             logDiagnostic("chat.ui send ignored reason=sending sessionKey=\(sessionKey)")
             return nil
