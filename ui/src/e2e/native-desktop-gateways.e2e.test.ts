@@ -565,6 +565,24 @@ suite.define(() => {
       await page.getByText(/Saved credentials stay hidden/).waitFor();
       await capture(page, proof, "edit-saved-gateway.png");
       await token.fill("unsaved-token");
+      for (const colorScheme of ["dark", "light", "dark"] as const) {
+        await page.emulateMedia({ colorScheme });
+        await expect
+          .poll(() =>
+            page.evaluate(() => ({
+              background: getComputedStyle(document.documentElement).backgroundColor,
+              field: getComputedStyle(document.querySelector("#gateway-token")!).backgroundColor,
+            })),
+          )
+          .toEqual(
+            colorScheme === "light"
+              ? { background: "rgb(250, 249, 247)", field: "rgb(255, 255, 255)" }
+              : { background: "rgb(14, 16, 21)", field: "rgb(22, 25, 32)" },
+          );
+        expect(await page.getByLabel("Name", { exact: true }).inputValue()).toBe("Studio");
+        expect(await token.inputValue()).toBe("unsaved-token");
+        expect(await token.getAttribute("type")).toBe("password");
+      }
       await page.getByRole("button", { name: "Show credential", exact: true }).click();
       expect(await token.getAttribute("type")).toBe("text");
       await page.getByRole("button", { name: "Back to Gateways", exact: true }).click();

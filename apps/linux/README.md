@@ -226,6 +226,9 @@ the dashboard for HTTP errors, authentication prompts, and Gateway readiness.
 
 ### Switching Gateways
 
+The Gateway manager follows your system's light or dark appearance, including
+changes made while it is open, without interrupting an unsaved connection form.
+
 Use **Gateways → Manage Gateways…** in the app or tray menu to save a direct URL
 or SSH connection. **Add Gateway** and **Edit** open a focused connection form;
 **Back to Gateways** returns to the saved list and discards unsaved changes.

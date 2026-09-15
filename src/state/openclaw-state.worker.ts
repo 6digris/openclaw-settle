@@ -4,6 +4,7 @@ import {
   readConfigHealthSnapshotInDatabase,
 } from "../config/io.health-state.kernel.js";
 import { loadMutableCronStoreInWorker } from "../cron/store/load.worker.js";
+import { countFailedDeliveryQueueEntriesInDatabase } from "../infra/delivery-queue-sqlite.kernel.js";
 import { executeSessionDeliveryCommand } from "../infra/session-delivery-queue.worker.js";
 import { createSqliteAuditRecordKernel } from "../infra/sqlite-audit-record.kernel.js";
 import {
@@ -305,6 +306,9 @@ function createSharedStateWorkerBackend(
       }
       if (command.type === "flows.syncMirroredTask") {
         return syncTaskMirroredFlowInDatabase(database, command.input);
+      }
+      if (command.type === "deliveryQueue.countFailed") {
+        return countFailedDeliveryQueueEntriesInDatabase(database);
       }
       if (
         command.type === "sessionDelivery.enqueue" ||
