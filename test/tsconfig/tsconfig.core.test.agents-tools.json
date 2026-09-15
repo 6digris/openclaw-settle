@@ -19,5 +19,12 @@
     "../../src/agents/model-catalog-view.test.ts",
     "../../src/agents/tool-*.test.ts",
     "../../src/agents/tool-*.test.tsx"
+  ],
+  "exclude": [
+    "../../node_modules",
+    "../../dist",
+    "../../**/dist/**",
+    "../../src/secrets/**/*.test.ts",
+    "../../src/secrets/**/*.test.tsx"
   ]
 }
