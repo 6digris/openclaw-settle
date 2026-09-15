@@ -3,6 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
+import { onSessionLifecycleEvent } from "../../sessions/session-lifecycle-events.js";
 import {
   closeOpenClawAgentDatabasesForTest,
   deferOpenClawAgentPostCommitPublication,
@@ -175,9 +176,14 @@ describe("SQLite session participants", () => {
     });
   });
 
-  it.each(["participant-before", "participant-after", "external-participant", "session-before"])(
-    "does not hide an untracked sibling change during participant publication: %s",
-    async (mutation) => {
+  it.each(
+    ["participant-before", "participant-after", "external-participant", "session-before"].flatMap(
+      (mutation) =>
+        ["inserted-target", "stable-repeat-target"].map((write) => ({ mutation, write })),
+    ),
+  )(
+    "does not hide an untracked sibling change during participant publication: $mutation, $write",
+    async ({ mutation, write }) => {
       await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
         const scope = { agentId: "main", env: state.env };
         const target = { ...scope, sessionKey: "agent:main:target" };
@@ -215,12 +221,17 @@ describe("SQLite session participants", () => {
           if (mutation.endsWith("before")) {
             mutate(db.db);
           }
-          recordSessionParticipant(target, { identity: profile("b"), promptedAt: 20 });
+          recordSessionParticipant(target, {
+            identity: profile(write === "inserted-target" ? "b" : "a"),
+            promptedAt: 20,
+          });
           if (mutation === "participant-after") {
             mutate(db.db);
           }
         }, scope);
-        expect(listSessionParticipantsReadOnly(target).get(target.sessionKey)).toHaveLength(2);
+        expect(listSessionParticipantsReadOnly(target).get(target.sessionKey)).toHaveLength(
+          write === "inserted-target" ? 2 : 1,
+        );
         if (mutation === "session-before") {
           expect(read().find((row) => row.sessionKey === sibling.sessionKey)?.entry.label).toBe(
             "changed",
@@ -231,6 +242,102 @@ describe("SQLite session participants", () => {
       });
     },
   );
+
+  it.each(["insert", "stable-repeat"])(
+    "refuses a participant %s inside a raw transaction without changing its rows",
+    async (write) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+        const scope = { agentId: "main", env: state.env, sessionKey: "agent:main:raw-transaction" };
+        await upsertSessionEntryCore(scope, { sessionId: "raw-transaction", updatedAt: 1 });
+        recordSessionParticipant(scope, { identity: profile("a"), promptedAt: 10 });
+        const read = () => listSessionEntriesCore({ ...scope, projection: "list" });
+        const before = read();
+        const participantsBefore = listSessionParticipantsReadOnly(scope).get(scope.sessionKey);
+        const database = openOpenClawAgentDatabase(scope);
+        const rows = database.db.prepare(
+          "SELECT * FROM session_participants ORDER BY actor_id, identity_namespace",
+        );
+        const rowsBefore = rows.all();
+        database.db.exec("BEGIN");
+        try {
+          expect(() =>
+            recordSessionParticipant(scope, {
+              identity: profile(write === "insert" ? "b" : "a"),
+              promptedAt: 20,
+            }),
+          ).toThrow("must use runOpenClawAgentWriteTransaction");
+          expect(rows.all()).toEqual(rowsBefore);
+        } finally {
+          database.db.exec("ROLLBACK");
+        }
+        expect(read()).toEqual(before);
+        expect(listSessionParticipantsReadOnly(scope).get(scope.sessionKey)).toEqual(
+          participantsBefore,
+        );
+      });
+    },
+  );
+
+  it("publishes the final participant view only after the outer transaction commits", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const scope = {
+        agentId: "main",
+        env: state.env,
+        sessionKey: "agent:main:participant-events",
+      };
+      await upsertSessionEntryCore(scope, { sessionId: "participant-events", updatedAt: 1 });
+      recordSessionParticipant(scope, { identity: profile("a"), promptedAt: 10 });
+      const read = () =>
+        listSessionEntriesCore({ ...scope, projection: "list" }).find(
+          (row) => row.sessionKey === scope.sessionKey,
+        )?.entry;
+      read();
+      const database = openOpenClawAgentDatabase(scope);
+      const observed: Array<{ inTransaction: boolean; entry: ReturnType<typeof read> }> = [];
+      const unsubscribe = onSessionLifecycleEvent((event) => {
+        if (
+          event.reason === "participants" &&
+          event.agentId === scope.agentId &&
+          event.sessionKey === scope.sessionKey
+        ) {
+          observed.push({ inTransaction: database.db.isTransaction, entry: read() });
+        }
+      });
+      try {
+        expect(() =>
+          runOpenClawAgentWriteTransaction(() => {
+            recordSessionParticipant(scope, { identity: profile("a"), promptedAt: 20 });
+            expect(observed).toEqual([]);
+            throw new Error("rollback participant");
+          }, scope),
+        ).toThrow("rollback participant");
+        expect(observed).toEqual([]);
+        runOpenClawAgentWriteTransaction(() => {
+          recordSessionParticipant(scope, { identity: profile("a"), promptedAt: 30 });
+          runOpenClawAgentWriteTransaction(() => {
+            recordSessionParticipant(scope, { identity: profile("b"), promptedAt: 40 });
+          }, scope);
+          expect(observed).toEqual([]);
+        }, scope);
+        expect(observed).toHaveLength(2);
+        for (const observation of observed) {
+          expect(observation).toMatchObject({
+            inTransaction: false,
+            entry: {
+              participants: ["a", "b"].map((id) => ({ identity: profile(id) })),
+              participantCount: 2,
+            },
+          });
+        }
+        expect(listSessionParticipantsReadOnly(scope).get(scope.sessionKey)).toEqual([
+          { identity: profile("a"), contributionCount: 2, firstPromptedAt: 10, lastPromptedAt: 30 },
+          { identity: profile("b"), contributionCount: 1, firstPromptedAt: 40, lastPromptedAt: 40 },
+        ]);
+      } finally {
+        unsubscribe();
+      }
+    });
+  });
 
   it.each(["outer", "nested"])(
     "retains committed participants after an %s transaction rollback",
