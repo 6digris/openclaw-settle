@@ -102,7 +102,8 @@ try {
     "/usr/local/lib",
   ]) {
     fs.mkdirSync(path.dirname(fixturePath(directory)), { recursive: true });
-    execFileSync("/bin/cp", ["-Rp", directory, fixturePath(directory)]);
+    // Preserve native modes and ownership, but not immutable flags on disposable copies.
+    execFileSync("/bin/cp", ["-RpN", directory, fixturePath(directory)]);
   }
   fs.mkdirSync(fixturePath("/usr/local/bin"), { recursive: true });
   fs.copyFileSync(process.execPath, fixturePath("/usr/local/bin/node"));
@@ -114,6 +115,11 @@ try {
   for (const filename of ["/etc/rc.subr", "/etc/defaults/rc.conf", "/etc/passwd", "/etc/group"]) {
     write(filename, fs.readFileSync(filename));
   }
+  // Packaged Node dependencies live outside rtld's built-in /lib and /usr/lib paths.
+  fs.mkdirSync(fixturePath("/var/run"), { recursive: true });
+  execFileSync("/usr/sbin/chroot", [root, "/sbin/ldconfig", "/lib", "/usr/lib", "/usr/local/lib"], {
+    timeout: 20_000,
+  });
   fs.mkdirSync(fixturePath("/etc/rc.d"), { recursive: true });
   fs.mkdirSync(fixturePath("/dev"));
   execFileSync("/sbin/mount", ["-t", "devfs", "devfs", fixturePath("/dev")]);
@@ -292,6 +298,17 @@ try {
     cleanupStage = "unmount-devfs";
     if (mounted) {
       execFileSync("/sbin/umount", [fixturePath("/dev")]);
+    }
+    const flags = spawnSync(
+      "/usr/bin/find",
+      [root, "-flags", "+schg,sappnd,uchg,uappnd", "-print"],
+      { encoding: "utf8", timeout: 20_000, maxBuffer: 4096 },
+    );
+    process.stdout.write(
+      `fixture-immutable-flags=${diagnostic(flags)} paths=${JSON.stringify(String(flags.stdout ?? "").slice(-4096))}\n`,
+    );
+    if (flags.error || flags.status !== 0) {
+      process.exitCode = 1;
     }
     cleanupStage = "remove-fixture";
     fs.rmSync(work, { recursive: true, force: true });
