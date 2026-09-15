@@ -395,6 +395,7 @@
     "skills/",
     "custodian-skills/",
     "scripts/check-install-dependency-ownership.mjs",
+    "scripts/freebsd-service-inspect.mjs",
     "scripts/install-cli.sh",
     "scripts/install.ps1",
     "scripts/prepare-git-hooks.mjs",
