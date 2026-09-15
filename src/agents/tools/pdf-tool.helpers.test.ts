@@ -65,6 +65,14 @@ describe("parsePageRange", () => {
     });
   });
 
+  it("bounds an oversized range with a large configured page budget", () => {
+    const selection = parsePageRange("1-1000001", 1_000_000);
+    expect(selection.pages).toHaveLength(1_000_000);
+    expect(selection.pages[0]).toBe(1);
+    expect(selection.pages.at(-1)).toBe(1_000_000);
+    expect(selection.truncated).toBe(true);
+  });
+
   it("deduplicates and sorts", () => {
     expect(parsePageRange("5,3,1,3,5", 20)).toEqual({
       pages: [1, 3, 5],

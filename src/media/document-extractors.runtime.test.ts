@@ -15,7 +15,6 @@ vi.mock("../plugins/document-extractors.runtime.js", () => ({
   resolvePluginDocumentExtractors: resolvePluginDocumentExtractorsMock,
 }));
 
-import { renderDocumentTruncationNotice } from "./document-extraction-metadata.js";
 import { extractDocumentContent } from "./document-extractors.runtime.js";
 import { extractPdfContent } from "./pdf-extract.js";
 
@@ -167,11 +166,8 @@ describe("extractDocumentContent", () => {
       maxPixels: 100,
       minTextChars: 10,
     });
-    const notice = renderDocumentTruncationNotice(result?.metadata);
 
     expect(result).not.toHaveProperty("metadata");
-    expect(notice).toBeUndefined();
-    expect(notice ?? "").not.toContain(injectedText);
   });
 
   it.each([
@@ -262,7 +258,6 @@ describe("extractDocumentContent", () => {
       ...(pageNumbers ? { pageNumbers } : {}),
     });
 
-    expect(renderDocumentTruncationNotice(result?.metadata)).toBeUndefined();
     expect(result).not.toHaveProperty("metadata");
   });
 

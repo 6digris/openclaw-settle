@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import type { OpenClawConfig } from "../../config/config.js";
+import { WorkerTaskError } from "../../infra/worker-task-pool.js";
 import * as pdfExtractModule from "../../media/pdf-extract.js";
 import * as webMedia from "../../media/web-media.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
@@ -699,6 +700,50 @@ describe("createPdfTool", () => {
       expect(firstCompletionContext()?.systemPrompt).toBeUndefined();
     });
   });
+
+  it.each([true, false])(
+    "reuses only successful extraction across fallbacks (overloaded=%s)",
+    async (overloaded) => {
+      await withTempPdfAgentDir(async (agentDir) => {
+        await stubPdfToolInfra(agentDir, {
+          provider: "openai",
+          api: "openai-responses",
+          input: ["text"],
+        });
+        const extractSpy = vi.spyOn(pdfExtractModule, "extractPdfContent").mockResolvedValue({
+          text: "Recovered document content",
+          images: [],
+        });
+        if (overloaded) {
+          extractSpy.mockRejectedValueOnce(
+            new WorkerTaskError("worker task capacity reached", "overloaded"),
+          );
+        } else {
+          completeMock.mockRejectedValueOnce(new Error("temporary provider failure"));
+        }
+        completeMock.mockResolvedValue({
+          role: "assistant",
+          stopReason: "stop",
+          content: [{ type: "text", text: "Recovered PDF summary" }],
+        });
+        const cfg: OpenClawConfig = {
+          agents: {
+            defaults: { pdfModel: { primary: OPENAI_PDF_MODEL, fallbacks: [CODEX_PDF_MODEL] } },
+          },
+        };
+        const tool = requirePdfTool((await loadCreatePdfTool())({ config: cfg, agentDir }));
+        const result = await tool.execute("recovery", { prompt: "summarize", pdf: "/tmp/doc.pdf" });
+
+        expect(result.content).toEqual([{ type: "text", text: "Recovered PDF summary" }]);
+        expectFields(result.details, { model: CODEX_PDF_MODEL, native: false });
+        expect(firstCompletionContext()?.messages?.[0]?.content?.[0]?.text).toContain(
+          "Recovered document content",
+        );
+        expect(extractSpy).toHaveBeenCalledTimes(overloaded ? 2 : 1);
+        expect(completeMock).toHaveBeenCalledTimes(overloaded ? 1 : 2);
+      });
+    },
+  );
 
   it("uses the prepared provider stream for extraction fallback", async () => {
     await withTempPdfAgentDir(async (agentDir) => {

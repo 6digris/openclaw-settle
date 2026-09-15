@@ -153,19 +153,6 @@ function buildPdfExtractionContext(
   };
 }
 
-function collectPdfTruncationNotices(
-  extractions: PdfExtractedContent[],
-  explicitSelectionLimit?: number,
-): string[] {
-  return extractions.flatMap((extraction, index) => {
-    const notice = renderDocumentTruncationNotice(extraction.metadata, explicitSelectionLimit);
-    if (!notice) {
-      return [];
-    }
-    return extractions.length > 1 ? `PDF ${index + 1}: ${notice}` : notice;
-  });
-}
-
 // ---------------------------------------------------------------------------
 // Run PDF prompt with model fallback
 // ---------------------------------------------------------------------------
@@ -618,7 +605,11 @@ export function createPdfTool(options?: {
       });
     }
 
-    const extractLoadedPdfs = async (): Promise<PdfExtractedContent[]> => {
+    let extractionCache: PdfExtractedContent[] | undefined;
+    const getExtractions = async (): Promise<PdfExtractedContent[]> => {
+      if (extractionCache) {
+        return extractionCache;
+      }
       const extractedAll: PdfExtractedContent[] = [];
       for (const pdf of loadedPdfs) {
         // Extraction is sequential and can be CPU-heavy. Do not start the next
@@ -636,12 +627,9 @@ export function createPdfTool(options?: {
         });
         extractedAll.push(extracted);
       }
-      return extractedAll;
+      extractionCache = extractedAll;
+      return extractionCache;
     };
-    // Native providers remain extraction-free; fallback candidates share one extraction
-    // so provider retries cannot repeat CPU work or observe different document prefixes.
-    let extractionPromise: Promise<PdfExtractedContent[]> | undefined;
-    const getExtractions = () => (extractionPromise ??= extractLoadedPdfs());
 
     // Do not issue a paid PDF-model call for an already-aborted run.
     signal?.throwIfAborted();
@@ -684,10 +672,13 @@ export function createPdfTool(options?: {
 
     const truncationNotices = result.native
       ? []
-      : collectPdfTruncationNotices(
-          await getExtractions(),
-          pageSelection?.truncated ? pageSelection.pages.length : undefined,
-        );
+      : (await getExtractions()).flatMap((extraction, index) => {
+          const notice = renderDocumentTruncationNotice(
+            extraction.metadata,
+            pageSelection?.truncated ? pageSelection.pages.length : undefined,
+          );
+          return notice ? (loadedPdfs.length > 1 ? `PDF ${index + 1}: ${notice}` : notice) : [];
+        });
     const text = [...truncationNotices, result.text].join("\n");
     return buildTextToolResult({ ...result, text }, { native: result.native, ...pdfDetails });
   };

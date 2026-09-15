@@ -46,9 +46,6 @@ export function providerSupportsNativePdf(provider: string): boolean {
   return providerSupportsNativePdfDocument({ providerId: provider });
 }
 
-export type PdfPageSelection = { pages: number[]; truncated: boolean };
-
-/** Parses a page range into at most `maxPages` sorted, unique, 1-based page numbers. */
 function readPageNumber(value: string, errorLabel: string): number {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 1) {
@@ -57,7 +54,11 @@ function readPageNumber(value: string, errorLabel: string): number {
   return parsed;
 }
 
-export function parsePageRange(range: string, maxPages: number): PdfPageSelection {
+/** Parses a page range into at most `maxPages` sorted, unique, 1-based page numbers. */
+export function parsePageRange(
+  range: string,
+  maxPages: number,
+): { pages: number[]; truncated: boolean } {
   const pages = new Set<number>();
   let truncated = false;
   const addPage = (page: number): boolean => {
@@ -66,7 +67,10 @@ export function parsePageRange(range: string, maxPages: number): PdfPageSelectio
     }
     if (pages.size >= maxPages) {
       truncated = true;
-      const largest = Math.max(...pages);
+      let largest = 0;
+      for (const selected of pages) {
+        largest = Math.max(largest, selected);
+      }
       if (page >= largest) {
         return false;
       }
