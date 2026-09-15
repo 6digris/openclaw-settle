@@ -1,7 +1,7 @@
 // Session store target discovery maps configured and on-disk agent stores to canonical targets.
 import fsSync from "node:fs";
 import path from "node:path";
-import { resolveConfiguredAgentId } from "../../agents/agent-scope-config.js";
+import { resolveAgentDir, resolveConfiguredAgentId } from "../../agents/agent-scope-config.js";
 import { listAgentEntries, listAgentIds, resolveDefaultAgentId } from "../../agents/agent-scope.js";
 import { resolveAgentSessionDirsFromAgentsDirSync } from "../../agents/session-dirs.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
@@ -559,7 +559,7 @@ export function resolveConfiguredAgentDatabaseCandidatePaths(
   ];
 }
 
-/** Project configured session-store selection to the exact database migration owners. */
+/** Include configured agent roots and session stores with their exact database owners. */
 export function resolveConfiguredAgentDatabaseTargets(
   cfg: OpenClawConfig,
   params: {
@@ -567,7 +567,7 @@ export function resolveConfiguredAgentDatabaseTargets(
     registeredDatabases?: readonly { agentId: string; path: string }[];
   },
 ): Array<{ agentId: string; path: string }> {
-  return resolveSessionStoreTargets(cfg, { allAgents: true }, params).map((target) => {
+  const targets = resolveSessionStoreTargets(cfg, { allAgents: true }, params).map((target) => {
     const resolved = resolveSqliteTargetFromSessionStorePath(target.storePath, {
       agentId: target.agentId,
       defaultAgentId: isPerAgentSessionStoreConfig(cfg.session?.store)
@@ -579,6 +579,17 @@ export function resolveConfiguredAgentDatabaseTargets(
     // Shared stores partition logical agents inside one physical schema owner.
     return { agentId: resolved.agentId ?? target.agentId, path: resolved.path };
   });
+  const seen = new Set(targets.map((target) => `${target.agentId}\0${target.path}`));
+  for (const agentId of listAgentIds(cfg)) {
+    const databasePath = path.join(
+      resolveAgentDir(cfg, agentId, params.env),
+      "openclaw-agent.sqlite",
+    );
+    if (!seen.has(`${agentId}\0${databasePath}`)) {
+      targets.push({ agentId, path: databasePath });
+    }
+  }
+  return targets;
 }
 
 /** Resolves session store targets from explicit CLI-style selection options. */
