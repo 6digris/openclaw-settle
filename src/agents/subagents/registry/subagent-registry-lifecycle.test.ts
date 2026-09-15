@@ -744,15 +744,17 @@ describe("subagent registry lifecycle hardening", () => {
     { label: "bound", hasOwner: true },
     { label: "unbound", hasOwner: false },
   ])("uses only the $label run owner for announce dispatch", async ({ hasOwner }) => {
-    const entry = createRunEntry({ expectsCompletionMessage: true });
+    const entry = createRunEntry({ expectsCompletionMessage: true, runTimeoutSeconds: 600 });
     const liveContext = { marker: "live-context" };
     const resolveGatewayContext = () => liveContext;
     if (hasOwner) {
       bindGatewayContextResolver(entry, resolveGatewayContext as never);
     }
     const runSubagentAnnounceFlow = vi.fn(
-      async (_announceParams: { resolveGatewayContext?: () => unknown }) =>
-        "delivered" as AnnounceFlowOutcome,
+      async (_announceParams: {
+        resolveGatewayContext?: () => unknown;
+        runTimeoutSeconds?: number;
+      }) => "delivered" as AnnounceFlowOutcome,
     );
     const controller = createLifecycleController({
       entry,
@@ -765,6 +767,7 @@ describe("subagent registry lifecycle hardening", () => {
     expect(announceParams?.resolveGatewayContext).toBe(
       hasOwner ? resolveGatewayContext : undefined,
     );
+    expect(announceParams?.runTimeoutSeconds).toBe(600);
   });
 
   it("hands announce dispatch the durable requester agent id on a multi-agent roster", async () => {

@@ -221,6 +221,11 @@ describe("test-projects args", () => {
       config: "test/vitest/vitest.infra.config.ts",
     },
     {
+      title: "routes plugin setup lifecycle to the infra fork shard",
+      target: "src/plugins/setup-registry.lifecycle.test.ts",
+      config: "test/vitest/vitest.infra.config.ts",
+    },
+    {
       title: "routes logging targets to the logging config",
       target: "src/logging/console-settings.test.ts",
       config: "test/vitest/vitest.logging.config.ts",
@@ -229,6 +234,11 @@ describe("test-projects args", () => {
       title: "routes wizard targets to the wizard config",
       target: "src/wizard/setup.official-plugins.test.ts",
       config: "test/vitest/vitest.wizard.config.ts",
+    },
+    {
+      title: "routes wizard recovery to the host-owned infra fork shard",
+      target: "src/wizard/setup.inference-recovery.integration.test.ts",
+      config: "test/vitest/vitest.infra.config.ts",
     },
     {
       title: "routes tui targets to the tui config",

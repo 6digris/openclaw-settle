@@ -1,6 +1,10 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
+  "src/agents/tools/media-generate-tool.resources.test.ts",
+  "src/agents/tools/media-generate-tool.donor-resources.test.ts",
   "src/tasks/task-registry.async-restore.test.ts",
+  "src/tasks/task-registry.restore-ownership.test.ts",
+  "src/agents/embedded-agent-runner/context-engine-maintenance.lifecycle.test.ts",
   "src/agents/subagents/registry/subagent-registry-recovery-acceptance.test.ts",
   "src/agents/subagents/registry/subagent-registry-task-replacement.test.ts",
   "src/tasks/task-registry-session-index.test.ts",
@@ -30,6 +34,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/commands/doctor/auth-alias-preservation.test.ts",
   "src/commands/doctor/shared/missing-configured-plugin-install.test.ts",
   "src/plugins/registry-refresh.test.ts",
+  "src/plugins/setup-registry.lifecycle.test.ts",
   "src/plugins/installed-plugin-index-store-write.receipt.test.ts",
   "src/plugins/install-record-commit.retention.test.ts",
   "src/plugins/management-service.policy-imports.test.ts",
@@ -77,6 +82,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/plugin-state/plugin-state-store.retention.test.ts",
   "src/plugin-state/plugin-state-store.runtime.test.ts",
   "src/plugin-state/plugin-state-store.schema.test.ts",
+  "test/e2e/qa-lab/runtime/gateway-tls-pinning.test.ts",
   "src/agents/tools/cron-tool.output-contract.test.ts",
   "src/plugins/services.cron.test.ts",
   "src/state/creator-namespace-migration.test.ts",
