@@ -10,6 +10,7 @@ import {
   type CurrentTranscriptProjection,
   type SessionTranscriptMessageEvent,
 } from "./session-accessor.sqlite-active-projection.js";
+import type { SessionTranscriptRawDeltaResult } from "./session-accessor.sqlite-contract.js";
 import { readTranscriptDisplaySource } from "./session-accessor.sqlite-display-position.js";
 import { isVisibleHistoryNonMessageEventSql } from "./session-accessor.sqlite-history-interval.js";
 import {
@@ -192,6 +193,92 @@ export function resolveVisibleHistoryProjection(
     latestResetRawSeq,
     total: visibleMessages.total + boundaries.length,
   };
+}
+
+/** Resolve a complete small active suffix without hydrating older marker boundaries. */
+export function tryResolveHistoryTailSequences(
+  projection: CurrentTranscriptProjection,
+  page: Extract<SessionTranscriptRawDeltaResult, { kind: "page" }>,
+): { displaySource: string | undefined; sequences: Map<number, number> } | undefined {
+  const { events } = page;
+  const firstSeq = events[0]?.seq;
+  const lastSeq = events.at(-1)?.seq;
+  if (
+    firstSeq === undefined ||
+    events.length > 200 ||
+    page.serializedBytes > 1_000_000 ||
+    page.hasMore ||
+    lastSeq !== projection.state.indexedSeq ||
+    projection.state.activeEventCount === projection.state.activeMessageCount ||
+    events.some(({ event }) => {
+      if (!event || typeof event !== "object" || !("type" in event)) {
+        return false;
+      }
+      return event.type === "reset" || event.type === "compaction";
+    })
+  ) {
+    return undefined;
+  }
+  const displaySource = readTranscriptDisplaySource(projection);
+  if (resolveTranscriptBoundaryWindow(projection)) {
+    return undefined;
+  }
+  // Keep older active-marker JSON validation ahead of the selected-row reads.
+  const total = resolveVisibleHistoryEventCount(projection);
+  const rows = executeSqliteQuerySync(
+    projection.database.db,
+    getActiveTranscriptKysely(projection.database)
+      .selectFrom("session_transcript_active_events as active")
+      .innerJoin("transcript_events as event", (join) =>
+        join
+          .onRef("event.session_id", "=", "active.session_id")
+          .onRef("event.seq", "=", "active.event_seq"),
+      )
+      .leftJoin("transcript_event_identities as identity", (join) =>
+        join
+          .onRef("identity.session_id", "=", "active.session_id")
+          .onRef("identity.seq", "=", "active.event_seq"),
+      )
+      .select(["active.event_seq", "active.message_position"])
+      .select((eb) =>
+        isVisibleHistoryNonMessageEventSql(
+          eb.ref("identity.event_type"),
+          eb.ref("event.event_json"),
+          eb.ref("active.event_seq"),
+          eb.ref("event.seq"),
+        ).as("is_marker"),
+      )
+      .where("active.session_id", "=", projection.resolved.sessionId)
+      .where("active.active_position", ">=", projection.state.activeEventCount - events.length)
+      .where("active.active_position", "<", projection.state.activeEventCount)
+      .where("active.event_seq", ">=", firstSeq)
+      .where("active.event_seq", "<=", lastSeq)
+      .orderBy("active.active_position", "asc"),
+  ).rows;
+  // Unique integer positions in this N-wide interval prove a dense suffix only
+  // when every raw row is present in the same order, including hidden controls.
+  if (
+    rows.length !== events.length ||
+    rows.some(
+      (row, index) =>
+        row.event_seq !== events[index]!.seq || (row.is_marker && row.message_position !== null),
+    )
+  ) {
+    return undefined;
+  }
+  const sequences = new Map<number, number>();
+  let sequence = total;
+  let messagePosition = projection.state.activeMessageCount - 1;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index]!;
+    if (row.message_position !== null && row.message_position !== messagePosition--) {
+      return undefined;
+    }
+    if (row.is_marker || row.message_position !== null) {
+      sequences.set(row.event_seq, sequence--);
+    }
+  }
+  return { displaySource, sequences };
 }
 
 export function resolveVisibleHistoryRange(

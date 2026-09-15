@@ -79,6 +79,29 @@ flushed. SQL plans, statement counts, rows delivered to JavaScript, and JSON
 parsing counts come from a separate instrumented read. Heap deltas are
 uncollected observations, not total allocations. Fixtures are removed afterward.
 
+Use the opt-in `delta` operation to measure the display-delta owner after an
+append, with 1, 8, 64, or 1,024 historical visible markers and ordinary-message,
+hidden-marker, and reset-window controls:
+
+```bash
+pnpm test:sessions:history:bench --operation delta --samples 30 --output history-delta.json
+pnpm test:sessions:history:bench --operation delta --delta-case visible-1,visible-8,plain-0 --analyze --output history-delta-small.json
+```
+
+Delta cases start with 80 messages. Each read follows one ordinary-message
+append, keeping the historical custom-marker count fixed. The reset case keeps
+the last two messages before its reset boundary and adds 64 custom markers.
+Appends and projection settlement happen outside timing; the parent prepares
+the first append before the fresh child opens its database. Exact raw-page and
+full-history validation runs after each read and can warm caches for subsequent
+samples, consistently in both arms. SQL/JSON tracing uses a separate appended
+message. Reports retain individual warm timing samples and complete responses,
+including opaque cursors and display sources; those native identities require
+separate validation when comparing processes. `result` is the last timed
+response, not an additional empty read. This measures the direct owner;
+registered Gateway flow tests provide integration coverage. The existing
+profiles and default three operations are unchanged.
+
 </Accordion>
 
 <Accordion title="Model latency (scripts/bench-model.ts)">

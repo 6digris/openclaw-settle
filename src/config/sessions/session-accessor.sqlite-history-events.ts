@@ -45,6 +45,7 @@ import {
   resolveVisibleHistoryEventCount,
   resolveVisibleHistoryProjection,
   resolveVisibleHistoryRange,
+  tryResolveHistoryTailSequences,
   type VisibleHistoryBoundary,
   type VisibleHistoryProjection,
 } from "./session-accessor.sqlite-history-projection.js";
@@ -310,40 +311,48 @@ export function readTranscriptDisplayDelta(
     if (result.events.length === 0) {
       return { ...result, activeLeafEntryId: projection.state.leafEventId };
     }
-    const history = resolveVisibleHistoryProjection(projection);
-    const visible = resolveVisibleMessagePositions(projection);
-    const firstSeq = result.events[0]?.seq;
-    const lastSeq = result.events.at(-1)?.seq;
-    const db = getActiveTranscriptKysely(projection.database);
-    const sequences = new Map(
-      firstSeq === undefined || lastSeq === undefined
-        ? []
-        : executeSqliteQuerySync(
-            projection.database.db,
-            db
-              .selectFrom("session_transcript_active_events")
-              .select(["event_seq", "message_position"])
-              .where("session_id", "=", projection.resolved.sessionId)
-              .where("event_seq", ">=", firstSeq)
-              .where("event_seq", "<=", lastSeq)
-              .where("message_position", "is not", null),
-          ).rows.map((row) => [
-            row.event_seq,
-            row.message_position === null
-              ? undefined
-              : resolveHistoryMessageSequence(visible, history, row.message_position),
-          ]),
-    );
-    if (firstSeq !== undefined && lastSeq !== undefined) {
-      for (const boundary of history.boundaries) {
-        if (boundary.eventSeq >= firstSeq && boundary.eventSeq <= lastSeq) {
-          sequences.set(boundary.eventSeq, boundary.displayPosition + 1);
+    const tail = tryResolveHistoryTailSequences(projection, result);
+    let displaySource: string | undefined;
+    let sequences: Map<number, number | undefined>;
+    if (tail) {
+      ({ displaySource, sequences } = tail);
+    } else {
+      const history = resolveVisibleHistoryProjection(projection);
+      displaySource = history.displaySource;
+      const visible = resolveVisibleMessagePositions(projection);
+      const firstSeq = result.events[0]?.seq;
+      const lastSeq = result.events.at(-1)?.seq;
+      const db = getActiveTranscriptKysely(projection.database);
+      sequences = new Map(
+        firstSeq === undefined || lastSeq === undefined
+          ? []
+          : executeSqliteQuerySync(
+              projection.database.db,
+              db
+                .selectFrom("session_transcript_active_events")
+                .select(["event_seq", "message_position"])
+                .where("session_id", "=", projection.resolved.sessionId)
+                .where("event_seq", ">=", firstSeq)
+                .where("event_seq", "<=", lastSeq)
+                .where("message_position", "is not", null),
+            ).rows.map((row) => [
+              row.event_seq,
+              row.message_position === null
+                ? undefined
+                : resolveHistoryMessageSequence(visible, history, row.message_position),
+            ]),
+      );
+      if (firstSeq !== undefined && lastSeq !== undefined) {
+        for (const boundary of history.boundaries) {
+          if (boundary.eventSeq >= firstSeq && boundary.eventSeq <= lastSeq) {
+            sequences.set(boundary.eventSeq, boundary.displayPosition + 1);
+          }
         }
       }
     }
     const events = positionTranscriptDisplayEvents(
       projection,
-      history.displaySource,
+      displaySource,
       result.events.map((row) => {
         const messageSeq = sequences.get(row.seq);
         return { ...row, eventSeq: row.seq, ...(messageSeq === undefined ? {} : { messageSeq }) };

@@ -151,11 +151,15 @@ describe("SQLite transcript history events", () => {
     });
   });
 
-  it("preserves physical dispatch cuts across history pages and deltas", async () => {
+  it.each([false, true])("preserves history dispatch cuts (dual: %s)", async (messageMarker) => {
     await persistSessionTranscriptTurn(scope, {
       messages: [transcriptMessage("exec", null, { role: "assistant", content: "exec" })],
       touchSessionEntry: false,
     });
+    const beforeAppend = readTranscriptRawDelta(scope);
+    if (beforeAppend.kind !== "page") {
+      throw new Error("missing initial transcript page");
+    }
     await appendTranscriptEvent(scope, {
       type: "custom",
       id: "control",
@@ -170,6 +174,7 @@ describe("SQLite transcript history events", () => {
       content: "This turn ended before a reply.",
       display: true,
       timestamp: "2026-09-08T00:00:00.000Z",
+      ...(messageMarker ? { message: { role: "assistant", content: "notice message" } } : {}),
     });
     await persistSessionTranscriptTurn(scope, {
       messages: [
@@ -207,14 +212,20 @@ describe("SQLite transcript history events", () => {
     }
     const rawSeq = new Map(raw.events.map((row) => [historyEventId(row), row.seq]));
     const history = readSessionTranscriptHistoryEvents(scope);
-    expect(history.map(historyEventId)).toEqual(["exec", "notice", "wait", "first", "later"]);
-    expect(history.map(({ seq }) => seq)).toEqual([1, 2, 3, 4, 5]);
+    expect(history.map(historyEventId)).toEqual(
+      messageMarker
+        ? ["exec", "notice", "notice", "wait", "first", "later"]
+        : ["exec", "notice", "wait", "first", "later"],
+    );
+    expect(history.map(({ seq }) => seq)).toEqual(
+      messageMarker ? [1, 2, 3, 4, 5, 6] : [1, 2, 3, 4, 5],
+    );
     expect(delta.events.find((row) => historyEventId(row) === "notice")).toMatchObject({
-      messageSeq: 2,
+      messageSeq: messageMarker ? 3 : 2,
       displayPosition: { rawSeq: rawSeq.get("notice") },
     });
     expect(delta.events.find((row) => historyEventId(row) === "wait")).toMatchObject({
-      messageSeq: 3,
+      messageSeq: messageMarker ? 4 : 3,
     });
     const source = history[0]?.displayPosition?.source;
     expect(source).toEqual(expect.any(String));
@@ -248,6 +259,12 @@ describe("SQLite transcript history events", () => {
     expect(delta.cursor).toBe(raw.cursor);
     expect(delta.serializedBytes).toBe(raw.serializedBytes);
     expect(delta.events.map(({ event, seq }) => ({ event, seq }))).toEqual(raw.events);
+    const tailRaw = readTranscriptRawDelta(scope, { cursor: beforeAppend.cursor });
+    expect(readTranscriptDisplayDelta(scope, { cursor: beforeAppend.cursor })).toEqual({
+      ...tailRaw,
+      activeLeafEntryId: "later",
+      events: delta.events.filter(({ seq }) => seq > beforeAppend.events.at(-1)!.seq),
+    });
     const blocked = readTranscriptDisplayDelta(scope, { maxBytes: 1 });
     expect(blocked.kind).toBe("page");
     if (blocked.kind !== "page") {
