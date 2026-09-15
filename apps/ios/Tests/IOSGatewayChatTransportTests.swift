@@ -169,6 +169,7 @@ struct IOSGatewayChatTransportTests {
         responsePayloads: [String: String] = [:],
         sourceConnectionProvider: IOSSourceResourceLoader.ConnectionProvider? = nil,
         beforeResponse: (@Sendable (RecordedRequest) async throws -> Void)? = nil,
+        isolation: isolated (any Actor)? = #isolation,
         _ run: (IOSGatewayChatTransport, RequestRecorder) async throws -> Void) async throws
     {
         let recorder = RequestRecorder()
