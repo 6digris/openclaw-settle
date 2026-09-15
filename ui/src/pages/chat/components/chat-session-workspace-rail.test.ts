@@ -4,6 +4,10 @@ import { render } from "lit";
 import { afterEach, assert, describe, expect, it, vi } from "vitest";
 import { renderSessionWorkspaceRail } from "./chat-session-workspace-rail.ts";
 import type { SessionWorkspaceProps } from "./chat-session-workspace-types.ts";
+import {
+  createSessionWorkspaceProps,
+  type SessionWorkspaceHost,
+} from "./chat-session-workspace.ts";
 
 function createWorkspace(overrides: Partial<SessionWorkspaceProps> = {}): SessionWorkspaceProps {
   return {
@@ -35,6 +39,47 @@ afterEach(() => {
 });
 
 describe("session workspace path actions", () => {
+  it("keeps path-only session rows selected after their read and refresh", async () => {
+    const file = { kind: "modified", path: "README.md", name: "README.md", missing: false };
+    const result = { sessionKey: "agent:main:current", root: "/workspace", files: [file] };
+    const state = {
+      client: { request: vi.fn().mockResolvedValue({ artifacts: [] }) },
+      connected: true,
+      handleOpenSidebar: vi.fn(),
+      hello: null,
+      agentsList: [],
+      sessionKey: result.sessionKey,
+      sidebarContent: null,
+      sessions: {
+        listFiles: vi.fn().mockResolvedValue(result),
+        getFile: vi.fn().mockResolvedValue({ ...result, file: { ...file, content: "# Readme" } }),
+      },
+    } as unknown as SessionWorkspaceHost;
+    createSessionWorkspaceProps(state, { expanded: true });
+    await vi.waitFor(() => expect(createSessionWorkspaceProps(state).list).not.toBeNull());
+    const container = document.createElement("div");
+    const renderRows = () =>
+      render(
+        renderSessionWorkspaceRail(createSessionWorkspaceProps(state, { expanded: true })),
+        container,
+      );
+    renderRows();
+    container.querySelector<HTMLButtonElement>(".chat-workspace-rail__file-open")!.click();
+    await vi.waitFor(() =>
+      expect(state.sessionWorkspaceState?.previews[0]?.content.kind).toBe("file"),
+    );
+    renderRows();
+    expect(container.querySelector(".chat-workspace-rail__file--active")?.textContent).toContain(
+      "README.md",
+    );
+    createSessionWorkspaceProps(state).onRefresh();
+    await vi.waitFor(() => expect(createSessionWorkspaceProps(state).loading).toBe(false));
+    renderRows();
+    expect(container.querySelector(".chat-workspace-rail__file--active")?.textContent).toContain(
+      "README.md",
+    );
+  });
+
   it("renders file-shaped placeholders while the initial workspace list loads", async () => {
     const workspace = createWorkspace({ loading: true });
     const mount = document.body.appendChild(document.createElement("div"));

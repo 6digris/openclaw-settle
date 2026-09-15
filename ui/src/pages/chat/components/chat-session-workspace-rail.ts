@@ -12,6 +12,7 @@ import {
   isApplePlatform,
   KEYBOARD_SHORTCUT_COMBOS,
 } from "../../../lib/keyboard-shortcut-catalog.ts";
+import { isSessionWorkspaceFileSelected } from "../../../lib/sessions/workspace.ts";
 import type {
   SessionWorkspaceFilter,
   SessionWorkspaceProps,
@@ -200,7 +201,12 @@ export function renderSessionWorkspaceRail(
                 name: file.path || file.name,
                 meta: formatWorkspaceFileSize(file.size),
                 onOpen,
-                active: `file:${file.path}` === sessionWorkspace.activeId,
+                active: isSessionWorkspaceFileSelected(
+                  sessionWorkspace.activeId,
+                  sessionWorkspace.list?.root,
+                  file.path,
+                  file.workspacePath,
+                ),
                 badge: file.missing
                   ? html`<span class="chat-workspace-rail__file-badge"
                       >${t("chat.workspaceFiles.missing")}</span
@@ -249,7 +255,12 @@ export function renderSessionWorkspaceRail(
             : [entry.path, formatWorkspaceFileSize(entry.size)].filter(Boolean).join(" / "),
           onOpen,
           directory,
-          active: `file:${entry.path}` === sessionWorkspace.activeId,
+          active: isSessionWorkspaceFileSelected(
+            sessionWorkspace.activeId,
+            sessionWorkspace.list?.root,
+            entry.path,
+            entry.path,
+          ),
           badge: kind
             ? html`<span
                 class="chat-workspace-rail__file-badge chat-workspace-rail__file-badge--kind"
