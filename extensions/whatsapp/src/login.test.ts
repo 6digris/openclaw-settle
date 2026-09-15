@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { createNonExitingRuntimeEnv } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { resetLogger, setLoggerOverride, success } from "openclaw/plugin-sdk/runtime-env";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { createCompletedPhoneCodeCreds } from "./phone-code.test-helpers.js";
 
 vi.mock("./session.js", async () => {
   const actual = await vi.importActual<typeof import("./session.js")>("./session.js");
@@ -229,6 +230,10 @@ describe("web login", () => {
     const loginPromise = loginWebWithPhoneCode(false, "+1 (555) 123-4567", waiter, runtime);
     await loginPromise;
 
+    expect(vi.mocked(createWaSocket).mock.calls[0]?.[2]).toMatchObject({
+      browser: ["openclaw", "Chrome", expect.any(String)],
+      qrTimeoutMs: 5 * 60_000,
+    });
     expect(sock.requestPairingCode).toHaveBeenCalledWith("15551234567");
     expect(waiter).toHaveBeenCalled();
     expect(runtime.log).toHaveBeenCalledWith(success("WhatsApp pairing code: 1234 5678"));

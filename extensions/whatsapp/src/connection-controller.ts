@@ -1,5 +1,5 @@
 // Whatsapp plugin module implements connection controller behavior.
-import type { GroupMetadata, WASocket, WAMessageKey, proto } from "baileys";
+import type { GroupMetadata, WABrowserDescription, WASocket, WAMessageKey, proto } from "baileys";
 import { registerChannelRuntimeContext } from "openclaw/plugin-sdk/channel-runtime-context";
 import { info } from "openclaw/plugin-sdk/runtime-env";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
@@ -304,6 +304,8 @@ export async function waitForWhatsAppLoginResult(params: {
   waitForConnection?: typeof waitForWaConnection;
   createSocket?: typeof createWaSocket;
   socketTiming?: WhatsAppSocketTimingOptions;
+  qrTimeoutMs?: number;
+  browser?: WABrowserDescription;
   onQr?: (qr: string) => void;
   beforeCreateLoginSocket?: (context: { reason: LoginSocketPrepareReason }) => Promise<void> | void;
   prepareLoginSocket?: (
@@ -337,6 +339,8 @@ export async function waitForWhatsAppLoginResult(params: {
       currentSock = await createSocket(false, params.verbose, {
         authDir: params.authDir,
         ...params.socketTiming,
+        ...(params.qrTimeoutMs === undefined ? {} : { qrTimeoutMs: params.qrTimeoutMs }),
+        ...(params.browser ? { browser: params.browser } : {}),
         onQr: params.onQr,
         beforeCredentialPersistence: params.beforeCredentialPersistence,
         onCredentialPersistenceError: params.onCredentialPersistenceError,
