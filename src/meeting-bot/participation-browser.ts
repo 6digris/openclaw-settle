@@ -4,6 +4,7 @@ import type {
   MeetingBrowserParticipationAdapter,
   MeetingParticipationAction,
   MeetingParticipationEffectResult,
+  MeetingParticipationSource,
 } from "./participation-types.js";
 import type { MeetingBrowserRequestCaller } from "./platform-adapter-contract.js";
 
@@ -21,6 +22,7 @@ export async function runMeetingParticipationWithBrowser(params: {
   targetId: string;
   requestId: string;
   action: MeetingParticipationAction;
+  source?: MeetingParticipationSource;
   assertCurrent: () => void;
   timeoutMs: number;
 }): Promise<MeetingParticipationEffectResult> {
@@ -65,6 +67,7 @@ export async function runMeetingParticipationWithBrowser(params: {
           meetingUrl: params.meetingUrl,
           requestId: params.requestId,
           action: params.action,
+          source: params.source,
         };
         const remainingTimeoutMs = () => {
           const timeoutMs = Math.floor(deadline - Date.now());

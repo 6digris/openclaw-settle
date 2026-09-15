@@ -58,7 +58,10 @@ export class MeetingSessionRuntime<
   readonly #sessionCleanup = new MeetingSessionCleanupTracker();
   readonly #meetingLock = new MeetingSessionJoinLock();
   readonly #sessionStops = new Map<string, () => Promise<void>>();
-  readonly #sessionSpeakers = new Map<string, (instructions?: string) => void>();
+  readonly #sessionSpeakers = new Map<
+    string,
+    NonNullable<MeetingSessionRuntimeHandles<THealth>["speak"]>
+  >();
   readonly #sessionHealth = new Map<string, () => Partial<THealth>>();
   readonly #durableTranscripts: MeetingSessionDurableTranscripts<TSession>;
   readonly #transcriptStore: MeetingSessionTranscriptStore<TSession>;
@@ -265,27 +268,42 @@ export class MeetingSessionRuntime<
   async speak(
     sessionId: string,
     instructions?: string,
+    assertCurrent?: () => void,
+    refreshCurrent?: () => Promise<void>,
   ): Promise<{ found: boolean; spoken: boolean; session?: TSession }> {
     const session = this.#sessions.get(sessionId);
     if (!session) {
       return { found: false, spoken: false };
     }
-    if (session.state !== "active") {
+    const isSessionCurrent = () =>
+      this.#sessions.get(sessionId) === session &&
+      session.state === "active" &&
+      !this.#sessionLeaves.has(sessionId);
+    const assertSpeechCurrent = () => {
+      if (!isSessionCurrent()) {
+        throw new Error("Meeting session is no longer active");
+      }
+      assertCurrent?.();
+    };
+    if (!isSessionCurrent()) {
       return { found: true, spoken: false, session };
     }
+    assertSpeechCurrent();
     const delegated = await this.options.speakViaTransport(session, instructions);
-    if (session.state !== "active") {
+    if (!isSessionCurrent()) {
       return { found: true, spoken: false, session };
     }
+    assertSpeechCurrent();
     if (delegated?.handled) {
       return { found: true, spoken: delegated.spoken, session };
     }
     await this.refreshBrowserHealth(session);
-    if (session.state !== "active") {
+    if (!isSessionCurrent()) {
       return { found: true, spoken: false, session };
     }
+    assertSpeechCurrent();
     const handles = await this.options.ensureRealtimeBridge(session);
-    if (session.state !== "active") {
+    if (!isSessionCurrent()) {
       // A concurrent leave can finish while bridge startup awaits. Stop the late bridge
       // instead of attaching it to an ended session with no remaining cleanup owner.
       await handles?.stop?.();
@@ -294,8 +312,9 @@ export class MeetingSessionRuntime<
     if (handles) {
       this.#attachRuntimeHandles(session, handles);
     }
+    assertSpeechCurrent();
     const speak = this.#sessionSpeakers.get(sessionId);
-    if (!speak || session.state !== "active") {
+    if (!speak) {
       return { found: true, spoken: false, session };
     }
     const readiness = this.refreshSpeechReadiness(session);
@@ -307,7 +326,12 @@ export class MeetingSessionRuntime<
       session.updatedAt = nowIso();
       return { found: true, spoken: false, session };
     }
-    speak(instructions || this.options.defaultSpeechInstructions);
+    assertSpeechCurrent();
+    await speak(
+      instructions || this.options.defaultSpeechInstructions,
+      assertSpeechCurrent,
+      refreshCurrent,
+    );
     session.updatedAt = nowIso();
     this.refreshHealth(sessionId);
     return { found: true, spoken: true, session };

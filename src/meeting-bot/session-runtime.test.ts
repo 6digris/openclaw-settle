@@ -2,14 +2,17 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeferredCore } from "../shared/deferred.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
 } from "../state/openclaw-state-db.js";
 import { TranscriptsStore } from "../transcripts/store.js";
 import { createMeetingSession } from "./session-factory.js";
+import type { MeetingSessionRuntimeHandles } from "./session-runtime.js";
 import { createTestRuntime } from "./session-runtime.test-support.js";
 import type { TestSession, TestJoinContext } from "./session-runtime.test-support.js";
+import type { MeetingBrowserHealth } from "./session-types.js";
 
 describe("createMeetingSession", () => {
   it.each([
@@ -592,6 +595,200 @@ describe("MeetingSessionRuntime leave cleanup", () => {
 });
 
 describe("MeetingSessionRuntime speech readiness", () => {
+  it("rejects speech when its source expires during browser readiness", async () => {
+    const readinessStarted = createDeferredCore();
+    const readinessFinished = createDeferredCore();
+    const expired = new Error("Speech source expired");
+    let sourceCurrent = true;
+    const speak = vi.fn();
+    const ensureRealtimeBridge = vi.fn(async () => undefined);
+    const { runtime } = createTestRuntime({
+      talkBack: true,
+      releaseBrowserTab: async () => true,
+      ensureRealtimeBridge,
+      refreshBrowserHealth: async (session) => {
+        readinessStarted.resolve();
+        await readinessFinished.promise;
+        session.browser!.health = { inCall: true, micMuted: false };
+      },
+      joinTransport: async ({ session, context }) => {
+        session.browser = {
+          launched: true,
+          hasAudioBridge: true,
+          health: { inCall: true },
+        };
+        context.attachRuntimeHandles(session, { speak });
+        return {};
+      },
+    });
+    const { session } = await runtime.join({
+      url: "https://meeting.example/room",
+      agentId: "main",
+    });
+
+    const pendingSpeech = runtime.speak(session.id, "Answer the current question", () => {
+      if (!sourceCurrent) {
+        throw expired;
+      }
+    });
+    await readinessStarted.promise;
+    sourceCurrent = false;
+    readinessFinished.resolve();
+
+    await expect(pendingSpeech).rejects.toBe(expired);
+    expect(ensureRealtimeBridge).not.toHaveBeenCalled();
+    expect(speak).not.toHaveBeenCalled();
+  });
+
+  it("keeps a recovered bridge owned for cleanup when its speech source expires", async () => {
+    const recoveryStarted = createDeferredCore();
+    const recoveryFinished = createDeferredCore();
+    const expired = new Error("Speech source expired");
+    let sourceCurrent = true;
+    const speak = vi.fn();
+    const stop = vi.fn(async () => {});
+    const { runtime } = createTestRuntime({
+      talkBack: true,
+      releaseBrowserTab: async () => true,
+      ensureRealtimeBridge: async (session) => {
+        recoveryStarted.resolve();
+        await recoveryFinished.promise;
+        session.browser!.hasAudioBridge = true;
+        return { speak, stop };
+      },
+      joinTransport: async ({ session }) => {
+        session.browser = {
+          launched: true,
+          hasAudioBridge: false,
+          health: { inCall: true, micMuted: false },
+        };
+        return {};
+      },
+    });
+    const { session } = await runtime.join({
+      url: "https://meeting.example/room",
+      agentId: "main",
+    });
+
+    const pendingSpeech = runtime.speak(session.id, "Answer the current question", () => {
+      if (!sourceCurrent) {
+        throw expired;
+      }
+    });
+    await recoveryStarted.promise;
+    sourceCurrent = false;
+    recoveryFinished.resolve();
+
+    await expect(pendingSpeech).rejects.toBe(expired);
+    expect(speak).not.toHaveBeenCalled();
+    expect(stop).not.toHaveBeenCalled();
+    await expect(runtime.leave(session.id)).resolves.toMatchObject({
+      found: true,
+      session: { state: "ended" },
+    });
+    expect(stop).toHaveBeenCalledOnce();
+  });
+
+  it.each(["source expiry", "session leave"] as const)(
+    "forwards a live speech guard that rejects after %s",
+    async (invalidation) => {
+      let sourceCurrent = true;
+      const speak =
+        vi.fn<NonNullable<MeetingSessionRuntimeHandles<MeetingBrowserHealth>["speak"]>>();
+      const { runtime } = createTestRuntime({
+        talkBack: true,
+        releaseBrowserTab: async () => true,
+        joinTransport: async ({ session, context }) => {
+          session.browser = {
+            launched: true,
+            hasAudioBridge: true,
+            health: { inCall: true, micMuted: false },
+          };
+          context.attachRuntimeHandles(session, { speak });
+          return {};
+        },
+      });
+      const { session } = await runtime.join({
+        url: "https://meeting.example/room",
+        agentId: "main",
+      });
+
+      await expect(
+        runtime.speak(session.id, "Answer the current question", () => {
+          if (!sourceCurrent) {
+            throw new Error("Speech source expired");
+          }
+        }),
+      ).resolves.toMatchObject({ found: true, spoken: true });
+      expect(speak).toHaveBeenCalledExactlyOnceWith(
+        "Answer the current question",
+        expect.any(Function),
+        undefined,
+      );
+      const forwardedGuard = speak.mock.calls[0]?.[1];
+      expect(forwardedGuard).not.toThrow();
+
+      if (invalidation === "session leave") {
+        await runtime.leave(session.id);
+      } else {
+        sourceCurrent = false;
+      }
+      expect(forwardedGuard).toThrow(
+        invalidation === "session leave"
+          ? "Meeting session is no longer active"
+          : "Speech source expired",
+      );
+    },
+  );
+
+  it("forwards source refresh and rejects when asynchronous speech submission fails", async () => {
+    const submissionStarted = createDeferredCore();
+    const sourceRefresh = createDeferredCore();
+    const refreshFailed = new Error("Speech source refresh failed");
+    const refreshCurrent = vi.fn(() => sourceRefresh.promise);
+    const speak = vi.fn<NonNullable<MeetingSessionRuntimeHandles<MeetingBrowserHealth>["speak"]>>(
+      async (_instructions, assertCurrent, refreshSource) => {
+        assertCurrent?.();
+        submissionStarted.resolve();
+        await refreshSource?.();
+      },
+    );
+    const { runtime } = createTestRuntime({
+      talkBack: true,
+      releaseBrowserTab: async () => true,
+      joinTransport: async ({ session, context }) => {
+        session.browser = {
+          launched: true,
+          hasAudioBridge: true,
+          health: { inCall: true, micMuted: false },
+        };
+        context.attachRuntimeHandles(session, { speak });
+        return {};
+      },
+    });
+    const { session } = await runtime.join({
+      url: "https://meeting.example/room",
+      agentId: "main",
+    });
+
+    const pendingSpeech = runtime.speak(
+      session.id,
+      "Answer the current question",
+      undefined,
+      refreshCurrent,
+    );
+    await submissionStarted.promise;
+    expect(speak).toHaveBeenCalledExactlyOnceWith(
+      "Answer the current question",
+      expect.any(Function),
+      refreshCurrent,
+    );
+    expect(refreshCurrent).toHaveBeenCalledOnce();
+    sourceRefresh.reject(refreshFailed);
+
+    await expect(pendingSpeech).rejects.toBe(refreshFailed);
+  });
+
   it("treats an unknown microphone state as transiently unverified", async () => {
     const { runtime } = createTestRuntime({
       talkBack: true,

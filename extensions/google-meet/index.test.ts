@@ -29,6 +29,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import plugin from "./index.js";
 import { findGoogleMeetCalendarEvent, listGoogleMeetCalendarEvents } from "./src/calendar.js";
 import { resolveGoogleMeetConfig, type GoogleMeetConfig } from "./src/config.js";
+import { GoogleMeetChatObserver } from "./src/google-meet-chat.js";
 import { normalizeMeetUrl } from "./src/meet-url.js";
 import {
   buildGoogleMeetPreflightReport,
@@ -963,8 +964,12 @@ async function captureMeetLeaveScript() {
 }
 
 describe("google-meet plugin", () => {
+  // Native chat has its own registered lifecycle suite with the real observer.
+  // Keep legacy audio/join fixtures from starting background polls or a live CLI fallback.
+  const startChatObserver = vi.spyOn(GoogleMeetChatObserver.prototype, "start");
   beforeEach(() => {
     vi.clearAllMocks();
+    startChatObserver.mockResolvedValue(undefined);
     voiceCallMocks.joinMeetViaVoiceCallGateway.mockResolvedValue({
       callId: "call-1",
       dtmfSent: true,
@@ -995,6 +1000,7 @@ describe("google-meet plugin", () => {
   });
 
   afterAll(() => {
+    startChatObserver.mockRestore();
     vi.doUnmock("openclaw/plugin-sdk/ssrf-runtime");
     vi.doUnmock("./src/voice-call-gateway.js");
     vi.resetModules();
@@ -1586,6 +1592,7 @@ describe("google-meet plugin", () => {
       "transcript",
       "participation_context",
       "participate",
+      "send_chat",
       "setup_status",
       "resolve_space",
       "preflight",
@@ -1613,6 +1620,30 @@ describe("google-meet plugin", () => {
       description:
         "Join mode. agent uses realtime transcription, the configured OpenClaw agent, and regular TTS. bidi uses the realtime voice model directly. transcribe joins observe-only.",
     });
+    expect(properties.text).toMatchObject({ type: "string" });
+    expect(properties.output).toMatchObject({ type: "string", enum: ["chat", "voice"] });
+  });
+
+  it.each([
+    { text: "Send in chat.", expected: true },
+    { text: "Send in chat.", output: "chat", expected: true },
+    { text: "Reply aloud.", output: "voice", expected: true },
+    { text: "Never send both.", output: "both", expected: false },
+    { text: 123, expected: false },
+  ])("validates send_chat tool parameters: %j", ({ expected, ...message }) => {
+    const { tools } = setup();
+    const tool = getMeetTool({ tools });
+    const result = validateJsonSchemaValue({
+      schema: tool.parameters as JsonSchemaObject,
+      cacheKey: "google-meet.tool.send-chat",
+      value: {
+        action: "send_chat",
+        sessionId: "meet_1",
+        requestId: "request-1",
+        ...message,
+      },
+    });
+    expect(result.ok).toBe(expected);
   });
 
   it("normalizes Meet URLs, codes, and space names for the Meet API", async () => {

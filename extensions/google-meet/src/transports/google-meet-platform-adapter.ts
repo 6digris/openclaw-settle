@@ -15,6 +15,7 @@ import {
   meetLeaveScript,
   meetStatusScript,
 } from "./google-meet-page-scripts.js";
+import { GOOGLE_MEET_PARTICIPATION } from "./google-meet-participation.js";
 import { GOOGLE_MEET_NODE_COMMAND } from "./google-meet-platform-constants.js";
 import {
   forceMeetEnglishUi,
@@ -130,6 +131,7 @@ export const GOOGLE_MEET_PLATFORM_ADAPTER = MeetingPlatformAdapter.create<
     },
   },
   browser: {
+    participation: GOOGLE_MEET_PARTICIPATION,
     buildAudioCaptureScript: meetAudioCaptureScript,
     allowsMicrophone: MeetingPlatformAdapter.isTalkBackMode,
     buildStatusJoinScript: (params) =>

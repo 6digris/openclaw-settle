@@ -227,6 +227,11 @@ Only a rejected result that proves no requested effect occurred may set
 `correctable: true`. Other meeting platforms need no adapter change and continue
 to report unsupported participation.
 
+For reads that share the same browser target, `runMeetingBrowserAct` exposes the
+existing serialization lock. The caller must still pin the session and route,
+respect the deadline, and revalidate live authority after awaited work. Acquiring
+the lock does not grant permission to act or make a cached source current.
+
 ## Other top-level `api` fields
 
 Beyond `api.runtime`, the API object also provides:

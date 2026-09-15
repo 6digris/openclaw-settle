@@ -111,7 +111,10 @@ export type RealtimeVoiceSessionHarness<TForcedConsultContext = unknown> = {
   readonly talkback: RealtimeVoiceAgentTalkbackQueue | undefined;
   readonly transcript: RealtimeVoiceTranscriptEntry[];
   close(): void;
-  createBridge(params: RealtimeVoiceBridgeSessionParams): RealtimeVoiceBridgeSession;
+  createBridge(
+    params: RealtimeVoiceBridgeSessionParams,
+    options?: { shouldHandleResponseLifecycle?: () => boolean },
+  ): RealtimeVoiceBridgeSession;
   emit<TPayload>(input: TalkEventInput<TPayload>): TalkEvent<TPayload>;
   ensureTurn(): string;
   endTurn(reason?: string): void;
@@ -208,6 +211,9 @@ export function createRealtimeVoiceSessionHarness<TForcedConsultContext = unknow
       return;
     }
     if (event.direction !== "server" || event.type !== "response.created") {
+      return;
+    }
+    if (event.responseId && settledResponseIds.has(event.responseId)) {
       return;
     }
     responseOwnerTurnId = ensureTurn();
@@ -310,25 +316,43 @@ export function createRealtimeVoiceSessionHarness<TForcedConsultContext = unknow
       responseOwnerTurnId = undefined;
       responseOwnerId = undefined;
     },
-    createBridge(bridgeParams) {
+    createBridge(bridgeParams, options) {
+      const canHandleResponseLifecycle = (responseId?: string): boolean => {
+        if (options?.shouldHandleResponseLifecycle?.() === false) {
+          // Local speech can reserve the current Talk turn. Retire provider
+          // responses seen during that reservation so late callbacks stay fenced.
+          rememberSettledResponse(responseOwnerId);
+          rememberSettledResponse(responseId);
+          return false;
+        }
+        return !responseId || !settledResponseIds.has(responseId);
+      };
       bridgeCapabilities = bridgeParams.capabilities;
       bridge = createRealtimeVoiceBridgeSession({
         ...bridgeParams,
         onResponseRequest: () => {
+          if (!canHandleResponseLifecycle()) {
+            return;
+          }
           ensureTurn();
           bridgeParams.onResponseRequest?.();
         },
         onTranscript: (role, text, isFinal) => {
+          if (role === "assistant" && !canHandleResponseLifecycle()) {
+            return;
+          }
           if (isFinal) {
             harness.recordTranscript(role, text);
           }
           bridgeParams.onTranscript?.(role, text, isFinal);
         },
         onEvent: (event) => {
-          claimResponseEvent(event);
-          const legacyOutcome = finishLegacyEvent(event);
-          if (legacyOutcome) {
-            bridgeParams.onResponseDone?.(legacyOutcome);
+          if (canHandleResponseLifecycle(event.responseId)) {
+            claimResponseEvent(event);
+            const legacyOutcome = finishLegacyEvent(event);
+            if (legacyOutcome) {
+              bridgeParams.onResponseDone?.(legacyOutcome);
+            }
           }
           if (params.captureBridgeEvents !== false) {
             recordRealtimeVoiceBridgeEvent(bridgeEvents, event);
@@ -336,7 +360,10 @@ export function createRealtimeVoiceSessionHarness<TForcedConsultContext = unknow
           bridgeParams.onEvent?.(event);
         },
         onResponseDone: (outcome) => {
-          if (finishResponse(outcome, "typed").ok) {
+          if (
+            canHandleResponseLifecycle(outcome.responseId) &&
+            finishResponse(outcome, "typed").ok
+          ) {
             bridgeParams.onResponseDone?.(outcome);
           }
         },
