@@ -18,6 +18,7 @@ import { appendSkillProposalEvent } from "../skills/workshop/store-sqlite-event.
 import { importLegacySkillProposal } from "../skills/workshop/store.js";
 import type { SkillProposalRecord } from "../skills/workshop/types.js";
 import {
+  closeOpenClawStateDatabaseByPathAsync,
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
@@ -121,8 +122,8 @@ describe("read-only Skill Workshop migration inspection", () => {
       const before = await loadCronJobsStoreWithConfigJobsReadOnly(storePath, state.env);
       await migrateLegacySkillWorkshopProposals({ config, env: state.env });
       await expect(fs.access(legacy)).rejects.toMatchObject({ code: "ENOENT" });
-      closeOpenClawStateDatabaseForTest();
       const databasePath = resolveOpenClawStateSqlitePath(state.env);
+      await closeOpenClawStateDatabaseByPathAsync(databasePath);
       const databaseBefore = await snapshotDatabase(databasePath);
       const filesBefore = (await fs.readdir(state.stateDir, { recursive: true })).toSorted();
       const destination = path.join(
