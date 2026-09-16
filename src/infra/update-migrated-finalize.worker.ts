@@ -87,7 +87,9 @@ async function finalizeMigratedUpdate(): Promise<void> {
   }
   if (process.platform === "freebsd") {
     assertFreeBsdUpdateCommandMode(input.params.opts, input.params.opts.run?.env);
-    if (input.params.shouldRestart !== false || !input.params.opts.run?.runId) {
+    // The private JSON's producer type does not validate the received literal.
+    const shouldRestart: unknown = input.params.shouldRestart;
+    if (shouldRestart !== false || !input.params.opts.run?.runId) {
       throw new UpdatePreMutationError(
         "freebsd-update-mode",
         "FreeBSD finalization requires the existing manual CLI update run with restart disabled.",

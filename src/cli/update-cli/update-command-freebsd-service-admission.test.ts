@@ -113,7 +113,7 @@ describe.skipIf(!disposableGuest)(
           await withEnvAsync(isolatedEnv(env), async () => {
             await withRcDefinition(status, async () => {
               const exit = await updateCommand({ restart: false, yes: true, json: true }).catch(
-                (error: unknown) => error,
+                (failure: unknown) => failure,
               );
               expect(exit).toBeInstanceOf(ExitError);
               expect(exit).toMatchObject({ code: 1 });

@@ -315,8 +315,8 @@ describe("FreeBSD pkg update admission", () => {
   });
 });
 
-it("keeps Linux request modes and inherited-run selection outside FreeBSD policy", async () => {
-  await withMockedPlatform("linux", () => {
+it("keeps Linux request modes and inherited-run selection outside FreeBSD policy", () => {
+  withMockedPlatform("linux", () => {
     for (const restart of [undefined, true, false]) {
       const env = { OPENCLAW_UPDATE_RUN_ID: "unresolved", OPENCLAW_UPDATE_RUN_HANDOFF: "1" };
       expect(() => assertFreeBsdUpdateCommandMode({ restart }, env)).not.toThrow();

@@ -90,8 +90,8 @@ describe.skipIf(!nativeFreeBsdRoot)("native FreeBSD update admission and history
         expect(await readRestartSentinelReadOnly(callerEnv)).toEqual(callerBefore);
         const historyBefore = getUpdateRun(run.runId, { env });
         const errors = vi.spyOn(defaultRuntime, "error").mockImplementation(() => {});
-        const entered = createDeferred<void>();
-        const resume = createDeferred<void>();
+        const entered = createDeferred();
+        const resume = createDeferred();
         const nativeProbe = exec.runCommandBuffered;
         vi.spyOn(exec, "runCommandBuffered").mockImplementationOnce(async (...args) => {
           entered.resolve();
@@ -171,8 +171,8 @@ describe.skipIf(!nativeFreeBsdRoot)("native FreeBSD update admission and history
           failUpdateCommandRun(new Error("late diagnostic"), run);
           expect(complete()).toMatchObject({ status: "error", reason: "freebsd-update-ownership" });
         };
-        const entered = createDeferred<void>();
-        const resume = createDeferred<void>();
+        const entered = createDeferred();
+        const resume = createDeferred();
         const nativeProbe = exec.runCommandBuffered;
         vi.spyOn(exec, "runCommandBuffered").mockImplementationOnce(async (...args) => {
           entered.resolve();

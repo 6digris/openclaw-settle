@@ -120,13 +120,14 @@ describe.skipIf(!nativeFreeBsdRoot)("native FreeBSD root path admission", () => 
     "refuses a replaceable namespace: %s",
     async (kind) => {
       await withFreeBsdRootFixture(async ({ home, root, env }) => {
+        let selectedRoot = root;
         if (kind === "writable ancestor") {
           await fs.chmod(home, 0o777);
         } else {
           const alias = path.join(home, "alias");
           await fs.symlink(root, alias);
           if (kind === "installation symlink") {
-            root = alias;
+            selectedRoot = alias;
           } else if (kind === "state symlink") {
             env.OPENCLAW_STATE_DIR = alias;
           } else {
@@ -134,7 +135,7 @@ describe.skipIf(!nativeFreeBsdRoot)("native FreeBSD root path admission", () => 
           }
         }
         await expect(
-          assertFreeBsdUpdateRootOwnership({ roots: [root], env }),
+          assertFreeBsdUpdateRootOwnership({ roots: [selectedRoot], env }),
         ).rejects.toMatchObject({
           reason: "freebsd-update-ownership",
         });
