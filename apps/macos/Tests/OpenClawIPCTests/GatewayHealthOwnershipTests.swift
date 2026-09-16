@@ -22,6 +22,7 @@ private final class HealthGatewayFixture {
     let holdPreflight = LockIsolated(true)
     let gateway: GatewayConnection
     let control: ControlChannel
+    private let session: GatewayTestWebSocketSession
     private let previousAccent = AppStateStore.shared.profileAccentHex
     private let previousMainKey = WorkActivityStore.shared.mainSessionKey
     private let previousMode = AppStateStore.shared.connectionMode
@@ -64,6 +65,7 @@ private final class HealthGatewayFixture {
                 }
             })
         })
+        self.session = session
         self.gateway = GatewayConnection(
             testEndpointProvider: {
                 await endpointGate?.suspend()
@@ -96,12 +98,44 @@ private final class HealthGatewayFixture {
         AppStateStore.shared.profileAccentHex = self.previousAccent
     }
 
-    func waitForHeld(after previousID: String? = nil) async throws -> Request {
+    func waitForHeld(after previousID: String? = nil, store: HealthStore? = nil) async throws -> Request {
         let deadline = ContinuousClock.now + .seconds(2)
         while self.held.value == nil || self.held.value?.id == previousID, ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(2))
         }
-        let request = try #require(self.held.value)
+        let heldRequest = self.held.value
+        if heldRequest == nil || heldRequest?.id == previousID {
+            // Observe only after the original deadline; retain that outcome while recording the failure.
+            var facts: [String: String] = [
+                "previousRequestID": previousID ?? "nil",
+                "heldRequestID": heldRequest?.id ?? "nil",
+                "selectedRevision": String(describing: self.gateway.selectedEndpointRevision),
+                "connectedRevision": String(describing: self.gateway.connectedEndpointRevision),
+                "controlState": String(describing: self.control.state),
+                "controlLastPingMs": String(describing: self.control.lastPingMs),
+                "holdHealth": String(self.holdHealth.value),
+                "holdPreflight": String(self.holdPreflight.value),
+                "socketCount": String(self.session.snapshotMakeCount()),
+                "cancelCount": String(self.session.snapshotCancelCount()),
+                "requests": self.requests.value.map {
+                    "\($0.owner):\($0.id):\($0.method):preflight=\($0.isPreflight)"
+                }.joined(separator: " "),
+                "storeIsRefreshing": store.map { String($0.isRefreshing) } ?? "unobserved",
+                "storeHasSnapshot": store.map { String($0.snapshot != nil) } ?? "unobserved",
+                "storeLastError": store?.lastError ?? "nil",
+            ]
+            if let socket = self.session.latestTask() {
+                facts["socketState"] = String(describing: socket.state)
+                facts["connectRequestID"] = socket.snapshotConnectRequestID() ?? "nil"
+                facts["sendCount"] = String(socket.snapshotSendCount())
+                facts["receiveCallbackCount"] = String(socket.snapshotCallbackReceiveCount())
+                facts["hasPendingReceive"] = String(socket.hasPendingReceiveHandler())
+            }
+            if let data = try? JSONSerialization.data(withJSONObject: facts, options: [.sortedKeys]) {
+                print("[health-readiness] \(String(decoding: data, as: UTF8.self))")
+            }
+        }
+        let request = try #require(heldRequest)
         try #require(request.id != previousID)
         return request
     }
@@ -174,13 +208,13 @@ struct GatewayHealthOwnershipTests {
             let first = Task { await store.refresh() }
             var second: Task<Void, Never>?
             do {
-                let a = try await fixture.waitForHeld()
+                let a = try await fixture.waitForHeld(store: store)
                 fixture.revision.setValue(2)
                 let bRefresh = Task { await store.refresh() }
                 second = bRefresh
-                let bBootstrap = try await fixture.waitForHeld(after: a.id)
+                let bBootstrap = try await fixture.waitForHeld(after: a.id, store: store)
                 HealthGatewayFixture.respond(bBootstrap)
-                let b = try await fixture.waitForHeld(after: bBootstrap.id)
+                let b = try await fixture.waitForHeld(after: bBootstrap.id, store: store)
                 HealthGatewayFixture.respond(a)
                 await first.value
                 #expect(store.isRefreshing)
@@ -220,12 +254,12 @@ struct GatewayHealthOwnershipTests {
                 fixture.holdHealth.setValue(true)
                 let pendingRefresh = Task { await store.refresh() }
                 refresh = pendingRefresh
-                let first = try await fixture.waitForHeld()
+                let first = try await fixture.waitForHeld(store: store)
                 #expect(store.snapshot?.channelLabels?["fixture"] == "Gateway A")
                 let read: HealthGatewayFixture.Request
                 if first.isPreflight {
                     HealthGatewayFixture.respond(first)
-                    read = try await fixture.waitForHeld(after: first.id)
+                    read = try await fixture.waitForHeld(after: first.id, store: store)
                 } else {
                     read = first
                 }
@@ -255,7 +289,7 @@ struct GatewayHealthOwnershipTests {
             let store = HealthStore(control: fixture.control)
             store.start()
             do {
-                let a = try await fixture.waitForHeld()
+                let a = try await fixture.waitForHeld(store: store)
                 HealthGatewayFixture.respond(a)
                 let firstDeadline = ContinuousClock.now + .seconds(2)
                 while store.snapshot == nil, ContinuousClock.now < firstDeadline {
@@ -272,7 +306,7 @@ struct GatewayHealthOwnershipTests {
                 fixture.revision.setValue(2)
                 #expect(store.lastError == nil)
                 _ = try await fixture.gateway.acquireServerLease()
-                let b = try await fixture.waitForHeld(after: a.id)
+                let b = try await fixture.waitForHeld(after: a.id, store: store)
                 #expect(store.snapshot == nil)
                 HealthGatewayFixture.respond(b)
                 let secondDeadline = ContinuousClock.now + .seconds(2)
@@ -299,7 +333,7 @@ struct GatewayHealthOwnershipTests {
             store.start()
             var refresh: Task<Void, Never>?
             do {
-                let initial = try await fixture.waitForHeld()
+                let initial = try await fixture.waitForHeld(store: store)
                 HealthGatewayFixture.respond(initial)
                 let deadline = ContinuousClock.now + .seconds(2)
                 while store.isRefreshing || store.snapshot == nil, ContinuousClock.now < deadline {
@@ -309,7 +343,7 @@ struct GatewayHealthOwnershipTests {
                 try #require(!store.isRefreshing)
                 let read = Task { await store.refresh(onDemand: onDemand) }
                 refresh = read
-                let pending = try await fixture.waitForHeld(after: initial.id)
+                let pending = try await fixture.waitForHeld(after: initial.id, store: store)
                 pending.socket.emitReceiveFailure()
                 await read.value
                 let disconnectDeadline = ContinuousClock.now + .seconds(2)
