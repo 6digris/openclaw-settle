@@ -55,7 +55,7 @@ function fixture(count = 20, pending = 3) {
   const attention = new SessionAttentionController(host);
   controllers.forEach((controller) => controller.hostConnected?.());
   disposals.push(() => controllers.forEach((controller) => controller.hostDisconnected?.()));
-  for (let i = 0; i < pending; i++)
+  for (let i = 0; i < pending; i++) {
     gateway.publishEvent("question.requested", {
       id: `question-${i}`,
       status: "pending",
@@ -71,6 +71,7 @@ function fixture(count = 20, pending = 3) {
         },
       ],
     });
+  }
   const rows: GatewaySessionRow[] = keys.map(
     (key) => ({ key, kind: "direct", updatedAt: 1 }) satisfies GatewaySessionRow,
   );
@@ -110,7 +111,9 @@ describe("session attention preparation", () => {
     const builds = vi.spyOn(questions, "listQuestionPrompts");
     const formats = vi.spyOn(approvalPresentation, "compactApprovalCommand");
     update();
-    for (const row of rows) attention.resolveSessionAttention(row);
+    for (const row of rows) {
+      attention.resolveSessionAttention(row);
+    }
     attention.knownSessionAttention();
     console.log("ATTENTION_COUNTS", {
       builds: builds.mock.calls.length,
@@ -278,7 +281,9 @@ describe("session attention preparation", () => {
   });
 
   it("measures the same modest per-update row lookup workload", () => {
-    if (!process.env.ATTENTION_BENCHMARK) return;
+    if (!process.env.ATTENTION_BENCHMARK) {
+      return;
+    }
     const report = [];
     for (const count of [20, 100, 200]) {
       for (const pending of [0, 3]) {
@@ -289,7 +294,9 @@ describe("session attention preparation", () => {
           const start = performance.now();
           project();
           const elapsed = performance.now() - start;
-          if (run >= 20) samples.push(elapsed);
+          if (run >= 20) {
+            samples.push(elapsed);
+          }
         }
         samples.sort((a, b) => a - b);
         report.push({ count, pending, medianMs: samples[50], p95Ms: samples[95] });
