@@ -15,6 +15,8 @@ import type { ChatHost } from "./chat-send-contract.ts";
 import { setChatError } from "./chat-send-queue-state.ts";
 import type { ChatSendSubmitOptions } from "./chat-send-submit.ts";
 import { refreshChatSessionListForTarget } from "./chat-session.ts";
+import type { ChatPageHost } from "./chat-state-host.ts";
+import type { ChatProps } from "./chat-view.ts";
 import { adoptStartedChatRun } from "./run-lifecycle.ts";
 
 type ChatGoalHost = ChatHost & {
@@ -32,6 +34,32 @@ type GoalOperation = {
 };
 
 const goalOperations = new WeakMap<ChatHost, GoalOperation>();
+
+export function createChatGoalProps(
+  host: ChatGoalHost & Pick<ChatPageHost, "handleChatDraftChange">,
+  canSubmit: boolean,
+) {
+  return {
+    onGoalAction: (goalId, action) => void mutateChatGoal(host, { goalId, action }),
+    goalDraftMode: host.chatGoalDraftMode ?? null,
+    currentSessionId: host.currentSessionId,
+    onGoalDraftModeChange: (mode) => {
+      // Persist the new goal mode with the current draft, not the draft from this render.
+      host.chatGoalDraftMode = mode;
+      host.handleChatDraftChange(host.chatMessage);
+    },
+    onGoalSubmit: canSubmit
+      ? (draft, submissionAction) => submitChatGoalDraft(host, draft, submissionAction)
+      : undefined,
+  } satisfies Pick<
+    ChatProps,
+    | "onGoalAction"
+    | "goalDraftMode"
+    | "currentSessionId"
+    | "onGoalDraftModeChange"
+    | "onGoalSubmit"
+  >;
+}
 
 export async function submitChatGoalDraft(
   host: ChatGoalHost,

@@ -30,7 +30,7 @@ import {
   resolveUiConfiguredMainKey,
 } from "../../lib/sessions/session-key.ts";
 import { showToast } from "../../lib/toast.ts";
-import { mutateChatGoal, submitChatGoalDraft } from "./chat-goals.ts";
+import { createChatGoalProps } from "./chat-goals.ts";
 import { clearChatHistory } from "./chat-history-actions.ts";
 import { isInitialChatHistoryUnavailable } from "./chat-history-state.ts";
 import { resolveChatMessageAccess } from "./chat-message-access.ts";
@@ -635,17 +635,7 @@ export class ChatPane extends ChatPaneLayoutRender {
         onEditSubmit: sessionParticipationBlocked ? undefined : state.submitQueuedChatMessageEdit,
         onCancel: state.cancelQueuedChatMessageEdit,
       },
-      onGoalAction: (goalId, action) => void mutateChatGoal(state, { goalId, action }),
-      goalDraftMode: state.chatGoalDraftMode ?? null,
-      currentSessionId: state.currentSessionId,
-      onGoalDraftModeChange: (mode) => {
-        state.chatGoalDraftMode = mode;
-        state.handleChatDraftChange(state.chatMessage);
-      },
-      onGoalSubmit:
-        suggestionViewer || catalogKey
-          ? undefined
-          : (draft, submissionAction) => submitChatGoalDraft(state, draft, submissionAction),
+      ...createChatGoalProps(state, !suggestionViewer && !catalogKey),
       onCompanionPrefill: this.prefillSessionCompanionQuestion,
       replyTarget: state.chatReplyTarget ?? null,
       onClearReply: () => {

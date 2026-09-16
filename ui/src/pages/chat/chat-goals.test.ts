@@ -1,10 +1,11 @@
 // @vitest-environment node
+import assert from "node:assert/strict";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { SessionGoal } from "../../api/types.ts";
 import { createSessionsListResult } from "../../test-helpers/chat-model.ts";
 import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
-import { mutateChatGoal } from "./chat-goals.ts";
+import { createChatGoalProps, mutateChatGoal } from "./chat-goals.ts";
 import { makeChatHost } from "./chat-host.test-support.ts";
 
 const goal: SessionGoal = {
@@ -32,6 +33,76 @@ function goalHost(requestHandlers: Record<string, unknown>) {
     requestHandlers,
   });
 }
+
+describe("Goal render props", () => {
+  it("commits goal mode before refreshing the invocation-time draft", () => {
+    const host = Object.assign(goalHost({}), {
+      handleSendChat: vi.fn(async () => true),
+      handleChatDraftChange: vi.fn((message: string): void => {
+        expect(host.chatGoalDraftMode).toEqual({ action: "start", sessionId: "session-a" });
+        expect(message).toBe("Updated draft");
+      }),
+    });
+    const props = createChatGoalProps(host, true);
+    expect(props.goalDraftMode).toBeNull();
+    expect(props.currentSessionId).toBe("session-a");
+    host.chatMessage = "Updated draft";
+    props.onGoalDraftModeChange({ action: "start", sessionId: "session-a" });
+    expect(host.handleChatDraftChange).toHaveBeenCalledExactlyOnceWith("Updated draft");
+    expect(createChatGoalProps(host, true).goalDraftMode).toBe(host.chatGoalDraftMode);
+  });
+
+  it.each([
+    [true, "function"],
+    [false, "undefined"],
+  ] as const)(
+    "keeps goal actions available when submit eligibility is %s",
+    async (canSubmit, expectedType) => {
+      const host = Object.assign(
+        goalHost({
+          "sessions.goal.update": { status: "updated", goalId: goal.id, goal },
+        }),
+        {
+          handleSendChat: vi.fn(async () => true),
+          handleChatDraftChange: vi.fn(),
+        },
+      );
+      const props = createChatGoalProps(host, canSubmit);
+      expect(typeof props.onGoalSubmit).toBe(expectedType);
+      expect(props.onGoalAction(goal.id, "pause")).toBeUndefined();
+      expect(host.request).toHaveBeenCalledWith(
+        "sessions.goal.update",
+        expect.objectContaining({
+          goalId: goal.id,
+          action: "pause",
+          sessionId: "session-a",
+        }),
+      );
+      await Promise.resolve();
+    },
+  );
+
+  it("forwards the submission event and returns the goal owner's pending result", async () => {
+    const pending = createDeferred<boolean>();
+    const host = Object.assign(goalHost({}), {
+      handleSendChat: vi.fn(() => pending.promise),
+      handleChatDraftChange: vi.fn(),
+    });
+    host.chatMessage = "Review the UI";
+    const props = createChatGoalProps(host, true);
+    assert(props.onGoalSubmit);
+    const event = new Event("submit");
+    const result = props.onGoalSubmit({ action: "start", objective: host.chatMessage }, event);
+    expect(result).toBeInstanceOf(Promise);
+    expect(host.handleSendChat).toHaveBeenCalledExactlyOnceWith(
+      undefined,
+      { intent: { kind: "session-goal-start", version: 1, issuedAtMs: expect.any(Number) } },
+      event,
+    );
+    pending.resolve(false);
+    expect(await result).toBe(false);
+  });
+});
 
 describe("Goal control requests", () => {
   it("edits literal objective text through the typed owner and leaves the chat draft alone", async () => {
