@@ -2,6 +2,7 @@ import { createConfiguredGatewayLocalProbe } from "../../gateway/local-http-prob
 import type { GatewayLockIdentity } from "../../infra/gateway-lock.js";
 import { sleep } from "../../utils.js";
 import {
+  hasTerminalPluginHealthFailure,
   inspectGatewayPortHealth,
   resolveGatewayRestartProbeContext,
 } from "./restart-health-probe.js";
@@ -79,7 +80,7 @@ export async function waitForGatewayHealthyListener(params: {
   if (snapshot.healthy) {
     return snapshot;
   }
-  if (snapshot.activatedPluginErrors?.length || snapshot.unavailablePlugins?.length) {
+  if (hasTerminalPluginHealthFailure(snapshot)) {
     return snapshot;
   }
   while (attempt < attempts) {
@@ -96,7 +97,7 @@ export async function waitForGatewayHealthyListener(params: {
     if (snapshot.healthy) {
       return snapshot;
     }
-    if (snapshot.activatedPluginErrors?.length || snapshot.unavailablePlugins?.length) {
+    if (hasTerminalPluginHealthFailure(snapshot)) {
       return snapshot;
     }
   }

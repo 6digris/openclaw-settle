@@ -19,6 +19,7 @@ import {
 import { sleep } from "../../utils.js";
 import {
   confirmGatewayReachable,
+  hasTerminalPluginHealthFailure,
   resolveGatewayRestartProbeContext,
   type GatewayReachability,
   type GatewayRestartProbeContext,
@@ -478,9 +479,12 @@ export async function waitForGatewayHealthyRestart(params: {
     ) {
       failureOutcome = "channel-errors";
     }
-    // Degraded readiness also needs a settled generation: a retiring boot can
-    // still own the listener while an asynchronous restart is taking effect.
-    if (failureOutcome) {
+    const serviceRecovering =
+      failureOutcome === "plugin-errors" &&
+      !hasTerminalPluginHealthFailure(snapshot, params.includePluginHealth === true);
+    // Service owners can recover within this budget. Boot-stable failures still need
+    // a settled generation because a retiring boot can retain its listener.
+    if (failureOutcome && !serviceRecovering) {
       if (
         failureStreak?.outcome === failureOutcome &&
         isSameGatewayRestartGeneration(failureStreak.snapshot, snapshot)
@@ -559,7 +563,11 @@ export async function waitForGatewayHealthyRestart(params: {
             ? migrationDeadlineMs
             : (postMigrationDeadlineMs ?? standardDeadlineMs) + settleDurationMs;
       if (deadlineMs === undefined || elapsedMs >= deadlineMs) {
-        return withWaitContext(snapshot, "timeout", elapsedMs);
+        return withWaitContext(
+          snapshot,
+          serviceRecovering ? "plugin-errors" : "timeout",
+          elapsedMs,
+        );
       }
     }
     await sleep(delayMs, params.signal);

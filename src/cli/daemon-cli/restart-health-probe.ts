@@ -30,6 +30,17 @@ import type {
 } from "./restart-health.types.js";
 import { allListenersOwnedByRuntimePid } from "./restart-port-ownership.js";
 
+/** Load/quarantine failures are boot-stable; service owners may clear their live failures. */
+export function hasTerminalPluginHealthFailure(
+  snapshot: Pick<GatewayPortHealthSnapshot, "activatedPluginErrors" | "unavailablePlugins">,
+  includeUnavailable = true,
+): boolean {
+  return Boolean(
+    (includeUnavailable && snapshot.unavailablePlugins?.length) ||
+    snapshot.activatedPluginErrors?.some((error) => error.failurePhase !== "service"),
+  );
+}
+
 export type GatewayRestartProbeAuth = {
   token?: string;
   password?: string;
