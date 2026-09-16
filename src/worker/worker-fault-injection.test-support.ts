@@ -172,6 +172,7 @@ export class ComposedGatewayHarness {
   readonly liveDeltas: string[] = [];
   readonly chat: ReturnType<typeof createWorkerChatProjection>;
   readonly abandonedServices: workerEnv.WorkerEnvironmentService[] = [];
+  service!: workerEnv.WorkerEnvironmentService;
   providerCalls = 0;
   replacementProviderCalls = 0;
   connectionCount = 0;
@@ -186,7 +187,6 @@ export class ComposedGatewayHarness {
   private readonly requestMethods = new Map<string, string>();
   private readonly faults: FaultRule[] = [];
   private readonly liveEventGates: LiveEventGate[] = [];
-  private serviceValue!: workerEnv.WorkerEnvironmentService;
   private liveEventsValue!: liveEvents.WorkerLiveEventReceiver;
   private readonly placementLifecycle: WorkerFaultPlacementLifecycle;
   private placementGateValue: WorkerSessionPlacementGate | undefined;
@@ -247,7 +247,7 @@ export class ComposedGatewayHarness {
       sessionKey: SESSION_KEY,
     });
     this.placementGateValue = createWorkerSessionPlacementGate(this.placementStore);
-    this.serviceValue = this.createService();
+    this.service = this.createService();
     this.httpServer = createServer();
     this.webSocketServer = new WebSocketServer({ server: this.httpServer });
     this.webSocketServer.on("connection", (socket) => this.accept(socket));
@@ -361,14 +361,14 @@ export class ComposedGatewayHarness {
 
   hardRestart(): void {
     this.chat.state.clear();
-    this.abandonedServices.push(this.serviceValue);
+    this.abandonedServices.push(this.service);
     this.liveEventsValue.clear();
     this.liveEventsValue = this.createLiveEvents(false);
     this.placementGateValue = createWorkerSessionPlacementGate(this.placementStore, {
       rejectExistingWorkerClaims: true,
     });
     this.useReplacementExecutor = true;
-    this.serviceValue = this.createService();
+    this.service = this.createService();
     this.terminateSockets();
   }
 
@@ -458,7 +458,7 @@ export class ComposedGatewayHarness {
     this.socketCleanups.clear();
     this.connectionWork.beginClose();
     await this.connectionWork.drain();
-    await this.serviceValue.stop();
+    await this.service.stop();
     for (const service of this.abandonedServices) {
       await service.stop();
     }
@@ -637,7 +637,7 @@ export class ComposedGatewayHarness {
       this.requests.push({ method: request.method, params: structuredClone(request.params) });
     };
     socket.on("message", observe);
-    const service = this.serviceValue;
+    const service = this.service;
     const cleanup = workerServer.attachWorkerWsMessageHandler({
       socket,
       connectionWork: this.connectionWork,
