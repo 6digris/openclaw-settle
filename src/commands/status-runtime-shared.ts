@@ -1,24 +1,14 @@
 // Shared runtime probes used by status text and JSON commands.
 // Heavy modules stay lazily loaded so fast status output avoids security/provider/gateway costs.
 
-import { resolveDefaultAgentDir } from "../agents/agent-scope.js";
-import { resolveAgentHarnessPolicy } from "../agents/harness/policy.js";
-import { resolveModelAuthLabel } from "../agents/model-auth-label.js";
-import { resolveDefaultModelForAgent } from "../agents/model-selection.js";
-import { listOpenAIAuthProfileProvidersForAgentRuntime } from "../agents/openai-routing.js";
 import type { OpenClawConfig } from "../config/types.js";
 import type { HeartbeatEventPayload } from "../infra/heartbeat-events.js";
 import { createLazyImportLoader } from "../shared/lazy-promise.js";
-import {
-  buildCodexSyntheticUsageAuth,
-  mergeUsageSummaries,
-  shouldUseCodexSyntheticUsageForRuntime,
-  resolveUsageCredentialType,
-} from "../status/codex-synthetic-usage.js";
 import type { HealthSummary } from "./health.js";
+import type { StatusUsageSummaryOptions } from "./status-usage.runtime.js";
 import { getDaemonStatusSummary, getNodeDaemonStatusSummary } from "./status.daemon.js";
 
-const providerUsageLoader = createLazyImportLoader(() => import("../infra/provider-usage.js"));
+const statusUsageModuleLoader = createLazyImportLoader(() => import("./status-usage.runtime.js"));
 const securityAuditModuleLoader = createLazyImportLoader(
   () => import("../security/audit.runtime.js"),
 );
@@ -26,10 +16,6 @@ const readOnlyChannelPluginsModuleLoader = createLazyImportLoader(
   () => import("../channels/plugins/read-only.js"),
 );
 const gatewayCallModuleLoader = createLazyImportLoader(() => import("../gateway/call.js"));
-
-function loadProviderUsage() {
-  return providerUsageLoader.load();
-}
 
 function loadSecurityAuditModule() {
   return securityAuditModuleLoader.load();
@@ -41,41 +27,6 @@ function loadReadOnlyChannelPluginsModule() {
 
 function loadGatewayCallModule() {
   return gatewayCallModuleLoader.load();
-}
-
-function shouldUseConfiguredCodexSyntheticUsage(params: {
-  config: OpenClawConfig;
-  agentDir: string;
-}): boolean {
-  const configuredDefault = resolveDefaultModelForAgent({
-    cfg: params.config,
-    allowPluginNormalization: false,
-  });
-  const policy = resolveAgentHarnessPolicy({
-    config: params.config,
-    provider: configuredDefault.provider,
-    modelId: configuredDefault.model,
-  });
-  if (
-    !shouldUseCodexSyntheticUsageForRuntime({
-      provider: configuredDefault.provider,
-      effectiveHarness: policy.runtime,
-    })
-  ) {
-    return false;
-  }
-  const authLabel = resolveModelAuthLabel({
-    provider: configuredDefault.provider,
-    acceptedProviderIds: listOpenAIAuthProfileProvidersForAgentRuntime({
-      provider: configuredDefault.provider,
-      harnessRuntime: policy.runtime,
-      config: params.config,
-    }),
-    cfg: params.config,
-    agentDir: params.agentDir,
-    includeExternalProfiles: false,
-  });
-  return resolveUsageCredentialType(authLabel) !== "api_key";
 }
 
 /** Runs the lightweight security audit used by status JSON/all output. */
@@ -105,37 +56,14 @@ export async function resolveStatusSecurityAudit(params: {
   });
 }
 
-type StatusUsageSummaryOptions = {
-  config: OpenClawConfig;
-  timeoutMs?: number;
-  agentDir?: string;
-};
-
-/** Loads provider usage for status output, defaulting to the config's default agent directory. */
+/** Loads optional usage and its credential resolver only when requested. */
 export async function resolveStatusUsageSummary(params: StatusUsageSummaryOptions) {
-  const { loadProviderUsageSummary } = await loadProviderUsage();
-  const agentDir = params.agentDir ?? resolveDefaultAgentDir(params.config);
-  const usage = await loadProviderUsageSummary({
-    timeoutMs: params.timeoutMs,
-    config: params.config,
-    agentDir,
-  });
-  if (!shouldUseConfiguredCodexSyntheticUsage({ config: params.config, agentDir })) {
-    return usage;
-  }
-  const codexUsage = await loadProviderUsageSummary({
-    timeoutMs: params.timeoutMs,
-    providers: ["openai"],
-    auth: [buildCodexSyntheticUsageAuth()],
-    config: params.config,
-    agentDir,
-  });
-  return mergeUsageSummaries(usage, codexUsage);
+  return (await statusUsageModuleLoader.load()).resolveStatusUsageSummary(params);
 }
 
-/** Exposes the lazily loaded provider-usage module for callers that need its helpers. */
+/** Exposes provider-usage formatting for callers that requested usage. */
 export async function loadStatusProviderUsageModule() {
-  return await loadProviderUsage();
+  return (await statusUsageModuleLoader.load()).loadStatusProviderUsageModule();
 }
 
 /** Calls gateway health and lets errors propagate to deep status callers. */
