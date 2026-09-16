@@ -168,11 +168,12 @@ export class SidebarCatalogMenuController {
 export function createSidebarCatalogMenuController(
   host: SidebarMenusControllerHost,
   beforeOpen: () => void,
+  requestUpdate: () => void = () => host.requestUpdate(),
 ): SidebarCatalogMenuController {
   return new SidebarCatalogMenuController({
     // Closing every transient menu keeps one popover at a time.
     beforeOpen,
-    requestUpdate: () => host.requestUpdate(),
+    requestUpdate,
     terminalAvailable: () => host.terminalAvailable,
     openTerminal: (key, agentId) => openCatalogSessionInTerminal(host, key, agentId),
     beginMutation: () => {

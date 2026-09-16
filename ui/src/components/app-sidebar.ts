@@ -1,4 +1,4 @@
-import { html, nothing, type PropertyValues, type TemplateResult } from "lit";
+import { html, nothing, type LitElement, type PropertyValues, type TemplateResult } from "lit";
 import { state } from "lit/decorators.js";
 import type {
   FsListDirResult,
@@ -82,7 +82,9 @@ class AppSidebar extends AppSidebarSessionNavigationElement implements SessionLi
   @state() override sidebarObserverDigests: ReadonlyMap<string, SessionObserverDigest> = new Map();
 
   override readonly sessionOrganizer = new SessionOrganizerController(this);
-  override readonly sidebarMenus = new SidebarMenusController(this);
+  override readonly sidebarMenus = new SidebarMenusController(this, () =>
+    this.requestChromeUpdate(),
+  );
   private readonly people = new SidebarPeopleController(this);
 
   sessionGroupDefaults(name: string) {
@@ -135,6 +137,8 @@ class AppSidebar extends AppSidebarSessionNavigationElement implements SessionLi
   private narration: SidebarSessionNarrationController | null = null;
   private narrationLoad: Promise<void> | null = null;
   private sessionNavigationState: SidebarSessionNavigationState | undefined;
+  private projectionPending = true;
+  private renderProjectionReady = false;
   private readonly sidebarContext = new SidebarContextController(this);
   private projectedSessionRows: SidebarRecentSession[] | undefined;
   private projectedSessionCatalogs: SidebarSessionCatalog[] = [];
@@ -148,18 +152,23 @@ class AppSidebar extends AppSidebarSessionNavigationElement implements SessionLi
       () => this.context?.gateway,
       (gateway) => gateway.subscribeEvents((event) => this.narration?.handleEvent(event)),
     )
-    .watch(
+    .effect(
       () => this.context?.agentIdentity,
-      (agentIdentity, notify) => agentIdentity.subscribe(notify),
+      (agentIdentity) => agentIdentity.subscribe(() => this.requestChromeUpdate()),
     )
-    .watch(
+    .effect(
       () => this.context?.config,
-      (config, notify) => config.subscribe(notify),
-      () => this.syncCommunityInviteState(),
+      (config) => {
+        this.syncCommunityInviteState();
+        return config.subscribe(() => {
+          this.syncCommunityInviteState();
+          this.requestChromeUpdate();
+        });
+      },
     )
-    .watch(
+    .effect(
       () => this.context?.plugins,
-      (plugins, notify) => plugins.subscribe(notify),
+      (plugins) => plugins.subscribe(() => this.requestChromeUpdate()),
     );
   private readonly nativeGatewaysChanged = () => this.sidebarMenus.closeSessionMenu();
   private readonly hiddenSessionCatalogsChanged = () => {
@@ -199,6 +208,19 @@ class AppSidebar extends AppSidebarSessionNavigationElement implements SessionLi
     void this.subscriptions;
   }
 
+  /** Unclassified controller notifications preserve the full freshness path. */
+  override requestUpdate(...args: Parameters<LitElement["requestUpdate"]>): void {
+    if (args[0] === undefined) {
+      this.projectionPending = true;
+    }
+    super.requestUpdate(...args);
+  }
+
+  // Only chrome owners use this path; a batched session update still wins.
+  private requestChromeUpdate(): void {
+    super.requestUpdate();
+  }
+
   override dismissTransientMenus(): boolean {
     const hadPersonCard = this.people.dismiss();
     return super.dismissTransientMenus() || hadPersonCard;
@@ -232,19 +254,28 @@ class AppSidebar extends AppSidebarSessionNavigationElement implements SessionLi
     ) {
       this.communityInvitePresentation = "shown";
     }
-    const currentResult =
-      this.sidebarAgentsMode === "roster"
-        ? this.rosterSessionSource?.result
-        : this.sessionData.sessionsResult;
-    this.sessionProjection.observeRows([
-      ...(currentResult ? [currentResult] : []),
-      ...Object.values(this.sessionData.sessionResultsByAgent),
-    ]);
-    this.sessionNavigationState = super.getSessionNavigationState();
-    this.projectedSessionRows = super.selectedAgentSessionRows(this.sessionNavigationState);
-    const catalogs = this.sidebarSessionCatalogs();
-    this.projectedSessionCatalogs = catalogs;
-    this.projectedSessionSections = super.zonedVisibleSections(this.projectedSessionRows, catalogs);
+    this.renderProjectionReady = true;
+    if (this.projectionPending || changed.size > 0 || !this.projectedSessionRows) {
+      this.projectionPending = false;
+      this.sessionNavigationState = undefined;
+      this.projectedSessionRows = undefined;
+      const currentResult =
+        this.sidebarAgentsMode === "roster"
+          ? this.rosterSessionSource?.result
+          : this.sessionData.sessionsResult;
+      this.sessionProjection.observeRows([
+        ...(currentResult ? [currentResult] : []),
+        ...Object.values(this.sessionData.sessionResultsByAgent),
+      ]);
+      this.sessionNavigationState = super.getSessionNavigationState();
+      this.projectedSessionRows = super.selectedAgentSessionRows(this.sessionNavigationState);
+      const catalogs = this.sidebarSessionCatalogs();
+      this.projectedSessionCatalogs = catalogs;
+      this.projectedSessionSections = super.zonedVisibleSections(
+        this.projectedSessionRows,
+        catalogs,
+      );
+    }
     // An open switcher tracks roster/reconnect updates; otherwise only hydrate
     // the active card and avoid background RPCs for every configured agent.
     const identityIds =
@@ -261,13 +292,17 @@ class AppSidebar extends AppSidebarSessionNavigationElement implements SessionLi
   }
 
   override getSessionNavigationState(): SidebarSessionNavigationState {
-    return this.sessionNavigationState ?? super.getSessionNavigationState();
+    return this.renderProjectionReady && this.sessionNavigationState
+      ? this.sessionNavigationState
+      : super.getSessionNavigationState();
   }
 
   protected override selectedAgentSessionRows(
     navigationState: SidebarSessionNavigationState,
   ): SidebarRecentSession[] {
-    return this.projectedSessionRows ?? super.selectedAgentSessionRows(navigationState);
+    return this.renderProjectionReady && this.projectedSessionRows
+      ? this.projectedSessionRows
+      : super.selectedAgentSessionRows(navigationState);
   }
 
   protected override zonedVisibleSections(_rows: SidebarRecentSession[]): SidebarVisibleSections {
@@ -283,8 +318,9 @@ class AppSidebar extends AppSidebarSessionNavigationElement implements SessionLi
     } else {
       this.narration.sync(this.narrationSyncInput());
     }
-    this.sessionNavigationState = undefined;
-    this.projectedSessionRows = undefined;
+    // Event handlers outside rendering consult their current owners, not the
+    // projection retained for explicitly chrome-only updates.
+    this.renderProjectionReady = false;
   }
 
   private visibleNarrationRowsInOrder(): SidebarRecentSession[] {

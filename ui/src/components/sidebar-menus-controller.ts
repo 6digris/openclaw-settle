@@ -93,19 +93,24 @@ export class SidebarMenusController implements ReactiveController, SidebarMenusC
     () => import("./sidebar-menus-render.ts"),
     (renderer) => {
       this.menuRenderer = renderer;
-      this.host.requestUpdate();
+      this.requestUpdate();
     },
   );
   readonly catalogMenu: SidebarCatalogMenuController;
   readonly agentMenuAvatars: IdentityAvatarController;
   pluginActionLifetime = new AbortController();
 
-  constructor(readonly host: SidebarMenusControllerHost) {
+  constructor(
+    readonly host: SidebarMenusControllerHost,
+    private readonly requestUpdate: () => void = () => host.requestUpdate(),
+  ) {
     host.addController(this);
     this.agentMenuAvatars = new IdentityAvatarController(host);
-    this.catalogMenu = createSidebarCatalogMenuController(host, () => {
-      this.dismissTransientMenus();
-    });
+    this.catalogMenu = createSidebarCatalogMenuController(
+      host,
+      () => this.dismissTransientMenus(),
+      this.requestUpdate,
+    );
   }
 
   hostConnected(): void {
@@ -130,7 +135,7 @@ export class SidebarMenusController implements ReactiveController, SidebarMenusC
     value: SidebarMenusControllerState[Key],
   ): void {
     Object.assign(this, { [key]: value });
-    this.host.requestUpdate();
+    this.requestUpdate();
   }
 
   preloadMenuRenderer() {
@@ -391,7 +396,7 @@ export class SidebarMenusController implements ReactiveController, SidebarMenusC
       return;
     }
     this.filterMenuView = view;
-    this.host.requestUpdate();
+    this.requestUpdate();
     this.focusFilterMenuView();
   }
 
