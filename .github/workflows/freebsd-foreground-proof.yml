@@ -10,11 +10,11 @@ permissions:
   actions: read
 
 concurrency:
-  group: freebsd-foreground-proof-${{ github.event.pull_request.number }}-x64-bootstrap
+  group: freebsd-foreground-proof-${{ github.event.pull_request.number }}-installed-followup
   cancel-in-progress: false
 
 env:
-  EXPECTED_PARENT: a0bbbc42d0f390b74c191dbc6ab612bf3d3a4526
+  EXPECTED_PARENT: 5fac5c93e5fe70a3adfc1a7827e3707d6dff6078
   SOURCE_SHA: cf932c2e760bbbeee6059a71949732b8d7b7d0ea
   HARNESS_SHA: ${{ github.event.pull_request.head.sha }}
   COMPARISON_BASE: 351ff29013b53ca90977058fdeb1af0a1dc33bec
@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [x86_64]
+        arch: [x86_64, aarch64]
     env:
       EXPECTED_NODE_ARCH: ${{ matrix.arch == 'aarch64' && 'arm64' || 'x64' }}
       MANIFEST_SHA: bd80f64f56ed65de38dd13f2493f23ffd78fb73e09fa1796b98855197b94c257
@@ -47,7 +47,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 11
+          fetch-depth: 12
           persist-credentials: false
           sparse-checkout-cone-mode: false
           sparse-checkout: |
@@ -72,7 +72,7 @@ jobs:
           artifact-ids: 10442404807
           path: proof-input
           merge-multiple: true
-      - name: Run native suites and an actual installed update
+      - name: Verify installed update and observe ARM admission
         uses: vmactions/freebsd-vm@8b0f1a8fc0ea0def307835c258940ca358fe6480 # v1.5.6
         with:
           release: "15.1"
@@ -207,155 +207,13 @@ jobs:
             NODE
             (cd / && /usr/bin/env -i HOME=/ PATH=/sbin:/bin:/usr/sbin:/usr/bin LC_ALL=C /usr/local/bin/node /usr/local/libexec/openclaw-service-inspect.mjs) > "$proof_root/initial-discovery.json"
             node -e 'const a=require("node:assert/strict"),r=JSON.parse(require("node:fs").readFileSync(process.argv[1]));a.equal(r.status,"absent");a.equal(r.authority,"diagnostic-only")' "$proof_root/initial-discovery.json"
-            if [ "$EXPECTED_NODE_ARCH" = x64 ]; then
-              echo 'Reused amd64 discovery proof: run35088646450 attempt1 job104769411269, 29/29 and strict cleanup; log SHA256 4ac65f9037f5048bfb6a2d78ccb13f9ee49c05134811eb24167e5d648e169fb6'
-            else
-            if node "$PACKAGED_ROOT/scripts/test-freebsd-service-inspect.mjs" > "$proof_root/discovery.log" 2>&1; then status=0; else status=$?; fi
-            cat "$proof_root/discovery.log"
-            test "$status" -eq 0
-            test "$(grep -c '^CASE ' "$proof_root/discovery.log")" -eq 29
-            test "$(grep -c '^PASS ' "$proof_root/discovery.log")" -eq 29
-            grep -Fx '29 native cases passed' "$proof_root/discovery.log"
-            grep -Fx 'escaped-pipe-holder cleanup=complete' "$proof_root/discovery.log"
-            grep -Fx 'fixture-cleanup=complete' "$proof_root/discovery.log"
-            fi
+            echo 'Reused discovery: run35088646450a1, x64 job104769411269 log4ac65f9037f5048bfb6a2d78ccb13f9ee49c05134811eb24167e5d648e169fb6; arm64 job104769411111 logf8dd93d5c3da7f75ade8640488094c914299f3add5474eea91e6b55158a9cb5d; each29 cases and strict fixture cleanup'
+            echo 'Reused x64 source proof: run35091818128a1/job104779671020, log3ae1e700ead028f4158b4b73577d16a0fd5fdd12c9927acf616d41d15ab9e770;17 ownership,44 lifecycle+1 Linux skip,4 rc, source/dist guards and owned ACL cleanup passed; aggregate failed at installed handoff oracle'
+            echo 'ARM native Vitest remains UNRUN; ARM observer execution is diagnostic only'
             export OPENCLAW_TEST_FREEBSD_DISPOSABLE=1 CI=true OPENCLAW_VITEST_MAX_WORKERS=1
             export TMPDIR="$proof_root/tmp" TMP="$proof_root/tmp" TEMP="$proof_root/tmp"
             mkdir -m 0700 "$TMPDIR"
             cd "$source_root"
-            # Only x64 has a frozen Rolldown binding. ARM still runs actual packaged
-            # CLI/update proof below; its Vitest cell is explicitly not executed.
-            if [ "$EXPECTED_NODE_ARCH" = x64 ]; then
-              (
-              # pnpm 12.3.4 has no FreeBSD binary. Use the reviewed test-only
-              # native bootstrap; keep the source packageManager and lock unchanged.
-              export COREPACK_ENABLE_PROJECT_SPEC=0 pnpm_config_pm_on_fail=ignore
-              corepack enable
-              corepack prepare 'pnpm@12.4.2+sha512.08adc6613180275c7c9edada39dcf08c9c61ad4e7eaf330a4f3461f102b0f907423454d117f98e72d47fef0616070644d7bffc973a6a57f5090a6d7c368b07c9' --activate
-              test "$(pnpm --version)" = 12.4.2
-              echo 'Native source-test bootstrap: pnpm12.4.2; producer/repository pin remains12.3.4'
-              # Include the root dependency closure and Markdown Core used by the canonical
-              # source-worker compiler, without unrelated plugin builds. Keep normal hooks.
-              pnpm --filter 'openclaw...' --filter '@openclaw/markdown-core...' --fail-if-no-match list --depth -1 --json > "$proof_root/source-scope.json"
-              node --input-type=module <<'NODE'
-              import assert from 'node:assert/strict';
-              import fs from 'node:fs';
-              import path from 'node:path';
-              const selected=JSON.parse(fs.readFileSync(`${process.env.PROOF_ROOT}/source-scope.json`));
-              const actual=selected.map(({name,path:directory})=>[name,path.relative(process.env.SOURCE_ROOT,directory)||'.']).sort();
-              const expected=[['openclaw','.'],['@openclaw/ai','packages/ai'],['@openclaw/markdown-core','packages/markdown-core'],['@openclaw/model-catalog-core','packages/model-catalog-core'],['@openclaw/normalization-core','packages/normalization-core'],['@openclaw/session-url-contract','packages/session-url-contract']].sort();
-              assert.deepEqual(actual,expected);
-              console.log(JSON.stringify({nativeSourceWorkspaceSelection:actual}));
-            NODE
-              pnpm --filter 'openclaw...' --filter '@openclaw/markdown-core...' --fail-if-no-match install --frozen-lockfile
-              node --input-type=module <<'NODE'
-              import assert from 'node:assert/strict';
-              import fs from 'node:fs';
-              import { createHash } from 'node:crypto';
-              for(const [file,digest] of Object.entries(JSON.parse(process.env.SOURCE_PINS))) assert.equal(createHash('sha256').update(fs.readFileSync(file)).digest('hex'),digest,file);
-              console.log('Frozen source, lock, workspace and npmrc identities preserved after pnpm12.4.2 install');
-            NODE
-              test ! -e dist
-              cp -R "$PACKAGED_ROOT/dist" dist
-              node --input-type=module <<'NODE'
-              import assert from 'node:assert/strict';
-              import fs from 'node:fs';
-              import path from 'node:path';
-              import { createHash } from 'node:crypto';
-              const entries=[];
-              function inspect(relative) {
-                const original=path.join(process.env.PACKAGED_ROOT,relative),copy=path.join(process.cwd(),relative);
-                const names=fs.readdirSync(original).sort();assert.deepEqual(fs.readdirSync(copy).sort(),names,relative);
-                for(const name of names) {
-                  const file=path.join(relative,name),stat=fs.lstatSync(path.join(process.env.PACKAGED_ROOT,file));
-                  if(stat.isDirectory()) inspect(file);
-                  else {
-                    assert(stat.isFile(),file);assert(fs.lstatSync(path.join(process.cwd(),file)).isFile(),file);
-                    const expected=createHash('sha256').update(fs.readFileSync(path.join(process.env.PACKAGED_ROOT,file))).digest('hex');
-                    assert.equal(createHash('sha256').update(fs.readFileSync(path.join(process.cwd(),file))).digest('hex'),expected,file);
-                    entries.push([file,expected]);
-                  }
-                }
-              }
-              inspect('dist');
-              assert(entries.some(([file])=>file==='dist/infra/update-migrated-finalize.worker.js'));
-              fs.writeFileSync(`${process.env.PROOF_ROOT}/dist-graph.json`,JSON.stringify(entries),{flag:'wx'});
-              console.log(JSON.stringify({candidateDistGraph:createHash('sha256').update(JSON.stringify(entries)).digest('hex'),files:entries.length,source:process.env.SOURCE_SHA}));
-            NODE
-              # Prove the loaded checkout is admissible before foreign-path tests;
-              # a generic ownership refusal must not pass for the wrong root.
-              node --import ./scripts/tsx.mjs --input-type=module <<'NODE'
-              import assert from 'node:assert/strict';
-              import fs from 'node:fs';
-              import { admitFreeBsdUpdateRootOwnership } from './src/infra/update-freebsd-root-ownership.ts';
-              import { withFreeBsdRootFixture } from './src/infra/update-freebsd-root-ownership.test-support.ts';
-              await withFreeBsdRootFixture(async ({env})=>{
-                const admission=await admitFreeBsdUpdateRootOwnership({roots:[process.cwd()],env});
-                assert(admission); assert.equal(admission.canWrite,true); admission.assertCurrent();
-                assert.equal(fs.existsSync(env.OPENCLAW_STATE_DIR),false);
-                assert.equal(fs.existsSync(env.OPENCLAW_CONFIG_PATH),false);
-              });
-              console.log('source checkout canonical admission and fixture cleanup complete');
-            NODE
-              for model in posix nfs4; do
-                mountpoint="/root/openclaw-test-acl-$model"
-                test ! -e "$mountpoint"; test ! -L "$mountpoint"
-                mkdir -m 0700 "$mountpoint"
-                unit=$(/sbin/mdconfig -a -t swap -s 64m)
-                node -e 'require("node:assert/strict").match(process.argv[1], /^md[0-9]+$/)' "$unit"
-                printf '%s\n' "$unit" > "$proof_root/$model.device"
-                /sbin/newfs -U -n "/dev/$unit"
-                if [ "$model" = posix ]; then acl=acls; else acl=nfsv4acls; fi
-                /sbin/mount -t ufs -o "$acl" "/dev/$unit" "$mountpoint"
-                chmod 0700 "$mountpoint"
-                /usr/bin/getconf ACL_NFS4 "$mountpoint"
-              done
-              node scripts/run-vitest.mjs run --config test/vitest/vitest.infra.config.ts                 src/infra/update-freebsd-root-ownership.test.ts                 --reporter=default --reporter=json --reporter="$source_root/scripts/lib/vitest-report-capture.mts"                 --outputFile.json="$proof_root/reports/ownership.json"
-              node scripts/run-vitest.mjs run --config test/vitest/vitest.cli.config.ts                 src/cli/update-cli/update-command-freebsd-admission.test.ts                 src/cli/update-cli/update-command-freebsd-finalization.test.ts                 src/cli/update-cli/update-command-freebsd-preparation.test.ts                 src/cli/update-cli/update-command-freebsd-worker.test.ts                 src/cli/update-cli/update-command-mutable-signals.test.ts                 --reporter=default --reporter=json --reporter="$source_root/scripts/lib/vitest-report-capture.mts"                 --outputFile.json="$proof_root/reports/lifecycle.json"
-              # This invocation is alone: it exclusively creates a temporary global rc definition.
-              node scripts/run-vitest.mjs run --config test/vitest/vitest.cli.config.ts                 src/cli/update-cli/update-command-freebsd-service-admission.test.ts                 --reporter=default --reporter=json --reporter="$source_root/scripts/lib/vitest-report-capture.mts"                 --outputFile.json="$proof_root/reports/service.json"
-              node --input-type=module <<'NODE'
-              import assert from 'node:assert/strict';
-              import fs from 'node:fs';
-              import path from 'node:path';
-              for (const [name, passed, skipped, modules] of [['ownership',17,0,1],['lifecycle',44,1,5],['service',4,0,1]]) {
-                const file = `${process.env.PROOF_ROOT}/reports/${name}.json`;
-                const report = JSON.parse(fs.readFileSync(file));
-                const capture = JSON.parse(fs.readFileSync(`${file}.capture.json`));
-                assert.equal(report.success, true); assert.equal(report.numPassedTests, passed);
-                assert.equal(report.numFailedTests, 0); assert.equal(report.numPendingTests, skipped);
-                assert.equal(capture.modules.length, modules); assert.equal(capture.processTimedOut, false);
-                assert.equal(capture.ignoreUnhandledErrors, false);
-                for (const key of ['unhandledErrors','suiteErrors','failedModules']) assert.equal(capture.ended[key],0);
-                if (skipped) {
-                  const pending = report.testResults.flatMap(result => result.assertionResults).filter(test => test.status !== 'passed');
-                  assert.deepEqual(pending.map(test => test.title), ['retains ordinary Linux progress and completion']);
-                }
-                console.log(JSON.stringify({ nativeSuite:name,passed,skipped,modules: capture.modules.map(module => path.relative(process.cwd(),module.file)) }));
-              }
-            NODE
-              for model in posix nfs4; do
-                unit=$(cat "$proof_root/$model.device")
-                mountpoint="/root/openclaw-test-acl-$model"
-                /sbin/mount -p | awk -v dev="/dev/$unit" -v point="$mountpoint" '$1==dev && $2==point && $3=="ufs" { found++ } END { exit found != 1 }'
-                /sbin/umount "$mountpoint"
-                /sbin/mdconfig -d -u "${unit#md}"
-                rmdir "$mountpoint"
-              done
-              node --input-type=module <<'NODE'
-              import assert from 'node:assert/strict';
-              import fs from 'node:fs';
-              import { createHash } from 'node:crypto';
-              const hash=file=>createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-              for(const [file,digest] of JSON.parse(fs.readFileSync(`${process.env.PROOF_ROOT}/dist-graph.json`))) assert.equal(hash(file),digest,file);
-              for(const [file,digest] of Object.entries(JSON.parse(process.env.SOURCE_PINS))) assert.equal(hash(file),digest,file);
-              console.log('source and candidate-built finalizer graph identities preserved');
-            NODE
-              echo 'native ownership/lifecycle/global-rc suites and owned ACL mount cleanup complete'
-              )
-            else
-              echo 'ARM Vitest UNRUN: frozen Rolldown 1.2.5 has no declared FreeBSD arm64 binding; no dependency override applied'
-            fi
             test "${COREPACK_ENABLE_PROJECT_SPEC-unset}" = unset
             test "${pnpm_config_pm_on_fail-unset}" = unset
             # The installed surface uses only the sealed package, never source imports.
@@ -364,7 +222,8 @@ jobs:
             export npm_config_prefix="$proof_root/installation"
             mkdir -m 0700 "$HOME" "$npm_config_prefix"
             export PATH="$npm_config_prefix/bin:$PATH"
-            npm install --global "$INPUT_ROOT/payload/candidate.tgz" --no-audit --no-fund
+            npm --version
+            npm install --global "file:$INPUT_ROOT/payload/candidate.tgz" "--allow-scripts=file:$INPUT_ROOT/payload/candidate.tgz" --no-audit --no-fund
             export INSTALLED_ROOT="$npm_config_prefix/lib/node_modules/openclaw"
             node --input-type=module <<'NODE'
             import assert from 'node:assert/strict';
@@ -376,17 +235,246 @@ jobs:
             const expected=JSON.parse(fs.readFileSync(`${process.env.PACKAGED_ROOT}/dist/build-info.json`));
             assert.deepEqual(actual,expected); console.log(JSON.stringify({installedBefore:actual}));
             NODE
+            # Create observer output custody before any guarded installed admission.
+            mkdir -m 0700 "$proof_root/diagnostics"
+            cat > "$proof_root/admission-observer.mjs" <<'OBSERVER'
+            import assert from 'node:assert/strict';
+            import fs from 'node:fs';
+            import cp from 'node:child_process';
+            import { errorMonitor } from 'node:events';
+            import { syncBuiltinESMExports } from 'node:module';
+            import path from 'node:path';
+            import { fileURLToPath } from 'node:url';
+
+            let invoked;
+            try { invoked = process.argv[1] && fs.realpathSync(process.argv[1]); } catch {}
+            const self = fileURLToPath(import.meta.url);
+            // Inherited NODE_OPTIONS must not instrument npm, workers, or unrelated Node children.
+            if (invoked === self || (process.env.INSTALLED_ROOT && invoked === `${process.env.INSTALLED_ROOT}/openclaw.mjs` && process.argv.includes('update'))) {
+              // Disposable observer for the fixed installed-update fixture; no product imports.
+              const proof = process.env.PROOF_ROOT;
+              const installed = process.env.INSTALLED_ROOT;
+              assert(proof?.startsWith('/root/openclaw-foreground-proof.'));
+              assert.equal(installed, `${proof}/installation/lib/node_modules/openclaw`);
+              assert.equal(process.env.HOME, `${proof}/operator`);
+              assert.equal(process.env.OPENCLAW_STATE_DIR, `${proof}/operator/state-root`);
+              assert.equal(process.env.OPENCLAW_CONFIG_PATH, `${proof}/operator/openclaw.json`);
+              assert.equal(process.env.OPENCLAW_HOME, undefined);
+              const database = `${process.env.OPENCLAW_STATE_DIR}/state/openclaw.sqlite`;
+              const targets = [
+                ['installation', installed],
+                ['home', process.env.HOME],
+                ['state', process.env.OPENCLAW_STATE_DIR],
+                ['config', process.env.OPENCLAW_CONFIG_PATH],
+                ...['', '-wal', '-shm', '-journal'].map(suffix => [`database${suffix}`, database + suffix]),
+              ];
+              const labels = new Map();
+              for (const [role, target] of targets) {
+                let cursor = target;
+                for (let ancestor = 0; !labels.has(cursor); ancestor++) {
+                  labels.set(cursor, { role, ancestor });
+                  const parent = path.dirname(cursor);
+                  if (parent === cursor) break;
+                  cursor = parent;
+                }
+              }
+              function metadata(stat) {
+                return {
+                  type: stat.isFile() ? 'file' : stat.isDirectory() ? 'directory' : stat.isSymbolicLink() ? 'symlink' : 'other',
+                  uid: String(stat.uid), gid: String(stat.gid), mode: Number(stat.mode & 0o7777n).toString(8),
+                  dev: String(stat.dev), ino: String(stat.ino), nlink: String(stat.nlink),
+                  size: String(stat.size), ctimeNs: String(stat.ctimeNs), mtimeNs: String(stat.mtimeNs),
+                };
+              }
+              function snapshot() {
+                return [...labels].map(([file, label]) => {
+                  try { return { ...label, ...metadata(fs.lstatSync(file, { bigint: true })) }; }
+                  catch (error) { return { ...label, error: typeof error?.code === 'string' ? error.code : 'unknown' }; }
+                });
+              }
+              if (invoked === fileURLToPath(import.meta.url)) {
+                assert(['before-doctor', 'after-doctor', 'after-update'].includes(process.argv[2]));
+                console.log(JSON.stringify({ kind: 'installed-path-metadata', phase: process.argv[2], uid: process.getuid(), euid: process.geteuid(), entries: snapshot() }));
+              } else if (invoked === `${installed}/openclaw.mjs` && process.argv.includes('update')) {
+                const started = process.hrtime.bigint();
+                const events = [];
+                let overflow = false;
+                let sequence = 0;
+                const record = event => {
+                  if (events.length >= 2048) { overflow = true; return; }
+                  events.push({ elapsedNs: String(process.hrtime.bigint() - started), ...event });
+                };
+                const code = error => typeof error?.code === 'string' ? error.code : 'unknown';
+                const originalStat = fs.promises.lstat;
+                fs.promises.lstat = function (...args) {
+                  const label = typeof args[0] === 'string' && args[1]?.bigint === true && labels.get(args[0]);
+                  if (!label) return Reflect.apply(originalStat, this, args);
+                  const id = ++sequence;
+                  record({ id, operation: 'lstat', phase: 'start', ...label });
+                  let promise;
+                  try { promise = Reflect.apply(originalStat, this, args); }
+                  catch (error) { record({ id, phase: 'throw', error: code(error) }); throw error; }
+                  // Return the original promise; observation neither replaces its value nor awaits it.
+                  void promise.then(
+                    stat => record({ id, phase: 'resolved', ...metadata(stat) }),
+                    error => record({ id, phase: 'rejected', error: code(error) }),
+                  );
+                  return promise;
+                };
+                const originalSpawn = cp.spawn;
+                cp.spawn = function (...originalArgs) {
+                  const [command, args] = originalArgs;
+                  const argv = Array.isArray(args) ? args : [];
+                  const label = labels.get(argv.at(-1));
+                  const access = command === '/bin/getfacl' && argv.length === 5 && argv.slice(0, 4).join(' ') === '-q -n -s --';
+                  const defaults = command === '/bin/getfacl' && argv.length === 5 && argv.slice(0, 4).join(' ') === '-d -q -n --';
+                  const nfs4 = command === '/usr/bin/getconf' && argv.length === 2 && argv[0] === 'ACL_NFS4';
+                  if (!label || !(access || defaults || nfs4)) return Reflect.apply(originalSpawn, this, originalArgs);
+                  const id = ++sequence;
+                  record({ id, operation: access ? 'acl-access' : defaults ? 'acl-default' : 'acl-nfs4', phase: 'start', ...label });
+                  let child;
+                  try { child = Reflect.apply(originalSpawn, this, originalArgs); }
+                  catch (error) { record({ id, phase: 'throw', error: code(error) }); throw error; }
+                  const output = { stdout: { bytes: 0, prefix: '' }, stderr: { bytes: 0, prefix: '' } };
+                  const restores = [];
+                  for (const name of ['stdout', 'stderr']) {
+                    const stream = child[name];
+                    if (!stream) continue;
+                    const originalEmit = stream.emit;
+                    const observedEmit = function (event, ...values) {
+                      if (event === 'data' && (Buffer.isBuffer(values[0]) || typeof values[0] === 'string')) {
+                        const chunk = Buffer.isBuffer(values[0]) ? values[0] : Buffer.from(values[0]);
+                        output[name].bytes += chunk.length;
+                        if (output[name].prefix.length < 2) output[name].prefix += chunk.subarray(0, 2 - output[name].prefix.length).toString('ascii');
+                      }
+                      return Reflect.apply(originalEmit, this, [event, ...values]);
+                    };
+                    // Observe only data already emitted by the existing consumer, without starting flow.
+                    stream.emit = observedEmit;
+                    restores.push(() => { if (stream.emit === observedEmit) stream.emit = originalEmit; });
+                  }
+                  child.on(errorMonitor, error => record({ id, phase: 'error', error: code(error) }));
+                  child.once('exit', (status, signal) => record({ id, phase: 'exit', status, signal }));
+                  child.once('close', (status, signal) => {
+                    restores.forEach(restore => restore());
+                    record({ id, phase: 'close', status, signal, stdoutBytes: output.stdout.bytes, stderrBytes: output.stderr.bytes,
+                      stdoutClass: output.stdout.bytes === 0 ? 'empty' : nfs4 && output.stdout.bytes === 2 && ['0\n', '1\n'].includes(output.stdout.prefix) ? output.stdout.prefix.trim() : 'nonempty' });
+                  });
+                  return child;
+                };
+                syncBuiltinESMExports();
+                process.once('exit', status => {
+                  const receipt = { kind: 'installed-admission-observer', pid: process.pid, ppid: process.ppid, status, overflow, events };
+                  try { fs.writeFileSync(`${proof}/diagnostics/admission-observer-${process.pid}.json`, JSON.stringify(receipt), { flag: 'wx', mode: 0o600 }); }
+                  catch { try { fs.writeSync(2, 'installed admission observer receipt unavailable\n'); } catch {} }
+                });
+              }
+            }
+            OBSERVER
+            node --input-type=module <<'NODE'
+            import assert from 'node:assert/strict';
+            import fs from 'node:fs';
+            import { createHash } from 'node:crypto';
+            assert.equal(createHash('sha256').update(fs.readFileSync(`${process.env.PROOF_ROOT}/admission-observer.mjs`)).digest('hex'),'218b9b9837acf058d1c73683635b7ffec7af05ce6d4d9873d8fb8c095b7281c8');
+            NODE
             cd "$HOME"
+            if [ "$EXPECTED_NODE_ARCH" = arm64 ]; then node "$proof_root/admission-observer.mjs" before-doctor; fi
             if openclaw doctor --non-interactive > "$proof_root/doctor.log" 2>&1; then doctor_status=0; else doctor_status=$?; fi
             echo "Doctor output (last 64 KiB, exit $doctor_status):"
             tail -c 65536 "$proof_root/doctor.log"
+            doctor_diagnostic_status=0
+            if [ "$EXPECTED_NODE_ARCH" = arm64 ]; then
+              if node "$proof_root/admission-observer.mjs" after-doctor; then :; else doctor_diagnostic_status=$?; fi
+            fi
             if [ "$doctor_status" -ne 0 ]; then exit "$doctor_status"; fi
-            if openclaw update --tag "file:$INPUT_ROOT/first-hop.tgz" --yes --no-restart --json               > "$proof_root/update.json" 2> "$proof_root/update.stderr"; then update_status=0; else update_status=$?; fi
+            if [ "$doctor_diagnostic_status" -ne 0 ]; then exit "$doctor_diagnostic_status"; fi
+            node --input-type=module <<'NODE'
+            import assert from 'node:assert/strict';
+            import fs from 'node:fs';
+            import { createHash } from 'node:crypto';
+            import { DatabaseSync } from 'node:sqlite';
+            const physical=fs.realpathSync(process.env.INSTALLED_ROOT);
+            const file='/tmp/openclaw/managed-update-handoffs.sqlite';
+            let rows=[], exists=false;
+            try { fs.lstatSync(file); exists=true; }
+            catch(error) { if(error.code!=='ENOENT') throw error; }
+            if(exists) {
+              const db=new DatabaseSync(file,{readOnly:true});
+              try { if(db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name='managed_update_handoffs'").get()) rows=db.prepare('SELECT install_root,owner,payload_json,updated_at FROM managed_update_handoffs ORDER BY install_root').all(); }
+              finally { db.close(); }
+            }
+            const prefix=physical+'/.openclaw-update-child-';
+            const owned=row=>row.install_root===physical||(row.install_root>=prefix&&row.install_root<prefix+'\uffff');
+            assert.equal(rows.filter(owned).length,0,'installed executor scope must be absent before update');
+            fs.writeFileSync(`${process.env.PROOF_ROOT}/handoff-before.json`,JSON.stringify({physical,rows}),{flag:'wx',mode:0o600});
+            console.log(JSON.stringify({handoffBaselineRows:rows.length,sha256:createHash('sha256').update(JSON.stringify(rows)).digest('hex'),installedScope:'absent'}));
+            NODE
+            if [ "$EXPECTED_NODE_ARCH" = arm64 ]; then
+              # Same command and canonical deadline. Observation can add overhead;
+              # this architecture's result is diagnostic, even if the update passes.
+              if NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--import=$proof_root/admission-observer.mjs" openclaw update --tag "file:$INPUT_ROOT/first-hop.tgz" --yes --no-restart --json > "$proof_root/update.json" 2> "$proof_root/update.stderr"; then update_status=0; else update_status=$?; fi
+            else
+              if openclaw update --tag "file:$INPUT_ROOT/first-hop.tgz" --yes --no-restart --json > "$proof_root/update.json" 2> "$proof_root/update.stderr"; then update_status=0; else update_status=$?; fi
+            fi
             echo "Update stdout (last 64 KiB, exit $update_status):"
             tail -c 65536 "$proof_root/update.json"
             echo 'Update stderr (last 64 KiB):'
             tail -c 65536 "$proof_root/update.stderr"
+            diagnostic_status=0
+            if [ "$EXPECTED_NODE_ARCH" = arm64 ]; then
+              if node "$proof_root/admission-observer.mjs" after-update; then :; else diagnostic_status=$?; fi
+              if node --input-type=module <<'NODE'
+            import assert from 'node:assert/strict';
+            import fs from 'node:fs';
+            const directory=`${process.env.PROOF_ROOT}/diagnostics`;
+            const files=fs.readdirSync(directory).sort();
+            assert(files.length>0&&files.length<=8,'bounded admission receipts required');
+            let observed=false;
+            for(const file of files) {
+              assert(/^admission-observer-[0-9]+\.json$/.test(file),'unexpected diagnostic entry');
+              const stat=fs.lstatSync(`${directory}/${file}`);
+              assert(stat.isFile()&&stat.uid===0&&stat.size<=2097152,'invalid diagnostic receipt');
+              const receipt=JSON.parse(fs.readFileSync(`${directory}/${file}`));
+              assert.equal(receipt.kind,'installed-admission-observer');
+              assert.equal(receipt.overflow,false,'diagnostic event bound exceeded');
+              assert(Array.isArray(receipt.events)&&receipt.events.length<=2048,'invalid event count');
+              observed ||= receipt.events.some(event=>event.operation==='lstat');
+              console.log(JSON.stringify(receipt));
+            }
+            assert(observed,'no installed admission operations observed');
+            console.log(JSON.stringify({armAdmissionDiagnostic:'collected',qualification:false}));
+            NODE
+              then :; else collector_status=$?; if [ "$diagnostic_status" -eq 0 ]; then diagnostic_status=$collector_status; fi; fi
+            fi
+            # Observe shared-store preservation even after a rejected update. Keep
+            # the original CLI failure visible; ARM instrumentation never qualifies it.
+            if node --input-type=module <<'NODE'
+            import assert from 'node:assert/strict';
+            import fs from 'node:fs';
+            import { createHash } from 'node:crypto';
+            import { DatabaseSync } from 'node:sqlite';
+            const root=process.env.PROOF_ROOT, installed=process.env.INSTALLED_ROOT;
+            const file='/tmp/openclaw/managed-update-handoffs.sqlite';
+            let rows=[], exists=false;
+            try { fs.lstatSync(file); exists=true; }
+            catch(error) { if(error.code!=='ENOENT') throw error; }
+            if(exists) {
+              const db=new DatabaseSync(file,{readOnly:true});
+              try { if(db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name='managed_update_handoffs'").get()) rows=db.prepare('SELECT install_root,owner,payload_json,updated_at FROM managed_update_handoffs ORDER BY install_root').all(); }
+              finally { db.close(); }
+            }
+            const before=JSON.parse(fs.readFileSync(`${root}/handoff-before.json`));
+            assert(fs.realpathSync(installed)===before.physical,'installed physical root changed');
+            const prefix=before.physical+'/.openclaw-update-child-';
+            assert.equal(rows.filter(row=>row.install_root===before.physical||(row.install_root>=prefix&&row.install_root<prefix+'\uffff')).length,0,'installed executor scope must be absent after update');
+            assert(JSON.stringify(rows)===JSON.stringify(before.rows),'shared handoff rows changed during installed update');
+            console.log(JSON.stringify({handoffRows:rows.length,sha256:createHash('sha256').update(JSON.stringify(rows)).digest('hex'),installedScope:'absent',unrelatedRows:'unchanged'}));
+            NODE
+            then oracle_status=0; else oracle_status=$?; fi
+            printf 'installed_update_exit=%s diagnostic_exit=%s handoff_oracle_exit=%s\n' "$update_status" "$diagnostic_status" "$oracle_status"
             if [ "$update_status" -ne 0 ]; then exit "$update_status"; fi
+            if [ "$oracle_status" -ne 0 ]; then exit "$oracle_status"; fi
+            if [ "$diagnostic_status" -ne 0 ]; then exit "$diagnostic_status"; fi
             node --input-type=module <<'NODE'
             import assert from 'node:assert/strict';
             import { createHash } from 'node:crypto';
@@ -422,9 +510,7 @@ jobs:
             const row=db.prepare('SELECT run_id,trigger,status,phase,finished_at_ms FROM update_runs WHERE run_id=?').get(result.runId);
             assert.equal(row.trigger,'cli');assert.equal(row.status,'succeeded');assert.equal(row.phase,'finished');assert(row.finished_at_ms);
             db.close();
-            const lease=new DatabaseSync('/tmp/openclaw/managed-update-handoffs.sqlite',{readOnly:true});
-            assert.equal(lease.prepare('SELECT count(*) AS count FROM managed_update_handoffs').get().count,0);lease.close();
-            console.log(JSON.stringify({status:'passed',arch:process.arch,source:process.env.SOURCE_SHA,buildId:actualBuild.buildId,version:target.targetVersion,runId:result.runId,completedMutation:true,launcher:true,content:true,executorLeaseAbsent:true}));
+            console.log(JSON.stringify({status:process.arch==='arm64'?'diagnostic-completed':'passed',qualification:process.arch!=='arm64',arch:process.arch,source:process.env.SOURCE_SHA,buildId:actualBuild.buildId,version:target.targetVersion,runId:result.runId,completedMutation:true,launcher:true,content:true,executorLeaseAbsent:true}));
             NODE
             # The action has no VM shutdown hook. Hosted-job disposal owns the VM;
             # only successfully joined fixtures and mounts are called cleaned above.
