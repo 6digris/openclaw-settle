@@ -7,6 +7,7 @@ import { withOpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveFeishuAccount } from "./accounts.js";
 import { createFeishuBroadcastIngressSettlement } from "./bot-broadcast.js";
+import { createFeishuCardInteractionEnvelope } from "./card-interaction.js";
 import type { FeishuMessageProcessingClaim } from "./dedup.js";
 import type { FeishuIngressLifecycle } from "./feishu-ingress.js";
 import { monitorSingleAccount } from "./monitor.account.js";
@@ -322,7 +323,19 @@ describe("Feishu account replay work ownership", () => {
             ? {
                 token: `fixture-${kind}-settlement`,
                 operator: { open_id: "fixture-user" },
-                action: { tag: "button", value: { text: "/help" } },
+                action: {
+                  tag: "button",
+                  value: createFeishuCardInteractionEnvelope({
+                    k: "quick",
+                    a: "help",
+                    q: "/help",
+                    c: {
+                      u: "fixture-user",
+                      h: `oc-${kind}-settlement`,
+                      e: Date.now() + 60_000,
+                    },
+                  }),
+                },
                 context: { chat_id: `oc-${kind}-settlement` },
               }
             : {
