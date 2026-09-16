@@ -112,6 +112,8 @@ type StatusArgs = {
   resolvedVerbose?: VerboseLevel;
   resolvedReasoning?: ReasoningLevel;
   resolvedElevated?: ElevatedLevel;
+  /** Diagnostic setting and caller-effective state; not an execution grant. */
+  elevatedStatus?: { setting: ElevatedLevel; effective: ElevatedLevel | "unknown" };
   modelAuth?: string;
   activeModelAuth?: string;
   activeModel?: { modelProvider: string; model: string };
@@ -856,8 +858,9 @@ export function buildStatusMessageParts(args: StatusArgs): StatusMessageParts {
     pluginStatusLines.length > 0 || pluginTraceLines.length > 0
       ? [...pluginStatusLines, ...pluginTraceLines].join(" · ")
       : null;
-  const elevatedLabel =
-    elevatedLevel && elevatedLevel !== "off"
+  const elevatedLabel = args.elevatedStatus
+    ? `elevated setting:${args.elevatedStatus.setting} effective:${args.elevatedStatus.effective}`
+    : elevatedLevel && elevatedLevel !== "off"
       ? elevatedLevel === "on"
         ? "elevated"
         : `elevated:${elevatedLevel}`

@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { MsgContext } from "../templating.js";
+import type { ElevatedLevel } from "../thinking.js";
 import { resolveEffectiveElevatedState } from "./reply-elevated.js";
 
 function buildConfig(allowFrom: string[]): OpenClawConfig {
@@ -120,7 +121,13 @@ describe("resolveEffectiveElevatedState permissions", () => {
 });
 
 describe("resolveEffectiveElevatedState", () => {
-  it.each([
+  it.each<{
+    name: string;
+    configured?: ElevatedLevel;
+    session?: ElevatedLevel;
+    requested?: ElevatedLevel;
+    expected: ElevatedLevel;
+  }>([
     { name: "published default", expected: "on" },
     { name: "configured default", configured: "ask", expected: "ask" },
     { name: "session override", configured: "ask", session: "full", expected: "full" },
@@ -146,6 +153,39 @@ describe("resolveEffectiveElevatedState", () => {
 
     expect(result.currentLevel).toBe(session ?? configured ?? "on");
     expect(result.level).toBe(expected);
+  });
+
+  it("keeps missing matcher identity unknown without granting execution", () => {
+    const result = resolveEffectiveElevatedState({
+      cfg: buildConfig(["username:owner"]),
+      agentId: "main",
+      provider: "whatsapp",
+      ctx: buildContext(),
+      sessionEntry: { elevatedLevel: "full" },
+    });
+    expect(result).toMatchObject({
+      allowed: false,
+      level: "off",
+      status: { setting: "full", effective: "unknown" },
+    });
+  });
+
+  it("lets a known agent denial outrank missing global identity", () => {
+    const cfg = buildConfig(["username:owner"]);
+    cfg.agents = {
+      entries: { main: { tools: { elevated: { allowFrom: { whatsapp: [] } } } } },
+    };
+    const result = resolveEffectiveElevatedState({
+      cfg,
+      agentId: "main",
+      provider: "whatsapp",
+      ctx: buildContext(),
+    });
+    expect(result).toMatchObject({
+      allowed: false,
+      level: "off",
+      status: { setting: "on", effective: "off" },
+    });
   });
 
   it("forces denied senders off", () => {

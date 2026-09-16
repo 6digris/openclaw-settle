@@ -20,7 +20,7 @@ export type ResolveDirectStatusReplyForSessionParams = {
   sessionKey: string;
   /** Channel/surface name used when rendering the status command context. */
   channel: string;
-  /** Optional sender id for command-context rendering and audit output. */
+  /** Trusted sender id for caller-effective elevation. Omission may report unknown. */
   senderId?: string;
   /** Trusted channel sender fields used by explicit elevated allowlist matchers. */
   senderName?: string;
@@ -116,7 +116,7 @@ export async function resolveDirectStatusReplyForSessionCore(
     ctx: statusContext,
     sessionKey: statusSessionKey,
   });
-  const resolvedElevatedLevel = resolveEffectiveElevatedState({
+  const elevated = resolveEffectiveElevatedState({
     cfg: statusCfg,
     agentId: statusAgentId,
     ctx: statusContext,
@@ -124,7 +124,7 @@ export async function resolveDirectStatusReplyForSessionCore(
     sessionEntry: statusEntry,
     sessionKey: statusSessionKey,
     classificationSessionKey,
-  }).level;
+  });
   const thinkingCatalog = await modelState.resolveThinkingCatalog();
   let resolvedReasoningLevel = currentReasoningLevel;
   const hasAgentReasoningDefault =
@@ -171,7 +171,8 @@ export async function resolveDirectStatusReplyForSessionCore(
     resolvedFastMode: currentFastMode,
     resolvedVerboseLevel: currentVerboseLevel ?? "off",
     resolvedReasoningLevel,
-    resolvedElevatedLevel,
+    resolvedElevatedLevel: elevated.status.effective === "unknown" ? undefined : elevated.level,
+    elevatedStatus: elevated.status,
     resolveDefaultThinkingLevel: () => modelState.resolveDefaultThinkingLevel(),
     isGroup: params.isGroup,
     defaultGroupActivation: params.defaultGroupActivation,

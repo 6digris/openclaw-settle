@@ -281,6 +281,7 @@ function createCommandsStatusRuntimeModuleMock() {
       includeTranscriptUsage?: boolean;
       taskLineOverride?: string;
       resolvedElevatedLevel?: ElevatedLevel;
+      elevatedStatus?: { setting: ElevatedLevel; effective: ElevatedLevel | "unknown" };
       resolveDefaultThinkingLevel?: () => unknown;
     }) => {
       resolveQueueSettingsMock({
@@ -321,6 +322,7 @@ function createCommandsStatusRuntimeModuleMock() {
         includeTranscriptUsage: params.includeTranscriptUsage,
         workspaceDir: params.workspaceDir,
         resolvedElevated: params.resolvedElevatedLevel,
+        elevatedStatus: params.elevatedStatus,
       });
       return formatStatusLines(primary, params.taskLineOverride);
     },
@@ -1175,6 +1177,7 @@ describe("session_status tool", () => {
       },
       [targetKey]: {
         sessionId: "s-target",
+        elevatedLevel: "full",
         updatedAt: 10,
         delivery: normalizeSessionDeliveryState({
           context: {
@@ -1189,9 +1192,15 @@ describe("session_status tool", () => {
       tools: { sessions: { visibility: "all" }, agentToAgent: { enabled: true, allow: ["*"] } },
     };
 
+    mockConfig.tools = {
+      elevated: { allowFrom: { discord: ["owner"] } },
+      sessions: { visibility: "all" },
+      agentToAgent: { enabled: true, allow: ["*"] },
+    };
     const tool = createSessionStatusTool({
       agentSessionKey: currentKey,
       runSessionKey: currentKey,
+      activeElevatedLevel: "full",
       activeDeliveryContext: {
         channel: "webchat",
         to: "control-ui-conversation",
@@ -1201,6 +1210,10 @@ describe("session_status tool", () => {
 
     const result = await tool.execute("call-explicit-non-live-route-context", {
       sessionKey: targetKey,
+    });
+    expect(mockCallArg(buildStatusMessageMock)).toMatchObject({
+      resolvedElevated: undefined,
+      elevatedStatus: { setting: "full", effective: "unknown" },
     });
     const details = result.details as {
       origin?: { provider?: string };

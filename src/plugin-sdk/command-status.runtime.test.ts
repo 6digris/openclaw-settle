@@ -255,6 +255,60 @@ describe("resolveDirectStatusReplyForSessionCore", () => {
     expectResolvedReasoningLevel(result, "stream");
   });
 
+  it.each([
+    { name: "missing identity", senderId: undefined, allowFrom: ["owner"], effective: "unknown" },
+    { name: "authorized caller", senderId: "owner", allowFrom: ["owner"], effective: "full" },
+    { name: "denied caller", senderId: "other", allowFrom: ["owner"], effective: "off" },
+    { name: "wildcard", senderId: undefined, allowFrom: ["*"], effective: "full" },
+    {
+      name: "disabled",
+      senderId: undefined,
+      allowFrom: ["owner"],
+      enabled: false,
+      effective: "off",
+    },
+    {
+      name: "required sandbox",
+      senderId: undefined,
+      allowFrom: ["*"],
+      sandbox: "required",
+      effective: "off",
+    },
+    { name: "empty allowlist", senderId: undefined, allowFrom: [], effective: "off" },
+  ] as const)("separates configured and effective elevation for $name", async (testCase) => {
+    loadSessionEntry.mockReturnValue({
+      cfg: {
+        tools: {
+          elevated: {
+            enabled: "enabled" in testCase ? testCase.enabled : true,
+            allowFrom: { discord: [...testCase.allowFrom] },
+          },
+        },
+      },
+      canonicalKey: "main",
+      entry: {
+        sessionId: "sess-main",
+        elevatedLevel: "full",
+        ...("sandbox" in testCase ? { sandbox: testCase.sandbox } : {}),
+      },
+      store: {},
+      storePath: "/tmp/sessions.sqlite",
+    });
+    const result = await resolveDirectStatusReplyForSessionCore({
+      cfg: {},
+      sessionKey: "main",
+      channel: "discord",
+      senderId: testCase.senderId,
+      senderIsOwner: true,
+      isAuthorizedSender: true,
+      isGroup: false,
+      defaultGroupActivation: () => "always",
+    });
+    expect(result).toMatchObject({
+      elevatedStatus: { setting: "full", effective: testCase.effective },
+    });
+  });
+
   it("uses the sender-aware effective elevated level", async () => {
     loadSessionEntry.mockReturnValue({
       cfg: { tools: { elevated: { allowFrom: { discord: ["owner"] } } } },

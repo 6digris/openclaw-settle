@@ -64,7 +64,7 @@ function isApprovedElevatedSender(params: {
   formatAllowFrom: AllowFromFormatter;
   allowFrom?: AgentElevatedAllowFromConfig;
   fallbackAllowFrom?: Array<string | number>;
-}): boolean {
+}): boolean | "unknown" {
   const rawAllow = resolveElevatedAllowList(
     params.allowFrom,
     params.provider,
@@ -154,9 +154,19 @@ function isApprovedElevatedSender(params: {
     tag: (value) => matchesMutableTokens(value, senderTagTokens),
   };
 
+  const fieldAvailable: Record<ExplicitElevatedAllowField, boolean> = {
+    id: senderIdTokens.size > 0,
+    from: senderFromTokens.size > 0,
+    e164: senderE164Tokens.size > 0,
+    name: senderNameTokens.size > 0,
+    username: senderUsernameTokens.size > 0,
+    tag: senderTagTokens.size > 0,
+  };
+  let missingIdentity = false;
   for (const entry of allowTokens) {
     const explicitEntry = parseExplicitElevatedAllowEntry(entry);
     if (!explicitEntry) {
+      missingIdentity ||= senderIdentityTokens.size === 0;
       if (
         matchesFormattedTokens({
           formatAllowFrom: params.formatAllowFrom,
@@ -169,13 +179,14 @@ function isApprovedElevatedSender(params: {
       }
       continue;
     }
+    missingIdentity ||= !fieldAvailable[explicitEntry.field];
     const matchesExplicitField = explicitFieldMatchers[explicitEntry.field];
     if (matchesExplicitField(explicitEntry.value)) {
       return true;
     }
   }
 
-  return false;
+  return missingIdentity ? "unknown" : false;
 }
 
 /** Resolves whether elevated tools are enabled and allowed for the inbound sender. */
@@ -187,6 +198,7 @@ function resolveElevatedPermissions(params: {
 }): {
   enabled: boolean;
   allowed: boolean;
+  permissionKnown: boolean;
   failures: Array<{ gate: string; key: string }>;
 } {
   const globalConfig = params.cfg.tools?.elevated;
@@ -205,11 +217,11 @@ function resolveElevatedPermissions(params: {
     });
   }
   if (!enabled) {
-    return { enabled, allowed: false, failures };
+    return { enabled, allowed: false, permissionKnown: true, failures };
   }
   if (!params.provider) {
     failures.push({ gate: "provider", key: "ctx.Provider" });
-    return { enabled, allowed: false, failures };
+    return { enabled, allowed: false, permissionKnown: false, failures };
   }
 
   const normalizedProvider = normalizeChannelId(params.provider);
@@ -231,12 +243,11 @@ function resolveElevatedPermissions(params: {
     allowFrom: globalConfig?.allowFrom,
     fallbackAllowFrom,
   });
-  if (!globalAllowed) {
+  if (globalAllowed !== true) {
     failures.push({
       gate: "allowFrom",
       key: `tools.elevated.allowFrom.${params.provider}`,
     });
-    return { enabled, allowed: false, failures };
   }
 
   const agentAllowed = agentConfig?.allowFrom
@@ -248,13 +259,21 @@ function resolveElevatedPermissions(params: {
         fallbackAllowFrom,
       })
     : true;
-  if (!agentAllowed) {
+  if (agentAllowed !== true) {
     failures.push({
       gate: "allowFrom",
       key: `agents.entries.*.tools.elevated.allowFrom.${params.provider}`,
     });
   }
-  return { enabled, allowed: globalAllowed && agentAllowed, failures };
+  return {
+    enabled,
+    allowed: globalAllowed === true && agentAllowed === true,
+    permissionKnown:
+      globalAllowed === false ||
+      agentAllowed === false ||
+      (globalAllowed === true && agentAllowed === true),
+    failures,
+  };
 }
 
 /** Resolves the elevated level that the current sender and session can actually use. */
@@ -274,6 +293,8 @@ export function resolveEffectiveElevatedState(params: {
   currentLevel: ElevatedLevel;
   level: ElevatedLevel;
   sandboxed: boolean;
+  /** Presentation only; never consume this as execution authority. */
+  status: { setting: ElevatedLevel; effective: ElevatedLevel | "unknown" };
 } {
   const permissions = resolveElevatedPermissions(params);
   const runtime = resolveSandboxRuntimeStatus({
@@ -288,6 +309,11 @@ export function resolveEffectiveElevatedState(params: {
     ? [...permissions.failures, { gate: "sandbox", key: "session.sandbox" }]
     : permissions.failures;
   const configuredLevel = params.cfg.agents?.defaults?.elevatedDefault;
+  const setting =
+    params.requestedLevel ??
+    normalizeElevatedLevel(params.sessionEntry?.elevatedLevel) ??
+    configuredLevel ??
+    "on";
   const currentLevel = allowed
     ? (normalizeElevatedLevel(params.sessionEntry?.elevatedLevel) ?? configuredLevel ?? "on")
     : "off";
@@ -298,5 +324,16 @@ export function resolveEffectiveElevatedState(params: {
     currentLevel,
     level: allowed ? (params.requestedLevel ?? currentLevel) : "off",
     sandboxed: runtime.sandboxed,
+    status: {
+      setting,
+      effective:
+        sandboxRequired || !permissions.enabled || setting === "off"
+          ? "off"
+          : permissions.permissionKnown
+            ? allowed
+              ? setting
+              : "off"
+            : "unknown",
+    },
   };
 }

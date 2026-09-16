@@ -6,6 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { readStringValue } from "@openclaw/normalization-core/string-coerce";
 import { Type } from "typebox";
+import { resolveEffectiveElevatedState } from "../../auto-reply/reply/reply-elevated.js";
 import type {
   ElevatedLevel,
   ReasoningLevel,
@@ -1147,6 +1148,16 @@ export function createSessionStatusTool(opts?: {
           const isLiveRouteSession = activeRouteRunSessionKey
             ? agentId === requesterAgentId && scopedResolved.key.trim() === activeRouteRunSessionKey
             : agentId === requesterAgentId && liveSessionKeySet.has(scopedResolved.key.trim());
+          const activeElevatedLevel = isLiveRouteSession ? opts?.activeElevatedLevel : undefined;
+          const elevatedStatus = resolveEffectiveElevatedState({
+            cfg,
+            agentId,
+            ctx: {},
+            provider: sessionDeliveryChannel(statusSessionEntry) ?? "",
+            // The scoped owner already loaded this exact row; do not reopen storage
+            // under a second identity just to render its immutable sandbox requirement.
+            sessionEntry: statusSessionEntry,
+          }).status;
           const { buildStatusText } = await loadCommandsStatusRuntime();
           const statusText = await buildStatusText({
             cfg,
@@ -1165,9 +1176,11 @@ export function createSessionStatusTool(opts?: {
             resolvedFastMode: statusSessionEntry.fastMode,
             resolvedVerboseLevel: (statusSessionEntry.verboseLevel ?? "off") as VerboseLevel,
             resolvedReasoningLevel: (statusSessionEntry.reasoningLevel ?? "off") as ReasoningLevel,
-            resolvedElevatedLevel:
-              (isLiveRouteSession ? opts?.activeElevatedLevel : undefined) ??
-              (statusSessionEntry.elevatedLevel as ElevatedLevel | undefined),
+            resolvedElevatedLevel: activeElevatedLevel,
+            elevatedStatus: {
+              ...elevatedStatus,
+              effective: activeElevatedLevel ?? elevatedStatus.effective,
+            },
             resolveDefaultThinkingLevel: () =>
               resolveThinkingDefaultWithRuntimeCatalogCore({
                 cfg,

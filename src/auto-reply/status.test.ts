@@ -1326,6 +1326,21 @@ describe("buildStatusMessage", () => {
     expect(normalizeTestText(text)).toContain("Execution: docker/all");
   });
 
+  it.each(["unknown", "off", "full"] as const)(
+    "distinguishes elevation setting from %s effective state",
+    (effective) => {
+      const text = buildStatusMessage({
+        modelRefs: statusModelRefs({ provider: "anthropic", model: "claude-opus-4-6" }),
+        config: {},
+        agent: {},
+        sessionKey: "agent:main:main",
+        elevatedStatus: { setting: "full", effective },
+        queue: { mode: "collect", depth: 0 },
+      });
+      expect(text).toContain(`elevated setting:full effective:${effective}`);
+    },
+  );
+
   it("shows verbose/elevated labels only when enabled", () => {
     const text = buildStatusMessage({
       modelRefs: statusModelRefs({ provider: "anthropic", model: "claude-opus-4-6" }),

@@ -295,7 +295,7 @@ export async function maybeResolveNativeSlashCommandFastReply(params: {
       ctx: params.ctx,
       sessionKey: sessionState.sessionKey,
     });
-    const resolvedElevatedLevel = resolveEffectiveElevatedState({
+    const elevated = resolveEffectiveElevatedState({
       cfg: params.cfg,
       agentId: params.agentId,
       ctx: params.ctx,
@@ -303,7 +303,7 @@ export async function maybeResolveNativeSlashCommandFastReply(params: {
       sessionEntry: targetSessionEntry,
       sessionKey: sessionState.sessionKey,
       classificationSessionKey,
-    }).level;
+    });
     // This fast path has no model-state owner; prepare side-effect-free catalog facts directly.
     const thinkingCatalog = await readPreparedModelCatalog({
       config: params.cfg,
@@ -332,7 +332,8 @@ export async function maybeResolveNativeSlashCommandFastReply(params: {
           resolvedThinkLevel,
           resolvedVerboseLevel: "off",
           resolvedReasoningLevel: "off",
-          resolvedElevatedLevel,
+          resolvedElevatedLevel: elevated.level,
+          elevatedStatus: elevated.status,
           resolveDefaultThinkingLevel,
           isGroup: sessionState.isGroup,
           defaultGroupActivation: () => "always",
