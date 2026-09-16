@@ -1144,6 +1144,7 @@ describe("scripts/test-projects changed-target routing", () => {
         "test/scripts/ci-changed-node-test-plan.test.ts",
         "test/scripts/ci-chrome-mcp-prewarm.test.ts",
         "test/scripts/ci-docker-seed-plan.test.ts",
+        "test/scripts/ci-node-test-plan.test.ts",
         "test/scripts/ci-security-fast-workflow.test.ts",
         "test/scripts/docker-release-artifacts.test.ts",
         "test/scripts/full-release-artifacts.test.ts",
