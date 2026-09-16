@@ -57,7 +57,7 @@ export function createChatGoalProps(
   >;
 }
 
-export async function submitChatGoalDraft(
+async function submitChatGoalDraft(
   host: ChatGoalHost,
   draft: ChatGoalDraft,
   submissionAction?: Event,
@@ -91,7 +91,7 @@ export async function submitChatGoalDraft(
   );
 }
 
-export async function mutateChatGoal(
+async function mutateChatGoal(
   host: ChatHost,
   action: { goalId: string } & ({ action: ChatGoalAction } | { action: "edit"; objective: string }),
 ): Promise<boolean> {

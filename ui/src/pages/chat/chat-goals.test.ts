@@ -5,7 +5,7 @@ import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { SessionGoal } from "../../api/types.ts";
 import { createSessionsListResult } from "../../test-helpers/chat-model.ts";
 import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
-import { createChatGoalProps, mutateChatGoal } from "./chat-goals.ts";
+import { createChatGoalProps } from "./chat-goals.ts";
 import { makeChatHost } from "./chat-host.test-support.ts";
 
 const goal: SessionGoal = {
@@ -23,7 +23,7 @@ const goal: SessionGoal = {
 afterEach(() => vi.restoreAllMocks());
 
 function goalHost(requestHandlers: Record<string, unknown>) {
-  return makeChatHost({
+  const host = makeChatHost({
     currentSessionId: "session-a",
     chatMessage: "Unrelated draft",
     sessionsResult: {
@@ -31,6 +31,10 @@ function goalHost(requestHandlers: Record<string, unknown>) {
       sessions: [{ key: "agent:main", kind: "direct", updatedAt: 2, goal }],
     },
     requestHandlers,
+  });
+  return Object.assign(host, {
+    handleSendChat: vi.fn(async () => true),
+    handleChatDraftChange: vi.fn(),
   });
 }
 
@@ -114,7 +118,9 @@ describe("Goal control requests", () => {
         goal: { ...goal, objective, updatedAt: 3 },
       },
     });
-    expect(await mutateChatGoal(host, { action: "edit", goalId: goal.id, objective })).toBe(true);
+    const { onGoalSubmit } = createChatGoalProps(host, true);
+    assert(onGoalSubmit);
+    expect(await onGoalSubmit({ action: "edit", goalId: goal.id, objective })).toBe(true);
     expect(host.request).toHaveBeenCalledWith(
       "sessions.goal.update",
       expect.objectContaining({
@@ -141,8 +147,8 @@ describe("Goal control requests", () => {
         goal: { ...goal, status: "active", updatedAt: 3 },
       },
     });
-    expect(await mutateChatGoal(host, { action: "resume", goalId: goal.id })).toBe(true);
-    expect(host.chatRunId).toBe("resume-run");
+    createChatGoalProps(host, true).onGoalAction(goal.id, "resume");
+    await vi.waitFor(() => expect(host.chatRunId).toBe("resume-run"));
     expect(host.chatMessages).toEqual([]);
     expect(host.chatMessage).toBe("Unrelated draft");
   });
@@ -164,14 +170,19 @@ describe("Goal control requests", () => {
       },
     });
     const refresh = vi.spyOn(host.sessions, "refresh").mockResolvedValue();
-    expect(await mutateChatGoal(host, { action: "resume", goalId: goal.id })).toBe(false);
+    const props = createChatGoalProps(host, true);
+    props.onGoalAction(goal.id, "resume");
+    await vi.waitFor(() =>
+      expect(host.lastError).toBe("Gateway disconnected before the acknowledgment"),
+    );
     const firstRequest = host.request.mock.calls.find(
       ([method]) => method === "sessions.goal.update",
     )?.[1];
     fail = false;
     host.client = createTestGatewayClient(host.request);
     host.connectionEpoch += 1;
-    expect(await mutateChatGoal(host, { action: "resume", goalId: goal.id })).toBe(true);
+    props.onGoalAction(goal.id, "resume");
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce());
     const requests = host.request.mock.calls.filter(
       ([method]) => method === "sessions.goal.update",
     );
@@ -184,21 +195,26 @@ describe("Goal control requests", () => {
   it("does not apply a delayed clear to a replacement goal", async () => {
     const pending = createDeferred<{ status: string; goalId: string }>();
     const host = goalHost({ "sessions.goal.clear": () => pending.promise });
-    const clear = mutateChatGoal(host, { action: "clear", goalId: goal.id });
+    createChatGoalProps(host, true).onGoalAction(goal.id, "clear");
+    // The next update comes from the mutation owner after the deferred RPC settles.
+    const settled = createDeferred<void>();
+    host.requestUpdate = () => settled.resolve();
     host.sessions.patchRowLocal(host.sessionKey, { goal: { ...goal, id: "replacement-goal" } });
     pending.resolve({ status: "cleared", goalId: goal.id });
-    await clear;
+    await settled.promise;
     expect(host.sessions.state.result?.sessions[0]?.goal?.id).toBe("replacement-goal");
   });
 
   it("does not apply a delayed Resume to a different visible session", async () => {
     const pending = createDeferred<{ status: string; goalId: string; runId: string }>();
     const host = goalHost({ "sessions.goal.update": () => pending.promise });
-    const resume = mutateChatGoal(host, { action: "resume", goalId: goal.id });
+    createChatGoalProps(host, true).onGoalAction(goal.id, "resume");
+    const settled = createDeferred<void>();
+    host.requestUpdate = () => settled.resolve();
     host.sessionKey = "agent:main:other";
     host.currentSessionId = "session-b";
     pending.resolve({ status: "started", goalId: goal.id, runId: "old-session-run" });
-    expect(await resume).toBe(true);
+    await settled.promise;
     expect(host.chatRunId).toBeNull();
     expect(host.chatMessage).toBe("Unrelated draft");
   });
