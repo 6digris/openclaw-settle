@@ -473,9 +473,8 @@ export class ChatPane extends ChatPaneLayoutRender {
       gatewayClient: state.client,
       composerHoldToRecord: state.settings.composerHoldToRecord,
       realtimeTalkInputDeviceId: state.settings.realtimeTalkInputDeviceId,
-      onComposerHoldToRecordChange: (enabled) => {
-        state.settings = patchSettings({ composerHoldToRecord: enabled });
-      },
+      onComposerHoldToRecordChange: (enabled) =>
+        void (state.settings = patchSettings({ composerHoldToRecord: enabled })),
       onOpenTalkSettings: () => this.context.navigate("talk"),
       onOpenDictationSettings: () => this.context.navigate("model-setup"),
       suggestionComposer: suggestionViewer,
@@ -660,9 +659,8 @@ export class ChatPane extends ChatPaneLayoutRender {
       agentsList: state.agentsList,
       currentAgentId,
       ...chatProps,
-      onAgentChange: (agentId) => {
-        this.onPaneSessionChange?.(this.paneId, buildAgentMainSessionKey({ agentId }));
-      },
+      onAgentChange: (agentId) =>
+        void this.onPaneSessionChange?.(this.paneId, buildAgentMainSessionKey({ agentId })),
       onSessionSelect: (next) => this.onPaneSessionChange?.(this.paneId, next),
       canvasPluginSurfaceUrl: state.canvasPluginSurfaceUrl,
       boardProvider: board.provider,

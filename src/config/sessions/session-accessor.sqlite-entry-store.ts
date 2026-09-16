@@ -26,6 +26,7 @@ import {
 import {
   readExactSessionEntryRow,
   readSessionEntryRowScan,
+  type ResolvedSessionEntryRow,
 } from "./session-accessor.sqlite-entry-read.js";
 import {
   clearSessionCollaborationForKey,
@@ -79,10 +80,14 @@ export {
 export function readSessionIdentitySnapshot(
   database: OpenClawAgentDatabase,
   sessionKeys: Iterable<string>,
+  knownRow?: ResolvedSessionEntryRow,
 ): Map<string, SessionEntry> {
   const snapshot = new Map<string, SessionEntry>();
   for (const sessionKey of uniqueStrings([...sessionKeys].map((key) => key.trim()))) {
-    const row = readExactSessionEntryRow(database, sessionKey);
+    const row =
+      knownRow?.row.session_key === sessionKey
+        ? knownRow
+        : readExactSessionEntryRow(database, sessionKey);
     if (row) {
       snapshot.set(sessionKey, row.entry);
     }
