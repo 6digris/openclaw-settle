@@ -586,7 +586,7 @@ describe("shared Codex app-server client", () => {
       args: ["app-server", "--cd", "proxy"],
     },
   ] as const)(
-    "captures configuration ownership only for a caller-spawned runtime: $name",
+    "captures thread configuration lifetime over $name while restricting native-process ownership",
     async (scenario) => {
       const harness = createClientHarness();
       vi.spyOn(CodexAppServerClient, "start").mockResolvedValue(harness.client);
@@ -614,6 +614,11 @@ describe("shared Codex app-server client", () => {
       });
       await sendInitializeResult(harness, "openclaw/0.151.0 (Linux; test)");
       const client = await acquire;
+      const assertConfigurationCurrent = captureCodexAppServerClientLifetime(
+        client,
+        "thread-configuration",
+      );
+      expect(assertConfigurationCurrent).not.toThrow();
       if (!scenario.allowed) {
         const writes = harness.writes.length;
         expect(() => captureCodexAppServerClientLifetime(client, "native-process")).toThrow(
@@ -631,6 +636,7 @@ describe("shared Codex app-server client", () => {
         releaseLeasedSharedCodexAppServerClient(client);
       }
       client.close();
+      expect(assertConfigurationCurrent).toThrow(CodexAdoptedThreadActiveError);
     },
   );
 
@@ -749,23 +755,26 @@ describe("shared Codex app-server client", () => {
     expect(releaseLeasedSharedCodexAppServerClient(client)).toBe(true);
   });
 
-  it("revokes configuration ownership when its physical client is retired", async () => {
-    const harness = createClientHarness();
-    vi.spyOn(CodexAppServerClient, "start").mockResolvedValue(harness.client);
-    const acquire = getLeasedSharedCodexAppServerClient({ timeoutMs: 1_000 });
-    await sendInitializeResult(harness, "openclaw/0.149.0 (Linux; test)");
-    const client = await acquire;
-    const assertExclusive = captureCodexAppServerClientLifetime(client, "native-process");
-    retireSharedCodexAppServerClientIfCurrent(client);
+  it.each(["native-process", "thread-configuration"] as const)(
+    "revokes %s ownership when its physical client is retired",
+    async (requiredOwnership) => {
+      const harness = createClientHarness();
+      vi.spyOn(CodexAppServerClient, "start").mockResolvedValue(harness.client);
+      const acquire = getLeasedSharedCodexAppServerClient({ timeoutMs: 1_000 });
+      await sendInitializeResult(harness, "openclaw/0.149.0 (Linux; test)");
+      const client = await acquire;
+      const assertExclusive = captureCodexAppServerClientLifetime(client, requiredOwnership);
+      retireSharedCodexAppServerClientIfCurrent(client);
 
-    expect(assertExclusive).toThrow(CodexAdoptedThreadActiveError);
-    expect(() => captureCodexAppServerClientLifetime(client, "native-process")).toThrow(
-      CodexAdoptedThreadActiveError,
-    );
-    expect(harness.stdinDestroyed).toBe(false);
-    expect(releaseLeasedSharedCodexAppServerClient(client)).toBe(true);
-    expect(harness.stdinDestroyed).toBe(true);
-  });
+      expect(assertExclusive).toThrow(CodexAdoptedThreadActiveError);
+      expect(() => captureCodexAppServerClientLifetime(client, requiredOwnership)).toThrow(
+        CodexAdoptedThreadActiveError,
+      );
+      expect(harness.stdinDestroyed).toBe(false);
+      expect(releaseLeasedSharedCodexAppServerClient(client)).toBe(true);
+      expect(harness.stdinDestroyed).toBe(true);
+    },
+  );
 
   it.each(["fails", "succeeds"])(
     "preserves a co-lease when selection replacement acquisition %s",
