@@ -2477,7 +2477,6 @@ src/config/model-input.ts	1
 src/config/mutate.ts	4
 src/config/normalize-exec-safe-bin.ts	2
 src/config/official-external-channel-secret-schema.ts	4
-src/config/plugin-auto-enable.apply.ts	1
 src/config/plugin-auto-enable.detect.ts	1
 src/config/plugin-auto-enable.shared.ts	1
 src/config/plugin-install-record-map.ts	3

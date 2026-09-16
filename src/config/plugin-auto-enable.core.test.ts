@@ -1320,53 +1320,6 @@ describe("applyPluginAutoEnable core", () => {
     expect(setupRegistryMock.resolvePluginSetupAutoEnableReasons).toHaveBeenCalledTimes(2);
   });
 
-  it("fingerprints identical metadata snapshots once per plugin metadata lifecycle", () => {
-    const traversals = { candidates: 0, plugins: 0 };
-    const config: OpenClawConfig = {};
-    const envSnapshot = makeIsolatedEnv();
-    const discovery: PluginDiscoveryResult = {
-      candidates: new Proxy([], {
-        get: (target, property, receiver) => {
-          if (property === "map") {
-            traversals.candidates += 1;
-          }
-          return Reflect.get(target, property, receiver);
-        },
-      }),
-      diagnostics: [],
-    };
-    const manifestRegistry = makeRegistry([]);
-    manifestRegistry.plugins = new Proxy(manifestRegistry.plugins, {
-      get: (target, property, receiver) => {
-        if (property === "map") {
-          traversals.plugins += 1;
-        }
-        return Reflect.get(target, property, receiver);
-      },
-    });
-
-    const first = applyPluginAutoEnable({
-      config,
-      discovery,
-      env: envSnapshot,
-      manifestRegistry,
-    });
-    const firstTraversalCounts = { ...traversals };
-
-    for (let index = 0; index < 20; index += 1) {
-      expect(applyPluginAutoEnable({ config, discovery, env: envSnapshot, manifestRegistry })).toBe(
-        first,
-      );
-    }
-    expect(traversals).toEqual(firstTraversalCounts);
-
-    clearPluginMetadataLifecycleCaches();
-    applyPluginAutoEnable({ config, discovery, env: envSnapshot, manifestRegistry });
-
-    expect(traversals.candidates).toBeGreaterThan(firstTraversalCounts.candidates);
-    expect(traversals.plugins).toBeGreaterThan(firstTraversalCounts.plugins);
-  });
-
   it("does not reuse same-turn results for omitted metadata after current snapshot replacement", () => {
     const config: OpenClawConfig = {
       channels: { apn: { someKey: "value" } },
@@ -1468,70 +1421,89 @@ describe("applyPluginAutoEnable core", () => {
     expect(second).not.toBe(first);
   });
 
-  it("refreshes auto-enable results after registry mutates at a lifecycle boundary", () => {
-    const config: OpenClawConfig = {
-      channels: { apn: { someKey: "value" } },
-    };
-    const registry = makeRegistry([{ id: "other-channel", channels: ["other"] }]);
+  it.each(["replacement", "lifecycle mutation"])(
+    "refreshes registry auto-enable results after %s",
+    (change) => {
+      const config: OpenClawConfig = {
+        channels: { apn: { someKey: "value" } },
+      };
+      const registry = makeRegistry([{ id: "other-channel", channels: ["other"] }]);
 
-    const first = applyPluginAutoEnable({
-      config,
-      discovery: emptyDiscovery,
-      env,
-      manifestRegistry: registry,
-    });
-    registry.plugins.splice(
-      0,
-      registry.plugins.length,
-      ...makeRegistry([{ id: "apn-channel", channels: ["apn"] }]).plugins,
-    );
-    clearPluginMetadataLifecycleCaches();
-    const second = applyPluginAutoEnable({
-      config,
-      discovery: emptyDiscovery,
-      env,
-      manifestRegistry: registry,
-    });
+      const first = applyPluginAutoEnable({
+        config,
+        discovery: emptyDiscovery,
+        env,
+        manifestRegistry: registry,
+      });
+      const plugins = makeRegistry([{ id: "apn-channel", channels: ["apn"] }]).plugins;
+      if (change === "replacement") {
+        registry.plugins = plugins;
+      } else {
+        registry.plugins.splice(0, registry.plugins.length, ...plugins);
+        clearPluginMetadataLifecycleCaches();
+      }
+      const second = applyPluginAutoEnable({
+        config,
+        discovery: emptyDiscovery,
+        env,
+        manifestRegistry: registry,
+      });
 
-    expect(first.config.plugins?.entries?.["apn-channel"]).toBeUndefined();
-    expect(second.config.plugins?.entries?.["apn-channel"]?.enabled).toBe(true);
-    expect(second).not.toBe(first);
-  });
+      expect(first.config.plugins?.entries?.["apn-channel"]).toBeUndefined();
+      expect(second.config.plugins?.entries?.["apn-channel"]?.enabled).toBe(true);
+      expect(second).not.toBe(first);
+    },
+  );
 
-  it("refreshes auto-enable results after discovery mutates at a lifecycle boundary", () => {
-    const config: OpenClawConfig = {};
-    const mutableDiscovery: PluginDiscoveryResult = { candidates: [], diagnostics: [] };
-    const manifestRegistry = makeRegistry([
-      { id: "cache-channel-plugin", channels: ["cache-channel"] },
-    ]);
-    const configuredEnv = makeIsolatedEnv({
-      CACHE_CHANNEL_TOKEN: "configured",
-    });
+  it.each(["replacement", "lifecycle mutation"])(
+    "refreshes discovery auto-enable results after %s",
+    (change) => {
+      const config: OpenClawConfig = {};
+      const mutableDiscovery: PluginDiscoveryResult = { candidates: [], diagnostics: [] };
+      const manifestRegistry = makeRegistry([
+        { id: "cache-channel-plugin", channels: ["cache-channel"] },
+      ]);
+      const configuredEnv = makeIsolatedEnv({
+        CACHE_CHANNEL_TOKEN: "configured",
+      });
 
-    const first = applyPluginAutoEnable({
-      config,
-      discovery: mutableDiscovery,
-      env: configuredEnv,
-      manifestRegistry,
-    });
-    mutableDiscovery.candidates.push(
-      makeBundledChannelCandidate({
+      const first = applyPluginAutoEnable({
+        config,
+        discovery: mutableDiscovery,
+        env: configuredEnv,
+        manifestRegistry,
+      });
+      const candidate = makeBundledChannelCandidate({
         pluginId: "cache-channel-plugin",
         channelId: "cache-channel",
-      }),
-    );
-    clearPluginMetadataLifecycleCaches();
-    const second = applyPluginAutoEnable({
-      config,
-      discovery: mutableDiscovery,
-      env: configuredEnv,
-      manifestRegistry,
-    });
+      });
+      if (change === "replacement") {
+        mutableDiscovery.candidates = [candidate];
+      } else {
+        mutableDiscovery.candidates.push(candidate);
+        clearPluginMetadataLifecycleCaches();
+      }
+      const second = applyPluginAutoEnable({
+        config,
+        discovery: mutableDiscovery,
+        env: configuredEnv,
+        manifestRegistry,
+      });
 
-    expect(first.config.plugins?.entries?.["cache-channel-plugin"]).toBeUndefined();
-    expect(second.config.plugins?.entries?.["cache-channel-plugin"]?.enabled).toBe(true);
-    expect(second).not.toBe(first);
-  });
+      expect(first.config.plugins?.entries?.["cache-channel-plugin"]).toBeUndefined();
+      expect(second.config.plugins?.entries?.["cache-channel-plugin"]?.enabled).toBe(true);
+      expect(second).not.toBe(first);
+
+      const suppressed = applyPluginAutoEnable({
+        config,
+        discovery: mutableDiscovery,
+        env: configuredEnv,
+        manifestRegistry,
+        ambientEnvTriggers: "suppress",
+      });
+      expect(suppressed.config.plugins?.entries?.["cache-channel-plugin"]).toBeUndefined();
+    },
+  );
 
   it("refreshes auto-enable results after env mutates at a lifecycle boundary", () => {
     const config: OpenClawConfig = {

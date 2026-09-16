@@ -13,8 +13,8 @@ import type {
 import type { OpenClawConfig } from "./types.openclaw.js";
 
 type PluginAutoEnableCacheEntry = {
-  discoveryFingerprint: string;
-  registryFingerprint: string;
+  discoveryCandidates: PluginDiscoveryResult["candidates"];
+  registryPlugins: PluginManifestRegistry["plugins"];
   ambientEnvTriggers: AmbientEnvTriggerPolicy;
   result: PluginAutoEnableResult;
 };
@@ -25,12 +25,10 @@ type PluginAutoEnableConfigCache = WeakMap<object, PluginAutoEnableEnvCache>;
 
 let sameTurnApplyCache: PluginAutoEnableConfigCache | undefined;
 let sameTurnApplyCacheClearScheduled = false;
-let stableFingerprintMemo = new WeakMap<object, string>();
 
-// Metadata arrays use replacement snapshots; lifecycle clear refreshes their identity memo.
-// Config/env identity is already enforced by the nested same-turn cache.
+// Metadata uses replacement snapshots; in-place mutation requires a lifecycle clear.
+// Compare the selected arrays too because their containing objects can stay unchanged.
 registerPluginMetadataProcessMemoLifecycleClear(() => {
-  stableFingerprintMemo = new WeakMap();
   sameTurnApplyCache = undefined;
 });
 
@@ -59,54 +57,6 @@ function getOrCreateWeakMap<K extends object, V>(
   const next = create();
   parent.set(key, next);
   return next;
-}
-
-function stableFingerprintValue(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value) ?? "null";
-  }
-  const cached = stableFingerprintMemo.get(value);
-  if (cached !== undefined) {
-    return cached;
-  }
-  const fingerprint = Array.isArray(value)
-    ? `[${value.map((entry) => stableFingerprintValue(entry)).join(",")}]`
-    : (() => {
-        const record = value as Record<string, unknown>;
-        return `{${Object.keys(record)
-          .toSorted((left, right) => left.localeCompare(right))
-          .map((key) => `${JSON.stringify(key)}:${stableFingerprintValue(record[key])}`)
-          .join(",")}}`;
-      })();
-  stableFingerprintMemo.set(value, fingerprint);
-  return fingerprint;
-}
-
-function createPluginAutoEnableCacheEntry(params: {
-  discovery: PluginDiscoveryResult;
-  manifestRegistry: PluginManifestRegistry;
-  result: PluginAutoEnableResult;
-  ambientEnvTriggers: AmbientEnvTriggerPolicy;
-}): PluginAutoEnableCacheEntry {
-  return {
-    discoveryFingerprint: stableFingerprintValue(params.discovery.candidates),
-    registryFingerprint: stableFingerprintValue(params.manifestRegistry.plugins),
-    ambientEnvTriggers: params.ambientEnvTriggers,
-    result: params.result,
-  };
-}
-
-function isPluginAutoEnableCacheEntryFresh(params: {
-  entry: PluginAutoEnableCacheEntry;
-  discovery: PluginDiscoveryResult;
-  manifestRegistry: PluginManifestRegistry;
-  ambientEnvTriggers: AmbientEnvTriggerPolicy;
-}): boolean {
-  return (
-    params.entry.discoveryFingerprint === stableFingerprintValue(params.discovery.candidates) &&
-    params.entry.registryFingerprint === stableFingerprintValue(params.manifestRegistry.plugins) &&
-    params.entry.ambientEnvTriggers === params.ambientEnvTriggers
-  );
 }
 
 /** Applies already detected plugin auto-enable candidates to config. */
@@ -169,12 +119,9 @@ export function applyPluginAutoEnable(params: {
     const cached = discoveryCache.get(params.discovery);
     if (
       cached &&
-      isPluginAutoEnableCacheEntryFresh({
-        entry: cached,
-        discovery: params.discovery,
-        manifestRegistry: params.manifestRegistry,
-        ambientEnvTriggers,
-      })
+      cached.discoveryCandidates === params.discovery.candidates &&
+      cached.registryPlugins === params.manifestRegistry.plugins &&
+      cached.ambientEnvTriggers === ambientEnvTriggers
     ) {
       return cached.result;
     }
@@ -185,15 +132,12 @@ export function applyPluginAutoEnable(params: {
       env: params.env,
       manifestRegistry: params.manifestRegistry,
     });
-    discoveryCache.set(
-      params.discovery,
-      createPluginAutoEnableCacheEntry({
-        discovery: params.discovery,
-        manifestRegistry: params.manifestRegistry,
-        result,
-        ambientEnvTriggers,
-      }),
-    );
+    discoveryCache.set(params.discovery, {
+      discoveryCandidates: params.discovery.candidates,
+      registryPlugins: params.manifestRegistry.plugins,
+      result,
+      ambientEnvTriggers,
+    });
     scheduleSameTurnApplyCacheClear();
     return result;
   }
