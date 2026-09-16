@@ -75,7 +75,7 @@ async function assertOwnedSignal(
     import { withUpdateCommandExecutor } from ${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.executor).href)};
     const root = ${JSON.stringify(root)};
     const mode = ${JSON.stringify(mode)};
-    const opts = {};
+    const opts = { restart: false };
     if (mode === 'inherited') process.env.OPENCLAW_UPDATE_RUN_ID = createUpdateRun({trigger:'cli'}).runId;
     const run = await admitUpdateCommandRun({opts, root});
     await withUpdatePreviewSignals({...opts, run}, async () => {
