@@ -26,7 +26,9 @@ const mocks = vi.hoisted(() => ({
   resolveNodeRuntimeInfo:
     vi.fn<typeof import("../daemon/runtime-paths.js").resolveNodeRuntimeInfo>(),
   detectRuntime: vi.fn<typeof import("../infra/runtime-guard.js").detectRuntime>(),
-  resolveGatewayService: vi.fn(() => ({ label: "openclaw-gateway" })),
+  resolveGatewayService: vi.fn((): { label: string; managementUnsupportedReason?: string } => ({
+    label: "openclaw-gateway",
+  })),
   resolvePluginProvidersCore: vi.fn((): Array<Record<string, unknown>> => []),
   resolveDefaultModelForAgent: vi.fn(() => ({ provider: "openai", model: "gpt-5.5" })),
 }));
@@ -1003,6 +1005,33 @@ describe("doctor gateway runtime checks", () => {
     });
     expect(JSON.stringify(findings)).not.toContain("user:pass");
     expect(JSON.stringify(findings)).not.toContain("token=secret");
+  });
+
+  it("reports native unsupported-management guidance for verified absence", async () => {
+    const managementUnsupportedReason =
+      "Gateway service management is not supported by this CLI on FreeBSD. Run `openclaw gateway run` as your onboarding account.";
+    mocks.resolveGatewayService.mockReturnValueOnce({
+      label: "Gateway service",
+      managementUnsupportedReason,
+    });
+    mocks.readGatewayServiceState.mockResolvedValueOnce({
+      installed: false,
+      loadState: { status: "not-loaded" },
+      running: false,
+      env: {},
+      command: null,
+      runtime: { status: "stopped", missingUnit: true },
+    });
+    await expect(collectGatewayDaemonFindings({ cfg: { gateway: {} } })).resolves.toEqual([
+      {
+        checkId: "core/doctor/gateway-daemon",
+        severity: "warning",
+        message: "Gateway service is not installed.",
+        path: "gateway.mode",
+        target: "Gateway service",
+        fixHint: managementUnsupportedReason,
+      },
+    ]);
   });
 
   it.each([

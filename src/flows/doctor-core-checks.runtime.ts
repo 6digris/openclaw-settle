@@ -243,7 +243,9 @@ export async function collectGatewayDaemonFindings(
       message: "Gateway service is not installed.",
       path: "gateway.mode",
       target: service.label,
-      fixHint: "Run `openclaw gateway install` to install the service.",
+      fixHint:
+        service.managementUnsupportedReason ??
+        "Run `openclaw gateway install` to install the service.",
     });
     return findings;
   }
