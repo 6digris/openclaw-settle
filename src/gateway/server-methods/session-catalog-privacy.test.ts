@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { describe, expect, it, vi } from "vitest";
 import {
   ErrorCodes,
@@ -304,31 +305,44 @@ describe("catalog delivery uses current canonical privacy", () => {
     );
   });
 
-  it("rejects a final response when canonical close revokes its reads during projection", async () => {
+  it("rejects admitted final responses when canonical close revokes their reads during projection", async () => {
     await withCatalog(async ({ call, startCall, closeStore, config, context, list, owner }) => {
       await closeStore();
       let project = false;
       let closing: ReturnType<typeof closeStore> | undefined;
       let producerSignal: AbortSignal | undefined;
+      const release = createDeferredCore();
       list.mockImplementationOnce(async ({ signal }) => {
         producerSignal = signal;
+        await release.promise;
         project = true;
         // No delivery rows remain to trigger a later read guard before respond.
         return [];
       });
       const getRuntimeConfig = context.getRuntimeConfig;
       context.getRuntimeConfig = () => {
-        if (project) {
+        if (project && !closing) {
           expect(hasOpenClawAgentDatabaseAsyncResources()).toBe(true);
-          closing ??= closeStore();
+          closing = closeStore();
         }
         return config;
       };
       const pending = startCall("sessions.catalog.list", {}, owner);
+      const follower = startCall("sessions.catalog.list", {}, owner);
       try {
-        await expect(pending.completion).rejects.toMatchObject({ name: "AbortError" });
+        const outcomes = Promise.allSettled([pending.completion, follower.completion]);
+        release.resolve();
+        const [failure, followerFailure] = await outcomes;
+        assert(failure.status === "rejected", "leader must preserve the projection failure");
+        assert(
+          followerFailure.status === "rejected",
+          "follower must preserve the projection failure",
+        );
+        expect(failure.reason).toMatchObject({ name: "AbortError" });
+        expect(followerFailure.reason).toBe(failure.reason);
         await closing;
         expect(pending.respond).not.toHaveBeenCalled();
+        expect(follower.respond).not.toHaveBeenCalled();
         expect(producerSignal?.aborted).toBe(true);
         expect(hasOpenClawAgentDatabaseAsyncResources()).toBe(false);
         context.getRuntimeConfig = getRuntimeConfig;
@@ -337,7 +351,8 @@ describe("catalog delivery uses current canonical privacy", () => {
         expect(hasOpenClawAgentDatabaseAsyncResources()).toBe(false);
       } finally {
         context.getRuntimeConfig = getRuntimeConfig;
-        await Promise.allSettled([pending.completion, closing]);
+        release.resolve();
+        await Promise.allSettled([pending.completion, follower.completion, closing]);
       }
     });
   });

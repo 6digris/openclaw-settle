@@ -33,6 +33,7 @@ import { authorizeGatewaySessionCreation } from "../operator-role-policy.js";
 import { resolveAgentIdOrRespondError } from "./agent-id-shared.js";
 import { authorizeSessionCatalogThread } from "./session-catalog-authorization.js";
 import { continueAuthorizedSessionCatalog } from "./session-catalog-continue.js";
+import { catalogError, projectSessionCatalogFinalResult } from "./session-catalog-delivery.js";
 import {
   createSessionCatalogRequestEntrySnapshot,
   type SessionCatalogInstances,
@@ -77,17 +78,6 @@ function normalizeSessionCatalogSearch(search: string | undefined): string | und
   return normalized
     ? truncateUtf16Safe(normalized, SESSION_CATALOG_SEARCH_MAX_UTF16_UNITS)
     : undefined;
-}
-
-function catalogError(error: unknown): { code: string; message: string } {
-  const record =
-    error && typeof error === "object" ? (error as Record<string, unknown>) : undefined;
-  const recordMessage = typeof record?.message === "string" ? record.message.trim() : "";
-  const fallbackMessage = typeof error === "string" ? error.trim() : "";
-  return {
-    code: typeof record?.code === "string" && record.code ? record.code : "catalog_error",
-    message: recordMessage || fallbackMessage || "session catalog provider failed",
-  };
 }
 
 export function resolveSessionCatalogProvider(
@@ -394,13 +384,22 @@ export const sessionCatalogHandlers: GatewayRequestHandlers = {
           cache.delete(listKey);
           cache.set(listKey, cached);
           const result = await cached.result;
-          const assertCurrent = response?.assertCurrent ?? assertCallerCurrent;
-          assertCurrent();
-          const projected = projectResult(
-            result,
-            response ? cached.progress.listEntries : undefined,
-          );
-          assertCurrent();
+          let projected: CatalogListResult;
+          if (response) {
+            projected = projectSessionCatalogFinalResult({
+              result,
+              progress: cached.progress,
+              response,
+              project: projectResult,
+            });
+          } else {
+            assertCallerCurrent();
+            projected = projectResult(result);
+            assertCallerCurrent();
+          }
+          if (cached.progress.invalidated && cache.get(listKey) === cached) {
+            cache.delete(listKey);
+          }
           respond(true, projected);
           return;
         } finally {
@@ -477,8 +476,8 @@ export const sessionCatalogHandlers: GatewayRequestHandlers = {
               progress.publish(catalog, instances);
             };
             try {
-              const hosts = await progress.runProvider(onHost, (lifetime) =>
-                listSessionCatalogProvider(provider, {
+              const hosts = await progress.runProvider(onHost, (lifetime) => {
+                const providerParams = {
                   agentId: resolvedAgent.agentId,
                   allowProcessHomeFallback: allowHomeFallback,
                   search,
@@ -488,8 +487,9 @@ export const sessionCatalogHandlers: GatewayRequestHandlers = {
                   sessionEntries: requestEntries?.sessionEntries,
                   listNodes,
                   ...lifetime,
-                }),
-              );
+                };
+                return listSessionCatalogProvider(provider, providerParams, progress.assertCurrent);
+              });
               for (const host of hosts) {
                 requestEntries?.captureHostInstances(host, instances);
               }
@@ -507,12 +507,19 @@ export const sessionCatalogHandlers: GatewayRequestHandlers = {
       cache.set(listKey, entry);
       pruneMapToMaxSize(cache, SESSION_CATALOG_LIST_CACHE_MAX_ENTRIES);
       const result = await operation;
-      response.assertCurrent();
+      const projected = projectSessionCatalogFinalResult({
+        result,
+        progress,
+        response,
+        project: projectResult,
+      });
       if (cache.get(listKey) === entry) {
-        entry.expiresAt = Date.now() + SESSION_CATALOG_SHARE_WINDOW_MS;
+        if (progress.invalidated) {
+          cache.delete(listKey);
+        } else {
+          entry.expiresAt = Date.now() + SESSION_CATALOG_SHARE_WINDOW_MS;
+        }
       }
-      const projected = projectResult(result, progress.listEntries);
-      response.assertCurrent();
       respond(true, projected);
     } catch (error) {
       progress.retire(error);

@@ -84,6 +84,7 @@ export type CatalogListProgressSubscriber = (
 
 export type CatalogFinalResponsePermit = {
   assertCurrent: () => void;
+  assertResponseCurrent: () => "active" | "retired";
   release: () => void;
 };
 
@@ -138,6 +139,7 @@ export class SessionCatalogListLifetime {
   private entryRead: SessionEntryListReadRetention | undefined;
   private isCurrent: (() => boolean) | undefined;
   private state: "active" | "completed" | "invalidated" = "active";
+  private resultFailure: { error: unknown } | undefined;
   private resultInvalidated = false;
   private listing = true;
   private pending = 0;
@@ -183,11 +185,11 @@ export class SessionCatalogListLifetime {
     return this.resultInvalidated;
   }
 
-  assertCurrent(): void {
+  readonly assertCurrent = (): void => {
     if (!this.active()) {
       throw createAbortError("Session catalog listing is no longer current");
     }
-  }
+  };
 
   assertPublicationCurrent(): void {
     this.assertCurrent();
@@ -208,13 +210,23 @@ export class SessionCatalogListLifetime {
     }
     let released = false;
     this.finalResponses += 1;
+    const assertResponseCurrent = (): "active" | "retired" => {
+      this.active();
+      if (released || !isCallerCurrent()) {
+        throw createAbortError("Session catalog response is no longer current");
+      }
+      if (this.resultFailure) {
+        throw this.resultFailure.error;
+      }
+      return this.state === "active" ? "active" : "retired";
+    };
     return {
       assertCurrent: () => {
-        this.assertCurrent();
-        if (released || !isCallerCurrent() || this.state !== "active") {
+        if (assertResponseCurrent() !== "active") {
           throw createAbortError("Session catalog response is no longer current");
         }
       },
+      assertResponseCurrent,
       release: () => {
         if (!released) {
           released = true;
@@ -374,6 +386,12 @@ export class SessionCatalogListLifetime {
     const onFinished = this.onFinished;
     this.onFinished = undefined;
     onFinished?.(this);
+  }
+
+  failResult(error: unknown): void {
+    // Abort callbacks can reenter admitted responses; record the failure before revoking delivery.
+    this.resultFailure ??= { error };
+    this.retire(error);
   }
 
   retire(reason?: unknown): void {
