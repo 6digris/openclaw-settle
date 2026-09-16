@@ -125,7 +125,9 @@ describe("session workspace path actions", () => {
         row.querySelector<HTMLButtonElement>('button[aria-label="Copy path"]')!.click();
         await vi.waitFor(() => expect(writeText).toHaveBeenLastCalledWith(paths[index]));
       }
-      expect(rows[1].classList.contains("chat-workspace-rail__file--active")).toBe(true);
+      const selectedRow = rows[1];
+      assert(selectedRow, "Expected the selected ui/index.ts row");
+      expect(selectedRow.classList.contains("chat-workspace-rail__file--active")).toBe(true);
       workspace.filter = "changed";
       renderRows();
       expect(labels()).toEqual(["inventory.csv", `ui${separator}index.ts`]);
