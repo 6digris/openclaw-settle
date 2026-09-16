@@ -1692,10 +1692,6 @@ describe("task-registry store runtime", () => {
       configureTaskRegistryRuntime({
         store: {
           ...createInMemoryTaskRegistryStore(),
-          loadSnapshot: () => ({
-            tasks: new Map(),
-            deliveryStates: new Map(),
-          }),
           withMutation: <T>(operation: () => T): T => {
             if (failureStage === "admission") {
               throw new Error("Synthetic coordinator admission failure");
