@@ -41,7 +41,7 @@ type NormalizedAttempt = Extract<
   { action: "proceed" }
 >;
 type Dispatch = Awaited<ReturnType<typeof prepareAndDispatchEmbeddedRunAttempt>>;
-type SessionPromptState = ReturnType<typeof createEmbeddedRunSessionPromptState>;
+type SessionPromptState = Awaited<ReturnType<typeof createEmbeddedRunSessionPromptState>>;
 type FailoverRetryController = ReturnType<typeof createEmbeddedRunFailoverRetryController>;
 type CompactionRuntime = ReturnType<typeof createEmbeddedRunCompactionRuntime>;
 

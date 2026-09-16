@@ -383,11 +383,16 @@ export function assertTaskRegistryOwnerCurrent(
 export async function prepareTaskRegistryProjectionAsync(
   context: OpenClawStateWorkerContext,
   store: TaskRegistryStore,
-): Promise<void> {
+  maxAttempts = Number.POSITIVE_INFINITY,
+): Promise<boolean> {
   assertTaskRegistryOwnerCurrent(context, store);
   await ensureTaskRegistryReadyAsync(context);
   assertTaskRegistryOwnerCurrent(context, store);
+  let attempts = 0;
   while (projection.mutationDepth === 0 && (projection.dirty || dirtyScopes.size > 0)) {
+    if (attempts++ >= maxAttempts) {
+      return false;
+    }
     const epoch = projection.epoch;
     const scopes = projection.dirty ? [undefined] : [...dirtyScopes];
     const snapshots = await Promise.all(
@@ -405,8 +410,9 @@ export async function prepareTaskRegistryProjectionAsync(
     }
     // In-flight mutations retain their publication obligations after this read.
     markTaskRegistryProjectionRestored();
-    return;
+    return true;
   }
+  return true;
 }
 
 function failTaskRegistryRestore(

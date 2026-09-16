@@ -192,7 +192,6 @@ export async function listTaskRecordPage(params: {
   >
 > {
   const { readContext, store } = params;
-  await prepareTaskRegistryProjectionAsync(readContext, store);
   const assertCurrent = () => assertTaskRegistryOwnerCurrent(readContext, store);
   assertCurrent();
   const statuses = params.statuses ? new Set(params.statuses) : null;
@@ -203,12 +202,17 @@ export async function listTaskRecordPage(params: {
   // Filtering and ordering stay registry-owned so authoritative records never
   // cross the boundary; only the bounded selected page is defensively cloned.
   const windowSize = params.offset + params.limit;
-  let workStartedAt = performance.now();
   for (let attempt = 0; attempt < TASK_PAGE_MAX_ATTEMPTS; attempt += 1) {
+    const prepared = await prepareTaskRegistryProjectionAsync(readContext, store, 1);
+    assertCurrent();
     const revision = readTaskRegistryRevision();
     if (params.expectedRevision !== undefined && params.expectedRevision !== revision) {
       return err("cursor_stale");
     }
+    if (!prepared) {
+      continue;
+    }
+    let workStartedAt = performance.now();
     // Session pages scan only related candidates; exact owner/agent checks still run below.
     const source = sessionKey ? taskIdsByRelatedSessionKey.get(sessionKey) : tasks;
     const scanLimit = source?.size ?? 0;

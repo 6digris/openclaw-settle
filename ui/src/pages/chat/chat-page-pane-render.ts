@@ -52,7 +52,7 @@ type ChatPagePaneRenderOptions = {
 };
 
 export function renderChatPagePaneCell(options: ChatPagePaneRenderOptions) {
-  const sessions = options.context?.sessions?.state.result?.sessions ?? [];
+  const sessions = options.context?.sessions?.presentation.result?.sessions ?? [];
   return html`
     <div
       class="chat-split-view__cell ${

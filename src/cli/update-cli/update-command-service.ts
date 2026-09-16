@@ -36,6 +36,7 @@ import {
   isPackageManagerUpdateMode,
   runUpdatedInstallGatewayCommand,
 } from "./update-command-service-command.js";
+import type { ManagedGatewayUpdateVerdict } from "./update-command-service-context-types.js";
 import { resolveServiceRefreshEnv } from "./update-command-service-env.js";
 import {
   UpdateServiceLoadBoundaryError,
@@ -47,7 +48,6 @@ import {
   gatewayServiceCommandUsesRoot,
   resolveGatewayServiceManagementBlockMessageForUpdate,
   resolveUpdatedGatewayRestartPort,
-  type ManagedGatewayUpdateVerdict,
 } from "./update-command-service-plan.js";
 import {
   hasLoadedLaunchdKeepAliveSupervisor,
