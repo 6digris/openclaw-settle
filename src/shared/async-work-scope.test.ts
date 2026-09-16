@@ -14,12 +14,12 @@ describe("async work scope", () => {
   it("drains cancellation cleanup with the original Worker error", async () => {
     const reason = await new Promise<Error>((resolve, reject) => {
       const worker = new Worker('throw new Error("worker cancellation");', { eval: true });
-      let failure: Error | undefined;
+      let failure: unknown;
       worker.once("error", (error) => {
         failure = error;
       });
       worker.once("exit", () => {
-        if (failure) {
+        if (failure instanceof Error) {
           resolve(failure);
         } else {
           reject(new Error("Worker exited without its expected error"));
