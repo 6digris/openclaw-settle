@@ -76,29 +76,30 @@ describe("Gateway post-ready startup work", () => {
           controlUiEnabled: false,
           sidecarStartup: "defer",
         });
-        console.info("SR");
         await realStartup;
-        console.info("ST");
         // Let both production grace periods elapse while published startup is pending.
         await delay(600);
         expect(startMaintenance).not.toHaveBeenCalled();
         expect(resumed).not.toHaveBeenCalled();
 
         if (outcome === "closes") {
+          closeOutcome = server.close();
+          await postReadyWork;
+          expect(resumed).toHaveBeenCalledExactlyOnceWith(true);
+          // Real process cleanup needs native timers; observe only startup's timer publication.
           vi.useFakeTimers({
             toFake: ["setTimeout", "clearTimeout"],
             shouldClearNativeTimers: true,
           });
-          closeOutcome = server.close();
-          console.info("CR");
-          await postReadyWork;
-          console.info("PR");
-          expect(resumed).toHaveBeenCalledExactlyOnceWith(true);
-          startup.resolve();
-          console.info("CW");
+          try {
+            startup.resolve();
+            await server.startupSettled;
+            expect(vi.getTimerCount()).toBe(0);
+          } finally {
+            vi.useRealTimers();
+          }
           await closeOutcome;
           expect(startMaintenance).not.toHaveBeenCalled();
-          expect(vi.getTimerCount()).toBe(0);
         } else {
           startup.resolve();
           await server.startupSettled;
@@ -113,7 +114,6 @@ describe("Gateway post-ready startup work", () => {
           await closeOutcome;
           await server?.close();
           await postReadyWork;
-          console.info("SC");
           await state.cleanup();
         } finally {
           vi.useRealTimers();

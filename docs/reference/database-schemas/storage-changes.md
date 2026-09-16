@@ -91,8 +91,16 @@ Discord presence cooldown reads, claims, and conditional rollback use the shared
 state worker. The listener rechecks current policy and Gateway generation after
 storage waits, queues greetings only after a durable claim, and joins admitted
 work and rollback during provider shutdown, including work detached by reconnect.
-The same namespace, eight-hour expiry, and capacity policy remain in use. Thread
-binding persistence retains its synchronous owner and public completion contract.
+The same namespace, eight-hour expiry, and capacity policy remain in use. Discord
+thread binding restoration at channel-manager creation, provider startup, and
+registered subagent hooks uses the shared state worker. Concurrent cold reads share
+one load; a synchronous compatibility caller that initializes or mutates the
+registry while that load is pending keeps its newer state. Provider startup stops
+acquired binding managers when startup is cancelled or reconciliation fails. Snapshot writes and
+public synchronous binding APIs retain their synchronous owner and completion
+contract. Moving those writes requires preserving immediate unbind persistence
+and preventing older writes from recreating removed bindings; row comparison
+tokens alone do not identify an absent binding incarnation.
 
 Memory-host event appends and bounded journal reads execute on the shared state
 worker. The plugin-state owner allocates the sequence, rereads the cursor and
@@ -107,7 +115,7 @@ Reef registration binding reads, reservations, finalization, release, and setup-
 persistence use the shared-state worker. Reservation mutations compare the current
 row before writing; a conflict rereads ownership before retrying. The CLI, setup
 wizard, and channel startup await these operations. Keys, migration gates, trust,
-audit, replay, review, and delivery state retain their existing native
+audit, replay, review mutations, and delivery state retain their existing native
 owners. Key creation still performs its synchronous guard checks and insert without
 an event-loop yield; those separate operations do not form a cross-process transaction.
 Stored registration JSON, reservation expiry, namespace limits, and Doctor imports
@@ -124,6 +132,13 @@ supported hosts without comparison operations retain atomic native updates until
 approved minimum host version guarantees comparison support. Worker failures never
 switch to that path. Invalid-row diagnostics on current hosts report
 the Reef validation error directly; older hosts retain native store error wrapping.
+
+Reef review-decision lookups and pending-review lists use the shared-state worker.
+Both reads recheck the live channel authority after storage settles, before returning
+results. Older hosts retain their existing asynchronous read adapter. Review requests,
+decisions, and completed-review eviction keep their uninterrupted native authority
+check and mutation path; worker read failures never fall back to native reads.
+Review JSON, digest identity, ordering, capacity, and retention are unchanged.
 
 Use Kysely for ordinary queries and mutations. The current
 `getNodeSqliteKysely` facade compiles queries; `executeSqliteQuerySync` runs them
@@ -153,8 +168,10 @@ Session listing loads complete persisted subagent metadata in the shared-state
 worker through a read-only connection. The existing cache coalesces pending fills
 and applies intervening named updates and deletions before publishing its first
 complete snapshot. Full replacement, registry ownership changes, and database
-retirement fence obsolete replies. Its 500 ms freshness policy and retention
-rules remain unchanged. Gateway, embedded, and TUI callers merge accepted rows
+retirement fence obsolete replies. Loaded snapshots stay current through registry
+publication instead of periodic reloads: named writes patch rows, while full
+replacement and restore replace snapshots. Retention rules remain unchanged.
+Gateway, embedded, and TUI callers merge accepted rows
 with current host memory and scheduler facts before building the full topology.
 Pure topology grouping yields through the shared session-list work budget.
 Synchronous readers reuse the same SQL and row decoder; runtime reads do not
@@ -378,9 +395,23 @@ candidate transcript, compaction checkpoint, or trajectory files. Prompt-referen
 projection runs only when prompt blobs exist. Age, exclusion, and containment
 checks still govern every removal.
 
-Automatic session-entry maintenance reads its protection-key inventory once per
-plan, only when age or cap candidates exist, within the same write transaction.
-Retention rules and active-work, ancestor, and lifecycle protection remain unchanged.
+Automatic session-entry maintenance first checks the unarchived count and
+store-scoped age facts. Writes below the existing cap high-water mark skip
+candidate and protection-key reads until pruning or dashboard archiving could
+change an entry. A plan refreshes the timestamp facts; tracked entry writes
+advance them conservatively, while rollback, untracked mutations, external
+commits, and connection replacement invalidate reuse. Key-inherent protection
+does not keep an old primary or external conversation permanently due. Already-aged
+entries with dynamic protection still require fresh planning on writes.
+
+The coalesced maintenance kick also wakes at the next age boundary, with a
+30-minute periodic recheck for released work protection and external changes.
+Its timer retires with the exact database connection. Planning still reads its
+protection-key inventory at most once when age or cap candidates exist, inside
+the write transaction; archives and final deletion retain their existing
+post-writer lifecycle checks. Retention rules, cap buffering, forced cleanup,
+and active-work, ancestor, and lifecycle protection remain unchanged. No schema
+or migration change is required.
 
 After archive preparation, session deletion rereads its target before admitting
 the final reclamation worker. A missing or changed target returns the existing

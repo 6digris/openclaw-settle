@@ -593,11 +593,7 @@ function refreshUnderCustody(): void {
       for (const { snapshot, scope } of snapshots) {
         installSnapshot(snapshot, scope);
       }
-      projection.dirty = false;
-      dirtyScopes.clear();
-      for (const pending of pendingMutations) {
-        dirtyScopes.add(pending.scope);
-      }
+      markTaskRegistryProjectionRestored();
     },
     rollback() {
       if (previous) {
