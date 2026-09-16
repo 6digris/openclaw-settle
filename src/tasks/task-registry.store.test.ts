@@ -3,7 +3,6 @@ import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { createDeferred } from "../../test/helpers/promise.js";
 import type { AdmittedRunContext } from "../agents/admitted-run-context.js";
 import { createExecutionIdentityAdmissionToken } from "../audit/execution-identity-admission.js";
 import { bindExecutionOwnerLifecycleMetadata } from "../audit/execution-owner-lifecycle-binding-store.js";
@@ -403,63 +402,6 @@ describe("task-registry store runtime", () => {
     expect(getTaskById("task-restored")).toBeUndefined();
     expect(failedLoad).toHaveBeenCalledTimes(1);
     expect(cleanLoad).toHaveBeenCalledTimes(1);
-  });
-
-  it("uses scoped owner lookups for fresh owner task reads", async () => {
-    const storedTask = createStoredTask();
-    const loadSnapshot = vi.fn(() => ({
-      tasks: new Map(),
-      deliveryStates: new Map(),
-    }));
-    const lookup = createDeferred<TaskRecord[]>();
-    const listTasksForOwnerKey = vi.fn(() => lookup.promise);
-    configureTaskRegistryRuntime({
-      store: {
-        ...createInMemoryTaskRegistryStore(),
-        loadSnapshot,
-        listTasksForOwnerKey,
-      },
-    });
-
-    const pending = listFreshTasksForOwnerKey(
-      captureOpenClawStateWorkerContext(),
-      "agent:main:main",
-    );
-    lookup.resolve([storedTask]);
-    const tasks = await pending;
-
-    expect(tasks.map((task) => task.taskId)).toEqual(["task-restored"]);
-    expect(listTasksForOwnerKey).toHaveBeenCalledWith(
-      expect.objectContaining({ admission: expect.any(Object) }),
-      "agent:main:main",
-    );
-    expect(loadSnapshot).toHaveBeenCalledTimes(1);
-  });
-
-  it("uses the current memory snapshot when a delayed owner lookup fails", async () => {
-    const storedTask = createStoredTask();
-    const lookup = createDeferred<TaskRecord[]>();
-    const started = createDeferred();
-    configureTaskRegistryRuntime({
-      store: {
-        ...createInMemoryTaskRegistryStore({
-          tasks: new Map([[storedTask.taskId, storedTask]]),
-          deliveryStates: new Map(),
-        }),
-        listTasksForOwnerKey: () => {
-          started.resolve();
-          return lookup.promise;
-        },
-      },
-    });
-    const pending = listFreshTasksForOwnerKey(
-      captureOpenClawStateWorkerContext(),
-      storedTask.ownerKey,
-    );
-    await started.promise;
-    updateTaskNotifyPolicyById({ taskId: storedTask.taskId, notifyPolicy: "silent" });
-    lookup.reject(new Error("owner lookup unavailable"));
-    expect(await pending).toMatchObject([{ taskId: storedTask.taskId, notifyPolicy: "silent" }]);
   });
 
   it("does not clone non-blocker details when inspecting restart blockers", () => {

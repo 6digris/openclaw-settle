@@ -1,14 +1,16 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { createInMemoryTaskRegistryStore } from "../test-utils/task-registry-store.js";
 import {
   getTaskById,
   listTaskRecordPage,
+  listFreshTasksForOwnerKey,
   resetTaskRegistryForTests,
 } from "./task-registry-query.js";
-import { markTaskTerminalById } from "./task-registry-record-api.js";
+import { markTaskTerminalById, updateTaskNotifyPolicyById } from "./task-registry-record-api.js";
 import {
   reloadTaskRegistryFromStoreAsync,
   tasks as authoritativeTasks,
@@ -501,5 +503,83 @@ describe("listTaskRecordPage", () => {
     }
 
     expect(getTaskById(task.taskId)?.detail).toEqual({ nested: { value: "original" } });
+  });
+});
+
+describe("listFreshTasksForOwnerKey", () => {
+  function createStoredTask(): TaskRecord {
+    return {
+      taskId: "task-restored",
+      runtime: "acp",
+      sourceId: "run-restored",
+      requesterSessionKey: "agent:main:main",
+      ownerKey: "agent:main:main",
+      scopeKind: "session",
+      childSessionKey: "agent:codex:acp:restored",
+      runId: "run-restored",
+      task: "Restored task",
+      status: "running",
+      deliveryStatus: "pending",
+      notifyPolicy: "done_only",
+      createdAt: 100,
+      lastEventAt: 100,
+    };
+  }
+
+  it("uses scoped owner lookups for fresh owner task reads", async () => {
+    const storedTask = createStoredTask();
+    const loadSnapshot = vi.fn(() => ({
+      tasks: new Map(),
+      deliveryStates: new Map(),
+    }));
+    const lookup = createDeferred<TaskRecord[]>();
+    const listTasksForOwnerKey = vi.fn(() => lookup.promise);
+    configureTaskRegistryRuntime({
+      store: {
+        ...createInMemoryTaskRegistryStore(),
+        loadSnapshot,
+        listTasksForOwnerKey,
+      },
+    });
+
+    const pending = listFreshTasksForOwnerKey(
+      captureOpenClawStateWorkerContext(),
+      "agent:main:main",
+    );
+    lookup.resolve([storedTask]);
+    const tasks = await pending;
+
+    expect(tasks.map((task) => task.taskId)).toEqual(["task-restored"]);
+    expect(listTasksForOwnerKey).toHaveBeenCalledWith(
+      expect.objectContaining({ admission: expect.any(Object) }),
+      "agent:main:main",
+    );
+    expect(loadSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the current memory snapshot when a delayed owner lookup fails", async () => {
+    const storedTask = createStoredTask();
+    const lookup = createDeferred<TaskRecord[]>();
+    const started = createDeferred();
+    configureTaskRegistryRuntime({
+      store: {
+        ...createInMemoryTaskRegistryStore({
+          tasks: new Map([[storedTask.taskId, storedTask]]),
+          deliveryStates: new Map(),
+        }),
+        listTasksForOwnerKey: () => {
+          started.resolve();
+          return lookup.promise;
+        },
+      },
+    });
+    const pending = listFreshTasksForOwnerKey(
+      captureOpenClawStateWorkerContext(),
+      storedTask.ownerKey,
+    );
+    await started.promise;
+    updateTaskNotifyPolicyById({ taskId: storedTask.taskId, notifyPolicy: "silent" });
+    lookup.reject(new Error("owner lookup unavailable"));
+    expect(await pending).toMatchObject([{ taskId: storedTask.taskId, notifyPolicy: "silent" }]);
   });
 });
