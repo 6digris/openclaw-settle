@@ -2237,6 +2237,7 @@ describe("runCodexAppServerSideQuestion", () => {
           await expect(run).resolves.toEqual({ text: "Side answer." });
         }
       } finally {
+        controller.abort("test cleanup");
         finishProjection.resolve();
         await settled;
       }
