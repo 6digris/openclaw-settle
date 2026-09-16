@@ -32,6 +32,10 @@ import {
   resolveChangedTestTargetPlan,
 } from "../../scripts/test-projects.test-support.mts";
 import { listGitTrackedFiles } from "../../src/test-utils/repo-files.js";
+import {
+  databaseWorkerExtensionTestFiles,
+  databaseWorkerExtensionTestRoots,
+} from "../vitest/vitest.extension-database-workers-paths.mjs";
 import { isGatewayServerTestFile } from "../vitest/vitest.gateway-server-paths.mjs";
 
 const CODEX_TEST_PROCESS_FILE_LIMIT = 12;
@@ -141,7 +145,13 @@ function expectBoundedCodexFallback(
   expect(
     groups.every(
       (shard) =>
-        shard.configs[0] === "test/vitest/vitest.extension-codex.config.ts" &&
+        shard.includePatterns?.every(
+          (file) =>
+            shard.configs[0] ===
+            (databaseWorkerExtensionTestFiles.includes(file)
+              ? "test/vitest/vitest.extension-database-workers.config.ts"
+              : "test/vitest/vitest.extension-codex.config.ts"),
+        ) &&
         (shard.includePatterns?.length ?? 0) > 0 &&
         (shard.includePatterns?.length ?? 0) <= CODEX_TEST_PROCESS_FILE_LIMIT,
     ),
@@ -417,7 +427,10 @@ describe("CI changed Node test plan", () => {
     expect(shards?.filter((shard) => shard.targets)).toHaveLength(1);
     expect(shards?.flatMap((shard) => shard.targets ?? [])).toEqual([hostTest]);
     expect(new Set(fallbackGroups(shards ?? []).flatMap((group) => group.configs))).toEqual(
-      new Set(["test/vitest/vitest.extensions.config.ts"]),
+      new Set([
+        "test/vitest/vitest.extensions.config.ts",
+        "test/vitest/vitest.extension-database-workers.config.ts",
+      ]),
     );
     expect(buildVitestRunPlans([hostTest])).toEqual([
       {
@@ -1082,8 +1095,24 @@ describe("CI changed Node test plan", () => {
   });
 
   it("covers every extension config when the fallback planner itself changes", () => {
-    expectAllExtensionConfigs(
-      createChangedExtensionFallbackShards(["scripts/lib/ci-changed-node-test-plan.mts"]),
+    const shards = createChangedExtensionFallbackShards([
+      "scripts/lib/ci-changed-node-test-plan.mts",
+    ]);
+    expectAllExtensionConfigs(shards);
+    const workerTargets = fallbackGroups(shards)
+      .filter((group) =>
+        group.configs.includes("test/vitest/vitest.extension-database-workers.config.ts"),
+      )
+      .flatMap((group) => group.includePatterns ?? []);
+    // Whole-config fallback must retain tests even when their plugin has no package manifest.
+    expect(workerTargets.toSorted()).toEqual(
+      listExtensionTestFilesForRoots(["extensions"])
+        .filter(
+          (file) =>
+            databaseWorkerExtensionTestFiles.includes(file) ||
+            databaseWorkerExtensionTestRoots.some((root) => file.startsWith(`${root}/`)),
+        )
+        .toSorted(),
     );
   });
 
@@ -1146,18 +1175,57 @@ describe("CI changed Node test plan", () => {
     expect(hasCoreExtensionImpact(["docs/ci.md"])).toBe(false);
   });
 
-  it("keeps extension-only fallbacks scoped to the changed extension config", () => {
-    expect(createChangedExtensionFallbackShards(["extensions/discord/src/channel.ts"])).toEqual([
-      {
-        checkName: "checks-node-changed-extensions-config",
-        configs: ["test/vitest/vitest.extension-discord.config.ts"],
-        planConcurrency: 1,
-        predictedSeconds: expect.any(Number),
-        requiresDist: false,
-        runner: "blacksmith-8vcpu-ubuntu-2404",
-        shardName: "changed-extensions-config",
-      },
-    ]);
+  it("keeps extension-only fallbacks scoped to their owning configs", () => {
+    const shards = createChangedExtensionFallbackShards(["extensions/discord/src/channel.ts"]);
+    const groups = fallbackGroups(shards);
+    expect(shards.every((shard) => shard.planConcurrency === 1)).toBe(true);
+    expect(groups).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ configs: ["test/vitest/vitest.extension-discord.config.ts"] }),
+        expect.objectContaining({
+          configs: ["test/vitest/vitest.extension-database-workers.config.ts"],
+          includePatterns: databaseWorkerExtensionTestFiles.filter((file) =>
+            file.startsWith("extensions/discord/"),
+          ),
+        }),
+      ]),
+    );
+    expect(groups).toHaveLength(2);
+  });
+
+  it.each([
+    { name: "precise", createShards: createChangedNodeTestShards },
+    { name: "fallback", createShards: createChangedExtensionFallbackShards },
+  ])("retains per-file worker coverage in $name extension plans", ({ createShards }) => {
+    for (const root of [
+      "extensions/copilot",
+      "extensions/codex",
+      "extensions/matrix",
+      "extensions/telegram",
+    ]) {
+      const shards = createShards([`${root}/package.json`]);
+      expect(shards).not.toBeNull();
+      const groups = fallbackGroups(shards ?? []);
+      const workerTargets = groups
+        .filter((group) =>
+          group.configs.includes("test/vitest/vitest.extension-database-workers.config.ts"),
+        )
+        .flatMap((group) => group.includePatterns ?? []);
+      const expectedWorkers = databaseWorkerExtensionTestFiles.filter((file) =>
+        file.startsWith(`${root}/`),
+      );
+      expect(workerTargets.toSorted(), root).toEqual(expectedWorkers.toSorted());
+      const ordinaryTargets = groups
+        .filter(
+          (group) =>
+            !group.configs.includes("test/vitest/vitest.extension-database-workers.config.ts"),
+        )
+        .flatMap((group) => group.includePatterns ?? []);
+      expect(
+        ordinaryTargets.filter((file) => expectedWorkers.includes(file)),
+        root,
+      ).toEqual([]);
+    }
   });
 
   it("does not create extension fallback shards for docs-only diffs", () => {
@@ -1241,7 +1309,13 @@ describe("CI changed Node test plan", () => {
       expect(
         groups.every(
           (group) =>
-            group.configs[0] === "test/vitest/vitest.extension-telegram.config.ts" &&
+            group.includePatterns?.every(
+              (file) =>
+                group.configs[0] ===
+                (databaseWorkerExtensionTestFiles.includes(file)
+                  ? "test/vitest/vitest.extension-database-workers.config.ts"
+                  : "test/vitest/vitest.extension-telegram.config.ts"),
+            ) &&
             (group.includePatterns?.length ?? 0) > 0 &&
             (group.includePatterns?.length ?? 0) <= 10,
         ),
@@ -1249,7 +1323,6 @@ describe("CI changed Node test plan", () => {
       expect(targets.toSorted()).toEqual(
         listExtensionTestFilesForRoots(["extensions/telegram"]).toSorted(),
       );
-      expect(groups).toHaveLength(Math.ceil(targets.length / 10));
     },
   );
 
@@ -1297,7 +1370,13 @@ describe("CI changed Node test plan", () => {
     expect(
       groups.every(
         (shard) =>
-          shard.configs[0] === "test/vitest/vitest.extension-matrix.config.ts" &&
+          shard.includePatterns?.every(
+            (file) =>
+              shard.configs[0] ===
+              (databaseWorkerExtensionTestFiles.includes(file)
+                ? "test/vitest/vitest.extension-database-workers.config.ts"
+                : "test/vitest/vitest.extension-matrix.config.ts"),
+          ) &&
           (shard.includePatterns?.length ?? 0) > 0 &&
           (shard.includePatterns?.length ?? 0) <= 40,
       ),
@@ -1337,6 +1416,7 @@ describe("CI changed Node test plan", () => {
       {
         checkName: "checks-node-changed-extensions-config",
         configs: ["test/vitest/vitest.extension-database-workers.config.ts"],
+        includePatterns: listExtensionTestFilesForRoots(["extensions/memory-core"]),
         planConcurrency: 1,
         predictedSeconds: expect.any(Number),
         requiresDist: false,
@@ -1472,6 +1552,7 @@ describe("CI changed Node test plan", () => {
     expect(shards).toContainEqual({
       checkName: "checks-node-changed-extensions-config",
       configs: ["test/vitest/vitest.extension-database-workers.config.ts"],
+      includePatterns: listExtensionTestFilesForRoots(["extensions/memory-core"]),
       planConcurrency: 1,
       predictedSeconds: expect.any(Number),
       requiresDist: false,

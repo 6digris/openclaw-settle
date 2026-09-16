@@ -381,6 +381,7 @@ function resolveChangedExtensionRoots(changedPaths: string[]) {
 
 function createChangedExtensionConfigShards(
   extensionRoots: string[],
+  options: { includeWholeConfigs?: boolean } = {},
 ): ChangedExtensionConfigShard[] {
   const rootsByConfig = new Map<string, string[]>();
   for (const root of extensionRoots) {
@@ -389,8 +390,13 @@ function createChangedExtensionConfigShards(
   }
   const filesByConfig = new Map<string, string[]>();
   for (const file of rootsByConfig.size > 0 ? listExtensionTestFilesForRoots(["extensions"]) : []) {
-    const config = resolveExtensionTestConfig(file.split("/").slice(0, 2).join("/"));
+    const root = file.split("/").slice(0, 2).join("/");
+    const config = resolveExtensionTestConfig(file);
     filesByConfig.set(config, [...(filesByConfig.get(config) ?? []), file]);
+    const roots = rootsByConfig.get(config) ?? [];
+    if (extensionRoots.includes(root) && !roots.includes(root)) {
+      rootsByConfig.set(config, [...roots, root]);
+    }
   }
   const plans: Array<{
     config: string;
@@ -400,29 +406,34 @@ function createChangedExtensionConfigShards(
   }> = [...rootsByConfig].flatMap(([config, roots]) => {
     const splitProcesses = shouldSplitExtensionTestProcesses(config);
     const testFiles = (filesByConfig.get(config) ?? []).filter(
-      (file) => !splitProcesses || roots.some((root) => file.startsWith(`${root}/`)),
+      (file) =>
+        !splitProcesses ||
+        options.includeWholeConfigs ||
+        roots.some((root) => file.startsWith(`${root}/`)),
     );
     const chunks = testFiles.length > 0 ? splitExtensionTestJobTargets(config, testFiles) : [roots];
+    if (splitProcesses) {
+      return chunks.map((includePatterns) => ({
+        config,
+        includePatterns,
+        predictedSeconds: estimateExtensionTestCost(config, includePatterns.length),
+      }));
+    }
     const predictedSeconds = Math.ceil(
       estimateExtensionTestCost(config, testFiles.length) / chunks.length,
     );
     return chunks.length > 1
-      ? chunks.map((includePatterns, index) =>
-          Object.assign(
-            { config, predictedSeconds },
-            splitProcesses
-              ? { includePatterns }
-              : {
-                  // Counts size jobs only. Vitest owns the complete config inventory,
-                  // including unrelated plugin roots, excludes and untracked tests.
-                  env: {
-                    OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: JSON.stringify([
-                      `--shard=${index + 1}/${chunks.length}`,
-                    ]),
-                  },
-                },
-          ),
-        )
+      ? chunks.map((_, index) => ({
+          config,
+          predictedSeconds,
+          // Counts size jobs only. Vitest owns the complete config inventory,
+          // including unrelated plugin roots, excludes and untracked tests.
+          env: {
+            OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: JSON.stringify([
+              `--shard=${index + 1}/${chunks.length}`,
+            ]),
+          },
+        }))
       : [{ config, predictedSeconds }];
   });
   return plans.map(({ config, env, includePatterns, predictedSeconds }, index) => {
@@ -498,6 +509,8 @@ export function createChangedExtensionFallbackShards(
   const shards = hasCoreExtensionImpact(changedPaths, { cwd })
     ? createChangedExtensionConfigShards(
         listAvailableExtensionIds().map((extensionId) => `extensions/${extensionId}`),
+        // Configs can retain tests under plugin roots without a package manifest.
+        { includeWholeConfigs: true },
       )
     : createChangedExtensionConfigShardsForPaths(changedPaths, cwd);
   const jobs = packChangedExtensionConfigShards(shards);
