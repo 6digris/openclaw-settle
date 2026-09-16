@@ -71,9 +71,10 @@ export async function updateCommand(inputOpts: UpdateCommandOptions): Promise<vo
       pkgOwnership: prepared.pkgOwnership,
       freebsdRootAdmission: prepared.freebsdRootAdmission,
     });
-    const { initializeAndRunUpdate, updateStateNeedsInitialization } =
-      await import("./update-command-initialization.js");
+    const { updateStateNeedsInitialization } =
+      await import("./update-command-state-initialization.js");
     if (await updateStateNeedsInitialization(env)) {
+      const { initializeAndRunUpdate } = await import("./update-command-initialization.js");
       return await initializeAndRunUpdate({
         opts: inputOpts,
         prepared,
