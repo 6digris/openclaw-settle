@@ -4251,33 +4251,32 @@ describe("server-channels auto restart", () => {
 
   it.each(
     (["list-accounts", "runtime"] as const).flatMap((phase) =>
-      [false, true].map((retained) => ({ phase, retained })),
+      [
+        { retained: false, paused: true },
+        { retained: true, paused: false },
+        { retained: true, paused: true },
+      ].map(({ retained, paused }) => ({ phase, retained, paused })),
     ),
   )(
-    "preserves pending-start ownership across $phase preparation (retained: $retained)",
-    async ({ phase, retained }) => {
+    "preserves pending-start ownership across $phase preparation (retained: $retained, paused: $paused)",
+    async ({ phase, retained, paused }) => {
       const preparing = createDeferred();
       const release = createDeferred();
       const cleanupStarted = createDeferred();
       const releaseCleanup = createDeferred();
-      if (phase === "runtime" && !retained) {
+      if (phase === "runtime" && paused) {
         hoisted.startChannelApprovalHandlerBootstrap.mockResolvedValueOnce(async () => {
           cleanupStarted.resolve();
           await releaseCleanup.promise;
         });
       }
-      const originalStart = vi.fn(async ({ abortSignal }: ChannelGatewayContext<TestAccount>) => {
+      const startAccount = async ({ abortSignal }: ChannelGatewayContext<TestAccount>) => {
         await new Promise<void>((resolve) => {
           abortSignal.addEventListener("abort", () => resolve(), { once: true });
         });
-      });
-      const replacementStart = vi.fn(
-        async ({ abortSignal }: ChannelGatewayContext<TestAccount>) => {
-          await new Promise<void>((resolve) => {
-            abortSignal.addEventListener("abort", () => resolve(), { once: true });
-          });
-        },
-      );
+      };
+      const originalStart = vi.fn(startAccount);
+      const replacementStart = vi.fn(startAccount);
       const originalPlugin = createTestPlugin({ startAccount: originalStart });
       let registry = installTestRegistry(
         originalPlugin,
@@ -4304,13 +4303,13 @@ describe("server-channels auto restart", () => {
       );
       let replacements: Array<ReturnType<ChannelManager["startChannel"]>> = [];
       await preparing.promise;
-      const target = retained ? "slack" : "discord";
+      const target = paused ? "discord" : "slack";
       const resume = manager.pauseChannelStarts([target]);
       try {
         await expect(manager.startChannel(target, "default")).rejects.toThrow(
           "plugins are reloading; retry",
         );
-        if (!retained) {
+        if (paused) {
           await manager.stopChannel("discord", undefined, { manual: false });
         }
         registry = installTestRegistry(
@@ -4318,21 +4317,19 @@ describe("server-channels auto restart", () => {
           createTestPlugin({ id: "slack", startAccount: replacementStart }),
         );
         resume("published");
-        replacements = retained
-          ? []
-          : [
-              manager.startChannel("discord", "default"),
-              manager.startChannel("discord", "default"),
-            ];
+        replacements = paused
+          ? [manager.startChannel("discord", "default"), manager.startChannel("discord", "default")]
+          : [];
         await flushMicrotasks();
         release.resolve();
-        if (phase === "runtime" && !retained) {
+        if (phase === "runtime" && paused) {
           await cleanupStarted.promise;
           await waitForImmediate();
+          expect(originalStart).not.toHaveBeenCalled();
           expect(replacementStart).not.toHaveBeenCalled();
           releaseCleanup.resolve();
         }
-        if (retained) {
+        if (!paused) {
           expect(await completion).toEqual({
             result: new Map([["default", { status: "handed-off" }]]),
           });
@@ -4342,7 +4339,7 @@ describe("server-channels auto restart", () => {
           });
         }
         const outcomes = await Promise.all(replacements);
-        if (!retained) {
+        if (paused) {
           expect(outcomes.map((result) => result.get("default"))).toContainEqual({
             status: "handed-off",
           });

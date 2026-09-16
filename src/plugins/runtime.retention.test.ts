@@ -15,6 +15,7 @@ it.each([
   { mode: "registry", name: "releases successors while a retired registry remains reachable" },
   { mode: "cache", name: "releases callback captures while a retired cache remains reachable" },
   { mode: "formatter", name: "finishes cache retirement when a custom stack formatter throws" },
+  { mode: "channel-fence", name: "releases published channel fence snapshots" },
   ...["default", "cause"].map((kind) => ({
     mode: `work-scope-${kind}`,
     name: `releases closed work scope ${kind} callers`,

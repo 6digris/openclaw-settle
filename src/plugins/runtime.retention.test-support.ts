@@ -228,6 +228,12 @@ async function recoverOwner(root: string, kind: "source" | "bundled-cjs" | "bund
 }
 
 switch (process.argv[2]) {
+  case "channel-fence": {
+    const { verifyPublishedChannelFenceRetention } =
+      await import("../gateway/server-channels.retention.test-support.js");
+    await verifyPublishedChannelFenceRetention(collect);
+    break;
+  }
   case "work-scope-default":
   case "work-scope-cause": {
     const { runWorkScopeRetention } =

@@ -1731,10 +1731,10 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
             continue;
           }
           if (store.startFence === fence && fence.paused) {
-            // Publication keeps the token so delayed predecessor preparation stays stale.
+            // Keep the token to fence delayed preparation, but release the retired projection.
             // A cancelled retry restores an earlier failed replacement's pause.
             if (outcome === "published") {
-              fence.paused = false;
+              Object.assign(fence, { paused: false, snapshot: undefined });
             } else {
               store.startFence = previous;
             }
