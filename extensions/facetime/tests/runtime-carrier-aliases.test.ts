@@ -31,8 +31,11 @@ describe("FaceTime runtime carrier aliases", () => {
         : completeAbsence(),
     );
     const runtime = await createRuntime();
-    const active = incomingCall(1);
-    active.data.conversation_uuid = "shared-conversation";
+    const incoming = incomingCall(1);
+    const active = {
+      ...incoming,
+      data: { ...incoming.data, conversation_uuid: "shared-conversation" },
+    };
 
     mocks.helperParams?.onMessage(active);
     await vi.waitFor(() => expect(talk.activate).toHaveBeenCalledOnce());
@@ -59,8 +62,11 @@ describe("FaceTime runtime carrier aliases", () => {
     const talk = createTalkDriver({});
     mocks.startTalk.mockResolvedValueOnce(talk);
     const runtime = await createRuntime();
-    const active = incomingCall(1);
-    active.data.conversation_uuid = "shared-conversation";
+    const incoming = incomingCall(1);
+    const active = {
+      ...incoming,
+      data: { ...incoming.data, conversation_uuid: "shared-conversation" },
+    };
 
     mocks.helperParams?.onMessage(active);
     await vi.waitFor(() => expect(talk.activate).toHaveBeenCalledOnce());

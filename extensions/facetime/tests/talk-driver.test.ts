@@ -65,6 +65,7 @@ const mocks = vi.hoisted(() => ({
           responseId?: string;
           message?: string;
         }): void;
+        onTranscript?(role: "user" | "assistant", text: string, final: boolean): void;
         onReady(): void;
         onError(error: Error): void;
         onClose(reason: "completed" | "error"): void;
