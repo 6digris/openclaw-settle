@@ -71,6 +71,7 @@ describe("runDoctorConfigPreflight state migration", () => {
       requiredPluginIds: [],
       inspectionRequiredPluginIds: [],
       statelessPluginIds: retainedPluginIds?.includes("fixture") ? [] : ["fixture"],
+      runtimePluginAliases: [],
     }));
 
     await readConfigFileSnapshot.withImplementation(

@@ -147,6 +147,7 @@ describe("plugin migration availability during installation deferral", () => {
       requiredPluginIds: entry.required ? ["fixture"] : [],
       inspectionRequiredPluginIds: entry.inspection ? ["fixture"] : [],
       statelessPluginIds: entry.ready ? ["fixture"] : [],
+      runtimePluginAliases: [],
     });
   });
 });
