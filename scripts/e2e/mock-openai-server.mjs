@@ -770,6 +770,14 @@ function mcpCodeModeApiFileEvents(body, bodyText) {
     !/MCP_CODE_MODE_FILE_TOOL_RESULT/.test(toolOutput) ||
     !/fixture-note-alpha/.test(toolOutput)
   ) {
+    // The scenario dumps this server log on failure. Preserve the rejected
+    // fixture result so the generic final marker does not hide the cause.
+    console.error(
+      "MCP code-mode rejected tool output:",
+      JSON.stringify(
+        boundedRequestLogBody(toolOutput, toolOutput, { requestLogBodyMaxBytes: 4096 }),
+      ),
+    );
     return responseEvents(
       "MCP_CODE_MODE_FILE_FAIL unclear=code-mode-exec-did-not-return-fixture-note",
     );
