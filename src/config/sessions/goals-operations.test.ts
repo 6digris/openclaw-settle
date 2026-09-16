@@ -5,6 +5,7 @@ import {
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
+import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
 import { lookupSessionGoalOperation, mutateSessionGoal } from "./goals-operations.js";
 import type {
   SessionGoalOperation,
@@ -184,6 +185,53 @@ describe("typed Goal operation persistence", () => {
         operation: editOperation,
       }),
     ).toEqual(edited.result);
+  });
+
+  it("preserves case-distinct Matrix identities when editing a Goal", async () => {
+    const mixedKey = "agent:main:matrix:channel:!RoomAbC:example.org";
+    const lowerKey = "agent:main:matrix:channel:!roomabc:example.org";
+    for (const [key, id, room] of [
+      [mixedKey, "mixed-session", "!RoomAbC:example.org"],
+      [lowerKey, "lower-session", "!roomabc:example.org"],
+    ] as const) {
+      await replaceSessionEntry(
+        { agentId: "main", sessionKey: key, storePath: fixture.storePath() },
+        {
+          sessionId: id,
+          updatedAt: now,
+          delivery: normalizeSessionDeliveryState({ context: { channel: "matrix", to: room } }),
+        },
+      );
+    }
+    const mixedScope = { agentId: "main", sessionKey: mixedKey, storePath: fixture.storePath() };
+    const goal = await createSessionGoal({ ...mixedScope, objective: "before" });
+    const readSibling = () =>
+      database().db.prepare("SELECT * FROM session_nodes WHERE session_key = ?").get(lowerKey);
+    const siblingBefore = readSibling();
+    expect(siblingBefore).toMatchObject({ current_session_id: "lower-session" });
+    const identityMutation = vi.fn();
+    const unsubscribe = onSessionIdentityMutation(identityMutation);
+    try {
+      const edited = await mutateSessionGoal({
+        ...mixedScope,
+        expectedSessionId: "mixed-session",
+        operation: {
+          ...identity("edit-matrix"),
+          action: "edit",
+          goalId: goal.id,
+          objective: "after",
+        },
+      });
+      expect(edited.result.goal?.objective).toBe("after");
+      expect(loadSessionEntry(mixedScope)).toMatchObject({
+        sessionId: "mixed-session",
+        goal: { id: goal.id, objective: "after" },
+      });
+      expect(readSibling()).toEqual(siblingBefore);
+      expect(identityMutation).not.toHaveBeenCalled();
+    } finally {
+      unsubscribe();
+    }
   });
 
   it("replays the original success after clear and reopening without recreating Goal or turn", async () => {

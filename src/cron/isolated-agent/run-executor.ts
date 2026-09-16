@@ -230,13 +230,17 @@ function buildCronDeliveryTargetRuntimeContext(params: {
   ].join("\n");
 }
 
-/** Result envelope returned after an isolated cron prompt completes. */
-export type CronExecutionResult = {
+type CronCompletedPromptRun = {
   runResult: CronPromptRunResult;
   fallbackProvider: string;
   fallbackModel: string;
   runStartedAt: number;
   runEndedAt: number;
+};
+
+/** Result envelope returned after an isolated cron prompt completes. */
+export type CronExecutionResult = CronCompletedPromptRun & {
+  completedPromptRuns?: CronCompletedPromptRun[];
   liveSelection: CronLiveSelection;
 };
 
@@ -291,6 +295,7 @@ type CronRunExecutionParams = {
       Partial<Omit<CronAgentExecutionPhaseUpdate, "jobId" | "phase">>,
   ) => void;
   onLaneWait?: (info?: { waiting?: boolean }) => void;
+  onPromptCompleted?: (execution: CronExecutionResult) => void;
   executionIdentity?: import("../service/state.js").CronExecutionIdentityAdmission;
   runStartedAt?: number;
 };
@@ -299,8 +304,11 @@ type CronRunExecutionParams = {
 function createCronPromptExecutor(
   params: Omit<
     CronRunExecutionParams,
-    "commandBody" | "isAborted" | "agentVerboseDefault" | "runStartedAt"
-  > & { resolvedVerboseLevel: VerboseLevel },
+    "commandBody" | "isAborted" | "agentVerboseDefault" | "runStartedAt" | "onPromptCompleted"
+  > & {
+    resolvedVerboseLevel: VerboseLevel;
+    onPromptCompleted: (run: CronCompletedPromptRun) => void;
+  },
 ) {
   const sessionFile = params.runSessionKey;
   const cronFallbacksOverride =
@@ -421,7 +429,7 @@ function createCronPromptExecutor(
     };
   };
 
-  const runPrompt = async (promptText: string) => {
+  const runPrompt = async (promptText: string, runStartedAt: number) => {
     // A retry can fail during preparation, before any backend start callback.
     params.lifecycle.beginAttempt();
     const sessionTarget = {
@@ -948,8 +956,15 @@ function createCronPromptExecutor(
       provider: fallbackResult.provider,
       model: fallbackResult.model,
     });
-    await params.persistRunContinuationSession?.();
     runEndedAt = Date.now();
+    params.onPromptCompleted({
+      runResult,
+      fallbackProvider,
+      fallbackModel,
+      runStartedAt,
+      runEndedAt,
+    });
+    await params.persistRunContinuationSession?.();
     pendingUserTurn = undefined;
   };
 
@@ -976,6 +991,8 @@ export async function executeCronRun(params: CronRunExecutionParams): Promise<Cr
     sessionId: params.cronSession.sessionEntry.sessionId,
     verboseLevel: resolvedVerboseLevel,
   });
+  const runStartedAt = params.runStartedAt ?? Date.now();
+  const completedPromptRuns: CronCompletedPromptRun[] = [];
   const executor = createCronPromptExecutor({
     cfg: params.cfg,
     cfgWithAgentDefaults: params.cfgWithAgentDefaults,
@@ -1015,17 +1032,27 @@ export async function executeCronRun(params: CronRunExecutionParams): Promise<Cr
     onExecutionStarted: params.onExecutionStarted,
     onExecutionPhase: params.onExecutionPhase,
     onLaneWait: params.onLaneWait,
+    onPromptCompleted: (run) => {
+      completedPromptRuns.push(run);
+      params.onPromptCompleted?.({
+        ...run,
+        runStartedAt,
+        ...(completedPromptRuns.length > 1
+          ? { completedPromptRuns: [...completedPromptRuns] }
+          : {}),
+        liveSelection: params.liveSelection,
+      });
+    },
     executionIdentity: params.executionIdentity,
   });
 
-  const runStartedAt = params.runStartedAt ?? Date.now();
   const MAX_MODEL_SWITCH_RETRIES = 2;
   let modelSwitchRetries = 0;
   let promptMediaTaskIds: ReadonlySet<string> = new Set();
   while (true) {
     try {
       promptMediaTaskIds = getGeneratedMediaTaskIdsForSessionKey(params.runSessionKey);
-      await executor.runPrompt(params.commandBody);
+      await executor.runPrompt(params.commandBody, runStartedAt);
       break;
     } catch (err) {
       if (
@@ -1122,7 +1149,7 @@ export async function executeCronRun(params: CronRunExecutionParams): Promise<Cr
         "Do not send a status update like 'on it'.",
         "Use tools when needed, including sessions_spawn for parallel subtasks, wait for spawned subagents to finish, then return only the final summary.",
       ].join(" ");
-      await executor.runPrompt(continuationPrompt);
+      await executor.runPrompt(continuationPrompt, Date.now());
       ({ runResult, fallbackProvider, fallbackModel, runEndedAt } = executor.getState());
     }
   }
@@ -1136,6 +1163,7 @@ export async function executeCronRun(params: CronRunExecutionParams): Promise<Cr
     fallbackModel,
     runStartedAt,
     runEndedAt,
+    ...(completedPromptRuns.length > 1 ? { completedPromptRuns } : {}),
     liveSelection: params.liveSelection,
   };
 }

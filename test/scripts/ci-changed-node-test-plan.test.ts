@@ -1286,11 +1286,8 @@ describe("CI changed Node test plan", () => {
     try {
       vi.spyOn(changedExtensions, "listAvailableExtensionIds").mockReturnValue(ids);
       vi.spyOn(extensionTestPlan, "listExtensionTestFilesForRoots").mockReturnValue(files);
-      vi.spyOn(extensionTestPlan, "resolveExtensionTestConfig").mockImplementation((root) => {
-        return expectDefined(
-          configs[ids.indexOf(root.slice("extensions/".length))],
-          "fixture config",
-        );
+      vi.spyOn(extensionTestPlan, "resolveExtensionTestConfig").mockImplementation((target) => {
+        return expectDefined(configs[ids.indexOf(target.split("/")[1] ?? "")], "fixture config");
       });
       vi.spyOn(extensionTestPlan, "estimateExtensionTestCost").mockImplementation((config) => {
         return expectDefined(costs[configs.indexOf(config)], "fixture cost");

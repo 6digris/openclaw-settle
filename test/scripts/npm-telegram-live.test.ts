@@ -516,6 +516,77 @@ for (const subpath of ${JSON.stringify(privateQaSubpaths)}) {
     expect(isPreRichInlineCompositionTarget(root)).toBe(false);
   });
 
+  it.each([
+    [],
+    ["telegram-policy-hot-reload"],
+    ["telegram-group-policy-hot-reload"],
+    ["telegram-policy-hot-reload", "telegram-group-policy-hot-reload"],
+  ])(
+    "qualifies default policy reload scenarios from the selected source (%j)",
+    (...supported: string[]) => {
+      const root = mkTempRoot();
+      const policyScenarios = ["telegram-policy-hot-reload", "telegram-group-policy-hot-reload"];
+      for (const id of supported) {
+        const file = path.join(root, `qa/scenarios/channels/${id}.yaml`);
+        mkdirSync(path.dirname(file), { recursive: true });
+        writeFileSync(file, `scenario:\n  id: ${id}\n`);
+      }
+      execFileSync("git", ["init", "-q", root]);
+      execFileSync("git", ["-C", root, "add", "."]);
+      execFileSync("git", [
+        "-C",
+        root,
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.test",
+        "commit",
+        "-qm",
+        "target",
+        "--allow-empty",
+      ]);
+      const selectedSha = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], {
+        encoding: "utf8",
+      }).trim();
+      const output = path.join(root, "github.env");
+      const qualifier = path.resolve(
+        TEST_DIR,
+        "../../scripts/e2e/lib/npm-telegram-live/resolve-target-scenarios.mts",
+      );
+      execFileSync(process.execPath, [qualifier, root], {
+        env: { ...process.env, OPENCLAW_SELECTED_SHA: selectedSha, GITHUB_ENV: output },
+      });
+      const omissions = readFileSync(output, "utf8").trim().split("=")[1];
+      const env = { OPENCLAW_NPM_TELEGRAM_OMIT_DEFAULT_SCENARIOS: omissions };
+      const resolve = (ids: readonly string[]) =>
+        ids.length ? [...ids] : ["channel-canary", ...policyScenarios];
+      expect(testing.resolvePackageTelegramScenarios(env, resolve).resolvedScenarioIds).toEqual([
+        "channel-canary",
+        ...policyScenarios.filter((id) => supported.includes(id)),
+      ]);
+      for (const id of policyScenarios) {
+        expect(
+          testing.resolvePackageTelegramScenarios(
+            { ...env, OPENCLAW_NPM_TELEGRAM_SCENARIOS: id },
+            resolve,
+          ).resolvedScenarioIds,
+        ).toEqual([id]);
+        expect(
+          testing.resolvePackageTelegramScenarios(
+            { ...env, OPENCLAW_NPM_TELEGRAM_RTT_CHECKS: id },
+            resolve,
+          ).resolvedScenarioIds,
+        ).toEqual([id]);
+      }
+      expect(() =>
+        execFileSync(process.execPath, [qualifier, root], {
+          env: { ...process.env, OPENCLAW_SELECTED_SHA: "0".repeat(40), GITHUB_ENV: output },
+          stdio: "pipe",
+        }),
+      ).toThrow("frozen Telegram source checkout does not match package source SHA");
+    },
+  );
+
   it("combines only the unsupported frozen Telegram scenario contracts", () => {
     const root = mkTempRoot();
     const writeOwner = (relativePath: string, source: string) => {
@@ -529,6 +600,10 @@ for (const subpath of ${JSON.stringify(privateQaSubpaths)}) {
       "extensions/telegram/src/bot-message-dispatch.ts",
       "enqueueDraftLaneEvent(async () => {});",
     );
+
+    for (const id of ["telegram-policy-hot-reload", "telegram-group-policy-hot-reload"]) {
+      writeOwner(`qa/scenarios/channels/${id}.yaml`, `scenario:\n  id: ${id}\n`);
+    }
 
     expect(resolveFrozenTelegramScenarioOmissions(root)).toEqual([
       "telegram-partial-failure-recovery",
