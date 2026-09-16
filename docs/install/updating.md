@@ -66,6 +66,8 @@ keep their own policy.
 When the selected service uses a different configuration from the invoking shell,
 the service's configuration and plugins remain the update target; the shell's
 configuration and backups are preserved.
+Before stopping a running profile, the updater records restart intent so
+interrupted subagents can recover after the service starts again.
 Automatic rollback checks every affected profile before restoring the shared
 installation once.
 
@@ -73,6 +75,8 @@ This coordination belongs to the updater that starts the operation. An older
 installed updater, including 2026.9.4, still manages only its selected profile on
 the first upgrade. Stop the other Gateways sharing that installation before
 running that older updater, then restart and verify them after it completes.
+Let active work finish first: those older updaters can cancel work that remains
+active when their shutdown drain expires.
 For targets that support candidate validation, Doctor lint, config and plugin planning, and a
 canary boot on copied state finish before the service stops. The stopped interval
 contains the swap, required migrations, plugin downloads and convergence, and

@@ -23,6 +23,10 @@ import { sha256Hex } from "../../infra/crypto-digest.js";
 import { readActiveGatewayLockIdentity } from "../../infra/gateway-lock.js";
 import { probePortUsage } from "../../infra/ports-probe.js";
 import { resolveEnvironmentValue } from "../../infra/process-env.js";
+import {
+  clearGatewayRestartIntentSync,
+  writeGatewayRestartIntentSync,
+} from "../../infra/restart-intent.js";
 import { isCurrentManagedServiceUpdateHandoffProcess } from "../../infra/update-managed-service-handoff.js";
 import { getUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import { defaultRuntime } from "../../runtime.js";
@@ -362,13 +366,12 @@ export async function maybeStopManagedServiceBeforeMutableUpdate(
       undefined,
     );
   }
-  if (params.phase === "inspect") {
-    return await stopManagedServiceBeforeMutableUpdate(params);
-  }
-  return await withGatewayServiceOperationLock(
-    params.expectedService?.serviceEnv ?? params.env ?? process.env,
-    (assertNative) => stopManagedServiceBeforeMutableUpdate(params, assertNative),
-  );
+  return params.phase === "inspect"
+    ? await stopManagedServiceBeforeMutableUpdate(params)
+    : await withGatewayServiceOperationLock(
+        params.expectedService?.serviceEnv ?? params.env ?? process.env,
+        (assertNative) => stopManagedServiceBeforeMutableUpdate(params, assertNative),
+      );
 }
 
 async function stopManagedServiceBeforeMutableUpdate(
@@ -550,8 +553,8 @@ async function stopManagedServiceBeforeMutableUpdate(
       : undefined;
     return blockMessage ? { ...inspected, blockMessage } : inspected;
   }
-  const suspendTask = async () => {
-    return await maybeSuspendWindowsTaskAutoStartForUpdate({
+  const suspendTask = () =>
+    maybeSuspendWindowsTaskAutoStartForUpdate({
       serviceEnv: serviceState.env,
       updateRun,
       assertCurrentService: createWindowsTaskAutoStartGuard({
@@ -571,7 +574,6 @@ async function stopManagedServiceBeforeMutableUpdate(
         }
       },
     });
-  };
   // A loaded LaunchAgent can be between KeepAlive respawns. Other supervisors
   // need the handoff marker to distinguish that transition from operator-stopped state.
   const supervisorMayRespawn =
@@ -606,6 +608,7 @@ async function stopManagedServiceBeforeMutableUpdate(
   }
   const windowsTaskAutoStartRecovery = await suspendTask();
   let stoppedAtMs: number | undefined;
+  let clearRestartIntent: (() => void) | undefined;
   try {
     // Ownership inspection and native preparation await work. Recheck the exact
     // launcher before stopping so a replacement service cannot inherit authority.
@@ -623,16 +626,21 @@ async function stopManagedServiceBeforeMutableUpdate(
       allowInstallRootChange: params.allowInstallRootChange,
     });
     assertGatewayServiceAdmissionUnchanged(inspected, currentVerdict);
-    assertCurrent();
     const currentBlockMessage = await resolveAncestryBlock(currentState);
     if (currentBlockMessage) {
       throw new UpdatePreMutationError("managed-service-preflight", currentBlockMessage);
     }
+    assertCurrent();
     stoppedAtMs = Date.now();
     if (params.updateRun) {
       recordUpdateRunPhase(params.updateRun.runId, "activating", undefined, {
         env: params.updateRun.env,
       });
+    }
+    if (
+      writeGatewayRestartIntentSync({ env: currentState.env, targetPid: currentState.runtime?.pid })
+    ) {
+      clearRestartIntent = () => clearGatewayRestartIntentSync(currentState.env);
     }
     await service.stop({
       env: currentState.env,
@@ -659,6 +667,7 @@ async function stopManagedServiceBeforeMutableUpdate(
         cause,
       });
     }
+    clearRestartIntent?.();
     if (err instanceof UpdateCommandAbort) {
       throw err;
     }
@@ -686,8 +695,6 @@ async function stopManagedServiceBeforeMutableUpdate(
     ...inspected,
     stopped: true,
     stoppedAtMs,
-    serviceDefinitionEnv:
-      resolveManagedGatewayServiceCommand(serviceState.command)?.environment ?? {},
     ...(windowsTaskAutoStartRecovery ? { windowsTaskAutoStartRecovery } : {}),
   };
 }
