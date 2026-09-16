@@ -6,6 +6,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/snapshot/git-backup.test.ts",
   "src/state/backup-run-records.test.ts",
   "src/tasks/task-registry.async-restore.test.ts",
+  "src/tasks/task-status.worker.test.ts",
   "src/tasks/task-registry.restore-ownership.test.ts",
   "src/agents/embedded-agent-runner/context-engine-maintenance.lifecycle.test.ts",
   "src/agents/subagents/registry/subagent-registry-recovery-acceptance.test.ts",

@@ -64,6 +64,7 @@ import {
 } from "./task-flow-registry.js";
 import type { TaskFlowRecord } from "./task-flow-registry.types.js";
 import { getTaskActivitySnapshot } from "./task-registry-activity.js";
+import { selectTaskRecordsForAgentId } from "./task-registry-query.js";
 import { updateTaskStateByRunId } from "./task-registry-record-api.js";
 import {
   readTaskRegistryRevision,
@@ -76,7 +77,6 @@ import {
   findTaskByRunId,
   getTaskById,
   isParentFlowLinkError,
-  listTasksForAgentId,
   listTasksForOwnerKey,
   listTasksForRelatedSessionKey,
   listTaskRecords,
@@ -3312,7 +3312,9 @@ describe("task-registry", () => {
       });
 
       expect(created.agentId).toBe("main");
-      expect(listTasksForAgentId("main").map((task) => task.taskId)).toEqual([created.taskId]);
+      expect(selectTaskRecordsForAgentId("main").map((task) => task.taskId)).toEqual([
+        created.taskId,
+      ]);
     });
   });
 
@@ -3326,8 +3328,10 @@ describe("task-registry", () => {
       });
 
       expect(created.agentId).toBe("worker");
-      expect(listTasksForAgentId("worker").map((task) => task.taskId)).toEqual([created.taskId]);
-      expect(listTasksForAgentId("main")).toEqual([]);
+      expect(selectTaskRecordsForAgentId("worker").map((task) => task.taskId)).toEqual([
+        created.taskId,
+      ]);
+      expect(selectTaskRecordsForAgentId("main")).toEqual([]);
     });
   });
 
