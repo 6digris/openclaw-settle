@@ -146,3 +146,39 @@ it("keeps a pinned runtime readable when the captured launch directory is unavai
   expect(process.env.CONFIG_ASYNC_GLOBAL).toBeUndefined();
   expect(process.env.CONFIG_ASYNC_WORKSPACE).toBeUndefined();
 });
+
+it("selects the runtime snapshot only when the captured reader is invoked", async () => {
+  fixture();
+  setRuntimeConfigSnapshot({ gateway: { port: 18789 } });
+  const read = captureRuntimeConfigAsyncReader();
+  const current = { gateway: { port: 19001 } };
+  setRuntimeConfigSnapshot(current);
+
+  expect(() => read.assertCurrent()).not.toThrow();
+  expect(await withoutMainSql(read)).toBe(current);
+  expect(() => read.assertCurrent()).not.toThrow();
+});
+
+it.each(["replacement", "reset and same-object publication"])(
+  "rejects selected runtime facts after a queued %s",
+  async (change) => {
+    fixture();
+    const selected = { gateway: { port: 18789 } };
+    const replacement = { gateway: { port: 19001 } };
+    setRuntimeConfigSnapshot(selected);
+    const read = captureRuntimeConfigAsyncReader();
+    const pending = withoutMainSql(read);
+    queueMicrotask(() => {
+      if (change === "replacement") {
+        setRuntimeConfigSnapshot(replacement);
+      } else {
+        resetConfigRuntimeState();
+        setRuntimeConfigSnapshot(selected);
+      }
+    });
+
+    expect(await pending).toBe(selected);
+    expect(() => read.assertCurrent()).toThrow("superseded");
+    expect(() => read()).toThrow("superseded");
+  },
+);

@@ -349,6 +349,8 @@ export async function triageCommand(
     return;
   }
 
+  const manualAgent =
+    handoff ?? externalAgents.find(({ agent }) => !options.agent || agent === options.agent);
   const needsConfirmation =
     interactive &&
     options.nonInteractive !== true &&
@@ -370,6 +372,11 @@ export async function triageCommand(
   } else if (bundle.kind === "unavailable") {
     runtime.log(`Diagnostics export unavailable: ${bundle.reason}`);
   }
+  if (!runEmbedded && manualAgent?.agent === "kimi") {
+    runtime.log(
+      "Kimi Code runs one prompt with its native automatic permission policy (no approval prompts).",
+    );
+  }
   const declined =
     needsConfirmation &&
     agentLabel !== undefined &&
@@ -382,8 +389,6 @@ export async function triageCommand(
     return;
   }
   if (declined || !allowAgent || runEmbedded || !handoff) {
-    const manualAgent =
-      handoff ?? externalAgents.find(({ agent }) => !options.agent || agent === options.agent);
     if (declined || !allowAgent) {
       runtime.log("No repair agent was started.");
     }
@@ -454,9 +459,11 @@ export async function triageCommand(
     const args =
       handoff.agent === "claude"
         ? ["--safe-mode", prompt]
-        : handoff.agent === "opencode"
-          ? ["--prompt", prompt]
-          : [prompt];
+        : handoff.agent === "qwen"
+          ? ["--prompt-interactive", prompt]
+          : handoff.agent === "opencode" || handoff.agent === "kimi"
+            ? ["--prompt", prompt]
+            : [prompt];
     // Artifact I/O can outlive the admitted update attempt. Recheck its exact
     // owner immediately before handing control to a local coding agent.
     if (!isCurrent()) {

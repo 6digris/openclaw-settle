@@ -146,7 +146,7 @@ export function captureRuntimeConfigAsyncReader(
   const stage = prepareConfigRuntimeEnvLoad({ previousConfig: {} });
   // Legacy cold IO chooses the root config path before dotenv changes the environment.
   const io = createConfigIO({ env: stage.env });
-  const assertCurrent = () => {
+  const assertSourceCurrent = () => {
     options.assertCurrent?.();
     if (
       process.env !== sourceEnv ||
@@ -156,10 +156,15 @@ export function captureRuntimeConfigAsyncReader(
       throw new Error("Runtime config source changed during asynchronous preparation");
     }
   };
+  let assertSnapshotCurrent: (() => void) | undefined;
+  const assertCurrent = () => {
+    assertSourceCurrent();
+    assertSnapshotCurrent?.();
+  };
   const preparePublication = (prepared: PreparedConfigRuntimeEnv): PreparedConfigRuntimeEnv => ({
     env: prepared.env,
     publish: () => {
-      assertCurrent();
+      assertSourceCurrent();
       const previousSelectors = selectors;
       const publication = prepared.publish();
       // Only this canonical publication may advance the captured selector facts.
@@ -196,7 +201,12 @@ export function captureRuntimeConfigAsyncReader(
           throw error;
         }
       },
-      { assertCurrent },
+      {
+        assertCurrent: assertSourceCurrent,
+        retainSnapshotCurrent: (assertCurrent) => {
+          assertSnapshotCurrent = assertCurrent;
+        },
+      },
     ));
   };
   return Object.assign(read, { assertCurrent });
