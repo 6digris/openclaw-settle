@@ -18,6 +18,7 @@ import {
 import { resolveChatPaneDesktopTarget } from "./chat-pane-placement.ts";
 import type { ResolvedBoardView } from "./chat-pane-shared.ts";
 import { renderSidebarRegion, sidebarRegionCallbacks } from "./chat-pane-sidebar-layout.ts";
+import { dismissRealtimeTalkError } from "./chat-realtime.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import { ChatToolIconController } from "./chat-tool-icon-controller.ts";
 import { renderChat, type ChatProps } from "./chat-view.ts";
@@ -68,6 +69,32 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
     client: ChatPageHost["client"];
     href: string;
   } | null = null;
+
+  protected createRealtimeTalkProps(state: ChatPageHost) {
+    return {
+      realtimeTalkActive: state.realtimeTalkActive,
+      realtimeTalkStatus: state.realtimeTalkStatus,
+      realtimeTalkDetail: state.realtimeTalkDetail,
+      realtimeTalkInputLevel: state.realtimeTalkInputLevel,
+      realtimeTalkConversation: state.realtimeTalkConversation,
+      realtimeTalkVideoStream: state.realtimeTalkVideoStream,
+      realtimeTalkCameraDevices: state.realtimeTalkCameraDevices,
+      realtimeTalkVideoCapable: state.realtimeTalkVideoCapable,
+      realtimeTalkVideoPending: state.realtimeTalkVideoPending,
+      realtimeTalkCameraError: state.realtimeTalkCameraError,
+      realtimeTalkVoice: state.realtimeTalkVoice,
+      realtimeTalkInputDeviceId: state.settings.realtimeTalkInputDeviceId,
+      onUseSystemDefaultMicrophone: state.realtimeTalkUseSystemDefault ?? undefined,
+      onToggleRealtimeTalk: () => void state.toggleRealtimeTalk(),
+      onSelectRealtimeVoice: (voice: string) => void state.selectRealtimeTalkVoice(voice),
+      onToggleRealtimeCamera: () => void state.toggleRealtimeTalkCamera(),
+      onSwitchRealtimeCamera: () => void state.switchRealtimeTalkCamera(),
+      onDismissRealtimeTalkError: () => {
+        dismissRealtimeTalkError(state);
+        state.requestUpdate?.();
+      },
+    };
+  }
 
   protected renderChatPaneLayout(params: ChatPaneLayoutRenderParams) {
     const {

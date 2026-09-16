@@ -50,7 +50,6 @@ import {
   resolveChatArtifactDownload,
 } from "./chat-pane-state.ts";
 import { createChatQuestionActions } from "./chat-question-actions.ts";
-import { dismissRealtimeTalkError } from "./chat-realtime.ts";
 import { activeChatRunStartupStatus } from "./chat-run-startup.ts";
 import { chatSendHoldReason } from "./chat-send-support.ts";
 import { refreshChatCommands } from "./chat-state-refresh.ts";
@@ -457,22 +456,11 @@ export class ChatPane extends ChatPaneLayoutRender {
       modelSwitching: Boolean(state.chatModelSwitchPromises[state.sessionKey]),
       queue: state.chatQueue,
       queuedOutboxCount: state.chatQueue.filter((item) => !item.pendingRunId).length,
-      realtimeTalkActive: state.realtimeTalkActive,
-      realtimeTalkStatus: state.realtimeTalkStatus,
-      realtimeTalkDetail: state.realtimeTalkDetail,
-      realtimeTalkInputLevel: state.realtimeTalkInputLevel,
-      realtimeTalkConversation: state.realtimeTalkConversation,
-      realtimeTalkVideoStream: state.realtimeTalkVideoStream,
-      realtimeTalkCameraDevices: state.realtimeTalkCameraDevices,
-      realtimeTalkVideoCapable: state.realtimeTalkVideoCapable,
-      realtimeTalkVideoPending: state.realtimeTalkVideoPending,
-      realtimeTalkCameraError: state.realtimeTalkCameraError,
-      realtimeTalkVoice: state.realtimeTalkVoice,
+      ...this.createRealtimeTalkProps(state),
       connected: state.connected,
       offline: gatewaySnapshot.offlineStable,
       gatewayClient: state.client,
       composerHoldToRecord: state.settings.composerHoldToRecord,
-      realtimeTalkInputDeviceId: state.settings.realtimeTalkInputDeviceId,
       onComposerHoldToRecordChange: (enabled) => {
         state.settings = patchSettings({ composerHoldToRecord: enabled });
       },
@@ -605,17 +593,8 @@ export class ChatPane extends ChatPaneLayoutRender {
           search: `?session=${encodeURIComponent(state.sessionKey)}${status}`,
         });
       },
-      onUseSystemDefaultMicrophone: state.realtimeTalkUseSystemDefault ?? undefined,
-      onToggleRealtimeTalk: () => void state.toggleRealtimeTalk(),
-      onSelectRealtimeVoice: (voice) => void state.selectRealtimeTalkVoice(voice),
-      onToggleRealtimeCamera: () => void state.toggleRealtimeTalkCamera(),
-      onSwitchRealtimeCamera: () => void state.switchRealtimeTalkCamera(),
       onDismissError: () => {
         dismissChatError(state as never);
-        state.requestUpdate?.();
-      },
-      onDismissRealtimeTalkError: () => {
-        dismissRealtimeTalkError(state as never);
         state.requestUpdate?.();
       },
       onAbort: sessionActionCallbacks.onAbort,
