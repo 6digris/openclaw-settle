@@ -32,7 +32,8 @@ export async function verifyDiscoveryTimerRetention(collect: () => Promise<void>
       });
       let starts = 0;
       let stops = 0;
-      const entry: PluginGatewayDiscoveryServiceRegistration = {
+      const entry = {
+        id: "retention",
         pluginId: "retention",
         pluginName: "Retention",
         source: "test",
