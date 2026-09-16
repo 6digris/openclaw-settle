@@ -22,6 +22,7 @@ import { normalizeSkillFilter } from "../discovery/filter.js";
 import { getSkillsSnapshotVersion } from "../runtime/refresh-state.js";
 import { mergeRemoteNodeSkillEntries } from "../runtime/remote-skills.js";
 import { fingerprintSkillSnapshotConfig } from "../runtime/snapshot-config-fingerprint.js";
+import { getWorkspaceSkillCatalog } from "../runtime/workspace-catalog.js";
 import type {
   OpenClawSkillMetadata,
   ParsedSkillFrontmatter,
@@ -385,6 +386,16 @@ function loadSkillEntries(
     pluginMetadataSnapshot?: PluginMetadataSnapshot;
   },
 ): SkillEntry[] {
+  const remoteEntries = getWorkspaceSkillCatalog(workspaceDir);
+  if (remoteEntries) {
+    if (
+      opts?.workspaceSkillsDir &&
+      path.resolve(opts.workspaceSkillsDir) !== path.resolve(workspaceDir, "skills")
+    ) {
+      throw new Error("Remote skill discovery does not support an additional execution skill root");
+    }
+    return remoteEntries;
+  }
   const workspaceOnly = opts?.workspaceOnly === true;
   const workspaceSkillsDir = opts?.workspaceSkillsDir ?? path.resolve(workspaceDir, "skills");
   const configuredCustodianAgentId = opts?.config

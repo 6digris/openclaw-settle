@@ -345,7 +345,9 @@ export async function handleInlineActions(params: {
     params.skillCommands.length > 0
       ? params.skillCommands
       : shouldLoadSkillCommands
-        ? (await loadSkillCommandsRuntime()).listSkillCommandsForWorkspace({
+        ? await (
+            await loadSkillCommandsRuntime()
+          ).prepareSkillCommandsForWorkspace({
             workspaceDir,
             cfg,
             agentId,
@@ -353,11 +355,14 @@ export async function handleInlineActions(params: {
             sessionEntry: targetSessionEntry,
             sessionKey,
             execOverrides,
+            ...(opts?.abortSignal ? { signal: opts.abortSignal } : {}),
           })
         : [];
   const allSkillCommands =
     allowTextCommands && (hasSkillReferences || hasSkillSlashCandidate) && skillFilter !== undefined
-      ? (await loadSkillCommandsRuntime()).listSkillCommandsForWorkspace({
+      ? await (
+          await loadSkillCommandsRuntime()
+        ).prepareSkillCommandsForWorkspace({
           workspaceDir,
           cfg,
           agentId,
@@ -365,6 +370,7 @@ export async function handleInlineActions(params: {
           sessionKey,
           execOverrides,
           includeAllowlistHidden: true,
+          ...(opts?.abortSignal ? { signal: opts.abortSignal } : {}),
         })
       : skillCommands;
 

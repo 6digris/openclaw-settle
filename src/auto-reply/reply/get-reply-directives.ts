@@ -266,13 +266,16 @@ export async function resolveReplyDirectives(params: {
     agentId,
     sessionEntry: targetSessionEntry,
     sessionKey,
+    ...(params.opts?.abortSignal ? { signal: params.opts.abortSignal } : {}),
   };
 
   // Only load workspace skill commands when aliases or explicit skill references need them.
   // This avoids scanning skills for ordinary text, paths, and built-in slash directives.
   const skillCommands =
     canInterpretTextDirectives && (rawAliases.length > 0 || hasSkillReferences)
-      ? (await loadSkillCommands()).listSkillCommandsForWorkspace({
+      ? await (
+          await loadSkillCommands()
+        ).prepareSkillCommandsForWorkspace({
           ...skillCommandContext,
           skillFilter,
         })
@@ -281,7 +284,9 @@ export async function resolveReplyDirectives(params: {
 
   const allSkillCommands =
     hasSkillReferences && skillFilter !== undefined
-      ? (await loadSkillCommands()).listSkillCommandsForWorkspace({
+      ? await (
+          await loadSkillCommands()
+        ).prepareSkillCommandsForWorkspace({
           ...skillCommandContext,
           includeAllowlistHidden: true,
         })

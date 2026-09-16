@@ -1,6 +1,9 @@
 import path from "node:path";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { MemorySearchManager } from "../memory-host-sdk/host/types.js";
+import type { PluginSkillRoot } from "../skills/loading/plugin-skills.js";
+import type { ResolvedSkillDiscoveryLimits } from "../skills/loading/skill-root-discovery.js";
+import type { SkillEntry } from "../skills/types.js";
 import type { EmbeddedRunAttemptParams } from "./embedded-agent-runner/run/types.js";
 import type { SandboxFsBridge } from "./sandbox/fs-bridge.types.js";
 import type { SessionPlacementTurnParams } from "./session-placement-admission.js";
@@ -9,6 +12,18 @@ import type { AnyAgentTool } from "./tools/common.js";
 /** A host-owned binding; callers still enforce their own allowed files and operations. */
 export type AgentWorkspaceAccess = {
   bridge: SandboxFsBridge;
+  /** Complete catalog from provisioned Harness skill roots; Gateway policy still filters it. */
+  loadSkills?: (params: {
+    limits: ResolvedSkillDiscoveryLimits;
+    /** Gateway-selected installed sources. The host maps these to its provisioned Harness image. */
+    pluginSkillRoots: PluginSkillRoot[];
+    bundledSkillsDir?: string;
+    signal?: AbortSignal;
+  }) => Promise<{
+    revision: string;
+    entries: SkillEntry[];
+    runtime: { platform: string; bins: string[] };
+  }>;
   /** Native memory maintenance; separate from owner document edit permissions. */
   memoryBridge?: Pick<
     SandboxFsBridge,
@@ -55,7 +70,8 @@ export function registerAgentWorkspaceAccess(
   if (bindings.get(key)?.active) {
     throw new Error(`Workspace access is already registered: ${key}`);
   }
-  const binding = { access, active: true };
+  // Each registration has a distinct identity, including reuse of the same provider object.
+  const binding = { access: Object.freeze({ ...access }), active: true };
   bindings.set(key, binding);
   return () => {
     // Revocation must not turn a remote workspace into a local fallback.

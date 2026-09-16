@@ -7,6 +7,8 @@ import {
   normalizeWorkspaceSkillRoots,
 } from "../loading/workspace-skill-loader.js";
 import type { SkillEligibilityContext, SkillEntry, SkillSnapshot } from "../types.js";
+import { getSkillsSnapshotVersion } from "./refresh-state.js";
+import { getWorkspaceSkillCatalog } from "./workspace-catalog.js";
 
 /** Resolves skill entries embedded into a run payload into runtime-visible entries. */
 export function resolveEmbeddedRunSkillEntries(params: {
@@ -23,6 +25,17 @@ export function resolveEmbeddedRunSkillEntries(params: {
   loadSkillEntries: () => SkillEntry[];
   preserveEntryOrder: boolean;
 } {
+  // Even hydrated snapshots must be fenced when their remote binding stops or changes.
+  const remoteEntries = getWorkspaceSkillCatalog(params.workspaceDir);
+  if (
+    remoteEntries &&
+    params.skillsSnapshot &&
+    params.skillsSnapshot.version !== getSkillsSnapshotVersion(params.workspaceDir)
+  ) {
+    throw new Error(
+      "Remote workspace skill snapshot is stale; prepare a fresh snapshot before execution",
+    );
+  }
   const shouldLoadSkillEntries = !params.skillsSnapshot || !params.skillsSnapshot.resolvedSkills;
   const config = resolveSkillRuntimeConfig(params.config);
   const skillRoots =

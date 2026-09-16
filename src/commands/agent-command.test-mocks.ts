@@ -326,7 +326,7 @@ vi.mock("../skills/discovery/agent-filter.js", () => ({
 
 vi.mock("../skills/runtime/session-snapshot.js", () => ({
   resolveReusableWorkspaceSkillSnapshot: vi.fn(
-    (params?: { existingSnapshot?: unknown; skillFilter?: string[] }) => ({
+    async (params?: { existingSnapshot?: unknown; skillFilter?: string[] }) => ({
       snapshot: params?.existingSnapshot ?? {
         prompt: "",
         skills: [],

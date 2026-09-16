@@ -87,6 +87,7 @@ export async function ensureSkillSnapshot(params: {
   /** If provided, only load skills with these names (for per-channel skill filtering) */
   skillFilter?: string[];
   skillOverrides?: Record<string, boolean>;
+  signal?: AbortSignal;
 }): Promise<{
   sessionEntry?: SessionEntry;
   skillsSnapshot?: SessionEntry["skillsSnapshot"];
@@ -135,13 +136,14 @@ export async function ensureSkillSnapshot(params: {
       workspaceDir,
       ...(params.executionSkillsDir ? { executionSkillsDir: params.executionSkillsDir } : {}),
       config: cfg,
+      ...(params.signal ? { signal: params.signal } : {}),
       agentId: sessionAgentId,
       skillFilter,
       skillOverrides,
       eligibility: { nodeSkills: nodeSkillsEligibility, remote: remoteEligibility },
       existingSnapshot: snapshot,
     });
-  const initialSnapshotState = resolveSnapshot(existingSnapshot);
+  const initialSnapshotState = await resolveSnapshot(existingSnapshot);
   const shouldRefreshSnapshot = initialSnapshotState.shouldRefresh;
 
   if (isFirstTurnInSession && (sessionEntryHandle || sessionStore) && sessionKey) {
@@ -154,7 +156,7 @@ export async function ensureSkillSnapshot(params: {
     const skillSnapshot =
       !current.skillsSnapshot || shouldRefreshSnapshot
         ? initialSnapshotState.snapshot
-        : resolveSnapshot(current.skillsSnapshot).snapshot;
+        : (await resolveSnapshot(current.skillsSnapshot)).snapshot;
     nextEntry = {
       ...current,
       sessionId: sessionId ?? current.sessionId ?? crypto.randomUUID(),
@@ -185,10 +187,10 @@ export async function ensureSkillSnapshot(params: {
     (nextEntry?.skillsSnapshot !== existingSnapshot || !shouldRefreshSnapshot);
   const skillsSnapshot =
     hasFreshSnapshotInEntry && nextEntry?.skillsSnapshot
-      ? resolveSnapshot(nextEntry.skillsSnapshot).snapshot
+      ? (await resolveSnapshot(nextEntry.skillsSnapshot)).snapshot
       : shouldRefreshSnapshot || !nextEntry?.skillsSnapshot
         ? initialSnapshotState.snapshot
-        : resolveSnapshot(nextEntry.skillsSnapshot).snapshot;
+        : (await resolveSnapshot(nextEntry.skillsSnapshot)).snapshot;
   if (
     skillsSnapshot &&
     (sessionEntryHandle || sessionStore) &&

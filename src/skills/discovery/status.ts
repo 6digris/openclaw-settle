@@ -1,5 +1,6 @@
 // Skill discovery status helpers summarize installed, workspace, and bundled skills.
 import path from "node:path";
+import { getAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { evaluateEntryRequirementsForCurrentPlatform } from "../../shared/entry-status.js";
 import type { RequirementConfigCheck, Requirements } from "../../shared/requirements.js";
@@ -352,6 +353,11 @@ export function buildWorkspaceSkillStatus(
     agentId?: string;
   },
 ): SkillStatusReport {
+  if (getAgentWorkspaceAccess(workspaceDir)) {
+    throw new Error(
+      "Remote skill installation status is unavailable; Gateway-local lockfiles and binaries are not authoritative",
+    );
+  }
   const managedSkillsDir = opts?.managedSkillsDir ?? path.join(CONFIG_DIR, "skills");
   const bundledContext = resolveBundledSkillsContext();
   const agentSkillFilter = opts?.agentId

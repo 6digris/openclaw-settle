@@ -150,7 +150,7 @@ async function resolveCommandSkillsPrompt(params: {
   }
 
   try {
-    const skillsSnapshot = resolveReusableWorkspaceSkillSnapshot({
+    const skillsSnapshot = await resolveReusableWorkspaceSkillSnapshot({
       workspaceDir: params.workspaceDir,
       config: params.config,
       agentId: params.agentId,

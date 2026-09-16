@@ -46,7 +46,8 @@ vi.mock("./commands.runtime.js", () => ({
 }));
 
 vi.mock("../../skills/discovery/chat-commands.runtime.js", () => ({
-  listSkillCommandsForWorkspace: (...args: unknown[]) => listSkillCommandsForWorkspaceMock(...args),
+  prepareSkillCommandsForWorkspace: (...args: unknown[]) =>
+    listSkillCommandsForWorkspaceMock(...args),
 }));
 
 vi.mock("../../channels/plugins/index.js", () => ({

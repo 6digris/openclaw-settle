@@ -31,7 +31,7 @@ describe("resolveCronSkillsSnapshot", () => {
       hasBin: () => false,
       hasAnyBin: () => false,
     });
-    resolveReusableWorkspaceSkillSnapshotMock.mockReturnValue({
+    resolveReusableWorkspaceSkillSnapshotMock.mockResolvedValue({
       snapshot: { prompt: "fresh", skills: [] },
       shouldRefresh: true,
       snapshotVersion: 0,

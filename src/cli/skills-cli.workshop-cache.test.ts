@@ -124,11 +124,13 @@ describe("skills workshop CLI gateway snapshot invalidation", () => {
       description: "Visible in sessions without restarting the gateway",
       content: "# Gateway Visible\n\nUse the newly applied workflow.\n",
     });
-    const beforeApply = gatewaySnapshots.resolveReusableWorkspaceSkillSnapshot({
-      workspaceDir: mocks.workspaceDir,
-      config: mocks.config,
-      watch: false,
-    }).snapshot;
+    const beforeApply = (
+      await gatewaySnapshots.resolveReusableWorkspaceSkillSnapshot({
+        workspaceDir: mocks.workspaceDir,
+        config: mocks.config,
+        watch: false,
+      })
+    ).snapshot;
     expect(beforeApply.skills.map((skill) => skill.name)).not.toContain("gateway-visible");
 
     // Session persistence strips resolvedSkills; the Gateway rehydrates that field
@@ -171,12 +173,14 @@ describe("skills workshop CLI gateway snapshot invalidation", () => {
     expect(gatewayRefreshState.getSkillsSnapshotVersion(mocks.workspaceDir)).toBeGreaterThan(
       beforeVersion,
     );
-    const newSession = gatewaySnapshots.resolveReusableWorkspaceSkillSnapshot({
-      workspaceDir: mocks.workspaceDir,
-      config: mocks.config,
-      existingSnapshot: persistedSnapshot,
-      watch: false,
-    }).snapshot;
+    const newSession = (
+      await gatewaySnapshots.resolveReusableWorkspaceSkillSnapshot({
+        workspaceDir: mocks.workspaceDir,
+        config: mocks.config,
+        existingSnapshot: persistedSnapshot,
+        watch: false,
+      })
+    ).snapshot;
     expect(newSession.skills.map((skill) => skill.name)).toContain("gateway-visible");
   });
 

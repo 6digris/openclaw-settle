@@ -419,7 +419,7 @@ vi.mock("../plugins/plugin-metadata-snapshot.js", () => ({
 vi.mock("../skills/discovery/chat-commands.runtime.js", () => ({
   expandExplicitSkillReferences: ({ text }: { text: string }) => ({ body: text, skills: [] }),
   hasSkillReferenceCandidate: () => true,
-  listSkillCommandsForWorkspace: (params: unknown) =>
+  prepareSkillCommandsForWorkspace: (params: unknown) =>
     state.listSkillCommandsForWorkspaceMock(params),
   resolveEffectiveAgentSkillFilter: () => undefined,
 }));
@@ -706,7 +706,7 @@ vi.mock("../skills/runtime/remote.js", () => ({
 }));
 
 vi.mock("../skills/runtime/session-snapshot.js", () => ({
-  resolveReusableWorkspaceSkillSnapshot: (params: {
+  resolveReusableWorkspaceSkillSnapshot: async (params: {
     workspaceDir: string;
     existingSnapshot?: { resolvedSkills?: unknown };
     skillFilter?: string[];

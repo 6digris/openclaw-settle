@@ -39,7 +39,7 @@ vi.mock("../commands-text-routing.js", () => ({
   shouldHandleTextCommands: (...args: unknown[]) => textRoutingMocks.shouldHandle(...args),
 }));
 vi.mock("../../skills/discovery/chat-commands.runtime.js", () => ({
-  listSkillCommandsForWorkspace: (...args: unknown[]) =>
+  prepareSkillCommandsForWorkspace: (...args: unknown[]) =>
     skillCommandMocks.listForWorkspace(...args),
 }));
 
@@ -173,6 +173,21 @@ describe("reply directive resolution", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
   });
+
+  it.each(["Read https://example.com/guide", "Read /workspace/report.md"])(
+    "awaits remote skill command discovery for ordinary text with model aliases: %s",
+    async (body) => {
+      skillCommandMocks.listForWorkspace.mockResolvedValueOnce([]);
+      const { result } = await resolveModelDirective({ body });
+      expect(skillCommandMocks.listForWorkspace).toHaveBeenCalledOnce();
+      expect(result.kind).toBe("continue");
+      if (result.kind !== "continue") {
+        throw new Error(`expected continue result, got ${result.kind}`);
+      }
+      expect(result.result.cleanedBody).toBe(body);
+      expect(result.result.directives.hasModelDirective).toBe(false);
+    },
+  );
 
   it.each([
     { label: "default off", agentCfg: {}, caption: "Attachment caption" },

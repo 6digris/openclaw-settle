@@ -230,22 +230,24 @@ describe("syncWorkspaceSkills", () => {
       name: skillName,
       description: "Execution root B",
     });
-    const resolveSnapshot = (executionWorkspace: string) =>
-      resolveReusableWorkspaceSkillSnapshot({
-        workspaceDir: agentWorkspace,
-        executionSkillsDir: path.join(executionWorkspace, "skills"),
-        config: {},
-        skillFilter: [skillName],
-        snapshotVersion: getSkillsSnapshotVersion(agentWorkspace),
-        watch: false,
-      }).snapshot;
+    const resolveSnapshot = async (executionWorkspace: string) =>
+      (
+        await resolveReusableWorkspaceSkillSnapshot({
+          workspaceDir: agentWorkspace,
+          executionSkillsDir: path.join(executionWorkspace, "skills"),
+          config: {},
+          skillFilter: [skillName],
+          snapshotVersion: getSkillsSnapshotVersion(agentWorkspace),
+          watch: false,
+        })
+      ).snapshot;
     const syncSnapshot = async (executionWorkspace: string) =>
       await syncWorkspaceSkills({
         sourceWorkspaceDir: agentWorkspace,
         targetWorkspaceDir: targetWorkspace,
         bundledSkillsDir: path.join(agentWorkspace, ".bundled"),
         managedSkillsDir: path.join(agentWorkspace, ".managed"),
-        skillsSnapshot: resolveSnapshot(executionWorkspace),
+        skillsSnapshot: await resolveSnapshot(executionWorkspace),
       });
 
     await syncSnapshot(firstExecutionWorkspace);

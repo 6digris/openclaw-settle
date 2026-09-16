@@ -331,13 +331,16 @@ export async function maybeResolveNativeSlashCommandFastReply(params: {
 
   let loadedSkillCommands: SkillCommandSpec[] | undefined;
   const loadNativeSkillCommands = async () => {
-    loadedSkillCommands ??= (await loadSkillCommandsRuntime()).listSkillCommandsForWorkspace({
+    loadedSkillCommands ??= await (
+      await loadSkillCommandsRuntime()
+    ).prepareSkillCommandsForWorkspace({
       workspaceDir: params.workspaceDir,
       cfg: params.cfg,
       agentId: params.agentId,
       skillFilter: params.skillFilter,
       sessionEntry: sessionState.sessionEntry,
       sessionKey: sessionState.sessionKey,
+      ...(params.opts?.abortSignal ? { signal: params.opts.abortSignal } : {}),
     });
     return loadedSkillCommands;
   };

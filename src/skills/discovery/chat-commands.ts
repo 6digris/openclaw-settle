@@ -10,11 +10,16 @@ import {
   type ExecSessionDefaults,
   resolveNodeExecEligibility,
 } from "../../agents/exec-defaults.js";
+import { getAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { logVerbose } from "../../globals.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
 import { loadWorkspaceSkills } from "../loading/workspace-skill-loader.js";
 import { getRemoteSkillEligibility } from "../runtime/remote.js";
+import {
+  getWorkspaceSkillCatalog,
+  prepareWorkspaceSkillCatalog,
+} from "../runtime/workspace-catalog.js";
 import type { SkillCommandSpec } from "../types.js";
 import { resolveEffectiveAgentSkillFilter } from "./agent-filter.js";
 import { listReservedChatSlashCommandNames } from "./chat-command-invocation.js";
@@ -68,6 +73,21 @@ export function listSkillCommandsForWorkspace(params: {
   });
 }
 
+/** Internal async entry point; the public synchronous discovery API retains its return type. */
+export async function prepareSkillCommandsForWorkspace(
+  params: Parameters<typeof listSkillCommandsForWorkspace>[0] & { signal?: AbortSignal },
+): Promise<SkillCommandSpec[]> {
+  if (getAgentWorkspaceAccess(params.workspaceDir)) {
+    await prepareWorkspaceSkillCatalog({
+      workspaceDir: params.workspaceDir,
+      config: params.cfg,
+      pluginMetadataSnapshot: params.pluginMetadataSnapshot,
+      signal: params.signal,
+    });
+  }
+  return listSkillCommandsForWorkspace(params);
+}
+
 function dedupeBySkillName(commands: SkillCommandSpec[]): SkillCommandSpec[] {
   const seen = new Set<string>();
   const out: SkillCommandSpec[] = [];
@@ -102,15 +122,18 @@ export function listSkillCommandsForAgents(params: {
   }> = [];
   for (const agentId of agentIds) {
     const workspaceDir = resolveAgentWorkspaceDir(params.cfg, agentId);
-    if (!fs.existsSync(workspaceDir)) {
+    const remoteEntries = getWorkspaceSkillCatalog(workspaceDir);
+    if (!remoteEntries && !fs.existsSync(workspaceDir)) {
       logVerbose(`Skipping agent "${agentId}": workspace does not exist: ${workspaceDir}`);
       continue;
     }
-    try {
-      fs.realpathSync(workspaceDir);
-    } catch {
-      logVerbose(`Skipping agent "${agentId}": cannot resolve workspace: ${workspaceDir}`);
-      continue;
+    if (!remoteEntries) {
+      try {
+        fs.realpathSync(workspaceDir);
+      } catch {
+        logVerbose(`Skipping agent "${agentId}": cannot resolve workspace: ${workspaceDir}`);
+        continue;
+      }
     }
     workspaceAgents.push({
       agentId,

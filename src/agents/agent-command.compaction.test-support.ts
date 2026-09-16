@@ -161,7 +161,7 @@ vi.mock("../skills/runtime/remote.js", () => ({
 }));
 
 vi.mock("../skills/runtime/session-snapshot.js", () => ({
-  resolveReusableWorkspaceSkillSnapshot: () => ({
+  resolveReusableWorkspaceSkillSnapshot: async () => ({
     shouldRefresh: true,
     snapshot: {
       prompt: "",

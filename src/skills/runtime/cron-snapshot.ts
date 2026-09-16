@@ -29,19 +29,21 @@ export async function resolveCronSkillsSnapshot(params: {
     cfg: params.config,
     agentId: params.agentId,
   });
-  return runtime.resolveReusableWorkspaceSkillSnapshot({
-    workspaceDir: params.workspaceDir,
-    config: params.config,
-    agentId: params.agentId,
-    existingSnapshot: params.existingSnapshot,
-    skillFilter,
-    eligibility: {
-      nodeSkills,
-      remote: runtime.getRemoteSkillEligibility({
-        advertiseExecNode: nodeSkills.canExec,
-      }),
-    },
-    watch: false,
-    hydrateExisting: false,
-  }).snapshot;
+  return (
+    await runtime.resolveReusableWorkspaceSkillSnapshot({
+      workspaceDir: params.workspaceDir,
+      config: params.config,
+      agentId: params.agentId,
+      existingSnapshot: params.existingSnapshot,
+      skillFilter,
+      eligibility: {
+        nodeSkills,
+        remote: runtime.getRemoteSkillEligibility({
+          advertiseExecNode: nodeSkills.canExec,
+        }),
+      },
+      watch: false,
+      hydrateExisting: false,
+    })
+  ).snapshot;
 }

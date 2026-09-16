@@ -11,6 +11,7 @@ import { loadEnabledClaudeBundleCommands } from "../../plugins/bundle-commands.j
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
 import { resolveSkillTelemetrySource } from "../loading/source.js";
 import { filterWorkspaceSkills, loadVisibleSkills } from "../loading/workspace-skill-loader.js";
+import { getWorkspaceSkillCatalog } from "../runtime/workspace-catalog.js";
 import type { SkillEligibilityContext, SkillCommandSpec, SkillEntry } from "../types.js";
 import { resolveEffectiveAgentSkillFilter } from "./agent-filter.js";
 import { filterUserInvocableSkillEntries, isSkillPromptVisible } from "./skill-index.js";
@@ -86,11 +87,13 @@ export function buildWorkspaceSkillCommandSpecs(
     reservedNames?: Set<string>;
   },
 ): SkillCommandSpec[] {
+  const remoteEntries = getWorkspaceSkillCatalog(workspaceDir, opts?.config);
+  const entries = remoteEntries ?? opts?.entries;
   const effectiveSkillFilter = opts?.includeAllowlistHidden
     ? undefined
     : (opts?.skillFilter ?? resolveEffectiveAgentSkillFilter(opts?.config, opts?.agentId));
-  const eligible = opts?.entries
-    ? filterWorkspaceSkills(opts.entries, {
+  const eligible = entries
+    ? filterWorkspaceSkills(entries, {
         config: opts?.config,
         skillFilter: effectiveSkillFilter,
         eligibility: opts?.eligibility,
@@ -176,7 +179,7 @@ export function buildWorkspaceSkillCommandSpecs(
     specs.push({
       name: unique,
       displayName: entry.skill.displayName ?? rawName,
-      skillFile: canonicalizePath(entry.skill.filePath),
+      skillFile: remoteEntries ? entry.skill.filePath : canonicalizePath(entry.skill.filePath),
       skillName: rawName,
       description,
       modelVisible: isSkillPromptVisible(entry),
@@ -185,6 +188,10 @@ export function buildWorkspaceSkillCommandSpecs(
     });
   }
 
+  // Claude bundle command templates are a separate Gateway file source, absent from this catalog.
+  if (remoteEntries) {
+    return specs;
+  }
   const bundleCommands = loadEnabledClaudeBundleCommands({
     workspaceDir,
     cfg: opts?.config,

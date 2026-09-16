@@ -16,6 +16,7 @@ import {
   hasBinary,
   isConfigPathTruthyWithDefaults,
 } from "../../shared/config-eval.js";
+import { evaluateWorkspaceSkillRuntime } from "../runtime/workspace-catalog.js";
 import type { SkillEligibilityContext, SkillEntry, SkillsInstallPreferences } from "../types.js";
 import { resolveSkillKey } from "./frontmatter.js";
 import { resolveSkillSource } from "./source.js";
@@ -139,6 +140,18 @@ export function shouldIncludeSkill(params: {
   }
   if (!isBundledSkillAllowed(entry, bundledAllowlist)) {
     return false;
+  }
+  const remoteEligible = evaluateWorkspaceSkillRuntime(entry, {
+    isEnvSatisfied: (envName) =>
+      isSkillEnvRequirementSatisfied({
+        envName,
+        skillConfig,
+        primaryEnv: entry.metadata?.primaryEnv,
+      }),
+    isConfigSatisfied: (configPath) => isSkillConfigPathTruthy(config, configPath),
+  });
+  if (remoteEligible !== undefined) {
+    return remoteEligible;
   }
   return evaluateRuntimeEligibility({
     os: entry.metadata?.os,

@@ -121,17 +121,19 @@ async function createMultiRootFixture() {
   }
   const skillFilter = ["aardvark", "middle", "shared", "zulu"];
   const executionSkillsDir = path.join(executionWorkspaceDir, "skills");
-  const snapshot = withWorkspaceHome(
+  const snapshot = await withWorkspaceHome(
     agentWorkspaceDir,
-    () =>
-      resolveReusableWorkspaceSkillSnapshot({
-        workspaceDir: agentWorkspaceDir,
-        executionSkillsDir,
-        config: {},
-        skillFilter,
-        watch: false,
-        snapshotVersion: 1,
-      }).snapshot,
+    async () =>
+      (
+        await resolveReusableWorkspaceSkillSnapshot({
+          workspaceDir: agentWorkspaceDir,
+          executionSkillsDir,
+          config: {},
+          skillFilter,
+          watch: false,
+          snapshotVersion: 1,
+        })
+      ).snapshot,
   );
   return { agentWorkspaceDir, executionSkillsDir, skillFilter, snapshot };
 }
@@ -275,21 +277,25 @@ describe("buildSkillSnapshot", () => {
       name: "canonical",
       description: "Canonical",
     });
-    const build = (executionSkillsDir?: string) =>
+    const build = async (executionSkillsDir?: string) =>
       withWorkspaceHome(
         workspaceDir,
-        () =>
-          resolveReusableWorkspaceSkillSnapshot({
-            workspaceDir,
-            ...(executionSkillsDir ? { executionSkillsDir } : {}),
-            config: {},
-            skillFilter: ["canonical"],
-            watch: false,
-            snapshotVersion: 1,
-          }).snapshot,
+        async () =>
+          (
+            await resolveReusableWorkspaceSkillSnapshot({
+              workspaceDir,
+              ...(executionSkillsDir ? { executionSkillsDir } : {}),
+              config: {},
+              skillFilter: ["canonical"],
+              watch: false,
+              snapshotVersion: 1,
+            })
+          ).snapshot,
       );
 
-    expect(JSON.stringify(build(path.join(workspaceDir, "skills")))).toBe(JSON.stringify(build()));
+    expect(JSON.stringify(await build(path.join(workspaceDir, "skills")))).toBe(
+      JSON.stringify(await build()),
+    );
   });
 
   it("returns identical sets from snapshot and cold embedded fallback paths", async () => {

@@ -193,7 +193,7 @@ vi.mock("../../skills/runtime/cron-snapshot.runtime.js", () => ({
   resolveNodeExecEligibility: vi.fn(() => ({ canExec: false })),
   getRemoteSkillEligibility: getRemoteSkillEligibilityMock,
   resolveEffectiveAgentSkillFilter: resolveAgentSkillsFilterMock,
-  resolveReusableWorkspaceSkillSnapshot: (params: {
+  resolveReusableWorkspaceSkillSnapshot: async (params: {
     workspaceDir: string;
     config?: unknown;
     agentId?: string;

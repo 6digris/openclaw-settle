@@ -65,14 +65,16 @@ describe("resolveEmbeddedRunSkillEntries (integration)", () => {
       });
     }
     const skillNames = ["fallback-agent", "fallback-shared", "fallback-execution"];
-    const snapshot = resolveReusableWorkspaceSkillSnapshot({
-      workspaceDir: agentWorkspaceDir,
-      executionSkillsDir,
-      config: {},
-      skillFilter: skillNames,
-      watch: false,
-      snapshotVersion: 1,
-    }).snapshot;
+    const snapshot = (
+      await resolveReusableWorkspaceSkillSnapshot({
+        workspaceDir: agentWorkspaceDir,
+        executionSkillsDir,
+        config: {},
+        skillFilter: skillNames,
+        watch: false,
+        snapshotVersion: 1,
+      })
+    ).snapshot;
 
     const fallback = resolveEmbeddedRunSkillEntries({
       workspaceDir: agentWorkspaceDir,
@@ -111,14 +113,16 @@ describe("resolveEmbeddedRunSkillEntries (integration)", () => {
       description: "Execution priority",
     });
     const config: OpenClawConfig = { skills: { limits: { maxSkillsInPrompt: 1 } } };
-    const snapshotPrompt = resolveReusableWorkspaceSkillSnapshot({
-      workspaceDir: agentWorkspaceDir,
-      executionSkillsDir,
-      config,
-      skillFilter: [agentSkillName, executionSkillName],
-      watch: false,
-      snapshotVersion: 1,
-    }).snapshot.prompt;
+    const snapshotPrompt = (
+      await resolveReusableWorkspaceSkillSnapshot({
+        workspaceDir: agentWorkspaceDir,
+        executionSkillsDir,
+        config,
+        skillFilter: [agentSkillName, executionSkillName],
+        watch: false,
+        snapshotVersion: 1,
+      })
+    ).snapshot.prompt;
     const fallback = resolveEmbeddedRunSkillEntries({
       workspaceDir: agentWorkspaceDir,
       executionSkillsDir,

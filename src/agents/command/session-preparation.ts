@@ -66,10 +66,11 @@ export async function prepareEmbeddedSessionState(params: {
     sessionKey: params.sessionKey,
     agentId: params.sessionAgentId,
   });
-  const skillSnapshotState = resolveReusableWorkspaceSkillSnapshot({
+  const skillSnapshotState = await resolveReusableWorkspaceSkillSnapshot({
     workspaceDir: params.workspaceDir,
     executionSkillsDir: params.executionSkillsDir,
     config: params.cfg,
+    ...(params.opts.abortSignal ? { signal: params.opts.abortSignal } : {}),
     agentId: params.sessionAgentId,
     existingSnapshot: params.isNewSession ? undefined : currentSkillsSnapshot,
     skillFilter,
@@ -86,6 +87,7 @@ export async function prepareEmbeddedSessionState(params: {
       ? { pluginMetadataSnapshot: params.pluginMetadataSnapshot }
       : {}),
   });
+  assertAgentRunLifecycleGenerationCurrent(params.lifecycleGeneration);
   const needsSkillsSnapshot =
     params.isNewSession || !currentSkillsSnapshot || skillSnapshotState.shouldRefresh;
   const skillsSnapshot = skillSnapshotState.snapshot;

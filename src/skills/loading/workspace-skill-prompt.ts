@@ -1,3 +1,4 @@
+import { getAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 // Workspace skill prompt helpers render bounded catalogs and reusable snapshots.
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
@@ -39,7 +40,10 @@ function resolveWorkspaceSkillPromptState(
   const limits = opts?.config?.skills?.limits;
   const agentLimits = resolveEffectiveAgentSkillsLimits(opts?.config, opts?.agentId);
   const prompt = formatSkillsForPromptBounded({
-    skills: compactPromptSkills(resolvedSkills),
+    // Gateway HOME and symlinks do not describe a provisioned Harness filesystem.
+    skills: getAgentWorkspaceAccess(workspaceDir)
+      ? resolvedSkills
+      : compactPromptSkills(resolvedSkills),
     maxSkillsInPrompt: limits?.maxSkillsInPrompt,
     maxSkillsPromptChars: agentLimits?.maxSkillsPromptChars ?? limits?.maxSkillsPromptChars,
     remoteNote,

@@ -103,7 +103,7 @@ vi.mock("../../skills/runtime/remote.js", () => ({
 }));
 
 vi.mock("../../skills/runtime/session-snapshot.js", () => ({
-  resolveReusableWorkspaceSkillSnapshot: vi.fn(() => ({
+  resolveReusableWorkspaceSkillSnapshot: vi.fn(async () => ({
     snapshot: { prompt: "", skills: [], resolvedSkills: [] },
     shouldRefresh: false,
     snapshotVersion: "test-snapshot",
@@ -209,7 +209,7 @@ describe("resolveCommandsSystemPromptBundle", () => {
     createOpenClawCodingToolsMock.mockClear();
     createOpenClawCodingToolsMock.mockReturnValue([]);
     vi.mocked(ensureSandboxWorkspaceForSession).mockResolvedValue(null);
-    vi.mocked(resolveReusableWorkspaceSkillSnapshot).mockReturnValue({
+    vi.mocked(resolveReusableWorkspaceSkillSnapshot).mockResolvedValue({
       snapshot: { prompt: "", skills: [], resolvedSkills: [] },
       shouldRefresh: false,
       snapshotVersion: "test-snapshot",
@@ -539,7 +539,7 @@ describe("resolveCommandsSystemPromptBundle", () => {
         },
         workspaceAccess: "rw",
       } as never);
-      vi.mocked(resolveReusableWorkspaceSkillSnapshot).mockReturnValue({
+      vi.mocked(resolveReusableWorkspaceSkillSnapshot).mockResolvedValue({
         snapshot: {
           prompt:
             "<available_skills>~/.npm-global/lib/node_modules/openclaw/skills/gog/SKILL.md</available_skills>",

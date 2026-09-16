@@ -1,5 +1,6 @@
 // Session snapshot helpers capture and restore runtime skill state for sessions.
 import { stableStringify } from "@openclaw/normalization-core";
+import { getAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { pruneMapToMaxSize } from "../../infra/map-size.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
@@ -15,6 +16,7 @@ import { getSkillsSnapshotVersion, shouldRefreshSnapshotForVersion } from "./ref
 import { ensureSkillsWatcher } from "./refresh.js";
 import { fingerprintSkillSnapshotConfig } from "./snapshot-config-fingerprint.js";
 import { hydrateResolvedSkills } from "./snapshot-hydration.js";
+import { getWorkspaceSkillCatalog, prepareWorkspaceSkillCatalog } from "./workspace-catalog.js";
 
 // Full snapshots let fresh sessions and runtime-only hydration share one versioned rebuild.
 const skillSnapshotCache = new Map<string, SkillSnapshot>();
@@ -34,6 +36,7 @@ type ReusableSkillSnapshotParams = {
   watch?: boolean;
   hydrateExisting?: boolean;
   pluginMetadataSnapshot?: PluginMetadataSnapshot;
+  signal?: AbortSignal;
 };
 
 type ReusableSkillSnapshotResult = {
@@ -48,9 +51,13 @@ function cacheSkillSnapshot(cacheKey: string, snapshot: SkillSnapshot): SkillSna
   return snapshot;
 }
 
-export function resolveReusableWorkspaceSkillSnapshot(
+export async function resolveReusableWorkspaceSkillSnapshot(
   params: ReusableSkillSnapshotParams,
-): ReusableSkillSnapshotResult {
+): Promise<ReusableSkillSnapshotResult> {
+  params.signal?.throwIfAborted();
+  const remoteWorkspace = getAgentWorkspaceAccess(params.workspaceDir)
+    ? await prepareWorkspaceSkillCatalog(params)
+    : false;
   const normalizedRoots = normalizeWorkspaceSkillRoots({
     agentWorkspaceDir: params.workspaceDir,
     ...(params.executionSkillsDir ? { executionSkillsDir: params.executionSkillsDir } : {}),
@@ -62,7 +69,10 @@ export function resolveReusableWorkspaceSkillSnapshot(
       }
     : undefined;
   const watcherWorkspaceDir = skillRoots?.agentWorkspaceDir ?? params.workspaceDir;
-  if (params.watch !== false) {
+  if (remoteWorkspace && normalizedRoots.executionSkillsDir) {
+    throw new Error("Remote skill discovery does not support an additional execution skill root");
+  }
+  if (!remoteWorkspace && params.watch !== false) {
     ensureSkillsWatcher({
       workspaceDir: watcherWorkspaceDir,
       ...(skillRoots ? { executionSkillsDir: skillRoots.executionSkillsDir } : {}),
@@ -72,13 +82,14 @@ export function resolveReusableWorkspaceSkillSnapshot(
         : {}),
     });
   }
-  const snapshotVersion = params.snapshotVersion ?? getSkillsSnapshotVersion(watcherWorkspaceDir);
+  const snapshotVersion = remoteWorkspace
+    ? getSkillsSnapshotVersion(watcherWorkspaceDir)
+    : (params.snapshotVersion ?? getSkillsSnapshotVersion(watcherWorkspaceDir));
   const promptFormatChanged =
     params.existingSnapshot?.promptFormatVersion !== WORKSPACE_SKILLS_PROMPT_FORMAT_VERSION;
-  const skillVersionChanged = shouldRefreshSnapshotForVersion(
-    params.existingSnapshot?.version,
-    snapshotVersion,
-  );
+  const skillVersionChanged = remoteWorkspace
+    ? params.existingSnapshot?.version !== snapshotVersion
+    : shouldRefreshSnapshotForVersion(params.existingSnapshot?.version, snapshotVersion);
   const nodeSkillsEligibilityChanged =
     stableStringify(params.existingSnapshot?.nodeSkillsEligibility) !==
     stableStringify(params.eligibility?.nodeSkills);
@@ -95,17 +106,19 @@ export function resolveReusableWorkspaceSkillSnapshot(
     !matchesSkillFilter(params.existingSnapshot?.skillFilter, params.skillFilter) ||
     skillOverridesChanged;
   const buildSnapshot = () => {
-    const entries = skillRoots
-      ? loadMergedWorkspaceSkills({
-          ...skillRoots,
-          config: params.config,
-          agentId: params.agentId,
-          skillFilter: params.skillFilter,
-          skillOverrides: params.skillOverrides,
-          eligibility: params.eligibility,
-          pluginMetadataSnapshot: params.pluginMetadataSnapshot,
-        })
-      : undefined;
+    const entries = remoteWorkspace
+      ? getWorkspaceSkillCatalog(params.workspaceDir)
+      : skillRoots
+        ? loadMergedWorkspaceSkills({
+            ...skillRoots,
+            config: params.config,
+            agentId: params.agentId,
+            skillFilter: params.skillFilter,
+            skillOverrides: params.skillOverrides,
+            eligibility: params.eligibility,
+            pluginMetadataSnapshot: params.pluginMetadataSnapshot,
+          })
+        : undefined;
     const snapshot = buildSkillSnapshot(params.workspaceDir, {
       config: params.config,
       ...(entries ? { entries, preserveEntryOrder: true } : {}),

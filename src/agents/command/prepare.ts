@@ -376,7 +376,7 @@ export async function prepareAgentCommandExecution(
       const {
         expandExplicitSkillReferences,
         hasSkillReferenceCandidate,
-        listSkillCommandsForWorkspace,
+        prepareSkillCommandsForWorkspace,
         resolveEffectiveAgentSkillFilter,
       } = await import("../../skills/discovery/chat-commands.runtime.js");
       const hasExplicitSkillCandidate =
@@ -389,12 +389,16 @@ export async function prepareAgentCommandExecution(
           agentId: sessionAgentId,
           sessionEntry: sessionEntryRaw,
           sessionKey,
+          ...(opts.abortSignal ? { signal: opts.abortSignal } : {}),
           ...(preparedMetadataSnapshot ? { pluginMetadataSnapshot: preparedMetadataSnapshot } : {}),
           ...(skillFilter ? { skillFilter } : {}),
         };
-        const skillCommands = listSkillCommandsForWorkspace(commandParams);
+        const skillCommands = await prepareSkillCommandsForWorkspace(commandParams);
         const allSkillCommands = skillFilter
-          ? listSkillCommandsForWorkspace({ ...commandParams, includeAllowlistHidden: true })
+          ? await prepareSkillCommandsForWorkspace({
+              ...commandParams,
+              includeAllowlistHidden: true,
+            })
           : skillCommands;
         const expansion = expandExplicitSkillReferences({
           text: message,
