@@ -404,12 +404,18 @@ export function startFaceTimeAudioPump(params: {
       if (line.includes("verified OpenClaw-Mic input route")) {
         settleRouteReady();
       }
-      if (
-        !captureFailureReported &&
-        /facetime-audio-capture: fatal(?:-safety-retained)?:/u.test(line)
-      ) {
+      const fatal = line.match(/facetime-audio-capture: fatal(?:-safety-retained)?:\s*(.*)$/u);
+      if (!captureFailureReported && fatal) {
         captureFailureReported = true;
-        reportFailure(new Error("native FaceTime safety monitor reported a fatal error"), false);
+        const detail = fatal[1]?.trim();
+        reportFailure(
+          new Error(
+            detail
+              ? `native FaceTime safety monitor reported a fatal error: ${detail}`
+              : "native FaceTime safety monitor reported a fatal error",
+          ),
+          false,
+        );
       }
     }
     captureStderr = captureStderr.split(/\r?\n/u).at(-1) ?? "";

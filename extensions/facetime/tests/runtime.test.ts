@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   completeAbsence,
   completeAction,
+  completeSharedAction,
   createRuntime,
   createTalkDriver,
   FaceTimeHelperActionError,
@@ -33,15 +34,23 @@ describe("FaceTime runtime call sequencing", () => {
     });
     mocks.helper.answerCall.mockImplementationOnce(async () => {
       order.push("answer-muted");
-      return completeAction({ outcome: "answered-muted", muted: true, is_uplink_muted: true });
+      return completeSharedAction({
+        outcome: "answered-muted",
+        muted: true,
+        is_uplink_muted: true,
+      });
     });
     mocks.helper.setMuted.mockImplementationOnce(async () => {
       order.push("unmute");
-      return completeAction({ outcome: "media-configured", muted: false, is_uplink_muted: false });
+      return completeSharedAction({
+        outcome: "media-configured",
+        muted: false,
+        is_uplink_muted: false,
+      });
     });
     mocks.helper.startTransmission.mockImplementationOnce(async () => {
       order.push("start-transmission");
-      return completeAction({
+      return completeSharedAction({
         outcome: "media-active",
         muted: false,
         is_uplink_muted: false,
@@ -540,12 +549,18 @@ describe("FaceTime runtime call sequencing", () => {
     await runtime.stop();
   });
 
-  it("fails closed when native unmute postconditions are negative", async () => {
+  it("fails closed when any native unmute postcondition is negative", async () => {
     const talk = createTalkDriver({});
     mocks.startTalk.mockResolvedValueOnce(talk);
-    mocks.helper.setMuted.mockResolvedValueOnce(
-      completeAction({ outcome: "media-configured", muted: false, is_uplink_muted: true }),
-    );
+    mocks.helper.setMuted.mockResolvedValueOnce({
+      helpersContacted: 2,
+      topologyGeneration: 1,
+      topologyComplete: true,
+      helperResults: [
+        { outcome: "media-configured", muted: false, is_uplink_muted: false },
+        { outcome: "media-configured", muted: false, is_uplink_muted: true },
+      ],
+    });
     const runtime = await createRuntime();
 
     mocks.helperParams?.onMessage(incomingCall(1));
@@ -971,7 +986,8 @@ describe("FaceTime runtime call sequencing", () => {
     mocks.helper.inspectCall.mockResolvedValue(
       completeAction({ outcome: "present", found: true, call_uuid: "ringing-call" }),
     );
-    mocks.startTalk.mockResolvedValue(createTalkDriver({}));
+    const talk = createTalkDriver({});
+    mocks.startTalk.mockResolvedValue(talk);
     const runtime = await createRuntime(state);
     const event = {
       event: "ft-call-status-changed",

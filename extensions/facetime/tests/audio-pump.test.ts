@@ -107,7 +107,7 @@ describe("FaceTime native audio bridge", () => {
 
     expect(onError).toHaveBeenCalledWith(
       expect.objectContaining({
-        message: "native FaceTime safety monitor reported a fatal error",
+        message: "native FaceTime safety monitor reported a fatal error: process tap failed",
       }),
     );
   });

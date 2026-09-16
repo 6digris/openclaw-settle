@@ -388,17 +388,6 @@ export async function startFaceTimeTalkDriver(params: {
       finishDrainedResponse();
     },
   });
-  try {
-    await Promise.race([pump.suppressionReady(), startupFailurePromise]);
-  } catch (error) {
-    const normalized = error instanceof Error ? error : new Error(String(error));
-    await suspendMedia("capture-start-failed");
-    const safeToClose = startupFailure === normalized ? await reportFailure(normalized) : true;
-    if (safeToClose) {
-      await close("capture-start-failed");
-    }
-    throw error;
-  }
   const connectProvider = async () => {
     if (providerConnectPromise) {
       return await providerConnectPromise;
@@ -657,13 +646,26 @@ export async function startFaceTimeTalkDriver(params: {
     })();
     return await providerConnectPromise;
   };
+  const providerConnect = connectProvider();
+  void providerConnect.catch(() => {});
+  try {
+    await Promise.race([pump.suppressionReady(), startupFailurePromise]);
+  } catch (error) {
+    const normalized = error instanceof Error ? error : new Error(String(error));
+    await suspendMedia("capture-start-failed");
+    const safeToClose = startupFailure === normalized ? await reportFailure(normalized) : true;
+    if (safeToClose) {
+      await close("capture-start-failed");
+    }
+    throw error;
+  }
   return {
     callUUID: params.callUUID,
     get recentTalkEvents() {
       return talk.recentEvents;
     },
     async readyForAudio() {
-      audioReadyPromise ??= connectProvider().then(async () => {
+      audioReadyPromise ??= providerConnect.then(async () => {
         await Promise.race([pump?.routeReady(), mediaSuspendedPromise]);
         // A route-ready callback can race with safety suspension. Never let an
         // already-waiting runtime resume carrier transmission afterward.

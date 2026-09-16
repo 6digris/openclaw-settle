@@ -19,6 +19,11 @@ type DefaultAudioDevices = {
   output: AudioDeviceDescription;
 };
 
+type CoreAudioDeviceProfile = {
+  name: string;
+  virtual: boolean;
+};
+
 function parseDefaultAudioDevices(raw: string): DefaultAudioDevices {
   const parsed: unknown = JSON.parse(raw);
   const record = asRecord(parsed);
@@ -67,22 +72,53 @@ function pushCheck(
   checks.push({ required: true, ...check });
 }
 
-function parseCoreAudioDeviceNames(systemProfilerOutput: string): string[] {
-  const names: string[] = [];
+function parseCoreAudioDevices(systemProfilerOutput: string): CoreAudioDeviceProfile[] {
+  try {
+    const parsed = asRecord(JSON.parse(systemProfilerOutput));
+    const entries = Array.isArray(parsed.SPAudioDataType) ? parsed.SPAudioDataType : [];
+    const deviceEntries = entries.flatMap((entry): unknown[] => {
+      const record = asRecord(entry);
+      return Array.isArray(record._items) ? record._items : [record];
+    });
+    const devices = deviceEntries.flatMap((entry): CoreAudioDeviceProfile[] => {
+      const record = asRecord(entry);
+      return typeof record._name === "string"
+        ? [
+            {
+              name: record._name,
+              virtual: record.coreaudio_device_transport === "coreaudio_device_type_virtual",
+            },
+          ]
+        : [];
+    });
+    if (devices.length > 0) {
+      return devices;
+    }
+  } catch {
+    // Older test fixtures and unusual system_profiler failures can still
+    // provide the human-readable device list without transport metadata.
+  }
+  const devices: CoreAudioDeviceProfile[] = [];
   for (const line of systemProfilerOutput.split(/\r?\n/u)) {
     const match = line.match(/^\s{8}(.+):\s*$/u);
     if (match?.[1]) {
-      names.push(match[1].trim());
+      devices.push({ name: match[1].trim(), virtual: false });
     }
   }
-  return [...new Set(names)];
+  return [...new Map(devices.map((device) => [device.name, device])).values()];
 }
 
-function findPhysicalOutputProblem(defaults: DefaultAudioDevices): string | undefined {
+function findPhysicalOutputProblem(
+  defaults: DefaultAudioDevices,
+  devices: readonly CoreAudioDeviceProfile[],
+): string | undefined {
   if (defaults.output.isAggregate) {
     return `system output is aggregate device ${defaults.output.name}`;
   }
-  if (/BlackHole|OpenClaw-(?:Feed|Mic)/iu.test(defaults.output.name)) {
+  if (
+    devices.some((device) => device.name === defaults.output.name && device.virtual) ||
+    /BlackHole|OpenClaw-(?:Feed|Mic)/iu.test(defaults.output.name)
+  ) {
     return `system output is virtual device ${defaults.output.name}`;
   }
   return undefined;
@@ -148,10 +184,12 @@ export async function runFaceTimePreflight(params: {
 
   await checkCallApp({ runCommandWithTimeout, checks });
 
-  const profiler = await runCommandWithTimeout(["/usr/sbin/system_profiler", "SPAudioDataType"], {
-    timeoutMs: 10_000,
-  });
-  const deviceNames = profiler.code === 0 ? parseCoreAudioDeviceNames(profiler.stdout ?? "") : [];
+  const profiler = await runCommandWithTimeout(
+    ["/usr/sbin/system_profiler", "SPAudioDataType", "-json"],
+    { timeoutMs: 10_000 },
+  );
+  const audioDevices = profiler.code === 0 ? parseCoreAudioDevices(profiler.stdout ?? "") : [];
+  const deviceNames = audioDevices.map((device) => device.name);
   for (const [id, label, deviceName] of [
     ["paired-driver-mic", "OpenClaw microphone device", FACETIME_MIC_DEVICE_NAME],
     ["paired-driver-feed", "OpenClaw feed device", FACETIME_FEED_DEVICE_NAME],
@@ -176,7 +214,7 @@ export async function runFaceTimePreflight(params: {
     if (defaults.code === 0) {
       try {
         currentAudioDefaults = parseDefaultAudioDevices(defaults.stdout ?? "");
-        const problem = findPhysicalOutputProblem(currentAudioDefaults);
+        const problem = findPhysicalOutputProblem(currentAudioDefaults, audioDevices);
         pushCheck(checks, {
           id: "physical-output",
           label: "Physical call output",

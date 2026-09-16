@@ -295,7 +295,7 @@ describe("FaceTime talk driver lifecycle", () => {
     expect(mocks.pump.stop).not.toHaveBeenCalled();
   });
 
-  it("returns after native suppression without connecting the provider", async () => {
+  it("connects the provider while waiting for native suppression", async () => {
     let releaseSuppression = () => {};
     mocks.pump.suppressionReady.mockImplementationOnce(
       () =>
@@ -306,15 +306,13 @@ describe("FaceTime talk driver lifecycle", () => {
     const starting = startFaceTimeTalkDriver(startParams());
 
     await vi.waitFor(() => expect(mocks.pump.suppressionReady).toHaveBeenCalledOnce());
-    expect(mocks.createSession).not.toHaveBeenCalled();
-    expect(mocks.bridge.connect).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(mocks.createSession).toHaveBeenCalledOnce());
+    expect(mocks.bridge.connect).toHaveBeenCalledOnce();
 
     releaseSuppression();
     const driver = await starting;
 
     expect(driver.processOutputSuppressed()).toBe(true);
-    expect(mocks.createSession).not.toHaveBeenCalled();
-    expect(mocks.bridge.connect).not.toHaveBeenCalled();
   });
 
   it("waits for provider connect, provider ready, and microphone routing", async () => {

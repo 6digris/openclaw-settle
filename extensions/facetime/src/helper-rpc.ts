@@ -679,51 +679,61 @@ export function projectFaceTimeNativeAction(
 ): FaceTimeNativeActionOutcome {
   const results = requireCompleteTopology(result);
   const present = results.filter((entry) => entry.outcome !== "absent");
-  if (present.length !== 1) {
-    throw new FaceTimeHelperAmbiguousError(
-      `FaceTime ${action} matched ${present.length} carrier owners`,
-      result,
-    );
-  }
-  const observed = present[0];
-  if (!observed) {
+  // FaceTime and Phone can both proxy the same system TUCall. Accept shared
+  // visibility only when every helper that found the exact call proves the postcondition.
+  if (present.length === 0) {
     throw new FaceTimeHelperAmbiguousError(`FaceTime ${action} carrier owner is missing`, result);
   }
   if (
     action === "unmute" &&
-    observed.muted === false &&
-    observed.is_uplink_muted === false &&
-    typeof observed.conversation_audio_error !== "string"
+    present.every(
+      (observed) =>
+        observed.muted === false &&
+        observed.is_uplink_muted === false &&
+        typeof observed.conversation_audio_error !== "string",
+    )
   ) {
     return { status: "media-active" };
   }
   if (
     action === "answer" &&
-    observed.outcome === "answered-muted" &&
-    observed.muted === true &&
-    observed.is_uplink_muted === true
+    present.every(
+      (observed) =>
+        observed.outcome === "answered-muted" &&
+        observed.muted === true &&
+        observed.is_uplink_muted === true,
+    )
   ) {
     return { status: "answered-muted" };
   }
   if (
     action === "safe-mute" &&
-    observed.downlink_muted === true &&
-    observed.muted === true &&
-    observed.is_uplink_muted === true
+    present.every(
+      (observed) =>
+        observed.downlink_muted === true &&
+        observed.muted === true &&
+        observed.is_uplink_muted === true,
+    )
   ) {
     return { status: "safe-muted" };
   }
   if (
     action === "activate" &&
-    observed.muted === false &&
-    observed.is_uplink_muted === false &&
-    observed.is_sending_audio === true &&
-    observed.is_sending_transmission === true &&
-    typeof observed.conversation_audio_error !== "string"
+    present.every(
+      (observed) =>
+        observed.muted === false &&
+        observed.is_uplink_muted === false &&
+        observed.is_sending_audio === true &&
+        observed.is_sending_transmission === true &&
+        typeof observed.conversation_audio_error !== "string",
+    )
   ) {
     return { status: "media-active" };
   }
-  if (action === "terminate" && observed.outcome === "termination-requested") {
+  if (
+    action === "terminate" &&
+    present.every((observed) => observed.outcome === "termination-requested")
+  ) {
     return { status: "termination-requested" };
   }
   throw new FaceTimeHelperActionError(`FaceTime ${action} postcondition was not observed`);

@@ -119,6 +119,19 @@ export function completeAction(owner: Record<string, unknown>) {
   };
 }
 
+export function completeSharedAction(owner: Record<string, unknown>) {
+  return {
+    helpersContacted: 2,
+    topologyGeneration: 1,
+    topologyComplete: true,
+    helperResults: [
+      { ...owner, helperBundleIdentifier: "com.apple.FaceTime" },
+      { ...owner, helperBundleIdentifier: "com.apple.mobilephone" },
+    ],
+    ...owner,
+  };
+}
+
 export function completeAbsence() {
   return {
     helpersContacted: 2,
