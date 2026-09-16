@@ -146,6 +146,24 @@ export async function findSessionTranscriptArchiveEventReadOnly(
   const resolved = resolveSqliteReadScope(scope);
   const options = toDatabaseOptions(resolved);
   return withSqliteTranscriptArchiveSession(options, async () => {
+    // Empty lookups must not hold completion roots through archive Worker startup.
+    const registered = withOpenClawAgentDatabaseReadOnly(
+      (database) =>
+        listTranscriptArchivesFromDatabase(
+          database,
+          resolved.agentId,
+          [scope.sessionId ?? scope.sessionKey],
+          [],
+        ).some((archive) =>
+          scope.sessionId
+            ? archive.sessionId === scope.sessionId
+            : archive.sessionKey === scope.sessionKey,
+        ),
+      options,
+    );
+    if (!registered.found || !registered.value) {
+      return undefined;
+    }
     const [result] = await runSqliteTranscriptArchiveReadWorker([
       {
         agentId: options.agentId,

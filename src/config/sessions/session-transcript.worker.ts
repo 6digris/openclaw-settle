@@ -14,7 +14,10 @@ import type {
   readSessionTranscriptModelContext,
   SessionModelContextLimits,
 } from "./session-accessor.sqlite-model-context.js";
-import type { SessionTranscriptRuntimeTarget } from "./session-accessor.types.js";
+import type {
+  SessionAccessScope,
+  SessionTranscriptRuntimeTarget,
+} from "./session-accessor.types.js";
 import { SessionTranscriptColdError } from "./session-cold-storage-state.js";
 import type {
   SessionHistoryWorkerRequest,
@@ -54,6 +57,12 @@ export type SessionTranscriptHistoryWorkerInput = {
   admission?: UserTurnTranscriptAdmissionReceipt;
 };
 
+export type SessionRowPresenceWorkerInput = {
+  kind: "session-row-presence";
+  database: { agentId: string; path: string };
+  scope: SessionAccessScope & { databaseAgentId: string };
+};
+
 export type SessionBranchSummaryWorkerInput = {
   kind: "branch-summaries";
   request: SessionBranchSummaryReadRequest;
@@ -62,6 +71,7 @@ export type SessionBranchSummaryWorkerInput = {
 type SessionTranscriptWorkerValues = {
   "branch-summaries": SessionBranchSummaryReadResult;
   "history-page": SessionHistoryWorkerResult;
+  "session-row-presence": boolean;
   "model-context": ReturnType<typeof readSessionTranscriptModelContext>;
   "session-entry": {
     entry: SessionFileEntry | null;
@@ -90,12 +100,26 @@ serveWorkerTasks(
       | SessionModelContextWorkerInput
       | SessionEntryWorkerInput
       | SessionTranscriptHistoryWorkerInput
+      | SessionRowPresenceWorkerInput
       | SessionBranchSummaryWorkerInput;
     try {
       if (request.kind === "branch-summaries") {
         const { readSessionBranchSummariesInWorker } =
           await import("./session-accessor.sqlite-branches.js");
         return { ok: true, value: readSessionBranchSummariesInWorker(request.request) };
+      }
+      if (request.kind === "session-row-presence") {
+        if (!historyDatabaseScope) {
+          const { OpenClawAgentDatabaseReadOnlyScope } =
+            await import("../../state/openclaw-agent-db-readonly.js");
+          historyDatabaseScope = new OpenClawAgentDatabaseReadOnlyScope();
+        }
+        const { loadSessionEntryReadOnlyInScope } =
+          await import("./session-accessor.sqlite-entry.js");
+        return historyDatabaseScope.run(request.database, () => ({
+          ok: true,
+          value: loadSessionEntryReadOnlyInScope(request.scope) !== undefined,
+        }));
       }
       return await runWithSessionTranscriptReadFence(
         request.admission,

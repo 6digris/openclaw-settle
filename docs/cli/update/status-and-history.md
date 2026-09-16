@@ -53,6 +53,20 @@ the outcome. Post-core finalization children report back to their parent without
 creating a separate update run, including when an older updater cannot forward
 a run ID.
 
+On an existing profile, update history admission waits for a database writer using
+the update's step timeout (30 minutes by default, or `--timeout`). If that wait
+expires, the command exits successfully with a deferred `update-ledger-busy`
+outcome and retry guidance. It does not claim an update completed or create a run;
+previous history remains visible. A dry-run reports the incomplete preview in
+`notes`. Repair uses its existing preflight budget for the same admission.
+Status and background history work retain their shorter wait budget.
+Hidden post-core finalization returns a nonzero exit with the same deferred
+reason when admission is exhausted. Its Gateway parent records a skipped outcome
+and leaves restart pending until a later update completes plugin convergence.
+Public `update`, `--dry-run`, and `update repair` keep the successful deferral exit.
+This behavior requires the updated CLI: a previously installed updater cannot
+use candidate code before its own history admission completes.
+
 Triage preserves the original update report. Any update launched during repair
 gets a separate `runId`.
 
@@ -206,10 +220,12 @@ required migrations remain errors. Historical runs cannot recover facts that
 their updater never recorded.
 
 Current updaters record their process identities and refresh the ledger
-every 30 seconds during long build, install, and finalization phases. Finalization
-pauses those writes while repair Doctor runs, including the post-plugin Doctor.
-These phases record their start and completion; the recorded driver identity
-protects the running update while its last-activity timestamp stays unchanged.
+every 30 seconds during long build, install, and finalization phases. Those
+writes pause whenever a Doctor child is repairing state: finalization pauses them
+for repair Doctor, including the post-plugin Doctor, and installation pauses them
+for the activation Doctor step. These phases record their start and completion;
+the recorded driver identity protects the running update while its last-activity
+timestamp stays unchanged.
 The Gateway checks for
 abandoned runs at startup and while following active updates. After more than
 30 minutes without step or heartbeat activity, verifiably dead recorded drivers

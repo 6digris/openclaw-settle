@@ -4728,6 +4728,7 @@ export const en: TranslationMap & {
     },
     composer: {
       composerInput: "Chat composer",
+      emojiSuggestions: "Emoji suggestions",
       placeholder: "Message {name}",
       emptyHint: "Write a message to send.",
       placeholderWithAttachments: "Add a message or paste more images...",
@@ -4930,6 +4931,9 @@ export const en: TranslationMap & {
       preparing: "Preparing voice session...",
       connecting: "Connecting voice input...",
       listening: "Listening...",
+      selectionFailed: "Could not change voices. Restart the call.",
+      selectionTimedOut: "Voice change timed out. Restart the call.",
+      selectionConfirmationFailed: "Voice change unconfirmed.",
     },
     selectors: {
       loadMoreSessions: "Show more",
