@@ -35,12 +35,6 @@ extension String {
 }
 
 public actor GatewayChannelActor {
-    struct PendingRequest {
-        let continuation: CheckedContinuation<GatewayFrame, Error>
-        var timeoutTask: Task<Void, Never>?
-        let transportLifetime = WebSocketRequestLifetime()
-    }
-
     nonisolated static func resolveRequestTimeoutMs(_ timeoutMs: Double?, defaultMs: Double) -> Double? {
         timeoutMs == 0 ? nil : (timeoutMs ?? defaultMs)
     }

@@ -813,8 +813,11 @@ public final class GatewayTLSPinningSession: NSObject, WebSocketSessioning, URLS
     public func validateServerTrust(_ trust: SecTrust, for url: URL) -> Bool {
         guard let authority = GatewayTLSAuthority(url: url), authority.scheme == "wss" else { return false }
         switch GatewayTLSServerTrust.evaluate(
-            trust: trust, host: authority.host, port: authority.port,
-            params: self.params, expectedFingerprint: self.currentEnforcedFingerprint())
+            trust: trust,
+            host: authority.host,
+            port: authority.port,
+            params: self.params,
+            expectedFingerprint: self.currentEnforcedFingerprint())
         {
         case let .accept(fingerprint, enforcePin):
             self.recordTLSAcceptance(fingerprint, enforcePin: enforcePin)
