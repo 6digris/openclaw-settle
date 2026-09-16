@@ -1249,7 +1249,6 @@ exit 99
   describe("alias wrapper trust delegation", () => {
     function makeAliasFixture() {
       const fixture = makeMismatchedWrapperRepo({ realModules: true });
-      linkPrWrapperDependencies(fixture.linked);
       fixture.git(fixture.linked, ["checkout", "--detach", "refs/remotes/origin/main"]);
       // Keep the Node recorder at the supervisor handoff, after dependency preparation.
       linkPrWrapperDependencies(fixture.linked);
