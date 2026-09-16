@@ -24,9 +24,11 @@ export type PluginRuntimeModuleResolution = {
 };
 
 type PreparedPluginAliases = {
+  packageRoot: string | null;
   cacheKey: string;
   sdkRoots: string[];
   getAliasMap: () => PluginSdkAliasMap;
+  getSourceTransformAliasMap: () => PluginSdkAliasMap;
   resolveAlias: (specifier: string) => string | undefined;
 };
 
@@ -58,13 +60,8 @@ export function createPluginCacheSdk() {
       PluginSdkAliasMap,
       {
         normalizedJiti?: PluginSdkAliasMap;
-        normalizedTargets?: PluginSdkAliasMap;
         moduleKey?: string;
       }
-    >(),
-    mergedAliases: new WeakMap<
-      PluginSdkAliasMap,
-      WeakMap<PluginSdkAliasMap, WeakMap<PluginSdkAliasMap, PluginSdkAliasMap>>
     >(),
     native: {
       sdkProviders: new Map<

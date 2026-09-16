@@ -4,7 +4,6 @@ import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { hasActiveUpdateDoctorStep } from "../infra/update-run-record.js";
 import type { RuntimeEnv } from "../runtime.js";
-
 type DoctorMaintenance = NonNullable<
   Awaited<ReturnType<typeof import("./doctor-maintenance.js").beginDoctorMaintenance>>
 >;
@@ -370,7 +369,7 @@ async function inspectLegacyDoctorRehearsal(): Promise<LegacyDoctorRehearsal | u
     refuse("the copied configuration changed during inspection");
   }
   const config = snapshot.sourceConfigBeforeMigrations ?? snapshot.sourceConfig;
-  const registered = registryApi.inspectOpenClawRegisteredAgentDatabases({
+  const registered = await registryApi.inspectOpenClawRegisteredAgentDatabases({
     env,
     includeIncompatibleSchemaVersions: true,
   });

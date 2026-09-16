@@ -69,6 +69,7 @@ const MACHINE_CREDIT_EMAILS = new Set([
   "198982749+copilot@users.noreply.github.com",
   "223556219+copilot@users.noreply.github.com",
   "309084314+roboclaw-bot@users.noreply.github.com",
+  "services+roboclaw@openclaw.org",
 ]);
 const GITHUB_APP_BOT_EMAIL = /^(?:\d+\+)?[^@\s]*\[bot\]@users\.noreply\.github\.com$/;
 const LOCAL_CREDIT_EMAIL =
@@ -179,7 +180,7 @@ function compose({ preview, source, authors, prAuthor, captured, queue }) {
   const sourceTrailers = source.split("\n").filter(Boolean);
   const eligibleEmails = new Set();
   const unverifiedEmails = new Set();
-  for (const { name, email, user } of authors) {
+  for (const { name, email, user, changesTree } of authors) {
     const normalized = email.trim().toLowerCase();
     const linkedHuman = user?.type === "User" && Boolean(user.login);
     const prAuthorMatch =
@@ -188,7 +189,9 @@ function compose({ preview, source, authors, prAuthor, captured, queue }) {
       name.trim().toLowerCase() === prAuthor.login.toLowerCase() &&
       !NOREPLY_EMAIL.test(normalized);
     if (linkedHuman || prAuthorMatch) {
-      eligibleEmails.add(normalized);
+      if (changesTree || prAuthorMatch || user?.login === prAuthor?.login) {
+        eligibleEmails.add(normalized);
+      }
     } else {
       unverifiedEmails.add(normalized);
     }

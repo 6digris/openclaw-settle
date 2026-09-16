@@ -25,6 +25,10 @@ import {
   type ZaloCredentialStateRecord,
   type StoredZaloCredentials,
 } from "./src/session-state.js";
+// Zalouser API module exposes the plugin public contract.
+
+// Doctor enumeration cold-loads this closure; session-store-runtime pulls the
+// session-accessor/kysely graph, so values load lazily inside async bodies.
 
 export { normalizeCompatibilityConfig, legacyConfigRules } from "./config-doctor-api.js";
 

@@ -1,5 +1,8 @@
 import type { DatabaseSync } from "node:sqlite";
-import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db-contract.js";
+import type {
+  OpenClawStateDatabaseOptions,
+  OpenClawStateSchemaReadAdmission,
+} from "../state/openclaw-state-db-contract.js";
 import {
   withExistingOpenClawStateDatabaseArtifactPreservingReadOnly,
   withExistingOpenClawStateDatabaseArtifactPreservingReadOnlyAsync,
@@ -18,7 +21,6 @@ import { LEGACY_UPDATE_RUN_EXPIRED_REASON } from "./update-run-legacy-expiry.js"
 import type { UpdateFetchFailure, UpdateRunRecord } from "./update-run-record.js";
 import { hasStoredUpdateRecovery } from "./update-run-recovery-store.js";
 import { ABANDONED_UPDATE_RUN_MS } from "./update-run-timeouts.js";
-
 export function readUpdateRunRecord(db: DatabaseSync, runId: string): UpdateRunRecord | undefined {
   const query = getNodeSqliteKysely<Pick<DB, "update_runs">>(db)
     .selectFrom("update_runs")
@@ -41,7 +43,15 @@ export function getUpdateRun(
 export function findActiveUpdateRun(
   options: OpenClawStateDatabaseOptions = {},
 ): UpdateRunRecord | undefined {
-  return listUpdateRuns({ limit: 1, active: true }, options)[0];
+  return withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(
+    ({ db }) => readActiveUpdateRun(db),
+    options,
+  );
+}
+
+/** Read activity on the caller's connection so maintenance can fence its mutation. */
+export function readActiveUpdateRun(db: DatabaseSync): UpdateRunRecord | undefined {
+  return readRuns(db, { limit: 1, active: true })[0];
 }
 
 export async function getUpdateRunAsync(
@@ -54,7 +64,7 @@ export async function getUpdateRunAsync(
   );
 }
 
-type ListInput = { limit?: number; active?: boolean; reason?: string };
+type ListInput = { limit?: number; active?: boolean; reason?: string; includeRunId?: string };
 
 /** A capped active-owner listing cannot establish complete recovery ownership. */
 export function requireCompleteActiveUpdateRuns(runs: UpdateRunRecord[]): UpdateRunRecord[] {
@@ -79,23 +89,33 @@ function readRuns(db: DatabaseSync, input: ListInput): UpdateRunRecord[] {
   if (input.reason) {
     query = query.where("reason", "=", input.reason);
   }
-  return executeSqliteQuerySync(
+  const runs = executeSqliteQuerySync(
     db,
     query
       .orderBy("created_at_ms", "desc")
       .orderBy("run_id", "desc")
       .limit(Math.max(1, Math.min(100, Math.trunc(input.limit ?? 20)))),
   ).rows.map(decodeRun);
+  // Restoration must retain its captured owner even after that row becomes terminal.
+  if (input.includeRunId && !runs.some((run) => run.runId === input.includeRunId)) {
+    const captured = readUpdateRunRecord(db, input.includeRunId);
+    if (captured) {
+      runs.push(captured);
+    }
+  }
+  return runs;
 }
 
 export function listUpdateRuns(
   input: ListInput = {},
   options: OpenClawStateDatabaseOptions = {},
+  openStateSchemaReadAdmission?: OpenClawStateSchemaReadAdmission,
 ): UpdateRunRecord[] {
   return (
     withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(
       ({ db }) => readRuns(db, input),
       options,
+      openStateSchemaReadAdmission,
     ) ?? []
   );
 }

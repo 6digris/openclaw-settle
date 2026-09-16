@@ -111,6 +111,7 @@ const COMMAND_ICON_OVERRIDES: Partial<Record<string, IconName>> = {
 const INLINE_MULTI_WORD_COMMANDS = new Set(["dashboard"]);
 
 const LOCAL_COMMANDS = new Set([
+  "btw",
   "help",
   "new",
   "reset",
@@ -704,6 +705,10 @@ export function parseSlashCommand(text: string): ParsedSlashCommand | null {
 export function isChatControlCommand(text: string): boolean {
   const key = parseSlashCommand(text)?.command.key;
   return normalizeLowercaseStringOrEmpty(text.trim()) === "/stop" || key === "approve";
+}
+
+export function canSubmitBeforeChatHistory(text: string): boolean {
+  return !text.trimStart().startsWith("/") || isChatControlCommand(text);
 }
 
 export function isModelIndependentChatCommand(text: string): boolean {

@@ -1,5 +1,7 @@
 // Doctor repair flow builds and runs repair actions for doctor findings.
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
+import { UpdateCommandRecoveryPendingError } from "../cli/update-cli/update-command-recovery.js";
+import { captureDoctorUpdateRecoveryGuard } from "../commands/doctor-update-recovery.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { scrubDoctorErrorMessage } from "./doctor-error-message.js";
 import { copyHealthCheck, normalizeHealthCheck } from "./health-check-adapter.js";
@@ -37,6 +39,7 @@ export async function runDoctorHealthRepairs(
   ctx: HealthRepairContext,
   opts: DoctorRepairRunOptions = {},
 ): Promise<DoctorRepairRunResult> {
+  const assertCurrent = captureDoctorUpdateRecoveryGuard();
   const inputs = opts.checks ?? listHealthChecks().map(copyHealthCheck);
   const checks: readonly DoctorHealthCheck[] = inputs.map(normalizeHealthCheck);
   const findings: HealthFinding[] = [];
@@ -50,8 +53,10 @@ export async function runDoctorHealthRepairs(
   let checksValidated = 0;
 
   for (const check of checks) {
+    assertCurrent?.();
     const detectCtx: HealthRepairContext = { ...ctx, cfg };
-    const runResult = await runHealthCheck(check, detectCtx, opts);
+    const runResult = await runHealthCheck(check, detectCtx, opts, assertCurrent);
+    assertCurrent?.();
     cfg = runResult.config;
     findings.push(...runResult.findings);
     // Only a completed validation can replace this check's original findings;
@@ -67,6 +72,7 @@ export async function runDoctorHealthRepairs(
     checksValidated += runResult.checksValidated;
   }
 
+  assertCurrent?.();
   return {
     config: cfg,
     findings,
@@ -85,6 +91,7 @@ async function runHealthCheck(
   check: DoctorHealthCheck,
   ctx: HealthRepairContext,
   opts: DoctorRepairRunOptions,
+  assertCurrent: (() => void) | undefined,
 ): Promise<DoctorRepairRunResult> {
   const findings: HealthFinding[] = [];
   const remainingFindings: HealthFinding[] = [];
@@ -98,8 +105,10 @@ async function runHealthCheck(
 
   let checkFindings: readonly HealthFinding[];
   try {
-    checkFindings = await check.detect(ctx);
+    checkFindings = await withAuthority(assertCurrent, () => check.detect(ctx));
   } catch (err) {
+    assertCurrent?.();
+    if (err instanceof UpdateCommandRecoveryPendingError) throw err;
     warnings.push(`${check.id} detect failed: ${scrubDoctorErrorMessage(err)}`);
     return repairRunResult(cfg, findings, remainingFindings, changes, warnings, diffs, effects);
   }
@@ -110,9 +119,9 @@ async function runHealthCheck(
 
   // Split checks expose detect/repair separately, so repair output must be validated by detect().
   try {
-    const result = await check.repair(
-      { ...ctx, dryRun: opts.dryRun === true, diff: opts.diff === true },
-      checkFindings,
+    const repair = check.repair.bind(check);
+    const result = await withAuthority(assertCurrent, () =>
+      repair({ ...ctx, dryRun: opts.dryRun === true, diff: opts.diff === true }, checkFindings),
     );
     warnings.push(...(result.warnings ?? []));
     diffs.push(...(result.diffs ?? []));
@@ -134,9 +143,8 @@ async function runHealthCheck(
       });
     }
     try {
-      const validationFindings = await check.detect(
-        { ...ctx, cfg },
-        createValidationScope(findings),
+      const validationFindings = await withAuthority(assertCurrent, () =>
+        check.detect({ ...ctx, cfg }, createValidationScope(findings)),
       );
       remainingFindings.push(...validationFindings);
       checksValidated++;
@@ -144,9 +152,13 @@ async function runHealthCheck(
         warnings.push(`${check.id} repair left ${validationFindings.length} finding(s)`);
       }
     } catch (err) {
+      assertCurrent?.();
+      if (err instanceof UpdateCommandRecoveryPendingError) throw err;
       warnings.push(`${check.id} validation failed: ${scrubDoctorErrorMessage(err)}`);
     }
   } catch (err) {
+    assertCurrent?.();
+    if (err instanceof UpdateCommandRecoveryPendingError) throw err;
     warnings.push(`${check.id} repair failed: ${scrubDoctorErrorMessage(err)}`);
   }
 
@@ -154,6 +166,19 @@ async function runHealthCheck(
     checksRepaired,
     checksValidated,
   });
+}
+
+async function withAuthority<T>(
+  assertCurrent: (() => void) | undefined,
+  run: () => Promise<T>,
+): Promise<T> {
+  assertCurrent?.();
+  try {
+    return await run();
+  } finally {
+    // A rejection is an authority boundary too, not an advisory escape hatch.
+    assertCurrent?.();
+  }
 }
 
 function repairRunResult(

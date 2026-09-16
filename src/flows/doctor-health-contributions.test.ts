@@ -4,6 +4,7 @@ import nodePath from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDoctorConfigSnapshot } from "../commands/doctor-config-snapshot.test-helpers.js";
 import type { DoctorPrompter } from "../commands/doctor-prompter.js";
+import { ConfigWritePostCommitError } from "../config/io.write-errors.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { LEGACY_SECRETREF_ENV_MARKER_PREFIX } from "../config/types.secrets.js";
 import { fetchNpmPackageTargetStatus } from "../infra/update-check-package-target.js";
@@ -37,12 +38,13 @@ const mocks = vi.hoisted(() => ({
   isDefaultInstallIdentity: vi.fn(() => true),
   isContainerEnvironment: vi.fn(() => false),
   maybeRunConfiguredPluginInstallReleaseStep: vi.fn(),
-  registerBundledHealthChecks: vi.fn(),
+  registerBundledHealthChecks: vi.fn((): HealthFinding[] => []),
   runDoctorHealthRepairs: vi.fn(),
   maybeMigrateAuthProfileJsonStoresToSqlite: vi.fn().mockResolvedValue({
     detected: [],
     changes: [],
-    configOwnerMigrationApplied: false,
+    migratedProfileIds: new Set<string>(),
+    blockedProfileIds: new Set<string>(),
     warnings: [],
   }),
   collectOpenAICodexAuthProfileStoreIdMap: vi.fn(() => new Map<string, string>()),
@@ -530,7 +532,8 @@ vi.mock("../config/config.js", async (importOriginal) => ({
       { snapshot: createDoctorConfigSnapshot(), previousHash: null, attempt: 0 },
       {},
     );
-    return mocks.replaceConfigFile({ ...options, nextConfig });
+    await mocks.replaceConfigFile({ ...options, nextConfig });
+    return { nextConfig };
   },
   readConfigFileSnapshot: mocks.readConfigFileSnapshot,
 }));
@@ -720,12 +723,13 @@ describe("doctor health contributions", () => {
   beforeEach(() => {
     mocks.isContainerEnvironment.mockReset().mockReturnValue(false);
     mocks.maybeRunConfiguredPluginInstallReleaseStep.mockReset();
-    mocks.registerBundledHealthChecks.mockReset();
+    mocks.registerBundledHealthChecks.mockReset().mockReturnValue([]);
     mocks.runDoctorHealthRepairs.mockReset();
     mocks.maybeMigrateAuthProfileJsonStoresToSqlite.mockClear().mockResolvedValue({
       detected: [],
       changes: [],
-      configOwnerMigrationApplied: false,
+      migratedProfileIds: new Set<string>(),
+      blockedProfileIds: new Set<string>(),
       warnings: [],
     });
     mocks.collectOpenAICodexAuthProfileStoreIdMap.mockReset().mockReturnValue(new Map());
@@ -960,6 +964,35 @@ describe("doctor health contributions", () => {
       "doctor:test-failure run failed: media migration required",
     ]);
     expect(mocks.note).toHaveBeenCalledBefore(laterRun);
+  });
+
+  it("stops after an optional contribution fails after writing config", async () => {
+    const laterRun = vi.fn(async () => undefined);
+    const ctx = createDoctorContext({ env: {} });
+    const failure = new ConfigWritePostCommitError({
+      configPath: ctx.configPath,
+      rollbackStatus: "not-restored",
+      cause: new Error("config path changed since last load"),
+    });
+
+    await expect(
+      runDoctorHealthContributionList(ctx, [
+        createDoctorHealthContribution({
+          id: "doctor:test-config-write",
+          label: "Test config write",
+          run: async () => {
+            throw failure;
+          },
+        }),
+        createDoctorHealthContribution({
+          id: "doctor:test-later",
+          label: "Test later",
+          run: laterRun,
+        }),
+      ]),
+    ).rejects.toBe(failure);
+
+    expect(laterRun).not.toHaveBeenCalled();
   });
 
   it("rejects a failed initial config write before later work runs", async () => {
@@ -2546,7 +2579,7 @@ describe("doctor health contributions", () => {
     );
   });
 
-  it.each(["warning", "refused"] as const)(
+  it.each(["warning", "deferred", "refused"] as const)(
     "prints legacy state migration notices and records only advisories (%s)",
     async (outcome) => {
       const contribution = requireDoctorContribution("doctor:legacy-state");
@@ -2585,7 +2618,7 @@ describe("doctor health contributions", () => {
         "Doctor notices",
       );
       expect(ctx.updateWarnings ?? []).toEqual(
-        outcome === "warning" ? ["Legacy cleanup deferred; run openclaw doctor --fix"] : [],
+        outcome !== "refused" ? ["Legacy cleanup deferred; run openclaw doctor --fix"] : [],
       );
     },
   );
@@ -2635,7 +2668,8 @@ describe("doctor health contributions", () => {
     });
     expect(mocks.maybeMigrateAuthProfileJsonStoresToSqlite).toHaveBeenCalledWith({
       cfg: ctx.cfg,
-      prompter: ctx.prompter,
+      env: process.env,
+      prompter: { confirmAutoFix: ctx.prompter.confirmAutoFix },
       openAICodexAuthProfileIdMap:
         mocks.collectOpenAICodexAuthProfileStoreIdMap.mock.results[0]?.value,
     });
@@ -3785,7 +3819,8 @@ describe("doctor health contributions", () => {
     expect(ctx.cfg).toEqual({ updated: true });
     expect(ctx.cfgForPersistence).toEqual({});
     expect(ctx.runtime.error).toHaveBeenCalledWith("structured warning");
-    expect(ctx.runtime.log).toHaveBeenCalledWith("changed from structured health");
+    expect(ctx.runtime.log).not.toHaveBeenCalledWith("changed from structured health");
+    expect(ctx.configResult.pendingChangePanels).toEqual(["changed from structured health"]);
   });
 
   it.each([
@@ -4645,6 +4680,7 @@ describe("doctor health contributions", () => {
       expect(mocks.repairCronCodexModelRefsAfterConfigWrite).toHaveBeenCalledWith({
         cfg,
         retiredModelRefConfig,
+        migrateCodexModelRefs: true,
         repairRetiredModelRefs: repair,
         blockedModelIdentities: new Set(["codex\u0000gpt-5.6-sol"]),
       });

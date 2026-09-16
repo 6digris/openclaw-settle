@@ -5,10 +5,14 @@ import { formatErrorMessage } from "../../infra/errors.js";
 import { createPackageIntegrityReader } from "../../infra/package-update-integrity.js";
 import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
 import { normalizeUpdateChannel } from "../../infra/update-channels.js";
-import { verifyPackageUpdateRecovery } from "../../infra/update-global.js";
+import {
+  verifyPackageUpdateRecovery,
+  canResolveRegistryVersionForPackageTarget,
+} from "../../infra/update-global.js";
 import type { UpdateRecoveryBackupRef } from "../../infra/update-recovery-backup-contract.js";
 import { withUpdateRecoveryConfigWrites } from "../../infra/update-recovery-config-writes.js";
 import { withPluginLifecycleLease } from "../../plugins/plugin-lifecycle-lease.js";
+import { defaultRuntime } from "../../runtime.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { assertOpenClawStateWriteAllowedAtPath } from "../../state/openclaw-state-ownership.js";
 import { readPackageVersion, resolveNodeRunner, UpdatePreMutationError } from "./shared.js";
@@ -32,9 +36,11 @@ import {
 import { preflightConfiguredNpmPluginTargets } from "./update-command-plugin-preflight.js";
 import { finishUpdate } from "./update-command-post-update.js";
 import { createUpdateCommandFinalizationFence } from "./update-command-recovery.js";
+import type { RefuseUpdate } from "./update-command-result.js";
 import { inspectUpdateRuntimeCapability } from "./update-command-runtime-capability.js";
 import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
 import {
+  collectServiceInspectionFailureFacts,
   GatewayServiceUpdateOwnershipError,
   resolvePackageRuntimePreflight,
   type ManagedServiceRootRedirect,
@@ -44,7 +50,6 @@ import {
   shouldBlockMutableUpdateFromGatewayServiceEnv,
   UpdateCommandAbort,
 } from "./update-command-service.js";
-
 /** A current core still owns plugin convergence, but only changed plugins need activation. */
 export async function finishAlreadyCurrentUpdate(
   params: Pick<
@@ -52,6 +57,7 @@ export async function finishAlreadyCurrentUpdate(
     | "opts"
     | "result"
     | "root"
+    | "previousInstallRoot"
     | "requestedChannel"
     | "storedChannel"
     | "channel"
@@ -63,11 +69,12 @@ export async function finishAlreadyCurrentUpdate(
     | "packageUpdateNodeRunner"
     | "ownedManagedUpdateEnv"
   > & {
+    packageInstallSpec: string | null;
     managedServiceRootRedirect: ManagedServiceRootRedirect | null;
     legacyConfigPlan?: LegacyConfigUpdatePlan;
     runtimeTarget?: { version: string; nodeEngine: string | null };
     stop: () => void;
-    refuseUpdate: (reason: string, message?: string) => Promise<void>;
+    refuseUpdate: RefuseUpdate;
   },
 ): Promise<void> {
   await withOwnedManagedUpdateEnv(params.ownedManagedUpdateEnv, async () => {
@@ -82,42 +89,44 @@ export async function finishAlreadyCurrentUpdate(
       },
     };
     const inspection = {
+      ...params,
       roots: [params.root],
-      legacyConfigPlan: params.legacyConfigPlan,
       updateInstallKind: params.result.mode === "git" ? ("git" as const) : ("package" as const),
-      shouldRestart: params.shouldRestart,
       jsonMode: Boolean(params.opts.json),
       timeoutMs: params.updateStepTimeoutMs,
-      invocationCwd: params.invocationCwd,
-      managedServiceRootRedirect: params.managedServiceRootRedirect,
     };
     const admission = await inspectUpdateDatabaseContexts(inspection);
     const service = admission.service;
     const runtime = await resolvePackageRuntimePreflight({
+      ...params,
       target: params.runtimeTarget,
       installedRoot: params.root,
-      nodeRunner: service?.serviceNodeRunner ?? params.packageUpdateNodeRunner,
-      fallbackNodeRunner:
-        params.shouldRestart &&
-        service?.running &&
-        service.serviceUpdateVerdict?.kind === "owned" &&
-        service.serviceUpdateVerdict.refreshDefinition
-          ? resolveNodeRunner()
-          : undefined,
+      nodeRunner: params.packageUpdateNodeRunner,
+      alreadyCurrent: true,
+      service,
       timeoutMs: params.updateStepTimeoutMs,
     });
     if (!runtime.ok) {
-      throw new UpdatePreMutationError("node-runtime-preflight", runtime.error);
+      throw new UpdatePreMutationError("node-runtime-preflight", runtime.error, {
+        failureFacts: runtime.failureFacts,
+      });
     }
     const packageUpdateNodeRunner = runtime.value.nodeRunner;
     const context = admission.contexts.at(-1)!;
-    await preflightConfiguredNpmPluginTargets({
+    const pluginWarnings = await preflightConfiguredNpmPluginTargets({
       config: context.configSnapshot.sourceConfig,
       env: context.env,
       targetVersion: result.after.version,
       channel: params.channel,
       timeoutMs: params.updateStepTimeoutMs,
     });
+    for (const warning of pluginWarnings) {
+      if (params.opts.json) {
+        defaultRuntime.error(warning.message);
+      } else {
+        defaultRuntime.log(warning.message);
+      }
+    }
     await inspectUpdateDatabaseContexts({ ...inspection, expectedServices: admission.services });
     await Promise.all(admission.contexts.map(revalidateUpdateDatabaseContext));
     let stopState;
@@ -137,7 +146,10 @@ export async function finishAlreadyCurrentUpdate(
             tag:
               params.channel === "extended-stable"
                 ? undefined
-                : (result.after.version ?? undefined),
+                : params.packageInstallSpec &&
+                    !canResolveRegistryVersionForPackageTarget(params.packageInstallSpec)
+                  ? params.packageInstallSpec
+                  : (result.after.version ?? undefined),
             timeoutMs: params.updateStepTimeoutMs,
             nodeRunner: packageUpdateNodeRunner,
             invocationCwd: params.invocationCwd,
@@ -160,6 +172,7 @@ export async function finishAlreadyCurrentUpdate(
           stopState.blockMessage ??
             "Run openclaw update from a terminal outside the Gateway service before changing installed plugins.",
         ),
+        { failureFacts: collectServiceInspectionFailureFacts(stopState.serviceUpdateVerdict) },
       );
     }
     await assertOpenClawStateWriteAllowedAtPath({
@@ -330,6 +343,7 @@ export async function finishAlreadyCurrentUpdate(
       await params.refuseUpdate(
         error instanceof UpdatePreMutationError ? error.reason : "managed-service-preflight",
         error.message,
+        error.failureFacts,
       );
       return;
     }

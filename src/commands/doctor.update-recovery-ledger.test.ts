@@ -40,7 +40,6 @@ import {
 } from "../test-utils/openclaw-test-state.js";
 import { resolveCompletedDoctorUpdateRecovery } from "./doctor-update-recovery.js";
 import { doctorCommand } from "./doctor.js";
-
 const mocks = vi.hoisted(() => ({
   coordinator: vi.fn<() => string>(),
   afterClose: vi.fn<() => Promise<void>>(),

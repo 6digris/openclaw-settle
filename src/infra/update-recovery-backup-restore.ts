@@ -18,7 +18,6 @@ import { SQLITE_SIDECAR_SUFFIXES } from "./sqlite-files.js";
 import { createVerifiedSqliteSnapshot } from "./sqlite-snapshot.js";
 import { canonicalEntryPath, fileDigest, statOrMissing } from "./update-recovery-backup-files.js";
 import { captureUpdateRecoveryConfigRestore } from "./update-recovery-config-writes.js";
-
 export async function restorePreparedUpdateRecoveryBackup(
   prepared: {
     manifest: UpdateRecoveryBackupManifest;

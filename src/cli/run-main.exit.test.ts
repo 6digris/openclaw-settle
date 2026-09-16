@@ -22,8 +22,11 @@ import { captureEnv, withEnvAsync } from "../test-utils/env.js";
 import { ExpectedCliError } from "./failure-output.js";
 import { getGatewayRunRuntimeHooks } from "./gateway-cli/runtime-hooks.js";
 import type { RootHelpRenderOptions } from "./program/root-help.js";
+import type { ConfigSnapshotStub } from "./run-main-config.test-support.js";
+import { registerDoctorBootstrapRecoveryTests } from "./run-main-doctor-recovery.suite.js";
 import { getPendingCliDisposers } from "./runtime-cleanup.js";
 import { registerSignalExitBarrier, waitForSignalExitBarriers } from "./signal-exit-barrier.js";
+// Run main exit tests cover process exit behavior for CLI failures.
 
 const TLS_FINGERPRINT = "ab".repeat(32);
 const PREFIXED_TLS_FINGERPRINT = `sha256:${TLS_FINGERPRINT.toUpperCase()}`;
@@ -32,17 +35,6 @@ type RunMainModule = typeof import("./run-main.js");
 
 let runCli: RunMainModule["runCli"];
 let shouldStartProxyForCli: RunMainModule["shouldStartProxyForCli"];
-
-type ConfigSnapshotStub = {
-  exists: boolean;
-  hash?: string;
-  issues?: Array<{ message: string; path: string }>;
-  legacyIssues?: Array<{ message: string; path: string }>;
-  path?: string;
-  raw?: string | null;
-  valid: boolean;
-  sourceConfig: Record<string, unknown>;
-};
 
 const tryRouteCliMock = vi.hoisted(() => vi.fn());
 const loadDotEnvMock = vi.hoisted(() => vi.fn());
@@ -58,13 +50,13 @@ const pinConfigDirMock = vi.hoisted(() => vi.fn());
 const pinRuntimePathsMock = vi.hoisted(() => vi.fn());
 const ensurePathMock = vi.hoisted(() => vi.fn());
 const assertRuntimeMock = vi.hoisted(() => vi.fn(async () => {}));
-const runtimeSupportedMock = vi.hoisted(() => vi.fn(() => true));
 const prepareDoctorUpdateRecoveryMock = vi.hoisted(() => vi.fn(async () => {}));
 const withDoctorUpdateRecoveryMock = vi.hoisted(() =>
   vi.fn(async (_runtime: unknown, run: () => Promise<unknown>) => run()),
 );
 const guardUpdateDoctorSchemaUpgradeMock = vi.hoisted(() => vi.fn(async () => {}));
 const initializeDebugProxyCaptureMock = vi.hoisted(() => vi.fn());
+const isCurrentRuntimeSupportedMock = vi.hoisted(() => vi.fn(async () => true));
 const closeActiveMemorySearchManagersMock = vi.hoisted(() => vi.fn(async () => {}));
 const hasMemoryRuntimeMock = vi.hoisted(() => vi.fn(() => false));
 const listRegisteredAgentHarnessesMock = vi.hoisted(() => vi.fn((): unknown[] => []));
@@ -329,7 +321,7 @@ vi.mock("../infra/path-env.js", () => ({
 vi.mock("../infra/runtime-guard.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../infra/runtime-guard.js")>()),
   assertSupportedRuntime: assertRuntimeMock,
-  isCurrentRuntimeSupported: runtimeSupportedMock,
+  isCurrentRuntimeSupported: isCurrentRuntimeSupportedMock,
 }));
 
 vi.mock("../commands/doctor-update-recovery.js", () => ({
@@ -602,7 +594,7 @@ describe("runCli exit behavior", () => {
     delete process.env[GATEWAY_SERVICE_RUNTIME_PID_ENV];
     existsSyncOverride.value = undefined;
     vi.clearAllMocks();
-    runtimeSupportedMock.mockReturnValue(true);
+    isCurrentRuntimeSupportedMock.mockResolvedValue(true);
     readConfigFileSnapshotMock.mockResolvedValue({
       exists: true,
       valid: true,
@@ -2396,13 +2388,28 @@ describe("runCli exit behavior", () => {
     expect(shouldStartProxyForCli(argv)).toBe(false);
   });
 
-  it("starts the managed proxy for network-capable commands by default", async () => {
-    tryRouteCliMock.mockResolvedValueOnce(true);
+  it.each([true, false])(
+    "selects proxy config after async runtime support resolves to %s",
+    async (supported) => {
+      tryRouteCliMock.mockResolvedValueOnce(true);
+      isCurrentRuntimeSupportedMock.mockResolvedValueOnce(supported);
+      if (supported) {
+        loadConfigMock.mockReturnValueOnce({ proxy: { proxyUrl: "http://validated.invalid" } });
+      } else {
+        readSourceConfigBestEffortMock.mockResolvedValueOnce({
+          proxy: { proxyUrl: "http://source.invalid" },
+        });
+      }
 
-    await runCli(["node", "openclaw", "plugins", "marketplace", "list"]);
+      await runCli(["node", "openclaw", "plugins", "marketplace", "list"]);
 
-    expect(startProxyMock).toHaveBeenCalledWith(undefined);
-  });
+      expect(readSourceConfigBestEffortMock).toHaveBeenCalledTimes(supported ? 0 : 1);
+      expect(loadConfigMock).toHaveBeenCalledTimes(supported ? 1 : 0);
+      expect(startProxyMock).toHaveBeenCalledWith({
+        proxyUrl: supported ? "http://validated.invalid" : "http://source.invalid",
+      });
+    },
+  );
 
   it.each([
     ["worker", { observe: false, pluginValidation: "core-only" }],
@@ -2431,130 +2438,20 @@ describe("runCli exit behavior", () => {
     },
   );
 
-  it.each([
-    ["root command", ["node", "openclaw", "update", "--dry-run", "--json"]],
-    ["root shorthand", ["node", "openclaw", "--update", "--dry-run", "--json"]],
-  ])("reads source-only proxy config for the update dry-run %s", async (_name, argv) => {
-    tryRouteCliMock.mockResolvedValueOnce(true);
-    readSourceConfigBestEffortMock.mockResolvedValueOnce({ proxy: { selected: "dry-run" } });
-
-    await runCli(argv);
-
-    expect(readSourceConfigBestEffortMock).toHaveBeenCalledOnce();
-    expect(loadConfigMock).not.toHaveBeenCalled();
-    expect(startProxyMock).toHaveBeenCalledWith({ selected: "dry-run" });
-  });
-
-  it("reads source-only proxy config for mutable updates", async () => {
-    tryRouteCliMock.mockResolvedValueOnce(true);
-
-    await runCli(["node", "openclaw", "update"]);
-
-    expect(readSourceConfigBestEffortMock).toHaveBeenCalledOnce();
-    expect(loadConfigMock).not.toHaveBeenCalled();
-    expect(startProxyMock).toHaveBeenCalledWith(undefined);
-  });
-
-  it("reads source-only proxy config before doctor lint owns plugin-aware validation", async () => {
-    tryRouteCliMock.mockResolvedValueOnce(true);
-    readSourceConfigBestEffortMock.mockResolvedValueOnce({ proxy: { selected: "doctor-lint" } });
-
-    await runCli(["node", "openclaw", "doctor", "--lint", "--json"]);
-
-    expect(readSourceConfigBestEffortMock).toHaveBeenCalledOnce();
-    expect(loadConfigMock).not.toHaveBeenCalled();
-    expect(startProxyMock).toHaveBeenCalledWith({ selected: "doctor-lint" });
-  });
-
-  it.each([
-    ["explicit lint", ["--lint", "--json"]],
-    ["bare JSON", ["--json"]],
-    ["post-upgrade probes", ["--post-upgrade", "--json"]],
-    ["session inspection", ["--session-sqlite", "inspect", "--json"]],
-    ["session validation", ["--session-sqlite", "validate", "--json"]],
-    ["session dry run", ["--session-sqlite=dry-run", "--json"]],
-    ["help", ["--help"]],
-    ["version", ["--version"]],
-  ])("does not acquire update state ownership for read-only Doctor %s", async (_name, args) => {
-    if (_name === "help") {
-      outputPrecomputedSubcommandHelpTextMock.mockReturnValueOnce(true);
-    } else if (_name === "version") {
-      buildProgramMock.mockReturnValueOnce({
-        commands: [{ name: () => "doctor", aliases: () => [] }],
-        parseAsync: vi.fn(async () => {}),
-      });
-    } else {
-      tryRouteCliMock.mockResolvedValueOnce(true);
-    }
-    await withEnvAsync(
-      { OPENCLAW_UPDATE_IN_PROGRESS: "1", OPENCLAW_DEBUG_PROXY_ENABLED: "1" },
-      () => runCli(["node", "openclaw", "doctor", ...args]),
-    );
-    expect(prepareDoctorUpdateRecoveryMock).not.toHaveBeenCalled();
-    expect(withDoctorUpdateRecoveryMock).not.toHaveBeenCalled();
-    expect(guardUpdateDoctorSchemaUpgradeMock).not.toHaveBeenCalled();
-    expect(initializeDebugProxyCaptureMock).not.toHaveBeenCalled();
-    expect(loadConfigMock).not.toHaveBeenCalled();
-  });
-
-  it("does not acquire update state ownership when unsupported Node routes Doctor to lint", async () => {
-    runtimeSupportedMock.mockReturnValue(false);
-    tryRouteCliMock.mockResolvedValueOnce(true);
-    await withEnvAsync(
-      { OPENCLAW_UPDATE_IN_PROGRESS: "1", OPENCLAW_DEBUG_PROXY_ENABLED: "1" },
-      () => runCli(["node", "openclaw", "doctor"]),
-    );
-    expect(prepareDoctorUpdateRecoveryMock).not.toHaveBeenCalled();
-    expect(withDoctorUpdateRecoveryMock).not.toHaveBeenCalled();
-    expect(guardUpdateDoctorSchemaUpgradeMock).not.toHaveBeenCalled();
-    expect(initializeDebugProxyCaptureMock).not.toHaveBeenCalled();
-    expect(loadConfigMock).not.toHaveBeenCalled();
-  });
-
-  it("passes the driver's recovery reference before Doctor bootstrap writes", async () => {
-    tryRouteCliMock.mockResolvedValueOnce(true);
-    const reference = JSON.stringify({
-      directory: "/var/tmp/openclaw-fixture/backup",
-      manifestPath: "/var/tmp/openclaw-fixture/backup/manifest.json",
-      manifestSha256: "a".repeat(64),
-    });
-    await withEnvAsync({ OPENCLAW_UPDATE_IN_PROGRESS: "1" }, () =>
-      runCli([
-        "node",
-        "openclaw",
-        "doctor",
-        "--fix",
-        "--update-recovery-owner=driver",
-        `--update-recovery-backup=${reference}`,
-      ]),
-    );
-    expect(prepareDoctorUpdateRecoveryMock).toHaveBeenCalledWith(
-      expect.objectContaining({ updateRecoveryOwner: "driver", updateRecoveryBackup: reference }),
-    );
-  });
-
-  it.each([
-    ["repair", ["--fix", "--non-interactive"]],
-    ["state compaction", ["--state-sqlite=compact", "--json"]],
-    ["session import", ["--session-sqlite", "import", "--json"]],
-  ])("prepares state recovery before an updating Doctor %s", async (_name, args) => {
-    tryRouteCliMock.mockResolvedValueOnce(true);
-    await withEnvAsync(
-      { OPENCLAW_UPDATE_IN_PROGRESS: "1", OPENCLAW_DEBUG_PROXY_ENABLED: "1" },
-      () => runCli(["node", "openclaw", "doctor", ...args]),
-    );
-    expect(prepareDoctorUpdateRecoveryMock).toHaveBeenCalledOnce();
-    expect(withDoctorUpdateRecoveryMock).toHaveBeenCalledOnce();
-    expect(guardUpdateDoctorSchemaUpgradeMock).toHaveBeenCalledOnce();
-    expect(initializeDebugProxyCaptureMock).toHaveBeenCalledOnce();
-    expect(prepareDoctorUpdateRecoveryMock.mock.invocationCallOrder[0]).toBeLessThan(
-      expectDefined(
-        guardUpdateDoctorSchemaUpgradeMock.mock.invocationCallOrder[0],
-        "Doctor schema guard invocation",
-      ),
-    );
-  });
-
+  registerDoctorBootstrapRecoveryTests(() => ({
+    runCli,
+    tryRouteCliMock,
+    readSourceConfigBestEffortMock,
+    loadConfigMock,
+    startProxyMock,
+    outputPrecomputedSubcommandHelpTextMock,
+    buildProgramMock,
+    prepareDoctorUpdateRecoveryMock,
+    withDoctorUpdateRecoveryMock,
+    guardUpdateDoctorSchemaUpgradeMock,
+    initializeDebugProxyCaptureMock,
+    isCurrentRuntimeSupportedMock,
+  }));
   it.each([
     {
       name: "version-pinned skill install",
@@ -2695,7 +2592,7 @@ describe("runCli exit behavior", () => {
       "full Commander path with root options",
       ["node", "openclaw", "--log-level", "debug", "gateway", "run"],
     ],
-  ])("loads trusted dotenv and isolates %s gateway proxy config reads", async (_name, argv) => {
+  ])("isolates %s gateway proxy config reads core-only", async (_name, argv) => {
     existsSyncOverride.value = (target) => target === path.join(process.cwd(), ".env");
     if (_name === "full Commander path with root options") {
       tryRouteCliMock.mockResolvedValueOnce(false);
@@ -2714,7 +2611,7 @@ describe("runCli exit behavior", () => {
     expect(loadConfigMock).toHaveBeenCalledWith({
       isolateEnv: true,
       observe: false,
-      skipPluginValidation: true,
+      pluginValidation: "core-only",
     });
     expect(startProxyMock).toHaveBeenCalledWith(undefined);
   });

@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { extractErrorCode } from "@openclaw/normalization-core/error-coercion";
 import { createDeferredCore } from "../shared/deferred.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import type { PluginHostCleanupResult } from "./host-hook-cleanup.types.js";
@@ -15,7 +16,7 @@ import type {
   PluginFileCacheEntry,
   PluginPathCacheEntry,
 } from "./plugin-cache-files.types.js";
-import type { PluginCacheManagement } from "./plugin-cache-management.js";
+import type { PluginCacheFact, PluginCacheManagement } from "./plugin-cache-management.js";
 import type { PluginCacheMetadata } from "./plugin-cache-metadata.js";
 import { createPluginCacheSdk, type PluginCacheSdk } from "./plugin-cache-sdk.js";
 import { pluginInstanceInvocation } from "./plugin-instance-invocation.js";
@@ -45,16 +46,48 @@ export interface PluginCache
   [Symbol.asyncDispose](): Promise<void>;
 }
 
+const PLUGIN_CACHE_FACT_INVALIDATED = "PLUGIN_CACHE_FACT_INVALIDATED";
+
+/** Cached diagnostics must not retain the caller through V8's lazy stack frames. */
+export function materializePluginCacheError(failure: unknown): void {
+  let error = failure;
+  const seen = new Set<Error>();
+  while (error instanceof Error && !seen.has(error)) {
+    seen.add(error);
+    try {
+      error.stack = String(error.stack);
+    } catch {
+      // V8's setter releases private frames even when formatting throws;
+      // coercion also detaches CallSites returned by a custom formatter.
+      error.stack = "Stack trace unavailable: custom formatter failed";
+    }
+    // Bounded file readers wrap their original failure without replacing its stack.
+    error = error.cause;
+  }
+}
+
+/** Explicit fact invalidation cancels its preparation. */
+export class PluginCacheFactInvalidatedError extends Error {
+  readonly code = PLUGIN_CACHE_FACT_INVALIDATED;
+}
+
+export function isPluginCacheFactInvalidatedError(error: unknown): boolean {
+  // Shared fact promises can originate in another source/require module graph.
+  return extractErrorCode(error) === PLUGIN_CACHE_FACT_INVALIDATED;
+}
+
+type PluginCacheScope = { cache: PluginCache; parent?: PluginCacheScope };
+
 const state = resolveGlobalSingleton<{
   current?: PluginCache;
-  scope: AsyncLocalStorage<PluginCache>;
+  scope: AsyncLocalStorage<PluginCacheScope>;
   snapshotOwners: WeakMap<object, PluginCache>;
   retirements: Array<{
     cache: PluginCache;
     completion: Promise<PromiseSettledResult<PluginHostCleanupResult>>;
   }>;
 }>(Symbol.for("openclaw.pluginCache"), () => ({
-  scope: new AsyncLocalStorage<PluginCache>(),
+  scope: new AsyncLocalStorage<PluginCacheScope>(),
   snapshotOwners: new WeakMap(),
   retirements: [],
 }));
@@ -114,6 +147,55 @@ export function getPluginCacheRetention(cache: PluginCache): Promise<void> | und
   return retained?.references.size ? retained.settled.promise : undefined;
 }
 
+function createPluginMetadataCache(): PluginCache["metadata"] {
+  return {
+    current: {
+      snapshot: undefined,
+      owner: "operation",
+      configFingerprint: undefined,
+      envFingerprint: undefined,
+      defaultDiscoveryCompatible: false,
+      compatiblePolicyHashes: undefined,
+      compatibleConfigFingerprints: undefined,
+      revision: Symbol("plugin-metadata-snapshot"),
+      configIdentities: new WeakSet(),
+    },
+    snapshots: new Map(),
+    discovery: new Map(),
+    sharedDiscovery: new Map(),
+    projections: new WeakMap(),
+    projectionSources: new WeakMap(),
+    completions: new WeakMap(),
+    indexFacts: new WeakMap(),
+    providerPolicyOwners: new WeakMap(),
+    channelAdapters: new WeakMap(),
+    bundledChannelCatalogs: new Map(),
+    bundledProviderPolicySurfaces: new Map(),
+    staticCatalogStates: new WeakMap(),
+    modelSuppressionResolvers: new WeakMap(),
+  };
+}
+
+/** Invalidate discovery facts without retiring callbacks owned by this operation. */
+export function invalidatePluginCacheMetadata(cache: PluginCache): void {
+  cache.metadata = createPluginMetadataCache();
+  for (const root of cache.roots.values()) {
+    root.files.clear();
+    root.checkedEntries.clear();
+    root.paths.clear();
+    root.directory = undefined;
+    root.artifacts.clear();
+    root.runtimeArtifacts.clear();
+    root.entryBoundaries.clear();
+    root.entryPaths.clear();
+  }
+  cache.rootAliases.clear();
+  cache.installRecords.clear();
+  cache.persistedInstalledIndex.clear();
+  cache.preparedBundledDiscoveryModes.clear();
+  cache.dependencyStatus = new WeakMap();
+}
+
 /** Each inventory owns its acquired facts and reusable load results; publication owns activation. */
 export function createPluginCache(options: { kind?: PluginCache["kind"] } = {}): PluginCache {
   return {
@@ -126,31 +208,10 @@ export function createPluginCache(options: { kind?: PluginCache["kind"] } = {}):
     sdk: createPluginCacheSdk(),
     setupModules: new Map(),
     instances: new Set(),
-    metadata: {
-      current: {
-        snapshot: undefined,
-        owner: "operation",
-        configFingerprint: undefined,
-        envFingerprint: undefined,
-        defaultDiscoveryCompatible: false,
-        compatiblePolicyHashes: undefined,
-        compatibleConfigFingerprints: undefined,
-        revision: Symbol("plugin-metadata-snapshot"),
-        configIdentities: new WeakSet(),
-      },
-      snapshots: new Map(),
-      discovery: new Map(),
-      projections: new WeakMap(),
-      projectionSources: new WeakMap(),
-      completions: new WeakMap(),
-      indexFacts: new WeakMap(),
-      channelAdapters: new WeakMap(),
-      bundledChannelCatalogs: new Map(),
-      staticCatalogStates: new WeakMap(),
-      modelSuppressionResolvers: new WeakMap(),
-    },
+    metadata: createPluginMetadataCache(),
     installRecords: new Map(),
     persistedInstalledIndex: new Map(),
+    preparedBundledDiscoveryModes: new Map(),
     dependencyStatus: new WeakMap(),
     ...createPluginCacheArtifacts(),
   };
@@ -167,7 +228,16 @@ export function adoptProcessPluginCache(cache: PluginCache): void {
 }
 
 export function getScopedPluginCache(): PluginCache | undefined {
-  return state.scope.getStore();
+  return state.scope.getStore()?.cache;
+}
+
+/** Installation refreshes every enclosing operation, including callers outside metadata phases. */
+export function getScopedPluginCaches(): PluginCache[] {
+  const caches: PluginCache[] = [];
+  for (let scope = state.scope.getStore(); scope; scope = scope.parent) {
+    caches.push(scope.cache);
+  }
+  return caches;
 }
 
 export function getPluginCache(): PluginCache {
@@ -175,7 +245,79 @@ export function getPluginCache(): PluginCache {
 }
 
 export function withPluginCache<T>(cache: PluginCache, run: () => T): T {
-  return state.scope.run(cache, run);
+  return state.scope.run({ cache, parent: state.scope.getStore() }, run);
+}
+
+/** Coalesce asynchronous facts without republishing data after explicit invalidation. */
+export async function preparePluginCacheFact<T>(
+  owner: PluginCache,
+  facts: Map<string, PluginCacheFact<T>>,
+  key: string,
+  read: () => Promise<T>,
+): Promise<{ value: T; assertCurrent: () => void }> {
+  const signal = getPluginCacheRetirementSignal(owner);
+  signal.throwIfAborted();
+  let current = facts.get(key);
+  if (!current) {
+    const release = retainPluginCache(owner);
+    let reading: Promise<T>;
+    try {
+      reading = read();
+    } catch (error) {
+      release();
+      throw error;
+    }
+    const pending: { pending: Promise<{ value: T }> } = {
+      pending: reading
+        .then((value) => {
+          signal.throwIfAborted();
+          const published = facts.get(key);
+          if (published !== pending) {
+            if (published && "value" in published) {
+              return published;
+            }
+            throw new PluginCacheFactInvalidatedError(
+              "Plugin state changed during preparation; retry the operation.",
+            );
+          }
+          const ready = { value };
+          facts.set(key, ready);
+          return ready;
+        })
+        .catch((error: unknown) => {
+          const published = facts.get(key);
+          if (published === pending) {
+            facts.delete(key);
+          }
+          signal.throwIfAborted();
+          if (published !== pending && !isPluginCacheFactInvalidatedError(error)) {
+            throw new PluginCacheFactInvalidatedError(
+              "Plugin state changed during preparation; retry the operation.",
+              { cause: error },
+            );
+          }
+          throw error;
+        })
+        .finally(release),
+    };
+    facts.set(key, pending);
+    current = pending;
+  }
+  const ready = "pending" in current ? await current.pending : current;
+  const assertCurrent = () => {
+    signal.throwIfAborted();
+    if (facts.get(key) !== ready) {
+      throw new PluginCacheFactInvalidatedError(
+        "Plugin state changed during preparation; retry the operation.",
+      );
+    }
+  };
+  assertCurrent();
+  return { value: ready.value, assertCurrent };
+}
+
+export function runOutsidePluginCache<T>(run: () => T): T {
+  return state.scope.exit(run);
 }
 
 /** Frozen views retain their producer so deferred access fills the same generation. */
@@ -238,6 +380,7 @@ export function retirePluginCache(
   retained.retirement = completion.promise;
   // Abort listeners may reenter retirement or release the final generation immediately.
   retained.controller.abort();
+  materializePluginCacheError(retained.controller.signal.reason);
   const begin = () => beginPluginCacheRetirement(cache, beforeRetire);
   void (retained.references.size ? retained.settled.promise.then(begin) : begin()).then(
     completion.resolve,

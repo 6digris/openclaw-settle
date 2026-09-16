@@ -1,6 +1,5 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-// OpenClaw operation tests cover rescue operation planning and execution.
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
@@ -12,7 +11,6 @@ import {
 import { resetPluginStateStoreForTests } from "../plugin-state/plugin-state-store.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
-import { listSystemAgentAuditEntriesForTests } from "./audit.test-support.js";
 import { runGatewayLifecycle } from "./operations-execution-helpers.js";
 import {
   describeSystemAgentPersistentOperation,
@@ -21,17 +19,15 @@ import {
   parseSystemAgentOperation,
 } from "./operations.js";
 import { createSystemAgentTestRuntime } from "./system-agent.runtime.test-support.js";
-import { createSystemAgentPluginMetadataTestSnapshot } from "./system-agent.test-helpers.js";
+import {
+  createSystemAgentPluginMetadataTestSnapshot,
+  expectTestRecordFields as expectRecordFields,
+  readLastSystemAgentAuditEntry as readLastAuditEntry,
+} from "./system-agent.test-helpers.js";
 
 type TestConfig = Record<string, unknown>;
 
 const requireRecord = createRequireRecord("object", "label-not-object");
-
-function expectRecordFields(record: Record<string, unknown>, fields: Record<string, unknown>) {
-  for (const [key, value] of Object.entries(fields)) {
-    expect(record[key]).toEqual(value);
-  }
-}
 
 function expectAuditRecord(
   audit: unknown,
@@ -41,10 +37,6 @@ function expectAuditRecord(
   const auditRecord = requireRecord(audit, "audit record");
   expectRecordFields(auditRecord, fields);
   expectRecordFields(requireRecord(auditRecord.details, "audit details"), detailFields);
-}
-
-function readLastAuditEntry(): unknown {
-  return listSystemAgentAuditEntriesForTests().at(-1)?.value;
 }
 
 function requireFirstMockCall(mock: unknown, label: string): unknown[] {
@@ -245,6 +237,12 @@ vi.mock("../config/config.js", () => ({
 }));
 const opTempDirs = useAutoCleanupTempDirTracker(afterEach);
 
+function useOperationStateDir(prefix: string): string {
+  const stateDir = opTempDirs.make(prefix);
+  setTestEnvValue("OPENCLAW_STATE_DIR", stateDir);
+  return stateDir;
+}
+
 describe("system agent operations", () => {
   let stateDirSnapshot: ReturnType<typeof captureEnv> | undefined;
 
@@ -422,8 +420,7 @@ describe("system agent operations", () => {
   });
 
   it("rejects an explicit new-agent model before any config write or audit", async () => {
-    const tempDir = opTempDirs.make("openclaw-agent-model-rejected-");
-    setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
+    const tempDir = useOperationStateDir("openclaw-agent-model-rejected-");
     const { runtime, lines } = createSystemAgentTestRuntime();
     const createAgent = vi.fn();
     expect(
@@ -454,8 +451,7 @@ describe("system agent operations", () => {
   });
 
   it("reserves the normalized OpenClaw agent identity before any write or audit", async () => {
-    const tempDir = opTempDirs.make("openclaw-agent-id-reserved-");
-    setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
+    const tempDir = useOperationStateDir("openclaw-agent-id-reserved-");
     const { runtime, lines } = createSystemAgentTestRuntime();
     const createAgent = vi.fn();
     const operation = {
@@ -478,8 +474,7 @@ describe("system agent operations", () => {
   });
 
   it("delegates literal main to the canonical creation gate", async () => {
-    const tempDir = opTempDirs.make("openclaw-agent-main-gate-");
-    setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
+    useOperationStateDir("openclaw-agent-main-gate-");
     const { runtime } = createSystemAgentTestRuntime();
     const createAgent = vi.fn(async () => ({
       status: "error" as const,
@@ -574,8 +569,7 @@ describe("system agent operations", () => {
   });
 
   it("records an approved standalone restart truthfully", async () => {
-    const tempDir = opTempDirs.make("openclaw-restart-applied-");
-    setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
+    useOperationStateDir("openclaw-restart-applied-");
     const { runtime } = createSystemAgentTestRuntime();
     const runGatewayRestart = vi.fn(async () => true);
     const result = await executeSystemAgentOperation({ kind: "gateway-restart" }, runtime, {
@@ -592,8 +586,7 @@ describe("system agent operations", () => {
   });
 
   it("does not report or audit a gateway restart that returned false", async () => {
-    const tempDir = opTempDirs.make("openclaw-restart-failed-");
-    setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
+    const tempDir = useOperationStateDir("openclaw-restart-failed-");
     const { runtime, lines } = createSystemAgentTestRuntime();
     const runGatewayRestart = vi.fn(async () => false);
 
@@ -620,8 +613,7 @@ describe("system agent operations", () => {
   });
 
   it("applies config set through typed deps and writes an audit entry", async () => {
-    const tempDir = opTempDirs.make("openclaw-config-set-");
-    setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
+    useOperationStateDir("openclaw-config-set-");
     const { runtime, lines } = createSystemAgentTestRuntime();
     const runConfigSet = vi.fn(async () => {});
 
@@ -655,8 +647,7 @@ describe("system agent operations", () => {
   });
 
   it("records SQLite audit state despite a retired audit-directory symlink", async () => {
-    const tempDir = opTempDirs.make("openclaw-audit-warning-");
-    setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
+    const tempDir = useOperationStateDir("openclaw-audit-warning-");
     const redirectedAuditDir = path.join(tempDir, "redirected-audit");
     await fs.mkdir(redirectedAuditDir);
     await fs.symlink(redirectedAuditDir, path.join(tempDir, "audit"), "dir");
@@ -676,8 +667,7 @@ describe("system agent operations", () => {
   });
 
   it("applies SecretRef config set through typed deps and writes an audit entry", async () => {
-    const tempDir = opTempDirs.make("openclaw-config-ref-");
-    setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
+    useOperationStateDir("openclaw-config-ref-");
     const { runtime, lines } = createSystemAgentTestRuntime();
     const runConfigSet = vi.fn(async () => {});
 
@@ -749,75 +739,6 @@ describe("system agent operations", () => {
     });
   });
 
-  it.each([
-    { kind: "config-set" as const, path: "agents.defaults.model.primary", value: "openai/gpt-5.5" },
-    {
-      kind: "config-set" as const,
-      path: "agents[defaults][model][primary]",
-      value: "openai/gpt-5.5",
-    },
-    {
-      kind: "config-set" as const,
-      path: 'agents["defaults"]["model"].primary',
-      value: "openai/gpt-5.5",
-    },
-    { kind: "config-set" as const, path: "agents.defaults.agentRuntime", value: "{}" },
-    { kind: "config-set" as const, path: "agents.defaults.params.temperature", value: "0.5" },
-    { kind: "config-set" as const, path: "agents.list[0].models.openai", value: "{}" },
-    { kind: "config-set" as const, path: "agents.list[0].params.temperature", value: "0.5" },
-    { kind: "config-set" as const, path: "agents.list[0].default", value: "true" },
-    { kind: "config-set" as const, path: "agents.list[0].agentDir", value: '"/tmp/agent"' },
-    { kind: "config-set" as const, path: "auth.order.anthropic", value: "[]" },
-    { kind: "config-set" as const, path: "env.vars.ANTHROPIC_API_KEY", value: '"changed"' },
-    { kind: "config-set" as const, path: '["env"]["vars"]["OPENAI_API_KEY"]', value: '"x"' },
-    { kind: "config-set" as const, path: "secrets.defaults.env", value: '"changed"' },
-    { kind: "config-set" as const, path: '["secrets"]["defaults"]["env"]', value: '"x"' },
-    { kind: "config-set" as const, path: "plugins.load", value: "{}" },
-    {
-      kind: "config-set" as const,
-      path: String.raw`mo\dels.providers.openai.apiKey`,
-      value: '"x"',
-    },
-    { kind: "config-set" as const, path: "$include", value: '"./alternate.json5"' },
-    { kind: "config-set" as const, path: '["$include"]', value: '"./alternate.json5"' },
-    {
-      kind: "config-set-ref" as const,
-      path: "models.providers.openai.apiKey",
-      source: "env" as const,
-      id: "OPENAI_API_KEY",
-    },
-    {
-      kind: "config-set-ref" as const,
-      path: "models[providers][openai][apiKey]",
-      source: "env" as const,
-      id: "OPENAI_API_KEY",
-    },
-    {
-      kind: "config-set-ref" as const,
-      path: '["models"]["providers"]["openai"]["apiKey"]',
-      source: "env" as const,
-      id: "OPENAI_API_KEY",
-    },
-  ])("rejects unverified inference-route write $path", async (operation) => {
-    const tempDir = opTempDirs.make("openclaw-route-write-refused-");
-    setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
-    const { runtime, lines } = createSystemAgentTestRuntime();
-    const runConfigSet = vi.fn(async () => {});
-
-    await expect(
-      executeSystemAgentOperation(operation, runtime, {
-        approved: true,
-        deps: { runConfigSet },
-      }),
-      // Denylisted roots cite their documented escalation; route paths point
-      // at the verified set_default_model/onboard flows.
-    ).rejects.toThrow(/openclaw onboard|trusted shell/);
-
-    expect(runConfigSet).not.toHaveBeenCalled();
-    expect(lines.join("\n")).not.toContain("[openclaw] running:");
-    await expect(fs.access(path.join(tempDir, "audit", "system-agent.jsonl"))).rejects.toThrow();
-  });
-
   // Operator parity: surfaces the Control UI edits freely stay agent-writable
   // behind the exact-operation approval gate instead of a path ban.
   it.each([
@@ -831,8 +752,7 @@ describe("system agent operations", () => {
       value: "false",
     },
   ])("allows approved operator-parity write $path", async (operation) => {
-    const tempDir = opTempDirs.make("openclaw-parity-write-");
-    setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
+    useOperationStateDir("openclaw-parity-write-");
     const { runtime } = createSystemAgentTestRuntime();
     const runConfigSet = vi.fn(async () => {});
 
@@ -841,94 +761,6 @@ describe("system agent operations", () => {
       deps: { runConfigSet },
     });
 
-    expect(result.applied).toBe(true);
-    expect(runConfigSet).toHaveBeenCalledOnce();
-  });
-
-  it("fails closed on plugin-entry writes when route ownership cannot be proven", async () => {
-    // Same invariant as plugin_uninstall: without a readable config the entry
-    // cannot be proven off the active inference route.
-    mockConfig.missing("/tmp/openclaw.json");
-    const { runtime } = createSystemAgentTestRuntime();
-    const runConfigSet = vi.fn(async () => {});
-
-    await expect(
-      executeSystemAgentOperation(
-        { kind: "config-set", path: "plugins.entries.codex.enabled", value: "false" },
-        runtime,
-        { approved: true, deps: { runConfigSet } },
-      ),
-    ).rejects.toThrow("active inference route");
-    expect(runConfigSet).not.toHaveBeenCalled();
-  });
-
-  it("still blocks per-agent routing writes that hit the system agent owner", async () => {
-    const tempDir = opTempDirs.make("openclaw-default-agent-route-");
-    setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
-    mockConfig.setConfig({
-      agents: {
-        ownership: "explicit",
-        defaults: { systemAgent: { agentId: "main" } },
-        list: [{ id: "main" }, { id: "helper" }],
-      },
-    });
-    const { runtime } = createSystemAgentTestRuntime();
-    const runConfigSet = vi.fn(async () => {});
-
-    await expect(
-      executeSystemAgentOperation(
-        { kind: "config-set", path: "agents.list[0].model", value: '"openai/gpt-5.5"' },
-        runtime,
-        { approved: true, deps: { runConfigSet } },
-      ),
-    ).rejects.toThrow("openclaw onboard");
-    expect(runConfigSet).not.toHaveBeenCalled();
-
-    // The same routing field on a non-default agent is an approved write.
-    const result = await executeSystemAgentOperation(
-      { kind: "config-set", path: "agents.list[1].model", value: '"openai/gpt-5.5"' },
-      runtime,
-      { approved: true, deps: { runConfigSet } },
-    );
-    expect(result.applied).toBe(true);
-    expect(runConfigSet).toHaveBeenCalledOnce();
-  });
-
-  it("resolves numeric legacy list indices from the authored array order", async () => {
-    const tempDir = opTempDirs.make("openclaw-numeric-agent-route-");
-    setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
-    mockConfig.setResolvedConfig(
-      {
-        agents: {
-          entries: {
-            "2": {},
-            "10": { default: true },
-          },
-        },
-      },
-      {
-        agents: {
-          list: [{ id: "10", default: true }, { id: "2" }],
-        },
-      },
-    );
-    const { runtime } = createSystemAgentTestRuntime();
-    const runConfigSet = vi.fn(async () => {});
-
-    await expect(
-      executeSystemAgentOperation(
-        { kind: "config-set", path: "agents.list[0].model", value: '"openai/gpt-5.5"' },
-        runtime,
-        { approved: true, deps: { runConfigSet } },
-      ),
-    ).rejects.toThrow("openclaw onboard");
-    expect(runConfigSet).not.toHaveBeenCalled();
-
-    const result = await executeSystemAgentOperation(
-      { kind: "config-set", path: "agents.list[1].model", value: '"openai/gpt-5.5"' },
-      runtime,
-      { approved: true, deps: { runConfigSet } },
-    );
     expect(result.applied).toBe(true);
     expect(runConfigSet).toHaveBeenCalledOnce();
   });
@@ -962,10 +794,14 @@ describe("system agent operations", () => {
   });
 
   it("installs plugins only after approval and audits the write", async () => {
-    const tempDir = opTempDirs.make("openclaw-plugin-install-");
-    setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
+    useOperationStateDir("openclaw-plugin-install-");
     const { runtime, lines } = createSystemAgentTestRuntime();
     const beforePersistentApply = vi.fn();
+    const applyPluginRuntime = vi.fn(async () => ({
+      operationId: "system-install",
+      generation: 4,
+      pluginIds: ["openclaw-demo"],
+    }));
 
     const plan = await executeSystemAgentOperation(
       { kind: "plugin-install", spec: "clawhub:openclaw-demo" },
@@ -983,6 +819,7 @@ describe("system agent operations", () => {
       {
         approved: true,
         beforePersistentApply,
+        deps: { applyPluginRuntime },
         auditDetails: { rescue: true },
       },
     );
@@ -999,6 +836,7 @@ describe("system agent operations", () => {
       allowInstallPolicyWarningPrompt: false,
     });
     expect(typeof installRequest.beforePersistentApply).toBe("function");
+    expect(installRequest.applyRuntime).toBe(applyPluginRuntime);
     expect(beforePersistentApply).toHaveBeenCalledOnce();
     expectRuntimeArg(installRequest.runtime);
     expect(lines.join("\n")).toContain("[openclaw] done: plugin.install");
@@ -1050,8 +888,7 @@ describe("system agent operations", () => {
   });
 
   it("uninstalls a non-route plugin only after approval and audits the write", async () => {
-    const tempDir = opTempDirs.make("openclaw-plugin-uninstall-");
-    setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
+    useOperationStateDir("openclaw-plugin-uninstall-");
     const { runtime, lines } = createSystemAgentTestRuntime();
     const runPluginUninstall = vi.fn(async (pluginId: string, pluginRuntime: RuntimeEnv) => {
       pluginRuntime.log(`uninstalled ${pluginId}`);

@@ -109,9 +109,7 @@ export async function prepareVerifiedBackup(ref: UpdateRecoveryBackupRef) {
       const target = await fs.open(targetPath, "wx+", 0o600);
       try {
         const before = await source.handle.stat({ bigint: true });
-        await copyFileHandle(source.handle, target, {
-          noProgressMessage: "Update recovery staging copy made no progress.",
-        });
+        await copyFileHandle(source.handle, target);
         const actual = await sha256File(target);
         if (
           !sameFileMutationFingerprint(before, await source.handle.stat({ bigint: true })) ||

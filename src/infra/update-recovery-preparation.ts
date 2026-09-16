@@ -6,6 +6,7 @@ import {
   type UpdateRecoveryBackupManifest,
 } from "../commands/backup-verify-manifest.js";
 import { withConfigMutationLock } from "../config/mutate.js";
+import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../state/openclaw-agent-db-contract.js";
 import { clearOpenClawStateCopyLeases } from "../state/openclaw-state-copy-leases.js";
 import { prepareOpenClawStateRecoveryCopy } from "../state/openclaw-state-recovery-preparation.js";
 import { pinDirectory, requireDirectorySync, syncDirectory } from "./directory-durability.js";
@@ -193,8 +194,28 @@ async function sealUpdateRecoveryPreparedGeneration(params: {
             readOnly: true,
           });
           try {
-            if (readSqliteUserVersion(database) !== 19) {
-              refuse(item.entry.sourcePath, "only unchanged agent v19 representation is supported");
+            const baselinePath = item.before && baseline.payloads.get(item.before.archivePath);
+            if (!baselinePath) refuse(item.entry.sourcePath, "baseline agent payload disappeared");
+            const original = openNodeSqliteDatabase(resolveImmutableSqliteFileUri(baselinePath), {
+              readOnly: true,
+            });
+            try {
+              const version = readSqliteUserVersion(database);
+              const schema =
+                "SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE sql IS NOT NULL ORDER BY type,name";
+              if (
+                version < 1 ||
+                version > OPENCLAW_AGENT_SCHEMA_VERSION ||
+                version !== readSqliteUserVersion(original) ||
+                !isDeepStrictEqual(database.prepare(schema).all(), original.prepare(schema).all())
+              ) {
+                refuse(
+                  item.entry.sourcePath,
+                  "only unchanged supported agent representations can be prepared",
+                );
+              }
+            } finally {
+              original.close();
             }
           } finally {
             database.close();

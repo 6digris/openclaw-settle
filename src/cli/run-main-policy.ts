@@ -19,6 +19,7 @@ import { isReservedNonPluginCommandRoot } from "./command-registration-policy.js
 import { hasMachineOutputOption } from "./machine-output-argv.js";
 import { getCoreCliParentDefaultHelpCommands } from "./program/core-command-descriptors.js";
 import { getSubCliParentDefaultHelpCommands } from "./program/subcli-descriptors.js";
+// Main CLI startup policy helpers for fast paths, proxy startup, aliases, and missing commands.
 
 const ROOT_HELP_ALIASES = new Set(["tools"]);
 const SETUP_ONBOARD_CONFIGURE_HELP_COMMANDS = new Set(["setup", "onboard", "configure"]);

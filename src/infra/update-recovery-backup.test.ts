@@ -40,7 +40,6 @@ import {
   withUpdateRecoveryConfigWrites,
 } from "./update-recovery-config-writes.js";
 import { createUpdateRun } from "./update-run-ledger.js";
-
 const authority = { assertOwned() {} };
 const execFileAsync = promisify(execFile);
 const resolvePreferredOpenClawTmpDirMock = vi.hoisted(() => vi.fn<() => string>());
@@ -708,11 +707,15 @@ describe("update recovery backup", () => {
           }
           const link = await fs.readlink(state.configPath).catch(() => null);
           const routeTarget = await fs.readlink(route);
+          const configBeforeRefusal = await fs.readFile(state.configPath);
           if (change === "unchanged" || change === "owned replacement") {
-            await restoreUpdateRecoveryBackup(ref, authority);
-            expect(await fs.readlink(state.configPath)).toBe(originalLink);
+            // Config-write provenance does not grant reverse publication authority.
+            await expect(restoreUpdateRecoveryBackup(ref, authority)).rejects.toThrow();
+            expect(await fs.readlink(state.configPath).catch(() => null)).toBe(link);
+            expect(await fs.readlink(route)).toBe(routeTarget);
+            expect(await fs.readFile(state.configPath)).toEqual(configBeforeRefusal);
             expect(database.prepare("SELECT workspace_dir FROM workshop").get()).toEqual({
-              workspace_dir: "original-workspace",
+              workspace_dir: "migrated-workspace",
             });
           } else {
             await expect(restoreUpdateRecoveryBackup(ref, authority)).rejects.toThrow(

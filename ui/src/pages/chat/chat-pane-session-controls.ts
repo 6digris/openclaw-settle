@@ -2,6 +2,7 @@ import { html } from "lit";
 import type { GatewaySessionRow } from "../../api/types.ts";
 import type { ApplicationGatewaySnapshot } from "../../app/gateway.ts";
 import { t } from "../../i18n/index.ts";
+import { storedChatOutboxScopeKey } from "../../lib/chat/outbox-store.ts";
 import { resolveModelCatalogState } from "../../lib/model-catalog-store.ts";
 import {
   readSessionMethodAccess,
@@ -23,6 +24,8 @@ import type { ChatProps } from "./chat-view.ts";
 import { renderChatModelAccountControl } from "./components/chat-model-account-control.ts";
 import { renderChatModelControls } from "./components/chat-model-controls.ts";
 import type { ChatPermissionPickerProps } from "./components/chat-permission-picker.ts";
+import { getChatModelObservedRunId, getChatRunOwnerSessionKey } from "./history-merge.ts";
+import { activeQueuedMessageEdit } from "./queued-message-edit.ts";
 
 type SessionActionAccess = ReturnType<typeof readChatSessionActionAccess>;
 type SessionAction = keyof SessionActionAccess;
@@ -42,6 +45,22 @@ type PendingPermissionChange = {
 const pendingPermissionChanges = new WeakMap<ChatPageHost, Map<string, PendingPermissionChange>>();
 const permissionOutcomeOwners = new WeakMap<ChatPageHost, Map<string, symbol>>();
 
+export function createChatPaneQueuedEditProps(
+  state: ChatPageHost,
+  sessionParticipationBlocked: boolean,
+): NonNullable<ChatProps["queuedEdit"]> {
+  return {
+    editingId: activeQueuedMessageEdit(state)?.id ?? null,
+    editingText: activeQueuedMessageEdit(state)?.draftText,
+    editingMentions: activeQueuedMessageEdit(state)?.mentions,
+    source: activeQueuedMessageEdit(state)?.source,
+    onEdit: sessionParticipationBlocked ? undefined : state.editQueuedChatMessage,
+    onEditChange: sessionParticipationBlocked ? undefined : state.updateQueuedChatMessageEdit,
+    onEditSubmit: sessionParticipationBlocked ? undefined : state.submitQueuedChatMessageEdit,
+    onCancel: state.cancelQueuedChatMessageEdit,
+  };
+}
+
 export function readChatPaneMutationAccess(
   snapshot: ApplicationGatewaySnapshot,
   sessionKey: string,
@@ -54,6 +73,10 @@ export function readChatPaneMutationAccess(
     effort: readSessionMethodAccess(snapshot, {
       method: "sessions.patch",
       params: { key: sessionKey, thinkingLevel: null },
+    }),
+    contextWindow: readSessionMethodAccess(snapshot, {
+      method: "sessions.patch",
+      params: { key: sessionKey, contextWindow: null },
     }),
     permission: readSessionMethodAccess(snapshot, {
       method: "sessions.patch",
@@ -73,6 +96,7 @@ export function renderChatPaneComposerControls(params: {
   agentDefaultPermissionMode?: ChatPermissionPickerProps["defaultMode"];
   modelAccess: SessionMethodAccess;
   effortAccess: SessionMethodAccess;
+  contextWindowAccess: SessionMethodAccess;
   permissionAccess: SessionMethodAccess;
   canSelectFull: boolean;
   onModelSetup: () => void;
@@ -88,6 +112,7 @@ export function renderChatPaneComposerControls(params: {
     agentDefaultPermissionMode,
     modelAccess,
     effortAccess,
+    contextWindowAccess,
     permissionAccess,
     canSelectFull,
     onModelSetup,
@@ -132,7 +157,11 @@ export function renderChatPaneComposerControls(params: {
     currentChange?.pending || selectedSession?.permissionModePending,
   );
   const modelCatalogState = resolveModelCatalogState(
-    { models: state.chatModelCatalog, refreshFailed: state.chatModelCatalogRefreshFailed },
+    {
+      models: state.chatModelCatalog,
+      refreshFailed: state.chatModelCatalogRefreshFailed,
+      pendingProviders: state.chatModelCatalogPendingProviders,
+    },
     {
       connected: state.connected,
       loading: state.chatModelsLoading,
@@ -147,11 +176,14 @@ export function renderChatPaneComposerControls(params: {
     composerControls: html`
       <div class="chat-composer-model-control">
         ${renderChatModelControls({
-          renderAccountControl: (accountModel) =>
+          modelAuthStatusResult: state.modelAuthStatusResult,
+          accountSelection,
+          renderAccountSection: (accountModel) =>
             renderChatModelAccountControl({
               owner: state,
               client,
               selection: accountSelection,
+              modelAuthStatusResult: state.modelAuthStatusResult,
               model: accountModel,
               disabled:
                 !modelAccess.allowed ||
@@ -173,6 +205,8 @@ export function renderChatPaneComposerControls(params: {
               onRequestUpdate: () => state.requestUpdate?.(),
             }),
           activeRunId: state.chatRunId,
+          activeRunSessionKey: getChatRunOwnerSessionKey(state),
+          modelObservedRunId: getChatModelObservedRunId(state, selectedSession),
           agentDefaultModel,
           connected: state.connected,
           gatewayAvailable: Boolean(state.client),
@@ -188,7 +222,16 @@ export function renderChatPaneComposerControls(params: {
           modelsLoading: state.chatModelsLoading,
           modelMutationDisabledReason: modelAccess.allowed ? undefined : modelAccess.reason,
           effortMutationDisabledReason: effortAccess.allowed ? undefined : effortAccess.reason,
-          sending: state.chatSending,
+          contextWindowMutationDisabledReason: contextWindowAccess.allowed
+            ? undefined
+            : contextWindowAccess.reason,
+          sending:
+            state.chatSending &&
+            state.chatSendingScopeKey ===
+              storedChatOutboxScopeKey({
+                sessionKey,
+                ...(agentScope.agentId ? { agentId: agentScope.agentId } : {}),
+              }),
           sessionKey: state.sessionKey,
           selectedSession,
           sessionsResult: state.sessionsResult,
@@ -200,7 +243,7 @@ export function renderChatPaneComposerControls(params: {
               ? switchChatFastMode(state, next, targetSessionKey)
               : Promise.resolve(false),
           onContextWindowSelect: (next, targetSessionKey) =>
-            effortAccess.allowed
+            contextWindowAccess.allowed
               ? switchChatContextWindow(state, next, targetSessionKey)
               : Promise.resolve(false),
           onModelPickerOpen: () => refreshChatModelCatalogOnDemand(state),
@@ -209,9 +252,9 @@ export function renderChatPaneComposerControls(params: {
             // Closing also needs a render; catalog refresh only invalidates on open.
             state.requestUpdate?.();
           },
-          onModelSelect: (next, targetSessionKey) =>
+          onModelSelect: (next, targetSessionKey, agentRuntime) =>
             modelAccess.allowed
-              ? switchChatModel(state, next, targetSessionKey)
+              ? switchChatModel(state, next, targetSessionKey, agentRuntime)
               : Promise.resolve(false),
           onThinkingSelect: (next, targetSessionKey) =>
             effortAccess.allowed

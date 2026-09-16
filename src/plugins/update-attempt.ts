@@ -26,7 +26,6 @@ import {
   type PluginUpdateOutcome,
   type UpdatablePluginInstallRecord,
 } from "./update-source.js";
-
 export function formatNewerExactPinnedNpmDefaultLineMessage(params: {
   pluginId: string;
   recordedSpec: string;
@@ -534,7 +533,7 @@ export async function runPluginUpdateAttempt(params: {
       fallbackSpec: params.clawhubSpecs.fallbackSpec,
       verb: params.dryRun ? "would use" : "used",
     });
-    params.logger.warn?.(
+    params.logger.info?.(
       `Plugin "${params.pluginId}" has no beta ClawHub release for ${params.clawhubSpecs.fallbackLabel ?? params.effectiveSpec}; using ${params.clawhubSpecs.fallbackSpec} instead. Core update can still complete.`,
     );
     result = await installPluginFromClawHub(

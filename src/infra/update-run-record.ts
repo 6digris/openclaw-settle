@@ -4,18 +4,80 @@ import type { z } from "zod";
 import { UPDATE_RUN_PHASES } from "../../packages/gateway-protocol/src/update-run-vocabulary.js";
 import type { UpdateRunRecordSchema } from "./update-run-schema.js";
 import type { UpdateStepResult, UpdateRunResult } from "./update-runner-types.js";
+export function updateStepDiagnostics(
+  step: Pick<UpdateStepResult, "failureFacts" | "stdoutTail" | "stderrTail">,
+): { tails: string[]; reasonDetails?: string } {
+  const stderr = step.stderrTail ?? "";
+  const tails = [step.stdoutTail ?? "", stderr];
+  if (
+    !step.failureFacts?.length ||
+    !/^\[openclaw\] (?:The CLI command failed\.|Reason: )/mu.test(stderr)
+  ) {
+    return { tails };
+  }
+  const messages = new Set(
+    step.failureFacts.flatMap((fact) => (fact.message ? [fact.message] : [])),
+  );
+  const reason =
+    /(?:^|\n)\[openclaw\] Reason: ([\s\S]*?)(?=\n\[openclaw\] (?:Debug: |Stack:|Try: |Help: )|$)/u.exec(
+      stderr,
+    )?.[1];
+  const reasonDetails = reason
+    ?.split(/\r?\n/u)
+    .filter((line) => !messages.has(line.trim()))
+    .join("; ")
+    .trim();
+  const filtered = tails.map((output) => {
+    let tail = output;
+    for (const message of messages) {
+      const envelope = { ok: false, error: { type: "cli_error", message } };
+      tail = tail
+        .replaceAll(JSON.stringify(envelope), "")
+        .replaceAll(JSON.stringify(envelope, null, 2), "");
+    }
+    return tail
+      .split(/\r?\n/u)
+      .filter((line) => {
+        if (/^\[openclaw\] (?:The CLI command failed\.$|Debug: |Try: |Help: )/u.test(line)) {
+          return false;
+        }
+        return !messages.has(line.replace(/^\[openclaw\] Reason: /u, "").trim());
+      })
+      .join("\n");
+  });
+  return { tails: filtered, reasonDetails };
+}
 
 /** A bounded diagnostic excerpt for a failed update step, never its command log or cwd. */
 export function summarizeUpdateStepFailure(
-  step: Pick<UpdateStepResult, "exitCode" | "termination" | "stdoutTail" | "stderrTail">,
+  step: Pick<
+    UpdateStepResult,
+    "name" | "exitCode" | "termination" | "stdoutTail" | "stderrTail" | "failureFacts"
+  >,
 ): string {
+  const diagnostics = updateStepDiagnostics(step);
+  // Schema refusals lead with the cause, followed by documentation and generic recovery advice.
+  const excerpts =
+    step.name === "database-schema-preflight"
+      ? [(step.stderrTail?.trim() || step.stdoutTail?.trim())?.split(/\r?\n/u)[0]]
+      : diagnostics.tails.map((tail, index) => {
+          const lastLine = tail.trim().split(/\r?\n/u).at(-1) ?? "";
+          const excerpt = sliceUtf16Safe(lastLine, -120);
+          if (index !== 1 || !diagnostics.reasonDetails) {
+            return excerpt;
+          }
+          if (!lastLine || diagnostics.reasonDetails.includes(lastLine)) {
+            return truncateUtf16Safe(diagnostics.reasonDetails, 120);
+          }
+          // Preserve the final outcome inside the existing per-stream excerpt budget.
+          const details = truncateUtf16Safe(
+            diagnostics.reasonDetails,
+            Math.max(0, 120 - excerpt.length - 2),
+          );
+          return [details, excerpt].filter(Boolean).join("; ");
+        });
   return truncateUtf16Safe(
-    [
-      step.termination ?? `Exit code: ${step.exitCode ?? "unknown"}`,
-      ...[step.stdoutTail, step.stderrTail].map((tail) =>
-        sliceUtf16Safe(tail?.trim().split(/\r?\n/u).at(-1) ?? "", -120),
-      ),
-    ]
+    [step.termination ?? `Exit code: ${step.exitCode ?? "unknown"}`, ...excerpts]
       .filter(Boolean)
       .join("; "),
     300,
@@ -66,7 +128,7 @@ export function finishUpdateRunRecord(
   }
   record.status = result.status;
   record.phase = "finished";
-  record.reason = result.reason ?? null;
+  record.reason = result.reason ?? (result.status === "failed" ? record.reason : null);
   record.finishedAtMs = now;
   record.after = { ...record.after, ...result.after };
   record.downtimeMs = result.downtimeMs ?? record.downtimeMs;
@@ -144,6 +206,7 @@ const RETAINED_STEP_NAMES = [
   "notice:verifying",
   "previous generation restoration",
   "post-update verification",
+  "task-delivery-recovery",
   "driver:adopted",
   "driver:identity-unavailable",
   "reconcile:abandoned",
@@ -155,5 +218,34 @@ export function isRetainedStep(item: unknown): boolean {
     isRecord(item) &&
     typeof item.step === "string" &&
     (item.step.startsWith("finalize:") || RETAINED_STEP_NAMES.some((name) => name === item.step))
+  );
+}
+
+export function hasVerifiedCompletedUpdate(
+  run: UpdateRunRecord | undefined,
+): run is UpdateRunRecord {
+  if (!run) {
+    return false;
+  }
+  const completed = (names: string[]) =>
+    run.steps.some((step) => names.includes(step.step) && step.status === "completed");
+  const health = run.verification;
+  return (
+    run.status === "succeeded" &&
+    run.finishedAtMs !== null &&
+    run.confirmedAtMs !== null &&
+    Boolean(run.after.version) &&
+    health.runningVersion === run.after.version &&
+    (!run.after.buildId || health.runningBuildId === run.after.buildId) &&
+    health.serviceRunning === true &&
+    health.versionMatch === true &&
+    health.readyz !== false &&
+    health.settled !== false &&
+    health.channelsReady !== false &&
+    health.pluginErrors?.length === 0 &&
+    completed(["openclaw doctor", "post-update verification"]) &&
+    completed(["gateway verification", "verifying"]) &&
+    run.origin.updateRecoveryCapture?.status !== "restore-failed" &&
+    run.origin.updateRecoveryCapture?.restored !== true
   );
 }

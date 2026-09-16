@@ -7,6 +7,7 @@ import { clearNodeSqliteKyselyCacheForDatabase } from "./kysely-sync-cache-state
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { hasNodeErrorCode } from "./path-guards.js";
 import { prepareSqliteReadOnlyLocation } from "./sqlite-snapshot-source.js";
+import type { UpdateRecoveryBackupRef } from "./update-recovery-backup-contract.js";
 import type { UpdateRunLedgerOptions as LedgerOptions } from "./update-run-codec.js";
 import {
   readUpdateRunDriver,
@@ -20,7 +21,6 @@ import {
 } from "./update-run-recovery-schema.js";
 import { readRecoveries } from "./update-run-recovery-store.js";
 import { assertNoPendingUpdateRecovery } from "./update-run-recovery.js";
-
 async function inspectUpdateRecoveryDatabasePath(
   options: OpenClawStateDatabaseOptions,
 ): Promise<string | undefined> {
@@ -52,8 +52,9 @@ async function inspectUpdateRecoveryDatabasePath(
 export async function assertUpdateRecoveryAdmission(
   options: OpenClawStateDatabaseOptions = {},
 ): Promise<void> {
-  if (await inspectUpdateRecoveryDatabasePath(options)) {
-    assertNoPendingUpdateRecovery(options);
+  const databasePath = await inspectUpdateRecoveryDatabasePath(options);
+  if (databasePath) {
+    assertNoPendingUpdateRecovery({ ...options, path: databasePath });
   }
 }
 
@@ -164,4 +165,58 @@ export function bindUnprotectedGatewayUpdateFinalizer(
   };
   assertCurrent();
   return { runId: parent.runId, assertCurrent };
+}
+
+type UpdateRecoveryInvocationAuthority = {
+  active: boolean;
+  protected: boolean;
+  rehearsal?: boolean;
+  guard?: () => void;
+  refusal?: { error: unknown };
+  maintenance?: { assertCurrent: () => void };
+  assertRecoveryClaim?: () => void;
+  reference?: UpdateRecoveryBackupRef;
+  backupRunId?: string;
+};
+
+/** Bind one invocation; a refused or replaced owner cannot recover its authority. */
+export function captureUpdateRecoveryInvocationGuard(
+  scope: UpdateRecoveryInvocationAuthority | undefined,
+): (() => void) | undefined {
+  if (!scope || (!scope.protected && !scope.rehearsal && !scope.guard)) {
+    return undefined;
+  }
+  if (!scope.guard) {
+    const maintenance = scope.maintenance;
+    const assertMaintenanceCurrent = maintenance?.assertCurrent.bind(maintenance);
+    const claim = scope.assertRecoveryClaim;
+    const reference = scope.reference;
+    const manifestSha256 = reference?.manifestSha256;
+    const backupRunId = scope.backupRunId;
+    scope.guard = () => {
+      if (scope.refusal) {
+        throw scope.refusal.error;
+      }
+      try {
+        if (
+          !scope.active ||
+          !maintenance ||
+          scope.maintenance !== maintenance ||
+          scope.assertRecoveryClaim !== claim ||
+          scope.reference !== reference ||
+          reference?.manifestSha256 !== manifestSha256 ||
+          scope.backupRunId !== backupRunId
+        ) {
+          throw new Error("Doctor recovery lost its original invocation authority.");
+        }
+        assertMaintenanceCurrent?.();
+        claim?.();
+      } catch (error) {
+        scope.refusal = { error };
+        throw error;
+      }
+    };
+  }
+  scope.guard();
+  return scope.guard;
 }

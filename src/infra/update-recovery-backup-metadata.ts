@@ -22,7 +22,6 @@ import {
   MAX_MANIFEST_BYTES,
   statOrMissing,
 } from "./update-recovery-backup-files.js";
-
 export const MAX_UPDATE_RECOVERY_OUTCOME_BYTES = 16 * 1024;
 type Authority = { assertOwned: () => void };
 const recordedOutcomeSchema = updateRecoveryTerminalOutcomeSchema;
@@ -53,6 +52,7 @@ export async function withRecoveryMetadata<T>(
     source: Awaited<ReturnType<typeof safeRoot>>;
     pin: Awaited<ReturnType<typeof pinDirectory>>;
   }) => Promise<T>,
+  options: { readOnly?: true } = {},
 ): Promise<T> {
   authority.assertOwned();
   updateRecoveryBackupRefSchema.parse(ref);
@@ -62,7 +62,9 @@ export async function withRecoveryMetadata<T>(
   ) {
     throw new Error("Invalid update recovery manifest locator.");
   }
-  await ensurePrivateSnapshotRepositoryRoot(ref.directory);
+  if (!options.readOnly) {
+    await ensurePrivateSnapshotRepositoryRoot(ref.directory);
+  }
   const pin = await pinDirectory(ref.directory);
   try {
     const source = await safeRoot(ref.directory);

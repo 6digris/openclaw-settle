@@ -18,6 +18,13 @@ import {
   resolveLegacyReefStateDir,
 } from "./doctor-state-paths.js";
 import {
+  REEF_REPLAY_MAX_ENTRIES,
+  REEF_REPLAY_NAMESPACE,
+  REEF_REPLAY_TTL_MS,
+  reefReplayStoreKey,
+  type ReefReplayRecord,
+} from "./replay-store.js";
+import {
   REEF_AUDIT_HEAD_KEY,
   REEF_AUDIT_HEAD_MAX_ENTRIES,
   REEF_AUDIT_HEAD_NAMESPACE,
@@ -33,17 +40,12 @@ import {
   REEF_DURABLE_MIGRATION_KEY,
   REEF_DURABLE_MIGRATION_MAX_ENTRIES,
   REEF_DURABLE_MIGRATION_NAMESPACE,
-  REEF_REPLAY_MAX_ENTRIES,
-  REEF_REPLAY_NAMESPACE,
-  REEF_REPLAY_TTL_MS,
   REEF_REVIEWS_MAX_ENTRIES,
   REEF_REVIEWS_NAMESPACE,
   parseReefAuditHead,
   reefAuditEntryKey,
-  reefReplayStoreKey,
   type ReefAuditHeadRecord,
   type ReefAuditStateRecord,
-  type ReefReplayRecord,
   type ReefReviewRecord,
   type ReefDurableMigrationRecord,
   type ReefIdentityMigrationRecord,
@@ -51,6 +53,8 @@ import {
   REEF_KEYS_MIGRATION_MAX_ENTRIES,
   REEF_KEYS_MIGRATION_NAMESPACE,
 } from "./state.js";
+// Import from defining modules, not the protocol barrel: index.js re-exports
+// guard-adapters, whose provider-http graph doctor enumeration must not cold-load.
 
 const REEF_RUNTIME_LEGACY_FILENAMES = ["replay.jsonl", "reviews.json", "delivered.json"];
 

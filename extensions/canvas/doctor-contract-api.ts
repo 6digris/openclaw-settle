@@ -8,6 +8,7 @@ import {
   migrateCanvasHostConfig,
   resolveLegacyCanvasDocumentsDir,
 } from "./src/config-migration.js";
+// Canvas Doctor keeps copy-time dependencies cold until legacy documents exist.
 
 const RETIRED_CANVAS_HOST_CONFIG_PATH = ["plugins", "entries", "canvas", "config", "host"] as const;
 

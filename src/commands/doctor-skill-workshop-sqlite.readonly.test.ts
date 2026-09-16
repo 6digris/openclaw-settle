@@ -18,7 +18,7 @@ import { appendSkillProposalEvent } from "../skills/workshop/store-sqlite-event.
 import { importLegacySkillProposal } from "../skills/workshop/store.js";
 import type { SkillProposalRecord } from "../skills/workshop/types.js";
 import {
-  closeOpenClawStateDatabaseForTest,
+  closeOpenClawStateDatabaseAsync,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
@@ -32,7 +32,6 @@ import {
   createAppliedLegacyProposal,
   seedLegacyV15ProposalRows,
 } from "./doctor-skill-workshop-sqlite.test-support.js";
-
 async function snapshotDatabase(databasePath: string) {
   const database = openNodeSqliteDatabase(databasePath, { readOnly: true });
   try {
@@ -122,7 +121,7 @@ describe("read-only Skill Workshop migration inspection", () => {
       const before = await loadCronJobsStoreWithConfigJobsReadOnly(storePath, state.env);
       await migrateLegacySkillWorkshopProposals({ config, env: state.env });
       await expect(fs.access(legacy)).rejects.toMatchObject({ code: "ENOENT" });
-      closeOpenClawStateDatabaseForTest();
+      await closeOpenClawStateDatabaseAsync();
       const databasePath = resolveOpenClawStateSqlitePath(state.env);
       const databaseBefore = await snapshotDatabase(databasePath);
       const filesBefore = (await fs.readdir(state.stateDir, { recursive: true })).toSorted();
@@ -271,7 +270,7 @@ describe("read-only Skill Workshop migration inspection", () => {
             store: { env: state.env },
           });
         }
-        closeOpenClawStateDatabaseForTest();
+        await closeOpenClawStateDatabaseAsync();
         const databasePath = resolveOpenClawStateSqlitePath(state.env);
         const databaseBefore = proposal ? await snapshotDatabase(databasePath) : undefined;
         const filesBefore = (await fs.readdir(state.stateDir, { recursive: true })).toSorted();
@@ -351,7 +350,7 @@ describe("read-only Skill Workshop migration inspection", () => {
         } else {
           importLegacySkillProposal({ record, ownerAgentId: "main", store: { env: state.env } });
         }
-        closeOpenClawStateDatabaseForTest();
+        await closeOpenClawStateDatabaseAsync();
         const databasePath = resolveOpenClawStateSqlitePath(state.env);
         const seed = openNodeSqliteDatabase(databasePath);
         try {
@@ -389,7 +388,7 @@ describe("read-only Skill Workshop migration inspection", () => {
           ].toSorted((left, right) => left.path.localeCompare(right.path)),
         );
 
-        closeOpenClawStateDatabaseForTest();
+        await closeOpenClawStateDatabaseAsync();
         expect(await snapshotDatabase(databasePath)).toEqual(before);
         expect(await fs.readFile(skillFile, "utf8")).toBe(content);
       });
@@ -499,7 +498,7 @@ describe("read-only Skill Workshop migration inspection", () => {
           store: { env: state.env },
         });
       }
-      closeOpenClawStateDatabaseForTest();
+      await closeOpenClawStateDatabaseAsync();
       const seed = openNodeSqliteDatabase(resolveOpenClawStateSqlitePath(state.env));
       try {
         for (const sample of cases.filter((entry) => entry.owner === null)) {

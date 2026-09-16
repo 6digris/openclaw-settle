@@ -6,6 +6,7 @@ import type {
 } from "openclaw/plugin-sdk/runtime-doctor-migrations";
 import type { LineWebhookSpoolPayload } from "./src/webhook-spool-contract.js";
 import { countLegacySpoolRows, migrateLineLegacySpoolRows } from "./src/webhook-spool-migration.js";
+// Line doctor contract owns the pre-drain webhook spool upgrade migration.
 
 const LINE_CHANNEL_ID = "line";
 

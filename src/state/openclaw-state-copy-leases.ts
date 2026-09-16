@@ -3,7 +3,6 @@ import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-syn
 import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
 import { tableExists } from "./openclaw-state-db-schema-helpers.js";
 import type { DB } from "./openclaw-state-db.generated.js";
-
 /** Source process ownership cannot survive reuse of a copied OpenClaw database. */
 export function clearOpenClawStateCopyLeases(database: DatabaseSync): void {
   const queries = getNodeSqliteKysely<Pick<DB, "agent_database_leases" | "state_leases">>(database);

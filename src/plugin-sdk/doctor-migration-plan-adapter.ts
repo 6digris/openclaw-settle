@@ -9,7 +9,6 @@ import type {
   PluginDoctorMigrationBackupResource,
   PluginDoctorStateMigration,
 } from "../plugins/doctor-contract-module.js";
-
 async function resourceKind(
   filename: string,
 ): Promise<PluginDoctorMigrationBackupResource["kind"]> {

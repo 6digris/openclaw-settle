@@ -27,6 +27,11 @@ import {
   resolveClawHubInstallSpecsForUpdateChannel,
   resolveNpmInstallSpecsForUpdateChannel,
 } from "./install-channel-specs.js";
+import {
+  copyPluginInstallTransactionRequest,
+  retainPluginInstallTransaction,
+  withPluginInstallTransactions,
+} from "./install-transaction.js";
 import { isUnavailableNpmTarget } from "./install-types.js";
 import { installPluginFromNpmSpec } from "./install.js";
 import {
@@ -35,6 +40,7 @@ import {
   resolveNpmInstallRecordSpec,
 } from "./installs.js";
 import { ManagedPluginLifecycleError } from "./management-lifecycle-error.js";
+import { withPluginLifecycleLease } from "./plugin-lifecycle-lease.js";
 import { formatClawHubInstallFailure, formatNpmInstallFailure } from "./update-attempt.js";
 import {
   buildLoadPathHelpers,
@@ -52,7 +58,6 @@ import {
   type PluginUpdateLogger,
   type PluginUpdateOutcome,
 } from "./update-source.js";
-
 type PluginChannelSyncSummary = {
   switchedToBundled: string[];
   switchedToClawHub: string[];
@@ -76,13 +81,31 @@ export async function syncPluginsForUpdateChannel(params: {
   logger?: PluginUpdateLogger;
   externalizedBundledPluginBridges?: readonly ExternalizedBundledPluginBridge[];
   onCapabilityConsent?: PluginCapabilityConsentHandler;
-  beforePersistentEffect?: () => void | Promise<void>;
+  beforePersistentEffect?: () => void;
+  preparePersistentEffect?: () => void | Promise<void>;
 }): Promise<PluginChannelSyncResult> {
+  return await withPluginLifecycleLease(
+    { env: params.env, assertCurrent: params.beforePersistentEffect },
+    (lease) =>
+      withPluginInstallTransactions(
+        params,
+        () => lease.assertOwned(),
+        syncPluginsForUpdateChannelWithLease,
+      ),
+  );
+}
+
+async function syncPluginsForUpdateChannelWithLease(
+  params: Parameters<typeof syncPluginsForUpdateChannel>[0],
+): Promise<PluginChannelSyncResult> {
   const env = params.env ?? process.env;
   const logger = params.logger ?? {};
   const consent = capturePluginCapabilityConsentHandlerErrors(
     params.onCapabilityConsent,
-    params.beforePersistentEffect,
+    async () => {
+      await params.preparePersistentEffect?.();
+      params.beforePersistentEffect?.();
+    },
   );
   const summary: PluginChannelSyncSummary = {
     switchedToBundled: [],
@@ -100,11 +123,31 @@ export async function syncPluginsForUpdateChannel(params: {
   const loadHelpers = buildLoadPathHelpers(next.plugins?.load?.paths ?? [], env);
   let installs = next.plugins?.installs ?? {};
   let changed = false;
+  const retainedLinks = new Set<string>();
+  for (const [pluginId, record] of Object.entries(installs)) {
+    const bundledInfo = bundled.get(pluginId);
+    if (record.source !== "path" || !bundledInfo) {
+      continue;
+    }
+    const linkedPath = loadHelpers.paths.find(
+      (loadPath) =>
+        !userPathsEqual(loadPath, bundledInfo.localPath, env) &&
+        (userPathsEqual(loadPath, record.sourcePath, env) ||
+          userPathsEqual(loadPath, record.installPath, env)),
+    );
+    if (!linkedPath) {
+      continue;
+    }
+    retainedLinks.add(pluginId);
+    const warning = `Retained linked plugin "${pluginId}" at ${linkedPath}; update this plugin at its source.`;
+    summary.warnings.push(warning);
+    logger.warn?.(warning);
+  }
 
   if (params.channel === "dev") {
     for (const [pluginId, record] of Object.entries(installs)) {
       const bundledInfo = bundled.get(pluginId);
-      if (!bundledInfo) {
+      if (!bundledInfo || retainedLinks.has(pluginId)) {
         continue;
       }
 
@@ -229,14 +272,14 @@ export async function syncPluginsForUpdateChannel(params: {
           onCapabilityConsent: consent.onCapabilityConsent,
           beforePersistentEffect: consent.beforePersistentEffect,
         });
-        const options = {
+        const options = copyPluginInstallTransactionRequest(params, {
           spec,
           config: next,
           mode: "update" as const,
           expectedPluginId: targetPluginId,
           logger,
           onBeforePluginArtifactCommit: capabilityConsent.onBeforePluginArtifactCommit,
-        };
+        });
         let result:
           | Awaited<ReturnType<typeof installPluginFromNpmSpec>>
           | Awaited<ReturnType<typeof installPluginFromClawHub>>;
@@ -249,7 +292,9 @@ export async function syncPluginsForUpdateChannel(params: {
                   expectedIntegrity,
                   trustedSourceLinkedOfficialInstall,
                 });
+          retainPluginInstallTransaction(params, result);
         } catch (error) {
+          params.beforePersistentEffect?.();
           consent.rethrowCallbackError();
           if (!(error instanceof ManagedPluginLifecycleError)) {
             throw error;
@@ -265,6 +310,7 @@ export async function syncPluginsForUpdateChannel(params: {
           };
         }
         consent.rethrowCallbackError();
+        params.beforePersistentEffect?.();
         return { result, capabilityConsent, installSpec: spec };
       };
       const {
@@ -377,7 +423,7 @@ export async function syncPluginsForUpdateChannel(params: {
 
     for (const [pluginId, record] of Object.entries(installs)) {
       const bundledInfo = bundled.get(pluginId);
-      if (!bundledInfo) {
+      if (!bundledInfo || retainedLinks.has(pluginId)) {
         continue;
       }
 
@@ -395,11 +441,7 @@ export async function syncPluginsForUpdateChannel(params: {
       // Keep explicit bundled installs on release channels. Replacing them with
       // npm installs can reintroduce duplicate-id shadowing and packaging drift.
       loadHelpers.addPath(bundledInfo.localPath);
-      const alreadyBundled =
-        record.source === "path" &&
-        userPathsEqual(record.sourcePath, bundledInfo.localPath, env) &&
-        userPathsEqual(record.installPath, bundledInfo.localPath, env);
-      if (alreadyBundled) {
+      if (userPathsEqual(record.installPath, bundledInfo.localPath, env)) {
         continue;
       }
 

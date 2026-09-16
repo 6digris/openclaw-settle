@@ -31,7 +31,9 @@ export class AsyncWorkScope {
     if (this.phase === "closed") {
       throw new Error("Async work scope is closed");
     }
-    const operation = this.registerWork<void>();
+    // Synchronous work is removed in finally and needs no promise cleanup reactions.
+    const operation = createDeferredCore();
+    this.pending.add(operation.promise);
     try {
       return currentWorkScope.run(this, run);
     } finally {
@@ -114,6 +116,11 @@ export async function trackAsyncWork<T>(run: () => T | Promise<T>): Promise<T> {
 export function captureAsyncWorkTracker(): typeof trackAsyncWork {
   const scope = currentWorkScope.getStore();
   return async (run) => await (scope ? scope.track(run) : currentWorkScope.exit(run));
+}
+
+/** Starts work its caller does not own, so the caller's scope neither waits for it nor closes under it. */
+export function runOutsideAsyncWorkScope<T>(run: () => T): T {
+  return currentWorkScope.exit(run);
 }
 
 export function getAsyncWorkSignal(): AbortSignal | undefined {

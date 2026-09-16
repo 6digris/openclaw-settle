@@ -2,9 +2,9 @@
 import fs from "node:fs";
 import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coercion";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadBundledPluginPublicSurface } from "../../plugin-sdk/test-helpers/public-surface-loader.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
 import type { ProviderPlugin } from "../../plugins/types.js";
+import { loadBundledPluginFacade } from "../../test-utils/bundled-plugin-public-surface.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -3098,6 +3098,30 @@ describe("resolveModel", () => {
     expect(result.model?.reasoning).toBe(true);
   });
 
+  // Reproduces a real operator's live config: a self-hosted OmniRoute deployment
+  // configured entirely as an inline `models.providers` entry (no bundled plugin
+  // catalog backing it) with `compat.supportsResponsesContinuation: true` set on
+  // the catalog model row, per docs/concepts/model-providers.md's documented
+  // custom/proxy endpoint opt-in for HTTP continuation eligibility.
+  it("carries a configured custom-endpoint compat.supportsResponsesContinuation opt-in through to the resolved model", async () => {
+    const cfg = makeProviderConfig("omniroute", {
+      baseUrl: "https://omniroute.example.test/v1",
+      api: "openai-responses",
+      models: [
+        {
+          id: "default",
+          name: "OmniRoute Default",
+          compat: { supportsResponsesContinuation: true },
+        },
+      ],
+    });
+
+    const result = await resolveModelForTest("omniroute", "default", "/tmp/agent", cfg);
+
+    expect(result.error).toBeUndefined();
+    expect(result.model?.compat).toMatchObject({ supportsResponsesContinuation: true });
+  });
+
   it("propagates image input capability from matching configured fallback model", async () => {
     const cfg = makeProviderConfig("custom", {
       baseUrl: "http://localhost:9000",
@@ -4781,7 +4805,7 @@ describe("resolveModel", () => {
   it.each(["provider", "model"])(
     "preserves authored %s transport and model overrides",
     async (scope) => {
-      const { buildOpenAIProvider } = await loadBundledPluginPublicSurface<{
+      const { buildOpenAIProvider } = await loadBundledPluginFacade<{
         buildOpenAIProvider: () => ProviderPlugin;
       }>({ pluginId: "openai", artifactBasename: "api.js" });
       const provider = buildOpenAIProvider();

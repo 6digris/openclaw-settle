@@ -22,6 +22,7 @@ import {
   normalizeAcpxGatewayInstanceRecord,
   type AcpxGatewayInstanceRecord,
 } from "./src/state.js";
+// ACPX doctor contract repairs shipped config and migrates plugin-owned runtime state.
 
 const ACPX_CONFIG_PATH = ["plugins", "entries", "acpx", "config"] as const;
 const RETIRED_ACPX_CONFIG_KEYS = ["strictWindowsCmdWrapper", "queueOwnerTtlSeconds"] as const;

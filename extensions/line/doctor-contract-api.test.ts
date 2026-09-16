@@ -15,6 +15,7 @@ import type {
 } from "openclaw/plugin-sdk/runtime-doctor-migrations";
 import { afterEach, describe, expect, it } from "vitest";
 import { stateMigrations } from "./doctor-contract-api.js";
+// Line tests cover the doctor state migration for pre-drain webhook spool rows.
 
 const migration = stateMigrations[0]!;
 

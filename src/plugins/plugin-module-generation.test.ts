@@ -1,12 +1,14 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
-import { createRequire } from "node:module";
+import Module, { createRequire } from "node:module";
 import path from "node:path";
 import { createJiti } from "jiti";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { createPluginCache, withPluginCache } from "./plugin-cache.js";
+import { capturePluginGenerationArtifact } from "./plugin-generation-artifact.js";
+import { bindPluginInstanceModuleLoader } from "./plugin-instance-module-loader.js";
 import { PluginInstance } from "./plugin-instance.js";
-import { bindPluginInstanceModuleLoader } from "./plugin-module-loader-cache.js";
 
 const temp = useAutoCleanupTempDirTracker(afterEach);
 const nativeRequire = createRequire(import.meta.url);
@@ -34,6 +36,37 @@ function load(rootDir: string, entry: string, standalone = false) {
 }
 
 describe("plugin module generations", () => {
+  it.runIf(process.env.OPENCLAW_TEST_BUN_LAUNCHER === "1")(
+    "reloads Bun plugin generations while retained callers keep their original modules",
+    () => {
+      const home = temp.make("plugin-bun-generations-");
+      const result = spawnSync(
+        process.env.BUN_BIN ?? "bun",
+        [
+          "--no-install",
+          "--conditions=openclaw-custom",
+          "src/plugins/plugin-module-generation.bun.test-support.ts",
+          home,
+        ],
+        {
+          cwd: process.cwd(),
+          encoding: "utf8",
+          timeout: 30_000,
+          env: {
+            PATH: process.env.PATH,
+            SystemRoot: process.env.SystemRoot,
+            HOME: home,
+            USERPROFILE: home,
+            TMPDIR: home,
+            OPENCLAW_STATE_DIR: path.join(home, "state"),
+          },
+        },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+    },
+  );
+
   it.each([
     ...["ts", "mts", "mtsx"].flatMap((extension) =>
       ["commonjs", undefined].map((type) => ({ extension, type, importOnly: false })),
@@ -615,6 +648,51 @@ describe("plugin module generations", () => {
     },
   );
 
+  it.each(["before bind", "directory before bind", "after bind", "unchanged"])(
+    "checks expected source bytes before execution and uses that same capture (%s)",
+    async (change) => {
+      const marker = path.join(temp.make("plugin-expected-effect-"), "ran");
+      const entry = (value: string) =>
+        `require("node:fs").writeFileSync(${JSON.stringify(marker)}, ${JSON.stringify(value)}); module.exports = ${JSON.stringify(value)};`;
+      const root = temp.make("plugin-expected-source-");
+      const source = path.join(root, "entry.cjs");
+      fs.writeFileSync(source, entry("reviewed"));
+      const prepared = capturePluginGenerationArtifact(root);
+      const expectedSourceDigest = prepared.sourceDigest;
+      prepared.dispose();
+      const instance = new PluginInstance("fixture");
+      instances.push(instance);
+      const options = {
+        instance,
+        origin: "config" as const,
+        source,
+        rootDir: root,
+        expectedSourceDigest,
+      };
+      if (change.endsWith("before bind")) {
+        if (change === "directory before bind") {
+          fs.mkdirSync(path.join(root, "empty"));
+        } else {
+          fs.writeFileSync(source, entry("changed"));
+        }
+        expect
+          .soft(() => {
+            bindPluginInstanceModuleLoader(options);
+            instance.loadModule(source);
+          })
+          .toThrow(/source.*changed/i);
+        expect(fs.existsSync(marker)).toBe(false);
+      } else {
+        bindPluginInstanceModuleLoader(options);
+        if (change === "after bind") {
+          fs.writeFileSync(source, entry("changed"));
+        }
+        expect(instance.loadModule(source)).toBe("reviewed");
+        expect(fs.readFileSync(marker, "utf8")).toBe("reviewed");
+      }
+    },
+  );
+
   it("retains native JSON import attributes for a computed JavaScript edge", async () => {
     const root = temp.make("plugin-native-computed-json-");
     fs.writeFileSync(path.join(root, "data.json"), '{"value":42}');
@@ -703,6 +781,34 @@ describe("plugin module generations", () => {
       expect(load(root, entry).value).toEqual(expected);
     },
   );
+
+  it("resolves deferred TypeScript without acquiring the compiler until execution", () => {
+    const root = temp.make("plugin-resolve-only-typescript-");
+    fs.writeFileSync(
+      path.join(root, "index.cjs"),
+      "exports.resolve = () => require.resolve('./deferred.ts'); exports.read = () => require('./deferred.ts').value;",
+    );
+    fs.writeFileSync(path.join(root, "deferred.ts"), "exports.value = 42 as number;");
+    // oxlint-disable-next-line typescript/unbound-method -- called below with the intercepted module receiver.
+    const originalRequire = Module.prototype.require;
+    const compilerGuard = vi.spyOn(Module.prototype, "require").mockImplementation(function (
+      this: NodeJS.Module,
+      id: string,
+    ) {
+      if (id === "typescript") {
+        throw new Error("Resolution must not acquire the TypeScript compiler");
+      }
+      return originalRequire.call(this, id);
+    });
+    let plugin: { resolve(): string; read(): number };
+    try {
+      plugin = load(root, "index.cjs").value as typeof plugin;
+      expect(fs.existsSync(plugin.resolve())).toBe(true);
+    } finally {
+      compilerGuard.mockRestore();
+    }
+    expect(plugin.read()).toBe(42);
+  });
 
   it("defers unused TypeScript syntax errors until their module is loaded", async () => {
     const root = temp.make("plugin-lazy-source-error-");

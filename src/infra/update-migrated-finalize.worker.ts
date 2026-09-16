@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import path from "node:path";
 import { finishUpdateRun } from "../cli/daemon-cli.js";
 import { retainCliProcessJobUntilExit, withCliProcessScope } from "../cli/runtime-cleanup-scope.js";
 import type { UpdateCommandOptions } from "../cli/update-cli/shared.js";
@@ -7,34 +8,47 @@ import {
   withDelegatedUpdateCommandExecutor,
   withUpdateCommandExecutor,
 } from "../cli/update-cli/update-command-executor.js";
-import type { UpdateCaptureRetirementInput } from "../cli/update-cli/update-command-migrated-types.js";
 import type {
+  UpdateDoctorInput,
+  UpdateCaptureRetirementInput,
   MigratedUpdateFinalizationInput,
   MigratedUpdateFinalizationResult,
-} from "../cli/update-cli/update-command-migrated.js";
+} from "../cli/update-cli/update-command-migrated-types.js";
 import { finishUpdate } from "../cli/update-cli/update-command-post-update.js";
 import {
   formatUpdateFinalizationError,
   UpdateCommandFailure,
 } from "../cli/update-cli/update-command-result.js";
 import { createWindowsTaskAutoStartGuard } from "../cli/update-cli/update-command-service-maintenance.js";
+import { withUpdateCommandTerminalResult } from "../cli/update-cli/update-command-terminal.js";
 import { createWindowsTaskAutoStartRecovery } from "../cli/update-cli/update-command-windows-task.js";
+import { routeLogsToStderr } from "../logging/console.js";
+import { defaultRuntime } from "../runtime.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../state/openclaw-agent-db-contract.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../state/openclaw-state-db-contract.js";
-import { closeOpenClawStateDatabase } from "../state/openclaw-state-db.js";
-import { formatErrorMessage } from "./errors.js";
+import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
 import { resolveOpenClawPackageRoot } from "./openclaw-root.js";
 import { readPackageVersion } from "./package-json.js";
 import { resolveEnvironmentValue } from "./process-env.js";
+import {
+  UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV,
+  recordUpdateDoctorConfigWriteRefusal,
+  writeUpdatePostInstallDoctorResult,
+} from "./update-doctor-result.js";
+import { resolveUpdateFinalizationTimeoutMs } from "./update-finalization-budget.js";
 import { readBuiltGatewayBuildId } from "./update-git-runtime.js";
-import { createManagedUpdateRequesterAuthority } from "./update-requester-authority.js";
+import { resolveUpdateInstallRoot } from "./update-install-root.js";
+import {
+  createManagedUpdateRequesterAuthority,
+  UpdateRequesterRevokedError,
+} from "./update-requester-authority.js";
 import { adoptUpdateRun, getUpdateRun, recordUpdateRunStep } from "./update-run-ledger.js";
 import type { UpdateRecoveryFence } from "./update-run-recovery.js";
-
 async function finalizeMigratedUpdate(): Promise<void> {
   // Validation imports this whole candidate graph before activation. The helper
   // also needs the stable recovery barrel's writer after an actual schema bump.
   if (process.argv[2] === "--check") {
+    routeLogsToStderr();
     if (typeof finishUpdateRun !== "function") {
       throw new Error("Candidate recovery writer is unavailable.");
     }
@@ -43,6 +57,7 @@ async function finalizeMigratedUpdate(): Promise<void> {
         executorDelegation: "pid-start-v1",
         updateRecovery: "parent-v1",
         captureRetirement: "settled-v1",
+        doctorConfigWrites: "pid-start-v1",
         state: OPENCLAW_STATE_SCHEMA_VERSION,
         agent: OPENCLAW_AGENT_SCHEMA_VERSION,
       }),
@@ -57,9 +72,9 @@ async function finalizeMigratedUpdate(): Promise<void> {
   for await (const chunk of process.stdin) {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
-  const raw = Buffer.concat(chunks).toString("utf8");
+  const text = Buffer.concat(chunks).toString("utf8");
   if (process.argv[2] === "--retire-capture") {
-    const retirementInput: UpdateCaptureRetirementInput = JSON.parse(raw);
+    const retirementInput: UpdateCaptureRetirementInput = JSON.parse(text);
     const runtimeRoot = await resolveOpenClawPackageRoot({ moduleUrl: import.meta.url });
     if (
       !runtimeRoot ||
@@ -102,20 +117,41 @@ async function finalizeMigratedUpdate(): Promise<void> {
     );
     return;
   }
-  const input = JSON.parse(raw) as MigratedUpdateFinalizationInput; // SAFETY: Only the typed parent continuation serializes this private input.
+  if (process.argv[2] === "--doctor") {
+    // SAFETY: The typed parent sends this private input only after binding this child.
+    return await runDelegatedDoctor(JSON.parse(text) as UpdateDoctorInput);
+  }
+  // SAFETY: Only the typed parent continuation serializes this private input.
+  const input = JSON.parse(text) as MigratedUpdateFinalizationInput;
+  if (input.params.opts.json) {
+    // The installed updater forwards this worker's stdout verbatim. Keep diagnostics
+    // on stderr through terminal-history reads and the process's database cleanup.
+    routeLogsToStderr();
+  }
   if (input.recoveryHandoff) {
     throw new Error(
       "Full-state checkpoint recovery is deferred; retained state was left unchanged.",
     );
   }
-  if (input.executor) {
-    await withDelegatedUpdateCommandExecutor(
-      input.executor,
-      input.params.opts.run?.runId ?? "",
-      input.params.result.root ?? input.params.root,
-      async (fence) => finalizeInput(input, fence),
-    );
-  } else {
+  const activationTimeoutMs =
+    input.params.opts.run?.activationTimeoutMs ??
+    (await resolveUpdateFinalizationTimeoutMs(input.params.updateStepTimeoutMs, {
+      env: input.params.ownedManagedUpdateEnv ?? input.params.opts.run?.env,
+      databases: input.params.schemaVersions,
+      pluginCount: Object.keys(input.params.preUpdatePluginInstallRecords).length,
+    }));
+  const finalized = await withUpdateCommandTerminalResult(async (registerRun) => {
+    if (input.executor) {
+      return await withDelegatedUpdateCommandExecutor(
+        input.executor,
+        input.params.opts.run?.runId ?? "",
+        input.params.result.root ?? input.params.root,
+        async (fence) => finalizeInput(input, fence, registerRun),
+        {
+          activationTimeoutMs,
+        },
+      );
+    }
     // The shipped v2026.9.3 producer overrides these selectors for worker
     // scratch, but retains its pre-override environment in the private input.
     // Restore only this one-shot worker's selectors before resolving the normal
@@ -124,6 +160,27 @@ async function finalizeMigratedUpdate(): Promise<void> {
     if (!admissionEnv) {
       throw new Error("Grantless finalization requires its captured update environment.");
     }
+    // v2026.9.3 update-command-migrated.ts:149–195 sends this grantless handoff.
+    // Its captured meta.root is the lease key; activation can retarget that path.
+    // Only the same installation borrows the waiting parent's lease.
+    const meta = input.params.controlPlaneUpdateSentinelMeta;
+    const runId = input.params.opts.run?.runId ?? "";
+    const scratch = path.dirname(input.resultPath);
+    const legacyManagedParent =
+      input.params.result.before?.version === "2026.9.3" &&
+      admissionEnv.OPENCLAW_UPDATE_RUN_HANDOFF === "1" &&
+      admissionEnv.OPENCLAW_UPDATE_RUN_ID === runId &&
+      meta?.runId === runId &&
+      meta.handoffId &&
+      meta.root &&
+      meta.root === resolveUpdateInstallRoot(input.params.result.root ?? input.params.root) &&
+      path.basename(scratch).startsWith("openclaw-update-migrated-") &&
+      path.basename(input.resultPath) === "result.json" &&
+      ["TMPDIR", "TMP", "TEMP"].every(
+        (name) => resolveEnvironmentValue(process.env, name) === scratch,
+      )
+        ? { runId, handoffId: meta.handoffId, root: meta.root }
+        : undefined;
     for (const name of ["TMPDIR", "TMP", "TEMP"] as const) {
       const value = resolveEnvironmentValue(admissionEnv, name);
       if (value === undefined) {
@@ -132,24 +189,124 @@ async function finalizeMigratedUpdate(): Promise<void> {
         process.env[name] = value;
       }
     }
-    // Acquire before adopting the run or making effects. Missing newer grants
-    // still cannot bypass a live original or descendant in that same domain.
-    await withUpdateCommandExecutor(input.params.opts.run?.runId ?? "", async (executor) => {
-      const fence = await executor.enter(input.params.result.root ?? input.params.root);
-      await finalizeInput(input, fence);
-    });
+    return await withUpdateCommandExecutor(
+      runId,
+      async (executor) => {
+        const fence = await executor.enter(input.params.result.root ?? input.params.root, {
+          activationTimeoutMs,
+        });
+        return await finalizeInput(input, fence, registerRun);
+      },
+      legacyManagedParent ? { legacyManagedParent } : undefined,
+    );
+  }, input.params.opts);
+  if (input.params.updateRecoveryBackup && finalized.result.status === "error") {
+    const response: MigratedUpdateFinalizationResult = {
+      result: { ...finalized.result, runId: finalized.run.runId },
+      exitCode: finalized.exitCode || 1,
+      recoveryRequired: true,
+      executorDelegation: "pid-start-v1",
+    };
+    await fs.writeFile(input.resultPath, JSON.stringify(response), { mode: 0o600 });
+    return;
   }
+  const terminal = getUpdateRun(finalized.run.runId, { env: finalized.run.env });
+  if (!terminal || terminal.status === "running") {
+    throw new Error("Candidate finalization left the update run nonterminal.");
+  }
+  const response: MigratedUpdateFinalizationResult = {
+    result: finalized.result,
+    exitCode: finalized.exitCode,
+    terminalRunId: terminal.runId,
+    executorDelegation: "pid-start-v1",
+    automaticTriage: finalized.automaticTriage,
+  };
+  // Private response publication follows executor settlement and terminal history.
+  await fs.writeFile(input.resultPath, JSON.stringify(response), { mode: 0o600 });
+}
+
+async function runDelegatedDoctor(input: UpdateDoctorInput): Promise<void> {
+  const resultPath = process.env[UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV]?.trim();
+  if (!resultPath || !input.executor) {
+    throw new Error("Update Doctor requires its delegated executor and result path.");
+  }
+  await withDelegatedUpdateCommandExecutor(
+    input.executor,
+    input.runId,
+    input.root,
+    async (fence) => {
+      const requester = input.requester
+        ? await createManagedUpdateRequesterAuthority(input.requester)
+        : undefined;
+      const assertCurrent = () => {
+        try {
+          fence.assertCurrent();
+          if (requester?.isCurrent() === false) {
+            throw new UpdateRequesterRevokedError();
+          }
+        } catch (error) {
+          recordUpdateDoctorConfigWriteRefusal({
+            reason:
+              error instanceof UpdateRequesterRevokedError ? error.code : "authority-check-failed",
+            message: formatUpdateFinalizationError(error),
+            keys: [],
+          });
+          throw error;
+        }
+      };
+      try {
+        assertCurrent();
+      } catch (error) {
+        if (!(error instanceof UpdateRequesterRevokedError)) {
+          throw error;
+        }
+        fence.assertCurrent();
+        await writeUpdatePostInstallDoctorResult({
+          resultPath,
+          result: {
+            status: "error",
+            configWriteRefusal: { reason: error.code, message: error.message, keys: [] },
+          },
+        });
+        process.exitCode = 1;
+        return;
+      }
+      const { runDoctorHealthFlow } = await import("../flows/doctor-health.js");
+      assertCurrent();
+      await runDoctorHealthFlow(
+        {
+          ...defaultRuntime,
+          exit: (code) => {
+            process.exitCode = code;
+          },
+        },
+        {
+          repair: input.repair,
+          nonInteractive: true,
+          ...(input.updateRecoveryBackup
+            ? {
+                updateRecoveryOwner: "driver",
+                updateRecoveryBackup: JSON.stringify(input.updateRecoveryBackup),
+              }
+            : {}),
+        },
+        { inputHash: input.configInputHash, assertCurrent },
+      );
+    },
+  );
 }
 
 async function finalizeInput(
   input: MigratedUpdateFinalizationInput,
-  executorFence?: UpdateRecoveryFence,
-): Promise<void> {
+  executorFence: UpdateRecoveryFence,
+  registerRun: (run: NonNullable<UpdateCommandOptions["run"]>) => void,
+) {
   const transferredRun = input.params.opts.run;
   if (
     !transferredRun ||
     "executorFence" in transferredRun ||
-    (!input.recoveryHandoff &&
+    (!input.params.updateRecoveryBackup &&
+      !input.recoveryHandoff &&
       input.params.rollbackBlockedReason !== "state-migrated-no-rollback" &&
       input.params.rollbackBlockedReason !== "rollback-state-unverified")
   ) {
@@ -172,7 +329,8 @@ async function finalizeInput(
         }
       : {}),
   };
-  executorFence?.assertCurrent();
+  executorFence.assertCurrent();
+  registerRun(run);
   for (const step of input.bufferedSteps) {
     executorFence?.assertCurrent();
     recordUpdateRunStep(run.runId, step, { env: run.env });
@@ -206,73 +364,34 @@ async function finalizeInput(
   try {
     result = await finishUpdate({
       ...input.params,
+      deferFailureRecoveryToParent: Boolean(input.params.updateRecoveryBackup),
+      result: { ...input.params.result, runId: run.runId },
       opts: { ...input.params.opts, run },
       ...(stopped
         ? { preManagedServiceStop: { ...stopped, windowsTaskAutoStartRecovery: windowsRecovery } }
         : {}),
     });
   } catch (error) {
-    if (error instanceof UpdateCommandFailure) {
-      result = error.result;
-      exitCode = error.exitCode;
-      automaticTriage = error.automaticTriage;
-    } else if (input.params.updateRecoveryBackup) {
-      result = {
-        ...input.params.result,
-        status: "error" as const,
-        reason: "post-update-failed",
-        steps: [
-          ...input.params.result.steps,
-          {
-            name: "candidate finalization",
-            command: "openclaw update",
-            cwd: input.params.result.root ?? input.params.root,
-            durationMs: 0,
-            exitCode: 1,
-            stderrTail: formatErrorMessage(error),
-          },
-        ],
-      };
-      exitCode = 1;
-    } else {
+    if (!(error instanceof UpdateCommandFailure)) {
       throw error;
     }
+    result = error.result;
+    exitCode = error.exitCode;
+    automaticTriage = error.automaticTriage;
   } finally {
     await windowsRecovery?.complete(result?.status === "ok");
   }
-  executorFence?.assertCurrent();
-  if (input.params.updateRecoveryBackup && result.status === "error") {
-    // The parent owns the package transaction. Return before a terminal write
-    // so it can restore both package and state after this process has exited.
-    const response: MigratedUpdateFinalizationResult = {
-      result: { ...result, runId: run.runId },
-      exitCode: exitCode || 1,
-      recoveryRequired: true,
-      ...(executorFence ? { executorDelegation: "pid-start-v1" as const } : {}),
-    };
-    await fs.writeFile(input.resultPath, JSON.stringify(response), { mode: 0o600 });
-    executorFence?.assertCurrent();
-    return;
-  }
-  const terminal = getUpdateRun(run.runId, { env: run.env });
-  if (!terminal || terminal.status === "running") {
-    throw new Error("Candidate finalization left the update run nonterminal.");
-  }
-  const response: MigratedUpdateFinalizationResult = {
-    result,
-    exitCode,
-    terminalRunId: terminal.runId,
-    ...(executorFence ? { executorDelegation: "pid-start-v1" as const } : {}),
-    automaticTriage,
-  };
-  executorFence?.assertCurrent();
-  await fs.writeFile(input.resultPath, JSON.stringify(response), { mode: 0o600 });
-  executorFence?.assertCurrent();
+  executorFence.assertCurrent();
+  return { run, result, exitCode, automaticTriage };
 }
 
-void finalizeMigratedUpdate()
-  .catch((error: unknown) => {
-    process.stderr.write(`${formatUpdateFinalizationError(error)}\n`);
-    process.exitCode = 1;
-  })
-  .finally(() => closeOpenClawStateDatabase());
+void (async () => {
+  try {
+    await finalizeMigratedUpdate();
+  } finally {
+    await closeOpenClawStateDatabaseAsync();
+  }
+})().catch((error: unknown) => {
+  process.stderr.write(`${formatUpdateFinalizationError(error)}\n`);
+  process.exitCode = 1;
+});

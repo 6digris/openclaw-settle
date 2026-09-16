@@ -17,7 +17,6 @@ import {
   recordConfigFileWrite,
   withConfigFileWriteCapture,
 } from "./write-capture.js";
-
 const hash = (raw: string) => createHash("sha256").update(raw).digest("hex");
 
 afterEach(() => {

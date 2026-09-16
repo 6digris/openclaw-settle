@@ -24,6 +24,7 @@ import type { PreUpdateConfigRestoreInput } from "../../infra/update-post-core-c
 import { withPluginLifecycleLease } from "../../plugins/plugin-lifecycle-lease.js";
 import { defaultRuntime } from "../../runtime.js";
 import { VERSION } from "../../version.js";
+// Config snapshots and pre/post-update config restoration.
 
 const PRE_UPDATE_CONFIG_SNAPSHOT_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 

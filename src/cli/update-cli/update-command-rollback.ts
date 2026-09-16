@@ -43,7 +43,6 @@ import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { defaultRuntime } from "../../runtime.js";
 import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
-import { confirmGatewayReachable } from "../daemon-cli/restart-health-probe.js";
 import type { UpdateCommandOptions } from "./shared.js";
 import {
   readUpdateConfigSnapshot,
@@ -65,7 +64,6 @@ import {
   resolveUpdatedGatewayRestartPort,
   type PreManagedServiceStop,
 } from "./update-command-service.js";
-
 /** Restore the verified state set before restarting the retained package. */
 export async function rollbackFailedUpdate(params: {
   result: UpdateRunResult;
@@ -152,23 +150,24 @@ export async function rollbackFailedUpdate(params: {
     };
   };
   const env = before?.serviceEnv ?? opts.run?.env ?? process.env;
-  const assertAdmission = (admissionEnv: NodeJS.ProcessEnv) =>
+  const assertAdmission = (
+    admissionEnv: NodeJS.ProcessEnv,
+    targetPath = resolveOpenClawStateSqlitePath(admissionEnv),
+  ) =>
     params.updateRecoveryBackup
-      ? assertUpdateRecoveryBackupAdmission({ env: admissionEnv }, assertCurrent)
-      : assertUpdateRecoveryAdmission({ env: admissionEnv });
+      ? assertUpdateRecoveryBackupAdmission({ env: admissionEnv, path: targetPath }, assertCurrent)
+      : assertUpdateRecoveryAdmission({ env: admissionEnv, path: targetPath });
   if (!opts.recovery) {
     try {
       assertCurrent();
       // A lost live context (including the same run ID) is not permission to
       // fall back to legacy rollback, even when publication removed the main DB.
-      await assertAdmission(env);
+      const targetPath = resolveOpenClawStateSqlitePath(env);
+      await assertAdmission(env, targetPath);
       assertCurrent();
       // Service authority and diagnostic history can select distinct state
       // roots. Neither may contain pending recovery before legacy mutation.
-      if (
-        opts.run &&
-        resolveOpenClawStateSqlitePath(opts.run.env) !== resolveOpenClawStateSqlitePath(env)
-      ) {
+      if (opts.run && resolveOpenClawStateSqlitePath(opts.run.env) !== targetPath) {
         await assertAdmission(opts.run.env);
         assertCurrent();
       }
@@ -221,6 +220,7 @@ export async function rollbackFailedUpdate(params: {
       env,
       root: result.root ?? null,
       nodeRunner: params.nodeRunner,
+      timeoutMs: params.timeoutMs,
     });
     assertCurrent();
     const sharedPath = resolveOpenClawStateSqlitePath(env);
@@ -338,16 +338,6 @@ export async function rollbackFailedUpdate(params: {
     }
     return stopped;
   };
-  const stopIfUnreachable = async () => {
-    assertCurrent();
-    if (port !== undefined) {
-      const { reachable } = await confirmGatewayReachable({ port, env });
-      assertCurrent();
-      if (!reachable) {
-        await stop();
-      }
-    }
-  };
   try {
     assertCurrent();
     if (params.updateRecoveryBackup) {
@@ -368,15 +358,12 @@ export async function rollbackFailedUpdate(params: {
         stderrTail:
           "Automatic rollback refused: no verified update-recovery set is available. Run `npx openclaw@latest doctor --fix` to recover with a compatible runtime.",
       });
-      await stopIfUnreachable();
       return failed(params.rollbackBlockedReason);
     }
     if (!params.updateRecoveryBackup && !params.schemaVersions) {
-      await stopIfUnreachable();
       return failed("rollback-state-unverified");
     }
     if (!params.updateRecoveryBackup && !(await stateUnchanged())) {
-      await stopIfUnreachable();
       return failed("state-migrated-no-rollback");
     }
     await packageTransaction?.assertRollbackSafe?.();
@@ -675,7 +662,7 @@ export async function rollbackFailedUpdate(params: {
       ...(verifiedAtMs === undefined ? {} : { verifiedAtMs }),
     };
   } catch (error) {
-    let detail = formatErrorMessage(error);
+    const detail = formatErrorMessage(error);
     if (params.updateRecoveryBackup && !stateRestored) {
       return failed("rollback-state-unverified", detail);
     }
@@ -693,19 +680,8 @@ export async function rollbackFailedUpdate(params: {
         pendingRecoveryReason: formatErrorMessage(cause),
       };
     }
-    failureReason = error instanceof NativePackageRollbackError ? error.reason : failureReason;
-    if (
-      failureReason === "rollback-state-unverified" ||
-      failureReason === "state-migrated-no-rollback" ||
-      error instanceof NativePackageRollbackError
-    ) {
-      const reason = failureReason;
-      try {
-        await stopIfUnreachable();
-        failureReason = reason;
-      } catch (stopError) {
-        detail += `; ${formatErrorMessage(stopError)}`;
-      }
+    if (error instanceof NativePackageRollbackError) {
+      failureReason = error.reason;
     }
     assertCurrent();
     if (opts.run) {

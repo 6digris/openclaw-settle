@@ -22,8 +22,6 @@ import type { PluginCliLoadSession } from "../plugins/cli-registry-loader.js";
 import { createPluginCache, getPluginCache, withPluginCache } from "../plugins/plugin-cache.js";
 import { resolveCliArgvInvocation } from "./argv-invocation.js";
 import {
-  getFlagValue,
-  hasFlag,
   normalizeGeneratedHelpCommandArgv,
   normalizeRootHelpTargetArgv,
   normalizeRootLogLevelArgv,
@@ -31,11 +29,11 @@ import {
 } from "./argv.js";
 import {
   isReservedNonPluginCommandRoot,
-  shouldRegisterPrimaryCommandOnly,
   shouldSkipPluginCommandRegistration,
 } from "./command-registration-policy.js";
 import { resolveCliStartupPolicy as resolveCliStartupPolicyForArgv } from "./command-startup-policy.js";
 import { maybeRunCliInContainer, parseCliContainerArgs } from "./container-target.js";
+import { tryRunGatewayServiceUpdateCapabilityProbe } from "./daemon-cli/update-capability.js";
 import { shouldStartLocalOnboarding } from "./fresh-install-config.js";
 import {
   consumeGatewayFastPathRootOptionToken,
@@ -59,6 +57,10 @@ import {
 } from "./program/core-command-descriptors.js";
 import { getSubCliEntriesCore } from "./program/subcli-descriptors.js";
 import {
+  prepareDoctorBootstrapRecovery,
+  withDoctorBootstrapRecovery,
+} from "./run-main-doctor-recovery.js";
+import {
   resolveMissingPluginCommandMessage,
   isDoctorStateMutationInvocation,
   rewriteUpdateFlagArgv,
@@ -76,6 +78,7 @@ import {
   createGatewayDispatchStartupTrace,
 } from "./startup-trace.js";
 import { normalizeWindowsArgv } from "./windows-argv.js";
+// Main CLI entry orchestration: fast paths, env setup, plugin aliases, and Commander dispatch.
 
 export {
   rewriteUpdateFlagArgv,
@@ -1014,20 +1017,8 @@ export async function runCli(
       // Nested registrars and late actions share this lightweight owner, even when no
       // top-level plugin preparation is needed. Gateway retains its boot/process owner.
       const gatewayRun = isGatewayRunInvocationArgv(originalArgv);
-      const runWithRecovery = async (cleanup?: CliHarnessCleanup) => {
-        if (isDoctorStateMutationInvocation(originalArgv)) {
-          const { isCurrentRuntimeSupported } = await import("../infra/runtime-guard.js");
-          if (!isCurrentRuntimeSupported()) {
-            return run(cleanup);
-          }
-          const [{ withDoctorUpdateRecovery }, { defaultRuntime }] = await Promise.all([
-            import("../commands/doctor-update-recovery.js"),
-            import("../runtime.js"),
-          ]);
-          return withDoctorUpdateRecovery(defaultRuntime, () => run(cleanup));
-        }
-        return run(cleanup);
-      };
+      const runWithRecovery = (cleanup?: CliHarnessCleanup) =>
+        withDoctorBootstrapRecovery(originalArgv, () => run(cleanup));
       return withCliCommandCleanup(gatewayRun, (cleanup) =>
         gatewayRun ? run() : withPluginCache(createPluginCache(), () => runWithRecovery(cleanup)),
       );
@@ -1138,9 +1129,13 @@ async function runCliWithPreparedOutputMode(
     true,
     options.runtimeRecoveryEnv,
   );
-  const runtimeSupported = isCurrentRuntimeSupported();
+  const runtimeSupported = await isCurrentRuntimeSupported();
   const mutatingDoctor = isDoctorStateMutationInvocation(normalizedArgv, runtimeSupported);
   const readOnlyDoctor = normalizedInvocation.primary === "doctor" && !mutatingDoctor;
+
+  if (await tryRunGatewayServiceUpdateCapabilityProbe(normalizedArgv)) {
+    return;
+  }
 
   if (
     !isHelpOrVersionInvocation &&
@@ -1159,36 +1154,7 @@ async function runCliWithPreparedOutputMode(
     });
   }
   if (mutatingDoctor) {
-    // Debug capture can migrate shared state before Commander reaches Doctor.
-    // Capture recovery after selectors settle, before any bootstrap writer.
-    const { prepareDoctorUpdateRecovery } = await import("../commands/doctor-update-recovery.js");
-    const recoveryOwner = getFlagValue(normalizedArgv, "--update-recovery-owner");
-    const recoveryBackup = getFlagValue(normalizedArgv, "--update-recovery-backup");
-    if (
-      recoveryOwner !== undefined &&
-      recoveryOwner !== "driver" &&
-      recoveryOwner !== "unprotected"
-    ) {
-      throw new Error("--update-recovery-owner must be driver or unprotected.");
-    }
-    if (recoveryBackup === null) {
-      throw new Error("--update-recovery-backup requires a reference.");
-    }
-    await prepareDoctorUpdateRecovery({
-      updateRecoveryOwner: recoveryOwner,
-      updateRecoveryBackup: recoveryBackup,
-      repair: hasFlag(normalizedArgv, "--fix") || hasFlag(normalizedArgv, "--repair"),
-      yes: hasFlag(normalizedArgv, "--yes"),
-      nonInteractive: hasFlag(normalizedArgv, "--non-interactive"),
-    });
-    const [{ guardUpdateDoctorSchemaUpgrade }, { defaultRuntime }] = await Promise.all([
-      import("../commands/doctor-update-schema-guard.js"),
-      import("../runtime.js"),
-    ]);
-    await guardUpdateDoctorSchemaUpgrade({
-      runtime: defaultRuntime,
-      json: options.builtInMachineOutput,
-    });
+    await prepareDoctorBootstrapRecovery(normalizedArgv, options.builtInMachineOutput);
   }
   await configureStartupTraces();
   if (!isHelpOrVersionInvocation && isGatewayRunInvocation) {
@@ -1238,7 +1204,9 @@ async function runCliWithPreparedOutputMode(
     env: process.env,
   });
   const useSourceOnlyBestEffortConfig =
-    !runtimeSupported || normalizedInvocation.primary === "update" || readOnlyDoctor;
+    !runtimeSupported ||
+    normalizedInvocation.primary === "update" ||
+    normalizedInvocation.primary === "doctor";
   const readBestEffortCliConfig = async (): Promise<OpenClawConfig> => {
     if (!bestEffortConfigPromise) {
       bestEffortConfigPromise = import("../config/io.js").then(async (configIo) => {
@@ -1249,7 +1217,7 @@ async function runCliWithPreparedOutputMode(
           // Routing must not create state before Doctor decides whether migrations are needed.
           observe: false,
           ...(isolateProxyConfigEnv ? { isolateEnv: true } : {}),
-          ...(bestEffortConfigStartupPolicy.validateConfigOnly
+          ...(bestEffortConfigStartupPolicy.validateConfigOnly || isGatewayRunInvocation
             ? { pluginValidation: "core-only" }
             : { skipPluginValidation: true }),
         };
@@ -1663,7 +1631,7 @@ async function runCliWithPreparedOutputMode(
       // Register the primary command (builtin or subcli) so help and command parsing
       // are correct even with lazy command registration.
       const { primary } = invocation;
-      if (primary && shouldRegisterPrimaryCommandOnly(parseArgv)) {
+      if (primary) {
         await startupTrace.measure("register-primary", async () => {
           const { getProgramContext } = await import("./program/program-context.js");
           const ctx = getProgramContext(program);

@@ -1,6 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
-
 export type ConfigFileWrite = {
   path: string;
   beforeHash: string | null;

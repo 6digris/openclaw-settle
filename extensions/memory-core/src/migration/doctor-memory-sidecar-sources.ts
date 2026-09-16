@@ -8,10 +8,10 @@ import {
 } from "openclaw/plugin-sdk/runtime-doctor-migrations";
 // Doctor discovery accepts retired array-backed config without loading a writable store.
 import { asOptionalObjectRecord as readLegacyObjectRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
-import {
-  LEGACY_MEMORY_SIDECAR_SUFFIXES,
-  type LegacyMemorySidecarSource,
-} from "./doctor-memory-sidecar-import.js";
+import type { LegacyMemorySidecarSource } from "./doctor-memory-sidecar-import.js";
+// Doctor discovery accepts retired array-backed config without loading a writable store.
+
+const LEGACY_MEMORY_SIDECAR_SUFFIXES = ["", "-wal", "-shm", "-journal"] as const;
 
 type MemoryFtsTokenizer = "unicode61" | "trigram";
 

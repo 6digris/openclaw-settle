@@ -24,26 +24,16 @@ import {
   sameUpdateRunDriver,
   type UpdateRunDriver,
 } from "../infra/update-run-driver.js";
-import { hasActiveUpdateDoctorStep, type UpdateRunRecord } from "../infra/update-run-record.js";
+import {
+  hasActiveUpdateDoctorStep,
+  hasVerifiedCompletedUpdate,
+  type UpdateRunRecord,
+} from "../infra/update-run-record.js";
+import { captureUpdateRecoveryInvocationGuard } from "../infra/update-run-recovery-admission.js";
 import type { UpdateRecoveryFence } from "../infra/update-run-recovery.js";
 import { ExitError, type RuntimeEnv } from "../runtime.js";
-import type { beginDoctorMaintenance } from "./doctor-maintenance.js";
 import type { DoctorOptions } from "./doctor-prompter.js";
-
-type DoctorRecoveryScope = {
-  runtime: RuntimeEnv;
-  prepared: boolean;
-  protected: boolean;
-  rehearsal?: boolean;
-  storesClosed?: boolean;
-  backup?: UpdateRecoveryBackupRef;
-  backupRunId?: string;
-  resolved?: UpdateRecoveryBackupRef;
-  reference?: UpdateRecoveryBackupRef;
-  assertRecoveryClaim?: () => void;
-  revalidatePendingRecovery?: () => Promise<void>;
-  maintenance?: Awaited<ReturnType<typeof beginDoctorMaintenance>>;
-};
+import type { DoctorRecoveryScope } from "./doctor-update-recovery-scope.js";
 
 type DoctorRunOutcome<T> = { ok: true; value: T } | { ok: false; error: unknown };
 
@@ -64,7 +54,7 @@ export async function withDoctorUpdateRecovery<T>(
   if (doctorRecovery.getStore()) {
     return run();
   }
-  const scope: DoctorRecoveryScope = { runtime, prepared: false, protected: false };
+  const scope: DoctorRecoveryScope = { runtime, active: true, prepared: false, protected: false };
   return withConfigFileWriteCapture(() =>
     doctorRecovery.run(scope, async () => {
       let outcome: DoctorRunOutcome<T>;
@@ -94,6 +84,14 @@ export async function withDoctorUpdateRecovery<T>(
               { cause: error },
             );
           }
+        }
+        if (scope.completeForwardRecovery && !failure) {
+          await scope.maintenance?.closeStores();
+          scope.storesClosed = true;
+          await scope.completeForwardRecovery();
+          scope.runtime.log(
+            "Forward update recovery completed; failed history and recovery generations retained.",
+          );
         }
         if (scope.backup) {
           if (failure) {
@@ -131,6 +129,7 @@ export async function withDoctorUpdateRecovery<T>(
       } catch (error) {
         settlementErrors.push(error);
       }
+      scope.active = false;
       scope.protected = false;
       try {
         await scope.maintenance?.release();
@@ -140,6 +139,9 @@ export async function withDoctorUpdateRecovery<T>(
         } else {
           settlementErrors.push(error);
         }
+      }
+      if (scope.refusal) {
+        throw scope.refusal.error;
       }
       if (settlementErrors.length > 0) {
         if (!failure && settlementErrors.length === 1) {
@@ -169,11 +171,20 @@ export async function withDoctorUpdateRecovery<T>(
 }
 
 function assertDoctorRecoveryCurrent(scope: DoctorRecoveryScope): void {
+  if (scope.guard) {
+    scope.guard();
+    return;
+  }
   if (!scope.maintenance) {
     throw new Error("Doctor recovery lost maintenance ownership.");
   }
   scope.maintenance.assertCurrent();
   scope.assertRecoveryClaim?.();
+}
+
+/** Bind this invocation once; a replacement owner cannot erase its first refusal. */
+export function captureDoctorUpdateRecoveryGuard(): (() => void) | undefined {
+  return captureUpdateRecoveryInvocationGuard(doctorRecovery.getStore());
 }
 
 function doctorBackupRunId(scope: DoctorRecoveryScope): string {
@@ -405,6 +416,7 @@ export async function prepareDoctorUpdateRecovery(options: DoctorOptions = {}): 
       scope.maintenance = rehearsal.maintenance;
       scope.assertRecoveryClaim = rehearsal.assertCurrent;
       scope.rehearsal = true;
+      captureDoctorUpdateRecoveryGuard();
       return;
     }
   }
@@ -425,6 +437,7 @@ export async function prepareDoctorUpdateRecovery(options: DoctorOptions = {}): 
   }
   const pending = !updating
     ? await backup.findPendingUpdateRecoveryBackup({
+        forwardRepair: true,
         warn: (message) => scope.runtime.error(message),
       })
     : null;
@@ -487,6 +500,7 @@ export async function prepareDoctorUpdateRecovery(options: DoctorOptions = {}): 
     await assertPendingRecoveryOffline();
     scope.revalidatePendingRecovery = async () => {
       const selected = await backup.findPendingUpdateRecoveryBackup({
+        forwardRepair: true,
         warn: (message) => scope.runtime.error(message),
       });
       if (
@@ -501,12 +515,21 @@ export async function prepareDoctorUpdateRecovery(options: DoctorOptions = {}): 
       await assertPendingRecoveryOffline();
       assertDoctorRecoveryCurrent(scope);
     };
-    await restoreDoctorBackup(scope, pending, { resumeRepair: true });
-    scope.resolved = pending;
-    scope.backup = pending;
+    await maintenance.closeStores();
+    scope.storesClosed = true;
+    await scope.revalidatePendingRecovery();
+    const { prepareUpdateRecoveryForwardResolution } =
+      await import("../infra/update-recovery-forward.js");
+    scope.completeForwardRecovery = await prepareUpdateRecoveryForwardResolution(
+      pending,
+      root,
+      { assertOwned: () => assertDoctorRecoveryCurrent(scope) },
+      import.meta.url,
+    );
     scope.reference = pending;
     scope.protected = true;
     scope.storesClosed = false;
+    captureDoctorUpdateRecoveryGuard();
     // The claimed capture protects all remaining writes; terminal publication waits for settlement.
     scope.revalidatePendingRecovery = undefined;
     return;
@@ -573,6 +596,7 @@ export async function prepareDoctorUpdateRecovery(options: DoctorOptions = {}): 
     scope.backupRunId = capturedManifest.runId;
   }
   scope.protected = true;
+  captureDoctorUpdateRecoveryGuard();
 }
 
 export function getDoctorUpdateRecoveryMode(): "capture" | "legacy-rehearsal" | undefined {
@@ -597,33 +621,6 @@ export function doctorUpdateRecoveryRuntime(runtime: RuntimeEnv): RuntimeEnv {
       throw new ExitError(code);
     },
   };
-}
-
-function hasVerifiedCompletedUpdate(run: UpdateRunRecord | undefined): run is UpdateRunRecord {
-  if (!run) {
-    return false;
-  }
-  const completed = (names: string[]) =>
-    run.steps.some((step) => names.includes(step.step) && step.status === "completed");
-  const health = run.verification;
-  return (
-    run.status === "succeeded" &&
-    run.finishedAtMs !== null &&
-    run.confirmedAtMs !== null &&
-    Boolean(run.after.version) &&
-    health.runningVersion === run.after.version &&
-    (!run.after.buildId || health.runningBuildId === run.after.buildId) &&
-    health.serviceRunning === true &&
-    health.versionMatch === true &&
-    health.readyz !== false &&
-    health.settled !== false &&
-    health.channelsReady !== false &&
-    health.pluginErrors?.length === 0 &&
-    completed(["openclaw doctor", "post-update verification"]) &&
-    completed(["gateway verification", "verifying"]) &&
-    run.origin.updateRecoveryCapture?.status !== "restore-failed" &&
-    run.origin.updateRecoveryCapture?.restored !== true
-  );
 }
 
 /** Admission may settle a completed prior update, but never adopt unresolved recovery. */

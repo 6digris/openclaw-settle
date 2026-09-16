@@ -48,6 +48,13 @@ Node harnesses:
   `node scripts/run-vitest.mjs <path-or-filter>`.
 - Changed typecheck/lint/guard proof: `node scripts/check-changed.mjs`.
 
+For Control UI route tests, run `node scripts/run-tsgo-core-test-shards.mjs ui`
+to check fixture types; `node scripts/run-tsgo.mjs -p tsconfig.ui.json` checks
+production UI code and excludes tests. Type route fixtures against the loader's
+required capabilities instead of asserting a partial fixture as the full
+application context. Keep real selection capabilities in lifecycle tests so
+agent scope changes and subscription cleanup follow the application behavior.
+
 For remote-environment proof, invoke `node scripts/crabbox-wrapper.mjs`
 directly. Avoid local `pnpm crabbox:run` in linked worktrees because pnpm may
 reconcile dependencies before the remote wrapper starts.
@@ -130,11 +137,18 @@ Isolated Doctor config scripts also share the prepared config-flow, health-write
 and install-index modules. Each case still starts a fresh process with separate
 state; standalone and watch runs resolve the original TypeScript entrypoints.
 
-The prepared model-catalog worker also uses this compiled generation. Separate
-prepared model generations still own separate worker threads, and their choice
-of source or built plugin artifacts stays independent of worker compilation.
+The model-catalog and session model-context workers also use this compiled generation.
+Model-catalog workers still belong to their prepared model generations; context reads
+retain their serial worker pool. Plugin source/built selection remains independent
+of worker compilation.
 Other worker-thread entries and arbitrary source CLI fixtures remain outside
 this declared set.
+
+The agent database module-identity test shares the compiled host and SQLite SDK
+entries while forcing a separate plugin transform of the SDK. Its standalone and
+watch runs retain a disposable build from current source because this regression
+specifically checks a packaged graph. Both modes use the same assertions and
+subprocess deadline.
 
 The session-title and child-link retention tests declare their title-reader,
 session-utils, and listing roots in this same generation. Each fresh
@@ -176,8 +190,9 @@ they impose resource limits. Third-party dependencies remain external except for
 the always-bundled OpenClaw packages. fs-safe remains external so its native loader
 resolves the optional platform package from fs-safe's own dependency scope, including
 nested pnpm installs. Compiled workers use that same installed package; they do not
-copy native binaries. The default stays off, and the existing `off`/`auto`/`require`
-opt-ins retain their behavior. Sealed portable worker bundles use guarded JavaScript
+copy native binaries. Native defaults stay off on macOS/Linux and auto on Windows,
+where secure credential reads require the matching native helper. Explicit
+`off`/`auto`/`require` settings retain precedence. Sealed portable worker bundles use guarded JavaScript
 only and explicitly disable native loading.
 
 Watch mode deliberately keeps the existing live-source path, including tsx for

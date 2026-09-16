@@ -18,7 +18,6 @@ import { ExitError, type RuntimeEnv } from "../runtime.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { prepareDoctorUpdateRecovery, withDoctorUpdateRecovery } from "./doctor-update-recovery.js";
 import { doctorCommand } from "./doctor.js";
-
 const mocks = vi.hoisted(() => ({
   create: vi.fn(),
   verify: vi.fn(),

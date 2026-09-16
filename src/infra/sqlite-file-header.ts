@@ -1,5 +1,4 @@
 import fs from "node:fs/promises";
-
 /** Classify snapshot inputs without opening SQLite or touching WAL companions. */
 export async function isSqliteSnapshotFile(pathname: string): Promise<boolean> {
   if (pathname.endsWith(".sqlite")) {

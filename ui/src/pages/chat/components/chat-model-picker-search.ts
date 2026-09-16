@@ -16,8 +16,12 @@ function visibleModelRows(root: HTMLElement): HTMLButtonElement[] {
     );
 }
 
+function isSelectableModelRow(row: HTMLButtonElement): boolean {
+  return !row.disabled && row.getAttribute("aria-disabled") !== "true";
+}
+
 function selectableModelRows(root: HTMLElement): HTMLButtonElement[] {
-  return visibleModelRows(root).filter((row) => !row.disabled);
+  return visibleModelRows(root).filter(isSelectableModelRow);
 }
 
 function ensureModelPickerIds(menu: HTMLElement): void {
@@ -101,7 +105,13 @@ export function updateModelSearch(input: HTMLInputElement, preserveHighlight = f
   const rows = [...menu.querySelectorAll<HTMLButtonElement>("[data-chat-model-option]")];
   const matches: Array<{ row: HTMLButtonElement; score: number; index: number }> = [];
   rows.forEach((row, index) => {
-    const score = query ? modelMatchRank(row, query) : 0;
+    const accountCollapsed =
+      row.hasAttribute("data-chat-account-option") &&
+      row
+        .closest("section")
+        ?.querySelector("[data-chat-account-group-toggle]")
+        ?.getAttribute("aria-expanded") !== "true";
+    const score = query ? modelMatchRank(row, query) : accountCollapsed ? null : 0;
     row.hidden = score === null;
     row.style.removeProperty("--chat-model-rank");
     delete row.dataset.chatModelRank;
@@ -115,7 +125,7 @@ export function updateModelSearch(input: HTMLInputElement, preserveHighlight = f
     .forEach(({ row }, rank) => {
       row.dataset.chatModelRank = String(rank);
       row.style.setProperty("--chat-model-rank", String(rank));
-      if (!row.disabled) {
+      if (isSelectableModelRow(row)) {
         selectableRows.push(row);
       }
     });
@@ -164,6 +174,9 @@ export function clearChatModelSearchOnEscape(event: KeyboardEvent): boolean {
 }
 
 export function handleModelSearchKeydown(event: KeyboardEvent): void {
+  if (event.isComposing || event.keyCode === 229) {
+    return;
+  }
   if (event.key !== "Enter" && event.key !== "ArrowDown" && event.key !== "ArrowUp") {
     return;
   }

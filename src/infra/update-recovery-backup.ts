@@ -39,7 +39,6 @@ import {
 } from "./update-recovery-config-writes.js";
 import type { UpdateRunDriver } from "./update-run-driver.js";
 import { resolveUpdateRecoveryTerminalOutcome } from "./update-run-record.js";
-
 const log = createSubsystemLogger("update/backup");
 type Authority = { assertOwned: () => void };
 type CreateOptions = Authority & {
@@ -451,8 +450,12 @@ async function listBackups(installRoot?: string): Promise<
 export async function assertNoUnresolvedUpdateRecoveryBackup(
   _params: { installRoot?: string } = {},
 ): Promise<void> {
-  const existing = (await listBackups())[0];
-  if (existing) {
+  const { hasUpdateRecoveryForwardResolution } = await import("./update-recovery-forward.js");
+  const captures = await listBackups();
+  for (const existing of captures) {
+    if (await hasUpdateRecoveryForwardResolution(existing.ref)) {
+      continue;
+    }
     throw new Error(
       `Update capture ${existing.ref.manifestPath} remains retained (${existing.outcome.status}); another protected mutation is refused. Inspect with openclaw update status --json; resolve with npx openclaw@latest doctor --fix.`,
     );
@@ -460,11 +463,29 @@ export async function assertNoUnresolvedUpdateRecoveryBackup(
 }
 
 /** Backup-local pending markers cannot override the update's durable terminal result. */
-export async function inspectUpdateRecoveryBackups(params: { installRoot?: string } = {}) {
+export async function inspectUpdateRecoveryBackups(
+  params: { installRoot?: string; forwardRepair?: true } = {},
+) {
   const snapshots = await listBackups(params.installRoot);
+  const { hasUpdateRecoveryForwardResolution } = await import("./update-recovery-forward.js");
+  const forwardResolved = new Set<string>();
+  for (const { ref } of snapshots) {
+    if (await hasUpdateRecoveryForwardResolution(ref)) forwardResolved.add(ref.manifestSha256);
+  }
   const { getUpdateRunAsync } = await import("./update-run-reader.js");
   return await Promise.all(
     snapshots.map(async ({ ref, manifest, outcome }) => {
+      if (forwardResolved.has(ref.manifestSha256)) {
+        return {
+          ref,
+          runId: manifest.runId,
+          captureStatus: outcome.status,
+          status: "forward-resolved" as const,
+          terminalOutcome: undefined,
+          nextAction: "openclaw update status --json",
+          message: `Update recovery set ${ref.manifestPath}: current state repaired forward; failed history and all generations retained.`,
+        };
+      }
       let terminalOutcome: "committed" | "restored" | undefined;
       let ambiguity: string | undefined;
       try {
@@ -478,7 +499,15 @@ export async function inspectUpdateRecoveryBackups(params: { installRoot?: strin
             terminalOutcome = outcome.status;
           }
         }
-        if (run?.origin.updateRecoveryCapture?.doctorCompleted && !terminalOutcome) {
+        if (
+          run?.origin.updateRecoveryCapture?.doctorCompleted &&
+          !terminalOutcome &&
+          !(
+            params.forwardRepair &&
+            run.status === "failed" &&
+            run.origin.updateRecoveryCapture.manifestSha256 === ref.manifestSha256
+          )
+        ) {
           ambiguity = "Doctor succeeded but its older updater has no complete runtime validation";
         }
         if (!terminalOutcome && !ambiguity && run?.status !== "failed") {
@@ -487,7 +516,7 @@ export async function inspectUpdateRecoveryBackups(params: { installRoot?: strin
       } catch (error) {
         ambiguity = `update outcome is unreadable: ${formatErrorMessage(error)}`;
       }
-      if (!terminalOutcome && !ambiguity && snapshots.length > 1) {
+      if (!terminalOutcome && !ambiguity && snapshots.length - forwardResolved.size > 1) {
         ambiguity =
           "other recovery sets exist; restoring this set could discard newer database writes";
       }
@@ -546,7 +575,7 @@ export async function reconcileUpdateRecoveryBackupOutcome(
 }
 
 export async function findPendingUpdateRecoveryBackup(
-  params: { installRoot?: string; warn?: (message: string) => void } = {},
+  params: { installRoot?: string; warn?: (message: string) => void; forwardRepair?: true } = {},
 ): Promise<UpdateRecoveryBackupRef | null> {
   const warn = params.warn ?? ((message: string) => log.warn(message));
   const inspections = await inspectUpdateRecoveryBackups(params);

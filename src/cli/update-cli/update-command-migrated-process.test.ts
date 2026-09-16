@@ -14,7 +14,6 @@ import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db
 import { killPidIfAlive, waitForPidToExit } from "../../test-utils/process-tree.js";
 import { runUpdateFinalizationDoctorInFreshProcess } from "./update-command-fresh-doctor.js";
 import type { MigratedUpdateFinalizationInput } from "./update-command-migrated-types.js";
-
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(closeOpenClawStateDatabaseForTest);
 

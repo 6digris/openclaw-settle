@@ -20,6 +20,7 @@ import {
   resolveTaskScriptPath,
 } from "./schtasks-layout.js";
 import {
+  findInstalledGatewayChildPid,
   findInstalledProcessPid,
   isNodeHostArgv,
   probeProcessState,
@@ -48,7 +49,6 @@ import {
   isUpdateOwnedGatewayServiceCommand,
 } from "./service-update-authority.js";
 import { WINDOWS_TASK_SUPERVISOR_FLAG } from "./windows-task-supervisor-contract.js";
-
 export const SCHEDULED_TASK_FALLBACK_POLL_MS = 250;
 export const SCHEDULED_TASK_FALLBACK_TIMEOUT_MS = 15_000;
 
@@ -85,8 +85,10 @@ export async function isStartupEntryInstalled(env: GatewayServiceEnv): Promise<b
 export async function removeStartupEntries(
   env: GatewayServiceEnv,
   stdout: NodeJS.WritableStream,
+  assertCurrent?: () => void,
 ): Promise<void> {
   for (const startupEntryPath of resolveStartupEntryPaths(env)) {
+    assertCurrent?.();
     try {
       assertGatewayServiceUpdateCurrent();
       await fs.unlink(startupEntryPath);
@@ -259,7 +261,7 @@ export async function resolveFallbackRuntime(
   const snapshot = shouldInspectProcess ? readWindowsProcessSnapshot() : null;
   const processPid =
     snapshot && installedArguments
-      ? findInstalledProcessPid(snapshot, port, installedArguments, () => true)
+      ? findInstalledGatewayChildPid(snapshot, port, installedArguments)
       : null;
   if (processPid) {
     return {
@@ -422,13 +424,14 @@ export async function restartStartupEntry(
   env: GatewayServiceEnv,
   stdout: NodeJS.WritableStream,
   onMutation?: (kind: "stop" | "restart") => void,
+  assertCurrent?: () => void,
 ): Promise<GatewayServiceRestartResult> {
   const runtime = await resolveControllableFallbackRuntime(env);
   if (runtime.pid) {
-    await terminateGatewayProcessTree(runtime.pid, 300);
+    await terminateGatewayProcessTree(runtime.pid, 300, assertCurrent);
     onMutation?.("stop");
   }
-  await launchFallbackTaskScript(env);
+  await launchFallbackTaskScript(env, undefined, assertCurrent);
   onMutation?.("restart");
   stdout.write(`${formatLine("Restarted Windows login item", resolveTaskName(env))}\n`);
   return { outcome: "completed" };

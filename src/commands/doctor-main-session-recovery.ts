@@ -5,6 +5,7 @@ import {
   applySessionEntryReplacements,
   iterateDoctorSessionKeyBatches,
 } from "../config/sessions/session-accessor.js";
+import { captureDoctorUpdateRecoveryGuard } from "./doctor-update-recovery.js";
 
 export type MainSessionRecoveryIntegrityCandidate = {
   clearStaleAbort: boolean;
@@ -40,6 +41,7 @@ export function inspectMainSessionRecoveryEntry(
 export async function noteMainSessionRecoveryIntegrity(
   params: MainSessionRecoveryDoctorParams,
 ): Promise<void> {
+  const assertCurrent = captureDoctorUpdateRecoveryGuard();
   const { wedged } = params;
   if (wedged.length === 0) {
     return;
@@ -67,12 +69,16 @@ export async function noteMainSessionRecoveryIntegrity(
     return;
   }
   const staleCount = params.countLabel(staleAborted.length, "wedged main session");
-  if (
-    !(await params.confirmRepair({
+  let confirmed: boolean;
+  try {
+    confirmed = await params.confirmRepair({
       message: `Clear stale aborted recovery flags for ${staleCount}?`,
       initialValue: true,
-    }))
-  ) {
+    });
+  } finally {
+    assertCurrent?.();
+  }
+  if (!confirmed) {
     return;
   }
 
@@ -80,21 +86,27 @@ export async function noteMainSessionRecoveryIntegrity(
   // Revalidate under the writer lock because session state can change while Doctor prompts.
   let repaired = 0;
   for (const sessionKeys of iterateDoctorSessionKeyBatches(staleAborted.map(({ key }) => key))) {
-    repaired += await applySessionEntryReplacements<number>({
-      consumePendingReset: true,
-      sessionKeys,
-      storePath: params.storePath,
-      update: (currentEntries) => {
-        const replacements = currentEntries.flatMap(({ sessionKey, entry }) => {
-          const transition = transitionMainSessionRecovery(entry, {
-            kind: "doctor_repair",
-            now: repairedAt,
+    assertCurrent?.();
+    try {
+      repaired += await applySessionEntryReplacements<number>({
+        assertCommitAllowed: assertCurrent,
+        consumePendingReset: true,
+        sessionKeys,
+        storePath: params.storePath,
+        update: (currentEntries) => {
+          const replacements = currentEntries.flatMap(({ sessionKey, entry }) => {
+            const transition = transitionMainSessionRecovery(entry, {
+              kind: "doctor_repair",
+              now: repairedAt,
+            });
+            return transition.kind === "doctor_repaired" ? [{ sessionKey, entry }] : [];
           });
-          return transition.kind === "doctor_repaired" ? [{ sessionKey, entry }] : [];
-        });
-        return { replacements, result: replacements.length };
-      },
-    });
+          return { replacements, result: replacements.length };
+        },
+      });
+    } finally {
+      assertCurrent?.();
+    }
   }
   if (repaired > 0) {
     params.changes.push(

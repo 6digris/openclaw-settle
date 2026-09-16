@@ -1,11 +1,10 @@
-// Gateway config reload planner.
-// Maps changed config paths to hot-reload actions, no-ops, or full restarts.
 import {
   type ChannelId,
   type ChannelPlugin,
   listChannelPlugins,
 } from "../channels/plugins/index.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { PluginLifecycleReason } from "../plugins/lifecycle.js";
 import { getActivePluginRegistry, getActivePluginRegistryVersion } from "../plugins/runtime.js";
 import { DEFAULT_ACCOUNT_ID } from "../routing/account-id.js";
 import { isTranscriptTitleOnlyConfigChange } from "../transcripts/config-reload.js";
@@ -28,6 +27,15 @@ export type GatewayReloadPlan = {
   restartHeartbeat: boolean;
   reconcileSystemJobs?: boolean;
   reloadPlugins: boolean;
+  /** Plugin owners whose undeclared channel settings require fresh registration. */
+  reloadPluginIds?: Set<string>;
+  pluginLifecycle?: {
+    pluginIds: readonly string[];
+    reason: PluginLifecycleReason;
+    operationId: string;
+    expectedSourceDigests?: Readonly<Record<string, string>>;
+    expectedInstallHashes?: Readonly<Record<string, string>>;
+  };
   restartChannels: Set<ChannelKind>;
   restartServices?: Set<string>;
   disposeMcpRuntimes: boolean;
@@ -66,6 +74,7 @@ type ReloadPolicy = {
   actions?: readonly ReloadAction[];
   channels?: readonly ChannelPlugin[];
   services?: readonly string[];
+  replaceChannelPlugins?: boolean;
   accountScoped?: boolean;
 };
 type ReloadRule = Omit<ReloadPolicy, "prefixes"> & { prefix: string };
@@ -133,13 +142,7 @@ function expandReloadPolicies(policies: ReloadPolicy[]): ReloadRule[] {
 const CORE_RELOAD_POLICIES: ReloadPolicy[] = [
   { prefixes: ["gateway.remote", "gateway.reload"], kind: "none" },
   {
-    prefixes: [
-      ...AUTH_CREDENTIAL_PATHS,
-      "mcp.apps",
-      "secrets.egressProxy",
-      "plugins.load",
-      "plugins.installs",
-    ],
+    prefixes: [...AUTH_CREDENTIAL_PATHS, "mcp.apps", "secrets.egressProxy"],
     kind: "restart",
   },
   {
@@ -214,6 +217,7 @@ const CORE_RELOAD_POLICIES: ReloadPolicy[] = [
     kind: "hot",
     actions: ["reconcileSystemJobs"],
   },
+  { prefixes: ["plugins.load", "plugins.installs"], kind: "hot", actions: ["reloadPlugins"] },
   { prefixes: ["cron"], kind: "hot", actions: ["restartCron"] },
   { prefixes: ["mcp", "gateway.publicOrigin"], kind: "hot", actions: ["disposeMcpRuntimes"] },
   // Capability ownership changes replace the plugin generation that owns its routes.
@@ -273,6 +277,12 @@ const DEFAULT_RELOAD_POLICIES: ReloadPolicy[] = [
     kind: "hot",
   },
   { prefixes: ["plugins"], kind: "hot", actions: ["reloadPlugins", "disposeMcpRuntimes"] },
+  {
+    prefixes: ["channels"],
+    kind: "hot",
+    actions: ["reloadPlugins"],
+    replaceChannelPlugins: true,
+  },
   { prefixes: ["gateway", "discovery"], kind: "restart" },
 ];
 
@@ -535,6 +545,18 @@ export function buildGatewayReloadPlan(
     plan.hotReasons.push(path);
     for (const action of rule?.actions ?? []) {
       plan[action] = true;
+    }
+    if (rule?.replaceChannelPlugins) {
+      // Manifest channel IDs survive even when registration has no active channel.
+      for (const record of getReloadPolicyCatalog().registry?.plugins ?? []) {
+        if (
+          record.channelIds.some(
+            (id) => path === "channels" || matchesReloadPrefix(path, `channels.${id}`),
+          )
+        ) {
+          (plan.reloadPluginIds ??= new Set()).add(record.id);
+        }
+      }
     }
     for (const service of rule?.services ?? []) {
       plan.restartServices?.add(service);

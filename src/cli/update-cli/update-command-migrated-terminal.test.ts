@@ -186,7 +186,12 @@ async function scenario(kind: Scenario) {
     return {
       result: {
         ...input.result,
-        recovery: { serviceRestartSafe: true, version: "1.0.0", service: "healthy" },
+        recovery: {
+          serviceRestartSafe: true,
+          packageRollbackVerified: kind === "not-rolled-back" ? undefined : true,
+          version: "1.0.0",
+          service: "healthy",
+        },
       },
       stateRestored: true,
       rolledBack: kind !== "not-rolled-back",
@@ -209,7 +214,8 @@ async function scenario(kind: Scenario) {
   let injected = false;
   let failure: unknown;
   try {
-    await withUpdateCommandTerminalResult(run, async () => {
+    await withUpdateCommandTerminalResult(async (registerRun) => {
+      registerRun(run);
       try {
         return await withUpdateCommandExecutor(run.runId, async (executor) => {
           run.executorFence = await executor.enter(root);

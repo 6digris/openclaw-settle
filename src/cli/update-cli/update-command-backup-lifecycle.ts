@@ -31,7 +31,6 @@ import type { FinishUpdateParams } from "./update-command-finish-types.js";
 import { assertUpdateCommandRecovery } from "./update-command-recovery.js";
 import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
 import { deferUpdateCommandCaptureRetirement } from "./update-command-terminal.js";
-
 function assertCaptureStateOwner(runEnv: NodeJS.ProcessEnv, captureEnv: NodeJS.ProcessEnv): void {
   if (
     resolvePathViaExistingAncestorSync(resolveOpenClawStateSqlitePath(runEnv)) !==

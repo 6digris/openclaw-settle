@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import fsNode from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -46,6 +47,7 @@ import {
 } from "../state/agent-deletion-journal.js";
 import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import {
+  closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -577,18 +579,18 @@ describe("Claw serving monitor cleanup", () => {
       const plan = await current.plan();
       const database = openOpenClawStateDatabase();
       if (failure === "cron-persistence") {
-        database.db.exec(`CREATE TEMP TRIGGER refuse_monitor_delete
+        database.db.exec(`CREATE TRIGGER refuse_monitor_delete
           BEFORE DELETE ON cron_jobs WHEN OLD.agent_id = 'worker'
           BEGIN SELECT RAISE(ABORT, 'synthetic monitor persistence failure'); END`);
       }
-      const rename = fs.rename.bind(fs);
+      const renameSync = fsNode.renameSync.bind(fsNode);
       const writeFailure =
         failure === "config-write"
-          ? vi.spyOn(fs, "rename").mockImplementation(async (...args) => {
+          ? vi.spyOn(fsNode, "renameSync").mockImplementation((...args) => {
               if (args[1] === current.state.configPath) {
                 throw new Error("synthetic config persistence failure");
               }
-              await rename(...args);
+              renameSync(...args);
             })
           : undefined;
       let result: Awaited<ReturnType<typeof current.apply>>;
@@ -631,6 +633,7 @@ describe("Claw serving monitor cleanup", () => {
       const firstJournal = readAgentDeletionJournal("worker");
       expect(firstJournal).toBeDefined();
       await expect(fs.access(path.join(current.workspaceDir, "SOUL.md"))).resolves.toBeUndefined();
+      await closeOpenClawStateDatabaseAsync();
       closeOpenClawStateDatabaseForTest();
       expect(readAgentDeletionJournal("worker")?.operationId).toBe(firstJournal?.operationId);
       current.setReloadSettled(true);
@@ -797,6 +800,7 @@ describe("Claw serving monitor cleanup", () => {
       expect(readAgentDeletionJournal("worker")).toBeDefined();
       expect(Object.hasOwn(current.getConfig().agents?.entries ?? {}, "worker")).toBe(true);
       await expect(fs.access(path.join(current.workspaceDir, "SOUL.md"))).resolves.toBeUndefined();
+      await closeOpenClawStateDatabaseAsync();
       closeOpenClawStateDatabaseForTest();
       expect(readAgentDeletionJournal("worker")).toBeDefined();
       release.resolve();

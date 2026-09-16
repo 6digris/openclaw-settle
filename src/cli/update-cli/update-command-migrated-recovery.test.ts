@@ -13,14 +13,11 @@ import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
 import { runUtf8CommandWithTimeout } from "../../process/exec.js";
 import { printResult } from "./progress.js";
 import type { FinishUpdateParams } from "./update-command-finish-types.js";
-import {
-  continueMigratedUpdateInFreshProcess,
-  type MigratedUpdateFinalizationInput,
-} from "./update-command-migrated.js";
+import type { MigratedUpdateFinalizationInput } from "./update-command-migrated-types.js";
+import { continueMigratedUpdateInFreshProcess } from "./update-command-migrated.js";
 import { recordUpdateResultNextAction } from "./update-command-result.js";
 import { rollbackFailedUpdate } from "./update-command-rollback.js";
 import { createWindowsTaskAutoStartRecovery } from "./update-command-windows-task.js";
-
 const state = vi.hoisted(() => ({
   childActive: false,
   executorCurrent: true,

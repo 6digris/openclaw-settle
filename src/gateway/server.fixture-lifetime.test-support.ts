@@ -257,8 +257,9 @@ test("observes startup cleanup ownership through fixture teardown", async () => 
       const owner = retain();
       metadataRetains++;
       return { ...owner, close: async (...args) => {
-        await own(owner.close(...args));
+        const result = await own(owner.close(...args));
         metadataReleases++;
+        return result;
       } };
     });
     restorers.push(() => metadataSpy.mockRestore());
@@ -268,7 +269,7 @@ test("observes startup cleanup ownership through fixture teardown", async () => 
       return own(preparing.then(async runtime => {
         lifecycle = runtime;
         tlsError = runtime.gatewayTls.error;
-        runtime.registerGatewayLifetimeSidecars([sidecar]);
+        runtime.registerGatewayLifetimeSidecars(sidecar);
         const close = runtime.closeOnStartupFailure;
         const closeSpy = vi.spyOn(runtime, "closeOnStartupFailure").mockImplementation(() => {
           const closing = own(close());
@@ -374,7 +375,7 @@ test("observes startup cleanup ownership through fixture teardown", async () => 
       kernelReturned: kernelResult.status === "fulfilled", listenCalls: nativeListens.length,
       probeListening: probe.listening, blockerListening: blocker.listening,
       stopCalls: stopProbe.mock.calls.length, lowerStops, metadataRetains, metadataReleases,
-      nativeOwnerRetained: lifecycle.runtimeState.gatewayLifetimeSidecars.includes(sidecar),
+      nativeOwnerRetained: lifecycle.runtimeState.gatewayLifetimeSidecars.snapshot().includes(sidecar),
       fixtureRelease, afterEach, cleanup, successorSetup, successorStarted, homeRestored,
       beforeCleanup, afterCleanup, afterSuccessor: readState(),
     };

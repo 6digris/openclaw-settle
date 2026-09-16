@@ -10,7 +10,6 @@ import {
   waitForSignalExitBarriers,
 } from "../signal-exit-barrier.js";
 import type { UpdateCommandOptions } from "./shared.js";
-
 export class UpdateCommandAbort extends Error {
   constructor() {
     super("openclaw-update-abort");

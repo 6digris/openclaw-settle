@@ -11,12 +11,29 @@ import type {
   CronToolsAllowExecTargetRequirement,
   CronToolsAllowProvenance,
 } from "../types.js";
+import type { CronAddOptions, CronUpdateOptions } from "./state.js";
+
+export function consumeRuntimeAuthorityMutationOptions(
+  opts: CronAddOptions | CronUpdateOptions | undefined,
+): Pick<Parameters<typeof reconcileRuntimeAuthority>[0], "captured" | "runtimeAuthority"> {
+  // Validation-only guards must not look like an empty fresh capture: that
+  // would erase an existing runtime ceiling during an otherwise routine edit.
+  opts?.commitGuard?.();
+  return {
+    captured: opts?.captureRuntimeAuthority !== undefined,
+    runtimeAuthority: opts?.captureRuntimeAuthority?.(),
+  };
+}
 
 function stampScheduledToolPolicy(
   job: CronStoredJob,
-  scheduledToolPolicy: CronScheduledToolPolicy | undefined,
+  scheduledToolPolicy: CronScheduledToolPolicy | null | undefined,
 ): void {
-  if (!cronJobUsesToolRuntime(job) || job.payload.toolsAllow === undefined) {
+  if (
+    !cronJobUsesToolRuntime(job) ||
+    job.payload.toolsAllow === undefined ||
+    scheduledToolPolicy === null
+  ) {
     delete job.scheduledToolPolicy;
     return;
   }
@@ -35,18 +52,24 @@ function reconcileScheduledToolPolicy(params: {
   job: CronStoredJob;
   previouslyUsedToolRuntime: boolean;
   explicitlyMutatesToolsAllow: boolean;
-  scheduledToolPolicy?: CronScheduledToolPolicy;
+  scheduledToolPolicy?: CronScheduledToolPolicy | null;
 }): void {
   const { job } = params;
-  if (!cronJobUsesToolRuntime(job) || job.payload.toolsAllow === undefined) {
-    delete job.scheduledToolPolicy;
-    return;
-  }
   const current = resolveCronScheduledToolPolicy({
-    toolsAllow: job.payload.toolsAllow,
+    toolsAllow: job.payload.toolsAllow ?? [],
     scheduledToolPolicy: job.scheduledToolPolicy,
     owner: job.owner,
   });
+  if (!cronJobUsesToolRuntime(job) || job.payload.toolsAllow === undefined) {
+    // A dormant account binding is still its ceiling. Dropping it would let
+    // a later operator payload conversion silently adopt trusted authority.
+    if (current?.mode === "account") {
+      job.scheduledToolPolicy = current;
+    } else {
+      delete job.scheduledToolPolicy;
+    }
+    return;
+  }
   if (current) {
     job.scheduledToolPolicy = current;
     return;
@@ -158,7 +181,7 @@ export function reconcileToolsAllowAuthority(params: {
   job: CronStoredJob;
   previouslyUsedToolRuntime: boolean;
   explicitlyMutatesToolsAllow: boolean;
-  scheduledToolPolicy?: CronScheduledToolPolicy;
+  scheduledToolPolicy?: CronScheduledToolPolicy | null;
   toolsAllowProvenance?: CronToolsAllowProvenance;
   toolsAllowExecTarget?: CronToolsAllowExecTarget;
 }): void {

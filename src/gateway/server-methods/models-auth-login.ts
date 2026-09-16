@@ -7,19 +7,21 @@ import {
   completeProviderModelAccess,
   type PreparedProviderModelAccess,
 } from "../../commands/models/auth-model-policy.js";
-import { runModelsAuthLoginFlowCore } from "../../commands/models/auth.js";
+import { runModelsAuthLoginFlowForGateway } from "../../commands/models/auth.js";
 import { resolveManifestDeclaredProviderAuthChoices } from "../../plugins/provider-auth-choices.js";
 import {
   formatProviderLoginChoiceRef,
   isProviderLoginChoiceStartable,
 } from "../../plugins/provider-login-options.js";
 import { createNonExitingRuntime } from "../../runtime.js";
-import { ProviderAuthConfigApplyError } from "../../shared/provider-auth-result.js";
+import {
+  ProviderAuthConfigApplyError,
+  ProviderCredentialsSavedError,
+} from "../../shared/provider-auth-result.js";
 import { WizardSession } from "../../wizard/session.js";
+import { refreshModelAuthStateAfterMutation } from "../model-auth-refresh.js";
 import { createProviderBrowserAuthSession } from "../provider-browser-auth.js";
 import { bindWizardLoginOwner } from "../server-wizard-sessions.js";
-import { getTailscalePublishedOrigin } from "../tailscale-published-origin.js";
-import { refreshModelAuthStateAfterMutation } from "./models-auth-refresh.js";
 import {
   createAdmittedWizardSession,
   respondSetupAdmissionBusy,
@@ -102,21 +104,21 @@ export const modelsAuthLoginHandlers: GatewayRequestHandlers = {
             await prompter.openUrl?.(url);
             assertFlowCurrent();
           };
-          const published = getTailscalePublishedOrigin();
-          const browser =
-            published && client.browserOrigin?.origin === published.origin
-              ? createProviderBrowserAuthSession({
-                  signal: AbortSignal.any([signal, published.signal]),
-                  openUrl,
-                })
-              : undefined;
+          const browser = client.browserOrigin
+            ? createProviderBrowserAuthSession({
+                signal,
+                openUrl,
+                browserOrigin: client.browserOrigin,
+              })
+            : undefined;
           const assertFlowCurrent = () => {
             signal.throwIfAborted();
             assertCurrent();
             browser?.assertCurrent();
           };
+          let result: Awaited<ReturnType<typeof runModelsAuthLoginFlowForGateway>>;
           try {
-            const result = await runModelsAuthLoginFlowCore({
+            result = await runModelsAuthLoginFlowForGateway({
               provider: choice.providerId,
               method: choice.methodId,
               ownerPluginId: choice.pluginId,
@@ -131,14 +133,14 @@ export const modelsAuthLoginHandlers: GatewayRequestHandlers = {
               signal: browser?.signal ?? signal,
               isRemote: true,
               openUrl,
-              browserAuthorization: browser?.authorize,
+              browserAuthorization: browser?.available ? browser.authorize : undefined,
               assertCurrent: assertFlowCurrent,
               beforePersistentEffect: () => {
                 assertFlowCurrent();
                 runner.lockCancellationForPreparation();
               },
               refreshAfterLogin: (agentId) =>
-                refreshModelAuthStateAfterMutation(context, "login", agentId),
+                refreshModelAuthStateAfterMutation(context.getRuntimeConfig, "login", agentId),
             });
             if (result.profiles.length === 0) {
               throw new Error(`${choice.choiceLabel} did not return a credential profile.`);
@@ -150,8 +152,9 @@ export const modelsAuthLoginHandlers: GatewayRequestHandlers = {
             signal.throwIfAborted();
             assertCurrent();
           };
+          let modelAccessOutcome: Awaited<ReturnType<typeof completeProviderModelAccess>>;
           try {
-            await completeProviderModelAccess({
+            modelAccessOutcome = await completeProviderModelAccess({
               prepared: modelAccess,
               prompter,
               runtime,
@@ -163,6 +166,16 @@ export const modelsAuthLoginHandlers: GatewayRequestHandlers = {
             });
           } catch (error) {
             throw new ProviderAuthConfigApplyError(error);
+          }
+          if (modelAccessOutcome.kind === "saved" && modelAccessOutcome.application !== "applied") {
+            throw new ProviderCredentialsSavedError(
+              "Your sign-in and model access were saved, but OpenClaw has not confirmed that model access is active. Close this dialog. Open Settings and select Apply changes, then send /models.",
+            );
+          }
+          if (result.authRefresh !== "refreshed") {
+            throw new ProviderCredentialsSavedError(
+              "Your sign-in was saved, but the connection update could not be confirmed. Send /login refresh in chat to try again.",
+            );
           }
         },
         { timeoutMs: 25 * 60_000 },

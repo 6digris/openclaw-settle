@@ -1,5 +1,5 @@
 import os from "node:os";
-import { vi } from "vitest";
+import { vi, expect } from "vitest";
 import { GATEWAY_SERVICE_SELECTOR_ENV_KEYS } from "../../daemon/constants.js";
 import type { GatewayServiceCommandConfig } from "../../daemon/service.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
@@ -156,3 +156,16 @@ export const successfulPluginUpdate: PostCorePluginUpdateResult = {
   integrityDrifts: [],
   warnings: [],
 };
+
+export function expectUpdateFailure(
+  promise: Promise<unknown>,
+  reason: string,
+  details: object = {},
+) {
+  return expect(promise).rejects.toMatchObject({
+    name: "UpdateCommandFailure",
+    exitCode: 1,
+    result: { status: "error", reason },
+    ...details,
+  });
+}

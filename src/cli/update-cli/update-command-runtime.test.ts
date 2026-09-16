@@ -3,7 +3,6 @@ import * as nodeSqlite from "../../../node-sqlite.mjs";
 import { ExitError } from "../../runtime.js";
 import * as cleanupScope from "../runtime-cleanup-scope.js";
 import { updateCommand } from "./update-command.js";
-
 const mocks = vi.hoisted(() => ({
   stateAdmission: vi.fn(() => {
     throw new Error("state admission reached on unsupported Node");
@@ -35,8 +34,9 @@ describe("unsupported CLI Node update admission", () => {
 
   it.each(["22.23.2", "26.0.0"])("refuses Node %s before stateful preparation", async (node) => {
     vi.stubGlobal("process", { ...process, versions: { ...process.versions, node } });
-    vi.spyOn(nodeSqlite, "detectCurrentSqliteCapabilities").mockReturnValue({
-      ...nodeSqlite.detectCurrentSqliteCapabilities(),
+    const capabilities = await nodeSqlite.detectCurrentSqliteCapabilities();
+    vi.spyOn(nodeSqlite, "detectCurrentSqliteCapabilities").mockResolvedValue({
+      ...capabilities,
       text: false,
     });
     await expect(updateCommand({ json: true })).rejects.toEqual(new ExitError(1));

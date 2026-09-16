@@ -24,7 +24,6 @@ import { withUpdateRecoveryConfigWrites } from "./update-recovery-config-writes.
 import { createRetainedCheckpointFixture } from "./update-retained-checkpoint.test-support.js";
 import { createUpdateRun, finishUpdateRun, getUpdateRun } from "./update-run-ledger.js";
 import { assertUpdateRecoveryAdmission } from "./update-run-recovery-admission.js";
-
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => {
   closeOpenClawStateDatabaseForTest();
@@ -37,6 +36,34 @@ describe("package-only recovery admission", () => {
     await assertUpdateRecoveryAdmission({ env: { OPENCLAW_STATE_DIR: root } });
     expect(fsSync.existsSync(root)).toBe(false);
   });
+
+  it.each([false, true])(
+    "keeps the selected recovery directory and file together (explicit path=%s)",
+    async (explicitPath) => {
+      const f = createRetainedCheckpointFixture(dirs.make("update-admission-target-"));
+      const replacement = path.join(dirs.make("update-admission-replacement-"), "absent");
+      const before = fsSync.readFileSync(f.file);
+      let changed = false;
+      const lstat = fs.lstat.bind(fs);
+      vi.spyOn(fs, "lstat").mockImplementation(async (...args) => {
+        const result = await lstat(...args);
+        if (String(args[0]) === path.dirname(f.file)) {
+          changed = true;
+          f.env.OPENCLAW_STATE_DIR = replacement;
+        }
+        return result;
+      });
+      await expect(
+        assertUpdateRecoveryAdmission(explicitPath ? { ...f.options, path: f.file } : f.options),
+      ).rejects.toMatchObject({
+        name: "UpdateRecoveryRequiredError",
+        record: { runId: f.run.runId },
+      });
+      expect(changed).toBe(true);
+      expect(fsSync.readFileSync(f.file).equals(before)).toBe(true);
+      expect(fsSync.existsSync(replacement)).toBe(false);
+    },
+  );
 
   it.each(["sealed", "unsealed", "displaced", "orphan beside canonical"] as const)(
     "refuses %s checkpoint state without changing retained bytes",
@@ -65,7 +92,15 @@ describe("package-only recovery admission", () => {
       await expect(assertUpdateRecoveryAdmission(f.options)).rejects.toThrow(
         /recovery|publication/i,
       );
-      expect(snapshot()).toEqual(before);
+      const after = snapshot();
+      expect(after).toHaveLength(before.length);
+      for (const [index, bytes] of before.entries()) {
+        if (bytes === null) {
+          expect(after[index]).toBeNull();
+        } else {
+          expect(after[index]?.equals(bytes)).toBe(true);
+        }
+      }
       if (freshRun) {
         expect(getUpdateRun(freshRun.runId, f.options)).toEqual(freshRun);
       }

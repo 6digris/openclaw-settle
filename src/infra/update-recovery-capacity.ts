@@ -3,7 +3,6 @@ import path from "node:path";
 import { formatDiskSpaceBytes, tryReadDiskSpace } from "./disk-space.js";
 import { SQLITE_SIDECAR_SUFFIXES } from "./sqlite-files.js";
 import { MAX_MANIFEST_BYTES, statOrMissing } from "./update-recovery-backup-files.js";
-
 const RESERVE_BYTES = 1024 * 1024 * 1024;
 
 type CaptureFile = { pathname: string; size: number; sqlite: boolean };
