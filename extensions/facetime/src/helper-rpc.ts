@@ -229,8 +229,11 @@ export class FaceTimeHelperSocketServer {
     return await this.#sendActionToAll("start-transmission", { callUUID });
   }
 
-  async inspectCall(callUUIDs: readonly string[]): Promise<HelperActionResult> {
-    return await this.#sendActionToAll("inspect-call", { callUUIDs }, 750);
+  async inspectCall(
+    callUUIDs: readonly string[],
+    requiredPeerProcessIds: readonly number[] = [],
+  ): Promise<HelperActionResult> {
+    return await this.#sendActionToAll("inspect-call", { callUUIDs }, 750, requiredPeerProcessIds);
   }
 
   get connectedSockets(): number {
@@ -568,6 +571,7 @@ export class FaceTimeHelperSocketServer {
     action: string,
     data: Record<string, unknown>,
     timeoutMs = 5_000,
+    requiredPeerProcessIds: readonly number[] = [],
   ): Promise<HelperActionResult> {
     const sockets = [...this.#sockets].filter(
       (candidate) =>
@@ -579,6 +583,7 @@ export class FaceTimeHelperSocketServer {
         "FaceTime helper is not connected to the facetime event socket",
       );
     }
+    const peers = sockets.map((socket) => this.#socketPeers.get(socket));
     const results = await Promise.allSettled(
       sockets.map((socket) => this.#sendActionOnSocket(socket, action, data, timeoutMs)),
     );
@@ -587,18 +592,25 @@ export class FaceTimeHelperSocketServer {
         ? [
             {
               ...result.value,
-              helperBundleIdentifier:
-                this.#socketPeers.get(sockets[index])?.bundleIdentifier ?? "unknown",
-              helperPeer: this.#socketPeers.get(sockets[index]),
+              helperBundleIdentifier: peers[index]?.bundleIdentifier ?? "unknown",
+              helperPeer: peers[index],
             },
           ]
         : [],
     );
     if (fulfilled.length > 0) {
+      const fulfilledProcessIds = new Set(
+        fulfilled.flatMap((result) => {
+          const peer = result.helperPeer;
+          return peer && typeof peer === "object" && "processId" in peer ? [peer.processId] : [];
+        }),
+      );
       return {
         helpersContacted: sockets.length,
         topologyGeneration: this.#connectionGeneration,
-        topologyComplete: fulfilled.length === sockets.length,
+        topologyComplete:
+          fulfilled.length === sockets.length &&
+          requiredPeerProcessIds.every((processId) => fulfilledProcessIds.has(processId)),
         helperResults: fulfilled,
         ...fulfilled[fulfilled.length - 1],
       };

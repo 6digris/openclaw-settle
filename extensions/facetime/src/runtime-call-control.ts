@@ -180,7 +180,11 @@ export function createFaceTimeCallControl(params: {
             await call.runCarrierCommand({
               generation,
               allowClosing: true,
-              action: async () => await params.helper.inspectCall([...call.carrierCallUUIDs]),
+              action: async () =>
+                await params.helper.inspectCall(
+                  [...call.carrierCallUUIDs],
+                  [...call.carrierPeers.keys()],
+                ),
             });
           const first = projectCompleteFaceTimeAbsence(await inspect());
           await new Promise<void>((resolve) => {

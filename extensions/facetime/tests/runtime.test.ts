@@ -461,14 +461,19 @@ describe("FaceTime runtime call sequencing", () => {
     const talk = createTalkDriver({});
     mocks.startTalk.mockResolvedValueOnce(talk);
     const runtime = await createRuntime();
-    mocks.helperParams?.onMessage(incomingCall(1));
+    mocks.helperParams?.onMessage(incomingCall(1), {
+      bundleIdentifier: "com.apple.FaceTime",
+      processId: 4321,
+      processStartedAtMs: Date.parse("Tue Nov 14 22:13:20 2023"),
+      connectionGeneration: 7,
+    });
     await vi.waitFor(() => expect(talk.activate).toHaveBeenCalledOnce());
     vi.clearAllMocks();
     mocks.helper.connectedSockets = 1;
     mocks.helper.connectedHelperBundles = ["com.apple.mobilephone"];
     mocks.helper.leaveCall.mockRejectedValueOnce(new Error("Call not found!"));
     mocks.helper.inspectCall.mockResolvedValue({
-      helpersContacted: 2,
+      helpersContacted: 1,
       topologyGeneration: 1,
       topologyComplete: false,
       helperResults: [{ outcome: "absent", found: false }],
@@ -480,6 +485,7 @@ describe("FaceTime runtime call sequencing", () => {
     expect((await runtime.status()).calls).toMatchObject([
       { callUUID: "call-1", carrierHangupPending: true },
     ]);
+    expect(mocks.helper.inspectCall).toHaveBeenCalledWith(["call-1"], [4321]);
     expect(talk.close).not.toHaveBeenCalled();
 
     mocks.helper.connectedSockets = 2;

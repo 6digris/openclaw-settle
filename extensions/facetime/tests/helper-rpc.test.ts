@@ -129,12 +129,12 @@ async function registerHelper(
   bundleIdentifier: string,
   buildId: string | null = TEST_HELPER_BUILD_ID,
   expectConnected = true,
+  processId = 1234,
 ): Promise<TestHelperSession | undefined> {
   if (buildId === null) {
     socket.write(`${JSON.stringify({ event: "ping", bundle_identifier: bundleIdentifier })}\r\n`);
     return undefined;
   }
-  const processId = 1234;
   const processStartedAtMs = 1_700_000_000_000;
   const clientNonce = "c".repeat(64);
   socket.write(
@@ -320,6 +320,74 @@ describe("FaceTime helper RPC", () => {
       helpersContacted: 2,
       helperResults: [expect.objectContaining({ handled: true })],
       handled: true,
+    });
+  });
+
+  it("keeps a disconnected carrier peer in inspect-call completeness", async () => {
+    const port = await reservePort();
+    helper = new FaceTimeHelperSocketServer({
+      host: "127.0.0.1",
+      port,
+      logger: console,
+      ipcKey: TEST_HELPER_AUTH_TOKEN,
+      buildId: TEST_HELPER_BUILD_ID,
+      onMessage: () => undefined,
+    });
+    await helper.start();
+
+    const faceTimeClient = net.createConnection({ host: "127.0.0.1", port });
+    client = faceTimeClient;
+    const phoneClient = net.createConnection({ host: "127.0.0.1", port });
+    faceTimeClient.setEncoding("utf8");
+    phoneClient.setEncoding("utf8");
+    await Promise.all([
+      waitForSocketEvent(faceTimeClient, "connect"),
+      waitForSocketEvent(phoneClient, "connect"),
+    ]);
+    await registerHelper(
+      faceTimeClient,
+      helper,
+      "com.apple.FaceTime",
+      TEST_HELPER_BUILD_ID,
+      true,
+      1234,
+    );
+    await registerHelper(
+      phoneClient,
+      helper,
+      "com.apple.mobilephone",
+      TEST_HELPER_BUILD_ID,
+      true,
+      5678,
+    );
+
+    const faceTimeClosed = waitForSocketEvent(faceTimeClient, "close");
+    faceTimeClient.destroy();
+    await faceTimeClosed;
+    await waitFor(() => helper?.connectedSockets === 1);
+
+    const received = readHelperPayload(phoneClient);
+    const actionPromise = helper.inspectCall(["call-phone"], [1234]);
+    const payload = await received;
+    expect(payload).toMatchObject({
+      action: "inspect-call",
+      data: { callUUIDs: ["call-phone"] },
+    });
+    sendHelperPayload(phoneClient, {
+      transactionId: payload.transactionId,
+      outcome: "absent",
+      found: false,
+    });
+
+    await expect(actionPromise).resolves.toMatchObject({
+      helpersContacted: 1,
+      topologyComplete: false,
+      helperResults: [
+        expect.objectContaining({
+          found: false,
+          helperPeer: expect.objectContaining({ processId: 5678 }),
+        }),
+      ],
     });
   });
 
