@@ -1276,7 +1276,6 @@ async fn run_session<S>(
         };
         tokio::pin!(deadline);
         tokio::select! {
-            biased;
             changed = close.changed() => {
                 let _ = changed;
                 let _ = tokio::time::timeout(write_timeout, socket.close(None)).await;
