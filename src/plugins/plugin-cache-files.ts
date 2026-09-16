@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { err, ok } from "@openclaw/normalization-core/result";
 import { openRootFileSync, readFileDescriptorBoundedSync } from "../infra/boundary-file-read.js";
 import { resolveRootPathSync } from "../infra/boundary-path.js";
 import { FsSafeError } from "../infra/fs-safe.js";
@@ -87,17 +88,31 @@ export function refreshPluginCacheStat(targetPath: string): fs.Stats | null {
   return pluginCacheStatSync(targetPath);
 }
 
-export function pluginCacheStatSync(targetPath: string): fs.Stats | null {
+export function pluginCacheStatSync(
+  targetPath: string,
+  options?: { throwOnError: boolean },
+): fs.Stats | null {
   const facts = pathFacts(targetPath);
   if (facts.stat === undefined) {
     try {
-      facts.stat = fs.statSync(targetPath);
-      facts.exists = true;
-    } catch {
-      facts.stat = null;
+      // Absence needs no Error; keep access failures distinct for optional artifact probes.
+      const stat = fs.statSync(targetPath, { throwIfNoEntry: false }) ?? null;
+      facts.stat = ok(stat);
+      if (stat) {
+        facts.exists = true;
+      }
+    } catch (error) {
+      materializeErrorStack(error);
+      facts.stat = err(error);
     }
   }
-  return facts.stat;
+  if (facts.stat.ok) {
+    return facts.stat.value;
+  }
+  if (options?.throwOnError) {
+    throw facts.stat.error;
+  }
+  return null;
 }
 
 /** Final symlink checks must retain lstat facts separately from followed target stats. */
@@ -175,7 +190,7 @@ export function checkPluginCacheEntry(params: {
     } else {
       fs.closeSync(opened.fd);
       root = bindPluginCacheRoot(params.rootDir, opened.rootRealPath);
-      Object.assign(pathFacts(opened.path), { exists: true, stat: opened.stat });
+      Object.assign(pathFacts(opened.path), { exists: true, stat: ok(opened.stat) });
       checked = { ok: true, path: opened.path, rootRealPath: opened.rootRealPath, exists: true };
     }
   }
@@ -268,7 +283,7 @@ export function readPluginCacheFile(params: {
           ctimeMs: opened.stat.ctimeMs,
         },
       };
-      Object.assign(pathFacts(absolutePath), { exists: true, stat: opened.stat });
+      Object.assign(pathFacts(absolutePath), { exists: true, stat: ok(opened.stat) });
       root.checkedEntries.set(key, {
         ok: true,
         path: opened.path,
@@ -326,7 +341,7 @@ function readPluginCacheRegularFile(params: {
         hash: crypto.createHash("sha256").update(contents).digest("hex"),
         signature: { size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs },
       };
-      Object.assign(pathFacts(absolutePath), { exists: true, stat });
+      Object.assign(pathFacts(absolutePath), { exists: true, stat: ok(stat) });
       root.files.set(key, entry);
     } catch (error) {
       materializeErrorStack(error);

@@ -1,6 +1,10 @@
 import path from "node:path";
 import { isMissingPathError } from "../infra/errno.js";
-import { pluginCacheExistsSync, readPluginCacheDirectory } from "./plugin-cache-files.js";
+import {
+  pluginCacheExistsSync,
+  pluginCacheStatSync,
+  readPluginCacheDirectory,
+} from "./plugin-cache-files.js";
 
 /** Resolves artifact paths in the caller's layout and filename preference order. */
 export function resolvePluginRootArtifactPath(
@@ -15,7 +19,9 @@ export function resolvePluginRootArtifactPath(
       const directory = path.dirname(candidate);
       if (directory !== checkedDirectory) {
         try {
-          skipDirectory = readPluginCacheDirectory(directory).length === 0;
+          skipDirectory =
+            pluginCacheStatSync(directory, { throwOnError: true }) === null ||
+            readPluginCacheDirectory(directory).length === 0;
         } catch (error) {
           // Directory-list permissions do not determine whether a child can be accessed.
           skipDirectory = isMissingPathError(error);

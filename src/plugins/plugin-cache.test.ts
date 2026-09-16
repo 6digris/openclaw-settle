@@ -10,10 +10,13 @@ import { resolvePluginDoctorContractArtifact } from "./doctor-contract-artifact.
 import { buildInstalledPluginIndexRecords } from "./installed-plugin-index-record-builder.js";
 import { loadPluginManifestRegistryCore } from "./manifest-registry.js";
 import {
+  checkPluginCacheEntry,
   pluginCacheExistsSync,
   pluginCacheRealpathSync,
+  pluginCacheStatSync,
   readPluginCacheFile,
   readPluginCacheJsonFile,
+  refreshPluginCacheStat,
 } from "./plugin-cache-files.js";
 import {
   createPluginCache,
@@ -36,6 +39,41 @@ afterEach(() => {
 });
 
 describe("plugin package facts", () => {
+  it.each(["checked", "boundary", "regular", "refresh"])(
+    "replaces denied stat facts after a successful %s observation",
+    (observation) => {
+      const rootDir = fs.realpathSync(tempDirs.make("plugin-stat-repair-"));
+      const filePath = path.join(rootDir, "catalog.json");
+      fs.writeFileSync(filePath, "{}");
+      const failure = Object.assign(new Error("metadata denied"), { code: "EACCES" });
+      const stat = fs.statSync;
+      const denied = vi.spyOn(fs, "statSync").mockImplementation((target, options) => {
+        if (target === filePath) {
+          throw failure;
+        }
+        return stat(target, options);
+      });
+      expect(pluginCacheStatSync(filePath)).toBeNull();
+      expect(() => pluginCacheStatSync(filePath, { throwOnError: true })).toThrow(failure);
+      denied.mockRestore();
+
+      const params = { rootDir, relativePath: "catalog.json", rejectHardlinks: true };
+      if (observation === "checked") {
+        expect(checkPluginCacheEntry(params).ok).toBe(true);
+      } else if (observation === "boundary") {
+        expect(readPluginCacheFile(params).ok).toBe(true);
+      } else if (observation === "regular") {
+        expect(readPluginCacheJsonFile(filePath).ok).toBe(true);
+      } else {
+        expect(refreshPluginCacheStat(filePath)?.isFile()).toBe(true);
+      }
+
+      const read = vi.spyOn(fs, "statSync");
+      expect(pluginCacheStatSync(filePath, { throwOnError: true })?.isFile()).toBe(true);
+      expect(read).not.toHaveBeenCalled();
+    },
+  );
+
   it("preserves JavaScript realpath identities for canonical paths, aliases, and traversal", () => {
     const root = fs.realpathSync(tempDirs.make("plugin-realpath-"));
     const packageDir = path.join(root, "package");
@@ -332,6 +370,7 @@ describe("plugin package facts", () => {
         OPENCLAW_BUNDLED_PLUGINS_DIR: bundledDir,
         OPENCLAW_TEST_TRUST_BUNDLED_PLUGINS_DIR: "1",
       };
+      const readdir = vi.spyOn(fs, "readdirSync");
       const discovery = discoverOpenClawPlugins({ env, installRecords: {} });
       expect(
         discovery.candidates.find((candidate) => candidate.idHint === "generation-owner"),
@@ -363,6 +402,9 @@ describe("plugin package facts", () => {
       expect(
         exists.mock.calls.filter(([file]) => String(file).startsWith(`${distDir}${path.sep}`)),
       ).toEqual([]);
+      if (directory === "missing") {
+        expect(readdir.mock.calls.filter(([file]) => String(file) === distDir)).toEqual([]);
+      }
       expect(records[0]?.doctorContractHash).toBeUndefined();
       fs.mkdirSync(distDir, { recursive: true });
       const contract = "module.exports = {};";
@@ -383,21 +425,32 @@ describe("plugin package facts", () => {
     },
   );
 
-  it.each(["EACCES", "EPERM"])(
-    "finds Doctor artifacts when directory listing fails with %s",
-    (code) => {
-      const rootDir = fs.realpathSync(tempDirs.make("plugin-artifact-list-denied-"));
-      const distDir = path.join(rootDir, "dist");
-      fs.mkdirSync(distDir);
-      const modulePath = path.join(distDir, "doctor-contract-api.cjs");
-      fs.writeFileSync(modulePath, "module.exports = {};");
-      vi.spyOn(fs, "readdirSync").mockImplementation(() => {
-        throw Object.assign(new Error("directory listing denied"), { code });
+  it.each([
+    { code: "EACCES", operation: "listing" },
+    { code: "EPERM", operation: "listing" },
+    { code: "ERR_ACCESS_DENIED", operation: "metadata" },
+  ])("finds Doctor artifacts when directory $operation fails with $code", ({ code, operation }) => {
+    const rootDir = fs.realpathSync(tempDirs.make("plugin-artifact-list-denied-"));
+    const distDir = path.join(rootDir, "dist");
+    fs.mkdirSync(distDir);
+    const modulePath = path.join(distDir, "doctor-contract-api.cjs");
+    fs.writeFileSync(modulePath, "module.exports = {};");
+    vi.spyOn(fs, "readdirSync").mockImplementation(() => {
+      throw Object.assign(new Error("directory listing denied"), { code });
+    });
+    if (operation === "metadata") {
+      const stat = fs.statSync;
+      vi.spyOn(fs, "statSync").mockImplementation((filePath, options) => {
+        if (filePath === distDir) {
+          throw Object.assign(new Error("directory metadata denied"), { code });
+        }
+        return stat(filePath, options);
       });
-      expect(resolvePluginDoctorContractArtifact({ rootDir, origin: "global" })).toEqual({
-        modulePath,
-        boundaryRoot: rootDir,
-      });
-    },
-  );
+      expect(pluginCacheStatSync(distDir)).toBeNull();
+    }
+    expect(resolvePluginDoctorContractArtifact({ rootDir, origin: "global" })).toEqual({
+      modulePath,
+      boundaryRoot: rootDir,
+    });
+  });
 });

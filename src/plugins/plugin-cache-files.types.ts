@@ -1,4 +1,5 @@
 import type fs from "node:fs";
+import type { Result } from "@openclaw/normalization-core/result";
 import type { RootFileOpenFailure } from "../infra/boundary-file-read.js";
 import type { PluginDiagnosticCode, PluginManifest } from "./manifest-types.js";
 
@@ -31,7 +32,7 @@ export type PluginPathCacheEntry = {
   exists?: boolean;
   realpath?: string | null;
   nativeRealpath?: string | null;
-  stat?: fs.Stats | null;
+  stat?: Result<fs.Stats | null, unknown>;
   lstat?: fs.Stats | null;
 };
 
