@@ -17,6 +17,7 @@ import {
   resolveSqliteScope,
   toDatabaseOptions,
 } from "../config/sessions/session-accessor.sqlite-scope.js";
+import * as gatewayWorkAdmission from "../process/gateway-work-admission.js";
 import { runExclusiveSessionLifecycleMutation } from "../sessions/session-lifecycle-admission.js";
 import {
   closeOpenClawAgentDatabasesForTest,
@@ -510,6 +511,25 @@ describe("private subagent completion processing receipts", () => {
       sessionKey: childSessionKey,
       defaultSessionId: `${descendantRunId}-session`,
     });
+    const waitAdmitted = createDeferred();
+    const waitReleased = createDeferred();
+    const beginRootWork = gatewayWorkAdmission.tryBeginGatewayRootWorkAdmission;
+    const observeWait = vi
+      .spyOn(gatewayWorkAdmission, "tryBeginGatewayRootWorkAdmission")
+      .mockImplementation((origin) => {
+        const admission = beginRootWork(origin);
+        if (origin !== "ws:agent.wait" || !admission?.ownsRoot) {
+          return admission;
+        }
+        waitAdmitted.resolve();
+        return {
+          ...admission,
+          release: () => {
+            admission.release();
+            waitReleased.resolve();
+          },
+        };
+      });
     registerSubagentRun({
       runId: descendantRunId,
       childSessionKey,
@@ -522,7 +542,40 @@ describe("private subagent completion processing receipts", () => {
       expectsCompletionMessage: false,
       taskRowOwnership: "required",
     });
+    const childEntered = createDeferred();
+    const childReleased = createDeferred();
+    signal.addEventListener("abort", () => childReleased.resolve(), { once: true });
+    agentCommandMock.mockImplementationOnce(async (input) => {
+      const command = input as AgentCommandOpts;
+      expect(command.sessionId).toBe(`${descendantRunId}-session`);
+      command.onExecutionStarted?.();
+      const abortSignal = expectDefined(command.abortSignal, "Expected child abort signal");
+      abortSignal.addEventListener("abort", () => childReleased.resolve(), { once: true });
+      childEntered.resolve();
+      await childReleased.promise;
+      abortSignal.throwIfAborted();
+      throw new Error("operator stop must prevent further child work");
+    });
+    // Registration alone has no runner to publish the terminal observed by agent.wait.
+    const child = kernel.gatewayInstanceRuntime.recovery.dispatchAgent(
+      {
+        sessionKey: childSessionKey,
+        expectedExistingSessionId: `${descendantRunId}-session`,
+        idempotencyKey: descendantRunId,
+        message: "Synthetic continuation child",
+        deliver: false,
+      },
+      undefined,
+      { expectFinal: true },
+    );
+    const childObserved = child.then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
     try {
+      await childEntered.promise;
+      // A pending connection owns no root yet; Stop must exercise the admitted observer.
+      await waitAdmitted.promise;
       // The parent and child are intentionally live. Wait only for this child's
       // persisted launch, not for all Gateway roots to finish before Stop.
       await expect
@@ -539,6 +592,7 @@ describe("private subagent completion processing receipts", () => {
         }),
       ).toMatchObject({ aborted: true });
     } finally {
+      observeWait.mockRestore();
       if (kernel.gatewayRequestContext.chatAbortControllers.has(runId)) {
         await kernel.gatewayInstanceRuntime.recovery.dispatchSessionMethod("chat.abort", {
           sessionKey,
@@ -546,8 +600,11 @@ describe("private subagent completion processing receipts", () => {
         });
       }
       release.resolve();
-      await observed;
+      childReleased.resolve();
+      await Promise.all([observed, childObserved]);
     }
+    expect(await childObserved).toMatchObject({ value: { status: "timeout", stopReason: "rpc" } });
+    await waitReleased.promise;
     await settleSubagentRegistryPersistenceWork();
     expect(
       loadSubagentRunsForControllerFromSqlite(sessionKey).find(
@@ -567,7 +624,7 @@ describe("private subagent completion processing receipts", () => {
     expect(await dispatch()).toMatchObject({ status: "error", stopReason: "rpc" });
     await restart();
     expect(await dispatch()).toMatchObject({ status: "error", stopReason: "rpc" });
-    expect(agentCommandMock).toHaveBeenCalledOnce();
+    expect(agentCommandMock).toHaveBeenCalledTimes(2);
   });
   it.each(["resolved", "rejected", "abandoned"] as const)(
     "preserves executing private timeout facts (%s)",
