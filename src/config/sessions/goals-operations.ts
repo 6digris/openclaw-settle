@@ -335,7 +335,9 @@ export async function mutateSessionGoal(
         const next = mergeSessionEntry(fresh.entry, { goal });
         const identityKeys = collectSessionEntryLookupKeys(database, resolved.sessionKey);
         const previousIdentity = readSessionIdentitySnapshot(database, identityKeys);
-        writeSessionEntry(database, resolved.sessionKey, next);
+        writeSessionEntry(database, resolved.sessionKey, next, {
+          canonicalPreviousEntry: previousIdentity.get(resolved.sessionKey) ?? null,
+        });
         const currentIdentity = readSessionIdentitySnapshot(database, identityKeys);
         const result = writeSessionGoalOperationReceipt(
           database.db,
