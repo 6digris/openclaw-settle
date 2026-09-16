@@ -197,7 +197,7 @@ describe("Goal control requests", () => {
     const host = goalHost({ "sessions.goal.clear": () => pending.promise });
     createChatGoalProps(host, true).onGoalAction(goal.id, "clear");
     // The next update comes from the mutation owner after the deferred RPC settles.
-    const settled = createDeferred<void>();
+    const settled = createDeferred();
     host.requestUpdate = () => settled.resolve();
     host.sessions.patchRowLocal(host.sessionKey, { goal: { ...goal, id: "replacement-goal" } });
     pending.resolve({ status: "cleared", goalId: goal.id });
@@ -209,7 +209,7 @@ describe("Goal control requests", () => {
     const pending = createDeferred<{ status: string; goalId: string; runId: string }>();
     const host = goalHost({ "sessions.goal.update": () => pending.promise });
     createChatGoalProps(host, true).onGoalAction(goal.id, "resume");
-    const settled = createDeferred<void>();
+    const settled = createDeferred();
     host.requestUpdate = () => settled.resolve();
     host.sessionKey = "agent:main:other";
     host.currentSessionId = "session-b";

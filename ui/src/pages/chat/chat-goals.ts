@@ -49,7 +49,7 @@ export function createChatGoalProps(
       host.handleChatDraftChange(host.chatMessage);
     },
     onGoalSubmit: canSubmit
-      ? (draft, submissionAction) => submitChatGoalDraft(host, draft, submissionAction)
+      ? (draft, submissionAction?: Event) => submitChatGoalDraft(host, draft, submissionAction)
       : undefined,
   } satisfies Pick<
     ChatProps,
