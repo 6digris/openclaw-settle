@@ -42,7 +42,7 @@ import type { createEmbeddedRunSessionPromptState } from "./session-prompt-state
 import type { EmbeddedRunAttemptResult } from "./types.js";
 
 type ContextEngine = Awaited<ReturnType<typeof resolveContextEngine>>;
-type SessionPromptState = ReturnType<typeof createEmbeddedRunSessionPromptState>;
+type SessionPromptState = Awaited<ReturnType<typeof createEmbeddedRunSessionPromptState>>;
 type CompactionResult = Awaited<ReturnType<ContextEngine["compact"]>>;
 
 export type EmbeddedRunCompactionRecoveryInput = {

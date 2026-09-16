@@ -337,7 +337,7 @@ final class StatusMenuRenderer: NSObject {
         case .talkMode:
             Task { await self.state.setTalkEnabled(!self.state.talkEnabled) }
         case .allSessions:
-            Task { await DashboardManager.shared.show(atPath: DashboardRouteMap.sessionsPagePath) }
+            AppNavigationActions.openPrimaryWebRoute(DashboardRouteMap.sessionsPagePath)
         case .settings:
             AppNavigationActions.openSettings()
         case .connection:

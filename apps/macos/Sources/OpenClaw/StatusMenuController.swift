@@ -162,16 +162,12 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
             else { return event }
             let point = button.convert(event.locationInWindow, from: nil)
             guard button.bounds.contains(point) else { return event }
-            switch event.type {
-            case .leftMouseDown:
-                AppNavigationActions.openDashboard()
-                return nil
-            case .rightMouseDown:
+            if event.type == .rightMouseDown || event.modifierFlags.contains(.control) {
                 self.presentMenu()
-                return nil
-            default:
-                return event
+            } else {
+                AppNavigationActions.openDashboard()
             }
+            return nil
         }
     }
 

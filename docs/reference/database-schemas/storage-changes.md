@@ -73,15 +73,34 @@ to synchronous writes. Remove this fallback only when the declared host floor
 excludes hosts without comparison support. Durable ingress joins each cursor
 update before admitting the next row and joins admitted work on shutdown.
 Existing namespaces, stored values, expiry, migration, and best-effort failure
-policies remain unchanged. Reply-cache hydration and the synchronous action-alias
-lookup retain their existing owner.
+policies remain unchanged.
+
+The iMessage reply cache also hydrates and persists through worker-backed keyed
+stores. Its owner allocates short IDs in memory without yielding and serializes
+counter, eviction, and entry writes; callers join persistence before completion.
+A successfully read counter remains available if later entry hydration fails.
+The shared action dispatcher awaits the async conversation-matching companion
+before entering the action, including the first action after a restart. The
+existing boolean callback retains synchronous cold hydration for published
+OpenClaw 2026.9.4 hosts and other hosts without that companion. It remains a
+literal boolean, never a promise. Remove this plugin fallback only when its
+declared host floor excludes hosts without async matching. Existing cache
+namespaces, record shapes, TTLs, limits, and best-effort failure policy are unchanged.
 
 Discord presence cooldown reads, claims, and conditional rollback use the shared
 state worker. The listener rechecks current policy and Gateway generation after
 storage waits, queues greetings only after a durable claim, and joins admitted
 work and rollback during provider shutdown, including work detached by reconnect.
-The same namespace, eight-hour expiry, and capacity policy remain in use. Thread
-binding persistence retains its synchronous owner and public completion contract.
+The same namespace, eight-hour expiry, and capacity policy remain in use. Discord
+thread binding restoration at channel-manager creation, provider startup, and
+registered subagent hooks uses the shared state worker. Concurrent cold reads share
+one load; a synchronous compatibility caller that initializes or mutates the
+registry while that load is pending keeps its newer state. Provider startup stops
+acquired binding managers when startup is cancelled or reconciliation fails. Snapshot writes and
+public synchronous binding APIs retain their synchronous owner and completion
+contract. Moving those writes requires preserving immediate unbind persistence
+and preventing older writes from recreating removed bindings; row comparison
+tokens alone do not identify an absent binding incarnation.
 
 Memory-host event appends and bounded journal reads execute on the shared state
 worker. The plugin-state owner allocates the sequence, rereads the cursor and
@@ -113,13 +132,23 @@ Reef registration binding reads, reservations, finalization, release, and setup-
 persistence use the shared-state worker. Reservation mutations compare the current
 row before writing; a conflict rereads ownership before retrying. The CLI, setup
 wizard, and channel startup await these operations. Keys, migration gates, trust,
-audit, replay, review, delivery, and inbox-cursor state retain their existing native
+audit, replay, review, and delivery state retain their existing native
 owners. Key creation still performs its synchronous guard checks and insert without
 an event-loop yield; those separate operations do not form a cross-process transaction.
 Stored registration JSON, reservation expiry, namespace limits, and Doctor imports
 are unchanged. Hosts predating the comparison API retain their existing atomic native
 registration callbacks until an approved minimum host version permits removal. A
 worker failure never switches an operation to that compatibility path.
+
+Reef inbox-cursor loads and monotonic advances use the shared-state worker.
+Advances compare the current row before changing progress or reporting an invalid
+identity binding, and revalidate explicit conflicts. The inbox awaits persistence
+before publishing its cursor and joins admitted writes during shutdown. Stored
+bindings, cursor JSON, namespace capacity, and expiry remain unchanged. Older
+supported hosts without comparison operations retain atomic native updates until an
+approved minimum host version guarantees comparison support. Worker failures never
+switch to that path. Invalid-row diagnostics on current hosts report
+the Reef validation error directly; older hosts retain native store error wrapping.
 
 Use Kysely for ordinary queries and mutations. The current
 `getNodeSqliteKysely` facade compiles queries; `executeSqliteQuerySync` runs them
