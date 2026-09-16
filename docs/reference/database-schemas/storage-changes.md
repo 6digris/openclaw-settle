@@ -76,6 +76,18 @@ Reads use the existing-only worker path and do not create a missing database.
 Public event helpers and exports await durable completion. Cursor eviction,
 namespace-wide append ordering, sibling row budgets, and rollback remain unchanged.
 
+Reef registration binding reads, reservations, finalization, release, and setup-session
+persistence use the shared-state worker. Reservation mutations compare the current
+row before writing; a conflict rereads ownership before retrying. The CLI, setup
+wizard, and channel startup await these operations. Keys, migration gates, trust,
+audit, replay, review, delivery, and inbox-cursor state retain their existing native
+owners. Key creation still performs its synchronous guard checks and insert without
+an event-loop yield; those separate operations do not form a cross-process transaction.
+Stored registration JSON, reservation expiry, namespace limits, and Doctor imports
+are unchanged. Hosts predating the comparison API retain their existing atomic native
+registration callbacks until an approved minimum host version permits removal. A
+worker failure never switches an operation to that compatibility path.
+
 Use Kysely for ordinary queries and mutations. The current
 `getNodeSqliteKysely` facade compiles queries; `executeSqliteQuerySync` runs them
 on the supplied `node:sqlite` connection. Calling Kysely's asynchronous
@@ -99,6 +111,17 @@ use one snapshot and bypass secondary indexes so stale indexes cannot hide rows.
 Only pending reads coalesce; completed results are not cached. Physical integrity
 verification remains with full registry restoration and Doctor, while known
 database failures and quarantine still refuse summary reads.
+
+Session listing loads complete persisted subagent metadata in the shared-state
+worker through a read-only connection. The existing cache coalesces pending fills
+and applies intervening named updates and deletions before publishing its first
+complete snapshot. Full replacement, registry ownership changes, and database
+retirement fence obsolete replies. Its 500 ms freshness policy and retention
+rules remain unchanged. Gateway, embedded, and TUI callers merge accepted rows
+with current host memory and scheduler facts before building the full topology.
+Pure topology grouping yields through the shared session-list work budget.
+Synchronous readers reuse the same SQL and row decoder; runtime reads do not
+repair storage.
 
 Gateway user-preference RPCs and Talk appearance reads resolve merged profile IDs
 and access preferences in the shared-state worker. Preference writes keep profile
