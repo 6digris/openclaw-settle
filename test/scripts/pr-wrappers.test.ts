@@ -1250,6 +1250,7 @@ exit 99
     function makeAliasFixture() {
       const fixture = makeMismatchedWrapperRepo({ realModules: true });
       fixture.git(fixture.linked, ["checkout", "--detach", "refs/remotes/origin/main"]);
+      linkPrWrapperDependencies(fixture.linked);
       for (const alias of ["pr-prepare", "pr-review", "pr-merge"]) {
         cpSync(join("scripts", alias), join(fixture.linked, "scripts", alias));
       }
@@ -1288,7 +1289,7 @@ exit 99
         encoding: "utf8",
         env: fixture.env,
       });
-      expect(result.status, result.stderr).toBe(73);
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(73);
       expect(result.stderr).toBe("");
       expect(result.stdout.split("\0")).toEqual([
         fixture.caller,
