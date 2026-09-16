@@ -316,6 +316,8 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
   comparison; capacity alone is not a measured speedup.
 - The Docker seed job requests `blacksmith-16vcpu-ubuntu-2404`; its weighted
   scheduler and serial declaration compiler policy stay unchanged.
+  The MCP code-mode failures on 2026-09-15/16 came from the tool-metadata
+  regression fixed by [#149662](https://github.com/openclaw/openclaw/pull/149662).
 - Eligible Control UI E2E rows request the 16-vCPU class with unchanged live
   backend/event/contributor routing and two/one-worker project limits. Targets
   with the named-project contract use six shards on non-frozen Blacksmith and
@@ -334,12 +336,11 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
   routing, deadlines and all caps unchanged. This adds zero jobs or registrations.
   Compiler-only AWS evidence does not prove CI timing; validate the complete job
   through exact-head native CI before claiming an improvement.
-- Current-target `build-artifacts` uses the existing 16-class after a complete
-  four-CPU/15.42-GiB compute proof, including the unchanged parallel verifier wave.
+- `build-artifacts` requests the 32-class after the selected Blacksmith
+  recommendation identified CPU saturation on the 16-class.
   The SDK memory owner keeps declarations serial when two heaps do not fit.
-  Frozen or unclassified targets retain 32-class; hosted fallbacks, job counts,
-  concurrency and deadlines stay unchanged. Measured compute fit does not prove
-  queue savings; observe the next exact-head CI cycle.
+  Hosted fallbacks, job counts, concurrency and deadlines stay unchanged;
+  observe complete-job timing on the next exact-head CI cycle.
 - Normal canonical hybrid first attempts use the existing four-part QA smoke
   plan, removing two repeated checkouts, setups and private runtime builds.
   Blacksmith profiles retain four parts; GitHub profiles and fresh hybrid
@@ -359,8 +360,8 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
 - Hybrid `check-shard` and `check-additional-shard` rows use `ubuntu-24.04` on
   every attempt, retaining Full Release Validation's frozen-candidate lint
   exception. Blacksmith-profile lint, dependencies, test types, extension-package
-  boundary, and runtime-topology checks retain their 32-class labels. Npm preflight
-  also retains `blacksmith-32vcpu-ubuntu-2404`. The 2026-09-01 x64 probe
+  boundary checks retain their 32-class labels; runtime-topology uses the 16-class.
+  Npm preflight also retains `blacksmith-32vcpu-ubuntu-2404`. The 2026-09-01 x64 probe
   [run 33538827388](https://github.com/openclaw/openclaw/actions/runs/33538827388)
   measured requested 8/16/32 labels delivering 2/4/8 CPUs respectively. Treat
   larger requests as a measured capacity workaround, never as worker counts.

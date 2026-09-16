@@ -60,7 +60,7 @@ preserves existing worker limits, explicit budgets, matrix sizes, and
 existing jobs adds no runner registrations. Repeat the capacity probe and
 reassess sizing after Blacksmith's allocation changes.
 
-`build-artifacts` requests the 32-class after the selected Blacksmith recommendation identified CPU saturation on the 16-class. Runtime topology architecture and Docker seed request the 16-class. These changes preserve hosted fallbacks, job counts, concurrency settings, and deadlines.
+`build-artifacts` requests the 32-class after the selected Blacksmith recommendation identified CPU saturation on the 16-class. Runtime topology architecture and Docker seed request the 16-class. The MCP code-mode failures on 2026-09-15/16 came from the tool-metadata regression fixed by [#149662](https://github.com/openclaw/openclaw/pull/149662). These changes preserve hosted fallbacks, job counts, concurrency settings, and deadlines.
 
 Selected Node rows request the 16-class only when their current planned class matches the recommendation:
 
