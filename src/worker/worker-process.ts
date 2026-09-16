@@ -89,9 +89,8 @@ function createWorkerIpcLifetime(): WorkerCommandLifetime {
       }
     },
     terminateOwnedTree: () => {
-      signalProcessTree(process.pid, "SIGKILL", {
-        detached: process.platform !== "win32",
-      });
+      // Anchored applications share their owner's group; direct workers may lead their own.
+      signalProcessTree(process.pid, "SIGKILL");
     },
     dispose: () => {
       if (disposed) {

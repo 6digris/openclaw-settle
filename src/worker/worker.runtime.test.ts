@@ -1930,6 +1930,12 @@ describe("worker runtime", () => {
           `await import(${JSON.stringify(new URL("../../scripts/tsx.mjs", import.meta.url).href)});`,
           `const { runWorkerProcess } = await import(${JSON.stringify(new URL("./worker-process.ts", import.meta.url).href)});`,
           `writeFileSync(${JSON.stringify(path.join(workspaceDir, "runtime.pid"))}, String(process.pid));`,
+          ...(crashed === "anchor"
+            ? [
+                // A normal exception exit would conceal a failed supervisor-lifetime signal.
+                'process.on("exit", () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0));',
+              ]
+            : []),
           "await runWorkerProcess({ internalWorkerIpc: true, managed: true });",
         ].join("\n"),
       );
@@ -2083,6 +2089,9 @@ describe("worker runtime", () => {
         try {
           if (runtimeStopped && runtime && inspectNodeWorkerProcessIdentity(runtime) === "live") {
             process.kill(runtime.pid, "SIGCONT");
+          }
+          if (runtime && inspectNodeWorkerProcessIdentity(runtime) === "live") {
+            process.kill(runtime.pid, "SIGKILL");
           }
           if (nodeHost) {
             await stopChildProcess(nodeHost, 5_000);
