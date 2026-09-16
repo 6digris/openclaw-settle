@@ -108,7 +108,9 @@ async function runHealthCheck(
     checkFindings = await withAuthority(assertCurrent, () => check.detect(ctx));
   } catch (err) {
     assertCurrent?.();
-    if (err instanceof UpdateCommandRecoveryPendingError) throw err;
+    if (err instanceof UpdateCommandRecoveryPendingError) {
+      throw err;
+    }
     warnings.push(`${check.id} detect failed: ${scrubDoctorErrorMessage(err)}`);
     return repairRunResult(cfg, findings, remainingFindings, changes, warnings, diffs, effects);
   }
@@ -153,12 +155,16 @@ async function runHealthCheck(
       }
     } catch (err) {
       assertCurrent?.();
-      if (err instanceof UpdateCommandRecoveryPendingError) throw err;
+      if (err instanceof UpdateCommandRecoveryPendingError) {
+        throw err;
+      }
       warnings.push(`${check.id} validation failed: ${scrubDoctorErrorMessage(err)}`);
     }
   } catch (err) {
     assertCurrent?.();
-    if (err instanceof UpdateCommandRecoveryPendingError) throw err;
+    if (err instanceof UpdateCommandRecoveryPendingError) {
+      throw err;
+    }
     warnings.push(`${check.id} repair failed: ${scrubDoctorErrorMessage(err)}`);
   }
 

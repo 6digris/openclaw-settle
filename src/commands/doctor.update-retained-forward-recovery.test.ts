@@ -183,7 +183,9 @@ describe("retained forward recovery through real owners", () => {
       fixture = undefined;
     });
     it("repairs current state without restoring B and admits a second protected capture", async () => {
-      if (!fixture) throw new Error("Missing retained update fixture");
+      if (!fixture) {
+        throw new Error("Missing retained update fixture");
+      }
       const { state, root, producer, produced, sealed, config } = fixture;
       const messages: string[] = [];
       const runtime: RuntimeEnv = {

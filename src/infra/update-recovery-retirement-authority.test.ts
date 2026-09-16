@@ -63,7 +63,9 @@ it.each([
         }
         const manifest = await verifyUpdateRecoveryBackup(selected);
         const first = manifest.entries.find((entry) => entry.kind === "file");
-        if (first?.kind !== "file") throw new Error("Missing retirement payload fixture");
+        if (first?.kind !== "file") {
+          throw new Error("Missing retirement payload fixture");
+        }
         const target =
           phase === "store marker"
             ? path.join(path.dirname(baseline.directory), UPDATE_CAPTURE_PRIVACY_MARKER)

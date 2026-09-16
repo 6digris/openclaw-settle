@@ -195,10 +195,15 @@ async function sealUpdateRecoveryPreparedGeneration(params: {
           });
           try {
             const baselinePath = item.before && baseline.payloads.get(item.before.archivePath);
-            if (!baselinePath) refuse(item.entry.sourcePath, "baseline agent payload disappeared");
-            const original = openNodeSqliteDatabase(resolveImmutableSqliteFileUri(baselinePath), {
-              readOnly: true,
-            });
+            if (!baselinePath) {
+              refuse(item.entry.sourcePath, "baseline agent payload disappeared");
+            }
+            const baselineDatabase = openNodeSqliteDatabase(
+              resolveImmutableSqliteFileUri(baselinePath),
+              {
+                readOnly: true,
+              },
+            );
             try {
               const version = readSqliteUserVersion(database);
               const schema =
@@ -206,8 +211,11 @@ async function sealUpdateRecoveryPreparedGeneration(params: {
               if (
                 version < 1 ||
                 version > OPENCLAW_AGENT_SCHEMA_VERSION ||
-                version !== readSqliteUserVersion(original) ||
-                !isDeepStrictEqual(database.prepare(schema).all(), original.prepare(schema).all())
+                version !== readSqliteUserVersion(baselineDatabase) ||
+                !isDeepStrictEqual(
+                  database.prepare(schema).all(),
+                  baselineDatabase.prepare(schema).all(),
+                )
               ) {
                 refuse(
                   item.entry.sourcePath,
@@ -215,7 +223,7 @@ async function sealUpdateRecoveryPreparedGeneration(params: {
                 );
               }
             } finally {
-              original.close();
+              baselineDatabase.close();
             }
           } finally {
             database.close();

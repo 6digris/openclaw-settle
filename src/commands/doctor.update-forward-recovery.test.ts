@@ -263,8 +263,9 @@ it.each(["missing", "empty", "truncated"] as const)(
         code: "ENOENT",
       });
       const partialManifest = manifestState === "empty" ? "" : '{"schemaVersion":2,';
-      if (manifestState !== "missing")
+      if (manifestState !== "missing") {
         await fs.writeFile(path.join(incomplete, "manifest.json"), partialManifest);
+      }
       const evidence = path.join(incomplete, "interrupted-payload");
       await fs.writeFile(evidence, "first\n");
       const retained = await fs.readdir(incomplete, { recursive: true });
@@ -277,10 +278,11 @@ it.each(["missing", "empty", "truncated"] as const)(
       });
       expect(loadSessionEntryReadOnly(newer)?.sessionId).toBe("must-survive-forward-repair");
       expect(await fs.readdir(incomplete, { recursive: true })).toEqual(retained);
-      if (manifestState !== "missing")
+      if (manifestState !== "missing") {
         expect(await fs.readFile(path.join(incomplete, "manifest.json"), "utf8")).toBe(
           partialManifest,
         );
+      }
       expect(await fs.readFile(evidence, "utf8")).toBe("first\n");
       await verifyUpdateRecoveryBackup(ref);
       await verifyUpdateRecoveryBackup(candidate);

@@ -470,7 +470,9 @@ export async function inspectUpdateRecoveryBackups(
   const { hasUpdateRecoveryForwardResolution } = await import("./update-recovery-forward.js");
   const forwardResolved = new Set<string>();
   for (const { ref } of snapshots) {
-    if (await hasUpdateRecoveryForwardResolution(ref)) forwardResolved.add(ref.manifestSha256);
+    if (await hasUpdateRecoveryForwardResolution(ref)) {
+      forwardResolved.add(ref.manifestSha256);
+    }
   }
   const { getUpdateRunAsync } = await import("./update-run-reader.js");
   return await Promise.all(

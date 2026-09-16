@@ -34,7 +34,7 @@ it("refuses baseline restoration without losing post-capture history or newer fa
       agents: { ownership: "explicit", entries: { main: { workspace: state.workspaceDir } } },
       plugins: { enabled: false },
     });
-    const authority = { assertOwned() {} };
+    const authority = { assertOwned(this: void) {} };
     const options = { env: state.env };
     const run = createUpdateRun({ trigger: "cli" }, options);
     const baseline = await createUpdateRecoveryBackup({

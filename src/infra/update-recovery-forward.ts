@@ -73,7 +73,9 @@ async function readBinding(ref: UpdateRecoveryBackupRef, authority: Authority, r
         try {
           generation = parseUpdateRecoveryBackupManifest(raw.toString("utf8"));
         } catch (error) {
-          if (!(error instanceof SyntaxError)) throw error;
+          if (!(error instanceof SyntaxError)) {
+            throw error;
+          }
           // The seal file itself is created before its write completes. A
           // truncated JSON prefix is evidence, not a published generation.
           incompleteGenerations[kind] = await fingerprintIncompleteRecoveryGeneration(
