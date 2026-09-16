@@ -37,8 +37,12 @@ const faceTimePlugin: OpenClawPluginDefinition = definePluginEntry({
     const validation = validateFaceTimeConfig(config);
     const pluginRoot = api.rootDir ?? api.resolvePath(".");
     let runtimePromise: Promise<import("./runtime-api.js").FaceTimeRuntime> | undefined;
+    let uninstalling = false;
 
     const ensureRuntime = async () => {
+      if (uninstalling) {
+        throw new Error("facetime native uninstall is in progress");
+      }
       if (!config.enabled) {
         throw new Error("facetime disabled in plugin config");
       }
@@ -171,22 +175,30 @@ const faceTimePlugin: OpenClawPluginDefinition = definePluginEntry({
       registerGateway(name, "operator.admin", installDriver);
     }
     registerGateway("facetime.uninstall", "operator.admin", async () => {
-      const current = runtimePromise;
-      if (current) {
-        await stopRetainedRuntime(current, (stopped) => {
-          if (runtimePromise === stopped) {
-            runtimePromise = undefined;
-          }
-        });
+      if (uninstalling) {
+        throw new Error("facetime native uninstall is already in progress");
       }
-      await uninstallFaceTimeDriver({
-        pluginRoot,
-        runCommandWithTimeout: api.runtime.system.runCommandWithTimeout,
-      });
-      return {
-        ok: true,
-        guidance: "Quit and reopen FaceTime and Phone before re-enabling this plugin.",
-      };
+      uninstalling = true;
+      try {
+        const current = runtimePromise;
+        if (current) {
+          await stopRetainedRuntime(current, (stopped) => {
+            if (runtimePromise === stopped) {
+              runtimePromise = undefined;
+            }
+          });
+        }
+        await uninstallFaceTimeDriver({
+          pluginRoot,
+          runCommandWithTimeout: api.runtime.system.runCommandWithTimeout,
+        });
+        return {
+          ok: true,
+          guidance: "Quit and reopen FaceTime and Phone before re-enabling this plugin.",
+        };
+      } finally {
+        uninstalling = false;
+      }
     });
     registerGateway(
       "facetime.preflight",

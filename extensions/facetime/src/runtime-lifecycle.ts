@@ -12,9 +12,6 @@ export async function stopRetainedRuntime<T extends { stop(): Promise<void> }>(
     clearIfCurrent(current);
     throw error;
   }
-  try {
-    await runtime.stop();
-  } finally {
-    clearIfCurrent(current);
-  }
+  await runtime.stop();
+  clearIfCurrent(current);
 }
