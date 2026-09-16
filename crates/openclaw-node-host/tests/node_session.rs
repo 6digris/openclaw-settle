@@ -1,23 +1,26 @@
 use futures_util::{SinkExt, StreamExt};
 use openclaw_node_host::{
-    CommandRuntime, ConnectAuth, InvocationResult, NodeClient, NodeClientConfig,
-    NodeConnectOptions, NodeIdentity, NodeProtocolVersion,
+    CommandRuntime, ConnectAuth, HandlerError, NodeClient, NodeClientConfig, NodeConnectOptions,
+    NodeIdentity, NodeProtocolVersion,
 };
 use serde_json::{json, Value};
 use std::{
     io,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
 };
 use tokio::net::TcpListener;
+use tokio::sync::Notify;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 #[tokio::test]
-async fn node_profile_uses_shared_session_for_invocations() {
+async fn public_runtime_completes_allowed_work_and_suppresses_wire_cancelled_effects() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
+    let cancelled_handler_entered = Arc::new(Notify::new());
+    let server_handler_entered = Arc::clone(&cancelled_handler_entered);
     let server = tokio::spawn(async move {
         let (tcp, _) = listener.accept().await.unwrap();
         let mut socket = accept_async(tcp).await.unwrap();
@@ -45,7 +48,7 @@ async fn node_profile_uses_shared_session_for_invocations() {
             &mut socket,
             json!({
                 "type":"event", "event":"node.invoke.request",
-                "payload":{"id":"invoke-1","nodeId":"node-1","command":"example.status",
+                "payload":{"id":"allowed","nodeId":"node-1","command":"example.status",
                     "paramsJSON":"{\"verbose\":true}",
                     "sessionKey":"agent:main:main"}
             }),
@@ -53,7 +56,7 @@ async fn node_profile_uses_shared_session_for_invocations() {
         .await;
         let result = receive_json(&mut socket).await;
         assert_eq!(result["method"], "node.invoke.result");
-        assert_eq!(result["params"]["id"], "invoke-1");
+        assert_eq!(result["params"]["id"], "allowed");
         assert_eq!(result["params"]["payload"], json!({"ready":true}));
         send_json(
             &mut socket,
@@ -62,8 +65,66 @@ async fn node_profile_uses_shared_session_for_invocations() {
             }),
         )
         .await;
+        send_json(
+            &mut socket,
+            json!({
+                "type":"event", "event":"node.invoke.request",
+                "payload":{"id":"cancelled","nodeId":"node-1","command":"example.status",
+                    "paramsJSON":"{\"verbose\":false}"}
+            }),
+        )
+        .await;
+        server_handler_entered.notified().await;
+        send_json(
+            &mut socket,
+            json!({
+                "type":"event", "event":"node.invoke.cancel",
+                "payload":{"invokeId":"cancelled","nodeId":"node-1"}
+            }),
+        )
+        .await;
+        let cancelled = receive_json(&mut socket).await;
+        assert_eq!(cancelled["method"], "node.invoke.result");
+        assert_eq!(cancelled["params"]["id"], "cancelled");
+        assert_eq!(cancelled["params"]["ok"], false);
+        assert_eq!(cancelled["params"]["error"]["code"], "CANCELLED_BY_GATEWAY");
+        send_json(
+            &mut socket,
+            json!({
+                "type":"res", "id":cancelled["id"], "ok":true, "payload":{"accepted":true}
+            }),
+        )
+        .await;
+        socket.close(None).await.unwrap();
     });
 
+    let native_effects = Arc::new(AtomicUsize::new(0));
+    let handler_effects = Arc::clone(&native_effects);
+    let handler_entered = Arc::clone(&cancelled_handler_entered);
+    let runtime = CommandRuntime::builder()
+        .command("example.status", move |context| {
+            let effects = Arc::clone(&handler_effects);
+            let entered = Arc::clone(&handler_entered);
+            async move {
+                assert_eq!(
+                    context.invocation.session_key.as_deref(),
+                    (context.invocation.id == "allowed").then_some("agent:main:main")
+                );
+                if context.invocation.id == "cancelled" {
+                    entered.notify_one();
+                    context.cancellation.cancelled().await;
+                    return Err(HandlerError::new(
+                        "CANCELLED_BY_GATEWAY",
+                        "Gateway cancelled before native effects",
+                    ));
+                }
+                assert_eq!(context.invocation.params, json!({"verbose": true}));
+                effects.fetch_add(1, Ordering::SeqCst);
+                Ok(json!({"ready": true}))
+            }
+        })
+        .build()
+        .unwrap();
     let session = NodeClient::connect(
         NodeClientConfig::new(format!("ws://{address}")),
         |challenge| async move {
@@ -80,17 +141,9 @@ async fn node_profile_uses_shared_session_for_invocations() {
     .await
     .unwrap();
     assert!(session.is_activated());
-    let invocation = session.next_invocation().await.unwrap();
-    assert_eq!(invocation.params, json!({"verbose":true}));
-    assert_eq!(invocation.session_key.as_deref(), Some("agent:main:main"));
-    session
-        .complete_invocation(
-            &invocation,
-            InvocationResult::success(json!({"ready":true})),
-        )
-        .await
-        .unwrap();
+    assert!(runtime.run(session).await.is_err());
     server.await.unwrap();
+    assert_eq!(native_effects.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
