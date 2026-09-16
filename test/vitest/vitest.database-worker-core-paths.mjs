@@ -101,6 +101,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/node-host/node-worker-supervisor.lifetime.test.ts",
   "src/node-host/node-worker-supervisor.recovery.test.ts",
   "src/node-host/runtime.worker-supervisor.test.ts",
+  "src/node-host/runner.inventory.test.ts",
   "src/node-host/node-worker-workspace-retention.test.ts",
   "src/node-host/node-worker-prepared-workspace.test.ts",
 ];
