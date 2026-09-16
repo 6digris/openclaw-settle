@@ -139,6 +139,7 @@ describe("typed Goal operation persistence", () => {
       goalId: receipt!.goalId,
       objective: editedObjective,
     } satisfies SessionGoalOperation;
+    const unsubscribeEdit = onSessionIdentityMutation(identityMutation);
     const editReads = trackSqliteStatementExecutions(
       database().db,
       ["sessionNodeSelects"],
@@ -159,8 +160,10 @@ describe("typed Goal operation persistence", () => {
       expect
         .soft(editReads.textBytes.sessionNodeSelects)
         .toBeLessThan(3.5 * Buffer.byteLength(skillsSnapshot.prompt));
+      expect(identityMutation).not.toHaveBeenCalled();
     } finally {
       editReads.restore();
+      unsubscribeEdit();
     }
     expect(edited.result.goal?.objective).toBe(editedObjective);
     expect(edited.sessionEntry?.skillsSnapshot).toEqual(skillsSnapshot);
