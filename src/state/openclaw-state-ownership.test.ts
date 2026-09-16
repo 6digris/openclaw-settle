@@ -254,9 +254,7 @@ describe("external shared-state ownership", () => {
     const { DatabaseSync } = requireNodeSqlite();
     const claimant = new DatabaseSync(database.path);
     const exec = vi.spyOn(database.db, "exec");
-    const defensive = database.db.enableDefensive
-      ? vi.spyOn(database.db, "enableDefensive")
-      : undefined;
+    const defensive = vi.spyOn(database.db, "enableDefensive");
     try {
       expect(openOpenClawStateDatabase({ env })).toBe(database);
       expect(openOpenClawStateDatabase({ env })).toBe(database);
@@ -292,10 +290,10 @@ describe("external shared-state ownership", () => {
       expect(
         exec.mock.calls.filter(([sql]) => /\bPRAGMA\s+writable_schema\s*=/iu.test(sql)),
       ).toEqual([]);
-      expect(defensive?.mock.calls ?? []).toEqual([]);
+      expect(defensive.mock.calls).toEqual([]);
     } finally {
       exec.mockRestore();
-      defensive?.mockRestore();
+      defensive.mockRestore();
       claimant.close();
     }
   });
