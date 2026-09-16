@@ -13,7 +13,7 @@ import { createCodexTestBindingStore } from "./app-server/session-binding.test-h
 import { clearSharedCodexAppServerClientAndWait } from "./app-server/shared-client.js";
 import { CODEX_APP_SERVER_VERSION } from "./app-server/version.js";
 import { createCodexSessionCatalogControl } from "./session-catalog-control.js";
-import { listCodexSessionCatalog } from "./session-catalog-listing.js";
+import { listCodexSessionCatalog } from "./session-catalog-list-operation.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -116,7 +116,10 @@ it("uses recorded originators through the protocol while preserving exclusion-pa
       getRuntimeConfig: () => config,
       resolveRuntimeOptions: resolveCodexSupervisionAppServerRuntimeOptions,
     });
-    const source = { ...control.homesForAgent("main")[0]!, localSessionsRoot: sessionsRoot };
+    const source = {
+      ...(await control.homesForAgent("main"))[0]!,
+      localSessionsRoot: sessionsRoot,
+    };
     const started = performance.now();
     const result = await listCodexSessionCatalog({
       agentId: "main",
