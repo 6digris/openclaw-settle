@@ -253,7 +253,7 @@ export async function triageCommand(
       ? resolveExecutablePath("node.exe")
       : undefined;
   const externalAgents = TRIAGE_EXTERNAL_AGENTS.flatMap((agent) => {
-    const executablePath = resolveExecutablePath(agent);
+    const executablePath = resolveExecutablePath(agent === "cursor" ? "cursor-agent" : agent);
     return executablePath
       ? [
           {
@@ -388,8 +388,10 @@ export async function triageCommand(
       runtime.log("No repair agent was started.");
     }
     if (!runEmbedded && !manualAgent) {
+      const installAgent =
+        options.agent === "cursor" ? "Cursor Agent (cursor-agent)" : options.agent;
       runtime.log(
-        `Install ${options.agent ?? "Claude Code or Codex"} on PATH, then run triage again.`,
+        `Install ${installAgent ?? "Claude Code or Codex"} on PATH, then run triage again.`,
       );
     }
     const command = runEmbedded

@@ -1,5 +1,6 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { createInMemoryTaskRegistryStore } from "../test-utils/task-registry-store.js";
@@ -13,6 +14,7 @@ import { markTaskTerminalById } from "./task-registry-record-api.js";
 import * as taskRegistryState from "./task-registry-state.js";
 import {
   reloadTaskRegistryFromStoreAsync,
+  runTaskRegistryWorkerMutation,
   tasks as authoritativeTasks,
 } from "./task-registry-state.js";
 import { configureTaskRegistryRuntime, getTaskRegistryStore } from "./task-registry.store.js";
@@ -50,6 +52,87 @@ async function readTaskPage(
 }
 
 describe("listTaskRecordPage", () => {
+  it.each(["converging", "exhausted"] as const)(
+    "bounds %s projection preparation without losing pending publication",
+    async (change) => {
+      const task: TaskRecord = {
+        taskId: "preparation-task",
+        runtime: "cli",
+        requesterSessionKey: "agent:main:main",
+        ownerKey: "agent:main:main",
+        scopeKind: "session",
+        task: "Bounded preparation",
+        status: "running",
+        deliveryStatus: "not_applicable",
+        notifyPolicy: "silent",
+        createdAt: 1,
+      };
+      const store = configureTaskSnapshot([task]);
+      const published: string[] = [];
+      let reads = 0;
+      const invalidations = change === "converging" ? 1 : 3;
+      configureTaskRegistryRuntime({
+        store: {
+          ...store,
+          async loadMutationSnapshotAsync() {
+            const snapshot = store.loadSnapshot();
+            if (reads++ < invalidations) {
+              markTaskTerminalById({
+                taskId: task.taskId,
+                status: "succeeded",
+                endedAt: reads + 10,
+              });
+            }
+            return snapshot;
+          },
+        },
+        observers: {
+          onEvent: (event) => {
+            if (event.kind === "upserted") {
+              published.push(event.task.notifyPolicy);
+            }
+          },
+        },
+      });
+      const read = captureTaskPageRead();
+      await readTaskPage({ offset: 0, limit: 1 }, read);
+      const release = createDeferred();
+      const mutation = runTaskRegistryWorkerMutation(
+        {
+          admission: read.readContext.admission,
+          scope: { taskId: task.taskId, flowId: "preparation-flow" },
+        },
+        async () => {
+          await release.promise;
+          const current = expectDefined(
+            store.loadSnapshot().tasks.get(task.taskId),
+            "pending preparation task",
+          );
+          store.upsertTaskWithDeliveryState({
+            task: { ...current, notifyPolicy: "state_changes" },
+          });
+        },
+        async () => store.loadSnapshot(),
+      );
+      try {
+        const page = await listTaskRecordPage({ ...read, offset: 0, limit: 1 });
+        if (change === "exhausted") {
+          expect(page).toEqual({ ok: false, error: "registry_changed" });
+        } else {
+          expect(page.ok).toBe(true);
+          if (page.ok) {
+            expect(page.value.tasks).toMatchObject([{ taskId: task.taskId, status: "succeeded" }]);
+          }
+        }
+      } finally {
+        release.resolve();
+        await mutation;
+      }
+      expect(getTaskById(task.taskId)?.notifyPolicy).toBe("state_changes");
+      expect(published.filter((policy) => policy === "state_changes")).toEqual(["state_changes"]);
+    },
+  );
+
   it.each(["page scan", "page cursor", "owner lookup", "empty owner key"] as const)(
     "revalidates the captured owner before %s after preparation settles",
     async (operation) => {
@@ -72,8 +155,9 @@ describe("listTaskRecordPage", () => {
       const prepare = taskRegistryState.prepareTaskRegistryProjectionAsync;
       vi.spyOn(taskRegistryState, "prepareTaskRegistryProjectionAsync").mockImplementation(
         (...args) =>
-          prepare(...args).then(() => {
+          prepare(...args).then((prepared) => {
             queueMicrotask(() => configureTaskSnapshot([]));
+            return prepared;
           }),
       );
       const prepareFilter = vi.fn(() => () => true);
