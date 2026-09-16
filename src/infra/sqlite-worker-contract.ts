@@ -66,12 +66,28 @@ export const SQLITE_WORKER_MAX_MESSAGE_BYTES = 32 * 1024 * 1024;
 export const SQLITE_WORKER_MAX_RESULT_BYTES = 64 * 1024 * 1024;
 export const SQLITE_WORKER_TRANSFER_FRAME_BYTES = 8 * 1024 * 1024;
 
+const SQLITE_WORKER_ERROR_NAME = "SqliteWorkerError";
+
 export class SqliteWorkerError extends Error {
   constructor(
     message: string,
     readonly code: "closed" | "overloaded" | "unavailable" | "outcome-unknown",
   ) {
     super(message);
-    this.name = "SqliteWorkerError";
+    this.name = SQLITE_WORKER_ERROR_NAME;
   }
+}
+
+/** Recognize typed broker errors across module graphs without admitting cleanup aggregates. */
+export function isSqliteWorkerError(
+  error: unknown,
+  code: SqliteWorkerError["code"],
+): error is SqliteWorkerError {
+  return (
+    error instanceof Error &&
+    !(error instanceof AggregateError) &&
+    error.name === SQLITE_WORKER_ERROR_NAME &&
+    "code" in error &&
+    error.code === code
+  );
 }
