@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
 import type { TaskSummary } from "../packages/gateway-protocol/src/schema/tasks.js";
 import { inspectManagedProcessGroup } from "../scripts/lib/managed-child-process.mts";
@@ -109,6 +110,36 @@ function fetchCommand(url: string): string {
     .join(" ");
 }
 
+function recoveredWorkerRequests(requests: readonly string[], parentKey: string, startAt: number) {
+  return requests.slice(startAt).flatMap((body, index) => {
+    const request = asOptionalRecord(JSON.parse(body));
+    if (
+      !request ||
+      !Array.isArray(request.input) ||
+      !Array.isArray(request.tools) ||
+      !request.tools.some((tool) => asOptionalRecord(tool)?.name === "exec")
+    ) {
+      return [];
+    }
+    const matches = request.input.some((item) => {
+      const message = asOptionalRecord(item);
+      return (
+        message?.role === "user" &&
+        Array.isArray(message.content) &&
+        message.content.some((block) => {
+          const text = asOptionalRecord(block)?.text;
+          return (
+            typeof text === "string" &&
+            text.includes(`sourceSession=${parentKey} `) &&
+            text.includes("sourceTool=subagent_interrupted_resume ")
+          );
+        })
+      );
+    });
+    return matches ? [{ index: startAt + index, request }] : [];
+  });
+}
+
 it.skipIf(!isLiveTestEnabled() || process.platform === "win32")(
   "preserves recovered tool results across two cold restarts and refuses stale hard-kill replay",
   { timeout: 900_000 },
@@ -117,7 +148,7 @@ it.skipIf(!isLiveTestEnabled() || process.platform === "win32")(
     if (!apiKey) {
       throw new Error("Subagent restart live proof requires OPENAI_API_KEY");
     }
-    const modelRef = process.env.OPENCLAW_LIVE_SUBAGENT_E2E_MODEL?.trim() || "openai/gpt-5.6-luna";
+    const modelRef = process.env.OPENCLAW_LIVE_SUBAGENT_E2E_MODEL?.trim() || "openai/gpt-5.6-sol";
     expect(modelRef.startsWith("openai/")).toBe(true);
     const model = modelRef.slice("openai/".length);
     const instance = await createOpenClawTestInstance({
@@ -134,6 +165,7 @@ it.skipIf(!isLiveTestEnabled() || process.platform === "win32")(
     });
     let client: GatewayClient | undefined;
     let provider: Awaited<ReturnType<typeof observeOpenAiResponses>> | undefined;
+    let secondRecoveryRequest: ReturnType<typeof recoveredWorkerRequests>[number] | undefined;
     let gates: Awaited<ReturnType<typeof createExternalGates>> | undefined;
     const parents = new Set<string>();
     let fixtureStateBound = false;
@@ -277,14 +309,15 @@ it.skipIf(!isLiveTestEnabled() || process.platform === "win32")(
         const parentKey = `agent:main:restart-parent-${randomUUID()}`;
         const first = gates.create();
         const second = gates.create();
-        const firstMarker = `RECOVERED_TOOL_RESULT_${randomUUID()}`;
-        const secondMarker = `FINAL_GATE_RESULT_${randomUUID()}`;
+        const firstMarker = `First command completed successfully. Receipt: ${randomUUID()}`;
+        const secondMarker = `Second command completed successfully. Receipt: ${randomUUID()}`;
         const finalMarker = `RECOVERY_PARENT_${randomUUID()}`;
         const childTask = [
           "Complete exactly two HTTP commands in order. Use only exec and process; do not write files or spawn.",
           `First command: ${fetchCommand(first.url)}`,
           `Second command: ${fetchCommand(second.url)}`,
           "Use yieldMs 1000 and timeoutSeconds 300. Poll a pending process until it finishes. Never repeat a command that already returned successful stdout.",
+          "Only poll when exec explicitly returns a running process session ID. Completed stdout is the command result, not a process handle.",
           "Gateway restarts may interrupt a pending command. After recovery, ignore old process handles and rerun only the interrupted command. Preserve all earlier successful stdout from your transcript.",
           "After both commands succeed, reply with exactly the first command's stdout on the first line and the second command's stdout on the second line. No other content.",
         ].join("\n");
@@ -347,13 +380,28 @@ it.skipIf(!isLiveTestEnabled() || process.platform === "win32")(
         );
         const recovered = childFor(parentKey)!;
         const firstRequests = first.snapshot().requests;
-        const providerBeforeSecondRestart = provider.requests.length;
         const recoveredPid = await killOwnedGateway();
+        const providerBeforeSecondRestart = provider.requests.length;
+        evidence.providerBeforeSecondRestart = providerBeforeSecondRestart;
         second.release(secondMarker);
         evidence.phase = "second-recovery-final";
         logLiveProgress("subagent restart: recovered receipt persisted; starting recovery 2");
         await instance.startGateway();
         client = await connect();
+        secondRecoveryRequest = await vi.waitUntil(
+          () =>
+            recoveredWorkerRequests(provider!.requests, parentKey, providerBeforeSecondRestart)[0],
+          { timeout: WAIT_MS },
+        );
+        evidence.secondRecoveryRequestIndex = secondRecoveryRequest.index;
+        expect(secondRecoveryRequest.request.input).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: "function_call_output",
+              output: expect.stringContaining(firstMarker),
+            }),
+          ]),
+        );
         const expectedFinal = `${finalMarker}\n${firstMarker}\n${secondMarker}`;
         await vi.waitFor(
           async () => {
@@ -379,11 +427,6 @@ it.skipIf(!isLiveTestEnabled() || process.platform === "win32")(
         expect(completed.runId).not.toBe(recovered.runId);
         expect((await history(parentKey)).filter((text) => text === expectedFinal)).toHaveLength(1);
         expect(first.snapshot().requests).toBe(firstRequests);
-        expect(
-          provider.requests
-            .slice(providerBeforeSecondRestart)
-            .some((body) => body.includes(firstMarker)),
-        ).toBe(true);
         Object.assign(evidence, {
           initialPid,
           recoveredPid,
@@ -446,6 +489,8 @@ it.skipIf(!isLiveTestEnabled() || process.platform === "win32")(
         expect(loadExactSessionEntry(scope)!.entry.updatedAt).toBe(staleAt);
         await cleanupSessionStateForTest({ stateDir: instance.stateDir });
         const providerBeforeStaleRestart = provider.requests.length;
+        const staleGateRequests = staleGate.snapshot().requests;
+        evidence.providerBeforeStaleRestart = providerBeforeStaleRestart;
         staleGate.release("STALE_GATE_RELEASED");
         evidence.phase = "stale-child-restart";
         logLiveProgress("subagent restart: stopped fixture aged three days; verifying no replay");
@@ -460,12 +505,18 @@ it.skipIf(!isLiveTestEnabled() || process.platform === "win32")(
           { timeout: 30_000 },
         );
         expect(childFor(staleParent)?.runId).toBe(owned.runId);
-        expect(provider.requests.length).toBe(providerBeforeStaleRestart);
+        const staleProviderDispatches = recoveredWorkerRequests(
+          provider.requests,
+          staleParent,
+          providerBeforeStaleRestart,
+        ).length;
+        expect(staleProviderDispatches).toBe(0);
+        expect(staleGate.snapshot().requests).toBe(staleGateRequests);
         Object.assign(evidence, {
           phase: "passed",
           staleRunId: owned.runId,
           staleAt,
-          staleProviderDispatches: 0,
+          staleProviderDispatches,
         });
         logLiveProgress(`subagent cold restart proof passed; evidence=${artifactDir}`);
       },
@@ -475,6 +526,7 @@ it.skipIf(!isLiveTestEnabled() || process.platform === "win32")(
           JSON.stringify(
             redactSecrets({
               requestCount: provider?.requests.length ?? 0,
+              secondRecoveryRequest,
               requests: provider?.requests.slice(-16).map((body) => JSON.parse(body)) ?? [],
             }),
             null,
