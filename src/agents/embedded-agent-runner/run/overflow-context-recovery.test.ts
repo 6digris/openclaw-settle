@@ -47,11 +47,12 @@ describe("recoverEmbeddedRunOverflow transcript ownership", () => {
         prompt: "continue",
         timeoutMs: 1_000,
       };
-      const sessionPromptState = createEmbeddedRunSessionPromptState({
+      await using sessionPromptState = await createEmbeddedRunSessionPromptState({
         runParams,
         sessionAgentId: "main",
         resolvedSessionKey: target.sessionKey,
         lifecycleGeneration: getAgentRunLifecycleGeneration(),
+        onInterrupt: () => {},
       });
       const contextEngine: ContextEngine = {
         info: { id: "fixture", name: "Fixture engine" },
