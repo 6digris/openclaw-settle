@@ -10,6 +10,7 @@ import { resolveVitestSpawnParams, spawnWatchedVitestProcess } from "../../scrip
 import { createVitestProcessCompletion } from "../../scripts/vitest-process-group.mts";
 import { createFixtureLifetime } from "../helpers/fixture-lifetime.js";
 import { runNodeScript } from "../helpers/run-node-script.js";
+import { fixturePreloadEnv } from "./fixtures/ci-fixture-runtime.cjs";
 
 const root = process.cwd();
 const artifacts = path.join(root, ".artifacts");
@@ -175,7 +176,11 @@ export function createWorkerArtifactTest() {
 }
 
 /** Reuse the shutdown fixture's executable boundary, keeping real owners and IPC. */
-export function createControlledWorkerCompiler(directory: string, env: NodeJS.ProcessEnv) {
+export function createControlledWorkerCompiler(
+  directory: string,
+  env: NodeJS.ProcessEnv,
+  runtime: "node" | "bun" = "node",
+) {
   const input = writeFixture(directory, "worker-input.mjs", "export const fixture = true;\n");
   const receipt = path.join(directory, "fixture-compilers.jsonl");
   const compiler = fileURLToPath(new URL("./fixtures/vitest-worker-compiler.mjs", import.meta.url));
@@ -192,10 +197,17 @@ export function createControlledWorkerCompiler(directory: string, env: NodeJS.Pr
     syncFixtureBuiltinExports(["node:child_process"]);
   `,
   );
+  const preloadEnv = Object.fromEntries(
+    Object.entries(fixturePreloadEnv(preload, runtime)).map(([key, value]) => [
+      key,
+      `${env[key] ?? ""} ${value}`.trim(),
+    ]),
+  );
   return {
+    args: (generation: string) => [compiler, generation, input, receipt],
     env: {
       ...env,
-      NODE_OPTIONS: `${env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(preload).href}`.trim(),
+      ...preloadEnv,
     },
     read: (): Array<{ pid: number; directory: string; inputs: number; outputs: number }> =>
       fs

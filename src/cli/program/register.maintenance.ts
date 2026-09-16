@@ -248,7 +248,7 @@ export function registerMaintenanceCommands(program: Command) {
     )
     .option("--json", "Output sanitized handoff paths, finding counts, and commands as JSON", false)
     .option("--no-export", "Skip the sanitized diagnostics archive")
-    .option("--agent <name>", "Select a coding agent (claude|codex|opencode|pi)")
+    .option("--agent <name>", "Select a coding agent (claude|codex|cursor|grok|muse|opencode|pi)")
     .option("--run", "Run one embedded agent turn after verifying model inference", false)
     .option(
       "--non-interactive",
@@ -271,11 +271,14 @@ export function registerMaintenanceCommands(program: Command) {
         agent !== undefined &&
         agent !== "claude" &&
         agent !== "codex" &&
+        agent !== "cursor" &&
+        agent !== "grok" &&
+        agent !== "muse" &&
         agent !== "opencode" &&
         agent !== "pi"
       ) {
         return exitDoctorError(
-          "Invalid --agent. Use claude, codex, opencode, or pi.",
+          "Invalid --agent. Use claude, codex, cursor, grok, muse, opencode, or pi.",
           opts.json === true,
         );
       }
