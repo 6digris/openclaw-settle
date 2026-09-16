@@ -1261,9 +1261,7 @@ exit 99
       );
       fixture.git(fixture.canonical, ["add", "scripts/pr"]);
       fixture.git(fixture.canonical, ["commit", "-m", "test: stale canonical wrapper"]);
-      // Install dependencies before recording Node calls so the fixture reaches
-      // supervisor handoff without entering dependency materialization first.
-      linkPrWrapperDependencies(fixture.linked);
+      // Stop at the real supervisor handoff, before locks or native PR actions.
       const recorder = join(fixture.bin, "node");
       writeFileSync(recorder, '#!/bin/sh\nprintf \'%s\\0\' "$PWD" "$@"\nexit 73\n');
       chmodSync(recorder, 0o755);
