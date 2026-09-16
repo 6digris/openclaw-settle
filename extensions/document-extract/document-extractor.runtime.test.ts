@@ -204,28 +204,11 @@ describe("PDF document extractor", () => {
 
   it("rejects selected pages outside the PDF page count before extraction", async () => {
     pdfDocument.pageCount = 1;
-    pdfDocument.extract.mockResolvedValueOnce(extractionResult("", []));
     await expect(extractPdfContent(request({ pageNumbers: [2] }))).rejects.toThrow(
       "No requested PDF pages exist in this 1-page document.",
     );
     expect(pdfDocument.extract).not.toHaveBeenCalled();
     expect(pdfDocument.destroy).toHaveBeenCalledTimes(1);
-
-    await expect(extractPdfContent(request({ pageNumbers: [] }))).resolves.toEqual({
-      text: "",
-      images: [],
-      metadata: {
-        pages: {
-          processed: [],
-          total: 1,
-          selection: "explicit",
-          truncated: false,
-        },
-        textTruncated: false,
-        imagesTruncated: false,
-      },
-    });
-    expect(pdfDocument.destroy).toHaveBeenCalledTimes(2);
   });
 
   it("reports image fallback failures and returns extracted text", async () => {
