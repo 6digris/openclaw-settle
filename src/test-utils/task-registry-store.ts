@@ -13,6 +13,10 @@ import type {
   TaskFlowRegistryObservedUpdate,
   TaskFlowRegistryStoreSnapshot,
 } from "../tasks/task-flow-registry.store.types.js";
+import type { TaskInitialWorkerOperations } from "../tasks/task-initial-worker.types.js";
+import { selectExistingTaskForCreate } from "../tasks/task-registry-create-rules.js";
+import { runTaskCreateOperation } from "../tasks/task-registry-create.operation.js";
+import { assertParentFlowRecordLinkAllowed } from "../tasks/task-registry-parent-flow-rules.js";
 import { findLatestTaskForFlowInSnapshot } from "../tasks/task-registry-records.js";
 import type {
   TaskMirroredFlowSyncOutcome,
@@ -84,6 +88,58 @@ export function createInMemoryTaskRegistryStore(
 ): TaskRegistryStore {
   const state = structuredClone(snapshot);
   return {
+    async runInitialMutationAsync(context, command, assertCurrent) {
+      const unsupported = (): never => {
+        throw new Error("Initial flow mutations require the isolated worker fixture.");
+      };
+      const operations: {
+        [Key in keyof TaskInitialWorkerOperations]: (
+          input: TaskInitialWorkerOperations[Key]["input"],
+        ) => TaskInitialWorkerOperations[Key]["output"];
+      } = {
+        "tasks.createRecord": (input) =>
+          runTaskCreateOperation(input, {
+            readSelection: (identity) => {
+              const flows = flowStore?.loadSnapshot().flows;
+              const parentFlowId = input.params.parentFlowId?.trim();
+              assertParentFlowRecordLinkAllowed(
+                { ...identity, parentFlowId },
+                parentFlowId ? flows?.get(parentFlowId) : undefined,
+              );
+              const current = this.loadSnapshot();
+              const existing = selectExistingTaskForCreate({
+                ...input.params,
+                ...identity,
+                candidates: [...current.tasks.values()].toSorted(
+                  (left, right) =>
+                    left.createdAt - right.createdAt ||
+                    (left.taskId < right.taskId ? -1 : left.taskId > right.taskId ? 1 : 0),
+                ),
+                isTaskMirroredFlow: (flowId) => flows?.get(flowId)?.syncMode === "task_mirrored",
+              });
+              return {
+                existing,
+                deliveryState: existing ? current.deliveryStates.get(existing.taskId) : undefined,
+              };
+            },
+            write: (operation) => operation(),
+            assertCurrent,
+            upsertDelivery: (deliveryState) => this.upsertDeliveryState(deliveryState),
+            upsertTask: (task, deliveryState) =>
+              this.upsertTaskWithDeliveryState({ task, deliveryState }),
+            deferCommit: (publish) => publish(),
+            onCommitted() {},
+          }),
+        "flows.createForTask": unsupported,
+        "tasks.settleUnstarted": unsupported,
+        "tasks.linkInitialFlow": unsupported,
+        "flows.deleteUnlinkedForTask": unsupported,
+        "flows.finalizeTaskCancellation": unsupported,
+      };
+      context.admission.assertCurrent();
+      assertCurrent();
+      return operations[command.type](command.input);
+    },
     async syncLiveTaskFlowAsync(_context, params, authority) {
       if (!flowStore) {
         throw new Error(

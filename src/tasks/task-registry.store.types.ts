@@ -18,11 +18,9 @@ export type TaskExecutionRestoreStore = {
 };
 
 export type TaskRegistryMutationScope = {
-  taskId: string;
-  flowId: string;
-  runId?: string;
+  flowId?: string;
   childSessionKey?: string;
-};
+} & ({ taskId: string; runId?: string } | { taskId?: never; runId: string });
 
 export type TaskLiveFlowSelection = {
   taskId: string;
