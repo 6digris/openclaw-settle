@@ -7,7 +7,6 @@ import {
 } from "../../agents/admitted-run-context.js";
 import type { BootstrapContextMode } from "../../agents/bootstrap-files.js";
 import { resolveCliBackendConfig } from "../../agents/cli-backends.js";
-import { resolveCliRuntimeToolsAllow } from "../../agents/cli-runner/tool-policy.js";
 import { settleCliSessionResult } from "../../agents/cli-session-store.js";
 import {
   applyCliSessionBindingResult,
@@ -15,7 +14,6 @@ import {
 } from "../../agents/cli-session.js";
 import { runEmbeddedAgentEntry } from "../../agents/embedded-agent-runner/run-entry.js";
 import type { FastModeAutoProgressState } from "../../agents/fast-mode.js";
-import { AgentHarnessPreflightError } from "../../agents/harness/errors.js";
 import { runAgentHarnessBeforeMessageWriteHook } from "../../agents/harness/hook-helpers.js";
 import { findModelInCatalog, modelSupportsInput } from "../../agents/model-catalog-lookup.js";
 import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
@@ -50,7 +48,6 @@ import {
   hasNewGeneratedMediaTaskForSessionKey,
 } from "../../tasks/task-status-access.js";
 import { resolveCronJobConfigRevision } from "../config-revision.js";
-import type { CronRuntimeAuthority } from "../runtime-authority.js";
 import { resolveCronScheduledToolPolicy } from "../scheduled-tool-policy.js";
 import type { CronAgentExecutionPhaseUpdate, CronJob, CronStoredJob } from "../types.js";
 import {
@@ -88,21 +85,6 @@ import { isLikelyInterimCronMessage } from "./subagent-followup-hints.js";
 
 type AgentTurnPayload = Extract<CronJob["payload"], { kind: "agentTurn" }> | null;
 
-function assertCronRuntimeAuthorityCandidate(params: {
-  authority?: CronRuntimeAuthority;
-  candidateRuntime: string;
-  cliExecution: boolean;
-}): void {
-  const authority = params.authority;
-  if (!authority) {
-    return;
-  }
-  if (params.candidateRuntime !== authority.runtimeId || params.cliExecution) {
-    throw new AgentHarnessPreflightError(
-      `This automation carries ${authority.namespace} authority captured for the ${authority.runtimeId} runtime, but the selected execution runtime is ${params.candidateRuntime}. Restore that runtime and auth profile, or explicitly replace the automation's toolsAllow cap from an authenticated creator turn.`,
-    );
-  }
-}
 type CronPromptRunResult = Awaited<ReturnType<typeof runCliAgent>>;
 type CronEmbeddedRuntime = typeof import("./run-embedded.runtime.js");
 type CronSubagentRegistryRuntime = typeof import("./run-subagent-registry.runtime.js");
@@ -328,7 +310,6 @@ function createCronPromptExecutor(
     toolsAllow: params.agentPayload?.toolsAllow,
     scheduledToolPolicy: validatedScheduledToolPolicy,
     callerOrigin: params.job.toolsAllowProvenance?.callerOrigin,
-    execTarget: params.job.toolsAllowExecTarget,
   });
   const { sourceDelivery } = params;
   const sourceReplyDeliveryMode = sourceDelivery.sourceReplyDeliveryMode;
@@ -594,11 +575,6 @@ function createCronPromptExecutor(
           candidateRuntime,
           cliExecution && Boolean(rootedExecution),
         );
-        assertCronRuntimeAuthorityCandidate({
-          authority: params.job.runtimeAuthority,
-          candidateRuntime,
-          cliExecution,
-        });
         // The validated candidate that admits detached work owns its continuation
         // even if the provider throws before returning result metadata.
         setCronSessionRuntimeModel({
@@ -690,10 +666,6 @@ function createCronPromptExecutor(
                   sourceReplyDeliveryMode,
                   requireExplicitMessageTarget: sourceDelivery.messageTool.requireExplicitTarget,
                 },
-                toolsAllow: resolveCliRuntimeToolsAllow(
-                  params.agentPayload?.toolsAllow,
-                  params.agentPayload?.toolsAllowIsDefault,
-                ),
                 scheduledToolPolicy,
                 abortSignal: params.abortSignal,
                 onExecutionStarted: notifyExecutionStarted,
@@ -809,10 +781,8 @@ function createCronPromptExecutor(
           runTimeoutOverrideMs: params.runTimeoutOverrideMs,
           bootstrapContextMode,
           bootstrapContextRunKind: "cron",
-          toolsAllow: params.agentPayload?.toolsAllow,
-          scheduledRuntimeAuthority: params.job.runtimeAuthority,
-          scheduledRuntimeAuthorityRecoveryRequired:
-            params.job.runtimeAuthorityRecoveryRequired === true,
+          // A schedule wakes its owning agent; stale tool/app snapshots must not
+          // replace that agent's current permissions or native execution environment.
           scheduledToolPolicy,
           execOverrides: params.suppressExecNotifyOnExit
             ? {

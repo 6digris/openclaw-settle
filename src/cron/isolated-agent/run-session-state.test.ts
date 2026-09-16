@@ -436,16 +436,6 @@ describe("createPersistCronSessionEntry", () => {
     });
     expect(store[runSessionKey]?.previousSessionId).toBeUndefined();
     expect(store[runSessionKey]?.forkSource).toBeUndefined();
-    expect(store[runSessionKey]?.cronRunContinuation?.toolsAllowExecTarget).toEqual({
-      version: 1,
-      host: "gateway",
-      ask: "always",
-    });
-    expect(store[runSessionKey]?.cronRunContinuation?.toolsAllowExecTargetRequirement).toEqual({
-      version: 1,
-      target: { version: 1, host: "gateway", ask: "always" },
-      grantIndex: 1,
-    });
     expect(store[runSessionKey]?.cronRunContinuation?.scheduledToolPolicy).toEqual({
       version: 1,
       mode: "account",
@@ -466,8 +456,6 @@ describe("createPersistCronSessionEntry", () => {
       cronRunContinuation: {
         lifecycleRevision,
         phase: "running",
-        toolsAllow: ["image_generate", "write"],
-        toolsAllowIsDefault: true,
       },
     });
 

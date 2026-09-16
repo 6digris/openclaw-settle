@@ -379,13 +379,16 @@ export async function startOrResumeThread(
         !binding?.threadId);
     let rotatedContextEngineBinding = false;
     let prebuiltPluginThreadConfig: CodexPluginThreadConfig | undefined;
+    // Scheduled work rechecks current app policy after acquiring its native thread.
+    const requiresCurrentPolicyCheck =
+      params.params.trigger === "cron" || params.pluginThreadConfig?.requiresCurrentPolicyCheck;
     // Scoped inventory requires a loaded native thread. The warm/resume owner
     // calls this only after acquiring that exact subscription, before admission.
     const buildLoadedPluginThreadConfig = async (
       current: CodexAppServerThreadBinding,
     ): Promise<CodexPluginThreadConfig | undefined> => {
       if (
-        !params.pluginThreadConfig?.requiresCurrentPolicyCheck &&
+        !requiresCurrentPolicyCheck &&
         !shouldRecheckRecoverablePluginBinding({
           binding: current,
           pluginThreadConfig: params.pluginThreadConfig,
@@ -399,7 +402,7 @@ export async function startOrResumeThread(
         );
       } catch (error) {
         throwIfAborted();
-        if (params.pluginThreadConfig?.requiresCurrentPolicyCheck) {
+        if (requiresCurrentPolicyCheck) {
           throw error;
         }
         embeddedAgentLog.warn("codex app-server plugin app config recovery check failed", {

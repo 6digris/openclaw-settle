@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import {
   isHostScopedAgentToolActive,
   type EmbeddedRunAttemptParamsV2 as EmbeddedRunAttemptParams,
@@ -30,7 +29,6 @@ import {
   type JsonObject,
   type JsonValue,
 } from "./protocol.js";
-import { fingerprintJsonObject } from "./thread-fingerprints.js";
 import {
   CODEX_NATIVE_PERSONALITY_NONE,
   resolveCodexAppServerModelProvider,
@@ -161,7 +159,6 @@ export type CodexThreadConfigurationContext = CodexThreadPromptContext &
     | "pluginHarnessToolPolicySafeDeniedTools"
     | "authoredContextTokenCap"
     | "bootstrapContextMode"
-    | "scheduledRuntimeAuthority"
   >;
 
 type CodexThreadConfigurationOptions = {
@@ -247,6 +244,7 @@ export function buildThreadStartParams(
       : {}),
     personality: CODEX_NATIVE_PERSONALITY_NONE,
     serviceName: "OpenClaw",
+    threadSource: "openclaw",
     ...resolveCodexThreadEnvironmentSelection(options),
     // Codex 0.146 accepts canonical typed function and namespace specs natively.
     dynamicTools: [...options.dynamicTools],
@@ -457,10 +455,7 @@ export function buildCodexRuntimeThreadConfigForRun(
         ? CODEX_DELEGATION_DISABLED_THREAD_CONFIG
         : undefined,
       messageOnlySourceReply || params.pluginHarnessToolPolicyRestricted === true
-        ? buildRestrictedToolConfigPatch(
-            restrictedToolSurfaceMcpServerNames,
-            Boolean(params.scheduledRuntimeAuthority),
-          )
+        ? buildRestrictedToolConfigPatch(restrictedToolSurfaceMcpServerNames)
         : buildCodexRingZeroThreadConfigPatch(
             params,
             options.hostSystemAgentActive,
@@ -496,10 +491,7 @@ export function buildCodexRingZeroThreadConfigPatch(
   };
 }
 
-function buildRestrictedToolConfigPatch(
-  inheritedMcpServerNames: readonly string[],
-  scheduledAppAuthorityActive = false,
-): JsonObject {
+function buildRestrictedToolConfigPatch(inheritedMcpServerNames: readonly string[]): JsonObject {
   // Restricted turns already send environments: [] and disable native code mode.
   // Remove Codex-owned tool sources here; project-document suppression belongs to
   // ring-zero, message-only, and tool-disabled context policy at the caller.
@@ -508,12 +500,6 @@ function buildRestrictedToolConfigPatch(
   );
   return {
     ...CODEX_RING_ZERO_THREAD_CONFIG,
-    ...(scheduledAppAuthorityActive
-      ? {
-          "features.apps": true,
-          "orchestrator.mcp.enabled": true,
-        }
-      : {}),
     ...(Object.keys(mcpServers).length > 0 ? { mcp_servers: mcpServers } : {}),
   };
 }
@@ -566,23 +552,12 @@ export async function assertCodexManagedRequirementsDoNotOverrideToolPolicy(
     restrictedToolSurface: boolean;
     requiredNativeShell?: boolean;
     additionalDeniedFeatures?: readonly string[];
-    allowedManagedRequirementsFingerprint?: string;
     allowConfiguredManagedHooks?: boolean;
   },
   signal?: AbortSignal,
 ): Promise<void> {
   const requirements = await readCodexManagedRequirements(client, signal);
-  const managedRequirementsFingerprint = buildCodexManagedRequirementsFingerprint(requirements);
-  const managedRequirementsMatch =
-    options.allowedManagedRequirementsFingerprint !== undefined &&
-    managedRequirementsFingerprint === options.allowedManagedRequirementsFingerprint;
-  const managedHooksAllowed =
-    managedRequirementsMatch || options.allowConfiguredManagedHooks === true;
-  if (options.allowedManagedRequirementsFingerprint !== undefined && !managedRequirementsMatch) {
-    throw new Error(
-      "Codex managed requirements changed since this automation was authorized; reauthorize the automation from a fresh owner turn",
-    );
-  }
+  const managedHooksAllowed = options.allowConfiguredManagedHooks === true;
   if (requirements === null) {
     return;
   }
@@ -631,22 +606,6 @@ export async function assertCodexManagedRequirementsDoNotOverrideToolPolicy(
       }
     }
   }
-}
-
-/** Hashes the exact managed requirements without retaining their hook commands or policy details. */
-function buildCodexManagedRequirementsFingerprint(requirements: JsonObject | null): string {
-  const fingerprint = fingerprintJsonObject({ version: 1, requirements });
-  return crypto.createHash("sha256").update(fingerprint).digest("hex");
-}
-
-/** Reads and fingerprints the exact managed requirements active on this app-server. */
-export async function readCodexManagedRequirementsFingerprint(
-  client: Pick<CodexAppServerClient, "request">,
-  signal?: AbortSignal,
-): Promise<string> {
-  return buildCodexManagedRequirementsFingerprint(
-    await readCodexManagedRequirements(client, signal),
-  );
 }
 
 async function readCodexManagedRequirements(

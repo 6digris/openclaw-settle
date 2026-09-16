@@ -65,6 +65,43 @@ type CodexThreadLifecycleTimingLogger = NonNullable<
 const PROGRESS_CARD_SYSTEM_PROMPT =
   "During multi-step work, keep your progress card current with the progress_card tool; the user follows it instead of reading the transcript.";
 
+describe("Codex usage attribution", () => {
+  it("labels new OpenClaw threads without rewriting resumed thread attribution", () => {
+    const params = createAttemptParams({ provider: "openai" });
+    const appServer = createAppServerOptions() as never;
+    const start = buildThreadStartParams(params, { appServer, cwd: "/repo", dynamicTools: [] });
+    const resume = buildThreadResumeParams(params, { appServer, threadId: "thread-1" });
+
+    expect(start.threadSource).toBe("openclaw");
+    expect(resume).not.toHaveProperty("threadSource");
+  });
+
+  it.each(["user", "cron", "heartbeat", "manual", "memory", "overflow"] as const)(
+    "preserves the %s run trigger on each new turn",
+    (trigger) => {
+      const params = { ...createAttemptParams({ provider: "openai" }), trigger };
+      const request = buildTurnStartParams(params, {
+        appServer: createAppServerOptions() as never,
+        threadId: "existing-thread",
+        cwd: "/repo",
+      });
+
+      expect(request.turnTrigger).toBe(trigger);
+    },
+  );
+
+  it("does not guess a human trigger when the caller supplied none", () => {
+    const params = { ...createAttemptParams({ provider: "openai" }), trigger: undefined };
+    const request = buildTurnStartParams(params, {
+      appServer: createAppServerOptions() as never,
+      threadId: "existing-thread",
+      cwd: "/repo",
+    });
+
+    expect(request).not.toHaveProperty("turnTrigger");
+  });
+});
+
 describe("Codex incognito thread persistence", () => {
   it("marks only incognito-shaped harness sessions ephemeral", () => {
     const appServer = createAppServerOptions() as never;
@@ -537,54 +574,6 @@ describe("Codex ring-zero thread config", () => {
       config: authoredProjectDocConfig(200_000),
     });
     expect(disabled.config?.project_doc_max_bytes).toBe(0);
-  });
-
-  it("keeps scheduled-authority apps enabled inside the restricted tool surface", () => {
-    const params = createAttemptParams({ provider: "openai" });
-    params.pluginHarnessToolPolicyRestricted = true;
-    params.scheduledRuntimeAuthority = {
-      version: 1,
-      runtimeId: "codex",
-      namespace: "codex.apps",
-      payload: { version: 1, auth: {}, apps: [] },
-    };
-    const apps = {
-      _default: { enabled: false },
-      calendar: { enabled: true },
-    };
-
-    const appServer = createAppServerOptions() as never;
-    const options = {
-      appServer,
-      cwd: "/repo",
-      dynamicTools: [],
-      hostSystemAgentActive: false,
-      nativeCodeModeEnabled: false,
-      config: {
-        apps,
-        mcp_servers: {
-          inherited: { command: "inherited-mcp" },
-        },
-      },
-    };
-    const start = buildThreadStartParams(params, options);
-    const resume = buildThreadResumeParams(params, {
-      ...options,
-      threadId: "thread-1",
-    });
-
-    for (const request of [start, resume]) {
-      expect(request.config?.["features.apps"]).toBe(true);
-      expect(request.config?.["orchestrator.mcp.enabled"]).toBe(true);
-      expect(request.config?.apps).toEqual(apps);
-      expect(request.config?.mcp_servers).toEqual({
-        inherited: {
-          command: "inherited-mcp",
-          enabled: false,
-        },
-      });
-      expect(request.config?.["features.multi_agent"]).toBe(false);
-    }
   });
 });
 
@@ -3135,6 +3124,7 @@ describe("Codex plugin binding recovery", () => {
     const sessionFile = path.join(tempDir, "session-authority.jsonl");
     const workspaceDir = path.join(tempDir, "workspace-authority");
     const params = createThreadLifecycleParams(sessionFile, workspaceDir);
+    params.trigger = "cron";
     const stateStore = createCodexTestBindingStateStore();
     let bindingStore = createCodexAppServerBindingStore(stateStore);
     let threadSequence = 0;
@@ -3166,7 +3156,6 @@ describe("Codex plugin binding recovery", () => {
       const base = createProvisionalPluginThreadConfigProvider("calendar");
       return {
         ...base,
-        requiresCurrentPolicyCheck: true,
         inputFingerprint,
         build: vi.fn(async () => {
           const config = await base.build();

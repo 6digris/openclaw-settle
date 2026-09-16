@@ -3,7 +3,7 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { normalizeOptionalAccountId } from "../routing/account-id.js";
 import { snapshotOwnCronRecord } from "./own-record.js";
 
-/** Closed, server-authored origin of an account-scoped scheduled tool cap. */
+/** Closed, server-authored origin of an account-scoped scheduled task. */
 export type CronScheduledToolCallerOrigin =
   | { kind: "external"; channel: string }
   | { kind: "local" }
@@ -148,32 +148,7 @@ export function restoreCronPinnedExecGrant(params: {
   return restored;
 }
 
-/** Returns operator-visible recovery guidance when a required pin cannot be proven intact. */
-export function resolveCronToolsAllowExecTargetRecoveryError(params: {
-  jobId?: string;
-  requirement?: unknown;
-  execTarget?: unknown;
-}): string | undefined {
-  const requirement = normalizeCronToolsAllowExecTargetRequirement(params.requirement);
-  if (!requirement) {
-    return undefined;
-  }
-  if (resolveMatchingCronExecTarget(params)) {
-    return undefined;
-  }
-  const subject = params.jobId ? `Automation ${params.jobId}` : "This automation";
-  const recoveryCommand = params.jobId
-    ? `openclaw automations edit ${params.jobId} --tools <tool,...>`
-    : "openclaw automations list --all";
-  return (
-    `${subject} cannot run because its captured exec restriction is missing or invalid. ` +
-    "No trigger, script, or agent action was executed. Recreate it from a fresh authenticated creator turn, " +
-    `or explicitly reauthorize its complete tool cap from a trusted operator shell with ` +
-    `\`${recoveryCommand}\`.`
-  );
-}
-
-/** Server-authored provenance for a persisted scheduled tool-cap authority envelope. */
+/** Server-authored owner context; execution still resolves the agent's current policy. */
 export type CronScheduledToolPolicy =
   | {
       version: 1;
@@ -203,7 +178,12 @@ export function createAccountCronScheduledToolPolicy(params: {
   if (!ownerSessionKey || !ownerAccountId) {
     return undefined;
   }
-  return { version: 1, mode: "account", ownerSessionKey, ownerAccountId };
+  return {
+    version: 1,
+    mode: "account",
+    ownerSessionKey,
+    ownerAccountId,
+  };
 }
 
 /** Accepts only the current closed provenance shape; unknown versions fail closed. */
@@ -243,9 +223,6 @@ export function resolveCronScheduledToolPolicy(params: {
   scheduledToolPolicy?: unknown;
   owner?: { sessionKey?: string; accountId?: string };
 }): CronScheduledToolPolicy | undefined {
-  if (params.toolsAllow === undefined) {
-    return undefined;
-  }
   const policy = normalizeCronScheduledToolPolicy(params.scheduledToolPolicy);
   if (!policy || policy.mode === "trusted") {
     return policy;

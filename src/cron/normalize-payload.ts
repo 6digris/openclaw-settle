@@ -13,6 +13,20 @@ import { snapshotOwnCronRecord } from "./own-record.js";
 
 type UnknownRecord = Record<string, unknown>;
 
+/** Reject newly authored caps without invalidating legacy rows on disk. */
+export function assertNoNewCronToolAllowlist(value: unknown): void {
+  if (!isRecord(value)) {
+    return;
+  }
+  for (const input of [value, value.payload]) {
+    if (isRecord(input) && Object.hasOwn(input, "toolsAllow") && input.toolsAllow != null) {
+      throw new Error(
+        "Per-job tool restrictions are no longer supported. Remove toolsAllow or --tools and configure tools on the owning agent; scheduled work uses its current permissions.",
+      );
+    }
+  }
+}
+
 function normalizeTrimmedStringArray(
   value: unknown,
   options?: { allowNull?: boolean },
@@ -141,6 +155,8 @@ export function normalizeCronPayload(payload: UnknownRecord): UnknownRecord {
       delete next.fallbacks;
     }
   }
+  // Keep legacy stored values readable for rollback. Scheduled execution ignores
+  // this retired field; normalizing stored data must not rewrite old job definitions.
   if ("toolsAllow" in next) {
     const toolsAllow = normalizeTrimmedStringArray(next.toolsAllow, { allowNull: true });
     if (toolsAllow !== undefined) {

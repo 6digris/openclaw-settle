@@ -33,7 +33,6 @@ import {
   nextWakeAtMs,
   recomputeNextRunsForMaintenance,
 } from "./jobs-scheduling.js";
-import { reconcileRuntimeAuthority } from "./jobs-tool-policy.js";
 import { cronPatchTouchesDeliveryResolution } from "./jobs-validation.js";
 import { applyJobPatch, applyDeclarativeJobSpec, createJob } from "./jobs.js";
 import {
@@ -296,18 +295,6 @@ function declarativeFields(job: CronStoredJob, includeEnabled: boolean) {
   };
 }
 
-function consumeRuntimeAuthorityMutationOptions(
-  opts: CronAddOptions | CronUpdateOptions | undefined,
-): Pick<Parameters<typeof reconcileRuntimeAuthority>[0], "captured" | "runtimeAuthority"> {
-  // Validation-only guards must not look like an empty fresh capture: that
-  // would erase an existing runtime ceiling during an otherwise routine edit.
-  opts?.commitGuard?.();
-  return {
-    captured: opts?.captureRuntimeAuthority !== undefined,
-    runtimeAuthority: opts?.captureRuntimeAuthority?.(),
-  };
-}
-
 /** Adds or converges a declaration-keyed cron job inside one store lock and write transaction. */
 export async function add(
   state: CronServiceState,
@@ -364,16 +351,10 @@ export async function add(
         nowMs: now,
         cronConfig: state.deps.cronConfig,
         scheduledToolPolicy: opts?.scheduledToolPolicy,
-        toolsAllowProvenance: opts?.toolsAllowProvenance,
-        toolsAllowExecTarget: opts?.toolsAllowExecTarget,
+        scheduledToolCallerOrigin: opts?.scheduledToolCallerOrigin,
         configuredChannels,
       });
-      const runtimeAuthorityMutation = consumeRuntimeAuthorityMutationOptions(opts);
-      reconcileRuntimeAuthority({
-        job: nextJob,
-        ...runtimeAuthorityMutation,
-        explicitlyMutatesToolsAllow: normalizedInput.payload.toolsAllow !== undefined,
-      });
+      opts?.commitGuard?.();
       const includeEnabled = opts?.enabledExplicit === true;
       if (
         isDeepStrictEqual(
@@ -410,8 +391,7 @@ export async function add(
     const snapshot = snapshotStoreForRollback(state);
     const job = createJob(state, creationInput, {
       scheduledToolPolicy: opts?.scheduledToolPolicy,
-      toolsAllowProvenance: opts?.toolsAllowProvenance,
-      toolsAllowExecTarget: opts?.toolsAllowExecTarget,
+      scheduledToolCallerOrigin: opts?.scheduledToolCallerOrigin,
       configuredChannels,
     });
     if (opts?.createdActor) {
@@ -420,12 +400,7 @@ export async function add(
     if (opts?.skillLibrarySelections) {
       job.skillLibrarySelections = structuredClone(opts.skillLibrarySelections);
     }
-    const runtimeAuthorityMutation = consumeRuntimeAuthorityMutationOptions(opts);
-    reconcileRuntimeAuthority({
-      job,
-      ...runtimeAuthorityMutation,
-      explicitlyMutatesToolsAllow: normalizedInput.payload.toolsAllow !== undefined,
-    });
+    opts?.commitGuard?.();
     state.store?.jobs.push(job);
 
     // Mutation notifications describe durable state, so publish them only
@@ -513,8 +488,7 @@ async function updateLoadedJob(params: {
     scheduleValidationNowMs: now,
     cronConfig: state.deps.cronConfig,
     scheduledToolPolicy: opts?.scheduledToolPolicy,
-    toolsAllowProvenance: opts?.toolsAllowProvenance,
-    toolsAllowExecTarget: opts?.toolsAllowExecTarget,
+    scheduledToolCallerOrigin: opts?.scheduledToolCallerOrigin,
     configuredChannels,
   });
   if (patch.agentId !== undefined) {
@@ -535,13 +509,7 @@ async function updateLoadedJob(params: {
     scheduleChanged: patch.schedule !== undefined,
     explicitTriggerState: patch.state,
   });
-  const runtimeAuthorityMutation = consumeRuntimeAuthorityMutationOptions(opts);
-  reconcileRuntimeAuthority({
-    job: nextJob,
-    ...runtimeAuthorityMutation,
-    explicitlyMutatesToolsAllow:
-      patch.payload !== undefined && Object.hasOwn(patch.payload, "toolsAllow"),
-  });
+  opts?.commitGuard?.();
   const snapshot = snapshotStoreForRollback(state);
   await persistUpdatedJob({ state, snapshot, previousJob: job, nextJob });
   return nextJob;

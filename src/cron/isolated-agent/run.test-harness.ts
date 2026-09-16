@@ -98,7 +98,6 @@ export const retireSessionMcpRuntimeMock = createMock();
 export const cleanupBrowserSessionsForLifecycleEndMock = createMock();
 export const removeCronRunContinuationSessionIfIdleMock = createMock();
 export const callGatewayMock = createMock();
-export const hasUsableWebSearchProviderMock = createMock();
 export const readSessionMessagesAsyncMock = createMock();
 
 const resolveBootstrapWarningSignaturesSeenMock = createMock();
@@ -178,10 +177,6 @@ vi.mock("./run-external-content.runtime.js", () => ({
 
 vi.mock("./run-context.runtime.js", () => ({
   resolveContextTokensForModel: resolveContextTokensForModelMock,
-}));
-
-vi.mock("../../web-search/runtime.js", () => ({
-  hasUsableWebSearchProvider: hasUsableWebSearchProviderMock,
 }));
 
 vi.mock("../../skills/runtime/cron-snapshot.runtime.js", () => ({
@@ -862,11 +857,6 @@ export function resetRunCronIsolatedAgentTurnHarness(): void {
     },
   );
   logWarnMock.mockReset();
-  hasUsableWebSearchProviderMock.mockReset();
-  hasUsableWebSearchProviderMock.mockImplementation(
-    (params?: { runtimeWebSearch?: { selectedProvider?: string } }) =>
-      Boolean(params?.runtimeWebSearch?.selectedProvider),
-  );
   readSessionMessagesAsyncMock.mockReset();
   readSessionMessagesAsyncMock.mockResolvedValue([]);
 }

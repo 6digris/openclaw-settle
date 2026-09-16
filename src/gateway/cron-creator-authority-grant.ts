@@ -141,33 +141,6 @@ export function revokeCronCreatorAuthorityRunScope(scope: CronCreatorAuthorityRu
   }
 }
 
-/** Consumes one live exact-run grant synchronously at the cron commit boundary. */
-export function consumeCronCreatorAuthorityGrant(
-  grant: CronCreatorAuthorityGrant,
-): CronRuntimeAuthority | undefined {
-  const runId = grant.runId.trim();
-  const token = grant.token.trim();
-  const entry = token ? grantsByToken.get(token) : undefined;
-  if (!entry) {
-    throw expiredAuthorityError();
-  }
-  const scope = entry.scope;
-  if (
-    entry.management ||
-    !scope.active ||
-    scope.signal.aborted ||
-    entry.operationSignal?.aborted ||
-    scope.runId !== runId
-  ) {
-    if (!scope.active || scope.signal.aborted || entry.operationSignal?.aborted) {
-      revokeCronCreatorAuthorityGrant(token);
-    }
-    throw expiredAuthorityError();
-  }
-  revokeCronCreatorAuthorityGrant(token);
-  return entry.runtimeAuthority ? cloneCronRuntimeAuthority(entry.runtimeAuthority) : undefined;
-}
-
 function expiredManagementError(): TypeError {
   return new TypeError(
     "Automation admin grant is missing, expired, or already used. Retry from a fresh authenticated Control UI administrator turn, or use the Automations page.",
