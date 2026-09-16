@@ -200,6 +200,7 @@ export function handleDesktopObserveUpgrade(
     }
     let closeCause: { trigger: DesktopCloseTrigger; code: number } | undefined;
     let negotiating = Boolean(entry.preauth);
+    const diagnosticStartedAt = Date.now();
     let resumeTimer: ReturnType<typeof setInterval> | undefined;
     const stopKeepalive = startWebSocketKeepalive(ws);
     const resumeWebSocket = () => ws.resume();
@@ -211,6 +212,18 @@ export function handleDesktopObserveUpgrade(
       }
       // Keep the first cleanup decision when its destroyed stream emits a later close.
       closeCause = { trigger, code };
+      console.error(
+        "DESKTOP_QA " +
+          JSON.stringify({
+            event: "bridge-first-close",
+            at: Date.now(),
+            startedAt: diagnosticStartedAt,
+            control: entry.control,
+            negotiating,
+            trigger,
+            code,
+          }),
+      );
       entry.requester?.signal?.removeEventListener("abort", onRequesterGone);
       stopKeepalive();
       clearInterval(resumeTimer);
@@ -227,6 +240,16 @@ export function handleDesktopObserveUpgrade(
     const onRequesterGone = () => closeBoth(4006, "authority_revoked", "authority-revoked");
 
     const startSplice = (browserRemainder: Buffer = Buffer.alloc(0), preauthenticated = false) => {
+      console.error(
+        "DESKTOP_QA " +
+          JSON.stringify({
+            event: "bridge-splice",
+            at: Date.now(),
+            startedAt: diagnosticStartedAt,
+            control: entry.control,
+            preauthenticated,
+          }),
+      );
       const clientMessageFilter = entry.control
         ? undefined
         : createRfbClientMessageFilter({

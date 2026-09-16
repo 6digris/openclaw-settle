@@ -12,6 +12,7 @@ import {
   exportDesktopResizeProof,
   inspectDesktopSshdRuntimeDirectory,
   readDesktopProofPhase,
+  readDesktopDiagnosticMarkers,
   readDesktopProofTestReport,
   sanitizeDesktopResizeProof,
   withDesktopProofCleanup,
@@ -731,5 +732,69 @@ describe("desktop proof identity and public evidence", () => {
     await expect(
       exportDesktopResizeProof(input, path.join(root, "public"), "node"),
     ).rejects.toThrow("regular-file");
+  });
+});
+
+describe("temporary desktop lifecycle diagnostic export", () => {
+  const marker = (value: unknown) => `DESKTOP_QA ${JSON.stringify(value)}`;
+
+  it("exports only known lifecycle fields from decorated log lines", () => {
+    expect(
+      readDesktopDiagnosticMarkers(
+        `2026-09-16 ${marker({
+          event: "bridge-first-close",
+          at: 123,
+          startedAt: 100,
+          control: false,
+          negotiating: true,
+          trigger: "stream-close",
+          code: 1000,
+          token: "private-token",
+          url: "https://private.invalid",
+          payload: "private-bytes",
+        })}`,
+      ),
+    ).toEqual([
+      {
+        event: "bridge-first-close",
+        at: 123,
+        startedAt: 100,
+        control: false,
+        negotiating: true,
+        trigger: "stream-close",
+        code: 1000,
+      },
+    ]);
+  });
+
+  it("drops malformed, unknown, missing, and unsafe field values", () => {
+    expect(
+      readDesktopDiagnosticMarkers(
+        [
+          "DESKTOP_QA not json",
+          marker({ event: "private-token", at: 1 }),
+          marker({ event: "rfb-connected", at: 1 }),
+          marker({ event: "ssh-exit", at: 1, code: null, signal: "private-token" }),
+          marker({ event: "rfb-connected", at: -1, viewOnly: false }),
+          marker({ event: "rfb-connected", at: 1, viewOnly: "private-token" }),
+          marker({ event: "rfb-connected", at: 1, viewOnly: false, extra: "x".repeat(1024) }),
+        ].join("\n"),
+      ),
+    ).toEqual([]);
+  });
+
+  it("retains bounded newest records and nullable SSH exit facts", () => {
+    const records = Array.from({ length: 140 }, (_, at) =>
+      marker({
+        event: "ssh-exit",
+        at,
+        code: null,
+        signal: "SIGTERM",
+      }),
+    );
+    const parsed = readDesktopDiagnosticMarkers(records.join("\n"));
+    expect(parsed).toHaveLength(128);
+    expect(parsed[0]).toEqual({ event: "ssh-exit", at: 12, code: null, signal: "SIGTERM" });
+    expect(parsed.at(-1)?.at).toBe(139);
   });
 });

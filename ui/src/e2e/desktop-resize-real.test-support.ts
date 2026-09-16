@@ -99,7 +99,10 @@ export async function observeDesktopEndpointPackets(port: number, signal: AbortS
       tails.set(socket, bytes.subarray(-9));
     }
   };
+  let diagnosticSequence = 0;
   const server = net.createServer((client) => {
+    const diagnosticConnection = ++diagnosticSequence;
+    let diagnosticClosed = false;
     if (closed || peers.size >= 32) {
       fail("Desktop endpoint connection bound exceeded");
       client.destroy();
@@ -113,7 +116,21 @@ export async function observeDesktopEndpointPackets(port: number, signal: AbortS
         client.destroy();
         upstream.destroy();
       });
-      socket.once("close", () => {
+      socket.once("close", (hadError) => {
+        if (!diagnosticClosed) {
+          diagnosticClosed = true;
+          console.error(
+            "DESKTOP_QA " +
+              JSON.stringify({
+                event: "tap-first-close",
+                at: Date.now(),
+                connection: diagnosticConnection,
+                side: socket === client ? "gateway" : "vnc",
+                hadError,
+                cleanup: closed,
+              }),
+          );
+        }
         peers.delete(socket);
         tails.delete(client);
         if (pending) {

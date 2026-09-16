@@ -7,9 +7,10 @@ import { buildControlUiFocusPath } from "@openclaw/session-url-contract";
 import type { Locator, Page } from "playwright";
 import { createServer } from "vite";
 import { expect, it } from "vitest";
-import type {
-  desktopProofTestReport,
-  readDesktopProofPhase,
+import {
+  readDesktopDiagnosticMarkers,
+  type desktopProofTestReport,
+  type readDesktopProofPhase,
 } from "../../../scripts/lib/desktop-resize-proof.mts";
 import { getFreePort } from "../../../src/test-utils/ports.ts";
 import { startSkillLibraryNodeProcess } from "../../../test/e2e/qa-lab/runtime/skill-library-node-process.ts";
@@ -121,6 +122,11 @@ async function resizeWindow(page: Page, width: number, height: number) {
 }
 
 async function captureDesktopSockets(page: Page) {
+  page.on("console", (message) => {
+    for (const record of readDesktopDiagnosticMarkers(message.text())) {
+      console.error("DESKTOP_QA " + JSON.stringify(record));
+    }
+  });
   // Observe native sockets so forbidden messages exercise the production filter.
   // No connection, RFB authentication, RPC, or bridge is replaced.
   await page.addInitScript(() => {
@@ -858,7 +864,13 @@ suite.define(() => {
         },
         release: async () => {
           // The suite joins browser and fixture closes before releasing shared state.
-          await gateway.cleanup();
+          try {
+            await gateway.cleanup();
+          } finally {
+            for (const record of readDesktopDiagnosticMarkers(gateway.logs())) {
+              console.error("DESKTOP_QA " + JSON.stringify(record));
+            }
+          }
           owners.gateway = "closed";
           recordPhase(lastPhase);
         },

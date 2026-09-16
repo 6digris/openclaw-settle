@@ -3,6 +3,88 @@ import path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 
+// Temporary diagnostic derivative: export only fixed-schema lifecycle facts.
+const desktopDiagnosticFields = {
+  "bridge-first-close": ["startedAt", "control", "negotiating", "trigger", "code"],
+  "bridge-splice": ["startedAt", "control", "preauthenticated"],
+  "ssh-exit": ["code", "signal"],
+  "rfb-connected": ["viewOnly"],
+  "rfb-disconnected": ["viewOnly", "connected", "clean", "code"],
+  "tap-first-close": ["connection", "side", "hadError", "cleanup"],
+} as const;
+const desktopDiagnosticEnums: Record<string, readonly string[]> = {
+  trigger: [
+    "owner-close",
+    "browser-close",
+    "browser-error",
+    "stream-close",
+    "stream-error",
+    "authority-revoked",
+    "invalid-view-only-stream",
+    "authentication-failed",
+  ],
+  signal: ["SIGHUP", "SIGINT", "SIGQUIT", "SIGKILL", "SIGTERM", "SIGABRT", "SIGSEGV", "SIGPIPE"],
+  side: ["gateway", "vnc"],
+};
+
+export function readDesktopDiagnosticMarkers(log: string) {
+  const records: Array<Record<string, string | number | boolean | null>> = [];
+  // The command owner already bounds logs; also bound this parser's work and output.
+  for (const line of log.slice(-512_000).split("\n")) {
+    const marker = line.indexOf("DESKTOP_QA ");
+    if (marker < 0 || line.length > 1_024) {
+      continue;
+    }
+    let value: unknown;
+    try {
+      value = JSON.parse(stripVTControlCharacters(line.slice(marker + "DESKTOP_QA ".length)));
+    } catch {
+      continue;
+    }
+    if (!isRecord(value)) {
+      continue;
+    }
+    const event = Object.keys(desktopDiagnosticFields).find((key) => key === value.event);
+    if (!event) {
+      continue;
+    }
+    const fields = desktopDiagnosticFields[event as keyof typeof desktopDiagnosticFields];
+    const record: Record<string, string | number | boolean | null> = { event };
+    let valid = true;
+    for (const field of ["at", ...fields]) {
+      const item = value[field];
+      if ((field === "code" || field === "signal") && item === null) {
+        record[field] = null;
+      } else if (Object.hasOwn(desktopDiagnosticEnums, field)) {
+        if (typeof item !== "string" || !desktopDiagnosticEnums[field]!.includes(item)) {
+          valid = false;
+          break;
+        }
+        record[field] = item;
+      } else if (["at", "startedAt", "connection", "code"].includes(field)) {
+        if (typeof item !== "number" || !Number.isSafeInteger(item) || item < 0) {
+          valid = false;
+          break;
+        }
+        record[field] = item;
+      } else {
+        if (typeof item !== "boolean") {
+          valid = false;
+          break;
+        }
+        record[field] = item;
+      }
+    }
+    if (valid) {
+      records.push(record);
+      if (records.length > 128) {
+        records.shift();
+      }
+    }
+  }
+  return records;
+}
+
 export const desktopResizeStages = [
   "02-panel",
   "03-panel-resized",

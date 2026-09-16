@@ -14,6 +14,7 @@ import {
   exportDesktopResizeProof,
   inspectDesktopSshdRuntimeDirectory,
   readDesktopProofPhase,
+  readDesktopDiagnosticMarkers,
   readDesktopProofTestReport,
   withDesktopProofCleanup,
 } from "./lib/desktop-resize-proof.mts";
@@ -66,6 +67,10 @@ const receipt = {
   },
   commands: [] as Array<{ label: string; exitCode: number | null; elapsedMs: number }>,
   carriers: [] as string[],
+  diagnosticMarkers: [] as Array<{
+    carrier: "node" | "ssh";
+    records: ReturnType<typeof readDesktopDiagnosticMarkers>;
+  }>,
   testDiagnostics: [] as Array<{
     carrier: "node" | "ssh";
     status: "pending" | "available" | "missing" | "invalid";
@@ -166,6 +171,12 @@ async function run(
     },
     async () => {
       receipt.commands.push({ label, exitCode, elapsedMs: Date.now() - started });
+      if (exitCode !== 0 && (label === "test-node" || label === "test-ssh")) {
+        receipt.diagnosticMarkers.push({
+          carrier: label === "test-node" ? "node" : "ssh",
+          records: readDesktopDiagnosticMarkers(Buffer.concat(log).toString("utf8")),
+        });
+      }
       await withDesktopProofCleanup(
         async () => {
           if (label === "sshd-config" && exitCode !== 0) {

@@ -144,7 +144,10 @@ export function createWorkerDesktopTunnels(deps: {
           timeoutMs: Number.MAX_SAFE_INTEGER,
         }),
       );
-      void child.exited.then(() => {
+      void child.exited.then(({ code, signal }) => {
+        console.error(
+          "DESKTOP_QA " + JSON.stringify({ event: "ssh-exit", at: Date.now(), code, signal }),
+        );
         void stopOwner();
       });
       await child.ready;

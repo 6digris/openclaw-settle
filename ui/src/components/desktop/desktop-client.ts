@@ -185,6 +185,10 @@ export class DesktopClient {
         return;
       }
       connected = true;
+      console.error(
+        "DESKTOP_QA " +
+          JSON.stringify({ event: "rfb-connected", at: Date.now(), viewOnly: options.viewOnly }),
+      );
       options.onConnect?.();
       applySizing();
     });
@@ -195,6 +199,17 @@ export class DesktopClient {
       stopInputTracking();
       // SAFETY: noVNC's public disconnect event carries clean, even before the socket closes.
       const { clean } = (event as CustomEvent<{ clean: boolean }>).detail;
+      console.error(
+        "DESKTOP_QA " +
+          JSON.stringify({
+            event: "rfb-disconnected",
+            at: Date.now(),
+            viewOnly: options.viewOnly,
+            connected,
+            clean,
+            code: closeDetail?.code ?? null,
+          }),
+      );
       options.onDisconnect?.({ ...closeDetail, clean });
     });
     rfb.addEventListener("securityfailure", (event) => {
