@@ -94,9 +94,13 @@ export class ShellPanelOwner {
     ) => void,
   ) {}
 
-  get assistantRestorationPending(): boolean {
-    const element = this.host.assistantPanelElement;
-    return this.restoredPanels.has(element) && this.host.lazyCustomElements.isPreloading(element);
+  get panelRestorationPending(): boolean {
+    for (const element of this.restoredPanels) {
+      if (this.host.lazyCustomElements.isPreloading(element)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   releasePreparedReservations(): void {
@@ -148,7 +152,9 @@ export class ShellPanelOwner {
       const prepared = this.prepared.get(element);
       if (!available) {
         if (gatewaySnapshot.phase === "connected") {
-          prepared?.release();
+          // Capability/config can settle after connection. Keep the prepared
+          // layout owned so a later available update can restore its reservation.
+          prepared?.synchronize(false);
         }
         continue;
       }

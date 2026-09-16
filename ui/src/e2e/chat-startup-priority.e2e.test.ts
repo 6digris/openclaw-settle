@@ -19,7 +19,10 @@ const sessionKey = "agent:research:dashboard:12345678-90ab-cdef-1234-567890abcde
 const historyText = "Authoritative selected conversation.";
 const bulkMethods = ["sessions.list", "sessions.catalog.list"];
 
-async function installStartupGateway(page: Page) {
+async function installStartupGateway(
+  page: Page,
+  historyMessages: unknown[] = [{ role: "assistant", content: historyText }],
+) {
   const config = { tools: { swarm: { enabled: true } } };
   return installMockGateway(page, {
     defaultAgentId: "main",
@@ -27,7 +30,7 @@ async function installStartupGateway(page: Page) {
     mainSessionKey: "agent:main:main",
     sessionKey,
     sessions: [{ key: sessionKey, kind: "direct", label: "Selected conversation", updatedAt: 1 }],
-    historyMessages: [{ role: "assistant", content: historyText }],
+    historyMessages,
     deferredMethods: ["chat.startup"],
     heldMethods: bulkMethods,
     featureMethods: [
@@ -134,7 +137,7 @@ async function readStartupShimmer(page: Page) {
     const shell = document.querySelector(".shell")!;
     const masks = [
       ...shell.querySelectorAll(
-        ".startup-chat-skeleton .startup-transcript-lines > .skeleton-line:first-child, .startup-chat-skeleton .user .chat-bubble, .assistant-panel-title",
+        ".startup-chat-skeleton .startup-transcript-lines > .skeleton-line:first-child, .startup-chat-skeleton .user .chat-bubble",
       ),
     ];
     return {
@@ -201,7 +204,13 @@ async function expectStartupShimmerRetired(page: Page) {
 suite.define(() => {
   it("loads selected history before automatic rosters, including event refreshes, and keeps live messages", async () => {
     await suite.withPage(createControlUiE2eContextOptions(), async ({ page }) => {
-      const gateway = await installStartupGateway(page);
+      const gateway = await installStartupGateway(page, [
+        ...Array.from({ length: 40 }, (_, index) => ({
+          role: index % 2 === 0 ? "user" : "assistant",
+          content: `Earlier conversation message ${index + 1}.`,
+        })),
+        { role: "assistant", content: historyText },
+      ]);
       try {
         await openPendingChat(page, gateway);
         await expectBulkReadsHeld(gateway);
@@ -224,19 +233,83 @@ suite.define(() => {
         }
 
         await gateway.resolveDeferred("chat.startup");
-        // RPC admission follows history; initial presentation also waits for the roster.
-        await page.locator(".startup-chat-skeleton").waitFor();
-        expect(await gateway.getRequests("talk.catalog")).toEqual([]);
-        await expectBulkReadsReleased(gateway);
+        // The roster responses remain held while the selected conversation becomes usable.
+        for (const method of bulkMethods) {
+          await gateway.waitForRequest(method, { match: { agentId: "research" } });
+        }
         const transcript = page.locator(".chat-pane-cache__pane--active .chat-thread");
-        await transcript.getByText(historyText, { exact: true }).waitFor();
+        const selectedMessage = transcript.getByText(historyText, { exact: true });
+        await selectedMessage.waitFor();
+        await expect
+          .poll(() => transcript.evaluate((element) => getComputedStyle(element).opacity))
+          .toBe("1");
+        // Use a real pointer selection: Range.addRange could select hidden or inert content.
+        await selectedMessage.click({ clickCount: 3 });
+        expect(await page.evaluate(() => window.getSelection()?.toString().trim())).toBe(
+          historyText,
+        );
+        const sidebar = page.locator(".shell-nav");
+        expect(await sidebar.evaluate((element) => element.hasAttribute("inert"))).toBe(true);
+        expect(await sidebar.getAttribute("aria-busy")).toBe("true");
+        expect(await page.locator("openclaw-app-shell").getAttribute("aria-busy")).toBe("false");
         await gateway.waitForRequest("talk.catalog");
         const composer = page.locator(
           ".chat-pane-cache__pane--active .agent-chat__composer-combobox textarea",
         );
-        const draft = "Synthetic draft after coordinated startup.";
-        await expect.poll(() => composer.isEnabled()).toBe(true);
+        const draft = "Synthetic draft before the sidebar finishes loading.";
+        await expect.poll(() => composer.isEditable()).toBe(true);
         await composer.fill(draft);
+        // Scroll into earlier messages; newly mounted virtual rows may correct scrollTop.
+        await transcript.hover();
+        await page.mouse.wheel(0, -200);
+        await expect
+          .poll(() =>
+            transcript.evaluate(
+              (element) => element.scrollHeight - element.clientHeight - element.scrollTop,
+            ),
+          )
+          .toBeGreaterThan(100);
+        expect(await transcript.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+        const anchorText = await transcript
+          .getByText(/^Earlier conversation message \d+\.$/u)
+          .evaluateAll((elements) => {
+            const viewport = elements[0]?.closest(".chat-thread")?.getBoundingClientRect();
+            return elements
+              .find((element) => {
+                const rect = element.getBoundingClientRect();
+                return viewport && rect.top >= viewport.top && rect.bottom <= viewport.bottom;
+              })
+              ?.textContent?.trim();
+          });
+        expect(anchorText).toBeDefined();
+        const readingAnchor = transcript.getByText(anchorText!, { exact: true });
+        const readAnchorOffset = () =>
+          readingAnchor.evaluate(
+            (element) =>
+              element.getBoundingClientRect().top -
+              element.closest(".chat-thread")!.getBoundingClientRect().top,
+          );
+        let readingOffset = await readAnchorOffset();
+        let stableSamples = 0;
+        // Settle only before releasing the roster; never move the expected position afterward.
+        await expect
+          .poll(async () => {
+            const offset = await readAnchorOffset();
+            stableSamples = Math.abs(offset - readingOffset) < 0.5 ? stableSamples + 1 : 0;
+            readingOffset = offset;
+            return stableSamples;
+          })
+          .toBeGreaterThanOrEqual(3);
+        expect(await composer.evaluate((element) => document.activeElement === element)).toBe(true);
+        await expectBulkReadsReleased(gateway);
+        await expectStartupShimmerRetired(page);
+        expect(await sidebar.evaluate((element) => element.hasAttribute("inert"))).toBe(false);
+        expect(await sidebar.getAttribute("aria-busy")).toBe("false");
+        expect(await selectedMessage.isVisible()).toBe(true);
+        expect(await readingAnchor.isVisible()).toBe(true);
+        expect(await readAnchorOffset()).toBeCloseTo(readingOffset, 0);
+        expect(await composer.inputValue()).toBe(draft);
+        expect(await composer.evaluate((element) => document.activeElement === element)).toBe(true);
         await gateway.waitForRequest("sessions.messages.subscribe", { match: { key: sessionKey } });
         // A live history refresh must preserve the presented transcript and draft.
         await gateway.deferNext("chat.history");
@@ -350,7 +423,7 @@ suite.define(() => {
     },
   );
   it.each([false, true])(
-    "isolates the live transcript while delayed Home joins the startup phase (split=%s)",
+    "keeps delayed Home hidden until the conversation is composed (split=%s)",
     async (split) => {
       await suite.withPage(createControlUiE2eContextOptions(), async ({ page }) => {
         await page.emulateMedia({ reducedMotion: "no-preference" });
@@ -396,11 +469,17 @@ suite.define(() => {
           })
           .toBeGreaterThan(1);
 
-        // Hold the real Home import to cover its ordinary loading bar as well as its header mask.
-        // Components such as the model trigger override the ordinary skeleton duration.
-        await page.addStyleTag({
-          content: "openclaw-assistant-panel .skeleton { --skeleton-duration: 1.45s; }",
-        });
+        const composer = page
+          .locator(
+            "openclaw-router-outlet .chat-pane-cache__pane--active .agent-chat__composer-combobox textarea",
+          )
+          .first();
+        await expect.poll(() => composer.isEditable()).toBe(true);
+        const draft = "Keep this conversation draft through the coordinated reveal.";
+        await composer.fill(draft);
+        expect(await composer.evaluate((element) => document.activeElement === element)).toBe(true);
+
+        // Home mounts behind the conversation mask; its own loading bar must not flash.
         const homeModule = await holdModuleResponse(
           page,
           /\/home-session\.runtime(?:-[^/?]+)?\.(?:ts|js)(?:\?|$)/u,
@@ -410,36 +489,17 @@ suite.define(() => {
             window.dispatchEvent(new CustomEvent(eventName, { detail: { open: true } }));
           }, HOME_PANEL_TOGGLE_EVENT);
           await homeModule.request;
-          await page.locator("openclaw-assistant-panel .assistant-panel-header").waitFor();
-          await expectAlignedStartupMasks(page);
+          const header = page.locator("openclaw-assistant-panel .assistant-panel-header");
+          await header.waitFor({ state: "attached" });
+          expect(await header.isVisible()).toBe(false);
           const loadingBar = page.locator("openclaw-assistant-panel .lazy-view-state .skeleton");
-          await loadingBar.waitFor();
-          const readLoadingBar = () =>
-            loadingBar.evaluate((element) => {
-              const style = getComputedStyle(element, "::after");
-              const shift = new DOMMatrixReadOnly(style.transform).m41;
-              const mainMask = document.querySelector(
-                ".startup-chat-skeleton .startup-transcript-lines > .skeleton-line",
-              )!;
-              return {
-                position: (100 * shift) / element.getBoundingClientRect().width,
-                mainPosition:
-                  Number.parseFloat(getComputedStyle(mainMask, "::after").backgroundPositionX) -
-                  100,
-              };
-            });
-          let barSample = await readLoadingBar();
-          await expect
-            .poll(async () => {
-              barSample = await readLoadingBar();
-              return Math.abs(barSample.mainPosition) < 60;
-            })
-            .toBe(true);
-          expect(Math.abs(barSample.position - barSample.mainPosition)).toBeLessThan(0.1);
-          const firstBar = await readLoadingBar();
-          await expect
-            .poll(async () => Math.abs((await readLoadingBar()).position - firstBar.position))
-            .toBeGreaterThan(1);
+          await loadingBar.waitFor({ state: "attached" });
+          expect(await loadingBar.isVisible()).toBe(false);
+          expect(await composer.inputValue()).toBe(draft);
+          expect(await composer.evaluate((element) => document.activeElement === element)).toBe(
+            true,
+          );
+          await expectAlignedStartupMasks(page);
         } finally {
           homeModule.release();
         }
@@ -455,13 +515,8 @@ suite.define(() => {
           .toBeGreaterThan(1);
         await expectAlignedStartupMasks(page);
 
-        const composer = page.locator(
-          "openclaw-assistant-panel .agent-chat__composer-combobox textarea",
-        );
-        await expect.poll(() => composer.isEditable()).toBe(true);
-        const draft = "Keep this Home draft through the coordinated reveal.";
-        await composer.fill(draft);
-        expect(await composer.evaluate((element) => document.activeElement === element)).toBe(true);
+        const homeHeader = page.locator("openclaw-assistant-panel .assistant-panel-header");
+        expect(await homeHeader.isVisible()).toBe(false);
         await gateway.resolveDeferred("chat.startup");
         await expectBulkReadsReleased(gateway);
         await expectStartupShimmerRetired(page);
@@ -469,6 +524,14 @@ suite.define(() => {
         expect(await composer.evaluate((element) => document.activeElement === element)).toBe(true);
         await composer.press("End");
         await composer.press("!");
+        expect(await composer.inputValue()).toBe(`${draft}!`);
+        await homeHeader.waitFor();
+        const homeComposer = page.locator(
+          "openclaw-assistant-panel .agent-chat__composer-combobox textarea",
+        );
+        await expect.poll(() => homeComposer.isEditable()).toBe(true);
+        await homeComposer.fill("Home is ready after the reveal.");
+        expect(await homeComposer.inputValue()).toBe("Home is ready after the reveal.");
         expect(await composer.inputValue()).toBe(`${draft}!`);
         expect(await gateway.getRequests("chat.send")).toEqual([]);
       });

@@ -3,7 +3,7 @@ import { createContext } from "@lit/context";
 export const STARTUP_REGION_READY_EVENT = "openclaw-startup-region-ready";
 
 export type StartupPresentation = {
-  stage: "pending" | "chrome" | "ready";
+  stage: "pending" | "chrome" | "content" | "ready";
   placeholderVisible: boolean;
   initialAssistantName?: string;
 };
@@ -79,7 +79,14 @@ export class StartupPresentationController {
 
   private advance() {
     const { stage } = this.snapshot;
-    if (stage === "ready" || !this.chromeReady || (stage === "chrome" && !this.contentReady)) {
+    const nextStage = this.chromeReady
+      ? this.contentReady
+        ? "ready"
+        : "chrome"
+      : this.contentReady
+        ? "content"
+        : "pending";
+    if (stage === "ready" || stage === nextStage) {
       return;
     }
     const remaining = this.shownAt === undefined ? 0 : this.shownAt + 300 - performance.now();
@@ -91,12 +98,11 @@ export class StartupPresentationController {
       }, remaining);
       return;
     }
-    if (this.contentReady) {
+    if (nextStage === "ready") {
       this.finish();
       return;
     }
-    // The transcript keeps the skeleton already painted with the chrome. Its
-    // minimum dwell and pulse must not restart at this presentation boundary.
-    this.set({ ...this.snapshot, stage: "chrome" });
+    // Either region can reveal first; the original dwell and clock do not restart.
+    this.set({ ...this.snapshot, stage: nextStage });
   }
 }

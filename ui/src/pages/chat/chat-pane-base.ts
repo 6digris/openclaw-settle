@@ -84,10 +84,46 @@ import {
   openSlot,
   promoteSidebarPanel,
   setSidebarOpen,
+  SIDEBAR_GEOMETRY_COMMIT_EVENT,
 } from "./sidebar-layout.ts";
 
 export abstract class ChatPaneBase extends OpenClawLightDomElement {
   private paneLifecycleRoot: Element | null = null;
+  protected renderedSidebarLayout?: SidebarLayout;
+  get sidebarCompositionReady(): boolean {
+    const layout = this.renderedSidebarLayout;
+    if (!layout) {
+      return false;
+    }
+    if (layout.columns.length === 0) {
+      return true;
+    }
+    const frame = this.querySelector(".sidebar-region");
+    const region = frame?.querySelector<HTMLElementTagNameMap["openclaw-chat-sidebar-region"]>(
+      ":scope > openclaw-chat-sidebar-region",
+    );
+    if (region) {
+      return region.layout === layout && region.hasUpdated && !region.isUpdatePending;
+    }
+    // A failed region import has a committed local result too.
+    return Boolean(
+      frame?.querySelector(":scope > .sidebar-region__right-runtime .lazy-view-error"),
+    );
+  }
+  private readonly handleSidebarGeometryCommit = (event: Event) => {
+    if (
+      event.target instanceof Element &&
+      event.target.closest("openclaw-chat-pane")?.isSameNode(this) &&
+      !this.transcript.initialLayoutReady
+    ) {
+      // Let the transcript's existing geometry listener finish measuring first.
+      void Promise.resolve().then(() => {
+        if (this.isConnected) {
+          this.transcript.hostUpdated();
+        }
+      });
+    }
+  };
   // The first Lit update must render even while hidden; later hidden work parks.
   // Disconnect releases the waiter so reconnect can schedule in its new lifecycle.
   private hiddenUpdateResume: (() => void) | undefined;
@@ -114,6 +150,7 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
   override connectedCallback() {
     this.paneLifecycleRoot = this.closest("openclaw-app-shell") ?? this.parentElement;
     document.addEventListener("visibilitychange", this.handleVisibilityChange);
+    this.addEventListener(SIDEBAR_GEOMETRY_COMMIT_EVENT, this.handleSidebarGeometryCommit);
     super.connectedCallback();
     this.addEventListener(
       CHAT_TRANSCRIPT_LOADING_CHANGED_EVENT,
@@ -138,6 +175,8 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
     this.context?.connectionBootstrap.setForegroundPane(this, null);
     this.hiddenUpdateResume?.();
     document.removeEventListener("visibilitychange", this.handleVisibilityChange);
+    this.removeEventListener(SIDEBAR_GEOMETRY_COMMIT_EVENT, this.handleSidebarGeometryCommit);
+    this.renderedSidebarLayout = undefined;
     super.disconnectedCallback();
     // A removed Home pane cannot bubble its final loading edge. Notify its
     // former shell so background history does not stay blocked on that pane.
@@ -285,6 +324,7 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
   get transcriptPresentationReady(): boolean {
     return (
       this.transcriptReady &&
+      this.sidebarCompositionReady &&
       (this.transcript.initialLayoutReady ||
         Boolean(this.querySelector(".chat-history-error:not(.chat-history-error--inline)")))
     );
@@ -360,7 +400,7 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
     this.requestUpdate(),
   );
   protected readonly transcript = new ChatTranscriptController(this, {
-    isContentReady: () => this.transcriptReady,
+    isContentReady: () => this.transcriptReady && this.sidebarCompositionReady,
     onInitialLayoutReady: () =>
       this.dispatchEvent(
         new Event(CHAT_PANE_LIFECYCLE_CHANGED_EVENT, { bubbles: true, composed: true }),

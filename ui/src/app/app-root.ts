@@ -663,7 +663,7 @@ export class OpenClawApp extends OpenClawLightDomElement {
             ${this.startupPresentation.snapshot.stage !== "ready" ? t("common.loading") : nothing}
           </span>
           <openclaw-app-shell
-            aria-busy=${String(this.startupPresentation.snapshot.stage !== "ready")}
+            aria-busy=${String(this.startupPresentation.snapshot.stage === "pending" || this.startupPresentation.snapshot.stage === "chrome")}
             .runtime=${runtime}
             .onboarding=${this.onboarding}
             .startupPresentation=${this.startupPresentation}

@@ -23,7 +23,7 @@ It speaks **directly to the Gateway WebSocket** on the same port.
 
 If the Gateway's request queue is full, the Control UI shows "The server is busy. Please try again in a moment." Wait briefly, then retry the action.
 
-A cold chat startup uses regional skeletons: the workspace chrome, sidebar, and chat header reveal together, followed by the transcript if history is still pending. Skeletons appear after 150 ms and stay for at least 300 ms once shown. The composer is the real control, disabled until connected. Existing cached sessions and history paint directly on warm starts, and reconnecting preserves local drafts. Skeletons use the content layout and respect your theme and reduced-motion preference.
+When opening a chat, the conversation area shows a conversation skeleton while its content loads. Saved side panels and the terminal mount in their reserved space before the conversation appears, without showing separate panel skeletons. A panel still waiting for its own data shows a short loading status. Navigation can finish loading independently. Skeletons appear after 150 ms and stay for at least 300 ms once shown. The composer is the real control, disabled until connected. Existing cached sessions and history paint directly on warm starts, and reconnecting preserves local drafts. Skeletons use the content layout and respect your theme and reduced-motion preference.
 
 The selected chat loads before automatic sidebar task lists refresh. Live events remain subscribed during startup, and explicit sidebar actions remain available. Background lists resume after the transcript loads or reports an error.
 

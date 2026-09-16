@@ -100,7 +100,7 @@ class CustodianSurface extends OpenClawLightDomElement {
     const messageId = this.store.messages.at(-1)?.id ?? null;
     if (messageId !== this.lastMessageId) {
       this.lastMessageId = messageId;
-      if (transcript && this.startup.stage !== "ready") {
+      if (transcript && (this.startup.stage === "pending" || this.startup.stage === "chrome")) {
         // Hidden messages cannot scrollIntoView; position the live scroller before reveal.
         transcript.scrollTop = transcript.scrollHeight;
       } else {

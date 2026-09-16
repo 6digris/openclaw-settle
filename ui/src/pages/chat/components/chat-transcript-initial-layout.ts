@@ -47,7 +47,6 @@ export class ChatTranscriptInitialLayout {
     if (this.committed || pending()) {
       return;
     }
-    this.reconcileImplicitEndAnchor();
     const commit = host.updateComplete;
     void commit.then((complete) => {
       const element = scrollElement();
@@ -76,7 +75,7 @@ export class ChatTranscriptInitialLayout {
     });
   }
 
-  private reconcileImplicitEndAnchor(): void {
+  reconcileImplicitEndAnchor(): void {
     if (!this.implicitEndAnchorPending) {
       return;
     }

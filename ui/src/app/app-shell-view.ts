@@ -16,12 +16,12 @@ import {
   KEYBOARD_SHORTCUT_COMBOS,
 } from "../lib/keyboard-shortcut-contract.ts";
 import { readSessionMethodAccess } from "../lib/session-method-access.ts";
-import { normalizeAgentId, resolveUiSelectedSessionAgentId } from "../lib/sessions/session-key.ts";
+import { resolveUiSelectedSessionAgentId } from "../lib/sessions/session-key.ts";
 import { isTerminalAvailable } from "../lib/terminal-availability.ts";
 import type { NewSessionTarget } from "../pages/new-session/location.ts";
 import { pluginTabKey, pluginTabRefFromSearch } from "../pages/plugin/route.ts";
 import { renderPluginSurface } from "../plugins/control-ui-view.ts";
-import type { ShellRouteState } from "./app-host-route-state.ts";
+import { selectShellAgentId, type ShellRouteState } from "./app-host-route-state.ts";
 import {
   renderLazyDevicePairSetup,
   type DevicePairSetupHost,
@@ -232,17 +232,13 @@ export function renderApplicationShell(host: ShellViewHost) {
     lazyCustomElements.preload(SIDEBAR_ATTENTION_ELEMENT, { reportError: true });
   }
   const shellWidth = Math.max(globalThis.innerWidth || 0, NAV_WIDTH_MAX);
-  // A route query is navigation input, not an owner record. Let it override the
-  // live selection only after the roster proves that agent exists.
   const { agentsList } = context.agents.state;
   const { selectedId } = context.agentSelection.state;
-  const requestedRouteAgentId = host.newSessionRouteAgentId();
-  const routeAgentId = requestedRouteAgentId ? normalizeAgentId(requestedRouteAgentId) : null;
-  const selectedAgentId =
-    routeAgentId !== null &&
-    agentsList?.agents.some((agent) => normalizeAgentId(agent.id) === routeAgentId) === true
-      ? routeAgentId
-      : normalizeAgentId(selectedId ?? gatewaySnapshot.assistantAgentId);
+  const selectedAgentId = selectShellAgentId(
+    host.newSessionRouteAgentId(),
+    agentsList?.agents,
+    selectedId ?? gatewaySnapshot.assistantAgentId,
+  );
   const newSessionAccess = readSessionMethodAccess(gatewaySnapshot, {
     method: "sessions.create",
     params: {},
@@ -258,10 +254,7 @@ export function renderApplicationShell(host: ShellViewHost) {
     }
   };
   const uiSettings = context.theme.settings;
-  const { location = globalThis.location, committedSessionKey } = host.routeState;
-  const presentationSessionKey =
-    committedSessionKey ||
-    initialSessionIdentity(location, context, host.activeSessionKey).sessionKey;
+  const { committedSessionKey, location = globalThis.location } = host.routeState;
   // The new-session draft shares the chat layout: full-height pane that owns
   // its scrolling and pins the composer dock to the bottom.
   const chatLikeRoute = sessionRoute || activeRoute === "new-session";
@@ -521,9 +514,10 @@ export function renderApplicationShell(host: ShellViewHost) {
                 role=${mobileNavLayout ? "dialog" : nothing}
                 aria-modal=${mobileNavLayout && navDrawerOpen ? "true" : nothing}
                 aria-label=${mobileNavLayout ? t("palette.categories.navigation") : nothing}
+                aria-busy=${String(host.startupSnapshot?.stage === "pending" || host.startupSnapshot?.stage === "content")}
                 aria-hidden=${mobileNavLayout && navigationSurfaceHidden ? "true" : nothing}
                 tabindex=${mobileNavLayout ? -1 : nothing}
-                ?inert=${navigationSurfaceHidden || host.startupSnapshot?.stage === "pending"}
+                ?inert=${navigationSurfaceHidden || host.startupSnapshot?.stage === "pending" || host.startupSnapshot?.stage === "content"}
               >
                 ${navigationContent}
                 ${
@@ -595,7 +589,12 @@ export function renderApplicationShell(host: ShellViewHost) {
         ${nativeEmbed ? navigationContent : nothing}
         ${
           host.startupPresentation?.retainSkeletons && chatLikeRoute
-            ? renderStartupChatSkeleton(presentationSessionKey, startupName, uiSettings)
+            ? renderStartupChatSkeleton(
+                committedSessionKey ||
+                  initialSessionIdentity(location, context, host.activeSessionKey).sessionKey,
+                startupName,
+                uiSettings,
+              )
             : nothing
         }
         <openclaw-router-outlet

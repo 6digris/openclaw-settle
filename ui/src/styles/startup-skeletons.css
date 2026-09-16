@@ -30,6 +30,13 @@ openclaw-app:has(.shell:not([data-startup-stage="ready"])),
   position: relative;
 }
 
+/* The conversation owns structural loading feedback in a session. Optional
+   panels keep a status in their reserved box, including late imports and reloads. */
+.shell:has(> .content--chat) {
+  --panel-loading-structure-display: none;
+  --panel-loading-status-display: block;
+}
+
 .startup-chat-skeleton {
   z-index: 2;
   pointer-events: none;
@@ -51,13 +58,33 @@ openclaw-app:has(.shell:not([data-startup-stage="ready"])),
   transition: var(--startup-mask-transition, opacity 160ms var(--ease-out));
 }
 
-.shell[data-startup-stage="pending"][data-startup-placeholder="true"] .startup-sidebar-skeleton {
+.shell:not(
+    [data-startup-stage="chrome"],
+    [data-startup-stage="ready"]
+  )[data-startup-placeholder="true"]
+  .startup-sidebar-skeleton {
   opacity: 1;
 }
 
 .startup-sidebar-skeleton * {
   --startup-mask-transition: none;
   visibility: hidden;
+}
+
+/* Retain the saved grid dimensions without drawing another panel placeholder. */
+.startup-chat-skeleton .sidebar-region__right-runtime > * {
+  visibility: hidden;
+}
+
+/* Mount and measure the final composition behind the conversation's mask. */
+.shell[data-startup-managed]:not([data-startup-stage="content"], [data-startup-stage="ready"])
+  :is(
+    openclaw-chat-pane .sidebar-region__right-runtime > *,
+    openclaw-terminal-panel,
+    openclaw-assistant-panel
+  ) {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .shell[data-startup-stage]
@@ -113,39 +140,21 @@ openclaw-app:has(.shell:not([data-startup-stage="ready"])),
   width: 32%;
 }
 
-/* Each region inherits one reveal; its leaves retain their existing boxes. */
-.shell[data-startup-stage]
-  :is(
-    .shell-nav,
-    .chat-pane__header,
-    .assistant-panel-header,
-    .chat-thread,
-    :where(.assistant-panel) .custodian__messages
-  ) {
-  --startup-mask-opacity: 0;
-}
-
-.shell[data-startup-stage="pending"] :is(.shell-nav, .chat-pane__header, .assistant-panel-header),
-.shell:not([data-startup-stage="ready"])
+.shell:not([data-startup-stage="chrome"], [data-startup-stage="ready"]) .shell-nav,
+.shell[data-startup-stage="pending"] :is(.chat-pane__header, .assistant-panel-header),
+.shell:not([data-startup-stage="content"], [data-startup-stage="ready"])
   :is(.chat-thread, :where(.assistant-panel) .custodian__messages) {
   --startup-mask-opacity: 1;
   pointer-events: none;
   user-select: none;
 }
 
-.shell[data-startup-stage="pending"] :is(.sidebar, .chat-pane__header, .assistant-panel-header) *,
-.shell:not([data-startup-stage="ready"])
+.shell:not([data-startup-stage="chrome"], [data-startup-stage="ready"]) .sidebar *,
+.shell[data-startup-stage="pending"] :is(.chat-pane__header, .assistant-panel-header) *,
+.shell:not([data-startup-stage="content"], [data-startup-stage="ready"])
   :is(.chat-thread, :where(.assistant-panel) .custodian__messages)
   * {
   visibility: hidden;
-}
-
-/* Keep the bounded virtual range measured through the masks' exit fade.
-   Once the placeholders retire, the transcript resumes its normal containment. */
-.shell:has(.startup-chat-skeleton, .startup-sidebar-skeleton)
-  .chat--startup-managed
-  .chat-virtual-row {
-  content-visibility: visible;
 }
 
 .shell[data-startup-placeholder="true"] .startup-transcript-skeleton {
@@ -163,13 +172,16 @@ openclaw-app:has(.shell:not([data-startup-stage="ready"])),
   --startup-mask-opacity: 0;
 }
 
-.shell[data-startup-stage]
+.shell[data-startup-managed]
   :where(
     .assistant-panel-title,
     .chat-pane__workspace-chip > span:not(.workspace-icon-fallback),
     .chat-pane__session-title-text,
     .chat-pane__workspace-chip,
-    .assistant-panel-icon,
+    .assistant-panel-icon
+  ),
+.shell[data-startup-stage]
+  :where(
     .startup-transcript-skeleton .chat-bubble,
     .startup-transcript-lines > .skeleton-line,
     .startup-transcript-skeleton .chat-avatar
@@ -232,7 +244,7 @@ openclaw-app:has(.shell:not([data-startup-stage="ready"])),
 }
 
 /* These controls contain bare SVGs, so mask their icon box, not the button. */
-.shell[data-startup-stage] :where(.chat-pane__workspace-chip, .assistant-panel-icon)::before {
+.shell[data-startup-managed] :where(.chat-pane__workspace-chip, .assistant-panel-icon)::before {
   inset: 50% auto auto 50%;
   width: 16px;
   height: 16px;
@@ -240,7 +252,7 @@ openclaw-app:has(.shell:not([data-startup-stage="ready"])),
   border-radius: var(--radius-sm);
 }
 
-.shell[data-startup-stage] .chat-pane__workspace-chip::before {
+.shell[data-startup-managed] .chat-pane__workspace-chip::before {
   inset-inline-start: 5px;
   width: 14px;
   height: 14px;
@@ -252,9 +264,17 @@ openclaw-app:has(.shell:not([data-startup-stage="ready"])),
   transform: translateX(var(--startup-shimmer));
 }
 
+.shell:not(
+    [data-startup-stage="chrome"],
+    [data-startup-stage="ready"]
+  )[data-startup-placeholder="false"]
+  .shell-nav,
 .shell[data-startup-stage="pending"][data-startup-placeholder="false"]
-  :is(.shell-nav, .chat-pane__header, .assistant-panel-header),
-.shell[data-startup-placeholder="false"]
+  :is(.chat-pane__header, .assistant-panel-header),
+.shell:not(
+    [data-startup-stage="content"],
+    [data-startup-stage="ready"]
+  )[data-startup-placeholder="false"]
   :is(.chat-thread, :where(.assistant-panel) .custodian__messages) {
   visibility: hidden;
 }
@@ -307,9 +327,13 @@ openclaw-app:has(.shell:not([data-startup-stage="ready"])),
   transition: var(--startup-mask-transition, opacity 160ms var(--ease-out));
 }
 
-.shell[data-startup-stage="pending"]
-  :is(openclaw-app-sidebar .sidebar, openclaw-chat-pane .chat-pane__header),
-.shell:not([data-startup-stage="ready"]) openclaw-chat-pane .chat-thread {
+.shell:not([data-startup-stage="chrome"], [data-startup-stage="ready"])
+  openclaw-app-sidebar
+  .sidebar,
+.shell[data-startup-stage="pending"] openclaw-chat-pane .chat-pane__header,
+.shell:not([data-startup-stage="content"], [data-startup-stage="ready"])
+  openclaw-chat-pane
+  .chat-thread {
   opacity: 0;
 }
 
@@ -320,7 +344,7 @@ openclaw-app:has(.shell:not([data-startup-stage="ready"])),
 }
 
 .shell:not([data-startup-stage="pending"]) .startup-chat-skeleton .chat-pane__header,
-.shell[data-startup-stage="ready"] .startup-chat-skeleton {
+.shell:is([data-startup-stage="content"], [data-startup-stage="ready"]) .startup-chat-skeleton {
   opacity: 0;
   visibility: hidden;
   transition: var(--startup-mask-transition, opacity 160ms var(--ease-out), visibility 0s 160ms);

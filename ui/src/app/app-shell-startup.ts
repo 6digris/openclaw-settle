@@ -4,6 +4,7 @@ import type { AppSidebarSessionNavigationElement } from "../components/app-sideb
 import type { OpenClawAssistantPanel } from "../components/assistant-panel.ts";
 import type { StartupChatPane as StartupPlaceholder } from "../components/startup-chat-skeleton.ts";
 import type { ChatPane } from "../pages/chat/chat-pane-render.ts";
+import { SIDEBAR_GEOMETRY_COMMIT_EVENT } from "../pages/chat/sidebar-layout.ts";
 import { hasPresentedReplacement } from "../plugins/control-ui-view-presentation.ts";
 import type { ShellRouteState } from "./app-host-route-state.ts";
 import type { ApplicationContext } from "./context.ts";
@@ -14,7 +15,7 @@ interface ShellStartupHost extends HTMLElement {
   readonly startupPresentation?: StartupPresentationController;
   readonly routeState: ShellRouteState;
   readonly workspaceChromeVisible: boolean;
-  readonly assistantRestorationPending: boolean;
+  readonly panelRestorationPending: boolean;
   readonly navigationSidebar: HTMLElement;
   requestUpdate(): void;
 }
@@ -24,8 +25,26 @@ export class ShellStartupOwner {
   private startupIdentityOwner = "";
   private startupIdentityReady = false;
   private releasingSkeletons = false;
+  private sidebarFailed = false;
 
   constructor(private readonly host: ShellStartupHost) {
+    host.addEventListener(SIDEBAR_GEOMETRY_COMMIT_EVENT, () => {
+      const startup = host.startupPresentation;
+      if (!startup || startup.snapshot.stage === "ready") {
+        return;
+      }
+      // A promoted panel can commit with no measurable conversation. Recheck
+      // presentation directly, without rerendering the shell on every geometry event.
+      void Promise.resolve().then(() => {
+        if (
+          host.isConnected &&
+          host.startupPresentation === startup &&
+          startup.snapshot.stage !== "ready"
+        ) {
+          this.synchronize(this.sidebarFailed);
+        }
+      });
+    });
     host.addEventListener("animationstart", (event) => {
       if (
         event.animationName !== "startup-shimmer" ||
@@ -59,6 +78,7 @@ export class ShellStartupOwner {
   }
 
   synchronize(sidebarFailed: boolean) {
+    this.sidebarFailed = sidebarFailed;
     const host = this.host;
     const startup = host.startupPresentation;
     const context = host.context;
@@ -149,25 +169,30 @@ export class ShellStartupOwner {
         }
       });
     }
-    const chromeReady = Boolean(
-      !host.assistantRestorationPending &&
+    const mainChromeReady = Boolean(
+      !host.panelRestorationPending &&
       !host.querySelector<OpenClawAssistantPanel>("openclaw-assistant-panel")
         ?.homePresentationPending &&
       panes.length > 0 &&
       panes.every(
         (pane) =>
-          pane.composerReady && pane.querySelector(pane.compact ? ".chat" : ".chat-pane__header"),
+          pane.composerReady &&
+          pane.sidebarCompositionReady &&
+          pane.querySelector(pane.compact ? ".chat" : ".chat-pane__header"),
       ) &&
-      (!host.workspaceChromeVisible || host.navigationSidebar.querySelector(".sidebar-brand")) &&
       this.startupIdentityReady &&
-      (context.agents.state.agentsList || context.agents.state.agentsError) &&
+      (context.agents.state.agentsList || context.agents.state.agentsError),
+    );
+    const chromeReady = Boolean(
+      mainChromeReady &&
+      (!host.workspaceChromeVisible || host.navigationSidebar.querySelector(".sidebar-brand")) &&
       (!host.workspaceChromeVisible ||
         host.querySelector<AppSidebarSessionNavigationElement>("openclaw-app-sidebar:defined")
           ?.sessionData.initialListReady),
     );
     startup.update(
       chromeReady,
-      chromeReady &&
+      mainChromeReady &&
         [
           ...host.querySelectorAll<HTMLElementTagNameMap["openclaw-custodian-surface"]>(
             "openclaw-assistant-panel openclaw-custodian-surface",

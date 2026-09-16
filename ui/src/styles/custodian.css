@@ -605,7 +605,9 @@ openclaw-custodian-page {
   transform: none;
 }
 
-.shell:not([data-startup-stage="ready"]) .custodian__startup + .custodian__messages,
-.shell[data-startup-stage="ready"] .custodian__startup {
+.shell:not([data-startup-stage="content"], [data-startup-stage="ready"])
+  .custodian__startup
+  + .custodian__messages,
+.shell:is([data-startup-stage="content"], [data-startup-stage="ready"]) .custodian__startup {
   opacity: 0;
 }

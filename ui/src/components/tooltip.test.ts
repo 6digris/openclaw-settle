@@ -488,7 +488,31 @@ describe("openclaw-tooltip", () => {
 
     const descriptionId = trigger.getAttribute("aria-describedby");
     expect(descriptionId).toBeTruthy();
-    expect(document.getElementById(descriptionId ?? "")?.textContent).toBe("Accessible tooltip");
+    const description = document.getElementById(descriptionId ?? "");
+    expect(description?.textContent).toBe("Accessible tooltip");
+    if (!description) {
+      throw new Error("Accessible tooltip description is missing");
+    }
+    await Promise.resolve();
+    const mutations: MutationRecord[] = [];
+    const observer = new MutationObserver((records) => mutations.push(...records));
+    observer.observe(description, { childList: true, characterData: true, subtree: true });
+    observer.observe(trigger, { attributes: true, attributeFilter: ["aria-describedby"] });
+    try {
+      tooltip.delay = 25;
+      await tooltip.updateComplete;
+      await Promise.resolve();
+      mutations.push(...observer.takeRecords());
+      expect(mutations).toEqual([]);
+
+      tooltip.content = "Updated accessible tooltip";
+      await tooltip.updateComplete;
+      await Promise.resolve();
+      expect(description.textContent).toBe("Updated accessible tooltip");
+      expect(trigger.getAttribute("aria-describedby")).toBe(descriptionId);
+    } finally {
+      observer.disconnect();
+    }
   });
 
   it("describes the focusable element inside a wrapper trigger", async () => {

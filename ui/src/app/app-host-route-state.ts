@@ -1,6 +1,7 @@
 import type { RouteLocation, RouteMatch, RouterState } from "@openclaw/uirouter";
 import { isSessionRouteId } from "../app-route-paths.ts";
 import type { RouteId } from "../app-routes.ts";
+import { normalizeAgentId } from "../lib/sessions/session-key.ts";
 import { selectRenderedRouteMatch } from "./router-outlet.ts";
 
 export type ShellRouteState = {
@@ -48,4 +49,17 @@ export function selectShellRouteState(routerState: RouterState<RouteId>): ShellR
       : {}),
     ...(committedSessionKey ? { committedSessionKey } : {}),
   };
+}
+
+/** A route query can override selection only after the roster proves its owner. */
+export function selectShellAgentId(
+  requestedAgentId: string,
+  agents: ReadonlyArray<{ id: string }> | undefined,
+  fallbackAgentId: string | null | undefined,
+): string {
+  const routeAgentId = requestedAgentId ? normalizeAgentId(requestedAgentId) : null;
+  return routeAgentId !== null &&
+    agents?.some((agent) => normalizeAgentId(agent.id) === routeAgentId) === true
+    ? routeAgentId
+    : normalizeAgentId(fallbackAgentId);
 }

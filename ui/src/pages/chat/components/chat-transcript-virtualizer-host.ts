@@ -6,12 +6,8 @@ import {
   measureElement as measureVirtualElement,
   observeElementRect,
 } from "@tanstack/virtual-core";
-import {
-  nothing,
-  type ReactiveController,
-  type ReactiveControllerHost,
-  type TemplateResult,
-} from "lit";
+import { nothing } from "lit";
+import type { ReactiveController, ReactiveControllerHost, TemplateResult } from "lit";
 import { McpAppUnmountGate } from "../../../components/mcp-app-unmount.ts";
 import { resolveScrollBehavior } from "../../../lib/scroll-behavior.ts";
 import type { AssistantMessageExpansionState } from "../chat-thread.ts";
@@ -400,6 +396,9 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
       this.endAnchorFrame = requestAnimationFrame(() => {
         this.endAnchorFrame = null;
         if (this.connected && !this.offsetState.pendingInteractionAnchor) {
+          if (this.contentReady) {
+            this.initialLayout.reconcileImplicitEndAnchor();
+          }
           this.initialLayout.update();
           this.reconcileEndAnchor();
         }

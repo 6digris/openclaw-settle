@@ -376,7 +376,8 @@ export class ChatPane extends ChatPaneLayoutRender {
       showThinking: state.settings.chatShowThinking,
       showToolCalls: state.settings.chatShowToolCalls,
       persistCommentary: state.settings.chatPersistCommentary !== false,
-      startupLoading: startupPresentation.stage !== "ready",
+      startupLoading:
+        startupPresentation.stage === "pending" || startupPresentation.stage === "chrome",
       loading: catalogKey ? this.catalogLoading : state.chatLoading,
       routeLoadingSkeleton: this.routeLoadingSkeleton && initialHistoryUnavailable,
       sending:
@@ -601,12 +602,10 @@ export class ChatPane extends ChatPaneLayoutRender {
                   submissionAction,
                 ),
       // Checkpoint deep-link carries the archived filter so the row stays findable.
-      onOpenSessionCheckpoints: () => {
-        const status = selectedSessionArchived ? "&status=archived" : "";
+      onOpenSessionCheckpoints: () =>
         this.context.navigate("sessions", {
-          search: `?session=${encodeURIComponent(state.sessionKey)}${status}`,
-        });
-      },
+          search: `?session=${encodeURIComponent(state.sessionKey)}${selectedSessionArchived ? "&status=archived" : ""}`,
+        }),
       onUseSystemDefaultMicrophone: state.realtimeTalkUseSystemDefault ?? undefined,
       onToggleRealtimeTalk: () => void state.toggleRealtimeTalk(),
       onToggleRealtimeCamera: () => void state.toggleRealtimeTalkCamera(),

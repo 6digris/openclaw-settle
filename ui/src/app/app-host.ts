@@ -281,8 +281,8 @@ class OpenClawShell
     return routeSearch === undefined ? this.onboarding : resolveOnboardingMode(routeSearch);
   }
 
-  get assistantRestorationPending(): boolean {
-    return this.shellChrome.panels.assistantRestorationPending;
+  get panelRestorationPending(): boolean {
+    return this.shellChrome.panels.panelRestorationPending;
   }
 
   get workspaceChromeVisible(): boolean {

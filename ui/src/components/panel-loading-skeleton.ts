@@ -33,6 +33,14 @@ class PanelLoadingSkeleton extends OpenClawLitElement {
       color: var(--muted);
     }
 
+    .structure {
+      display: var(--panel-loading-structure-display, contents);
+    }
+
+    .status {
+      display: var(--panel-loading-status-display, none);
+    }
+
     :host([compact]) {
       min-height: 0;
       padding: 8px;
@@ -431,7 +439,8 @@ class PanelLoadingSkeleton extends OpenClawLitElement {
   }
 
   override render() {
-    return html`${this.renderContent()}`;
+    return html`<span class="status" aria-hidden="true">${this.label}</span>
+      <div class="structure">${this.renderContent()}</div>`;
   }
 }
 

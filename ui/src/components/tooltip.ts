@@ -543,10 +543,16 @@ class Tooltip extends OpenClawLitElement {
       (root instanceof ShadowRoot ? root : this).append(description);
       this.#descriptionElement = description;
     }
-    this.#descriptionElement.textContent = richText || this.content;
+    const description = richText || this.content;
+    if (this.#descriptionElement.textContent !== description) {
+      this.#descriptionElement.textContent = description;
+    }
     const ids = new Set((current ?? "").split(/\s+/u).filter(Boolean));
     ids.add(this.#descriptionId);
-    trigger.setAttribute("aria-describedby", [...ids].join(" "));
+    const describedBy = [...ids].join(" ");
+    if (current !== describedBy) {
+      trigger.setAttribute("aria-describedby", describedBy);
+    }
   }
 
   private restoreDescription() {
