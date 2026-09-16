@@ -1244,6 +1244,15 @@ export async function addCronJob(state: CronState): Promise<CronSaveResult> {
     if (schedule) {
       job.schedule = schedule;
     }
+    if (sourceJob?.pacing) {
+      if (schedule?.kind === "every" || schedule?.kind === "cron") {
+        if (!editingJob) {
+          job.pacing = { ...sourceJob.pacing };
+        }
+      } else if (editingJob && schedule) {
+        job.pacing = null;
+      }
+    }
     if (payload) {
       job.payload = payload;
     }
