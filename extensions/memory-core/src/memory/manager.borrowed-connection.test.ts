@@ -569,17 +569,34 @@ describe("memory manager shared agent connection", () => {
       );
       observeCacheTimer = setImmediate(observeCache);
     };
-    const releaseWriter = setTimeout(() => {
+    const heartbeat = createDeferred<void>();
+    const responsivenessDeadline = createDeferred<never>();
+    const heartbeatTimer = setTimeout(() => heartbeat.resolve(), 100);
+    const responsivenessTimer = setTimeout(
+      () =>
+        responsivenessDeadline.reject(
+          new Error("Published search and heartbeat did not finish within 1000 ms"),
+        ),
+      1000,
+    );
+    const sync = manager.sync({ reason: sessionWork ? "session-delta" : "watch" });
+    void sync.catch(() => undefined);
+    const search = reader.search("Alpha");
+    try {
+      const [results] = await Promise.race([
+        Promise.all([search, heartbeat.promise]),
+        responsivenessDeadline.promise,
+      ]);
+      clearTimeout(responsivenessTimer);
+      expect(results.some((result) => result.path === "memory/2026-01-12.md")).toBe(true);
+      expect(writer.isTransaction).toBe(true);
+      expect(performance.now() - started).toBeLessThan(1000);
+      // Search must finish under contention; sync owns its later publication and cleanup.
       writer.exec("ROLLBACK");
       if (scenario === "cache-prune") {
         observeCache();
       }
-    }, 100);
-    const sync = manager.sync({ reason: sessionWork ? "session-delta" : "watch" });
-    try {
-      const [results] = await Promise.all([reader.search("Alpha"), sync]);
-      expect(results.some((result) => result.path === "memory/2026-01-12.md")).toBe(true);
-      expect(performance.now() - started).toBeLessThan(1000);
+      await sync;
       if (scenario === "deleted-memory") {
         expect(
           shared.db
@@ -621,13 +638,14 @@ describe("memory manager shared agent connection", () => {
         ).toBe(true);
       }
     } finally {
-      clearTimeout(releaseWriter);
+      clearTimeout(heartbeatTimer);
+      clearTimeout(responsivenessTimer);
       clearImmediate(observeCacheTimer);
       if (writer.isTransaction) {
         writer.exec("ROLLBACK");
       }
       writer.close();
-      await sync.catch(() => undefined);
+      await Promise.allSettled([search, sync]);
       await manager.close();
     }
   });
