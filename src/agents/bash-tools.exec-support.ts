@@ -4,12 +4,13 @@ import { normalizeAgentId } from "../routing/session-key.js";
 import { resolveAgentConfig } from "./agent-scope-config.js";
 import { EXEC_RETENTION_CAP_NOTE, renderExecOutputText } from "./bash-tools.exec-output.js";
 import type { ExecToolArgs } from "./bash-tools.exec-request-preparation.js";
-import { type ExecProcessOutcome, resolveExecTarget } from "./bash-tools.exec-runtime.js";
+import { resolveExecTarget } from "./bash-tools.exec-runtime.js";
 import {
   type BackgroundExecTaskHandle,
   finalizeBackgroundExecTask,
 } from "./bash-tools.exec-task-tracking.js";
 import type {
+  ExecProcessOutcome,
   ExecToolApprovalReview,
   ExecToolDefaults,
   ExecToolDetails,

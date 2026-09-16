@@ -55,7 +55,11 @@ import {
   renderExecUpdateText,
 } from "./bash-tools.exec-output.js";
 import { emitExecProcessCompleted } from "./bash-tools.exec-runtime.diagnostics.js";
-import type { ExecToolDetails } from "./bash-tools.exec-types.js";
+import type {
+  ExecProcessFailureKind,
+  ExecProcessOutcome,
+  ExecToolDetails,
+} from "./bash-tools.exec-types.js";
 import type { BashSandboxConfig } from "./bash-tools.shared.js";
 import { chunkString, clampWithDefault, readEnvInt } from "./bash-tools.shared.js";
 import { buildGitHubExecLaunchArgv } from "./github-exec-launch.js";
@@ -117,43 +121,7 @@ export const DEFAULT_APPROVAL_REQUEST_TIMEOUT_MS = DEFAULT_APPROVAL_TIMEOUT_MS +
 const DEFAULT_APPROVAL_RUNNING_NOTICE_MS = 10_000;
 const APPROVAL_SLUG_LENGTH = 8;
 
-/** Failure categories used to explain exec process exits. */
-type ExecProcessFailureKind =
-  | "shell-command-not-found"
-  | "shell-not-executable"
-  | "overall-timeout"
-  | "no-output-timeout"
-  | "signal"
-  | "aborted"
-  | "runtime-error";
-
 type ExecExitFailureKind = Exclude<ExecProcessFailureKind, "runtime-error">;
-
-/** Normalized result of a spawned exec process. */
-export type ExecProcessOutcome =
-  | {
-      status: "completed";
-      exitCode: number;
-      exitSignal: NodeJS.Signals | number | null;
-      exitReason?: TerminationReason;
-      durationMs: number;
-      aggregated: string;
-      timedOut: false;
-      noOutputTimedOut?: boolean;
-    }
-  | {
-      status: "failed";
-      exitCode: number | null;
-      exitSignal: NodeJS.Signals | number | null;
-      exitReason?: TerminationReason;
-      durationMs: number;
-      aggregated: string;
-      timedOut: boolean;
-      noOutputTimedOut?: boolean;
-      failureKind: ExecProcessFailureKind;
-      oomScoreWrapperSelected?: boolean;
-      reason: string;
-    };
 
 /** Live handle returned after an exec process has started. */
 export type ExecProcessHandle = {

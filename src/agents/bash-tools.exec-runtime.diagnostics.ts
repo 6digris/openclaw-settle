@@ -1,6 +1,6 @@
 /** Completion diagnostics for host and sandbox exec processes. */
 import { emitDiagnosticEventWithTrustedTraceContext } from "../infra/diagnostic-events.js";
-import type { ExecProcessOutcome } from "./bash-tools.exec-runtime.js";
+import type { ExecProcessOutcome } from "./bash-tools.exec-types.js";
 
 function normalizeExecExitSignal(signal: NodeJS.Signals | number | null): string | undefined {
   if (signal === null) {
