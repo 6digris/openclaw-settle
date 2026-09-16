@@ -562,10 +562,11 @@ where
     // timeout cannot overtake its request. Each request carries its
     // semaphore permit through the session task, bounding queued and
     // pending requests even if the caller drops its future.
-    // Keep one command slot available for control traffic when every RPC slot
-    // is occupied by a caller-owned request.
+    // Keep one command slot available for cancellation when every RPC slot is
+    // occupied by a caller-owned request.
     let command_capacity = config.max_in_flight.max(1).saturating_add(1);
     let (command_tx, command_rx) = mpsc::channel(command_capacity);
+    let (control_tx, control_rx) = mpsc::channel(1);
     let events = Arc::new(EventHub::new(
         config.event_capacity,
         config.max_event_buffer_bytes,
@@ -577,6 +578,7 @@ where
         socket,
         SessionChannels {
             commands: command_rx,
+            controls: control_rx,
             events: Arc::clone(&events),
             activity: activity_tx,
             closed: closed_tx,
@@ -590,6 +592,7 @@ where
     Ok(GatewaySession {
         hello,
         command_tx,
+        control_tx,
         event_rx: Arc::new(Mutex::new(events.initial_subscription(closed_rx.clone()))),
         events,
         activity_rx,
@@ -672,6 +675,7 @@ async fn connect_with_certificate_policy(
 pub struct GatewaySession {
     hello: Value,
     command_tx: mpsc::Sender<SessionCommand>,
+    control_tx: mpsc::Sender<SessionControl>,
     events: Arc<EventHub>,
     event_rx: Arc<Mutex<EventSubscription>>,
     activity_rx: watch::Receiver<u64>,
@@ -703,7 +707,7 @@ impl GatewaySession {
             RequestCancellation::new(id.clone(), self.command_tx.clone(), cancelled.clone());
         tokio::time::timeout_at(
             deadline,
-            self.command_tx.send(SessionCommand::Ping {
+            self.control_tx.send(SessionControl::Ping {
                 id,
                 reply,
                 permit,
@@ -983,13 +987,6 @@ impl SessionCloseCause {
 }
 
 enum SessionCommand {
-    Ping {
-        id: String,
-        reply: oneshot::Sender<Result<Value, ClientError>>,
-        permit: tokio::sync::OwnedSemaphorePermit,
-        deadline: Instant,
-        cancelled: Arc<AtomicBool>,
-    },
     Request {
         id: String,
         method: String,
@@ -1002,6 +999,16 @@ enum SessionCommand {
     },
     CancelRequest {
         id: String,
+    },
+}
+
+enum SessionControl {
+    Ping {
+        id: String,
+        reply: oneshot::Sender<Result<Value, ClientError>>,
+        permit: tokio::sync::OwnedSemaphorePermit,
+        deadline: Instant,
+        cancelled: Arc<AtomicBool>,
     },
 }
 
@@ -1218,6 +1225,7 @@ where
 
 struct SessionChannels {
     commands: mpsc::Receiver<SessionCommand>,
+    controls: mpsc::Receiver<SessionControl>,
     events: Arc<EventHub>,
     activity: watch::Sender<u64>,
     closed: watch::Sender<Option<SessionCloseCause>>,
@@ -1238,6 +1246,7 @@ async fn run_session<S>(
 {
     let SessionChannels {
         mut commands,
+        mut controls,
         events,
         activity,
         closed,
@@ -1267,6 +1276,7 @@ async fn run_session<S>(
         };
         tokio::pin!(deadline);
         tokio::select! {
+            biased;
             changed = close.changed() => {
                 let _ = changed;
                 let _ = tokio::time::timeout(write_timeout, socket.close(None)).await;
@@ -1287,24 +1297,24 @@ async fn run_session<S>(
                     }
                 }
             }
+            Some(SessionControl::Ping { id, reply, permit, deadline, cancelled }) = controls.recv() => {
+                if cancelled.load(Ordering::Acquire) || deadline <= Instant::now() {
+                    let _ = reply.send(Err(ClientError::RequestTimeout("ping".into())));
+                    continue;
+                }
+                match send_message(&mut socket, Message::Ping(id.clone().into_bytes().into()), write_timeout, "ping").await {
+                    Ok(()) => {
+                        pending.insert(id, PendingRequest { method: "ping".into(), reply, _permit: permit, deadline: Some(deadline), cancelled });
+                    }
+                    Err(error) => {
+                        let reason = error.to_string();
+                        let _ = reply.send(Err(error));
+                        break SessionCloseCause::Transport(reason);
+                    }
+                }
+            }
             command = commands.recv() => {
                 match command {
-                    Some(SessionCommand::Ping { id, reply, permit, deadline, cancelled }) => {
-                        if cancelled.load(Ordering::Acquire) || deadline <= Instant::now() {
-                            let _ = reply.send(Err(ClientError::RequestTimeout("ping".into())));
-                            continue;
-                        }
-                        match send_message(&mut socket, Message::Ping(id.clone().into_bytes().into()), write_timeout, "ping").await {
-                            Ok(()) => {
-                                pending.insert(id, PendingRequest { method: "ping".into(), reply, _permit: permit, deadline: Some(deadline), cancelled });
-                            }
-                            Err(error) => {
-                                let reason = error.to_string();
-                                let _ = reply.send(Err(error));
-                                break SessionCloseCause::Transport(reason);
-                            }
-                        }
-                    }
                     Some(SessionCommand::Request { id, method, params, reply, permit, deadline, cancelled, guard }) => {
                         if cancelled.load(Ordering::Acquire) {
                             continue;
@@ -1649,6 +1659,7 @@ mod tests {
             tokio_tungstenite::WebSocketStream::from_raw_socket(StalledIo, Role::Client, None)
                 .await;
         let (command_tx, command_rx) = mpsc::channel(1);
+        let (_control_tx, control_rx) = mpsc::channel(1);
         let events = Arc::new(EventHub::new(1, 1024));
         let (activity_tx, _activity_rx) = watch::channel(0);
         let (closed_tx, mut closed_rx) = watch::channel(None);
@@ -1658,6 +1669,7 @@ mod tests {
             socket,
             SessionChannels {
                 commands: command_rx,
+                controls: control_rx,
                 events,
                 activity: activity_tx,
                 closed: closed_tx,

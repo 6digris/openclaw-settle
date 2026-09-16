@@ -180,6 +180,22 @@ struct GatewayTLSPinningTests {
         #expect(GatewayTLSStore.loadFingerprint(stableID: "profile:first-use") == fingerprint)
     }
 
+    @Test func `server trust evaluator binds system trust to the requested hostname`() throws {
+        let trust = try gatewayTLSTestTrust(systemTrusted: true)
+        let params = GatewayTLSParams(
+            required: true,
+            expectedFingerprint: nil,
+            allowTOFU: true,
+            storeKey: "profile:wrong-host")
+
+        #expect(GatewayTLSServerTrust.evaluate(
+            trust: trust,
+            host: "other.example",
+            port: 443,
+            params: params) == .reject)
+        #expect(GatewayTLSStore.loadFingerprint(stableID: "profile:wrong-host") == nil)
+    }
+
     @Test func `server trust evaluator reuses persisted first use pin`() throws {
         let trust = try gatewayTLSTestTrust(systemTrusted: false)
         let fingerprint = SHA256.hash(data: gatewayTLSTestCertificateDER)

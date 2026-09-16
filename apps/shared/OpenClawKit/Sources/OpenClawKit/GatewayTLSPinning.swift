@@ -177,7 +177,10 @@ public enum GatewayTLSServerTrust {
         params: GatewayTLSParams,
         expectedFingerprint: String?) -> GatewayTLSServerTrustEvaluation
     {
-        let systemTrustOk = SecTrustEvaluateWithError(trust, nil)
+        let hostnamePolicy = SecPolicyCreateSSL(true, host as CFString)
+        let systemTrustOk =
+            SecTrustSetPolicies(trust, hostnamePolicy) == errSecSuccess &&
+            SecTrustEvaluateWithError(trust, nil)
         let fingerprint = certificateFingerprint(trust)
         let expected = expectedFingerprint.map(normalizeFingerprint)
         let failure: (GatewayTLSValidationFailureKind, String?, String?) -> GatewayTLSServerTrustEvaluation
