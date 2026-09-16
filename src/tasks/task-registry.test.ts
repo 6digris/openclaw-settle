@@ -105,7 +105,11 @@ import {
 } from "./task-registry.maintenance.js";
 import { configureTaskRegistryRuntime, getTaskRegistryStore } from "./task-registry.store.js";
 import { summarizeTaskRecords } from "./task-registry.summary.js";
-import { createAcpTaskRecord, createTaskFixture } from "./task-registry.test-support.js";
+import {
+  configureInMemoryTaskStoresForTests,
+  createAcpTaskRecord,
+  createTaskFixture,
+} from "./task-registry.test-support.js";
 import type { TaskDeliveryState, TaskRecord } from "./task-registry.types.js";
 import { bindTaskRunOwner, getTaskRunOwner } from "./task-run-owner.js";
 import {
@@ -413,15 +417,6 @@ function finalizeSubagentTask(
   params: Omit<Parameters<typeof finalizeTaskRecordByRunId>[0], "runId" | "runtime">,
 ) {
   return finalizeTaskRecordByRunId({ runId: task.runId!, runtime: "subagent", ...params });
-}
-
-function configureInMemoryTaskStoresForTests() {
-  configureTaskRegistryRuntime({
-    store: createInMemoryTaskRegistryStore(),
-  });
-  configureTaskFlowRegistryRuntime({
-    store: createInMemoryTaskFlowRegistryStore(),
-  });
 }
 
 async function withTaskRegistryTempDir<T>(
@@ -4430,19 +4425,18 @@ describe("task-registry", () => {
         lastEventAt: 100,
       };
       let restoreShouldFail = true;
-      const loadSnapshot = () => {
-        if (restoreShouldFail) {
-          throw new Error("SQLITE_IOERR: initial task restore failed");
-        }
-        return {
-          tasks: new Map([[storedTask.taskId, storedTask]]),
-          deliveryStates: new Map(),
-        };
-      };
       configureTaskRegistryRuntime({
         store: {
           ...createInMemoryTaskRegistryStore(),
-          loadSnapshot,
+          loadSnapshot: () => {
+            if (restoreShouldFail) {
+              throw new Error("SQLITE_IOERR: initial task restore failed");
+            }
+            return {
+              tasks: new Map([[storedTask.taskId, storedTask]]),
+              deliveryStates: new Map(),
+            };
+          },
         },
       });
 
@@ -4486,19 +4480,18 @@ describe("task-registry", () => {
         lastEventAt: 200,
       };
       let restoreError: Error | null = null;
-      const loadSnapshot = () => {
-        if (restoreError) {
-          throw restoreError;
-        }
-        return {
-          tasks: new Map([[storedTask.taskId, storedTask]]),
-          deliveryStates: new Map(),
-        };
-      };
       configureTaskRegistryRuntime({
         store: {
           ...createInMemoryTaskRegistryStore(),
-          loadSnapshot,
+          loadSnapshot: () => {
+            if (restoreError) {
+              throw restoreError;
+            }
+            return {
+              tasks: new Map([[storedTask.taskId, storedTask]]),
+              deliveryStates: new Map(),
+            };
+          },
         },
       });
       expect(getTaskById(storedTask.taskId)?.taskId).toBe(storedTask.taskId);

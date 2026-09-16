@@ -162,10 +162,6 @@ function configureInMemoryTaskRegistryStoreForTests(): void {
   configureTaskRegistryRuntime({
     store: {
       ...createInMemoryTaskRegistryStore(),
-      loadSnapshot: () => ({
-        tasks: new Map(),
-        deliveryStates: new Map(),
-      }),
       upsertTaskWithDeliveryState: () => {},
       deleteTaskWithDeliveryState: () => {},
       upsertDeliveryState: () => {},

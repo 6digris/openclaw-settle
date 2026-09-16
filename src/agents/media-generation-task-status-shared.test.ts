@@ -419,13 +419,14 @@ describe("media generation delivery-phase prompt guard", () => {
         );
         ownerMocks.assertTaskRegistryOwnerCurrent.mockImplementation(assertCurrent);
       } else {
-        taskRuntimeInternalMocks.listFreshTasksForOwnerKey.mockResolvedValue([task]);
-        configMocks.readConfig.mockImplementation(() =>
-          Promise.resolve(fixedStoreConfig).then((config) => {
-            settled = true;
-            return config;
-          }),
-        );
+        taskRuntimeInternalMocks.listFreshTasksForOwnerKey
+          .mockResolvedValueOnce([task])
+          .mockImplementationOnce(() =>
+            Promise.resolve([task]).then((tasks) => {
+              settled = true;
+              return tasks;
+            }),
+          );
         configMocks.assertSourceCurrent.mockImplementation(assertCurrent);
       }
       if (lookup === "duplicate") {
