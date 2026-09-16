@@ -17,6 +17,8 @@ export const PLUGIN_COMPAT_RECORDS = [
     owner: "sdk",
     introduced: "2026-08-21",
     deprecated: "2026-09-15",
+    warningStarts: "2026-09-15",
+    removalGate: "next-plugin-sdk-major",
     replacement:
       "Await context.acquireManagedWorkspaceAsync(request) and release the returned lease in finally. Retain synchronous acquisition for supported external plugins until explicit breaking-release approval.",
     docsPath: "/plugins/sdk-migration/how-to-migrate#managed-node-workspace-acquisition",

@@ -23,7 +23,9 @@ The synchronous `context.acquireManagedWorkspace(request)` callback shipped in
 Its return value stays synchronous. Bundled commands use the async companion;
 plugins requiring that companion should report an unavailable host capability
 instead of falling back to synchronous acquisition. Removal of the deprecated
-callback follows the normal SDK compatibility process.
+callback requires an explicitly approved future breaking Plugin SDK release.
+The `next-plugin-sdk-major` gate does not itself authorize removal or shorten
+an existing compatibility window.
 
 ## How to migrate
 

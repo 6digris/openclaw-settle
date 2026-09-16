@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it } from "vitest";
 import { classifyBundledExtensionSourcePath } from "../../../../scripts/lib/extension-source-classifier.mts";
+import { collectModuleReferencesFromSource } from "../../../../scripts/lib/guard-inventory-utils.mjs";
 import { GUARDED_EXTENSION_PUBLIC_SURFACE_BASENAMES } from "../../../plugin-sdk/test-helpers/public-artifacts.js";
 import { loadPluginManifestRegistryCore } from "../../../plugins/manifest-registry.js";
 import { expectNoReaddirSyncDuring } from "../../../test-utils/fs-scan-assertions.js";
@@ -637,10 +638,12 @@ describe("channel import guardrails", () => {
 
   it("keeps core production files off plugin-private src imports", () => {
     for (const file of collectCoreSourceFiles()) {
-      const text = readSource(file);
-      expect(text, `${file} should not import plugin-private src paths`).not.toMatch(
-        /["'][^"']*extensions\/[^/"']+\/src\//,
-      );
+      const references = collectModuleReferencesFromSource(readSource(file), {
+        fileName: file,
+        acceptSpecifier: (specifier) =>
+          /(?:^|\/)extensions\/[^/]+\/src(?:\/|$)/u.test(normalizePath(specifier)),
+      });
+      expect(references, `${file} should not import plugin-private src paths`).toEqual([]);
     }
   });
 
