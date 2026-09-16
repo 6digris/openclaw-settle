@@ -1115,7 +1115,7 @@ describe("CI changed Node test plan", () => {
     expect(bundles.length).toBeGreaterThan(0);
     for (const bundle of bundles) {
       expect(bundle.groups!.length).toBeGreaterThan(1);
-      expect(bundle.predictedSeconds).toBeLessThanOrEqual(240);
+      expect(bundle.predictedSeconds).toBeLessThanOrEqual(360);
       expect(bundle.configs).toEqual([]);
       expect(bundle.pretestBuildMode).toBeUndefined();
       expect(bundle.groups!.every((group) => !group.pretestBuildMode)).toBe(true);
@@ -1124,14 +1124,42 @@ describe("CI changed Node test plan", () => {
         true,
       );
     }
+    const standaloneConfigs = new Set([
+      "test/vitest/vitest.extension-database-workers.config.ts",
+      "test/vitest/vitest.extension-signal.config.ts",
+    ]);
+    const codexTailFiles = [
+      "extensions/codex/src/app-server/run-attempt-runtime.authority.test.ts",
+      "extensions/codex/src/app-server/run-attempt.generation-finalization.test.ts",
+      "extensions/codex/src/app-server/run-attempt.steering-authority.test.ts",
+    ];
+    for (const config of standaloneConfigs) {
+      const owner = shards.filter((job) =>
+        fallbackGroups([job]).some((group) => group.configs.includes(config)),
+      );
+      expect(owner).toHaveLength(1);
+      expect(owner[0]?.groups).toBeUndefined();
+    }
+    for (const file of codexTailFiles) {
+      const owner = shards.filter((job) =>
+        fallbackGroups([job]).some((group) => group.includePatterns?.includes(file)),
+      );
+      expect(owner).toHaveLength(1);
+      expect(owner[0]?.groups).toBeUndefined();
+    }
+    const standalone = (shard: (typeof shards)[number]) =>
+      shard.configs?.some((config) => standaloneConfigs.has(config)) ||
+      shard.includePatterns?.some((file) => codexTailFiles.includes(file));
     for (const [index, shard] of shards.entries()) {
       for (const other of shards.slice(index + 1)) {
         const canShareJob =
+          !standalone(shard) &&
+          !standalone(other) &&
           !shard.pretestBuildMode &&
           !other.pretestBuildMode &&
           shard.runner === other.runner &&
           shard.requiresDist === other.requiresDist &&
-          shard.predictedSeconds! + other.predictedSeconds! <= 240;
+          shard.predictedSeconds! + other.predictedSeconds! <= 360;
         expect(canShareJob, `${shard.shardName} and ${other.shardName} fit one job`).toBe(false);
       }
     }
@@ -1243,7 +1271,7 @@ describe("CI changed Node test plan", () => {
 
       expect(shards.length).toBeLessThan(groups.length);
       expect(shards.every((shard) => shard.planConcurrency === 1)).toBe(true);
-      expect(shards.every((shard) => shard.predictedSeconds! <= 240)).toBe(true);
+      expect(shards.every((shard) => shard.predictedSeconds! <= 360)).toBe(true);
       expect(
         groups.every(
           (group) =>

@@ -16015,19 +16015,43 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
   it.each(["github", "hybrid", "blacksmith"] as const)(
     "keeps the complete %s manifest output below the safety budget",
     (runnerProfile) => {
+      const plan = createNodeTestShardBundles({
+        compactMode: "pull-request",
+        includeReleaseOnlyPluginShards: false,
+        runnerBackend: runnerProfile,
+      });
       const manifest = runCiManifestFixture({
         bundledPlanner: true,
         changedPaths: ["src/auto-reply/full-plan.ts"],
         eventName: "pull_request",
-        nodeTestShards: createNodeTestShardBundles({
-          compactMode: "pull-request",
-          includeReleaseOnlyPluginShards: false,
-          runnerBackend: runnerProfile,
-        }),
+        nodeTestShards: plan,
         runnerProfile,
       });
       expect(manifest.status, manifest.output).toBe(0);
       expect(manifest.outputChars, runnerProfile).toBeLessThan(262_144);
+      const rows = JSON.parse(
+        expectDefined(manifest.outputs.checks_node_core_nondist_matrix, "Node matrix"),
+      ).include;
+      expect(rows.length).toBeLessThanOrEqual(120);
+      for (const job of plan.filter((candidate) => !candidate.requiresDist)) {
+        expect(rows).toContainEqual(
+          expect.objectContaining({
+            check_name: job.checkName,
+            runner: job.runner,
+            plan_concurrency: 1,
+            predicted_seconds: job.predictedSeconds,
+          }),
+        );
+      }
+      if (runnerProfile !== "github") {
+        expect(rows).toContainEqual(
+          expect.objectContaining({
+            runner: "blacksmith-16vcpu-ubuntu-2404",
+            plan_concurrency: 1,
+            predicted_seconds: 540,
+          }),
+        );
+      }
     },
   );
 

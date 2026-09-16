@@ -92,7 +92,54 @@ const MAX_CHANGED_NODE_TEST_TARGETS = 96;
 // Each target runs in its own child process (isolation contract), so bound the
 // serial tail per job; the shard runner overlaps two children at a time.
 const CHANGED_NODE_TEST_TARGETS_PER_JOB = 12;
-const CHANGED_EXTENSION_JOB_SECONDS = 240;
+const CHANGED_EXTENSION_JOB_SECONDS = 360;
+// Runs 34978416570/35046146611 (database workers + Signal) and
+// 34959628169/34998358237 (Codex) exceed their weights; keep each envelope
+// standalone until the timing refit lands. Bundle ordinals are not identities.
+const STANDALONE_EXTENSION_CONFIGS = new Set([
+  "test/vitest/vitest.extension-database-workers.config.ts",
+  "test/vitest/vitest.extension-signal.config.ts",
+]);
+// The three observed Codex envelopes contain these files, not every Codex test.
+// Match membership so inventory changes cannot move a tail into a larger bin.
+const STANDALONE_EXTENSION_FILES = new Set([
+  "extensions/codex/src/app-server/run-attempt-runtime.authority.test.ts",
+  "extensions/codex/src/app-server/run-attempt-state.test.ts",
+  "extensions/codex/src/app-server/run-attempt-thread-cleanup.test.ts",
+  "extensions/codex/src/app-server/run-attempt-tools.test.ts",
+  "extensions/codex/src/app-server/run-attempt.agent-end-context.test.ts",
+  "extensions/codex/src/app-server/run-attempt.auth-context.test.ts",
+  "extensions/codex/src/app-server/run-attempt.channel-tool-progress.test.ts",
+  "extensions/codex/src/app-server/run-attempt.configured-mcp.test.ts",
+  "extensions/codex/src/app-server/run-attempt.context-engine.test.ts",
+  "extensions/codex/src/app-server/run-attempt.continuity-media.test.ts",
+  "extensions/codex/src/app-server/run-attempt.durable-context.test.ts",
+  "extensions/codex/src/app-server/run-attempt.dynamic-tools.test.ts",
+  "extensions/codex/src/app-server/run-attempt.generation-finalization.test.ts",
+  "extensions/codex/src/app-server/run-attempt.hooks.test.ts",
+  "extensions/codex/src/app-server/run-attempt.media-lifetime.test.ts",
+  "extensions/codex/src/app-server/run-attempt.model-attribution.test.ts",
+  "extensions/codex/src/app-server/run-attempt.native-hook-fallback.test.ts",
+  "extensions/codex/src/app-server/run-attempt.native-hook-relay-retention.test.ts",
+  "extensions/codex/src/app-server/run-attempt.native-hook-relay.test.ts",
+  "extensions/codex/src/app-server/run-attempt.notification-burst.test.ts",
+  "extensions/codex/src/app-server/run-attempt.plugin-refresh.test.ts",
+  "extensions/codex/src/app-server/run-attempt.question-refresh.test.ts",
+  "extensions/codex/src/app-server/run-attempt.reasoning-effort.test.ts",
+  "extensions/codex/src/app-server/run-attempt.settlement.test.ts",
+  "extensions/codex/src/app-server/run-attempt.steering-authority.test.ts",
+  "extensions/codex/src/app-server/run-attempt.steering-media.test.ts",
+  "extensions/codex/src/app-server/run-attempt.steering-settlement.test.ts",
+  "extensions/codex/src/app-server/run-attempt.steering.test.ts",
+  "extensions/codex/src/app-server/run-attempt.test.ts",
+  "extensions/codex/src/app-server/run-attempt.turn-watches.test.ts",
+  "extensions/codex/src/app-server/run-attempt.usage-limits.test.ts",
+  "extensions/codex/src/app-server/run-attempt.vision-tools.test.ts",
+  "extensions/codex/src/app-server/runtime-artifact.test.ts",
+  "extensions/codex/src/app-server/sandbox-exec-server-node-relay.test.ts",
+  "extensions/codex/src/app-server/sandbox-exec-server.fs-bridge-composition.test.ts",
+  "extensions/codex/src/app-server/sandbox-exec-server.fs-streaming.test.ts",
+]);
 const MAX_CHANGED_EXTENSION_FALLBACK_JOBS = 50;
 // Memory Core targets perform real SQLite/indexing work. Two concurrent Vitest
 // processes starve each other on 4-vCPU runners and push otherwise healthy
@@ -509,6 +556,15 @@ export function createChangedExtensionFallbackShards(
   return jobs;
 }
 
+function isStandaloneExtensionEnvelope(shard: ChangedExtensionConfigShard): boolean {
+  return (
+    shard.configs.some((config) => STANDALONE_EXTENSION_CONFIGS.has(config)) ||
+    (shard.configs.includes("test/vitest/vitest.extension-codex.config.ts") &&
+      (!shard.includePatterns ||
+        shard.includePatterns.some((file) => STANDALONE_EXTENSION_FILES.has(file))))
+  );
+}
+
 function packChangedExtensionConfigShards(
   shards: ChangedExtensionConfigShard[],
 ): ChangedNodeTestShard[] {
@@ -520,9 +576,11 @@ function packChangedExtensionConfigShards(
     // runtime preparation stays separate from other configs' readers.
     (bin, shard) =>
       !shard.pretestBuildMode &&
+      !isStandaloneExtensionEnvelope(shard) &&
       bin.every(
         (entry) =>
           !entry.pretestBuildMode &&
+          !isStandaloneExtensionEnvelope(entry) &&
           entry.runner === shard.runner &&
           entry.requiresDist === shard.requiresDist,
       ) &&

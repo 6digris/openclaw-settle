@@ -133,23 +133,57 @@ describe("compact node prerequisite admission", () => {
   });
 
   it.each([
-    { seconds: [180, 100, 20], parallelJobs: 1 },
-    { seconds: [280, 20], parallelJobs: 2 },
+    { seconds: [180, 100, 20], ordinaryJobs: 1 },
+    { seconds: [280, 20], ordinaryJobs: 2 },
   ])("shares ordinary job setup without adding work to oversized groups: $seconds", (sample) => {
     for (const profile of ["blacksmith", "github", "hybrid"]) {
       setGroups(sample.seconds.map((seconds, index) => [`plain-${index}`, undefined, seconds]));
       const jobs = plan(profile);
-      expect(jobs).toHaveLength(profile === "github" ? 2 : sample.parallelJobs);
+      expect(jobs).toHaveLength(profile === "github" ? 2 : sample.ordinaryJobs);
       if (jobs.length === 1) {
         expect(jobs[0]).toMatchObject({
-          planConcurrency: 2,
+          planConcurrency: 1,
           predictedSeconds: profile === "hybrid" ? 261 : 300,
-          runner: "blacksmith-32vcpu-ubuntu-2404",
+          runner: "blacksmith-16vcpu-ubuntu-2404",
         });
         expect(jobs[0]?.pretestBuildMode).toBeUndefined();
       }
     }
   });
+
+  it.each(["blacksmith", "hybrid"])(
+    "bounds serial ordinary %s bins by both time and count",
+    (profile) => {
+      setGroups(Array.from({ length: 21 }, (_, index) => [`plain-${index}`, undefined, 1]));
+      const dense = plan(profile);
+      expect(dense.map((job) => job.groups.length).toSorted((a, b) => b - a)).toEqual([20, 1]);
+      expect(dense.every((job) => job.planConcurrency === 1)).toBe(true);
+      expect(dense.find((job) => job.groups.length === 20)?.runner).toBe(
+        "blacksmith-16vcpu-ubuntu-2404",
+      );
+      setGroups(Array.from({ length: 4 }, (_, index) => [`plain-${index}`, undefined, 180]));
+      const bounded = plan(profile);
+      expect(bounded).toHaveLength(2);
+      expect(bounded.map((job) => job.groups.length).toSorted((a, b) => b - a)).toEqual([3, 1]);
+      expect(bounded.every((job) => job.predictedSeconds! <= 540)).toBe(true);
+      expect(
+        bounded
+          .flatMap((job) => job.groups)
+          .map((group) => group.shard_name)
+          .toSorted(),
+      ).toEqual(["plain-0", "plain-1", "plain-2", "plain-3"]);
+      expect(
+        bounded
+          .find((job) => job.groups.length > 1)
+          ?.groups.every((group) => group.env?.OPENCLAW_VITEST_MAX_WORKERS === "2"),
+      ).toBe(true);
+      setGroups([
+        ["plain-heavy", undefined, 301],
+        ["plain-light", undefined, 1],
+      ]);
+      expect(plan(profile).every((job) => job.groups.length === 1)).toBe(true);
+    },
+  );
 
   it.each([
     { profile: "blacksmith", expected: 110, changed: 114 },
