@@ -41,6 +41,15 @@ function makeTimedJob(id: string, nextRunAtMs: number): CronJob {
   };
 }
 
+function makeOnExitJob(id: string, nowMs: number): CronJob {
+  return {
+    ...makeTimedJob(id, nowMs),
+    schedule: onExitSchedule,
+    // A timed slot would let the scheduler compete with the observed exit.
+    state: {},
+  };
+}
+
 function makeService(
   storePath: string,
   runCommandJob: NonNullable<ConstructorParameters<typeof CronService>[0]["runCommandJob"]>,
@@ -113,8 +122,7 @@ describe("cron run receipt settlement", () => {
     const { storePath } = await makeStorePath();
     const startedAtMs = Date.now() - 1_000;
     const job: CronJob = {
-      ...makeTimedJob("on-exit-dead-receipt", startedAtMs),
-      schedule: onExitSchedule,
+      ...makeOnExitJob("on-exit-dead-receipt", startedAtMs),
       delivery: { mode: "none" },
       state: { runningAtMs: startedAtMs },
     };
@@ -294,7 +302,7 @@ describe("cron run receipt settlement", () => {
   it("reserves an observed exit atomically after a competing manual run", async () => {
     vi.useRealTimers();
     const { storePath } = await makeStorePath();
-    const job = { ...makeTimedJob("on-exit-manual-race", Date.now()), schedule: onExitSchedule };
+    const job = makeOnExitJob("on-exit-manual-race", Date.now());
     await saveCronStore(storePath, { version: 1, jobs: [job] });
     const manualStarted = createDeferred();
     const releaseManual = createDeferred<{ status: "ok" }>();
@@ -368,8 +376,7 @@ describe("cron run receipt settlement", () => {
       vi.useRealTimers();
       const { storePath } = await makeStorePath();
       const job = {
-        ...makeTimedJob(`on-exit-queued-${action}`, Date.now()),
-        schedule: onExitSchedule,
+        ...makeOnExitJob(`on-exit-queued-${action}`, Date.now()),
         deleteAfterRun: true,
         delivery: { mode: "none" as const },
         payload: { kind: "command" as const, argv: ["original"], timeoutSeconds: 30 },
