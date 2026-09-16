@@ -40,7 +40,6 @@ import {
   resolveSettledUpdateCommandResult,
   withUpdateCommandTerminalResult,
 } from "./update-command-terminal.js";
-
 afterEach(() => vi.restoreAllMocks());
 
 it.each(["current", "revoked", "replaced-run", "rebound-recovery"] as const)(

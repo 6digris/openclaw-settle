@@ -8,7 +8,6 @@ import { computeDeclaredSurfaceHash } from "./capability-summary.js";
 import type { PluginInstallArtifactConsentHandler } from "./install-types.js";
 import { makeTrackedTempDir } from "./test-helpers/fs-fixtures.js";
 import { syncPluginsForUpdateChannel } from "./update-channel.js";
-
 const installers = vi.hoisted(() => ({ npm: vi.fn(), clawhub: vi.fn() }));
 vi.mock("./install.js", () => ({ installPluginFromNpmSpec: installers.npm }));
 vi.mock("./clawhub.js", () => ({
@@ -168,7 +167,7 @@ describe("channel migration artifact consent", () => {
         },
       ],
       onCapabilityConsent: review === "absent" ? undefined : onCapabilityConsent,
-      beforePersistentEffect,
+      preparePersistentEffect: beforePersistentEffect,
     });
     if (review === "guard-refuse") {
       await expect(operation).rejects.toBe(captureError);

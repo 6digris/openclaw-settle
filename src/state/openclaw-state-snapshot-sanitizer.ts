@@ -7,6 +7,7 @@ import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-syn
 import { clearOpenClawStateCopyLeases } from "./openclaw-state-copy-leases.js";
 import { tableExists } from "./openclaw-state-db-schema-helpers.js";
 import type { DB as OpenClawStateKyselyDatabase } from "./openclaw-state-db.generated.js";
+// Removes transient runtime state from restorable OpenClaw database snapshots.
 
 type SnapshotSanitizerDatabase = Pick<OpenClawStateKyselyDatabase, "exec_approvals_config">;
 

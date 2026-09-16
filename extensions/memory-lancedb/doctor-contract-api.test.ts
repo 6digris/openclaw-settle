@@ -10,7 +10,6 @@ import {
   stateMigrations,
 } from "./doctor-contract-api.js";
 import { installTmpDirHarness } from "./test-helpers.js";
-
 const unusedDoctorContext = {
   openPluginStateKeyedStore() {
     throw new Error("not used by memory-lancedb migration");

@@ -12,11 +12,17 @@ import { resolveExecDefaults } from "../agents/exec-defaults.js";
 import { createLazyExecTool, resolveExecToolConfig } from "../agents/lazy-exec-tool.js";
 import { createOpenClawTools } from "../agents/openclaw-tools.js";
 import { filterRequesterYieldTools } from "../agents/openclaw-tools.requester-yield.js";
+import {
+  applySwarmCollectorToolContract,
+  createSwarmCollectorWriteAuthority,
+  resolveSwarmCollectorToolContext,
+} from "../agents/openclaw-tools.swarm.js";
 import { resolveRequesterToolPolicies } from "../agents/requester-tool-policy.js";
 import type { PreparedRootedExecutionCapability } from "../agents/rooted-run-params.js";
 import { resolveSandboxRuntimeStatus } from "../agents/sandbox/runtime-status.js";
 import { resolveScheduledToolCallerContext } from "../agents/scheduled-tool-policy.js";
 import { buildDeclaredToolAllowlistContext } from "../agents/tool-policy-declared-context.js";
+import { filterToolsByPolicy } from "../agents/tool-policy-match.js";
 import {
   applyToolPolicyPipeline,
   buildDefaultToolPolicyPipelineSteps,
@@ -32,8 +38,10 @@ import {
 } from "../agents/tool-policy.js";
 import type { AnyAgentTool } from "../agents/tools/common.js";
 import {
+  captureFinalEffectiveCronCreatorToolAllowlist,
   replaceWithEffectiveCronCreatorToolAllowlist,
   type CronCreatorToolAllowlistEntry,
+  type CronToolsAllowCaptureRef,
 } from "../agents/tools/cron-tool.js";
 import { createChannelQuestionPromptDelivery } from "../agents/tools/question-prompt-send.js";
 import type { SourceReplyDeliveryMode } from "../auto-reply/get-reply-options.types.js";
@@ -68,6 +76,7 @@ export function resolveGatewayScopedTools(
   > & {
     cfg: OpenClawConfig;
     rootedExecution?: PreparedRootedExecutionCapability;
+    messageActionTurnCapability?: string;
     authProfileStore?: AuthProfileStore;
     agentDir?: string;
     onYield?: (message: string, acknowledgment?: string) => Promise<void> | void;
@@ -79,6 +88,11 @@ export function resolveGatewayScopedTools(
     allowGatewaySubagentBinding?: boolean;
     allowMediaInvokeCommands?: boolean;
     surface?: GatewayScopedToolSurface;
+    /**
+     * Liveness of the client grant this request authenticated with, supplied by
+     * the loopback server. Run-contract tools re-check it before they write.
+     */
+    isGrantCurrent?: () => boolean;
     excludeToolNames?: Iterable<string>;
     /** Server-minted coding tools that must be mediated through the loopback surface. */
     mediatedToolNames?: Iterable<string>;
@@ -120,6 +134,7 @@ export function resolveGatewayScopedTools(
     providerProfile,
     profileAlsoAllow,
     providerProfileAlsoAllow,
+    gatewayConfigReadAllowed,
   } = resolveEffectiveToolPolicy({
     config: params.cfg,
     sessionKey: runtimePolicySessionKey,
@@ -250,6 +265,8 @@ export function resolveGatewayScopedTools(
   // pass so child sessions inherit the actual parent tool surface.
   const inheritedToolAllowlist: string[] = [];
   const cronCreatorToolAllowlist: CronCreatorToolAllowlistEntry[] = [];
+  const cronCreatorToolAllowlistCaptureRef: CronToolsAllowCaptureRef | undefined =
+    surface === "loopback" ? {} : undefined;
   const shouldInheritEffectiveToolAllowlist = [
     profilePolicy,
     providerProfilePolicy,
@@ -265,9 +282,43 @@ export function resolveGatewayScopedTools(
     gatewayRequestedTools.length > 0 ? { allow: gatewayRequestedTools } : undefined,
   ].some(hasRestrictiveAllowPolicy);
 
+  // CLI backends reach OpenClaw tools through this resolver instead of the
+  // embedded runner, and the loopback grant carries no collector fields, so the
+  // subagent registry supplies the collector run contract for this child.
+  //
+  // Authority is the admitted collector run, not the transport. `params.runId`
+  // reaches this resolver only from `McpLoopbackRequestContext.runId`, which
+  // `resolveMcpRequestContext` copies out of a Gateway-minted, run-bound CLI
+  // client grant; the session-scoped `openclaw attach` branch and the
+  // header-derived branch never set it, and the `http` caller never passes one.
+  // Requiring that id to match the registry's collector record therefore admits
+  // the collector child's own run and nobody else, including an attach client
+  // bound to that same collector session.
+  const swarmCollectorAdmission = {
+    childSessionKey: params.sessionKey,
+    admittedRunId: surface === "loopback" ? params.runId : undefined,
+  };
+  const swarmCollectorContext = resolveSwarmCollectorToolContext(swarmCollectorAdmission);
   const openClawTools = createOpenClawTools({
+    gatewayConfigReadAllowed,
     agentSessionKey: params.sessionKey,
+    messageToolTurnCapability:
+      surface === "loopback" && params.messageActionTurnCapability
+        ? { token: params.messageActionTurnCapability, sessionKey: runtimePolicySessionKey }
+        : undefined,
     runId: params.runId,
+    ...(swarmCollectorContext
+      ? {
+          swarmCollector: true,
+          assertCollectorWriteAuthority: createSwarmCollectorWriteAuthority({
+            admission: swarmCollectorAdmission,
+            isGrantCurrent: params.isGrantCurrent,
+          }),
+          ...(swarmCollectorContext.swarmOutputSchema
+            ? { swarmOutputSchema: swarmCollectorContext.swarmOutputSchema }
+            : {}),
+        }
+      : {}),
     execSession: params.execSession,
     execOverrides: params.execOverrides,
     approvalReviewerDeviceIds: params.approvalReviewerDeviceId
@@ -301,6 +352,7 @@ export function resolveGatewayScopedTools(
     onYield: params.onYield,
     requireExplicitMessageTarget: params.requireExplicitMessageTarget,
     senderIsOwner: params.senderIsOwner,
+    requesterSenderId: senderId,
     conversationReadOrigin: params.conversationReadOrigin,
     allowGatewaySubagentBinding: params.allowGatewaySubagentBinding,
     skillWorkshop: params.skillWorkshop,
@@ -314,8 +366,10 @@ export function resolveGatewayScopedTools(
     modelProvider: params.modelProvider,
     modelId: params.modelId,
     modelHasVision: params.modelHasVision,
+    requesterModel: params.requesterModel,
     pairedNodeComputerUse: params.pairedNodeComputerUse,
     clientCaps: params.clientCaps,
+    gatewayUiCommandTarget: params.gatewayUiCommandTarget,
     pinnedWidgetAuthoring: surface === "loopback" ? params.pinnedWidgetAuthoring : undefined,
     workspaceDir,
     sandboxed,
@@ -349,6 +403,7 @@ export function resolveGatewayScopedTools(
     ]),
     pluginToolDenylist: explicitDenylist,
     cronCreatorToolAllowlist,
+    cronCreatorToolAllowlistCaptureRef,
     inheritedToolAllowlist,
     inheritedToolDenylist,
   });
@@ -393,10 +448,12 @@ export function resolveGatewayScopedTools(
           modelProvider: params.modelProvider,
           modelId: params.modelId,
           modelHasVision: params.modelHasVision,
+          requesterModel: params.requesterModel,
           pairedNodeComputerUse: params.pairedNodeComputerUse,
           messageProvider: params.messageProvider,
           messageChannel: params.messageProvider,
           clientCaps: params.clientCaps,
+          gatewayUiCommandTarget: params.gatewayUiCommandTarget,
           agentAccountId: params.accountId,
           currentChannelId: params.currentChannelId,
           currentThreadTs: params.currentThreadTs,
@@ -513,6 +570,7 @@ export function resolveGatewayScopedTools(
     : toolsWithMediatedCoding;
 
   const toolsForMessageProvider = filterToolsByMessageProvider(allTools, params.messageProvider);
+  let nativeCreatorTools = (params.nativeCronCreatorToolAllowlist ?? []).map((name) => ({ name }));
   const policyFiltered = applyToolPolicyPipeline({
     tools: toolsForMessageProvider,
     toolMeta: (tool: AnyAgentTool) => getPluginToolMeta(tool),
@@ -542,6 +600,11 @@ export function resolveGatewayScopedTools(
       workspaceDir,
       toolDenylist: explicitDenylist,
     }),
+    // Native initialization reports availability; the same creator policies must
+    // also allow those capabilities before an automation may inherit them.
+    onFilter: ({ policy }) => {
+      nativeCreatorTools = filterToolsByPolicy(nativeCreatorTools, policy);
+    },
   });
 
   const gatewayDenySet = new Set(
@@ -552,9 +615,15 @@ export function resolveGatewayScopedTools(
       ...excludedToolNames,
     ].map(normalizeToolPolicyName),
   );
-  const tools = applyDelegationCapability(
-    policyFiltered.filter((tool) => !gatewayDenySet.has(normalizeToolPolicyName(tool.name))),
-    params.delegationCapability,
+  const tools = applySwarmCollectorToolContract(
+    applyDelegationCapability(
+      policyFiltered.filter((tool) => !gatewayDenySet.has(normalizeToolPolicyName(tool.name))),
+      params.delegationCapability,
+    ),
+    {
+      swarmCollector: Boolean(swarmCollectorContext),
+      structuredOutputTool: openClawTools.find((tool) => tool.name === "structured_output"),
+    },
   );
   // The loopback exec tool is node-only. Do not let a raw `exec` capability get
   // reinterpreted as generic Gateway/sandbox exec by spawned sessions or cron jobs.
@@ -564,21 +633,35 @@ export function resolveGatewayScopedTools(
   if (shouldInheritEffectiveToolAllowlist) {
     replaceWithEffectiveToolAllowlist(inheritedToolAllowlist, inheritableTools);
   }
+  const nativeCapture = {
+    canonicalToolNames: params.nativeCronCreatorToolAllowlist,
+    // The loopback grant carries native authority only for Gateway-placed CLI runs.
+    nativeExecTarget: { host: "gateway" as const },
+  };
   replaceWithEffectiveCronCreatorToolAllowlist(
     cronCreatorToolAllowlist,
     inheritableTools,
     (tool) => getPluginToolMeta(tool),
-    {
-      canonicalToolNames: params.nativeCronCreatorToolAllowlist,
-      // The loopback grant only carries native authority for Gateway-placed
-      // CLI runs, so its native shell is pinned restrict-only to this host.
-      nativeExecTarget: { host: "gateway" },
-    },
+    nativeCapture,
   );
 
   return {
     agentId: sessionAgentId,
     tools: applyToolAvailabilityDescriptions(filterRequesterYieldTools(tools, params.sessionKey)),
     workspaceDir,
+    // Only the MCP owner knows which tools survived its grant and schema gates.
+    captureFinalCronCreatorTools: cronCreatorToolAllowlistCaptureRef
+      ? (callableToolNames: ReadonlySet<string>) =>
+          captureFinalEffectiveCronCreatorToolAllowlist(
+            cronCreatorToolAllowlist,
+            cronCreatorToolAllowlistCaptureRef,
+            inheritableTools.filter((tool) => callableToolNames.has(tool.name.trim())),
+            (tool) => getPluginToolMeta(tool),
+            {
+              ...nativeCapture,
+              canonicalToolNames: nativeCreatorTools.map((tool) => tool.name),
+            },
+          )
+      : undefined,
   };
 }

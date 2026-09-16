@@ -12,6 +12,7 @@ import {
   resetPluginBlobStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { stateMigrations } from "./doctor-contract-api.js";
 import { rollbackChatGptImportRun } from "./src/chatgpt-import.js";
@@ -31,6 +32,7 @@ import {
   resolveMemoryWikiSourceSyncStatePath,
 } from "./src/source-sync-state.js";
 import { createMemoryWikiTestHarness } from "./src/test-helpers.js";
+// Memory Wiki tests cover doctor migration of legacy source sync state.
 
 function requireStateMigration(id: string) {
   return expectDefined(
@@ -99,6 +101,7 @@ describe("memory-wiki doctor source sync migration", () => {
   });
 
   afterEach(async () => {
+    await closeOpenClawStateDatabaseAsync();
     configureMemoryWikiCompiledCacheStore(undefined);
     configureMemoryWikiImportRunStateStore(undefined);
     resetPluginBlobStoreForTests();

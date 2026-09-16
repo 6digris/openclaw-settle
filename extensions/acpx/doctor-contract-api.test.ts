@@ -12,6 +12,7 @@ import type {
   OpenKeyedStoreOptions,
   PluginDoctorStateMigrationContext,
 } from "openclaw/plugin-sdk/runtime-doctor-migrations";
+import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   legacyConfigRules,
@@ -28,6 +29,7 @@ import {
   ACPX_LEGACY_PROCESS_LEASE_FILE,
   type AcpxGatewayInstanceRecord,
 } from "./src/state.js";
+// ACPX tests cover doctor repair of legacy config and runtime state.
 
 vi.mock("./runtime-api.js", () => {
   throw new Error("Empty-state doctor detection must not load ACPX runtime helpers");
@@ -109,6 +111,7 @@ describe("acpx doctor state migration", () => {
   });
 
   afterEach(async () => {
+    await closeOpenClawStateDatabaseAsync();
     resetPluginStateStoreForTests();
     await fs.rm(stateDir, { recursive: true, force: true });
   });

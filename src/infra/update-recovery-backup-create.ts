@@ -43,7 +43,6 @@ import {
 } from "./update-recovery-backup-files.js";
 import { assertUpdateRecoveryCapacity } from "./update-recovery-capacity.js";
 import { readUpdateRunDriver, type UpdateRunDriver } from "./update-run-driver.js";
-
 function within(candidate: string, root: string): boolean {
   const relative = path.relative(root, candidate);
   return (
@@ -131,16 +130,11 @@ async function inspectUpdateRecoveryBackup(params: CaptureParams) {
     throw new Error("Invalid update recovery run id.");
   }
   const plan = await resolveBackupPlanFromDisk({ includeWorkspace: false });
-  if (plan.skipped.some((entry) => entry.reason === "unresolved")) {
-    throw new Error(
-      "Cannot create a complete update recovery backup while config ownership is unresolved. Run npx openclaw@latest doctor --fix, then retry the update.",
-    );
-  }
   const config = await readConfigFileSnapshot({ observe: false });
   const stateDir = resolvePathViaExistingAncestorSync(plan.stateDir);
   const installRoot = path.resolve(params.installRoot);
   const directory = captureDirectory(params.runId, stateDir);
-  const registry = inspectOpenClawRegisteredAgentDatabases({
+  const registry = await inspectOpenClawRegisteredAgentDatabases({
     includeIncompatibleSchemaVersions: true,
   });
   const discoveryConfig = (resolveStartupConfigSnapshot(config) ?? config).config;
@@ -172,7 +166,7 @@ async function inspectUpdateRecoveryBackup(params: CaptureParams) {
   for (const database of [
     ...registry,
     ...configuredDatabases,
-    ...plan.inventory.agentRoots.map((root) => ({
+    ...plan.resources.agentRoots.map((root) => ({
       agentId: root.agentId,
       path: root.databasePath,
     })),
@@ -194,7 +188,7 @@ async function inspectUpdateRecoveryBackup(params: CaptureParams) {
     plan.configPath,
     ...includePaths,
     resolveOpenClawStateSqlitePath(),
-    ...plan.inventory.agentRoots.map((root) => root.databasePath),
+    ...plan.resources.agentRoots.map((root) => root.databasePath),
     ...registry.map((database) => database.path),
     ...configuredDatabases.map((database) => database.path),
     ...resources.map((resource) => resource.path),
@@ -210,7 +204,7 @@ async function inspectUpdateRecoveryBackup(params: CaptureParams) {
     .toSorted((a, b) => a.length - b.length)
     .filter((root, index, all) => !all.slice(0, index).some((other) => within(root, other)));
   const scanRoots = [
-    ...new Set([stateDir, ...plan.inventory.agentRoots.map((root) => root.sourcePath), ...roots]),
+    ...new Set([stateDir, ...plan.resources.agentRoots.map((root) => root.sourcePath), ...roots]),
   ];
   if (roots.some((root) => root === path.parse(root).root || within(root, backupStore(stateDir)))) {
     throw new Error(
@@ -233,7 +227,7 @@ async function inspectUpdateRecoveryBackup(params: CaptureParams) {
     createdAt: new Date().toISOString(),
     roots,
     excludedRoots: [
-      ...plan.inventory.regenerableRoots.map((root) => root.sourcePath),
+      ...plan.resources.regenerableRoots.map((root) => root.sourcePath),
       backupStore(stateDir),
       resolvePathViaExistingAncestorSync(resolveGatewayLockDir(stateDir)),
       ...[plan.configPath, ...includePaths].map((pathname) =>
@@ -267,7 +261,7 @@ async function inspectUpdateRecoveryBackup(params: CaptureParams) {
     const declaredPath =
       explicitPaths.includes(pathname) ||
       resourcePaths.some((resource) => within(pathname, resource) || within(resource, pathname));
-    if (!plan.inventory.isTraversable(pathname) && !declaredPath) {
+    if (!plan.resources.isTraversable(pathname) && !declaredPath) {
       return;
     }
     if (seen.size >= 1_000_000) {
@@ -310,7 +304,7 @@ async function inspectUpdateRecoveryBackup(params: CaptureParams) {
         const declaredResource = resourcePaths.some(
           (resource) => within(child, resource) || within(resource, child),
         );
-        if (plan.inventory.isPackageContent(child) && !declaredResource) {
+        if (plan.resources.isPackageContent(child) && !declaredResource) {
           manifest.excludedRoots.push(child);
           continue;
         }
@@ -478,7 +472,7 @@ export async function captureUpdateRecoveryBackup(
           }
           const opened = await source.handle.stat({ bigint: true });
           await copyFileHandle(source.handle, output, {
-            noProgressMessage: "Update recovery input copy made no progress.",
+            assertBeforeMutation: params.assertOwned,
           });
           if (!sameFileMutationFingerprint(opened, await source.handle.stat({ bigint: true }))) {
             throw new Error(`Update recovery input changed during backup: ${pathname}`);

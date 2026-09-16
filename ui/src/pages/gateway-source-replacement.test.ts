@@ -4,9 +4,11 @@ import { TaskStatus } from "@lit/task";
 import type { SkillsLibraryListResult } from "@openclaw/gateway-protocol";
 import { nothing } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeferred as deferred } from "../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
 import type { ApplicationContext, ApplicationGatewaySnapshot } from "../app/context.ts";
 import { clawhubVerdictKey } from "../lib/skills/index.ts";
+import { settleLitElement } from "../test-helpers/lit-settle.ts";
 import { waitForFast } from "../test-helpers/wait-for.ts";
 import type { ModelProvidersData } from "./model-providers/load.ts";
 import { createEmptyModelProvidersRouteData } from "./model-providers/model-providers-page.test-support.ts";
@@ -14,6 +16,7 @@ import type { ModelProvidersRouteData } from "./model-providers/route.ts";
 import type { SkillsRouteData } from "./skills/skills-page.ts";
 import { createSkill } from "./skills/view.test-support.ts";
 import type { UsageRefreshPolicy } from "./usage/refresh-policy.ts";
+import { cacheSnapshot } from "./usage/usage-page.test-support.ts";
 import type { UsageRouteData } from "./usage/usage-page.ts";
 import "./cron/cron-page.ts";
 import "./debug/debug-page.ts";
@@ -61,16 +64,6 @@ function applyPageGatewaySnapshot(
   page.gateway.applySnapshot(snapshot, { initial: false, sourceChanged: false });
 }
 
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((nextResolve, nextReject) => {
-    resolve = nextResolve;
-    reject = nextReject;
-  });
-  return { promise, reject, resolve };
-}
-
 function gatewayWithClient(
   client: GatewayBrowserClient,
   connected: boolean,
@@ -106,6 +99,16 @@ function contextWithClient(
 ): ApplicationContext {
   const subscribe = () => () => undefined;
   const agentsList = options.agentsList ?? null;
+  const createSelection = () => ({
+    state: {
+      selectedId: options.selectedAgentId ?? null,
+      scopeId: options.selectedAgentId ?? null,
+    },
+    intentRevision: 0,
+    set: vi.fn(),
+    setScope: vi.fn(),
+    subscribe,
+  });
   return {
     basePath: "",
     gateway: gatewayWithClient(client, options.connected ?? false),
@@ -115,15 +118,8 @@ function contextWithClient(
       subscribe,
     },
     agentIdentity: { get: () => undefined, ensure: vi.fn(async () => undefined), subscribe },
-    agentSelection: {
-      state: {
-        selectedId: options.selectedAgentId ?? null,
-        scopeId: options.selectedAgentId ?? null,
-      },
-      set: vi.fn(),
-      setScope: vi.fn(),
-      subscribe,
-    },
+    agentSelection: createSelection(),
+    settingsAgentSelection: createSelection(),
     channels: { subscribe },
     runtimeConfig: {
       state: { configSnapshot: {}, configLoading: false },
@@ -150,9 +146,9 @@ function contextWithClient(
 
 function contextWithMutableGateway(
   client: GatewayBrowserClient,
-  options: { agentsList?: unknown } = {},
+  options: { agentsList?: unknown; selectedAgentId?: string | null } = {},
 ) {
-  const context = contextWithClient(client, { connected: true, agentsList: options.agentsList });
+  const context = contextWithClient(client, { connected: true, ...options });
   let currentSnapshot = context.gateway.snapshot;
   const listeners = new Set<(snapshot: ApplicationGatewaySnapshot) => void>();
   const gateway = {
@@ -528,6 +524,7 @@ describe("gateway source replacement across reconnect with a reused client", () 
       data: staleData,
       client,
       agentId: "main",
+      selectionIntentRevision: context.settingsAgentSelection.intentRevision,
     };
 
     document.body.append(page);
@@ -539,7 +536,11 @@ describe("gateway source replacement across reconnect with a reused client", () 
     const request = vi.fn(async () => emptySkillLibrary);
     const client = { request } as unknown as GatewayBrowserClient;
     const agentsList = { defaultId: "main", agents: [{ id: "main" }] };
-    const context = contextWithClient(client, { connected: true, agentsList });
+    const context = contextWithClient(client, {
+      connected: true,
+      agentsList,
+      selectedAgentId: "main",
+    });
     const report = { skills: [{ skillKey: "old" }] } as unknown as SkillsRouteData["report"];
     const routeData = {
       gateway: context.gateway,
@@ -547,7 +548,7 @@ describe("gateway source replacement across reconnect with a reused client", () 
       agents: context.agents,
       agentsList,
       selectedAgentId: "main",
-      selection: context.agentSelection.state,
+      selectionIntentRevision: context.settingsAgentSelection.intentRevision,
       report,
       error: null,
     } as unknown as SkillsRouteData;
@@ -584,7 +585,11 @@ describe("gateway source replacement across reconnect with a reused client", () 
     });
     const client = { request } as unknown as GatewayBrowserClient;
     const agentsList = { defaultId: "main", agents: [{ id: "main" }] };
-    const context = contextWithClient(client, { connected: true, agentsList });
+    const context = contextWithClient(client, {
+      connected: true,
+      agentsList,
+      selectedAgentId: "main",
+    });
     const report = {
       skills: [
         createSkill({
@@ -612,7 +617,7 @@ describe("gateway source replacement across reconnect with a reused client", () 
       agents: context.agents,
       agentsList,
       selectedAgentId: "main",
-      selection: context.agentSelection.state,
+      selectionIntentRevision: context.settingsAgentSelection.intentRevision,
       report,
       error: null,
     } as SkillsRouteData;
@@ -649,7 +654,7 @@ describe("gateway source replacement across reconnect with a reused client", () 
     });
     const client = { request } as unknown as GatewayBrowserClient;
     const agentsList = { defaultId: "main", agents: [{ id: "main" }] };
-    const harness = contextWithMutableGateway(client, { agentsList });
+    const harness = contextWithMutableGateway(client, { agentsList, selectedAgentId: "main" });
     const report = {
       skills: [
         createSkill({
@@ -678,7 +683,7 @@ describe("gateway source replacement across reconnect with a reused client", () 
       agents: harness.context.agents,
       agentsList,
       selectedAgentId: "main",
-      selection: harness.context.agentSelection.state,
+      selectionIntentRevision: harness.context.settingsAgentSelection.intentRevision,
       report,
       error: null,
     } as SkillsRouteData;
@@ -727,7 +732,11 @@ describe("gateway source replacement across reconnect with a reused client", () 
       scope: "global" as const,
       agents: [{ id: "main" }, { id: "research" }],
     };
-    const context = contextWithClient(client, { connected: true, agentsList });
+    const context = contextWithClient(client, {
+      connected: true,
+      agentsList,
+      selectedAgentId: "main",
+    });
     const page = createPage("openclaw-skills-page", context) as TestPage & {
       routeData: SkillsRouteData;
     };
@@ -742,7 +751,7 @@ describe("gateway source replacement across reconnect with a reused client", () 
       agents: context.agents,
       agentsList,
       selectedAgentId: "main",
-      selection: context.agentSelection.state,
+      selectionIntentRevision: context.settingsAgentSelection.intentRevision,
       report: null,
       error: null,
     };
@@ -765,7 +774,11 @@ describe("gateway source replacement across reconnect with a reused client", () 
     });
     const client = { request } as unknown as GatewayBrowserClient;
     const agentsList = { defaultId: "main", agents: [{ id: "main" }] };
-    const context = contextWithClient(client, { connected: true, agentsList });
+    const context = contextWithClient(client, {
+      connected: true,
+      agentsList,
+      selectedAgentId: "main",
+    });
     const staleReport = { skills: [{ skillKey: "stale" }] } as unknown as SkillsRouteData["report"];
     const page = createPage("openclaw-skills-page", context) as TestPage & {
       routeData: SkillsRouteData;
@@ -777,7 +790,7 @@ describe("gateway source replacement across reconnect with a reused client", () 
       agents: context.agents,
       agentsList,
       selectedAgentId: "main",
-      selection: context.agentSelection.state,
+      selectionIntentRevision: context.settingsAgentSelection.intentRevision,
       report: staleReport,
       error: null,
     } as unknown as SkillsRouteData;
@@ -810,21 +823,47 @@ describe("gateway source replacement across reconnect with a reused client", () 
   });
 
   it("clears usage loaded by the previous provider", async () => {
-    const client = {} as GatewayBrowserClient;
-    const page = createPage("openclaw-usage-page", contextWithClient(client)) as TestPage & {
-      usageResult: unknown;
-      providerUsageSummary: unknown;
+    const snapshot = cacheSnapshot("sessions", "fresh");
+    const result = { ...snapshot.result, sessions: [{ key: "old", usage: null }] };
+    const providerUsage = {
+      updatedAt: 1,
+      providers: [{ provider: "old", displayName: "Old provider", windows: [] }],
+    };
+    const request = vi.fn(async (method: string) => {
+      if (method === "sessions.usage") {
+        return result;
+      }
+      if (method === "usage.cost") {
+        return snapshot.costSummary;
+      }
+      if (method === "usage.status") {
+        return providerUsage;
+      }
+      throw new Error(`Unexpected request: ${method}`);
+    });
+    const client = { request } as unknown as GatewayBrowserClient;
+    const page = createPage(
+      "openclaw-usage-page",
+      contextWithClient(client, { connected: true }),
+    ) as TestPage & {
+      loadUsage: () => Promise<void>;
+      readonly usageResult: UsageRouteData["result"];
+      readonly usageCostSummary: UsageRouteData["costSummary"];
+      readonly providerUsageSummary: unknown;
       usageSelectedSessions: string[];
     };
     document.body.append(page);
     await page.updateComplete;
-    page.usageResult = { sessions: [{ key: "old" }] };
-    page.providerUsageSummary = { providers: [{ provider: "old" }] };
+    await page.loadUsage();
+    expect(page.usageResult).toBe(result);
+    expect(page.usageCostSummary).toBe(snapshot.costSummary);
+    expect(page.providerUsageSummary).toBe(providerUsage);
     page.usageSelectedSessions = ["old"];
 
     await replaceContext(page, client);
 
     expect(page.usageResult).toBeNull();
+    expect(page.usageCostSummary).toBeNull();
     expect(page.providerUsageSummary).toBeNull();
     expect(page.usageSelectedSessions).toEqual([]);
   });
@@ -931,21 +970,28 @@ describe("gateway source replacement across reconnect with a reused client", () 
     const context = contextWithClient(client, { connected: true });
     const page = createPage("openclaw-debug-page", context) as TestPage & {
       debugStatus: unknown;
-      diagnosticsTask: { run: () => Promise<void>; status: TaskStatus };
+      debugHealth: unknown;
+      debugModels: unknown[];
+      debugHeartbeat: unknown;
+      debugLanes: unknown[];
+      diagnosticsTask: { readonly status: TaskStatus };
     };
-    page.debugStatus = { seeded: true };
     document.body.append(page);
     await page.updateComplete;
-    page.debugStatus = null;
 
-    const load = page.diagnosticsTask.run();
     await waitForFast(() => expect(request).toHaveBeenCalledTimes(4));
     await replaceContext(page, client);
     pending.resolve({ models: [{ id: "stale" }], stale: true });
-    await load;
+    await pending.promise;
+    await settleLitElement(page);
 
+    expect(request).toHaveBeenCalledTimes(4);
     expect(page.diagnosticsTask.status).not.toBe(TaskStatus.PENDING);
     expect(page.debugStatus).toBeNull();
+    expect(page.debugHealth).toBeNull();
+    expect(page.debugModels).toEqual([]);
+    expect(page.debugHeartbeat).toBeNull();
+    expect(page.debugLanes).toEqual([]);
   });
 
   it("clears cron data loaded by the previous provider", async () => {

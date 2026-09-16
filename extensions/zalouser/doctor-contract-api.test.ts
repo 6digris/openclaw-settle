@@ -17,7 +17,10 @@ import {
   normalizeSessionDeliveryState,
   upsertSessionEntry,
 } from "openclaw/plugin-sdk/session-store-runtime";
-import { closeOpenClawAgentDatabasesForTest } from "openclaw/plugin-sdk/sqlite-runtime-testing";
+import {
+  closeOpenClawAgentDatabasesForTest,
+  closeOpenClawStateDatabaseAsync,
+} from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { stateMigrations } from "./doctor-contract-api.js";
 import { setZalouserRuntime } from "./src/runtime.js";
@@ -29,6 +32,7 @@ import {
   ZALOUSER_CREDENTIALS_NAMESPACE,
   type StoredZaloCredentials,
 } from "./src/session-state.js";
+// Zalouser tests cover Doctor-owned state migration.
 
 function createDoctorContext(env: NodeJS.ProcessEnv): PluginDoctorStateMigrationContext {
   return {
@@ -66,6 +70,7 @@ describe("zalouser doctor state migration", () => {
     // resetPluginStateStoreForTests only releases plugin state plus shared state, so the
     // cached agent handles must be closed here or Windows fails the removal with EBUSY.
     closeOpenClawAgentDatabasesForTest();
+    await closeOpenClawStateDatabaseAsync();
     resetPluginStateStoreForTests();
     await fs.rm(stateDir, { recursive: true, force: true });
   });

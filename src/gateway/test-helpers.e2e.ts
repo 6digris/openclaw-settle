@@ -6,8 +6,12 @@ import path from "node:path";
 import { rawDataToString } from "@openclaw/gateway-client/websocket-data";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
-import { WebSocket } from "ws";
-import { type HelloOk, PROTOCOL_VERSION } from "../../packages/gateway-protocol/src/index.js";
+import { WebSocket, type RawData } from "../../packages/gateway-client/src/websocket.js";
+import {
+  type HelloOk,
+  type ModelCatalogTarget,
+  PROTOCOL_VERSION,
+} from "../../packages/gateway-protocol/src/index.js";
 import { acquireGatewayTestClient } from "../../test/helpers/gateway-client.js";
 import {
   acquireGatewayTestWebSocket,
@@ -45,7 +49,9 @@ export async function connectGatewayClient(params: {
   url: string;
   token?: string;
   deviceToken?: string;
+  origin?: string;
   clientName?: GatewayClientName;
+  modelCatalog?: ModelCatalogTarget;
   clientDisplayName?: string;
   clientVersion?: string;
   mode?: GatewayClientMode;
@@ -67,7 +73,10 @@ export async function connectGatewayClient(params: {
   maxProtocol?: number;
   timeoutMs?: number;
   timeoutMessage?: string;
+  signal?: AbortSignal;
+  verifyCleanup?: (cleanup: () => Promise<void>) => Promise<void>;
 }) {
+  params.signal?.throwIfAborted();
   const role = params.role ?? "operator";
   const scopes = params.scopes ?? (role === "node" ? [] : undefined);
   const platform = params.platform ?? process.platform;
@@ -90,6 +99,7 @@ export async function connectGatewayClient(params: {
       url: params.url,
       token: params.token,
       deviceToken: params.deviceToken,
+      origin: params.origin,
       ...(params.connectChallengeTimeoutMs !== undefined
         ? { connectChallengeTimeoutMs: params.connectChallengeTimeoutMs }
         : {}),
@@ -100,6 +110,7 @@ export async function connectGatewayClient(params: {
       minProtocol: params.minProtocol,
       maxProtocol: params.maxProtocol,
       clientName: params.clientName ?? GATEWAY_CLIENT_NAMES.TEST,
+      modelCatalog: params.modelCatalog,
       clientDisplayName: params.clientDisplayName ?? "vitest",
       clientVersion: params.clientVersion ?? "dev",
       platform,
@@ -120,6 +131,8 @@ export async function connectGatewayClient(params: {
       timeoutMessage: params.timeoutMessage ?? "gateway connect timeout",
       closeMessage: "gateway closed during connect",
       unrefTimeout: true,
+      signal: params.signal,
+      verifyCleanup: params.verifyCleanup,
     },
   );
 }
@@ -138,7 +151,7 @@ type DeviceAuthConnectResponse = {
 
 function waitForDeviceAuthMessage<T>(
   ws: WebSocket,
-  read: (data: WebSocket.RawData) => T | undefined,
+  read: (data: RawData) => T | undefined,
   timeoutMessage: string,
 ): Promise<T> {
   const message = new Promise<T>((resolve, reject) => {
@@ -154,7 +167,7 @@ function waitForDeviceAuthMessage<T>(
     };
     const onClose = (code: number, reason: Buffer) =>
       onError(new Error(`closed ${code}: ${rawDataToString(reason)}`));
-    const onMessage = (data: WebSocket.RawData) => {
+    const onMessage = (data: RawData) => {
       try {
         const value = read(data);
         if (value !== undefined) {
@@ -274,6 +287,10 @@ export async function startGatewayWithClient(params: {
   cfg: unknown;
   configPath: string;
   token: string;
+  clientName?: GatewayClientName;
+  modelCatalog?: ModelCatalogTarget;
+  mode?: GatewayClientMode;
+  origin?: string;
   clientDisplayName?: string;
   scopes?: string[];
   onEvent?: (evt: { event?: string; payload?: unknown }) => void;
@@ -302,6 +319,10 @@ export async function startGatewayWithClient(params: {
     const client = await connectGatewayClient({
       url: `ws://127.0.0.1:${port}`,
       token: params.token,
+      clientName: params.clientName,
+      modelCatalog: params.modelCatalog,
+      mode: params.mode,
+      origin: params.origin,
       clientDisplayName: params.clientDisplayName,
       scopes: params.scopes,
       onEvent: params.onEvent,

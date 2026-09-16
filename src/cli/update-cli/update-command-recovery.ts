@@ -1,9 +1,11 @@
 import { formatErrorMessage } from "../../infra/errors.js";
+import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
 import { assertUpdateRecoveryAdmission } from "../../infra/update-run-recovery-admission.js";
 import {
   loadUpdateRecovery,
   UpdateRecoveryRequiredError,
 } from "../../infra/update-run-recovery.js";
+import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import type { UpdateCommandOptions } from "./shared.js";
 import type { FinishUpdateParams } from "./update-command-finish-types.js";
 import { UpdateCommandPendingRecoveryFailure } from "./update-command-result.js";
@@ -49,11 +51,12 @@ export async function assertUpdateCommandPackageFinalization(
         "Full-state checkpoint recovery is deferred; retained state was left unchanged.",
       );
     }
-    await assertUpdateRecoveryAdmission({
-      env: params.ownedManagedUpdateEnv ?? params.opts.run?.env,
-    });
+    const env = params.ownedManagedUpdateEnv ?? params.opts.run?.env;
+    // Keep the first target stable if selectors change during admission.
+    const targetPath = resolveOpenClawStateSqlitePath(env);
+    await assertUpdateRecoveryAdmission({ env, path: targetPath });
     assertCurrent();
-    if (run) {
+    if (run && resolveOpenClawStateSqlitePath(run.env) !== targetPath) {
       await assertUpdateRecoveryAdmission({ env: run.env });
       assertCurrent();
     }
@@ -83,4 +86,21 @@ export function createUpdateCommandFinalizationFence(
     }
   };
   return assertCurrent;
+}
+
+export function createUpdateCommandExecutionAssertions(
+  opts: UpdateCommandOptions,
+  originalRun: UpdateCommandOptions["run"],
+) {
+  const requesterAuthority = originalRun?.requesterAuthority;
+  const assertRequesterCurrent = () => {
+    if (opts.run !== originalRun || requesterAuthority?.isCurrent() === false) {
+      throw new UpdateRequesterRevokedError();
+    }
+  };
+  const assertExecutionCurrent = () => {
+    assertUpdateCommandRecovery(opts);
+    assertRequesterCurrent();
+  };
+  return { requesterAuthority, assertRequesterCurrent, assertExecutionCurrent };
 }

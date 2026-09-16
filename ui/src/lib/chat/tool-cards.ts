@@ -1,9 +1,11 @@
+import { readSessionMessageIdentity } from "@openclaw/gateway-client/browser";
 import { isHttpUrl } from "@openclaw/net-policy/url-protocol";
 import {
   asNullableObjectRecord as readRecord,
   asNullableRecord,
   isRecord,
 } from "@openclaw/normalization-core/record-coerce";
+import { readNonBlankString } from "@openclaw/normalization-core/string-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 // Control UI chat domain owns pure tool-card extraction rules.
 import {
@@ -109,7 +111,19 @@ function readToolExitCode(...values: unknown[]): number | undefined {
   return undefined;
 }
 
+export function isToolCardSkipped(card: ToolCard): boolean {
+  const details = readRecord(card.details);
+  return (
+    (card.live !== true || card.completed === true) &&
+    details?.status === "skipped" &&
+    details.deniedReason === "steering"
+  );
+}
+
 export function isToolCardError(card: ToolCard): boolean {
+  if (isToolCardSkipped(card)) {
+    return false;
+  }
   // Progress can contain error-shaped text; only a result may imply failure.
   const canInferFailure = card.live !== true || card.completed === true;
   return card.isError ?? (canInferFailure && isToolErrorOutput(card.outputText));
@@ -119,6 +133,9 @@ export function resolveToolCardOutcome(
   card: ToolCard,
   runActive: boolean | undefined,
 ): ToolCardOutcome {
+  if (isToolCardSkipped(card)) {
+    return "skipped";
+  }
   if (isToolCardError(card)) {
     return "failed";
   }
@@ -216,13 +233,7 @@ function serializeToolInput(args: unknown): string | undefined {
   try {
     return JSON.stringify(args, null, 2);
   } catch {
-    if (typeof args === "number" || typeof args === "boolean" || typeof args === "bigint") {
-      return String(args);
-    }
-    if (typeof args === "symbol") {
-      return args.description ? `Symbol(${args.description})` : "Symbol()";
-    }
-    return Object.prototype.toString.call(args);
+    return typeof args === "bigint" ? String(args) : Object.prototype.toString.call(args);
   }
 }
 
@@ -282,7 +293,15 @@ export function resolveCollapsedToolArgumentPreview(args: unknown): string | und
     if (typeof value !== "string") {
       continue;
     }
-    const firstLine = value.split(/\r\n?|\n/).find((line) => line.trim().length > 0);
+    const firstContent = value.search(/\S/);
+    let firstLine: string | undefined;
+    if (firstContent >= 0) {
+      const start =
+        Math.max(value.lastIndexOf("\r", firstContent), value.lastIndexOf("\n", firstContent)) + 1;
+      const lineEnd = /[\r\n]/g;
+      lineEnd.lastIndex = firstContent;
+      firstLine = value.slice(start, lineEnd.exec(value)?.index ?? value.length);
+    }
     const preview = formatCollapsedToolPreviewText(
       firstLine ? redactToolPayloadText(firstLine) : undefined,
     );
@@ -334,9 +353,12 @@ function extractToolCards(message: unknown): ToolCard[] {
   const cards: ToolCard[] = [];
   const fallbackMatchedCards = new WeakSet<ToolCard>();
   const transcriptMessageId = resolveTranscriptMessageId(m);
+  const messageRunId = readSessionMessageIdentity(m)?.runId ?? readNonBlankString(m.runId);
 
   for (let index = 0; index < content.length; index++) {
     const item = content[index] ?? {};
+    const runId = readNonBlankString(item.runId) ?? messageRunId;
+    const parentToolCallId = readNonBlankString(item.parentToolCallId);
     if (isToolCallContentBlock(item)) {
       const args = coerceArgs(item.arguments ?? item.args ?? item.input);
       const callId = resolveToolCallId(item, m);
@@ -344,6 +366,8 @@ function extractToolCards(message: unknown): ToolCard[] {
       cards.push({
         id: resolveToolCardId(item, m, index),
         ...(callId ? { callId } : {}),
+        ...(runId ? { runId } : {}),
+        ...(parentToolCallId ? { parentToolCallId } : {}),
         name: resolveToolName(item, m),
         args,
         inputText: serializeToolInput(args),
@@ -386,6 +410,8 @@ function extractToolCards(message: unknown): ToolCard[] {
       if (existing) {
         fallbackMatchedCards.add(existing);
         existing.callId ??= callId;
+        existing.runId ??= runId;
+        existing.parentToolCallId ??= parentToolCallId;
         // Live tool-stream messages emit a toolresult block for partial
         // `update` output too; completion there is owned by the stream's
         // resultReceived marker (set at card creation), not block presence —
@@ -410,6 +436,8 @@ function extractToolCards(message: unknown): ToolCard[] {
       cards.push({
         id: cardId,
         ...(callId ? { callId } : {}),
+        ...(runId ? { runId } : {}),
+        ...(parentToolCallId ? { parentToolCallId } : {}),
         name,
         completed: true,
         outputText: text,
@@ -433,6 +461,7 @@ function extractToolCards(message: unknown): ToolCard[] {
     cards.push({
       id: resolveToolCardId({}, m, 0),
       ...(callId ? { callId } : {}),
+      ...(messageRunId ? { runId: messageRunId } : {}),
       name,
       completed: isToolResultMessage(message) || role === "tool" || role === "function",
       outputText: text,

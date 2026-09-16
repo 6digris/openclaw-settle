@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { isPidAlive } from "../shared/pid-alive.js";
 import { killPidIfAlive, waitForPidToExit } from "../test-utils/process-tree.js";
-
 const fixture = fileURLToPath(
   new URL("./runtime-cleanup-scope.windows.test-support.ts", import.meta.url),
 );

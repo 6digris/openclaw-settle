@@ -21,9 +21,12 @@ import {
   type UpdateCommandOptions,
 } from "./shared.js";
 import { handleDryRunPreflightError, printUpdateDryRun } from "./update-command-dry-run.js";
-import type { ManagedServiceRootRedirect } from "./update-command-service-plan.js";
+import type { RefuseUpdate } from "./update-command-result.js";
+import {
+  resolvePackageRuntimePreflight,
+  type ManagedServiceRootRedirect,
+} from "./update-command-service-plan.js";
 import type { resolveUpdateCommandTarget } from "./update-command-target.js";
-
 export async function readInstalledUpdateSchemaVersions(
   root: string,
 ): Promise<OpenClawSchemaVersions | undefined> {
@@ -90,8 +93,10 @@ export async function preflightUpdateCommandSchemas(params: {
   packageAlreadyCurrent: boolean;
   packageTargetVersion?: string;
   packageInstallSpec?: string | null;
+  packageRuntimeTarget?: { version: string; nodeEngine: string | null };
+  managedServiceNodeRunner?: string;
   opts: Pick<UpdateCommandOptions, "dryRun" | "json" | "run">;
-  refuseUpdate: (reason: string, message?: string) => Promise<void>;
+  refuseUpdate: RefuseUpdate;
 }): Promise<
   { packageSchemaPreflight: OpenClawDatabaseSchemaPreflight; preflightNotes: string[] } | undefined
 > {
@@ -159,6 +164,22 @@ export async function preflightUpdateCommandSchemas(params: {
         admission.contexts,
       );
       if (opts.dryRun && updateInstallKind === "package") {
+        const runtime = await resolvePackageRuntimePreflight({
+          ...params,
+          target: params.packageRuntimeTarget,
+          nodeRunner: params.managedServiceNodeRunner,
+          timeoutMs: updateStepTimeoutMs,
+          alreadyCurrent: params.packageAlreadyCurrent,
+          service: admission.service,
+          installedRoot: params.packageAlreadyCurrent ? root : undefined,
+        });
+        if (!runtime.ok) {
+          preflightNotes.push(`Would refuse update: ${runtime.error}`);
+        } else if (runtime.value.replacedNodeRunner) {
+          preflightNotes.push(
+            `Would replace managed gateway service Node (${runtime.value.replacedNodeRunner}) with current Node (${runtime.value.nodeRunner}) for openclaw@${runtime.value.targetVersion}.`,
+          );
+        }
         if (
           params.packageInstallSpec &&
           !canResolveRegistryVersionForPackageTarget(params.packageInstallSpec)
@@ -170,19 +191,20 @@ export async function preflightUpdateCommandSchemas(params: {
           const { preflightConfiguredNpmPluginTargets } =
             await import("./update-command-plugin-preflight.js");
           const context = admission.contexts.at(-1)!;
-          await preflightConfiguredNpmPluginTargets({
+          const pluginWarnings = await preflightConfiguredNpmPluginTargets({
             config: context.configSnapshot.sourceConfig,
             env: context.env,
             targetVersion: params.packageTargetVersion ?? null,
             channel,
             timeoutMs: updateStepTimeoutMs,
           });
+          preflightNotes.push(...pluginWarnings.map((warning) => warning.message));
         }
       }
     } catch (error) {
       if (!opts.dryRun) {
         if (error instanceof UpdatePreMutationError) {
-          await refuseUpdate(error.reason, error.message);
+          await refuseUpdate(error.reason, error.message, error.failureFacts);
           return undefined;
         }
         throw error;

@@ -13,18 +13,18 @@ import {
   executeSqliteQuerySync,
 } from "../infra/kysely-sync.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
-import {
-  closeOpenClawStateDatabaseForTest,
-  openOpenClawStateDatabase,
-} from "../state/openclaw-state-db.js";
+import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { spawnNodeEvalSync } from "../test-utils/node-process.js";
 import { activeSessions } from "./capture.js";
 import { exportTranscriptLibrary, getTranscriptLibrary, listTranscriptLibrary } from "./library.js";
-import type { TranscriptSessionDescriptor } from "./provider-types.js";
+import {
+  createTranscriptLibraryStoreFixture,
+  transcriptLibrarySession as session,
+} from "./library.store.test-support.js";
 import { readTranscriptLibraryStatus } from "./status.js";
 import { cursorScope, encodeCursor } from "./store-read.js";
 import { meetingTranscriptDb } from "./store-sqlite.js";
-import { TranscriptsStore, transcriptSessionSelector } from "./store.js";
+import { transcriptSessionSelector } from "./store.js";
 import { summarizeTranscripts } from "./summary.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -35,13 +35,7 @@ afterEach(() => {
 });
 
 function fixture() {
-  const stateDir = tempDirs.make("transcript-library-");
-  const options = { env: { ...process.env, OPENCLAW_STATE_DIR: stateDir } };
-  return {
-    stateDir,
-    store: new TranscriptsStore(path.join(stateDir, "transcripts"), options),
-    database: () => openOpenClawStateDatabase(options).db,
-  };
+  return createTranscriptLibraryStoreFixture(tempDirs.make("transcript-library-"));
 }
 
 function observeArchiveReads(database: DatabaseSync) {
@@ -62,13 +56,38 @@ function observeArchiveReads(database: DatabaseSync) {
     const statement = prepare.call(this, sql);
     if (
       this.location() !== location ||
-      !/^select\b/iu.test(sql) ||
+      !/^(?:select|with)\b/iu.test(sql) ||
       !sql.includes("meeting_transcript_")
     ) {
       return statement;
     }
     const record = { sql, rows: 0, bytes: 0, maxRowBytes: 0, closed: false };
     queries.push(record);
+    const observeRow = (row: Record<string, unknown>) => {
+      const bytes = Object.values(row).reduce<number>(
+        (total, value) => total + (typeof value === "string" ? Buffer.byteLength(value) : 0),
+        0,
+      );
+      record.rows++;
+      record.bytes += bytes;
+      record.maxRowBytes = Math.max(record.maxRowBytes, bytes);
+    };
+    const nativeGet = statement.get.bind(statement);
+    vi.spyOn(statement, "get").mockImplementation(
+      new Proxy(nativeGet, {
+        apply(get, _receiver, parameters) {
+          try {
+            const row = get(...parameters);
+            if (row) {
+              observeRow(row);
+            }
+            return row;
+          } finally {
+            record.closed = true;
+          }
+        },
+      }),
+    );
     const iterate = statement.iterate.bind(statement);
     vi.spyOn(statement, "iterate").mockImplementation((...parameters) => {
       const iterator = iterate(...parameters);
@@ -78,13 +97,7 @@ function observeArchiveReads(database: DatabaseSync) {
         if (result.done) {
           record.closed = true;
         } else {
-          const bytes = Object.values(result.value).reduce<number>(
-            (total, value) => total + (typeof value === "string" ? Buffer.byteLength(value) : 0),
-            0,
-          );
-          record.rows++;
-          record.bytes += bytes;
-          record.maxRowBytes = Math.max(record.maxRowBytes, bytes);
+          observeRow(result.value);
         }
         return result;
       });
@@ -100,18 +113,6 @@ function observeArchiveReads(database: DatabaseSync) {
     return statement;
   });
   return queries;
-}
-function session(
-  sessionId: string,
-  overrides: Partial<TranscriptSessionDescriptor> = {},
-): TranscriptSessionDescriptor {
-  return {
-    sessionId,
-    title: sessionId,
-    source: { providerId: "manual-transcript" },
-    startedAt: "2026-08-20T10:00:00.000Z",
-    ...overrides,
-  };
 }
 
 describe("transcript library SQLite reads", () => {
@@ -796,6 +797,7 @@ describe("transcript library SQLite reads", () => {
       "public-channel",
       "public-thread",
       "public-file",
+      "FIRST MILESTONE",
     ]) {
       expect(
         (await listTranscriptLibrary(store, { query })).sessions.map((entry) => entry.selector),

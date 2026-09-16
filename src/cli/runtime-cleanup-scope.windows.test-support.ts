@@ -10,7 +10,6 @@ import {
   withCliCommandCleanup,
   withCliProcessScope,
 } from "./runtime-cleanup-scope.js";
-
 const [role, ownership, inherited, requestedCode, descendants, markerPath] = process.argv.slice(2);
 const fixture = fileURLToPath(import.meta.url);
 const args = [...process.execArgv, fixture];

@@ -8,8 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { requireNodeSqlite } from "./node-sqlite.js";
 import { createPrivateSqliteDirectory } from "./sqlite-private-directory.js";
 import { prepareSqliteReadOnlyLocation } from "./sqlite-snapshot-source.js";
+import { createVerifiedSqliteSnapshot } from "./sqlite-snapshot.js";
 import * as stateDatabaseCoordinator from "./state-database-coordinator.js";
-
 const durabilityTestState = vi.hoisted(() => ({
   publicationSyncUnsupported: false,
   syncOutcome: undefined as
@@ -32,8 +32,6 @@ vi.mock("@openclaw/fs-safe/durability", async (importOriginal) => {
       durabilityTestState.syncOutcome ?? (await actual.syncDirectory(...args)),
   };
 });
-
-import { createVerifiedSqliteSnapshot } from "./sqlite-snapshot.js";
 
 const tempDirs: string[] = [];
 

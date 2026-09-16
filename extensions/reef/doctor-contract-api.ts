@@ -47,7 +47,6 @@ import {
   resolveReefTrustStoreKey,
 } from "./src/trust-store.js";
 import type { ReefKeys } from "./src/types.js";
-
 const RETIRED_REEF_CONFIG_KEYS = ["friends", "dmPolicy", "allowFrom"] as const;
 const REEF_CONFIG_IMPORT_NAMESPACE = "peer-state-config-imports";
 const LegacyReefFriendSchema = ReefPeerTrustSchema.omit({ approvedAt: true });

@@ -4,6 +4,8 @@ import type {
   SessionOwner,
   SessionsAssignOwnerParams,
   SessionsDeleteResult,
+  SessionsPatchManyParams,
+  SessionsPatchManyResult,
   SessionsRecoverResult,
 } from "../../../../packages/gateway-protocol/src/index.js";
 import type { SessionCatalogPullRequestSummary } from "../../../../packages/gateway-protocol/src/schema/sessions-catalog.js";
@@ -27,7 +29,10 @@ import type { AuthenticatedUser } from "../../app/user-profile.ts";
 import type { GatewayConnectionScope } from "../gateway-connection-lifecycle.ts";
 import type { SessionCreateOutcome, SessionCreateParams } from "./create.ts";
 import type { SessionGroupSettings } from "./custom-groups.ts";
-import type { GitHubPublicationPresentationBinding } from "./github-publication-controller.ts";
+import type {
+  GitHubPublicationController,
+  GitHubPublicationPresentationBinding,
+} from "./github-publication-controller.ts";
 import type { SessionArchivedFilter } from "./navigation.ts";
 import type { SessionPatchRoute } from "./patch.ts";
 import type { SessionChangedResult, SessionReconcileOptions } from "./reconcile.ts";
@@ -118,7 +123,7 @@ export type SessionDeleteOutcome = Pick<SessionsDeleteResult, "deleted" | "workt
 
 export type SessionDeleteBatchResult = {
   deleted: string[];
-  errors: string[];
+  errors: { target: SessionDeleteTarget; error: unknown }[];
   preservedWorktrees: PreservedSessionWorktree[];
 };
 
@@ -172,9 +177,16 @@ export type GitHubPublicationBinding = GitHubPublicationPresentationBinding & {
 
 export type SessionCapability = {
   readonly githubPublication: {
-    attach: (row: GatewaySessionRow, changed: () => void) => GitHubPublicationBinding | null;
+    // The lazy presentation supplies code; this session owner keeps operation custody.
+    attach: (
+      row: GatewaySessionRow,
+      changed: () => void,
+      Controller: typeof GitHubPublicationController,
+    ) => GitHubPublicationBinding | null;
   };
   readonly state: SessionState;
+  /** Memory-only roster presentation; never authority for mutations or live row observations. */
+  readonly presentation: Pick<SessionState, "result" | "agentId" | "resultCached">;
   /** Advances only when a canonical sessions.list result is published. */
   readonly canonicalListRevision: number;
   whenCachedRosterSettled: () => Promise<void>;
@@ -198,7 +210,10 @@ export type SessionCapability = {
   reconcile: (
     row: GatewaySessionRow | undefined,
     defaults?: SessionsListResult["defaults"],
-    options?: SessionReconcileOptions & { sourceCanonicalListRevision?: number },
+    options?: SessionReconcileOptions & {
+      sourceCanonicalListRevision?: number;
+      sourceListScope?: SessionListScope;
+    },
   ) => boolean;
   /** Captures request ordering before a supplemental row read begins. */
   captureReconcile: () => SessionCapability["reconcile"];
@@ -206,6 +221,8 @@ export type SessionCapability = {
   observeRow: (
     target: SessionRowTarget,
     listener: (row: GatewaySessionRow | null) => void,
+    /** Matching events can omit descriptor-only fields; re-read those without watching roster revisions. */
+    options?: { onInvalidate?: (reason?: string) => void },
   ) => SessionRowObservation;
   /** Preserve an existing row observation through a local presentation copy. */
   inheritRow: (
@@ -218,7 +235,10 @@ export type SessionCapability = {
   reconcileChanged: (payload: unknown, options?: SessionReconcileOptions) => SessionChangedResult;
   reconcileRunTerminal: (terminal: SessionRunTerminal) => boolean;
   refresh: (options?: SessionRefreshOptions) => Promise<void>;
-  /** Forces the remembered roster query; null means the attempt retired or failed. */
+  /** Schedules background list refreshes without replacing queued foreground queries. */
+  invalidate: () => void;
+  /** Refreshes the remembered query without superseding queued foreground intent.
+   * An explicit agent forces replacement; null means the attempt retired or failed. */
   refreshReplacement: (agentId?: string | null) => Promise<SessionsListResult | null>;
   createResult: (
     params?: SessionCreateParams,
@@ -227,8 +247,12 @@ export type SessionCapability = {
   create: (params?: SessionCreateParams) => Promise<string | null>;
   recover: (params: { key: string; agentId?: string }) => Promise<SessionsRecoverResult | null>;
   patch: SessionPatchRoute;
+  patchMany: (
+    targets: SessionsPatchManyParams["targets"],
+    patch: SessionsPatchManyParams["patch"],
+  ) => Promise<SessionsPatchManyResult | null>;
   archiveVisibility: (key: string) => SessionArchiveVisibility | undefined;
-  setArchivePending: (key: string, pending: boolean) => void;
+  beginArchive: (key: string, sessionId: string | undefined) => (() => void) | null;
   assignOwner: (
     key: string,
     owner: SessionsAssignOwnerParams["owner"],

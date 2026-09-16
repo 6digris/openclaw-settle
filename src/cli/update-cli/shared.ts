@@ -11,7 +11,19 @@ import { resolveOpenClawPackageRoot } from "../../infra/openclaw-root.js";
 import { readPackageName, readPackageVersion } from "../../infra/package-json.js";
 import { normalizePackageTagInput } from "../../infra/package-tag.js";
 import { parseSemver } from "../../infra/runtime-guard.js";
+import {
+  resolveBoundUpdateTarget,
+  type AdmittedUpdateBridgeContext,
+} from "../../infra/update-bridge-binding.js";
 import { fetchNpmTagVersion } from "../../infra/update-check.js";
+import {
+  normalizeUpdateFailureFacts,
+  type UpdateFailureFact,
+} from "../../infra/update-failure-facts.js";
+import {
+  createFreeBsdPkgOwnershipInspection,
+  type FreeBsdPkgOwnershipInspection,
+} from "../../infra/update-freebsd-pkg-ownership.js";
 import {
   canResolveRegistryVersionForPackageTarget,
   createGlobalInstallEnv,
@@ -22,14 +34,19 @@ import {
 import type { UpdateRequesterAuthority } from "../../infra/update-requester-authority.js";
 import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
 import { runStep } from "../../infra/update-runner-command.js";
+import { resolveUnmanagedUpdateInstallReason } from "../../infra/update-runner-install-surface.js";
 import type { UpdateStepProgress, UpdateStepResult } from "../../infra/update-runner.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import { defaultRuntime } from "../../runtime.js";
+import { UPDATE_INSTALL_SKIP_GUIDANCE } from "../../shared/update-outcome.js";
 import { pathExists } from "../../utils.js";
 import { COMPLETION_SKIP_PLUGIN_COMMANDS_ENV } from "../completion-runtime.js";
 import { isJsonOutputModeActive } from "../json-output-mode.js";
+// Shared update command primitives for channel resolution, install roots, and subprocess steps.
 
 export type UpdateCommandOptions = {
+  /** Private external bridge capability; never serialize or expose as a root override. */
+  bridge?: AdmittedUpdateBridgeContext;
   /** In-process executor only; workers must reacquire authority, never deserialize this. */
   /** Legacy live context is unsupported; its presence is refusal-only. */
   recovery?: unknown;
@@ -37,6 +54,8 @@ export type UpdateCommandOptions = {
   /** Internal orchestration context, shared across update phases and child processes. */
   run?: {
     runId: string;
+    defaultStepTimeoutMs?: number;
+    activationTimeoutMs?: number;
     env: NodeJS.ProcessEnv;
     /** Prepared before replacement; never load the old authority graph after activation. */
     requesterAuthority?: UpdateRequesterAuthority;
@@ -75,13 +94,18 @@ export type UpdateWizardOptions = {
 };
 
 export class UpdatePreMutationError extends Error {
+  readonly failureFacts: UpdateFailureFact[];
+
   constructor(
     readonly reason: string,
     message: string,
-    options?: ErrorOptions,
+    options?: ErrorOptions & { failureFacts?: readonly UpdateFailureFact[] },
   ) {
     super(message, options);
     this.name = "UpdatePreMutationError";
+    this.failureFacts = normalizeUpdateFailureFacts(
+      options?.failureFacts ?? [{ check: reason, code: reason, message }],
+    );
   }
 }
 
@@ -223,7 +247,10 @@ export function tryResolveInvocationCwd(): string | undefined {
 }
 
 /** Locate the installed OpenClaw package root that should receive update operations. */
-export async function resolveUpdateRoot(): Promise<string> {
+export async function resolveUpdateRoot(bridge?: AdmittedUpdateBridgeContext): Promise<string> {
+  if (bridge !== undefined) {
+    return resolveBoundUpdateTarget(bridge);
+  }
   // Preserve the lexical package path from the invoking shim. pnpm 11 package
   // modules realpath into a shared store, which is not the install owner.
   const invocationRoot = process.argv[1]
@@ -244,11 +271,12 @@ export async function runUpdateStep(params: {
   timeoutMs: number;
   progress?: UpdateStepProgress;
   env?: NodeJS.ProcessEnv;
+  runCommand?: Parameters<typeof runStep>[0]["runCommand"];
 }): Promise<UpdateStepResult> {
   return await runStep({
     ...params,
     cwd: params.cwd ?? process.cwd(),
-    runCommand: runCommandWithTimeout,
+    runCommand: params.runCommand ?? runCommandWithTimeout,
     stepIndex: 0,
     totalSteps: 0,
   });
@@ -421,16 +449,24 @@ export async function resolveGlobalManager(params: {
   root: string;
   installKind: "git" | "package" | "unknown";
   timeoutMs: number;
+  pkgOwnership?: FreeBsdPkgOwnershipInspection;
 }): Promise<GlobalInstallManager> {
+  await (
+    params.pkgOwnership ?? createFreeBsdPkgOwnershipInspection(params.timeoutMs)
+  ).assertUnowned(params.root);
   if (params.installKind === "package") {
+    const diagnostics: string[] = [];
     const detected = await detectGlobalInstallManagerForRoot(
       runCommandWithTimeout,
       params.root,
       params.timeoutMs,
+      diagnostics,
     );
     if (!detected) {
-      throw new Error(
-        "Update refused: package manager owner is unknown; no changes were made. Run this OpenClaw install through its active npm, pnpm, or Bun global shim, or reinstall it with that package manager, then retry.",
+      const reason = resolveUnmanagedUpdateInstallReason();
+      throw new UpdatePreMutationError(
+        reason,
+        `${UPDATE_INSTALL_SKIP_GUIDANCE[reason]} Inspected: ${diagnostics.join("; ")}.`,
       );
     }
     return detected;

@@ -11,8 +11,7 @@ import { isJsonObject, type CodexServiceTier, type JsonObject } from "./protocol
 import { mergeCodexRateLimitsUpdate } from "./rate-limit-cache.js";
 import { withTimeout } from "./timeout.js";
 
-type ClientRuntimeContext = Omit<CodexAppServerAuthProfileLookup, "agentDir"> & {
-  agentDir: string;
+type ClientRuntimeContext = CodexAppServerAuthProfileLookup & {
   authMode?: "prepared-api-key" | "profile";
   onAuthRefreshFailure?: () => void;
 };
@@ -204,6 +203,9 @@ export function ensureCodexAppServerClientRuntime(
     }
     if (runtime.context.authMode === "prepared-api-key") {
       throw new Error("ChatGPT token refresh is unavailable for prepared Codex API-key auth.");
+    }
+    if (!runtime.context.agentDir) {
+      throw new Error("ChatGPT token refresh requires an OpenClaw-owned auth profile.");
     }
     const previousAccountId =
       isJsonObject(request.params) && typeof request.params.previousAccountId === "string"
@@ -641,6 +643,32 @@ export function isCodexAppServerLiveThreadClaimed(
 ): boolean {
   const runtime = configuredClients.get(client);
   return runtime !== undefined && !runtime.closed && runtime.claimedThreads.has(threadId);
+}
+
+export function hasCodexAppServerSiblingThreadWork(
+  client: CodexAppServerClient,
+  threadId: string,
+): boolean {
+  const runtime = configuredClients.get(client);
+  if (!runtime || runtime.closed) {
+    return false;
+  }
+  // A protected parent can be settled while its native children still write.
+  if (runtime.protectedThreads.size > 0) {
+    return true;
+  }
+  // Ephemeral history exists only on this process, even after its turn settles.
+  for (const [retainedThreadId, retained] of runtime.retainedThreads) {
+    if (retainedThreadId !== threadId && retained.ephemeralPolicy !== undefined) {
+      return true;
+    }
+  }
+  for (const claimedThreadId of runtime.claimedThreads.keys()) {
+    if (claimedThreadId !== threadId) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Release the exact physical subscription and finish only its observed ownership generation. */

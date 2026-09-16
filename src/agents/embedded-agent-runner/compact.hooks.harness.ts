@@ -195,7 +195,7 @@ export const runCliAgentMock = vi.fn(async () => ({
 }));
 export const resolveCliBackendConfigMock = vi.fn(() => null as Record<string, unknown> | null);
 function createMockCompactionSession() {
-  let onContextReplaced: ((tokensAfter: number) => void) | undefined;
+  let onContextReplaced: ((tokensAfter: number, tokensBefore: number) => void) | undefined;
   const session = {
     sessionId: "session-1",
     messages: sessionMessages.map((message) => structuredClone(message)),
@@ -223,7 +223,7 @@ function createMockCompactionSession() {
       },
     ),
     [agentSessionSetContextReplacementHook]: (
-      callback: ((tokensAfter: number) => void) | undefined,
+      callback: ((tokensAfter: number, tokensBefore: number) => void) | undefined,
     ) => {
       onContextReplaced = callback;
     },
@@ -241,7 +241,7 @@ function createMockCompactionSession() {
       (tokens, message) => tokens + estimateTokensMock(message),
       0,
     );
-    onContextReplaced?.(tokensAfter);
+    onContextReplaced?.(tokensAfter, result.tokensBefore);
     return { result, tokensAfter };
   }
   return session;
@@ -1036,7 +1036,9 @@ export async function loadCompactHooksHarness(options: { durableSession?: boolea
 
   vi.doMock("../../skills/loading/workspace-skill-loader.js", () => {
     return {
-      loadWorkspaceSkills: vi.fn(() => []),
+      prepareWorkspaceSkills: vi.fn<
+        typeof import("../../skills/loading/workspace-skill-loader.js").prepareWorkspaceSkills
+      >(async () => []),
     };
   });
 

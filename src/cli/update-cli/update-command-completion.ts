@@ -4,7 +4,6 @@ import { defaultRuntime } from "../../runtime.js";
 import { formatCliCommand } from "../command-format.js";
 import { tryWriteCompletionCache } from "./shared.js";
 import { tryInstallShellCompletion } from "./update-command-service.js";
-
 /** Completion refresh is advisory and runs after service recovery has settled. */
 export async function refreshUpdateCompletion(
   root: string,
@@ -23,5 +22,5 @@ export async function refreshUpdateCompletion(
       );
     }
   }
-  await tryInstallShellCompletion({ jsonMode, skipPrompt });
+  await tryInstallShellCompletion({ root, jsonMode, skipPrompt });
 }

@@ -14,7 +14,6 @@ import {
   MEMORY_TABLE_NAME,
   quoteLanceSqlString,
 } from "./lancedb-schema.js";
-
 type LanceDbModule = typeof import("@lancedb/lancedb");
 type LanceDbConnection = Awaited<ReturnType<LanceDbModule["connect"]>>;
 type LanceDbTable = Awaited<ReturnType<LanceDbConnection["openTable"]>>;

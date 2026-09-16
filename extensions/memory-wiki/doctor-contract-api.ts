@@ -34,6 +34,8 @@ import {
   resolveMemoryWikiSourceSyncStatePath,
   writeMemoryWikiSourceSyncState,
 } from "./src/source-sync-state.js";
+// Memory Wiki doctor contract owns legacy state cleanup and migrations.
+
 export { legacyConfigRules, normalizeCompatibilityConfig } from "./src/config-compat.js";
 
 const LEGACY_MEMORY_WIKI_COMPILED_CACHE_PATHS = [

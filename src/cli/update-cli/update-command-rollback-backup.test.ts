@@ -16,7 +16,6 @@ import {
 } from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { rollbackFailedUpdate } from "./update-command-rollback.js";
-
 const mocks = vi.hoisted(() => ({
   verify: vi.fn(),
   restore: vi.fn(),

@@ -12,8 +12,11 @@ import {
 import { loadUpdateRecovery } from "../../infra/update-run-recovery.js";
 import { defaultRuntime } from "../../runtime.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import * as postCoreModule from "./update-command-post-core.js";
+import { finishUpdate } from "./update-command-post-update.js";
 import {
   createManagedServiceIdentityFixture,
+  expectUpdateFailure,
   finishSuccessfulPackageSwitch,
   managedServiceState,
   programArguments,
@@ -21,7 +24,9 @@ import {
   taskRecovery,
   validConfigSnapshot,
 } from "./update-command-post-update.test-support.js";
-
+import * as rollbackModule from "./update-command-rollback.js";
+import { UpdateServiceLoadBoundaryError } from "./update-command-service-load.js";
+import { resolveUpdatedGatewayRestartPort } from "./update-command-service.js";
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const mocks = vi.hoisted(() => ({
   checkCompletionStatus: vi.fn(),
@@ -35,9 +40,7 @@ const mocks = vi.hoisted(() => ({
   readConfig: vi.fn(),
   createServiceConfigIO: vi.fn(),
   readServiceState: vi.fn(),
-  restartService: vi.fn<typeof import("./update-command-service.js").maybeRestartService>(
-    async () => "ok",
-  ),
+  restartService: vi.fn<typeof import("./update-command-service.js").maybeRestartService>(),
   stopService:
     vi.fn<
       typeof import("./update-command-service.js").maybeStopManagedServiceBeforeMutableUpdate
@@ -70,16 +73,20 @@ vi.mock("../../commands/doctor-completion.js", async (importOriginal) => ({
   checkShellCompletionStatus: mocks.checkCompletionStatus,
   ensureCompletionCacheExists: mocks.ensureCompletionCache,
 }));
-vi.mock("../../plugins/plugin-lifecycle-lease.js", () => ({
-  withPluginLifecycleLease: async (_params: unknown, callback: () => unknown) => {
-    mocks.leaseActive = true;
-    try {
-      return await callback();
-    } finally {
-      mocks.leaseActive = false;
-    }
-  },
-}));
+vi.mock("../../plugins/plugin-lifecycle-lease.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../plugins/plugin-lifecycle-lease.js")>();
+  const withPluginLifecycleLease: typeof actual.withPluginLifecycleLease = (params, callback) =>
+    actual.withPluginLifecycleLease(params, async (lease) => {
+      const leaseWasActive = mocks.leaseActive;
+      mocks.leaseActive = true;
+      try {
+        return await callback(lease);
+      } finally {
+        mocks.leaseActive = leaseWasActive;
+      }
+    });
+  return { ...actual, withPluginLifecycleLease };
+});
 vi.mock("../../plugins/installed-plugin-index-records.js", () => ({
   loadInstalledPluginIndexInstallRecords: mocks.loadPluginRecords,
 }));
@@ -118,12 +125,6 @@ vi.mock("./update-command-result.js", async (importOriginal) => ({
   writeControlPlaneUpdateRestartSentinelBestEffort: mocks.writeSentinel,
 }));
 
-import * as postCoreModule from "./update-command-post-core.js";
-import { finishUpdate } from "./update-command-post-update.js";
-import * as rollbackModule from "./update-command-rollback.js";
-import { UpdateServiceLoadBoundaryError } from "./update-command-service-load.js";
-import { resolveUpdatedGatewayRestartPort } from "./update-command-service.js";
-
 type FinishUpdateParams = Parameters<typeof finishUpdate>[0];
 const stdinIsTTYDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 function expectFailureReport(reason: string, options: unknown = expect.any(Object)) {
@@ -133,15 +134,6 @@ function expectFailureReport(reason: string, options: unknown = expect.any(Objec
     expect.any(Object),
   );
   expect(defaultRuntime.exit).not.toHaveBeenCalled();
-}
-
-function expectUpdateFailure(promise: Promise<unknown>, reason: string, details: object = {}) {
-  return expect(promise).rejects.toMatchObject({
-    name: "UpdateCommandFailure",
-    exitCode: 1,
-    result: { status: "error", reason },
-    ...details,
-  });
 }
 
 afterEach(() => {
@@ -281,13 +273,18 @@ describe("successful update finalization ordering", () => {
         windowsTaskAutoStartRecovery: recovery,
       });
       try {
-        await entered.promise;
-        expect.soft(mocks.restartService).not.toHaveBeenCalled();
-        expect.soft(recovery.restore).not.toHaveBeenCalled();
-      } finally {
-        release.resolve();
-      }
-      try {
+        try {
+          await Promise.race([
+            entered.promise,
+            finishing.then(() => {
+              throw new Error("Update completed before plugin convergence entered.");
+            }),
+          ]);
+          expect.soft(mocks.restartService).not.toHaveBeenCalled();
+          expect.soft(recovery.restore).not.toHaveBeenCalled();
+        } finally {
+          release.resolve();
+        }
         await finishing;
       } finally {
         identity.restore();

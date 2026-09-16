@@ -1,7 +1,6 @@
 import path from "node:path";
 import { expect, it } from "vitest";
 import { parseUpdateRecoveryBackupManifest } from "./backup-verify-manifest.js";
-
 it("rejects an update-recovery root without its configuration inventory", () => {
   const stateDir = path.resolve("fixture", "state");
   const manifest = {

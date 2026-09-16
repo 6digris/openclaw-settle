@@ -2,7 +2,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.js";
-
+import { resolvePluginNpmGenerationProjectDir } from "../../../plugins/install-paths.js";
+import {
+  loadInstalledPluginIndexInstallRecords,
+  readPersistedInstalledPluginIndexInstallRecords,
+} from "../../../plugins/installed-plugin-index-records.js";
+import { seedInstalledPluginIndex } from "../../../plugins/test-helpers/installed-plugin-index.js";
+import { VERSION } from "../../../version.js";
+import { runPostCorePluginConvergence } from "./post-core-plugin-convergence.js";
 const mocks = vi.hoisted(() => ({
   listManagedPluginNpmRoots: vi.fn(),
   maybeRepairStaleManagedNpmBundledPlugins: vi.fn(),
@@ -35,15 +42,6 @@ vi.mock("../../../plugins/npm-project-roots.js", async (importOriginal) => {
 vi.mock("../../../plugins/payload-verification.js", () => ({
   runPluginPayloadSmokeCheck: mocks.runPluginPayloadSmokeCheck,
 }));
-
-import { resolvePluginNpmGenerationProjectDir } from "../../../plugins/install-paths.js";
-import {
-  loadInstalledPluginIndexInstallRecords,
-  readPersistedInstalledPluginIndexInstallRecords,
-  writePersistedInstalledPluginIndexInstallRecords,
-} from "../../../plugins/installed-plugin-index-records.js";
-import { VERSION } from "../../../version.js";
-import { runPostCorePluginConvergence } from "./post-core-plugin-convergence.js";
 
 describe("post-core bundled plugin retirement", () => {
   const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -115,7 +113,7 @@ describe("post-core bundled plugin retirement", () => {
       JSON.stringify({ id: "bundleddemo", name: "bundleddemo", configSchema: { type: "object" } }),
       "utf8",
     );
-    await writePersistedInstalledPluginIndexInstallRecords(
+    await seedInstalledPluginIndex(
       {
         bundleddemo: {
           source: "npm",
@@ -154,7 +152,7 @@ describe("post-core bundled plugin retirement", () => {
           ...records,
           bundleddemo: { ...bundleddemoRecord, installPath: retryPackageDir },
         };
-        await writePersistedInstalledPluginIndexInstallRecords(nextRecords, {
+        await seedInstalledPluginIndex(nextRecords, {
           config: cfg,
           env: params.env,
         });
@@ -167,7 +165,7 @@ describe("post-core bundled plugin retirement", () => {
         };
       }
       if (params.baselineRecords) {
-        await writePersistedInstalledPluginIndexInstallRecords(records, {
+        await seedInstalledPluginIndex(records, {
           config: cfg,
           env: params.env,
         });
@@ -179,11 +177,19 @@ describe("post-core bundled plugin retirement", () => {
       await Promise.resolve();
       expect(fs.existsSync(packageDir)).toBe(true);
     });
-    const first = await runPostCorePluginConvergence({ cfg, env, beforePersistentEffect });
+    const first = await runPostCorePluginConvergence({
+      cfg,
+      env,
+      preparePersistentEffect: beforePersistentEffect,
+    });
     expect(beforePersistentEffect).toHaveBeenCalledOnce();
     beforePersistentEffect.mockClear();
     const projectsAfterFirst = fs.readdirSync(path.join(stateDir, "npm", "projects"));
-    const second = await runPostCorePluginConvergence({ cfg, env, beforePersistentEffect });
+    const second = await runPostCorePluginConvergence({
+      cfg,
+      env,
+      preparePersistentEffect: beforePersistentEffect,
+    });
     expect(beforePersistentEffect).not.toHaveBeenCalled();
 
     expect(fs.existsSync(packageDir)).toBe(false);

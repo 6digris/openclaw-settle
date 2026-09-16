@@ -11,7 +11,6 @@ import {
   CONFIG_GET_OUTPUT_MAX_CHARS,
   CONFIG_SCHEMA_CHILDREN_MAX,
   applyPersistentOperation,
-  assertConfigWriteDoesNotBypassInferenceVerification,
   createNoExitRuntime,
   executeSetDefaultModel,
   executeSetup,
@@ -319,7 +318,6 @@ export async function executeSystemAgentOperation(
     case "setup":
       return await executeSetup(operation, runtime, opts);
     case "config-set":
-      await assertConfigWriteDoesNotBypassInferenceVerification(operation);
       return await applyPersistentOperation({
         auditOperation: "config.set",
         operation,
@@ -331,7 +329,6 @@ export async function executeSystemAgentOperation(
         },
       });
     case "config-set-ref":
-      await assertConfigWriteDoesNotBypassInferenceVerification(operation);
       return await applyPersistentOperation({
         auditOperation: "config.setRef",
         operation,
@@ -379,7 +376,7 @@ export async function executeSystemAgentOperation(
             ) => {
               const { runPluginUninstallCommand } =
                 await import("../cli/plugins-uninstall-command.js");
-              await runPluginUninstallCommand(pluginId, options, pluginRuntime);
+              await runPluginUninstallCommand([pluginId], options, pluginRuntime);
             });
           // A concurrent config write can retarget the default route between
           // the pre-approval check and this commit; re-verify before the
@@ -428,9 +425,10 @@ export async function executeSystemAgentOperation(
         run: async (ctx) => {
           const createAgentForOperation =
             ctx.deps?.createAgent ?? (await import("../agents/agent-create.js")).createAgent;
-          const result = await ctx.commit(async () => {
-            return await createAgentForOperation({
+          const result = await ctx.commit(() =>
+            createAgentForOperation({
               name: operation.agentId,
+              ...(operation.role ? { role: operation.role } : {}),
               ...(operation.workspace ? { workspace: operation.workspace } : {}),
               ...(ctx.assertPersistentApply
                 ? { beforePersistentApply: ctx.assertPersistentApply }
@@ -439,11 +437,16 @@ export async function executeSystemAgentOperation(
                 createdVia: "agent",
                 creatorAgentId: operation.requesterAgentId ?? SYSTEM_AGENT_ID,
               },
-            });
-          });
+            }),
+          );
           if (result.status === "error") {
             throw new Error(result.message);
           }
+          const name =
+            result.config.agents?.entries?.[result.agentId]?.identity?.name ?? result.name;
+          ctx.runtime.log(
+            `Created agent ${name} (${result.agentId}). It now appears in the Agents home and the agent switcher; select it to start chatting.`,
+          );
           return {
             summary: `Created agent ${result.agentId}`,
             bootstrapPending: result.bootstrapPending,
@@ -456,6 +459,49 @@ export async function executeSystemAgentOperation(
         },
       });
     }
+    case "create-team":
+      return await applyPersistentOperation({
+        auditOperation: "agents.createTeam",
+        operation,
+        runtime,
+        opts,
+        run: async (ctx) => {
+          const { createAgentTeam } = await import("../agents/agent-team.js");
+          const result = await ctx.commit(() =>
+            createAgentTeam({
+              coordinator: operation.coordinatorId,
+              prefix: operation.prefix,
+              workspaceRoot: operation.workspaceRoot,
+              beforePersistentApply: ctx.assertPersistentApply,
+              provenance: {
+                createdVia: "agent",
+                creatorAgentId: opts.requesterAgentId ?? SYSTEM_AGENT_ID,
+              },
+            }),
+          );
+          if (result.status === "error") {
+            if (result.retainedAgents?.length) {
+              const summary = `Team creation incomplete. ${result.message}`;
+              ctx.runtime.error(
+                `${summary} Retained agents appear in the Agents home and the agent switcher. Resolve the failure before creating the missing agents.`,
+              );
+              return {
+                summary,
+                details: { retainedAgentIds: result.retainedAgents.map(({ agentId }) => agentId) },
+              };
+            }
+            throw new Error(result.message);
+          }
+          ctx.runtime.log(
+            `Created team: ${result.agents.map(({ agentId }) => agentId).join(", ")}. Select chief of staff ${result.coordinatorId} in the Agents home or the agent switcher to start chatting; all four agents now appear there.`,
+          );
+          return {
+            summary: `Created team with chief of staff ${result.coordinatorId}`,
+            agentId: result.coordinatorId,
+            bootstrapPending: false,
+          };
+        },
+      });
     case "doctor": {
       const runDoctor =
         opts.deps?.runDoctor ?? (await import("../commands/doctor.js")).doctorCommand;

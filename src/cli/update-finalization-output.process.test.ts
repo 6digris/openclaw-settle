@@ -5,8 +5,10 @@ import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { runtimeProcessEntrypoints } from "../infra/runtime-process-entrypoints.js";
+import { prepareUpdateFailureReport } from "../infra/update-failure-report-prepare.js";
 import { listUpdateRuns } from "../infra/update-run-ledger.js";
 import { isPidAlive } from "../shared/pid-alive.js";
+import { resolveTestNodeExecPath } from "../test-utils/node-process.js";
 import {
   formatCliProcessFailure,
   runCliProcessChild,
@@ -14,6 +16,7 @@ import {
 } from "./cli-process-child.test-helpers.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const testNodeExecPath = resolveTestNodeExecPath();
 // Keep source transforms reusable across fresh children; each case still owns its state.
 const childTempDir = useAutoCleanupTempDirTracker(afterAll).make("openclaw-update-child-tmp-");
 const fixture = fileURLToPath(
@@ -30,6 +33,7 @@ const scenarios = [
   "json",
   "inherited-json",
   "doctor-error",
+  "doctor-warning",
   "plugin-error",
   "human",
   "human-plugin-error",
@@ -104,6 +108,7 @@ describe.each(["repair", "finalize"])("update %s process output", (command) => {
         listUpdateRuns({ limit: 1 }, { env: { HOME: root, OPENCLAW_STATE_DIR: state } })[0];
       let observedPhaseStart: ReturnType<typeof readRun> | undefined;
       const result = await runCliProcessChild({
+        nodeExecutable: testNodeExecPath,
         ...(scenario === "phase-hang"
           ? {
               interact: async (
@@ -129,7 +134,7 @@ describe.each(["repair", "finalize"])("update %s process output", (command) => {
         ],
         env: {
           ESBUILD_WORKER_THREADS: "0",
-          PATH: path.dirname(process.execPath),
+          PATH: path.dirname(testNodeExecPath),
           HOME: root,
           USERPROFILE: root,
           OPENCLAW_HOME: root,
@@ -290,7 +295,7 @@ describe.each(["repair", "finalize"])("update %s process output", (command) => {
         expect(result.stderr, failure).not.toContain("Process still alive after terminal output");
         return;
       }
-      const triageNotice = "Update failed. Entering triage...";
+      const triageNotice = "Update failed. Preparing triage diagnostics...";
       if (!scenario.endsWith("error")) {
         expect(result.stdout + result.stderr, failure).not.toContain(triageNotice);
         expect(result.stdout + result.stderr, failure).not.toContain("triage-fixture-prompt.md");
@@ -319,6 +324,7 @@ describe.each(["repair", "finalize"])("update %s process output", (command) => {
       // Parse the whole pipe: accepting a suffix would hide Clack's direct stdout writes.
       const output = JSON.parse(result.stdout);
       if (scenario.endsWith("error")) {
+        expect(result.stderr, failure).not.toContain("Process still alive after terminal output");
         expect(result.stderr, failure).toContain(triageNotice);
         expect(result.stderr, failure).toContain('"promptPath":');
         expect(result.stderr, failure).toContain("triage-fixture-prompt.md");
@@ -329,6 +335,42 @@ describe.each(["repair", "finalize"])("update %s process output", (command) => {
         expect(output).toMatchObject({
           ok: false,
           error: { type: "cli_error", message: expect.stringContaining("Doctor repair failed") },
+        });
+        const run = readRun()!;
+        expect(run, failure).toMatchObject({
+          status: "failed",
+          reason: "doctor-failed",
+          target: { kind: "package", version: "2026.9.4" },
+          steps: expect.arrayContaining([
+            expect.objectContaining({ step: "finalize:doctor", status: "failed", exitCode: 1 }),
+          ]),
+        });
+        const report = await prepareUpdateFailureReport(
+          {
+            attemptId: run.runId,
+            recordedRun: run,
+            result: { status: "error", mode: "unknown", steps: [], durationMs: 0 },
+          },
+          { env: { HOME: root, OPENCLAW_STATE_DIR: state }, stateDir: state },
+        );
+        expect(report.body).toContain("Update target: 2026.9.4");
+        expect(report.body).toContain("Update mode: package");
+        expect(report.body).toContain("Reason code: doctor-failed");
+        expect(report.body).toContain("Failed phase finalize:doctor: exit 1");
+        expect(report.body).toContain(
+          "Recovery outcome: package rollback not needed: no package mutation",
+        );
+      } else if (scenario === "doctor-warning") {
+        const warning = "Optional probe failed; run openclaw doctor after updating.";
+        expect(output).toMatchObject({
+          status: "warning",
+          postUpdate: { doctor: { status: "warning", warnings: [warning] } },
+        });
+        expect(readRun(), failure).toMatchObject({
+          status: "succeeded",
+          steps: expect.arrayContaining([
+            expect.objectContaining({ step: "warning:finalize:doctor:0", detail: warning }),
+          ]),
         });
       } else {
         expect(output).toMatchObject({

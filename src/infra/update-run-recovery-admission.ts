@@ -20,7 +20,6 @@ import {
 } from "./update-run-recovery-schema.js";
 import { readRecoveries } from "./update-run-recovery-store.js";
 import { assertNoPendingUpdateRecovery } from "./update-run-recovery.js";
-
 async function inspectUpdateRecoveryDatabasePath(
   options: OpenClawStateDatabaseOptions,
 ): Promise<string | undefined> {
@@ -52,8 +51,9 @@ async function inspectUpdateRecoveryDatabasePath(
 export async function assertUpdateRecoveryAdmission(
   options: OpenClawStateDatabaseOptions = {},
 ): Promise<void> {
-  if (await inspectUpdateRecoveryDatabasePath(options)) {
-    assertNoPendingUpdateRecovery(options);
+  const databasePath = await inspectUpdateRecoveryDatabasePath(options);
+  if (databasePath) {
+    assertNoPendingUpdateRecovery({ ...options, path: databasePath });
   }
 }
 

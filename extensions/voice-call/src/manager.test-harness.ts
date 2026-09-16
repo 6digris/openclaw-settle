@@ -9,6 +9,7 @@ import {
   createPluginStateKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { onTestFinished } from "vitest";
 import { VoiceCallConfigSchema } from "./config.js";
 import { CallManager } from "./manager.js";
@@ -87,7 +88,7 @@ export function createTestStorePath(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-voice-call-test-"));
 }
 
-function createVoiceCallStateRuntimeForTests(): VoiceCallStateRuntime["state"] {
+export function createVoiceCallStateRuntimeForTests(): VoiceCallStateRuntime["state"] {
   return {
     resolveStateDir: () => "",
     openKeyedStore: <T>(options: OpenKeyedStoreOptions) =>
@@ -101,7 +102,7 @@ function createVoiceCallStateRuntimeForTests(): VoiceCallStateRuntime["state"] {
   };
 }
 
-function installVoiceCallStateRuntimeForTests(): void {
+export function installVoiceCallStateRuntimeForTests(): void {
   setVoiceCallStateRuntime({ state: createVoiceCallStateRuntimeForTests() });
 }
 
@@ -257,6 +258,7 @@ export function createEventManagerHarness() {
     while (pendingWork.size > 0) {
       await Promise.allSettled(pendingWork);
     }
+    await closeOpenClawStateDatabaseAsync();
     for (const ctx of ownedContexts) {
       fs.rmSync(ctx.storePath, { recursive: true, force: true });
     }

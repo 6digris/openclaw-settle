@@ -6,6 +6,7 @@ import type { OpenClawStateDatabaseSchemaMigration } from "openclaw/plugin-sdk/d
 import type { PluginDoctorStateMigration } from "openclaw/plugin-sdk/runtime-doctor-migrations";
 import { resolveMatrixStateLayoutChildDepth } from "../storage-paths.js";
 import { resolveMatrixSqliteStateEnv } from "./sqlite-state.js";
+// Matrix plugin module owns Doctor repair of account-scoped SQLite databases.
 
 const STATE_DATABASE_FILENAME = "openclaw.sqlite";
 

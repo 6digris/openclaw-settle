@@ -7,7 +7,6 @@ import { sha256File } from "./directory-durability.js";
 import { hasErrnoCode } from "./errno.js";
 import { sameFileMutationFingerprint } from "./file-descriptor.js";
 import { root as safeRoot } from "./fs-safe.js";
-
 export async function statOrMissing(pathname: string) {
   try {
     return await fs.lstat(pathname);

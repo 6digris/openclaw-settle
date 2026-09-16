@@ -46,7 +46,6 @@ import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
 import { withUpdateFailureTriage } from "./update-command-triage.js";
 import { withUpdateCommandRecoveryUnwind } from "./update-command-unwind.js";
 import { updateCommand } from "./update-command.js";
-
 const dirs = new Set<string>();
 afterEach(() => cleanupTempDirs(dirs));
 afterEach(() => {

@@ -1,4 +1,5 @@
 import { vi } from "vitest";
+import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import type { OpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { resolveUsableAgentCredentialModes } from "./agent-auth-credentials.js";
@@ -78,7 +79,7 @@ const preparedModelRuntimeMocks = vi.hoisted(() => ({
   })),
   prepareStaticCatalog: vi.fn(async (..._args: unknown[]) => ({ entries: [] })),
   runPreparedModelCatalogWorker: vi.fn(
-    async (..._args: unknown[]): Promise<ModelCatalogSnapshot> => ({
+    async (_providerIds?: readonly string[]): Promise<ModelCatalogSnapshot> => ({
       entries: [],
       routeVariants: [],
     }),
@@ -111,6 +112,8 @@ const preparedModelRuntimeMocks = vi.hoisted(() => ({
 
 vi.mock("../plugins/plugin-metadata-snapshot.js", () => ({
   isPluginMetadataSnapshotCompatible: () => true,
+  resolvePluginMetadataSnapshotCacheKey: () => "fixed-prepared-runtime-plugin-inventory",
+  projectPluginMetadataSnapshot: (snapshot: PluginMetadataSnapshot) => snapshot,
   loadPluginMetadataSnapshot: () => preparedModelRuntimeMocks.pluginMetadataSnapshot,
   resolvePluginMetadataSnapshot: () => preparedModelRuntimeMocks.pluginMetadataSnapshot,
 }));
@@ -121,7 +124,9 @@ vi.mock("./prepared-model-catalog-worker.js", () => ({
   ) => {
     preparedModelRuntimeMocks.createPreparedModelCatalogWorker(...factoryArgs);
     return {
-      loadCatalog: async (...args: unknown[]) => {
+      loadCatalog: async (
+        ...args: Parameters<typeof preparedModelRuntimeMocks.runPreparedModelCatalogWorker>
+      ) => {
         const catalog = await preparedModelRuntimeMocks.runPreparedModelCatalogWorker(...args);
         // Real worker replies always pair inventory with the observed auth generation.
         setPreparedModelFullCatalogAuth(
@@ -135,6 +140,9 @@ vi.mock("./prepared-model-catalog-worker.js", () => ({
         );
         return {
           modelCatalog: catalog,
+          runtimeModels: new Map(),
+          providerExpiries: new Map(),
+          configuredProviderModelIds: new Map(),
           configuredRuntimeModels: factoryArgs[0].agentFacts.configuredRuntimeModels,
         };
       },
@@ -142,6 +150,7 @@ vi.mock("./prepared-model-catalog-worker.js", () => ({
         Promise.resolve({
           authStore: preparedModelRuntimeMocks.preparedAuthStore ?? { version: 1, profiles: {} },
           authModes: {},
+          credentials: {},
         }),
     };
   },
@@ -149,6 +158,9 @@ vi.mock("./prepared-model-catalog-worker.js", () => ({
 
 vi.mock("./model-catalog.js", async () => ({
   findModelCatalogEntry: (await import("./model-catalog-lookup.js")).findModelCatalogEntry,
+  loadManifestModelCatalog: (
+    await vi.importActual<typeof import("./model-catalog.js")>("./model-catalog.js")
+  ).loadManifestModelCatalog,
   buildPreparedModelCatalogSnapshot: (...args: Parameters<BuildPreparedModelCatalogSnapshot>) =>
     preparedModelRuntimeMocks.buildPreparedModelCatalogSnapshot(...args),
 }));
@@ -256,7 +268,10 @@ vi.mock("./legacy-inherited-auth-dir.js", async (importOriginal) => ({
   resolveLegacyInheritedAuthDir: () => agentScopeMocks.resolveDefaultAgentDir(),
 }));
 
-vi.mock("./auth-profiles/runtime-materializations.js", () => ({
+vi.mock("./auth-profiles/runtime-materializations.js", async (importOriginal) => ({
+  clearRuntimeAuthMaterializationsAtDatabasePath: (
+    await importOriginal<typeof import("./auth-profiles/runtime-materializations.js")>()
+  ).clearRuntimeAuthMaterializationsAtDatabasePath,
   getPreparedRuntimeAuthMaterializations: () =>
     preparedModelRuntimeMocks.preparedAuthMaterializations,
   registerRuntimeAuthMaterializationMutationListener: (
@@ -381,6 +396,7 @@ vi.mock("../logging/subsystem.js", () => ({
   createSubsystemLogger: () => {
     const logger = {
       child: () => logger,
+      isEnabled: () => false,
       debug: vi.fn(),
       error: vi.fn(),
       info: vi.fn(),

@@ -1,3 +1,4 @@
+import path from "node:path";
 // Imported by agent.test.ts to keep its mocked suite in one Vitest module graph.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ErrorCodes } from "../../../packages/gateway-protocol/src/index.js";
@@ -12,7 +13,10 @@ import {
   addSubagentRunForTests,
   getSubagentRunByChildSessionKey,
   listSubagentRunsForRequester,
+  markRequesterTurnYielded,
+  registerSubagentRun,
   resetSubagentRegistryForTests,
+  settleRequesterAfterSessionSpawns,
 } from "../../agents/subagents/registry/subagent-registry.test-helpers.js";
 import { recordAgentRunTerminalOutcome } from "../../channels/turn/agent-run-terminal-outcome.js";
 import {
@@ -29,12 +33,15 @@ import {
   markTaskTerminalById,
   reloadTaskRegistryFromStore,
 } from "../../tasks/task-registry.js";
+import { resetTaskRegistryForTests } from "../../tasks/task-registry.test-support.js";
 import { setDetachedTaskLifecycleRuntime } from "../../tasks/task-runtime.test-helpers.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
 import { waitForAgentJob } from "../agent-turn/agent-job.js";
 import { dispatchAgentRunFromGateway } from "../agent-turn/agent-run-dispatch.js";
 import { createAgentTurnIo } from "../agent-turn/io.js";
 import { removeChatAbortControllerEntry } from "../chat-abort.js";
+import { bindInProcessSubagentResume } from "../in-process-subagent-resume.js";
+import { bindParentSubagentResume } from "../session-subagent-resume.js";
 import { registerPluginSubagentRunFromGateway } from "./agent-task-tracking.js";
 import {
   applyGatewaySubagentRegistryTestDeps,
@@ -66,10 +73,11 @@ const mocks = getAgentTestMocks();
 
 // Shared by every spawn control plane whose child turn reaches the gateway as a
 // plain `agent` run: ACP manual spawns, plugin subagents, and native subagents.
-function mockSpawnedChildSessionEntry(childSessionKey: string) {
+function mockSpawnedChildSessionEntry(childSessionKey: string, storePath = "/tmp/sessions.json") {
+  mocks.userTurnStorePath = storePath;
   mocks.loadSessionEntry.mockReturnValue({
     cfg: {},
-    storePath: "/tmp/sessions.json",
+    storePath,
     entry: { sessionId: "spawned-child-session", updatedAt: Date.now() },
     canonicalKey: childSessionKey,
   });
@@ -429,19 +437,28 @@ describe("gateway agent handler", () => {
       { parent: "cron", requesterSessionKey: "agent:main:cron:orchestration:run:scheduled-run" },
     ].flatMap((parent) =>
       [
-        { sourceTool: "subagent_settle", continuesRun: true },
-        { sourceTool: "subagent_announce", continuesRun: false },
-        { sourceTool: "sessions_send", continuesRun: false },
+        { sourceTool: "subagent_settle", continuesRun: true, resume: false, inputFailure: false },
+        {
+          sourceTool: "subagent_announce",
+          continuesRun: false,
+          resume: false,
+          inputFailure: false,
+        },
+        { sourceTool: "sessions_send", continuesRun: false, resume: false, inputFailure: false },
+        { sourceTool: "sessions_send", continuesRun: true, resume: true, inputFailure: false },
+        { sourceTool: "sessions_send", continuesRun: false, resume: true, inputFailure: true },
       ].map((followup) => ({
         parent: parent.parent,
         requesterSessionKey: parent.requesterSessionKey,
         sourceTool: followup.sourceTool,
         continuesRun: followup.continuesRun,
+        resume: followup.resume,
+        inputFailure: followup.inputFailure,
       })),
     ),
   )(
-    "handles $sourceTool followups to a yielded orchestrator for its $parent parent",
-    async ({ requesterSessionKey, sourceTool, continuesRun }) => {
+    "handles $sourceTool followups (resume=$resume, inputFailure=$inputFailure) to a yielded orchestrator for its $parent parent",
+    async ({ requesterSessionKey, sourceTool, continuesRun, resume, inputFailure }) => {
       await withTestDir({ prefix: "openclaw-gateway-yield-completion-" }, async (root) => {
         useTestStateDir(root);
         resetAgentTaskRegistryForTests();
@@ -471,7 +488,10 @@ describe("gateway agent handler", () => {
           pauseReason: "sessions_yield",
           expectsCompletionMessage: true,
         });
-        mockSpawnedChildSessionEntry(childSessionKey);
+        mockSpawnedChildSessionEntry(
+          childSessionKey,
+          path.join(root, "agents", "main", "sessions", "sessions.json"),
+        );
         mocks.agentCommand.mockImplementation(async () => {
           completion.resolve({
             status: "ok",
@@ -493,7 +513,43 @@ describe("gateway agent handler", () => {
           },
         };
 
-        await invokeAgent(request, { context, reqId: runId, client: backendGatewayClient() });
+        const client = requireValue(backendGatewayClient(), "backend fixture client");
+        if (resume) {
+          client.internal = bindInProcessSubagentResume(
+            { syntheticClient: true as const },
+            bindParentSubagentResume({
+              cfg: {},
+              caller: { agentId: "main", sessionKey: requesterSessionKey, assertCurrent: vi.fn() },
+              childSessionKey,
+              childSessionId: "spawned-child-session",
+            }),
+          );
+        }
+        if (inputFailure) {
+          mocks.stageSessionPendingInput.mockRejectedValueOnce(
+            new Error("resume input admission failed"),
+          );
+        }
+        const respond = vi.fn();
+        await invokeAgent(request, { context, reqId: runId, client, respond });
+        if (inputFailure) {
+          expectRespondError(respond, { message: "resume input admission failed" });
+          expect(mocks.agentCommand).not.toHaveBeenCalled();
+          expect(getSubagentRunByChildSessionKey(childSessionKey)).toMatchObject({
+            runId: previousRunId,
+            pauseReason: "sessions_yield",
+          });
+          expect(announce).not.toHaveBeenCalled();
+          return;
+        }
+        if (resume) {
+          expect(respond).toHaveBeenCalledWith(
+            true,
+            expect.objectContaining({ status: "accepted", taskRunId: previousRunId }),
+            undefined,
+            expect.anything(),
+          );
+        }
 
         const continued = requireValue(
           getSubagentRunByChildSessionKey(childSessionKey),
@@ -537,7 +593,7 @@ describe("gateway agent handler", () => {
         await invokeAgent(request, {
           context,
           reqId: `${runId}-retry`,
-          client: backendGatewayClient(),
+          client,
         });
         expect(mocks.agentCommand).toHaveBeenCalledTimes(commandCallCount);
         expect(announce).toHaveBeenCalledTimes(1);
@@ -548,51 +604,396 @@ describe("gateway agent handler", () => {
     },
   );
 
+  it("keeps one task when a completed child wakes its requester before the yielded lifecycle ends", async () => {
+    await withTestDir({ prefix: "openclaw-gateway-yield-settlement-race-" }, async (root) => {
+      useTestStateDir(root);
+      // Adoption commits the registry and its canonical task together in SQLite.
+      resetTaskRegistryForTests({ persist: false });
+      resetSubagentRegistryForTests({ persist: false });
+      const requesterSessionKey = "agent:main:main";
+      const childSessionKey = "agent:main:subagent:settlement-orchestrator";
+      const workerSessionKey = "agent:main:subagent:settlement-worker";
+      const previousRunId = "orchestrator-yielding";
+      const nextRunId = "orchestrator-settle-continuation";
+      const workerRunId = "settled-worker";
+      const result = "The completed worker result has been checked.";
+      const completion = createDeferred<AgentWaitResult>();
+      const previousWait = createDeferred<AgentWaitResult>();
+      const announce = vi.fn<SubagentRegistryDeps["runSubagentAnnounceFlow"]>(
+        async () => "delivered",
+      );
+      let lifecycleHandler: Parameters<SubagentRegistryDeps["onAgentEvent"]>[0] | undefined;
+      let continuedAtDispatch: ReturnType<typeof getSubagentRunByChildSessionKey> | undefined;
+      const context = makeContext();
+      const wakeRespond = vi.fn();
+      const wake = vi.fn<SubagentRegistryDeps["maybeWakeRequesterAfterAllChildrenSettled"]>(
+        async (params) => {
+          if (params.requesterSessionKey !== childSessionKey) {
+            return false;
+          }
+          // The transport crosses the real agent admission boundary before the
+          // predecessor's lifecycle end is delivered, as in the production race.
+          await invokeAgent(
+            {
+              message: "The worker finished; verify and return its result.",
+              sessionKey: childSessionKey,
+              idempotencyKey: nextRunId,
+              inputProvenance: {
+                kind: "inter_session",
+                sourceSessionKey: workerSessionKey,
+                sourceTool: "subagent_settle",
+              },
+            },
+            { context, reqId: nextRunId, client: backendGatewayClient(), respond: wakeRespond },
+          );
+          return true;
+        },
+      );
+      applyGatewaySubagentRegistryTestDeps({
+        callGateway: (async ({ params }: { params?: { runId?: string } }) =>
+          await (params?.runId === previousRunId
+            ? previousWait.promise
+            : completion.promise)) as SubagentRegistryDeps["callGateway"],
+        runSubagentAnnounceFlow: announce,
+        maybeWakeRequesterAfterAllChildrenSettled: wake,
+        onAgentEvent: (handler) => {
+          lifecycleHandler = handler;
+          return () => {};
+        },
+      });
+      registerSubagentRun({
+        runId: previousRunId,
+        childSessionKey,
+        requesterSessionKey,
+        requesterAgentId: "main",
+        requesterDisplayKey: requesterSessionKey,
+        task: "Collect and verify the worker's result",
+        cleanup: "keep",
+        expectsCompletionMessage: true,
+      });
+      const originalTask = requireValue(findTaskByRunId(previousRunId), "original requester task");
+      addSubagentRunForTests({
+        runId: workerRunId,
+        childSessionKey: workerSessionKey,
+        requesterSessionKey: childSessionKey,
+        requesterAgentId: "main",
+        requesterTurnRunId: previousRunId,
+        requesterDisplayKey: childSessionKey,
+        task: "Produce the worker result",
+        startedAt: Date.now() - 10,
+        endedAt: Date.now(),
+        outcome: { status: "ok" },
+        expectsCompletionMessage: true,
+        completion: {
+          required: true,
+          resultText: "Worker result is ready.",
+          capturedAt: Date.now(),
+        },
+        delivery: { status: "delivered" },
+        cleanupCompletedAt: Date.now(),
+      });
+      mockSpawnedChildSessionEntry(
+        childSessionKey,
+        path.join(root, "agents", "main", "sessions", "sessions.json"),
+      );
+      mocks.agentCommand.mockImplementation(async () => {
+        continuedAtDispatch = structuredClone(getSubagentRunByChildSessionKey(childSessionKey));
+        completion.resolve({
+          status: "ok",
+          startedAt: Date.now(),
+          endedAt: Date.now(),
+          terminalReply: { disposition: "visible", text: result },
+        });
+        return { payloads: [{ text: result }], meta: { durationMs: 1 } };
+      });
+      expectRecordFields(getSubagentRunByChildSessionKey(childSessionKey)?.execution, {
+        status: "running",
+        endedAt: undefined,
+      });
+      expect(
+        markRequesterTurnYielded({
+          requesterSessionKey: childSessionKey,
+          requesterAgentId: "main",
+          requesterTurnRunId: previousRunId,
+        }),
+      ).toBe(1);
+      expect(
+        settleRequesterAfterSessionSpawns({
+          requesterSessionKey: childSessionKey,
+          requesterAgentId: "main",
+          requesterTurnRunId: previousRunId,
+          requesterYielded: true,
+          acceptedSessionSpawns: [
+            {
+              runId: workerRunId,
+              childSessionKey: workerSessionKey,
+              expectsCompletionMessage: true,
+            },
+          ],
+        }),
+      ).toBe(true);
+      await waitForAssertion(() => {
+        expect(wake).toHaveBeenCalled();
+        expect(wakeRespond.mock.calls.find(([ok]) => ok === false)).toBeUndefined();
+        expectRecordFields(context.dedupe.get(`agent:${nextRunId}`)?.payload, { status: "ok" });
+      });
+      expectRecordFields(continuedAtDispatch, {
+        runId: nextRunId,
+        taskRunId: previousRunId,
+        requesterSessionKey,
+        pauseReason: undefined,
+      });
+      await waitForAssertion(() => {
+        expectRecordFields(findTaskByRunId(previousRunId), {
+          taskId: originalTask.taskId,
+          status: "succeeded",
+          deliveryStatus: "delivered",
+        });
+      });
+      expect(findTaskByRunId(nextRunId)).toBeUndefined();
+      requireValue(
+        lifecycleHandler,
+        "registry lifecycle listener",
+      )({
+        runId: previousRunId,
+        sessionKey: childSessionKey,
+        seq: 1,
+        ts: Date.now(),
+        stream: "lifecycle",
+        data: { phase: "end", endedAt: Date.now(), yielded: true },
+      });
+      await Promise.resolve();
+      expectRecordFields(findTaskByRunId(previousRunId), {
+        taskId: originalTask.taskId,
+        status: "succeeded",
+      });
+      expect(
+        listSubagentRunsForRequester(requesterSessionKey).map((entry) => entry.runId),
+      ).not.toContain(previousRunId);
+      expect(announce).toHaveBeenCalledTimes(1);
+      expect(announce).toHaveBeenCalledWith(
+        expect.objectContaining({
+          childRunId: nextRunId,
+          requesterSessionKey,
+          roundOneReply: result,
+        }),
+      );
+    });
+  });
+
+  it("disposes resume runtime when task replacement and pending-input cleanup both fail", async () => {
+    await withTestDir({ prefix: "openclaw-resume-cleanup-failure-" }, async (root) => {
+      useTestStateDir(root);
+      resetAgentTaskRegistryForTests();
+      resetSubagentRegistryForTests({ persist: false });
+      const childSessionKey = "agent:main:dashboard:resume-cleanup";
+      const previousRunId = "resume-cleanup-paused";
+      const runId = "resume-cleanup-successor";
+      addSubagentRunForTests({
+        runId: previousRunId,
+        childSessionKey,
+        requesterSessionKey: "agent:main:main",
+        requesterDisplayKey: "main",
+        task: "Wait",
+        startedAt: Date.now() - 10,
+        endedAt: Date.now(),
+        pauseReason: "sessions_yield",
+        expectsCompletionMessage: true,
+      });
+      mockSpawnedChildSessionEntry(
+        childSessionKey,
+        path.join(root, "agents", "main", "sessions", "sessions.json"),
+      );
+      applyGatewaySubagentRegistryTestDeps({
+        persistSubagentRunsToDiskOrThrow: () => {
+          throw new Error("task replacement failed");
+        },
+      });
+      const runtime = await import("../../agents/prepared-model-runtime.js");
+      const acquire = vi.mocked(runtime.acquireAgentRunPreparedModelRuntime);
+      const createLease = requireValue(acquire.getMockImplementation(), "model lease fixture");
+      const dispose = vi.fn(async () => {});
+      acquire.mockImplementationOnce(async (...args) => ({
+        ...(await createLease(...args)),
+        [Symbol.asyncDispose]: dispose,
+      }));
+      const stage = requireValue(
+        mocks.stageSessionPendingInput.getMockImplementation(),
+        "input fixture",
+      );
+      const finish = vi.fn(() => {
+        throw new Error("input cleanup failed");
+      });
+      mocks.stageSessionPendingInput.mockImplementationOnce(async (...args) => {
+        const input = await stage(...args);
+        return input ? { ...input, finish } : input;
+      });
+      const client = requireValue(backendGatewayClient(), "backend client");
+      client.internal = bindInProcessSubagentResume(
+        { syntheticClient: true as const },
+        bindParentSubagentResume({
+          cfg: {},
+          caller: { agentId: "main", sessionKey: "agent:main:main", assertCurrent: vi.fn() },
+          childSessionKey,
+          childSessionId: "spawned-child-session",
+        }),
+      );
+      const respond = vi.fn();
+      const context = makeContext();
+      try {
+        await invokeAgent(
+          {
+            message: "Continue",
+            sessionKey: childSessionKey,
+            idempotencyKey: runId,
+            inputProvenance: {
+              kind: "inter_session",
+              sourceTool: "sessions_send",
+              sourceSessionKey: "agent:main:main",
+            },
+          },
+          { client, respond, context, flushDispatch: false },
+        );
+        expect(finish).toHaveBeenCalledWith("cancelled");
+        expect(dispose).toHaveBeenCalledOnce();
+        expect(respond).toHaveBeenCalledWith(
+          false,
+          undefined,
+          expect.objectContaining({
+            message: expect.stringContaining(
+              "Error: task replacement failed; pending input cleanup failed: Error: input cleanup failed",
+            ),
+          }),
+        );
+        expect(mocks.agentCommand).not.toHaveBeenCalled();
+        expect(context.chatAbortControllers.has(runId)).toBe(false);
+        expect(getSubagentRunByChildSessionKey(childSessionKey)).toMatchObject({
+          runId: previousRunId,
+          pauseReason: "sessions_yield",
+        });
+      } finally {
+        applyGatewaySubagentRegistryTestDeps();
+      }
+    });
+  });
+
   it("registers normally when a follow-up to a paused session names its own requester", async () => {
     await withTestDir(
       { prefix: "openclaw-gateway-plugin-subagent-own-requester-" },
       async (root) => {
         useTestStateDir(root);
+        resetAgentTaskRegistryForTests();
         resetSubagentRegistryForTests({ persist: false });
         const childSessionKey = "agent:work:subagent:plugin-yield-own-requester";
+        const originalRequester = "agent:main:telegram:direct:777";
+        const previousRunId = "plugin-subagent-paused";
+        const runId = "plugin-subagent-own-requester";
         const followUpRequester = {
           sessionKey: "agent:main:telegram:direct:555",
           origin: { channel: "telegram", to: "telegram:555", accountId: "work" },
         } as const;
+        const cfg = {
+          session: { mainKey: "main", scope: "per-sender" },
+          agents: { list: [{ id: "main", default: true }, { id: "work" }] },
+        } satisfies typeof mocks.loadConfigReturn;
+        mocks.listAgentIds.mockReturnValue(["main", "work"]);
+        mocks.loadConfigReturn = cfg;
+        mocks.userTurnStorePath = path.join(root, "agents", "work", "sessions", "sessions.json");
+        mocks.loadSessionEntry.mockReturnValue({
+          cfg,
+          storePath: mocks.userTurnStorePath,
+          entry: { sessionId: "spawned-child-session", updatedAt: Date.now() },
+          canonicalKey: childSessionKey,
+        });
+        mocks.updateSessionStore.mockResolvedValue(undefined);
+        const result = "The separately requested follow-up is complete.";
+        const completion = createDeferred<AgentWaitResult>();
+        const announce = vi.fn<SubagentRegistryDeps["runSubagentAnnounceFlow"]>(
+          async () => "delivered",
+        );
+        applyGatewaySubagentRegistryTestDeps({
+          callGateway: (async () =>
+            await completion.promise) as SubagentRegistryDeps["callGateway"],
+          runSubagentAnnounceFlow: announce,
+        });
         addSubagentRunForTests({
-          runId: "plugin-subagent-paused",
+          runId: previousRunId,
           childSessionKey,
-          requesterSessionKey: "agent:main:telegram:direct:777",
-          requesterDisplayKey: "agent:main:telegram:direct:777",
+          requesterSessionKey: originalRequester,
+          requesterDisplayKey: originalRequester,
           task: "wait for the remote job",
           endedAt: 2_000,
           pauseReason: "sessions_yield",
           expectsCompletionMessage: true,
         });
+        mocks.agentCommand.mockImplementation(async () => {
+          completion.resolve({
+            status: "ok",
+            startedAt: Date.now(),
+            endedAt: Date.now(),
+            terminalReply: { disposition: "visible", text: result },
+          });
+          return { payloads: [{ text: result }], meta: { durationMs: 1 } };
+        });
+        const context = makeContext();
+        const baseClient = requireValue(backendGatewayClient(), "expected backend client");
 
-        await registerPluginSubagentRunFromGateway({
-          cfg: {
-            session: { mainKey: "main", scope: "per-sender" },
-            agents: { list: [{ id: "main", default: true }, { id: "work" }] },
+        const response = await invokeAgent(
+          {
+            message: "deliver to me instead",
+            sessionKey: childSessionKey,
+            idempotencyKey: runId,
           },
-          runId: "plugin-subagent-own-requester",
-          childSessionKey,
-          task: "deliver to me instead",
-          requester: followUpRequester,
-          pluginId: "memory-core",
+          {
+            context,
+            reqId: runId,
+            client: {
+              connect: baseClient.connect,
+              internal: {
+                ...baseClient.internal,
+                agentRunTracking: "plugin_subagent",
+                pluginSubagentRequester: followUpRequester,
+                pluginRuntimeOwnerId: "memory-core",
+              },
+            },
+          },
+        );
+        expect(response.mock.calls[0]?.[0], JSON.stringify(response.mock.calls[0])).toBe(true);
+        await waitForAssertion(() => {
+          expectRecordFields(context.dedupe.get(`agent:${runId}`)?.payload, { status: "ok" });
+          expect(announce).toHaveBeenCalledTimes(1);
+          expectRecordFields(getSubagentRunByChildSessionKey(childSessionKey)?.delivery, {
+            status: "delivered",
+          });
         });
 
         // An explicit requester is a delivery opt-in. Adopting the paused row here
         // would drop that audience with nothing recording why, so the follow-up
         // gets its own row and the paused run keeps its original requester.
+        const originalRuns = listSubagentRunsForRequester(originalRequester);
+        expect(originalRuns.map((entry) => entry.runId)).toEqual([previousRunId]);
+        expectRecordFields(requireValue(originalRuns[0], "expected original paused owner"), {
+          requesterSessionKey: originalRequester,
+          pauseReason: "sessions_yield",
+          cleanupCompletedAt: undefined,
+        });
         const run = requireValue(
           getSubagentRunByChildSessionKey(childSessionKey),
           "expected separately registered plugin subagent run",
         );
         expectRecordFields(run, {
-          runId: "plugin-subagent-own-requester",
+          runId,
           requesterSessionKey: followUpRequester.sessionKey,
+          requesterOrigin: followUpRequester.origin,
         });
+        expect(announce).toHaveBeenCalledWith(
+          expect.objectContaining({
+            childSessionKey,
+            childRunId: runId,
+            requesterSessionKey: followUpRequester.sessionKey,
+            roundOneReply: result,
+          }),
+        );
       },
     );
   });
@@ -1908,16 +2309,10 @@ describe("gateway agent handler", () => {
       useTestStateDir(root);
       resetAgentTaskRegistryForTests();
       primeMainAgentRun();
-      let resolveRun: (value: {
+      const { promise: pending, resolve: resolveRun } = createDeferred<{
         payloads: Array<{ text: string }>;
         meta: { durationMs: number };
-      }) => void;
-      const pending = new Promise<{
-        payloads: Array<{ text: string }>;
-        meta: { durationMs: number };
-      }>((resolve) => {
-        resolveRun = resolve;
-      });
+      }>();
       mocks.agentCommand.mockReturnValueOnce(pending);
 
       await invokeAgent(
@@ -3415,10 +3810,7 @@ describe("gateway agent handler", () => {
       const finalizeError = new Error("finalize boom");
       // The background run completes off-turn; signal finalize instead of
       // polling for it so contended runners cannot outlast a fixed poll budget.
-      let signalFinalizeCalled: () => void = () => {};
-      const finalizeCalled = new Promise<void>((resolve) => {
-        signalFinalizeCalled = resolve;
-      });
+      const { promise: finalizeCalled, resolve: signalFinalizeCalled } = createDeferred();
       const finalizeTaskRunByRunIdSpy = vi.fn(() => {
         signalFinalizeCalled();
         throw finalizeError;

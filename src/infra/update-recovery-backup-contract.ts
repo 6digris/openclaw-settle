@@ -1,6 +1,5 @@
 import path from "node:path";
 import { z } from "zod";
-
 export const updateRecoveryBackupRefSchema = z
   .object({
     directory: z.string().min(1),

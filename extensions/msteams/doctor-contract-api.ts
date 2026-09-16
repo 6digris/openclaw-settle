@@ -12,6 +12,7 @@ import {
 } from "openclaw/plugin-sdk/runtime-doctor-migrations";
 import { resolveStorePath } from "openclaw/plugin-sdk/session-store-paths";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { stateFileBackupResources } from "./doctor-backup-resources.js";
 import { normalizeStoredConversationId } from "./src/conversation-store-helpers.js";
 import {
   buildMSTeamsConversationStateKey,
@@ -48,6 +49,7 @@ import {
   type StoredMSTeamsPoll,
   type StoredMSTeamsPollVoteBucket,
 } from "./src/polls.js";
+import { withMSTeamsSqliteMutationLock } from "./src/sqlite-state.js";
 import {
   isMSTeamsSsoStoreData,
   makeMSTeamsSsoTokenStoreKey,
@@ -57,6 +59,7 @@ import {
   normalizeMSTeamsSsoStoredToken,
   type MSTeamsSsoStoredToken,
 } from "./src/sso-token-store.js";
+// Msteams API module exposes the plugin public contract.
 
 export { legacyConfigRules, normalizeCompatibilityConfig } from "./config-doctor-api.js";
 
@@ -164,17 +167,6 @@ function listCandidateStorePaths(params: {
     paths.add(resolveStorePath(params.config.session?.store, { agentId, env: params.env }));
   }
   return [...paths];
-}
-
-function stateFileBackupResources(
-  stateDir: string,
-  filename: string,
-): PluginDoctorMigrationBackupResource[] {
-  const filePath = path.join(stateDir, filename);
-  return [
-    { path: filePath, kind: "file" },
-    { path: `${filePath}.migrated`, kind: "file" },
-  ];
 }
 
 async function readLegacyJsonFile<T>(
@@ -420,63 +412,70 @@ export const stateMigrations: PluginDoctorStateMigration[] = [
       };
     },
     async migrateLegacyState(params) {
-      const filePath = path.join(params.stateDir, MSTEAMS_POLLS_LEGACY_FILENAME);
-      const state = await readLegacyJsonFile(filePath, parseLegacyPollStore);
-      if (!state) {
-        return { changes: [], warnings: [] };
-      }
-      const pollStore = params.context.openPluginStateKeyedStore<StoredMSTeamsPoll>({
-        namespace: MSTEAMS_POLLS_NAMESPACE,
-        maxEntries: MSTEAMS_SQLITE_MAX_POLL_ROWS,
-      });
-      const voteBucketStore = params.context.openPluginStateKeyedStore<StoredMSTeamsPollVoteBucket>(
-        {
-          namespace: MSTEAMS_POLL_VOTE_BUCKETS_NAMESPACE,
-          maxEntries: MSTEAMS_MAX_POLL_VOTE_BUCKET_ROWS,
+      return await withMSTeamsSqliteMutationLock(
+        { stateDir: params.stateDir },
+        MSTEAMS_POLLS_NAMESPACE,
+        async () => {
+          const filePath = path.join(params.stateDir, MSTEAMS_POLLS_LEGACY_FILENAME);
+          const state = await readLegacyJsonFile(filePath, parseLegacyPollStore);
+          if (!state) {
+            return { changes: [], warnings: [] };
+          }
+          const pollStore = params.context.openPluginStateKeyedStore<StoredMSTeamsPoll>({
+            namespace: MSTEAMS_POLLS_NAMESPACE,
+            maxEntries: MSTEAMS_SQLITE_MAX_POLL_ROWS,
+          });
+          const voteBucketStore =
+            params.context.openPluginStateKeyedStore<StoredMSTeamsPollVoteBucket>({
+              namespace: MSTEAMS_POLL_VOTE_BUCKETS_NAMESPACE,
+              maxEntries: MSTEAMS_MAX_POLL_VOTE_BUCKET_ROWS,
+            });
+          const requiredPollKeys = new Set((await pollStore.entries()).map((entry) => entry.key));
+          const requiredVoteKeys = new Set(
+            (await voteBucketStore.entries()).map((entry) => entry.key),
+          );
+          let imported = 0;
+          for (const [pollId, poll] of selectRetainedMSTeamsPolls(state.polls)) {
+            const { metadata, votes } = splitMSTeamsPoll(poll);
+            const pollKey = buildMSTeamsPollStateKey(pollId);
+            requiredPollKeys.add(pollKey);
+            const didImportPoll = await pollStore.registerIfAbsent(pollKey, metadata);
+            const buckets = new Map<string, Record<string, string[]>>();
+            for (const [voterId, selections] of Object.entries(votes)) {
+              const bucket = selectMSTeamsPollVoteBucket(pollId, voterId);
+              const bucketVotes = buckets.get(bucket) ?? {};
+              bucketVotes[voterId] = selections;
+              buckets.set(bucket, bucketVotes);
+            }
+            let importedVoteBucket = false;
+            for (const [bucket, bucketVotes] of buckets) {
+              const key = buildMSTeamsPollVoteBucketKey(pollId, bucket);
+              requiredVoteKeys.add(key);
+              const existing = await voteBucketStore.lookup(key);
+              await voteBucketStore.register(key, {
+                pollId,
+                bucket,
+                votes: { ...bucketVotes, ...existing?.votes },
+                updatedAt: poll.updatedAt ?? poll.createdAt,
+              });
+              importedVoteBucket = true;
+            }
+            if (didImportPoll || importedVoteBucket) {
+              imported++;
+            }
+          }
+          return completeLegacyKeyedImport({
+            filePath,
+            label: `${MSTEAMS_PLUGIN_ID} poll`,
+            imported,
+            warnings: [],
+            stores: [
+              { store: pollStore, requiredKeys: requiredPollKeys },
+              { store: voteBucketStore, requiredKeys: requiredVoteKeys },
+            ],
+          });
         },
       );
-      const requiredPollKeys = new Set((await pollStore.entries()).map((entry) => entry.key));
-      const requiredVoteKeys = new Set((await voteBucketStore.entries()).map((entry) => entry.key));
-      let imported = 0;
-      for (const [pollId, poll] of selectRetainedMSTeamsPolls(state.polls)) {
-        const { metadata, votes } = splitMSTeamsPoll(poll);
-        const pollKey = buildMSTeamsPollStateKey(pollId);
-        requiredPollKeys.add(pollKey);
-        const didImportPoll = await pollStore.registerIfAbsent(pollKey, metadata);
-        const buckets = new Map<string, Record<string, string[]>>();
-        for (const [voterId, selections] of Object.entries(votes)) {
-          const bucket = selectMSTeamsPollVoteBucket(pollId, voterId);
-          const bucketVotes = buckets.get(bucket) ?? {};
-          bucketVotes[voterId] = selections;
-          buckets.set(bucket, bucketVotes);
-        }
-        let importedVoteBucket = false;
-        for (const [bucket, bucketVotes] of buckets) {
-          const key = buildMSTeamsPollVoteBucketKey(pollId, bucket);
-          requiredVoteKeys.add(key);
-          const existing = await voteBucketStore.lookup(key);
-          await voteBucketStore.register(key, {
-            pollId,
-            bucket,
-            votes: { ...bucketVotes, ...existing?.votes },
-            updatedAt: poll.updatedAt ?? poll.createdAt,
-          });
-          importedVoteBucket = true;
-        }
-        if (didImportPoll || importedVoteBucket) {
-          imported++;
-        }
-      }
-      return completeLegacyKeyedImport({
-        filePath,
-        label: `${MSTEAMS_PLUGIN_ID} poll`,
-        imported,
-        warnings: [],
-        stores: [
-          { store: pollStore, requiredKeys: requiredPollKeys },
-          { store: voteBucketStore, requiredKeys: requiredVoteKeys },
-        ],
-      });
     },
   },
   {

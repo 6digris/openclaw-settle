@@ -49,7 +49,6 @@ extension DashboardWindowController {
         case let .requestPermission(id):
             if let capability = id.capability {
                 _ = await PermissionManager.ensure([capability], interactive: true)
-                await PermissionMonitor.shared.refreshNow()
             }
         case let .openSystemSettings(id):
             if let capability = id.capability {
@@ -84,6 +83,7 @@ extension DashboardWindowController {
 
     private static let booleanStateSettings: [DeviceSettingKey: ReferenceWritableKeyPath<AppState, Bool>] = [
         .showDockIcon: \.showDockIcon,
+        .nativeExperienceEnabled: \.nativeExperienceEnabled,
         .iconAnimationsEnabled: \.iconAnimationsEnabled,
         .debugPaneEnabled: \.debugPaneEnabled,
         .peekabooBridgeEnabled: \.peekabooBridgeEnabled,
@@ -222,6 +222,7 @@ extension DashboardWindowController {
             guard !Task.isCancelled, self.isWindowOpen else { return }
             switch outcome {
             case .offering: self.show()
+            case .superseded: break
             case let .unavailable(title, message):
                 let alert = NSAlert()
                 alert.messageText = title

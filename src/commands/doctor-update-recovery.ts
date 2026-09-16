@@ -29,7 +29,6 @@ import type { UpdateRecoveryFence } from "../infra/update-run-recovery.js";
 import { ExitError, type RuntimeEnv } from "../runtime.js";
 import type { beginDoctorMaintenance } from "./doctor-maintenance.js";
 import type { DoctorOptions } from "./doctor-prompter.js";
-
 type DoctorRecoveryScope = {
   runtime: RuntimeEnv;
   prepared: boolean;

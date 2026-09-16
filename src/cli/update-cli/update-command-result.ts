@@ -2,6 +2,7 @@
 import { PLUGIN_CAPABILITY_CONSENT_REQUIRED } from "../../../packages/gateway-protocol/src/capability-consent-error-details.js";
 import { theme } from "../../../packages/terminal-core/src/theme.js";
 import type { TriageFailureContext } from "../../commands/triage-prompt.js";
+import { isAbortError } from "../../infra/abort-signal.js";
 import {
   attachErrorDiagnostic,
   formatErrorMessageForDisplay,
@@ -17,19 +18,26 @@ import {
   writeControlPlaneUpdateRestartSentinel,
   type ControlPlaneUpdateSentinelMetaFile,
 } from "../../infra/update-control-plane-sentinel.js";
+import type { UpdateFailureFact } from "../../infra/update-failure-facts.js";
+import { FreeBsdPkgOwnershipError } from "../../infra/update-freebsd-pkg-ownership.js";
+import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
+import { normalizeControlPlaneUpdateResult } from "../../infra/update-restart-sentinel-payload.js";
+import { UpdateRunAdmissionBusyError } from "../../infra/update-run-admission.js";
 import { getUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { defaultRuntime } from "../../runtime.js";
+import { UPDATE_ACTIVATION_TIMEOUT_REASON } from "../../shared/update-outcome.js";
 import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
 import { exitCliAfterOutput } from "../one-shot-exit.js";
 import { printResult } from "./progress.js";
-import type { UpdateCommandOptions } from "./shared.js";
+import { UpdatePreMutationError, type UpdateCommandOptions } from "./shared.js";
 import type { UpdateConfigSnapshot } from "./update-command-config-snapshot.js";
 import type { FinishUpdateParams } from "./update-command-finish-types.js";
 import type { OwnedManagedUpdateContext } from "./update-command-managed-context.js";
 import type { PreManagedServiceStop } from "./update-command-service-context-types.js";
 import { GatewayServiceUpdateOwnershipError } from "./update-command-service-plan.js";
 import { resolveUpdateResultNextAction } from "./update-recovery-guidance.js";
+// Update failures and control-plane results share one reporting boundary.
 
 /** Terminal worker diagnostics do not participate in recovery decisions. */
 export function formatUpdateFinalizationError(error: unknown): string {
@@ -67,12 +75,57 @@ export function resolveCompletedUpdateResult(
   params: Pick<FinishUpdateParams, "startedAt" | "rollbackBlockedReason" | "updateRecoveryBackup">,
   result: UpdateRunResult,
 ): UpdateRunResult {
-  return {
+  return normalizeControlPlaneUpdateResult({
     ...result,
-    ...(result.status === "error" && params.rollbackBlockedReason && !params.updateRecoveryBackup
+    ...(result.status === "error" &&
+    result.reason !== UPDATE_ACTIVATION_TIMEOUT_REASON &&
+    params.rollbackBlockedReason &&
+    !params.updateRecoveryBackup
       ? { reason: params.rollbackBlockedReason }
       : {}),
     durationMs: Math.max(0, Date.now() - params.startedAt),
+  });
+}
+
+export function createUpdateCommandFailureResult(
+  params: Pick<UpdateRunResult, "mode" | "root" | "recovery" | "durationMs"> & {
+    failure: { cause: unknown; detail?: string };
+    admission?: true;
+  },
+): UpdateRunResult {
+  const { failure, admission, ...result } = params;
+  const { cause, detail } = failure;
+  const preMutationFailure = cause instanceof UpdatePreMutationError;
+  const pkgOwnershipFailure = cause instanceof FreeBsdPkgOwnershipError;
+  const admissionFailure =
+    admission === true && cause instanceof GatewayServiceUpdateOwnershipError;
+  const reason =
+    cause instanceof UpdateRequesterRevokedError
+      ? cause.code
+      : preMutationFailure || pkgOwnershipFailure
+        ? cause.reason
+        : admissionFailure
+          ? "managed-service-preflight"
+          : "update-failed";
+  return {
+    ...result,
+    status: "error",
+    reason,
+    steps: [
+      {
+        name: preMutationFailure || pkgOwnershipFailure || admissionFailure ? reason : "update",
+        command: "openclaw update",
+        cwd: result.root ?? process.cwd(),
+        durationMs: result.durationMs,
+        exitCode: 1,
+        ...(isAbortError(cause) ? { termination: "signal" as const } : {}),
+        ...(detail !== undefined ? { stderrTail: detail } : {}),
+        // Recorded diagnostics do not change post-mutation recovery eligibility.
+        ...(preMutationFailure || cause instanceof GatewayServiceUpdateOwnershipError
+          ? { failureFacts: cause.failureFacts }
+          : {}),
+      },
+    ],
   };
 }
 
@@ -80,28 +133,53 @@ export function resolveCompletedUpdateResult(
 export async function withUpdateAdmissionReporting<T>(
   opts: UpdateCommandOptions,
   admit: () => Promise<T>,
+  mode: "unknown" | "finalize" = "unknown",
 ): Promise<T> {
+  const startedAt = Date.now();
   try {
     return await admit();
   } catch (error) {
+    if (error instanceof UpdateRunAdmissionBusyError) {
+      const result = {
+        status: "skipped",
+        mode,
+        reason: error.reason,
+        steps: [],
+        durationMs: Date.now() - startedAt,
+        ...(opts.dryRun ? { dryRun: true } : {}),
+        notes: [error.message],
+      };
+      if (opts.json) {
+        defaultRuntime.writeJson(result);
+      } else {
+        defaultRuntime.log(theme.warn(error.message));
+      }
+      // Existing parents treat zero as completed convergence, even without reading JSON.
+      return exitCliAfterOutput(defaultRuntime, result.mode === "finalize" ? 1 : 0);
+    }
     if (error instanceof UpdateCommandPendingRecoveryFailure) {
       return reportUpdateCommandPendingRecovery(error, opts);
     }
-    if (!(error instanceof GatewayServiceUpdateOwnershipError)) {
+    if (
+      !(error instanceof GatewayServiceUpdateOwnershipError) &&
+      !(error instanceof FreeBsdPkgOwnershipError)
+    ) {
       throw error;
     }
-    const message = `${error.message} Run \`openclaw gateway status --deep\` from the service's owning account before retrying.`;
+    const message =
+      error instanceof FreeBsdPkgOwnershipError
+        ? error.message
+        : `${error.message} Run \`openclaw gateway status --deep\` from the service's owning account before retrying.`;
     if (opts.json) {
       defaultRuntime.error(message);
     }
     printResult(
-      {
-        status: "error",
+      createUpdateCommandFailureResult({
         mode: "unknown",
-        reason: "managed-service-preflight",
-        steps: [],
+        admission: true,
+        failure: { cause: error },
         durationMs: 0,
-      },
+      }),
       opts,
       { nextAction: message },
     );
@@ -256,6 +334,7 @@ export function resolveAutomaticUpdateTriage(
 }
 
 export type UpdateAdmissionReportParams = {
+  failureFacts?: readonly UpdateFailureFact[];
   root: string;
   installKind: "git" | "package" | "unknown";
   reason: string;
@@ -263,6 +342,12 @@ export type UpdateAdmissionReportParams = {
   opts: UpdateCommandOptions;
   controlPlaneUpdateSentinelMeta: ControlPlaneUpdateSentinelMetaFile["meta"] | null;
 };
+
+export type RefuseUpdate = (
+  reason: string,
+  message?: string,
+  failureFacts?: readonly UpdateFailureFact[],
+) => Promise<void>;
 
 /** A fresh admission decision is data until its staging and executor owners settle. */
 export class UnreportedUpdateAdmissionOutcome extends Error {
@@ -279,15 +364,16 @@ export async function writeControlPlaneUpdateRestartSentinelBestEffort(params: {
   meta: ControlPlaneUpdateSentinelMetaFile["meta"] | null;
   result: UpdateRunResult;
   jsonMode: boolean;
+  env: NodeJS.ProcessEnv | undefined;
 }): Promise<void> {
   if (!params.meta) {
     return;
   }
   try {
-    await writeControlPlaneUpdateRestartSentinel({
-      meta: params.meta,
-      result: params.result,
-    });
+    await writeControlPlaneUpdateRestartSentinel(
+      { meta: params.meta, result: params.result },
+      params.env,
+    );
   } catch (err) {
     const message = `Failed to write update.run restart sentinel: ${String(err)}`;
     if (params.jsonMode) {
@@ -302,12 +388,13 @@ export async function markControlPlaneUpdateRestartSentinelFailureBestEffort(par
   meta: ControlPlaneUpdateSentinelMetaFile["meta"] | null;
   reason: string;
   jsonMode: boolean;
+  env: NodeJS.ProcessEnv | undefined;
 }): Promise<void> {
   if (!params.meta) {
     return;
   }
   try {
-    await markControlPlaneUpdateRestartSentinelFailure(params.reason, params.meta);
+    await markControlPlaneUpdateRestartSentinelFailure(params.reason, params.meta, params.env);
   } catch (err) {
     const message = `Failed to mark update.run restart sentinel failed: ${String(err)}`;
     if (params.jsonMode) {

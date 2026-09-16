@@ -10,7 +10,6 @@ import {
   LEGACY_UPDATE_RUN_EXPIRED_REASON,
 } from "./update-run-legacy-expiry.js";
 import { UNPROTECTED_GATEWAY_UPDATE_ADVISORY } from "./update-run-record.js";
-
 /** Status heals the bounded legacy defect while other recovery keeps its existing owner. */
 export function readUpdateRunStatus() {
   let runReconciliationError: string | undefined;
@@ -44,7 +43,10 @@ export function readUpdateRunStatus() {
                     {
                       runId: expired.runId,
                       reason: LEGACY_UPDATE_RUN_EXPIRED_REASON,
-                      message: LEGACY_UPDATE_RUN_ADVISORY,
+                      message:
+                        expired.runId === currentRun?.runId
+                          ? LEGACY_UPDATE_RUN_ADVISORY
+                          : "Historical update: a 2026.9.2-era update never progressed past admission and was treated as abandoned after 24 h.",
                     },
                   ]
                 : []),

@@ -5,11 +5,11 @@ import {
   isArchivePathWithin,
   normalizeArchivePath,
   normalizeArchiveRoot,
+  type BackupSymbolicLink,
 } from "../infra/backup-archive-path-policy.js";
 import { normalizeWindowsPathForComparison } from "../infra/path-guards.js";
 import { UpdateRunRecordSchema } from "../infra/update-run-schema.js";
 import { isRecord } from "../utils.js";
-
 const recoveryPath = z
   .string()
   .min(1)
@@ -124,6 +124,13 @@ export function parseUpdateRecoveryBackupManifest(raw: string): UpdateRecoveryBa
   return manifest;
 }
 
+export function backupManifestSizeError(bytes: number): Error | undefined {
+  const maxBytes = 1024 * 1024;
+  return bytes > maxBytes
+    ? new Error(`Backup manifest exceeds ${maxBytes} byte limit.`)
+    : undefined;
+}
+
 export type BackupManifest = {
   schemaVersion: number;
   createdAt: string;
@@ -147,6 +154,7 @@ export type BackupManifest = {
     sourcePath: string;
     archivePath: string;
   }>;
+  externalSymbolicLinks?: BackupSymbolicLink[];
   skipped?: Array<{
     kind?: string;
     sourcePath?: string;
@@ -159,7 +167,7 @@ function parseBackupManifestSourcePath(value: unknown, label: string): string {
   if (typeof value !== "string" || value.includes("\0")) {
     throw new Error(`Backup manifest ${label} has an invalid sourcePath.`);
   }
-  const windowsPath = /^[A-Za-z]:[\\/]/u.test(value);
+  const windowsPath = /^(?:[A-Za-z]:[\\/]|\\\\(?![?.]\\))/u.test(value);
   const normalized = windowsPath ? path.win32.normalize(value) : path.posix.normalize(value);
   if ((!windowsPath && !value.startsWith("/")) || normalized !== value) {
     throw new Error(`Backup manifest ${label} sourcePath must be absolute and normalized.`);
@@ -194,7 +202,7 @@ function parseBackupManifestAgentRoots(
       throw new Error("Backup manifest agent root has an invalid or noncanonical agentId.");
     }
     const normalizedSourcePath = parseBackupManifestSourcePath(sourcePath, "agent root");
-    const windowsPath = /^[A-Za-z]:[\\/]/u.test(normalizedSourcePath);
+    const windowsPath = /^(?:[A-Za-z]:[\\/]|\\\\(?![?.]\\))/u.test(normalizedSourcePath);
     const sourcePathKey = windowsPath
       ? normalizeWindowsPathForComparison(normalizedSourcePath)
       : normalizedSourcePath;
@@ -253,6 +261,23 @@ export function parseBackupManifest(raw: string): BackupManifest {
     });
   }
 
+  const externalSymbolicLinks: BackupSymbolicLink[] = [];
+  if (parsed.externalSymbolicLinks !== undefined) {
+    if (!Array.isArray(parsed.externalSymbolicLinks)) {
+      throw new Error("Backup manifest externalSymbolicLinks must be an array.");
+    }
+    for (const link of parsed.externalSymbolicLinks) {
+      if (
+        !isRecord(link) ||
+        typeof link.entryPath !== "string" ||
+        typeof link.linkpath !== "string"
+      ) {
+        throw new Error("Backup manifest contains an invalid external symbolic link.");
+      }
+      externalSymbolicLinks.push({ entryPath: link.entryPath, linkpath: link.linkpath });
+    }
+  }
+
   return {
     schemaVersion: 1,
     archiveRoot: parsed.archiveRoot,
@@ -274,6 +299,7 @@ export function parseBackupManifest(raw: string): BackupManifest {
         }
       : undefined,
     assets,
+    ...(parsed.externalSymbolicLinks === undefined ? {} : { externalSymbolicLinks }),
   };
 }
 

@@ -1,7 +1,11 @@
+import { createHash } from "node:crypto";
 import { formatErrorMessage } from "../infra/errors.js";
 import { findStartupMaintenanceRequiredError } from "../infra/startup-maintenance-required.js";
 import { withPluginMetadataSnapshotScope } from "../plugins/current-plugin-metadata-snapshot.js";
-import { withArtifactPreservingStateReads } from "../state/openclaw-state-db-readonly.js";
+import {
+  withArtifactPreservingStateReads,
+  withSynchronousArtifactPreservingStateSnapshot,
+} from "../state/openclaw-state-db-readonly.js";
 import {
   includeContributionOwnsAgentRoster,
   includeContributionOwnsBindings,
@@ -62,6 +66,18 @@ type InternalReadOptions = {
 
 function listResolvedIncludePaths(includeFilePathsForWatch: ReadonlySet<string>): string[] {
   return [...includeFilePathsForWatch].toSorted();
+}
+
+export function hashConfigRevision(
+  raw: string,
+  includeFileHashes: Record<string, string>,
+  includeFileTargets: Record<string, string>,
+): string {
+  const revision = createHash("sha256").update(raw);
+  for (const [includePath, includeHash] of Object.entries(includeFileHashes)) {
+    revision.update(JSON.stringify([includePath, includeFileTargets[includePath], includeHash]));
+  }
+  return revision.digest("hex");
 }
 
 export async function readConfigFileSnapshotInternal(
@@ -220,21 +236,36 @@ export async function readConfigFileSnapshotInternal(
     const validationConfigRaw = effectiveConfigRaw;
     const snapshotRaw = raw;
     const snapshotParsed = effectiveParsed;
-    const snapshotHash = rawHash;
+    // The write revision covers every authored input, without hashing runtime defaults or env.
+    const snapshotHash = hashConfigRevision(
+      raw,
+      includeFileHashesForWrite,
+      includeFileTargetsForWrite,
+    );
+    fallbackHash = snapshotHash;
     fallbackSourceConfig = coerceConfig(effectiveConfigRaw);
     const pluginMetadata = context.createValidationPluginMetadataSnapshotLoader({
       effectiveConfigRaw,
       env: deps.env,
       allowCurrentPluginMetadata: options.allowCurrentPluginMetadata,
     });
-    const validated = await deps.measure("config.snapshot.read.validate", () =>
-      validateConfigObjectWithPlugins(validationConfigRaw, {
-        ...pathResolution,
-        pluginValidation: context.options.pluginValidation,
-        loadPluginMetadataSnapshot: pluginMetadata.load,
-        sourceRaw: effectiveParsed,
-        preservedLegacyRootKeys: context.options.preservedLegacyRootKeys,
-      }),
+    const { deferredPluginMigrations, validated } = await deps.measure(
+      "config.snapshot.read.validate",
+      () =>
+        withSynchronousArtifactPreservingStateSnapshot(() => {
+          const pending = context.resolveDeferredPluginMigrations();
+          return {
+            deferredPluginMigrations: pending,
+            validated: validateConfigObjectWithPlugins(validationConfigRaw, {
+              ...pathResolution,
+              pluginValidation: context.options.pluginValidation,
+              loadPluginMetadataSnapshot: pluginMetadata.load,
+              sourceRaw: effectiveParsed,
+              preservedLegacyRootKeys: context.options.preservedLegacyRootKeys,
+              deferredPluginMigrations: pending,
+            }),
+          };
+        }),
     );
     if (!validated.ok) {
       const availableSnapshot = pluginMetadata.getSnapshot();
@@ -272,6 +303,7 @@ export async function readConfigFileSnapshotInternal(
           runtimeConfig: coerceConfig(effectiveConfigRaw),
           hash: snapshotHash,
           issues: validated.issues,
+          deferredPluginMigrations,
           warnings: [...validated.warnings, ...envVarWarnings],
           resolutionFacts: readResolution.resolutionFacts,
           legacyIssues,
@@ -358,6 +390,7 @@ export async function readConfigFileSnapshotInternal(
             hash: snapshotHash,
             issues: [],
             warnings: [...validated.warnings, ...envVarWarnings],
+            deferredPluginMigrations,
             resolutionFacts: readResolution.resolutionFacts,
             legacyIssues: [],
           }),

@@ -2,7 +2,6 @@ import { parseClawHubPluginSpec } from "../infra/clawhub-spec.js";
 import { markClawPackageIndependentlyOwned } from "../state/claw-package-adoption.js";
 import { withClawPackageLifecycleLease } from "../state/claw-package-lifecycle-lease.js";
 import { installPluginFromNpmSpec } from "./install.js";
-
 type ClawHubInstallRecord = {
   source?: string;
   clawhubPackage?: string;
@@ -32,17 +31,20 @@ export async function runPluginUpdateWithClawHubLease<T>(params: {
   pluginId: string;
   clawhubPackage?: string;
   dryRun: boolean;
+  beforePersistentEffect?: () => void;
   run: () => Promise<T>;
-  beforePersistentEffect?: () => void | Promise<void>;
+  preparePersistentEffect?: () => void | Promise<void>;
 }): Promise<T | { kind: "exception"; message: string; error: unknown }> {
   try {
     if (!params.clawhubPackage || params.dryRun) {
       return await params.run();
     }
-    await params.beforePersistentEffect?.();
+    await params.preparePersistentEffect?.();
+    params.beforePersistentEffect?.();
     return await withClawPackageLifecycleLease(
       { kind: "plugin", source: "clawhub", ref: params.clawhubPackage },
       async () => {
+        params.beforePersistentEffect?.();
         markClawPackageIndependentlyOwned({
           kind: "plugin",
           source: "clawhub",

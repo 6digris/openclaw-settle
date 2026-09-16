@@ -30,7 +30,7 @@ Details: [Plugins](/tools/plugin)
 
 <Steps>
   <Step title="Ensure plugin is available">
-    Install `@openclaw/mattermost` with the command above, then restart the Gateway if it is already running.
+    Install `@openclaw/mattermost` with the command above. Check the [application result](/plugins/manage-plugins#apply-changes-and-inspect) before continuing.
   </Step>
   <Step title="Create a Mattermost bot">
     Create a Mattermost bot account, copy the **bot token**, and add the bot to the teams and channels it should read.
@@ -346,6 +346,7 @@ openclaw message read --channel mattermost --target channel:<channelId> --limit 
 - Direct operator calls rely on Mattermost's channel membership and `read_channel` permission. A provider 403 remains a normal, visible tool error.
 - Delegated reads of the current Mattermost conversation are allowed for the current account. Cross-channel delegated reads additionally require the destination channel ID under `channels.mattermost.groups`, a `"*"` groups entry, or `groupPolicy: "open"`. Cross-account and cross-channel DM reads fail closed.
 - History reads are disabled by default. Set `channels.mattermost.actions.messages: true` to enable them. Override the setting per account with `channels.mattermost.accounts.<id>.actions.messages`.
+- These access rules apply to both the bundled plugin and the official plugin installed through npm or ClawHub. Delegated reads require the calling run and plugin registration to remain active.
 
 ## Reactions (message tool)
 

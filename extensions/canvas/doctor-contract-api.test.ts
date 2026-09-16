@@ -10,7 +10,6 @@ import {
   normalizeCompatibilityConfig,
   stateMigrations,
 } from "./doctor-contract-api.js";
-
 const migration = stateMigrations[0];
 const canvasDoctorWorkspaceRoot = resolvePreferredOpenClawTmpDir();
 

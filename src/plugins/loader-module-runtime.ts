@@ -1,15 +1,12 @@
 import { toSafeImportPath } from "../shared/import-specifier.js";
 import { VERSION } from "../version.js";
 import { runPluginRegistration } from "./api-lifecycle.js";
-import { isJavaScriptModulePath } from "./native-module-require.js";
 import { getPluginCache, withPluginCache } from "./plugin-cache.js";
+import { bindPluginInstanceModuleLoader } from "./plugin-instance-module-loader.js";
 import { getPluginInstance, getPluginValueInstance } from "./plugin-instance-scope.js";
 import { PluginInstance } from "./plugin-instance.js";
 import { withProfile } from "./plugin-load-profile.js";
-import {
-  bindPluginInstanceModuleLoader,
-  getCachedPluginModuleLoader,
-} from "./plugin-module-loader-cache.js";
+import { getCachedPluginModuleLoader } from "./plugin-module-loader-cache.js";
 import { installOpenClawPluginSdkNativeResolver } from "./plugin-sdk-native-resolver.js";
 import { getPluginRegistryInspectionResources } from "./registry-inspection-resources.js";
 import type { PluginRecord, PluginRegistry } from "./registry-types.js";
@@ -104,9 +101,15 @@ export function createPluginModuleLoader(options: {
   tryNative?: boolean;
   loaderFilename?: string;
   installNativeSdkResolver?: boolean;
+  expectedSourceDigests?: Readonly<Record<string, string>>;
 }) {
   const cache = getPluginCache();
-  const captured = { ...options };
+  const captured = {
+    ...options,
+    expectedSourceDigests: options.expectedSourceDigests
+      ? { ...options.expectedSourceDigests }
+      : undefined,
+  };
   const createLoaderForModule = (modulePath: string) => {
     if (captured.installNativeSdkResolver !== false && captured.tryNative !== false) {
       installOpenClawPluginSdkNativeResolver({
@@ -142,23 +145,21 @@ export function createPluginModuleLoader(options: {
       let instance = getPluginInstance(owner.record);
       if (!instance) {
         instance = new PluginInstance(owner.record.id, owner);
-        if (owner.record.origin === "bundled" && isJavaScriptModulePath(modulePath)) {
-          // Core-shipped JS chunks keep process identity; source plugins own a reloadable graph.
-          const loadHostModule = createLoaderForModule(modulePath);
-          instance.bindModuleLoader((source) =>
-            withPluginCache(cache, () => loadHostModule(toSafeImportPath(source))),
-          );
-        } else {
-          bindPluginInstanceModuleLoader({
-            instance,
-            origin: owner.record.origin,
-            source: modulePath,
-            rootDir: owner.rootDir,
-            standalone: owner.standalone,
-            devSourceRoot: captured.devSourceRoot,
-            pluginSdkResolution: captured.pluginSdkResolution,
-          });
-        }
+        bindPluginInstanceModuleLoader({
+          instance,
+          origin: owner.record.origin,
+          source: modulePath,
+          rootDir: owner.rootDir,
+          standalone: owner.standalone,
+          expectedSourceDigest: captured.expectedSourceDigests?.[owner.record.id],
+          devSourceRoot: captured.devSourceRoot,
+          pluginSdkResolution: captured.pluginSdkResolution,
+          createHostModuleLoader: () => createLoaderForModule(modulePath),
+        });
+      }
+      const expected = captured.expectedSourceDigests?.[owner.record.id];
+      if (expected !== undefined && instance.sourceDigest !== expected) {
+        throw new Error(`Plugin ${owner.record.id} captured source changed after installation`);
       }
       return instance.loadModule(modulePath);
     });

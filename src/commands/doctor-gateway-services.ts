@@ -9,6 +9,7 @@ import {
 import { SUPPORTED_NODE_VERSIONS } from "../../node-version.mjs";
 import { note } from "../../packages/terminal-core/src/note.js";
 import { replaceConfigFile, type OpenClawConfig } from "../config/config.js";
+import { ConfigWritePostCommitError } from "../config/io.write-errors.js";
 import { isDefaultInstallIdentity, resolveGatewayPort, resolveIsNixMode } from "../config/paths.js";
 import { resolveSecretInputRef } from "../config/types.secrets.js";
 import { formatGatewayHeapLimitReport, inspectGatewayHeapLimit } from "../daemon/gateway-heap.js";
@@ -919,6 +920,9 @@ export async function maybeRepairGatewayServiceConfig(
         "Gateway",
       );
     } catch (err) {
+      if (err instanceof ConfigWritePostCommitError) {
+        throw err;
+      }
       runtime.error(`Failed to persist gateway.auth.token before service repair: ${String(err)}`);
       return cfg;
     }
@@ -1044,7 +1048,10 @@ export async function maybeScanExtraGatewayServices(
     extraServices.filter((service) => service.legacy !== true),
   );
   if (cleanupHints.length > 0) {
-    note(cleanupHints.map((hint) => `- ${hint}`).join("\n"), "Cleanup hints");
+    note(
+      cleanupHints.map((hint) => `- ${hint}`).join("\n"),
+      process.platform === "linux" ? "Inspection hints" : "Cleanup hints",
+    );
   }
 
   note(

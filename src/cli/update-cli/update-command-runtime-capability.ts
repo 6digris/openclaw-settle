@@ -1,6 +1,5 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { runUtf8CommandWithTimeout } from "../../process/exec.js";
-
 /** This bounded read establishes compatibility only; callers retain all mutation authority. */
 export async function inspectUpdateRuntimeCapability(params: {
   command: string[];

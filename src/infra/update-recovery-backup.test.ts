@@ -38,7 +38,6 @@ import {
   withUpdateRecoveryConfigWrites,
 } from "./update-recovery-config-writes.js";
 import { createUpdateRun } from "./update-run-ledger.js";
-
 const authority = { assertOwned() {} };
 const execFileAsync = promisify(execFile);
 const resolvePreferredOpenClawTmpDirMock = vi.hoisted(() => vi.fn<() => string>());

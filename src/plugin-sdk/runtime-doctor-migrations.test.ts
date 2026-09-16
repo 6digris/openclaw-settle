@@ -7,12 +7,12 @@ import {
   createPluginStateKeyedStore,
   resetPluginStateStoreForTests,
 } from "../plugin-state/plugin-state-store.js";
+import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db-cache.js";
 import {
   defineLegacyJsonStateMigration,
   definePluginDoctorMigrationFromPlans,
   type PluginDoctorStateMigrationContext,
 } from "./runtime-doctor-migrations.js";
-
 const runLegacyMigrationPlans = vi.hoisted(() => vi.fn());
 const executorModuleLoads = vi.hoisted(() => vi.fn());
 
@@ -37,6 +37,7 @@ describe("defineLegacyJsonStateMigration retention", () => {
   });
 
   afterEach(async () => {
+    await closeOpenClawStateDatabaseAsync();
     resetPluginStateStoreForTests();
     await fs.rm(stateDir, { recursive: true, force: true });
   });

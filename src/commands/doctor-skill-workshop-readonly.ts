@@ -12,7 +12,10 @@ import {
   type WorkshopAutomationReference,
 } from "./doctor-skill-workshop-automations.js";
 import { listPendingLegacyCollectionBackupRoots } from "./doctor-skill-workshop-collection-backups.js";
-import { classifyWorkshopRelocation } from "./doctor-skill-workshop-relocation.js";
+import {
+  classifyWorkshopRelocation,
+  isReadOnlyRehearsalProposal,
+} from "./doctor-skill-workshop-relocation.js";
 import {
   LEGACY_WORKSHOP_PROPOSALS_DIR as PROPOSALS_DIR,
   LEGACY_WORKSHOP_MAX_RECORD_BYTES as MAX_RECORD_BYTES,
@@ -20,15 +23,14 @@ import {
   readLegacyWorkshopJson,
   readWorkshopMigrationRecords,
 } from "./doctor-skill-workshop-sources.js";
-
 const WORKSHOP_DIR = "skill-workshop";
-export const MANIFEST_PATH = `${WORKSHOP_DIR}/proposals.json`;
+const MANIFEST_PATH = `${WORKSHOP_DIR}/proposals.json`;
 // Preserve incomplete proposal artifacts outside active discovery so Doctor
 // does not retry an impossible import on every run.
 const RECOVERY_DIR = `${WORKSHOP_DIR}/recovery`;
-export const RECOVERY_PROPOSALS_DIR = `${RECOVERY_DIR}/proposals`;
+const RECOVERY_PROPOSALS_DIR = `${RECOVERY_DIR}/proposals`;
 
-type LegacyWorkshopMigrationInspection = {
+export type LegacyWorkshopMigrationInspection = {
   externalProposalCount: number;
   externalProposalCountsByAgent: Record<string, number>;
   externalProposalDetails?: string[];
@@ -40,15 +42,23 @@ type LegacyWorkshopMigrationInspection = {
 export async function inspectLegacySkillWorkshopMigration(params: {
   config: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
+  // Lint's private database snapshot does not change persisted filesystem targets.
+  stateEnv?: NodeJS.ProcessEnv;
 }): Promise<LegacyWorkshopMigrationInspection> {
   const env = params.env ?? process.env;
-  const { records, appliedEvents } = await readWorkshopMigrationRecords(env, true);
+  const stateEnv = params.stateEnv ?? env;
+  const { records, appliedEvents } = await readWorkshopMigrationRecords(stateEnv, true);
   // Lint needs ownership counts, not adoption verification through writable recovery readers.
-  const { external } = classifyWorkshopRelocation(records, params.config, env);
+  const { external } = classifyWorkshopRelocation(
+    records.filter(({ record }) => !isReadOnlyRehearsalProposal(record, env)),
+    params.config,
+    env,
+  );
   const backups = await listPendingLegacyCollectionBackupRoots(params.config, env);
   const automationReferences = await inspectWorkshopAutomationReferences({
     config: params.config,
     env,
+    stateEnv,
     records,
     appliedEvents,
   });
@@ -78,7 +88,6 @@ export async function inspectLegacySkillWorkshopMigration(params: {
     ...(automationReferences.length > 0 ? { automationReferences } : {}),
   };
 }
-
 /** Inventory migration-owned files without opening Workshop's writable recovery readers. */
 export async function collectDoctorSkillWorkshopBackupResources(params: {
   config: OpenClawConfig;

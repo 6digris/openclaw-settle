@@ -14,7 +14,6 @@ import {
   type UpdateRecoveryBackupRef,
 } from "./update-recovery-backup-contract.js";
 import { canonicalEntryPath, digest, statOrMissing } from "./update-recovery-backup-files.js";
-
 type Authority = { assertOwned: () => void };
 const captureOwners = new WeakMap<Map<string, ConfigFileWrite>, string>();
 

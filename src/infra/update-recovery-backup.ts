@@ -45,7 +45,6 @@ import {
 } from "./update-recovery-config-writes.js";
 import type { UpdateRunDriver } from "./update-run-driver.js";
 import { resolveUpdateRecoveryTerminalOutcome } from "./update-run-record.js";
-
 const log = createSubsystemLogger("update/backup");
 type Authority = { assertOwned: () => void };
 type CreateOptions = Authority & {
@@ -147,9 +146,7 @@ async function prepareVerifiedBackup(ref: UpdateRecoveryBackupRef) {
       const target = await fs.open(targetPath, "wx+", 0o600);
       try {
         const before = await source.handle.stat({ bigint: true });
-        await copyFileHandle(source.handle, target, {
-          noProgressMessage: "Update recovery staging copy made no progress.",
-        });
+        await copyFileHandle(source.handle, target);
         const actual = await sha256File(target);
         if (
           !sameFileMutationFingerprint(before, await source.handle.stat({ bigint: true })) ||

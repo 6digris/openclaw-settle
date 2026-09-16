@@ -7,7 +7,6 @@ import type {
   PluginDoctorMigrationBackupResource,
   PluginDoctorStateMigration,
 } from "./doctor-contract-module.js";
-
 /** Validate and combine data footprints after registry discovery selects the migrations. */
 export async function collectPluginDoctorMigrationResources(
   entries: readonly { pluginId: string; migration: PluginDoctorStateMigration }[],

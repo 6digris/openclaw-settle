@@ -22,7 +22,6 @@ import {
   MAX_MANIFEST_BYTES,
   statOrMissing,
 } from "./update-recovery-backup-files.js";
-
 export const MAX_UPDATE_RECOVERY_OUTCOME_BYTES = 16 * 1024;
 type Authority = { assertOwned: () => void };
 const recordedOutcomeSchema = updateRecoveryTerminalOutcomeSchema;

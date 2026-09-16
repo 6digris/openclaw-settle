@@ -11,12 +11,14 @@ import type {
   OpenKeyedStoreOptions,
   PluginDoctorStateMigrationContext,
 } from "openclaw/plugin-sdk/runtime-doctor-migrations";
+import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   legacyConfigRules,
   normalizeCompatibilityConfig,
   stateMigrations,
 } from "./doctor-contract-api.js";
+// Active Memory tests cover doctor contract api plugin behavior.
 
 it("removes the retired QMD override while preserving Active Memory siblings", () => {
   expect(legacyConfigRules).toEqual([
@@ -65,6 +67,7 @@ describe("active-memory doctor state migration", () => {
 
   afterEach(async () => {
     vi.useRealTimers();
+    await closeOpenClawStateDatabaseAsync();
     resetPluginStateStoreForTests();
     await fs.rm(stateDir, { recursive: true, force: true });
   });

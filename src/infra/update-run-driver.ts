@@ -1,7 +1,6 @@
 import { hostname } from "node:os";
 import { getFileLockProcessStartTime, isPidDefinitelyDead } from "../shared/pid-alive.js";
 import { UNPROTECTED_GATEWAY_UPDATE_ADVISORY, type UpdateRunRecord } from "./update-run-record.js";
-
 export type UpdateRunDriver = {
   host: string;
   pid: number;

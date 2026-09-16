@@ -25,6 +25,7 @@ import {
   loadGatewayModelCatalogSnapshot,
   loadPreparedGatewayModelCatalogSnapshot,
   readPreparedGatewayModelCatalog,
+  readPreparedGatewayModelCatalogBatch,
   readPreparedGatewayModelCatalogOwnerSnapshot,
 } from "./server-model-catalog.js";
 
@@ -104,7 +105,6 @@ function createLocalGatewayRequestContext(
     getRuntimeConfig: params.getRuntimeConfig,
     // Embedded calls have no running Gateway application owner.
     isConfigReloadSettled: () => false,
-    notifyPluginMetadataChanged: () => {},
     resolveTerminalLaunchPolicy: () => ({ ok: false, block: { kind: "disabled" } }),
     isTerminalEnabled: () => false,
     loadGatewayModelCatalog: (loadParams) =>
@@ -115,6 +115,8 @@ function createLocalGatewayRequestContext(
     loadGatewayModelCatalogSnapshot: loadCatalogSnapshot,
     readPreparedGatewayModelCatalog: (loadParams) =>
       readPreparedGatewayModelCatalog({ ...loadParams, getConfig: params.getRuntimeConfig }),
+    readPreparedGatewayModelCatalogBatch: (agentIds) =>
+      readPreparedGatewayModelCatalogBatch(agentIds, { getConfig: params.getRuntimeConfig }),
     readChatMetadata: async () => {
       throw new Error("Chat metadata is unavailable in local embedded agent gateway context.");
     },

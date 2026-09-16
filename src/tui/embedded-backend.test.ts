@@ -7,6 +7,7 @@ import {
   INTERNAL_RUNTIME_CONTEXT_END,
 } from "../agents/internal-runtime-context.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.types.js";
+import { resolveThinkingDefault } from "../agents/model-thinking-default.js";
 import type { LoadPreparedModelCatalogParams } from "../agents/prepared-model-catalog.js";
 import { setPreparedModelRuntimeAuthStore } from "../agents/prepared-model-runtime-auth.js";
 import type { PreparedModelRuntimeSnapshot } from "../agents/prepared-model-runtime.types.js";
@@ -88,7 +89,7 @@ const getRuntimeConfigMock = vi.fn(() => ({}));
 const loadPreparedModelCatalogMock = vi.fn(
   (_params?: LoadPreparedModelCatalogParams): ModelCatalogEntry[] => [],
 );
-const resolveThinkingDefaultMock = vi.fn<(...args: unknown[]) => string | undefined>();
+const resolveThinkingDefaultMock = vi.fn<typeof resolveThinkingDefault>();
 const buildModelsListResultMock = vi.fn(
   async (
     _params: Parameters<
@@ -247,12 +248,17 @@ vi.mock("../agents/defaults.js", () => ({
 }));
 
 vi.mock("../agents/model-selection.js", () => ({
-  resolveThinkingDefault: (...args: unknown[]) => resolveThinkingDefaultMock(...args),
+  resolveThinkingDefault: (...args: Parameters<typeof resolveThinkingDefault>) =>
+    resolveThinkingDefaultMock(...args),
 }));
 
 vi.mock("../agents/prepared-model-catalog.js", () => ({
   readPreparedModelCatalog: (params?: LoadPreparedModelCatalogParams) =>
     loadPreparedModelCatalogMock(params),
+  loadPreparedModelCatalogSnapshot: async (params?: LoadPreparedModelCatalogParams) => {
+    const entries = loadPreparedModelCatalogMock(params);
+    return { entries, routeVariants: entries };
+  },
   withPreparedModelCatalogOwner: (...args: Parameters<typeof withPreparedModelCatalogOwnerMock>) =>
     withPreparedModelCatalogOwnerMock(...args),
 }));
@@ -293,8 +299,11 @@ vi.mock("../gateway/server-methods/chat.js", () => ({
   replaceOversizedChatHistoryMessages: ({ messages }: { messages: unknown[] }) => ({ messages }),
 }));
 
-vi.mock("../gateway/server-methods/chat-history-pages.js", () => ({
+vi.mock("../gateway/server-methods/chat-history-page-kernel.js", () => ({
   enrichChatHistoryCompactionMarkers: (messages: unknown[]) => messages,
+}));
+
+vi.mock("../gateway/server-methods/chat-history-pages.js", () => ({
   readChatHistoryPage: (params: unknown) => readChatHistoryPageMock(params),
 }));
 
@@ -556,7 +565,7 @@ describe("EmbeddedTuiBackend", () => {
         armSessionDiffBaselineCapture: true,
         emitCommandHooks: true,
         commandSource: "tui:embedded",
-        loadGatewayModelCatalog: expect.any(Function),
+        loadGatewayModelCatalogSnapshot: expect.any(Function),
       }),
     );
     expect(result).toEqual({
@@ -589,11 +598,17 @@ describe("EmbeddedTuiBackend", () => {
       loadPreparedModelCatalogMock.mockReturnValue(catalog);
       createGatewaySessionMock.mockImplementation(
         async ({
-          loadGatewayModelCatalog,
+          loadGatewayModelCatalogSnapshot,
         }: {
-          loadGatewayModelCatalog: () => Promise<unknown[]>;
+          loadGatewayModelCatalogSnapshot: () => Promise<{
+            entries: unknown[];
+            routeVariants: unknown[];
+          }>;
         }) => {
-          expect(await loadGatewayModelCatalog()).toBe(catalog);
+          expect(await loadGatewayModelCatalogSnapshot()).toEqual({
+            entries: catalog,
+            routeVariants: catalog,
+          });
           return {
             ok: true,
             key: input.key,
@@ -957,11 +972,17 @@ describe("EmbeddedTuiBackend", () => {
     buildModelsListResultMock.mockResolvedValue({ models });
     projectSessionsPatchEntryMock.mockImplementation(
       async ({
-        loadGatewayModelCatalog,
+        loadGatewayModelCatalogSnapshot,
       }: {
-        loadGatewayModelCatalog: () => Promise<unknown[]>;
+        loadGatewayModelCatalogSnapshot: () => Promise<{
+          entries: unknown[];
+          routeVariants: unknown[];
+        }>;
       }) => {
-        expect(await loadGatewayModelCatalog()).toBe(catalog);
+        expect(await loadGatewayModelCatalogSnapshot()).toEqual({
+          entries: catalog,
+          routeVariants: catalog,
+        });
         return { ok: true, entry: {} };
       },
     );
@@ -1373,14 +1394,24 @@ describe("EmbeddedTuiBackend", () => {
     },
   );
 
-  it("loads history thinking defaults from the selected owner's prepared catalog", async () => {
+  it("loads history thinking defaults from the selected owner's model config and prepared catalog", async () => {
     const catalog: ModelCatalogEntry[] = [
       { id: "gpt-5.4", name: "Reasoning model", provider: "openai", reasoning: true },
     ];
     loadPreparedModelCatalogMock.mockReturnValue(catalog);
-    resolveThinkingDefaultMock.mockReturnValueOnce("low");
+    resolveThinkingDefaultMock.mockImplementationOnce(resolveThinkingDefault);
     loadSessionEntryMock.mockReturnValue({
       cfg: {
+        agents: {
+          defaults: {
+            models: { "openai/gpt-5.4": { params: { thinking: "high" } } },
+          },
+          entries: {
+            work: {
+              models: { "openai/gpt-5.4": { params: { thinking: "low" } } },
+            },
+          },
+        },
         models: {
           mode: "replace",
           providers: {
@@ -1390,20 +1421,21 @@ describe("EmbeddedTuiBackend", () => {
           },
         },
       },
-      agentId: "main",
-      canonicalKey: "agent:main:main",
+      agentId: "work",
+      canonicalKey: "agent:work:main",
       entry: {},
     });
 
     const backend = new EmbeddedTuiBackend();
 
-    await expect(backend.loadHistory({ sessionKey: "agent:main:main" })).resolves.toMatchObject({
-      sessionKey: "agent:main:main",
+    await expect(backend.loadHistory({ sessionKey: "agent:work:main" })).resolves.toMatchObject({
+      sessionKey: "agent:work:main",
       messages: [],
       thinkingLevel: "low",
+      sessionInfo: { thinkingLevel: "low" },
     });
     expect(loadPreparedModelCatalogMock).toHaveBeenCalledWith(
-      expect.objectContaining({ agentId: "main", readOnly: true }),
+      expect.objectContaining({ agentId: "work", readOnly: true }),
     );
     expect(resolveThinkingDefaultMock).toHaveBeenCalledWith(
       expect.objectContaining({ provider: "openai", model: "gpt-5.4", catalog }),
@@ -2101,14 +2133,6 @@ describe("EmbeddedTuiBackend", () => {
     const first = deferred<EmbeddedAgentResult>();
     agentCommandFromIngressMock.mockReturnValueOnce(first.promise);
     resolveActiveEmbeddedRunSessionIdMock.mockReturnValue("active-session");
-    loadSessionEntryMock.mockImplementation((sessionKey: string, opts?: { agentId?: string }) => ({
-      cfg: {},
-      agentId: opts?.agentId ?? parseAgentSessionKey(sessionKey)?.agentId ?? "main",
-      canonicalKey: sessionKey,
-      storePath: "/tmp/openclaw-sessions.json",
-      store: {},
-      entry: {},
-    }));
     queueEmbeddedAgentMessageWithOutcomeAsyncMock.mockResolvedValue({
       queued: true,
       sessionId: "active-session",
@@ -2175,14 +2199,6 @@ describe("EmbeddedTuiBackend", () => {
       .mockReturnValueOnce(first.promise)
       .mockReturnValueOnce(second.promise);
     resolveActiveEmbeddedRunSessionIdMock.mockReturnValue("active-session");
-    loadSessionEntryMock.mockImplementation((sessionKey: string, opts?: { agentId?: string }) => ({
-      cfg: {},
-      agentId: opts?.agentId ?? parseAgentSessionKey(sessionKey)?.agentId ?? "main",
-      canonicalKey: sessionKey,
-      storePath: "/tmp/openclaw-sessions.json",
-      store: {},
-      entry: {},
-    }));
     queueEmbeddedAgentMessageWithOutcomeAsyncMock.mockResolvedValue({
       queued: false,
       sessionId: "active-session",

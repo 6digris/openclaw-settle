@@ -11,6 +11,7 @@ import {
   readStringValue as readString,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveUserPath } from "openclaw/plugin-sdk/text-utility-runtime";
+/** Canvas config migration to the single surviving route-enable switch. */
 
 const RETIRED_HOST_KEYS = ["root", "port", "liveReload"] as const;
 

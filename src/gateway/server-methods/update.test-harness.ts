@@ -9,7 +9,6 @@ import type { RespawnSupervisor } from "../../infra/supervisor-markers.js";
 import type { UpdateChannel } from "../../infra/update-channels.js";
 import { getUpdateRun } from "../../infra/update-run-ledger.js";
 import { createTempHomeEnv, type TempHomeEnv } from "../../test-utils/temp-home.js";
-
 let ledgerHome: TempHomeEnv | undefined;
 beforeEach(async () => {
   ledgerHome = await createTempHomeEnv("openclaw-update-rpc-");
@@ -226,7 +225,12 @@ export const resolveGatewayLifecycleNoticeRouteMock = vi.fn(
     threadId?: string;
   }) =>
     deliveryContext?.channel === "slack" && deliveryContext.to
-      ? { ...deliveryContext, channel: "slack", to: deliveryContext.to, threadId }
+      ? {
+          ...deliveryContext,
+          channel: "slack",
+          to: deliveryContext.to.replace(/^slack:/, ""),
+          threadId,
+        }
       : undefined,
 );
 vi.mock("../server-restart-sentinel-notice.js", () => ({
@@ -478,7 +482,11 @@ beforeEach(() => {
 export async function invokeUpdateRun(
   params: Record<string, unknown>,
   respond?: (ok: boolean, response?: unknown) => void,
-  runtimeConfig: OpenClawConfig = { update: {} },
+  runtimeConfig: OpenClawConfig = {
+    update: {},
+    commands: { ownerAllowFrom: ["slack:C0123ABC", "slack:C0456DEF"] },
+  },
+  contextOverrides: Record<string, unknown> = {},
 ) {
   const { updateHandlers } = await import("./update.js");
   const onRespond = respond ?? (() => {});
@@ -488,7 +496,7 @@ export async function invokeUpdateRun(
   )({
     params,
     respond: onRespond as never,
-    context: { getRuntimeConfig: () => runtimeConfig },
+    context: { getRuntimeConfig: () => runtimeConfig, ...contextOverrides },
   } as never);
 }
 
@@ -516,4 +524,26 @@ export async function captureUpdateRunPayload(
     });
   }
   return payload;
+}
+
+export function mockGlobalInstallSurface() {
+  initializeGatewayUpdateStatusMock.mockResolvedValueOnce({
+    root: "/tmp/openclaw-global",
+    status: { root: "/tmp/openclaw-global", installKind: "package", packageManager: "npm" },
+    installReceipt: null,
+  });
+  resolveUpdateInstallSurfaceMock.mockResolvedValueOnce({
+    kind: "global",
+    mode: "npm",
+    root: "/tmp/openclaw-global",
+    packageRoot: "/tmp/openclaw-global",
+  });
+}
+
+export function mockGitInstallSurface(root: string) {
+  initializeGatewayUpdateStatusMock.mockResolvedValueOnce({
+    root,
+    status: { root, installKind: "git", packageManager: "pnpm" },
+    installReceipt: null,
+  });
 }

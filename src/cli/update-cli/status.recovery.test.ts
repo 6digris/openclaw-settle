@@ -1,6 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { updateStatusCommand } from "./status.js";
-
 const mocks = vi.hoisted(() => ({
   inspect:
     vi.fn<typeof import("../../infra/update-recovery-backup.js").inspectUpdateRecoveryBackups>(),

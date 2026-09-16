@@ -1,6 +1,5 @@
 import { compareSemverStrings } from "./update-check.js";
 import type { UpdateRecoveryBackupRef } from "./update-recovery-backup-contract.js";
-
 export function buildUpdateRecoveryDoctorArgs(
   backup?: UpdateRecoveryBackupRef,
   owner?: "unprotected",

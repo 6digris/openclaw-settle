@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { STREAM_ERROR_FALLBACK_TEXT } from "@openclaw/ai/internal/shared";
 import { afterEach, describe, expect, it } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import {
   appendSessionTranscriptReport,
   appendTranscriptMessage,
@@ -9,11 +10,23 @@ import {
   replaceTranscriptEvents,
 } from "../../config/sessions/session-accessor.js";
 import { readTranscriptDisplayDelta } from "../../config/sessions/session-accessor.sqlite-history-events.js";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  closeOpenClawAgentDatabasesForTest,
+} from "../../state/openclaw-agent-db.js";
 import { buildGatewaySessionSnapshot } from "../session-event-payload.js";
 import { readChatHistoryDelta } from "./chat-history-delta.js";
 import { readChatHistoryPage } from "./chat-history-pages.js";
+import { appendInjectedAssistantMessageToTranscript } from "./chat-transcript-inject.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const tempDirs = createTempDirTracker();
+afterEach(async () => {
+  for (const directory of tempDirs.dirs) {
+    await closeOpenClawAgentDatabasesAsync(directory);
+    closeOpenClawAgentDatabasesForTest(directory);
+  }
+  tempDirs.cleanup();
+});
 const maxBytes = 1_000_000;
 const sessionKey = "agent:main:delta-budget";
 const sessionId = "delta-budget-session";
@@ -487,5 +500,46 @@ describe("chat history recovery cursor eligibility", () => {
       messages: [{ messageId: "partial-failure" }],
     });
     expect((await readTail(scope)).deltaCursor).toEqual(expect.any(String));
+  });
+});
+
+describe("chat history TTS supplement cursor reconciliation", () => {
+  it("resets the cursor refresh so the supplement merges into the visible reply", async () => {
+    const { scope, cursor } = await createTranscript();
+    const visibleText = "Plain recon 4101 stays visible.";
+    const attachment = {
+      type: "attachment",
+      attachment: { kind: "audio", label: "reply.wav", mimeType: "audio/wav" },
+    };
+    await appendTranscriptMessage(scope, {
+      eventId: "answer",
+      message: { role: "assistant", content: [{ type: "text", text: visibleText }] },
+    });
+    const answerDelta = readDelta(scope, cursor);
+    expect(answerDelta.kind).toBe("delta");
+    if (answerDelta.kind !== "delta") {
+      throw new Error("Expected the answer delta");
+    }
+
+    const appended = await appendInjectedAssistantMessageToTranscript({
+      ...scope,
+      message: "Audio reply",
+      content: [{ type: "text", text: "Audio reply" }, attachment],
+      ttsSupplement: {
+        textSha256: createHash("sha256").update(visibleText).digest("hex"),
+      },
+    });
+    expect(appended.ok).toBe(true);
+
+    expect(readDelta(scope, answerDelta.deltaCursor)).toEqual({ kind: "reset" });
+    const refreshed = await readTail(scope);
+    expect(refreshed.messages).toMatchObject([
+      {
+        role: "assistant",
+        content: [{ type: "text", text: visibleText }, attachment],
+      },
+    ]);
+    expect(refreshed.messages).toHaveLength(1);
+    expect(refreshed.deltaCursor).toEqual(expect.any(String));
   });
 });

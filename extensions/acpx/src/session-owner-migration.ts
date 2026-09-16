@@ -14,7 +14,6 @@ import {
   openAcpxProcessLeaseStateStore,
   readAcpxProcessLeaseIdentity,
 } from "./process-lease.js";
-
 type MigrationInput = Parameters<PluginDoctorStateMigration["migrateLegacyState"]>[0];
 type Claim = Awaited<
   ReturnType<NonNullable<MigrationInput["context"]["inspectAcpSessionClaims"]>>

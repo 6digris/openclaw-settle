@@ -31,6 +31,8 @@ to `false`. New configuration files persist `false` for the host-generated catal
 inventory, including installable official plugins. Explicit values are always kept.
 These opt-out-only entries do not request installation or widen a plugin allowlist;
 an explicit plugin selection or other authored configuration still does.
+They also do not produce disabled-plugin config warnings. Existing opt-outs remain
+valid and need no Doctor rewrite; removing one can restore legacy discovery behavior.
 
 The host-generated `legacyDefaultEnabled: true` declaration preserves the shipped
 Claude/Codex implicit-on behavior only for existing readable configurations. It is
@@ -225,6 +227,39 @@ Supported evidence entries:
 | `requiresAllEnv`   | No       | `string[]` | Every listed env var must be non-empty before the evidence is valid.                                           |
 | `credentialMarker` | Yes      | `string`   | Non-secret marker returned when the evidence is present.                                                       |
 | `source`           | No       | `string`   | User-facing source label for auth/status output.                                                               |
+
+## configGroups reference
+
+`configGroups` organizes the plugin’s Settings page into titled sections. It is
+presentation metadata beside `configSchema`; it does not add configuration keys
+or change validation, defaults, or runtime behavior.
+
+```json
+{
+  "configGroups": [
+    {
+      "id": "connection",
+      "title": "Connection",
+      "order": 10,
+      "properties": ["apiKey", "endpoint"]
+    },
+    { "id": "history", "title": "History", "order": 20, "properties": ["storage"] }
+  ]
+}
+```
+
+Each entry requires a nonempty `id`, `title`, and `properties` array. Properties
+name exact immediate keys in `configSchema.properties`; they are not nested
+paths. A nested object and its descendants stay in that property’s section.
+Group ids and property assignments must be unique. Optional integer `order`
+sorts sections from lowest to highest (default `0`); ties retain manifest order.
+Properties appear in the order authored within each group.
+
+There is one level of sections, all visible by default. Settings search matches
+field names, labels, descriptions, and group titles. Unassigned properties appear
+under **Other**. Missing or invalid grouping metadata leaves the complete flat
+form available; it never hides fields or prevents the plugin from loading.
+Hosts without grouping support ignore this optional metadata.
 
 ## uiHints reference
 

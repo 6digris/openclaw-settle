@@ -7,6 +7,7 @@ import {
   getRegistryJitiMocks,
   resetRegistryJitiMocks,
 } from "./test-helpers/registry-jiti-mocks.js";
+// Covers plugin doctor state-migration registry behavior.
 
 const tempDirs: string[] = [];
 const mocks = getRegistryJitiMocks();

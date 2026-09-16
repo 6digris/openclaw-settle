@@ -1,15 +1,17 @@
-/* @vitest-environment jsdom */
 import type { UsersMentionableResult } from "@openclaw/gateway-protocol";
-import { render } from "lit";
+import { nothing, render } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { HumanMention } from "../../lib/chat/chat-types.ts";
 import { updateHumanMentions } from "../../lib/chat/human-mentions.ts";
+/* @vitest-environment jsdom */
+import { NewSessionComposerTextareaController } from "../new-session/composer-controller.ts";
+import { renderNewSessionComposer } from "../new-session/composer.ts";
 import {
-  NewSessionComposerTextareaController,
-  renderNewSessionComposer,
-} from "../new-session/composer.ts";
-import { createComposerProps, resetComposerFixture } from "./chat-composer.test-support.ts";
+  createComposerProps,
+  findPrimaryButton,
+  resetComposerFixture,
+} from "./chat-composer.test-support.ts";
 import { renderChatComposer } from "./components/chat-composer.ts";
 
 const people: UsersMentionableResult = {
@@ -81,6 +83,7 @@ function composerFixture(
             onSend: () => send({ draft, mentions }),
           })
         : renderNewSessionComposer({
+            renderCritters: () => nothing,
             message: draft,
             mentions,
             getMentions: () => mentions,
@@ -158,32 +161,53 @@ function composerFixture(
 }
 
 describe("chat inline commands with human mentions", () => {
-  it("keeps an inline command and its recipient in the draft until chat is ready", () => {
+  it("sends an ordinary message with its recipient while history loads", () => {
     const mention = { profileId: "profile-alex-online", start: 7, end: 12 };
-    const view = composerFixture("chat", "Review @Alex", [mention], "Loading chat");
+    const draft = "Review @Alex";
+    const view = composerFixture("chat", draft, [mention], "Loading chat");
 
-    view.edit("Review @Alex /dashboard release health");
+    view.edit(draft);
+    view.key("Escape");
     view.key("Enter");
 
     expect(view.slashCommand).not.toHaveBeenCalled();
-    expect(view.send).not.toHaveBeenCalled();
-    expect(view.value()).toEqual({
-      draft: "Review @Alex /dashboard release health",
-      mentions: [mention],
-    });
+    expect(view.send).toHaveBeenCalledExactlyOnceWith({ draft, mentions: [mention] });
   });
 
-  it("runs an appended multi-word dashboard request and keeps the draft recipient", () => {
+  it.each([
+    { input: "keyboard", history: "ready", action: "command" },
+    { input: "keyboard", history: "loading", action: "held" },
+    { input: "button", history: "ready", action: "message" },
+    { input: "button", history: "loading", action: "message" },
+  ])("handles appended commands via $input with history $history", ({ input, history, action }) => {
     const mention = { profileId: "profile-alex-online", start: 7, end: 12 };
-    const view = composerFixture("chat", "Review @Alex", [mention]);
+    const draft = "Review @Alex /dashboard release health";
+    const view = composerFixture(
+      "chat",
+      "Review @Alex",
+      [mention],
+      history === "loading" ? "Loading chat" : undefined,
+    );
 
-    view.edit("Review @Alex /dashboard release health");
-    view.key("Enter");
+    view.edit(draft);
+    if (input === "keyboard") {
+      view.key("Enter");
+    } else {
+      findPrimaryButton(view.container).click();
+    }
 
-    expect(view.slashCommand).toHaveBeenCalledExactlyOnceWith("/dashboard release health");
-    expect(view.send).not.toHaveBeenCalled();
+    if (action === "command") {
+      expect(view.slashCommand).toHaveBeenCalledExactlyOnceWith("/dashboard release health");
+    } else {
+      expect(view.slashCommand).not.toHaveBeenCalled();
+    }
+    if (action === "message") {
+      expect(view.send).toHaveBeenCalledExactlyOnceWith({ draft, mentions: [mention] });
+    } else {
+      expect(view.send).not.toHaveBeenCalled();
+    }
     expect(view.value()).toEqual({
-      draft: "Review @Alex ",
+      draft: action === "command" ? "Review @Alex " : draft,
       mentions: [mention],
     });
   });

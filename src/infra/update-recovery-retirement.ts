@@ -25,7 +25,6 @@ import {
   MAX_MANIFEST_BYTES,
   statOrMissing,
 } from "./update-recovery-backup-files.js";
-
 function assertLocator(runId: string, receipt: UpdateRecoveryRetirement) {
   if (
     receipt.stateDir !== resolvePathViaExistingAncestorSync(resolveStateDir()) ||

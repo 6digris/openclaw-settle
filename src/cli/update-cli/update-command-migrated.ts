@@ -11,9 +11,11 @@ import {
   resolveUpdateStateContentVersion,
   updateStateSchemaVersionsMatch,
 } from "../../infra/update-candidate-state.js";
+import { resolveUpdateFinalizationTimeoutMs } from "../../infra/update-finalization-budget.js";
 import { readBuiltGatewayBuildId } from "../../infra/update-git-runtime.js";
 import { recordUpdateRunStep } from "../../infra/update-run-ledger.js";
 import type { UpdateRunStep } from "../../infra/update-run-record.js";
+import { isUpdateGatewayReadinessPending } from "../../infra/update-run-step.js";
 import { retireCommandProcessJobForHandoff } from "../../process/exec-spawn.js";
 import { runUtf8CommandWithTimeout } from "../../process/exec.js";
 import { defaultRuntime } from "../../runtime.js";
@@ -54,13 +56,8 @@ import {
   withOwnedManagedUpdateEnv,
 } from "./update-command-service-env.js";
 import { createWindowsTaskAutoStartGuard } from "./update-command-service-maintenance.js";
-import { recordVerifiedUpdatePackageCleanup } from "./update-command-terminal.js";
+import { recordUpdatePackageCompletion } from "./update-command-terminal.js";
 import { createWindowsTaskAutoStartRecovery } from "./update-command-windows-task.js";
-
-export type {
-  MigratedUpdateFinalizationInput,
-  MigratedUpdateFinalizationResult,
-} from "./update-command-migrated-types.js";
 
 /** Inspect private state copies without reopening migrated state through the previous runtime. */
 export async function inspectActivatedUpdateState(
@@ -71,6 +68,7 @@ export async function inspectActivatedUpdateState(
     config: OpenClawConfig;
     env: NodeJS.ProcessEnv;
     candidateSchemaVersions?: OpenClawSchemaVersions;
+    timeoutMs?: number;
   },
 ): Promise<FinishUpdateParams["rollbackBlockedReason"]> {
   const { result, root, schemaVersions, candidateSchemaVersions, env, config } = params;
@@ -84,6 +82,7 @@ export async function inspectActivatedUpdateState(
       env,
       root: result.root ?? null,
       nodeRunner: params.packageUpdateNodeRunner,
+      timeoutMs: params.timeoutMs,
     });
     const shared = current.find((entry) => entry.path === resolveOpenClawStateSqlitePath(env));
     const sharedVersion = shared ? resolveUpdateStateContentVersion(shared) : undefined;
@@ -229,6 +228,7 @@ async function recoverMigratedUpdateInParent(
     meta: params.controlPlaneUpdateSentinelMeta,
     result: completed,
     jsonMode: Boolean(params.opts.json),
+    env: params.ownedManagedUpdateEnv ?? run?.env,
   });
   assertCurrent();
   printResult(completed, params.opts, { nextAction });
@@ -311,6 +311,7 @@ export async function continueMigratedUpdateInFreshProcess(
         command: workerCommand,
         root,
         env: workerEnv,
+        timeoutMs: params.updateStepTimeoutMs,
       });
       candidateExtinguished = check.cleanup !== "uncertain";
       assertCurrent();
@@ -359,6 +360,16 @@ export async function continueMigratedUpdateInFreshProcess(
       const { windowsTaskAutoStartRecovery: _windows, ...serializableStop } = preManagedServiceStop;
       stopState = serializableStop;
     }
+    run.activationTimeoutMs ??= await resolveUpdateFinalizationTimeoutMs(
+      params.updateStepTimeoutMs,
+      {
+        env: params.ownedManagedUpdateEnv ?? run.env,
+        databases: params.schemaVersions,
+        pluginCount: Object.keys(params.preUpdatePluginInstallRecords).length,
+        nodeRunner: params.packageUpdateNodeRunner,
+      },
+    );
+    assertCurrent();
     const resultPath = path.join(scratchDir, "result.json");
     const { requesterAuthority, executorFence, ...runIdentity } = run;
     const input: MigratedUpdateFinalizationInput = {
@@ -391,7 +402,7 @@ export async function continueMigratedUpdateInFreshProcess(
     };
     const runChild = async (
       grant?: UpdateCommandChildGrant,
-      beforeInput?: (pid: number) => void,
+      beforeInput?: (pid: number, argv?: readonly string[]) => void,
     ) => {
       try {
         const command = await runUtf8CommandWithTimeout(workerCommand, {
@@ -402,7 +413,7 @@ export async function continueMigratedUpdateInFreshProcess(
           beforeInput,
           // This continuation includes bounded plugin steps as well as service
           // verification; the whole-process bound must exceed one step's budget.
-          timeoutMs: Math.max(30 * 60_000, params.updateStepTimeoutMs * 6),
+          timeoutMs: run.activationTimeoutMs,
           killProcessTree: true,
           requireProcessTreeExtinction: true,
           killGraceMs: 500,
@@ -477,7 +488,9 @@ export async function continueMigratedUpdateInFreshProcess(
       return await recover(response.result);
     }
     try {
-      await windowsRecovery?.complete(response.result.status === "ok");
+      await windowsRecovery?.complete(
+        response.result.status === "ok" || isUpdateGatewayReadinessPending(response.result),
+      );
     } catch (cause) {
       throw new UpdateCommandFailure(
         response.result,
@@ -556,13 +569,13 @@ export async function continueMigratedUpdateInFreshProcess(
         },
       );
     }
-    const cleanupFailure = await recordVerifiedUpdatePackageCleanup(
+    const cleanupFailure = await recordUpdatePackageCompletion(
       params,
       response.result,
       assertCurrent,
     );
     if (cleanupFailure) {
-      return { result: cleanupFailure.result, exitCode: cleanupFailure.exitCode };
+      throw cleanupFailure;
     }
     return {
       result: response.result,

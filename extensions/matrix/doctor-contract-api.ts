@@ -66,6 +66,7 @@ import {
 } from "./src/matrix/monitor/inbound-dedupe-migration.js";
 import type { MatrixStoredRecoveryKey } from "./src/matrix/sdk/types.js";
 import { resolveMatrixCredentialsDir } from "./src/storage-paths.js";
+// Matrix API module exposes the plugin public contract.
 
 export { normalizeCompatibilityConfig, legacyConfigRules } from "./config-doctor-api.js";
 

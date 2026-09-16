@@ -6,7 +6,6 @@ import type {
 } from "openclaw/plugin-sdk/runtime-doctor-migrations";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { CODEX_APP_SERVER_BINDING_NAMESPACE } from "../app-server/session-binding-meta.js";
-
 const PAGE_SIZE = 512;
 const KEY_PREFIXES = ["session-key:", "session:"] as const;
 

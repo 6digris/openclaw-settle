@@ -17,7 +17,6 @@ import {
   UpdateCommandFailure,
   UpdateCommandPendingRecoveryFailure,
 } from "./update-command-result.js";
-
 /** The caller owns stopped writers and joined children; this operation never starts a Gateway. */
 export async function restoreUpdateRecoveryState(
   backup: UpdateRecoveryBackupRef,

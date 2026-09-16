@@ -4,11 +4,16 @@ import type { OpenClawSchemaVersions } from "../state/openclaw-schema-versions.j
 import type { LocalPackageOverridesResult } from "./package-local-overrides.js";
 import type { UpdateChannel } from "./update-channels.js";
 import type { DevUpdateTarget } from "./update-dev-target.js";
+import type {
+  UpdateDoctorConfigChange,
+  UpdateDoctorConfigWriteRefusal,
+} from "./update-doctor-config.js";
 import type { PackageUpdateStepAdvisory } from "./update-doctor-result.js";
+import type { UpdateFailureFact } from "./update-failure-facts.js";
 import type { GlobalInstallManager } from "./update-global.js";
 import type { UpdateRecoveryBackupRef } from "./update-recovery-backup-contract.js";
 import type { UpdateRecovery } from "./update-recovery.js";
-
+import type { UpdateSnapshotCapacity } from "./update-snapshot-capacity.js";
 export type UpdateStepAdvisory =
   | PackageUpdateStepAdvisory
   | { kind: "candidate-runtime-unavailable" | "recoverable-maintenance"; message: string };
@@ -27,6 +32,10 @@ export type UpdateStepResult = {
   advisory?: UpdateStepAdvisory;
   /** Complete owner-classified warnings when one step reports several outcomes. */
   warnings?: string[];
+  failureFacts?: UpdateFailureFact[];
+  configChanges?: UpdateDoctorConfigChange[];
+  configWriteRefusal?: UpdateDoctorConfigWriteRefusal;
+  snapshotCapacity?: UpdateSnapshotCapacity;
 };
 
 export type UpdateRunResult = {
@@ -48,6 +57,7 @@ export type UpdateRunResult = {
   recovery?: UpdateRecovery;
   postUpdate?: {
     plugins?: {
+      failureFacts?: UpdateFailureFact[];
       status: "ok" | "warning" | "skipped" | "error";
       reason?: string;
       changed: boolean;
@@ -108,6 +118,13 @@ export type UpdateStepProgress = {
   onStepComplete?: (step: UpdateStepCompletion) => void;
 };
 
+type GitUpdateTarget = {
+  sha?: string;
+  version?: string;
+  schemaVersions?: OpenClawSchemaVersions;
+  metadataUnreadable?: string;
+};
+
 export type UpdateRunnerOptions = {
   runId?: string;
   cwd?: string;
@@ -124,22 +141,20 @@ export type UpdateRunnerOptions = {
   /** Expose a new checkout only after target admission; subsequent work uses the published path. */
   publishGitCheckout?: () => Promise<string>;
   /** Read-only admission before executing a fetched candidate; never stops a service. */
-  inspectGitTarget?: (target: {
-    schemaVersions?: OpenClawSchemaVersions;
-    metadataUnreadable?: string;
-  }) => Promise<void>;
+  inspectGitTarget?: (target: GitUpdateTarget) => Promise<void>;
   /** Admit the built candidate after validation, before retention or activation. */
   inspectGitCandidate?: (candidateRoot: string) => Promise<void>;
+  /** Admit required preparation after no-op detection, before allocating the candidate worktree. */
+  beforeGitStaging?: () => Promise<{ step: UpdateStepResult; failureReason: string }>;
   validateCandidate?: (root: string) => Promise<void>;
+  /** CLI-owned activation Doctor retains its config writer and requester authority. */
+  runGitDoctor?: (root: string) => Promise<UpdateStepResult | null>;
   prepareGitExposure?: (
     candidateRoot: string,
     candidateSha: string,
     env: NodeJS.ProcessEnv | undefined,
   ) => Promise<void>;
-  beforeGitMutation?: (target: {
-    schemaVersions?: OpenClawSchemaVersions;
-    metadataUnreadable?: string;
-  }) => Promise<{
+  beforeGitMutation?: (target: GitUpdateTarget) => Promise<{
     allowGatewayServiceRepair?: boolean;
     allowGatewayActivation?: boolean;
   } | void>;

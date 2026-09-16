@@ -9,7 +9,6 @@ import type {
 } from "../plugin-state/plugin-state-store.js";
 import { coerceDoctorSessionRouteStateOwners } from "./doctor-session-route-state-owner-types.js";
 import type { PluginManifestDoctorContract } from "./manifest-types.js";
-
 export type PluginDoctorStateMigrationDetection = {
   preview: string[];
 };

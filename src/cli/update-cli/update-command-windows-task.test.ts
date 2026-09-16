@@ -12,7 +12,6 @@ import { createManagedHandoffLeaseStore } from "../../infra/update-managed-servi
 import { createUpdateRun, getUpdateRun } from "../../infra/update-run-ledger.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
 import { createWindowsTaskAutoStartRecovery } from "./update-command-windows-task.js";
-
 vi.mock("../../daemon/schtasks.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../daemon/schtasks.js")>()),
   resumeScheduledTaskAutoStartAfterUpdate: vi.fn(),

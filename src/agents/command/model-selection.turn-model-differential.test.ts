@@ -95,6 +95,7 @@ vi.mock("../model-thinking-default.js", () => ({
 vi.mock("../model-visibility-policy.js", () => ({
   createModelVisibilityPolicy: () => ({
     allowAny: true,
+    catalog: [],
     allowedCatalog: [],
     selectionAliasIndex: { byAlias: new Map(), byKey: new Map() },
     allows: () => true,
@@ -111,7 +112,7 @@ vi.mock("../session-runtime-compat.js", () => ({
   resolveSessionRuntimeOverrideForProvider: () => undefined,
 }));
 vi.mock("../thinking-runtime.js", () => ({
-  hasResolvedThinkingCatalogEntry: () => false,
+  needsThinkHydration: () => false,
   normalizeThinkingCatalogProviders: (catalog: unknown) => catalog,
   resolveEffectiveAgentRuntime: () => undefined,
 }));

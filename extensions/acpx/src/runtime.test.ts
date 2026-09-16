@@ -38,7 +38,7 @@ function makeEmptySessionStore(): TestSessionStore {
 
 const DOCUMENTED_OPENCLAW_BRIDGE_COMMAND =
   "env OPENCLAW_HIDE_BANNER=1 OPENCLAW_SUPPRESS_NOTES=1 openclaw acp --url ws://127.0.0.1:18789 --token-file ~/.openclaw/gateway.token --session agent:main:main";
-const CODEX_ACP_COMMAND = "npx @agentclientprotocol/codex-acp@1.6.2";
+const CODEX_ACP_COMMAND = "npx @agentclientprotocol/codex-acp@1.10.0";
 const CODEX_ACP_WRAPPER_COMMAND = `node "/tmp/openclaw/acpx/codex-acp-wrapper.mjs"`;
 const CODEX_ACP_WRAPPER_COMMAND_WITH_LEASE = `${CODEX_ACP_WRAPPER_COMMAND} ${OPENCLAW_ACPX_LEASE_ID_ARG} lease-close ${OPENCLAW_GATEWAY_INSTANCE_ID_ARG} gateway-test`;
 const LOCAL_NODE_MODULES_CODEX_COMMAND = `node "${path.resolve(
@@ -1314,7 +1314,7 @@ describe("AcpxRuntime fresh reset wrapper", () => {
       }),
     ).toEqual([
       "npx",
-      "@agentclientprotocol/codex-acp@1.6.2",
+      "@agentclientprotocol/codex-acp@1.10.0",
       OPENCLAW_CODEX_CONFIG_ARG,
       '{"model":"gpt-5.4","model_reasoning_effort":"medium"}',
     ]);
@@ -2628,10 +2628,7 @@ describe("AcpxRuntime fresh reset wrapper", () => {
         list: () => ["codex"],
       },
     });
-    let releaseFirst!: () => void;
-    const firstBlocked = new Promise<void>((resolve) => {
-      releaseFirst = resolve;
-    });
+    const { promise: firstBlocked, resolve: releaseFirst } = createDeferred<void>();
     let entered = 0;
     let active = 0;
     let maxActive = 0;
@@ -3080,14 +3077,8 @@ describe("AcpxRuntime fresh reset wrapper", () => {
       openclawProcessLeaseStore: leaseStore.store,
       openclawWrapperRoot: "/tmp/openclaw/acpx",
     });
-    let markTurnStarted!: () => void;
-    const turnStarted = new Promise<void>((resolve) => {
-      markTurnStarted = resolve;
-    });
-    let releaseTurn!: () => void;
-    const turnBlocked = new Promise<void>((resolve) => {
-      releaseTurn = resolve;
-    });
+    const { promise: turnStarted, resolve: markTurnStarted } = createDeferred<void>();
+    const { promise: turnBlocked, resolve: releaseTurn } = createDeferred<void>();
     vi.spyOn(delegate, "startTurn").mockImplementation((input) => {
       markTurnStarted();
       return makeTurn(input, { result: turnBlocked.then(() => ({ status: "completed" })) });
@@ -3147,14 +3138,8 @@ describe("AcpxRuntime fresh reset wrapper", () => {
       openclawProcessLeaseStore: leaseStore.store,
       openclawWrapperRoot: "/tmp/openclaw/acpx",
     });
-    let markTurnStarted!: () => void;
-    const turnStarted = new Promise<void>((resolve) => {
-      markTurnStarted = resolve;
-    });
-    let releaseTurn!: () => void;
-    const turnBlocked = new Promise<void>((resolve) => {
-      releaseTurn = resolve;
-    });
+    const { promise: turnStarted, resolve: markTurnStarted } = createDeferred<void>();
+    const { promise: turnBlocked, resolve: releaseTurn } = createDeferred<void>();
     vi.spyOn(delegate, "startTurn").mockImplementation((input) => {
       markTurnStarted();
       return makeTurn(input, { result: turnBlocked.then(() => ({ status: "completed" })) });
@@ -3203,14 +3188,8 @@ describe("AcpxRuntime fresh reset wrapper", () => {
         list: () => ["codex"],
       },
     });
-    let markLaunchPersisted!: () => void;
-    const launchPersisted = new Promise<void>((resolve) => {
-      markLaunchPersisted = resolve;
-    });
-    let failLaunch!: () => void;
-    const launchBlocked = new Promise<void>((resolve) => {
-      failLaunch = resolve;
-    });
+    const { promise: launchPersisted, resolve: markLaunchPersisted } = createDeferred<void>();
+    const { promise: launchBlocked, resolve: failLaunch } = createDeferred<void>();
     vi.spyOn(delegate, "ensureSession").mockImplementation(async (input) => {
       const command = runtimeCommand(runtime);
       await wrappedStore.save({
@@ -3222,14 +3201,8 @@ describe("AcpxRuntime fresh reset wrapper", () => {
       await launchBlocked;
       throw new Error("launch failed");
     });
-    let markControlStarted!: () => void;
-    const controlStarted = new Promise<void>((resolve) => {
-      markControlStarted = resolve;
-    });
-    let releaseControl!: () => void;
-    const controlBlocked = new Promise<void>((resolve) => {
-      releaseControl = resolve;
-    });
+    const { promise: controlStarted, resolve: markControlStarted } = createDeferred<void>();
+    const { promise: controlBlocked, resolve: releaseControl } = createDeferred<void>();
     vi.spyOn(delegate, "setMode").mockImplementation(async () => {
       markControlStarted();
       await controlBlocked;
@@ -3273,14 +3246,8 @@ describe("AcpxRuntime fresh reset wrapper", () => {
     };
     const leaseStore = makeLeaseStore();
     let leaseLoads = 0;
-    let markRetirementStarted!: () => void;
-    const retirementStarted = new Promise<void>((resolve) => {
-      markRetirementStarted = resolve;
-    });
-    let releaseRetirement!: () => void;
-    const retirementBlocked = new Promise<void>((resolve) => {
-      releaseRetirement = resolve;
-    });
+    const { promise: retirementStarted, resolve: markRetirementStarted } = createDeferred<void>();
+    const { promise: retirementBlocked, resolve: releaseRetirement } = createDeferred<void>();
     leaseStore.store.load.mockImplementation(async (leaseId: string) => {
       leaseLoads += 1;
       if (leaseLoads === 2) {
@@ -3346,14 +3313,8 @@ describe("AcpxRuntime fresh reset wrapper", () => {
       state: "open",
     });
     let leaseLoads = 0;
-    let markRetirementStarted!: () => void;
-    const retirementStarted = new Promise<void>((resolve) => {
-      markRetirementStarted = resolve;
-    });
-    let releaseRetirement!: () => void;
-    const retirementBlocked = new Promise<void>((resolve) => {
-      releaseRetirement = resolve;
-    });
+    const { promise: retirementStarted, resolve: markRetirementStarted } = createDeferred<void>();
+    const { promise: retirementBlocked, resolve: releaseRetirement } = createDeferred<void>();
     leaseStore.store.load.mockImplementation(async (leaseId: string) => {
       leaseLoads += 1;
       if (leaseLoads === 2) {

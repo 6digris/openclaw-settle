@@ -3,7 +3,6 @@ import {
   maybeStopManagedServiceBeforeMutableUpdate,
   type PreManagedServiceStop,
 } from "./update-command-service.js";
-
 /** Current-core maintenance keeps one stopped interval from its first write through activation. */
 export async function parkCurrentCoreUpdate(
   params: Omit<

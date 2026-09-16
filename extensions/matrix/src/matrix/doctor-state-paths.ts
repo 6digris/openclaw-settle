@@ -3,7 +3,6 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { PluginDoctorMigrationBackupResource } from "openclaw/plugin-sdk/runtime-doctor-migrations";
 import { resolveMatrixStateLayoutChildDepth } from "../storage-paths.js";
-
 export async function collectLegacyMatrixStateRoots(
   stateDir: string,
   filename: string,

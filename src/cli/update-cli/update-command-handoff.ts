@@ -32,7 +32,6 @@ import { printResult } from "./progress.js";
 import { resolveNodeRunner, UpdatePreMutationError, type UpdateCommandOptions } from "./shared.js";
 import { releaseUpdateCommandPreflightForHandoff } from "./update-command-executor.js";
 import { resolveOwnedManagedUpdateEnv } from "./update-command-service-env.js";
-
 function parsePositivePid(value: unknown): number | null {
   if (typeof value === "number") {
     return Number.isFinite(value) && value > 0 ? Math.floor(value) : null;
@@ -144,6 +143,12 @@ export async function handoffUpdateFromGateway(params: {
       : null);
   if (!parentPid || !supervisor) {
     return false;
+  }
+  if (params.opts.bridge !== undefined) {
+    throw new UpdatePreMutationError(
+      "bridge-managed-handoff-unsupported",
+      "The update bridge cannot transfer to the installed updater. Run it from a shell outside the Gateway service.",
+    );
   }
   params.stopProgress();
   const env = resolveOwnedManagedUpdateEnv({

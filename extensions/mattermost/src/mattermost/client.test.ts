@@ -165,10 +165,7 @@ describe("readMattermostError", () => {
   });
 
   it("parses bounded JSON error messages from response bodies", async () => {
-    const response = new Response(JSON.stringify({ message: "invalid token", id: "app.error" }), {
-      status: 401,
-      headers: { "content-type": "application/json" },
-    });
+    const response = Response.json({ message: "invalid token", id: "app.error" }, { status: 401 });
     const jsonSpy = vi.spyOn(response, "json").mockRejectedValue(new Error("unbounded"));
     const textSpy = vi.spyOn(response, "text").mockRejectedValue(new Error("unbounded"));
 
@@ -195,10 +192,7 @@ describe("readMattermostError", () => {
 
   it("redacts reflected credentials in JSON error messages", async () => {
     const token = "mm-bot-token-ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-    const response = new Response(JSON.stringify({ message: `auth failed for Bearer ${token}` }), {
-      status: 401,
-      headers: { "content-type": "application/json" },
-    });
+    const response = Response.json({ message: `auth failed for Bearer ${token}` }, { status: 401 });
 
     const detail = await readMattermostError(response, { Authorization: `Bearer ${token}` });
 
@@ -496,6 +490,84 @@ describe("createMattermostClient", () => {
     });
     const result = await client.request<unknown>("/anything", { method: "DELETE" });
     expect(result).toBeUndefined();
+  });
+
+  it("treats an accepted reaction add as success when its body read fails", async () => {
+    const release = vi.fn(async () => {});
+    const stream = new ReadableStream<Uint8Array>({
+      pull() {
+        throw new Error("accepted response body lost");
+      },
+    });
+    fetchWithSsrFGuardMock.mockResolvedValueOnce({
+      response: new Response(stream, {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      }),
+      release,
+    });
+    const client = createMattermostClient({
+      baseUrl: "https://chat.example.com",
+      botToken: "test-token",
+    });
+
+    await expect(
+      client.request("/reactions", {
+        method: "POST",
+        body: JSON.stringify({ user_id: "u1", post_id: "p1", emoji_name: "+1" }),
+      }),
+    ).resolves.toBeUndefined();
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats an accepted reaction add as success when its body is undecodable", async () => {
+    const release = vi.fn(async () => {});
+    fetchWithSsrFGuardMock.mockResolvedValueOnce({
+      response: new Response('{"partial":', {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      }),
+      release,
+    });
+    const client = createMattermostClient({
+      baseUrl: "https://chat.example.com",
+      botToken: "test-token",
+    });
+
+    await expect(
+      client.request("/reactions", {
+        method: "POST",
+        body: JSON.stringify({ user_id: "u1", post_id: "p1", emoji_name: "+1" }),
+      }),
+    ).resolves.toBeUndefined();
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a rejecting body cancellation on an accepted reaction add", async () => {
+    const release = vi.fn(async () => {});
+    const stream = new ReadableStream<Uint8Array>({
+      cancel() {
+        return Promise.reject(new Error("release failed"));
+      },
+    });
+    fetchWithSsrFGuardMock.mockResolvedValueOnce({
+      response: new Response(stream, {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      }),
+      release,
+    });
+    const client = createMattermostClient({
+      baseUrl: "https://chat.example.com",
+      botToken: "test-token",
+    });
+
+    await expect(
+      client.request("/reactions", {
+        method: "POST",
+        body: JSON.stringify({ user_id: "u1", post_id: "p1", emoji_name: "+1" }),
+      }),
+    ).resolves.toBeUndefined();
   });
 });
 

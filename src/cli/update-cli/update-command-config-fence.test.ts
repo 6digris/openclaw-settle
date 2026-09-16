@@ -14,7 +14,6 @@ import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { persistRequestedUpdateChannel } from "./update-command-config.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
-
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => {
   closeOpenClawStateDatabaseForTest();
