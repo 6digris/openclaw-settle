@@ -273,10 +273,12 @@ describe("AgentRuntimePlan tool policy helpers", () => {
       const catalogRef = createToolSearchCatalogRef();
       try {
         const output = { content: [{ type: "text" as const, text: "fixture note" }], details: {} };
-        const tool = {
+        const tool: AgentTool = {
           ...createParameterFreeTool("fixture__lookup_note"),
+          label: "Fixture lookup",
+          parameters: Type.Object({}),
           execute: vi.fn(async () => output),
-        } as AgentTool;
+        };
         const metadata: Parameters<typeof setPluginToolMeta>[1] = {
           pluginId: "bundle-mcp",
           optional: false,
