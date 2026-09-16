@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -7,6 +7,9 @@ import { describe, expect, it, vi } from "vitest";
 import officialExternalChannelCatalog from "../../scripts/lib/official-external-channel-catalog.json" with { type: "json" };
 import officialExternalPluginCatalog from "../../scripts/lib/official-external-plugin-catalog.json" with { type: "json" };
 import officialExternalProviderCatalog from "../../scripts/lib/official-external-provider-catalog.json" with { type: "json" };
+import { collectExtensionPackageJsonCandidates } from "../../scripts/lib/plugin-publication-candidates.ts";
+import type { PluginPackageJson } from "../../scripts/lib/plugin-publication-collector.ts";
+import { isPluginPublicationEnabled } from "../../scripts/lib/plugin-publication-target.mjs";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db-cache.js";
 import type { PluginPackageInstall } from "./manifest.js";
 import { createSqliteHostedOfficialExternalPluginCatalogSnapshotStore } from "./official-external-plugin-catalog-snapshot-store.js";
@@ -35,12 +38,9 @@ import {
 import { createInMemoryHostedCatalogSnapshotStore } from "./official-external-plugin-catalog.test-support.js";
 import type { HostedOfficialExternalPluginCatalogSnapshot } from "./official-external-plugin-catalog.types.js";
 
-type ExtensionPackageMetadata = {
-  name?: unknown;
+type ExtensionPackageMetadata = PluginPackageJson & {
   openclaw?: {
-    build?: { bundledDist?: unknown };
     install?: PluginPackageInstall;
-    release?: { publishToClawHub?: unknown; publishToNpm?: unknown };
   };
 };
 
@@ -63,63 +63,46 @@ function resolveBundledCatalogIdentity(entry: BundledCatalogIdentity): string | 
   );
 }
 
-function listPublishedPluginOwners(): Array<{
-  id: string;
-  packageName: string;
-  install: PluginPackageInstall;
-  publishToClawHub: boolean;
-  external: boolean;
-}> {
-  const extensionsDir = new URL("../../extensions/", import.meta.url);
-  return readdirSync(extensionsDir, { withFileTypes: true }).flatMap((entry) => {
-    if (!entry.isDirectory()) {
-      return [];
-    }
-    const extensionDir = new URL(`${entry.name}/`, extensionsDir);
-    let packageJson: ExtensionPackageMetadata;
-    try {
-      packageJson = JSON.parse(
-        readFileSync(new URL("package.json", extensionDir), "utf8"),
-      ) as ExtensionPackageMetadata;
-    } catch {
-      return [];
-    }
-    const release = packageJson.openclaw?.release;
-    if (
-      packageJson.openclaw?.build?.bundledDist === true ||
-      (release?.publishToClawHub !== true && release?.publishToNpm !== true)
-    ) {
-      return [];
-    }
-    const packageName = packageJson.name;
-    if (typeof packageName !== "string" || !packageName.trim()) {
-      throw new Error(`${entry.name} publishes without a package name`);
-    }
-    const install = packageJson.openclaw?.install;
-    if (!install) {
-      throw new Error(`${entry.name} publishes without install metadata`);
-    }
-    let manifest: { id?: unknown };
-    try {
-      manifest = JSON.parse(
-        readFileSync(new URL("openclaw.plugin.json", extensionDir), "utf8"),
-      ) as { id?: unknown };
-    } catch {
-      throw new Error(`${entry.name} publishes without a readable plugin manifest`);
-    }
-    if (typeof manifest.id !== "string" || !manifest.id.trim()) {
-      throw new Error(`${entry.name} publishes without a manifest id`);
-    }
-    return [
-      {
-        id: manifest.id,
-        packageName,
-        install,
-        publishToClawHub: release?.publishToClawHub === true,
-        external: packageJson.openclaw?.build?.bundledDist === false,
-      },
-    ];
-  });
+function listPublishedPluginOwners() {
+  return collectExtensionPackageJsonCandidates<ExtensionPackageMetadata>().flatMap(
+    ({ extensionId, packageDir, packageJson }) => {
+      const publishToClawHub = isPluginPublicationEnabled(packageJson, "clawhub");
+      if (!publishToClawHub && !isPluginPublicationEnabled(packageJson, "npm")) {
+        return [];
+      }
+      const packageName = packageJson.name;
+      if (typeof packageName !== "string" || !packageName.trim()) {
+        throw new Error(`${extensionId} publishes without a package name`);
+      }
+      const install = packageJson.openclaw?.install;
+      if (!install) {
+        throw new Error(`${extensionId} publishes without install metadata`);
+      }
+      let manifest: { id?: unknown };
+      try {
+        manifest = JSON.parse(
+          readFileSync(
+            new URL(`../../${packageDir}/openclaw.plugin.json`, import.meta.url),
+            "utf8",
+          ),
+        ) as { id?: unknown };
+      } catch {
+        throw new Error(`${extensionId} publishes without a readable plugin manifest`);
+      }
+      if (typeof manifest.id !== "string" || !manifest.id.trim()) {
+        throw new Error(`${extensionId} publishes without a manifest id`);
+      }
+      return [
+        {
+          id: manifest.id,
+          packageName,
+          install,
+          publishToClawHub,
+          external: packageJson.openclaw?.build?.bundledDist === false,
+        },
+      ];
+    },
+  );
 }
 
 function expectCatalogEntry(id: string): OfficialExternalPluginCatalogEntry {
@@ -407,22 +390,36 @@ describe("official external plugin catalog", () => {
     expect(gaps).toEqual([]);
   });
 
-  it("declares each ClawHub publication target in its package", () => {
+  it("declares each published ClawHub counterpart in its package and discovery catalog", () => {
     const gaps = listPublishedPluginOwners().flatMap(
       ({ id, packageName, install, publishToClawHub }) => {
         if (!publishToClawHub) {
           return [];
         }
         const expected = `clawhub:${packageName}`;
-        // Bundled packages may be publishable before external catalog publication.
-        // The preceding test checks catalog/install parity for external owners.
-        return install.clawhubSpec === expected
+        const catalogSpec = resolveOfficialExternalPluginInstall(
+          expectCatalogEntry(id),
+        )?.clawhubSpec;
+        return install.clawhubSpec === expected && catalogSpec === expected
           ? []
-          : [{ id, packageName, expected, packageSpec: install.clawhubSpec }];
+          : [{ id, packageName, expected, packageSpec: install.clawhubSpec, catalogSpec }];
       },
     );
     expect(gaps).toEqual([]);
   });
+
+  it.each(["logbook", "memory-wiki", "onepassword"])(
+    "keeps deferred %s out of the external catalog",
+    (id) => {
+      const packageJson = JSON.parse(
+        readFileSync(new URL(`../../extensions/${id}/package.json`, import.meta.url), "utf8"),
+      ) as ExtensionPackageMetadata;
+      expect(isPluginPublicationEnabled(packageJson, "npm")).toBe(false);
+      expect(isPluginPublicationEnabled(packageJson, "clawhub")).toBe(false);
+      expect(getOfficialExternalPluginCatalogEntry(id)).toBeUndefined();
+      expect(getOfficialExternalPluginCatalogEntryForPackage(packageJson.name)).toBeUndefined();
+    },
+  );
 
   it("keeps Codex installable as a harness without declaring a model provider", () => {
     const entry = expectCatalogEntry("codex");
