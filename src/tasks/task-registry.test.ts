@@ -4426,19 +4426,18 @@ describe("task-registry", () => {
         lastEventAt: 100,
       };
       let restoreShouldFail = true;
-      const loadSnapshot = () => {
-        if (restoreShouldFail) {
-          throw new Error("SQLITE_IOERR: initial task restore failed");
-        }
-        return {
-          tasks: new Map([[storedTask.taskId, storedTask]]),
-          deliveryStates: new Map(),
-        };
-      };
       configureTaskRegistryRuntime({
         store: {
           ...createInMemoryTaskRegistryStore(),
-          loadSnapshot,
+          loadSnapshot: () => {
+            if (restoreShouldFail) {
+              throw new Error("SQLITE_IOERR: initial task restore failed");
+            }
+            return {
+              tasks: new Map([[storedTask.taskId, storedTask]]),
+              deliveryStates: new Map(),
+            };
+          },
         },
       });
 
@@ -4482,19 +4481,18 @@ describe("task-registry", () => {
         lastEventAt: 200,
       };
       let restoreError: Error | null = null;
-      const loadSnapshot = () => {
-        if (restoreError) {
-          throw restoreError;
-        }
-        return {
-          tasks: new Map([[storedTask.taskId, storedTask]]),
-          deliveryStates: new Map(),
-        };
-      };
       configureTaskRegistryRuntime({
         store: {
           ...createInMemoryTaskRegistryStore(),
-          loadSnapshot,
+          loadSnapshot: () => {
+            if (restoreError) {
+              throw restoreError;
+            }
+            return {
+              tasks: new Map([[storedTask.taskId, storedTask]]),
+              deliveryStates: new Map(),
+            };
+          },
         },
       });
       expect(getTaskById(storedTask.taskId)?.taskId).toBe(storedTask.taskId);
