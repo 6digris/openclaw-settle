@@ -334,7 +334,14 @@ export async function mutateSessionGoal(
         const goal = applySessionGoalOperation(fresh.entry, options.operation, Date.now());
         const next = mergeSessionEntry(fresh.entry, { goal });
         const identityKeys = collectSessionEntryLookupKeys(database, resolved.sessionKey);
-        const previousIdentity = readSessionIdentitySnapshot(database, identityKeys);
+        // The exact row was already validated in this same write transaction.
+        const previousIdentity = new Map([
+          [resolved.sessionKey, fresh.entry],
+          ...readSessionIdentitySnapshot(
+            database,
+            identityKeys.filter((key) => key !== resolved.sessionKey),
+          ),
+        ]);
         writeSessionEntry(database, resolved.sessionKey, next, {
           canonicalPreviousEntry: previousIdentity.get(resolved.sessionKey) ?? null,
         });
