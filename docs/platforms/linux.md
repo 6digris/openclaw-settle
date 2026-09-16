@@ -46,6 +46,17 @@ When connecting to an older Gateway whose dashboard does not support this layout
 the companion keeps the system title bar. Update the Gateway to enable the unified
 window controls.
 
+The local startup, setup, recovery, Gateway manager, and Quick Chat screens share
+light and dark styling and follow system appearance changes while open. Connection
+drafts, credential visibility, and Quick Chat replies stay intact. The connected
+dashboard retains its own web UI appearance setting.
+
+Remote setup and Connection Settings use one **Authentication** choice for token
+or password. **Show credential** reveals the entered value; switching types clears
+the draft and masks the new field. Press Enter or **Connect to Gateway** to connect.
+In Connection Settings, blank credentials reuse the saved credentials for the same
+endpoint.
+
 ### Desktop compatibility
 
 Published AMD64 AppImages are built on Ubuntu 22.04 and require glibc 2.35 or
@@ -76,10 +87,18 @@ bundles. See their platform pages for requirements and capabilities.
 ### Gateway selection
 
 Open **Gateways → Manage Gateways…** from the native app or tray menu to save a
-direct URL or SSH connection. The dashboard's profile menu switches only its
-current window; Control-click opens an additional window. Choosing a Gateway
-from the native menu focuses its existing window without reloading it, while
-**Open … in New Window** creates an independent one.
+direct URL or SSH connection. Choose **Add Gateway** or **Edit** to open the
+connection form; **Back to Gateways** returns to the saved list and discards
+unsaved changes. Under **Authentication**, choose token or password and enter a
+credential only if needed. Saved credentials stay hidden; leave the field blank
+to keep them for the same connection. Switching authentication types clears the
+credential you have entered. SSH certificate pins are under **Advanced connection
+settings**.
+
+The dashboard's profile menu switches only its current window; Control-click
+opens an additional window. Choosing a Gateway from the native menu focuses its
+existing window without reloading it, while **Open … in New Window** creates an
+independent one.
 
 The Primary Gateway continues to own Quick Chat and the desktop connection.
 Changing it requires the separate **Set as Primary** confirmation on a saved

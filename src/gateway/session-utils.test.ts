@@ -24,6 +24,7 @@ import {
 } from "../config/sessions/session-accessor.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import type { CronJob } from "../cron/types.js";
+import { clearAgentRunContext, registerAgentRunContext } from "../infra/agent-run-registry.js";
 import type { ExecApprovalsFile } from "../infra/exec-approvals-core.js";
 import * as execApprovalsStore from "../infra/exec-approvals-store.js";
 import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-lifecycle.js";
@@ -488,6 +489,38 @@ describe("gateway session utils", () => {
     expect(row.activeModel).toBeUndefined();
   });
 
+  test("projects a running candidate across aliased keys without changing the configured model", () => {
+    const runId = "live-model-projection";
+    const context = {
+      agentId: "main",
+      sessionKey: "agent:main:canonical",
+      sessionId: "live-model-session",
+      activeModel: { provider: "ollama", model: "qwen3.5:9b" },
+    };
+    registerAgentRunContext(runId, context);
+    onTestFinished(() => clearAgentRunContext(runId));
+    const row = buildGatewaySessionRow({
+      cfg: createModelDefaultsConfig({ primary: "anthropic/claude-sonnet-4-6" }),
+      storePath: "",
+      store: {},
+      key: "main",
+      entry: {
+        sessionId: context.sessionId,
+        updatedAt: 1,
+        status: "running",
+        lastRunId: runId,
+        modelProvider: "anthropic",
+        model: "claude-sonnet-4-6",
+      },
+    });
+    expect(row).toMatchObject({
+      modelProvider: "anthropic",
+      model: "claude-sonnet-4-6",
+      activeModelProvider: "ollama",
+      activeModel: "qwen3.5:9b",
+    });
+  });
+
   test.each([
     { name: "never read", entry: {}, expected: false },
     {
@@ -844,55 +877,61 @@ describe("gateway session utils", () => {
     ]);
   });
 
-  test("session lists separate archived rows and sort pinned sessions first", async () => {
-    const cfg = createModelDefaultsConfig({ primary: "openai/gpt-5.4" });
-    const store: Record<string, SessionEntry> = {
-      recent: { sessionId: "recent", updatedAt: 30 },
-      pinned: { sessionId: "pinned", updatedAt: 10, pinnedAt: 40 },
-      archived: {
-        sessionId: "archived",
-        updatedAt: 20,
-        archivedAt: 50,
-        archiveReason: "active-session-cap",
-      },
-    } satisfies Record<string, SessionEntry>;
+  test.each([
+    ["pinned", {}],
+    ["agent:main:dashboard:pinned", { parentSessionKey: "agent:main:main" }],
+  ])(
+    "session lists separate archived rows and sort pinned %s first",
+    async (pinnedKey, lineage) => {
+      const cfg = createModelDefaultsConfig({ primary: "openai/gpt-5.4" });
+      const store: Record<string, SessionEntry> = {
+        recent: { sessionId: "recent", updatedAt: 30 },
+        [pinnedKey]: { sessionId: "pinned", updatedAt: 10, pinnedAt: 40, ...lineage },
+        archived: {
+          sessionId: "archived",
+          updatedAt: 20,
+          archivedAt: 50,
+          archiveReason: "active-session-cap",
+        },
+      } satisfies Record<string, SessionEntry>;
 
-    const active = await listSessionFixture({ cfg, storePath: "", store, opts: {} });
-    expect(active.sessions.map((session) => session.key)).toEqual(["pinned", "recent"]);
-    expect(active.sessions[0]).toMatchObject({
-      pinned: true,
-      pinnedAt: 40,
-      archived: false,
-    });
+      const active = await listSessionFixture({ cfg, storePath: "", store, opts: {} });
+      expect(active.sessions.map((session) => session.key)).toEqual([pinnedKey, "recent"]);
+      expect(active.sessions[0]).toMatchObject({
+        pinned: true,
+        pinnedAt: 40,
+        archived: false,
+      });
 
-    const archived = await listSessionFixture({
-      cfg,
-      storePath: "",
-      store,
-      opts: { archived: true },
-    });
-    expect(archived.sessions).toMatchObject([
-      {
-        key: "archived",
-        archived: true,
-        archivedAt: 50,
-        archiveReason: "active-session-cap",
-        pinned: false,
-      },
-    ]);
+      const archived = await listSessionFixture({
+        cfg,
+        storePath: "",
+        store,
+        opts: { archived: true },
+      });
+      expect(archived.sessions).toMatchObject([
+        {
+          key: "archived",
+          archived: true,
+          archivedAt: 50,
+          archiveReason: "active-session-cap",
+          pinned: false,
+        },
+      ]);
 
-    const all = await listSessionFixture({
-      cfg,
-      storePath: "",
-      store,
-      opts: { archived: "all" },
-    });
-    expect(all.sessions.map((session) => session.key)).toEqual(["pinned", "recent", "archived"]);
-  });
+      const all = await listSessionFixture({
+        cfg,
+        storePath: "",
+        store,
+        opts: { archived: "all" },
+      });
+      expect(all.sessions.map((session) => session.key)).toEqual([pinnedKey, "recent", "archived"]);
+    },
+  );
 
   test.each([
     ["agent:main:dashboard:child", { spawnedBy: "agent:main:main" }],
-    ["agent:main:dashboard:child", { parentSessionKey: "agent:main:main" }],
+    ["agent:main:dashboard:child", { parentSessionKey: "agent:main:dashboard:parent" }],
     ["agent:main:subagent:child", {}],
   ] as const)(
     "ignores stale child pins in session list projection and ordering: %s %j",

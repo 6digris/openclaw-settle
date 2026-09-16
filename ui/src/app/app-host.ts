@@ -4,7 +4,6 @@ import type { GatewayBrowserClient, GatewayEventFrame } from "../api/gateway.ts"
 import "../components/app-topbar.ts";
 import "../components/assistant-panel.ts";
 import "../components/modal-dialog.ts";
-import "../pages/debug/debug-overlay.ts";
 import {
   formatDocumentTitle,
   isSettingsNavigationRoute,
@@ -306,6 +305,28 @@ class OpenClawShell
           };
         },
       )
+      .effect(
+        () => this.context,
+        (context) => {
+          const startedAt = Date.now();
+          let active = true;
+          let disconnect: (() => void) | undefined;
+          const runtime = createIdleImport(
+            () => import("./control-ui-favicon-status.runtime.ts"),
+            ({ connectControlUiFavicon }) => {
+              if (active) {
+                disconnect = connectControlUiFavicon(this, context, startedAt);
+              }
+            },
+          );
+          runtime.schedule();
+          return () => {
+            active = false;
+            runtime.dispose();
+            disconnect?.();
+          };
+        },
+      )
       .watch(
         () => this.context?.nativeDeviceSettings,
         (settings, notify) => settings.subscribe(notify),
@@ -321,6 +342,14 @@ class OpenClawShell
       .watch(
         () => this.context?.agentSelection,
         (selection, notify) => selection.subscribe(notify),
+      )
+      .watch(
+        () => this.context?.settingsAgentSelection,
+        (selection, notify) => selection.subscribe(notify),
+      )
+      .watch(
+        () => this.context?.agentIdentity,
+        (identity, notify) => identity.subscribe(notify),
       )
       .watch(
         () => this.context?.gateway,
@@ -582,6 +611,10 @@ class OpenClawShell
   readonly handleNativeHistoryState = this.shellChrome.handleNativeHistoryState;
   readonly handleWindowResize = this.shellChrome.handleWindowResize;
   readonly handleDocumentKeydown = this.shellChrome.handleDocumentKeydown;
+  get pendingDebugOverlayMode() {
+    return this.shellChrome.pendingDebugOverlayMode;
+  }
+  readonly togglePendingDebugOverlayMode = () => this.shellChrome.togglePendingDebugOverlayMode();
   readonly openPalette = this.shellChrome.openPalette;
   readonly refreshControlUi = (): Promise<boolean> => {
     const context = this.context;
@@ -656,6 +689,9 @@ class OpenClawShell
     const context = this.context;
     if (!context) {
       return;
+    }
+    if (this.querySelector(".settings-sidebar__agent")) {
+      void context.agentIdentity.ensure([context.settingsAgentSelection.state.selectedId]);
     }
     if (this.workspaceChromeVisible) {
       this.shellChrome.panels.restore();
