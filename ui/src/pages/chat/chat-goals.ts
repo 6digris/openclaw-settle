@@ -53,11 +53,7 @@ export function createChatGoalProps(
       : undefined,
   } satisfies Pick<
     ChatProps,
-    | "onGoalAction"
-    | "goalDraftMode"
-    | "currentSessionId"
-    | "onGoalDraftModeChange"
-    | "onGoalSubmit"
+    "onGoalAction" | "goalDraftMode" | "currentSessionId" | "onGoalDraftModeChange" | "onGoalSubmit"
   >;
 }
 
