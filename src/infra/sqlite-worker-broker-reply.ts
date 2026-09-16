@@ -25,7 +25,7 @@ import {
   type SqliteWorkerTransferFrame,
 } from "./sqlite-worker-transfer.js";
 
-export function dispatchSqliteWorkerJob(worker: Worker, job: Job): void {
+function dispatchSqliteWorkerJob(worker: Worker, job: Job): void {
   if (job.createAdmission) {
     const settlement = createDeferredCore<SqliteWorkerOperationSettlement>();
     job.settleNative = settlement.resolve;
@@ -72,7 +72,7 @@ function prepareSqliteWorkerRequest(job: Job): SqliteWorkerRequest {
   return { ...request, type: "execute-start", transfer };
 }
 
-export function decodeSqliteWorkerReplyValue(
+function decodeSqliteWorkerReplyValue(
   job: Job,
   reply: Extract<SqliteWorkerReply, { ok: true }>,
 ):
@@ -157,7 +157,7 @@ export function decodeSqliteWorkerReplyValue(
     : { type: "complete", value };
 }
 
-export function decodeSqliteWorkerReplyError(
+function decodeSqliteWorkerReplyError(
   job: Job,
   error: Extract<SqliteWorkerReply, { ok: false }>["error"],
 ): Error {

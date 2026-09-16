@@ -2,9 +2,20 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferredCore } from "../shared/deferred.js";
+import {
+  encodeOpenClawStateWorkerError,
+  hydrateOpenClawStateWorkerError,
+} from "../state/openclaw-state-worker-error.js";
+import { SqliteSchemaVersionError } from "./sqlite-user-version.js";
 import { SqliteWorkerBroker } from "./sqlite-worker-broker.js";
-import type { SqliteWorkerRequest, SqliteWorkerStore } from "./sqlite-worker-contract.js";
+import type {
+  SqliteWorkerReply,
+  SqliteWorkerRequest,
+  SqliteWorkerStore,
+} from "./sqlite-worker-contract.js";
+import { findStartupMaintenanceRequiredError } from "./startup-maintenance-required.js";
 
+type ReplyError = Extract<SqliteWorkerReply, { ok: false }>["error"];
 type Receipt = { worker: number; actor: number; writes: number };
 type Operations = { append: { input: string; output: Receipt } };
 type ControlledWorker = {
@@ -13,6 +24,7 @@ type ControlledWorker = {
   autoExit: boolean;
   holdExecute: boolean;
   failure?: "execute" | "close";
+  replyError?: ReplyError;
   requests: SqliteWorkerRequest[];
   terminationStarted: Promise<void>;
   finishTermination(): void;
@@ -41,6 +53,7 @@ vi.mock("node:worker_threads", async (importOriginal) => {
     autoExit = true;
     holdExecute = false;
     failure?: "execute" | "close";
+    replyError?: ReplyError;
     readonly requests: SqliteWorkerRequest[] = [];
     private readonly terminating = deferred();
     private readonly terminated = deferred<number>();
@@ -70,6 +83,14 @@ vi.mock("node:worker_threads", async (importOriginal) => {
             ok: false,
             retire: true,
             error: { name: "Error", message: `Fixture ${request.type} failed` },
+          });
+          return;
+        }
+        if (request.type === "execute" && this.replyError) {
+          this.emit("message", {
+            id: request.id,
+            ok: false,
+            error: structuredClone(this.replyError),
           });
           return;
         }
@@ -168,9 +189,6 @@ vi.mock("./state-database-coordinator.js", () => ({
 }));
 vi.mock("./sqlite-coordinator.js", () => ({ SqliteCoordinatorError: class extends Error {} }));
 vi.mock("./sqlite-transaction.js", () => ({ retainSqliteWriteAdmissionService: () => () => {} }));
-vi.mock("../state/openclaw-state-worker-error.js", () => ({
-  retainOpenClawStateWorkerErrorPayload: vi.fn(),
-}));
 
 const backend = new URL("file:///synthetic/memory.mjs");
 const foregroundBackend = new URL("file:///synthetic/foreground.mjs");
@@ -514,6 +532,57 @@ describe("SQLite worker thread reservation", () => {
         await Promise.allSettled([store.close()]);
       });
       expect(fixture.workers).toHaveLength(1);
+    },
+  );
+
+  it.each([false, true])(
+    "preserves shared-state error classification through the broker (outcome unknown: %s)",
+    async (outcomeUnknown) => {
+      const owner = broker();
+      const store = await owner.open<Operations>(
+        { moduleUrl: backend, databasePath: "/synthetic/state.sqlite", input: undefined },
+        {
+          environment: { OPENCLAW_STATE_DIR: "/synthetic" },
+          coordinatorRuntime: { directory: "/synthetic/coordinator", keepAlive: false },
+        },
+      );
+      if (!store) {
+        throw new Error("Synthetic shared-state store did not open");
+      }
+      try {
+        const payload = encodeOpenClawStateWorkerError(
+          new SqliteSchemaVersionError("newer schema"),
+        );
+        if (!payload) {
+          throw new Error("Expected canonical payload");
+        }
+        const code = outcomeUnknown ? "outcome-unknown" : "gateway.maintenance_required";
+        const name = outcomeUnknown ? "SqliteWorkerError" : "SqliteSchemaVersionError";
+        const message = outcomeUnknown ? "write outcome unknown" : "newer schema";
+        requiredFirst(fixture.workers).replyError = {
+          name,
+          message,
+          code,
+          sharedState: payload,
+        };
+        const outcome = await observe(append(store)).outcome;
+        if (outcome.ok || !(outcome.error instanceof Error)) {
+          throw new Error("Expected a transported worker failure");
+        }
+        const failure = outcome.error;
+        expect(failure).toMatchObject({ name, message, code });
+        const hydrated = hydrateOpenClawStateWorkerError(failure);
+        if (outcomeUnknown) {
+          expect(hydrated).toBe(failure);
+          expect(findStartupMaintenanceRequiredError(failure)).toBeUndefined();
+        } else {
+          expect(hydrated).toBeInstanceOf(SqliteSchemaVersionError);
+          expect(hydrated.message).toBe("newer schema");
+          expect(findStartupMaintenanceRequiredError(hydrated)).toBe(hydrated);
+        }
+      } finally {
+        await store.close();
+      }
     },
   );
 
