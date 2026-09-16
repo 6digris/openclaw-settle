@@ -26,6 +26,7 @@ type PendingAgentConsult = {
   cancelRequested: boolean;
   backendSettled: boolean;
   generation: number;
+  interruptedBySpeechGeneration?: number;
   abortController: AbortController;
   runRegistration?: { runId: string; controller: AbortController };
 };
@@ -66,9 +67,16 @@ export function createFaceTimeConsultController(params: {
       abortConsult(consult);
     }
   };
-  const cancelPending = () => {
+  const markPendingInterrupted = (speechGeneration: number) => {
     for (const consult of pending.values()) {
-      if (consult.cancelRequested) {
+      if (!consult.cancelRequested) {
+        consult.interruptedBySpeechGeneration = speechGeneration;
+      }
+    }
+  };
+  const cancelInterrupted = (speechGeneration: number) => {
+    for (const consult of pending.values()) {
+      if (consult.cancelRequested || consult.interruptedBySpeechGeneration !== speechGeneration) {
         continue;
       }
       consult.cancelRequested = true;
@@ -306,5 +314,5 @@ export function createFaceTimeConsultController(params: {
         void params.getBridge()?.submitToolResult(callId, { error: message });
       });
   };
-  return { abortForClose, cancelPending, handleToolCall };
+  return { abortForClose, cancelInterrupted, handleToolCall, markPendingInterrupted };
 }

@@ -617,6 +617,9 @@ describe("FaceTime talk driver lifecycle", () => {
     driver.activate();
     driver.activate();
 
+    expect(mocks.bridge.triggerGreeting).toHaveBeenCalledWith(
+      "Say exactly: Hi, I'm here and listening.",
+    );
     expect(mocks.bridge.triggerGreeting).toHaveBeenCalledOnce();
   });
 
@@ -771,6 +774,7 @@ describe("FaceTime talk driver lifecycle", () => {
       direction: "server",
       type: "input_audio_buffer.speech_started",
     });
+    mocks.sessionParams?.onTranscript?.("user", "A new question.", true);
     runTool("consult-b");
     await vi.waitFor(() => expect(mocks.consult).toHaveBeenCalledTimes(2));
     const first = mocks.consult.mock.calls[0]?.[0] as {
@@ -849,6 +853,7 @@ describe("FaceTime talk driver lifecycle", () => {
       direction: "server",
       type: "input_audio_buffer.speech_started",
     });
+    mocks.sessionParams?.onTranscript?.("user", "Actually, do something else.", true);
 
     await vi.waitFor(() =>
       expect(mocks.bridge.submitToolResult).toHaveBeenCalledWith(
@@ -887,6 +892,7 @@ describe("FaceTime talk driver lifecycle", () => {
       direction: "server",
       type: "input_audio_buffer.speech_started",
     });
+    mocks.sessionParams?.onTranscript?.("user", "Actually, do something else.", true);
 
     await vi.waitFor(() =>
       expect(mocks.bridge.submitToolResult).toHaveBeenCalledWith(
@@ -921,6 +927,7 @@ describe("FaceTime talk driver lifecycle", () => {
       direction: "server",
       type: "input_audio_buffer.speech_started",
     });
+    mocks.sessionParams?.onTranscript?.("user", "Actually, do something else.", true);
 
     await vi.waitFor(() =>
       expect(mocks.bridge.submitToolResult).toHaveBeenCalledWith(
@@ -951,9 +958,51 @@ describe("FaceTime talk driver lifecycle", () => {
       direction: "server",
       type: "input_audio_buffer.speech_started",
     });
+    mocks.sessionParams?.onTranscript?.("user", "Actually, do something else.", true);
 
     await vi.waitFor(() => expect(onFailure).toHaveBeenCalledWith(new Error("submission failed")));
     expect(mocks.bridge.close).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a consult alive through VAD noise and its originating transcript", async () => {
+    let finishConsult = (_result: { text: string }) => {};
+    mocks.consult.mockImplementationOnce(
+      () =>
+        new Promise<{ text: string }>((resolve) => {
+          finishConsult = resolve;
+        }),
+    );
+    await startReadyFaceTimeTalkDriver();
+
+    mocks.sessionParams?.onEvent({
+      direction: "server",
+      type: "input_audio_buffer.speech_started",
+    });
+    void mocks.sessionParams?.onToolCall({
+      itemId: "item-calendar",
+      callId: "call-calendar",
+      name: "openclaw_agent_consult",
+      args: { question: "What is on my calendar?" },
+    });
+    await vi.waitFor(() => expect(mocks.consult).toHaveBeenCalledOnce());
+    const consultParams = mocks.consult.mock.calls[0]?.[0] as { abortSignal: AbortSignal };
+
+    mocks.sessionParams?.onTranscript?.("user", "What is on my calendar?", true);
+    mocks.sessionParams?.onEvent({
+      direction: "server",
+      type: "input_audio_buffer.speech_started",
+    });
+    mocks.sessionParams?.onTranscript?.("user", "   ", true);
+
+    expect(consultParams.abortSignal.aborted).toBe(false);
+    expect(mocks.bridge.submitToolResult).not.toHaveBeenCalled();
+
+    finishConsult({ text: "Calendar answer." });
+    await vi.waitFor(() =>
+      expect(mocks.bridge.submitToolResult).toHaveBeenCalledWith("call-calendar", {
+        text: "Calendar answer.",
+      }),
+    );
   });
 
   it("routes the main session key to the configured default agent", async () => {

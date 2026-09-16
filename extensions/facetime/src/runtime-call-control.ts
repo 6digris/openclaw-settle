@@ -7,6 +7,7 @@ import { FACETIME_FEED_DEVICE_NAME, FACETIME_MIC_DEVICE_NAME } from "./audio-pum
 import { FaceTimeCallRegistry } from "./call-lifecycle.js";
 import type { FaceTimeConfig } from "./config.js";
 import {
+  FaceTimeHelperAmbiguousError,
   projectCompleteFaceTimeAbsence,
   projectFaceTimeNativeAction,
   type FaceTimeHelperSocketServer,
@@ -28,6 +29,58 @@ export function createFaceTimeCallControl(params: {
   getHelperTopologyVersion: () => number;
   retainHelperResultPeers: (call: ActiveFaceTimeCall, result: HelperActionResult) => void;
 }) {
+  const runCarrierActionAcrossAliases = async (request: {
+    call: ActiveFaceTimeCall;
+    generation: number;
+    action: "safe-mute" | "terminate";
+    run: (callUUID: string) => Promise<HelperActionResult>;
+  }): Promise<HelperActionResult> => {
+    const candidates = [
+      request.call.carrierCallUUID,
+      ...[...request.call.carrierCallUUIDs].toReversed(),
+    ].filter((candidate, index, all) => all.indexOf(candidate) === index);
+    let lastAbsent: FaceTimeHelperAmbiguousError | undefined;
+    for (const candidate of candidates) {
+      let result: HelperActionResult;
+      try {
+        result = await request.call.runCarrierCommand({
+          generation: request.generation,
+          allowClosing: true,
+          action: async () => await request.run(candidate),
+        });
+      } catch (error) {
+        if (!(error instanceof FaceTimeHelperAmbiguousError)) {
+          throw error;
+        }
+        try {
+          projectCompleteFaceTimeAbsence(error.result);
+          lastAbsent = error;
+        } catch {
+          throw error;
+        }
+        continue;
+      }
+      try {
+        projectFaceTimeNativeAction(request.action, result);
+        request.call.promoteCarrierCallUUID(candidate);
+        return result;
+      } catch (error) {
+        try {
+          projectCompleteFaceTimeAbsence(result);
+          lastAbsent =
+            error instanceof FaceTimeHelperAmbiguousError
+              ? error
+              : new FaceTimeHelperAmbiguousError(
+                  `FaceTime ${request.action} carrier owner is missing`,
+                  result,
+                );
+        } catch {
+          throw error;
+        }
+      }
+    }
+    throw lastAbsent ?? new Error(`FaceTime ${request.action} carrier owner is missing`);
+  };
   const routeCallAudio = async (call: ActiveFaceTimeCall) => {
     if (!call.audioReady) {
       const routing =
@@ -149,12 +202,12 @@ export function createFaceTimeCallControl(params: {
       call.carrierHangupAttempt ??
       (async () => {
         try {
-          const muted = await call.runCarrierCommand({
+          const muted = await runCarrierActionAcrossAliases({
+            call,
             generation,
-            allowClosing: true,
-            action: async () => await params.helper.safetyMute(call.carrierCallUUID),
+            action: "safe-mute",
+            run: async (callUUID) => await params.helper.safetyMute(callUUID),
           });
-          projectFaceTimeNativeAction("safe-mute", muted);
           params.retainHelperResultPeers(call, muted);
         } catch (error) {
           params.logger.warn(
@@ -162,12 +215,12 @@ export function createFaceTimeCallControl(params: {
           );
         }
         try {
-          const leave = await call.runCarrierCommand({
+          const leave = await runCarrierActionAcrossAliases({
+            call,
             generation,
-            allowClosing: true,
-            action: async () => await params.helper.leaveCall(call.carrierCallUUID),
+            action: "terminate",
+            run: async (callUUID) => await params.helper.leaveCall(callUUID),
           });
-          projectFaceTimeNativeAction("terminate", leave);
           params.retainHelperResultPeers(call, leave);
         } catch (error) {
           params.logger.warn(

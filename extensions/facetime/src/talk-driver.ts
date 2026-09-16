@@ -43,6 +43,8 @@ export type FaceTimeTalkDriver = {
   close(reason?: string): Promise<void>;
 };
 
+const FACETIME_INITIAL_GREETING = "Say exactly: Hi, I'm here and listening.";
+
 export async function startFaceTimeTalkDriver(params: {
   config: FaceTimeConfig;
   fullConfig: OpenClawConfig;
@@ -102,6 +104,7 @@ export async function startFaceTimeTalkDriver(params: {
   let bridge: RealtimeVoiceBridgeSession | undefined;
   let lastInputAudioStatusAt = 0;
   let callMediaTimestampMs = 0;
+  let inputSpeechGeneration = 0;
   let modelMediaGeneration = 1;
   let responseGeneration = 0;
   let response:
@@ -448,7 +451,7 @@ export async function startFaceTimeTalkDriver(params: {
           }),
           autoRespondToAudio: true,
           triggerGreetingOnReady: false,
-          initialGreetingInstructions: "Greet the caller briefly and say you are listening.",
+          initialGreetingInstructions: FACETIME_INITIAL_GREETING,
           markStrategy: "ack-immediately",
           tools: resolveRealtimeVoiceAgentConsultTools(params.config.realtime.toolPolicy, [
             FACETIME_END_CALL_TOOL,
@@ -499,6 +502,9 @@ export async function startFaceTimeTalkDriver(params: {
               final,
             });
             if (role === "user" && final) {
+              if (text.trim()) {
+                consultController.cancelInterrupted(inputSpeechGeneration);
+              }
               remember({
                 type: "input.audio.committed",
                 turnId,
@@ -524,10 +530,10 @@ export async function startFaceTimeTalkDriver(params: {
               });
             }
             if (event.type === "input_audio_buffer.speech_started") {
-              // A caller follow-up supersedes any consult started for the previous
-              // utterance. Close its provider tool call immediately so a slow agent
-              // cannot block the new turn, then ignore its eventual settlement.
-              consultController.cancelPending();
+              inputSpeechGeneration += 1;
+              // VAD can fire on brief line noise. Mark the in-flight consult now,
+              // but only cancel it after this speech produces a real final transcript.
+              consultController.markPendingInterrupted(inputSpeechGeneration);
               const playbackActive = response !== undefined && (pump?.queuedAudioFrames() ?? 0) > 0;
               if (response) {
                 bridge?.setMediaTimestamp(
@@ -686,7 +692,7 @@ export async function startFaceTimeTalkDriver(params: {
         return;
       }
       activated = true;
-      bridge?.triggerGreeting("Greet the caller briefly and say you are listening.");
+      bridge?.triggerGreeting(FACETIME_INITIAL_GREETING);
     },
     suspendMedia,
     async failClosed(reason = "fail-closed") {

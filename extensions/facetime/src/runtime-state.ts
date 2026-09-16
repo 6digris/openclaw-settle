@@ -8,6 +8,7 @@ import type { FaceTimeTalkEventSummary } from "./talk-events-summary.js";
 
 export class ActiveFaceTimeCall extends FaceTimeCallInstance {
   readonly carrierCallUUIDs: Set<string>;
+  readonly retiredCarrierCallUUIDs = new Set<string>();
   carrierCallUUID: string;
   readonly carrierPeers = new Map<number, FaceTimeHelperPeer>();
   readonly senderId: string;
@@ -66,6 +67,10 @@ export class ActiveFaceTimeCall extends FaceTimeCallInstance {
   }
 
   promoteCarrierCallUUID(callUUID: string): void {
+    if (callUUID !== this.carrierCallUUID) {
+      this.retiredCarrierCallUUIDs.add(this.carrierCallUUID);
+      this.retiredCarrierCallUUIDs.delete(callUUID);
+    }
     this.carrierCallUUIDs.add(callUUID);
     this.carrierCallUUID = callUUID;
   }

@@ -53,6 +53,24 @@ export function createFaceTimeCallEventHandler(params: {
   outboundCarrierPeers: ReadonlyMap<number, FaceTimeHelperPeer>;
   cancelPendingDial: (pending: PendingFaceTimeDial) => Promise<void>;
 }) {
+  const eventIdentities = (event: FaceTimeCallStatusEvent): string[] =>
+    [
+      event.data.call_uuid,
+      event.data.dial_id,
+      event.data.proxy_identifier,
+      event.data.conversation_uuid,
+    ].filter(
+      (identity): identity is string => typeof identity === "string" && identity.trim() !== "",
+    );
+  const resolveEventCall = (event: FaceTimeCallStatusEvent) => {
+    for (const identity of eventIdentities(event)) {
+      const call = params.calls.get(identity);
+      if (call) {
+        return call;
+      }
+    }
+    return undefined;
+  };
   const canPromotePendingDial = (pending: PendingFaceTimeDial) =>
     params.getPendingDial() === pending && pending.delivery !== "cancelling";
   const authorizePendingDial = async (
@@ -109,7 +127,7 @@ export function createFaceTimeCallEventHandler(params: {
       params.logger.warn("[facetime] ignored incoming call; audio driver installation is pending");
       return;
     }
-    if (params.calls.get(callUUID)) {
+    if (resolveEventCall(event)) {
       return;
     }
     if (params.calls.size > 0) {
@@ -169,7 +187,7 @@ export function createFaceTimeCallEventHandler(params: {
       params.logger.warn("[facetime] ignored active call; audio driver installation is pending");
       return;
     }
-    let call = params.calls.get(callUUID);
+    let call = resolveEventCall(event);
     if (!call) {
       if (!owner) {
         params.logger.warn("[facetime] refused active call without authenticated owner");
@@ -213,7 +231,7 @@ export function createFaceTimeCallEventHandler(params: {
       return;
     }
     const callUUID = readCallUUID(event);
-    const existingCall = params.calls.get(callUUID);
+    const existingCall = resolveEventCall(event);
     if (existingCall) {
       if (peer) {
         existingCall.carrierPeers.set(peer.processId, peer);
@@ -248,7 +266,7 @@ export function createFaceTimeCallEventHandler(params: {
         if (!owner || !canPromotePendingDial(pending)) {
           return;
         }
-        let ringingCall = params.calls.get(callUUID);
+        let ringingCall = resolveEventCall(event);
         if (!ringingCall && params.calls.size === 0) {
           ringingCall = createManagedCall({
             callUUID,
@@ -313,7 +331,7 @@ export function createFaceTimeCallEventHandler(params: {
       if (authorizedPending && params.calls.active) {
         params.calls.retainAlias(params.calls.active, callUUID);
       }
-      if (!params.calls.has(callUUID) && !owner) {
+      if (!resolveEventCall(event) && !owner) {
         params.logger.info("[facetime] ignored unauthorized active FaceTime call");
         return;
       }
@@ -323,7 +341,7 @@ export function createFaceTimeCallEventHandler(params: {
         canPromotePendingDial(authorizedPending) &&
         params.calls.has(callUUID)
       ) {
-        const activeCall = params.calls.get(callUUID);
+        const activeCall = resolveEventCall(event);
         if (activeCall) {
           params.calls.retainAlias(activeCall, authorizedPending.dialID);
           if (authorizedPending.proxyIdentifier) {
@@ -346,8 +364,14 @@ export function createFaceTimeCallEventHandler(params: {
       ) {
         params.clearPendingDial();
       }
-      const endedCall = params.calls.get(callUUID);
+      const endedCall = resolveEventCall(event);
       if (endedCall) {
+        if (endedCall.retiredCarrierCallUUIDs.has(callUUID)) {
+          params.logger.debug?.(
+            "[facetime] ignored ended event for a stale carrier alias while another carrier is current",
+          );
+          return;
+        }
         endedCall.markCarrierClosed();
         await params.callControl.closeCall(endedCall, "native-ended");
       }
