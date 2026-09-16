@@ -2,10 +2,8 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { ensureMemoryIndexSchema } from "../../packages/memory-host-sdk/src/host/memory-schema.js";
 import { assertSqliteSchemaContains } from "../infra/sqlite-schema-contract.js";
-import {
-  assertOpenClawAgentDatabaseForMaintenance,
-  OPENCLAW_AGENT_SCHEMA_VERSION,
-} from "./openclaw-agent-db.js";
+import { assertOpenClawAgentDatabaseForMaintenance } from "../plugin-sdk/sqlite-agent-schema.js";
+import { OPENCLAW_AGENT_SCHEMA_VERSION } from "./openclaw-agent-db-contract.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
 import {
   CLAW_LAZY_ADDITIVE_STATE_COLUMN_DEFINITIONS,
@@ -474,6 +472,41 @@ CREATE INDEX IF NOT EXISTS idx_web_push_approval_deliveries_subscription
           pathname: "agent.sqlite",
         }),
       ).toThrow("missing table auth_profile_store");
+    } finally {
+      database.close();
+    }
+  });
+
+  it("validates an existing read transaction with compatible extra indexes without changing it", () => {
+    const database = createAgentDatabase();
+    try {
+      database.exec(
+        "CREATE INDEX operator_pending_lookup ON session_canonical_validation_pending(session_key);",
+      );
+      const changes = database.prepare("SELECT total_changes() AS n").get();
+      database.exec("PRAGMA query_only=ON; BEGIN;");
+      expect(() =>
+        assertOpenClawAgentDatabaseForMaintenance(database, {
+          agentId: "worker-1",
+          pathname: "agent.sqlite",
+        }),
+      ).not.toThrow();
+      expect(database.isTransaction).toBe(true);
+      expect(database.prepare("SELECT total_changes() AS n").get()).toEqual(changes);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("rejects a required canonical invalidation trigger removed after successful validation", () => {
+    const database = createAgentDatabase();
+    const options = { agentId: "worker-1", pathname: "agent.sqlite" };
+    try {
+      expect(() => assertOpenClawAgentDatabaseForMaintenance(database, options)).not.toThrow();
+      database.exec("DROP TRIGGER session_nodes_canonical_pending_after_update;");
+      expect(() => assertOpenClawAgentDatabaseForMaintenance(database, options)).toThrow(
+        "missing or drifted trigger session_nodes_canonical_pending_after_update",
+      );
     } finally {
       database.close();
     }

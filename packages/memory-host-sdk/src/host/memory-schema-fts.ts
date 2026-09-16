@@ -1,10 +1,12 @@
 // Memory Host SDK module owns derived FTS schema and rebuild behavior.
 import type { DatabaseSync } from "node:sqlite";
-
-export const MEMORY_INDEX_SOURCES_TABLE = "memory_index_sources";
-export const MEMORY_INDEX_CHUNKS_TABLE = "memory_index_chunks";
-export const MEMORY_INDEX_FTS_TABLE = "memory_index_chunks_fts";
-export const MEMORY_INDEX_PATHS_FTS_TABLE = "memory_index_paths_fts";
+import {
+  MEMORY_INDEX_SOURCES_TABLE,
+  MEMORY_INDEX_CHUNKS_TABLE,
+  MEMORY_INDEX_FTS_TABLE,
+  MEMORY_INDEX_PATHS_FTS_TABLE,
+  MEMORY_PATH_FTS_TRIGGER_DEFINITIONS,
+} from "./memory-schema-contract.js";
 
 type FtsTableSchemaStatus = "missing" | "matching" | "mismatched" | "not-fts";
 
@@ -98,45 +100,6 @@ function dropMismatchedFtsTable(params: {
   }
   params.db.exec(`DROP TABLE ${params.tableName}`);
 }
-
-/** Optional canonical triggers owned by the derived path FTS index. */
-export const MEMORY_PATH_FTS_TRIGGER_DEFINITIONS = [
-  {
-    name: "memory_index_paths_fts_after_insert",
-    sql: `
-      CREATE TRIGGER IF NOT EXISTS main.memory_index_paths_fts_after_insert
-      AFTER INSERT ON ${MEMORY_INDEX_SOURCES_TABLE}
-      BEGIN
-        INSERT INTO ${MEMORY_INDEX_PATHS_FTS_TABLE} (rowid, path, source)
-        VALUES (NEW.id, NEW.path, NEW.source);
-      END;
-    `,
-  },
-  {
-    name: "memory_index_paths_fts_after_update",
-    sql: `
-      CREATE TRIGGER IF NOT EXISTS main.memory_index_paths_fts_after_update
-      AFTER UPDATE OF id, path, source ON ${MEMORY_INDEX_SOURCES_TABLE}
-      BEGIN
-        DELETE FROM ${MEMORY_INDEX_PATHS_FTS_TABLE}
-        WHERE rowid = OLD.id;
-        INSERT INTO ${MEMORY_INDEX_PATHS_FTS_TABLE} (rowid, path, source)
-        VALUES (NEW.id, NEW.path, NEW.source);
-      END;
-    `,
-  },
-  {
-    name: "memory_index_paths_fts_after_delete",
-    sql: `
-      CREATE TRIGGER IF NOT EXISTS main.memory_index_paths_fts_after_delete
-      AFTER DELETE ON ${MEMORY_INDEX_SOURCES_TABLE}
-      BEGIN
-        DELETE FROM ${MEMORY_INDEX_PATHS_FTS_TABLE}
-        WHERE rowid = OLD.id;
-      END;
-    `,
-  },
-] as const;
 
 export function rebuildMemoryChunkFts(db: DatabaseSync, ftsTable: string): void {
   db.exec(`
@@ -265,3 +228,10 @@ export function ensureMemoryPathFtsSchema(params: {
     throw err;
   }
 }
+
+export {
+  MEMORY_INDEX_SOURCES_TABLE,
+  MEMORY_INDEX_CHUNKS_TABLE,
+  MEMORY_INDEX_FTS_TABLE,
+  MEMORY_INDEX_PATHS_FTS_TABLE,
+} from "./memory-schema-contract.js";

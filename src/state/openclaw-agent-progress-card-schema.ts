@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { OPENCLAW_AGENT_SCHEMA_WITHOUT_BOARD_SQL } from "./openclaw-agent-board-schema.js";
+import { SESSION_PROGRESS_CARDS_TABLE } from "./openclaw-agent-db-contract.js";
 
-export const SESSION_PROGRESS_CARDS_TABLE = "session_progress_cards";
 const PROGRESS_CARD_SCHEMA_START = `CREATE TABLE IF NOT EXISTS ${SESSION_PROGRESS_CARDS_TABLE} (`;
 const PROGRESS_CARD_SCHEMA_END = "CREATE TABLE IF NOT EXISTS heartbeat_outcomes (";
 

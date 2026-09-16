@@ -1,10 +1,9 @@
 import type { DatabaseSync } from "node:sqlite";
 import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
+import { SESSION_PENDING_INPUTS_TABLE } from "./openclaw-agent-db-contract.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
 import { ensureColumn, tableHasColumn } from "./openclaw-state-db-schema-helpers.js";
 
-export const SESSION_PENDING_INPUTS_TABLE = "session_pending_inputs";
-export const SESSION_INPUT_COMPLETIONS_TABLE = "session_input_completions";
 const presentDatabases = new WeakSet<DatabaseSync>();
 const completeDatabases = new WeakSet<DatabaseSync>();
 const completionDatabases = new WeakSet<DatabaseSync>();
@@ -102,3 +101,8 @@ export function hasPendingInputConsumptionColumn(db: DatabaseSync): boolean {
   }
   return present;
 }
+
+export {
+  SESSION_PENDING_INPUTS_TABLE,
+  SESSION_INPUT_COMPLETIONS_TABLE,
+} from "./openclaw-agent-db-contract.js";

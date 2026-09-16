@@ -236,6 +236,7 @@
   "session-key-runtime",
   "session-store-runtime",
   "session-transcript-runtime",
+  "sqlite-agent-schema",
   "sqlite-runtime",
   "sqlite-runtime-testing",
   "session-transcript-hit",

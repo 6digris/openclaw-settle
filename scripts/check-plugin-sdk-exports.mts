@@ -40,6 +40,7 @@ const forbiddenPublicDeclarationSpecifiers = ["@openclaw/llm-core"];
 const FORBIDDEN_PUBLIC_PROTOCOL_REGISTRY_RE = /\bdeclare\s+const\s+ProtocolSchemas(?:\$\d+)?\b/u;
 const RELATIVE_DECLARATION_SPECIFIER_RE = /\b(?:from|import)\s*(?:\(\s*)?["']([^"']+)["']/gu;
 const requiredSubpathExports: Record<string, string[]> = {
+  "sqlite-agent-schema": ["assertOpenClawAgentDatabaseForMaintenance"],
   "diagnostic-flags": ["isDiagnosticFlagEnabled"],
   "diagnostic-runtime": ["areDiagnosticsEnabledForProcess", "createSubsystemLogger"],
   "secret-input-runtime": [
@@ -82,6 +83,12 @@ let missing = 0;
     writeFileSync(
       join(consumerRoot, "index.ts"),
       `import { buildChannelConfigSchema, DmPolicySchema } from "openclaw/plugin-sdk/channel-config-schema";
+import type { DatabaseSync } from "node:sqlite";
+import { assertOpenClawAgentDatabaseForMaintenance } from "openclaw/plugin-sdk/sqlite-agent-schema";
+declare const ownedAgentDatabase: DatabaseSync;
+const schemaCheckResult: void = assertOpenClawAgentDatabaseForMaintenance(ownedAgentDatabase, {
+  agentId: "main", pathname: "agent.sqlite",
+});
 import { defineChannelPluginEntry } from "openclaw/plugin-sdk/core";
 import type { sendDurableMessageBatch } from "openclaw/plugin-sdk/channel-outbound";
 import type {

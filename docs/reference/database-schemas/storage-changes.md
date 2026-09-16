@@ -701,3 +701,30 @@ without `preflight-agent` remain unsupported; installing a newer CLI elsewhere
 does not make those payloads compatible. Runtime/package identity and serving
 health are separate checks from database compatibility. A successful read-only
 preflight does not authorize checkpoint replay or replacement of live databases.
+
+### Validate an existing agent connection
+
+Connection owners can use the same synchronous schema assertion through the
+focused SDK entry:
+
+```ts
+import { assertOpenClawAgentDatabaseForMaintenance } from "openclaw/plugin-sdk/sqlite-agent-schema";
+
+assertOpenClawAgentDatabaseForMaintenance(database, {
+  agentId: "main",
+  pathname: databasePath,
+});
+```
+
+`database` is an already-open `node:sqlite` `DatabaseSync`; `pathname` labels
+diagnostics and does not open or select another database. The function returns
+`void` on success and throws for an incompatible owner, version marker, or schema.
+It requires the exact stored agent identity and current schema version, preserves
+the native allowances for compatible additive columns and nonunique indexes, and
+does not repair schema or change the caller's transaction or connection lifetime.
+
+The caller owns a consistent read transaction, WAL coordination, and any authority
+required by its next action. Validation describes that transaction's schema; it
+does not establish future freshness, physical integrity, transcript preservation,
+or completed pending-session validation. Use the copied-file command above when
+you also need its integrity and consolidated-file checks.

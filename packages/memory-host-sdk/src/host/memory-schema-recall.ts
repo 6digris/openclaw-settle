@@ -1,8 +1,8 @@
 import type { DatabaseSync } from "node:sqlite";
+import { MEMORY_INDEX_CHUNK_RECALL_METADATA_TABLE } from "./memory-schema-contract.js";
 import { runSqliteImmediateTransactionSync } from "./openclaw-runtime-sqlite.js";
 
 const MEMORY_INDEX_CHUNKS_TABLE = "memory_index_chunks";
-export const MEMORY_INDEX_CHUNK_RECALL_METADATA_TABLE = "memory_index_chunk_recall_metadata";
 
 export const MEMORY_INDEX_CHUNK_RECALL_METADATA_SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS ${MEMORY_INDEX_CHUNK_RECALL_METADATA_TABLE} (
@@ -84,3 +84,5 @@ export function ensureMemoryRecallMetadataSchema(db: DatabaseSync): void {
   }
   runSqliteImmediateTransactionSync(db, ensure);
 }
+
+export { MEMORY_INDEX_CHUNK_RECALL_METADATA_TABLE } from "./memory-schema-contract.js";

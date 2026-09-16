@@ -1195,6 +1195,10 @@
     "./plugin-sdk/session-transcript-runtime": {
       "default": "./dist/plugin-sdk/session-transcript-runtime.js"
     },
+    "./plugin-sdk/sqlite-agent-schema": {
+      "types": "./dist/plugin-sdk/sqlite-agent-schema.d.ts",
+      "default": "./dist/plugin-sdk/sqlite-agent-schema.js"
+    },
     "./plugin-sdk/sqlite-runtime": {
       "default": "./dist/plugin-sdk/sqlite-runtime.js"
     },

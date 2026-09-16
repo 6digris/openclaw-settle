@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { assertSqliteSchemaContains } from "../infra/sqlite-schema-contract.js";
 import { withoutCanonicalSessionValidationSchema } from "./openclaw-agent-canonical-validation-schema.js";
+import { LEGACY_PARTICIPANT_OPTIONAL_COLUMNS } from "./openclaw-agent-db-contract.js";
 import { sessionParticipantsSchemaSql } from "./openclaw-agent-session-participants-schema.js";
 import { tableExists, tableHasColumn } from "./openclaw-state-db-schema-helpers.js";
 
@@ -16,10 +17,6 @@ const LEGACY_PARTICIPANTS_SCHEMA = `CREATE TABLE IF NOT EXISTS session_participa
   FOREIGN KEY (session_key) REFERENCES session_nodes(session_key) ON DELETE CASCADE
 ) STRICT;`;
 const MIGRATION_TABLE = "session_participants_identity_migration";
-export const LEGACY_PARTICIPANT_OPTIONAL_COLUMNS = [
-  "session_participants.actor_source",
-  "session_participants.contribution_count",
-];
 
 /** Historical structural/media validation must not require a future identity key. */
 export function withLegacySessionParticipantsSchema(sql: string): string {

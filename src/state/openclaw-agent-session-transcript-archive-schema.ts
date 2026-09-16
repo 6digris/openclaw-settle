@@ -1,9 +1,8 @@
 import type { DatabaseSync } from "node:sqlite";
 import { extractSqliteTableSchema } from "../infra/sqlite-schema-sql.js";
 import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
+import { SESSION_TRANSCRIPT_ARCHIVES_TABLE } from "./openclaw-agent-db-contract.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
-
-export const SESSION_TRANSCRIPT_ARCHIVES_TABLE = "session_transcript_archives";
 
 const ENSURED_DATABASES = new WeakSet<DatabaseSync>();
 
@@ -29,3 +28,5 @@ export function ensureSessionTranscriptArchiveSchema(db: DatabaseSync): void {
   runSqliteImmediateTransactionSync(db, ensure);
   ENSURED_DATABASES.add(db);
 }
+
+export { SESSION_TRANSCRIPT_ARCHIVES_TABLE } from "./openclaw-agent-db-contract.js";

@@ -1,16 +1,8 @@
 import type { DatabaseSync } from "node:sqlite";
 import { extractSqliteTableSchema } from "../infra/sqlite-schema-sql.js";
 import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
+import { STANDING_INTENTS_TABLE } from "./openclaw-agent-db-contract.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
-
-export const STANDING_INTENTS_TABLE = "standing_intents";
-export const STANDING_INTENTS_FTS_TABLE = "standing_intents_fts";
-export const STANDING_INTENTS_FTS_SHADOW_TABLES = [
-  "standing_intents_fts_config",
-  "standing_intents_fts_data",
-  "standing_intents_fts_docsize",
-  "standing_intents_fts_idx",
-] as const;
 
 type StandingIntentColumnInfo = { name?: unknown };
 

@@ -1,9 +1,9 @@
 import type { DatabaseSync } from "node:sqlite";
 import { extractSqliteTableSchema } from "../infra/sqlite-schema-sql.js";
 import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
+import { SESSION_GOAL_OPERATIONS_TABLE } from "./openclaw-agent-db-contract.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
 
-export const SESSION_GOAL_OPERATIONS_TABLE = "session_goal_operations";
 const ensuredDatabases = new WeakSet<DatabaseSync>();
 
 /** First typed Goal use installs the additive receipt table, without a version bump. */
@@ -25,3 +25,5 @@ export function ensureSessionGoalOperationsSchema(db: DatabaseSync): void {
   });
   ensuredDatabases.add(db);
 }
+
+export { SESSION_GOAL_OPERATIONS_TABLE } from "./openclaw-agent-db-contract.js";

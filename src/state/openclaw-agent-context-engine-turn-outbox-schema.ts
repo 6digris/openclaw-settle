@@ -1,9 +1,8 @@
 import type { DatabaseSync } from "node:sqlite";
 import { extractSqliteTableSchema } from "../infra/sqlite-schema-sql.js";
 import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
+import { CONTEXT_ENGINE_TURN_OUTBOX_TABLE } from "./openclaw-agent-db-contract.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
-
-export const CONTEXT_ENGINE_TURN_OUTBOX_TABLE = "context_engine_turn_outbox";
 
 const ENSURED_DATABASES = new WeakSet<DatabaseSync>();
 

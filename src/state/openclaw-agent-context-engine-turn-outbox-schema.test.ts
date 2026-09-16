@@ -3,10 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  CONTEXT_ENGINE_TURN_OUTBOX_TABLE,
-  ensureContextEngineTurnOutboxSchema,
-} from "./openclaw-agent-context-engine-turn-outbox-schema.js";
+import { ensureContextEngineTurnOutboxSchema } from "./openclaw-agent-context-engine-turn-outbox-schema.js";
+import { CONTEXT_ENGINE_TURN_OUTBOX_TABLE } from "./openclaw-agent-db-contract.js";
 import {
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,

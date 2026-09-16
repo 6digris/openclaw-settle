@@ -1,8 +1,7 @@
 // Memory Host SDK module owns additive memory chunk provenance schema.
 import type { DatabaseSync } from "node:sqlite";
+import { MEMORY_INDEX_CHUNK_PROVENANCE_TABLE } from "./memory-schema-contract.js";
 import { runSqliteImmediateTransactionSync } from "./openclaw-runtime-sqlite.js";
-
-export const MEMORY_INDEX_CHUNK_PROVENANCE_TABLE = "memory_index_chunk_provenance";
 
 export const MEMORY_INDEX_CHUNK_PROVENANCE_SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS ${MEMORY_INDEX_CHUNK_PROVENANCE_TABLE} (
@@ -63,3 +62,5 @@ export function ensureMemoryChunkProvenance(db: DatabaseSync): void {
   }
   runSqliteImmediateTransactionSync(db, ensure);
 }
+
+export { MEMORY_INDEX_CHUNK_PROVENANCE_TABLE } from "./memory-schema-contract.js";

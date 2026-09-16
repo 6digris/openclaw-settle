@@ -55,3 +55,30 @@ export type OpenClawAgentDatabaseOwnerInspection =
   | { status: "unreadable" };
 
 export const SESSION_PARTICIPANTS_TABLE = "session_participants";
+
+export const CONTEXT_ENGINE_TURN_OUTBOX_TABLE = "context_engine_turn_outbox";
+
+export const SESSION_GOAL_OPERATIONS_TABLE = "session_goal_operations";
+
+export const MESSAGE_TOOL_RUN_OUTCOMES_TABLE = "message_tool_run_outcomes";
+
+export const SESSION_PENDING_INPUTS_TABLE = "session_pending_inputs";
+export const SESSION_INPUT_COMPLETIONS_TABLE = "session_input_completions";
+
+export const SESSION_PROGRESS_CARDS_TABLE = "session_progress_cards";
+
+export const SESSION_TRANSCRIPT_ARCHIVES_TABLE = "session_transcript_archives";
+
+export const STANDING_INTENTS_TABLE = "standing_intents";
+export const STANDING_INTENTS_FTS_TABLE = "standing_intents_fts";
+export const STANDING_INTENTS_FTS_SHADOW_TABLES = [
+  "standing_intents_fts_config",
+  "standing_intents_fts_data",
+  "standing_intents_fts_docsize",
+  "standing_intents_fts_idx",
+] as const;
+
+export const LEGACY_PARTICIPANT_OPTIONAL_COLUMNS = [
+  "session_participants.actor_source",
+  "session_participants.contribution_count",
+];

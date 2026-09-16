@@ -1,9 +1,8 @@
 import type { DatabaseSync } from "node:sqlite";
 import { extractSqliteTableSchema } from "../infra/sqlite-schema-sql.js";
 import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
+import { MESSAGE_TOOL_RUN_OUTCOMES_TABLE } from "./openclaw-agent-db-contract.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
-
-export const MESSAGE_TOOL_RUN_OUTCOMES_TABLE = "message_tool_run_outcomes";
 
 const ENSURED_DATABASES = new WeakSet<DatabaseSync>();
 

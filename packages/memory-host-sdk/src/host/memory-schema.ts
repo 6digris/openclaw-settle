@@ -38,7 +38,6 @@ export {
   MEMORY_INDEX_FTS_TABLE,
   MEMORY_INDEX_PATHS_FTS_TABLE,
   MEMORY_INDEX_SOURCES_TABLE,
-  MEMORY_PATH_FTS_TRIGGER_DEFINITIONS,
 } from "./memory-schema-fts.js";
 export {
   ensureMemoryChunkProvenance,
