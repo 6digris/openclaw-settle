@@ -1,3 +1,4 @@
+import { isSqliteWorkerError } from "../infra/sqlite-worker-contract.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { runWithGatewayIndependentRootWorkAdmission } from "../process/gateway-work-admission.js";
 import { restoreAgentSchemaInspectionError } from "../state/openclaw-agent-schema-inspection-response.js";
@@ -11,7 +12,10 @@ import {
   reconcileTaskFlowWorkerReceipts,
   syncFlowFromTaskResult,
 } from "./task-flow-runtime-internal.js";
-import type { TaskRegistryRestoreResult } from "./task-registry-restore.worker.js";
+import type {
+  TaskMirroredFlowSyncOutcome,
+  TaskRegistryRestoreResult,
+} from "./task-registry-restore.worker.js";
 import { getTaskRegistryStore, type TaskRegistryStore } from "./task-registry.store.js";
 import type { TaskRecord } from "./task-registry.types.js";
 
@@ -97,7 +101,19 @@ function scheduleTaskFlowSyncRetry(
         return;
       }
       // The durable row, link and latest-task order are reread by the same owner.
-      const outcome = await store.syncTaskFlowAsync(current, { taskId: id });
+      let outcome: TaskMirroredFlowSyncOutcome;
+      try {
+        outcome = await store.syncTaskFlowAsync(current, { taskId: id });
+      } catch (error) {
+        if (isSqliteWorkerError(error, "overloaded")) {
+          // Capacity rejects before dispatch; retain only the still-admitted bounded attempt.
+          current.admission.assertCurrent();
+          if (current.admission.identity.key === identityKey) {
+            scheduleTaskFlowSyncRetry(current, store, id, operation, selection, attempt + 1);
+          }
+        }
+        throw error;
+      }
       if (outcome.kind === "error") {
         scheduleTaskFlowSyncRetry(current, store, id, operation, selection, attempt + 1);
         throw restoreAgentSchemaInspectionError(outcome.error);
