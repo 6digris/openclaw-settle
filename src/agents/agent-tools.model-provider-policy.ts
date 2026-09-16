@@ -20,9 +20,8 @@ export function applyModelProviderToolPolicy(
     localModelLeanPreserveToolNames?: string[];
   },
 ): AnyAgentTool[] {
-  let tools = toolsInput;
-  tools = filterLocalModelLeanTools({
-    tools,
+  const tools = filterLocalModelLeanTools({
+    tools: toolsInput,
     config: params?.config,
     agentId: params?.agentId,
     sessionKey: params?.sessionKey,
@@ -43,6 +42,5 @@ export function applyModelProviderToolPolicy(
   ) {
     return tools.filter((tool) => tool.name !== "web_search");
   }
-
   return tools;
 }
