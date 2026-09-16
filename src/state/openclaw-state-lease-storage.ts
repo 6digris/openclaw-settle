@@ -9,6 +9,7 @@ import { withOpenClawStateDatabaseReadOnly } from "./openclaw-state-db-readonly.
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
+  runWithOpenClawStateBusyTimeout,
   type OpenClawStateDatabaseOptions,
 } from "./openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "./openclaw-state-db.paths.js";
@@ -58,6 +59,12 @@ const leaseSchema = ["schema_meta", "state_leases"]
     return OPENCLAW_STATE_SCHEMA_SQL.slice(start, end + marker.length);
   })
   .join("\n");
+
+export function prepareLeaseDatabase(database: OpenClawStateLeaseDatabase): void {
+  if (database.schemaPolicy !== "existing") {
+    runWithOpenClawStateBusyTimeout(() => undefined, database.options ?? {}, 0);
+  }
+}
 
 export function resolveLeaseDatabasePath(database: OpenClawStateLeaseDatabase): string {
   return database.schemaPolicy === "existing"

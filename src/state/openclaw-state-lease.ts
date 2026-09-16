@@ -27,11 +27,13 @@ import {
 import {
   validateOpenClawStateLeaseOptions,
   type OpenClawStateLeaseOptions,
+  type OpenClawStateLeaseInvocation as LeaseInvocation,
 } from "./openclaw-state-lease-options.js";
 import { registerProcessExitLeaseCleanup } from "./openclaw-state-lease-process-exit.js";
 import {
   STATE_LEASE_WRITE_BACKOFF as ACQUIRE_BACKOFF,
   isOpenClawStateLeaseWriteContention as isLeaseWriteContention,
+  prepareLeaseDatabase,
   readLeaseDatabase,
   resolveLeaseDatabasePath,
   tryAcquireOpenClawStateLease as tryAcquire,
@@ -70,7 +72,7 @@ export async function withOpenClawStateLease<T>(
  * Renewal uses the parent timer unless an independent worker is requested.
  */
 export async function withOpenClawStateLeaseAsync<T>(
-  options: Omit<OpenClawStateLeaseOptions, "database">,
+  options: Omit<OpenClawStateLeaseOptions, "database" | "prepareDatabase">,
   context: OpenClawStateWorkerContext,
   run: (lease: OpenClawStateAsyncLeaseContext) => Promise<T>,
 ): Promise<T> {
@@ -87,19 +89,6 @@ export async function withOpenClawStateLeaseAsync<T>(
     run,
   });
 }
-
-type LeaseInvocation<T> =
-  | {
-      kind: "native";
-      options: OpenClawStateLeaseOptions;
-      run: (lease: OpenClawStateLeaseContext) => Promise<T>;
-    }
-  | {
-      kind: "worker";
-      options: OpenClawStateLeaseOptions;
-      context: OpenClawStateWorkerContext;
-      run: (lease: OpenClawStateAsyncLeaseContext) => Promise<T>;
-    };
 
 function runStateLeaseOwner<T>(invocation: LeaseInvocation<T>): Promise<T> {
   const maintenance =
@@ -146,7 +135,12 @@ async function runStateLeaseOwnerInScope<T>(
   let workerOperations: ReturnType<typeof createOpenClawStateLeaseWorkerOwner> | undefined;
   // Acquisition budgets are elapsed-time contracts. Wall-clock changes still
   // affect persisted expiry timestamps, but must not lengthen or shorten waits.
-  const deadline = performance.now() + validated.waitMs;
+  let deadline = performance.now() + validated.waitMs;
+  let prepareDatabase =
+    invocation.kind === "native" &&
+    validated.prepareDatabase &&
+    validated.waitMs > 0 &&
+    validated.database.schemaPolicy !== "existing";
   let attempt = 0;
   let confirmedExpiresAt: number | undefined;
   const leaseLost = new AbortController();
@@ -301,6 +295,13 @@ async function runStateLeaseOwnerInScope<T>(
           throw abortError(validated.signal, "acquisition", validated.leaseLabel);
         }
         try {
+          if (prepareDatabase) {
+            prepareDatabase = false;
+            // Cold integrity/schema work is not lease contention. Preparation never
+            // waits on locks; a refused attempt keeps the original acquisition budget.
+            prepareLeaseDatabase(validated.database);
+            deadline = performance.now() + validated.waitMs;
+          }
           confirmedExpiresAt =
             workerStorage && workerOperations
               ? await workerStorage.acquire(
