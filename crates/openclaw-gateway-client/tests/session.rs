@@ -767,68 +767,85 @@ async fn oversized_retained_event_lags_without_closing_the_session() {
 
 #[tokio::test]
 async fn abandoned_request_releases_its_in_flight_permit() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let (first_seen_tx, first_seen_rx) = tokio::sync::oneshot::channel();
-    let server = tokio::spawn(async move {
-        let (tcp, _) = listener.accept().await.unwrap();
-        let mut socket = accept_async(tcp).await.unwrap();
-        send_json(
+    for caller_owned in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (first_seen_tx, first_seen_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = accept_async(tcp).await.unwrap();
+            send_json(
             &mut socket,
             json!({
                 "type":"event", "event":"connect.challenge", "payload":{"nonce":"nonce-abandon","ts":1_700_000_000_123_u64}
             }),
         )
         .await;
-        let connect = receive_json(&mut socket).await;
-        send_json(
-            &mut socket,
-            json!({
-                "type":"res", "id":connect["id"], "ok":true,
-                "payload":{"type":"hello-ok","protocol":4}
-            }),
-        )
-        .await;
-        let first = receive_json(&mut socket).await;
-        assert_eq!(first["method"], "node.first");
-        first_seen_tx.send(()).unwrap();
-        let second = receive_json(&mut socket).await;
-        assert_eq!(second["method"], "node.second");
-        send_json(
-            &mut socket,
-            json!({
-                "type":"res", "id":second["id"], "ok":true,
-                "payload":{"ok":true}
-            }),
-        )
-        .await;
-    });
+            let connect = receive_json(&mut socket).await;
+            send_json(
+                &mut socket,
+                json!({
+                    "type":"res", "id":connect["id"], "ok":true,
+                    "payload":{"type":"hello-ok","protocol":4}
+                }),
+            )
+            .await;
+            let first = receive_json(&mut socket).await;
+            assert_eq!(first["method"], "node.first");
+            first_seen_tx.send(()).unwrap();
+            let second = receive_json(&mut socket).await;
+            assert_eq!(second["method"], "node.second");
+            send_json(
+                &mut socket,
+                json!({
+                    "type":"res", "id":second["id"], "ok":true,
+                    "payload":{"ok":true}
+                }),
+            )
+            .await;
+        });
 
-    let config = GatewayClientConfig::new(format!("ws://{address}"))
-        .unwrap()
-        .request_timeout(Duration::from_millis(250))
-        .max_in_flight(1);
-    let session = GatewayClient::connect(config, |_| async {
-        Ok::<_, io::Error>(json!({"role":"node"}))
-    })
-    .await
-    .unwrap();
-    let first_session = session.clone();
-    let first = tokio::spawn(async move { first_session.request("node.first", json!({})).await });
-    first_seen_rx.await.unwrap();
-    first.abort();
-
-    assert_eq!(
-        tokio::time::timeout(
-            Duration::from_secs(1),
-            session.request("node.second", json!({}))
-        )
+        let config = GatewayClientConfig::new(format!("ws://{address}"))
+            .unwrap()
+            .request_timeout(Duration::from_millis(250))
+            .max_in_flight(1);
+        let session = GatewayClient::connect(config, |_| async {
+            Ok::<_, io::Error>(json!({"role":"node"}))
+        })
         .await
-        .expect("second request must acquire the released permit")
-        .unwrap(),
-        json!({"ok":true})
-    );
-    server.await.unwrap();
+        .unwrap();
+        let first_session = session.clone();
+        let mut first = tokio::spawn(async move {
+            if caller_owned {
+                first_session
+                    .request_until_cancelled("node.first", json!({}))
+                    .await
+            } else {
+                first_session.request("node.first", json!({})).await
+            }
+        });
+        first_seen_rx.await.unwrap();
+        if caller_owned {
+            // The native owner may legitimately wait beyond the shared client's default deadline.
+            assert!(tokio::time::timeout(Duration::from_millis(500), &mut first)
+                .await
+                .is_err());
+        }
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+
+        assert_eq!(
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                session.request("node.second", json!({}))
+            )
+            .await
+            .expect("second request must acquire the released permit")
+            .unwrap(),
+            json!({"ok":true})
+        );
+        server.await.unwrap();
+    }
 }
 
 #[tokio::test]

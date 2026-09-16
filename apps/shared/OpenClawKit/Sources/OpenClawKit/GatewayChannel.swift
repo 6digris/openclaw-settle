@@ -38,6 +38,7 @@ public actor GatewayChannelActor {
     struct PendingRequest {
         let continuation: CheckedContinuation<GatewayFrame, Error>
         var timeoutTask: Task<Void, Never>?
+        let transportLifetime = WebSocketRequestLifetime()
     }
 
     nonisolated static func resolveRequestTimeoutMs(_ timeoutMs: Double?, defaultMs: Double) -> Double? {
@@ -1464,13 +1465,14 @@ extension GatewayChannelActor {
                         }
                     }
                     self.pending[payload.id] = request
+                    let transportLifetime = request.transportLifetime
                     Task {
                         guard !cancellationGate.isCancelled else {
                             self.finishRequest(id: payload.id, result: .failure(CancellationError()))
                             return
                         }
                         do {
-                            try await task.send(.data(payload.data))
+                            try await task.sendRequest(.data(payload.data), lifetime: transportLifetime)
                         } catch is CancellationError {
                             // Cancellation owns only this request. Treating it as socket loss
                             // starts disconnect cleanup and can reject an immediate safe retry.
@@ -1648,6 +1650,7 @@ extension GatewayChannelActor {
         guard let request = self.pending.removeValue(forKey: id) else { return }
         // A deadline belongs to its pending request, including after caller cancellation or disconnect.
         request.timeoutTask?.cancel()
+        request.transportLifetime.finish()
         request.continuation.resume(with: result)
     }
 

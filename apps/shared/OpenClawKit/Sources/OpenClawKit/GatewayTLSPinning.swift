@@ -85,11 +85,11 @@ public enum GatewayBoundedDataError: Error, Equatable, Sendable {
     case responseTooLarge(maximumBytes: Int)
 }
 
-protocol GatewayTLSFailureProviding: AnyObject {
+public protocol GatewayTLSFailureProviding: AnyObject {
     func consumeLastTLSFailure() -> GatewayTLSValidationFailure?
 }
 
-protocol GatewayDeviceTokenRetryTrustProviding: AnyObject {
+public protocol GatewayDeviceTokenRetryTrustProviding: AnyObject {
     var allowsDeviceTokenRetryAuth: Bool { get }
 }
 
@@ -803,6 +803,24 @@ public final class GatewayTLSPinningSession: NSObject, WebSocketSessioning, URLS
         let failure = self.lastTLSFailure
         self.lastTLSFailure = nil
         return failure
+    }
+
+    /// Approve the certificate from an externally hosted TLS stream before it sends HTTP headers.
+    /// The existing pin owner also supplies typed repair evidence and first-use persistence.
+    public func validateServerTrust(_ trust: SecTrust, for url: URL) -> Bool {
+        guard let authority = GatewayTLSAuthority(url: url), authority.scheme == "wss" else { return false }
+        switch GatewayTLSServerTrust.evaluate(
+            trust: trust, host: authority.host, port: authority.port,
+            params: self.params, expectedFingerprint: self.currentEnforcedFingerprint())
+        {
+        case let .accept(fingerprint, enforcePin):
+            self.recordTLSAcceptance(fingerprint, enforcePin: enforcePin)
+            return true
+        case let .reject(failure, enforcedFingerprint):
+            if let enforcedFingerprint { self.recordTLSPinExpectation(enforcedFingerprint) }
+            self.recordTLSFailure(failure)
+            return false
+        }
     }
 
     private func recordTLSFailure(_ failure: GatewayTLSValidationFailure) {
