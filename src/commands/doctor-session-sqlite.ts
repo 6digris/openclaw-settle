@@ -243,7 +243,11 @@ export async function runDoctorSessionSqlite(
             retainSource();
             if (pending.length > 0) {
               for (const owner of archiveTargets) {
-                if (!owner.retainedImportVerified && owner.verifiedSources) {
+                if (
+                  !owner.retainedImportVerified &&
+                  owner.report.legacyEntries > 0 &&
+                  owner.verifiedSources
+                ) {
                   recordDeferredPluginSessionImport({
                     target: owner.target,
                     env,
@@ -251,6 +255,7 @@ export async function runDoctorSessionSqlite(
                     sources: owner.verifiedSources,
                     recordCount: owner.report.legacyEntries,
                   });
+                  owner.retainedImportVerified = true;
                 }
               }
             }
@@ -269,7 +274,6 @@ export async function runDoctorSessionSqlite(
             pending: conflict,
           });
           if (owner.deferredPluginIds.length > 0) {
-            owner.retainedImportVerified ||= owner.verifiedSources !== undefined;
             owner.report.issues.push({
               code: "plugin_migration_source_retained",
               message: `Plugin migration obligations changed before archival. Original session migration inputs remain pending for plugin(s): ${owner.deferredPluginIds.join(", ")}. Run openclaw doctor --fix after the plugin is available.`,
@@ -908,7 +912,9 @@ async function inspectOrMigrateTarget(params: {
       }
     }
     if (deferredPluginIds.length > 0 && validationPassed && report.issues.length === 0) {
-      if (!retainedImport) {
+      // An empty sibling target has no imported database to bind. Its pending
+      // obligations still retain the shared originals, without inventing an import receipt.
+      if (!retainedImport && records.length > 0) {
         if (!verifiedSources) {
           throw new Error("Deferred plugin session import has no verified source index.");
         }

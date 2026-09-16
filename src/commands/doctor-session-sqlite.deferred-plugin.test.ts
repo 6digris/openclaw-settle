@@ -114,11 +114,80 @@ function seed(
 }
 
 describe("session sources needed by deferred plugin migrations", () => {
-  it.each(["transcript", "legacy-store"] as const)(
-    "retains an ordinary import's %s when another Doctor records pending work before unlink",
-    async (kind) => {
+  it.each(["initial", "concurrent"] as const)(
+    "retains a shared legacy index without inventing an import for an empty agent (%s pending)",
+    async (pendingPhase) => {
+      await withOpenClawTestState({ label: "deferred-plugin-empty-agent" }, async (state) => {
+        const { cfg, originals, scope } = seed(state, "legacy-root");
+        cfg.agents!.entries!.ops = {};
+        let pendingChanged = false;
+        if (pendingPhase === "concurrent") {
+          recordDeferredPluginMigrations({
+            env: state.env,
+            pending: [],
+            resolvedPluginIds: ["fixture-plugin"],
+          });
+          const publish = directoryDurability.publishFileExclusive;
+          vi.spyOn(directoryDurability, "publishFileExclusive").mockImplementation(
+            async (options) => {
+              const result = await publish(options);
+              if (
+                !pendingChanged &&
+                originals.has(options.sourcePath) &&
+                options.sourcePath.endsWith(".jsonl")
+              ) {
+                pendingChanged = true;
+                recordDeferredPluginMigrations({
+                  env: state.env,
+                  pending: [
+                    {
+                      pluginId: "fixture-plugin",
+                      reason: "Another Doctor found additional state migration work.",
+                      command: "openclaw doctor --fix",
+                      requiresStateMigration: true,
+                    },
+                  ],
+                });
+              }
+              return result;
+            },
+          );
+        }
+        const report = await runDoctorSessionSqlite({
+          cfg,
+          env: state.env,
+          allAgents: true,
+          mode: "import",
+        });
+        expect(pendingChanged).toBe(pendingPhase === "concurrent");
+        expect(report.targets.find((target) => target.agentId === "ops")?.legacyEntries).toBe(0);
+        expect(fs.existsSync(path.join(state.agentDir("ops"), "openclaw-agent.sqlite"))).toBe(
+          false,
+        );
+        expect(
+          loadExactSessionEntry({ ...scope, sessionKey: "agent:main:kept" })?.entry.sessionId,
+        ).toBe("legacy-kept");
+        for (const [file, bytes] of originals) {
+          expect(fs.readFileSync(file)).toEqual(bytes);
+        }
+        expect(readDeferredPluginMigrations({ env: state.env })).toHaveLength(1);
+      });
+    },
+  );
+
+  it.each([
+    { kind: "transcript", layout: "external" },
+    { kind: "legacy-store", layout: "external" },
+    { kind: "transcript", layout: "legacy-root" },
+    { kind: "legacy-store", layout: "legacy-root" },
+  ] as const)(
+    "retains an ordinary import's $kind when another Doctor records pending work before unlink ($layout)",
+    async ({ kind, layout }) => {
       await withOpenClawTestState({ label: "deferred-plugin-archive-race" }, async (state) => {
-        const { cfg, storePath, originals, scope } = seed(state);
+        const { cfg, storePath, originals, scope } = seed(state, layout);
+        if (layout === "legacy-root") {
+          cfg.agents!.entries!.ops = {};
+        }
         const run = () =>
           runDoctorSessionSqlite({ cfg, env: state.env, allAgents: true, mode: "import" });
         recordDeferredPluginMigrations({
@@ -156,6 +225,14 @@ describe("session sources needed by deferred plugin migrations", () => {
         const interrupted = await run();
         publication.mockRestore();
         expect(pendingChanged).toBe(true);
+        if (layout === "legacy-root") {
+          expect(
+            interrupted.targets.find((target) => target.agentId === "ops")?.legacyEntries,
+          ).toBe(0);
+          expect(fs.existsSync(path.join(state.agentDir("ops"), "openclaw-agent.sqlite"))).toBe(
+            false,
+          );
+        }
         expect(fs.existsSync(protectedSource)).toBe(true);
         expect(fs.statSync(protectedSource).nlink).toBe(1);
         expect(fs.readFileSync(protectedSource)).toEqual(originals.get(protectedSource));
