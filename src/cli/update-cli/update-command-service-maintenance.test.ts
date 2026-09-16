@@ -21,10 +21,10 @@ import { CONTROL_PLANE_UPDATE_SENTINEL_META_ENV } from "../../infra/update-contr
 import { createManagedHandoffLeaseStore } from "../../infra/update-managed-service-handoff-lease.js";
 import { createUpdateRun } from "../../infra/update-run-ledger.js";
 import { getFileLockProcessStartTime } from "../../shared/pid-alive.js";
-import { makeTempWorkspace } from "../../test-helpers/workspace.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { mockProcessPlatform } from "../../test-utils/vitest-spies.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
+import { withServiceHome } from "./update-command-service-home.test-support.js";
 import {
   maybeStopManagedServiceBeforeMutableUpdate,
   revalidateManagedGatewayServiceAfterUpdate,
@@ -55,31 +55,6 @@ vi.mock("node:child_process", async (importOriginal) => ({
 
 beforeEach(() => mockSystemAccountHome());
 afterEach(() => vi.restoreAllMocks());
-
-async function withServiceHome(run: (home: string) => Promise<void>): Promise<void> {
-  const home = await makeTempWorkspace("openclaw-update-service-");
-  vi.spyOn(openClawTmp, "resolvePreferredOpenClawTmpDir").mockReturnValue(home);
-  try {
-    await withEnvAsync(
-      {
-        HOME: home,
-        USERPROFILE: home,
-        APPDATA: path.join(home, "AppData"),
-        OPENCLAW_GATEWAY_PORT: undefined,
-        OPENCLAW_HOME: undefined,
-        OPENCLAW_STATE_DIR: undefined,
-        OPENCLAW_CONFIG_PATH: undefined,
-        OPENCLAW_PROFILE: undefined,
-        OPENCLAW_SUPERVISOR_MODE: undefined,
-        OPENCLAW_SERVICE_MARKER: undefined,
-        OPENCLAW_SERVICE_KIND: undefined,
-      },
-      () => run(home),
-    );
-  } finally {
-    await fs.rm(home, { recursive: true, force: true });
-  }
-}
 
 it.each(["systemd-user-bus-unavailable", "service-manager-access-denied"] as const)(
   "retains the native inspection reason for failed preflight: %s",

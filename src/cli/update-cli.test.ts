@@ -51,6 +51,7 @@ import * as windowsPrivateDirectory from "../infra/windows-private-directory.js"
 import { flushLogger, resetLogger, setLoggerOverride } from "../logging/logger.js";
 import { CLAWHUB_INSTALL_ERROR_CODE } from "../plugins/clawhub-error-codes.js";
 import { ManagedPluginLifecycleError } from "../plugins/management-lifecycle-error.js";
+import type { CommandOptions } from "../process/exec.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../state/openclaw-agent-db-contract.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../state/openclaw-state-db-contract.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
@@ -61,6 +62,13 @@ import type { TempHomeEnv } from "../test-utils/temp-home.js";
 import { VERSION } from "../version.js";
 import { quoteCliArg } from "./quote-cli-arg.js";
 import { createCliRuntimeCapture, getMockCallOutput } from "./test-runtime-capture.js";
+import {
+  buildUpdateCliArgs,
+  makeOkUpdateResult,
+  reportCandidateSteps,
+  requireValue,
+  statfsFixture,
+} from "./update-cli.test-support.js";
 
 const commandTransport = vi.hoisted(() => ({
   run: vi.fn<typeof import("../process/exec.js").runCommandWithTimeout>(),
@@ -794,21 +802,7 @@ const { updateCommand } = await import("./update-cli/update-command.js");
 async function invokeUpdateCli(opts: Parameters<typeof updateCommand>[0]) {
   const program = new Command();
   registerUpdateCli(program);
-  const args = ["update"];
-  for (const key of ["yes", "json", "dryRun", "acceptCapabilities"] as const) {
-    if (opts[key]) {
-      args.push(`--${key.replace(/[A-Z]/gu, (letter) => `-${letter.toLowerCase()}`)}`);
-    }
-  }
-  if (opts.restart === false) {
-    args.push("--no-restart");
-  }
-  for (const key of ["channel", "tag", "timeout"] as const) {
-    if (opts[key] !== undefined) {
-      args.push(`--${key}`, opts[key]);
-    }
-  }
-  await program.parseAsync(args, { from: "user" });
+  await program.parseAsync(buildUpdateCliArgs(opts), { from: "user" });
 }
 const { updateFinalizeCommand } = await import("./update-cli/update-command-finalize.js");
 const { updateStatusCommand } = await import("./update-cli/status.js");
@@ -816,13 +810,6 @@ const { updateWizardCommand } = await import("./update-cli/wizard.js");
 const updateCliShared = await import("./update-cli/shared.js");
 const { resolveGitInstallDir } = updateCliShared;
 const { clearRestartSentinel, readRestartSentinel } = await import("../infra/restart-sentinel.js");
-
-function requireValue<T>(value: T | undefined, label: string): T {
-  if (value === undefined) {
-    throw new Error(`expected ${label}`);
-  }
-  return value;
-}
 
 type UpdateCliScenario = {
   name: string;
@@ -960,9 +947,12 @@ describe("update-cli", () => {
     return call;
   };
   const commandCalls = () =>
-    vi.mocked(runCommandWithTimeout).mock.calls as unknown as Array<
-      [string[], Record<string, unknown>]
-    >;
+    vi
+      .mocked(runCommandWithTimeout)
+      .mock.calls.map(([argv, options]): [string[], CommandOptions] => [
+        argv,
+        typeof options === "number" ? { timeoutMs: options } : options,
+      ]);
 
   const packageInstallCommandCall = () =>
     commandCalls().find(([argv]) => argv[0] === "npm" && argv[1] === "i" && argv[2] === "-g");
@@ -1172,41 +1162,6 @@ describe("update-cli", () => {
     if (call?.[1] === undefined) {
       throw new Error("Expected package install command options");
     }
-  };
-
-  const statfsFixture = (params: {
-    bavail: number;
-    bsize?: number;
-    blocks?: number;
-  }): ReturnType<typeof fsSync.statfsSync> => ({
-    type: 0,
-    bsize: params.bsize ?? 1024,
-    blocks: params.blocks ?? 2_000_000,
-    bfree: params.bavail,
-    bavail: params.bavail,
-    files: 0,
-    frsize: params.bsize ?? 1024,
-    ffree: 0,
-  });
-
-  const makeOkUpdateResult = (overrides: Partial<UpdateRunResult> = {}): UpdateRunResult =>
-    ({
-      status: "ok",
-      mode: "git",
-      steps: [],
-      durationMs: 100,
-      after: { version: "1.0.0" },
-      ...overrides,
-    }) as UpdateRunResult;
-
-  const reportCandidateSteps = <T extends { steps: UpdateRunResult["steps"] }>(
-    options: { onStep?: (step: UpdateRunResult["steps"][number]) => void },
-    result: T,
-  ): T => {
-    for (const step of result.steps) {
-      options.onStep?.(step);
-    }
-    return result;
   };
 
   const mockGitUpdateAfterMutation = (

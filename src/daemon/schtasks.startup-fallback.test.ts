@@ -2123,9 +2123,7 @@ describe("Windows startup fallback", () => {
             "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
           )
         ) {
-          return {
-            pid: 0,
-            output: [null, "", ""],
+          return makeSpawnSyncResult({
             stdout: JSON.stringify([
               {
                 ProcessId: 4242,
@@ -2136,19 +2134,9 @@ describe("Windows startup fallback", () => {
                 CommandLine: "C:\\bin\\openclaw.cmd node run --host 127.0.0.1 --port 18789",
               },
             ]),
-            stderr: "",
-            status: 0,
-            signal: null,
-          };
+          });
         }
-        return {
-          pid: 0,
-          output: [null, "", ""],
-          stdout: "",
-          stderr: "",
-          status: 0,
-          signal: null,
-        };
+        return makeSpawnSyncResult();
       });
 
       const runtime = await readScheduledTaskRuntime(nodeEnv);

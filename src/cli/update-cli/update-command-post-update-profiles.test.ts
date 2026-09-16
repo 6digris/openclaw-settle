@@ -51,17 +51,19 @@ describe("successful update finalization ordering", () => {
       };
       delete commonEnv.UPDATE_TEST_ORIGIN_AUTH;
       vi.stubEnv("UPDATE_TEST_ORIGIN_AUTH", "native-origin-ref");
-      const nativeEnvs = new Map<string, NodeJS.ProcessEnv>();
+      const nativeEnvs = new Map<string, Record<string, string>>();
       const profiles: FinishUpdateParams["profiles"] = ["primary", "ops"].map((name) => {
-        const native = {
+        const native: Record<string, string> = {
           HOME: identity.home,
           USERPROFILE: identity.home,
           PATH: `/native/${name}`,
           OPENCLAW_PROFILE: name,
           OPENCLAW_STATE_DIR: path.join(identity.home, `.openclaw-${name}`),
           OPENCLAW_CONFIG_PATH: path.join(identity.home, `.openclaw-${name}`, "openclaw.json"),
-          ...(name === "primary" ? { UPDATE_TEST_ORIGIN_AUTH: "native-origin-ref" } : {}),
         };
+        if (name === "primary") {
+          native.UPDATE_TEST_ORIGIN_AUTH = "native-origin-ref";
+        }
         nativeEnvs.set(name, native);
         const env = { ...commonEnv, ...native, UPDATE_TEST_COMMON_AUTH: "stale-common-ref" };
         return {
@@ -463,7 +465,6 @@ describe("successful update finalization ordering", () => {
       "repair-pending-then-failed",
       "state-only-caller",
       "state-only-caller-repair",
-      "legacy-caller-running-omitted",
     ] as const)(
       "finalizes one shared package only after every profile settles (%s)",
       async (outcome) => {
@@ -472,10 +473,7 @@ describe("successful update finalization ordering", () => {
         const stateOnly = outcome.startsWith("state-only-caller");
         const stateOnlyRepair = outcome === "state-only-caller-repair";
         const successful =
-          outcome === "healthy" ||
-          outcome === "offline-origin" ||
-          outcome === "repair-both" ||
-          outcome === "legacy-caller-running-omitted";
+          outcome === "healthy" || outcome === "offline-origin" || outcome === "repair-both";
         if (outcome === "offline-origin" || laterRepairFailure) {
           const service = await import("../../daemon/service.js");
           vi.spyOn(service, "resolveGatewayService").mockReturnValue({
@@ -525,9 +523,7 @@ describe("successful update finalization ordering", () => {
                 : {
                     inspected: true,
                     runtimeInspected: true,
-                    ...(outcome === "legacy-caller-running-omitted" && name === "primary"
-                      ? {}
-                      : { running }),
+                    running,
                     stopped: running,
                     serviceEnv: env,
                     windowsTaskAutoStartRecovery: laterRepairFailure
@@ -837,11 +833,7 @@ describe("successful update finalization ordering", () => {
                 "preserve:paused",
                 outcome === "offline-origin" ? "preserve:primary" : "start:primary",
               ]),
-          ...(outcome === "healthy" ||
-          outcome === "offline-origin" ||
-          outcome === "legacy-caller-running-omitted"
-            ? []
-            : ["rollback"]),
+          ...(outcome === "healthy" || outcome === "offline-origin" ? [] : ["rollback"]),
           ...(outcome === "repair-both" ? ["repair:ops", "repair:primary"] : []),
           "package-complete",
         ]);

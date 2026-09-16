@@ -125,10 +125,9 @@ export async function finishUpdate(
       shouldRestart:
         params.shouldRestart &&
         profile.preManagedServiceStop !== undefined &&
-        profile.preManagedServiceStop.running !== false &&
+        profile.preManagedServiceStop.running &&
         (!params.coreAlreadyCurrent ||
-          (profile.preManagedServiceStop.running === true &&
-            profile.preManagedServiceStop.serviceUpdateVerdict?.kind === "owned")),
+          profile.preManagedServiceStop.serviceUpdateVerdict?.kind === "owned"),
     }));
     const parkProfiles = async (selected: readonly (typeof profiles)[number][]) => {
       const parking = selected.filter(
