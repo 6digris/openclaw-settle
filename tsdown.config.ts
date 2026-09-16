@@ -411,6 +411,8 @@ function buildCoreDistEntries(): Record<string, string> {
     "infra/package-lifecycle": "src/infra/package-lifecycle.ts",
     "crabbox-wrapper": "scripts/crabbox-wrapper.mts",
     "docker-healthcheck": "src/docker-healthcheck.ts",
+    // Old updater bridges must not load replacement dependencies through the broad shared module.
+    "update-node-runner": "src/cli/update-cli/node-runner.ts",
     // Ensure this module is bundled as an entry so legacy CLI shims can resolve its exports.
     "cli/daemon-cli": "src/cli/daemon-cli.ts",
     // Keep long-lived lazy runtime boundaries on stable filenames so rebuilt

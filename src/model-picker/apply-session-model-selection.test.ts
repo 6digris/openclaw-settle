@@ -4,6 +4,7 @@ import { createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.js";
 import { loadProviderScopedThinkingCatalog } from "../agents/model-catalog.runtime.js";
+import { createModelVisibilityPolicy } from "../agents/model-visibility-policy.js";
 import {
   loadSessionEntryReadOnly,
   replaceSessionEntry,
@@ -108,7 +109,7 @@ function createEntry(overrides: Partial<SessionEntry> = {}): SessionEntry {
   };
 }
 
-function createParams(overrides: Partial<ApplySessionModelSelectionParams> = {}) {
+function createParams(overrides: Partial<ApplySessionModelSelectionParams<2>> = {}) {
   const sessionEntry = overrides.sessionEntry ?? createEntry();
   const sessionKey = overrides.sessionKey ?? "agent:main:dm:1";
   return {
@@ -132,7 +133,7 @@ function createParams(overrides: Partial<ApplySessionModelSelectionParams> = {})
     },
     markLiveSwitchPending: true,
     ...overrides,
-  } satisfies ApplySessionModelSelectionParams;
+  } satisfies ApplySessionModelSelectionParams<2>;
 }
 
 beforeEach(() => {
@@ -155,6 +156,42 @@ beforeEach(() => {
 afterEach(() => unsubscribeLifecycle());
 
 describe("applySessionModelSelection", () => {
+  it.each([true, false])(
+    "uses typed admission without invoking a legacy key callback (allowed=%s)",
+    async (allowed) => {
+      const params = createParams({
+        cfg: {
+          agents: {
+            defaults: {
+              modelPolicy: { allow: [allowed ? "openai/gpt-4o" : "anthropic/claude-opus-4-6"] },
+            },
+          },
+        },
+      });
+      const policy = createModelVisibilityPolicy({
+        cfg: params.cfg,
+        catalog: [...catalog],
+        defaultProvider: params.defaultProvider,
+        defaultModel: params.defaultModel,
+        agentId: params.agentId,
+      });
+      const legacyAllowsKey = vi.fn((_key: string): boolean => {
+        throw new Error("Legacy display-key admission must not run");
+      });
+      const legacyParams: ApplySessionModelSelectionParams = {
+        ...params,
+        modelPolicy: { ...policy, allowsKey: legacyAllowsKey },
+      };
+
+      expect(policy).not.toHaveProperty("allowsKey");
+      const result = await applySessionModelSelection(legacyParams);
+      expect(result).toMatchObject(
+        allowed ? { status: "applied" } : { status: "rejected", reason: "not-allowed" },
+      );
+      expect(legacyAllowsKey).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([false, true])("uses configured default only with reset intent=%s", async (reset) => {
     const modelCatalog = [
       { provider: "fixture", id: "automatic", name: "Automatic" },

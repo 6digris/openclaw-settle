@@ -111,7 +111,7 @@ function createEntry(overrides: Partial<SessionEntry> = {}): SessionEntry {
   };
 }
 
-function createParams(overrides: Partial<ApplySessionModelSelectionParams> = {}) {
+function createParams(overrides: Partial<ApplySessionModelSelectionParams<2>> = {}) {
   const sessionEntry = overrides.sessionEntry ?? createEntry();
   const sessionKey = overrides.sessionKey ?? "agent:main:dm:1";
   return {
@@ -135,7 +135,7 @@ function createParams(overrides: Partial<ApplySessionModelSelectionParams> = {})
     },
     markLiveSwitchPending: true,
     ...overrides,
-  } satisfies ApplySessionModelSelectionParams;
+  } satisfies ApplySessionModelSelectionParams<2>;
 }
 
 beforeEach(() => {

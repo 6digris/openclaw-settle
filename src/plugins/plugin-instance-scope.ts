@@ -106,7 +106,7 @@ export function getPluginInstance(record: PluginRecord): PluginInstanceHandle | 
   return pluginInstanceState.records.get(record)?.instance;
 }
 
-/** Exact owner of a callable public view; never inferred from a plugin id or path. */
+/** Exact owner of a public view or invocation resource; never inferred from a plugin id or path. */
 export function getPluginValueInstance(value: object): PluginInstanceHandle | undefined {
   return pluginInstanceState.values.get(value);
 }

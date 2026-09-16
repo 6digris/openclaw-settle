@@ -91,7 +91,7 @@ import { withSerializedRateLimitAttempt } from "./rate-limit-attempt-serializati
 import type { GatewayBroadcastFn } from "./server-broadcast-types.js";
 import { resolveConnectAuthDecision } from "./server/ws-connection/auth-context.js";
 import { resolveDeviceSignaturePayloadVersion } from "./server/ws-connection/handshake-auth-helpers.js";
-import type { GatewayWsClient } from "./server/ws-types.js";
+import type { GatewayPollingClientV2 } from "./server/ws-types.js";
 
 const BASE_PATH = "/api/nodes/watch";
 const CONNECT_PATH = `${BASE_PATH}/connect`;
@@ -945,8 +945,7 @@ export function createWatchNodeHttpRuntime(options: WatchNodeHttpRuntimeOptions)
           queue: [],
           queuedBytes: 0,
         };
-        const client: GatewayWsClient = {
-          socket: undefined as never,
+        const client: GatewayPollingClientV2 = {
           connect: registeredConnect,
           connId,
           isDeviceTokenAuth: true,

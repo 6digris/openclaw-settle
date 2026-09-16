@@ -1,6 +1,10 @@
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import {
+  hasDeferredUpdateModelRetirement,
+  recordUpdateModelRetirement,
+} from "../../infra/update-deferred-model-retirement.js";
 import { UpdateDoctorError } from "../../infra/update-doctor-result.js";
 import { createUpdateRun, listUpdateRuns } from "../../infra/update-run-ledger.js";
 import { defaultRuntime } from "../../runtime.js";
@@ -193,7 +197,10 @@ import {
   runUpdateFinalizationDoctorInFreshProcess,
 } from "./update-command-fresh-doctor.js";
 import { updatePluginsAfterCoreUpdate } from "./update-command-plugins.js";
-import { continuePostCoreUpdateInFreshProcess } from "./update-command-post-core.js";
+import {
+  continuePostCoreUpdateInFreshProcess,
+  writePostCorePluginUpdateResultFile,
+} from "./update-command-post-core.js";
 import { resumePostCoreUpdate } from "./update-command-resume.js";
 
 function expectLifecycleBoundary(preLeaseEvent: string): void {
@@ -226,6 +233,7 @@ describe("update plugin lifecycle lease boundaries", () => {
     vi.stubEnv("OPENCLAW_STATE_DIR", path.dirname(path.dirname(mocks.databasePath)));
     vi.stubEnv("OPENCLAW_UPDATE_RUN_ID", undefined);
     vi.stubEnv("OPENCLAW_UPDATE_POST_CORE", undefined);
+    vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_PARENT_FINALIZES", "1");
     mocks.events = [];
     mocks.leaseActive = false;
     mocks.doctorWarnings = [];
@@ -505,7 +513,7 @@ describe("update plugin lifecycle lease boundaries", () => {
     }
   });
 
-  it("returns resumed package work without Doctor completion and rereads state under the lease", async () => {
+  it("returns resumed package work to its finalizing parent and rereads state under the lease", async () => {
     await resumePostCoreUpdate({
       root: "/tmp/openclaw",
       channel: "stable",
@@ -528,6 +536,122 @@ describe("update plugin lifecycle lease boundaries", () => {
     expect(mocks.events).not.toContain("complete:true");
     expect(mocks.events).toContain("persisted-index:true");
   });
+
+  it.each(
+    [
+      { parent: "explicit", marker: "1", version: VERSION },
+      { parent: "9.3", marker: undefined, version: "2026.9.3" },
+    ].flatMap(({ parent, marker, version }) =>
+      [
+        { changed: false, deferred: true },
+        { changed: false, deferred: false },
+        { changed: true, deferred: true },
+      ].map(({ changed, deferred }) => ({ parent, marker, version, changed, deferred })),
+    ),
+  )(
+    "settles retained-runtime retirement through convergence (parent=$parent, changed=$changed, deferred=$deferred)",
+    async ({ marker, version, changed, deferred }) => {
+      const run = createUpdateRun({ trigger: "cli", before: { version } });
+      vi.stubEnv("OPENCLAW_UPDATE_RUN_ID", run.runId);
+      vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_PARENT_FINALIZES", marker);
+      vi.stubEnv(
+        "OPENCLAW_UPDATE_POST_CORE_RESULT_PATH",
+        path.join(path.dirname(mocks.databasePath), "post-core-result.json"),
+      );
+      if (deferred) {
+        recordUpdateModelRetirement("deferred");
+      }
+      const pluginUpdate = { ...successfulPluginUpdate, changed };
+      vi.mocked(updatePluginsAfterCoreUpdate).mockResolvedValueOnce({
+        ...pluginUpdate,
+        assessment: { kind: "no-payload-repair" },
+      });
+      let inChild = false;
+      const completions: string[] = [];
+      const completion = vi.mocked(completePostCorePluginUpdate);
+      const originalCompletion = completion.getMockImplementation();
+      // Retain the real parent and resume branches and the durable retirement owner;
+      // only the process transport and fresh Doctor effects are substituted here.
+      completion.mockImplementation(async (params) => {
+        completions.push(inChild ? "child" : "parent");
+        record("complete");
+        recordUpdateModelRetirement("completed");
+        return { pluginUpdate: params.pluginUpdate, configSnapshot: validConfigSnapshot };
+      });
+      vi.mocked(continuePostCoreUpdateInFreshProcess).mockImplementationOnce(async (params) => {
+        inChild = true;
+        try {
+          await resumePostCoreUpdate({
+            root: params.root,
+            channel: params.channel,
+            opts: params.opts,
+            timeoutMs: params.timeoutMs,
+          });
+          expect(hasDeferredUpdateModelRetirement()).toBe(changed && deferred);
+          const published = vi.mocked(writePostCorePluginUpdateResultFile).mock.lastCall?.[1];
+          if (!published) {
+            throw new Error("The resumed child did not publish its plugin result");
+          }
+          return { resumed: true, pluginUpdate: published };
+        } finally {
+          inChild = false;
+        }
+      });
+
+      try {
+        const { resultWithPostUpdate } = await convergeUpdatePlugins({
+          coreAlreadyCurrent: true,
+          result: {
+            status: "skipped",
+            reason: "already-current",
+            mode: "npm",
+            root: "/tmp/openclaw",
+            before: { version: VERSION },
+            after: { version: VERSION },
+            steps: [],
+            durationMs: 1,
+          },
+          root: "/tmp/openclaw",
+          previousInstallRoot: "/tmp/retained-updater",
+          installKindChanged: false,
+          configSnapshot: validConfigSnapshot,
+          requestedChannel: null,
+          storedChannel: null,
+          channel: "stable",
+          downgradeRisk: false,
+          opts: { yes: true, run: { runId: run.runId, env: process.env } },
+          preUpdatePluginInstallRecords: {},
+          startedAt: 1,
+          updateStepTimeoutMs: 1_000,
+        });
+
+        expect(continuePostCoreUpdateInFreshProcess).toHaveBeenCalledOnce();
+        expect(completions).toEqual(changed ? ["parent"] : deferred ? ["child"] : []);
+        expect(hasDeferredUpdateModelRetirement()).toBe(false);
+        expect(resultWithPostUpdate).toMatchObject({
+          status: changed ? "ok" : "skipped",
+          postUpdate: { plugins: { status: "ok", changed } },
+        });
+        if (deferred) {
+          expect(completePostCorePluginUpdate).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({ freshDoctorRequired: changed }),
+          );
+          expect(mocks.events.indexOf("complete:false")).toBeGreaterThan(
+            mocks.events.lastIndexOf("lease-exit:false"),
+          );
+        } else {
+          expect(completePostCorePluginUpdate).not.toHaveBeenCalled();
+        }
+        expect(mocks.events).not.toContain("complete:true");
+      } finally {
+        if (originalCompletion) {
+          completion.mockImplementation(originalCompletion);
+        } else {
+          completion.mockReset();
+        }
+      }
+    },
+  );
 
   it.each([undefined, "5"])(
     "runs finalizer doctors outside the lease with timeout %s",

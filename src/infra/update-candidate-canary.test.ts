@@ -26,6 +26,7 @@ import {
 } from "./update-doctor-result.js";
 import {
   POST_CORE_UPDATE_RESULT_PATH_ENV,
+  POST_CORE_UPDATE_PARENT_FINALIZES_ENV as PARENT_FINALIZES,
   POST_CORE_UPDATE_SOURCE_CONFIG_PATH_ENV,
 } from "./update-post-core-context.js";
 import { renderUpdateRunReport, updateRunReportInputFromResult } from "./update-run-report.js";
@@ -585,6 +586,7 @@ describe("update candidate canary", () => {
         [CONTROL_PLANE_UPDATE_SENTINEL_META_ENV]: path.join(root, "live-sentinel.json"),
         [POST_CORE_UPDATE_RESULT_PATH_ENV]: path.join(root, "live-result.json"),
         [POST_CORE_UPDATE_SOURCE_CONFIG_PATH_ENV]: path.join(root, "live-config.json"),
+        [PARENT_FINALIZES]: "1",
         OPENCLAW_UPDATE_RUN_HANDOFF: "1",
         OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH: path.join(root, "live-doctor-result.json"),
         OPENCLAW_SYSTEMD_UNIT: "source-gateway.service",
@@ -641,6 +643,7 @@ describe("update candidate canary", () => {
     ]) {
       expect(childEnv[key]).toBeUndefined();
     }
+    expect(mocks.spawn.mock.calls.every((call) => !(PARENT_FINALIZES in call[2].env))).toBe(true);
     expect(mocks.spawn.mock.calls.find(([, args]) => args.includes("--check"))?.[1]).toEqual([
       path.join(root, "dist", "infra", "update-migrated-finalize.worker.js"),
       "--check",

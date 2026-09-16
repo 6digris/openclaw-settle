@@ -316,6 +316,11 @@ export async function prepareGatewayLifecycle(params: {
     setChannelHealthMonitor: (next: typeof runtimeState.channelHealthMonitor) => {
       runtimeState.channelHealthMonitor = next;
     },
+    notifyPluginMetadataChanged: () => {
+      if (!lifecycle.closePreludeStarted) {
+        runtimeState.configReloader.notifyPluginMetadataChanged();
+      }
+    },
     applyPluginLifecycleChange: (
       change: Parameters<typeof runtimeState.configReloader.applyPluginLifecycleChange>[0],
     ) => runtimeState.configReloader.applyPluginLifecycleChange(change),

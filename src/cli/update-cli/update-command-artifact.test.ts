@@ -36,6 +36,7 @@ it.each(["activate", "refuse", "directory"] as const)(
       vi.stubEnv("STATE_DIRECTORY", canonicalState);
       vi.stubEnv("NODE_COMPILE_CACHE", canonicalTmp);
       vi.stubEnv("OPENCLAW_AGENT_DIR", canonicalState);
+      vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_PARENT_FINALIZES", "1");
       vi.stubEnv(
         "OPENCLAW_UPDATE_POST_CORE_RESULT_PATH",
         path.join(canonicalState, "continuation"),
@@ -63,7 +64,7 @@ it.each(["activate", "refuse", "directory"] as const)(
       fs.mkdirSync(process.env.OPENCLAW_STATE_DIR,{recursive:true});
       fs.writeFileSync(path.join(process.env.OPENCLAW_STATE_DIR,'lifecycle'),'private');
       fs.writeFileSync(path.join(os.tmpdir(),'lifecycle'),'private');
-      fs.writeFileSync('lifecycle-paths.json',JSON.stringify({home:process.env.HOME,openclawHome:process.env.OPENCLAW_HOME,state:process.env.OPENCLAW_STATE_DIR,tmp:os.tmpdir()}));
+      fs.writeFileSync('lifecycle-paths.json',JSON.stringify({home:process.env.HOME,openclawHome:process.env.OPENCLAW_HOME,state:process.env.OPENCLAW_STATE_DIR,tmp:os.tmpdir(),parentFinalizes:process.env.OPENCLAW_UPDATE_POST_CORE_PARENT_FINALIZES}));
       for(const key of ['STATE_DIRECTORY','OPENCLAW_AGENT_DIR','NODE_COMPILE_CACHE']) {
         if(process.env[key]) fs.writeFileSync(path.join(process.env[key],'leaked'),'bad');
       }
@@ -130,6 +131,8 @@ it.each(["activate", "refuse", "directory"] as const)(
           );
           isolatedHome = paths.openclawHome;
           expect(paths.home).toBe(home);
+          expect(paths).not.toHaveProperty("parentFinalizes");
+          expect(process.env.OPENCLAW_UPDATE_POST_CORE_PARENT_FINALIZES).toBe("1");
           expect(paths.state).not.toBe(canonicalState);
           expect(await fs.readFile(path.join(paths.state, "lifecycle"), "utf8")).toBe("private");
           expect(await fs.readFile(path.join(paths.tmp, "lifecycle"), "utf8")).toBe("private");

@@ -44,6 +44,7 @@ describe("continuePostCoreUpdateInFreshProcess", () => {
       const settledPath = path.join(root, "settled");
       const pidPath = path.join(root, "writer.pid");
       const argvPath = path.join(root, "argv.json");
+      const ownerPath = path.join(root, "completion-owner.json");
       const pluginUpdate: PostCorePluginUpdateResult = {
         status: "ok",
         changed: true,
@@ -73,6 +74,7 @@ process.once("SIGTERM", () => {
 });
 await fs.writeFile(${JSON.stringify(pidPath)}, String(process.pid));
 await fs.writeFile(${JSON.stringify(argvPath)}, JSON.stringify(process.argv.slice(2)));
+await fs.writeFile(${JSON.stringify(ownerPath)}, JSON.stringify({ parentFinalizes: process.env.OPENCLAW_UPDATE_POST_CORE_PARENT_FINALIZES }));
 await fs.writeFile(process.env.OPENCLAW_UPDATE_POST_CORE_RESULT_PATH, ${JSON.stringify(JSON.stringify(pluginUpdate))});
 `,
       );
@@ -112,6 +114,7 @@ await fs.writeFile(process.env.OPENCLAW_UPDATE_POST_CORE_RESULT_PATH, ${JSON.str
         "--timeout",
         cooperative ? "5" : "3600",
       ]);
+      expect(JSON.parse(await fs.readFile(ownerPath, "utf8"))).toEqual({ parentFinalizes: "1" });
       expect(aliveAtReturn).toBe(false);
       expect(settledAtReturn).toBe(cooperative ? "settled" : undefined);
     },

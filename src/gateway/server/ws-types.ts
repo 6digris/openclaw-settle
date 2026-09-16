@@ -1,4 +1,4 @@
-// Gateway WebSocket client types describe authenticated client state retained by the server.
+// Authenticated Gateway client state and producer-owned transport capabilities.
 import type { WebSocket } from "ws";
 import type { ConnectParams } from "../../../packages/gateway-protocol/src/schema/frames.js";
 import type { AgentRuntimeIdentity } from "../agent-runtime-identity-token.js";
@@ -26,13 +26,8 @@ export type GatewayIngressWebSocket = WebSocket & {
   __openclawPreauthBudgetKey?: string;
 };
 
-/**
- * Runtime WebSocket client state tracked by the gateway server.
- */
-export type GatewayWsClient = PluginNodeCapabilityClient & {
-  socket: GatewayConnectionTransport;
-  /** Physical WS liveness capability; absent on transports without ping/pong. */
-  webSocket?: Pick<WebSocket, "ping" | "once" | "off">;
+/** Authenticated state shared by framed and HTTP polling connections. */
+type GatewayClientState = PluginNodeCapabilityClient & {
   connect: ConnectParams;
   connId: string;
   /** Host-owned transport retirement notification; never accepted from wire params. */
@@ -78,6 +73,22 @@ export type GatewayWsClient = PluginNodeCapabilityClient & {
   canvasCapabilityExpiresAtMs?: number;
   invalidatedReason?: string;
 };
+
+/** Framed connection state; the shared connection owner does not require a WebSocket. */
+export type GatewayWsClient = GatewayClientState & {
+  socket: GatewayConnectionTransport;
+  /** Full physical socket supplied by WS ingress, never inferred from framed methods. */
+  webSocket?: WebSocket;
+};
+
+/** HTTP polling has an event-queue owner, not a framed or physical socket. */
+export type GatewayPollingClientV2 = GatewayClientState & {
+  socket?: never;
+  webSocket?: never;
+};
+
+/** SDK V2: narrow the producer-owned capability before transport-specific operations. */
+export type GatewayNodeClientV2 = GatewayWsClient | GatewayPollingClientV2;
 
 export const WS_HANDSHAKE_PHASES = [
   "tcp_accepted",

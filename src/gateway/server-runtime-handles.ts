@@ -28,6 +28,7 @@ export type GatewayConfigReloaderHandle = {
   stop: () => Promise<void>;
   hotReloadStatus?: () => GatewayHotReloadStatus | undefined;
   getDeferredChannelReloads?: () => readonly GatewayDeferredChannelReload[];
+  notifyPluginMetadataChanged: () => void;
   applyPluginLifecycleChange: import("../plugins/lifecycle.js").PluginLifecycleRuntimeApply;
   isConfigReloadSettled: () => boolean;
 };
@@ -73,6 +74,7 @@ export function createGatewayServerMutableState(): GatewayServerMutableState {
     channelHealthMonitor: null as ChannelHealthMonitor | null,
     configReloader: {
       stop: async () => {},
+      notifyPluginMetadataChanged: () => {},
       applyPluginLifecycleChange: async () => {
         throw new Error("Plugin lifecycle is unavailable before Gateway startup completes.");
       },

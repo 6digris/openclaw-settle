@@ -6022,6 +6022,49 @@ describe("gateway Gmail hot reload handlers", () => {
     }
   });
 
+  it("retains shipped metadata restart debt across a later logging change", async () => {
+    vi.useFakeTimers();
+    const harness = await createManagedRestartSequenceHarness();
+    hoisted.activeTaskBlockers.push(makeActiveTaskBlocker({ taskId: "metadata-restart-blocker" }));
+    const first = { ...harness.initialConfig, logging: { level: "debug" as const } };
+    const second = { ...harness.initialConfig, logging: { level: "warn" as const } };
+    try {
+      const firstPromotion = harness.nextPromotion();
+      harness.writeConfig(first, "metadata-with-logging", 1);
+      harness.reloader.notifyPluginMetadataChanged();
+      await vi.advanceTimersByTimeAsync(300);
+      await expect(firstPromotion).resolves.toBe("metadata-with-logging");
+      expect(harness.requestRecoveryRestart).not.toHaveBeenCalled();
+      expect(harness.reloader.isConfigReloadSettled()).toBe(false);
+      expect(harness.activateRuntimeSecrets).toHaveBeenCalledWith(
+        first,
+        expect.objectContaining({ reason: "restart-check" }),
+      );
+
+      const secondPromotion = harness.nextPromotion();
+      harness.writeConfig(second, "later-logging", 2);
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(secondPromotion).resolves.toBe("later-logging");
+      expect(harness.requestRecoveryRestart).not.toHaveBeenCalled();
+      // No new metadata notification: only the coordinator can retain the accepted obligation.
+      const settledBeforeEmission = harness.reloader.isConfigReloadSettled();
+      hoisted.activeTaskBlockers.length = 0;
+      await vi.advanceTimersByTimeAsync(500);
+      expect(harness.requestRecoveryRestart.mock.calls).toEqual([
+        ["config reload: plugin metadata changed", undefined],
+      ]);
+      expect(settledBeforeEmission).toBe(false);
+      expect(harness.activateRuntimeSecrets).toHaveBeenLastCalledWith(
+        second,
+        expect.objectContaining({ reason: "restart-check" }),
+      );
+      expect(harness.logReload.error).not.toHaveBeenCalled();
+    } finally {
+      hoisted.activeTaskBlockers.length = 0;
+      await harness.reloader.stop();
+    }
+  });
+
   it("cancels a deferred restart when a newer config fails required SecretRef preflight", async () => {
     vi.useFakeTimers();
     const harness = await createManagedRestartSequenceHarness();

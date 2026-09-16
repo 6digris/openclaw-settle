@@ -113,6 +113,7 @@ beforeEach(async () => {
     env: {
       OPENCLAW_COMPATIBILITY_HOST_VERSION: undefined,
       OPENCLAW_UPDATE_POST_CORE_RESULT_PATH: undefined,
+      OPENCLAW_UPDATE_POST_CORE_PARENT_FINALIZES: "1",
       OPENCLAW_UPDATE_POST_CORE_INSTALL_RECORDS_PATH: undefined,
       OPENCLAW_UPDATE_POST_CORE_SOURCE_CONFIG_PATH: undefined,
       OPENCLAW_UPDATE_POST_CORE_REQUESTED_CHANNEL: undefined,
@@ -664,6 +665,93 @@ describe("update orchestration lifecycle ownership", () => {
       }
     },
   );
+
+  it.each([
+    {
+      parent: "legacy",
+      parentFinalizes: undefined,
+      parentVersion: undefined,
+      parentCompletes: false,
+    },
+    { parent: "current", parentFinalizes: "1", parentVersion: undefined, parentCompletes: true },
+    {
+      parent: "9.2",
+      parentFinalizes: undefined,
+      parentVersion: "2026.9.2",
+      parentCompletes: false,
+    },
+    { parent: "9.3", parentFinalizes: undefined, parentVersion: "2026.9.3", parentCompletes: true },
+    { parent: "9.4", parentFinalizes: undefined, parentVersion: "2026.9.4", parentCompletes: true },
+    {
+      parent: "unknown",
+      parentFinalizes: undefined,
+      parentVersion: "unknown",
+      parentCompletes: false,
+    },
+  ])(
+    "registered post-core update finalizes before publishing unless its parent owns completion ($parent)",
+    async ({ parentFinalizes, parentVersion, parentCompletes }) => {
+      await writeScenario("resume");
+      const resultPath = state.path("post-core-result.json");
+      vi.stubEnv("OPENCLAW_UPDATE_POST_CORE", "1");
+      vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_CHANNEL", "stable");
+      vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_PARENT_FINALIZES", parentFinalizes);
+      if (parentVersion) {
+        const run = createUpdateRun({ trigger: "cli", before: { version: parentVersion } });
+        vi.stubEnv("OPENCLAW_UPDATE_RUN_ID", run.runId);
+      }
+      vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_RESULT_PATH", resultPath);
+      mocks.plugins.mockImplementationOnce(async () => {
+        const probe = await runExec(process.execPath, [entrypoint, "probe"], {
+          timeoutMs: 15_000,
+        });
+        expect(probe.stdout).toBe("excluded");
+        await expect(fs.stat(resultPath)).rejects.toMatchObject({ code: "ENOENT" });
+        return pluginResult;
+      });
+
+      await runRegisteredCli({
+        register: registerUpdateCli,
+        argv: ["update", "--json", "--yes", "--no-restart", "--timeout", "15"],
+      });
+
+      expect(JSON.parse(await fs.readFile(resultPath, "utf8"))).toMatchObject({
+        status: "ok",
+        changed: true,
+      });
+      expect(await events()).toEqual(
+        parentCompletes ? [] : ["post-attempt", "post-acquired", "validate", "readiness"],
+      );
+      expect(mocks.plugins).toHaveBeenCalledOnce();
+      expect(mocks.restart).not.toHaveBeenCalled();
+      expect(defaultRuntime.writeJson).not.toHaveBeenCalled();
+      expect(defaultRuntime.exit).toHaveBeenCalledWith(0);
+      const after = await runExec(process.execPath, [entrypoint, "probe"], { timeoutMs: 15_000 });
+      expect(after.stdout).toBe("acquired");
+    },
+  );
+
+  it.each([
+    { failDoctor: "post" as const, reason: "post-plugin-doctor-execution-failed" },
+    { invalidConfig: true, reason: "post-plugin-doctor-invalid-config" },
+    { readinessFailure: "finding" as const, reason: "post-plugin-update-readiness-failed" },
+  ])("legacy post-core handoff publishes finalization failure ($reason)", async (scenario) => {
+    await writeScenario("resume", scenario);
+    const resultPath = state.path("post-core-result.json");
+    vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_PARENT_FINALIZES", undefined);
+    vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_RESULT_PATH", resultPath);
+
+    await invoke("resume");
+
+    expect(JSON.parse(await fs.readFile(resultPath, "utf8"))).toMatchObject({
+      status: "error",
+      changed: true,
+      reason: scenario.reason,
+    });
+    expect(await events()).toContain("post-acquired");
+    expect(mocks.restart).not.toHaveBeenCalled();
+    expect(defaultRuntime.writeJson).not.toHaveBeenCalled();
+  });
 
   it.each([false, true])(
     "resume reads the parent migration owner's committed generation (empty=%s)",

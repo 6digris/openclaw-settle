@@ -3,6 +3,10 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { buildUpdateRehearsalPathEnv } from "../infra/update-rehearsal-paths.js";
+import {
+  applyPluginDoctorCompatibilityMigrations,
+  withDeferredPluginDoctorMigrations,
+} from "../plugins/doctor-contract-registry.js";
 import { readPersistedInstalledPluginIndexInstallRecords } from "../plugins/installed-plugin-index-records.js";
 import { listOfficialExternalPluginCatalogEntries } from "../plugins/official-external-plugin-catalog.js";
 import { createPluginCache, withPluginCache } from "../plugins/plugin-cache.js";
@@ -12,6 +16,7 @@ import {
   formatStartupPluginVerificationFailure,
   runDoctorPluginConvergence,
 } from "./doctor-config-preflight-plugin-verification.js";
+import { inspectPluginMigrationAvailability } from "./doctor/shared/plugin-migration-availability.js";
 import { runPostCorePluginConvergence } from "./doctor/shared/post-core-plugin-convergence.js";
 
 const npmInstall = vi.hoisted(() =>
@@ -49,6 +54,69 @@ describe("formatStartupPluginVerificationFailure", () => {
 
 describe("update canary plugin verification", () => {
   const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+
+  it.each(["private", "outside", "incomplete"] as const)(
+    "runs only copied Doctor contracts while deferring installation (placement=%s)",
+    async (placement) => {
+      const rehearsal = placement === "private";
+      npmInstall.mockClear();
+      const root = tempDirs.make("openclaw-canary-doctor-");
+      const pluginId = "canary-doctor-fixture";
+      const rootDir =
+        placement === "outside"
+          ? tempDirs.make("openclaw-canary-outside-")
+          : path.join(root, "candidate-plugins", pluginId);
+      fs.mkdirSync(rootDir, { recursive: true });
+      const fixture = createColdPluginFixture({
+        rootDir,
+        pluginId,
+        manifest: {
+          channels: [],
+          providers: [],
+          providerAuthChoices: [],
+          doctorContract: { configRepair: true },
+        },
+      });
+      fs.writeFileSync(
+        path.join(rootDir, "doctor-contract-api.cjs"),
+        `module.exports.normalizeCompatibilityConfig = ({ cfg }) => ({ config: cfg, changes: ["private Doctor callback"] });`,
+      );
+      const env = {
+        ...buildUpdateRehearsalPathEnv(root),
+        OPENCLAW_UPDATE_IN_PROGRESS: "1",
+        OPENCLAW_UPDATE_PARENT_SUPPORTS_DOCTOR_CONFIG_WRITE: "1",
+        OPENCLAW_SERVICE_REPAIR_POLICY: "external",
+        OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_SERVICE_REPAIR: "0",
+        OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION: "0",
+        ...(placement === "incomplete" ? { TMPDIR: path.dirname(root) } : {}),
+      };
+      const cfg = {
+        plugins: {
+          allow: [pluginId],
+          entries: { [pluginId]: { enabled: true } },
+          load: { paths: [rootDir] },
+        },
+      };
+      await withPluginCache(createPluginCache(), async () => {
+        const result = await inspectPluginMigrationAvailability({
+          cfg,
+          env,
+          installRecords: {},
+          deferInstallation: true,
+        });
+        expect(result.pending.map((plugin) => plugin.pluginId)).toEqual(
+          rehearsal ? [] : [pluginId],
+        );
+        const repaired = withDeferredPluginDoctorMigrations(
+          result.pending.map((plugin) => plugin.pluginId),
+          () => applyPluginDoctorCompatibilityMigrations(cfg, { env, pluginIds: [pluginId] }),
+        );
+        expect(repaired.changes).toEqual(rehearsal ? ["private Doctor callback"] : []);
+      });
+      expect(npmInstall).not.toHaveBeenCalled();
+      expect(fs.existsSync(fixture.runtimeMarker)).toBe(false);
+    },
+  );
 
   it("keeps an unavailable copied plugin nonblocking without fetching a replacement", async () => {
     npmInstall.mockClear();

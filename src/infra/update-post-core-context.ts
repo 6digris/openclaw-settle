@@ -3,6 +3,8 @@ import { mergeProcessEnv } from "./process-env.js";
 import type { UpdateChannel } from "./update-channels.js";
 
 export const POST_CORE_UPDATE_ENV = "OPENCLAW_UPDATE_POST_CORE";
+// Parent ownership applies to changed plugins; deferred unchanged work stays in the child.
+export const POST_CORE_UPDATE_PARENT_FINALIZES_ENV = "OPENCLAW_UPDATE_POST_CORE_PARENT_FINALIZES";
 export const POST_CORE_UPDATE_CHANNEL_ENV = "OPENCLAW_UPDATE_POST_CORE_CHANNEL";
 export const POST_CORE_UPDATE_RESULT_PATH_ENV = "OPENCLAW_UPDATE_POST_CORE_RESULT_PATH";
 export const POST_CORE_UPDATE_INSTALL_RECORDS_PATH_ENV =

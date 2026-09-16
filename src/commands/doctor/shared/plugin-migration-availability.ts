@@ -3,6 +3,10 @@ import { resolveConfigWidePluginMetadataSnapshot } from "../../../config/io.plug
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../../../config/types.plugins.js";
 import type { DeferredPluginMigration } from "../../../infra/deferred-plugin-migrations.js";
+import {
+  isUpdateRehearsalReadOnlyPath,
+  resolveUpdateRehearsalRoot,
+} from "../../../infra/update-rehearsal-paths.js";
 import { normalizePluginsConfig } from "../../../plugins/config-state.js";
 import { withPluginMetadataSnapshotScope } from "../../../plugins/current-plugin-metadata-snapshot.js";
 import { resolvePluginDoctorContractArtifact } from "../../../plugins/doctor-contract-artifact.js";
@@ -121,15 +125,23 @@ export async function inspectPluginMigrationAvailability(params: {
               isPayloadMissing(params.env, context.records[pluginId]?.installPath)) ||
             context.installedPluginIdsWithRepairablePackages.has(pluginId) ||
             context.configuredPluginIdsWithStaleDescriptors.has(pluginId);
+          // Installation stays deferred, but an already available private copy
+          // must run its Doctor surfaces during the candidate rehearsal.
+          const copiedPayloadReady =
+            plugin !== undefined &&
+            Boolean(resolveUpdateRehearsalRoot(params.env)) &&
+            !isUpdateRehearsalReadOnlyPath(plugin.rootDir, params.env);
+          const available =
+            bundled || (!unavailable && (!params.deferInstallation || copiedPayloadReady));
           if (
-            (bundled || (!params.deferInstallation && !unavailable)) &&
+            available &&
             plugin &&
             statelessCandidates.has(pluginId) &&
             isActivatedManifestOwner({ plugin, normalizedConfig, rootConfig: params.cfg })
           ) {
             statelessPluginIds.push(pluginId);
           }
-          if (bundled || (!params.deferInstallation && !unavailable)) {
+          if (available) {
             return [];
           }
           return [

@@ -72,6 +72,8 @@ export class PluginInstance {
       signal: this.controller.signal,
       onDispose: (cleanup: () => void | Promise<void>) => this.addCleanup(cleanup, "plugin"),
     });
+    // Invocation metadata stays narrow; host retention resolves this exact resource here.
+    valueInstances.set(this, this);
   }
 
   private addCleanup(cleanup: () => void | Promise<void>, kind: "plugin" | "module") {

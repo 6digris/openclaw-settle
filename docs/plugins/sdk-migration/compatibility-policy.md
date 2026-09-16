@@ -46,6 +46,14 @@ Retained compatibility entrypoints keep their shipped caller names:
 `resolvePluginProviders`, and `agent-runtime`'s
 `resolveThinkingDefaultWithRuntimeCatalog` accepts `loadModelCatalog`.
 
+`listAgentIds` accepts full `OpenClawConfig` inputs, including inline config
+literals, through both `agent-runtime` and `agent-scope-runtime`. Readonly
+roster views remain accepted. Only the roster participates in ID selection;
+additional config fields do not change that behavior. The deprecated
+`tryResolveDefaultAgentId` retains the same full-config and readonly input
+shapes, including extracted `Parameters` types. It keeps its current selection
+behavior and remains deprecated in favor of `tryResolveSoleAgentId`.
+
 `resolvePluginProviders` remains synchronous and returns the existing provider
 array. When it borrows from an owned inspection, the Gateway lifecycle or
 executable CLI invocation retains the backing resources until its actual work
@@ -65,6 +73,129 @@ not acquire this compatibility lifetime.
 offsets for `isInsideCode`. Regions returned by `findCodeRegions` additionally
 include parser-owned `block` metadata; callers supplying their own ranges do not
 need to provide it.
+
+### Session model selection inputs
+
+`model-session-runtime` retains the shipped `ApplySessionModelSelectionParams`
+input shape. Its optional caller-owned `modelPolicy` retains the required
+`allowsKey(key)` callback without requiring `catalog`. Function `Parameters`
+extraction retains that legacy input contract.
+
+New callers should use `ApplySessionModelSelectionParams<2>` from the same
+subpath. The existing exported type defaults to version 1 for shipped callers;
+version 2 describes the current policy input without adding another SDK export.
+The existing `applySessionModelSelection` function accepts both shapes through
+one implementation; current internal callers explicitly use version 2.
+Core admission consults only the typed `allows({ provider, model })` predicate,
+not the legacy callback. This adapter does not add `allowsKey` to current policy
+objects, reconstruct tuples from display keys, or change automatic/default
+selection, session locks, persistence fences, or authority checks.
+
+The legacy version-1 callback input is deprecated from 2026-09-15 and remains through the next
+Plugin SDK major. Removal also requires verified migration of supported external
+readers and explicit SDK-breaking release approval. The TypeScript annotation
+and compatibility registry identify the replacement; no runtime warning or
+runtime policy adapter is introduced.
+
+### Gateway node transport SDK V2
+
+OpenClaw 2026.9.5 introduces the **in-process Gateway SDK V2** node-session
+contract. This is not a node wire-protocol version change. The existing
+`GatewayRequestHandlerOptions` imports from `core` and `gateway-runtime` now
+explicitly name `GatewayRequestHandlerOptionsV2`; `registerGatewayMethod` uses
+that same contract. The existing `NodeSession` export from `gateway-runtime`
+selects `NodeSessionV2`. No separate registrar, registry, or SDK subpath is needed.
+
+This is an explicit source migration, not a transparent compatibility adapter.
+The old unconditional `node.client.socket: WebSocket` declaration was already
+false for supported watchOS HTTP polling nodes. Keeping that declaration would
+promise methods those nodes cannot provide. Filtering polling nodes out would
+also be incorrect: every registry enumeration, registration, lookup,
+pairing-current lookup, policy refresh, activity update, and surface update
+continues to return the actual supported nodes.
+
+V2 exposes producer-owned capabilities:
+
+| Capability         | Physical WebSocket              | Generic framed connection | HTTP polling |
+| ------------------ | ------------------------------- | ------------------------- | ------------ |
+| `client.socket`    | Ordered-frame transport         | Ordered-frame transport   | Absent       |
+| `client.webSocket` | Full, original WebSocket object | Absent                    | Absent       |
+
+Use the explicit physical capability before a WebSocket-only operation:
+
+```ts
+import type { GatewayRequestHandlerOptions } from "openclaw/plugin-sdk/core";
+
+function inspectNodes({ context }: GatewayRequestHandlerOptions) {
+  for (const node of context.nodeRegistry.listConnected()) {
+    const socket = node.client.webSocket;
+    if (socket) {
+      socket.ping();
+    }
+  }
+}
+```
+
+The same consumer works with the `gateway-runtime` import. Replace old
+unconditional `node.client.socket.ping()` calls with this narrowing; do not cast
+a polling or framed transport to `WebSocket`. `webSocket` is a fact supplied by
+physical ingress, not a runtime guess based on a method name. Narrow
+`client.socket` separately when a framed operation is genuinely required.
+
+Prefer the existing registry operations or `api.runtime.nodes` for ordinary
+inventory and invocation across transports. `api.runtime.nodes` does not replace
+every arbitrary WebSocket API. Node commands, pairing authorization, cancellation,
+HTTP polling recovery, and serialized wire payloads keep their existing contracts.
+
+A session or socket reference is not authorization or a new revocable plugin
+capability. Native socket identity is preserved. Revalidate the exact current
+node connection and applicable plugin/host lifetime after awaited work and before
+effects; never treat a retained session as authority over its replacement.
+This specifically approved V2 migration does not shorten other SDK compatibility
+windows or acknowledge unrelated SDK changes.
+
+### Gateway plugin metadata notification
+
+`GatewayRequestHandlerOptions.context.notifyPluginMetadataChanged(): void`,
+shipped in OpenClaw 2026.9.4 through `core` and `gateway-runtime`, remains
+available to registered Gateway handlers. It signals the existing config
+reloader, coalesces with watcher events, and requests ordinary Gateway restart
+planning even when config bytes and install records are unchanged. It leaves the
+running plugin inventory intact and honors `gateway.reload.mode: "off"` and
+config-writer intent. Calls during reloader preparation wait for readiness;
+calls after shutdown do nothing. Embedded contexts without a resident reloader
+retain the shipped inert callback.
+
+A callback captured by a registered handler belongs to that plugin instance.
+After the instance retires, new calls through retained copies fail; already
+admitted handlers can finish while disposal drains them. A notification accepted
+before retirement belongs to the reloader, so disposing the notifying plugin does
+not cancel it. Once accepted by the restart coordinator, its metadata restart
+requirement survives later config edits until restart emission; reload-off and
+writer-none candidates still pause that work.
+
+The callback is deprecated for explicit plugin management. Use the admin
+`plugins.refresh` or `plugins.reload` Gateway RPC and await its runtime receipt
+when the intended operation is to apply a plugin change now. These are not
+interchangeable operations: explicit application can run while automatic reload
+is off; a void notification neither confirms application nor authorizes that
+policy override. Do not replace a notification with a discarded application
+promise.
+
+The adapter remains through the next Plugin SDK major. Removal additionally
+requires verified migration of supported external-plugin readers and explicit
+SDK-breaking release approval. The TypeScript annotation and compatibility
+registry record the migration; no per-call runtime warning is emitted.
+
+### Discord component registration
+
+`registerBuiltDiscordComponentMessage` keeps its shipped `void` return contract.
+The existing SDK resource host owns asynchronous completion and cooperating tails,
+retains the invoking plugin while that work settles, and records asynchronous
+failure for logging and teardown. Synchronous admission and registration errors
+still reach the caller. A retired plugin or host cannot admit new work through a
+retained callback. The void return is not an application receipt; code needing an
+awaited operation should use the owning plugin API rather than await this facade.
 
 ### Harness attempt result migration
 

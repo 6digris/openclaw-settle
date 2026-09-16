@@ -1,13 +1,17 @@
 import { readConfigFileSnapshot } from "../../config/config.js";
 import { normalizeUpdateChannel } from "../../infra/update-channels.js";
+import { compareSemverStrings } from "../../infra/update-check.js";
+import { UPDATE_RUN_ID_ENV } from "../../infra/update-control-plane-sentinel.js";
 import { hasDeferredUpdateModelRetirement } from "../../infra/update-deferred-model-retirement.js";
 import {
   POST_CORE_UPDATE_REQUESTED_CHANNEL_ENV,
+  POST_CORE_UPDATE_PARENT_FINALIZES_ENV,
   POST_CORE_UPDATE_INSTALL_RECORDS_PATH_ENV,
   POST_CORE_UPDATE_RESULT_PATH_ENV,
   POST_CORE_UPDATE_STARTED_AT_ENV,
   POST_CORE_UPDATE_SOURCE_CONFIG_PATH_ENV,
 } from "../../infra/update-post-core-context.js";
+import { getUpdateRun } from "../../infra/update-run-ledger.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { loadInstalledPluginIndexInstallRecords } from "../../plugins/installed-plugin-index-records.js";
 import { readPersistedInstalledPluginIndex } from "../../plugins/installed-plugin-index-store.js";
@@ -127,15 +131,30 @@ async function resumePostCoreUpdateInternal(params: ResumePostCoreUpdateParams):
       pluginInstallRecords,
     });
   });
-  // Changed plugins already require the published parent's Doctor pass. Complete
-  // the otherwise-skipped retirement before the parent consumes this result.
+  // .6.34/.35 and .9.2 consume this result without another finalization pass.
+  // .9.3 first moved that pass to the parent; its active run records the invoking
+  // version. A run ID alone cannot distinguish .9.2. New parents advertise the
+  // responsibility explicitly, including untracked handoffs. These facts select
+  // the caller, not mutation authority: fresh Doctor reacquires its own leases.
+  const parentRunId = process.env[UPDATE_RUN_ID_ENV]?.trim();
+  const parentRun =
+    process.env[POST_CORE_UPDATE_PARENT_FINALIZES_ENV] !== "1" && parentRunId
+      ? getUpdateRun(parentRunId)
+      : undefined;
+  const parentVersion = parentRun?.status === "running" ? parentRun.before.version : undefined;
+  const parentFinalizes =
+    process.env[POST_CORE_UPDATE_PARENT_FINALIZES_ENV] === "1" ||
+    (compareSemverStrings(parentVersion ?? "", "2026.9.3") ?? -1) >= 0;
+  // An already-current retained runtime skips the parent's unchanged-plugin
+  // finalizer. Keep deferred retirement in this child regardless of parent role.
   const pluginUpdate =
-    !producedPluginUpdate.changed && hasDeferredUpdateModelRetirement()
+    (!producedPluginUpdate.changed && hasDeferredUpdateModelRetirement()) ||
+    (producedPluginUpdate.changed && !parentFinalizes)
       ? (
           await completePostCorePluginUpdate({
             root: params.root,
             pluginUpdate: producedPluginUpdate,
-            freshDoctorRequired: false,
+            freshDoctorRequired: producedPluginUpdate.changed,
             yes: params.opts.yes === true,
             json: params.opts.json === true,
             timeoutMs: params.timeoutMs,
