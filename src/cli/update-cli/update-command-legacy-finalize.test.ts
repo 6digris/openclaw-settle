@@ -320,17 +320,17 @@ function runLegacyFinalizationScenario(scenario: (typeof scenarios)[number], sig
           preUpdatePluginInstallRecords: {},
           startedAt: Date.now(),
           packageUpdateNodeRunner: testNodeExecPath,
+          preManagedServiceStop: {
+            stopped: true,
+            inspected: true,
+            runtimeInspected: true,
+            running: true,
+            serviceEnv: env,
+            ...(selectedNode ? { serviceNodeRunner: path.join(scratch, "obsolete-node") } : {}),
+          },
           ...(selectedNode
             ? {
                 serviceRuntimeRefreshRequired: requiresRuntimeRefresh,
-                preManagedServiceStop: {
-                  stopped: true,
-                  inspected: true,
-                  runtimeInspected: true,
-                  running: true,
-                  serviceEnv: env,
-                  serviceNodeRunner: path.join(scratch, "obsolete-node"),
-                },
               }
             : {}),
           updateStepTimeoutMs: 20000,
@@ -344,7 +344,15 @@ function runLegacyFinalizationScenario(scenario: (typeof scenarios)[number], sig
         fs.mkdirSync(opsStateDir);
         const opsConfigPath = path.join(opsStateDir, "openclaw.json");
         fs.writeFileSync(opsConfigPath, JSON.stringify({ plugins: { enabled: false } }));
+        const opsEnv = {
+          ...env,
+          OPENCLAW_PROFILE: "ops",
+          OPENCLAW_STATE_DIR: opsStateDir,
+          OPENCLAW_CONFIG_PATH: opsConfigPath,
+        };
         const {
+          preManagedServiceStop,
+          serviceRuntimeRefreshRequired,
           configSnapshot,
           requestedChannel,
           storedChannel,
@@ -353,6 +361,8 @@ function runLegacyFinalizationScenario(scenario: (typeof scenarios)[number], sig
           ...shared
         } = input.params;
         const profile = {
+          preManagedServiceStop,
+          serviceRuntimeRefreshRequired,
           configSnapshot,
           requestedChannel,
           storedChannel,
@@ -367,12 +377,8 @@ function runLegacyFinalizationScenario(scenario: (typeof scenarios)[number], sig
               {
                 ...profile,
                 configSnapshot: { ...snapshot, path: opsConfigPath },
-                ownedManagedUpdateEnv: {
-                  ...env,
-                  OPENCLAW_PROFILE: "ops",
-                  OPENCLAW_STATE_DIR: opsStateDir,
-                  OPENCLAW_CONFIG_PATH: opsConfigPath,
-                },
+                preManagedServiceStop: { ...preManagedServiceStop, serviceEnv: opsEnv },
+                ownedManagedUpdateEnv: opsEnv,
               },
             ],
           },

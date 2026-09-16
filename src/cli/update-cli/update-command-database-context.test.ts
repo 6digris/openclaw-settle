@@ -7,8 +7,12 @@ import {
   resolveGatewayWindowsTaskName,
 } from "../../daemon/constants.js";
 import * as serviceInventory from "../../daemon/inspect.js";
-import * as schtasksExec from "../../daemon/schtasks-exec.js";
-import { readGatewayServiceState, type GatewayService } from "../../daemon/service.js";
+import * as taskProbe from "../../daemon/schtasks-state-probe.js";
+import {
+  readGatewayServiceState,
+  resolveManagedGatewayServiceIdentity,
+  type GatewayService,
+} from "../../daemon/service.js";
 import {
   createMockGatewayService,
   mockSystemAccountHome,
@@ -80,10 +84,26 @@ async function fixture() {
   const primary = await add("primary");
   const secondary = await add("ops");
   const lookup = (env: NodeJS.ProcessEnv) =>
-    definitions.get(
-      env.OPENCLAW_SYSTEMD_UNIT?.replace(/\.service$/, "") ??
-        resolveGatewaySystemdServiceName(env.OPENCLAW_PROFILE),
+    [...definitions.values()].find(
+      (definition) =>
+        resolveManagedGatewayServiceIdentity(definition.env) ===
+        resolveManagedGatewayServiceIdentity(env),
     );
+  const task = (
+    taskPath: string,
+    subcommand: "gateway" | "node" = "gateway",
+  ): taskProbe.ScheduledTaskSnapshot => ({
+    taskPath,
+    state: 3,
+    actions: [
+      {
+        type: 0,
+        path: process.execPath,
+        arguments: `${path.join(root, "dist", "entry.js")} ${subcommand}`,
+        workingDirectory: root,
+      },
+    ],
+  });
   const service = createMockGatewayService({
     readCommand: vi.fn(async (env) => {
       const definition = lookup(env);
@@ -146,6 +166,7 @@ async function fixture() {
     service,
     params,
     add,
+    task,
   };
 }
 
@@ -488,6 +509,43 @@ describe("shared-install database admission", () => {
     ).toHaveLength(1);
   });
 
+  it("keeps the invoking caller in schema checks without adding it to selected native maintenance", async () => {
+    const f = await fixture();
+    const callerState = path.join(f.home, ".openclaw");
+    const callerConfig = path.join(callerState, "openclaw.json");
+    await fs.mkdir(callerState, { recursive: true });
+    await fs.writeFile(callerConfig, '{"gateway":{"mode":"local"}}');
+    vi.stubEnv("OPENCLAW_PROFILE", "default");
+    vi.stubEnv("OPENCLAW_STATE_DIR", callerState);
+    vi.stubEnv("OPENCLAW_CONFIG_PATH", callerConfig);
+
+    const admission = await inspectUpdateDatabaseContexts(f.params);
+    expect(admission.profiles.map(({ context }) => context.env.OPENCLAW_PROFILE)).toEqual([
+      "primary",
+      "ops",
+    ]);
+    expect(admission.contexts.map(({ env }) => env.OPENCLAW_PROFILE)).toEqual([
+      "default",
+      "primary",
+      "ops",
+    ]);
+    await expect(
+      inspectUpdateDatabaseContexts({ ...f.params, expectedProfiles: admission.profiles }),
+    ).resolves.toMatchObject({
+      profiles: [
+        { context: { env: { OPENCLAW_PROFILE: "primary" } } },
+        { context: { env: { OPENCLAW_PROFILE: "ops" } } },
+      ],
+      contexts: [
+        { env: { OPENCLAW_PROFILE: "default" } },
+        { env: { OPENCLAW_PROFILE: "primary" } },
+        { env: { OPENCLAW_PROFILE: "ops" } },
+      ],
+    });
+    expect(admission.profiles[0]?.stopState?.serviceUpdateVerdict?.kind).toBe("owned");
+    expect(f.service.stop).not.toHaveBeenCalled();
+  });
+
   it("excludes an unrelated caller config when replacement is redirected to owned profiles", async () => {
     const f = await fixture();
     const caller = await f.add("caller", f.foreignRoot);
@@ -520,11 +578,11 @@ describe("shared-install database admission", () => {
         scenario === "custom locator"
           ? "Custom OpenClaw Gateway"
           : resolveGatewayWindowsTaskName("ops");
-      vi.spyOn(schtasksExec, "execSchtasks").mockResolvedValue({
-        code: 0,
-        stderr: "",
-        stdout: `TaskName: \\${resolveGatewayWindowsTaskName("primary")}\n\nTaskName: \\${secondaryTask}\n\nTaskName: \\OpenClaw Node\nTask To Run: C:\\Users\\test\\.openclaw\\node.vbs\n`,
-      });
+      vi.spyOn(taskProbe, "listScheduledTasks").mockReturnValue([
+        f.task(`\\${resolveGatewayWindowsTaskName("primary")}`),
+        f.task(`\\${secondaryTask}`),
+        f.task("\\OpenClaw Node", "node"),
+      ]);
       if (scenario === "saved profile mismatch") {
         f.secondary.env.OPENCLAW_PROFILE = "primary";
       }
@@ -551,11 +609,9 @@ describe("shared-install database admission", () => {
       vi.stubEnv(key, value);
     }
     mockProcessPlatform("win32");
-    vi.spyOn(schtasksExec, "execSchtasks").mockResolvedValue({
-      code: 0,
-      stderr: "",
-      stdout: "TaskName: \\Custom OpenClaw Gateway\n",
-    });
+    vi.spyOn(taskProbe, "listScheduledTasks").mockReturnValue([
+      f.task("\\Custom OpenClaw Gateway"),
+    ]);
     const admission = await inspectUpdateDatabaseContexts(f.params);
     expect(admission.profiles).toHaveLength(1);
     expect(admission.profiles[0]?.stopState?.serviceEnv?.OPENCLAW_WINDOWS_TASK_NAME).toBe(

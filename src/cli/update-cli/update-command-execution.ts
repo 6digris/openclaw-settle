@@ -9,7 +9,6 @@ import {
   canResolveRegistryVersionForPackageTarget,
   verifyPackageUpdateRecovery,
 } from "../../infra/update-global.js";
-import { isCurrentForegroundUpdateHandoffProcess } from "../../infra/update-managed-service-handoff.js";
 import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
 import { recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import { readCurrentGitUpdateRecovery } from "../../infra/update-runner-git-recovery.js";
@@ -225,20 +224,10 @@ export async function executeMutableUpdate(
     }
     try {
       for (const profile of selected) {
-        const root = candidate.profileValidation.get(profile)!.root;
-        if (
-          profile === profiles[0] &&
-          !profile.preManagedServiceStop &&
-          opts.run?.completionOwner === "gateway-restart" &&
-          (await isCurrentForegroundUpdateHandoffProcess({
-            root,
-            runId: opts.run.runId,
-            env: candidate.envFor(profile),
-          }))
-        ) {
-          assertExecutionCurrent();
+        if (!profile.preManagedServiceStop) {
           continue;
         }
+        const root = candidate.profileValidation.get(profile)!.root;
         const rememberStopped = (state: PreManagedServiceStop) => {
           profile.preManagedServiceStop = {
             ...state,

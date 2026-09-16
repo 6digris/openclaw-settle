@@ -67,6 +67,7 @@ export async function inspectUpdateDatabaseContexts(params: {
   const profiles: UpdateDatabaseProfileAdmission[] = [];
   const externalConsumers: { root: string; state: GatewayServiceState }[] = [];
   let fallbackStopState: PreManagedServiceStop | undefined;
+  let selectedServiceOwned = false;
   const inspect = async (
     root: string,
     env: NodeJS.ProcessEnv,
@@ -132,6 +133,10 @@ export async function inspectUpdateDatabaseContexts(params: {
     ? params.expectedProfiles
     : [{ root: undefined, stopState: undefined }];
   for (const previous of selected) {
+    // A synthetic caller carries state, not a native service selection.
+    if (params.expectedProfiles && previous.stopState === undefined) {
+      continue;
+    }
     const env = previous.stopState?.serviceEnv ?? process.env;
     for (const root of previous.root ? [previous.root] : roots) {
       if (
@@ -144,14 +149,15 @@ export async function inspectUpdateDatabaseContexts(params: {
       ) {
         // The helper owns this foreground process; discovery below still admits
         // every real native consumer, including a stopped unit for this profile.
-        continue;
-      }
-      const inspected = await inspect(root, env, previous.stopState);
-      fallbackStopState ??= inspected;
-      if (inspected.serviceUpdateVerdict?.kind === "owned") {
-        await admit(root, inspected);
         break;
       }
+      const inspected = await inspect(root, env, previous.stopState);
+      if (inspected.serviceUpdateVerdict?.kind === "owned") {
+        await admit(root, inspected);
+        selectedServiceOwned ||= previous === selected[0];
+        break;
+      }
+      fallbackStopState ??= inspected;
     }
   }
 
@@ -205,7 +211,7 @@ export async function inspectUpdateDatabaseContexts(params: {
         }),
       ];
   const caller = contexts[0];
-  if (roots[0] && caller) {
+  if (roots[0] && caller && !selectedServiceOwned) {
     const callerIdentity = profileStateIdentity(caller);
     const originIndex = profiles.findIndex(
       (profile) => profileStateIdentity(profile.context) === callerIdentity,

@@ -593,23 +593,19 @@ export function writeRestartSentinelRowIfRevisionSync(
   const revision = nextRevision(previousRevision);
   const row = buildRestartSentinelRow(payload, revision);
   const stateDb = getNodeSqliteKysely<GatewayRestartSentinelDatabase>(db);
-  const result =
+  const result = executeSqliteQuerySync(
+    db,
     expectedRevision === null
-      ? executeSqliteQuerySync(
-          db,
-          stateDb
-            .insertInto("gateway_restart_sentinel")
-            .values(row)
-            .onConflict((conflict) => conflict.column("sentinel_key").doNothing()),
-        )
-      : executeSqliteQuerySync(
-          db,
-          stateDb
-            .updateTable("gateway_restart_sentinel")
-            .set(row)
-            .where("sentinel_key", "=", RESTART_SENTINEL_KEY)
-            .where("updated_at_ms", "=", expectedRevision),
-        );
+      ? stateDb
+          .insertInto("gateway_restart_sentinel")
+          .values(row)
+          .onConflict((conflict) => conflict.column("sentinel_key").doNothing())
+      : stateDb
+          .updateTable("gateway_restart_sentinel")
+          .set(row)
+          .where("sentinel_key", "=", RESTART_SENTINEL_KEY)
+          .where("updated_at_ms", "=", expectedRevision),
+  );
   if (result.numAffectedRows !== 1n) {
     return null;
   }

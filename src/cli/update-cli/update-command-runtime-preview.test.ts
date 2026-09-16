@@ -83,9 +83,9 @@ it.each(cases.flatMap((entry) => [true, false].map((json) => Object.assign({}, e
         .mocked(databaseContext.inspectUpdateDatabaseContexts)
         .getMockImplementation()!;
       vi.mocked(databaseContext.inspectUpdateDatabaseContexts).mockImplementation(
-        async (params) => ({
-          ...(await inspect(params)),
-          service: {
+        async (params) => {
+          const admission = await inspect(params);
+          admission.profiles[0]!.stopState = {
             stopped: false,
             inspected: true,
             runtimeInspected: true,
@@ -97,8 +97,9 @@ it.each(cases.flatMap((entry) => [true, false].map((json) => Object.assign({}, e
               fingerprint: "fixture",
               refreshDefinition: refresh,
             },
-          },
-        }),
+          };
+          return admission;
+        },
       );
     }
     const log = vi.spyOn(defaultRuntime, "log").mockImplementation(() => undefined);

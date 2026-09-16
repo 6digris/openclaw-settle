@@ -698,15 +698,16 @@ describe("Windows startup fallback", () => {
     });
   });
 
-  it("refuses update-owned Startup fallback before publishing a login item or detached launcher", async () => {
+  it("refuses update-owned task recreation before publishing a login item or detached launcher", async () => {
     await withWindowsEnv("openclaw-win-update-startup-", async ({ env }) => {
-      addMissingTaskInstallResponses([{ code: 5, stdout: "", stderr: "ERROR: Access is denied." }]);
+      addMissingTaskInstallResponses([]);
       await expect(
         withGatewayServiceUpdateAuthority(
           () => {},
           () => installGatewayScheduledTask(env),
         ),
-      ).rejects.toThrow("startup fallback is unsupported");
+      ).rejects.toThrow("UPDATE_NATIVE_AUTHORITY:");
+      expect(schtasksCalls.map(([operation]) => operation)).toEqual(["/Query"]);
       await expect(fs.stat(resolveStartupEntryPath(env))).rejects.toMatchObject({ code: "ENOENT" });
       expect(spawn).not.toHaveBeenCalled();
     });

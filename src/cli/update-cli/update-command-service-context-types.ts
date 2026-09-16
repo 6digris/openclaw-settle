@@ -27,6 +27,8 @@ export type PreManagedServiceStop = {
   blockMessage?: string;
   serviceEnv?: NodeJS.ProcessEnv;
   serviceDefinitionEnv?: NodeJS.ProcessEnv;
+  /** Native bindings captured before activation; omitted from worker inputs. */
+  serviceEffectiveEnv?: NodeJS.ProcessEnv;
   serviceNodeRunner?: string;
   /** Original account observed from the pinned native user-manager connection. */
   serviceManagerUid?: number;

@@ -13,10 +13,13 @@ import { withTestDir } from "../../test-helpers/temp-dir.js";
 import { executeMutableUpdate } from "./update-command-execution.js";
 import { updateExecutorNativeEntrypoints } from "./update-command-executor-native-runtime.test-support.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
-import { runPackageUpdateDoctor } from "./update-command-package.js";
+import type { PackageInstallUpdateParams } from "./update-command-package.js";
 
 const { executionParams, mocks, successfulUpdate } =
   await import("./update-command-execution.test-support.js");
+const { runPackageUpdateDoctor } = await vi.importActual<
+  typeof import("./update-command-package.js")
+>("./update-command-package.js");
 
 it.each(
   (["package", "git"] as const).flatMap((kind) =>
@@ -95,19 +98,17 @@ it.each(
         logTail: [],
         doctorConfigWrites: true,
       });
+      mocks.runDoctor.mockImplementation(runPackageUpdateDoctor);
       const runUpdate = async (
-        options: Pick<Parameters<typeof runPackageUpdateDoctor>[0], "getDoctorContext"> & {
+        options: Pick<PackageInstallUpdateParams, "runDoctor"> & {
           validateCandidate?: (root: string) => Promise<unknown>;
         },
       ) => {
         await options.validateCandidate?.(root);
-        const step = await runPackageUpdateDoctor({
-          root,
-          timeoutMs: 20_000,
-          progress: {},
-          managedServiceEnv: env,
-          getDoctorContext: options.getDoctorContext,
-        });
+        if (!options.runDoctor) {
+          throw new Error("Expected the execution owner's Doctor callback");
+        }
+        const step = await options.runDoctor(root);
         return {
           ...successfulUpdate,
           root,

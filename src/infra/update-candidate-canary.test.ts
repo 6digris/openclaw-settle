@@ -6,7 +6,6 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { formatCliFailureLines, formatCliJsonFailure } from "../cli/failure-output.js";
 import { createInvalidConfigError } from "../config/io.invalid-config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import * as diskSpace from "./disk-space.js";
 import * as readiness from "./update-candidate-canary-readiness.test-support.js";
 import { validateUpdateCandidateCanary } from "./update-candidate-canary.js";
 import {
@@ -14,6 +13,7 @@ import {
   createCanarySnapshotResult,
   FakeChild,
   renderCanarySteps,
+  stubCanaryDiskSpace,
   stubHealthyGateway,
   writeCanaryRuntime,
 } from "./update-candidate-canary.test-support.js";
@@ -75,8 +75,9 @@ beforeEach(async () => {
   mocks.snapshot.mockImplementation(async (_command, options: { input: string }) =>
     createCanarySnapshotResult(options.input, databasePath),
   );
-  mocks.spawn.mockImplementation(
-    (_command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
+  mocks.spawn
+    .mockReset()
+    .mockImplementation((_command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
       const child = new FakeChild(nextPid++);
       children.set(child.pid, child);
       childEnv = options.env;
@@ -94,8 +95,7 @@ beforeEach(async () => {
         }));
       }
       return child;
-    },
-  );
+    });
   mocks.signal.mockImplementation(
     (pid: number, _signal: string, options: { onComplete?: () => void }) => {
       children.get(pid)?.emit("close", 0);
@@ -112,12 +112,7 @@ afterEach(() => {
 describe("update candidate canary", () => {
   readiness.registerCanaryReadinessBudgetTests(() => root);
   it("records a typed capacity refusal before notifying the snapshot failure", async () => {
-    const capacity = vi.spyOn(diskSpace, "tryReadDiskSpace").mockImplementation((targetPath) => ({
-      targetPath,
-      checkedPath: targetPath,
-      availableBytes: 0,
-      totalBytes: 1024,
-    }));
+    const capacity = stubCanaryDiskSpace(0, 1024);
     const onStep = vi.fn();
     try {
       const result = await validateUpdateCandidateCanary({
@@ -272,6 +267,7 @@ describe("update candidate canary", () => {
       databasePath = path.join(root, "runtime-budget.sqlite");
       await fs.writeFile(databasePath, "");
       await fs.truncate(databasePath, sqliteBytes);
+      const capacity = stubCanaryDiskSpace(64 * 1024 ** 3, 128 * 1024 ** 3);
       const now = Date.now.bind(Date);
       let doctorElapsed = 0;
       const clock = vi.spyOn(Date, "now").mockImplementation(() => now() + doctorElapsed);
@@ -301,6 +297,7 @@ describe("update candidate canary", () => {
         }
       } finally {
         clock.mockRestore();
+        capacity.mockRestore();
       }
     },
   );
@@ -337,7 +334,7 @@ describe("update candidate canary", () => {
       );
       stubHealthyGateway();
       const result = await validateUpdateCandidateCanary(canaryStateOptions(3_000));
-      expect(result.status).toBe(failsValidation ? "error" : "ok");
+      expect(result.status, result.logTail.join("\n")).toBe(failsValidation ? "error" : "ok");
       expect(result.doctorConfigWrites).not.toBe(true);
       expect(result.doctorConfigChanges).toEqual(
         ["meta", "plugins", "wizard"].map((key) => ({ kind: "key", key })),

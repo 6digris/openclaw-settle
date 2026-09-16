@@ -1,7 +1,6 @@
 // In-process gateway run loop, restart signaling, drain, and update respawn handling.
 import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { once } from "node:events";
 import { performance } from "node:perf_hooks";
 import { MessageChannel } from "node:worker_threads";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
@@ -36,7 +35,6 @@ import {
   type GatewayDrainReason,
   runOutsideGatewayRootWorkAdmission,
 } from "../../process/gateway-work-admission.js";
-import { killProcessTree } from "../../process/kill-tree.js";
 import type { RuntimeEnv } from "../../runtime.js";
 import { drainGlobalSingletonLifecycleState } from "../../shared/global-singleton.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
@@ -59,13 +57,17 @@ const LAUNCHD_SUPERVISED_RESTART_EXIT_DELAY_MS = 1500;
 const DEFAULT_RESTART_DRAIN_TIMEOUT_MS = 300_000;
 const RESTART_DRAIN_STILL_PENDING_WARN_MS = 30_000;
 const RESTART_CLOSE_REPLY_DRAIN_SHUTDOWN_RESERVE_MS = 10_000;
-const UPDATE_RESPAWN_KILL_GRACE_MS = 1_000;
-const UPDATE_RESPAWN_EXIT_TIMEOUT_MS = 3_000;
 const LOG_FLUSH_EXIT_TIMEOUT_MS = 4_000;
 const HARD_EXIT_WATCHDOG_GRACE_MS = 2_000;
 
 type GatewayLifecycleRuntimeModule = typeof import("./lifecycle.runtime.js");
 type ShutdownFailure = { step: string; error: unknown };
+
+function isRunningGatewayChild(child: ChildProcess | true | null | undefined): boolean {
+  return Boolean(
+    child && child !== true && child.pid && child.exitCode === null && child.signalCode === null,
+  );
+}
 
 const gatewayLifecycleRuntimeLoader = createLazyImportLoader<GatewayLifecycleRuntimeModule>(
   () => import("./lifecycle.runtime.js"),
@@ -200,7 +202,11 @@ export async function runGatewayLoop(params: {
   ): Promise<void> => {
     if (foregroundUpdateClosed) {
       await flushLogsBeforeExit();
-      exitProcess(code);
+      const exitCode = code === 0 && !isRunningGatewayChild(committedGenericSuccessor) ? 1 : code;
+      if (exitCode !== code) {
+        gatewayLog.error("fresh Gateway stopped before handoff completed; check its startup logs");
+      }
+      exitProcess(exitCode);
       return;
     }
     if (hostStopOwner && hostLifecycle !== hostStopOwner) {
@@ -509,8 +515,14 @@ export async function runGatewayLoop(params: {
         typeof port === "number"
           ? await waitForHealthyChild(port, respawn.pid, params.healthHost ?? "127.0.0.1")
           : false;
-      if (healthy) {
+      // The replacement owns startup; a bounded observation cannot revoke that handoff.
+      if (healthy || (foregroundUpdateClosed && isRunningGatewayChild(respawn.child))) {
         committedGenericSuccessor = respawn.child ?? true;
+        if (!healthy) {
+          gatewayLog.warn(
+            "fresh Gateway readiness remains unverified; leaving the successor running",
+          );
+        }
         gatewayLog.info(
           `restart mode: update process respawn (spawned pid ${respawn.pid ?? "unknown"})`,
         );
@@ -520,20 +532,7 @@ export async function runGatewayLoop(params: {
         `update respawn child did not become healthy (${respawn.pid ?? "unknown"}); ${foregroundUpdateClosed ? "leaving Gateway stopped for recovery" : "falling back to in-process restart"}`,
       );
       try {
-        const child = respawn.child;
-        if (
-          foregroundUpdateClosed &&
-          child?.pid &&
-          child.exitCode === null &&
-          child.signalCode === null
-        ) {
-          killProcessTree(child.pid, { detached: true, graceMs: UPDATE_RESPAWN_KILL_GRACE_MS });
-          await once(child, "exit", {
-            signal: AbortSignal.timeout(UPDATE_RESPAWN_EXIT_TIMEOUT_MS),
-          });
-        } else {
-          child?.kill();
-        }
+        respawn.child?.kill();
       } catch (error) {
         gatewayLog.warn(`update respawn child did not settle: ${formatErrorMessage(error)}`);
       }

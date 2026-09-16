@@ -147,10 +147,17 @@ export async function continueMigratedUpdateInFreshProcess(
       params.packageUpdateNodeRunner ?? resolveNodeRunner(),
       path.join(root, "dist", runtimeProcessEntrypoints.updateMigratedFinalize.distWorkerPath),
     ];
+    const commonRuntimeEnv = resolveUpdatedInstallCommandEnv({
+      capturedEnv: run.env,
+      invocationCwd: params.invocationCwd,
+    });
     const workerEnv = {
       ...stripGatewayServiceMarkerEnv(
         resolveUpdatedInstallCommandEnv({
-          processEnv: params.profiles[0]?.ownedManagedUpdateEnv ?? run.env,
+          processEnv: commonRuntimeEnv,
+          capturedEnv: params.profiles[0]?.ownedManagedUpdateEnv ?? run.env,
+          serviceEnv: params.profiles[0]?.preManagedServiceStop?.serviceEffectiveEnv,
+          invocationCwd: params.invocationCwd,
         }),
       ),
       OPENCLAW_UPDATE_IN_PROGRESS: "1",
@@ -224,13 +231,18 @@ export async function continueMigratedUpdateInFreshProcess(
     const { requesterAuthority, executorFence, ...runIdentity } = run;
     const { onResult: _onResult, sourceUpdate: _sourceUpdate, ...workerOpts } = params.opts;
     const grouped: MigratedUpdateFinalizationInput = {
+      commonRuntimeEnv,
       params: {
         ...serializable,
         profiles: profiles.map(({ preManagedServiceStop, ...profile }) => {
           if (!preManagedServiceStop) {
             return profile;
           }
-          const { windowsTaskAutoStartRecovery, ...stopped } = preManagedServiceStop;
+          const {
+            windowsTaskAutoStartRecovery,
+            serviceEffectiveEnv: _serviceEffectiveEnv,
+            ...stopped
+          } = preManagedServiceStop;
           if (windowsTaskAutoStartRecovery) {
             // Parent compensation retains its owner; only the fresh finalizer
             // may restore autostart against migrated state.

@@ -42,11 +42,7 @@ export function retainUpdateProfileVerification(
   }
   const receipt = { ...step, name: `profile ${profileNumber}: ${step.name}` };
   const index = result.steps.findIndex((entry) => entry.name === receipt.name);
-  if (index < 0) {
-    result.steps.push(receipt);
-  } else {
-    result.steps[index] = receipt;
-  }
+  result.steps[index < 0 ? result.steps.length : index] = receipt;
 }
 
 export function getUpdateGatewayVerification(

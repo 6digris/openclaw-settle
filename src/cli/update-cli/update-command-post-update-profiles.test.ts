@@ -12,7 +12,7 @@ import {
 import * as gitRecovery from "../../infra/update-runner-git-recovery.js";
 import * as restartHealth from "../daemon-cli/restart-health.js";
 import { UpdatePreMutationError } from "./shared.js";
-import type { finishUpdate } from "./update-command-post-update.js";
+import { finishUpdate } from "./update-command-post-update.js";
 import {
   createManagedServiceIdentityFixture,
   finishSuccessfulPackageSwitch,
@@ -42,6 +42,94 @@ describe("successful update finalization ordering", () => {
     afterEach(() => {
       vi.unstubAllEnvs();
       identity.restore();
+    });
+
+    it("keeps origin-native credentials out of sibling installs during migrated finalization", async () => {
+      const commonEnv: NodeJS.ProcessEnv = {
+        ...process.env,
+        UPDATE_TEST_COMMON_AUTH: "fresh-common-ref",
+      };
+      delete commonEnv.UPDATE_TEST_ORIGIN_AUTH;
+      vi.stubEnv("UPDATE_TEST_ORIGIN_AUTH", "native-origin-ref");
+      const nativeEnvs = new Map<string, NodeJS.ProcessEnv>();
+      const profiles: FinishUpdateParams["profiles"] = ["primary", "ops"].map((name) => {
+        const native = {
+          HOME: identity.home,
+          USERPROFILE: identity.home,
+          PATH: `/native/${name}`,
+          OPENCLAW_PROFILE: name,
+          OPENCLAW_STATE_DIR: path.join(identity.home, `.openclaw-${name}`),
+          OPENCLAW_CONFIG_PATH: path.join(identity.home, `.openclaw-${name}`, "openclaw.json"),
+          ...(name === "primary" ? { UPDATE_TEST_ORIGIN_AUTH: "native-origin-ref" } : {}),
+        };
+        nativeEnvs.set(name, native);
+        const env = { ...commonEnv, ...native, UPDATE_TEST_COMMON_AUTH: "stale-common-ref" };
+        return {
+          configSnapshot: validConfigSnapshot,
+          requestedChannel: null,
+          storedChannel: null,
+          preUpdatePluginInstallRecords: {},
+          ownedManagedUpdateEnv: env,
+          preManagedServiceStop: {
+            inspected: true,
+            runtimeInspected: true,
+            running: true,
+            stopped: true,
+            serviceEnv: env,
+            serviceDefinitionEnv: native,
+            serviceUpdateVerdict: {
+              kind: "owned",
+              root: "/tmp/openclaw-update",
+              fingerprint: name,
+              refreshDefinition: true,
+            },
+          },
+        };
+      });
+      mocks.readServiceState.mockImplementation(async () => {
+        const environment = nativeEnvs.get(process.env.OPENCLAW_PROFILE!);
+        const state = managedServiceState({ ...process.env }, { environment });
+        state.command.managedDefinition = { ...state.command };
+        return state;
+      });
+      const installs = new Map<string, NodeJS.ProcessEnv | null | undefined>();
+      mocks.restartService.mockImplementation(async (params) => {
+        expect(params.refreshServiceEnv).toBe(true);
+        installs.set(process.env.OPENCLAW_PROFILE!, params.serviceInstallEnv);
+        return "ok";
+      });
+      await finishUpdate(
+        {
+          mutationStarted: true,
+          result: {
+            status: "ok",
+            mode: "npm",
+            root: "/tmp/openclaw-update",
+            steps: [],
+            durationMs: 1,
+          },
+          root: "/tmp/openclaw-update",
+          installKindChanged: false,
+          channel: "stable",
+          downgradeRisk: false,
+          shouldRestart: true,
+          opts: { json: true },
+          profiles,
+          controlPlaneUpdateSentinelMeta: null,
+          startedAt: Date.now(),
+          updateStepTimeoutMs: 1000,
+        },
+        commonEnv,
+      );
+      expect([...installs.keys()]).toEqual(["ops", "primary"]);
+      for (const [name, installedEnv] of installs) {
+        expect(installedEnv).toMatchObject({
+          ...nativeEnvs.get(name),
+          UPDATE_TEST_COMMON_AUTH: "fresh-common-ref",
+        });
+      }
+      expect(installs.get("ops")).not.toHaveProperty("UPDATE_TEST_ORIGIN_AUTH");
+      expect(process.env.UPDATE_TEST_ORIGIN_AUTH).toBe("native-origin-ref");
     });
 
     it.each([
@@ -373,13 +461,21 @@ describe("successful update finalization ordering", () => {
       "repair-both",
       "repair-healthy-then-failed",
       "repair-pending-then-failed",
+      "state-only-caller",
+      "state-only-caller-repair",
+      "legacy-caller-running-omitted",
     ] as const)(
       "finalizes one shared package only after every profile settles (%s)",
       async (outcome) => {
         const laterRepairFailure = outcome.endsWith("then-failed");
         const pendingRepair = outcome === "repair-pending-then-failed";
+        const stateOnly = outcome.startsWith("state-only-caller");
+        const stateOnlyRepair = outcome === "state-only-caller-repair";
         const successful =
-          outcome === "healthy" || outcome === "offline-origin" || outcome === "repair-both";
+          outcome === "healthy" ||
+          outcome === "offline-origin" ||
+          outcome === "repair-both" ||
+          outcome === "legacy-caller-running-omitted";
         if (outcome === "offline-origin" || laterRepairFailure) {
           const service = await import("../../daemon/service.js");
           vi.spyOn(service, "resolveGatewayService").mockReturnValue({
@@ -423,31 +519,52 @@ describe("successful update finalization ordering", () => {
             ownedManagedUpdateEnv: env,
             packageUpdateNodeRunner: `/nodes/${name}`,
             serviceRuntimeRefreshRequired: false,
-            preManagedServiceStop: {
-              inspected: true,
-              runtimeInspected: true,
-              running,
-              stopped: running,
-              serviceEnv: env,
-              windowsTaskAutoStartRecovery: laterRepairFailure ? windows.get(name) : undefined,
-              serviceUpdateVerdict: {
-                kind: "owned" as const,
-                root: "/tmp/openclaw-update",
-                fingerprint: name,
-                refreshDefinition: false,
-              },
-            },
+            preManagedServiceStop:
+              stateOnly && name === "primary"
+                ? undefined
+                : {
+                    inspected: true,
+                    runtimeInspected: true,
+                    ...(outcome === "legacy-caller-running-omitted" && name === "primary"
+                      ? {}
+                      : { running }),
+                    stopped: running,
+                    serviceEnv: env,
+                    windowsTaskAutoStartRecovery: laterRepairFailure
+                      ? windows.get(name)
+                      : undefined,
+                    serviceUpdateVerdict: {
+                      kind: "owned" as const,
+                      root: "/tmp/openclaw-update",
+                      fingerprint: name,
+                      refreshDefinition: false,
+                    },
+                  },
           };
         });
         const env = profiles[0]!.ownedManagedUpdateEnv;
         const run = { runId: createUpdateRun({ trigger: "cli" }, { env }).runId, env };
+        const callerVerification = { noticeDelivered: true };
+        if (stateOnly) {
+          recordUpdateRunVerification(run.runId, callerVerification, { env });
+        }
+        const siblingHealth = {
+          runtime: { status: "running" as const, pid: 202 },
+          healthy: true,
+          staleGatewayPids: [],
+          portUsage: { port: 19102, status: "busy" as const, listeners: [{ pid: 202 }], hints: [] },
+        };
         const events: string[] = [];
+        const nativeReads: string[] = [];
         const complete = vi.fn(async () => {
           events.push("package-complete");
         });
-        mocks.readServiceState.mockImplementation(async () =>
-          managedServiceState({ ...process.env }),
-        );
+        mocks.readServiceState.mockImplementation(async () => {
+          nativeReads.push(process.env.OPENCLAW_PROFILE!);
+          return managedServiceState({
+            ...(stateOnly ? profiles[1]!.ownedManagedUpdateEnv : process.env),
+          });
+        });
         mocks.updatePlugins.mockImplementation(async () => {
           const name = process.env.OPENCLAW_PROFILE;
           events.push(`plugins:${name}`);
@@ -466,6 +583,22 @@ describe("successful update finalization ordering", () => {
           events.push(`${params.shouldRestart ? "start" : "preserve"}:${name}`);
           expect(complete).not.toHaveBeenCalled();
           expect(mocks.printResult).not.toHaveBeenCalled();
+          if (stateOnly) {
+            if (stateOnlyRepair && name === "ops") {
+              params.onVerificationFailure?.("readyz-unhealthy");
+              return "restart-health-failed";
+            }
+            if (params.shouldRestart) {
+              recordUpdateGatewayHealth(
+                params.recordGatewayVerification === false ? undefined : params.opts.run,
+                siblingHealth,
+                19102,
+                true,
+              );
+              params.onVerified?.(Date.now());
+            }
+            return "ok";
+          }
           const running = name !== "paused" && (name !== "primary" || outcome !== "offline-origin");
           expect(params.shouldRestart).toBe(running);
           expect(params.requireRunningServiceAfterRestart).toBe(running);
@@ -496,13 +629,34 @@ describe("successful update finalization ordering", () => {
           );
           return "ok";
         });
-        if (outcome === "repair-both" || laterRepairFailure) {
+        if (outcome === "repair-both" || laterRepairFailure || stateOnlyRepair) {
           const repair = await import("./update-command-repair-service.js");
           vi.spyOn(repair, "repairUpdateService").mockImplementation(
-            async ({ result, env: profileEnv, nodeRunner, onVerified }) => {
+            async ({
+              result,
+              env: profileEnv,
+              nodeRunner,
+              onVerified,
+              opts,
+              recordGatewayVerification,
+              expectedService,
+            }) => {
               const name = profileEnv.OPENCLAW_PROFILE;
               expect(nodeRunner).toBe(`/nodes/${name}`);
               events.push(`repair:${name}`);
+              if (stateOnlyRepair) {
+                recordUpdateGatewayHealth(
+                  recordGatewayVerification === false ? undefined : opts.run,
+                  siblingHealth,
+                  19102,
+                  true,
+                );
+                if (name === "ops") {
+                  expect(expectedService).toBe(profiles[1]!.preManagedServiceStop);
+                }
+                onVerified?.(Date.now());
+                return { ...result, status: "ok", reason: undefined, recovery: undefined };
+              }
               if (laterRepairFailure) {
                 const preserved = name === "ops";
                 const receipt: (typeof result.steps)[number] = {
@@ -603,8 +757,26 @@ describe("successful update finalization ordering", () => {
                     complete,
                   },
                 }),
+            ...(stateOnly ? { packageTransaction: undefined } : {}),
           },
         );
+        if (stateOnly) {
+          await finishing;
+          expect(nativeReads).toEqual(["ops"]);
+          expect(events.filter((event) => event.startsWith("start:"))).toEqual(["start:ops"]);
+          expect(events.filter((event) => event.startsWith("repair:"))).toEqual(
+            stateOnlyRepair ? ["repair:ops"] : [],
+          );
+          expect(mocks.stopService).not.toHaveBeenCalled();
+          expect(rollback).not.toHaveBeenCalled();
+          expect(complete).not.toHaveBeenCalled();
+          expect(profiles[0]!.preManagedServiceStop).toBeUndefined();
+          const recorded = getUpdateRun(run.runId, { env });
+          expect(recorded?.status).toBe("succeeded");
+          expect(recorded?.verification).toEqual(callerVerification);
+          expect(mocks.printResult).toHaveBeenCalledOnce();
+          return;
+        }
         if (laterRepairFailure) {
           await expect(finishing).rejects.toMatchObject({ result: { status: "error" } });
           expect(events).toEqual([
@@ -665,7 +837,11 @@ describe("successful update finalization ordering", () => {
                 "preserve:paused",
                 outcome === "offline-origin" ? "preserve:primary" : "start:primary",
               ]),
-          ...(outcome === "healthy" || outcome === "offline-origin" ? [] : ["rollback"]),
+          ...(outcome === "healthy" ||
+          outcome === "offline-origin" ||
+          outcome === "legacy-caller-running-omitted"
+            ? []
+            : ["rollback"]),
           ...(outcome === "repair-both" ? ["repair:ops", "repair:primary"] : []),
           "package-complete",
         ]);

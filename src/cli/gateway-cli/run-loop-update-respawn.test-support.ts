@@ -1,10 +1,15 @@
 /** Registers update replacement and handoff cases in the run-loop signal fixture. */
-import { EventEmitter } from "node:events";
-import { withTimeout } from "@openclaw/fs-safe/advanced";
+import { spawn, type ChildProcess } from "node:child_process";
+import { EventEmitter, once } from "node:events";
 import { expect, it, vi, type Mock } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { stopChildProcess } from "../../../test/helpers/stop-child-process.js";
 import type { GatewayServer } from "../../gateway/server-public.js";
+import { withTimeout } from "../../infra/fs-safe.js";
+import type { GatewayBootLifecycleCompletion } from "../../infra/gateway-boot-lifecycle.js";
 import type { GatewayRestartIntent } from "../../infra/restart-intent.js";
+import { getFreePort } from "../../test-utils/ports.js";
+import { waitForHealthyGatewayChild } from "./update-child-health.js";
 
 type ManagedUpdateOwner = NonNullable<GatewayRestartIntent["successorOwner"]>;
 type GatewayStart = Parameters<typeof import("./run-loop.js").runGatewayLoop>[0]["start"];
@@ -42,6 +47,7 @@ type UpdateRespawnFixtures = {
     runtime: ExitRuntime;
     lockPort?: number;
     waitForHealthyChild?: (port: number, pid?: number, host?: string) => Promise<boolean>;
+    completeBoot?: (completion: GatewayBootLifecycleCompletion) => void;
   }) => Promise<unknown>;
   waitForStart: (started: Promise<void>) => Promise<void>;
   waitForLoopCondition: (predicate: () => boolean, message: string) => Promise<void>;
@@ -67,6 +73,8 @@ type UpdateRespawnFixtures = {
     typeof import("../../infra/update-managed-service-handoff.js").completeForegroundUpdateHandoffAfterClose
   >;
   killProcessTree: Mock;
+  flushLogger: Mock<() => Promise<void>>;
+  gatewayLog: { warn: Mock };
   consumeGatewayRestartIntentPayloadSync: Mock<
     () => { reason?: string; force?: boolean; waitMs?: number } | null
   >;
@@ -104,6 +112,8 @@ export function registerUpdateRespawnTests({
   acquireGatewayLock,
   completeForegroundUpdateHandoffAfterClose,
   killProcessTree,
+  flushLogger,
+  gatewayLog,
   consumeGatewayRestartIntentPayloadSync,
   commitManagedServiceUpdateHandoff,
   setPlatform,
@@ -200,7 +210,7 @@ export function registerUpdateRespawnTests({
     "failed-spawn",
     "disabled",
     "unhealthy",
-    "unresponsive",
+    "pending",
     "exited",
   ] as const)(
     "joins the foreground updater before a fresh successor and never resumes migrated runtime: %s",
@@ -221,7 +231,9 @@ export function registerUpdateRespawnTests({
         kill: vi.fn(),
       });
       const child =
-        outcome === "unresponsive" || outcome === "exited" ? respawnChild : { kill: vi.fn() };
+        outcome === "healthy" || outcome === "pending" || outcome === "exited"
+          ? respawnChild
+          : { kill: vi.fn() };
       killProcessTree.mockClear();
       respawnGatewayProcessForUpdate.mockReturnValueOnce(
         outcome === "failed-spawn"
@@ -258,7 +270,9 @@ export function registerUpdateRespawnTests({
           });
           expect(consumeGatewayRestartIntentPayloadSync).toHaveBeenCalledTimes(consumedIntents);
           updater.resolve({ respawn: outcome !== "unsafe" });
-          await expect(withTimeout(exited, 4_000)).resolves.toBe(outcome === "healthy" ? 0 : 1);
+          await expect(withTimeout(exited, 4_000)).resolves.toBe(
+            outcome === "healthy" || outcome === "pending" ? 0 : 1,
+          );
           expect(start).toHaveBeenCalledOnce();
           expect(acquireGatewayLock).toHaveBeenCalledOnce();
           expect(stopManagedProviderLocalServices).toHaveBeenCalledOnce();
@@ -274,11 +288,9 @@ export function registerUpdateRespawnTests({
           if (outcome === "unhealthy") {
             expect(child.kill).toHaveBeenCalledOnce();
           }
-          if (outcome === "unresponsive") {
-            expect(killProcessTree).toHaveBeenCalledExactlyOnceWith(7777, {
-              detached: true,
-              graceMs: 1_000,
-            });
+          if (outcome === "pending") {
+            expect(killProcessTree).not.toHaveBeenCalled();
+            expect(child.kill).not.toHaveBeenCalled();
             expect(respawnChild.listenerCount("exit")).toBe(0);
           }
           if (outcome === "exited") {
@@ -298,6 +310,149 @@ export function registerUpdateRespawnTests({
       });
     },
   );
+
+  it("preserves a foreground successor that opens its listener after the real readiness deadline", async () => {
+    const actualKillTree = await vi.importActual<typeof import("../../process/kill-tree.js")>(
+      "../../process/kill-tree.js",
+    );
+    const port = await getFreePort();
+    const child = spawn(
+      process.execPath,
+      [
+        "--input-type=commonjs",
+        "-e",
+        `const net = require("node:net");
+process.once("message", () => {
+  net.createServer(socket => socket.end()).listen(Number(process.argv[1]), "127.0.0.1", () => {
+    process.send("listening");
+  });
+});
+process.send("parked");`,
+        String(port),
+      ],
+      { detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"] },
+    );
+    const parked = once(child, "message");
+    const childKill = vi.spyOn(child, "kill");
+    killProcessTree.mockImplementation(actualKillTree.killProcessTree);
+    try {
+      const [parkedMessage] = await withTimeout(parked, 5_000);
+      expect(parkedMessage).toBe("parked");
+      expect(child.pid).toBeTypeOf("number");
+      consumeGatewaySigusr1RestartIntent.mockReturnValueOnce({
+        reason: "update.run",
+        successorOwner: managedUpdateSuccessorOwner,
+      });
+      isForegroundUpdateHandoff.mockReturnValue(true);
+      respawnGatewayProcessForUpdate.mockReturnValueOnce({
+        mode: "spawned",
+        pid: child.pid,
+        child,
+      });
+      await withIsolatedSignals(async ({ captureSignal }) => {
+        const close = vi.fn(async () => {});
+        const { start, started } = createSignaledStart(close);
+        const { runtime, exited } = createRuntimeWithExitSignal();
+        const completeBoot = vi.fn();
+        await runLoopWithStart({ start, runtime, lockPort: port, completeBoot });
+        await waitForStart(started);
+        const observedAt = performance.now();
+        captureSignal("SIGUSR1")();
+        const exitCode = await withTimeout(exited, 20_000);
+
+        expect(performance.now() - observedAt).toBeGreaterThanOrEqual(10_000);
+        expect(killProcessTree).not.toHaveBeenCalled();
+        expect(childKill).not.toHaveBeenCalled();
+        expect(child.exitCode).toBeNull();
+        expect(child.signalCode).toBeNull();
+        expect(exitCode).toBe(0);
+        expect(gatewayLog.warn).toHaveBeenCalledWith(
+          expect.stringMatching(/readiness.*unverified/i),
+        );
+        expect(completeBoot).toHaveBeenCalledExactlyOnceWith({
+          outcome: "planned_restart",
+          reason: "restart (SIGUSR1: update.run)",
+        });
+        expect(start).toHaveBeenCalledOnce();
+        expect(close).toHaveBeenCalledOnce();
+        expect(acquireGatewayLock).toHaveBeenCalledOnce();
+        expect(cancelManagedServiceUpdateHandoff).not.toHaveBeenCalled();
+        expect(commitManagedServiceUpdateHandoff).not.toHaveBeenCalled();
+        expect(markUpdateRestartSentinelFailure).not.toHaveBeenCalled();
+        expect(writeGatewayRestartHandoffSync).not.toHaveBeenCalled();
+
+        const listening = once(child, "message");
+        child.send("listen");
+        const [listeningMessage] = await withTimeout(listening, 5_000);
+        expect(listeningMessage).toBe("listening");
+        await expect(waitForHealthyGatewayChild(port, child.pid)).resolves.toBe(true);
+      });
+    } finally {
+      try {
+        await stopChildProcess(child, 5_000);
+      } finally {
+        killProcessTree.mockReset();
+        childKill.mockRestore();
+      }
+    }
+  });
+
+  it("fails the foreground handoff when its successor exits while exit logs are flushing", async () => {
+    const flushEntered = createDeferred();
+    const releaseFlush = createDeferred();
+    const child: EventEmitter &
+      Pick<ChildProcess, "pid" | "signalCode"> & {
+        exitCode: ChildProcess["exitCode"];
+        kill: Mock;
+      } = Object.assign(new EventEmitter(), {
+      pid: 7777,
+      exitCode: null,
+      signalCode: null,
+      kill: vi.fn(),
+    });
+    consumeGatewaySigusr1RestartIntent.mockReturnValueOnce({
+      reason: "update.run",
+      successorOwner: managedUpdateSuccessorOwner,
+    });
+    isForegroundUpdateHandoff.mockReturnValue(true);
+    respawnGatewayProcessForUpdate.mockReturnValueOnce({ mode: "spawned", pid: child.pid, child });
+    flushLogger.mockImplementationOnce(async () => {
+      flushEntered.resolve();
+      await releaseFlush.promise;
+    });
+    await withIsolatedSignals(async ({ captureSignal }) => {
+      const { start, started } = createSignaledStart(vi.fn(async () => {}));
+      const { runtime, exited } = createRuntimeWithExitSignal();
+      try {
+        await runLoopWithStart({
+          start,
+          runtime,
+          lockPort: 18789,
+          waitForHealthyChild: async () => true,
+        });
+        await waitForStart(started);
+        captureSignal("SIGUSR1")();
+        await withTimeout(flushEntered.promise, 5_000);
+        expect(runtime.exit).not.toHaveBeenCalled();
+        child.exitCode = 1;
+        child.emit("exit", 1, null);
+        releaseFlush.resolve();
+
+        await expect(withTimeout(exited, 5_000)).resolves.toBe(1);
+        expect(start).toHaveBeenCalledOnce();
+        expect(acquireGatewayLock).toHaveBeenCalledOnce();
+        expect(child.kill).not.toHaveBeenCalled();
+        expect(killProcessTree).not.toHaveBeenCalled();
+        expect(cancelManagedServiceUpdateHandoff).not.toHaveBeenCalled();
+        expect(commitManagedServiceUpdateHandoff).not.toHaveBeenCalled();
+        expect(markUpdateRestartSentinelFailure).not.toHaveBeenCalled();
+      } finally {
+        releaseFlush.resolve();
+        await withTimeout(exited, 5_000);
+        flushLogger.mockReset().mockResolvedValue(undefined);
+      }
+    });
+  });
 
   it.each(["update.run", "update.auto"] as const)(
     "writes a handoff before exiting for supervised %s restarts",

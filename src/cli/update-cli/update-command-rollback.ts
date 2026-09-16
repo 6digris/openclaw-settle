@@ -407,6 +407,12 @@ export async function rollbackFailedUpdate(params: {
     if (!previousVersion) {
       return failed("previous-version-unverified");
     }
+    const packageRecovery: UpdateRunResult["recovery"] = {
+      serviceRestartSafe: true,
+      packageRollbackVerified: true,
+      version: previousVersion,
+      ...(previousBuildId ? { buildId: previousBuildId } : {}),
+    };
     let verifiedAtMs: number | undefined;
     let healthy = true;
     let restartSafe = true;
@@ -467,18 +473,12 @@ export async function rollbackFailedUpdate(params: {
             });
           }
           assertCurrent();
-          const recovery: UpdateRunResult["recovery"] = {
-            serviceRestartSafe: true,
-            packageRollbackVerified: true,
-            version: previousVersion,
-            ...(previousBuildId ? { buildId: previousBuildId } : {}),
-          };
           authorized = true;
           failureReason = "restart-unhealthy";
           const beforeVerification = [...result.steps];
           const restartOutcome = await maybeRestartService({
             shouldRestart: true,
-            result: { ...result, recovery },
+            result: { ...result, recovery: { ...packageRecovery } },
             opts,
             recordGatewayVerification: profile === params.profiles[0],
             refreshServiceEnv: false,
@@ -515,13 +515,7 @@ export async function rollbackFailedUpdate(params: {
     }
     assertCurrent();
     if (restartSafe) {
-      result.recovery = {
-        serviceRestartSafe: true,
-        packageRollbackVerified: true,
-        version: previousVersion,
-        ...(previousBuildId ? { buildId: previousBuildId } : {}),
-        ...(healthy ? { service: "healthy" as const } : {}),
-      };
+      result.recovery = { ...packageRecovery, ...(healthy ? { service: "healthy" as const } : {}) };
     }
     if (opts.run) {
       recordUpdateRunStep(

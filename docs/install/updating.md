@@ -63,6 +63,9 @@ stops the running consumers before replacing the shared code and verifies their
 restarts together. Profiles that were already stopped stay stopped. An explicit
 channel choice changes only the selected profile's saved policy; sibling profiles
 keep their own policy.
+When the selected service uses a different configuration from the invoking shell,
+the service's configuration and plugins remain the update target; the shell's
+configuration and backups are preserved.
 Automatic rollback checks every affected profile before restoring the shared
 installation once.
 
@@ -79,6 +82,10 @@ unchanged plugins do not run another full Doctor pass. The final report records
 downtime through convergence and final verification, plus verification
 results. See
 [Validation and activation](/cli/update#validation-and-activation) for the checks.
+
+During a foreground restart, the replacement can still be starting when the
+initial readiness observation ends. OpenClaw leaves that process running and
+reports readiness as unverified. Use `openclaw gateway status --deep` to check its progress.
 
 The canary uses a temporary loopback Gateway port and suppresses background
 listeners, including the MCP Apps sandbox, browser control, and channel services.

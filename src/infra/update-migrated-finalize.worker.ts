@@ -74,6 +74,7 @@ function normalizeFinalizationInput(
     ...shared
   } = params;
   return {
+    commonRuntimeEnv: input.commonRuntimeEnv,
     executor: input.executor,
     recoveryHandoff: input.recoveryHandoff,
     bufferedSteps: input.bufferedSteps,
@@ -388,12 +389,15 @@ async function finalizeInput(
   let exitCode = 0;
   let automaticTriage: MigratedUpdateFinalizationResult["automaticTriage"];
   try {
-    result = await finishUpdate({
-      ...input.params,
-      profiles,
-      result: { ...input.params.result, runId: run.runId },
-      opts: { ...input.params.opts, run },
-    });
+    result = await finishUpdate(
+      {
+        ...input.params,
+        profiles,
+        result: { ...input.params.result, runId: run.runId },
+        opts: { ...input.params.opts, run },
+      },
+      input.commonRuntimeEnv,
+    );
   } catch (error) {
     if (!(error instanceof UpdateCommandFailure)) {
       throw error;

@@ -2,10 +2,7 @@ import { readConfigFileSnapshot } from "../../config/config.js";
 import { resolveGatewayService } from "../../daemon/service.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { readPackageVersion } from "../../infra/package-json.js";
-import {
-  buildControlPlaneUpdateRestartHealthPendingResult,
-  resolveManagedServiceUpdateFailureExitCode,
-} from "../../infra/update-control-plane-sentinel.js";
+import { buildControlPlaneUpdateRestartHealthPendingResult } from "../../infra/update-control-plane-sentinel.js";
 import { readBuiltGatewayBuildId } from "../../infra/update-git-runtime.js";
 import { verifyPackageUpdateRecovery } from "../../infra/update-global.js";
 import { parkForegroundUpdateHandoff } from "../../infra/update-managed-service-handoff.js";
@@ -45,7 +42,10 @@ import {
 
 export type { FinishUpdateParams } from "./update-command-finish-types.js";
 
-export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRunResult> {
+export async function finishUpdate(
+  params: FinishUpdateParams,
+  commonRuntimeEnv?: NodeJS.ProcessEnv,
+): Promise<UpdateRunResult> {
   if (params.serviceLoadBoundary && process.platform !== "linux") {
     throw new Error("Deferred native service loading is not supported on this platform.");
   }
@@ -98,12 +98,7 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
         { ...params.result, status: "error" },
         params.result.recovery?.serviceRestartSafe === true,
       );
-      throw createFailure(
-        reported,
-        resolveManagedServiceUpdateFailureExitCode(reported),
-        params.failure?.detail,
-        params.failure,
-      );
+      throw createFailure(reported, params.failure?.detail, params.failure);
     }
 
     if (params.result.status === "skipped" && !params.coreAlreadyCurrent) {
@@ -113,9 +108,9 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
       );
       throw createFailure(
         reported,
-        classifyUpdateOutcome(reported) === "failed"
-          ? resolveManagedServiceUpdateFailureExitCode(reported)
-          : 0,
+        undefined,
+        undefined,
+        classifyUpdateOutcome(reported) === "failed" ? undefined : 0,
       );
     }
 
@@ -129,9 +124,10 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
       profile,
       shouldRestart:
         params.shouldRestart &&
-        profile.preManagedServiceStop?.running !== false &&
+        profile.preManagedServiceStop !== undefined &&
+        profile.preManagedServiceStop.running !== false &&
         (!params.coreAlreadyCurrent ||
-          (profile.preManagedServiceStop?.running === true &&
+          (profile.preManagedServiceStop.running === true &&
             profile.preManagedServiceStop.serviceUpdateVerdict?.kind === "owned")),
     }));
     const parkProfiles = async (selected: readonly (typeof profiles)[number][]) => {
@@ -155,7 +151,7 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
           throw new Error(runtime.error);
         }
         entry.profile.packageUpdateNodeRunner = runtime.value.nodeRunner;
-        entry.profile.serviceRuntimeRefreshRequired =
+        entry.profile.serviceRuntimeRefreshRequired ||=
           runtime.value.replacedNodeRunner !== undefined;
       }
       for (const entry of parking) {
@@ -294,11 +290,7 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
       if (resultWithPostUpdate.status === "error") {
         finalizationState.triageAllowed = !convergence.cancelled;
         const reported = await reportResult(resultWithPostUpdate);
-        throw createFailure(
-          reported,
-          resolveManagedServiceUpdateFailureExitCode(reported),
-          convergence.detail,
-        );
+        throw createFailure(reported, convergence.detail);
       }
     }
     if (params.coreAlreadyCurrent && params.shouldRestart && profiles.length > 1) {
@@ -354,6 +346,7 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
     }
     const prepareProfileRestart = async (entry: (typeof profiles)[number]) => {
       try {
+        const runtimeEnv = commonRuntimeEnv ?? { ...process.env };
         return await withOwnedManagedUpdateEnv(entry.profile.ownedManagedUpdateEnv, async () => {
           const snapshot =
             entry.snapshot ??
@@ -371,6 +364,7 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
               result: resultWithPostUpdate,
             },
             snapshot,
+            runtimeEnv,
           );
           assertCurrent();
           if (params.coreAlreadyCurrent) {
@@ -403,20 +397,13 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
             },
           ],
         });
-        throw createFailure(
-          reported,
-          resolveManagedServiceUpdateFailureExitCode(reported),
-          message,
-          { cause: error },
-        );
+        throw createFailure(reported, message, { cause: error });
       }
     };
     const restarting: ((typeof profiles)[number] & {
       restart: Awaited<ReturnType<typeof prepareUpdateRestart>>;
     })[] = [];
-    for (const entry of profiles.toSorted(
-      (a, b) => Number(a.profile === origin) - Number(b.profile === origin),
-    )) {
+    for (const entry of [...profiles.slice(1), profiles[0]!]) {
       if (!params.coreAlreadyCurrent || entry.profile.preManagedServiceStop?.stopped) {
         restarting.push({ ...entry, restart: await prepareProfileRestart(entry) });
       }
@@ -429,7 +416,8 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
       let result = initial;
       for (const entry of restarting) {
         const context = entry.restart;
-        if (!entry.shouldRestart) {
+        const before = entry.profile.preManagedServiceStop;
+        if (!entry.shouldRestart || !before) {
           continue;
         }
         if (!context.serviceMutationAllowed || context.skipLegacyServiceRestart) {
@@ -457,12 +445,8 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
             nodeRunner: nodeFor(entry.profile),
             timeoutMs: params.updateStepTimeoutMs,
             invocationCwd: params.invocationCwd,
-            expectedService: entry.profile.preManagedServiceStop ?? {
-              serviceManagerUid: context.serviceManagerUid,
-              serviceEnv: context.gatewayServiceEnv ?? context.serviceStateReadEnv,
-              serviceUpdateVerdict: context.serviceUpdateVerdict,
-            },
-            recoveryStop: entry.profile.preManagedServiceStop,
+            expectedService: before,
+            recoveryStop: before,
             onVerified: onProfileVerified(entry.profile),
           }),
         );
@@ -560,7 +544,7 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
       // The origin may have consumed its sentinel. Change only its receipt.
       await markOriginFailure(recovered.result.reason ?? verificationFailure);
       const reported = await reportResult(recovered.result, false, undefined, false);
-      throw createFailure(reported, resolveManagedServiceUpdateFailureExitCode(reported));
+      throw createFailure(reported);
     }
     if (params.coreAlreadyCurrent) {
       return await reportResult(resultWithPostUpdate);
@@ -591,7 +575,7 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
           undefined,
           false,
         );
-        throw createFailure(reported, 1, retirement.error);
+        throw createFailure(reported, retirement.error, undefined, 1);
       }
     }
 
@@ -633,7 +617,7 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
       },
       recovery?.serviceRestartSafe === true,
     );
-    throw createFailure(reported, resolveManagedServiceUpdateFailureExitCode(reported), message, {
+    throw createFailure(reported, message, {
       cause: error,
     });
   }

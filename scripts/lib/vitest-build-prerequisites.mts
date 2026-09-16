@@ -185,6 +185,8 @@ const runtimeConsumers = [
     "src/cli/update-dry-run-state.process.test.ts",
     "src/cli/update-cli/update-command-migrated.test.ts",
     "src/cli/update-cli/update-command-rollback.test.ts",
+    "src/cli/update-cli/update-command-rollback-shared-profiles.test.ts",
+    "src/cli/update-cli/update-command-rollback-state.test.ts",
     "src/cli/update-cli/update-command-post-update-recovery.test.ts",
     "src/cli/update-cli/update-command-post-update-repair.test.ts",
     "src/cli/update-cli/update-command-service.integration.test.ts",

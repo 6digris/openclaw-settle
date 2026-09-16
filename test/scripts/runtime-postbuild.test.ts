@@ -1347,9 +1347,9 @@ describe("previous release update compatibility", () => {
     [
       { version: "2026.9.3", importer: "update-command-BOxZcaCa.mjs" },
       { version: "2026.9.4", importer: "update-command-Cbsq6P3O.mjs" },
-    ].flatMap((release) =>
+    ].flatMap(({ version, importer }) =>
       ["exact", "version", "buildId", "commit", "integrity", "importer", "owner", "target"].map(
-        (changed) => ({ ...release, changed }),
+        (changed) => ({ version, importer, changed }),
       ),
     ),
   )(
@@ -1396,8 +1396,8 @@ describe("previous release update compatibility", () => {
         packageDir: root,
         integrity: identity.integrity,
       });
-      expect(recorded.chunks.map((chunk) => chunk.path).sort()).toEqual(
-        changed === "exact" ? ["late-abcdefgh.js"] : [target, "late-abcdefgh.js"].sort(),
+      expect(recorded.chunks.map((chunk) => chunk.path).toSorted()).toEqual(
+        changed === "exact" ? ["late-abcdefgh.js"] : [target, "late-abcdefgh.js"].toSorted(),
       );
       expect(recorded.chunks.find((chunk) => chunk.path === "late-abcdefgh.js")?.exports).toEqual([
         {

@@ -2,7 +2,11 @@
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { cloneEnvWithPlatformSemantics } from "../config/env-vars.js";
 import { assertGatewayServiceMutationAllowed } from "../infra/gateway-supervision.js";
-import { GATEWAY_SERVICE_RUNTIME_PID_ENV, GATEWAY_SERVICE_SELECTOR_ENV_KEYS } from "./constants.js";
+import {
+  GATEWAY_SERVICE_RUNTIME_PID_ENV,
+  GATEWAY_SERVICE_SELECTOR_ENV_KEYS,
+  normalizeWindowsTaskIdentity,
+} from "./constants.js";
 import { assertFutureConfigActionAllowed } from "./future-config-guard.js";
 import { findGatewayServices } from "./inspect.js";
 import { resolveLaunchAgentLabel } from "./launchd-label.js";
@@ -175,7 +179,7 @@ export function resolveManagedGatewayServiceIdentity(env: GatewayServiceEnv): st
         ? resolveTaskName
         : resolveSystemdServiceName;
   const name = resolveName(env);
-  return process.platform === "win32" ? name.replace(/^\\+/, "").toLowerCase() : name;
+  return process.platform === "win32" ? normalizeWindowsTaskIdentity(name) : name;
 }
 
 /** Native snapshots are discovery facts; callers still prove target ownership before mutation. */

@@ -21,12 +21,14 @@ export type UpdateDoctorInput = {
 type MigratedUpdateProfileContext = Omit<UpdateProfileContext, "preManagedServiceStop"> & {
   preManagedServiceStop?: Omit<
     NonNullable<UpdateProfileContext["preManagedServiceStop"]>,
-    "windowsTaskAutoStartRecovery"
+    "windowsTaskAutoStartRecovery" | "serviceEffectiveEnv"
   >;
   windowsTaskAutoStartSuspended?: true;
 };
 
 export type MigratedUpdateFinalizationInput = {
+  /** Common runtime refs, separate from native bootstrap and authorization environments. */
+  commonRuntimeEnv?: NodeJS.ProcessEnv;
   params: Omit<FinishUpdateParams, "packageTransaction" | "profiles" | "opts"> & {
     opts: Omit<FinishUpdateParams["opts"], "run" | "recovery" | "onResult" | "sourceUpdate"> & {
       run?: Omit<

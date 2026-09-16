@@ -22,6 +22,7 @@ import {
 import { sha256Hex } from "../../infra/crypto-digest.js";
 import { readActiveGatewayLockIdentity } from "../../infra/gateway-lock.js";
 import { probePortUsage } from "../../infra/ports-probe.js";
+import { resolveEnvironmentValue } from "../../infra/process-env.js";
 import { isCurrentManagedServiceUpdateHandoffProcess } from "../../infra/update-managed-service-handoff.js";
 import { getUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import { defaultRuntime } from "../../runtime.js";
@@ -495,6 +496,12 @@ async function stopManagedServiceBeforeMutableUpdate(
     serviceEnv: serviceState.env,
     serviceDefinitionEnv:
       resolveManagedGatewayServiceCommand(serviceState.command)?.environment ?? {},
+    serviceEffectiveEnv: Object.fromEntries(
+      Object.keys(serviceState.command?.environment ?? {}).map((key) => [
+        key,
+        resolveEnvironmentValue(serviceState.env, key),
+      ]),
+    ),
     serviceNodeRunner: resolveManagedServiceNodeRunner(serviceState.command),
     ...(inspectingExternalSystem ? { serviceMutationAllowed: false } : {}),
     ...(process.platform === "linux"

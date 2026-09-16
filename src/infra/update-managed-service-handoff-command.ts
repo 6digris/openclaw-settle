@@ -11,24 +11,18 @@ export function resolveUpdateCliArgv(params: {
   execPath?: string;
   argv1?: string;
 }): string[] {
-  const updateArgs = ["update", "--yes", "--json"];
-  if (params.reapplyLocalOverrides) {
-    updateArgs.push("--reapply-local-overrides");
-  }
-  if (params.acceptCapabilities) {
-    updateArgs.push("--accept-capabilities");
-  }
-  if (params.channel) {
-    updateArgs.push("--channel", params.channel);
-  }
-  if (params.tag) {
-    updateArgs.push("--tag", params.tag);
-  }
-  if (typeof params.timeoutMs === "number" && Number.isFinite(params.timeoutMs)) {
-    updateArgs.push("--timeout", String(Math.max(1, Math.ceil(params.timeoutMs / 1000))));
-  }
-
-  return resolveManagedServiceCliArgv(params, updateArgs);
+  return resolveManagedServiceCliArgv(params, [
+    "update",
+    "--yes",
+    "--json",
+    ...(params.reapplyLocalOverrides ? ["--reapply-local-overrides"] : []),
+    ...(params.acceptCapabilities ? ["--accept-capabilities"] : []),
+    ...(params.channel ? ["--channel", params.channel] : []),
+    ...(params.tag ? ["--tag", params.tag] : []),
+    ...(typeof params.timeoutMs === "number" && Number.isFinite(params.timeoutMs)
+      ? ["--timeout", String(Math.max(1, Math.ceil(params.timeoutMs / 1000)))]
+      : []),
+  ]);
 }
 
 export function resolveManagedServiceCliArgv(
@@ -47,13 +41,7 @@ export function resolveManagedServiceCliArgv(
 }
 
 export function formatManagedServiceUpdateCommand(
-  params?: {
-    timeoutMs?: number;
-    channel?: UpdateChannel;
-    tag?: string;
-    acceptCapabilities?: boolean;
-    reapplyLocalOverrides?: boolean;
-  },
+  params?: Omit<Parameters<typeof resolveUpdateCliArgv>[0], "execPath" | "argv1">,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
   return formatCliCommand(

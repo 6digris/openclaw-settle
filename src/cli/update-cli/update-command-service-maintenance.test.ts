@@ -192,6 +192,55 @@ it("does not turn an offline sibling into the handed-off service", () =>
     });
   }));
 
+it("captures effective native environment bindings before activation without ambient provenance", () =>
+  withServiceHome(async (home) => {
+    mockProcessPlatform("linux");
+    const programArguments = [
+      process.execPath,
+      path.join(process.cwd(), "openclaw.mjs"),
+      "gateway",
+    ];
+    const env = {
+      ...process.env,
+      HOME: home,
+      DBUS_SESSION_BUS_ADDRESS: "unix:path=/captured-bus",
+      UPDATE_TEST_CALLER_AUTH: "caller-ref",
+    };
+    const service = createMockGatewayService({
+      readCommand: async () => ({
+        programArguments,
+        environment: {
+          HOME: home,
+          DBUS_SESSION_BUS_ADDRESS: "unix:path=/ignored-payload-bus",
+          UPDATE_TEST_NATIVE_AUTH: "native-file-ref",
+        },
+        environmentValueSources: { UPDATE_TEST_NATIVE_AUTH: "file" },
+        managedDefinition: { programArguments, environment: { HOME: home } },
+        managedOverrides: { environment: { keys: ["UPDATE_TEST_NATIVE_AUTH"] } },
+      }),
+      readRuntime: async () => ({ status: "stopped", systemd: { managerUid: 2001 } }),
+      isLoaded: async () => true,
+    });
+    mocks.service.mockReturnValue(service);
+    const inspected = await maybeStopManagedServiceBeforeMutableUpdate({
+      root: process.cwd(),
+      env,
+      updateInstallKind: "package",
+      shouldRestart: true,
+      phase: "inspect",
+      jsonMode: true,
+    });
+    expect(inspected.serviceUpdateVerdict?.kind).toBe("owned");
+    expect(inspected.serviceDefinitionEnv).toEqual({ HOME: home });
+    expect(inspected.serviceEffectiveEnv).toEqual({
+      HOME: home,
+      DBUS_SESSION_BUS_ADDRESS: "unix:path=/captured-bus",
+      UPDATE_TEST_NATIVE_AUTH: "native-file-ref",
+    });
+    expect(service.stop).not.toHaveBeenCalled();
+    expect(service.install).not.toHaveBeenCalled();
+  }));
+
 const nativeOfflineCases: NativeOfflineCase[] = [
   {
     platform: "linux",

@@ -3704,6 +3704,8 @@ describe("runGatewayLoop", () => {
     acquireGatewayLock,
     completeForegroundUpdateHandoffAfterClose,
     killProcessTree,
+    flushLogger,
+    gatewayLog,
     consumeGatewayRestartIntentPayloadSync,
     commitManagedServiceUpdateHandoff,
     setPlatform,

@@ -31,7 +31,10 @@ import {
 } from "../../state/openclaw-state-db.js";
 import { createUpdateProgress } from "./progress.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
-import type { MigratedUpdateFinalizationInput } from "./update-command-migrated-types.js";
+import type {
+  LegacyMigratedUpdateFinalizationInput,
+  MigratedUpdateFinalizationInput,
+} from "./update-command-migrated-types.js";
 import {
   continueMigratedUpdateInFreshProcess,
   inspectActivatedUpdateState,
@@ -55,6 +58,7 @@ afterEach(() => {
   vi.clearAllTimers();
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
 });
@@ -145,14 +149,24 @@ it.each([
   { pending: false, status: "error", missingFirstRecovery: false },
   { pending: true, status: "error", missingFirstRecovery: false },
   { pending: true, status: "error", missingFirstRecovery: true },
+  { pending: false, status: "error", missingFirstRecovery: false, envBindings: true },
 ] as const)(
-  "retains the backup across migrated finalization (readiness pending=$pending, status=$status, missing first recovery=$missingFirstRecovery)",
-  async ({ pending, status, missingFirstRecovery }) => {
+  "retains the backup across migrated finalization (readiness pending=$pending, status=$status, missing first recovery=$missingFirstRecovery, env bindings=$envBindings)",
+  async ({ pending, status, missingFirstRecovery, envBindings }) => {
     const exitCode = status === "skipped" ? 0 : 1;
     const reason = status === "skipped" ? "gateway-readiness-unverified" : "doctor-failed";
     const base = dirs.make("migrated-readiness-pending-");
     const { transaction, packageRoot } = await createRetainedPackageSwap(base);
-    const env = { OPENCLAW_STATE_DIR: path.join(base, "state") };
+    const env = {
+      OPENCLAW_STATE_DIR: path.join(base, "state"),
+      ...(envBindings ? { UPDATE_TEST_COMMON_AUTH: "stale-common-ref" } : {}),
+    };
+    const effectiveEnv = { UPDATE_TEST_ORIGIN_AUTH: "native-file-ref" };
+    const originEnv = envBindings ? { ...env, ...effectiveEnv } : env;
+    if (envBindings) {
+      vi.stubEnv("UPDATE_TEST_COMMON_AUTH", "fresh-common-ref");
+      vi.stubEnv("UPDATE_TEST_ORIGIN_AUTH", undefined);
+    }
     const run = {
       runId: createUpdateRun({ trigger: "cli" }, { env }).runId,
       env,
@@ -180,7 +194,26 @@ it.each([
         if (typeof options === "number" || typeof options.input !== "string") {
           throw new Error("Expected serialized finalization input");
         }
-        const input: MigratedUpdateFinalizationInput = JSON.parse(options.input);
+        const input: MigratedUpdateFinalizationInput | LegacyMigratedUpdateFinalizationInput =
+          JSON.parse(options.input);
+        if (envBindings) {
+          expect(options.env).toMatchObject({
+            ...effectiveEnv,
+            OPENCLAW_STATE_DIR: env.OPENCLAW_STATE_DIR,
+            UPDATE_TEST_COMMON_AUTH: "fresh-common-ref",
+          });
+          expect(input.commonRuntimeEnv).toMatchObject({
+            OPENCLAW_STATE_DIR: env.OPENCLAW_STATE_DIR,
+            UPDATE_TEST_COMMON_AUTH: "fresh-common-ref",
+          });
+          expect(input.commonRuntimeEnv).not.toHaveProperty("UPDATE_TEST_ORIGIN_AUTH");
+          expect(input.params.opts.run?.env).toEqual(env);
+          const stopped =
+            "profiles" in input.params
+              ? input.params.profiles[0]?.preManagedServiceStop
+              : input.params.preManagedServiceStop;
+          expect(stopped).not.toHaveProperty("serviceEffectiveEnv");
+        }
         const result = {
           ...input.params.result,
           status,
@@ -253,12 +286,16 @@ it.each([
             requestedChannel: null,
             storedChannel: "stable",
             preUpdatePluginInstallRecords: {},
+            ...(envBindings ? { ownedManagedUpdateEnv: originEnv } : {}),
             preManagedServiceStop: {
               stopped: true,
               inspected: true,
               runtimeInspected: true,
               running: true,
-              serviceEnv: env,
+              serviceEnv: originEnv,
+              ...(envBindings
+                ? { serviceDefinitionEnv: {}, serviceEffectiveEnv: effectiveEnv }
+                : {}),
               windowsTaskAutoStartRecovery: windowsRecovery,
             },
           },
@@ -277,6 +314,11 @@ it.each([
       result: { status },
     });
     expect(outcome.result.reason).toBe(reason);
+    if (envBindings) {
+      expect(run.env).toBe(env);
+      expect(run.env.UPDATE_TEST_COMMON_AUTH).toBe("stale-common-ref");
+      expect(run.env).not.toHaveProperty("UPDATE_TEST_ORIGIN_AUTH");
+    }
     if (pending) {
       expect(complete).not.toHaveBeenCalled();
     } else {
@@ -376,11 +418,11 @@ it.each([
   "fences migrated candidate finalization (json=$json, legacy=$legacy, grouped=$grouped, parentOwns=$parentOwns, check=$checkWorkMs, budget=$stepBudgetMs)",
   async ({ json, legacy, parentOwns, checkWorkMs, stepBudgetMs, grouped, foreground }) => {
     const stateDir = await fs.realpath(dirs.make("migrated-update-"));
+    vi.stubEnv("OPENCLAW_TEST_RUNTIME_LOG", "1");
     const env = {
       ...process.env,
       OPENCLAW_STATE_DIR: stateDir,
       OPENCLAW_CONFIG_PATH: path.join(stateDir, "openclaw.json"),
-      OPENCLAW_TEST_RUNTIME_LOG: "1",
     };
     const root = legacy ? path.join(stateDir, "legacy-runtime") : process.cwd();
     const legacyEffect = path.join(stateDir, "legacy-worker-effect");

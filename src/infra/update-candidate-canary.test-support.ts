@@ -6,7 +6,17 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { onTestFinished, vi } from "vitest";
 import { createUpdateProgress } from "../cli/update-cli/progress.js";
 import { defaultRuntime } from "../runtime.js";
+import * as diskSpace from "./disk-space.js";
 import type { UpdateStepResult } from "./update-runner-types.js";
+
+export function stubCanaryDiskSpace(availableBytes: number, totalBytes: number) {
+  return vi.spyOn(diskSpace, "tryReadDiskSpace").mockImplementation((targetPath) => ({
+    targetPath,
+    checkedPath: targetPath,
+    availableBytes,
+    totalBytes,
+  }));
+}
 
 export async function writeCanaryRuntime(root: string) {
   await fs.mkdir(path.join(root, "dist", "infra"), { recursive: true });

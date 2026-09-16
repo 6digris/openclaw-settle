@@ -13,7 +13,7 @@ import {
 } from "../infra/windows-launcher-encoding.js";
 import { parseCmdScriptCommandLine, quoteCmdScriptArg } from "./cmd-argv.js";
 import { assertNoCmdLineBreak, parseCmdSetAssignment, renderCmdSetAssignment } from "./cmd-set.js";
-import { resolveGatewayWindowsTaskName } from "./constants.js";
+import { normalizeWindowsTaskIdentity, resolveGatewayWindowsTaskName } from "./constants.js";
 import { resolveGatewayTaskScriptPath } from "./paths.js";
 import { probeScheduledTaskExists, probeScheduledTaskState } from "./schtasks-state-probe.js";
 import type {
@@ -318,10 +318,6 @@ export function resolveTaskLauncherScriptPath(env: GatewayServiceEnv, scriptPath
   return path.join(parsed.dir, `${parsed.name}.vbs`);
 }
 
-function taskIdentity(value: string): string {
-  return value.replace(/^\\+/, "").toLowerCase();
-}
-
 function assertStaticTaskPath(value: string): void {
   if (!/^(?:[a-z]:[\\/]|\\\\)/i.test(value) || /[%\r\n"]/.test(value)) {
     throw new Error("Scheduled Task launcher path is not absolute and literal");
@@ -426,7 +422,8 @@ export async function readScheduledTaskCommand(
     if (
       registered?.status === "found" &&
       (!registered.taskPath ||
-        taskIdentity(registered.taskPath) !== taskIdentity(taskName) ||
+        normalizeWindowsTaskIdentity(registered.taskPath) !==
+          normalizeWindowsTaskIdentity(taskName) ||
         registered.actions?.length !== 1 ||
         action?.type !== 0 ||
         action.arguments.trim())
@@ -456,7 +453,8 @@ export async function readScheduledTaskCommand(
         current.status !== registered.status ||
         (registered.status === "found" &&
           (current.status !== "found" ||
-            taskIdentity(current.taskPath ?? "") !== taskIdentity(registered.taskPath ?? "") ||
+            normalizeWindowsTaskIdentity(current.taskPath ?? "") !==
+              normalizeWindowsTaskIdentity(registered.taskPath ?? "") ||
             !isDeepStrictEqual(current.actions, registered.actions)))
       ) {
         throw new Error("Scheduled Task registration changed during inspection");
@@ -533,7 +531,8 @@ export async function readScheduledTaskCommand(
     if (
       registered &&
       ((environment.OPENCLAW_WINDOWS_TASK_NAME &&
-        taskIdentity(environment.OPENCLAW_WINDOWS_TASK_NAME) !== taskIdentity(taskName)) ||
+        normalizeWindowsTaskIdentity(environment.OPENCLAW_WINDOWS_TASK_NAME) !==
+          normalizeWindowsTaskIdentity(taskName)) ||
         (environment.OPENCLAW_PROFILE && !isValidProfileName(environment.OPENCLAW_PROFILE)) ||
         (env.OPENCLAW_PROFILE &&
           (normalizeProfileName(environment.OPENCLAW_PROFILE) ?? "default") !==

@@ -61,9 +61,9 @@ export function createUpdateFinalization(params: FinishUpdateParams, assertCurre
     markControlPlaneUpdateRestartSentinelFailureBestEffort({ ...sentinelOptions, reason });
   const createFailure = (
     result: UpdateRunResult,
-    exitCode = 1,
     detail?: string,
     options?: ErrorOptions,
+    exitCode = resolveManagedServiceUpdateFailureExitCode(result),
   ) =>
     new UpdateCommandFailure(result, exitCode, detail, {
       ...options,
@@ -441,12 +441,7 @@ export function createUpdateFinalization(params: FinishUpdateParams, assertCurre
             cause: restoreFailure.cause,
           })
         : restoreFailure.cause;
-      throw createFailure(
-        reportedResult,
-        resolveManagedServiceUpdateFailureExitCode(reportedResult),
-        detail,
-        { cause },
-      );
+      throw createFailure(reportedResult, detail, { cause });
     }
     return reportedResult;
   };

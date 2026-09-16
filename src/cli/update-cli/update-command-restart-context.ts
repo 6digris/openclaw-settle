@@ -6,6 +6,7 @@ import { prepareRestartScript } from "./restart-helper.js";
 import type { UpdateRestartParams } from "./update-command-service-context-types.js";
 import {
   resolveServiceRefreshEnv,
+  resolveUpdatedInstallCommandEnv,
   stripGatewayServiceMarkerEnv,
 } from "./update-command-service-env.js";
 import {
@@ -24,6 +25,7 @@ import {
 export async function prepareUpdateRestart(
   params: UpdateRestartParams,
   restartConfigSnapshot: ConfigFileSnapshot,
+  runtimeEnv: NodeJS.ProcessEnv,
 ) {
   let restartScriptPath: string | null = null;
   let refreshGatewayServiceEnv = false;
@@ -95,7 +97,11 @@ export async function prepareUpdateRestart(
       ) {
         gatewayServiceInstallEnv = resolveManagedGatewayServiceProcessEnv(
           serviceState.command,
-          params.ownedManagedUpdateEnv ?? process.env,
+          resolveUpdatedInstallCommandEnv({
+            processEnv: runtimeEnv,
+            capturedEnv: params.ownedManagedUpdateEnv ?? process.env,
+            invocationCwd: params.invocationCwd,
+          }),
         );
         if (gatewayServiceInstallEnv) {
           gatewayServiceInstallEnv = stripGatewayServiceMarkerEnv(gatewayServiceInstallEnv);

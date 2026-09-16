@@ -2,6 +2,7 @@ import "./update-command-execution.test-support.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import * as configFile from "../../config/config.js";
 import * as gatewayService from "../../daemon/service.js";
 import * as tempRoot from "../../infra/tmp-openclaw-dir.js";
 import { isPackageTargetAlreadyCurrent } from "../../infra/update-global.js";
@@ -9,14 +10,102 @@ import { createUpdateRun, getUpdateRun } from "../../infra/update-run-ledger.js"
 import { prepareGitMutation } from "../../infra/update-runner-git-target.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
 import { UpdatePreMutationError } from "./shared.js";
+import * as databaseContext from "./update-command-database-context.js";
 import { executeMutableUpdate } from "./update-command-execution.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
 import { preflightUpdateCommandSchemas } from "./update-command-schema.js";
 
-const { executionParams, mocks, successfulUpdate } =
+const { executionParams, inspectOrStopService, mocks, schemaContext, successfulUpdate } =
   await import("./update-command-execution.test-support.js");
 
 describe("update target admission", () => {
+  it.each(
+    (["package", "git"] as const).flatMap((kind) =>
+      [false, true].map((preparedCaller) => ({ kind, preparedCaller })),
+    ),
+  )(
+    "keeps schema-only callers out of $kind maintenance (prepared caller origin=$preparedCaller)",
+    async ({ kind, preparedCaller }) => {
+      const params = executionParams(kind);
+      const callerContext = schemaContext("default");
+      const nativeContext = schemaContext("primary");
+      mocks.captureManagedPreflight.mockResolvedValue(nativeContext);
+      mocks.maybeStopService.mockImplementation(async ({ phase }) => ({
+        ...inspectOrStopService(phase, { root: params.root, env: nativeContext.env }),
+        running: false,
+      }));
+      if (preparedCaller) {
+        // The admission owner has already proved this state-only caller's foreground ownership.
+        vi.spyOn(databaseContext, "inspectUpdateDatabaseContexts").mockResolvedValue({
+          scope: "installation",
+          roots: [params.root],
+          profiles: [
+            { root: params.root, context: callerContext },
+            {
+              root: params.root,
+              context: nativeContext,
+              stopState: {
+                ...inspectOrStopService("inspect", { root: params.root, env: nativeContext.env }),
+                running: false,
+              },
+            },
+          ],
+          contexts: [callerContext, nativeContext],
+          externalConsumers: [],
+        });
+      }
+      vi.spyOn(configFile, "readConfigFileSnapshot").mockImplementation(
+        async () => schemaContext(process.env.OPENCLAW_PROFILE ?? "default").configSnapshot,
+      );
+      mocks.runPackageUpdate.mockImplementation(
+        async ({
+          beforeActivate,
+        }: Parameters<typeof import("./update-command-package.js").runPackageInstallUpdate>[0]) => {
+          await beforeActivate();
+          return successfulUpdate;
+        },
+      );
+      mocks.runGitUpdate.mockImplementation(
+        async ({
+          inspectGitTarget,
+          beforeGitMutation,
+        }: Parameters<typeof import("./update-command-git.js").updateGitInstall>[0]) => {
+          const target = { schemaVersions: params.packageTargetSchemaVersions };
+          await inspectGitTarget(target);
+          await beforeGitMutation(target);
+          return { ...successfulUpdate, mode: "git" };
+        },
+      );
+
+      const execution = await executeMutableUpdate(params);
+      const mutableProfiles = preparedCaller ? ["default", "primary"] : ["primary"];
+
+      expect(execution).toMatchObject({ mutationStarted: true, result: { status: "ok" } });
+      expect(
+        mocks.maybeStopService.mock.calls
+          .filter(([options]) => options.phase === "prepare")
+          .map(([options]) => options.env?.OPENCLAW_PROFILE),
+      ).toEqual(["primary"]);
+      expect(
+        execution?.profiles.map((profile) => profile.ownedManagedUpdateEnv?.OPENCLAW_PROFILE),
+      ).toEqual(mutableProfiles);
+      if (preparedCaller) {
+        expect(execution?.profiles[0]?.preManagedServiceStop).toBeUndefined();
+      }
+      expect(execution?.profiles.at(-1)?.preManagedServiceStop).toMatchObject({
+        stopped: true,
+        serviceEnv: { OPENCLAW_PROFILE: "primary" },
+      });
+      expect(
+        new Set(mocks.prepareMutableUpdate.mock.calls.map(([env]) => env?.OPENCLAW_PROFILE)),
+      ).toEqual(new Set(mutableProfiles));
+      expect(mocks.checkTargetSchemas).toHaveBeenCalled();
+      for (const [, contexts] of mocks.checkTargetSchemas.mock.calls) {
+        expect(contexts.map(({ env }) => env.OPENCLAW_PROFILE)).toEqual(["default", "primary"]);
+      }
+    },
+  );
+
   it.each([
     "current",
     "current config drift",
