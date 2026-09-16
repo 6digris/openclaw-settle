@@ -6,6 +6,7 @@ import type { GatewaySessionRow } from "../api/types.ts";
 import type { RouteId } from "../app-route-paths.ts";
 import { compactApprovalCommand } from "../app/approval-presentation.ts";
 import type { ApplicationContext } from "../app/context.ts";
+import type { ExecApprovalRequest } from "../app/exec-approval.ts";
 import {
   createQuestionPromptState,
   disposeQuestionPromptState,
@@ -17,7 +18,7 @@ import {
 import { t } from "../i18n/index.ts";
 import { formatUiExternalText } from "../lib/format-error.ts";
 import { isGatewayMethodAdvertised } from "../lib/gateway-methods.ts";
-import { areUiSessionKeysEquivalent } from "../lib/sessions/session-key.ts";
+import { normalizeDefaultMainSessionAliasForUi } from "../lib/sessions/session-key.ts";
 import { SubscriptionsController } from "../lit/subscriptions-controller.ts";
 import {
   SIDEBAR_SESSION_NO_ATTENTION,
@@ -40,6 +41,12 @@ export class SessionAttentionController implements ReactiveController {
   private attentionGatewayConnected = false;
   private agentStatusExpiryTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
   private agentStatusExpiryAt: number | null = null;
+  private preparedAttention: {
+    questionRevision: number;
+    approvals: readonly ExecApprovalRequest[] | undefined;
+    entries: readonly SidebarKnownSessionAttention[];
+    bySession: ReadonlyMap<string, SidebarSessionAttention>;
+  } | null = null;
 
   constructor(private readonly host: SessionAttentionControllerHost) {
     host.addController(this);
@@ -64,7 +71,13 @@ export class SessionAttentionController implements ReactiveController {
       );
   }
 
+  /** Each host update prepares at most one shared set of presentation facts. */
+  hostUpdate(): void {
+    this.preparedAttention = null;
+  }
+
   hostDisconnected(): void {
+    this.preparedAttention = null;
     this.attentionGateway = null;
     this.attentionGatewayClient = null;
     this.attentionGatewayConnected = false;
@@ -109,11 +122,9 @@ export class SessionAttentionController implements ReactiveController {
   }
 
   resolveSessionAttention(row: GatewaySessionRow): SidebarSessionAttention {
-    const knownAttention = summarizeSidebarSessionAttention(
-      this.knownSessionAttention()
-        .filter((entry) => areUiSessionKeysEquivalent(entry.sessionKey, row.key))
-        .map((entry) => entry.attention),
-    );
+    const knownAttention =
+      this.prepareAttention().bySession.get(normalizeDefaultMainSessionAliasForUi(row.key)) ??
+      SIDEBAR_SESSION_NO_ATTENTION;
     if (knownAttention.kind !== "none") {
       return knownAttention;
     }
@@ -165,7 +176,22 @@ export class SessionAttentionController implements ReactiveController {
     );
   }
 
+  /** Share formatted facts with Home and unloaded-descendant projections. */
   knownSessionAttention(): readonly SidebarKnownSessionAttention[] {
+    return this.prepareAttention().entries;
+  }
+
+  private prepareAttention() {
+    const approvalQueue = this.host.sessionAttentionContext?.overlays?.snapshot.approvalQueue;
+    const questionRevision = this.questionPromptState.revision;
+    // Question mutations can arrive between render and event-handler lookups;
+    // approval owners replace their queue on addition, removal, and refresh.
+    if (
+      this.preparedAttention?.questionRevision === questionRevision &&
+      this.preparedAttention.approvals === approvalQueue
+    ) {
+      return this.preparedAttention;
+    }
     const questions = listQuestionPrompts(this.questionPromptState).flatMap((prompt) =>
       prompt.status === "pending" && prompt.sessionKey !== undefined
         ? [
@@ -187,9 +213,7 @@ export class SessionAttentionController implements ReactiveController {
           ]
         : [],
     );
-    const approvals = (
-      this.host.sessionAttentionContext?.overlays?.snapshot.approvalQueue ?? []
-    ).flatMap((approval) =>
+    const approvals = (approvalQueue ?? []).flatMap((approval) =>
       typeof approval.request.sessionKey === "string"
         ? [
             {
@@ -213,7 +237,30 @@ export class SessionAttentionController implements ReactiveController {
           ]
         : [],
     );
-    return [...questions, ...approvals];
+    const entries = [...questions, ...approvals];
+    const grouped = new Map<string, SidebarSessionAttention[]>();
+    for (const entry of entries) {
+      const key = normalizeDefaultMainSessionAliasForUi(entry.sessionKey);
+      if (!key) {
+        continue;
+      }
+      const values = grouped.get(key);
+      if (values) {
+        values.push(entry.attention);
+      } else {
+        grouped.set(key, [entry.attention]);
+      }
+    }
+    // Summarize each canonical session once, retaining request order and deduplication.
+    const bySession = new Map(
+      [...grouped].map(([key, values]) => [key, summarizeSidebarSessionAttention(values)]),
+    );
+    return (this.preparedAttention = {
+      questionRevision,
+      approvals: approvalQueue,
+      entries,
+      bySession,
+    });
   }
 }
 
