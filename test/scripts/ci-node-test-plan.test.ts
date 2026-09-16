@@ -986,41 +986,6 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     },
   );
 
-  it("keeps oversized runtime observations standalone without dropping their measured floor", () => {
-    const owner = expectDefined(
-      getCommittedCompactPlan("push", "hybrid")
-        .flatMap((job) => job.groups)
-        .find(
-          (group) =>
-            group.pretestBuildMode === "runtime" &&
-            !isExclusiveCompactShardName(group.shard_name) &&
-            group.includePatterns?.length &&
-            group.env?.OPENCLAW_VITEST_MAX_WORKERS === "2",
-        ),
-      "measured runtime owner",
-    );
-    vi.spyOn(testTimings, "readRuntimePlacementTimings").mockReturnValue([
-      {
-        configs: owner.configs,
-        env: owner.env ?? {},
-        includePatterns: owner.includePatterns!,
-        pretestBuildMode: "runtime",
-        seconds: 600,
-      },
-    ]);
-    const jobs = createNodeTestShardBundles({
-      compactMode: "push",
-      runnerBackend: "hybrid",
-      includeReleaseOnlyPluginShards: false,
-    });
-    const observed = expectDefined(
-      jobs.find((job) => job.groups.some((group) => group.shard_name === owner.shard_name)),
-      "standalone measured job",
-    );
-    expect(observed.groups).toHaveLength(1);
-    expect(observed.predictedSeconds).toBeGreaterThanOrEqual(622);
-  });
-
   it("preserves each plugin project inventory when runtime consumers are partitioned", () => {
     const originalArgv = process.argv;
     process.argv = originalArgv.slice(0, 2);
@@ -1473,9 +1438,16 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
             "agentic-plugin-sdk",
             "agentic-control-plane-runtime-state",
             "agentic-cli",
+            "agentic-commands-doctor-config-state",
+            "core-runtime-infra-storage-state",
+            "core-runtime-infra-system-runtime",
           ]) {
             const tails = plan.filter((shard) =>
-              shard.groups.some((group) => group.shard_name.replace(/-hosted-\d+$/u, "") === owner),
+              shard.groups.some(
+                (group) =>
+                  !group.pretestBuildMode &&
+                  group.shard_name.replace(/-hosted-\d+$/u, "") === owner,
+              ),
             );
             expect(tails.length, `${profile.name}: standalone ${owner}`).toBeGreaterThan(0);
             for (const tail of tails) {
@@ -1613,6 +1585,9 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
             "agentic-control-plane-auth-node",
             "agentic-plugin-sdk",
             "agentic-control-plane-runtime-state",
+            "agentic-commands-doctor-config-state",
+            "core-runtime-infra-storage-state",
+            "core-runtime-infra-system-runtime",
           ].includes(group.shard_name.replace(/-hosted-\d+$/u, "")),
         );
       expect(shard.runner).toBe(
@@ -2406,12 +2381,10 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       doctor.includePatterns?.toSorted(),
     );
     expect(new Set(placements.map(({ jobIndex }) => jobIndex)).size).toBe(placements.length);
-    for (const { group, job } of placements) {
+    for (const { group } of placements) {
       expect(group.configs).toEqual(doctor.configs);
       expect(group.env).toEqual(
-        isOrdinaryCompactJob(job)
-          ? { ...doctor.env, OPENCLAW_VITEST_MAX_WORKERS: "2" }
-          : doctor.env,
+        group.pretestBuildMode ? doctor.env : { ...doctor.env, OPENCLAW_VITEST_MAX_WORKERS: "2" },
       );
       expect(group.requiresDist).toBe(doctor.requiresDist);
       expect(group.runner).toBe(BUNDLED_NODE_TEST_RUNNER);

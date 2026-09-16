@@ -273,18 +273,24 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
   20 compatible groups. Other serial bins retain the ten-group cutoff.
   Blacksmith serial bins retain 200/276s, hybrid serial bins retain 210s,
   exclusive bins retain 150s by default, and groups above their serial cap stay alone.
-  Groups with committed or measured weight above 300s also stay alone on
-  Blacksmith and hybrid. Until their timing refit lands, explicit standalone
-  owner guards cover doctor SQLite-memory, Gateway chat/auth/runtime-state,
-  plugin SDK and the full CLI, including their generated split children.
+  Groups without dist or preparation requirements stay alone on Blacksmith
+  and hybrid when committed or measured stripe weights exceed 300s. Until
+  their timing refit lands, explicit standalone owner guards cover ordinary
+  doctor SQLite-memory, doctor config/state, Gateway chat/auth/runtime-state,
+  infrastructure storage/state, system runtime, plugin SDK and full CLI groups
+  (nine owners), including their generated split children. Dist and preparation
+  children retain their existing packing. Late runtime-placement observations
+  stay in the unchanged 440s placement pass, outside initial standalone admission.
   Ordinary named tails retain the 32-class request and two-worker ceiling;
   the full CLI retains the 16-class. Runtime-preparing children keep their
-  existing runner, including the 4-class `agentic-plugin-sdk-hosted-1`.
+  existing shared packing and runner, including the 4-class `agentic-plugin-sdk-hosted-1`.
   Isolation must not also shrink their previously packed
   hosts and risk extending the observed tails. Promote only the emitted runner,
   keeping logical classes, names and timing identities unchanged.
   Runs 35045292864/35046146611 show the changing compact-small-4 inventory;
   run 34501950584 measured 557s for the CLI against its 136s weight.
+  Run 35052961883 added doctor config/state (388s), infrastructure storage/state
+  (516/556s), and system runtime (318s) to the standalone set.
   Complete ordinary hybrid bins containing only non-build CLI-process groups may use
   250s and co-locate split siblings, provided each original child still fits
   150s. Promote only the emitted runner; retain logical classes, names and
@@ -325,18 +331,28 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
   elapsed-time, actual memory and cleanup proof; requested labels are not capacity.
 - The guarded 2026-09-16 planner dry run preserves all original groups and
   85 plugin process envelopes. Hybrid regular compact rows change from 28 to
-  30 on push and 50 to 52 on PR; Blacksmith changes from 33 to 34 and 51 to 52.
+  32 on push and 50 to 54 on PR; Blacksmith changes from 33 to 37 push
+  and 51 to 55 PR.
   Broad plugin fallback changes from 43 to 37 rows, making hybrid broad PR
-  regular Node rows 93 to 89. Longest predicted compact/plugin bins are 540/360s.
+  regular Node rows 93 to 91. Longest predicted compact/plugin bins are 540/360s.
   Standalone guards erase the earlier unguarded 23/45 compact-row forecast;
   do not claim five fewer compact registrations. The reference label counts
-  include seven ordinary non-CLI named tails retaining the 32-class and model 100–186
+  include eleven ordinary non-CLI tail rows retaining the 32-class and model 37–69
   compact setup vCPU-minutes saved per hybrid run at measured
   35–65s checkout/setup, plus 28–52 for six removed plugin jobs. These are
   setup-only forecasts. Keep the cap-based 4,776-registration envelope,
   80/50/64/120 caps, `max-parallel`, timeouts and executor gates unchanged.
-  Native proof is the packing PR's CI run: collect per-label counts, longest
+  Native proof is the packing PR's final-head CI run: collect per-label counts, longest
   16-class job, every job over twelve minutes, and actual memory/cleanup evidence.
+- Initial PR #149656 run 35052961883 tested head `8dc31be7` and emitted
+  52 compact plus 38 plugin rows from its merge checkout. It failed after
+  25m25s; the longest 16-class job took 24m20s, with nine compact and one plugin
+  jobs above twelve minutes. Four CPUs, approximately 15.4 GiB and one child
+  were observed. Small-12 ran 17 children in 1,398s against a 540s prediction;
+  large-3 ran five children in 892s. The correction restores runtime preparation
+  sharing after a failed placement test and adds the three measured ordinary
+  tail owners, without changing timing floors. Final-head native CI remains
+  pending for the coordinator; do not claim the modeled eleven-minute result.
 - The whole Blacksmith agent-support group requests `blacksmith-32vcpu-ubuntu-2404`.
   Its file inventory and resource-derived worker policy remain unchanged.
 - Numbered Blacksmith tooling bins request the same 32-vCPU class after packing.

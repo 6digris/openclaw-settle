@@ -722,6 +722,11 @@ const COMPACT_STANDALONE_OWNERS = new Set([
   "agentic-plugin-sdk",
   "agentic-control-plane-runtime-state",
   "agentic-cli",
+  // Run 35052961883 measured these ordinary children at 388s, 516–556s and
+  // 318s on the 16-class; retain isolation until their accepted timing refit.
+  "agentic-commands-doctor-config-state",
+  "core-runtime-infra-storage-state",
+  "core-runtime-infra-system-runtime",
 ]);
 
 export function isExclusiveCompactShardName(shardName: string): boolean {
@@ -3153,15 +3158,14 @@ function createCompactNodeTestShardBundles(
       .filter((family): family is string => family !== undefined);
     return new Set(families).size === families.length;
   };
-  const runtimeTimings = readRuntimePlacementTimings("blacksmith");
+  // Runtime preparation retains its own late placement observations and budget.
   const staysStandalone = (group: NodeTestShardGroup) =>
     options.runnerBackend !== "github" &&
+    !group.pretestBuildMode &&
+    !group.requiresDist &&
     (COMPACT_STANDALONE_OWNERS.has(group.shard_name.replace(/-hosted-\d+$/u, "")) ||
-      Math.max(
-        estimateStripeSeconds(group),
-        estimateCompactStripeSeconds(group, "blacksmith"),
-        resolveRuntimePlacementSeconds(group, runtimeTimings) ?? 0,
-      ) > COMPACT_STANDALONE_GROUP_SECONDS);
+      Math.max(estimateStripeSeconds(group), estimateCompactStripeSeconds(group, "blacksmith")) >
+        COMPACT_STANDALONE_GROUP_SECONDS);
   const admitsCompactBin = (
     groups: NodeTestShardGroup[],
     secondsCap: number,
@@ -3453,7 +3457,7 @@ function createCompactNodeTestShardBundles(
   // Only the public complete-plan entry normalizes this option. Precise plans
   // retain their original template capacity before projecting selected files.
   if (options.runnerBackend === "hybrid" && options.compactMode !== undefined) {
-    const timings = runtimeTimings;
+    const timings = readRuntimePlacementTimings("blacksmith");
     const placementJobs = compactJobs.filter(
       (job) =>
         job.pretestBuildMode !== "private-qa" &&
