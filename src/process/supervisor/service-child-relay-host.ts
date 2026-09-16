@@ -1,10 +1,10 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import type { Duplex, Readable, Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { setTimeout as delay } from "node:timers/promises";
 import { toErrorObject } from "../../infra/errors.js";
-import { withTimeout } from "../../infra/fs-safe.js";
 import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
 import {
   resolveRuntimeWorkerArgv,
@@ -259,6 +259,13 @@ export async function createServiceChildRelayAdapter(
   const constructionAbort = createDeferredCore<never>();
   void constructionAbort.promise.catch(() => {});
   let startupErrorAckDelivery: Promise<void> | undefined;
+  let cleanupDeadline: number | undefined;
+  let cleanupTimer: NodeJS.Timeout | undefined;
+  let completionSettled = false;
+  void Promise.allSettled([resultCompletion.promise, extinctionCompletion.promise]).then(() => {
+    completionSettled = true;
+    clearTimeout(cleanupTimer);
+  });
 
   const settleWait = () => {
     // Authority loss cannot erase an already observed root result. Output must
@@ -297,6 +304,34 @@ export async function createServiceChildRelayAdapter(
     settleWait();
     extinctionCompletion.reject(waitError);
     lineage?.destroy();
+  };
+
+  const expireCleanup = () => {
+    const message = "service child cleanup did not complete before its hard deadline";
+    const error = new Error(message);
+    // Extinction may already be confirmed while an output pipe remains open.
+    // Reject pending results before destroy can turn that missing tail into success.
+    resultError ??= error;
+    startup.reject(error);
+    resultCompletion.reject(error);
+    extinctionCompletion.reject(error);
+    try {
+      loseIdentity(message);
+    } finally {
+      control?.destroy();
+      lineage?.destroy();
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+    }
+  };
+  const beginCleanupDeadline = () => {
+    if (useWindowsJobAnchor || completionSettled || cleanupDeadline !== undefined) {
+      return;
+    }
+    // One owner budget spans cancellation, ACK, native joins and output drain.
+    // Repeated KILL, a later receipt or control EOF must not renew it.
+    cleanupDeadline = performance.now() + GRACEFUL_CANCEL_TIMEOUT_MS;
+    cleanupTimer = setTimeout(expireCleanup, GRACEFUL_CANCEL_TIMEOUT_MS);
   };
 
   const sendChildMessage = (
@@ -395,23 +430,13 @@ export async function createServiceChildRelayAdapter(
     }
     // Closure requires lineage EOF outside the group as well as kernel group
     // disappearance; an escaped writer survives the anchor's group-wide KILL.
-    const deadline = Date.now() + GRACEFUL_CANCEL_TIMEOUT_MS;
+    beginCleanupDeadline();
     if (!childExited) {
       // Control EOF can precede the relay reaping its anchor. Darwin reports
       // EPERM for that unreaped zombie group, so join before observing it.
-      const remainingMs = deadline - Date.now();
-      if (remainingMs <= 0) {
-        loseIdentity("service child relay did not exit before cleanup deadline");
-        return;
-      }
       try {
-        await withTimeout(
-          Promise.race([relayExit.promise, extinctionCompletion.promise]),
-          remainingMs,
-          { message: "service child relay did not exit before cleanup deadline" },
-        );
+        await Promise.race([relayExit.promise, extinctionCompletion.promise]);
       } catch {
-        loseIdentity("service child relay did not exit before cleanup deadline");
         return;
       }
       if (state !== "closing") {
@@ -419,19 +444,9 @@ export async function createServiceChildRelayAdapter(
       }
     }
     if (!lineage?.readableEnded) {
-      const remainingMs = deadline - Date.now();
-      if (remainingMs <= 0) {
-        loseIdentity("command lineage remained open after its anchor closed");
-        return;
-      }
       try {
-        await withTimeout(
-          Promise.race([lineageEnd.promise, extinctionCompletion.promise]),
-          remainingMs,
-          { message: "command lineage remained open after its anchor closed" },
-        );
+        await Promise.race([lineageEnd.promise, extinctionCompletion.promise]);
       } catch {
-        loseIdentity("command lineage remained open after its anchor closed");
         return;
       }
     }
@@ -451,9 +466,9 @@ export async function createServiceChildRelayAdapter(
         }
         return;
       }
-      const remainingMs = deadline - Date.now();
+      const remainingMs = cleanupDeadline! - performance.now();
       if (remainingMs <= 0) {
-        loseIdentity("owned process group remained after its anchor closed");
+        expireCleanup();
         return;
       }
       await delay(Math.min(100, remainingMs));
@@ -496,8 +511,12 @@ export async function createServiceChildRelayAdapter(
       (message.stream === "stdout" ? stdoutRelay : stderrRelay).end();
       settleWait();
     } else if (message.type === "closing") {
+      if (state === "closed" || state === "identity-lost") {
+        return;
+      }
       closingReceipt = true;
       state = "closing";
+      beginCleanupDeadline();
       if (control) {
         // Retire cancellation before acknowledging this exact POSIX receipt.
         // The ACK releases the sender, not the independent native extinction join.
@@ -701,11 +720,14 @@ export async function createServiceChildRelayAdapter(
   }
 
   function kill(signal: NodeJS.Signals = "SIGKILL") {
+    const normalized = signal === "SIGTERM" ? "SIGTERM" : "SIGKILL";
+    if (normalized === "SIGKILL") {
+      beginCleanupDeadline();
+    }
     // A closing receipt retires cancellation; channel/anchor exit still owns extinction.
     if (state !== "active") {
       return;
     }
-    const normalized = signal === "SIGTERM" ? "SIGTERM" : "SIGKILL";
     requestedSignal = normalized;
     outboundSequence += 1;
     // The host never converts the diagnostic command PID into group authority.
