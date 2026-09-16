@@ -1,4 +1,4 @@
-// Tests for SQLite user_version pragma helper.
+import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("../version.js", async (importOriginal) => {
@@ -6,6 +6,7 @@ vi.mock("../version.js", async (importOriginal) => {
   return { ...actual, resolveRuntimeServiceCommit: () => "aaaaaaa" };
 });
 import { VERSION } from "../version.js";
+import { enableNodeSqliteKyselyStatementCache } from "./kysely-sync-cache-state.js";
 import {
   createNewerSqliteSchemaVersionError,
   describeRunningOpenClawBuild,
@@ -13,47 +14,36 @@ import {
 } from "./sqlite-user-version.js";
 
 describe("readSqliteUserVersion", () => {
-  it("returns 0 when row is undefined", () => {
-    const db = {
-      prepare: () => ({ get: () => undefined }),
-    };
-    expect(readSqliteUserVersion(db)).toBe(0);
-  });
-
-  it("returns 0 when user_version is null", () => {
-    const db = {
-      prepare: () => ({ get: () => ({ user_version: null }) }),
-    };
-    expect(readSqliteUserVersion(db)).toBe(0);
-  });
-
-  it("returns numeric user_version", () => {
-    const db = {
-      prepare: () => ({ get: () => ({ user_version: 5 }) }),
-    };
-    expect(readSqliteUserVersion(db)).toBe(5);
-  });
-
-  it("returns 0 when user_version is 0", () => {
-    const db = {
-      prepare: () => ({ get: () => ({ user_version: 0 }) }),
-    };
-    expect(readSqliteUserVersion(db)).toBe(0);
-  });
-
-  it("converts string user_version to number", () => {
-    const db = {
-      prepare: () => ({ get: () => ({ user_version: "3" }) }),
-    };
-    expect(readSqliteUserVersion(db)).toBe(3);
-  });
-
-  it("returns 0 for empty object", () => {
-    const db = {
-      prepare: () => ({ get: () => ({}) }),
-    };
-    expect(readSqliteUserVersion(db)).toBe(0);
-  });
+  it.each([false, true])(
+    "reads current versions and rollback state without retaining values (cache enabled: %s)",
+    (cached) => {
+      const db = new DatabaseSync(":memory:");
+      if (cached) {
+        enableNodeSqliteKyselyStatementCache(db);
+      }
+      const prepares = vi.spyOn(db, "prepare");
+      const versions = [0, 3, 8, 0];
+      try {
+        for (const version of versions) {
+          db.exec(`PRAGMA user_version = ${version}`);
+          expect(readSqliteUserVersion(db)).toBe(version);
+        }
+        db.exec("BEGIN; PRAGMA user_version = 9");
+        expect(readSqliteUserVersion(db)).toBe(9);
+        db.exec("ROLLBACK");
+        expect(readSqliteUserVersion(db)).toBe(0);
+        if (cached) {
+          expect(prepares.mock.calls.length).toBeLessThan(versions.length + 2);
+        } else {
+          expect(prepares).toHaveBeenCalledTimes(versions.length + 2);
+        }
+      } finally {
+        prepares.mockRestore();
+        db.close();
+      }
+      expect(() => readSqliteUserVersion(db)).toThrow();
+    },
+  );
 });
 
 describe("createNewerSqliteSchemaVersionError", () => {

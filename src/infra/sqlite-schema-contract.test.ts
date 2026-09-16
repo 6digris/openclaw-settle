@@ -8,6 +8,7 @@ import {
   collectSqliteNamedIndexContract,
   collectSqliteSchemaIssues,
   createSqliteTableContractReader,
+  readSqliteSchemaCookie,
 } from "./sqlite-schema-contract.js";
 
 const [nodeMajor = 0, nodeMinor = 0] = process.versions.node.split(".").map(Number);
@@ -62,6 +63,34 @@ describe.each([false, true])("assertSqliteSchemaContains (statement cache: %s)",
     database.exec(schema);
     return database;
   }
+
+  it("reads schema changes and rollback through a reused version statement", () => {
+    const database = createDatabase("");
+    try {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        expect(readSqliteSchemaCookie(database)).toBe(0);
+      }
+      const prepares = vi.spyOn(database, "prepare");
+      try {
+        expect(readSqliteSchemaCookie(database)).toBe(0);
+        database.exec("CREATE TABLE kept (id INTEGER PRIMARY KEY)");
+        expect(readSqliteSchemaCookie(database)).toBe(1);
+        database.exec("BEGIN; CREATE TABLE discarded (id INTEGER PRIMARY KEY)");
+        expect(readSqliteSchemaCookie(database)).toBe(2);
+        database.exec("ROLLBACK");
+        expect(readSqliteSchemaCookie(database)).toBe(1);
+        if (cacheEnabled) {
+          expect(prepares).not.toHaveBeenCalled();
+        } else {
+          expect(prepares).toHaveBeenCalledTimes(4);
+        }
+      } finally {
+        prepares.mockRestore();
+      }
+    } finally {
+      database.close();
+    }
+  });
 
   it("accepts the canonical schema plus unrelated objects", () => {
     // Each cache mode must build a cold contract without warming the later cases.

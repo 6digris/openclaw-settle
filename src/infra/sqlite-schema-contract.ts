@@ -650,5 +650,7 @@ function compareJson(left: unknown, right: unknown): number {
 }
 
 export function readSqliteSchemaCookie(database: DatabaseSync) {
-  return database.prepare("PRAGMA schema_version").get()?.schema_version;
+  return executeWithCachedStatement(database, "PRAGMA schema_version", [], (statement) =>
+    statement.get(),
+  )?.schema_version;
 }
