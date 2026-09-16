@@ -897,8 +897,9 @@ private struct MacChatSurface: View {
             .onDisappear { self.audioInputCatalog.stop() }
     }
 
-    private var talkControl: OpenClawChatTalkControl {
-        OpenClawChatTalkControl(
+    private var talkControl: OpenClawChatTalkControl? {
+        guard self.usesPrimaryAppRuntime else { return nil }
+        return OpenClawChatTalkControl(
             isEnabled: self.usesPrimaryAppRuntime && self.appState.talkEnabled,
             isListening: self.usesPrimaryAppRuntime &&
                 !self.talkController.isPaused && self.talkController.phase == .listening,
@@ -996,6 +997,13 @@ final class WebChatSwiftUIWindowController: NSObject, NSWindowDelegate {
     private let voiceNoteRecorder: OpenClawVoiceNoteRecorder
     private var routingIdentityTask: Task<Void, Never>?
     private var window: NSWindow?
+    private var isHiddenForExperience = false
+    var onBecameKey: (() -> Void)?
+
+    var isWindowOpen: Bool {
+        !self.isHiddenForExperience && (self.window?.isVisible == true || self.window?.isMiniaturized == true)
+    }
+
     var onClosed: (() -> Void)?
     var onVisibilityChanged: ((Bool) -> Void)?
     /// Fires when the hosted chat switches sessions in place (sidebar,
@@ -1188,9 +1196,29 @@ final class WebChatSwiftUIWindowController: NSObject, NSWindowDelegate {
     func show() {
         guard let window else { return }
         self.ensureWindowSize()
+        self.isHiddenForExperience = false
+        window.isExcludedFromWindowsMenu = false
+        if window.isMiniaturized { window.deminiaturize(nil) }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        self.onBecameKey?()
         self.onVisibilityChanged?(true)
+    }
+
+    func hide() {
+        guard let window else { return }
+        // Deminiaturization can send focus notifications; fence those before
+        // removing the retained window from both the Dock and Window menu.
+        self.isHiddenForExperience = true
+        window.isExcludedFromWindowsMenu = true
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        window.orderOut(nil)
+        self.onVisibilityChanged?(false)
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        guard notification.object as? NSWindow === self.window, !self.isHiddenForExperience else { return }
+        self.onBecameKey?()
     }
 
     func cascade(from source: WebChatSwiftUIWindowController?) {
@@ -1213,10 +1241,10 @@ final class WebChatSwiftUIWindowController: NSObject, NSWindowDelegate {
         self.routingIdentityTask?.cancel()
         self.routingIdentityTask = nil
         self.viewModel.detachTransport()
+        self.window = nil
         self.onVisibilityChanged?(false)
         let onClosed = self.onClosed
         self.onClosed = nil
-        self.window = nil
         onClosed?()
     }
 

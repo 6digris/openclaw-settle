@@ -5,8 +5,12 @@ import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import { createSessionListEntryFilter, prepareSessionSharing } from "../session-sharing.js";
 import { readRecentSessionMessagesWithStatsAsync } from "../session-transcript-readers.js";
 import { buildSessionListRowMetadataContext } from "../session-utils-projection.js";
+import {
+  readSessionRowInputs,
+  materializeSessionRow,
+  presentSessionRow,
+} from "../session-utils-row.js";
 import { createGatewaySessionEntryReader } from "../session-utils-store-lookup.js";
-import { buildGatewaySessionRow } from "../session-utils.js";
 import { readPreparedServerMethodModelCatalog } from "./optional-model-catalog.js";
 import { readSessionPlacementFields } from "./session-placement-read-projection.js";
 import { loadSessionEntriesForTarget, requireSessionKey } from "./sessions-shared.js";
@@ -62,7 +66,7 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
       respond(true, { session: null }, undefined);
       return;
     }
-    const row = buildGatewaySessionRow({
+    const { inputs, presentation } = readSessionRowInputs({
       cfg,
       storePath,
       store,
@@ -85,6 +89,7 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
       rowContext: buildSessionListRowMetadataContext({ now: Date.now() }),
       includeSwarmChildren: true,
     });
+    const row = presentSessionRow(materializeSessionRow(inputs), presentation);
     Object.assign(row, {
       sharingRole: sharing.roleForTarget({
         agentId: target.agentId,

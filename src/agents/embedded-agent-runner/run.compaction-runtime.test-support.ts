@@ -202,11 +202,12 @@ async function createRecoveryFixture(state: OpenClawTestState, options: FixtureO
       expect(writerFence?.expectedWriterRunId).toBe(runId);
       runParams.sessionTarget = { ...target, ...writerFence };
     }
-    const sessionPromptState = createEmbeddedRunSessionPromptState({
+    const sessionPromptState = await createEmbeddedRunSessionPromptState({
       runParams,
       sessionAgentId: "main",
       resolvedSessionKey: target.sessionKey,
       lifecycleGeneration: getAgentRunLifecycleGeneration(),
+      onInterrupt: (reason) => controller.abort(reason),
     });
     forgetCommittedSuccessor = () => {
       const accepted = sessionPromptState.committedCompactionSuccessor;

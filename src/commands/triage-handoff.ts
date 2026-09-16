@@ -1,7 +1,15 @@
 import { formatInstallationTargetCommand } from "../cli/installation-target-format.js";
 import type { InstallationTarget } from "../infra/installation-target-context.js";
 
-export const TRIAGE_EXTERNAL_AGENTS = ["codex", "claude", "opencode", "pi"] as const;
+export const TRIAGE_EXTERNAL_AGENTS = [
+  "codex",
+  "claude",
+  "pi",
+  "opencode",
+  "muse",
+  "grok",
+  "cursor",
+] as const;
 export type TriageExternalAgent = (typeof TRIAGE_EXTERNAL_AGENTS)[number];
 
 /** Keep executable manual commands and the complete JSON handoff pinned to the same target. */
@@ -25,6 +33,21 @@ export function formatTriageHandoffCommands(params: {
       ["codex", "exec", "--skip-git-repo-check", promptPath ? "-" : prompt],
       target,
       stdin,
+    ),
+    cursor: formatInstallationTargetCommand(
+      ["cursor-agent", "--print", ...(promptPath ? [] : [prompt])],
+      target,
+      stdin,
+    ),
+    grok: formatInstallationTargetCommand(
+      ["grok", ...(promptPath ? ["--prompt-file", promptPath] : ["--single", prompt])],
+      target,
+      { env },
+    ),
+    muse: formatInstallationTargetCommand(
+      ["muse", "exec", ...(promptPath ? ["--prompt-file", promptPath] : [prompt])],
+      target,
+      { env },
     ),
     opencode: formatInstallationTargetCommand(
       ["opencode", "run", ...(promptPath ? [] : [prompt])],

@@ -146,7 +146,7 @@ public struct OpenClawChatWindowShell: View {
                 Text("New Thread")
                     .font(OpenClawChatTypography.body)
             }
-            .keyboardShortcut("n", modifiers: [.command])
+            .keyboardShortcut("n", modifiers: [.command, .shift])
             .focusable(false)
 
             Button {
@@ -295,7 +295,7 @@ public struct OpenClawChatWindowShell: View {
             } label: {
                 chatWindowActionLabel("New Thread", systemImage: "square.and.pencil")
             }
-            .keyboardShortcut("n", modifiers: [.command])
+            .keyboardShortcut("n", modifiers: [.command, .shift])
 
             Button {
                 self.isPresentingNewSessionOptions = true
