@@ -350,9 +350,9 @@ export async function completeTerminalEffects(
       });
     } catch (err) {
       params.warn("failed to persist subagent session timing", {
-        err,
-        runId: entry.runId,
-        childSessionKey: entry.childSessionKey,
+        error: buildSafeLifecycleErrorMeta(err),
+        runId: maskLifecycleIdentifier(entry.runId, "run"),
+        childSessionKey: maskLifecycleIdentifier(entry.childSessionKey, "session"),
       });
     }
   }
@@ -494,12 +494,8 @@ async function completeTerminalCleanup(
     return;
   }
 
-  // registerSubagentRun fires both an in-process listener and a gateway
-  // waitForSubagentCompletion RPC; both can reach this point for the same
-  // runId in embedded mode. Dedupe only the browser driver tab-close IPC
-  // with a sync check-then-set. The retire + announce tail below must still
-  // run for every caller, so a slow or held first browser cleanup cannot
-  // strand a duplicate caller's completion behind it.
+  // Equivalent callbacks stop at intake. Corrected terminal facts can still
+  // supersede a tail waiting on browser cleanup, so claim tab closure once.
   if (!suppressSessionEffects && entry.browserCleanupDispatchedAt === undefined) {
     let dispatchedBrowserCleanup = false;
     let cleanupBrowserSessions: typeof cleanupBrowserSessionsForLifecycleEnd | undefined =

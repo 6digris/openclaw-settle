@@ -633,10 +633,17 @@ describe("subagent registry lifecycle hardening", () => {
     { change: "timing", current: false },
     { change: "reply", current: false },
   ] as const)(
-    "keeps queued result authority correct after $change completion",
+    "completeSubagentRun keeps queued result authority correct after $change completion",
     async ({ change, current }) => {
       const entry = createRunEntry({ expectsCompletionMessage: true });
-      const controller = createLifecycleController({ entry });
+      const persistOrThrow = vi.fn();
+      const clearPendingLifecycleError = vi.fn();
+      const controller = createLifecycleController({
+        entry,
+        persistOrThrow,
+        clearPendingLifecycleError,
+      });
+      const generations = vi.spyOn(controller, "bumpTerminalGeneration");
       const terminalReply = { disposition: "visible", text: "final completion reply" } as const;
       await completeRun(controller, entry, { terminalReply });
       const prepared = await readSubagentRunAnnounceResultUsing(entry, {
@@ -648,6 +655,9 @@ describe("subagent registry lifecycle hardening", () => {
         findSessionTranscriptArchiveEventReadOnly: async () => undefined,
       });
       expect(prepared.isCurrent()).toBe(true);
+      const recorded = structuredClone(entry);
+      persistOrThrow.mockClear();
+      clearPendingLifecycleError.mockClear();
 
       await completeRun(controller, entry, {
         terminalReply:
@@ -663,6 +673,13 @@ describe("subagent registry lifecycle hardening", () => {
           : {}),
       });
       expect(prepared.isCurrent()).toBe(current);
+      expect(generations).toHaveBeenCalledTimes(current ? 1 : 2);
+      if (current) {
+        expect(entry).toEqual(recorded);
+        expect(persistOrThrow).not.toHaveBeenCalled();
+        expect(clearPendingLifecycleError).not.toHaveBeenCalled();
+        expect(helperMocks.persistSubagentSessionTiming).toHaveBeenCalledOnce();
+      }
     },
   );
 
@@ -5122,12 +5139,7 @@ describe("subagent registry lifecycle hardening", () => {
     expect(runSubagentAnnounceFlow).not.toHaveBeenCalled();
   });
 
-  it("dedupes browser cleanup when two callers complete the same run in parallel", async () => {
-    // registerSubagentRun fires both an in-process listener (phase='end') and a
-    // gateway waitForSubagentCompletion RPC; in embedded mode both resolve to
-    // the same runId and call completeSubagentRun. Without a per-entry dispatch
-    // guard, cleanupBrowserSessionsForLifecycleEnd fires once per caller,
-    // duplicating browser driver tab-close IPC.
+  it("completeSubagentRun admits browser cleanup once for equivalent parallel callbacks", async () => {
     const entry = createRunEntry({
       expectsCompletionMessage: false,
     });
@@ -5209,12 +5221,7 @@ describe("subagent registry lifecycle hardening", () => {
     expect(successor.terminalOwner).toBeUndefined();
   });
 
-  it("drains the retire + announce tail for a duplicate completion held behind a slow first browser cleanup", async () => {
-    // The dispatch flag dedupes only the browser tab-close IPC. A duplicate
-    // completion caller must still reach retireRunModeBundleMcpRuntime and
-    // startSubagentAnnounceCleanupFlow while the first caller's cleanup
-    // promise is still pending, so a slow browser driver cannot strand
-    // completion delivery behind it.
+  it("completeSubagentRun leaves a held browser tail with its original equivalent callback", async () => {
     const entry = createRunEntry({
       expectsCompletionMessage: true,
     });
@@ -5248,22 +5255,92 @@ describe("subagent registry lifecycle hardening", () => {
     const firstCompletion = controller.completeSubagentRun(completeParams);
     await firstCleanupEnteredPromise;
 
-    // Second caller observes the flag set, skips the cleanup wrapper, and must
-    // still drain the retire + announce tail without waiting on the first
-    // caller's still-pending cleanup.
-    await controller.completeSubagentRun({ ...completeParams, endedAt: 3_999 });
-
-    expect(
-      browserLifecycleCleanupMocks.cleanupBrowserSessionsForLifecycleEnd,
-    ).toHaveBeenCalledTimes(1);
-    expect(entry.execution.endedAt).toBe(4_000);
-    expect(bundleMcpRuntimeMocks.retireSessionMcpRuntimeForSessionKey).toHaveBeenCalled();
-    expect(runSubagentAnnounceFlow).toHaveBeenCalled();
-
-    // Release the held first cleanup so the first caller can settle too.
-    releaseFirstCleanup?.();
-    await expect(firstCompletion).resolves.toBeUndefined();
+    try {
+      await controller.completeSubagentRun({ ...completeParams, endedAt: 3_999 });
+      expect(
+        browserLifecycleCleanupMocks.cleanupBrowserSessionsForLifecycleEnd,
+      ).toHaveBeenCalledOnce();
+      expect(entry.execution.endedAt).toBe(4_000);
+      expect(bundleMcpRuntimeMocks.retireSessionMcpRuntimeForSessionKey).not.toHaveBeenCalled();
+      expect(runSubagentAnnounceFlow).not.toHaveBeenCalled();
+    } finally {
+      releaseFirstCleanup?.();
+      await firstCompletion;
+    }
+    expect(bundleMcpRuntimeMocks.retireSessionMcpRuntimeForSessionKey).toHaveBeenCalledTimes(2);
+    expect(bundleMcpRuntimeMocks.retireSessionMcpRuntimeForSessionKey).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ reason: "subagent-run-complete" }),
+    );
+    expect(bundleMcpRuntimeMocks.retireSessionMcpRuntimeForSessionKey).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ reason: "subagent-run-cleanup" }),
+    );
+    expect(runSubagentAnnounceFlow).toHaveBeenCalledOnce();
   });
+
+  it.each(["error", "kill"] as const)(
+    "completeSubagentRun fences a held browser tail when a distinct %s supersedes it",
+    async (change) => {
+      const entry = createRunEntry({ expectsCompletionMessage: true });
+      const controller = createLifecycleController({ entry });
+      const generations = vi.spyOn(controller, "bumpTerminalGeneration");
+      const entered = createDeferredCore();
+      const release = createDeferredCore();
+      browserLifecycleCleanupMocks.cleanupBrowserSessionsForLifecycleEnd.mockImplementationOnce(
+        async () => {
+          entered.resolve();
+          await release.promise;
+        },
+      );
+      // A kill correction refines provisional cancellation; finalized success still rejects delayed aborts.
+      const first = controller.completeSubagentRun(
+        change === "kill"
+          ? makeKilledSubagentCompletion(entry, { triggerCleanup: true })
+          : makeSubagentCompletion(entry, {
+              triggerCleanup: true,
+              terminalReply: { disposition: "visible", text: "original result" },
+            }),
+      );
+      await entered.promise;
+      try {
+        await controller.completeSubagentRun(
+          makeSubagentCompletion(entry, {
+            endedAt: 4_001,
+            outcome: { status: "error", error: "corrected terminal failure" },
+            reason: change === "kill" ? SUBAGENT_ENDED_REASON_KILLED : SUBAGENT_ENDED_REASON_ERROR,
+            triggerCleanup: true,
+          }),
+        );
+        expect(generations).toHaveBeenCalledTimes(2);
+        expect(controller.isTerminalCallbackCurrent(entry.runId, entry, 1)).toBe(false);
+        expect(controller.isTerminalCallbackCurrent(entry.runId, entry, 2)).toBe(true);
+        expect(entry).toMatchObject({
+          endedReason:
+            change === "kill" ? SUBAGENT_ENDED_REASON_KILLED : SUBAGENT_ENDED_REASON_ERROR,
+          execution: {
+            endedAt: 4_001,
+            outcome: { status: "error", error: "corrected terminal failure" },
+          },
+        });
+        expect(
+          browserLifecycleCleanupMocks.cleanupBrowserSessionsForLifecycleEnd,
+        ).toHaveBeenCalledOnce();
+        expect(bundleMcpRuntimeMocks.retireSessionMcpRuntimeForSessionKey).toHaveBeenCalledTimes(
+          change === "kill" ? 1 : 2,
+        );
+      } finally {
+        release.resolve();
+        await first;
+      }
+      expect(bundleMcpRuntimeMocks.retireSessionMcpRuntimeForSessionKey).toHaveBeenCalledTimes(
+        change === "kill" ? 1 : 2,
+      );
+      expect(controller.options.runSubagentAnnounceFlow).toHaveBeenCalledTimes(
+        change === "kill" ? 0 : 1,
+      );
+    },
+  );
 
   it("does not invalidate an active timeout tail when a published timeout is observed again", async () => {
     const entry = createRunEntry({

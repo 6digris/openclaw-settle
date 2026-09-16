@@ -42,6 +42,10 @@ export function createSubagentRegistryCompletionRuntime(config: {
         if (!current) {
           return;
         }
+        // Recorded terminal facts are not replayed to rescue a failed tail.
+        if (typeof current.execution.endedAt === "number") {
+          break;
+        }
       }
     }
 

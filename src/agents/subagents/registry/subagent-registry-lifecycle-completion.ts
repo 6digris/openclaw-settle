@@ -1,4 +1,3 @@
-import { isDeepStrictEqual } from "node:util";
 import { SILENT_REPLY_TOKEN } from "../../../auto-reply/tokens.js";
 import { isAgentEventLifecycleGenerationCurrent } from "../../../infra/agent-events.js";
 import { createLazyImportLoader } from "../../../shared/lazy-promise.js";
@@ -14,7 +13,6 @@ import {
   SUBAGENT_ENDED_REASON_COMPLETE,
   SUBAGENT_ENDED_REASON_ERROR,
   SUBAGENT_ENDED_REASON_KILLED,
-  type SubagentLifecycleEndedReason,
 } from "./subagent-lifecycle-events.js";
 import { shouldSuppressSubagentRecoverySessionEffects } from "./subagent-recovery-state.js";
 import { resolveKilledSubagentTaskEndedAt } from "./subagent-registry-completion.js";
@@ -81,26 +79,38 @@ function resolveExpiredExplicitRunDeadlineMs(params: {
   return effectiveEndedAt < params.nextEndedAt ? effectiveEndedAt : undefined;
 }
 
-function isOlderEquivalentTerminalCallback(params: {
-  entry: SubagentRunRecord;
-  endedAt: number;
-  outcome: SubagentRunOutcome;
-  reason: SubagentLifecycleEndedReason;
-}): boolean {
-  const current = params.entry.execution.outcome;
+function isEquivalentTerminalCallback(
+  entry: SubagentRunRecord,
+  request: SubagentCompletionRequest,
+  endedAt: number,
+): boolean {
+  const current = entry.execution.outcome;
   if (
-    typeof params.entry.execution.endedAt !== "number" ||
-    params.endedAt >= params.entry.execution.endedAt ||
-    params.entry.endedReason !== params.reason ||
-    current?.status !== params.outcome.status
+    entry.execution.status !== "terminal" ||
+    typeof entry.execution.endedAt !== "number" ||
+    endedAt > entry.execution.endedAt ||
+    entry.endedReason !== request.reason ||
+    current?.status !== request.outcome.status ||
+    (current.status === "error" && current.error !== request.outcome.error)
   ) {
     return false;
   }
-  return (
-    current.status !== "error" ||
-    params.outcome.status !== "error" ||
-    current.error === params.outcome.error
-  );
+  const reply = request.terminalReply;
+  const captured = entry.completion?.terminalReply;
+  if (!reply) {
+    return true;
+  }
+  if (reply.disposition === "visible") {
+    return (
+      captured?.disposition === "visible" &&
+      reply.text === captured.text &&
+      reply.modelRouteChange === captured.modelRouteChange
+    );
+  }
+  if (reply.disposition === "empty") {
+    return captured?.disposition === "empty" && reply.code === captured.code;
+  }
+  return captured?.disposition === "silent";
 }
 
 export async function completeSubagentRunAttempt(
@@ -127,6 +137,15 @@ export async function completeSubagentRunAttempt(
     if (completeParams.expectedEntry && entry !== completeParams.expectedEntry) {
       return;
     }
+    const recoveryRequested = completeParams.recoverInterrupted === true;
+    let requestedEndedAt =
+      typeof completeParams.endedAt === "number" ? completeParams.endedAt : Date.now();
+    if (
+      !recoveryRequested &&
+      isEquivalentTerminalCallback(entry, completeParams, requestedEndedAt)
+    ) {
+      return;
+    }
     suppressSessionEffects ||= shouldSuppressSubagentRecoverySessionEffects(entry);
     params.clearPendingLifecycleError(completeParams.runId);
     const currentEntry = entry;
@@ -140,7 +159,6 @@ export async function completeSubagentRunAttempt(
       }
       Object.assign(currentEntry, snapshot);
     };
-    const recoveryRequested = completeParams.recoverInterrupted === true;
     if (
       !recoveryRequested &&
       (entry.terminalOwner === "interrupted-recovery" ||
@@ -245,8 +263,6 @@ export async function completeSubagentRunAttempt(
       // A delayed abort must not replace a finalized result or reopen a cleaned cancellation.
       return;
     }
-    let requestedEndedAt =
-      typeof completeParams.endedAt === "number" ? completeParams.endedAt : Date.now();
     if (
       shouldPreservePublishedExplicitRunTimeout({
         entry,
@@ -254,23 +270,13 @@ export async function completeSubagentRunAttempt(
     ) {
       return;
     }
-    const shouldDrainExistingTerminal =
-      recoveryRequested ||
-      isOlderEquivalentTerminalCallback({
-        entry,
-        endedAt: requestedEndedAt,
-        outcome: completeParams.outcome,
-        reason: completeParams.reason,
-      });
-    if (shouldDrainExistingTerminal) {
-      // Preserve the newer canonical timing while allowing this duplicate
-      // caller to rescue a stalled cleanup and delivery tail.
+    if (recoveryRequested) {
       requestedEndedAt = entry.execution.endedAt!;
       completionReason = entry.endedReason ?? completeParams.reason;
     }
     let endedAt = requestedEndedAt;
     let completionOutcome =
-      shouldDrainExistingTerminal && entry.execution.outcome
+      recoveryRequested && entry.execution.outcome
         ? entry.execution.outcome
         : completeParams.outcome;
     const liveStructuredOutput = entry.collect
@@ -293,7 +299,7 @@ export async function completeSubagentRunAttempt(
       completionReason = SUBAGENT_ENDED_REASON_COMPLETE;
     }
     const observedStartedAt =
-      !shouldDrainExistingTerminal &&
+      !recoveryRequested &&
       typeof completeParams.startedAt === "number" &&
       Number.isFinite(completeParams.startedAt)
         ? completeParams.startedAt
@@ -436,20 +442,13 @@ export async function completeSubagentRunAttempt(
       completionOutcome = { status: "error", error: MISSING_REQUIRED_FINAL_REPLY_ERROR };
       completionReason = SUBAGENT_ENDED_REASON_ERROR;
     }
-    const outcome =
+    const executionOutcome =
       recoveryRequested && entry.execution.outcome
         ? entry.execution.outcome
         : withSubagentOutcomeTiming(completionOutcome, {
             startedAt: entry.execution.startedAt,
             endedAt,
           });
-    // Lifecycle events and agent.wait may report the same terminal facts. Keep
-    // their authority stable while a prepared announcement waits for admission.
-    const executionOutcome =
-      (recoveryRequested || isDeepStrictEqual(entry.execution.outcome, outcome)) &&
-      entry.execution.outcome
-        ? entry.execution.outcome
-        : outcome;
     const retainedRestartRecovery = suppressSessionEffects
       ? entry.execution.restartRecovery
       : undefined;
@@ -652,7 +651,7 @@ export async function completeSubagentRunAttempt(
     terminalGeneration = context.bumpTerminalGeneration(entry);
   } finally {
     // Only the canonical state/capture transition is serialized. Cleanup
-    // remains re-entrant so a stalled browser close cannot strand a duplicate callback.
+    // remains re-entrant so corrected facts can supersede an in-flight tail.
     releaseCompletionLock();
   }
 

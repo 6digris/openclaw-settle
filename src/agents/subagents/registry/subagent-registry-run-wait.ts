@@ -482,7 +482,7 @@ export class SubagentWaitManager {
       if (!current) {
         return;
       }
-      if (completionForRetry) {
+      if (completionForRetry && typeof current.execution.endedAt !== "number") {
         try {
           await this.options.completeSubagentRun(completionForRetry);
           return;

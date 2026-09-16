@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { CallGatewayOptions } from "../../../gateway/call.js";
 import {
   getActiveGatewayRootWorkCount,
   resetGatewayWorkAdmission,
@@ -10,6 +11,7 @@ import {
   SUBAGENT_ENDED_REASON_KILLED,
 } from "./subagent-lifecycle-events.js";
 import { createSubagentRegistryCompletionRuntime } from "./subagent-registry-completion-runtime.js";
+import { SubagentWaitManager } from "./subagent-registry-run-wait.js";
 import type { SubagentCompletionRequest, SubagentRunRecord } from "./subagent-registry.types.js";
 
 function createHarness() {
@@ -32,7 +34,7 @@ function createHarness() {
   const completeSubagentRun = vi
     .fn<(_: SubagentCompletionRequest) => Promise<void>>()
     .mockRejectedValue(new Error("synthetic completion failure"));
-  const resumeRun = vi.fn(() => {
+  const resumeRun = vi.fn<(runId: string) => void>(() => {
     throw resumeError;
   });
   const scheduleSweep = vi.fn();
@@ -84,41 +86,44 @@ describe("subagent completion rejection ownership", () => {
     { kind: "error", reason: SUBAGENT_ENDED_REASON_ERROR },
     { kind: "timeout", reason: SUBAGENT_ENDED_REASON_COMPLETE },
     { kind: "cancellation", reason: SUBAGENT_ENDED_REASON_KILLED },
-  ] as const)("contains the $kind grace callback's escaped rejection", async ({ kind, reason }) => {
-    const h = createHarness();
-    const schedule =
-      kind === "error"
-        ? h.runtime.pendingLifecycle.scheduleError
-        : kind === "timeout"
-          ? h.runtime.pendingLifecycle.scheduleTimeout
-          : h.runtime.pendingLifecycle.scheduleCancellation;
-    schedule({ runId: h.entry.runId, endedAt: 1, error: "failed" });
-    await vi.advanceTimersByTimeAsync(AGENT_RUN_TERMINAL_RETRY_GRACE_MS);
-    expect(h.completeSubagentRun).toHaveBeenCalledTimes(2);
-    expect(h.completeSubagentRun).toHaveBeenLastCalledWith(expect.objectContaining({ reason }));
-    expect(h.resumeRun).toHaveBeenCalledExactlyOnceWith(h.entry.runId);
-    expect(h.warn).toHaveBeenLastCalledWith("failed to complete subagent run in background", {
-      source: `lifecycle-${kind}-grace`,
-      runId: h.entry.runId,
-      error: h.resumeError,
-    });
-    expect(h.runs.get(h.entry.runId)).toBe(h.entry);
-    expect(h.entry.cleanupHandled).toBe(false);
-    expect(h.resumed.has(h.entry.runId)).toBe(false);
-    expect(getActiveGatewayRootWorkCount()).toBe(0);
-  });
+  ] as const)(
+    "completeSubagentRunWithRecovery contains the $kind grace callback's escaped rejection",
+    async ({ kind, reason }) => {
+      const h = createHarness();
+      const schedule =
+        kind === "error"
+          ? h.runtime.pendingLifecycle.scheduleError
+          : kind === "timeout"
+            ? h.runtime.pendingLifecycle.scheduleTimeout
+            : h.runtime.pendingLifecycle.scheduleCancellation;
+      schedule({ runId: h.entry.runId, endedAt: 1, error: "failed" });
+      await vi.advanceTimersByTimeAsync(AGENT_RUN_TERMINAL_RETRY_GRACE_MS);
+      expect(h.completeSubagentRun).toHaveBeenCalledOnce();
+      expect(h.completeSubagentRun).toHaveBeenLastCalledWith(expect.objectContaining({ reason }));
+      expect(h.resumeRun).toHaveBeenCalledExactlyOnceWith(h.entry.runId);
+      expect(h.warn).toHaveBeenLastCalledWith("failed to complete subagent run in background", {
+        source: `lifecycle-${kind}-grace`,
+        runId: h.entry.runId,
+        error: h.resumeError,
+      });
+      expect(h.runs.get(h.entry.runId)).toBe(h.entry);
+      expect(h.entry.cleanupHandled).toBe(false);
+      expect(h.resumed.has(h.entry.runId)).toBe(false);
+      expect(getActiveGatewayRootWorkCount()).toBe(0);
+    },
+  );
 
-  it("propagates the same escaped error to an awaited caller", async () => {
+  it("completeSubagentRunWithRecovery propagates the same escaped error to an awaited caller", async () => {
     const h = createHarness();
     await expect(
       h.runtime.completeSubagentRunWithRecovery(h.request, "subagent-wait"),
     ).rejects.toBe(h.resumeError);
-    expect(h.completeSubagentRun).toHaveBeenCalledTimes(2);
-    expect(h.warn).toHaveBeenCalledTimes(2);
+    expect(h.completeSubagentRun).toHaveBeenCalledOnce();
+    expect(h.warn).toHaveBeenCalledOnce();
     expect(getActiveGatewayRootWorkCount()).toBe(0);
   });
 
-  it("retains the restart-retry diagnostic and retires the fired timer", async () => {
+  it("scheduleSubagentCompletionRetryAfterRestart retains diagnostics and retires the fired timer", async () => {
     const h = createHarness();
     h.runtime.scheduleSubagentCompletionRetryAfterRestart(
       h.request,
@@ -134,7 +139,7 @@ describe("subagent completion rejection ownership", () => {
         error: h.resumeError,
       },
     );
-    expect(h.completeSubagentRun).toHaveBeenCalledTimes(2);
+    expect(h.completeSubagentRun).toHaveBeenCalledOnce();
     expect(h.retryTimers.size).toBe(0);
     expect(getActiveGatewayRootWorkCount()).toBe(0);
   });
@@ -156,9 +161,10 @@ describe("subagent completion rejection ownership", () => {
   );
 
   it.each([1, 2])(
-    "stops after successful attempt %i without starting cleanup recovery",
+    "completeSubagentRunWithRecovery stops after successful uncommitted attempt %i",
     async (attempt) => {
       const h = createHarness();
+      h.entry.execution = { status: "running", startedAt: 0 };
       h.completeSubagentRun.mockReset();
       if (attempt === 2) {
         h.completeSubagentRun.mockRejectedValueOnce(new Error("retry once"));
@@ -184,7 +190,7 @@ describe("subagent completion rejection ownership", () => {
   });
 
   it.each(["running", "cleaned", "yielded"] as const)(
-    "preserves %s recovery after both attempts fail",
+    "completeSubagentRunWithRecovery preserves %s recovery after completion fails",
     async (state) => {
       const h = createHarness();
       if (state === "running") {
@@ -197,7 +203,7 @@ describe("subagent completion rejection ownership", () => {
         h.entry.pauseReason = "sessions_yield";
       }
       await h.runtime.completeSubagentRunWithRecovery(h.request, "subagent-wait");
-      expect(h.completeSubagentRun).toHaveBeenCalledTimes(2);
+      expect(h.completeSubagentRun).toHaveBeenCalledTimes(state === "running" ? 2 : 1);
       expect(h.resumeRun).not.toHaveBeenCalled();
       expect(h.entry.cleanupHandled).toBe(true);
       expect(h.resumed.has(h.entry.runId)).toBe(true);
@@ -205,6 +211,72 @@ describe("subagent completion rejection ownership", () => {
         expect(h.scheduleSweep).toHaveBeenCalledExactlyOnceWith({ delayMs: 1_000 });
       } else {
         expect(h.scheduleSweep).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("completeSubagentRunWithRecovery resumes a recorded terminal after its tail throws", async () => {
+    const h = createHarness();
+    h.resumeRun.mockImplementation(() => {});
+    h.completeSubagentRun
+      .mockReset()
+      .mockRejectedValueOnce(new Error("terminal tail failed"))
+      .mockResolvedValue(undefined);
+    await h.runtime.completeSubagentRunWithRecovery(h.request, "lifecycle-ok-event");
+    expect(h.completeSubagentRun).toHaveBeenCalledOnce();
+    expect(h.resumeRun).toHaveBeenCalledExactlyOnceWith(h.entry.runId);
+    expect(h.entry.cleanupHandled).toBe(false);
+    expect(h.resumed.has(h.entry.runId)).toBe(false);
+    expect(h.scheduleSweep).not.toHaveBeenCalled();
+  });
+
+  it.each(["terminal", "running"] as const)(
+    "SubagentWaitManager.waitForSubagentCompletion recovers a %s entry after completion throws",
+    async (state) => {
+      const h = createHarness();
+      if (state === "running") {
+        h.entry.execution = { status: "running", startedAt: 0 };
+      }
+      h.resumeRun.mockImplementation(() => {});
+      const callGateway = vi.fn(async (_opts: CallGatewayOptions): Promise<unknown> => ({
+        status: "error",
+        error: "failed",
+        endedAt: 1,
+      }));
+      const manager = new SubagentWaitManager({
+        runs: h.runs,
+        getRunsForChildSession: () => h.runs.values(),
+        resumedRuns: h.resumed,
+        persist: vi.fn(),
+        persistOrThrow: vi.fn(),
+        callGateway: async <T = Record<string, unknown>>(opts: CallGatewayOptions): Promise<T> =>
+          (await callGateway(opts)) as T,
+        getRuntimeConfig: () => ({}),
+        ensureListener: vi.fn(),
+        startSweeper: vi.fn(),
+        stopSweeper: vi.fn(),
+        resumeSubagentRun: h.resumeRun,
+        clearPendingLifecycleError: vi.fn(),
+        clearPendingLifecycleTimeout: vi.fn(),
+        resolveSubagentWaitTimeoutMs: () => 1_000,
+        scheduleSweep: h.scheduleSweep,
+        resolveSubagentSessionCompletion: () => null,
+        resolveSubagentSessionStartedAt: () => undefined,
+        notifyContextEngineSubagentEnded: vi.fn(async () => {}),
+        completeCleanupBookkeeping: vi.fn(),
+        completeSubagentRun: h.completeSubagentRun,
+        resolveSubagentTask: () => ({ lookup: "available" }),
+      });
+      await manager.waitForSubagentCompletion(h.entry.runId, 1_000, h.entry);
+      expect(h.completeSubagentRun).toHaveBeenCalledTimes(state === "terminal" ? 1 : 2);
+      if (state === "terminal") {
+        expect(h.resumeRun).toHaveBeenCalledExactlyOnceWith(h.entry.runId);
+        expect(h.entry.cleanupHandled).toBe(false);
+        expect(h.resumed.has(h.entry.runId)).toBe(false);
+        expect(h.scheduleSweep).not.toHaveBeenCalled();
+      } else {
+        expect(h.resumeRun).not.toHaveBeenCalled();
+        expect(h.scheduleSweep).toHaveBeenCalledExactlyOnceWith({ delayMs: 1_000 });
       }
     },
   );
