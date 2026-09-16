@@ -175,6 +175,72 @@ describe("sandbox runtime activity", () => {
     });
   });
 
+  it("does not let another handle release an active execution", async () => {
+    const owner = coordinateSandboxBackendHandle(createHandle("finalize-owner"));
+    const foreign = coordinateSandboxBackendHandle(createHandle("finalize-foreign"));
+    const spec = await owner.buildExecSpec({ command: "hold", env: {}, usePty: false });
+    const params = {
+      status: "completed" as const,
+      exitCode: 0,
+      timedOut: false,
+      token: spec.finalizeToken,
+    };
+    const key = resolveSandboxRuntimeActivityKey(owner.id, owner.runtimeId);
+    try {
+      await foreign.finalizeExec?.(params);
+      await expect(tryWithSandboxRuntimeMutations([key], async () => "removed")).resolves.toEqual({
+        acquired: false,
+      });
+    } finally {
+      await owner.finalizeExec?.(params);
+    }
+  });
+
+  it("joins repeated finalization until the owner's cleanup settles", async () => {
+    let finish!: () => void;
+    let entered!: () => void;
+    const cleanup = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const raw = createHandle("finalize-concurrent");
+    raw.finalizeExec = vi.fn(async () => {
+      entered();
+      await cleanup;
+    });
+    const owner = coordinateSandboxBackendHandle(raw);
+    const spec = await owner.buildExecSpec({ command: "hold", env: {}, usePty: false });
+    const params = {
+      status: "completed" as const,
+      exitCode: 0,
+      timedOut: false,
+      token: spec.finalizeToken,
+    };
+    const finalize = owner.finalizeExec;
+    if (!finalize) {
+      throw new Error("Coordinated execution must provide finalization");
+    }
+    const first = finalize(params);
+    await started;
+    const second = finalize(params);
+    try {
+      expect(raw.finalizeExec).toHaveBeenCalledOnce();
+      await expect(
+        tryWithSandboxRuntimeMutations(
+          [resolveSandboxRuntimeActivityKey(owner.id, owner.runtimeId)],
+          async () => "removed",
+        ),
+      ).resolves.toEqual({ acquired: false });
+    } finally {
+      finish();
+      await Promise.all([first, second]);
+    }
+    await finalize(params);
+    expect(raw.finalizeExec).toHaveBeenCalledOnce();
+  });
+
   it("releases the execution lease when backend finalization fails", async () => {
     const raw = createHandle(`finalize-${Date.now()}`);
     raw.finalizeExec = vi.fn(async () => {

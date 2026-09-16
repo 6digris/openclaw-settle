@@ -14,6 +14,7 @@ import {
   captureUiProof,
   controlUiSessionPath,
   createNewSessionPageE2eSuite,
+  createdSessionListResult,
   installMockGateway,
   pollLocatorText,
   replaceGatewayClient,
@@ -70,12 +71,12 @@ async function withNewSessionPage(
   options: BrowserContextOptions,
   run: (page: Page) => Promise<void>,
 ): Promise<void> {
-  const context = await suite.browser.newContext(options);
-  try {
-    await run(await context.newPage());
-  } finally {
-    await context.close();
-  }
+  await suite.withPage(
+    options,
+    ({ page }) => run(page),
+    // Callers release held modules in finally; join their fetch/fulfill work before closing.
+    ({ page }) => page.unrouteAll({ behavior: "wait" }),
+  );
 }
 
 type MockGateway = Awaited<ReturnType<typeof installMockGateway>>;
@@ -342,8 +343,9 @@ suite.define(() => {
     });
   });
 
-  it("blocks a custom cloud worktree when Git rediscovery is unavailable", async () => {
+  it("blocks an unavailable cloud source until New workspace is explicitly selected", async () => {
     await withNewSessionPage(BASE_CONTEXT, async (page) => {
+      const sessionKey = "agent:main:cleared-unavailable-source";
       const gateway = await installMockGateway(page, {
         workspace: WORKSPACE,
         workspaceGit: true,
@@ -354,6 +356,10 @@ suite.define(() => {
           },
           "fs.listDir": { path: WORKSPACE, home: "/home/peter", entries: [] },
           "worktrees.branches": branchList(),
+          "sessions.create": { key: sessionKey },
+          "sessions.list": createdSessionListResult(sessionKey),
+          "sessions.dispatch": { placement: { state: "active", generation: 1 } },
+          "sessions.send": { runId: "run-cleared-source", status: "started" },
         },
       });
       await page.goto(`${suite.server.baseUrl}new`);
@@ -380,12 +386,9 @@ suite.define(() => {
       await expect.poll(() => start.isDisabled()).toBe(true);
       await whereTrigger.click();
       const cloud = where.getByRole("button", { name: "aws", exact: true });
-      expect(await cloud.isDisabled()).toBe(true);
-      await cloud.focus();
-      await page.keyboard.press("Enter");
-      await expect
-        .poll(() => tooltipTitleText(cloud))
-        .toBe("Couldn't verify Git for this folder. Choose it again to retry.");
+      expect(await cloud.isEnabled()).toBe(true);
+      await cloud.click();
+      await expect.poll(() => start.isDisabled()).toBe(true);
       await page.keyboard.press("Escape");
       await checkoutTrigger.click();
       const checkout = page.locator("wa-popover.new-session-page__checkout-popover");
@@ -393,6 +396,41 @@ suite.define(() => {
       await checkout.getByLabel("From").waitFor();
       await checkout.getByLabel("Name", { exact: true }).waitFor();
       expect(await gateway.getRequests("sessions.create")).toHaveLength(0);
+      await page.keyboard.press("Escape");
+
+      const projectTrigger = page.locator("#new-session-project-trigger");
+      await pollLocatorText(projectTrigger.locator(".new-session-page__trigger-label")).toBe(
+        "target-repo",
+      );
+      await projectTrigger.click();
+      await page.locator('.new-session-page__project-popover [data-value="new-workspace"]').click();
+      await pollLocatorText(projectTrigger.locator(".new-session-page__trigger-label")).toBe(
+        "New workspace",
+      );
+      expect(await checkoutTrigger.count()).toBe(0);
+      await expect.poll(() => start.isEnabled()).toBe(true);
+      await start.click();
+      const create = await gateway.waitForRequest("sessions.create");
+      expect(create.params).toMatchObject({
+        agentId: "main",
+        message: "",
+        titleSource: "do not run directly",
+        worktree: true,
+        worktreeSource: "empty",
+      });
+      for (const field of ["cwd", "projectId", "repository", "worktreeBaseRef", "worktreeName"]) {
+        expect(create.params).not.toHaveProperty(field);
+      }
+      expect((await gateway.waitForRequest("sessions.dispatch")).params).toEqual({
+        key: sessionKey,
+        agentId: "main",
+        profileId: "aws",
+      });
+      expect((await gateway.waitForRequest("sessions.send")).params).toMatchObject({
+        key: sessionKey,
+        message: "do not run directly",
+      });
+      await page.waitForURL((url) => url.pathname === controlUiSessionPath(sessionKey));
     });
   });
 
@@ -419,6 +457,11 @@ suite.define(() => {
       const projectSelect = page.locator("wa-popover.new-session-page__project-popover");
       const projectTrigger = page.locator("#new-session-project-trigger");
       await message.fill("preserve this replacement draft");
+      await page.locator("#new-session-checkout-trigger").click();
+      await page
+        .getByRole("button", { name: "New worktree Isolated copy of the repo", exact: true })
+        .click();
+      await page.keyboard.press("Escape");
       await whereTrigger.click();
       await whereSelect.getByRole("button", { name: "Old device" }).click();
 
@@ -511,14 +554,14 @@ suite.define(() => {
           };
         });
         const chatModule = await holdModuleResponse(page, /\/assets\/chat-page-[^/]+\.js/);
-        const sessionKey = "agent:main:late-recovery-scope";
-        const gateway = await installMockGateway(page, {
-          deferredMethods: ["sessions.create"],
-          methodResponses: {
-            "sessions.create": { key: sessionKey, runStarted: true, runId: "late-scope-run" },
-          },
-        });
         try {
+          const sessionKey = "agent:main:late-recovery-scope";
+          const gateway = await installMockGateway(page, {
+            deferredMethods: ["sessions.create"],
+            methodResponses: {
+              "sessions.create": { key: sessionKey, runStarted: true, runId: "late-scope-run" },
+            },
+          });
           await page.goto(`${suite.server.baseUrl}new`);
           const message = page.locator(".new-session-page__message");
           const start = page.locator("button.new-session-page__start-submit");
@@ -559,6 +602,7 @@ suite.define(() => {
           await page.waitForURL((url) => url.pathname === controlUiSessionPath(sessionKey));
         } finally {
           chatModule.release();
+          await page.unrouteAll({ behavior: "wait" });
         }
       });
     },

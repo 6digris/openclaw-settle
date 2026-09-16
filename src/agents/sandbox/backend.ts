@@ -213,7 +213,6 @@ async function createSandboxBackendLifecycle(
     lastUsedAtMs: Date.now(),
     image: backend.configLabel ?? params.cfg.docker.image,
     configLabelKind: backend.configLabelKind ?? "Image",
-    cleanupMetadata: backend.cleanupMetadata,
   });
   if (!reserveRuntimeId) {
     const backend = await factory(params);

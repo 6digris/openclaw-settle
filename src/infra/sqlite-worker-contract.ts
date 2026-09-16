@@ -11,6 +11,8 @@ export type SqliteWorkerCommand<Operations extends SqliteWorkerOperations> = {
 
 export type SqliteWorkerBackend<Operations extends SqliteWorkerOperations> = {
   execute(command: SqliteWorkerCommand<Operations>): Operations[keyof Operations]["output"];
+  /** Synchronously reject native state that requires retirement before releasing the operation. */
+  assertSettled?(): void;
   close(): void | Promise<void>;
 };
 
@@ -27,6 +29,9 @@ export type SqliteWorkerRequest = {
   actor: number;
   stateContext?: SqliteWorkerStateContext;
   gatewaySchemaFence?: MessagePort;
+  maintenanceSchemaFence?: MessagePort;
+  stateLifecycle?: MessagePort;
+  operationAdmission?: MessagePort;
 } & (
   | {
       type: "open";
@@ -50,6 +55,7 @@ export type SqliteWorkerReply = {
   | {
       ok: false;
       retire?: true;
+      openNotEntered?: true;
       error: {
         name: string;
         message: string;

@@ -6,12 +6,21 @@ import { hashTextSha256 } from "./hash.js";
 
 const RETRIES = 60 * 60 * 10;
 
-export async function withSandboxScopeLock<T>(scopeKey: string, run: () => Promise<T>): Promise<T> {
+export async function withSandboxScopeLock<T>(
+  scopeKey: string,
+  run: () => Promise<T>,
+  options?: { wait?: boolean },
+): Promise<T> {
   const key = scopeKey.trim() || "main";
   const lock = await acquireFileLock(
     path.join(SANDBOX_STATE_DIR, "locks", "scope", `scope-${hashTextSha256(key)}.jsonl`),
     {
-      retries: { retries: RETRIES, factor: 1, minTimeout: 100, maxTimeout: 100 },
+      retries: {
+        retries: options?.wait === false ? 0 : RETRIES,
+        factor: 1,
+        minTimeout: 100,
+        maxTimeout: 100,
+      },
       stale: 0,
       staleRecovery: "remove-if-definitely-stale",
     },

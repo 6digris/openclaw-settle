@@ -71,8 +71,6 @@ Automatic pruning selects runtimes that exceed `prune.idleHours` (default 24h) o
 
 Automatic configuration recycling also preserves active runtimes. Restricted dispatch still requires the current container configuration and refuses a retained runtime whose configuration differs. `openclaw sandbox recreate` explicitly removes the old runtime so the next use rebuilds it from current config; finish active work before using it.
 
-SSH and OpenShell cleanup uses the destination recorded when the runtime was created. Older registry entries without that destination, and OpenShell entries without an explicit gateway, require operator verification and manual backend cleanup. Changing current settings does not establish the old runtime's location. Verify the original target and back up any remote workspace data before removing it. Failed cleanup retains the registry entry for retry.
-
 <Tip>
 Prefer `openclaw sandbox recreate` over manual backend-specific cleanup. It uses the Gateway's runtime registry and avoids mismatches when scope or session keys change.
 </Tip>

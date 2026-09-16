@@ -80,11 +80,6 @@ if (schemaStart < 0 || schemaEnd < 0) {
 }
 const schema = OPENCLAW_STATE_SCHEMA_SQL.slice(schemaStart, schemaEnd + schemaEndMarker.length);
 
-/** Canonical additive history table. */
-export function ensureUpdateRunLedgerSchema(db: DatabaseSync): void {
-  db.exec(schema); // sqlite-allow-raw -- Canonical lazy additive DDL bootstrap only.
-}
-
 function persistRun(
   db: DatabaseSync,
   record: UpdateRunRecord,
@@ -127,7 +122,7 @@ function mutateRun(
   return runExistingOpenClawStateWriteTransaction(
     ({ db }) => mutateRunInTransaction(db, runId, update, options),
     options,
-    { schemaSql: schema, operationLabel: "update.run" },
+    { schemaSql: schema, operationLabel: "update.run", busyTimeoutMs: options.busyTimeoutMs },
   );
 }
 
@@ -221,7 +216,7 @@ export function createUpdateRun(
     options,
     {
       schemaSql: schema,
-      initializeSchema: ensureUpdateRunLedgerSchema,
+      busyTimeoutMs: options.busyTimeoutMs,
       recoverTaskDeliveryOrphans: !input.preview,
     },
   );
@@ -478,7 +473,7 @@ function reconcileCandidates(
       };
     },
     options,
-    { schemaSql: schema, operationLabel: "update.run" },
+    { schemaSql: schema, operationLabel: "update.run", busyTimeoutMs: options.busyTimeoutMs },
   );
 }
 
@@ -539,7 +534,7 @@ export function recordUpdateRunPhase(
 
 export function recordUpdateRunStep(
   runId: string,
-  step: UpdateRunStep,
+  { reason, ...step }: UpdateRunStep & { reason?: string },
   options: LedgerOptions = {},
 ): UpdateRunRecord {
   return mutateRun(
@@ -547,6 +542,9 @@ export function recordUpdateRunStep(
     (record) => {
       if (record.status === "running") {
         upsertStep(record, step);
+        if (reason !== undefined) {
+          record.reason = reason;
+        }
       }
     },
     options,

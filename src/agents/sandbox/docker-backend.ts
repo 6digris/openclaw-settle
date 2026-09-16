@@ -24,6 +24,7 @@ import {
   type SandboxContainerEngineTarget,
   validateSandboxContainerEngineTarget,
 } from "./docker.js";
+import { resolveSandboxContainerOnlyMounts } from "./mount-plan.js";
 import type { SandboxRegistryEntry } from "./registry.js";
 import { resolveSandboxRuntimeActivityKey } from "./runtime-activity.js";
 
@@ -101,7 +102,14 @@ async function createContainerSandboxBackend(
       ? { requireCurrentConfig: params.requireCurrentConfig }
       : {}),
   });
-  return createContainerSandboxBackendHandle({
+  // Image volumes and engine-created tmpfs are runtime facts. Snapshot them
+  // once at preparation so file tools never read an obscured host subtree.
+  const containerOnlyMounts = await resolveSandboxContainerOnlyMounts({
+    engine: boundEngine,
+    containerName,
+  });
+  const { createSandboxFsBridge } = await import("./fs-bridge.js");
+  const handle = createContainerSandboxBackendHandle({
     engine: boundEngine,
     containerName,
     workdir: params.cfg.docker.workdir,
@@ -109,6 +117,8 @@ async function createContainerSandboxBackend(
     image: params.cfg.docker.image,
     podmanTarget,
   });
+  handle.createFsBridge = ({ sandbox }) => createSandboxFsBridge({ sandbox, containerOnlyMounts });
+  return handle;
 }
 
 export async function createDockerSandboxBackend(

@@ -531,6 +531,97 @@ Write colocated tests in `src/channel.test.ts`:
     └── runtime.ts            # Runtime store (if needed)
 ```
 
+## Delegated context reads
+
+Bundled actions can prove equivalence between provider-native delivery aliases and
+the current conversation with
+`actions.messageActionTargetAliases[action].matchesCurrentConversationAsync`.
+The callback receives `{ args, accountId, toolContext }` and returns
+`Promise<boolean>`. The host awaits it only after checking the current provider,
+account, and any additional requested targets. External registrations cannot use
+this callback to bypass exact-current matching. A successful async match does not
+replace live caller or registration authority; the host rechecks those before
+dispatch.
+
+Async alias proof requires the selected bundled registration to be loaded.
+Liveness checks use its captured owner authority and the loaded registry; they
+never discover or load a bundled fallback after the registration is retired.
+Normal bundled runtime registration satisfies this requirement. The retained
+synchronous path keeps its existing compatibility behavior.
+
+The async callback takes precedence over `matchesCurrentConversation` when both
+are present. A false result or rejected promise never falls back to the legacy
+callback. The synchronous callback is deprecated for storage-backed matching but
+remains supported for older plugins and hosts, with no removal version scheduled.
+Keep its return type strictly `boolean`: older hosts treat a returned promise as
+truthy rather than awaiting it. Hosts predating the async companion ignore the new
+field and use only the synchronous callback. An async-only alias therefore cannot
+prove equivalence on those hosts; exact canonical target matching still works.
+
+Verified official installed plugins can delegate supported conversation, metadata, and attachment
+reads to provider-owned access checks. The request still needs server-owned current
+provider, account, and conversation context. Provider destination policies remain
+in force; this does not grant unrestricted account access.
+
+An adapter lists actions that support the lifetime fence in `actions.readAuthorityActions`.
+Its `actions.providerOwnedReadGates` declaration separately identifies the actions
+whose admission the provider owns. The host also classifies the action as eligible;
+a later host addition does not opt existing adapters into it.
+Only host-verified official registrations qualify. Discord supports `read`, `search`,
+`reactions`, `list-pins`, `thread-list`, `channel-info`, `permissions`, `member-info`,
+`role-info`, `emoji-list`, `channel-list`, `voice-status`, and `event-list`.
+Feishu supports `read`, `reactions`, `list-pins`, `member-info`, `channel-info`,
+`channel-list`, and configured `sticker-search`.
+Matrix supports `read`, `reactions`, `list-pins`, `emoji-list`, `member-info`, and
+`channel-info`.
+Mattermost supports `read`.
+Slack supports `read`, `reactions`, `list-pins`, `member-info`, `emoji-list`, and
+`download-file`.
+Older external adapters and unverified plugins retain the exact-current-conversation
+restriction. Write actions and
+other read-capable actions are unchanged.
+
+Delegated Slack member info is limited to the current requester on the same account,
+and emoji discovery uses the trusted workspace. Neither metadata action requires
+a channel target.
+
+Microsoft Teams supports `read`, `search`, `reactions`, `list-pins`, `member-info`,
+`channel-info`, and `channel-list` under the [Teams access rules](/channels/msteams/access-control).
+
+Discord's `permissions` action inspects the bot's permissions for an allowed channel.
+Guild metadata reads require the requested guild to be allowed by the selected
+account's current configuration, with unrestricted or wildcard channel access.
+Only direct operators receive the filtered-results relaxation for `channel-list`;
+delegated agents still require guild-wide channel access.
+
+The transport contract is mandatory for opt-in adapters:
+
+- Capture `captureChannelReadAuthority()` from `openclaw/plugin-sdk/fetch-runtime`
+  when submitting each request, before handing it to a shared queue.
+- Retain that exact callback through waits and retries; invoke it immediately
+  before every provider request, including target lookup requests, after any
+  asynchronous DNS or dispatcher preparation.
+- An absent callback means this invocation has no additional read-authority
+  fence. A thrown error stops the request; do not retry with a new callback.
+
+The host binds the callback to the selected registration and its active lifecycle.
+Local message tools and Gateway agent requests retain the originating run and
+turn authority. Opted-in bundled reads use the same lifetime fence while keeping
+their existing provider-owned admission rules. A bundled artifact or an omitted
+scoped registration cannot supply that authority; delegated execution requires
+the active registered instance. The host rejects stale
+action results and errors after either caller or plugin authority is revoked.
+A completed action also closes its captured callbacks. The fence prevents
+subsequent requests; it cannot undo a request already sent to the provider. No
+configuration switch or plugin-supplied trust field can mint this authority.
+
+Slack attachment downloads retain the originating read authority through URL
+refresh, binary transfer, media-store publication, image processing, and final
+host completion. The existing media artifact is kept only when the read succeeds.
+If completion is rejected, cleanup removes only files created by that operation;
+preexisting files, replacements, and shared files are preserved. The source abort
+signal also reaches the binary transfer where the caller supplies one.
+
 ## Advanced topics
 
 <CardGroup cols={2}>

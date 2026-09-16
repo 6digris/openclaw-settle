@@ -9,7 +9,7 @@ import {
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { GatewayClientRequestError } from "../../../packages/gateway-client/src/request-error.js";
-import { readCronJobNotFoundError } from "../../../packages/gateway-protocol/src/index.js";
+import { readCronJobNotFoundError } from "../../../packages/gateway-protocol/src/gateway-error-details.js";
 import { truncateToVisibleWidth, visibleWidth } from "../../../packages/terminal-core/src/ansi.js";
 import { sanitizeTerminalText } from "../../../packages/terminal-core/src/safe-text.js";
 import { colorize, isRich, theme } from "../../../packages/terminal-core/src/theme.js";
@@ -371,20 +371,7 @@ export function parseCronStaggerMs(params: {
   return parsed;
 }
 
-export function parseCronToolsAllow(input: unknown): string[] | undefined {
-  const raw = Array.isArray(input)
-    ? input.map((value) => String(value)).join(" ")
-    : typeof input === "string"
-      ? input
-      : "";
-  const tools = raw
-    .split(/[,\s]+/u)
-    .map((tool) => normalizeOptionalString(tool))
-    .filter((tool): tool is string => Boolean(tool));
-  return tools.length > 0 ? tools : undefined;
-}
-
-export function parseCronFallbacks(input: unknown): string[] | undefined {
+export function parseCronStringList(input: unknown): string[] | undefined {
   if (input === undefined) {
     return undefined;
   }
@@ -395,8 +382,8 @@ export function parseCronFallbacks(input: unknown): string[] | undefined {
       : "";
   return raw
     .split(/[,\s]+/u)
-    .map((fallback) => normalizeOptionalString(fallback))
-    .filter((fallback): fallback is string => Boolean(fallback));
+    .map((entry) => normalizeOptionalString(entry))
+    .filter((entry): entry is string => Boolean(entry));
 }
 
 /**

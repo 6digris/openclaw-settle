@@ -181,6 +181,13 @@ describe("detectChangedScope", () => {
     expect(detectChangedScope(["src/config/defaults.ts"])).toEqual(expectedNodeOnlyScope);
   });
 
+  it("runs Android and Node CI for Android toolchain action changes", () => {
+    expect(detectChangedScope([".github/actions/setup-android-toolchain/action.yml"])).toEqual({
+      ...expectedNodeOnlyScope,
+      runAndroid: true,
+    });
+  });
+
   it("keeps node lane off for native-only changes", () => {
     expect(detectChangedScope(["apps/macos/Sources/Foo.swift"])).toEqual({
       runNode: false,
@@ -648,6 +655,8 @@ describe("detectChangedScope", () => {
         "scripts/ci-changed-scope.mjs",
         "scripts/run-vitest.mts",
         "scripts/test-projects.test-support.mts",
+        "scripts/lib/ci-docker-seed-plan.mts",
+        "test/scripts/ci-docker-seed-plan.test.ts",
         "src/commands/status.scan-result.test.ts",
         "src/scripts/ci-changed-scope.control-ui.test.ts",
         "src/scripts/ci-changed-scope.native-i18n.test.ts",

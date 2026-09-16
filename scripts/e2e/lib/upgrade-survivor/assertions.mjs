@@ -31,6 +31,7 @@ const SCENARIOS = new Set([
   "msteams-polls",
   "abandoned-update",
   "legacy-operator-state",
+  "workshop-doctor-recovery",
   "mobile-pairing-reconnect",
   "acpx-openclaw-tools-bridge",
   "feishu-channel",
@@ -39,7 +40,10 @@ const SCENARIOS = new Set([
   "codex-allowlist-survival",
   "plugin-deps-cleanup",
   "configured-plugin-installs",
+  "missing-configured-plugin-migration",
   "custom-plugin-siblings",
+  "projects-doctor",
+  "taskflow-restoration",
   "stale-source-plugin-shadow",
   "prerelease-plugin-registry",
   "tilde-log-path",
@@ -1225,14 +1229,15 @@ function readInstalledPluginIndex() {
   return index;
 }
 
-function assertBaselinePlugin([expectedVersion, pluginId = "discord"]) {
+function assertBaselinePlugin([expectedVersion, pluginId, tag]) {
+  assert(["latest", "beta", "alpha"].includes(tag), "baseline plugin selector is not moving");
   const record = readInstalledPluginIndex().installRecords[pluginId];
   assert(record?.source === "npm", "baseline plugin was not installed from npm");
-  assert(record.spec === `@openclaw/${pluginId}@latest`, "baseline plugin selector became pinned");
+  assert(record.spec === `@openclaw/${pluginId}@${tag}`, "baseline plugin selector changed");
   const installed = readJson(path.join(resolveHomePath(record.installPath), "package.json"));
   assert(installed.name === `@openclaw/${pluginId}`, "baseline plugin package identity changed");
   assert(installed.version === expectedVersion, "baseline plugin is not the baseline version");
-  console.log(`Baseline npm plugin: @openclaw/${pluginId}@${expectedVersion}, selector=latest.`);
+  console.log(`Baseline npm plugin: @openclaw/${pluginId}@${expectedVersion}, selector=${tag}.`);
 }
 
 function assertExternalPluginInstall(records, pluginId, packageName) {
@@ -1622,15 +1627,63 @@ function assertRecoverableUpdateJson([file, expectedVersion, observationRoot, ba
   return denied;
 }
 
+function assertExpectedMissingCodexOutcome(result, expectedVersion) {
+  const plugins = result.postUpdate?.plugins;
+  assert(result.before?.version === "2026.9.2", "missing Codex fixture used the wrong baseline");
+  assert(result.run?.status === "succeeded", "missing Codex update run did not finish");
+  assert(plugins?.status === "warning", "missing Codex update omitted its final plugin warning");
+  const failures = plugins.npm?.outcomes?.filter((outcome) => outcome?.status === "error") ?? [];
+  assert(
+    failures.length === 1,
+    "missing Codex update must retain exactly its named failed attempt",
+  );
+  const failure = failures[0];
+  const missingPackage =
+    `Failed to install missing configured plugin "codex" from @openclaw/codex: ` +
+    `Package not found on npm: @openclaw/codex@${expectedVersion}.`;
+  assert(
+    failure.pluginId === "codex" &&
+      failure.code === undefined &&
+      typeof failure.message === "string" &&
+      failure.message.startsWith(missingPackage),
+    "missing Codex update retained an unexpected plugin failure",
+  );
+  const repairCommand = "openclaw plugins update codex";
+  assert(
+    plugins.warnings?.some(
+      (warning) =>
+        warning.pluginId === "codex" &&
+        warning.reason === failure.message &&
+        warning.guidance?.includes(repairCommand) &&
+        warning.message?.includes(`Run \`${repairCommand}\``),
+    ),
+    "missing Codex update omitted matching actionable recovery guidance",
+  );
+  return failure;
+}
+
 function assertSuccessfulUpdateJson([file, expectedVersion, observationRoot]) {
   assert(file && expectedVersion, "assert-successful-update-json requires a path and version");
   const result = readUpdateJson(file, observationRoot);
   const plugins = result?.postUpdate?.plugins;
   assert(result?.status === "ok", `update did not report ok: ${String(result?.status)}`);
+  if (["projects-doctor", "taskflow-restoration"].includes(getScenario())) {
+    assertStrict.equal(
+      result.before?.version,
+      "2026.9.4",
+      "Worker cell used the wrong published driver",
+    );
+  }
+  const expectedMissingPluginFailure =
+    getScenario() === "missing-configured-plugin-migration"
+      ? assertExpectedMissingCodexOutcome(result, expectedVersion)
+      : undefined;
   assert(
     plugins?.status !== "error" &&
       !plugins?.sync?.errors?.length &&
-      !plugins?.npm?.outcomes?.some((outcome) => outcome?.status === "error") &&
+      !plugins?.npm?.outcomes?.some(
+        (outcome) => outcome?.status === "error" && outcome !== expectedMissingPluginFailure,
+      ) &&
       !plugins?.integrityDrifts?.length,
     "successful update failed plugin convergence",
   );

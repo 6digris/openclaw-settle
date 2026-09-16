@@ -64,7 +64,7 @@ A complete recovery point must cover these together:
   including databases at configured paths outside the default layout.
 - The workspaces, credentials, and retained originals needed by that installation.
 
-Use `openclaw backup` for a verified, WAL-aware archive. Never copy only the
+Use `openclaw backup create --verify` for a verified, WAL-aware archive. Never copy only the
 main `.sqlite` file from a live WAL database: committed data can still be in
 `-wal`. Restore the verified consolidated database offline; do not mix it with
 `-wal` or `-shm` files from another database generation. See [Backup](/cli/backup)
@@ -341,5 +341,8 @@ UI when the run never entered that phase.
 For an explicit repair using configured inference, run `openclaw triage --run`
 in a terminal on the Gateway host. Interactive triage checks Doctor lint, runs
 up to one embedded repair turn with time and tool-call limits, and checks Doctor
-again. See [Triage](/cli/triage#installation-target-and-embedded-handoff) for the
+again. A saved activation or recovery failure additionally requires recorded updater
+completion and current installation and Gateway verification. An attributed
+Doctor/config blocker can be resolved by fresh Doctor checks and the recorded
+installed identity, while its historical failed run remains unchanged. See [Triage](/cli/triage#installation-target-and-embedded-handoff) for the
 repair contract, installation targeting, and validation results.

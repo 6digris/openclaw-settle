@@ -309,6 +309,7 @@ export class CodexAppServerEventProjector extends CodexTurnProjection {
       const projected: JsonObject = {
         plan: update.steps,
         ...(update.explanation ? { explanation: update.explanation } : {}),
+        ...(update.explanationFormat ? { explanationFormat: update.explanationFormat } : {}),
       };
       await this.reasoningProjection.handleTurnPlanUpdated(projected, "openclaw");
     }
@@ -407,13 +408,16 @@ export class CodexAppServerEventProjector extends CodexTurnProjection {
 
   private async handleItemCompleted(params: JsonObject): Promise<void> {
     const item = readItem(params.item);
+    const itemId = item?.id ?? readString(params, "itemId");
+    if (item?.type === "contextCompaction" && itemId && this.completedItemIds.has(itemId)) {
+      return;
+    }
     if (item?.type === "agentMessage" && item.text) {
       this.eventProjection.markSafetyBufferingAssistantStarted();
     }
     this.diagnostics.warnUnknownItemStatus(item);
     this.recordNativeToolOutcome(item);
     this.nativeToolLifecycleProjector.clearTerminalPresentationForNativeItem(item);
-    const itemId = item?.id ?? readString(params, "itemId");
     if (itemId) {
       this.activeItemIds.delete(itemId);
       this.completedItemIds.add(itemId);

@@ -24,7 +24,6 @@ import {
   resolveImageToolFactoryAvailable,
   resolveOptionalMediaToolFactoryPlan,
 } from "./openclaw-tools.media-factory-plan.js";
-import { createMediaGenerationAsyncStartCallback } from "./openclaw-tools.media-yield.js";
 import { applyNodesToolWorkspaceGuard } from "./openclaw-tools.nodes-workspace-guard.js";
 import {
   collectPresentOpenClawTools,
@@ -115,6 +114,7 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
     runId: options?.runId,
     swarmCollector: options?.swarmCollector,
     swarmOutputSchema: options?.swarmOutputSchema,
+    assertCollectorWriteAuthority: options?.assertCollectorWriteAuthority,
   });
   const inferredWorkspaceDir =
     options?.workspaceDir || !resolvedConfig
@@ -150,10 +150,6 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
     trimmedRunSessionKey && isCronRunSessionKey(trimmedRunSessionKey)
       ? trimmedRunSessionKey
       : options?.agentSessionKey;
-  const mediaGenerationAsyncStartCallback = createMediaGenerationAsyncStartCallback({
-    sessionKey: mediaGenerationAgentSessionKey,
-    onYield: options?.onYield,
-  });
   const imageTool =
     options?.agentDir &&
     resolveImageToolFactoryAvailable({
@@ -172,6 +168,7 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
           authProfileStore: options?.authProfileStore,
           workspaceDir,
           sandbox,
+          cwd: options?.cwd,
           fsPolicy: options?.fsPolicy,
           agentChannel: options?.agentChannel,
           agentAccountId: options?.agentAccountId,
@@ -191,8 +188,8 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
     workspaceDir,
     preparedModelRuntime: options?.preparedModelRuntime,
     sandbox,
+    cwd: options?.cwd,
     fsPolicy: options?.fsPolicy,
-    onAsyncTaskStarted: mediaGenerationAsyncStartCallback,
   };
   const imageGenerateTool = optionalMediaTools.imageGenerate
     ? createImageGenerateTool(mediaGenerationToolOptions)
@@ -216,6 +213,7 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
           authProfileStore: options?.authProfileStore,
           workspaceDir,
           sandbox,
+          cwd: options?.cwd,
           fsPolicy: options?.fsPolicy,
           deferAutoModelResolution: true,
         })
@@ -242,12 +240,15 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
     ? null
     : createMessageTool({
         agentAccountId: options?.agentAccountId,
-        agentSessionKey: options?.agentSessionKey,
-        runSessionKey: options?.runSessionKey,
+        agentSessionKey: options?.messageToolTurnCapability?.sessionKey ?? options?.agentSessionKey,
+        runSessionKey:
+          options?.runSessionKey ??
+          (options?.messageToolTurnCapability ? options.agentSessionKey : undefined),
         runId: options?.runId,
         agentId: sessionAgentId,
         sessionId: options?.sessionId,
-        messageActionTurnCapability: options?.messageActionTurnCapability,
+        messageActionTurnCapability:
+          options?.messageToolTurnCapability?.token ?? options?.messageActionTurnCapability,
         config: options?.config,
         preparedMessageToolCatalog: options?.preparedModelRuntime?.messageToolCatalog,
         currentChannelId: options?.currentChannelId,
@@ -537,6 +538,8 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
     createSessionsListTool({
       ...sessionLookupToolOptions,
       requesterAgentIdOverride: sessionAgentId,
+      requesterProfileId: options?.gatewayUiCommandTarget?.profileId,
+      supportsActiveOnly: !embedded,
     }),
     createSessionsHistoryTool({
       ...sessionLookupToolOptions,
@@ -570,7 +573,9 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
           // Keep the in-process caller so materialized agent roots retain their creation stamp.
           createSessionsSendTool({
             agentId: sessionAgentId,
-            agentSessionKey: options?.agentSessionKey,
+            // Match sessions_spawn: spawned children record the durable run
+            // session as spawnedBy, so the parent check must use the same key.
+            agentSessionKey: options?.runSessionKey ?? options?.agentSessionKey,
             agentChannel: options?.agentChannel,
             sandboxed: options?.sandboxed,
             config: sessionConfig,
@@ -582,13 +587,14 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
             agentSessionKey: options?.runSessionKey ?? options?.agentSessionKey,
             requesterTurnRunId: options?.runId,
             requesterThinkingLevel: options?.requesterThinkingLevel,
+            requesterModel: options?.requesterModel,
             completionOwnerKey: options?.runSessionKey,
             agentChannel: options?.agentChannel,
             agentAccountId: options?.agentAccountId,
             agentTo: options?.agentTo,
             agentThreadId: options?.agentThreadId,
-            currentMessagingTarget: options?.currentMessagingTarget,
-            currentChannelId: options?.currentChannelId,
+            currentMessagingTarget: options?.currentMessagingTarget ?? options?.currentChannelId,
+            currentChannelId: options?.nativeChannelId ?? options?.currentChannelId,
             currentThreadTs: options?.currentThreadTs,
             currentMessageId: options?.currentMessageId,
             agentGroupId: options?.agentGroupId,
@@ -614,7 +620,9 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
         requesterSessionKey,
         requesterAgentId: sessionAgentId,
         requesterTurnRunId: options?.runId,
+        swarmCollector: options?.swarmCollector,
         claimYieldCompletion: options?.claimYieldCompletion,
+        processScopeKey: options?.processScopeKey,
       }),
       onYield: options?.onYield,
     }),

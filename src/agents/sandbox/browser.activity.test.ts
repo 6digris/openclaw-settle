@@ -2,7 +2,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
-import { buildBrowserTestConfig } from "./browser.create.test-helpers.js";
+import { resolveSandboxConfigForAgent } from "./config.js";
 
 const { startBridge } = vi.hoisted(() => ({
   startBridge:
@@ -31,6 +31,22 @@ vi.mock("./docker.js", async () => ({
   execDocker: () => {
     throw new Error("Existing hot browser must not be recreated");
   },
+}));
+
+vi.mock("./docker-mount-source.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./docker-mount-source.js")>()),
+  resolveDockerSourceNamespace: async () => undefined,
+}));
+vi.mock("./container-engine.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./container-engine.js")>()),
+  execContainer: async () => ({
+    code: 0,
+    stderr: "",
+    stdout: JSON.stringify({
+      Mounts: [{ Type: "bind", Source: stateDir, Destination: "/workspace", RW: true }],
+      Tmpfs: null,
+    }),
+  }),
 }));
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -68,7 +84,19 @@ it("keeps a reused CDP bridge authorized when noVNC is disabled, but rejects a r
   const { buildSandboxContainerName, slugifySessionKey } = await import("./shared.js");
   const { readBrowserRegistryEntry, removeBrowserRegistryEntry, updateBrowserRegistry } =
     await import("./registry.js");
-  const cfg = buildBrowserTestConfig(true);
+  const cfg = resolveSandboxConfigForAgent({
+    agents: {
+      defaults: {
+        sandbox: {
+          mode: "all",
+          browser: { enabled: true, noVncEnabled: true },
+        },
+      },
+    },
+  });
+  cfg.tools = { allow: ["browser"], deny: [] };
+  cfg.workspaceAccess = "rw";
+  cfg.docker.tmpfs = [];
   const scopeKey = "agent:main:browser-activity";
   const containerName = buildSandboxContainerName(
     cfg.browser.containerPrefix,

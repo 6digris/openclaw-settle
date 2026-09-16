@@ -8,14 +8,22 @@ import * as assistantIdentity from "../../app/assistant-identity.ts";
 import { createChatSubmissions } from "../../app/chat-submissions.ts";
 import { createConnectionBootstrapCoordinator } from "../../app/connection-bootstrap.ts";
 import type { ApplicationContext } from "../../app/context.ts";
+import { canReloadControlUiDocument } from "../../app/document-reload-guard.ts";
 import { createAgentIdentityCapability } from "../../lib/agents/identity.ts";
 import { invalidateChatMetadataStore } from "../../lib/chat/chat-metadata-cache.ts";
+import { revalidateChatMetadata } from "../../lib/chat/chat-metadata-store.ts";
 import {
   buildFallbackSlashCommands,
   replaceSlashCommands,
   SLASH_COMMANDS,
 } from "../../lib/chat/commands.ts";
 import { extractText } from "../../lib/chat/message-extract.ts";
+import {
+  beginModelCatalogRead,
+  clearModelCatalogCache,
+  invalidateModelCatalogCache,
+  publishModelCatalogResult,
+} from "../../lib/model-catalog-cache.ts";
 import { createSessionCapability } from "../../lib/sessions/index.ts";
 import {
   createGatewayHarness,
@@ -26,13 +34,14 @@ import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
 import type { ChatHistoryResult } from "./chat-history-snapshot.ts";
 import { loadChatHistory } from "./chat-history.ts";
 import { makeChatHost } from "./chat-host.test-support.ts";
-import { removeQueuedMessage } from "./chat-queue.ts";
+import { enqueueChatMessage, removeQueuedMessage } from "./chat-queue.ts";
 import { ChatStateController } from "./chat-state-controller.ts";
 import { handlePageGatewayEvent } from "./chat-state-events.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import { createPageState } from "./chat-state-page.ts";
 import {
   applySelectedChatAgent,
+  applyChatModelCatalogSnapshot,
   refreshChatMetadata,
   refreshChatModelCatalogOnDemand,
   refreshChatModelAuthStatus,
@@ -43,6 +52,7 @@ import { buildChatItems } from "./chat-thread-build.ts";
 import { renderAssistantAttachments } from "./components/chat-message-attachments.ts";
 import { getChatSessionProjection, reduceChatSessionProjection } from "./history-merge.ts";
 import { scheduleControlUiAfterPaint } from "./performance.ts";
+import { beginQueuedMessageEdit } from "./queued-message-edit.ts";
 import { applySessionMessagePayload } from "./session-message-apply.ts";
 import { activatePanel, openSlot } from "./sidebar-layout.ts";
 import { buildToolStreamIdentity } from "./tool-stream-identity.ts";
@@ -2168,7 +2178,7 @@ describe("canonical session message recovery", () => {
   it.each([
     { name: "without a pending session-message reload", pendingReload: false },
     { name: "after a pending session-message reload", pendingReload: true },
-  ])("starts a fresh history request $name", async ({ pendingReload }) => {
+  ])("waits for the old read before fresh terminal history $name", async ({ pendingReload }) => {
     const runId = "run-with-pre-final-history";
     const prompt = {
       role: "user",
@@ -2219,9 +2229,10 @@ describe("canonical session message recovery", () => {
       },
     });
 
-    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenCalledTimes(1);
     staleHistory.resolve({ messages: [prompt], sessionId: "selected-session", sessionInfo });
     await preFinalLoad;
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2));
     expect(renderedTranscript(state)).toEqual([
       { role: "user", text: "Finish after the stale snapshot" },
     ]);
@@ -3207,7 +3218,7 @@ describe("ChatStateController render lifecycle", () => {
     expect(
       state.sidebarLayout.columns.flatMap((column) => column.panels.map((panel) => panel.slot)),
     ).toEqual(["detail", "workspace"]);
-    expect(state.attachmentSidebarContent?.kind).toBe("attachment");
+    expect(state.sessionWorkspaceState?.previews.at(-1)?.content.kind).toBe("attachment");
     expect(state.sidebarContent).toBe(detailContent);
 
     state.sidebarLayout = activatePanel(state.sidebarLayout, "detail");
@@ -3216,13 +3227,13 @@ describe("ChatStateController render lifecycle", () => {
     expect(
       state.sidebarLayout.columns.flatMap((column) => column.panels.map((panel) => panel.slot)),
     ).toEqual(["workspace"]);
-    expect(state.attachmentSidebarContent?.kind).toBe("attachment");
+    expect(state.sessionWorkspaceState?.previews.at(-1)?.content.kind).toBe("attachment");
     expect(state.sidebarContent).toBe(detailContent);
 
     state.handleCloseSidebar("workspace");
 
     expect(state.sidebarLayout.columns.flatMap((column) => column.panels)).toHaveLength(0);
-    expect(state.attachmentSidebarContent).toBeNull();
+    expect(state.sessionWorkspaceState?.previews ?? []).toEqual([]);
     expect(state.sidebarContent).toBe(detailContent);
   });
 
@@ -3822,6 +3833,24 @@ describe("ChatStateController render lifecycle", () => {
     expect(effect).not.toHaveBeenCalled();
   });
 
+  it("releases a queued correction reload hold when its pane is disposed", () => {
+    const controller = new ChatStateController<ChatPageHost>(createControllerHost());
+    controller.hostConnected();
+    const state = createPageState(createPageContext(), controller.createRenderLifecycle(), {
+      dispatchEvent: () => true,
+      querySelector: () => null,
+    });
+    controller.attach(state);
+    try {
+      const queued = enqueueChatMessage(state, "queued original")!;
+      expect(beginQueuedMessageEdit(state, queued.id)).toBe("started");
+      expect(canReloadControlUiDocument()).toBe(false);
+    } finally {
+      controller.hostDisconnected();
+    }
+    expect(canReloadControlUiDocument()).toBe(true);
+  });
+
   it("fully tears down realtime Talk when its state owner disconnects", () => {
     const host = createControllerHost();
     const controller = new ChatStateController<ChatPageHost>(host);
@@ -4318,6 +4347,310 @@ describe("refreshChatMetadata", () => {
     } as unknown as ChatPageHost;
   }
 
+  it("keeps a pending explicit picker catalog through command-only revalidation", async () => {
+    const models = [{ id: "fresh", name: "Fresh", provider: "test" }];
+    const catalog = createDeferred<{ models: typeof models }>();
+    const request = vi.fn((method: string) =>
+      method === "models.list" ? catalog.promise : Promise.resolve({ commands: [] }),
+    );
+    const state = createMetadataState(request);
+    const picker = refreshChatModelCatalogOnDemand(state);
+    try {
+      expect(state.chatModelsLoading).toBe(true);
+      await revalidateChatMetadata(state.client!, {
+        agentId: "work",
+        sessionKey: state.sessionKey,
+      });
+      catalog.resolve({ models });
+      await picker;
+      expect(state.chatModelCatalog).toEqual(models);
+      expect(state.chatModelsLoading).toBe(false);
+      expect(request.mock.calls.map(([method]) => method)).toEqual([
+        "models.list",
+        "chat.metadata",
+        "sessions.describe",
+      ]);
+    } finally {
+      catalog.resolve({ models });
+      await picker;
+      retireChatMetadataRequests(state);
+      state.sessions.dispose();
+    }
+  });
+
+  it("ends a retired automatic catalog's loading before unrelated commands settle", async () => {
+    const catalog = createDeferred<{ models: [] }>();
+    const commands = createDeferred<{ commands: [] }>();
+    const request = vi.fn((method: string) =>
+      method === "models.list" ? catalog.promise : commands.promise,
+    );
+    const state = createMetadataState(request);
+    const automatic = refreshChatMetadata(state, { automatic: true });
+    try {
+      expect(state.chatModelsLoading).toBe(true);
+      invalidateModelCatalogCache(state.client!, {
+        agentId: "work",
+        sessionKey: state.sessionKey,
+      });
+      catalog.resolve({ models: [] });
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+      expect(state.chatModelsLoading).toBe(false);
+      expect(request.mock.calls.filter(([method]) => method === "models.list")).toHaveLength(1);
+    } finally {
+      catalog.resolve({ models: [] });
+      commands.resolve({ commands: [] });
+      await automatic;
+      retireChatMetadataRequests(state);
+      state.sessions.dispose();
+    }
+  });
+
+  it.each(
+    (["automatic", "picker"] as const).flatMap((first) => [
+      { first, failure: false },
+      { first, failure: true },
+    ]),
+  )(
+    "keeps the replacement loading when the retired $first catalog settles (failure=$failure)",
+    async ({ first, failure }) => {
+      const retiredModels = [{ id: "retired", name: "Retired", provider: "test" }];
+      const oldCatalog = createDeferred<{ models: typeof retiredModels }>();
+      const freshModels = [{ id: "fresh", name: "Fresh", provider: "test" }];
+      const freshCatalog = createDeferred<{ models: typeof freshModels }>();
+      let catalogReads = 0;
+      const request = vi.fn((method: string) =>
+        method === "models.list"
+          ? ++catalogReads === 1
+            ? oldCatalog.promise
+            : freshCatalog.promise
+          : Promise.resolve({ commands: [] }),
+      );
+      const state = createMetadataState(request);
+      const original =
+        first === "automatic"
+          ? refreshChatMetadata(state, { automatic: true })
+          : refreshChatModelCatalogOnDemand(state);
+      invalidateModelCatalogCache(state.client!, { agentId: "work", sessionKey: state.sessionKey });
+      const replacement =
+        first === "automatic"
+          ? refreshChatModelCatalogOnDemand(state)
+          : refreshChatMetadata(state, { automatic: true });
+      try {
+        expect(catalogReads).toBe(1);
+        expect(state.chatModelsLoading).toBe(true);
+        if (failure) {
+          oldCatalog.reject(new Error("Retired catalog failure"));
+        } else {
+          oldCatalog.resolve({ models: retiredModels });
+        }
+        await original;
+        expect(catalogReads).toBe(2);
+        expect(state.chatModelCatalog).toEqual([]);
+        expect(state.chatModelCatalogError).toBeNull();
+        expect(state.chatModelsLoading).toBe(true);
+        freshCatalog.resolve({ models: freshModels });
+        await replacement;
+        expect(state.chatModelCatalog).toEqual(freshModels);
+        expect(state.chatModelsLoading).toBe(false);
+      } finally {
+        oldCatalog.resolve({ models: retiredModels });
+        freshCatalog.resolve({ models: freshModels });
+        await Promise.all([original, replacement]);
+        retireChatMetadataRequests(state);
+        state.sessions.dispose();
+      }
+    },
+  );
+
+  it("shares a failed automatic attempt until explicit refresh recovers it", async () => {
+    const models = [{ id: "fresh", name: "Fresh", provider: "test" }];
+    let failing = true;
+    const request = vi.fn(async (method: string) => {
+      if (failing) {
+        throw new Error("Shared automatic failure");
+      }
+      return method === "models.list" ? { models } : { commands: [] };
+    });
+    const first = createMetadataState(request);
+    const follower = createMetadataState(request, { client: first.client });
+    const counts = () =>
+      ["chat.metadata", "models.list"].map(
+        (method) => request.mock.calls.filter(([called]) => called === method).length,
+      );
+    try {
+      await Promise.all([
+        refreshChatMetadata(first, { automatic: true }),
+        refreshChatMetadata(follower, { automatic: true }),
+      ]);
+      await refreshChatMetadata(follower, { automatic: true });
+      expect(counts()).toEqual([1, 1]);
+      expect(follower.chatModelCatalogError).toContain("Shared automatic failure");
+      failing = false;
+      await refreshChatMetadata(first);
+      await refreshChatMetadata(follower, { automatic: true });
+      expect(counts()).toEqual([2, 2]);
+      expect(follower.chatModelCatalog).toEqual(models);
+      expect(follower.chatModelCatalogError).toBeNull();
+    } finally {
+      for (const state of [first, follower]) {
+        retireChatMetadataRequests(state);
+        state.sessions.dispose();
+      }
+    }
+  });
+
+  it.each([
+    "snapshot",
+    "snapshot-after-failure",
+    "invalidation",
+    "expiry",
+    "refresh",
+    "eviction",
+  ] as const)(
+    "reobserves canonical catalog %s after an automatic attempt settled",
+    async (change) => {
+      const clock = change === "expiry" ? vi.spyOn(Date, "now").mockReturnValue(1000) : undefined;
+      const before = [
+        {
+          id: "before",
+          name: "Before",
+          provider: "test",
+          ...(change === "expiry" ? { unavailableUntil: 2000 } : {}),
+        },
+      ];
+      const after = [{ id: "after", name: "After", provider: "test" }];
+      const request = vi.fn(async (method: string) => {
+        if (method === "models.list" && change === "snapshot-after-failure") {
+          throw new Error("Old catalog failure");
+        }
+        return method === "models.list" ? { models: before } : { commands: [] };
+      });
+      const first = createMetadataState(request);
+      const states = [first];
+      const scope = { agentId: "work", sessionKey: first.sessionKey };
+      const refresh =
+        change === "refresh"
+          ? beginModelCatalogRead(first.client!, { agentId: "other", refresh: true })
+          : undefined;
+      try {
+        await refreshChatMetadata(first, { automatic: true });
+        expect(first.chatModelCatalog).toEqual(change === "snapshot-after-failure" ? [] : before);
+        if (change.startsWith("snapshot")) {
+          publishModelCatalogResult(beginModelCatalogRead(first.client!, scope), scope, {
+            models: after,
+          });
+          const follower = createMetadataState(request, { client: first.client });
+          states.push(follower);
+          await refreshChatMetadata(follower, { automatic: true });
+          expect(follower.chatModelCatalog).toEqual(after);
+          expect(follower.chatModelCatalogError).toBeNull();
+        } else {
+          first.chatMetadataIsPresented = () => false;
+          if (refresh) {
+            publishModelCatalogResult(
+              refresh,
+              { agentId: "other", refresh: true },
+              { models: after },
+            );
+          } else if (change === "eviction") {
+            for (let index = 0; index < 65; index++) {
+              const otherScope = { agentId: `other-${index}` };
+              publishModelCatalogResult(
+                beginModelCatalogRead(first.client!, otherScope),
+                otherScope,
+                {
+                  models: after,
+                },
+              );
+            }
+          } else if (clock) {
+            clock.mockReturnValue(2000);
+          } else {
+            invalidateModelCatalogCache(first.client!, scope);
+          }
+          request.mockImplementation(async (method) =>
+            method === "models.list" ? { models: after } : { commands: [] },
+          );
+          first.chatMetadataIsPresented = () => true;
+          await refreshChatMetadata(first, { automatic: true });
+          expect(first.chatModelCatalog).toEqual(after);
+        }
+        expect(request.mock.calls.filter(([method]) => method === "models.list")).toHaveLength(
+          change.startsWith("snapshot") ? 1 : 2,
+        );
+      } finally {
+        clock?.mockRestore();
+        for (const state of states) {
+          retireChatMetadataRequests(state);
+          state.sessions.dispose();
+        }
+      }
+    },
+  );
+
+  it.each([1, 2])(
+    "ends automatic catalog loading for an expired response without retrying (%s panes)",
+    async (panes) => {
+      const models = [{ id: "expired", name: "Expired", provider: "test", unavailableUntil: 1 }];
+      const request = vi.fn(async (method: string) =>
+        method === "models.list" ? { models } : { commands: [] },
+      );
+      const state = createMetadataState(request);
+      const states = [state];
+      if (panes === 2) {
+        states.push(createMetadataState(request, { client: state.client }));
+      }
+      try {
+        await Promise.all(states.map((pane) => refreshChatMetadata(pane, { automatic: true })));
+        for (const pane of states) {
+          expect(pane.chatModelsLoading).toBe(false);
+          expect(pane.chatModelCatalog).toEqual(models);
+        }
+        expect(request.mock.calls.filter(([method]) => method === "models.list")).toHaveLength(1);
+      } finally {
+        for (const pane of states) {
+          retireChatMetadataRequests(pane);
+          pane.sessions.dispose();
+        }
+      }
+    },
+  );
+
+  it("keeps a fresh picker snapshot usable while automatic admission waits for commands", async () => {
+    const models = [{ id: "fresh", name: "Fresh", provider: "test" }];
+    const catalog = createDeferred<{ models: typeof models }>();
+    const pendingCommands = createDeferred<{ commands: [] }>();
+    const request = vi.fn((method: string) =>
+      method === "models.list"
+        ? catalog.promise
+        : method === "chat.metadata"
+          ? pendingCommands.promise
+          : Promise.resolve({}),
+    );
+    const state = createMetadataState(request);
+    const picker = refreshChatModelCatalogOnDemand(state);
+    const commands = revalidateChatMetadata(state.client!, {
+      agentId: "work",
+      sessionKey: state.sessionKey,
+    });
+    const automatic = refreshChatMetadata(state, { automatic: true });
+    try {
+      catalog.resolve({ models });
+      await picker;
+      expect(state.chatModelCatalog).toEqual(models);
+      expect(state.chatModelsLoading).toBe(false);
+      expect(request.mock.calls.filter(([method]) => method === "models.list")).toHaveLength(1);
+    } finally {
+      catalog.resolve({ models });
+      pendingCommands.resolve({ commands: [] });
+      await Promise.all([commands, automatic, picker]);
+      retireChatMetadataRequests(state);
+      state.sessions.dispose();
+    }
+  });
+
   it.each(
     ["settled", "catalog-first", "selection-first"].flatMap((order) => [
       { order, picker: false },
@@ -4403,9 +4736,9 @@ describe("refreshChatMetadata", () => {
           {
             key: "agent:work:kept",
             kind: "direct",
-            label: "Kept 2",
+            label: `Kept ${order === "catalog-first" ? 2 : 1}`,
             lastMessagePreview: "Saved preview",
-            updatedAt: 2,
+            updatedAt: order === "catalog-first" ? 2 : 1,
           },
         ]);
       } finally {
@@ -4462,24 +4795,74 @@ describe("refreshChatMetadata", () => {
   });
 
   it.each([
-    { pickerPending: false, scopedAfterGlobal: false },
-    { pickerPending: true, scopedAfterGlobal: false },
-    { pickerPending: false, scopedAfterGlobal: true },
+    {
+      pickerPending: false,
+      scopedAfterGlobal: false,
+      metadataPending: false,
+      hidden: false,
+      empty: false,
+    },
+    {
+      pickerPending: true,
+      scopedAfterGlobal: false,
+      metadataPending: false,
+      hidden: false,
+      empty: false,
+    },
+    {
+      pickerPending: false,
+      scopedAfterGlobal: true,
+      metadataPending: false,
+      hidden: false,
+      empty: false,
+    },
+    {
+      pickerPending: false,
+      scopedAfterGlobal: true,
+      metadataPending: true,
+      hidden: false,
+      empty: false,
+    },
+    {
+      pickerPending: false,
+      scopedAfterGlobal: true,
+      metadataPending: true,
+      hidden: true,
+      empty: false,
+    },
+    {
+      pickerPending: false,
+      scopedAfterGlobal: true,
+      metadataPending: true,
+      hidden: false,
+      empty: true,
+    },
   ])(
-    "converges catalog invalidation with pending picker=$pickerPending and scoped follow-up=$scopedAfterGlobal",
-    async ({ pickerPending, scopedAfterGlobal }) => {
+    "converges catalog invalidation with pending picker=$pickerPending, metadata=$metadataPending, scoped follow-up=$scopedAfterGlobal, hidden=$hidden and empty=$empty",
+    async ({ pickerPending, scopedAfterGlobal, metadataPending, hidden, empty }) => {
       const prepared = { id: "model", name: "Model", provider: "test", contextWindow: 8_192 };
       const discovered = { ...prepared, contextWindow: 262_144 };
-      const catalog = createDeferred<{ models: (typeof prepared)[] }>();
+      const acceptedModels = empty ? [] : [discovered];
+      const retiredCatalog = createDeferred<{ models: (typeof prepared)[] }>();
+      const currentCatalog = createDeferred<{ models: (typeof prepared)[] }>();
+      const metadata = createDeferred<{ commands: [] }>();
       let invalidated = false;
+      let catalogReads = 0;
       const request = vi.fn((method: string) =>
         method === "chat.metadata"
-          ? Promise.resolve({ commands: [] })
-          : invalidated
-            ? catalog.promise
-            : Promise.resolve({ models: [prepared] }),
+          ? metadataPending && invalidated
+            ? metadata.promise
+            : Promise.resolve({ commands: [] })
+          : method === "sessions.describe"
+            ? Promise.resolve({})
+            : invalidated
+              ? ++catalogReads === 1
+                ? retiredCatalog.promise
+                : currentCatalog.promise
+              : Promise.resolve({ models: [prepared] }),
       );
       const state = createMetadataState(request);
+      let follower: ChatPageHost | undefined;
       const invalidateSessions = vi
         .spyOn(state.sessions, "invalidate")
         .mockImplementation(() => {});
@@ -4496,13 +4879,59 @@ describe("refreshChatMetadata", () => {
           });
         }
         expect(invalidateSessions).not.toHaveBeenCalled();
-        catalog.resolve({ models: [discovered] });
-        await vi.waitFor(() => expect(invalidateSessions).toHaveBeenCalledOnce());
+        state.chatMetadataIsPresented = () => !hidden;
+        retiredCatalog.resolve({ models: [discovered] });
+        if (scopedAfterGlobal) {
+          await new Promise<void>((resolve) => {
+            setTimeout(resolve, 0);
+          });
+          expect(request.mock.calls.filter(([method]) => method === "sessions.describe")).toEqual(
+            [],
+          );
+        }
+        if (metadataPending) {
+          const scope = { agentId: "work", sessionKey: state.sessionKey };
+          publishModelCatalogResult(beginModelCatalogRead(state.client!, scope), scope, {
+            models: acceptedModels,
+          });
+          applyChatModelCatalogSnapshot(state);
+          expect(state.chatModelCatalog).toEqual(acceptedModels);
+          if (empty) {
+            follower = createMetadataState(request, { client: state.client });
+            void refreshChatMetadata(follower, { automatic: true });
+            expect(follower.chatModelsLoading).toBe(false);
+            expect(follower.chatModelCatalog).toEqual([]);
+          }
+          if (hidden) {
+            expect(request.mock.calls.filter(([method]) => method === "sessions.describe")).toEqual(
+              [],
+            );
+            state.chatMetadataIsPresented = () => true;
+            void refreshChatMetadata(state, { automatic: true });
+          }
+        } else {
+          currentCatalog.resolve({ models: [discovered] });
+        }
+        await vi.waitFor(() =>
+          expect(
+            request.mock.calls.filter(([method]) => method === "sessions.describe"),
+          ).toHaveLength(1),
+        );
+        expect(invalidateSessions).not.toHaveBeenCalled();
         await picker;
 
-        expect(state.chatModelCatalog).toEqual([discovered]);
+        expect(state.chatModelCatalog).toEqual(acceptedModels);
+        metadata.resolve({ commands: [] });
+        await refreshChatMetadata(state);
       } finally {
+        retiredCatalog.resolve({ models: [discovered] });
+        currentCatalog.resolve({ models: [discovered] });
+        metadata.resolve({ commands: [] });
         retireChatMetadataRequests(state);
+        if (follower) {
+          retireChatMetadataRequests(follower);
+          follower.sessions.dispose();
+        }
       }
     },
   );
@@ -4581,6 +5010,7 @@ describe("refreshChatMetadata", () => {
         kind === "picker" ? refreshChatModelCatalogOnDemand(state) : refreshChatMetadata(state);
       state.connected = false;
       retireChatMetadataRequests(state);
+      clearModelCatalogCache(state.client!);
       invalidateChatMetadataStore(state.client!);
       expect(state.chatModelCatalog).toEqual([]);
       expect(state.chatAccountSelection).toBeNull();
@@ -4604,40 +5034,6 @@ describe("refreshChatMetadata", () => {
     },
   );
 
-  it.each(["command-metadata", "patch"])(
-    "refreshes only the matching session for %s, not streaming updates",
-    async (reason) => {
-      const request = vi.fn().mockResolvedValue({ commands: [], models: [] });
-      const state = createMetadataState(request);
-      const invalidateSessions = vi
-        .spyOn(state.sessions, "invalidate")
-        .mockImplementation(() => {});
-      await refreshChatMetadata(state);
-      for (const [key, eventReason] of [
-        ["agent:work:other", reason],
-        [state.sessionKey, "message"],
-      ]) {
-        handlePageGatewayEvent(state, {
-          type: "event",
-          event: "sessions.changed",
-          payload: { key, agentId: "work", reason: eventReason },
-        });
-      }
-      expect(request.mock.calls.filter(([method]) => method === "chat.metadata")).toHaveLength(1);
-      handlePageGatewayEvent(state, {
-        type: "event",
-        event: "sessions.changed",
-        payload: { key: state.sessionKey, agentId: "work", reason },
-      });
-      await vi.waitFor(() =>
-        expect(request.mock.calls.filter(([method]) => method === "chat.metadata")).toHaveLength(2),
-      );
-      await refreshChatMetadata(state);
-      expect(invalidateSessions).not.toHaveBeenCalled();
-      retireChatMetadataRequests(state);
-    },
-  );
-
   it.each([
     {
       label: "warm",
@@ -4651,11 +5047,15 @@ describe("refreshChatMetadata", () => {
         models: Array<{ id: string; name: string; provider: string; reasoning: boolean }>;
       }>();
       const request = vi.fn((method: string, params?: unknown) => {
-        expect(params).toEqual(
-          method === "models.list"
-            ? { view: "configured", agentId: "work", sessionKey: "agent:work:main" }
-            : { agentId: "work", sessionKey: "agent:work:main" },
-        );
+        if (method === "sessions.describe") {
+          return Promise.resolve({});
+        }
+        expect(method).toBe("models.list");
+        expect(params).toEqual({
+          view: "configured",
+          agentId: "work",
+          sessionKey: "agent:work:main",
+        });
         return discovery.promise;
       });
       const state = createMetadataState(request, {
@@ -4681,7 +5081,11 @@ describe("refreshChatMetadata", () => {
           reasoning: true,
         },
       ]);
-      expect(invalidateSessions).toHaveBeenCalledOnce();
+      expect(invalidateSessions).not.toHaveBeenCalled();
+      expect(request).toHaveBeenCalledWith("sessions.describe", {
+        key: "agent:work:main",
+        agentId: "work",
+      });
       expect(state.chatModelCatalogError).toBeNull();
     },
   );
@@ -4735,11 +5139,11 @@ describe("refreshChatMetadata", () => {
     await refreshChatMetadata(state);
     expect(request.mock.calls.filter(([method]) => method === "models.list")).toHaveLength(3);
     expect(state.chatModelCatalog[0]?.id).toBe("other-model");
-    expect(request).toHaveBeenLastCalledWith(
-      "models.list",
-      { view: "configured", agentId: "other", sessionKey: "agent:other:main" },
-      { signal: expect.any(AbortSignal) },
-    );
+    expect(request).toHaveBeenLastCalledWith("models.list", {
+      view: "configured",
+      agentId: "other",
+      sessionKey: "agent:other:main",
+    });
   });
 
   it("ignores metadata after switching to a different agent", async () => {
@@ -4839,11 +5243,14 @@ describe("refreshChatMetadata", () => {
 
   it("retains rows after catalog failure and clears failure on a successful empty publication", async () => {
     const model = { id: "retained", name: "Retained", provider: "example" };
-    const request = vi
+    const catalog = vi
       .fn()
       .mockResolvedValueOnce({ models: [model], refreshFailed: true })
       .mockRejectedValueOnce(new Error("catalog transport failed"))
       .mockResolvedValueOnce({ models: [] });
+    const request = vi.fn((method: string) =>
+      method === "models.list" ? catalog() : Promise.resolve({}),
+    );
     const state = createMetadataState(request);
     await refreshChatModelCatalogOnDemand(state);
     expect(state.chatModelCatalog).toEqual([model]);

@@ -205,6 +205,19 @@ export const PluginCatalogEntrySchema = closedObject({
   order: Type.Optional(Type.Number()),
   /** True when the gateway can resolve a manifest or catalog icon for this plugin identity. */
   hasIcon: Type.Optional(Type.Boolean()),
+  /** True when the installed package supplies a default compact activity glyph. */
+  hasActivityIcon: Type.Optional(Type.Boolean()),
+  /** Exact effective tool IDs with package-owned activity glyph overrides. */
+  activityIconTools: Type.Optional(
+    Type.Array(
+      Type.String({
+        minLength: 1,
+        maxLength: 128,
+        pattern: "^[A-Za-z0-9_][A-Za-z0-9_.-]*$",
+      }),
+      { maxItems: 128 },
+    ),
+  ),
   /** Channel identities declared by this installed plugin. */
   channelIds: Type.Optional(Type.Array(NonEmptyString)),
   install: Type.Optional(PluginCatalogInstallActionSchema),
@@ -442,6 +455,7 @@ export const PluginDiscoveryEntrySchema = closedObject({
 
 export const PluginsCatalogBrowseParamsSchema = closedObject({
   query: Type.Optional(Type.String({ maxLength: 200 })),
+  searchSource: Type.Optional(Type.Literal("openclaw-control-ui")),
   intent: Type.Optional(PluginDiscoveryIntentSchema),
   category: Type.Optional(
     Type.String({ minLength: 1, maxLength: 64, pattern: "^[a-z][a-z0-9-]*$" }),

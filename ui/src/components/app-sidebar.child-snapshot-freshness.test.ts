@@ -1,6 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { describe, expect, it, vi } from "vitest";
+import { createDeferred as deferred } from "../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
 import type { GatewaySessionRow, SessionsListResult } from "../api/types.ts";
 import { childSessionListQuery } from "../lib/sessions/child-session-data.ts";
@@ -9,7 +10,6 @@ import "../test-helpers/app-sidebar-suite.ts";
 import {
   createGatewayHarness,
   createSessionsHarness,
-  deferred,
   mountSidebar,
 } from "../test-helpers/app-sidebar.ts";
 import { createTestGatewayClient } from "../test-helpers/gateway-client.ts";
@@ -582,7 +582,9 @@ describe("sidebar child snapshot freshness", () => {
       await vi.advanceTimersByTimeAsync(250);
       expect(harness.list).toHaveBeenCalledTimes(1);
       initial.resolve(result([child]));
-      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(harness.list).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
       expect(harness.list).toHaveBeenCalledTimes(2);
       await load;
       queued.reject(new Error("Child refresh failed"));
@@ -597,7 +599,7 @@ describe("sidebar child snapshot freshness", () => {
       expect(sidebar.sessionData.loadedChildSessionKeys.has(parentKey)).toBe(false);
 
       publishChildChanged();
-      await vi.advanceTimersByTimeAsync(250);
+      await vi.advanceTimersByTimeAsync(1_000);
       expect(harness.list).toHaveBeenCalledTimes(2);
       expect(sidebar.sessionData.childSessionErrorsByParent.get(parentKey)).toBe(
         "Child refresh failed",

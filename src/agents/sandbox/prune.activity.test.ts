@@ -81,6 +81,7 @@ describe("sandbox prune activity coordination", () => {
       const settled = createDeferredCore();
       class FileBridge implements SandboxFsBridge {
         private readonly physicalPath = "/workspace/physical";
+        readonly pathMappings = [{ hostRoot: stateDir, containerRoot: "/workspace" }];
         resolvePath() {
           return { relativePath: "alias", containerPath: "/workspace/alias" };
         }
@@ -156,6 +157,9 @@ describe("sandbox prune activity coordination", () => {
           };
           const bridge =
             backend.createFsBridge?.(bridgeParams) ?? createSandboxFsBridge(bridgeParams);
+          expect(bridge.pathMappings).toEqual([
+            { hostRoot: stateDir, containerRoot: "/workspace" },
+          ]);
           expect(await bridge.readDirectory?.({ filePath: "." })).toEqual([
             { name: "/workspace/physical", isDirectory: false },
           ]);

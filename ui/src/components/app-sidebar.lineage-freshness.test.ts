@@ -1,18 +1,14 @@
 /* @vitest-environment jsdom */
 
 import { describe, expect, it, vi } from "vitest";
+import { createDeferred as deferred } from "../../../test/helpers/promise.js";
 import type { GatewaySessionRow, SessionsListResult, SessionsPatchResult } from "../api/types.ts";
 import {
   createTestSessionCapability,
   sessionsResult,
 } from "../lib/sessions/session-capability.test-support.ts";
 import "../test-helpers/app-sidebar-suite.ts";
-import {
-  createGateway,
-  createGatewayHarness,
-  deferred,
-  mountSidebar,
-} from "../test-helpers/app-sidebar.ts";
+import { createGateway, createGatewayHarness, mountSidebar } from "../test-helpers/app-sidebar.ts";
 import { createTestGatewayClient } from "../test-helpers/gateway-client.ts";
 import { waitForFast } from "../test-helpers/wait-for.ts";
 import "./app-sidebar.ts";
@@ -125,6 +121,20 @@ describe("sidebar routed-lineage freshness", () => {
         await sidebar.updateComplete;
         expect(sidebar.sessionKey).toBe(selected.key);
         expect(sidebar.activeRouteId).toBe("chat");
+        expect(sidebar.sessionData.activeSessionLineageSelectedRow?.key).toBe(selected.key);
+        expect(sidebar.sessionData.sessionsResult?.sessions).toEqual([]);
+        expect(row()).toBeNull();
+
+        const describes = () =>
+          request.mock.calls.filter(
+            ([method, params]) => method === "sessions.describe" && params?.key === selected.key,
+          );
+        const settledDescribes = describes().length;
+        await sessions.refresh({ agentId: "main", force: true });
+        await sidebar.updateComplete;
+        await sidebar.sessionData.loadActiveSessionLineage(selected.key);
+        await sidebar.updateComplete;
+        expect(describes()).toHaveLength(settledDescribes);
         expect(sidebar.sessionData.activeSessionLineageSelectedRow?.key).toBe(selected.key);
         expect(sidebar.sessionData.sessionsResult?.sessions).toEqual([]);
         expect(row()).toBeNull();

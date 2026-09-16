@@ -69,7 +69,9 @@ export type VoiceRealtimeAgentTurnParams = {
   message: string;
   toolsAllow?: string[];
   userId: string;
+  isCurrent: () => boolean;
   signal?: AbortSignal;
+  voiceSelection?: import("openclaw/plugin-sdk/realtime-voice").RealtimeVoiceSelectionHandle;
 };
 
 export type VoiceRealtimeSpeakerTurn = {
@@ -85,8 +87,6 @@ export type VoiceRealtimeSession = {
   ) => VoiceRealtimeSpeakerTurn;
   close: () => void | Promise<void>;
   connect: () => Promise<void>;
-  handleBargeIn: (reason?: string) => void;
-  isBargeInEnabled: () => boolean;
   canReceiveDuringPlayback: () => boolean;
 };
 

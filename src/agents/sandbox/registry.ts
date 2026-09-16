@@ -32,7 +32,6 @@ export type SandboxRegistryEntry = {
   runtimeState?: "pending" | "ready" | "removing" | "removing-pending";
   /** Existing row revision used to fence destructive lifecycle cleanup. */
   registryGeneration?: number;
-  cleanupMetadata?: Record<string, string>;
 };
 
 type SandboxRegistry = {
@@ -151,17 +150,15 @@ function rowToBrowserEntry(row: SandboxRegistryRow): SandboxBrowserRegistryEntry
 function containerEntryToRow(entry: SandboxRegistryEntry, existing?: SandboxRegistryEntry | null) {
   const next: SandboxRegistryEntry = {
     ...entry,
-    backendId: existing?.backendId ?? entry.backendId,
-    backendTarget: existing?.backendTarget ?? entry.backendTarget,
-    runtimeLabel: existing?.runtimeLabel ?? entry.runtimeLabel,
-    sessionKey: existing?.sessionKey ?? entry.sessionKey,
+    backendId: entry.backendId ?? existing?.backendId,
+    backendTarget: entry.backendTarget ?? existing?.backendTarget,
+    runtimeLabel: entry.runtimeLabel ?? existing?.runtimeLabel,
     createdAtMs: existing?.createdAtMs ?? entry.createdAtMs,
     image: existing?.image ?? entry.image,
     configLabelKind: entry.configLabelKind ?? existing?.configLabelKind,
     configHash: entry.configHash ?? existing?.configHash,
     runtimeState: entry.runtimeState ?? existing?.runtimeState,
     workspaceDir: existing?.workspaceDir ?? entry.workspaceDir,
-    cleanupMetadata: existing ? existing.cleanupMetadata : entry.cleanupMetadata,
   };
   return {
     registry_kind: "container",

@@ -77,6 +77,14 @@ type StreamPerfProbe = {
   rafCount: number;
   hostUpdates: number;
   hostUpdatesInsideFrame: number;
+  offFrameUpdates: Array<{
+    host: "page" | "pane";
+    property: string;
+    rafCount: number;
+    phase: "burst" | "settling";
+    callers: string[];
+  }>;
+  droppedOffFrameUpdates: number;
 };
 
 type ToolProjectionProbe = {
@@ -130,6 +138,8 @@ async function installRenderProbe(page: ChatFlowPage) {
       rafCount: 0,
       hostUpdates: 0,
       hostUpdatesInsideFrame: 0,
+      offFrameUpdates: [],
+      droppedOffFrameUpdates: 0,
     };
     new MutationObserver((records) => {
       if (records.length > 0) {
@@ -162,6 +172,47 @@ async function installRenderProbe(page: ChatFlowPage) {
     }
     const ownerPrototype = owner as { requestUpdate: (...args: unknown[]) => unknown };
     const originalRequestUpdate = ownerPrototype.requestUpdate;
+    const propertyNames = (
+      "data navDrawerOpen presented layout narrow mergedChrome dropIndicator " +
+      "paneId presentationId chatMessagesBySession sessionSnapshotStore sessionKey " +
+      "routeLoadingSkeleton agentId inputRegion compact workContext draft focusComposer " +
+      "dashboardExpanded routeFace onFaceChange onFocusPane onSessionDeleted paneTitle " +
+      "onboarding onOpenSplitView onSplitDown onSplitRight onClosePane boardProvider"
+    ).split(" ");
+    const chunkNames = [
+      "control-ui-boot-chat",
+      "control-ui-boot-shared",
+      "control-ui-boot-new",
+      "control-ui-core",
+      "control-ui-foundation",
+      "lit-runtime",
+      "index",
+    ];
+    const sourceNames = new Set([
+      "chat-state-render",
+      "chat-state-controller",
+      "chat-state-events",
+      "chat-state-refresh",
+      "chat-pane-context",
+      "chat-pane-base",
+      "chat-page",
+      "chat-page-retained-sessions",
+      "subscriptions-controller",
+      "poll-controller",
+      "reactive-element",
+    ]);
+    const classifyCaller = (frame: string): string => {
+      const location = frame.match(/\/([^/\s?#]+)\.(js|ts)(?:\?[^\s]*)?:(\d{1,7}):(\d{1,7})\)?$/);
+      const name = location?.[1] ?? "";
+      const knownChunk = chunkNames.some(
+        (prefix) =>
+          name.startsWith(`${prefix}-`) &&
+          /^[A-Za-z0-9_-]{1,64}$/.test(name.slice(prefix.length + 1)),
+      );
+      return location && (knownChunk || sourceNames.has(name))
+        ? `${name}.${location[2]}:${location[3]}:${location[4]}`
+        : "unknown";
+    };
     ownerPrototype.requestUpdate = function patchedRequestUpdate(this: object, ...args: unknown[]) {
       const probe = scope.ocStreamPerf!;
       const tag = (this as HTMLElement).localName;
@@ -169,6 +220,22 @@ async function installRenderProbe(page: ChatFlowPage) {
         probe.hostUpdates += 1;
         if (insideFrame) {
           probe.hostUpdatesInsideFrame += 1;
+        } else if (probe.offFrameUpdates.length < 12) {
+          // Keep only known source/asset basenames and coordinates, never raw stacks or values.
+          // The asset suffix identifies the exact source map; RAF count counts callbacks.
+          const stack = new Error().stack ?? "";
+          probe.offFrameUpdates.push({
+            host: tag === "openclaw-chat-page" ? "page" : "pane",
+            property:
+              args[0] === undefined
+                ? "explicit"
+                : (propertyNames.find((name) => name === args[0]) ?? "other"),
+            rafCount: probe.rafCount,
+            phase: scope.ocBurstDone === true ? "settling" : "burst",
+            callers: stack.slice(0, 4096).split("\n").slice(2, 8).map(classifyCaller),
+          });
+        } else {
+          probe.droppedOffFrameUpdates += 1;
         }
       }
       return originalRequestUpdate.apply(this, args);
@@ -184,6 +251,8 @@ async function resetRenderProbe(page: ChatFlowPage) {
       rafCount: 0,
       hostUpdates: 0,
       hostUpdatesInsideFrame: 0,
+      offFrameUpdates: [],
+      droppedOffFrameUpdates: 0,
     };
   });
 }
@@ -514,9 +583,10 @@ suite.define(() => {
 
       expect(probe.hostUpdates).toBeGreaterThanOrEqual(MIN_BURST_HOST_UPDATES);
       expect(probe.hostUpdates).toBeLessThanOrEqual(MAX_BURST_HOST_UPDATES);
-      expect(probe.hostUpdatesInsideFrame / probe.hostUpdates).toBeGreaterThanOrEqual(
-        FRAME_SCHEDULED_MIN_RATIO,
-      );
+      expect(
+        probe.hostUpdatesInsideFrame / probe.hostUpdates,
+        `frame-scheduled update budget: ${JSON.stringify(probe)}`,
+      ).toBeGreaterThanOrEqual(FRAME_SCHEDULED_MIN_RATIO);
     });
   });
 
@@ -606,7 +676,16 @@ suite.define(() => {
     });
   });
 
-  it("keeps steady-state composer edits local to a long transcript", async () => {
+  it.each([
+    {
+      name: "keeps steady-state composer edits local to a long transcript",
+      scrollAwayAndBack: false,
+    },
+    {
+      name: "keeps composer edits local after scrolling returns to the same offset",
+      scrollAwayAndBack: true,
+    },
+  ])("$name", async ({ scrollAwayAndBack }) => {
     await suite.withPage(createControlUiE2eContextOptions(), async ({ page }) => {
       const gateway = await installMockGateway(page, {
         historyMessages: buildLongTranscriptFixture(LONG_TRANSCRIPT_MESSAGE_COUNT),
@@ -622,13 +701,35 @@ suite.define(() => {
       // The first saved draft notifies presence subscribers. Drain that transition
       // before measuring edits to an already-present draft.
       await waitForCommittedComposerDraft(page, scopeKey, "seed", 0);
+      const scrollDuringWait = scrollAwayAndBack
+        ? page.locator(".chat-pane-cache__pane--active .chat-thread").evaluate(async (element) => {
+            const thread = element as HTMLElement;
+            const originalTop = thread.scrollTop;
+            // Move during the stability sample, then restore its original geometry.
+            await new Promise<void>((resolve) => {
+              globalThis.setTimeout(resolve, 100);
+            });
+            thread.scrollTo({ top: originalTop - 8, behavior: "instant" });
+            await new Promise<void>((resolve) => {
+              requestAnimationFrame(() => resolve());
+            });
+            const awayTop = thread.scrollTop;
+            thread.scrollTo({ top: originalTop, behavior: "instant" });
+            return { originalTop, awayTop, restoredTop: thread.scrollTop };
+          })
+        : Promise.resolve(null);
       // Finish startup scrolling before measuring steady-state composer invalidations.
       await waitForChatScrollIdle(page);
+      const scroll = await scrollDuringWait;
+      if (scroll) {
+        expect(scroll.awayTop).toBeLessThan(scroll.originalTop);
+        expect(scroll.restoredTop).toBe(scroll.originalTop);
+      }
       await installRenderProbe(page);
       await resetRenderProbe(page);
 
       const suffix = " ordinary typing without commands";
-      await composer.pressSequentially(suffix);
+      await composer.pressSequentially(suffix, { delay: scrollAwayAndBack ? 5 : 0 });
       await waitForCommittedComposerDraft(page, scopeKey, `seed${suffix}`, 0);
       expect(await composer.inputValue()).toBe(`seed${suffix}`);
       const probe = await readRenderProbe(page);

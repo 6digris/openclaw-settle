@@ -26,13 +26,13 @@ type RuntimeGenerationCheck = () => Promise<void>;
 type CoordinatedExec = {
   lease: RuntimeActivityLease;
   rawToken: unknown;
+  finalization?: Promise<void>;
 };
 
 const runtimeActivityStates = resolveGlobalMap<string, RuntimeActivityState>(
   Symbol.for("openclaw.sandboxRuntimeActivityStates"),
   "close-and-restart",
 );
-const coordinatedExecs = new Map<object, CoordinatedExec>();
 const coordinatedHandles = new WeakMap<SandboxBackendHandle, SandboxBackendHandle>();
 const RETRY_MS = 25;
 const STALE_MS = 60 * 60 * 1000;
@@ -245,6 +245,9 @@ function wrapFsBridge(
         operation(params),
       );
   const coordinated = {
+    get pathMappings() {
+      return bridge.pathMappings;
+    },
     resolvePath: (params: Parameters<SandboxFsBridge["resolvePath"]>[0]) =>
       bridge.resolvePath(params),
     [SANDBOX_FILE_IDENTITY]: wrap(async (params: Parameters<SandboxFsBridge["readFile"]>[0]) =>
@@ -279,6 +282,8 @@ export function coordinateSandboxBackendHandle(
   const key =
     handle.runtimeActivityKey ?? resolveSandboxRuntimeActivityKey(handle.id, handle.runtimeId);
   const generation = activateSandboxRuntimeActivity(key);
+  // Tokens belong to this handle, and repeated settlement shares its finalizer.
+  const coordinatedExecs = new WeakMap<object, CoordinatedExec>();
   const coordinated: SandboxBackendHandle = {
     ...handle,
     ...(handle.validateWorkdir
@@ -306,17 +311,15 @@ export function coordinateSandboxBackendHandle(
         params.token && typeof params.token === "object" ? params.token : undefined;
       const token = tokenObject ? coordinatedExecs.get(tokenObject) : undefined;
       if (!token) {
-        await handle.finalizeExec?.(params);
         return;
       }
-      try {
-        await handle.finalizeExec?.({ ...params, token: token.rawToken });
-      } finally {
-        if (tokenObject) {
-          coordinatedExecs.delete(tokenObject);
+      await (token.finalization ??= Promise.resolve().then(async () => {
+        try {
+          await handle.finalizeExec?.({ ...params, token: token.rawToken });
+        } finally {
+          await token.lease.release();
         }
-        await token.lease.release();
-      }
+      }));
     },
     async runShellCommand(params: SandboxBackendCommandParams) {
       return await withRuntimeActivity(key, generation, assertSharedCurrent, params.signal, () =>

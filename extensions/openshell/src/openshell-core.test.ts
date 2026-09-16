@@ -137,18 +137,6 @@ function resetOpenShellBackendMocks() {
   );
 }
 
-function createOpenShellCleanupMetadata(
-  config = resolveOpenShellPluginConfig({ command: "/usr/local/bin/openshell", gateway: "lab" }),
-) {
-  return {
-    locatorVersion: "1",
-    command: config.command,
-    gateway: config.gateway ?? "",
-    gatewayEndpoint: config.gatewayEndpoint ?? "",
-    workspace: config.workspace ?? "default",
-  };
-}
-
 describe("openshell cli helpers", () => {
   const originalEnv = { ...process.env };
 
@@ -587,7 +575,7 @@ describe("openshell backend manager", () => {
     },
   );
 
-  it("removes runtimes using their recorded OpenShell control plane", async () => {
+  it("removes runtimes using the current OpenShell control-plane configuration", async () => {
     cliMocks.runOpenShellCli.mockResolvedValue({
       code: 0,
       stdout: "",
@@ -601,16 +589,25 @@ describe("openshell backend manager", () => {
       }),
     });
 
+    await manager.removeRuntime({
+      entry: createOpenShellRuntimeEntryFixture("openclaw-session-5678"),
+      config: {},
+    });
+
     const expectedConfig = resolveOpenShellPluginConfig({
       command: "/usr/local/bin/openshell",
       gateway: "lab",
-      workspace: "default",
     });
-    await manager.removeRuntime({
-      entry: {
-        ...createOpenShellRuntimeEntryFixture("openclaw-session-5678"),
-        cleanupMetadata: createOpenShellCleanupMetadata(),
+    expect(cliMocks.runOpenShellCli).toHaveBeenCalledWith({
+      context: {
+        sandboxName: "openclaw-session-5678",
+        config: expectedConfig,
       },
+      args: ["sandbox", "delete", "openclaw-session-5678"],
+    });
+
+    await manager.removeRuntime({
+      entry: createOpenShellRuntimeEntryFixture("openclaw-session-5678"),
       config: {
         plugins: {
           entries: {
@@ -630,35 +627,14 @@ describe("openshell backend manager", () => {
     expect(cliMocks.runOpenShellCli).toHaveBeenLastCalledWith({
       context: {
         sandboxName: "openclaw-session-5678",
-        config: expectedConfig,
+        config: resolveOpenShellPluginConfig({
+          command: "/opt/openshell/bin/openshell",
+          gateway: "research",
+          workspace: "team-1",
+        }),
       },
       args: ["sandbox", "delete", "openclaw-session-5678"],
     });
-  });
-
-  it("refuses to delete an OpenShell runtime without an authoritative locator", async () => {
-    const manager = createOpenShellSandboxBackendManager({
-      pluginConfig: resolveOpenShellPluginConfig({ command: "openshell" }),
-    });
-
-    await expect(
-      manager.removeRuntime({
-        entry: createOpenShellRuntimeEntryFixture("openclaw-session-legacy"),
-        config: {},
-      }),
-    ).rejects.toThrow("has no authoritative cleanup locator");
-    await expect(
-      manager.removeRuntime({
-        entry: {
-          ...createOpenShellRuntimeEntryFixture("openclaw-session-ambient"),
-          cleanupMetadata: createOpenShellCleanupMetadata(
-            resolveOpenShellPluginConfig({ command: "openshell" }),
-          ),
-        },
-        config: {},
-      }),
-    ).rejects.toThrow("has no authoritative cleanup locator");
-    expect(cliMocks.runOpenShellCli).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -677,10 +653,7 @@ describe("openshell backend manager", () => {
 
     await expect(
       manager.removeRuntime({
-        entry: {
-          ...createOpenShellRuntimeEntryFixture("openclaw-session-5678"),
-          cleanupMetadata: createOpenShellCleanupMetadata(),
-        },
+        entry: createOpenShellRuntimeEntryFixture("openclaw-session-5678"),
         config: {},
       }),
     ).rejects.toThrow(expected);
@@ -709,6 +682,71 @@ describe("openshell backend manager", () => {
     ).rejects.toThrow(/unresolved placeholder token <name>/);
     expect(cliMocks.runOpenShellCli).not.toHaveBeenCalled();
   });
+
+  it.each(["remote", "mirror"] as const)(
+    "rejects invalid exec environment before SSH staging and releases the %s session",
+    async (mode) => {
+      await using workspace = await createOpenShellTestWorkspace("env-workspace");
+      await using remote = await createOpenShellTestWorkspace("env-remote");
+      await using agentRemote = await createOpenShellTestWorkspace("env-agent");
+      sandboxMocks.remoteRoot = remote.dir;
+      sandboxMocks.remoteAgentRoot = agentRemote.dir;
+      cliMocks.runOpenShellCli.mockResolvedValue({ code: 0, stdout: "", stderr: "" });
+      const sshCommand = await makeExecutable({
+        name: "ssh-refuse",
+        script: ["#!/bin/sh", `printf 'unexpected launch\\n' >> "__LOG__"`, "exit 91"].join("\n"),
+      });
+      const logPath = expectDefined(process.env.OPEN_SHELL_CLI_TEST_LOG, "SSH launch record");
+      await fs.writeFile(logPath, "not launched\n", "utf8");
+      const session = {
+        command: sshCommand,
+        configPath: path.join(workspace.dir, "ssh-config"),
+        host: "openshell-test",
+      };
+      cliMocks.createOpenShellSshSession.mockResolvedValue(session);
+      const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/sandbox")>(
+        "openclaw/plugin-sdk/sandbox",
+      );
+      let disposalCallsAtPrepare = 0;
+      sandboxMocks.prepareSshSandboxExec.mockImplementationOnce(async (params) => {
+        disposalCallsAtPrepare = sandboxMocks.disposeSshSandboxSession.mock.calls.length;
+        return await actual.prepareSshSandboxExec(params);
+      });
+      const backend = await createOpenShellBackendFixture({
+        workspaceDir: workspace.dir,
+        mode,
+      });
+      const rejection = await backend
+        .buildExecSpec({
+          command: "true",
+          env: { "INVALID-NAME": "fixture" },
+          usePty: false,
+        })
+        .catch((error: unknown) => error);
+
+      expect(rejection).toBeInstanceOf(Error);
+      await expect(fs.readFile(logPath, "utf8")).resolves.toBe("not launched\n");
+      expect(sandboxMocks.disposeSshSandboxSession).toHaveBeenCalledTimes(
+        disposalCallsAtPrepare + 1,
+      );
+      expect(sandboxMocks.disposeSshSandboxSession).toHaveBeenLastCalledWith(session);
+
+      const valid = await backend.buildExecSpec({
+        command: "true",
+        env: { VALID_NAME: "fixture" },
+        usePty: false,
+      });
+      await backend.finalizeExec?.({
+        status: "completed",
+        exitCode: 0,
+        timedOut: false,
+        token: valid.finalizeToken,
+      });
+      expect(sandboxMocks.cleanupPreparedExec).toHaveBeenCalledOnce();
+      await expect(fs.readFile(logPath, "utf8")).resolves.toBe("not launched\n");
+      expect(String(rejection)).toContain("Invalid sandbox environment variable name");
+    },
+  );
 
   it.each(["completed", "failed"] as const)(
     "stages exec environment outside SSH argv and finalizes %s before session disposal",
@@ -1332,6 +1370,10 @@ describe("openshell fs bridges", () => {
       if (!bridge) {
         throw new Error("Expected an OpenShell filesystem bridge");
       }
+      expect(bridge.pathMappings).toContainEqual({
+        hostRoot: path.resolve(workspaceDir),
+        containerRoot: "/sandbox",
+      });
       expect(bridge.resolvePath({ filePath: "owner.txt" })).toEqual({
         ...(mode === "mirror" ? { hostPath: path.join(workspaceDir, "owner.txt") } : {}),
         relativePath: "owner.txt",
@@ -1646,21 +1688,29 @@ describe("openshell fs bridges", () => {
     });
   });
 
-  it("removes recursive local mirror directories without raw path deletion", async () => {
-    await using workspace = await createOpenShellTestWorkspace("fs");
-    const workspaceDir = workspace.dir;
-    await fs.mkdir(path.join(workspaceDir, "nested", "child"), { recursive: true });
-    await fs.writeFile(path.join(workspaceDir, "nested", "child", "target.txt"), "payload", "utf8");
-    const { backend, bridge } = await createMirrorFsBridgeFixture(workspaceDir);
-    await bridge.remove({ filePath: "nested", recursive: true, force: true });
+  it.each(["nested", "."])(
+    "removes deep local mirror trees at %s while retaining the mounted root",
+    async (filePath) => {
+      await using workspace = await createOpenShellTestWorkspace("fs");
+      const workspaceDir = workspace.dir;
+      const rootIdentity = await fs.stat(workspaceDir, { bigint: true });
+      const deepestDir = path.join(workspaceDir, "nested", ...Array<string>(65).fill("d"));
+      await fs.mkdir(deepestDir, { recursive: true });
+      await fs.writeFile(path.join(deepestDir, "target.txt"), "payload", "utf8");
+      const { backend, bridge } = await createMirrorFsBridgeFixture(workspaceDir);
+      await bridge.remove({ filePath, recursive: true, force: true });
 
-    await expectPathMissing(path.join(workspaceDir, "nested"));
-    expect(backend["removeRemotePath"]).toHaveBeenCalledWith("/sandbox/nested", {
-      recursive: true,
-      signal: undefined,
-      ignoreMissing: true,
-    });
-  });
+      await expect(fs.readdir(workspaceDir)).resolves.toEqual([]);
+      await expect(fs.stat(workspaceDir, { bigint: true })).resolves.toMatchObject({
+        dev: rootIdentity.dev,
+        ino: rootIdentity.ino,
+      });
+      expect(backend["removeRemotePath"]).toHaveBeenCalledWith(
+        filePath === "." ? "/sandbox" : "/sandbox/nested",
+        { recursive: true, signal: undefined, ignoreMissing: true },
+      );
+    },
+  );
 
   it.runIf(process.platform !== "win32")(
     "removes recursive local mirror directories containing symlink leaves without following them",
@@ -1673,6 +1723,8 @@ describe("openshell fs bridges", () => {
       await fs.mkdir(path.join(workspaceDir, "nested"), { recursive: true });
       await fs.writeFile(outsideTarget, "outside", "utf8");
       await fs.symlink(outsideTarget, path.join(workspaceDir, "nested", "link.txt"));
+      await fs.symlink(outsideDir, path.join(workspaceDir, "nested", "directory-link"));
+      await fs.symlink("missing", path.join(workspaceDir, "nested", "dangling-link"));
       const { bridge } = await createMirrorFsBridgeFixture(workspaceDir);
       await bridge.remove({ filePath: "nested", recursive: true, force: true });
 
@@ -1681,9 +1733,9 @@ describe("openshell fs bridges", () => {
     },
   );
 
-  it.runIf(process.platform !== "win32")(
-    "removes local mirror symlink leaves when force is false",
-    async () => {
+  it.runIf(process.platform !== "win32").each([false, true])(
+    "removes local mirror symlink leaves when force is false and recursive is %s",
+    async (recursive) => {
       await using workspace = await createOpenShellTestWorkspace("fs");
       const workspaceDir = workspace.dir;
       await using outsideWorkspace = await createOpenShellTestWorkspace("outside");
@@ -1692,15 +1744,28 @@ describe("openshell fs bridges", () => {
       await fs.writeFile(outsideTarget, "outside", "utf8");
       await fs.symlink(outsideTarget, path.join(workspaceDir, "link.txt"));
       const { backend, bridge } = await createMirrorFsBridgeFixture(workspaceDir);
-      await bridge.remove({ filePath: "link.txt", force: false });
+      await bridge.remove({ filePath: "link.txt", force: false, recursive });
 
       await expectPathMissing(path.join(workspaceDir, "link.txt"));
       await expect(fs.readFile(outsideTarget, "utf8")).resolves.toBe("outside");
       expect(backend["removeRemotePath"]).toHaveBeenCalledWith("/sandbox/link.txt", {
-        recursive: false,
+        recursive,
         signal: undefined,
         ignoreMissing: false,
       });
+    },
+  );
+
+  it.each([false, true])(
+    "preserves missing local mirror path handling when recursive is %s",
+    async (recursive) => {
+      await using workspace = await createOpenShellTestWorkspace("fs");
+      const { bridge } = await createMirrorFsBridgeFixture(workspace.dir);
+
+      await expect(
+        bridge.remove({ filePath: "missing", recursive, force: false }),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(bridge.remove({ filePath: "missing", recursive })).resolves.toBeUndefined();
     },
   );
 
@@ -2020,7 +2085,7 @@ describe("openshell fs bridges", () => {
     await using agentWorkspace = await createOpenShellTestWorkspace("agent");
     const agentWorkspaceDir = agentWorkspace.dir;
     await fs.writeFile(path.join(agentWorkspaceDir, "note.txt"), "agent", "utf8");
-    const backend = createMirrorBackendMock();
+    const backend = { ...createMirrorBackendMock(), remoteAgentWorkspaceDir: "/native-agent-root" };
     const sandbox = createSandboxTestContext({
       overrides: {
         backendId: "openshell",
@@ -2033,10 +2098,16 @@ describe("openshell fs bridges", () => {
 
     const { createOpenShellFsBridge } = await import("./fs-bridge.js");
     const bridge = createOpenShellFsBridge({ sandbox, backend });
-    const resolved = bridge.resolvePath({ filePath: "/agent/note.txt" });
+    expect(bridge.pathMappings).toContainEqual({
+      hostRoot: path.resolve(agentWorkspaceDir),
+      containerRoot: "/native-agent-root",
+    });
+    const resolved = bridge.resolvePath({ filePath: "/native-agent-root/note.txt" });
     expect(resolved.hostPath).toBe(path.join(agentWorkspaceDir, "note.txt"));
-    expect(await bridge.readFile({ filePath: "/agent/note.txt" })).toEqual(Buffer.from("agent"));
-    await expect(bridge.readDirectory({ filePath: "/agent" })).resolves.toEqual([
+    expect(await bridge.readFile({ filePath: "/native-agent-root/note.txt" })).toEqual(
+      Buffer.from("agent"),
+    );
+    await expect(bridge.readDirectory({ filePath: "/native-agent-root" })).resolves.toEqual([
       { name: "note.txt", isDirectory: false },
     ]);
   });

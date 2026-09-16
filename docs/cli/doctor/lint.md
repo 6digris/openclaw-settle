@@ -72,7 +72,7 @@ Explicit lint exit codes:
 
 When the updater runs lint, warning-severity findings below its error threshold are retained in a separate JSON `warnings` array. They do not change the lint exit code. The updater records these advisories in its run history, including intentional open channel policies, so they remain available in `openclaw update status`. Ordinary standalone lint keeps the selected output threshold.
 
-Bare `openclaw doctor --json` exits `0` once it emits a findings payload, including when `ok` is `false`. Argument errors or runtime failures before a payload can be produced remain nonzero.
+Bare `openclaw doctor --json` exits `0` once it emits a findings payload, including when `ok` is `false`. Argument errors remain nonzero. If the lint runner fails before producing a report, Doctor exits `2` and emits one redacted `{ ok: false, error: { type: "cli_error", message } }` document on stdout in JSON mode, without generic CLI startup guidance.
 
 `--all` controls which checks are selected before severity filtering. The default lint run excludes checks that are deep, historical, or more likely to surface repairable legacy residue; use `--all` for the complete inventory. `--only <id>` is the most precise selector and can run any registered check by id.
 
@@ -101,6 +101,15 @@ To check model credentials, run `openclaw doctor --lint --only core/doctor/auth-
 This opt-in check inspects shared credentials and each configured agent's local
 auth store, including fleets without a default agent. Shared credential problems
 are reported once; agent-specific cooldowns remain attributed to their local store.
+
+`core/doctor/runtime-tool-schemas` does not probe OAuth-backed MCP servers in read-only
+Doctor reports, including triage and update checks. A probe can rotate a refresh token
+at the external server even when local state writes go to a disposable snapshot.
+Doctor reports this deferral at informational severity; use `--severity-min info` to
+display it. For servers in `mcp.servers`, run `openclaw mcp probe <name>` against the
+serving configuration. Validate plugin-provided servers or agent-local auth profiles
+from an authenticated serving-agent turn so refreshed credentials persist with their
+owner. Non-OAuth MCP schema checks still run.
 
 ## Post-upgrade mode
 

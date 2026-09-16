@@ -113,13 +113,19 @@ export async function startBrowserBridgeServer(params: {
   ) => {
     return (req: Request, res: Response, next: NextFunction) => {
       const abort = new AbortController();
+      let settleResponse: () => void = () => undefined;
+      const responseSettled = new Promise<void>((resolve) => {
+        settleResponse = resolve;
+      });
       const abortRequest = () => abort.abort(new Error("Browser bridge request disconnected."));
       const abortIncompleteResponse = () => {
         if (!res.writableFinished) {
           abortRequest();
         }
+        settleResponse();
       };
       req.once("aborted", abortRequest);
+      res.once("finish", settleResponse);
       res.once("close", abortIncompleteResponse);
       void (async () => {
         let activity: { release(): Promise<void> } | null = null;
@@ -135,8 +141,16 @@ export async function startBrowserBridgeServer(params: {
             return;
           }
           await run(req, res, abort.signal);
+        } catch (error) {
+          // Let Express finish the error response before releasing its activity.
+          next(error);
         } finally {
+          // Ending a response need not flush it; disconnection need not settle its handler.
+          if (activity && !res.writableFinished && !res.destroyed) {
+            await responseSettled;
+          }
           req.off("aborted", abortRequest);
+          res.off("finish", settleResponse);
           res.off("close", abortIncompleteResponse);
           await activity?.release();
         }

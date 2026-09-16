@@ -253,6 +253,10 @@ vi.mock("../agents/model-selection.js", () => ({
 vi.mock("../agents/prepared-model-catalog.js", () => ({
   readPreparedModelCatalog: (params?: LoadPreparedModelCatalogParams) =>
     loadPreparedModelCatalogMock(params),
+  loadPreparedModelCatalogSnapshot: async (params?: LoadPreparedModelCatalogParams) => {
+    const entries = loadPreparedModelCatalogMock(params);
+    return { entries, routeVariants: entries };
+  },
   withPreparedModelCatalogOwner: (...args: Parameters<typeof withPreparedModelCatalogOwnerMock>) =>
     withPreparedModelCatalogOwnerMock(...args),
 }));
@@ -293,8 +297,11 @@ vi.mock("../gateway/server-methods/chat.js", () => ({
   replaceOversizedChatHistoryMessages: ({ messages }: { messages: unknown[] }) => ({ messages }),
 }));
 
-vi.mock("../gateway/server-methods/chat-history-pages.js", () => ({
+vi.mock("../gateway/server-methods/chat-history-page-kernel.js", () => ({
   enrichChatHistoryCompactionMarkers: (messages: unknown[]) => messages,
+}));
+
+vi.mock("../gateway/server-methods/chat-history-pages.js", () => ({
   readChatHistoryPage: (params: unknown) => readChatHistoryPageMock(params),
 }));
 
@@ -556,7 +563,7 @@ describe("EmbeddedTuiBackend", () => {
         armSessionDiffBaselineCapture: true,
         emitCommandHooks: true,
         commandSource: "tui:embedded",
-        loadGatewayModelCatalog: expect.any(Function),
+        loadGatewayModelCatalogSnapshot: expect.any(Function),
       }),
     );
     expect(result).toEqual({
@@ -589,11 +596,17 @@ describe("EmbeddedTuiBackend", () => {
       loadPreparedModelCatalogMock.mockReturnValue(catalog);
       createGatewaySessionMock.mockImplementation(
         async ({
-          loadGatewayModelCatalog,
+          loadGatewayModelCatalogSnapshot,
         }: {
-          loadGatewayModelCatalog: () => Promise<unknown[]>;
+          loadGatewayModelCatalogSnapshot: () => Promise<{
+            entries: unknown[];
+            routeVariants: unknown[];
+          }>;
         }) => {
-          expect(await loadGatewayModelCatalog()).toBe(catalog);
+          expect(await loadGatewayModelCatalogSnapshot()).toEqual({
+            entries: catalog,
+            routeVariants: catalog,
+          });
           return {
             ok: true,
             key: input.key,
@@ -957,11 +970,17 @@ describe("EmbeddedTuiBackend", () => {
     buildModelsListResultMock.mockResolvedValue({ models });
     projectSessionsPatchEntryMock.mockImplementation(
       async ({
-        loadGatewayModelCatalog,
+        loadGatewayModelCatalogSnapshot,
       }: {
-        loadGatewayModelCatalog: () => Promise<unknown[]>;
+        loadGatewayModelCatalogSnapshot: () => Promise<{
+          entries: unknown[];
+          routeVariants: unknown[];
+        }>;
       }) => {
-        expect(await loadGatewayModelCatalog()).toBe(catalog);
+        expect(await loadGatewayModelCatalogSnapshot()).toEqual({
+          entries: catalog,
+          routeVariants: catalog,
+        });
         return { ok: true, entry: {} };
       },
     );

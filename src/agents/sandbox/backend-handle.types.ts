@@ -54,6 +54,7 @@ export type SandboxFsBridgeContext = {
   containerWorkdir: string;
   docker: {
     binds?: string[];
+    tmpfs?: string[];
   };
   backend?: {
     runShellCommand(params: SandboxBackendCommandParams): Promise<SandboxBackendCommandResult>;
@@ -71,8 +72,6 @@ export type SandboxBackendHandle = {
   env?: Record<string, string>;
   configLabel?: string;
   configLabelKind?: string;
-  /** Provider-owned locator required to remove this exact runtime after config changes. */
-  cleanupMetadata?: Record<string, string>;
   /**
    * Remote backends own cwd existence checks because valid runtime paths may
    * not exist in the local workspace mirror. Backend validation must be paired

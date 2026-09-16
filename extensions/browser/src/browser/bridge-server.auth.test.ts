@@ -164,6 +164,45 @@ describe("startBrowserBridgeServer auth", () => {
     await vi.waitFor(() => expect(release).toHaveBeenCalledOnce());
   });
 
+  it("holds activity through response backpressure after the handler returns", async () => {
+    const release = vi.fn(async () => {});
+    const received = deferred();
+    const bridge = await startBrowserBridgeServer({
+      resolved: buildResolvedConfig(),
+      authToken: "response-lifetime-fixture",
+      acquireRequestActivity: async () => ({ release }),
+      // A paused client cannot consume this response within the socket buffers.
+      resolveSandboxNoVncToken: () => ({
+        noVncPort: 45678,
+        password: "x".repeat(16 * 1024 * 1024),
+      }),
+    });
+    servers.push({ stop: () => stopBrowserBridgeServer(bridge.server) });
+    let response: import("node:http").ServerResponse | undefined;
+    bridge.server.prependOnceListener("request", (_req, res) => {
+      response = res;
+    });
+    const client = request(
+      `${bridge.baseUrl}/sandbox/novnc?token=response-fixture`,
+      { headers: { Authorization: "Bearer response-lifetime-fixture" } },
+      (incoming) => {
+        incoming.pause();
+        received.resolve();
+      },
+    );
+    client.on("error", () => {});
+    client.end();
+    try {
+      await received.promise;
+      expect(response?.writableEnded).toBe(true);
+      expect(response?.writableFinished).toBe(false);
+      expect(release).not.toHaveBeenCalled();
+    } finally {
+      client.destroy();
+    }
+    await vi.waitFor(() => expect(release).toHaveBeenCalledOnce());
+  });
+
   it("requires auth params", async () => {
     await expect(
       startBrowserBridgeServer({

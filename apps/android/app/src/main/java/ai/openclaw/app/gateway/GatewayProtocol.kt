@@ -26,6 +26,7 @@ data class GatewayRequestFrame(
   val method: String,
   val params: JsonElement? = null,
   val traceparent: String? = null,
+  val expectedProfileId: String? = null,
 )
 
 @Serializable
@@ -44,6 +45,7 @@ data class GatewayEventFrame(
   val payload: JsonElement? = null,
   val seq: Long? = null,
   val stateVersion: GatewayEventFrameStateVersion? = null,
+  val recipientProfileId: String? = null,
 )
 
 @Serializable
@@ -941,6 +943,15 @@ enum class GatewayMethod(
   SessionsStorageRun("sessions.storage.run"),
   PluginsReload("plugins.reload"),
   ClawsPackagesRemove("claws.packages.remove"),
+  CanvasDocumentPreview("canvas.document.preview"),
+  ComputerStatus("computer.status"),
+  ComputerInvoke("computer.invoke"),
+  SessionsActivitySummaryEnsure("sessions.activitySummary.ensure"),
+  ControlUiSessionPullRequestsChecks("controlUi.sessionPullRequests.checks"),
+  DiagnosticsCpuProfile("diagnostics.cpuProfile"),
+  TalkVoiceGet("talk.voice.get"),
+  TalkVoiceSet("talk.voice.set"),
+  TalkVoiceComplete("talk.voice.complete"),
 }
 
 enum class GatewayEvent(
@@ -968,6 +979,7 @@ enum class GatewayEvent(
   Tick("tick"),
   TalkMode("talk.mode"),
   TalkEvent("talk.event"),
+  TalkVoiceChange("talk.voice.change"),
   Shutdown("shutdown"),
   GatewaySuspension("gateway.suspension"),
   Health("health"),

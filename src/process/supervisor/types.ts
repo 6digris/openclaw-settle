@@ -10,6 +10,8 @@ export type TerminationReason =
 
 /** Producer-owned activity; a settled result does not establish descendant extinction. */
 export type ProcessRunActivity = {
+  /** Absolute deadline accepted when the supervisor armed the overall timeout. */
+  readonly deadlineAtMs?: number;
   readonly resultSettled: boolean;
   readonly lastOutputAtMs: number;
 };
@@ -64,6 +66,11 @@ export type ProcessAdapterConstruction = {
   onSpawnCleanup?: (cleanup: Promise<void>) => void;
 };
 
+export type AwaitedStdoutConsumer = {
+  /** Subscribe once; EOF, decoder flush, and every accepted chunk settle before resolution. */
+  consumeStdout: (listener: (chunk: string) => void | Promise<void>) => Promise<void>;
+};
+
 export type SpawnProcessAdapter<WaitSignal = NodeJS.Signals | number | null> = {
   pid?: number;
   stdin?: ManagedRunStdin;
@@ -80,6 +87,12 @@ export type SpawnProcessAdapter<WaitSignal = NodeJS.Signals | number | null> = {
   waitForExtinction?: () => Promise<void>;
   kill: (signal?: NodeJS.Signals) => void;
   dispose: () => void;
+};
+
+/** Observe output before joining startup and private-input delivery. */
+export type ProcessAdapterStartup<Adapter extends SpawnProcessAdapter> = {
+  adapter: Adapter;
+  ready: Promise<void>;
 };
 
 type SpawnBaseInput = {
@@ -107,6 +120,8 @@ type SpawnBaseInput = {
   maxCapturedOutputChars?: number;
   onStdout?: (chunk: string) => void;
   onStderr?: (chunk: string) => void;
+  /** Revoke caller-owned capabilities when cancellation starts, before native termination. */
+  onCancel?: (reason: TerminationReason) => void;
 };
 
 type SpawnChildInput = SpawnBaseInput & {

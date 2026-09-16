@@ -79,14 +79,6 @@ function createSession() {
   };
 }
 
-function createSshCleanupMetadata(params?: { target?: string; workspaceRoot?: string }) {
-  return {
-    locatorVersion: "1",
-    target: params?.target ?? "peter@example.com:2222",
-    workspaceRoot: params?.workspaceRoot ?? "/remote/openclaw",
-  };
-}
-
 const requireRecord = createRequireRecord("object", "expected-label");
 
 function requireMockRecordArg(mock: ReturnType<typeof vi.fn>, callIndex: number, label: string) {
@@ -351,7 +343,6 @@ describe("ssh sandbox backend", () => {
           lastUsedAtMs: 1,
           image: "peter@example.com:2222",
           configLabelKind: "Target",
-          cleanupMetadata: createSshCleanupMetadata(),
         },
         config,
       }),
@@ -387,7 +378,6 @@ describe("ssh sandbox backend", () => {
         lastUsedAtMs: 1,
         image: "peter@example.com:2222",
         configLabelKind: "Target",
-        cleanupMetadata: createSshCleanupMetadata(),
       },
       config,
     });
@@ -395,10 +385,7 @@ describe("ssh sandbox backend", () => {
     expect(sshMocks.createSshSandboxSessionFromSettings).toHaveBeenCalledTimes(1);
   });
 
-  it("removes runtimes through their recorded SSH target and workspace root", async () => {
-    const config = createConfig();
-    config.agents!.defaults!.sandbox!.ssh!.target = "new@example.com:22";
-    config.agents!.defaults!.sandbox!.ssh!.workspaceRoot = "/new/openclaw";
+  it("removes runtimes by deleting the remote scope root", async () => {
     await sshSandboxBackendManager.removeRuntime({
       entry: {
         containerName: "openclaw-ssh-worker-abcd1234",
@@ -409,43 +396,13 @@ describe("ssh sandbox backend", () => {
         lastUsedAtMs: 1,
         image: "peter@example.com:2222",
         configLabelKind: "Target",
-        cleanupMetadata: createSshCleanupMetadata({
-          target: "old@example.com:2222",
-          workspaceRoot: "/old/openclaw",
-        }),
       },
-      config,
+      config: createConfig(),
     });
 
-    const sessionSettings = requireMockRecordArg(
-      sshMocks.createSshSandboxSessionFromSettings,
-      0,
-      "ssh session settings",
-    );
-    expect(sessionSettings.target).toBe("old@example.com:2222");
     const commandParams = requireSshRunCommandParams();
     expect(commandParams.allowFailure).toBe(true);
     expect(commandParams.remoteCommand).toContain('rm -rf -- "$1"');
-    expect(commandParams.remoteCommand).toContain("/old/openclaw/openclaw-ssh-agent-worker");
-  });
-
-  it("refuses to remove an SSH runtime without an authoritative locator", async () => {
-    await expect(
-      sshSandboxBackendManager.removeRuntime({
-        entry: {
-          containerName: "openclaw-ssh-worker-abcd1234",
-          backendId: "ssh",
-          runtimeLabel: "openclaw-ssh-worker-abcd1234",
-          sessionKey: "agent:worker",
-          createdAtMs: 1,
-          lastUsedAtMs: 1,
-          image: "peter@example.com:2222",
-          configLabelKind: "Target",
-        },
-        config: createConfig(),
-      }),
-    ).rejects.toThrow("has no authoritative cleanup locator");
-    expect(sshMocks.createSshSandboxSessionFromSettings).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -471,7 +428,6 @@ describe("ssh sandbox backend", () => {
             lastUsedAtMs: 1,
             image: "peter@example.com:2222",
             configLabelKind: "Target",
-            cleanupMetadata: createSshCleanupMetadata(),
           },
           config: createConfig(),
         }),

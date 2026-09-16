@@ -69,28 +69,32 @@ async function pruneSandboxRegistryEntries<TEntry extends SandboxRegistryEntry>(
       continue;
     }
     try {
-      await withSandboxScopeLock(entry.sessionKey, async () => {
-        await tryWithSandboxRuntimeMutations([params.runtimeKey(entry)], async (lifecycle) => {
-          const current = (await params.read()).entries.find(
-            (candidate) => candidate.containerName === entry.containerName,
-          );
-          if (
-            !current ||
-            current.registryGeneration !== entry.registryGeneration ||
-            !shouldPruneSandboxEntry(resolvePruneConfig(params.config, current), now, current)
-          ) {
-            return;
-          }
-          await params.remove(current);
-          if (
-            !(await params.read()).entries.some(
-              (candidate) => candidate.containerName === current.containerName,
-            )
-          ) {
-            lifecycle.retire();
-          }
-        });
-      });
+      await withSandboxScopeLock(
+        entry.sessionKey,
+        async () => {
+          await tryWithSandboxRuntimeMutations([params.runtimeKey(entry)], async (lifecycle) => {
+            const current = (await params.read()).entries.find(
+              (candidate) => candidate.containerName === entry.containerName,
+            );
+            if (
+              !current ||
+              current.registryGeneration !== entry.registryGeneration ||
+              !shouldPruneSandboxEntry(resolvePruneConfig(params.config, current), now, current)
+            ) {
+              return;
+            }
+            await params.remove(current);
+            if (
+              !(await params.read()).entries.some(
+                (candidate) => candidate.containerName === current.containerName,
+              )
+            ) {
+              lifecycle.retire();
+            }
+          });
+        },
+        { wait: false },
+      );
     } catch (error) {
       const message =
         error instanceof Error

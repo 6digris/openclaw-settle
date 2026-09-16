@@ -9,6 +9,10 @@ import {
   resetConfigOverrides,
   setConfigOverride,
 } from "../config/runtime-overrides.js";
+import {
+  getRuntimeConfigSnapshot,
+  getRuntimeConfigSourceSnapshot,
+} from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { flushDiagnosticsTimeline } from "../infra/diagnostics-timeline.js";
 import { createPluginRecord } from "../plugins/loader-records.js";
@@ -390,6 +394,7 @@ describe("createGatewayKernel", () => {
           gateway: { auth: sourceAuth, controlUi: { enabled: false }, port },
           logging: { level: "silent", consoleLevel: "silent" },
           messages: { visibleReplies: "automatic" },
+          plugins: { allow: [] },
         });
         state.applyEnv();
         kernel = await createGatewayKernel(port, {
@@ -401,13 +406,16 @@ describe("createGatewayKernel", () => {
         });
         expect(kernel.minimalTestGateway).toBe(false);
         expect(kernel.generatedStartupAuthToken).toBe(mode === "generated token");
+        expect(kernel.gatewayPluginConfigAtStart).not.toBe(kernel.cfgAtStart);
+        expect(getRuntimeConfigSnapshot()).toBe(kernel.gatewayPluginConfigAtStart);
+        expect(getRuntimeConfigSourceSnapshot()).toBe(kernel.configSnapshot.sourceConfig);
         if (startupAuth?.mode === "token") {
           startupAuth.token = "mutated-caller-token";
           startupAuth.rateLimit.maxAttempts = 99;
         }
         expect(setConfigOverride("messages.visibleReplies", "message_tool").ok).toBe(true);
         expect(setConfigOverride("gateway.port", port).ok).toBe(true);
-        const previousSourceConfig = kernel.startupLastGoodSnapshot.sourceConfig;
+        const previousSourceConfig = kernel.configSnapshot.sourceConfig;
         const sourcePort = (port % 65_535) + 1;
         const sourceConfig = {
           ...previousSourceConfig,
@@ -586,10 +594,7 @@ describe("createGatewayKernel", () => {
       ).resolves.toEqual({ runId, status: "ok" });
 
       const cleanupError = new Error("lifetime sidecar cleanup failed");
-      let rejectFirstStop!: (error: Error) => void;
-      const firstStop = new Promise<void>((_resolve, reject) => {
-        rejectFirstStop = reject;
-      });
+      const { promise: firstStop, reject: rejectFirstStop } = createDeferred();
       const reentrantSidecar = { stop: vi.fn(async () => {}) };
       let reentrantStop!: Promise<void>;
       const lifetimeSidecar = {
@@ -604,10 +609,7 @@ describe("createGatewayKernel", () => {
       kernel.registerGatewayLifetimeSidecars(lifetimeSidecar, { stop: trailingSidecar });
 
       const postReadyError = new Error("post-ready sidecar cleanup failed");
-      let rejectPostReadyStop!: (error: Error) => void;
-      const firstPostReadyStop = new Promise<void>((_resolve, reject) => {
-        rejectPostReadyStop = reject;
-      });
+      const { promise: firstPostReadyStop, reject: rejectPostReadyStop } = createDeferred();
       const postReadySidecar = vi
         .fn<() => Promise<void>>()
         .mockImplementationOnce(() => firstPostReadyStop)
@@ -667,10 +669,7 @@ describe("createGatewayKernel", () => {
       await vi.waitFor(() => {
         expect(postReadySidecar).toHaveBeenCalledOnce();
       });
-      let releaseLateLifetimeStop!: () => void;
-      const lateLifetimeStop = new Promise<void>((resolve) => {
-        releaseLateLifetimeStop = resolve;
-      });
+      const { promise: lateLifetimeStop, resolve: releaseLateLifetimeStop } = createDeferred();
       const lateLifetimeSidecar = { stop: vi.fn(() => lateLifetimeStop) };
       kernel.registerGatewayLifetimeSidecars(lateLifetimeSidecar);
       let closeSettled = false;
@@ -912,6 +911,7 @@ describe("createGatewayKernel", () => {
         "plugins.bootstrap",
         "gateway.kernel-state",
         "node-desktop.runtime-import",
+        "computer.runtime-import",
         "runtime.config",
         "control-ui.root",
         "terminal.launch-import",

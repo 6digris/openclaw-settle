@@ -1,4 +1,5 @@
 // Gateway concurrency benchmark tests cover CLI controls, probe budgets, and summaries.
+import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { readFile, writeFile } from "node:fs/promises";
@@ -8,13 +9,17 @@ import { createServer as createRawServer, type Socket } from "node:net";
 import { performance } from "node:perf_hooks";
 import { describe, expect, it, vi } from "vitest";
 import { testing } from "../../scripts/bench-gateway-concurrency.ts";
+import { readGatewayMemory } from "../../scripts/lib/gateway-bench-probes.ts";
 import {
   controlGatewayProfile,
   readGatewayCpuProfile,
   readGatewayHeapProfile,
 } from "../../scripts/lib/gateway-bench-profile.ts";
+import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 import { withTempDir } from "../../src/test-utils/temp-dir.js";
 import { createDeferred } from "../helpers/promise.js";
+
+const testNodeExecPath = resolveTestNodeExecPath();
 
 type BenchmarkRun = Parameters<typeof testing.summarizeRuns>[0][number];
 
@@ -22,6 +27,14 @@ function createBenchmarkRun(overrides: Partial<BenchmarkRun> = {}): BenchmarkRun
   return {
     controlPlane: [],
     controlUi: [],
+    cpuUsage: {
+      pid: 1,
+      startMonotonicMicros: 1_000,
+      endMonotonicMicros: 101_000,
+      wallMs: 100,
+      process: { userMs: 48, systemMs: 16, totalMs: 64 },
+      mainThread: { userMs: 32, systemMs: 8, totalMs: 40 },
+    },
     durationMs: 10,
     freshConnection: { error: null, latencyMs: 25, ok: true },
     history: [],
@@ -32,7 +45,20 @@ function createBenchmarkRun(overrides: Partial<BenchmarkRun> = {}): BenchmarkRun
     },
     messageSubscriptions: [],
     messageSubscriptionsDuringLoad: [],
-    modelRequestCount: 1,
+    mockRequests: testing.summarizeMockRequests(
+      [0, 0, 0, 1, 1].map((responses, index) =>
+        testing.parseMockRequests(
+          {
+            id: "fixture",
+            ingress: { responses, chatCompletions: 0, embeddings: 0, other: 0 },
+            selections: { model: 0, global: 0, automaticTool: 0, automaticText: responses },
+          },
+          index * 2,
+          index * 2 + 1,
+        ),
+      ),
+    ),
+    turnEvidence: { toolTurns: 0, observerModelDigestTurns: 0 },
     probeWarmup: { durationMs: 2, samples: [] },
     pluginMetadataScans: { count: 0, durationMs: null, totalDurationMs: 0 },
     readyz: [],
@@ -47,10 +73,337 @@ function createBenchmarkRun(overrides: Partial<BenchmarkRun> = {}): BenchmarkRun
 }
 
 describe("gateway concurrency benchmark script", () => {
+  it("partitions acknowledged ingress without attributing later selection events to the same phase", () => {
+    const snapshots = [0, 2, 5, 13, 17].map((responses, index) =>
+      testing.parseMockRequests(
+        {
+          id: "mock-one",
+          ingress: { responses, chatCompletions: 0, embeddings: index * 2, other: index },
+          selections: { model: index, global: 0, automaticTool: 0, automaticText: index },
+        },
+        index * 10,
+        index * 10 + 2,
+      ),
+    );
+    const result = testing.summarizeMockRequests(snapshots);
+    expect(result.ingress).toEqual({
+      startupAndWarmup: { responses: 2, chatCompletions: 0, embeddings: 2, other: 1 },
+      setup: { responses: 3, chatCompletions: 0, embeddings: 2, other: 1 },
+      loadBracket: { responses: 8, chatCompletions: 0, embeddings: 2, other: 1 },
+      postLoad: { responses: 4, chatCompletions: 0, embeddings: 2, other: 1 },
+      total: { responses: 17, chatCompletions: 0, embeddings: 8, other: 4 },
+    });
+    expect(result.selections).toEqual({ model: 4, global: 0, automaticTool: 0, automaticText: 4 });
+    expect(() => testing.summarizeMockRequests(snapshots.slice(1))).toThrow("incomplete");
+    const finalSnapshot = snapshots[4];
+    assert(finalSnapshot);
+    for (const change of [
+      { id: "replacement" },
+      { beforeMs: 0 },
+      { ingress: { ...finalSnapshot.ingress, responses: 1 } },
+      { selections: { ...finalSnapshot.selections, model: 0 } },
+    ]) {
+      expect(() =>
+        testing.summarizeMockRequests([...snapshots.slice(0, 4), { ...finalSnapshot, ...change }]),
+      ).toThrow("regressed");
+    }
+  });
+
+  it.each([undefined, -1, 0.5, Number.MAX_SAFE_INTEGER + 1, "1"])(
+    "rejects missing or unsafe mock counters: %s",
+    (responses) => {
+      expect(() =>
+        testing.parseMockRequests(
+          {
+            id: "mock",
+            ingress: { responses, chatCompletions: 0, embeddings: 0, other: 0 },
+            selections: { model: 0, global: 0, automaticTool: 0, automaticText: 0 },
+          },
+          0,
+          1,
+        ),
+      ).toThrow("invalid");
+    },
+  );
+
+  it("copies producer snapshots instead of retaining mutable counter objects", () => {
+    const producer = {
+      id: "mock",
+      ingress: { responses: 0, chatCompletions: 0, embeddings: 0, other: 0 },
+      selections: { model: 0, global: 0, automaticTool: 0, automaticText: 0 },
+    };
+    const snapshot = testing.parseMockRequests(producer, 0, 1);
+    producer.ingress.responses = 1;
+    producer.selections.model = 1;
+    expect(snapshot.ingress.responses).toBe(0);
+    expect(snapshot.selections.model).toBe(0);
+    expect(() => testing.parseMockRequests(undefined, 0, 1)).toThrow("identity");
+  });
+
+  it.each([false, true])(
+    "records tool events before or after final observation (delayed: %s)",
+    async (delayed) => {
+      const evidence = testing.createTurnEvidence(true);
+      let runId = "";
+      let emitToolEvents = () => {};
+      const rpc = async <T>(method: string, params: unknown): Promise<T> => {
+        if (method === "agent") {
+          const turn = params as { idempotencyKey: string; sessionKey: string };
+          runId = turn.idempotencyKey;
+          emitToolEvents = () => {
+            for (const phase of ["start", "result"]) {
+              evidence.onEvent({
+                event: "session.tool",
+                payload: {
+                  runId,
+                  sessionKey: turn.sessionKey,
+                  data: {
+                    phase,
+                    name: "exec",
+                    toolCallId: "call",
+                    isError: false,
+                    result: {
+                      details: {
+                        status: "completed",
+                        exitCode: 0,
+                        aggregated: "openclaw-draft-proof\n",
+                      },
+                    },
+                  },
+                },
+              });
+            }
+          };
+          if (!delayed) {
+            emitToolEvents();
+          }
+          // The terminal fast path must still obtain canonical agent.wait evidence.
+          return { runId, status: "ok" } as T;
+        }
+        evidence.onEvent({
+          event: "session.observer",
+          payload: {
+            runId,
+            sessionKey: "agent:main:test",
+            assessment: "Synthetic benchmark observation is valid.",
+          },
+        });
+        return {
+          runId,
+          status: "ok",
+          terminalReply: { disposition: "visible", text: "OPENCLAW_E2E_DRAFTPROOF" },
+        } as T;
+      };
+      await testing.runTurn(rpc, 0, performance.now() + 10_000, true, {
+        sessionKey: "agent:main:test",
+        evidence,
+      });
+      if (delayed) {
+        emitToolEvents();
+      }
+      expect(evidence.finish()).toEqual({ toolTurns: 1, observerModelDigestTurns: 1 });
+      expect(() =>
+        evidence.onEvent({
+          event: "session.tool",
+          payload: {
+            runId,
+            sessionKey: "agent:main:test",
+            data: { phase: "result", name: "exec", toolCallId: "call" },
+          },
+        }),
+      ).not.toThrow();
+      expect(() => evidence.finish()).toThrow("duplicated");
+    },
+  );
+
+  it.each([undefined, "another-run"])(
+    "rejects a missing or mismatched agent.wait identity: %s",
+    async (waitRunId) => {
+      const rpc = async <T>(method: string): Promise<T> =>
+        (method === "agent"
+          ? { runId: "expected-run", status: "accepted" }
+          : { runId: waitRunId, status: "ok" }) as T;
+      await expect(testing.runTurn(rpc, 0, performance.now() + 10_000)).rejects.toThrow(
+        "agent.wait returned a different or missing benchmark run identity",
+      );
+    },
+  );
+
+  it.each([
+    { name: "missing", result: undefined },
+    {
+      name: "validation error",
+      result: {
+        isError: true,
+        result: {
+          details: { status: "completed", exitCode: 0, aggregated: "openclaw-draft-proof" },
+        },
+      },
+    },
+    {
+      name: "approval unavailable",
+      result: { isError: false, result: { details: { status: "approval-unavailable" } } },
+    },
+    {
+      name: "nonzero",
+      result: {
+        isError: false,
+        result: {
+          details: { status: "completed", exitCode: 1, aggregated: "openclaw-draft-proof" },
+        },
+      },
+    },
+    {
+      name: "wrong call",
+      result: {
+        toolCallId: "other",
+        isError: false,
+        result: {
+          details: { status: "completed", exitCode: 0, aggregated: "openclaw-draft-proof" },
+        },
+      },
+    },
+  ])("does not let a final marker conceal $name tool evidence", ({ result }) => {
+    const evidence = testing.createTurnEvidence(true);
+    evidence.register("run", "session");
+    const tool = {
+      event: "session.tool",
+      payload: {
+        runId: "run",
+        sessionKey: "session",
+        data: { name: "exec", toolCallId: "call", phase: "start" },
+      },
+    };
+    evidence.onEvent(tool);
+    if (result) {
+      evidence.onEvent({
+        ...tool,
+        payload: { ...tool.payload, data: { ...tool.payload.data, phase: "result", ...result } },
+      });
+    }
+    evidence.complete("run", { disposition: "visible", text: "OPENCLAW_E2E_DRAFTPROOF" });
+    expect(() => evidence.finish()).toThrow("unsuccessful");
+  });
+
+  it.each([undefined, { disposition: "silent" }, { disposition: "visible", text: "wrong" }])(
+    "rejects absent or incorrect final reply evidence",
+    (reply) => {
+      const evidence = testing.createTurnEvidence(true);
+      evidence.register("run", "session");
+      expect(() => evidence.complete("run", reply)).toThrow("visible final");
+      expect(evidence.finish).toThrow();
+    },
+  );
+
+  it("reports process CPU per completed turn separately from main-thread CPU and probe samples", () => {
+    const first = createBenchmarkRun();
+    const second = createBenchmarkRun({
+      turnCount: 16,
+      cpuUsage: {
+        ...first.cpuUsage,
+        process: { userMs: 96, systemMs: 24, totalMs: 120 },
+        mainThread: { userMs: 60, systemMs: 20, totalMs: 80 },
+      },
+    });
+
+    expect(testing.summarizeRuns([first, second])).toMatchObject({
+      cpuCoreRatio: null,
+      gatewayProcessCpuMs: { count: 2, p50: 64, max: 120 },
+      gatewayProcessCpuMsPerTurn: { count: 2, p50: 7.5, max: 8 },
+      gatewayMainThreadCpuMs: { count: 2, p50: 40, max: 80 },
+      gatewayProcessCpuCoreRatio: { count: 2, p50: 0.64, max: 1.2 },
+    });
+  });
+
+  it.each([
+    {
+      name: "populated",
+      fields: { externalBytes: 2_621_440, arrayBuffersBytes: 1_572_864 },
+      expected: { externalMb: 2.5, arrayBuffersMb: 1.5 },
+    },
+    {
+      name: "zero",
+      fields: { externalBytes: 0, arrayBuffersBytes: 0 },
+      expected: { externalMb: 0, arrayBuffersMb: 0 },
+    },
+    { name: "missing", fields: {}, expected: {} },
+    {
+      name: "external-only",
+      fields: { externalBytes: 2_621_440 },
+      expected: { externalMb: 2.5 },
+    },
+    {
+      name: "ArrayBuffers-only",
+      fields: { arrayBuffersBytes: 1_572_864 },
+      expected: { arrayBuffersMb: 1.5 },
+    },
+    {
+      name: "invalid",
+      fields: { externalBytes: "unknown", arrayBuffersBytes: Number.POSITIVE_INFINITY },
+      expected: {},
+    },
+  ])("preserves $name optional Gateway memory in MiB", async ({ fields, expected }) => {
+    const rpc = vi.fn().mockResolvedValue({
+      processMemory: {
+        heapTotalBytes: 1_310_720,
+        heapUsedBytes: 524_288,
+        rssBytes: 3_145_728,
+        ...fields,
+      },
+    });
+
+    const sample = await readGatewayMemory(rpc, performance.now());
+
+    expect(rpc).toHaveBeenCalledExactlyOnceWith("status", { includeChannelSummary: false });
+    expect(sample).toEqual({
+      atMs: expect.any(Number),
+      heapTotalMb: 1.25,
+      heapUsedMb: 0.5,
+      rssMb: 3,
+      ...expected,
+    });
+  });
+
+  it("summarizes only observed optional memory values and complete growth pairs", () => {
+    const memory = createBenchmarkRun().memory;
+    const runs = [
+      {
+        before: { externalMb: 2, arrayBuffersMb: 1 },
+        after: { externalMb: 5, arrayBuffersMb: 2 },
+      },
+      {
+        before: { externalMb: 0, arrayBuffersMb: 0 },
+        after: { externalMb: 0, arrayBuffersMb: 0 },
+      },
+      {
+        before: { externalMb: 8, arrayBuffersMb: 3 },
+        after: { externalMb: 6, arrayBuffersMb: 1.5 },
+      },
+      { before: { externalMb: 100 }, after: { arrayBuffersMb: 6 } },
+      { before: { arrayBuffersMb: 8 }, after: { externalMb: 9 } },
+      { before: {}, after: {} },
+    ].map(({ before, after }) =>
+      createBenchmarkRun({
+        memory: {
+          ...memory,
+          before: { ...memory.before, ...before },
+          after: { ...memory.after, ...after },
+        },
+      }),
+    );
+
+    expect(testing.summarizeRuns(runs)).toMatchObject({
+      gatewayExternalMb: { count: 4, max: 9, p50: 5, p95: 9, p99: 9 },
+      gatewayExternalGrowthMb: { count: 3, max: 3, p50: 0, p95: 3, p99: 3 },
+      gatewayArrayBuffersMb: { count: 4, max: 6, p50: 1.5, p95: 6, p99: 6 },
+      gatewayArrayBuffersGrowthMb: { count: 3, max: 1, p50: 0, p95: 1, p99: 1 },
+    });
+  });
+
   it("writes load CPU and collected allocations before child teardown, excluding startup", async () => {
     await withTempDir("gateway-heap-profile-", async (dir) => {
       const child = spawn(
-        process.execPath,
+        testNodeExecPath,
         [
           "--expose-gc",
           "--import",
@@ -127,6 +480,8 @@ describe("gateway concurrency benchmark script", () => {
   it("parses benchmark controls without booting a gateway", () => {
     expect(
       testing.parseOptions([
+        "--agent-count",
+        "12",
         "--concurrency",
         "12",
         "--turns-per-session",
@@ -179,6 +534,7 @@ describe("gateway concurrency benchmark script", () => {
         "--json",
       ]),
     ).toMatchObject({
+      agentCount: 12,
       cadenceMs: 50,
       concurrency: 12,
       cpuProfDir: "/tmp/gateway-cpu-profiles",
@@ -212,6 +568,16 @@ describe("gateway concurrency benchmark script", () => {
       "--concurrency must be at most 64",
     );
     expect(testing.parseOptions([]).turnsPerSession).toBe(1);
+    expect(testing.parseOptions([]).agentCount).toBe(1);
+    expect(
+      testing.parseOptions(["--agent-count", "128", "--session-count", "1000"]).agentCount,
+    ).toBe(128);
+    for (const value of ["0", "1.5", "129"]) {
+      expect(() => testing.parseOptions(["--agent-count", value])).toThrow("--agent-count");
+    }
+    expect(() => testing.parseOptions(["--agent-count", "9"])).toThrow(
+      "--agent-count must not exceed the total session count",
+    );
     expect(
       testing.parseOptions(["--load-cpu-prof-dir", "/tmp/gateway-load-cpu-profiles"])
         .loadCpuProfDir,
@@ -332,10 +698,15 @@ describe("gateway concurrency benchmark script", () => {
       });
 
     expect(testing.summarizeRuns([createRun(2, [10, 20]), createRun(1, [30])])).toMatchObject({
+      gatewayExternalMb: null,
+      gatewayExternalGrowthMb: null,
+      gatewayArrayBuffersMb: null,
+      gatewayArrayBuffersGrowthMb: null,
       gatewayHeapGrowthMb: { count: 2, max: 20, p50: 20, p95: 20, p99: 20 },
       gatewayPeakRssMb: { count: 2, max: 210, p50: 210, p95: 210, p99: 210 },
       gatewayRssGrowthMb: { count: 2, max: 20, p50: 20, p95: 20, p99: 20 },
-      modelRequestCount: 2,
+      mockRequestIngress: { responses: 2, chatCompletions: 0, embeddings: 0, other: 0 },
+      mockResponseSelections: { model: 0, global: 0, automaticTool: 0, automaticText: 2 },
       pluginMetadataScanCount: 3,
       pluginMetadataScanTotalDurationMs: 60,
     });
@@ -508,7 +879,11 @@ describe("gateway concurrency benchmark script", () => {
       }
       turn.issued.resolve();
       await turn.completed.promise;
-      return { status: "ok" } as T;
+      return {
+        runId,
+        status: "ok",
+        terminalReply: { disposition: "visible", text: "OPENCLAW_E2E_DRAFTPROOF" },
+      } as T;
     };
     const [fastSession, slowSession] = ["fast", "slow"].map((sessionKey, index) =>
       testing.runSessionTurns(rpc, index, performance.now() + 60_000, {
@@ -665,8 +1040,23 @@ describe("gateway concurrency benchmark script", () => {
         const values = [1_000, 9_000];
         return () => values.shift() ?? 9_000;
       })(),
-      options: testing.parseOptions(["--runs", "1", "--warmup", "1", "--timeout-ms", "5000"]),
-      runSample: async ({ deadlineAt }) => {
+      options: testing.parseOptions([
+        "--runs",
+        "1",
+        "--warmup",
+        "1",
+        "--timeout-ms",
+        "5000",
+        "--agent-count",
+        "8",
+      ]),
+      runSample: async ({ deadlineAt, agentCount, concurrency, sessionCount, turnsPerSession }) => {
+        expect({ agentCount, concurrency, sessionCount, turnsPerSession }).toEqual({
+          agentCount: 8,
+          concurrency: 8,
+          sessionCount: 0,
+          turnsPerSession: 1,
+        });
         deadlines.push(deadlineAt);
         return sample;
       },
@@ -870,7 +1260,7 @@ describe("gateway concurrency benchmark script", () => {
   });
 
   it("loads through native Node TypeScript stripping", () => {
-    const result = spawnSync(process.execPath, ["scripts/bench-gateway-concurrency.ts", "--help"], {
+    const result = spawnSync(testNodeExecPath, ["scripts/bench-gateway-concurrency.ts", "--help"], {
       cwd: process.cwd(),
       encoding: "utf8",
     });
@@ -880,7 +1270,7 @@ describe("gateway concurrency benchmark script", () => {
   });
 
   it("ends CLI failures with the required wrapper marker", () => {
-    const result = spawnSync(process.execPath, ["scripts/bench-gateway-concurrency.ts", "--wat"], {
+    const result = spawnSync(testNodeExecPath, ["scripts/bench-gateway-concurrency.ts", "--wat"], {
       cwd: process.cwd(),
       encoding: "utf8",
     });

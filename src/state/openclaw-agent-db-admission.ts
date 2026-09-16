@@ -1,10 +1,12 @@
 import type { DatabaseSync } from "node:sqlite";
+import { isMainThread } from "node:worker_threads";
 import { assertSqliteIntegrityInWorker } from "../infra/sqlite-integrity-worker.js";
 import {
   runSqliteIntegrityCheckSync,
   type SqliteIntegrityCheck,
   type SqliteIntegrityOperation,
 } from "../infra/sqlite-integrity.js";
+import { registerDeferredSqliteWalWriteAdmission } from "../infra/sqlite-wal-write-admission.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
@@ -28,6 +30,10 @@ import {
 } from "./openclaw-agent-db-schema-helpers.js";
 import type { OpenClawAgentDatabaseValidation } from "./openclaw-agent-db-validation-cache.js";
 import { resolveOpenClawAgentSqlitePath } from "./openclaw-agent-db.paths.js";
+import {
+  getOpenClawDatabaseMaintenanceScope,
+  observeOpenClawDatabaseMaintenanceResource,
+} from "./openclaw-state-db-async-lifecycle.js";
 import { OPENCLAW_SQLITE_BUSY_TIMEOUT_MS } from "./openclaw-state-db-contract.js";
 
 /** Denial still invokes run under admission, with a throwing authority check, to permit cleanup. */
@@ -61,6 +67,22 @@ function assertAgentDatabaseOpenAuthority(
   }
 }
 
+function assertAgentDatabaseOperationCurrent(
+  database: OpenClawAgentDatabase,
+  options: OpenClawAgentDatabaseOptions,
+  pending: PendingAgentDatabaseOpen,
+  assertCurrent?: () => void,
+): void {
+  pending.controller.signal.throwIfAborted();
+  if (cache.databases.get(pending.path) !== database || !database.db.isOpen) {
+    throw new Error(`Agent database closed before its admitted operation: ${pending.path}`);
+  }
+  // Coalesced callers keep their own scope; admission cannot lend its cleanup authority.
+  assertAgentDeletionDatabaseCleanupAccess(database, options);
+  assertCurrent?.();
+  assertAgentDatabaseMaintenanceAccess(database.db);
+}
+
 /** Bind both admission drivers to the canonical private database-open generator. */
 export function createOpenClawAgentDatabaseAdmissionOwner(
   openSteps: (
@@ -73,6 +95,16 @@ export function createOpenClawAgentDatabaseAdmissionOwner(
     inputOptions: OpenClawAgentDatabaseOptions,
     operation: (database: OpenClawAgentDatabase) => T | Promise<T>,
     /** Synchronous live authority for the initiating open and this caller's operation. */
+    assertCurrent?: () => void,
+  ): Promise<T> {
+    const run = () => runAgentDatabaseAsync(inputOptions, operation, assertCurrent);
+    const scope = getOpenClawDatabaseMaintenanceScope();
+    return scope ? scope.run(run) : run();
+  }
+
+  function runAgentDatabaseAsync<T>(
+    inputOptions: OpenClawAgentDatabaseOptions,
+    operation: (database: OpenClawAgentDatabase) => T | Promise<T>,
     assertCurrent?: () => void,
   ): Promise<T> {
     try {
@@ -100,16 +132,10 @@ export function createOpenClawAgentDatabaseAdmissionOwner(
     const pending =
       existing ?? startOpenClawAgentDatabaseAdmission(options, agentId, pathname, assertCurrent);
     pending.operations += 1;
-    return pending.promise
+    const work = pending.promise
       .then((database) => {
-        pending.controller.signal.throwIfAborted();
-        if (cache.databases.get(pathname) !== database || !database.db.isOpen) {
-          throw new Error(`Agent database closed before its admitted operation: ${pathname}`);
-        }
-        // Coalesced callers keep their own scope; admission cannot lend its cleanup authority.
-        assertAgentDeletionDatabaseCleanupAccess(database, options);
-        assertCurrent?.();
-        assertAgentDatabaseMaintenanceAccess(database.db);
+        assertAgentDatabaseOperationCurrent(database, options, pending, assertCurrent);
+        observeOpenClawDatabaseMaintenanceResource(database.db);
         return operation(database);
       })
       .finally(() => {
@@ -120,10 +146,21 @@ export function createOpenClawAgentDatabaseAdmissionOwner(
           pending.releaseBorrow?.();
         }
       });
+    return work;
   }
 
   /** Run on a Worker to keep its same-connection integrity check outside the parent writer. */
-  async function withOpenClawAgentDatabaseAdmission<T>(
+  function withOpenClawAgentDatabaseAdmission<T>(
+    inputOptions: OpenClawAgentDatabaseOptions,
+    withAdmission: OpenClawAgentDatabaseWriteAdmission,
+    operation: (database: OpenClawAgentDatabase) => T | Promise<T>,
+  ): Promise<T> {
+    const run = () => runAgentDatabaseAdmission(inputOptions, withAdmission, operation);
+    const scope = getOpenClawDatabaseMaintenanceScope();
+    return scope ? scope.run(() => scope.track(run())) : run();
+  }
+
+  async function runAgentDatabaseAdmission<T>(
     inputOptions: OpenClawAgentDatabaseOptions,
     withAdmission: OpenClawAgentDatabaseWriteAdmission,
     operation: (database: OpenClawAgentDatabase) => T | Promise<T>,
@@ -177,9 +214,16 @@ export function createOpenClawAgentDatabaseAdmissionOwner(
           }
           pending.releaseBorrow = retainAgentDatabase(step.value.db);
           admission.complete(step.value);
-          assertAgentDeletionDatabaseCleanupAccess(step.value, options);
-          assertAgentDatabaseMaintenanceAccess(step.value.db);
-          return { done: true as const, result: await operation(step.value) };
+          const assertOperationCurrent = () =>
+            assertAgentDatabaseOperationCurrent(step.value, options, pending, assertCurrent);
+          assertOperationCurrent();
+          const flushMaintenance = isMainThread
+            ? undefined
+            : registerDeferredSqliteWalWriteAdmission(step.value.db);
+          flushMaintenance?.(assertOperationCurrent);
+          const result = await operation(step.value);
+          flushMaintenance?.(assertOperationCurrent);
+          return { done: true as const, result };
         });
         if (outcome.done) {
           return outcome.result;
@@ -310,6 +354,8 @@ export function createOpenClawAgentDatabaseAdmissionOwner(
             pathname,
             OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
             pending.controller.signal,
+            undefined,
+            step.value.timing,
           );
         } catch (error) {
           failure = error;

@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { setRuntimeConfigSnapshot } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { getProcessSupervisor } from "../../process/supervisor/index.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
@@ -39,6 +40,9 @@ let pruneTimeMs = Date.now();
 function advancePruneTime() {
   pruneTimeMs += 4 * 60 * 60 * 1000;
   vi.spyOn(Date, "now").mockReturnValue(pruneTimeMs);
+  setRuntimeConfigSnapshot({
+    agents: { defaults: { sandbox: { prune: { idleHours: 1, maxAgeDays: 0 } } } },
+  });
 }
 
 beforeEach(() => {
@@ -197,7 +201,7 @@ describe("durable sandbox runtime generations", () => {
           workspaceDir,
           containerWorkdir: "/workspace",
           buildExecSpec: (params) => backend.buildExecSpec(params),
-          finalizeExec,
+          finalizeExec: backend.finalizeExec,
         },
         usePty: false,
         warnings: [],
@@ -286,14 +290,23 @@ describe("durable sandbox runtime generations", () => {
         operation === "recreate"
           ? removeSandboxContainer("legacy-runtime")
           : maybePruneSandboxes({ ...cfg, prune: { idleHours: 1, maxAgeDays: 0 } });
-      const creating = expect(resolve()).rejects.toThrow("removed or is being removed");
+      const creation = resolve();
+      const creating =
+        operation === "recreate"
+          ? expect(creation).rejects.toThrow("removed or is being removed")
+          : expect(creation).resolves.toMatchObject({ runtimeId: "legacy-runtime" });
       await started.promise;
       try {
-        await vi.waitFor(async () => {
-          expect((await readRegistryEntry("legacy-runtime"))?.runtimeState).toBe(
-            "removing-pending",
-          );
-        });
+        if (operation === "prune") {
+          await removing;
+          expect((await readRegistryEntry("legacy-runtime"))?.runtimeState).toBe("pending");
+        } else {
+          await vi.waitFor(async () => {
+            expect((await readRegistryEntry("legacy-runtime"))?.runtimeState).toBe(
+              "removing-pending",
+            );
+          });
+        }
         expect(remove).not.toHaveBeenCalled();
       } finally {
         finish.resolve();
@@ -301,8 +314,15 @@ describe("durable sandbox runtime generations", () => {
       }
       await creating;
       await removing;
-      expect(remove).toHaveBeenCalledOnce();
-      await expect(readRegistryEntry("legacy-runtime")).resolves.toBeNull();
+      if (operation === "prune") {
+        expect(remove).not.toHaveBeenCalled();
+        await expect(readRegistryEntry("legacy-runtime")).resolves.toMatchObject({
+          runtimeState: "ready",
+        });
+      } else {
+        expect(remove).toHaveBeenCalledOnce();
+        await expect(readRegistryEntry("legacy-runtime")).resolves.toBeNull();
+      }
     },
   );
 
@@ -380,7 +400,8 @@ describe("durable sandbox runtime generations", () => {
     const first = resolve();
     await started.promise;
     const second = resolve();
-    await vi.waitFor(() => expect(nextId).toBe(2));
+    // Admission now serializes before reserving an ID. Do not wait for a second
+    // allocator call while deliberately holding the first provisioning scope.
     finish.resolve();
     const contexts = await Promise.all([first, second]);
     expect(contexts.map((context) => context?.runtimeId)).toEqual(["reserved-1", "reserved-1"]);
@@ -401,7 +422,10 @@ describe("durable sandbox runtime generations", () => {
         return backend;
       });
       const creating = resolve();
-      const failedCreation = expect(creating).rejects.toThrow("removed or is being removed");
+      const creationResult =
+        operation === "recreate"
+          ? expect(creating).rejects.toThrow("removed or is being removed")
+          : expect(creating).resolves.toMatchObject({ runtimeId: "reserved-1" });
       const id = await started.promise;
       let removing: Promise<void>;
       if (operation === "prune") {
@@ -411,16 +435,30 @@ describe("durable sandbox runtime generations", () => {
       } else {
         removing = removeSandboxContainer(id);
       }
-      await vi.waitFor(async () => {
-        expect((await readRegistryEntry(id))?.runtimeState).toBe("removing-pending");
-      });
-      expect(remove).not.toHaveBeenCalled();
-      finish.resolve();
-      await failedCreation;
+      try {
+        if (operation === "prune") {
+          await removing;
+          expect((await readRegistryEntry(id))?.runtimeState).toBe("pending");
+        } else {
+          await vi.waitFor(async () => {
+            expect((await readRegistryEntry(id))?.runtimeState).toBe("removing-pending");
+          });
+        }
+        expect(remove).not.toHaveBeenCalled();
+      } finally {
+        finish.resolve();
+        await Promise.allSettled([creationResult, removing]);
+      }
+      await creationResult;
       await removing;
-      expect(remove).toHaveBeenCalledOnce();
-      await expect(readRegistryEntry(id)).resolves.toBeNull();
-      await expect(resolve()).resolves.toMatchObject({ runtimeId: "reserved-2" });
+      if (operation === "prune") {
+        expect(remove).not.toHaveBeenCalled();
+        await expect(readRegistryEntry(id)).resolves.toMatchObject({ runtimeState: "ready" });
+      } else {
+        expect(remove).toHaveBeenCalledOnce();
+        await expect(readRegistryEntry(id)).resolves.toBeNull();
+        await expect(resolve()).resolves.toMatchObject({ runtimeId: "reserved-2" });
+      }
     },
   );
 
@@ -437,7 +475,7 @@ describe("durable sandbox runtime generations", () => {
     }
     await expect(
       backend.buildExecSpec({ command: "true", env: {}, usePty: false }),
-    ).rejects.toThrow("removed or is being removed");
+    ).rejects.toThrow("was recycled");
     await expect(readRegistryEntry("reserved-1")).resolves.toMatchObject({
       runtimeState: "removing",
     });

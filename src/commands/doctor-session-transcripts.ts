@@ -35,6 +35,7 @@ import {
   repairReservedIncognitoSessionKeys,
   type ReservedIncognitoKeyRepairReport,
 } from "./doctor-session-incognito-key-repair.js";
+import { formatSessionSqliteMigrationWarnings } from "./doctor-session-sqlite-warnings.js";
 import {
   DoctorSqliteMaintenanceLockUnavailableError,
   withDoctorSqliteMaintenanceLock,
@@ -306,6 +307,23 @@ async function noteSessionSqliteMigrationHealth(params: {
         config: params.cfg ?? {},
         env: params.env,
         maintenanceAuthority,
+        ...(maintenanceAuthority
+          ? {
+              beforeCompletion: async (
+                completedPluginIds: readonly string[],
+                assertCurrent: () => void,
+              ) => {
+                const { settleRetainedDoctorSessionSources } =
+                  await import("./doctor-session-sqlite.js");
+                await settleRetainedDoctorSessionSources(
+                  report,
+                  completedPluginIds,
+                  maintenanceAuthority,
+                  assertCurrent,
+                );
+              },
+            }
+          : {}),
         ...(params.postSessionPluginMigration
           ? { plannedActions: params.postSessionPluginMigration.plannedActions }
           : {}),
@@ -420,6 +438,9 @@ async function noteSessionSqliteMigrationHealth(params: {
     );
   }
   if (report.totals.issues > 0) {
+    lines.push(
+      ...formatSessionSqliteMigrationWarnings(report.targets).map((warning) => `- ${warning}`),
+    );
     lines.push(
       `- Found ${report.totals.issues} session SQLite issue(s). Inspect with "${formatCliCommand("openclaw doctor --session-sqlite dry-run --session-sqlite-all-agents", params.env)}".`,
     );

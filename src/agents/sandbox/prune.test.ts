@@ -161,7 +161,7 @@ describe("maybePruneSandboxes", () => {
     );
   });
 
-  it("retains the cleanup locator when runtime removal fails", async () => {
+  it("retains the registry entry when runtime removal fails", async () => {
     backendMocks.removeRuntime.mockRejectedValueOnce(new Error("docker rm failed"));
 
     await maybePruneSandboxes(buildPruneConfig());
@@ -214,6 +214,58 @@ describe("maybePruneSandboxes", () => {
         );
       } finally {
         lock.mockRestore();
+      }
+    },
+  );
+
+  it.each(["container", "browser"])(
+    "skips a contended %s scope without delaying unrelated cleanup",
+    async (kind) => {
+      const { withSandboxScopeLock } = await import("./scope-lock.js");
+      const { createDeferredCore } = await import("../../shared/deferred.js");
+      const entry = {
+        containerName: "locked-runtime",
+        backendId: "docker",
+        sessionKey: "agent:locked:main",
+        createdAtMs: Date.now() - 4 * 60 * 60 * 1000,
+        lastUsedAtMs: Date.now() - 2 * 60 * 60 * 1000,
+        image: "sandbox",
+        cdpPort: 9222,
+      };
+      registryMocks.readRegistry.mockResolvedValue({
+        entries: kind === "container" ? [entry] : [],
+      });
+      registryMocks.readBrowserRegistry.mockResolvedValue({
+        entries: [
+          ...(kind === "browser" ? [entry] : []),
+          { ...entry, containerName: "unrelated-browser", sessionKey: "agent:other:main" },
+        ],
+      });
+      const entered = createDeferredCore();
+      const release = createDeferredCore();
+      const held = withSandboxScopeLock(entry.sessionKey, async () => {
+        entered.resolve();
+        await release.promise;
+      });
+      await entered.promise;
+      let prune: Promise<void> | undefined;
+      try {
+        prune = maybePruneSandboxes(buildPruneConfig());
+        await expect(
+          Promise.race([
+            prune.then(() => "finished"),
+            new Promise<string>((resolve) => {
+              setTimeout(() => resolve("blocked"), 500);
+            }),
+          ]),
+        ).resolves.toBe("finished");
+        expect(
+          backendMocks.removeRuntime.mock.calls.map(([params]) => params.entry.containerName),
+        ).toEqual(["unrelated-browser"]);
+      } finally {
+        release.resolve();
+        await held;
+        await prune;
       }
     },
   );
