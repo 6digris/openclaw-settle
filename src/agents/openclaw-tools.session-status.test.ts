@@ -1,6 +1,5 @@
-// Verifies session status output across scoped stores, tasks, and runtime hooks.
-
 import { expectDefined } from "@openclaw/normalization-core";
+// Verifies session status output across scoped stores, tasks, and runtime hooks.
 import { Value } from "typebox/value";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ElevatedLevel } from "../auto-reply/thinking.js";
@@ -18,6 +17,10 @@ import { resolvePreferredSessionKeyForSessionIdMatches } from "../sessions/sessi
 import type { TaskRecord } from "../tasks/task-registry.types.js";
 import { buildTaskStatusSnapshot } from "../tasks/task-status.js";
 import { normalizeSessionDeliveryState } from "../utils/delivery-context.shared.js";
+import {
+  createMockConfig,
+  createScopedSessionStores,
+} from "./openclaw-tools.session-status.fixtures.js";
 import { compactToolOutputHint } from "./tool-schema-hints.js";
 
 const loadSessionStoreMock = vi.fn();
@@ -59,39 +62,8 @@ const emptyPluginMetadataSnapshot = {
 };
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-const createMockConfig = () => ({
-  session: { mainKey: "main", scope: "per-sender" },
-  agents: {
-    defaults: {
-      model: { primary: "openai/gpt-5.4" },
-      models: {},
-    },
-  },
-  tools: {
-    agentToAgent: { enabled: false },
-  },
-});
-
 let mockConfig: Record<string, unknown> = createMockConfig();
 const TASK_STATUS_SNAPSHOT_NOW = 1_000_000_000_000;
-
-function createScopedSessionStores() {
-  // Two stores simulate per-agent session files selected by scoped status lookups.
-  return new Map<string, Record<string, unknown>>([
-    [
-      "/tmp/main/sessions.json",
-      {
-        "agent:main:main": { sessionId: "s-main", updatedAt: 10 },
-      },
-    ],
-    [
-      "/tmp/support/sessions.json",
-      {
-        main: { sessionId: "s-support", updatedAt: 20 },
-      },
-    ],
-  ]);
-}
 
 function installScopedSessionStores(syncUpdates = false) {
   // Tests choose whether session-store writes should mutate the backing map.
@@ -898,7 +870,6 @@ describe("session_status tool", () => {
       workspaceDir: "/tmp/openclaw-spawned-workspace",
     });
   });
-
   it("errors for unknown session keys", async () => {
     resetSessionStore({
       main: { sessionId: "s1", updatedAt: 10 },
@@ -2098,7 +2069,6 @@ describe("session_status tool", () => {
       const tool = getSessionStatusTool("agent:kira:main");
 
       await tool.execute("call-agent-thinking-implicit", {});
-
       const statusArg = mockCallArg(buildStatusMessageMock) as Record<string, unknown>;
       expect(statusArg.agentId).toBe("kira");
       expectRecordFields(statusArg.agent, { thinkingDefault: "medium" });
@@ -2397,7 +2367,6 @@ describe("session_status tool", () => {
     installSameAgentVisibility("agent");
 
     const tool = getSessionStatusTool("agent:main:subagent:child");
-
     const result = await tool.execute("call-agent-visibility", {
       sessionKey: "agent:main:main",
       model: "default",

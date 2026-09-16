@@ -359,7 +359,7 @@ import {
   replaceRuntimeAuthProfileStoreSnapshots,
 } from "../../agents/auth-profiles.js";
 import type { ModelAliasIndex } from "../../agents/model-selection.js";
-import type { ModelDefinitionConfig, OpenClawConfig } from "../../config/config.js";
+import type { OpenClawConfig } from "../../config/config.js";
 import type { InternalSessionEntry, SessionEntry } from "../../config/sessions.js";
 import {
   loadSessionEntry,
@@ -376,6 +376,7 @@ import { enqueueSystemEvent } from "../../infra/system-events.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { withEnvAsync } from "../../test-utils/env.js";
+import { modelDefinition } from "./directive-handling.model.fixtures.js";
 import { createModelSelectionStateFixture } from "./model-selection.test-support.js";
 
 let handleDirectiveOnly: typeof import("./directive-handling.impl.js").handleDirectiveOnly;
@@ -539,18 +540,6 @@ function baseConfig(): OpenClawConfig {
     commands: { text: true },
     agents: { defaults: {} },
   } as unknown as OpenClawConfig;
-}
-
-function modelDefinition(id: string, name: string): ModelDefinitionConfig {
-  return {
-    id,
-    name,
-    reasoning: true,
-    input: ["text"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 128_000,
-    maxTokens: 8192,
-  };
 }
 
 function createSessionEntry(overrides?: Partial<InternalSessionEntry>): InternalSessionEntry {
