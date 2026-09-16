@@ -175,7 +175,7 @@ async function resumeUpdateRecoveryRetirement(
       await pin.assertCurrent();
       assertOwned();
       if (await statOrMissing(path.join(ref.directory, filename))) {
-        await source.remove(filename);
+        await source.remove(filename, { assertBeforeMutation: assertOwned });
       }
     }
     requireDirectorySync(await pin.sync(), "Update capture retirement");
@@ -203,7 +203,9 @@ async function resumeUpdateRecoveryRetirement(
         await parent.assertCurrent();
         await ancestor.assertCurrent();
         assertOwned();
-        await storeRoot.remove(UPDATE_CAPTURE_PRIVACY_MARKER);
+        await storeRoot.remove(UPDATE_CAPTURE_PRIVACY_MARKER, {
+          assertBeforeMutation: assertOwned,
+        });
         requireDirectorySync(await parent.sync(), "Empty update capture root");
         await parent.assertCurrent();
         await ancestor.assertCurrent();
@@ -334,12 +336,12 @@ export async function retireUpdateRecoveryBackupOwned(
             );
           }
           authority.assertOwned();
-          await source.remove(entry.archivePath);
+          await source.remove(entry.archivePath, { assertBeforeMutation: authority.assertOwned });
         }
       }
       await pin.assertCurrent();
       authority.assertOwned();
-      await source.remove("payload");
+      await source.remove("payload", { assertBeforeMutation: authority.assertOwned });
     }
     requireDirectorySync(await pin.sync(), "Update capture payload retirement");
     await pin.assertCurrent();

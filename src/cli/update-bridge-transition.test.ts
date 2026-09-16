@@ -110,9 +110,17 @@ async function fixture() {
       files,
     }),
   );
+  const targetStat = fs.statSync(target, { bigint: true });
   const context = b.admitUpdateBridgeBinding(
     {
-      target: b.readUpdateBridgeInstallIdentity(target),
+      target: {
+        root: target,
+        physicalRoot: fs.realpathSync(target),
+        device: String(targetStat.dev),
+        inode: String(targetStat.ino),
+        packageSha256: hash(fs.readFileSync(path.join(target, "package.json"))),
+        buildInfoSha256: hash(fs.readFileSync(path.join(target, "dist/build-info.json"))),
+      },
       selectors: selectors(),
       bridgeManifestPath: manifest,
       bridgeManifestSha256: hash(fs.readFileSync(manifest)),

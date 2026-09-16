@@ -10,7 +10,7 @@ import type { UpdateRecoveryFence } from "./update-run-recovery.js";
 // In-process authority for the explicit, external-shell update bridge.
 // This is not a managed handoff grant and must never cross a process boundary.
 
-export type UpdateBridgeInstallIdentity = Readonly<{
+type UpdateBridgeInstallIdentity = Readonly<{
   root: string;
   physicalRoot: string;
   device: string;
@@ -145,7 +145,7 @@ function digest(file: string): string {
 }
 
 /** Read-only installation identity; preserve the lexical package-manager root. */
-export function readUpdateBridgeInstallIdentity(root: string): UpdateBridgeInstallIdentity {
+function readUpdateBridgeInstallIdentity(root: string): UpdateBridgeInstallIdentity {
   if (!path.isAbsolute(root) || path.resolve(root) !== root) {
     return refuse("installation root must be absolute and normalized");
   }
@@ -399,7 +399,7 @@ export function assertBoundUpdateSelectors(
 }
 
 /** Returns the real owner fence unchanged; never wrap or serialize its authority. */
-export async function assertBoundUpdateExecutor(
+async function assertBoundUpdateExecutor(
   context: AdmittedUpdateBridgeContext,
   fence: UpdateRecoveryFence,
   root: string,

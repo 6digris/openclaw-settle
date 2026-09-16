@@ -250,6 +250,7 @@ export async function retireRetainedGenerationPayloads(
       }
       authority.assertOwned();
     };
+    // fs-safe awaits path preparation; retain live authority at its final syscall.
     // Children retire first; B's metadata remains until the existing terminal tail.
     for (const item of opened.toReversed()) {
       for (const [filename, identity] of item.files) {
@@ -262,11 +263,11 @@ export async function retireRetainedGenerationPayloads(
           throw new Error(`Update retirement payload changed before removal: ${filename}`);
         }
         authority.assertOwned();
-        await item.source.remove(filename);
+        await item.source.remove(filename, { assertBeforeMutation: authority.assertOwned });
       }
       if (item.payload) {
         await assertCurrent();
-        await item.source.remove("payload");
+        await item.source.remove("payload", { assertBeforeMutation: authority.assertOwned });
       }
       requireDirectorySync(await item.pin.sync(), "Retained generation payload retirement");
     }
@@ -288,7 +289,7 @@ export async function retireRetainedGenerationPayloads(
           throw new Error("Retirement metadata changed before removal.");
         }
         authority.assertOwned();
-        await item.source.remove(filename);
+        await item.source.remove(filename, { assertBeforeMutation: authority.assertOwned });
       }
       requireDirectorySync(await item.pin.sync(), "Retained generation metadata retirement");
       await baseline.pin.assertCurrent();

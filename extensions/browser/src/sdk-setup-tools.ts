@@ -14,7 +14,6 @@ export {
   readPositiveIntegerParam,
   readStringParam,
 } from "openclaw/plugin-sdk/channel-actions";
-export { formatCliCommand, note } from "openclaw/plugin-sdk/cli-runtime";
 export {
   IMAGE_REDUCE_QUALITY_STEPS,
   buildImageResizeSideGrid,

@@ -142,7 +142,7 @@ export const updateRecoveryCaptureStateSchema = z
   .strict();
 export type UpdateRecoveryCaptureState = z.infer<typeof updateRecoveryCaptureStateSchema>;
 
-export function mergeUpdateRecoveryCaptureState(
+function mergeUpdateRecoveryCaptureState(
   previous: UpdateRecoveryCaptureState | undefined,
   patch: Pick<UpdateRecoveryCaptureState, "manifestSha256"> & Partial<UpdateRecoveryCaptureState>,
 ): UpdateRecoveryCaptureState {
