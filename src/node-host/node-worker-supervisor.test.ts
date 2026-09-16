@@ -762,7 +762,8 @@ describe("node worker supervisor", () => {
       vi.spyOn(childAdapter, "createChildAdapter").mockImplementationOnce(async (options) => {
         const { adapter, ready } = await createAdapter(options);
         await ready;
-        const exited = adapter.wait();
+        let exitPromise: ReturnType<typeof adapter.wait> | undefined;
+        const exited = () => (exitPromise ??= adapter.wait());
         return {
           ready,
           adapter: {
@@ -770,7 +771,7 @@ describe("node worker supervisor", () => {
             // Reach the closed real pipe before its exit can settle the launch journal.
             openStartGate: async () => {
               await adapter.openStartGate?.();
-              childExit = await exited;
+              childExit = await exited();
               if (operation === "cancel") {
                 controller.abort(new Error("cancel during startup"));
               } else if (operation === "close") {
@@ -778,7 +779,7 @@ describe("node worker supervisor", () => {
               }
             },
             wait: async () => {
-              const exit = await exited;
+              const exit = await exited();
               await observationReleased.promise;
               return exit;
             },

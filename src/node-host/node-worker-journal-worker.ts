@@ -34,6 +34,10 @@ export class NodeWorkerJournalWorker {
     authority?: NodeWorkerJournalAuthority,
   ): Promise<OpenClawStateWorkerOperations[Key]["output"]> {
     const prepared = structuredClone(command);
+    // Orderly shutdown seals mutations, but durable receipts remain queryable.
+    if (prepared.type === "nodeWorker.turn.get") {
+      return this.runAdmitted((scope) => scope.execute(prepared), authority);
+    }
     return this.run((scope) => scope.execute(prepared), authority);
   }
 
@@ -43,6 +47,16 @@ export class NodeWorkerJournalWorker {
   ): Promise<T> {
     if (!this.accepting) {
       return Promise.reject(this.uncertain ?? new Error("Node worker journal admission is closed"));
+    }
+    return this.runAdmitted(operation, authority);
+  }
+
+  private runAdmitted<T>(
+    operation: (scope: JournalScope) => Promise<T>,
+    authority?: NodeWorkerJournalAuthority,
+  ): Promise<T> {
+    if (this.uncertain) {
+      return Promise.reject(this.uncertain);
     }
     const context = captureOpenClawStateWorkerContext(this.options);
     let active = true;

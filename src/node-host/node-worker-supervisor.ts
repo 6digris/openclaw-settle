@@ -39,7 +39,7 @@ import {
   nodeWorkerEnvironmentMatches,
   nodeWorkerReceiptMatchesOwner,
   type NodeWorkerActiveOwnership,
-  type NodeWorkerEnvironmentBinding,
+  type NodeWorkerAdmission,
   type NodeWorkerObservedTerminal,
   type NodeWorkerRunningChild,
   type NodeWorkerStopState,
@@ -73,17 +73,7 @@ class NodeWorkerSupervisor {
   private readonly bundleRoot: string;
   private readonly store: NodeWorkerLaunchStore;
   private readonly turns: NodeWorkerTurnStore;
-  private readonly admissions = new Map<
-    string,
-    {
-      binding: NodeWorkerEnvironmentBinding;
-      launchId: string;
-      planHash: string;
-      identity: NodeWorkerSupervisorIdentity;
-      abort: AbortController;
-      done: Promise<NodeWorkerLaunchReceipt>;
-    }
-  >();
+  private readonly admissions = new Map<string, NodeWorkerAdmission>();
   private readonly stoppingEnvironments = new Map<string, number>();
   private readonly workerEnv: NodeJS.ProcessEnv;
   private readonly engineEnv: NodeJS.ProcessEnv;
@@ -95,6 +85,7 @@ class NodeWorkerSupervisor {
   private supervisorIdentity?: NodeWorkerProcessIdentity;
   private initializationPromise?: Promise<void>;
   private closed = false;
+  private closeCompleted = false;
   private closePromise?: Promise<void>;
 
   constructor(options: NodeWorkerSupervisorOptions = {}) {
@@ -360,13 +351,17 @@ class NodeWorkerSupervisor {
   }
 
   async status(launchId: string): Promise<NodeWorkerLaunchReceipt | undefined> {
+    if (this.closeCompleted) {
+      return this.turns.get(launchId);
+    }
     await this.initialize();
     const turn = await this.turns.get(launchId);
     if (turn) {
       if (
-        this.active.get(turn.ownerLaunchId)?.state === "observed" ||
-        turn.state === "pending" ||
-        turn.state === "running"
+        !this.closeCompleted &&
+        (this.active.get(turn.ownerLaunchId)?.state === "observed" ||
+          turn.state === "pending" ||
+          turn.state === "running")
       ) {
         await this.statusOwner(turn.ownerLaunchId);
       }
@@ -448,6 +443,9 @@ class NodeWorkerSupervisor {
   }
 
   cancel(expected: NodeWorkerSupervisorIdentity): Promise<NodeWorkerLaunchReceipt | undefined> {
+    if (this.closeCompleted) {
+      return this.turns.getMatching(expected);
+    }
     return cancelNodeWorkerTurn(
       {
         admissions: this.admissions,
@@ -604,6 +602,7 @@ class NodeWorkerSupervisor {
           ? errors[0]
           : new AggregateError(errors, "node worker terminal reconciliation failed");
       }
+      this.closeCompleted = true;
     })();
     const closePromise = operation.finally(() => {
       if (this.closePromise === closePromise) {

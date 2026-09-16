@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { assertSqliteSchemaContains } from "../infra/sqlite-schema-contract.js";
 import {
@@ -15,10 +15,13 @@ import {
   type NodeWorkerLaunchClaim,
   type NodeWorkerTerminalState,
 } from "./node-worker-launch-store.js";
+import * as launchTransport from "./node-worker-launch-transport.js";
 import {
   requireNodeWorkerProcessIdentity,
   type NodeWorkerProcessIdentity,
 } from "./node-worker-process-identity.js";
+import * as processIdentity from "./node-worker-process-identity.js";
+import { createNodeWorkerSupervisor } from "./node-worker-supervisor.js";
 import { NodeWorkerTurnStore } from "./node-worker-turn-store.js";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
@@ -86,6 +89,42 @@ async function fixture(
 }
 
 describe("node worker turn journal", () => {
+  it("reads and replays durable receipts after supervisor shutdown without restarting recovery", async () => {
+    const unexpected = () => {
+      throw new Error("Process work is outside this receipt-only fixture");
+    };
+    vi.spyOn(processIdentity, "requireNodeWorkerProcessIdentity").mockImplementation(unexpected);
+    vi.spyOn(processIdentity, "inspectNodeWorkerProcessIdentity").mockImplementation(unexpected);
+    vi.spyOn(launchTransport, "prepareNodeWorkerLaunchTransport").mockImplementation(unexpected);
+    const f = await fixture({ pid: 17, startTime: 23 });
+    const supervisor = createNodeWorkerSupervisor({ env: f.env, capacity: 1 });
+    try {
+      await f.start();
+      const completed = await f.finish();
+      expect(completed).toMatchObject({ state: "completed" });
+      await f.launches.finish({
+        ...f.owner,
+        launchId: f.first.launchId,
+        planHash: f.first.planHash,
+        state: "completed",
+        resultJson: JSON.stringify({ turnId: f.first.launchId }),
+        nowMs: NOW_MS,
+      });
+      await supervisor.close();
+      expect(await supervisor.status(f.first.launchId)).toEqual(completed);
+      expect(await supervisor.cancel(f.first)).toEqual(completed);
+      expect(await supervisor.status("absent-turn")).toBeUndefined();
+      await supervisor.close();
+      expect(await supervisor.status(f.first.launchId)).toEqual(completed);
+      await f.turns.drain();
+      expect(await f.turns.get(f.first.launchId)).toEqual(completed);
+      await expect(f.finish()).rejects.toThrow("admission is closed");
+    } finally {
+      await supervisor.close();
+      vi.restoreAllMocks();
+    }
+  });
+
   it("keeps completed turn receipts independent of the physical slot and later turns across reopen", async () => {
     const f = await fixture({ pid: 17, startTime: 23 });
     expect(

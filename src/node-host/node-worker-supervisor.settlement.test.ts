@@ -10,6 +10,7 @@ import type { NodeWorkerChildAdapter } from "./node-worker-launch-transport.js";
 import type { NodeWorkerRunningChild } from "./node-worker-supervisor-ownership.js";
 import { createNodeWorkerSupervisor } from "./node-worker-supervisor.js";
 import {
+  TEST_WORKER_ENDPOINT,
   testNodeWorkerLaunchIdentity,
   testWorkerLaunchInput,
 } from "./node-worker-supervisor.test-support.js";
@@ -324,6 +325,67 @@ async function fixture(unknownOutcome = false) {
 }
 
 describe("node worker persistence settlement lifetime", () => {
+  it("keeps receipt replay available after close without admitting a new launch", async () => {
+    const f = await fixture();
+    try {
+      f.emitResult.resolve();
+      await f.entered.promise;
+      f.persistence.resolve();
+      await nextTurn();
+      const completed = await f.supervisor.status(f.identity.launchId);
+      await f.dispose();
+      const writes = mocks.turnFinish.mock.calls.length + mocks.launchFinish.mock.calls.length;
+      expect(await f.supervisor.status(f.identity.launchId)).toEqual(completed);
+      expect(await f.supervisor.cancel(f.identity)).toEqual(completed);
+      await expect(
+        f.supervisor.launch(
+          testWorkerLaunchInput("/synthetic/workspace", "after-close-turn"),
+          TEST_WORKER_ENDPOINT,
+        ),
+      ).rejects.toThrow("supervisor is closed");
+      expect(mocks.turnFinish.mock.calls.length + mocks.launchFinish.mock.calls.length).toBe(
+        writes,
+      );
+    } finally {
+      await f.dispose();
+    }
+  });
+
+  it("does not initialize recovery for a receipt read after closing an unused supervisor", async () => {
+    const supervisor = createNodeWorkerSupervisor({
+      env: { OPENCLAW_STATE_DIR: "/synthetic/state" },
+    });
+    mocks.launchList.mockRejectedValue(new Error("Recovery must stay closed"));
+    mocks.turnGet.mockResolvedValue(undefined);
+    await supervisor.close();
+    expect(await supervisor.status("absent-turn")).toBeUndefined();
+    expect(mocks.launchList).not.toHaveBeenCalled();
+    expect(mocks.prepare).not.toHaveBeenCalled();
+  });
+
+  it("retries failed close cleanup before completing shutdown", async () => {
+    const f = await fixture();
+    const failure = new Error("Synthetic close cleanup failed");
+    try {
+      f.emitResult.resolve();
+      await f.entered.promise;
+      f.persistence.resolve();
+      await nextTurn();
+      const closing = f.supervisor.close();
+      const rejected = expect(closing).rejects.toBe(failure);
+      await f.removalEntered.promise;
+      f.firstRemoval.reject(failure);
+      await rejected;
+      expect(f.snapshots.at(-1)).toBe(0);
+      f.retryRemoval.resolve();
+      await f.supervisor.close();
+      expect(f.snapshots.at(-1)).toBe(1);
+      expect(await f.supervisor.cancel(f.identity)).toMatchObject({ state: "completed" });
+    } finally {
+      await f.dispose();
+    }
+  });
+
   it("reconciles an observed replacement after a delayed running receipt", async () => {
     const f = await fixture();
     const readEntered = createDeferred();
@@ -477,6 +539,9 @@ describe("node worker persistence settlement lifetime", () => {
       expect(mocks.send).not.toHaveBeenCalled();
       expect(mocks.launchFinish).not.toHaveBeenCalled();
       expect(f.snapshots.at(-1)).toBe(0);
+      f.retryRemoval.resolve();
+      await expect(f.supervisor.close()).rejects.toThrow();
+      await expect(f.supervisor.status(f.identity.launchId)).rejects.toBe(failure);
     } finally {
       await f.dispose();
     }

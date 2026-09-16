@@ -11,12 +11,24 @@ import type {
 import type { NodeWorkerChildAdapter } from "./node-worker-launch-transport.js";
 import type { NodeWorkerCredentialScrubber } from "./node-worker-output.js";
 import type { NodeWorkerProcessIdentity } from "./node-worker-process-identity.js";
-import type { NodeWorkerLaunchInput } from "./node-worker-supervisor-contract.js";
+import type {
+  NodeWorkerLaunchInput,
+  NodeWorkerSupervisorIdentity,
+} from "./node-worker-supervisor-contract.js";
 import type { NodeWorkerWorkspaceRuntime } from "./node-worker-workspace.js";
 
 export type NodeWorkerStopState = Extract<NodeWorkerTerminalState, "cancelled" | "interrupted">;
 
 export type NodeWorkerEnvironmentBinding = ReturnType<typeof nodeWorkerEnvironmentBinding>;
+
+export type NodeWorkerAdmission = {
+  binding: NodeWorkerEnvironmentBinding;
+  launchId: string;
+  planHash: string;
+  identity: NodeWorkerSupervisorIdentity;
+  abort: AbortController;
+  done: Promise<NodeWorkerLaunchReceipt>;
+};
 
 /** Only environment facts survive a turn; descriptors contain disposable admission authority. */
 export function nodeWorkerEnvironmentBinding(input: NodeWorkerLaunchInput) {
