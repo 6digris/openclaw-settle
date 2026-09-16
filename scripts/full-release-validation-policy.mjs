@@ -1488,7 +1488,7 @@ function blockerIndex(issues) {
   return issues.map((issue) => jsonSha256(blockerEvidence(issue))).toSorted();
 }
 
-export function isReleaseCheckJobAdvisory({ jobName, releaseProfile, workflowRef }) {
+function isReleaseCheckJobAdvisory({ jobName, releaseProfile, workflowRef }) {
   // Cross-OS Windows/macOS results remain evidence without gating npm publication.
   // Match only execution lanes: Linux and shared preparation still block.
   if (/^cross_os_release_checks \/ (?:Windows|macOS) \/ /u.test(jobName)) {
@@ -1535,6 +1535,19 @@ function isAdvisoryChild(key, releaseProfile) {
   return key === "npmTelegram" || (key === "productPerformance" && releaseProfile === "beta");
 }
 
+export function isReleaseJobAdvisory({ childKey, jobName, releaseProfile, workflowRef }) {
+  if (isReleaseChecksChild(childKey)) {
+    return isReleaseCheckJobAdvisory({ jobName, releaseProfile, workflowRef });
+  }
+  // plugin-prerelease.yml keeps this exact job advisory; required suite jobs
+  // and whole-workflow failures still gate release qualification.
+  return (
+    ["pluginPrerelease", "pluginPrereleaseIndependent", "pluginPrereleaseCandidate"].includes(
+      childKey,
+    ) && jobName === "plugin-prerelease-inspector"
+  );
+}
+
 function failedJobsForPolicy(child, releaseProfile, workflowRef) {
   return child.jobs.filter((job) => {
     if (
@@ -1543,14 +1556,15 @@ function failedJobsForPolicy(child, releaseProfile, workflowRef) {
     ) {
       return false;
     }
-    if (isReleaseChecksChild(child.key)) {
-      return !isReleaseCheckJobAdvisory({
+    return !(
+      isAdvisoryChild(child.key, releaseProfile) ||
+      isReleaseJobAdvisory({
+        childKey: child.key,
         jobName: stringValue(job.name),
         releaseProfile,
         workflowRef,
-      });
-    }
-    return !isAdvisoryChild(child.key, releaseProfile);
+      })
+    );
   });
 }
 

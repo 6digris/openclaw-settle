@@ -25,7 +25,7 @@ import {
   compareReleaseJobsByName,
   composeReleaseChildAttemptEvidence,
   formatReleaseStateOutcome,
-  isReleaseCheckJobAdvisory,
+  isReleaseJobAdvisory,
   isReleaseGhArtifactMissingError,
   isSplitChangelogEvidenceDelta,
   classifyReleaseChangelogEvidenceComparison,
@@ -1045,20 +1045,18 @@ export function releaseAdvisoryJobEvidence(childEvidence, releaseProfile, workfl
   return Object.entries(childEvidence ?? {})
     .toSorted(([left], [right]) => left.localeCompare(right))
     .flatMap(([child, evidence]) =>
-      /^releaseChecks(?:Independent|Candidate)?$/u.test(child)
-        ? evidence.jobs
-            .filter((job) =>
-              isReleaseCheckJobAdvisory({ jobName: job.name, releaseProfile, workflowRef }),
-            )
-            .toSorted(compareReleaseJobsByName)
-            .map((job) => ({
-              child,
-              job: job.name,
-              status: job.status,
-              conclusion: job.conclusion,
-              policy: "advisory",
-            }))
-        : [],
+      evidence.jobs
+        .filter((job) =>
+          isReleaseJobAdvisory({ childKey: child, jobName: job.name, releaseProfile, workflowRef }),
+        )
+        .toSorted(compareReleaseJobsByName)
+        .map((job) => ({
+          child,
+          job: job.name,
+          status: job.status,
+          conclusion: job.conclusion,
+          policy: "advisory",
+        })),
     );
 }
 

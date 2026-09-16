@@ -1330,6 +1330,67 @@ describe("release decision policy", () => {
     });
   });
 
+  it.each(["pluginPrerelease", "pluginPrereleaseIndependent", "pluginPrereleaseCandidate"])(
+    "keeps the inspector advisory but preserves required failures for %s",
+    (key) => {
+      const inspector = {
+        name: "plugin-prerelease-inspector",
+        conclusion: "failure",
+        status: "completed",
+      };
+      const snapshot = child(key, {
+        conclusion: "success",
+        status: "completed",
+        jobs: [inspector],
+      });
+      const classify = (overrides: Record<string, unknown> = {}) =>
+        classifyReleaseSnapshot({
+          children: [{ ...snapshot, ...overrides }],
+          releaseProfile: "full",
+          workflowRef: "main",
+        });
+      expect(classify()).toMatchObject({ state: "passed", blockers: [] });
+      expect(classify({ status: "in_progress", conclusion: "" })).toMatchObject({
+        state: "qualifying",
+        activeRunIds: ["101"],
+        blockers: [],
+      });
+      for (const name of [
+        "plugin-npm-security-scan",
+        "plugin-prerelease-static-shard",
+        "plugin-prerelease-node-shard",
+        "plugin-prerelease-extension-shard",
+        "plugin-prerelease-docker-suite",
+        "plugin-prerelease-suite",
+        "plugin-prerelease-inspector-required",
+      ]) {
+        expect(
+          classify({ jobs: [inspector, { name, conclusion: "failure", status: "completed" }] }),
+        ).toMatchObject({
+          state: "blocked_complete",
+          blockerCount: 1,
+          blockers: [{ job: name }],
+        });
+      }
+      expect(classify({ conclusion: "failure" })).toMatchObject({
+        state: "blocked_complete",
+        blockers: [{ job: "<workflow>" }],
+      });
+      expect(
+        classify({
+          errors: [{ kind: "identity_mismatch", message: "wrong workflow SHA", runId: "101" }],
+        }),
+      ).toMatchObject({
+        state: "orchestration_error",
+        errors: [{ kind: "identity_mismatch" }],
+      });
+      expect(classify({ key: "normalCi" })).toMatchObject({
+        state: "blocked_complete",
+        blockers: [{ job: inspector.name }],
+      });
+    },
+  );
+
   it("reports a decisive blocker while unrelated diagnostics continue", () => {
     const result = classifyReleaseSnapshot({
       children: [
@@ -3385,6 +3446,12 @@ printf '%s\\n' '{"id":101,"event":"workflow_dispatch","path":".github/workflows/
   it.each([
     { rerunGroup: "ci", childKey: "normalCi", jobName: "test", conclusion: "success" },
     {
+      rerunGroup: "plugin-prerelease",
+      childKey: "pluginPrerelease",
+      jobName: "plugin-prerelease-inspector",
+      conclusion: "failure",
+    },
+    {
       rerunGroup: "cross-os",
       childKey: "releaseChecks",
       jobName: "cross_os_release_checks / Windows / packaged fresh",
@@ -3527,7 +3594,7 @@ printf '%s\\n' '{"id":101,"event":"workflow_dispatch","path":".github/workflows/
       expect(valid.status, valid.stderr).toBe(0);
 
       expect(JSON.parse(readFileSync(manifestPath, "utf8")).advisoryJobs).toEqual(
-        childKey === "releaseChecks"
+        childKey !== "normalCi"
           ? [{ child: childKey, job: jobName, status: "completed", conclusion, policy: "advisory" }]
           : [],
       );
