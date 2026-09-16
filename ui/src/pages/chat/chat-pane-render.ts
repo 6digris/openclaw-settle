@@ -255,7 +255,7 @@ export class ChatPane extends ChatPaneLayoutRender {
       onFork: (entryId) => this.forkFromMessage(entryId),
       onReset: () => void clearChatHistory(state),
     });
-    const setReply: NonNullable<ChatProps["onSetReply"]> = (target) => {
+    const setReply = (target: NonNullable<ChatProps["replyTarget"]> | null) => {
       state.chatReplyTarget = target;
       state.requestUpdate?.();
     };
@@ -648,10 +648,7 @@ export class ChatPane extends ChatPaneLayoutRender {
           : (draft, submissionAction) => submitChatGoalDraft(state, draft, submissionAction),
       onCompanionPrefill: this.prefillSessionCompanionQuestion,
       replyTarget: state.chatReplyTarget ?? null,
-      onClearReply: () => {
-        state.chatReplyTarget = null;
-        state.requestUpdate?.();
-      },
+      onClearReply: () => setReply(null),
       onSetReply: sessionDisabledBanner ? undefined : setReply,
       replyMessageAccess: catalogKey || selectedSessionArchived ? undefined : replyMessageAccess,
       onRewindMessage: selectedSessionArchived ? undefined : sessionActionCallbacks.onRewindMessage,
