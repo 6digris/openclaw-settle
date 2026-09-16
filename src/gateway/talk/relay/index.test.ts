@@ -71,9 +71,14 @@ import {
 import { resolveTalkRealtimeRelayPresentation } from "./issues.js";
 import { closeRelaySession } from "./operations.js";
 import { drainingRelaySessions, relaySessions } from "./state.js";
+import { createRelaySessionTestLifecycle } from "./test-support.js";
 import { MAX_RELAY_TOOL_CALL_IDENTITIES } from "./tool-call-ledger.js";
 
-const activeRelaySessions = new Map<string, string>();
+const {
+  track: trackRelaySession,
+  stop: stopTalkRealtimeRelaySession,
+  drain: drainRelaySessions,
+} = createRelaySessionTestLifecycle();
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const RELAY_AUTH_ERROR =
   "Realtime provider authentication failed. Check the provider credentials and try again.";
@@ -134,16 +139,8 @@ function createTalkRealtimeRelaySession(
     cfg,
     sessionTarget: prepareTalkSessionTarget(cfg, sessionKey ?? "agent:main:main"),
   });
-  activeRelaySessions.set(session.relaySessionId, params.connId);
+  trackRelaySession(session.relaySessionId, params.connId);
   return session;
-}
-
-function stopTalkRealtimeRelaySession(
-  params: Parameters<typeof stopTalkRealtimeRelaySessionRaw>[0],
-): ReturnType<typeof stopTalkRealtimeRelaySessionRaw> {
-  const completion = stopTalkRealtimeRelaySessionRaw(params);
-  activeRelaySessions.delete(params.relaySessionId);
-  return completion;
 }
 
 function createOwnedTalkRunControllers() {
@@ -483,26 +480,8 @@ describe("talk realtime gateway relay", () => {
 
   afterEach(async () => {
     try {
-      for (const [relaySessionId, connId] of activeRelaySessions) {
-        try {
-          await stopTalkRealtimeRelaySessionRaw({ relaySessionId, connId });
-        } catch (error) {
-          if (
-            !(error instanceof Error) ||
-            !error.message.includes("Unknown realtime relay session")
-          ) {
-            throw error;
-          }
-        }
-      }
-      await Promise.all(
-        [...drainingRelaySessions].map(
-          (session) =>
-            session.closing?.completion ?? session.voiceSessionClose ?? Promise.resolve(),
-        ),
-      );
+      await drainRelaySessions();
     } finally {
-      activeRelaySessions.clear();
       vi.useRealTimers();
       clientVoiceSessionTesting.reset();
       resetClientVoiceConfirmationStateForTest();
@@ -1207,7 +1186,7 @@ describe("talk realtime gateway relay", () => {
         tools: [],
         sessionTarget: prepareTalkSessionTarget(runtimeConfig, "main"),
       });
-      activeRelaySessions.set(session.relaySessionId, "conn-owner-pin");
+      trackRelaySession(session.relaySessionId, "conn-owner-pin");
       runtimeConfig = {
         agents: { entries: { main: {}, ops: { default: true } } },
       };
@@ -1262,7 +1241,7 @@ describe("talk realtime gateway relay", () => {
           " agent:main:main ",
         ),
       });
-      activeRelaySessions.set(session.relaySessionId, "conn-trimmed-owner");
+      trackRelaySession(session.relaySessionId, "conn-trimmed-owner");
 
       ensureTalkRealtimeRelayVoiceSession({
         relaySessionId: session.relaySessionId,

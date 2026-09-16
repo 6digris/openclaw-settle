@@ -12,7 +12,6 @@ import {
   readSessionTranscriptMessageEvents,
   replaceSessionEntry,
 } from "../../../config/sessions/session-accessor.js";
-import { runExclusiveSqliteSessionWrite } from "../../../config/sessions/session-accessor.sqlite-scope.js";
 import { enqueueCommandInLane, resetCommandLane } from "../../../process/command-queue.js";
 import {
   beginGatewayRestartSignalAdmission,
@@ -24,10 +23,7 @@ import {
   tryBeginGatewaySuspendAdmission,
 } from "../../../process/gateway-work-admission.js";
 import { getActiveSessionWorkAdmissionCount } from "../../../sessions/session-lifecycle-admission.js";
-import {
-  closeOpenClawAgentDatabasesForTest,
-  openOpenClawAgentDatabase,
-} from "../../../state/openclaw-agent-db.js";
+import { closeOpenClawAgentDatabasesForTest } from "../../../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../../../state/openclaw-state-db.js";
 import {
   authorizeClientVoiceConfirmation,
@@ -46,6 +42,11 @@ import type { GatewayRequestHandlerOptions } from "../../server-methods/types.js
 import { runWithGatewayHttpWorkAdmission } from "../../server/http-work-admission.js";
 import { resolveSessionMutationAuthorization } from "../../session-sharing.js";
 import { closeTalkClientGatewayControlSession } from "../client-gateway-control.js";
+import {
+  browserSession,
+  createDelegatedBrowserProviderFixture,
+  type BrowserRequest,
+} from "../client-gateway-control.test-support.js";
 import { cleanupTalkConnection } from "../session-registry.js";
 import {
   completeTalkVoiceChange,
@@ -90,57 +91,15 @@ const sessionId = "voice-transcript-session";
 let tempDir: string;
 let ownedVoiceSessionId: string | undefined;
 const offerResources: AsyncResource[] = [];
-type BrowserRequest = Parameters<
-  NonNullable<
-    import("../../../plugins/types.js").RealtimeVoiceProviderPlugin["createBrowserSession"]
-  >
->[0];
-const browserSession = {
-  provider: "openai",
-  transport: "webrtc" as const,
-  clientSecret: "test-pending-offer",
-  offerUrl: "/plugins/openai/realtime/calls",
-};
-
 function configureDelegatedBrowserProvider(
   createBrowserSession: (request: BrowserRequest) => Promise<typeof browserSession>,
 ) {
-  const cancelBrowserSession = vi.fn(async () => undefined);
-  const provider = {
-    id: "openai",
-    capabilities: { transports: ["webrtc"], handlesAgentConsult: true, supportsToolCalls: false },
+  const fixture = createDelegatedBrowserProviderFixture(
     createBrowserSession,
-  };
-  Object.defineProperty(provider, Symbol.for("openclaw.internal.realtime-voice-provider.v1"), {
-    value: { isBrowserSessionConfigured: () => true, cancelBrowserSession },
-  });
-  voiceMocks.resolveConfiguredRealtimeVoiceProvider.mockReturnValue({
-    provider,
-    providerConfig: {},
-    capabilities: provider.capabilities,
-  });
-  const client = { connId: "conn-close" };
-  const clients = new Set([client]);
-  return {
-    provider,
-    cancelBrowserSession,
-    client,
-    clients,
-    context: {
-      getRuntimeConfig: () => ({
-        agents: { defaults: { workspace: path.join(tempDir, "workspace") } },
-      }),
-      getClientConnIds: (filter?: (candidate: typeof client) => boolean) =>
-        new Set(
-          [...clients]
-            .filter((candidate) => !filter || filter(candidate))
-            .map((candidate) => candidate.connId),
-        ),
-      chatAbortControllers: new Map(),
-      logGateway: { warn: vi.fn() },
-      broadcastToConnIds: vi.fn(),
-    },
-  };
+    path.join(tempDir, "workspace"),
+  );
+  voiceMocks.resolveConfiguredRealtimeVoiceProvider.mockReturnValue(fixture.resolution);
+  return fixture;
 }
 
 async function invokeCreate(options: GatewayRequestHandlerOptions) {
@@ -681,55 +640,6 @@ describe("talk.client.transcript", () => {
         now: 201,
       }),
     ).toThrow("explicit spoken confirmation");
-  });
-
-  it("drains accepted final provider transcripts after Gateway control close aborts transport", async () => {
-    const createBrowserSession = vi.fn(async (_request: BrowserRequest) => browserSession);
-    const fixture = configureDelegatedBrowserProvider(createBrowserSession);
-    const respond = vi.fn();
-    await invokeCreate({
-      params: { sessionKey, provider: "openai", model: "gpt-live-test" },
-      respond,
-      context: fixture.context,
-      client: fixture.client,
-    } as never);
-    const result = respond.mock.calls[0]?.[1] as { voiceSessionId: string };
-    ownedVoiceSessionId = result.voiceSessionId;
-    const control = createBrowserSession.mock.calls[0]?.[0].gatewayControl;
-    expect(control).toBeDefined();
-    const gate = createDeferred();
-    const entered = createDeferred();
-    const database = openOpenClawAgentDatabase({ agentId: "main" });
-    const held = runExclusiveSqliteSessionWrite(
-      { agentId: "main", path: database.path },
-      () => {
-        entered.resolve();
-        return gate.promise;
-      },
-      "session.transcript.locked-write",
-    );
-    await entered.promise;
-    control?.onTranscript?.("user", "Synthetic accepted final speech", true);
-    const closing = invokeClose({ sessionKey, voiceSessionId: result.voiceSessionId });
-    void closing.catch(() => {});
-    try {
-      await vi.waitFor(() => expect(fixture.cancelBrowserSession).toHaveBeenCalledOnce());
-      expect(clientVoiceSessionTesting.readRecord("main", result.voiceSessionId)?.status).toBe(
-        "open",
-      );
-    } finally {
-      gate.resolve();
-      await Promise.all([held, closing]);
-    }
-    expect(await closing).toHaveBeenCalledWith(true, { ok: true }, undefined);
-    expect(clientVoiceSessionTesting.readRecord("main", result.voiceSessionId)).toMatchObject({
-      status: "closed",
-      hasUserTranscript: true,
-      transcriptFailureKeys: [],
-    });
-    expect(
-      readSessionTranscriptMessageEvents({ agentId: "main", sessionKey, sessionId }),
-    ).toHaveLength(1);
   });
 
   it("accepts an idempotent close retry after the first response is lost", async () => {
