@@ -453,7 +453,12 @@ async fn sidecar_bridge_preserves_authority_through_the_public_runtime() {
     .await
     .unwrap();
     let run = tokio::spawn(async move { runtime.run(session).await });
-    adapter.retiring_invocation_started.notified().await;
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        adapter.retiring_invocation_started.notified(),
+    )
+    .await
+    .expect("retiring sidecar invocation did not reach the adapter boundary");
     channel.retire();
 
     assert!(run.await.unwrap().is_err());
