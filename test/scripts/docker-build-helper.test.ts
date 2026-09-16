@@ -449,18 +449,19 @@ function survivorPostCoreFixture() {
 }
 
 function copySurvivorCaptureClosure(workDir: string) {
-  const library = join(workDir, "lib");
-  mkdirSync(join(library, "upgrade-survivor"), { recursive: true });
-  for (const name of [
-    "openclaw-state-paths.mjs",
-    "plugin-index-sqlite.mjs",
-    "env-limits.mjs",
-    "text-file-utils.mjs",
-    "upgrade-survivor/diagnostics.mjs",
+  for (const source of [
+    "scripts/e2e/lib/openclaw-state-paths.mjs",
+    "scripts/e2e/lib/plugin-index-sqlite.mjs",
+    "scripts/e2e/lib/env-limits.mjs",
+    "scripts/e2e/lib/text-file-utils.mjs",
+    UPGRADE_SURVIVOR_DIAGNOSTICS_PATH,
+    "scripts/lib/release-version.mjs",
   ]) {
-    writeFileSync(join(library, name), readFileSync(join("scripts/e2e/lib", name)));
+    const destination = join(workDir, source);
+    mkdirSync(dirname(destination), { recursive: true });
+    copyFileSync(source, destination);
   }
-  return join(library, "upgrade-survivor", "diagnostics.mjs");
+  return join(workDir, UPGRADE_SURVIVOR_DIAGNOSTICS_PATH);
 }
 
 function renderRepoShell(

@@ -2,10 +2,12 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { expectDefined } from "@openclaw/normalization-core";
+import { describe, expect, it, vi } from "vitest";
 import { resolveTestGitCommits } from "../../.github/actions/git-owner/test-prerequisites.mjs";
 import { resolveShardPlans } from "../../scripts/ci-run-node-test-shard.mts";
 import { listAvailableExtensionIds } from "../../scripts/lib/changed-extensions.mts";
+import * as changedExtensions from "../../scripts/lib/changed-extensions.mts";
 import {
   createChangedExtensionFallbackShards,
   createChangedNodeTestShards,
@@ -26,6 +28,7 @@ import {
   listExtensionTestFilesForRoots,
   resolveExtensionTestConfig,
 } from "../../scripts/lib/extension-test-plan.mts";
+import * as extensionTestPlan from "../../scripts/lib/extension-test-plan.mts";
 import {
   buildVitestRunPlans,
   hasImportGraphImpactOnTargets,
@@ -170,6 +173,136 @@ function expectAllExtensionConfigs(
 }
 
 describe("CI changed Node test plan", () => {
+  it("retains the paired tooling group for direct Docker helper selection", () => {
+    const shards = createSelectedNodeTestShardBundles(["test/scripts/docker-build-helper.test.ts"]);
+    expect(shards).not.toBeNull();
+    expect(shards?.flatMap((shard) => shard.groups).map((group) => group.shard_name)).toEqual([
+      "core-tooling-isolated",
+    ]);
+  });
+
+  it("avoids full-suite fallback for the ClawHub fixture's four changed paths", () => {
+    const shards = createChangedNodeTestShards([
+      "scripts/e2e/lib/skills/clawhub-install-proof.sh",
+      "scripts/e2e/skill-install-docker.sh",
+      "test/scripts/e2e-shell-tempfiles.test.ts",
+      "docs/help/testing/docker.md",
+    ]);
+    expect(shards).not.toBeNull();
+    expect(
+      shards
+        ?.flatMap((shard) => shard.groups ?? [])
+        .filter((group) => group.shard_name === "core-tooling-isolated"),
+    ).toHaveLength(1);
+  });
+
+  it.each(["blacksmith", "github", "hybrid"])(
+    "retains the complete paired tooling descriptor and job metadata (%s)",
+    (runnerBackend) => {
+      const docker = "test/scripts/docker-build-helper.test.ts";
+      const isolated = "test/plugins/bundled-provider-auth-literal-parity.test.ts";
+      const full = createNodeTestShardBundles({
+        compactMode: "pull-request",
+        runnerBackend,
+        includeReleaseOnlyPluginShards: false,
+      });
+      const ownerJob = expectDefined(
+        full.find((job) =>
+          job.groups.some((group) => group.shard_name === "core-tooling-isolated"),
+        ),
+        "canonical paired tooling job",
+      );
+      const owner = expectDefined(
+        ownerJob.groups.find((group) => group.shard_name === "core-tooling-isolated"),
+        "canonical paired tooling group",
+      );
+      expect(owner.configs).toEqual([
+        "test/vitest/vitest.tooling-docker.config.ts",
+        "test/vitest/vitest.tooling-isolated.config.ts",
+      ]);
+      expect(owner.includePatterns).toBeUndefined();
+      expect(owner.env?.OPENCLAW_VITEST_MAX_WORKERS).toBe("2");
+      expect(ownerJob.planConcurrency).toBe(1);
+
+      for (const targets of [
+        [docker],
+        [isolated],
+        [docker, isolated, "test/scripts/docker-e2e-update-suppression.test.ts", docker, isolated],
+        [isolated, "test/scripts/ci-linux-git.test.ts"],
+        [docker, "src/agents/embedded-agent-runner/run/attempt-yield-handoff.test.ts"],
+      ]) {
+        const selected = expectDefined(
+          createSelectedNodeTestShardBundles(targets, { runnerBackend }),
+          "selected paired tooling plan",
+        );
+        const pairs = selected.flatMap((job) =>
+          job.groups.filter((group) => group.shard_name === "core-tooling-isolated"),
+        );
+        expect(pairs).toEqual([owner]);
+        const selectedJob = expectDefined(
+          selected.find((job) => job.groups.includes(pairs[0]!)),
+          "selected paired tooling job",
+        );
+        expect(selectedJob).toEqual({
+          ...ownerJob,
+          checkName: `checks-node-changed-${ownerJob.shardName}`,
+          shardName: `changed-${ownerJob.shardName}`,
+          groups: [owner],
+        });
+        const encodedGroups = selectedJob.groups.map(
+          ({ configs, env, includePatterns, shard_name, timing_key }) => ({
+            configs,
+            env,
+            includePatterns,
+            shard_name,
+            timing_key,
+          }),
+        );
+        expect(
+          resolveShardPlans({
+            OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64: encodeNodeTestGroups(encodedGroups),
+          }),
+        ).toEqual(
+          encodedGroups.map((plan) => ({
+            kind: "group",
+            name: plan.shard_name,
+            timingKey: plan.timing_key ?? plan.shard_name,
+            plan,
+          })),
+        );
+        expect(resolveTestGitCommits(selectedJob)).toEqual(
+          resolveTestGitCommits({ groups: [owner] }),
+        );
+        for (const target of targets.filter((file) => file !== docker && file !== isolated)) {
+          expect(
+            selected.some((job) =>
+              job.groups.some(
+                (group) =>
+                  group.includePatterns?.includes(target) ||
+                  (!group.includePatterns &&
+                    group.configs.includes(buildVitestRunPlans([target])[0]!.config)),
+              ),
+            ),
+          ).toBe(true);
+        }
+      }
+    },
+  );
+
+  it.each([
+    "test/scripts/docker-build-helper.test.ts",
+    "test/plugins/bundled-provider-auth-literal-parity.test.ts",
+  ])("does not borrow paired tooling ownership for another checkout: %s", (target) => {
+    const cwd = mkdtempSync(path.join(tmpdir(), "openclaw-paired-tooling-owner-"));
+    try {
+      mkdirSync(path.dirname(path.join(cwd, target)), { recursive: true });
+      writeFileSync(path.join(cwd, target), "export {};\n");
+      expect(createChangedNodeTestShards([target], { cwd })).toBeNull();
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it.each(["blacksmith", "github", "hybrid"])(
     "retains precise embedded files with their canonical owners (%s)",
     (runnerBackend) => {
@@ -352,12 +485,10 @@ describe("CI changed Node test plan", () => {
       ["test/scripts/unknown-tooling.test.ts"],
       ["src/agents/embedded-agent-runner/run/unknown-owner.test.ts"],
       ["src/tui/tui-pty-harness.e2e.test.ts"],
-      ["test/plugins/bundled-provider-auth-literal-parity.test.ts"],
       ["test/vitest/vitest.tooling.config.ts"],
-      [
-        "test/scripts/ci-linux-git.test.ts",
-        "test/plugins/bundled-provider-auth-literal-parity.test.ts",
-      ],
+      ["test/vitest/vitest.tooling-isolated.config.ts"],
+      ["test/scripts/docker-build-helper.test.ts", "test/scripts/unknown-tooling.test.ts"],
+      ["test/scripts/docker-build-helper.test.ts", "src/tui/tui-pty-harness.e2e.test.ts"],
     ].map((targets) => ({ targets })),
   )("refuses incomplete or unsupported canonical selection $targets", ({ targets }) => {
     expect(createSelectedNodeTestShardBundles(targets)).toBeNull();
@@ -434,9 +565,15 @@ describe("CI changed Node test plan", () => {
       ]),
     ).toEqual([
       {
+        config: "test/vitest/vitest.extension-database-workers.config.ts",
+        forwardedArgs: [],
+        includePatterns: ["extensions/copilot/harness.test.ts"],
+        watchMode: false,
+      },
+      {
         config: "test/vitest/vitest.extensions.config.ts",
         forwardedArgs: [],
-        includePatterns: ["extensions/copilot/index.test.ts", "extensions/copilot/harness.test.ts"],
+        includePatterns: ["extensions/copilot/index.test.ts"],
         watchMode: false,
       },
     ]);
@@ -1131,6 +1268,64 @@ describe("CI changed Node test plan", () => {
     }
   });
 
+  it.each([48, 49])("exchanges extension groups within the 240-second budget, tail %s", (tail) => {
+    const costs = [144, 120, 72, tail, 96];
+    const ids = costs.map((_, index) => `packing-fixture-${index}`);
+    const configs = ids.map((id) => `test/vitest/vitest.${id}.config.ts`);
+    const files = ids.map((id) => `extensions/${id}/index.test.ts`);
+    try {
+      vi.spyOn(changedExtensions, "listAvailableExtensionIds").mockReturnValue(ids);
+      vi.spyOn(extensionTestPlan, "listExtensionTestFilesForRoots").mockReturnValue(files);
+      vi.spyOn(extensionTestPlan, "resolveExtensionTestConfig").mockImplementation((root) => {
+        return expectDefined(
+          configs[ids.indexOf(root.slice("extensions/".length))],
+          "fixture config",
+        );
+      });
+      vi.spyOn(extensionTestPlan, "estimateExtensionTestCost").mockImplementation((config) => {
+        return expectDefined(costs[configs.indexOf(config)], "fixture cost");
+      });
+      vi.spyOn(extensionTestPlan, "shouldSplitExtensionTestProcesses").mockReturnValue(false);
+      vi.spyOn(extensionTestPlan, "splitExtensionTestJobTargets").mockImplementation((config) => {
+        const file = expectDefined(files[configs.indexOf(config)], "fixture file");
+        return config === configs[4] ? [[file], [file]] : [[file]];
+      });
+
+      const shards = createChangedExtensionFallbackShards([
+        "scripts/lib/ci-changed-node-test-plan.mts",
+      ]);
+      const groups = fallbackGroups(shards);
+      // First-fit strands a third row for 144, 120, 72, 48, 48, 48.
+      // One extra second makes two rows impossible without exceeding the budget.
+      expect(shards).toHaveLength(tail === 48 ? 2 : 3);
+      expect(groups).toHaveLength(6);
+      expect(
+        groups
+          .map((group) => expectDefined(group.configs[0], "group config"))
+          .toSorted((a, b) => a.localeCompare(b)),
+      ).toEqual(
+        [...configs, expectDefined(configs[4], "sharded config")].toSorted((a, b) =>
+          a.localeCompare(b),
+        ),
+      );
+      expect(
+        groups.filter((group) => group.configs[0] === configs[4]).map((group) => group.env),
+      ).toEqual([
+        { OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: '["--shard=1/2"]' },
+        { OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: '["--shard=2/2"]' },
+      ]);
+      expect(groups.every((group) => !group.includePatterns && !group.pretestBuildMode)).toBe(true);
+      expect(new Set(groups.map((group) => group.shard_name)).size).toBe(6);
+      expect(shards.every((shard) => shard.planConcurrency === 1)).toBe(true);
+      expect(shards.every((shard) => shard.predictedSeconds! <= 240)).toBe(true);
+      expect(shards.reduce((seconds, shard) => seconds + shard.predictedSeconds!, 0)).toBe(
+        costs.reduce((sum, cost) => sum + cost, 0),
+      );
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
   it("covers every extension config when the extension inventory changes", () => {
     expectAllExtensionConfigs(
       createChangedExtensionFallbackShards(["scripts/lib/changed-extensions.mts"]),
@@ -1365,9 +1560,51 @@ describe("CI changed Node test plan", () => {
     });
   });
 
-  it("retains compact metadata for the ordinary tooling delivery-cache smoke", () => {
+  it("retains delivery-cache coverage and private QA preparation", () => {
     const target = "test/e2e/qa-lab/runtime/gateway-codex-delivery-cache.test.ts";
-    expect(createChangedNodeTestShards([target])).toBeNull();
+    expect(resolveChangedTestTargetPlan([target]).targets).toEqual([
+      target,
+      "test/scripts/ci-changed-node-test-plan.test.ts",
+      "test/scripts/ci-node-test-plan.test.ts",
+      "test/scripts/test-projects-build-admission.test.ts",
+    ]);
+    const shards = createChangedNodeTestShards([target]);
+    expect(shards).not.toBeNull();
+    const groups = fallbackGroups(shards ?? []);
+    expect(groups.flatMap((group) => group.includePatterns ?? []).toSorted()).toEqual([
+      target,
+      "test/scripts/ci-changed-node-test-plan.test.ts",
+      "test/scripts/ci-node-test-plan.test.ts",
+    ]);
+    const qaOwners = shards?.filter((shard) =>
+      shard.groups?.some((group) => group.includePatterns?.includes(target)),
+    );
+    expect(qaOwners).toHaveLength(1);
+    expect(qaOwners?.[0]).toMatchObject({
+      pretestBuildMode: "private-qa",
+      planConcurrency: 1,
+    });
+    expect(groups.find((group) => group.includePatterns?.includes(target))).toMatchObject({
+      configs: ["test/vitest/vitest.tooling.config.ts"],
+      pretestBuildMode: "private-qa",
+    });
+    // The third tooling consumer keeps its complete paired-config owner.
+    const paired = groups.filter((group) => group.shard_name === "core-tooling-isolated");
+    expect(paired).toHaveLength(1);
+    expect(paired[0]?.configs).toEqual([
+      "test/vitest/vitest.tooling-docker.config.ts",
+      "test/vitest/vitest.tooling-isolated.config.ts",
+    ]);
+    expect(paired[0]?.includePatterns).toBeUndefined();
+    expect(
+      buildVitestRunPlans(["test/scripts/test-projects-build-admission.test.ts"])[0]?.config,
+    ).toBe("test/vitest/vitest.tooling-isolated.config.ts");
+    expect(
+      groups
+        .filter((group) => group.requiresDist)
+        .map((group) => group.shard_name)
+        .toSorted(),
+    ).toEqual(["core-runtime-tui-pty", "core-support-boundary"]);
     expect(buildVitestRunPlans([target])).toEqual([
       expect.objectContaining({
         config: "test/vitest/vitest.tooling.config.ts",

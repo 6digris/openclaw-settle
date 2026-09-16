@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { WORKER_PROTOCOL_MAX_INFERENCE_PAYLOAD_BYTES } from "../../packages/gateway-protocol/src/schema/worker-inference.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { resetSecretRedactionRegistryForTest } from "../logging/secret-redaction-registry.test-support.js";
+import { INHERITED_PROCESS_LINEAGE_FD_ENV } from "../process/supervisor/inherited-process-lineage.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { completeWorkerLaunchDescriptor } from "../worker/launch-descriptor.js";
 import {
@@ -52,6 +53,21 @@ function launchInput(workspaceDir: string, launchId: string, prompt = "success")
   input.descriptor.admission.environmentId = `environment-${launchId}`;
   input.descriptor.admission.sessionId = `session-${launchId}`;
   return input;
+}
+
+function observeWorkerAdapters(
+  observe: (adapter: workerLaunchTransport.NodeWorkerChildAdapter) => void,
+) {
+  const prepare = workerLaunchTransport.prepareNodeWorkerLaunchTransport;
+  return vi
+    .spyOn(workerLaunchTransport, "prepareNodeWorkerLaunchTransport")
+    .mockImplementation(async (options) => {
+      const transport = await prepare(options);
+      if (transport.kind === "started") {
+        observe(transport.adapter);
+      }
+      return transport;
+    });
 }
 
 async function observeBackgroundConnection(url: string) {
@@ -246,6 +262,108 @@ describe("node worker environment lifetime", () => {
     }
   });
 
+  it.runIf(process.platform === "linux" || process.platform === "darwin")(
+    "releases deferred worker capacity once after late lineage EOF without erasing its completed turn",
+    async () => {
+      const capacities: Array<{ total: number; available: number }> = [];
+      const { bundleRoot, env, supervisor, workspaceDir } = fixture({
+        capacity: 1,
+        onCapacityChanged: (capacity) => capacities.push(capacity),
+      });
+      const input = launchInput(workspaceDir, "late-lineage-cleanup", "retire-stall");
+      const environment = testNodeWorkerEnvironmentIdentity(input);
+      const store = new NodeWorkerLaunchStore({ env });
+      const turns = new NodeWorkerTurnStore({ env });
+      const pidPath = path.join(workspaceDir, "lineage-writer.pid");
+      const releasePath = path.join(workspaceDir, "lineage-writer.release");
+      const writerSource = `
+        const fs = require("node:fs");
+        setInterval(() => {
+          if (fs.existsSync(${JSON.stringify(releasePath)})) process.exit(0);
+        }, 20);
+        fs.writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));
+      `;
+      fs.writeFileSync(
+        path.join(
+          bundleRoot,
+          input.gatewayNamespace,
+          "bundles",
+          input.expectedBundleHash,
+          "worker.mjs",
+        ),
+        `${TEST_WORKER_SOURCE}
+          const lineageFds = process.env[${JSON.stringify(INHERITED_PROCESS_LINEAGE_FD_ENV)}].split(",").map(Number);
+          const writer = spawn(process.execPath, ["-e", ${JSON.stringify(writerSource)}], {
+            detached: true,
+            stdio: ["ignore", "ignore", "ignore", ...lineageFds],
+          });
+          writer.unref();
+        `,
+      );
+      let ownerAdapter: workerLaunchTransport.NodeWorkerChildAdapter | undefined;
+      let writer: NodeWorkerProcessIdentity | undefined;
+      const captureAdapter = observeWorkerAdapters((adapter) => {
+        ownerAdapter = adapter;
+      });
+      try {
+        const running = await supervisor.launch(input, TEST_WORKER_ENDPOINT);
+        const completed = await waitForTerminal(supervisor, input.launchId);
+        await vi.waitFor(() => expect(fs.readFileSync(pidPath, "utf8")).toMatch(/^[1-9]\d*$/u));
+        writer = requireNodeWorkerProcessIdentity(Number(fs.readFileSync(pidPath, "utf8")));
+        const adapter = ownerAdapter;
+        if (!adapter?.waitForExtinction || !adapter.confirmExtinction) {
+          throw new Error("missing owned worker extinction observation");
+        }
+        expect(completed.state).toBe("completed");
+        expect(capacities.at(-1)).toEqual({ total: 1, available: 0 });
+        const capacityBeforeStop = capacities.length;
+        const expired = expect(adapter.waitForExtinction()).rejects.toThrow("hard deadline");
+        await expect(supervisor.stopEnvironment(environment)).rejects.toThrow(
+          "cleanup remains unconfirmed",
+        );
+        await expired;
+
+        expect(store.get(input.launchId)).toMatchObject({
+          state: "running",
+          worker: running.worker,
+        });
+        expect(turns.get(input.launchId)).toEqual(completed);
+        expect(capacities.at(-1)).toEqual({ total: 1, available: 0 });
+        expect(inspectNodeWorkerProcessIdentity(writer)).toBe("live");
+        expect(adapter.confirmExtinction()).toBe(false);
+        await expect(supervisor.status(input.launchId)).rejects.toThrow(
+          "cleanup remains unconfirmed",
+        );
+
+        fs.writeFileSync(releasePath, "");
+        await vi.waitFor(async () => {
+          expect(inspectNodeWorkerProcessIdentity(writer!)).toMatch(/^(dead|reused)$/u);
+          expect(await supervisor.status(input.launchId)).toEqual(completed);
+        });
+        expect(store.get(input.launchId)).toMatchObject({
+          state: "interrupted",
+          worker: running.worker,
+        });
+        expect(capacities.slice(capacityBeforeStop)).toEqual([{ total: 1, available: 1 }]);
+        await supervisor.stopEnvironment(environment);
+        expect(await supervisor.status(input.launchId)).toEqual(completed);
+        expect(capacities.slice(capacityBeforeStop)).toEqual([{ total: 1, available: 1 }]);
+        await supervisor.close();
+      } finally {
+        captureAdapter.mockRestore();
+        fs.writeFileSync(releasePath, "");
+        if (writer) {
+          await vi.waitFor(() =>
+            expect(inspectNodeWorkerProcessIdentity(writer!)).toMatch(/^(dead|reused)$/u),
+          );
+        }
+        // The pre-fix destroyed reader cannot recover even after its real writer exits.
+        await supervisor.close().catch(() => undefined);
+      }
+    },
+    20_000,
+  );
+
   it("closes a retained worker and its server after its turn receipt is already complete", async () => {
     const { supervisor, workspaceDir } = fixture({ capacity: 1 });
     const input = testWorkerLaunchInput(workspaceDir, "preview-close", "background-start");
@@ -426,17 +544,10 @@ describe("node worker environment lifetime", () => {
     const next = structuredClone(first);
     next.launchId = next.descriptor.assignment.turnId = "held-next";
     next.descriptor.admission.ownerEpoch += 1;
-    const prepare = workerLaunchTransport.prepareNodeWorkerLaunchTransport;
     let ownerAdapter: workerLaunchTransport.NodeWorkerChildAdapter | undefined;
-    const captureAdapter = vi
-      .spyOn(workerLaunchTransport, "prepareNodeWorkerLaunchTransport")
-      .mockImplementation(async (options) => {
-        const transport = await prepare(options);
-        if (transport.kind === "started") {
-          ownerAdapter ??= transport.adapter;
-        }
-        return transport;
-      });
+    const captureAdapter = observeWorkerAdapters((adapter) => {
+      ownerAdapter ??= adapter;
+    });
     let killOwner: workerLaunchTransport.NodeWorkerChildAdapter["kill"] | undefined;
     const heldSignals: Array<NodeJS.Signals | undefined> = [];
     let connection: BackgroundConnection | undefined;
