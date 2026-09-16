@@ -121,7 +121,12 @@ async fn serve_public_runtime_authority(listener: TcpListener, handler_entered: 
         }}),
     )
     .await;
-    handler_entered.notified().await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        handler_entered.notified(),
+    )
+    .await
+    .expect("cancelled handler did not reach its authority boundary");
     send_json(
         &mut socket,
         json!({"type":"event","event":"node.invoke.cancel",
