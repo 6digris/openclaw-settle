@@ -13,7 +13,10 @@ import {
 } from "../../infra/update-candidate-state.js";
 import { resolveUpdateFinalizationTimeoutMs } from "../../infra/update-finalization-budget.js";
 import type { UpdateRunStep } from "../../infra/update-run-record.js";
-import { isUpdateGatewayReadinessPending } from "../../infra/update-run-step.js";
+import {
+  isUpdateGatewayReadinessPending,
+  getUpdateProfileVerification,
+} from "../../infra/update-run-step.js";
 import { runUtf8CommandWithTimeout } from "../../process/exec.js";
 import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
@@ -23,8 +26,12 @@ import {
   withUpdateCommandExecutorChild,
   type UpdateCommandChildGrant,
 } from "./update-command-executor.js";
-import type { FinishUpdateParams } from "./update-command-finish-types.js";
 import type {
+  FinishUpdateParams,
+  ProfileFinishUpdateParams,
+} from "./update-command-finish-types.js";
+import type {
+  LegacyMigratedUpdateFinalizationInput,
   MigratedUpdateFinalizationInput,
   MigratedUpdateFinalizationResult,
 } from "./update-command-migrated-types.js";
@@ -39,13 +46,14 @@ import {
 } from "./update-command-service-env.js";
 import { createWindowsTaskAutoStartGuard } from "./update-command-service-maintenance.js";
 import { recordUpdatePackageCompletion } from "./update-command-terminal.js";
+import { completeWindowsTaskAutoStartRecoveries } from "./update-command-windows-task.js";
 
 export type { MigratedUpdateFinalizationResult } from "./update-command-migrated-types.js";
 
 /** Inspect private state copies without reopening migrated state through the previous runtime. */
 export async function inspectActivatedUpdateState(
   params: Pick<
-    FinishUpdateParams,
+    ProfileFinishUpdateParams,
     "result" | "root" | "schemaVersions" | "packageUpdateNodeRunner"
   > & {
     config: OpenClawConfig;
@@ -112,7 +120,7 @@ export async function inspectActivatedUpdateState(
 export async function continueMigratedUpdateInFreshProcess(
   params: FinishUpdateParams,
   bufferedSteps: UpdateRunStep[],
-): Promise<Omit<MigratedUpdateFinalizationResult, "terminalRunId">> {
+): Promise<Pick<MigratedUpdateFinalizationResult, "result" | "exitCode" | "automaticTriage">> {
   if (params.opts.recovery) {
     throw new UpdateCommandRecoveryPendingError("Full-state checkpoint recovery is deferred.");
   }
@@ -120,9 +128,14 @@ export async function continueMigratedUpdateInFreshProcess(
   if (!run) {
     throw new Error("Migrated update continuation requires its admitted run.");
   }
+  if (!params.profiles.length) {
+    throw new Error("Migrated finalization requires an admitted profile.");
+  }
   const assertCurrent = createUpdateCommandFinalizationFence(params);
   assertCurrent();
-  const windowsRecovery = params.preManagedServiceStop?.windowsTaskAutoStartRecovery;
+  const windowsRecoveries = params.profiles.map(
+    (profile) => profile.preManagedServiceStop?.windowsTaskAutoStartRecovery,
+  );
   const result = params.result;
   const scratchDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-update-migrated-"));
   try {
@@ -137,7 +150,7 @@ export async function continueMigratedUpdateInFreshProcess(
     const workerEnv = {
       ...stripGatewayServiceMarkerEnv(
         resolveUpdatedInstallCommandEnv({
-          processEnv: params.ownedManagedUpdateEnv ?? run.env,
+          processEnv: params.profiles[0]?.ownedManagedUpdateEnv ?? run.env,
         }),
       ),
       OPENCLAW_UPDATE_IN_PROGRESS: "1",
@@ -145,7 +158,8 @@ export async function continueMigratedUpdateInFreshProcess(
       TMP: scratchDir,
       TEMP: scratchDir,
     };
-    if (run.executorFence) {
+    let profileContexts = false;
+    if (run.executorFence || params.profiles.length > 1 || run.completionOwner) {
       assertCurrent();
       // Compatibility only, never authority. An older installed worker ignores
       // new JSON fields, so refuse before exposing any continuation input.
@@ -174,47 +188,70 @@ export async function continueMigratedUpdateInFreshProcess(
         check.code !== 0 ||
         check.cleanup !== "normal" ||
         !isRecord(contract) ||
-        contract.executorDelegation !== "pid-start-v1"
+        (run.executorFence && contract.executorDelegation !== "pid-start-v1")
       ) {
         throw new UpdateCommandRecoveryPendingError(
           "Candidate runtime does not support live executor delegation; recovery remains pending.",
         );
       }
+      profileContexts = contract.profileContexts === true;
+      if (run.completionOwner === "gateway-restart" && contract.gatewayRestartCompletion !== true) {
+        throw new UpdateCommandRecoveryPendingError(
+          "Candidate runtime cannot defer foreground update completion to Gateway restart; recovery remains pending.",
+        );
+      }
     }
-    if (windowsRecovery && params.preManagedServiceStop) {
-      // The parent retains its original definition-refresh grant for compensation.
-      // Only the fresh finalizer may restore autostart at activation after migration.
-      windowsRecovery.handoff(
-        createWindowsTaskAutoStartGuard({
-          root: result.root ?? params.root,
-          before: params.preManagedServiceStop,
-          timeoutMs: params.updateStepTimeoutMs,
-        }),
+    if (params.profiles.length > 1 && !profileContexts) {
+      throw new UpdateCommandRecoveryPendingError(
+        "Candidate runtime cannot finalize all shared-install profiles; recovery remains pending.",
       );
     }
-    const { packageTransaction: _transaction, preManagedServiceStop, ...serializable } = params;
-    let stopState: MigratedUpdateFinalizationInput["params"]["preManagedServiceStop"];
-    if (preManagedServiceStop) {
-      const { windowsTaskAutoStartRecovery: _windows, ...serializableStop } = preManagedServiceStop;
-      stopState = serializableStop;
-    }
-    run.activationTimeoutMs ??= await resolveUpdateFinalizationTimeoutMs(
-      params.updateStepTimeoutMs,
-      {
-        env: params.ownedManagedUpdateEnv ?? run.env,
-        databases: params.schemaVersions,
-        pluginCount: Object.keys(params.preUpdatePluginInstallRecords).length,
-        nodeRunner: params.packageUpdateNodeRunner,
-      },
-    );
+    const { packageTransaction: _transaction, profiles, ...serializable } = params;
+    run.activationTimeoutMs ??= (
+      await Promise.all(
+        profiles.map((profile) =>
+          resolveUpdateFinalizationTimeoutMs(params.updateStepTimeoutMs, {
+            env: profile.ownedManagedUpdateEnv ?? run.env,
+            databases: profile.schemaVersions,
+            pluginCount: Object.keys(profile.preUpdatePluginInstallRecords).length,
+            nodeRunner: params.packageUpdateNodeRunner,
+          }),
+        ),
+      )
+    ).reduce((total, budget) => total + budget, 0);
     assertCurrent();
     const resultPath = path.join(scratchDir, "result.json");
     const { requesterAuthority, executorFence, ...runIdentity } = run;
-    const input: MigratedUpdateFinalizationInput = {
+    const { onResult: _onResult, sourceUpdate: _sourceUpdate, ...workerOpts } = params.opts;
+    const grouped: MigratedUpdateFinalizationInput = {
       params: {
         ...serializable,
+        profiles: profiles.map(({ preManagedServiceStop, ...profile }) => {
+          if (!preManagedServiceStop) {
+            return profile;
+          }
+          const { windowsTaskAutoStartRecovery, ...stopped } = preManagedServiceStop;
+          if (windowsTaskAutoStartRecovery) {
+            // Parent compensation retains its owner; only the fresh finalizer
+            // may restore autostart against migrated state.
+            windowsTaskAutoStartRecovery.handoff(
+              createWindowsTaskAutoStartGuard({
+                root: result.root ?? params.root,
+                before: preManagedServiceStop,
+                timeoutMs: params.updateStepTimeoutMs,
+              }),
+            );
+          }
+          return {
+            ...profile,
+            preManagedServiceStop: stopped,
+            ...(windowsTaskAutoStartRecovery
+              ? { windowsTaskAutoStartSuspended: true as const }
+              : {}),
+          };
+        }),
         opts: {
-          ...params.opts,
+          ...workerOpts,
           run: {
             ...runIdentity,
             ...(requesterAuthority
@@ -223,12 +260,26 @@ export async function continueMigratedUpdateInFreshProcess(
           },
         },
         rollbackBlockedReason: params.rollbackBlockedReason ?? "state-migrated-no-rollback",
-        ...(preManagedServiceStop ? { preManagedServiceStop: stopState } : {}),
       },
       bufferedSteps,
-      ...(windowsRecovery ? { windowsTaskAutoStartSuspended: true } : {}),
       resultPath,
     };
+    let input: MigratedUpdateFinalizationInput | LegacyMigratedUpdateFinalizationInput = grouped;
+    if (!profileContexts) {
+      const {
+        profiles: [profile],
+        ...shared
+      } = grouped.params;
+      if (!profile) {
+        throw new Error("Migrated finalization requires an admitted profile.");
+      }
+      const { windowsTaskAutoStartSuspended, ...context } = profile;
+      input = {
+        ...grouped,
+        params: { ...shared, ...context },
+        ...(windowsTaskAutoStartSuspended ? { windowsTaskAutoStartSuspended } : {}),
+      };
+    }
     const runChild = (
       grant?: UpdateCommandChildGrant,
       bindChild?: (pid: number, argv?: readonly string[]) => void,
@@ -264,7 +315,13 @@ export async function continueMigratedUpdateInFreshProcess(
       child.code !== 0 ||
       child.cleanup !== "normal" ||
       (executorFence && response.executorDelegation !== "pid-start-v1") ||
-      response.terminalRunId !== run.runId ||
+      (response.terminalRunId !== run.runId &&
+        !(
+          run.completionOwner === "gateway-restart" &&
+          run.gatewayRestartRequired === true &&
+          response.restartRunId === run.runId &&
+          response.result.status === "ok"
+        )) ||
       response.result.runId !== run.runId ||
       !Number.isInteger(response.exitCode)
     ) {
@@ -273,8 +330,15 @@ export async function continueMigratedUpdateInFreshProcess(
       );
     }
     try {
-      await windowsRecovery?.complete(
-        response.result.status === "ok" || isUpdateGatewayReadinessPending(response.result),
+      await completeWindowsTaskAutoStartRecoveries(
+        windowsRecoveries,
+        (index) =>
+          response.result.status === "ok" ||
+          (response.result.status !== "error" &&
+            isUpdateGatewayReadinessPending(response.result)) ||
+          (params.profiles.length === 1
+            ? isUpdateGatewayReadinessPending(response.result)
+            : getUpdateProfileVerification(response.result, index + 1)?.exitCode === 0),
       );
     } catch (cause) {
       throw new UpdateCommandFailure(
@@ -304,7 +368,7 @@ export async function continueMigratedUpdateInFreshProcess(
       throw error;
     }
     try {
-      await windowsRecovery?.complete(false);
+      await completeWindowsTaskAutoStartRecoveries(windowsRecoveries, false);
     } catch (cause) {
       throw new AggregateError(
         [error, cause],

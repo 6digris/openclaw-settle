@@ -20,6 +20,7 @@ import * as openClawTmp from "../../infra/tmp-openclaw-dir.js";
 import { CONTROL_PLANE_UPDATE_SENTINEL_META_ENV } from "../../infra/update-control-plane-sentinel.js";
 import { createManagedHandoffLeaseStore } from "../../infra/update-managed-service-handoff-lease.js";
 import { createUpdateRun } from "../../infra/update-run-ledger.js";
+import { getFileLockProcessStartTime } from "../../shared/pid-alive.js";
 import { makeTempWorkspace } from "../../test-helpers/workspace.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { mockProcessPlatform } from "../../test-utils/vitest-spies.js";
@@ -158,6 +159,38 @@ type NativeOfflineCase = {
   phase?: "inspect" | "prepare";
   state?: number | string;
 };
+
+it("does not turn an offline sibling into the handed-off service", () =>
+  withServiceHome(async (home) => {
+    mockProcessPlatform("linux");
+    const siblingEnv = {
+      HOME: home,
+      OPENCLAW_PROFILE: "sibling",
+      OPENCLAW_STATE_DIR: path.join(home, ".openclaw-sibling"),
+      OPENCLAW_CONFIG_PATH: path.join(home, ".openclaw-sibling", "openclaw.json"),
+    };
+    const service = createMockGatewayService({
+      readCommand: async () => ({
+        programArguments: [process.execPath, path.join(process.cwd(), "openclaw.mjs"), "gateway"],
+        environment: siblingEnv,
+      }),
+      readRuntime: async () => ({ status: "stopped", systemd: { managerUid: 2001 } }),
+      isLoaded: async () => true,
+    });
+    mocks.service.mockReturnValue(service);
+    await withEnvAsync({ OPENCLAW_UPDATE_RUN_HANDOFF: "1" }, async () => {
+      const inspected = await maybeStopManagedServiceBeforeMutableUpdate({
+        root: process.cwd(),
+        updateInstallKind: "package",
+        shouldRestart: true,
+        phase: "prepare",
+        jsonMode: true,
+        expectedService: { serviceEnv: siblingEnv },
+      });
+      expect(inspected).toMatchObject({ stopped: false, running: false });
+      expect(service.stop).not.toHaveBeenCalled();
+    });
+  }));
 
 const nativeOfflineCases: NativeOfflineCase[] = [
   {
@@ -429,6 +462,8 @@ it.runIf(process.platform === "linux" || process.platform === "darwin").each(
   "keeps $platform serving-ancestor maintenance bound to the current updater: $identity $phase",
   ({ platform, identity, phase, authorized }) =>
     withServiceHome(async (home) => {
+      // Capture this process's native identity before changing only service policy's platform.
+      expect(getFileLockProcessStartTime(process.pid)).not.toBeNull();
       mockProcessPlatform(platform);
       const root = await fs.realpath(process.cwd());
       const metaPath = path.join(home, "handoff-meta.json");

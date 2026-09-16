@@ -29,20 +29,28 @@ export function assertUpdateCommandRecovery(opts: UpdateCommandOptions): void {
   }
 }
 
+/** Inspect each selected state path once before recovery can perform native effects. */
+export async function assertUpdateProfileRecoveryAdmission(
+  environments: readonly (NodeJS.ProcessEnv | undefined)[],
+  assertCurrent?: () => void,
+): Promise<void> {
+  const admittedPaths = new Set<string>();
+  for (const env of environments) {
+    const targetPath = resolveOpenClawStateSqlitePath(env);
+    if (!admittedPaths.has(targetPath)) {
+      await assertUpdateRecoveryAdmission({ env, path: targetPath });
+      assertCurrent?.();
+      admittedPaths.add(targetPath);
+    }
+  }
+}
+
 /** Package-only finalization cannot adopt a retained full-state claim. */
 export async function assertUpdateCommandPackageFinalization(
-  params: Pick<FinishUpdateParams, "opts" | "result" | "ownedManagedUpdateEnv">,
+  params: Pick<FinishUpdateParams, "opts" | "result" | "profiles">,
 ): Promise<void> {
   const run = params.opts.run;
-  const executor = run?.executorFence;
-  const assertCurrent = () => {
-    if (params.opts.run !== run || run?.executorFence !== executor) {
-      throw new UpdateCommandRecoveryPendingError(
-        "Package finalization lost its original executor.",
-      );
-    }
-    executor?.assertCurrent();
-  };
+  const assertCurrent = createUpdateCommandFinalizationFence(params);
   try {
     assertCurrent();
     if (params.opts.recovery) {
@@ -50,16 +58,17 @@ export async function assertUpdateCommandPackageFinalization(
         "Full-state checkpoint recovery is deferred; retained state was left unchanged.",
       );
     }
-    const env = params.ownedManagedUpdateEnv ?? params.opts.run?.env;
-    // Keep the first target stable if selectors change during admission.
-    const targetPath = resolveOpenClawStateSqlitePath(env);
-    await assertUpdateRecoveryAdmission({ env, path: targetPath });
-    assertCurrent();
-    if (run && resolveOpenClawStateSqlitePath(run.env) !== targetPath) {
-      await assertUpdateRecoveryAdmission({ env: run.env });
-      assertCurrent();
-    }
+    await assertUpdateProfileRecoveryAdmission(
+      [
+        ...params.profiles.map((profile) => profile.ownedManagedUpdateEnv ?? run?.env),
+        ...(run ? [run.env] : []),
+      ],
+      assertCurrent,
+    );
   } catch (cause) {
+    if (cause instanceof UpdateCommandPendingRecoveryFailure) {
+      throw cause;
+    }
     throw new UpdateCommandPendingRecoveryFailure(params.result, formatErrorMessage(cause), {
       cause,
     });
@@ -72,7 +81,7 @@ export function createUpdateCommandFinalizationFence(
 ): () => void {
   const originalRun = params.opts.run;
   const executor = originalRun?.executorFence;
-  const assertCurrent = () => {
+  return () => {
     try {
       if (params.opts.run !== originalRun || originalRun?.executorFence !== executor) {
         throw new Error("Package finalization lost its original executor.");
@@ -84,5 +93,4 @@ export function createUpdateCommandFinalizationFence(
       });
     }
   };
-  return assertCurrent;
 }

@@ -183,11 +183,11 @@ export async function resolvePackageRuntimePreflight(params: {
   const fallbackNodeRunner =
     params.shouldRestart &&
     nodeRunner &&
-    (params.alreadyCurrent
-      ? params.service?.running &&
+    (params.service
+      ? params.service.running &&
         params.service.serviceUpdateVerdict?.kind === "owned" &&
         params.service.serviceUpdateVerdict.refreshDefinition
-      : await gatewayServiceCommandUsesRoot({ root: params.root }))
+      : !params.alreadyCurrent && (await gatewayServiceCommandUsesRoot({ root: params.root })))
       ? resolveNodeRunner()
       : undefined;
   if (nodeRunner && fallbackNodeRunner && fallbackNodeRunner !== nodeRunner) {

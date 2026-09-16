@@ -2,8 +2,9 @@ import os from "node:os";
 import { vi } from "vitest";
 import { GATEWAY_SERVICE_SELECTOR_ENV_KEYS } from "../../daemon/constants.js";
 import type { GatewayServiceCommandConfig } from "../../daemon/service.js";
-import type { UpdateRunResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import { captureEnv } from "../../test-utils/env.js";
+import type { ProfileFinishUpdateParams } from "./update-command-finish-types.js";
 import type { PostCorePluginUpdateResult } from "./update-command-plugins.js";
 import { finishUpdate } from "./update-command-post-update.js";
 
@@ -35,6 +36,10 @@ export function createManagedServiceIdentityFixture(home: string) {
 type FinishUpdateParams = Parameters<typeof finishUpdate>[0];
 
 export const validConfigSnapshot = {
+  path: "/tmp/openclaw-update/openclaw.json",
+  exists: false,
+  raw: null,
+  resolved: {},
   valid: true,
   parsed: {},
   config: {},
@@ -57,16 +62,17 @@ export async function finishSuccessfulPackageSwitch(
     stoppedAtMs?: number;
     run?: FinishUpdateParams["opts"]["run"];
     windowsTaskAutoStartRecovery?: NonNullable<
-      FinishUpdateParams["preManagedServiceStop"]
+      ProfileFinishUpdateParams["preManagedServiceStop"]
     >["windowsTaskAutoStartRecovery"];
   } = {
     restartEnvironment: process.env,
   },
-  overrides: Partial<FinishUpdateParams> = {},
+  overrides: Partial<ProfileFinishUpdateParams> &
+    Partial<Pick<FinishUpdateParams, "profiles">> = {},
 ): Promise<void> {
   const packageRoot = params.packageRoot ?? "/tmp/openclaw-update";
   const previousRoot = params.previousRoot ?? packageRoot;
-  await finishUpdate({
+  const projected: ProfileFinishUpdateParams & Partial<Pick<FinishUpdateParams, "profiles">> = {
     mutationStarted: true,
     result: {
       status: "ok",
@@ -98,6 +104,9 @@ export async function finishSuccessfulPackageSwitch(
     updateStepTimeoutMs: 1_000,
     ...(params.restartEnvironment && {
       preManagedServiceStop: {
+        inspected: true,
+        runtimeInspected: true,
+        running: true,
         stopped: params.stoppedForUpdate ?? true,
         stoppedAtMs: params.stoppedAtMs,
         windowsTaskAutoStartRecovery: params.windowsTaskAutoStartRecovery,
@@ -113,7 +122,36 @@ export async function finishSuccessfulPackageSwitch(
       ownedManagedUpdateEnv: params.restartEnvironment,
     }),
     ...overrides,
-  } as unknown as FinishUpdateParams);
+  };
+  const {
+    configSnapshot,
+    requestedChannel,
+    storedChannel,
+    preUpdatePluginInstallRecords,
+    schemaVersions,
+    previousVerified,
+    activationConfig,
+    preManagedServiceStop,
+    ownedManagedUpdateEnv,
+    profiles,
+    ...shared
+  } = projected;
+  await finishUpdate({
+    ...shared,
+    profiles: profiles ?? [
+      {
+        configSnapshot,
+        requestedChannel,
+        storedChannel,
+        preUpdatePluginInstallRecords,
+        schemaVersions,
+        previousVerified,
+        activationConfig,
+        preManagedServiceStop,
+        ownedManagedUpdateEnv,
+      },
+    ],
+  });
 }
 
 export const programArguments = ["/usr/bin/node", "/tmp/openclaw-update/dist/index.js", "gateway"];

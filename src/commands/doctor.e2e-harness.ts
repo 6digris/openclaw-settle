@@ -34,8 +34,12 @@ const select = defineMockFn(vi.fn().mockResolvedValue("node"));
 const note = defineMockFn(vi.fn());
 export const writeConfigFile = defineMockFn(vi.fn().mockResolvedValue(undefined));
 export const resolveOpenClawPackageRoot = defineMockFn(vi.fn().mockResolvedValue(null));
-export const runGatewayUpdate = defineMockFn(
-  vi.fn().mockResolvedValue(createGatewayUpdateResult()),
+export const updateCommand = defineMockFn(
+  vi
+    .fn<typeof import("../cli/update-cli/update-command.js").updateCommand>()
+    .mockImplementation(async ({ onResult }) => {
+      onResult?.(createGatewayUpdateResult());
+    }),
 );
 const listPluginDoctorLegacyConfigRules = defineMockFn(vi.fn(() => []));
 const runDoctorHealthContributions = defineMockFn(vi.fn(defaultRunDoctorHealthContributions));
@@ -455,8 +459,8 @@ vi.mock("../infra/openclaw-root.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../infra/update-runner.js", () => ({
-  runGatewayUpdate,
+vi.mock("../cli/update-cli/update-command.js", () => ({
+  updateCommand,
 }));
 
 vi.mock("../flows/doctor-health-contributions.js", () => ({
@@ -640,7 +644,9 @@ beforeEach(() => {
   readConfigFileSnapshot.mockReset();
   writeConfigFile.mockReset().mockResolvedValue(undefined);
   resolveOpenClawPackageRoot.mockReset().mockResolvedValue(null);
-  runGatewayUpdate.mockReset().mockResolvedValue(createGatewayUpdateResult());
+  updateCommand.mockReset().mockImplementation(async ({ onResult }) => {
+    onResult?.(createGatewayUpdateResult());
+  });
   listPluginDoctorLegacyConfigRules.mockReset().mockReturnValue([]);
   runDoctorHealthContributions.mockReset().mockImplementation(defaultRunDoctorHealthContributions);
   maybeRepairMemoryRecallHealth.mockReset().mockResolvedValue(undefined);

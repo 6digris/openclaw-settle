@@ -4,8 +4,20 @@ import { setRuntimeConfigSnapshotRefreshHandler, writeConfigFile } from "../../c
 import { hashConfigRaw } from "../../config/io.read-helpers.js";
 import type { ConfigWriteOptions } from "../../config/io.types.js";
 import type { ConfigFileSnapshot, OpenClawConfig } from "../../config/types.js";
-import type { UpdateRunResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import type { UpdateConfigSnapshot } from "./update-command-config-snapshot.js";
+import type { UpdateProfileContext } from "./update-command-finish-types.js";
+
+export function createRollbackProfile(
+  params: Pick<UpdateProfileContext, "configSnapshot"> & Partial<UpdateProfileContext>,
+): UpdateProfileContext {
+  return {
+    requestedChannel: null,
+    storedChannel: null,
+    preUpdatePluginInstallRecords: {},
+    ...params,
+  };
+}
 
 export async function writeWithRefreshFailure(
   nextConfig: OpenClawConfig,

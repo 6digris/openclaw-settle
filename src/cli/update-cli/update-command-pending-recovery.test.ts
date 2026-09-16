@@ -490,7 +490,7 @@ describe("pending recovery finalizer", () => {
       const result = withUpdateFailureTriage({ ...f.opts, json: true }, target, () =>
         withUpdateCommandRecoveryUnwind(
           { ...f.opts, run },
-          { triageTarget: target, windowsTaskAutoStartRecovery: f.windows },
+          { triageTarget: target, windowsTaskAutoStartRecoveries: [f.windows] },
           async () => {
             if (kind === "unexpected") {
               throw new Error("lost executor context");
@@ -555,7 +555,7 @@ describe("migrated-runtime unwind", () => {
           ledgerHandoffOwned: true,
           ledgerHandoffCompleted: true,
           triageTarget: { env },
-          windowsTaskAutoStartRecovery: windows,
+          windowsTaskAutoStartRecoveries: [windows],
         },
         async () => {
           if (failed) {
@@ -600,7 +600,7 @@ it.each([false, true])(
         {
           ledgerHandoffOwned: true,
           triageTarget: { env, failureResult: primary },
-          windowsTaskAutoStartRecovery: windows,
+          windowsTaskAutoStartRecoveries: [windows],
         },
         async () => {
           if (failed) {

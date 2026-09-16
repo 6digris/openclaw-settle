@@ -13,7 +13,11 @@ import {
 import { summarizeGatewayServiceLayout } from "../../daemon/service-layout.js";
 import { withGatewayServiceOperationLock } from "../../daemon/service-operation-lock.js";
 import type { GatewayServiceState } from "../../daemon/service-types.js";
-import { readGatewayServiceState, resolveGatewayService } from "../../daemon/service.js";
+import {
+  readGatewayServiceCandidates,
+  readGatewayServiceState,
+  resolveGatewayService,
+} from "../../daemon/service.js";
 import { resolveSystemdServiceName } from "../../daemon/systemd-service-files.js";
 import { readActiveGatewayLockIdentity } from "../../infra/gateway-lock.js";
 import { hasNodeErrorCode, isPathInside } from "../../infra/path-guards.js";
@@ -52,15 +56,85 @@ export async function isManagedGatewayServiceOffline(
   );
 }
 
-/** Changed runtime artifacts require an offline physical target, not logical
- * ownership of a deployment's current/releases namespace. No service is stopped here. */
+type RuntimePublicationParams = {
+  root: string;
+  env: NodeJS.ProcessEnv;
+  timeoutMs: number;
+  assertCurrent: () => void;
+};
+type PublicationConsumer = Pick<GatewayServiceState, "env" | "systemdInstallation">;
+
+/** One physical publication holds every discovered consumer's native and state guards. */
 export async function withGatewayRuntimeArtifactPublication<T>(
-  params: {
-    root: string;
-    env: NodeJS.ProcessEnv;
-    timeoutMs: number;
-    assertCurrent: () => void;
-  },
+  params: RuntimePublicationParams,
+  publish: (assertPublicationCurrent: () => Promise<void>) => Promise<T>,
+): Promise<T> {
+  const service = resolveGatewayService();
+  const consumers: PublicationConsumer[] = [{ env: params.env }];
+  const readCandidates = async () => {
+    params.assertCurrent();
+    // Environment exclusions identify user units; system units retain their explicit native route.
+    const knownSystemTargets = new Set(
+      consumers.flatMap(({ systemdInstallation }) =>
+        systemdInstallation?.kind === "system" ? [stableStringify(systemdInstallation)] : [],
+      ),
+    );
+    const candidates = await readGatewayServiceCandidates(service, {
+      env: params.env,
+      knownServiceEnvs: consumers
+        .filter(({ systemdInstallation }) => systemdInstallation?.kind !== "system")
+        .map(({ env }) => env),
+      timeoutMs: params.timeoutMs,
+    }).catch(refuseRuntimePublication);
+    params.assertCurrent();
+    return candidates.filter(
+      ({ systemdInstallation }) =>
+        systemdInstallation?.kind !== "system" ||
+        !knownSystemTargets.has(stableStringify(systemdInstallation)),
+    );
+  };
+  consumers.push(...(await readCandidates()));
+  const guards: (() => Promise<void>)[] = [];
+  const coordinatorPaths = new Set<string>();
+  const assertPublicationCurrent = async () => {
+    if ((await readCandidates()).length > 0) {
+      refuseRuntimePublication(new Error("Gateway consumers changed before runtime publication."));
+    }
+    for (const guard of guards) {
+      await guard();
+    }
+    params.assertCurrent();
+  };
+  const enter = async (index: number): Promise<T> => {
+    const consumer = consumers[index];
+    if (!consumer) {
+      await assertPublicationCurrent();
+      return await publish(assertPublicationCurrent);
+    }
+    return await withRuntimePublicationForService(
+      { ...params, ...consumer },
+      coordinatorPaths,
+      async (guard) => {
+        guards.push(guard);
+        return await enter(index + 1);
+      },
+    );
+  };
+  return await enter(0);
+}
+
+function refuseRuntimePublication(cause?: unknown): never {
+  throw new UpdatePreMutationError(
+    "runtime-artifact-publication",
+    "Runtime artifacts changed, but an affected Gateway is running or its offline state could not be verified. Run `openclaw gateway status --deep`, stop the affected Gateway through its service owner, and retry the update.",
+    { cause },
+  );
+}
+
+/** Physical aliases require the same offline proof as the selected installation. */
+async function withRuntimePublicationForService<T>(
+  params: RuntimePublicationParams & PublicationConsumer,
+  coordinatorPaths: Set<string>,
   publish: (assertPublicationCurrent: () => Promise<void>) => Promise<T>,
 ): Promise<T> {
   const assertCaller = params.assertCurrent;
@@ -70,14 +144,8 @@ export async function withGatewayRuntimeArtifactPublication<T>(
       assertCaller();
       assertNative();
     };
-    const refuse = (cause?: unknown): never => {
-      throw new UpdatePreMutationError(
-        "runtime-artifact-publication",
-        "Runtime artifacts changed, but the affected Gateway is running or its offline state could not be verified. Run `openclaw gateway status --deep`, stop the affected Gateway through its service owner, and retry the update.",
-        { cause },
-      );
-    };
     const service = resolveGatewayService();
+    let systemdInstallation = params.systemdInstallation;
     type PathIdentity = { real: string; stat?: Stats };
     const identity = async (file: string) => {
       const real = await fs.realpath(file);
@@ -134,7 +202,7 @@ export async function withGatewayRuntimeArtifactPublication<T>(
       );
       assertCurrent();
       if (parents.some((parent) => parent.stat && !parent.stat.isDirectory())) {
-        refuse();
+        refuseRuntimePublication();
       }
       const target = parents[0]!;
       const destinations = await Promise.all(
@@ -143,6 +211,11 @@ export async function withGatewayRuntimeArtifactPublication<T>(
       assertCurrent();
       const state = await readGatewayServiceState(service, {
         env: params.env,
+        ...(systemdInstallation?.kind === "system"
+          ? { systemdInstallation, systemdReadTarget: systemdInstallation.system }
+          : systemdInstallation?.kind === "user"
+            ? { systemdInstallation, systemdReadTarget: systemdInstallation.user }
+            : {}),
         requireEffective: true,
         requireLoadedCommand: true,
         timeoutMs: params.timeoutMs,
@@ -163,6 +236,7 @@ export async function withGatewayRuntimeArtifactPublication<T>(
         serviceName,
         profile: resolveGatewayProfileSuffix(state.env.OPENCLAW_PROFILE),
         managerUid: observedSystemdManagerUid(state),
+        systemdInstallation: state.systemdInstallation,
       });
       let serving: { root: PathIdentity; entrypoint: PathIdentity } | undefined;
       let disjoint = false;
@@ -196,7 +270,7 @@ export async function withGatewayRuntimeArtifactPublication<T>(
         state.loadState.status !== "not-loaded" ||
         !state.runtime?.missingUnit
       ) {
-        refuse();
+        refuseRuntimePublication();
       }
       const absent =
         !state.command &&
@@ -211,7 +285,7 @@ export async function withGatewayRuntimeArtifactPublication<T>(
               (process.platform === "linux" && observedSystemdManagerUid(state) === undefined) ||
               !(await isManagedGatewayServiceOffline(service, state, params.timeoutMs)))))
       ) {
-        refuse();
+        refuseRuntimePublication();
       }
       assertCurrent();
       if (!disjoint) {
@@ -221,7 +295,7 @@ export async function withGatewayRuntimeArtifactPublication<T>(
         });
         assertCurrent();
         if (activeLock) {
-          refuse();
+          refuseRuntimePublication();
         }
         const port = await resolveUpdatedGatewayRestartPort({
           serviceEnv: state.env,
@@ -231,7 +305,7 @@ export async function withGatewayRuntimeArtifactPublication<T>(
         const usage = await probePortUsage(port);
         assertCurrent();
         if (usage !== "free") {
-          refuse();
+          refuseRuntimePublication();
         }
       }
       return { state, disjoint, parents, destinations, database, nativeIdentity, serving };
@@ -244,13 +318,14 @@ export async function withGatewayRuntimeArtifactPublication<T>(
         if (error instanceof UpdatePreMutationError) {
           throw error;
         }
-        return refuse(error);
+        return refuseRuntimePublication(error);
       }
     };
     const before = await inspect();
+    systemdInstallation ??= before.state.systemdInstallation;
     assertCurrent();
     if (before.serving && !before.serving.entrypoint.stat) {
-      refuse();
+      refuseRuntimePublication();
     }
     const assertPublicationCurrent = async () => {
       const current = await inspect();
@@ -280,7 +355,7 @@ export async function withGatewayRuntimeArtifactPublication<T>(
             ) &&
               changedIdentity(before.serving.entrypoint, current.serving.entrypoint))))
       ) {
-        refuse();
+        refuseRuntimePublication();
       }
       assertCurrent();
     };
@@ -288,11 +363,12 @@ export async function withGatewayRuntimeArtifactPublication<T>(
     try {
       try {
         assertCurrent();
-        if (!before.disjoint) {
+        if (!before.disjoint && !coordinatorPaths.has(before.database.real)) {
           coordinator = acquireGatewayLifecycleCoordinator({
             databasePath: before.database.real,
             busyTimeoutMs: 0,
           });
+          coordinatorPaths.add(before.database.real);
         }
         await assertPublicationCurrent();
         assertCurrent();
@@ -301,7 +377,7 @@ export async function withGatewayRuntimeArtifactPublication<T>(
         if (error instanceof UpdatePreMutationError) {
           throw error;
         }
-        refuse(error);
+        refuseRuntimePublication(error);
       }
       assertCurrent();
       // The publisher joins its rollback before settling, keeping both exclusions held.
@@ -309,7 +385,10 @@ export async function withGatewayRuntimeArtifactPublication<T>(
       assertCurrent();
       return result;
     } finally {
-      coordinator?.release();
+      if (coordinator) {
+        coordinator.release();
+        coordinatorPaths.delete(before.database.real);
+      }
     }
   });
 }

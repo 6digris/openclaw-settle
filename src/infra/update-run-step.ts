@@ -20,12 +20,56 @@ type ResultStep = Pick<
   | "snapshotCapacity"
 >;
 
+export function normalizeControlPlaneUpdateResult(result: UpdateRunResult): UpdateRunResult {
+  return (result.status === "ok" ||
+    (result.status === "skipped" && result.reason === "already-current")) &&
+    isUpdateGatewayReadinessPending(result)
+    ? { ...result, status: "skipped", reason: "gateway-readiness-unverified" }
+    : result;
+}
+
 export function isUpdateGatewayReadinessPending(result: UpdateRunResult): boolean {
   const step = result.steps.findLast(
     (entry) =>
       entry.name === "gateway verification" || entry.name === "rollback gateway verification",
   );
-  return step?.termination === "timeout" && step.advisory?.kind === "recoverable-maintenance";
+  const profiles = new Map<string, UpdateStepResult>();
+  for (const entry of result.steps) {
+    const profile = /^profile ([1-9]\d*): (rollback )?gateway verification$/u.exec(entry.name)?.[1];
+    if (profile) profiles.set(profile, entry);
+  }
+  return [step, ...profiles.values()].some(
+    (entry) =>
+      entry?.termination === "timeout" && entry.advisory?.kind === "recoverable-maintenance",
+  );
+}
+
+/** Keep each profile's latest receipt when the next native verification replaces the generic row. */
+export function retainUpdateProfileVerification(
+  result: UpdateRunResult,
+  profileNumber: number,
+  beforeSteps?: readonly UpdateStepResult[],
+): void {
+  const step = result.steps.findLast(
+    (entry) =>
+      entry.name === "gateway verification" || entry.name === "rollback gateway verification",
+  );
+  if (!step || beforeSteps?.includes(step)) return;
+  const receipt = { ...step, name: `profile ${profileNumber}: ${step.name}` };
+  const index = result.steps.findIndex((entry) => entry.name === receipt.name);
+  if (index < 0) result.steps.push(receipt);
+  else result.steps[index] = receipt;
+}
+
+export function getUpdateProfileVerification(
+  result: UpdateRunResult,
+  profileNumber: number,
+): UpdateStepResult | undefined {
+  return result.steps.findLast(
+    (step) =>
+      step.name === `profile ${profileNumber}: gateway verification` ||
+      step.name === `profile ${profileNumber}: rollback gateway verification`,
+  );
 }
 
 /** Warning rows preserve producer-classified advisories in the existing diagnostic ledger. */

@@ -79,9 +79,9 @@ export async function preflightUpdateCommandSchemas(params: {
   devTarget?: DevUpdateTarget;
   packageTargetSchemaVersions?: OpenClawSchemaVersions;
   packageTargetVersion?: string;
+  packageAlreadyCurrent?: boolean;
   packageInstallSpec?: string | null;
   packageRuntimeTarget?: { version: string; nodeEngine: string | null };
-  packageAlreadyCurrent?: boolean;
   managedServiceNodeRunner?: string;
   opts: Pick<UpdateCommandOptions, "dryRun" | "json" | "run">;
   refuseUpdate: RefuseUpdate;
@@ -118,6 +118,10 @@ export async function preflightUpdateCommandSchemas(params: {
       const { inspectGitDryRunTargetSchemaVersions } = await import("./update-command-git.js");
       const admission = await inspectUpdateDatabaseContexts({
         roots: switchToGit ? [root, resolveGitInstallDir()] : [root],
+        scope:
+          updateInstallKind === "package" && params.packageAlreadyCurrent
+            ? "profile-maintenance"
+            : "installation",
         updateInstallKind,
         shouldRestart,
         jsonMode: Boolean(opts.json),
@@ -152,7 +156,7 @@ export async function preflightUpdateCommandSchemas(params: {
           nodeRunner: params.managedServiceNodeRunner,
           timeoutMs: updateStepTimeoutMs,
           alreadyCurrent: params.packageAlreadyCurrent,
-          service: admission.service,
+          service: admission.profiles[0]?.stopState,
           installedRoot: params.packageAlreadyCurrent ? root : undefined,
         });
         if (!runtime.ok) {

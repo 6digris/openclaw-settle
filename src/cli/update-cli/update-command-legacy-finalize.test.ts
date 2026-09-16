@@ -52,6 +52,9 @@ function assertLegacyCommandJoined(
 }
 
 const scenarios = [
+  "profile-contexts",
+  "selected-node",
+  "selected-node-refresh",
   "state-migrated-no-rollback",
   "rollback-state-unverified",
   "revoked",
@@ -78,7 +81,7 @@ const scenarios = [
 ] as const;
 
 it.for(scenarios)(
-  "shipped legacy grant completes migrated finalization and native restart: %s",
+  "candidate finalization preserves native restart and shipped ownership: %s",
   { timeout: 90_000 },
   (scenario, { signal }) => runLegacyFinalizationScenario(scenario, signal),
 );
@@ -105,6 +108,8 @@ function runLegacyFinalizationScenario(scenario: (typeof scenarios)[number], sig
     const ownedEnvironment = scenario.includes("-owned");
     const incumbent = scenario.endsWith("-incumbent");
     const legacyParent = scenario.includes("-parent-");
+    const selectedNode = scenario.startsWith("selected-node");
+    const requiresRuntimeRefresh = scenario === "selected-node-refresh";
     const refusedParent = scenario.includes("-wrong-") || scenario.endsWith("-registered-child");
     const normalTemp = path.join(scratch, "normal-temp");
     const workerTemp = path.join(scratch, "openclaw-update-migrated-fixture");
@@ -232,6 +237,7 @@ function runLegacyFinalizationScenario(scenario: (typeof scenarios)[number], sig
         }
         const r=await execFileUtf8(process.execPath,["-e",${JSON.stringify(`require("node:fs").writeFileSync(${JSON.stringify(scratch + "/native-effect")},"restarted")`)}]);
         if(r.code!==0)throw new Error(r.stderr);
+        fs.appendFileSync(${JSON.stringify(scratch + "/native-profile-effects")},process.env.OPENCLAW_STATE_DIR+"\\n");
         process.stdout.write(JSON.stringify({action:"restart",ok:true,result:"restarted"}));
       });
     `,
@@ -314,11 +320,64 @@ function runLegacyFinalizationScenario(scenario: (typeof scenarios)[number], sig
           preUpdatePluginInstallRecords: {},
           startedAt: Date.now(),
           packageUpdateNodeRunner: testNodeExecPath,
+          ...(selectedNode
+            ? {
+                serviceRuntimeRefreshRequired: requiresRuntimeRefresh,
+                preManagedServiceStop: {
+                  stopped: true,
+                  inspected: true,
+                  runtimeInspected: true,
+                  running: true,
+                  serviceEnv: env,
+                  serviceNodeRunner: path.join(scratch, "obsolete-node"),
+                },
+              }
+            : {}),
           updateStepTimeoutMs: 20000,
           rollbackBlockedReason:
             scenario === "rollback-state-unverified" ? scenario : "state-migrated-no-rollback",
         },
       };
+      let privateInput: unknown = input;
+      if (scenario === "profile-contexts") {
+        const opsStateDir = path.join(scratch, "ops");
+        fs.mkdirSync(opsStateDir);
+        const opsConfigPath = path.join(opsStateDir, "openclaw.json");
+        fs.writeFileSync(opsConfigPath, JSON.stringify({ plugins: { enabled: false } }));
+        const {
+          configSnapshot,
+          requestedChannel,
+          storedChannel,
+          preUpdatePluginInstallRecords,
+          ownedManagedUpdateEnv: _owned,
+          ...shared
+        } = input.params;
+        const profile = {
+          configSnapshot,
+          requestedChannel,
+          storedChannel,
+          preUpdatePluginInstallRecords,
+        };
+        privateInput = {
+          ...input,
+          params: {
+            ...shared,
+            profiles: [
+              { ...profile, ownedManagedUpdateEnv: env },
+              {
+                ...profile,
+                configSnapshot: { ...snapshot, path: opsConfigPath },
+                ownedManagedUpdateEnv: {
+                  ...env,
+                  OPENCLAW_PROFILE: "ops",
+                  OPENCLAW_STATE_DIR: opsStateDir,
+                  OPENCLAW_CONFIG_PATH: opsConfigPath,
+                },
+              },
+            ],
+          },
+        };
+      }
       command = commandRunner.runUtf8CommandWithTimeout(
         [
           testNodeExecPath,
@@ -329,7 +388,7 @@ function runLegacyFinalizationScenario(scenario: (typeof scenarios)[number], sig
           JSON.stringify(runtimeProcessEntrypoints.sqliteReadOnly),
         ],
         {
-          input: JSON.stringify(input),
+          input: JSON.stringify(privateInput),
           env: scratchEnvironment
             ? {
                 ...originalEnvironment,
@@ -367,6 +426,15 @@ function runLegacyFinalizationScenario(scenario: (typeof scenarios)[number], sig
       assertLegacyCommandJoined(result);
       signal.throwIfAborted();
       const details = result.stderr + "\n" + result.stdout;
+      if (selectedNode) {
+        expect(
+          JSON.parse(fs.readFileSync(path.join(scratch, "runtime-selection.json"), "utf8")),
+          details,
+        ).toEqual({
+          nodeRunner: testNodeExecPath,
+          refreshRequired: requiresRuntimeRefresh,
+        });
+      }
       if (incumbent || refusedParent) {
         expect(result.code, details).not.toBe(0);
         expect(fs.existsSync(path.join(scratch, "receiver-pid"))).toBe(false);
@@ -378,6 +446,18 @@ function runLegacyFinalizationScenario(scenario: (typeof scenarios)[number], sig
         expect(fs.existsSync(path.join(scratch, "receiver-pid")), details).toBe(true);
         expect(fs.existsSync(path.join(scratch, "native-effect")), details).toBe(false);
         expect(result.code, details).not.toBe(0);
+      } else if (requiresRuntimeRefresh) {
+        expect(result.code, details).toBe(0);
+        expect(JSON.parse(fs.readFileSync(input.resultPath, "utf8")), details).toMatchObject({
+          exitCode: 1,
+          terminalRunId: runId,
+          result: { status: "error", root: candidateRoot, runId },
+        });
+        expect(fs.existsSync(path.join(scratch, "native-effect"))).toBe(false);
+        expect(details).toContain("requires a writable gateway service definition");
+        expect(getUpdateRun(runId, { env })?.status).toBe("failed");
+        expect(store.release(bound)).toBe(true);
+        expect(store.release(acquired.lease)).toBe(true);
       } else {
         expect(
           result.code,
@@ -389,6 +469,20 @@ function runLegacyFinalizationScenario(scenario: (typeof scenarios)[number], sig
           result: { status: "ok", root: candidateRoot, runId },
         });
         expect(fs.readFileSync(path.join(scratch, "native-effect"), "utf8")).toBe("restarted");
+        if (scenario === "profile-contexts") {
+          expect(
+            fs
+              .readFileSync(path.join(scratch, "native-profile-effects"), "utf8")
+              .trim()
+              .split("\n"),
+          ).toEqual([path.join(scratch, "ops"), scratch]);
+          expect(JSON.parse(result.stdout)).toMatchObject({
+            status: "ok",
+            root: candidateRoot,
+            runId,
+            run: { runId, status: "succeeded" },
+          });
+        }
         const receiver = JSON.parse(fs.readFileSync(path.join(scratch, "receiver-pid"), "utf8"));
         expect(receiver.parent).toBe(
           Number(fs.readFileSync(path.join(scratch, "finalizer-pid"), "utf8")),
@@ -486,7 +580,7 @@ it.for(["joined", "uncertain"] as const)(
       // cancellation or process-tree owner used by the legacy scenario.
       command = run(
         [
-          process.execPath,
+          testNodeExecPath,
           "-e",
           'process.on("SIGTERM", () => process.exit(0)); process.stdout.write("ready\\n"); setInterval(() => {}, 1000);',
         ],

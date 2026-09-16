@@ -12,6 +12,7 @@ import { OPENCLAW_STATE_SCHEMA_VERSION } from "../../state/openclaw-state-db-con
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { rollbackFailedUpdate } from "./update-command-rollback.js";
+import { createRollbackProfile } from "./update-command-rollback.test-support.js";
 import * as service from "./update-command-service.js";
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
@@ -48,10 +49,15 @@ describe("package rollback executor ownership", () => {
     });
     try {
       const result = await rollbackFailedUpdate({
+        profiles: [
+          createRollbackProfile({
+            configSnapshot,
+          }),
+        ],
+
         result: { status: "error", mode: "npm", root, steps: [], durationMs: 0 },
         previousRoot: root,
         rollbackBlockedReason: "state-migrated-no-rollback",
-        configSnapshot,
         opts: { run },
         timeoutMs: 1000,
       });
@@ -136,6 +142,13 @@ describe("package rollback executor ownership", () => {
     });
     const restart = vi.spyOn(service, "maybeRestartService").mockResolvedValue("ok");
     const pending = rollbackFailedUpdate({
+      profiles: [
+        createRollbackProfile({
+          schemaVersions,
+          configSnapshot,
+        }),
+      ],
+
       result: {
         status: "error",
         mode: "npm",
@@ -145,8 +158,6 @@ describe("package rollback executor ownership", () => {
         durationMs: 1,
       },
       previousRoot: packageRoot,
-      schemaVersions,
-      configSnapshot,
       opts: { json: true, run },
       timeoutMs: 1000,
       packageTransaction: transaction,
@@ -257,6 +268,13 @@ describe("package rollback executor ownership", () => {
       };
     });
     const outcome = await rollbackFailedUpdate({
+      profiles: [
+        createRollbackProfile({
+          schemaVersions,
+          configSnapshot,
+        }),
+      ],
+
       result: {
         status: "error",
         mode: "npm",
@@ -266,8 +284,6 @@ describe("package rollback executor ownership", () => {
         durationMs: 1,
       },
       previousRoot,
-      schemaVersions,
-      configSnapshot,
       opts: { json: true, run },
       timeoutMs: 1000,
       packageTransaction: {

@@ -519,6 +519,11 @@ export const prepareBundledPluginRuntime: PrepareBundledPluginRuntime = (params)
   }
   return {
     changed: roots.some((entry) => entry.changed),
+    get originalsIntact() {
+      return (
+        phase !== "publishing" && roots.every((entry) => !entry.savedOriginal && !entry.published)
+      );
+    },
     async publish(assertCurrent) {
       if (phase !== "prepared") {
         throw new Error("Prepared runtime publication is no longer available.");

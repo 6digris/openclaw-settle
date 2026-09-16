@@ -45,27 +45,45 @@ describe("package finalization recovery targets", () => {
       root,
       opts: { run },
       result: { status: "ok", mode: "npm", steps: [], durationMs: 0 },
+      profiles: [
+        {
+          configSnapshot: validConfigSnapshot,
+          requestedChannel: null,
+          storedChannel: null,
+          preUpdatePluginInstallRecords: {},
+        },
+      ],
     };
     return { run, params, databasePath: resolveOpenClawStateSqlitePath(env) };
   }
 
   it.each(
     (["entry", "settlement"] as const).flatMap((phase) =>
-      (["run-only", "same-target", "distinct-target", "retargeted"] as const).map((kind) => ({
-        phase,
-        kind,
-      })),
+      (["run-only", "same-target", "distinct-target", "sibling-target", "retargeted"] as const).map(
+        (kind) => ({
+          phase,
+          kind,
+        }),
+      ),
     ),
   )("inspects each selected recovery target once at $phase ($kind)", async ({ phase, kind }) => {
     const first = target();
-    const other = kind === "distinct-target" || kind === "retargeted" ? target() : undefined;
+    const other =
+      kind === "distinct-target" || kind === "sibling-target" || kind === "retargeted"
+        ? target()
+        : undefined;
     if (kind === "same-target") {
-      first.params.ownedManagedUpdateEnv = {
+      first.params.profiles[0]!.ownedManagedUpdateEnv = {
         ...first.run.env,
         OPENCLAW_STATE_DIR: first.params.root + path.sep + ".",
       };
     } else if (kind === "distinct-target") {
-      first.params.ownedManagedUpdateEnv = other!.run.env;
+      first.params.profiles[0]!.ownedManagedUpdateEnv = other!.run.env;
+    } else if (kind === "sibling-target") {
+      first.params.profiles.push({
+        ...first.params.profiles[0]!,
+        ownedManagedUpdateEnv: other!.run.env,
+      });
     }
     closeOpenClawStateDatabaseForTest();
     const prepare = vi.spyOn(snapshots, "prepareSqliteReadOnlyLocationSync");
@@ -89,7 +107,7 @@ describe("package finalization recovery targets", () => {
     const recoveryPaths =
       kind === "distinct-target"
         ? [other!.databasePath, first.databasePath]
-        : kind === "retargeted"
+        : kind === "retargeted" || kind === "sibling-target"
           ? [first.databasePath, other!.databasePath]
           : [first.databasePath];
     expect(prepare.mock.calls.map(([pathname]) => pathname)).toEqual([
@@ -99,50 +117,62 @@ describe("package finalization recovery targets", () => {
     ]);
   });
 
-  it.each(["first-read", "distinct-read", "run-replaced", "fence-replaced"] as const)(
-    "retains the original executor after recovery admission (%s)",
-    async (boundary) => {
-      const first = target();
-      const other = boundary === "distinct-read" ? target() : undefined;
-      if (other) {
-        first.params.ownedManagedUpdateEnv = other.run.env;
-      }
-      let current = true;
-      first.run.executorFence = {
-        assertCurrent() {
-          if (!current) {
-            throw new Error("original finalizer authority lost");
-          }
-        },
-      };
-      const replacementFence = { assertCurrent: vi.fn() };
-      closeOpenClawStateDatabaseForTest();
-      const lstat = fs.lstat.bind(fs);
-      vi.spyOn(fs, "lstat").mockImplementation(async (...args) => {
-        const result = await lstat(...args);
-        if (String(args[0]) === path.dirname(first.databasePath)) {
-          if (boundary === "run-replaced") {
-            first.params.opts.run = { ...first.run };
-          } else if (boundary === "fence-replaced") {
-            first.run.executorFence = replacementFence;
-          } else {
-            current = false;
-          }
+  it.each([
+    "first-read",
+    "distinct-read",
+    "sibling-read",
+    "run-replaced",
+    "fence-replaced",
+  ] as const)("retains the original executor after recovery admission (%s)", async (boundary) => {
+    const first = target();
+    const other =
+      boundary === "distinct-read" || boundary === "sibling-read" ? target() : undefined;
+    if (boundary === "sibling-read") {
+      first.params.profiles.push({
+        ...first.params.profiles[0]!,
+        ownedManagedUpdateEnv: other!.run.env,
+      });
+    } else if (other) {
+      first.params.profiles[0]!.ownedManagedUpdateEnv = other.run.env;
+    }
+    let current = true;
+    first.run.executorFence = {
+      assertCurrent() {
+        if (!current) {
+          throw new Error("original finalizer authority lost");
         }
-        return result;
-      });
-      await expect(assertUpdateCommandPackageFinalization(first.params)).rejects.toMatchObject({
-        name: "UpdateCommandPendingRecoveryFailure",
-        cause: {
-          message:
-            boundary === "run-replaced" || boundary === "fence-replaced"
-              ? "Package finalization lost its original executor."
-              : "original finalizer authority lost",
-        },
-      });
-      expect(replacementFence.assertCurrent).not.toHaveBeenCalled();
-    },
-  );
+      },
+    };
+    const replacementFence = { assertCurrent: vi.fn() };
+    closeOpenClawStateDatabaseForTest();
+    const lstat = fs.lstat.bind(fs);
+    vi.spyOn(fs, "lstat").mockImplementation(async (...args) => {
+      const result = await lstat(...args);
+      if (
+        String(args[0]) ===
+        path.dirname(boundary === "sibling-read" ? other!.databasePath : first.databasePath)
+      ) {
+        if (boundary === "run-replaced") {
+          first.params.opts.run = { ...first.run };
+        } else if (boundary === "fence-replaced") {
+          first.run.executorFence = replacementFence;
+        } else {
+          current = false;
+        }
+      }
+      return result;
+    });
+    await expect(assertUpdateCommandPackageFinalization(first.params)).rejects.toMatchObject({
+      name: "UpdateCommandPendingRecoveryFailure",
+      cause: {
+        message:
+          boundary === "run-replaced" || boundary === "fence-replaced"
+            ? "Package finalization lost its original executor."
+            : "original finalizer authority lost",
+      },
+    });
+    expect(replacementFence.assertCurrent).not.toHaveBeenCalled();
+  });
 });
 
 async function fixture(rollback = false) {
@@ -227,21 +257,25 @@ describe("durable terminal finalizer consumer", () => {
           mutationStarted: true,
           root: f.live,
           result: { status: "ok", mode: "npm", root: f.live, steps: [], durationMs: 0 },
-          configSnapshot: {
-            ...validConfigSnapshot,
-            path: path.join(f.root, "openclaw.json"),
-            exists: true,
-            raw: "{}",
-            resolved: {},
-          },
+          profiles: [
+            {
+              configSnapshot: {
+                ...validConfigSnapshot,
+                path: path.join(f.root, "openclaw.json"),
+                exists: true,
+                raw: "{}",
+                resolved: {},
+              },
+              requestedChannel: null,
+              storedChannel: null,
+              preUpdatePluginInstallRecords: {},
+            },
+          ],
           installKindChanged: false,
-          requestedChannel: null,
-          storedChannel: null,
           channel: "stable",
           downgradeRisk: false,
           shouldRestart: true,
           controlPlaneUpdateSentinelMeta: null,
-          preUpdatePluginInstallRecords: {},
           startedAt: Date.now(),
           updateStepTimeoutMs: 1000,
         },

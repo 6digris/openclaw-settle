@@ -75,7 +75,7 @@ import {
 } from "./update-run-ledger.js";
 import { updateRunStepsFromResultStep } from "./update-run-step.js";
 import { AUTO_UPDATE_STEP_TIMEOUT_MS } from "./update-run-timeouts.js";
-import { runGatewayUpdatePreflight, type UpdateRunResult } from "./update-runner.js";
+import type { UpdateRunResult } from "./update-runner-types.js";
 
 type UpdateCheckState = {
   lastCheckedAt?: string;
@@ -462,29 +462,6 @@ async function runAutoUpdateCommand(
 
   try {
     params.signal?.throwIfAborted();
-    if (params.devTarget) {
-      const result = await runGatewayUpdatePreflight(
-        params.root,
-        params.timeoutMs,
-        params.devTarget,
-        params.signal,
-      );
-      params.signal?.throwIfAborted();
-      if (result) {
-        if (classifyUpdateOutcome(result) === "noop") {
-          return {
-            status: "skipped",
-            result,
-            message: "Automatic update skipped: the selected version is already current.",
-          };
-        }
-        return {
-          status: "failed",
-          result,
-          message: `Automatic update preflight failed. Run \`${command}\` from a shell to inspect and retry.`,
-        };
-      }
-    }
     if (!params.root?.trim()) {
       throw new Error("managed auto-update install root is unavailable");
     }
@@ -762,8 +739,7 @@ async function resolveDevGitCommits(params: {
     .slice(0, DEV_COMMIT_LIMIT);
 }
 
-// The owner joins preflight and handoff readiness, never the detached helper's
-// subsequent wait for Gateway exit.
+// The owner joins handoff readiness, never the helper's subsequent wait for Gateway exit.
 async function runCampaignUpdate(params: {
   channel: "stable" | "beta" | "dev";
   mode: UpdateRunResult["mode"];

@@ -1,6 +1,7 @@
 // Shared callable contract for compiled callers loading source-checkout writers.
 type PreparedBundledPluginRuntime = {
   changed: boolean;
+  readonly originalsIntact?: boolean;
   publish(assertCurrent: () => void | Promise<void>): Promise<void>;
   cleanup(): Promise<void>;
 };

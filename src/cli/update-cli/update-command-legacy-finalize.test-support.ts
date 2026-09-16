@@ -25,7 +25,7 @@ const overrides = new Map<string, string>([
     source("./update-command-service-plan.ts"),
     `
     export function resolveGatewayServiceManagementBlockMessageForUpdate(env) {
-      if(env.OPENCLAW_STATE_DIR!==${JSON.stringify(scratch)}) throw new Error("Non-fixture service environment");
+      if(!${JSON.stringify([scratch, scratch + "/ops"])}.includes(env.OPENCLAW_STATE_DIR)) throw new Error("Non-fixture service environment");
       return undefined;
     }`,
   ],
@@ -46,6 +46,8 @@ const overrides = new Map<string, string>([
     source("./update-command-convergence.ts"),
     `export async function convergeUpdatePlugins(p) {
     p.assertCurrent();
+    const fs=await import("node:fs");
+    fs.writeFileSync(${JSON.stringify(scratch + "/runtime-selection.json")},JSON.stringify({nodeRunner:p.packageUpdateNodeRunner,refreshRequired:p.serviceRuntimeRefreshRequired}));
     return {resultWithPostUpdate:p.result,postUpdateConfigSnapshot:p.configSnapshot};
   }`,
   ],

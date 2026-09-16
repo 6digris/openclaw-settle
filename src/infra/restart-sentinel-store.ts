@@ -584,30 +584,13 @@ function upsertRestartSentinelRowSync(
   row: ReturnType<typeof buildRestartSentinelRow>,
 ): void {
   const stateDb = getNodeSqliteKysely<GatewayRestartSentinelDatabase>(db);
+  const { sentinel_key: _key, ...values } = row;
   executeSqliteQuerySync(
     db,
     stateDb
       .insertInto("gateway_restart_sentinel")
       .values(row)
-      .onConflict((conflict) =>
-        conflict.column("sentinel_key").doUpdateSet({
-          version: (eb) => eb.ref("excluded.version"),
-          kind: (eb) => eb.ref("excluded.kind"),
-          status: (eb) => eb.ref("excluded.status"),
-          ts: (eb) => eb.ref("excluded.ts"),
-          session_key: (eb) => eb.ref("excluded.session_key"),
-          thread_id: (eb) => eb.ref("excluded.thread_id"),
-          delivery_channel: (eb) => eb.ref("excluded.delivery_channel"),
-          delivery_to: (eb) => eb.ref("excluded.delivery_to"),
-          delivery_account_id: (eb) => eb.ref("excluded.delivery_account_id"),
-          message: (eb) => eb.ref("excluded.message"),
-          continuation_json: (eb) => eb.ref("excluded.continuation_json"),
-          doctor_hint: (eb) => eb.ref("excluded.doctor_hint"),
-          stats_json: (eb) => eb.ref("excluded.stats_json"),
-          payload_json: (eb) => eb.ref("excluded.payload_json"),
-          updated_at_ms: (eb) => eb.ref("excluded.updated_at_ms"),
-        }),
-      ),
+      .onConflict((conflict) => conflict.column("sentinel_key").doUpdateSet(values)),
   );
 }
 
@@ -674,27 +657,41 @@ export function writeUpdateInstallReceiptRowSync(
   return { version: 1, payload, revision };
 }
 
+/** Compare inside the caller's transaction; null requires an absent current row. */
 export function writeRestartSentinelRowIfRevisionSync(
   db: DatabaseSync,
   rawPayload: RestartSentinelPayload,
-  expectedRevision: number,
+  expectedRevision: number | null,
 ): RestartSentinel | null {
   const { state: current, revision: previousRevision } = readRestartSentinelSnapshotSync(db);
-  if (current.kind !== "valid" || current.sentinel.revision !== expectedRevision) {
+  if (
+    expectedRevision === null
+      ? current.kind !== "missing"
+      : current.kind !== "valid" || current.sentinel.revision !== expectedRevision
+  ) {
     return null;
   }
   const payload = requireValidPayload(rawPayload);
   const revision = nextRevision(previousRevision);
   const row = buildRestartSentinelRow(payload, revision);
   const stateDb = getNodeSqliteKysely<GatewayRestartSentinelDatabase>(db);
-  const result = executeSqliteQuerySync(
-    db,
-    stateDb
-      .updateTable("gateway_restart_sentinel")
-      .set(row)
-      .where("sentinel_key", "=", RESTART_SENTINEL_KEY)
-      .where("updated_at_ms", "=", expectedRevision),
-  );
+  const result =
+    expectedRevision === null
+      ? executeSqliteQuerySync(
+          db,
+          stateDb
+            .insertInto("gateway_restart_sentinel")
+            .values(row)
+            .onConflict((conflict) => conflict.column("sentinel_key").doNothing()),
+        )
+      : executeSqliteQuerySync(
+          db,
+          stateDb
+            .updateTable("gateway_restart_sentinel")
+            .set(row)
+            .where("sentinel_key", "=", RESTART_SENTINEL_KEY)
+            .where("updated_at_ms", "=", expectedRevision),
+        );
   if (result.numAffectedRows !== 1n) {
     return null;
   }

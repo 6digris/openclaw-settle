@@ -9,6 +9,7 @@ import { loadUpdateRecovery } from "../../infra/update-run-recovery.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import type { UpdateCommandOptions } from "./shared.js";
 import { rollbackFailedUpdate } from "./update-command-rollback.js";
+import { createRollbackProfile } from "./update-command-rollback.test-support.js";
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => {
@@ -28,30 +29,25 @@ async function fixture(sealed = true) {
   }).readConfigFileSnapshot();
   const opts: UpdateCommandOptions = {
     run: f.run,
-    recovery: {
-      options: f.options,
-      fence: {
-        assertCurrent() {
-          throw new Error("retained owner is no longer live");
-        },
-      },
-      getRecord: () => f.record,
-      onRecord() {
-        throw new Error("retained record must remain read-only");
-      },
-      assertReady() {
-        throw new Error("no live readiness authority");
-      },
-    },
   };
   const rollback = vi.fn(async () => {
     throw new Error("legacy rollback must not run");
   });
   const complete = vi.fn();
   const invoke = (
-    preManagedServiceStop?: Parameters<typeof rollbackFailedUpdate>[0]["preManagedServiceStop"],
+    preManagedServiceStop?: Parameters<
+      typeof rollbackFailedUpdate
+    >[0]["profiles"][number]["preManagedServiceStop"],
   ) =>
     rollbackFailedUpdate({
+      profiles: [
+        createRollbackProfile({
+          configSnapshot,
+          ownedManagedUpdateEnv: f.env,
+          preManagedServiceStop,
+        }),
+      ],
+
       result: {
         status: "error",
         mode: "npm",
@@ -61,11 +57,9 @@ async function fixture(sealed = true) {
         durationMs: 1,
       },
       previousRoot: f.root,
-      configSnapshot,
       opts,
       timeoutMs: 1000,
       packageTransaction: { rollback, complete, backupRoot: path.join(f.root, "retained") },
-      preManagedServiceStop,
     });
   return { ...f, opts, rollback, complete, invoke };
 }
@@ -81,7 +75,9 @@ describe("retained full-state recovery is read-only", () => {
       expect(await f.invoke()).toMatchObject({
         rolledBack: false,
         result: { reason: "candidate-failed", recovery: { serviceRestartSafe: false } },
-        pendingRecoveryReason: expect.stringContaining("deferred"),
+        pendingRecoveryReason: expect.stringContaining(
+          `Update ${f.run.runId} has unfinished recovery`,
+        ),
       });
       expect(fs.readFileSync(f.file)).toEqual(before);
       expect(fs.readFileSync(f.record.checkpoint!.ref.manifestPath)).toEqual(manifest);
@@ -93,7 +89,7 @@ describe("retained full-state recovery is read-only", () => {
     },
   );
 
-  it.each(["operator edit", "foreign root", "relative root", "lost context", "lost run"] as const)(
+  it.each(["operator edit", "foreign root", "relative root", "lost run"] as const)(
     "does not reinterpret %s as permission for package rollback",
     async (change) => {
       const f = await fixture();
@@ -108,9 +104,6 @@ describe("retained full-state recovery is read-only", () => {
           ...f.run,
           env: { ...f.env, OPENCLAW_STATE_DIR: path.relative(process.cwd(), f.root) },
         };
-      }
-      if (change === "lost context" || change === "lost run") {
-        f.opts.recovery = undefined;
       }
       if (change === "lost run") {
         f.opts.run = undefined;
@@ -131,31 +124,24 @@ describe("retained full-state recovery is read-only", () => {
     },
   );
 
-  it.each([true, false])(
-    "refuses an interrupted displacement with live-context=%s without recreating canonical state",
-    async (context) => {
-      const f = await fixture();
-      f.displace();
-      if (!context) {
-        f.opts.recovery = undefined;
-      }
-      const before = fs.readFileSync(f.displaced);
-      expect(await f.invoke()).toMatchObject({
-        rolledBack: false,
-        pendingRecoveryReason: expect.any(String),
-      });
-      expect(fs.existsSync(f.file)).toBe(false);
-      expect(fs.readFileSync(f.displaced)).toEqual(before);
-      expect(f.rollback).not.toHaveBeenCalled();
-      expect(f.complete).not.toHaveBeenCalled();
-    },
-  );
+  it("refuses an interrupted displacement without recreating canonical state", async () => {
+    const f = await fixture();
+    f.displace();
+    const before = fs.readFileSync(f.displaced);
+    expect(await f.invoke()).toMatchObject({
+      rolledBack: false,
+      pendingRecoveryReason: expect.any(String),
+    });
+    expect(fs.existsSync(f.file)).toBe(false);
+    expect(fs.readFileSync(f.displaced)).toEqual(before);
+    expect(f.rollback).not.toHaveBeenCalled();
+    expect(f.complete).not.toHaveBeenCalled();
+  });
 
   it.each(["service", "admitted"] as const)(
     "checks pending recovery in the %s root when service and history differ",
     async (pendingRoot) => {
       const f = await fixture();
-      f.opts.recovery = undefined;
       const cleanEnv = { OPENCLAW_STATE_DIR: dirs.make("rollback-other-root-") };
       f.opts.run = { ...f.run, env: pendingRoot === "admitted" ? f.env : cleanEnv };
       const before = fs.readFileSync(f.file);

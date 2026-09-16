@@ -7,7 +7,9 @@ import {
   withDelegatedUpdateCommandExecutor,
   withUpdateCommandExecutor,
 } from "../cli/update-cli/update-command-executor.js";
+import type { UpdateProfileContext } from "../cli/update-cli/update-command-finish-types.js";
 import type {
+  LegacyMigratedUpdateFinalizationInput,
   UpdateDoctorInput,
   MigratedUpdateFinalizationInput,
   MigratedUpdateFinalizationResult,
@@ -19,7 +21,10 @@ import {
 } from "../cli/update-cli/update-command-result.js";
 import { createWindowsTaskAutoStartGuard } from "../cli/update-cli/update-command-service-maintenance.js";
 import { withUpdateCommandTerminalResult } from "../cli/update-cli/update-command-terminal.js";
-import { createWindowsTaskAutoStartRecovery } from "../cli/update-cli/update-command-windows-task.js";
+import {
+  completeWindowsTaskAutoStartRecoveries,
+  createWindowsTaskAutoStartRecovery,
+} from "../cli/update-cli/update-command-windows-task.js";
 import { routeLogsToStderr } from "../logging/console.js";
 import { defaultRuntime } from "../runtime.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../state/openclaw-agent-db-contract.js";
@@ -39,6 +44,61 @@ import {
 } from "./update-requester-authority.js";
 import { adoptUpdateRun, getUpdateRun, recordUpdateRunStep } from "./update-run-ledger.js";
 import type { UpdateRecoveryFence } from "./update-run-recovery.js";
+import {
+  isUpdateGatewayReadinessPending,
+  getUpdateProfileVerification,
+} from "./update-run-step.js";
+
+function normalizeFinalizationInput(
+  input: MigratedUpdateFinalizationInput | LegacyMigratedUpdateFinalizationInput,
+): MigratedUpdateFinalizationInput {
+  const { params } = input;
+  if ("profiles" in params) {
+    return { ...input, params };
+  }
+  // The published singleton belongs to this boundary; finalization has one
+  // grouped owner regardless of which installed driver supplied the handoff.
+  const windowsTaskAutoStartSuspended =
+    "windowsTaskAutoStartSuspended" in input ? input.windowsTaskAutoStartSuspended : undefined;
+  const {
+    preManagedServiceStop,
+    ownedManagedUpdateEnv,
+    configSnapshot,
+    requestedChannel,
+    storedChannel,
+    preUpdatePluginInstallRecords,
+    schemaVersions,
+    previousVerified,
+    activationConfig,
+    serviceRuntimeRefreshRequired,
+    ...shared
+  } = params;
+  return {
+    executor: input.executor,
+    recoveryHandoff: input.recoveryHandoff,
+    bufferedSteps: input.bufferedSteps,
+    resultPath: input.resultPath,
+    params: {
+      ...shared,
+      profiles: [
+        {
+          preManagedServiceStop,
+          ownedManagedUpdateEnv,
+          configSnapshot,
+          requestedChannel,
+          storedChannel,
+          preUpdatePluginInstallRecords,
+          schemaVersions,
+          previousVerified,
+          activationConfig,
+          packageUpdateNodeRunner: params.packageUpdateNodeRunner,
+          serviceRuntimeRefreshRequired,
+          ...(windowsTaskAutoStartSuspended ? { windowsTaskAutoStartSuspended } : {}),
+        },
+      ],
+    },
+  };
+}
 
 async function finalizeMigratedUpdate(): Promise<void> {
   // Validation imports this whole candidate graph before activation. The helper
@@ -52,6 +112,8 @@ async function finalizeMigratedUpdate(): Promise<void> {
       JSON.stringify({
         executorDelegation: "pid-start-v1",
         doctorConfigWrites: "pid-start-v1",
+        profileContexts: true,
+        gatewayRestartCompletion: true,
         state: OPENCLAW_STATE_SCHEMA_VERSION,
         agent: OPENCLAW_AGENT_SCHEMA_VERSION,
       }),
@@ -72,7 +134,9 @@ async function finalizeMigratedUpdate(): Promise<void> {
     return await runDelegatedDoctor(JSON.parse(text) as UpdateDoctorInput);
   }
   // SAFETY: Only the typed parent continuation serializes this private input.
-  const input = JSON.parse(text) as MigratedUpdateFinalizationInput;
+  const input = normalizeFinalizationInput(
+    JSON.parse(text) as MigratedUpdateFinalizationInput | LegacyMigratedUpdateFinalizationInput,
+  );
   if (input.params.opts.json) {
     // The installed updater forwards this worker's stdout verbatim. Keep diagnostics
     // on stderr through terminal-history reads and the process's database cleanup.
@@ -83,13 +147,23 @@ async function finalizeMigratedUpdate(): Promise<void> {
       "Full-state checkpoint recovery is deferred; retained state was left unchanged.",
     );
   }
+  if (!input.params.profiles.length) {
+    throw new Error("Migrated finalization requires an admitted profile.");
+  }
   const activationTimeoutMs =
     input.params.opts.run?.activationTimeoutMs ??
-    (await resolveUpdateFinalizationTimeoutMs(input.params.updateStepTimeoutMs, {
-      env: input.params.ownedManagedUpdateEnv ?? input.params.opts.run?.env,
-      databases: input.params.schemaVersions,
-      pluginCount: Object.keys(input.params.preUpdatePluginInstallRecords).length,
-    }));
+    (
+      await Promise.all(
+        input.params.profiles.map((profile) =>
+          resolveUpdateFinalizationTimeoutMs(input.params.updateStepTimeoutMs, {
+            env: profile.ownedManagedUpdateEnv ?? input.params.opts.run?.env,
+            databases: profile.schemaVersions,
+            pluginCount: Object.keys(profile.preUpdatePluginInstallRecords).length,
+            nodeRunner: input.params.packageUpdateNodeRunner,
+          }),
+        ),
+      )
+    ).reduce((total, budget) => total + budget, 0);
   const finalized = await withUpdateCommandTerminalResult(async (registerRun) => {
     if (input.executor) {
       return await withDelegatedUpdateCommandExecutor(
@@ -106,7 +180,8 @@ async function finalizeMigratedUpdate(): Promise<void> {
     // scratch, but retains its pre-override environment in the private input.
     // Restore only this one-shot worker's selectors before resolving the normal
     // installation lease domain; scratch-local ownership cannot exclude updates.
-    const admissionEnv = input.params.ownedManagedUpdateEnv ?? input.params.opts.run?.env;
+    const admissionEnv =
+      input.params.profiles[0]?.ownedManagedUpdateEnv ?? input.params.opts.run?.env;
     if (!admissionEnv) {
       throw new Error("Grantless finalization requires its captured update environment.");
     }
@@ -151,13 +226,21 @@ async function finalizeMigratedUpdate(): Promise<void> {
     );
   }, input.params.opts);
   const terminal = getUpdateRun(finalized.run.runId, { env: finalized.run.env });
-  if (!terminal || terminal.status === "running") {
+  const gatewayRestartPending =
+    finalized.run.completionOwner === "gateway-restart" &&
+    finalized.run.gatewayRestartRequired === true &&
+    finalized.result.status === "ok" &&
+    terminal?.status === "running" &&
+    terminal.phase === "restarting";
+  if (!terminal || (terminal.status === "running" && !gatewayRestartPending)) {
     throw new Error("Candidate finalization left the update run nonterminal.");
   }
   const response: MigratedUpdateFinalizationResult = {
     result: finalized.result,
     exitCode: finalized.exitCode,
-    terminalRunId: terminal.runId,
+    ...(gatewayRestartPending
+      ? { restartRunId: terminal.runId }
+      : { terminalRunId: terminal.runId }),
     executorDelegation: "pid-start-v1",
     automaticTriage: finalized.automaticTriage,
   };
@@ -265,40 +348,51 @@ async function finalizeInput(
     executorFence?.assertCurrent();
     recordUpdateRunStep(run.runId, step, { env: run.env });
   }
-  const stopped = input.params.preManagedServiceStop;
-  if (input.windowsTaskAutoStartSuspended && !stopped?.serviceEnv) {
+  if (
+    input.params.profiles.some(
+      (profile) =>
+        profile.windowsTaskAutoStartSuspended && !profile.preManagedServiceStop?.serviceEnv,
+    )
+  ) {
     throw new Error("Transferred Windows task suspension is missing its stopped service owner.");
   }
-  const windowsRecovery =
-    input.windowsTaskAutoStartSuspended && stopped?.serviceEnv
-      ? createWindowsTaskAutoStartRecovery({
-          serviceEnv: stopped.serviceEnv,
-          updateRun: run,
-          alreadySuspended: true,
-          assertCurrentService: createWindowsTaskAutoStartGuard({
-            root: input.params.result.root ?? input.params.root,
-            before: stopped,
-            timeoutMs: input.params.updateStepTimeoutMs,
-          }),
-          assertCurrent: () => {
-            run.executorFence?.assertCurrent();
-            if (getUpdateRun(run.runId, { env: run.env })?.status !== "running") {
-              throw new Error("Update run no longer owns Windows task activation.");
-            }
-          },
-        })
-      : undefined;
-  let result;
+  const profiles: UpdateProfileContext[] = input.params.profiles.map(
+    ({ windowsTaskAutoStartSuspended, ...profile }) => {
+      const stopped = profile.preManagedServiceStop;
+      const windowsTaskAutoStartRecovery =
+        windowsTaskAutoStartSuspended && stopped?.serviceEnv
+          ? createWindowsTaskAutoStartRecovery({
+              serviceEnv: stopped.serviceEnv,
+              updateRun: run,
+              alreadySuspended: true,
+              assertCurrentService: createWindowsTaskAutoStartGuard({
+                root: input.params.result.root ?? input.params.root,
+                before: stopped,
+                timeoutMs: input.params.updateStepTimeoutMs,
+              }),
+              assertCurrent: () => {
+                run.executorFence?.assertCurrent();
+                if (getUpdateRun(run.runId, { env: run.env })?.status !== "running") {
+                  throw new Error("Update run no longer owns Windows task activation.");
+                }
+              },
+            })
+          : undefined;
+      return {
+        ...profile,
+        ...(stopped ? { preManagedServiceStop: { ...stopped, windowsTaskAutoStartRecovery } } : {}),
+      };
+    },
+  );
+  let result: MigratedUpdateFinalizationResult["result"] | undefined;
   let exitCode = 0;
   let automaticTriage: MigratedUpdateFinalizationResult["automaticTriage"];
   try {
     result = await finishUpdate({
       ...input.params,
+      profiles,
       result: { ...input.params.result, runId: run.runId },
       opts: { ...input.params.opts, run },
-      ...(stopped
-        ? { preManagedServiceStop: { ...stopped, windowsTaskAutoStartRecovery: windowsRecovery } }
-        : {}),
     });
   } catch (error) {
     if (!(error instanceof UpdateCommandFailure)) {
@@ -308,7 +402,16 @@ async function finalizeInput(
     exitCode = error.exitCode;
     automaticTriage = error.automaticTriage;
   } finally {
-    await windowsRecovery?.complete(result?.status === "ok");
+    await completeWindowsTaskAutoStartRecoveries(
+      profiles.map((profile) => profile.preManagedServiceStop?.windowsTaskAutoStartRecovery),
+      (index) =>
+        result?.status === "ok" ||
+        (result !== undefined &&
+          ((result.status !== "error" && isUpdateGatewayReadinessPending(result)) ||
+            (profiles.length === 1
+              ? isUpdateGatewayReadinessPending(result)
+              : getUpdateProfileVerification(result, index + 1)?.exitCode === 0))),
+    );
   }
   executorFence.assertCurrent();
   return { run, result, exitCode, automaticTriage };

@@ -11,7 +11,6 @@ import { collectNestedErrorCandidates } from "../../infra/error-graph-internal.j
 import { formatErrorMessage, formatUncaughtError } from "../../infra/errors.js";
 import type { PackageUpdateTransaction } from "../../infra/package-update-steps.js";
 import { isSqliteLockError } from "../../infra/sqlite-error-diagnostics.js";
-import type { readUpdateStateSchemaVersions } from "../../infra/update-candidate-state.js";
 import {
   markControlPlaneUpdateRestartSentinelFailure,
   writeControlPlaneUpdateRestartSentinel,
@@ -22,15 +21,16 @@ import { FreeBsdPkgOwnershipError } from "../../infra/update-freebsd-pkg-ownersh
 import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
 import { UpdateRunAdmissionBusyError } from "../../infra/update-run-admission.js";
 import { getUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
-import type { UpdateRunResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import { defaultRuntime } from "../../runtime.js";
 import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
 import { exitCliAfterOutput } from "../one-shot-exit.js";
 import { printResult } from "./progress.js";
 import { UpdatePreMutationError, type UpdateCommandOptions } from "./shared.js";
-import type { UpdateConfigSnapshot } from "./update-command-config-snapshot.js";
-import type { FinishUpdateParams } from "./update-command-finish-types.js";
-import type { OwnedManagedUpdateContext } from "./update-command-managed-context.js";
+import type {
+  ProfileFinishUpdateParams,
+  UpdateProfileContext,
+} from "./update-command-finish-types.js";
 import type { PreManagedServiceStop } from "./update-command-service-context-types.js";
 import { GatewayServiceUpdateOwnershipError } from "./update-command-service-plan.js";
 import { resolveUpdateResultNextAction } from "./update-recovery-guidance.js";
@@ -50,18 +50,15 @@ export function formatUpdateFinalizationError(error: unknown): string {
 }
 
 export type MutableUpdateExecutionResult = {
+  coreAlreadyCurrent?: true;
   mutationStarted: boolean;
   result: UpdateRunResult;
   failure?: { cause: unknown; detail: string };
-  preManagedServiceStop: PreManagedServiceStop | undefined;
-  ownedManagedUpdateContext: OwnedManagedUpdateContext | undefined;
+  profiles: UpdateProfileContext[];
   recoveryEnv: NodeJS.ProcessEnv | undefined;
   packageTransaction?: PackageUpdateTransaction;
-  schemaVersions?: Awaited<ReturnType<typeof readUpdateStateSchemaVersions>>;
   candidateSchemaVersions?: OpenClawSchemaVersions;
   previousSchemaVersions?: OpenClawSchemaVersions;
-  previousVerified?: boolean;
-  activationConfig?: UpdateConfigSnapshot;
 };
 
 export function createUpdateCommandFailureResult(
@@ -341,6 +338,10 @@ export async function writeControlPlaneUpdateRestartSentinelBestEffort(params: {
       params.env,
     );
   } catch (err) {
+    if (params.meta.completionOwner === "gateway-restart") {
+      // A foreground replacement cannot finish its run from a pending sentinel.
+      throw err;
+    }
     const message = `Failed to write update.run restart sentinel: ${String(err)}`;
     if (params.jsonMode) {
       defaultRuntime.error(message);
@@ -372,7 +373,7 @@ export async function markControlPlaneUpdateRestartSentinelFailureBestEffort(par
 }
 
 export function recordUpdateResultNextAction(
-  params: Pick<FinishUpdateParams, "opts" | "coreAlreadyCurrent" | "ownedManagedUpdateEnv">,
+  params: Pick<ProfileFinishUpdateParams, "opts" | "coreAlreadyCurrent" | "ownedManagedUpdateEnv">,
   result: UpdateRunResult,
 ) {
   const run = params.opts.run;

@@ -175,10 +175,10 @@ npm i -g openclaw@latest --allow-scripts=openclaw
 
 Prefer `openclaw update` for supervised installs: it can coordinate the package
 swap with the running Gateway service. If you update manually on a supervised
-install, stop the managed Gateway first. Package managers replace files in
-place, and a running Gateway can otherwise try to load core or plugin files
-mid-swap. Restart the Gateway after the package manager finishes so it picks up
-the new install.
+install, stop every Gateway that uses that installation first, including other
+profiles. Package managers replace files in place, and a running Gateway can
+otherwise try to load core or plugin files mid-swap. Restart those Gateways after
+the package manager finishes so they pick up the new install.
 
 Release packages include generated compatibility files for lazy imports from
 updaters in the supported upgrade window, including the 2026.9.1 service restart path. These

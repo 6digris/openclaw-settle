@@ -12,7 +12,7 @@ import { readBuiltGatewayBuildId } from "../../infra/update-git-runtime.js";
 import type { UpdateRepairValidation } from "../../infra/update-repair-protocol.js";
 import { recordUpdateRunStep, recordUpdateRunVerification } from "../../infra/update-run-ledger.js";
 import { updateRunStepsFromResultStep } from "../../infra/update-run-step.js";
-import type { UpdateRunResult, UpdateStepResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult, UpdateStepResult } from "../../infra/update-runner-types.js";
 import { defaultRuntime } from "../../runtime.js";
 import { formatCliCommand } from "../command-format.js";
 import { resolveGatewayRestartProbeContext } from "../daemon-cli/restart-health-probe.js";
@@ -159,7 +159,6 @@ function captureUpdateGatewayReadinessOwner(params: {
 }) {
   const originalRun = params.opts.run;
   const originalExecutor = originalRun?.executorFence;
-  const originalRecovery = params.opts.recovery;
   const proofOptions = {
     ...params.opts,
     ...(originalRun ? { run: { ...originalRun, env: { ...originalRun.env } } } : {}),
@@ -167,21 +166,12 @@ function captureUpdateGatewayReadinessOwner(params: {
   const assertCurrent = () => {
     params.signal?.throwIfAborted();
     params.assertCurrent?.();
-    if (
-      params.opts.run !== originalRun ||
-      originalRun?.executorFence !== originalExecutor ||
-      params.opts.recovery !== originalRecovery
-    ) {
+    if (params.opts.run !== originalRun || originalRun?.executorFence !== originalExecutor) {
       throw new UpdateCommandRecoveryPendingError(
         "Readiness observation lost its original executor.",
       );
     }
     originalExecutor?.assertCurrent();
-    if (originalRecovery) {
-      throw new UpdateCommandRecoveryPendingError(
-        "Full-state checkpoint recovery is deferred; retained state was left unchanged.",
-      );
-    }
   };
   return { proofOptions, assertCurrent };
 }
@@ -342,12 +332,14 @@ export async function verifyUpdatedGateway(
   params: UpdateGatewayReadinessParams & {
     result: UpdateRunResult;
     opts: UpdateCommandOptions;
+    recordGatewayVerification?: boolean;
     nodeRunner?: string;
     onVerified?: (verifiedAtMs: number) => void;
   },
 ): Promise<UpdateRepairValidation & { pluginWarnings?: PluginUpdateWarning[] }> {
   const startedAtMs = Date.now();
   const { proofOptions, assertCurrent } = captureUpdateGatewayReadinessOwner(params);
+  const verificationRun = params.recordGatewayVerification === false ? undefined : proofOptions.run;
   const { health, readyz, http, launchAgentRecovery } = await observeUpdateGatewayReadiness({
     ...params,
     assertCurrent,
@@ -411,7 +403,7 @@ export async function verifyUpdatedGateway(
     );
     assertCurrent();
     const verifiedAtMs = Date.now();
-    recordUpdateGatewayHealth(proofOptions.run, health, params.gatewayPort, readyz);
+    recordUpdateGatewayHealth(verificationRun, health, params.gatewayPort, readyz);
     params.onVerified?.(verifiedAtMs);
     assertCurrent();
     recordVerificationStep();
@@ -432,7 +424,7 @@ export async function verifyUpdatedGateway(
       ...(pluginWarnings.length > 0 ? { pluginWarnings } : {}),
     };
   }
-  recordUpdateGatewayHealth(proofOptions.run, health, params.gatewayPort, readyz);
+  recordUpdateGatewayHealth(verificationRun, health, params.gatewayPort, readyz);
   if (gatewayReadinessPending(health)) {
     const detail = [
       "Gateway readiness is pending; leaving the observed running process starting without another recovery restart or rollback.",

@@ -154,7 +154,6 @@ export type SidebarRecentSession = {
   attention: SidebarSessionAttention;
   /** Own attention remains distinct from the collapsed-tree projection. */
   ownAttention?: SidebarSessionAttention;
-  childAttention?: readonly SidebarSessionAttention[];
   unreadChildCount?: number;
   queuedChildCount?: number;
   agentStatusNote?: string;

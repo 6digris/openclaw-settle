@@ -1,11 +1,10 @@
 import { afterEach, beforeEach, vi } from "vitest";
-import type { UpdateRunResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import type { captureTargetDatabaseSchemaContext } from "./schema-preflight.js";
 import type { executeMutableUpdate } from "./update-command-execution.js";
 import type { PreManagedServiceStop } from "./update-command-service.js";
 
 const mocks = vi.hoisted(() => ({
-  captureManagedContext: vi.fn(),
   captureManagedPreflight:
     vi.fn<
       typeof import("./update-command-managed-context.js").captureOwnedManagedUpdatePreflightContext
@@ -16,9 +15,12 @@ const mocks = vi.hoisted(() => ({
     vi.fn<typeof import("./schema-preflight.js").checkTargetDatabaseSchemasForContexts>(),
   formatSchemaRefusalLines: vi.fn(),
   hasSchemaRefusal: vi.fn(),
-  maybeRestartService: vi.fn(),
   maybeStopService: vi.fn(),
-  prepareMutableUpdate: vi.fn<(env?: NodeJS.ProcessEnv) => Promise<void>>(),
+  prepareMutableUpdate: vi.fn<Parameters<typeof executeMutableUpdate>[0]["prepareMutableUpdate"]>(),
+  findServices: vi.fn(),
+  runtimePreflight:
+    vi.fn<typeof import("./update-command-service-plan.js").resolvePackageRuntimePreflight>(),
+  runDoctor: vi.fn<typeof import("./update-command-package.js").runPackageUpdateDoctor>(),
   pluginPreflight: vi.fn(),
   pluginTargets: vi.fn(),
   pluginRecords: vi.fn(),
@@ -45,6 +47,12 @@ vi.mock("./update-command-service-command.js", async (importOriginal) => ({
 }));
 
 afterEach(() => vi.restoreAllMocks());
+
+vi.mock("../../daemon/inspect.js", () => ({ findGatewayServices: mocks.findServices }));
+vi.mock("./update-command-service-plan.js", async (original) => ({
+  ...(await original<typeof import("./update-command-service-plan.js")>()),
+  resolvePackageRuntimePreflight: mocks.runtimePreflight,
+}));
 
 vi.mock("../../infra/update-global.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../infra/update-global.js")>()),
@@ -97,7 +105,6 @@ vi.mock("./update-command-handoff.js", () => ({
 
 vi.mock("./update-command-managed-context.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./update-command-managed-context.js")>()),
-  captureOwnedManagedUpdateContext: mocks.captureManagedContext,
   captureOwnedManagedUpdatePreflightContext: mocks.captureManagedPreflight,
   revalidateUpdateDatabaseContext: mocks.revalidateSchemaContext,
 }));
@@ -105,6 +112,7 @@ vi.mock("./update-command-managed-context.js", async (importOriginal) => ({
 vi.mock("./update-command-package.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./update-command-package.js")>()),
   runPackageInstallUpdate: mocks.runPackageUpdate,
+  runPackageUpdateDoctor: mocks.runDoctor,
 }));
 
 vi.mock("./update-command-service.js", async () => {
@@ -113,7 +121,6 @@ vi.mock("./update-command-service.js", async () => {
   );
   const { resolveUpdatedGatewayRestartPort } = await import("./update-command-service-plan.js");
   return {
-    maybeRestartServiceAfterFailedMutableUpdate: mocks.maybeRestartService,
     maybeStopManagedServiceBeforeMutableUpdate: mocks.maybeStopService,
     shouldBlockMutableUpdateFromGatewayServiceEnv: mocks.shouldBlockServiceUpdate,
     UpdateCommandAbort: actual.UpdateCommandAbort,
@@ -154,6 +161,12 @@ function executionParams(
     invocationCwd: "/work",
     recoveryState: { triageTarget: { env: {} } },
     prepareMutableUpdate: mocks.prepareMutableUpdate,
+    initialProfile: {
+      configSnapshot: schemaContext("default").configSnapshot,
+      requestedChannel: null,
+      storedChannel: null,
+      preUpdatePluginInstallRecords: {},
+    },
     packageTargetSchemaVersions: { state: 15, agent: 19 },
   };
 }
@@ -183,7 +196,10 @@ function schemaContext(
   };
 }
 
-function inspectOrStopService(phase: "inspect" | "prepare" = "prepare"): PreManagedServiceStop {
+function inspectOrStopService(
+  phase: "inspect" | "prepare" = "prepare",
+  scope: { root?: string; env?: NodeJS.ProcessEnv } = {},
+): PreManagedServiceStop {
   const running = !mocks.serviceStopped;
   if (phase === "prepare") {
     mocks.serviceStopped = true;
@@ -193,10 +209,10 @@ function inspectOrStopService(phase: "inspect" | "prepare" = "prepare"): PreMana
     inspected: true,
     runtimeInspected: true,
     running,
-    serviceEnv: { OPENCLAW_PROFILE: "default" },
+    serviceEnv: scope.env ?? { OPENCLAW_PROFILE: "default" },
     serviceUpdateVerdict: {
       kind: "owned",
-      root: "/opt/openclaw",
+      root: scope.root ?? "/opt/openclaw",
       fingerprint: "service-fingerprint",
       refreshDefinition: false,
     },
@@ -208,23 +224,28 @@ beforeEach(() => {
   mocks.serviceStopped = false;
   mocks.validateCanary.mockResolvedValue({
     status: "ok",
+    profileContexts: true,
     phase: "readiness",
     steps: [],
     durationMs: 1,
     logTail: [],
   });
-  mocks.captureManagedContext.mockResolvedValue(undefined);
   mocks.captureManagedPreflight.mockResolvedValue(schemaContext("default"));
-  mocks.captureSchemaContext.mockResolvedValue(schemaContext("invoker"));
+  mocks.captureSchemaContext.mockResolvedValue(schemaContext("default"));
   mocks.revalidateSchemaContext.mockImplementation(async (context) => context);
   mocks.checkTargetSchemas.mockResolvedValue({ incompatible: [], indeterminate: [] });
   mocks.formatSchemaRefusalLines.mockReturnValue(["schema refused"]);
   mocks.hasSchemaRefusal.mockImplementation(
     (schemas) => schemas.incompatible.length > 0 || schemas.indeterminate.length > 0,
   );
-  mocks.maybeRestartService.mockResolvedValue(undefined);
   mocks.maybeStopService.mockImplementation(async ({ phase }) => inspectOrStopService(phase));
-  mocks.prepareMutableUpdate.mockResolvedValue(undefined);
+  mocks.prepareMutableUpdate.mockResolvedValue({});
+  mocks.findServices.mockResolvedValue({ services: [], errors: [] });
+  mocks.runtimePreflight.mockImplementation(async ({ nodeRunner }) => ({
+    ok: true,
+    value: { nodeRunner },
+  }));
+  mocks.runDoctor.mockResolvedValue(null);
   mocks.pluginPreflight.mockResolvedValue([]);
   mocks.readGitRecovery.mockResolvedValue({ serviceRestartSafe: true });
   mocks.runGitUpdate.mockResolvedValue({ ...successfulUpdate, mode: "git" });

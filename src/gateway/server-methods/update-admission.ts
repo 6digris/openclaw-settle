@@ -2,8 +2,9 @@ import { UpdatePreMutationError } from "../../cli/update-cli/shared.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createFreeBsdPkgOwnershipInspection } from "../../infra/update-freebsd-pkg-ownership.js";
 import { recordUpdateRunStep } from "../../infra/update-run-ledger.js";
+import { summarizeUpdateStepFailure } from "../../infra/update-run-record.js";
+import { resolveUpdateInstallSurface } from "../../infra/update-runner-install-surface.js";
 import type { UpdateRunResult } from "../../infra/update-runner-types.js";
-import { resolveUpdateInstallSurface } from "../../infra/update-runner.js";
 import { initializeGatewayUpdateStatus } from "../../infra/update-startup.js";
 
 export async function resolveGatewayUpdateAdmission(timeoutMs?: number) {
@@ -36,6 +37,13 @@ export function recordHandoffFailure(
     exitCode: null,
     failureFacts,
   };
-  recordUpdateRunStep(runId, { step: step.name, status: "failed", reason, failureFacts });
+  recordUpdateRunStep(runId, {
+    step: step.name,
+    status: "failed",
+    exitCode: step.exitCode,
+    detail: summarizeUpdateStepFailure(step),
+    reason,
+    failureFacts,
+  });
   return { ...previous, status: "error", reason, steps: [...previous.steps, step] };
 }

@@ -13,6 +13,7 @@ import type { ResolvedGlobalInstallTarget } from "../../infra/update-global.js";
 import { prepareNativePackageStage } from "../../infra/update-native-package-stage.js";
 import { VERSION } from "../../version.js";
 import { rollbackFailedUpdate } from "./update-command-rollback.js";
+import { createRollbackProfile } from "./update-command-rollback.test-support.js";
 import type { PreManagedServiceStop } from "./update-command-service-context-types.js";
 import type { InstallRootTransitionFixture } from "./update-command-service-transition.test-support.js";
 import { maybeStopManagedServiceBeforeMutableUpdate } from "./update-command-service.js";
@@ -224,6 +225,15 @@ export function registerPackageRootRollbackTests(
       };
     });
     const outcome = await rollbackFailedUpdate({
+      profiles: [
+        createRollbackProfile({
+          schemaVersions,
+          previousVerified: true,
+          configSnapshot,
+          preManagedServiceStop: before,
+        }),
+      ],
+
       result: {
         status: "error",
         reason: "doctor-failed",
@@ -244,11 +254,7 @@ export function registerPackageRootRollbackTests(
       },
       previousRoot,
       packageTransaction: transaction,
-      schemaVersions,
-      previousVerified: true,
-      configSnapshot,
       opts: { json: true, run },
-      preManagedServiceStop: before,
       timeoutMs: 1000,
       nodeRunner: process.execPath,
     });

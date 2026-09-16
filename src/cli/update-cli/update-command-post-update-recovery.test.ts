@@ -22,7 +22,7 @@ import {
   recordUpdateRunVerification,
 } from "../../infra/update-run-ledger.js";
 import { renderUpdateRunNotice, renderUpdateRunReport } from "../../infra/update-run-report.js";
-import type { UpdateRunResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import { defaultRuntime } from "../../runtime.js";
 
 const mocks = vi.hoisted(() => ({
@@ -107,12 +107,14 @@ vi.mock("./update-command-result.js", async (importOriginal) => ({
 
 import { UpdatePreMutationError } from "./shared.js";
 import { finishUpdate } from "./update-command-post-update.js";
+import { taskRecovery } from "./update-command-post-update.test-support.js";
 import { repairUpdateService } from "./update-command-repair-service.js";
 import { UpdateCommandFailure } from "./update-command-result.js";
 import * as servicePlan from "./update-command-service-plan.js";
 import * as verificationOwner from "./update-command-verification.js";
 
 type FinishUpdateParams = Parameters<typeof finishUpdate>[0];
+type UpdateProfileContext = FinishUpdateParams["profiles"][number];
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 afterEach(() => {
@@ -142,12 +144,12 @@ async function finishFailedUpdate(
     originalRoot?: string;
     previousInstallRoot?: string;
     packageTransaction?: FinishUpdateParams["packageTransaction"];
-    schemaVersions?: FinishUpdateParams["schemaVersions"];
-    configSnapshot?: FinishUpdateParams["configSnapshot"];
+    schemaVersions?: UpdateProfileContext["schemaVersions"];
+    configSnapshot?: UpdateProfileContext["configSnapshot"];
     activationConfig?: { path: string; raw: string | null; hash: string };
     previousVerified?: boolean;
     windowsTaskAutoStartRecovery?: NonNullable<
-      FinishUpdateParams["preManagedServiceStop"]
+      UpdateProfileContext["preManagedServiceStop"]
     >["windowsTaskAutoStartRecovery"];
   } = {},
 ): Promise<UpdateCommandFailure> {
@@ -158,41 +160,45 @@ async function finishFailedUpdate(
     root: options.originalRoot ?? result.root ?? "/repo",
     previousInstallRoot: options.previousInstallRoot,
     packageTransaction: options.packageTransaction,
-    schemaVersions: options.schemaVersions,
-    activationConfig: options.activationConfig,
-    previousVerified: options.previousVerified,
     installKindChanged: false,
-    configSnapshot: options.configSnapshot ?? {
-      path: "/fixture/openclaw.json",
-      exists: false,
-      raw: null,
-      parsed: {},
-      sourceConfig: asResolvedSourceConfig({}),
-      resolved: asResolvedSourceConfig({}),
-      valid: true,
-      runtimeConfig: asRuntimeConfig({}),
-      config: asRuntimeConfig({}),
-      issues: [],
-      warnings: [],
-      legacyIssues: [],
-    },
-    requestedChannel: null,
-    storedChannel: "stable",
     channel: "stable",
     downgradeRisk: false,
     shouldRestart: true,
-    preUpdatePluginInstallRecords: {},
+    profiles: [
+      {
+        schemaVersions: options.schemaVersions,
+        activationConfig: options.activationConfig,
+        previousVerified: options.previousVerified,
+        configSnapshot: options.configSnapshot ?? {
+          path: "/fixture/openclaw.json",
+          exists: false,
+          raw: null,
+          parsed: {},
+          sourceConfig: asResolvedSourceConfig({}),
+          resolved: asResolvedSourceConfig({}),
+          valid: true,
+          runtimeConfig: asRuntimeConfig({}),
+          config: asRuntimeConfig({}),
+          issues: [],
+          warnings: [],
+          legacyIssues: [],
+        },
+        requestedChannel: null,
+        storedChannel: "stable",
+        preManagedServiceStop: {
+          stopped: options.stopped ?? true,
+          inspected: true,
+          runtimeInspected: true,
+          running: true,
+          serviceEnv: options.run?.env ?? {},
+          windowsTaskAutoStartRecovery: options.windowsTaskAutoStartRecovery,
+        },
+        preUpdatePluginInstallRecords: {},
+      },
+    ],
     updateStepTimeoutMs: 1000,
     opts: { json: options.json, run: options.run },
     startedAt: Date.now(),
-    preManagedServiceStop: {
-      stopped: options.stopped ?? true,
-      inspected: true,
-      runtimeInspected: true,
-      running: true,
-      serviceEnv: options.run?.env ?? {},
-      windowsTaskAutoStartRecovery: options.windowsTaskAutoStartRecovery,
-    },
     controlPlaneUpdateSentinelMeta: null,
   }).then(
     () => {
@@ -295,6 +301,7 @@ describe("failed update recovery restart", () => {
     "reports the terminal $service recovery for a $mode $status update",
     async ({ mode, status, reason, service }) => {
       mocks.restart.mockResolvedValueOnce(service);
+      const windowsRecovery = taskRecovery();
       const failure = await finishFailedUpdate(
         {
           ...failedResult({ serviceRestartSafe: true, version: "1.0.0" }),
@@ -311,7 +318,7 @@ describe("failed update recovery restart", () => {
             },
           ],
         },
-        { json: true },
+        { json: true, windowsTaskAutoStartRecovery: windowsRecovery },
       );
       expect(mocks.restart).toHaveBeenCalledOnce();
       expect(mocks.restart).toHaveBeenCalledWith(
@@ -324,6 +331,7 @@ describe("failed update recovery restart", () => {
         recovery: { serviceRestartSafe: true, version: "1.0.0", service },
       });
       expect(failure.exitCode).toBe(1);
+      expect(windowsRecovery.complete).toHaveBeenLastCalledWith(service === "healthy");
     },
   );
 

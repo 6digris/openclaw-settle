@@ -8,7 +8,7 @@ import {
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
 import { removePreparedWorkerOwnershipColumns } from "../../state/openclaw-state-schema-v17.test-support.js";
-import { captureOwnedManagedUpdateContext } from "./update-command-managed-context.js";
+import { captureOwnedManagedUpdatePreflightContext } from "./update-command-managed-context.js";
 import type { PreManagedServiceStop } from "./update-command-service-context-types.js";
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
@@ -52,7 +52,7 @@ it("captures the service's config without migrating its older target database", 
       },
     };
 
-    const context = await captureOwnedManagedUpdateContext({
+    const context = await captureOwnedManagedUpdatePreflightContext({
       stopState,
       processEnv: {
         ...process.env,
@@ -64,7 +64,7 @@ it("captures the service's config without migrating its older target database", 
     expect(context?.configSnapshot.path).toBe(configPath);
     expect(context?.configSnapshot.config.gateway?.port).toBe(19765);
     expect(context?.env.OPENCLAW_STATE_DIR).toBe(stateDir);
-    expect(stopState.serviceEnv).toBe(context?.env);
+    expect(stopState.serviceEnv).toBe(serviceEnv);
     expect(Object.keys(process.env).toSorted()).toEqual(Object.keys(beforeEnv).toSorted());
     for (const key of Object.keys(beforeEnv)) {
       expect(process.env[key] === beforeEnv[key], key).toBe(true);

@@ -21,7 +21,7 @@ import {
   recordUpdateRunRepairAttempt,
   recordUpdateRunStep,
 } from "../../infra/update-run-ledger.js";
-import type { UpdateRunResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import type { UpdateCommandOptions } from "./shared.js";
 import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
 

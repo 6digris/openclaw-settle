@@ -1,9 +1,11 @@
 import type { LegacyConfigUpdatePlan } from "../../commands/doctor/legacy-config-repair.js";
 import type { DevUpdateTarget } from "../../infra/update-dev-target.js";
 import type { ResolvedGlobalInstallTarget } from "../../infra/update-global.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
 import type { createUpdateProgress } from "./progress.js";
 import type { UpdateCommandOptions } from "./shared.js";
+import type { UpdateProfileContext } from "./update-command-finish-types.js";
 import type { StagedPackageInstallUpdate } from "./update-command-package.js";
 import type { ManagedServiceRootRedirect } from "./update-command-service-plan.js";
 import type { UpdateCommandRecoveryState } from "./update-command-service.js";
@@ -29,12 +31,20 @@ export type MutableUpdateExecutionParams = {
   stagedPackage?: StagedPackageInstallUpdate;
   packageTargetVersion?: string;
   packageTargetSchemaVersions?: OpenClawSchemaVersions;
+  packageRuntimeTarget?: { version: string; nodeEngine: string | null };
+  alreadyCurrentResult?: UpdateRunResult;
+  packageAlreadyCurrent?: boolean;
   packageUpdateNodeRunner?: string;
   managedServiceNodeRunner?: string;
   managedServiceRootRedirect: ManagedServiceRootRedirect | null;
   invocationCwd?: string;
   legacyConfigPlan?: LegacyConfigUpdatePlan;
   recoveryState: UpdateCommandRecoveryState;
-  prepareMutableUpdate: (env?: NodeJS.ProcessEnv, activationTimeoutMs?: number) => Promise<void>;
+  initialProfile: UpdateProfileContext;
+  prepareMutableUpdate: (
+    env?: NodeJS.ProcessEnv,
+    activationTimeoutMs?: number,
+    preflight?: true,
+  ) => Promise<UpdateProfileContext["preUpdatePluginInstallRecords"]>;
   onActivation?: () => void;
 };

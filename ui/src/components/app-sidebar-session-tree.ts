@@ -89,32 +89,23 @@ export function projectSessionTree(params: {
     const unloadedChildKeys = childSessionKeys.filter((key) => !rowsByKey.has(key));
     // Only direct unloaded children can match: parents carry their keys, but not grandchildren's.
     // Grandchildren join the normal transitive fold after their branch is materialized.
-    const childAttention = [
-      ...new Map(
-        [
-          ...children.flatMap((child) => [
-            attributeChildAttention(child.ownAttention ?? child.attention, child.label),
-            ...(child.childAttention ?? []),
-          ]),
-          ...unloadedChildKeys.map((key) =>
-            resolveAttention({
-              key,
-              agentId: parseAgentSessionKey(key)?.agentId ?? projected.agentId,
-            }),
-          ),
-        ]
-          .filter((value) => value.kind !== "none")
-          .map((value) => [JSON.stringify(value), value]),
-      ).values(),
-    ];
+    // Unloaded terminal outcomes require the existing child-detail loader.
+    // Child attention is transitive just like live-run counts: a collapsed
+    // ancestor remains actionable even when the blocked descendant is hidden.
+    const attention = summarizeSidebarSessionAttention([
+      projected.attention,
+      ...children.map((child) => attributeChildAttention(child.attention, child.label)),
+      ...unloadedChildKeys.map((key) =>
+        resolveAttention({
+          key,
+          agentId: parseAgentSessionKey(key)?.agentId ?? projected.agentId,
+        }),
+      ),
+    ]);
     const unreadChildCount = children.reduce(
       (count, child) => count + Number(child.unread) + (child.unreadChildCount ?? 0),
       0,
     );
-    // Unloaded terminal outcomes require the existing child-detail loader.
-    // Child attention is transitive just like live-run counts: a collapsed
-    // ancestor remains actionable even when the blocked descendant is hidden.
-    const attention = summarizeSidebarSessionAttention([projected.attention, ...childAttention]);
     let runningChildCount = 0;
     let failedChildCount = 0;
     let queuedChildCount = 0;
@@ -145,7 +136,6 @@ export function projectSessionTree(params: {
     return {
       ...projected,
       ownAttention: projected.attention,
-      childAttention,
       unreadChildCount,
       queuedChildCount,
       attention,

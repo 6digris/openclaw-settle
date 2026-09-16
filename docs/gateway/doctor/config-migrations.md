@@ -61,7 +61,7 @@ beyond the grace period.
 
 <AccordionGroup>
   <Accordion title="0. Optional update (git installs)">
-    If this is a git checkout and doctor is running interactively, it offers to update (fetch/rebase/build) before running doctor.
+    If this is a git checkout and doctor is running interactively, it offers to update (fetch/rebase/build) before running doctor. Accepting uses the same validation, shared-install profile coordination, recovery, and verification as `openclaw update`. The source update targets dev without changing the saved update channel. When the update runs Doctor in the replacement runtime, the original Doctor stops; an unchanged source checkout continues its checks. With an external supervisor or Doctor's external service-repair policy, Doctor continues without updating and directs you to the supervisor's update workflow.
   </Accordion>
   <Accordion title="1. Config normalization">
     GitHub Copilot now requires explicit provider config, a saved Copilot auth profile, or `COPILOT_GITHUB_TOKEN`. Generic `GH_TOKEN` and `GITHUB_TOKEN` no longer activate it. Doctor reports this change once when only a generic GitHub token is present. The retired `plugins.entries.github-copilot.config.discovery.enabled` setting is ignored during config loading, including malformed values, and removed when Doctor saves the config.

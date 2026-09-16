@@ -1,5 +1,6 @@
 /** Small runtime and orchestration helpers for the doctor E2E harness. */
 import { vi } from "vitest";
+import type { UpdateRunResult } from "../infra/update-runner-types.js";
 import { defineMockFn, type MockFn } from "../test-utils/vitest-mock-fn.js";
 import { createDoctorConfigSnapshot } from "./doctor-config-snapshot.test-helpers.js";
 
@@ -22,13 +23,13 @@ export function setDoctorStdinTty(value: boolean | undefined): void {
   }
 }
 
-export function createGatewayUpdateResult() {
+export function createGatewayUpdateResult(): UpdateRunResult {
   return {
     status: "skipped",
     mode: "unknown",
     steps: [],
     durationMs: 0,
-  } as const;
+  };
 }
 
 export function createCommandWithTimeoutResult() {

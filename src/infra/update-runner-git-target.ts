@@ -171,16 +171,13 @@ export async function prepareGitMutation(params: {
   root: string;
   revision: string;
   timeoutMs: number;
-  beforeGitMutation?: UpdateRunnerOptions["beforeGitMutation"];
-}): Promise<{
-  allowGatewayServiceRepair?: boolean;
-  allowGatewayActivation?: boolean;
-}> {
+  beforeGitMutation: UpdateRunnerOptions["beforeGitMutation"];
+}): Promise<void> {
   const target = await readGitTargetSchemaVersions(params);
   const sha = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/iu.test(params.revision)
     ? params.revision.toLowerCase()
     : undefined;
-  const preparation = await params.beforeGitMutation?.({
+  await params.beforeGitMutation({
     ...(sha ? { sha } : {}),
     ...(target.status === "ok"
       ? {
@@ -189,7 +186,6 @@ export async function prepareGitMutation(params: {
         }
       : { metadataUnreadable: target.reason }),
   });
-  return preparation ?? {};
 }
 
 export async function selectGitInspectionTarget(

@@ -11,16 +11,23 @@ import { createConfigIO } from "../../config/config.js";
 import { hashConfigRaw } from "../../config/io.read-helpers.js";
 import type { OpenClawConfig } from "../../config/types.js";
 import { FILE_LOCK_TIMEOUT_ERROR_CODE, withFileLock } from "../../infra/file-lock.js";
+import * as replaceFile from "../../infra/replace-file.js";
 import { readUpdateStateSchemaVersions } from "../../infra/update-candidate-state.js";
 import {
   captureUpdateDoctorConfigWrites,
   writeUpdatePostInstallDoctorResult,
 } from "../../infra/update-doctor-result.js";
 import { NativePackageRollbackError } from "../../infra/update-native-package-stage.js";
-import { createUpdateRun, getUpdateRun } from "../../infra/update-run-ledger.js";
+import {
+  createUpdateRun,
+  getUpdateRun,
+  recordUpdateRunVerification,
+} from "../../infra/update-run-ledger.js";
 import { renderUpdateRunReport } from "../../infra/update-run-report.js";
-import type { UpdateRunResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
+import type { UpdateProfileContext } from "./update-command-finish-types.js";
 import type { PreManagedServiceStop } from "./update-command-service.js";
+import { recordUpdateGatewayHealth } from "./update-command-verification.js";
 import { createWindowsTaskAutoStartRecovery } from "./update-command-windows-task.js";
 
 const mocks = vi.hoisted(() => ({
@@ -62,6 +69,7 @@ import { inspectActivatedUpdateState } from "./update-command-migrated.js";
 import * as packageModule from "./update-command-package.js";
 import { rollbackFailedUpdate } from "./update-command-rollback.js";
 import {
+  createRollbackProfile,
   expectDoctorRollback,
   writeWithRefreshFailure,
 } from "./update-command-rollback.test-support.js";
@@ -142,6 +150,298 @@ describe("verified package rollback", () => {
       return "ok";
     });
   });
+
+  async function sharedProfiles() {
+    const profiles: UpdateProfileContext[] = [];
+    for (const name of ["primary", "secondary", "offline"]) {
+      const env = { OPENCLAW_STATE_DIR: dirs.make(`rollback-${name}-`), OPENCLAW_PROFILE: name };
+      const configPath = path.join(env.OPENCLAW_STATE_DIR, "openclaw.json");
+      fs.writeFileSync(configPath, '{"logging":{"$include":"./logging.json"}}\n');
+      fs.writeFileSync(path.join(env.OPENCLAW_STATE_DIR, "logging.json"), '{"level":"info"}\n');
+      const configSnapshot = await readPreviousConfig(env);
+      const config = configSnapshot.sourceConfigBeforeMigrations ?? configSnapshot.sourceConfig;
+      setVersion(path.join(env.OPENCLAW_STATE_DIR, "agents/main/agent/openclaw-agent.sqlite"), 3);
+      profiles.push(
+        createRollbackProfile({
+          configSnapshot,
+          previousVerified: true,
+          schemaVersions: await readUpdateStateSchemaVersions({
+            stateDir: env.OPENCLAW_STATE_DIR,
+            config,
+            env,
+          }),
+          preManagedServiceStop: {
+            inspected: true,
+            runtimeInspected: true,
+            running: name !== "offline",
+            stopped: name !== "offline",
+            serviceEnv: env,
+            serviceNodeRunner: `/${name}/node`,
+            serviceManagerUid: name === "primary" ? 3001 : 3002,
+            serviceUpdateVerdict: {
+              kind: "owned",
+              root: previousRoot,
+              fingerprint: name,
+              refreshDefinition: false,
+            },
+          },
+        }),
+      );
+    }
+    const result: UpdateRunResult = {
+      status: "error",
+      mode: "npm",
+      root: candidateRoot,
+      reason: "readyz-unhealthy",
+      before: { version: "2026.9.1" },
+      after: { version: "2026.9.3" },
+      steps: [],
+      durationMs: 1,
+    };
+    const rollback = vi.fn(async () => ({
+      name: "package rollback",
+      activePackageRoot: previousRoot,
+      command: "restore",
+      cwd: previousRoot,
+      exitCode: 0,
+      durationMs: 1,
+    }));
+    const params = {
+      profiles,
+      result,
+      previousRoot,
+      opts: { json: true },
+      timeoutMs: 1000,
+      packageTransaction: { backupRoot: previousRoot, complete: vi.fn(), rollback },
+    };
+    return { profiles, params, rollback };
+  }
+
+  it.each([
+    "none",
+    "origin-not-restarted",
+    "unverified",
+    "restart throws",
+    "stop throws",
+    "readiness pending",
+  ] as const)(
+    "restores shared package once and recovers every eligible profile (%s)",
+    async (failure) => {
+      const { profiles, params, rollback } = await sharedProfiles();
+      const originNotRestarted = failure === "origin-not-restarted";
+      const healthy = failure === "none" || originNotRestarted;
+      const originVerification = {
+        serviceRunning: true,
+        pid: 101,
+        port: 19101,
+        runningVersion: "2026.9.1",
+        runningBuildId: "previous-build",
+        versionMatch: true,
+        settled: true,
+        readyz: true,
+        channelsReady: true,
+        pluginErrors: [],
+      };
+      const opts: Parameters<typeof rollbackFailedUpdate>[0]["opts"] = params.opts;
+      if (originNotRestarted) {
+        profiles[0]!.preManagedServiceStop!.stopped = false;
+        const env = profiles[0]!.preManagedServiceStop!.serviceEnv!;
+        opts.run = { runId: createUpdateRun({ trigger: "cli" }, { env }).runId, env };
+        recordUpdateRunVerification(opts.run.runId, originVerification, { env });
+        profiles[0]!.schemaVersions = await readUpdateStateSchemaVersions({
+          stateDir: env.OPENCLAW_STATE_DIR!,
+          config: profiles[0]!.configSnapshot.sourceConfig,
+          env,
+        });
+      }
+      const events: string[] = [];
+      const originalStops = profiles.map((profile) => profile.preManagedServiceStop!);
+      if (failure === "unverified") profiles[1]!.previousVerified = false;
+      mocks.stop.mockImplementation(async ({ expectedService, onStopped }) => {
+        const name = expectedService.serviceEnv.OPENCLAW_PROFILE;
+        events.push(`stop ${name}`);
+        const stopped = {
+          ...expectedService,
+          stopped: true,
+          stoppedAtMs: 100,
+          serviceNodeRunner: "/candidate/node",
+        };
+        onStopped?.(stopped);
+        if (name === "secondary" && failure === "stop throws")
+          throw new Error("native inspection failed after stop");
+        return stopped;
+      });
+      rollback.mockImplementation(async () => {
+        events.push("restore package");
+        return {
+          name: "package rollback",
+          activePackageRoot: previousRoot,
+          command: "restore",
+          cwd: previousRoot,
+          exitCode: 0,
+          durationMs: 1,
+        };
+      });
+      mocks.restart.mockImplementation(async (restart) => {
+        const { result, serviceEnv, nodeRunner, serviceManagerUid, onVerified } = restart;
+        if (originNotRestarted) expect(restart.opts).toBe(opts);
+        const name = serviceEnv?.OPENCLAW_PROFILE;
+        events.push(`restart ${name}`);
+        expect(process.env.OPENCLAW_PROFILE).toBe(name);
+        expect(nodeRunner).toBe(`/${name}/node`);
+        expect(serviceManagerUid).toBe(name === "primary" ? 3001 : 3002);
+        if (name === "secondary" && failure === "restart throws")
+          throw new Error("secondary native restart failed");
+        if (originNotRestarted) {
+          recordUpdateGatewayHealth(
+            restart.recordGatewayVerification === false ? undefined : restart.opts.run,
+            {
+              runtime: { status: "running", pid: 202 },
+              healthy: true,
+              gatewayVersion: "2026.9.1",
+              gatewayBuildId: "previous-build",
+              expectedVersion: "2026.9.1",
+              staleGatewayPids: [],
+              portUsage: { port: 19102, status: "busy", listeners: [{ pid: 202 }], hints: [] },
+            },
+            19102,
+            true,
+          );
+        }
+        if (failure === "readiness pending" || originNotRestarted) {
+          const pending = failure === "readiness pending" && name === "secondary";
+          const receipt: UpdateRunResult["steps"][number] = {
+            name: "rollback gateway verification",
+            command: "verify restored gateway",
+            cwd: previousRoot,
+            durationMs: 100,
+            exitCode: 0,
+            ...(pending
+              ? {
+                  termination: "timeout",
+                  advisory: {
+                    kind: "recoverable-maintenance",
+                    message: "Gateway is still starting.",
+                  },
+                }
+              : {}),
+          };
+          const index = result.steps.findIndex((step) => step.name === receipt.name);
+          if (index === -1) result.steps.push(receipt);
+          else result.steps[index] = receipt;
+          if (pending) return "readiness-pending";
+        }
+        onVerified?.(name === "primary" ? 140 : 120);
+        return "ok";
+      });
+      const outcome = await rollbackFailedUpdate(params);
+      expect(profiles[0]!.preManagedServiceStop).toMatchObject(
+        originNotRestarted ? { stopped: false } : { stopped: true, stoppedAtMs: 100 },
+      );
+      expect(profiles[1]!.preManagedServiceStop).toMatchObject({ stopped: true, stoppedAtMs: 100 });
+      expect(profiles[2]!.preManagedServiceStop).toBe(originalStops[2]);
+      expect(outcome.rolledBack).toBe(healthy);
+      expect(outcome.verifiedAtMs).toBe(healthy ? (originNotRestarted ? 120 : 140) : undefined);
+      expect(rollback).toHaveBeenCalledTimes(failure === "stop throws" ? 0 : 1);
+      expect(events).toEqual(
+        failure === "stop throws"
+          ? ["stop primary", "stop secondary"]
+          : [
+              ...(originNotRestarted ? [] : ["stop primary"]),
+              "stop secondary",
+              "restore package",
+              ...(failure === "unverified" ? [] : ["restart secondary"]),
+              ...(originNotRestarted ? [] : ["restart primary"]),
+            ],
+      );
+      const recovery = outcome.result.recovery;
+      expect(recovery?.serviceRestartSafe ? recovery.service : undefined).toBe(
+        healthy ? "healthy" : undefined,
+      );
+      if (originNotRestarted) {
+        expect(getUpdateRun(opts.run!.runId, { env: opts.run!.env })?.verification).toEqual(
+          originVerification,
+        );
+        expect(outcome.result.steps).toContainEqual(
+          expect.objectContaining({
+            name: "profile 2: rollback gateway verification",
+            exitCode: 0,
+          }),
+        );
+      }
+      if (failure === "unverified")
+        expect(outcome.result.reason).toBe("previous-version-unverified");
+      if (failure === "readiness pending") {
+        expect(outcome.result).toMatchObject({ status: "error", reason: "readyz-unhealthy" });
+        expect(outcome.result.steps).toContainEqual(
+          expect.objectContaining({
+            name: "profile 2: rollback gateway verification",
+            termination: "timeout",
+            advisory: { kind: "recoverable-maintenance", message: "Gateway is still starting." },
+          }),
+        );
+        expect(
+          outcome.result.steps.find((step) => step.name === "rollback gateway verification"),
+        ).not.toHaveProperty("termination");
+      }
+    },
+  );
+
+  it.each([
+    { change: "schema", duringStop: false },
+    { change: "schema", duringStop: true },
+    { change: "config", duringStop: false },
+    { change: "config", duringStop: true },
+    { change: "include", duringStop: false },
+    { change: "include", duringStop: true },
+  ])(
+    "refuses shared package restore for a sibling $change change (during stop=$duringStop)",
+    async ({ change, duringStop }) => {
+      const { profiles, params, rollback } = await sharedProfiles();
+      const sibling = profiles[1]!;
+      const edit = () => {
+        const stateDir = sibling.preManagedServiceStop!.serviceEnv!.OPENCLAW_STATE_DIR!;
+        if (change === "schema")
+          setVersion(path.join(stateDir, "agents/main/agent/openclaw-agent.sqlite"), 4);
+        else if (change === "include")
+          fs.writeFileSync(path.join(stateDir, "logging.json"), '{"level":"debug"}\n');
+        else fs.appendFileSync(sibling.configSnapshot.path, "\n// operator edit\n");
+      };
+      mocks.stop.mockImplementation(async ({ expectedService }) => {
+        if (expectedService.serviceEnv.OPENCLAW_PROFILE === "secondary") edit();
+        return { ...expectedService, stopped: true };
+      });
+      if (!duringStop) edit();
+      const outcome = await rollbackFailedUpdate(params);
+      expect(outcome).toMatchObject({
+        rolledBack: false,
+        result: { root: candidateRoot, reason: "state-migrated-no-rollback" },
+      });
+      expect(rollback).not.toHaveBeenCalled();
+      expect(mocks.restart).not.toHaveBeenCalled();
+      expect(mocks.stop).toHaveBeenCalledTimes(duringStop ? 2 : 0);
+    },
+  );
+  it.each(["unavailable package", "missing baseline", "blocked rollback"] as const)(
+    "leaves every profile service untouched after %s",
+    async (refusal) => {
+      const { profiles, params, rollback } = await sharedProfiles();
+      const originalStops = profiles.map((profile) => profile.preManagedServiceStop);
+      if (refusal === "missing baseline") profiles[1]!.schemaVersions = undefined;
+      const outcome = await rollbackFailedUpdate({
+        ...params,
+        ...(refusal === "unavailable package" ? { packageTransaction: undefined } : {}),
+        ...(refusal === "blocked rollback"
+          ? { rollbackBlockedReason: "state-migrated-no-rollback" }
+          : {}),
+      });
+      expect(outcome.rolledBack).toBe(false);
+      expect(rollback).not.toHaveBeenCalled();
+      expect(mocks.restart).not.toHaveBeenCalled();
+      expect(mocks.stop).not.toHaveBeenCalled();
+      expect(profiles.map((profile) => profile.preManagedServiceStop)).toEqual(originalStops);
+    },
+  );
   it.each([false, true])(
     "records refused project rollback without an additional stop (during stop=%s)",
     async (duringStop) => {
@@ -166,6 +466,20 @@ describe("verified package rollback", () => {
       }));
       const detail = "Global project changed since staging: sibling";
       const outcome = await rollbackFailedUpdate({
+        profiles: [
+          createRollbackProfile({
+            schemaVersions,
+            configSnapshot,
+            preManagedServiceStop: {
+              stopped: true,
+              inspected: true,
+              runtimeInspected: true,
+              running: true,
+              serviceEnv: env,
+            },
+          }),
+        ],
+
         result: {
           status: "error",
           mode: "pnpm",
@@ -175,17 +489,8 @@ describe("verified package rollback", () => {
           durationMs: 1,
         },
         previousRoot,
-        schemaVersions,
-        configSnapshot,
         opts: { json: true, run },
         timeoutMs: 1_000,
-        preManagedServiceStop: {
-          stopped: true,
-          inspected: true,
-          runtimeInspected: true,
-          running: true,
-          serviceEnv: env,
-        },
         packageTransaction: {
           backupRoot: "/backup",
           assertRollbackSafe: async () => {
@@ -224,13 +529,14 @@ describe("verified package rollback", () => {
     },
   );
   it.each([
-    { activated: false, healthy: true },
-    { activated: false, healthy: false },
-    { activated: true, healthy: true },
-    { activated: true, healthy: false },
+    { activated: false, healthy: true, stateChanged: false },
+    { activated: false, healthy: false, stateChanged: false },
+    { activated: true, healthy: true, stateChanged: false },
+    { activated: true, healthy: false, stateChanged: false },
+    { activated: true, healthy: false, stateChanged: true },
   ])(
-    "retains Windows suspension through rollback (activated=$activated, healthy=$healthy)",
-    async ({ activated, healthy }) => {
+    "retains Windows suspension through rollback (activated=$activated, healthy=$healthy, stateChanged=$stateChanged)",
+    async ({ activated, healthy, stateChanged }) => {
       const stateDir = dirs.make("rollback-windows-owner-");
       const env = { OPENCLAW_STATE_DIR: stateDir, OPENCLAW_WINDOWS_TASK_NAME: "rollback-fixture" };
       const configSnapshot = await readPreviousConfig(env);
@@ -280,6 +586,9 @@ describe("verified package rollback", () => {
         if (!suspended) {
           await fresh.complete();
         }
+        if (stateChanged) {
+          fs.writeFileSync(configSnapshot.path, "{}\n");
+        }
         return { ...service, windowsTaskAutoStartRecovery: suspended ? fresh : undefined };
       });
       mocks.restart.mockImplementationOnce(async ({ refreshServiceEnv }) => {
@@ -291,7 +600,14 @@ describe("verified package rollback", () => {
         return healthy ? "ok" : "restart-health-failed";
       });
       try {
+        const profile = createRollbackProfile({
+          schemaVersions,
+          previousVerified: true,
+          configSnapshot,
+          preManagedServiceStop: { ...service, windowsTaskAutoStartRecovery: original },
+        });
         const outcome = await rollbackFailedUpdate({
+          profiles: [profile],
           result: {
             status: "error",
             mode: "npm",
@@ -303,8 +619,6 @@ describe("verified package rollback", () => {
             durationMs: 1,
           },
           previousRoot,
-          schemaVersions,
-          previousVerified: true,
           packageTransaction: {
             backupRoot: "/backup",
             complete: vi.fn(async () => {}),
@@ -317,18 +631,21 @@ describe("verified package rollback", () => {
               durationMs: 1,
             }),
           },
-          configSnapshot,
           opts: { json: true },
-          preManagedServiceStop: { ...service, windowsTaskAutoStartRecovery: original },
           timeoutMs: 1_000,
         });
-        expect(enabled).toBe(true);
+        expect(enabled).toBe(!stateChanged);
         expect(outcome.rolledBack).toBe(healthy);
-        const retained = outcome.stoppedForRollback?.windowsTaskAutoStartRecovery;
+        const retained = profile.preManagedServiceStop?.windowsTaskAutoStartRecovery;
         expect(retained).toBe(activated ? fresh : original);
         await retained?.complete(healthy);
         expect(enabled).toBe(healthy);
-        expect(actions.slice(-2)).toEqual(healthy ? ["/ENABLE", "/Run"] : ["/Run", "/DISABLE"]);
+        if (stateChanged) {
+          expect(mocks.stop).toHaveBeenCalledTimes(1);
+          expect(mocks.restart).not.toHaveBeenCalled();
+        } else {
+          expect(actions.slice(-2)).toEqual(healthy ? ["/ENABLE", "/Run"] : ["/Run", "/DISABLE"]);
+        }
       } finally {
         await fresh?.complete(false);
         await original.complete(false);
@@ -641,12 +958,35 @@ describe("verified package rollback", () => {
       let outcome: Awaited<ReturnType<typeof rollbackFailedUpdate>>;
       try {
         outcome = await rollbackFailedUpdate({
+          profiles: [
+            createRollbackProfile({
+              configSnapshot,
+              activationConfig,
+              schemaVersions,
+              previousVerified,
+              preManagedServiceStop:
+                service === "absent"
+                  ? undefined
+                  : {
+                      stopped: service === "stopped",
+                      inspected: true,
+                      runtimeInspected: true,
+                      running: true,
+                      serviceEnv: { OPENCLAW_STATE_DIR: stateDir },
+                      serviceNodeRunner: "/previous/node",
+                      serviceUpdateVerdict: {
+                        kind: "owned",
+                        root: previousRoot,
+                        fingerprint: "fixture",
+                        refreshDefinition: true,
+                      },
+                    },
+            }),
+          ],
+
           result,
           previousRoot,
           nodeRunner: process.execPath,
-          configSnapshot,
-          activationConfig,
-          schemaVersions,
           candidateSchemaVersions: { state: change === "new-shared-deferred" ? 8 : 7, agent: 3 },
           previousSchemaVersions:
             change === "new-agent-previous-unknown"
@@ -655,26 +995,8 @@ describe("verified package rollback", () => {
                   state: 7,
                   agent: change === "new-agent-previous-incompatible" ? 2 : 3,
                 },
-          previousVerified,
           packageTransaction: { backupRoot: "/backup", rollback, complete: vi.fn() },
           opts: { json: true, restart: service !== "no-restart" },
-          preManagedServiceStop:
-            service === "absent"
-              ? undefined
-              : {
-                  stopped: service === "stopped",
-                  inspected: true,
-                  runtimeInspected: true,
-                  running: true,
-                  serviceEnv: { OPENCLAW_STATE_DIR: stateDir },
-                  serviceNodeRunner: "/previous/node",
-                  serviceUpdateVerdict: {
-                    kind: "owned",
-                    root: previousRoot,
-                    fingerprint: "fixture",
-                    refreshDefinition: true,
-                  },
-                },
           timeoutMs: 1_000,
         });
       } finally {
@@ -777,94 +1099,140 @@ describe("verified package rollback", () => {
     },
   );
 
-  it("excludes a competing config writer across package rollback and config restoration", async () => {
-    const stateDir = dirs.make("rollback-config-owner-");
-    const env = { OPENCLAW_STATE_DIR: stateDir };
-    const configPath = path.join(stateDir, "openclaw.json");
-    const original = '{"gateway":{"mode":"local","port":19101}}\n';
-    const candidate = '{"gateway":{"mode":"local","port":19102}}\n';
-    fs.writeFileSync(configPath, original);
-    const configSnapshot = await readPreviousConfig(env);
-    const config = configSnapshot.sourceConfigBeforeMigrations ?? configSnapshot.sourceConfig;
-    const schemaVersions = await readUpdateStateSchemaVersions({ stateDir, config, env });
-    fs.writeFileSync(configPath, candidate);
-    const lockOptions = {
-      retries: { retries: 0, factor: 1, minTimeout: 1, maxTimeout: 1 },
-      stale: 60_000,
-    };
-    let foreignWrite = false;
-    const outcome = await rollbackFailedUpdate({
-      result: {
-        status: "error",
-        mode: "npm",
-        root: candidateRoot,
-        reason: "readyz-unhealthy",
-        steps: [],
-        durationMs: 1,
-        before: { version: "2026.9.1" },
-        after: { version: "2026.9.3" },
-      },
-      previousRoot,
-      configSnapshot,
-      schemaVersions,
-      timeoutMs: 1000,
-      activationConfig: {
-        path: configPath,
-        raw: original,
-        hash: hashConfigRaw(candidate),
-        doctorOwned: true,
-      },
-      opts: { json: true },
-      preManagedServiceStop: {
-        inspected: true,
-        runtimeInspected: true,
-        running: false,
-        stopped: false,
-        serviceEnv: env,
-      },
-      packageTransaction: {
-        backupRoot: previousRoot,
-        complete: async () => {},
-        rollback: async () => {
-          try {
-            await withFileLock(configPath, lockOptions, async () => {
-              foreignWrite = true;
-              fs.writeFileSync(configPath, '{"gateway":{"mode":"local","port":19103}}\n');
-            });
-          } catch (error) {
-            if (
-              !(
-                error instanceof Error &&
-                "code" in error &&
-                error.code === FILE_LOCK_TIMEOUT_ERROR_CODE
-              )
-            ) {
-              throw error;
-            }
-          }
-          return {
-            name: "package rollback",
-            command: "restore",
-            cwd: previousRoot,
-            durationMs: 1,
-            exitCode: 0,
-            activePackageRoot: previousRoot,
-          };
+  it.each([false, true])(
+    "holds every profile config lock and current executor across restores (revoked=%s)",
+    async (revokeAfterRestore) => {
+      const original = '{"gateway":{"mode":"local","port":19101}}\n';
+      const candidate = '{"gateway":{"mode":"local","port":19102}}\n';
+      const profiles: UpdateProfileContext[] = [];
+      let current = true;
+      let run: updateShared.UpdateCommandOptions["run"];
+      for (const name of ["secondary", "primary"]) {
+        const stateDir = dirs.make(`rollback-config-${name}-`);
+        const env = { OPENCLAW_STATE_DIR: stateDir };
+        const configPath = path.join(stateDir, "openclaw.json");
+        const originalRaw = revokeAfterRestore && name === "primary" ? null : original;
+        if (originalRaw !== null) fs.writeFileSync(configPath, originalRaw);
+        const configSnapshot = await readPreviousConfig(env);
+        run ??= {
+          runId: createUpdateRun({ trigger: "cli" }, { env }).runId,
+          env,
+          executorFence: {
+            assertCurrent() {
+              if (!current) throw new Error("original executor revoked after config restoration");
+            },
+          },
+        };
+        const config = configSnapshot.sourceConfigBeforeMigrations ?? configSnapshot.sourceConfig;
+        const schemaVersions = await readUpdateStateSchemaVersions({ stateDir, config, env });
+        fs.writeFileSync(configPath, candidate);
+        profiles.push(
+          createRollbackProfile({
+            configSnapshot,
+            schemaVersions,
+            ownedManagedUpdateEnv: env,
+            activationConfig: {
+              path: configPath,
+              raw: originalRaw,
+              hash: hashConfigRaw(candidate),
+              doctorOwned: true,
+            },
+          }),
+        );
+      }
+      const replace = replaceFile.replaceFileAtomic;
+      let historyAtRevocation: ReturnType<typeof getUpdateRun>;
+      vi.spyOn(replaceFile, "replaceFileAtomic").mockImplementation(async (params) => {
+        await replace(params);
+        if (revokeAfterRestore && params.filePath === profiles[0]!.configSnapshot.path) {
+          historyAtRevocation = getUpdateRun(run!.runId, { env: run!.env });
+          current = false;
+        }
+      });
+      const lockOptions = {
+        retries: { retries: 0, factor: 1, minTimeout: 1, maxTimeout: 1 },
+        stale: 60_000,
+      };
+      let foreignWrite = false;
+      const outcome = await rollbackFailedUpdate({
+        profiles,
+        result: {
+          status: "error",
+          mode: "npm",
+          root: candidateRoot,
+          reason: "readyz-unhealthy",
+          steps: [],
+          durationMs: 1,
+          before: { version: "2026.9.1" },
+          after: { version: "2026.9.3" },
         },
-      },
-    });
-    expect(foreignWrite).toBe(false);
-    expect(fs.readFileSync(configPath, "utf8")).toBe(original);
-    expect(outcome.result).toMatchObject({
-      root: previousRoot,
-      recovery: { packageRollbackVerified: true },
-    });
-    expect(mocks.restart).not.toHaveBeenCalled();
-    await withFileLock(configPath, lockOptions, async () => {
-      fs.writeFileSync(configPath, candidate);
-    });
-    expect(fs.readFileSync(configPath, "utf8")).toBe(candidate);
-  });
+        previousRoot,
+        timeoutMs: 1000,
+        opts: { json: true, run },
+        packageTransaction: {
+          backupRoot: previousRoot,
+          complete: async () => {},
+          rollback: async () => {
+            for (const {
+              configSnapshot: { path: configPath },
+            } of profiles) {
+              try {
+                await withFileLock(configPath, lockOptions, async () => {
+                  foreignWrite = true;
+                  fs.writeFileSync(configPath, '{"gateway":{"mode":"local","port":19103}}\n');
+                });
+              } catch (error) {
+                if (
+                  !(
+                    error instanceof Error &&
+                    "code" in error &&
+                    error.code === FILE_LOCK_TIMEOUT_ERROR_CODE
+                  )
+                ) {
+                  throw error;
+                }
+              }
+            }
+            return {
+              name: "package rollback",
+              command: "restore",
+              cwd: previousRoot,
+              durationMs: 1,
+              exitCode: 0,
+              activePackageRoot: previousRoot,
+            };
+          },
+        },
+      });
+      expect(foreignWrite).toBe(false);
+      expect(outcome.result).toMatchObject({
+        root: previousRoot,
+        recovery: revokeAfterRestore
+          ? { serviceRestartSafe: false }
+          : { packageRollbackVerified: true },
+      });
+      expect(mocks.restart).not.toHaveBeenCalled();
+      if (revokeAfterRestore) {
+        expect(current).toBe(false);
+        expect(outcome.pendingRecoveryReason).toBe(
+          "original executor revoked after config restoration",
+        );
+        expect(getUpdateRun(run!.runId, { env: run!.env })).toEqual(historyAtRevocation);
+        expect(fs.readFileSync(profiles[0]!.configSnapshot.path, "utf8")).toBe(original);
+        expect(fs.readFileSync(profiles[1]!.configSnapshot.path, "utf8")).toBe(candidate);
+        return;
+      }
+      for (const {
+        configSnapshot: { path: configPath },
+      } of profiles) {
+        expect(fs.readFileSync(configPath, "utf8")).toBe(original);
+        await withFileLock(configPath, lockOptions, async () => {
+          fs.writeFileSync(configPath, candidate);
+        });
+        expect(fs.readFileSync(configPath, "utf8")).toBe(candidate);
+      }
+    },
+  );
 
   it("leaves the original task recovery with finalization when rollback is blocked", async () => {
     const complete = vi.fn(async () => {});
@@ -879,7 +1247,21 @@ describe("verified package rollback", () => {
         interrupted: () => false,
       },
     };
+    const profile = createRollbackProfile({
+      configSnapshot: await readPreviousConfig({
+        OPENCLAW_STATE_DIR: dirs.make("rollback-blocked-config-"),
+      }),
+      preManagedServiceStop: {
+        stopped: true,
+        inspected: true,
+        runtimeInspected: true,
+        running: true,
+        serviceEnv: { OPENCLAW_STATE_DIR: dirs.make("rollback-finalization-") },
+        windowsTaskAutoStartRecovery: stopped.windowsTaskAutoStartRecovery,
+      },
+    });
     const outcome = await rollbackFailedUpdate({
+      profiles: [profile],
       result: {
         status: "error",
         mode: "npm",
@@ -890,22 +1272,13 @@ describe("verified package rollback", () => {
       },
       previousRoot,
       rollbackBlockedReason: "state-migrated-no-rollback",
-      configSnapshot: await readPreviousConfig({
-        OPENCLAW_STATE_DIR: dirs.make("rollback-blocked-config-"),
-      }),
       opts: { json: true },
       timeoutMs: 1_000,
-      preManagedServiceStop: {
-        stopped: true,
-        inspected: true,
-        runtimeInspected: true,
-        running: true,
-        serviceEnv: { OPENCLAW_STATE_DIR: dirs.make("rollback-finalization-") },
-        windowsTaskAutoStartRecovery: stopped.windowsTaskAutoStartRecovery,
-      },
     });
     expect(outcome).toMatchObject({ rolledBack: false });
-    expect(outcome.stoppedForRollback).toBeUndefined();
+    expect(profile.preManagedServiceStop?.windowsTaskAutoStartRecovery).toBe(
+      stopped.windowsTaskAutoStartRecovery,
+    );
     expect(mocks.stop).not.toHaveBeenCalled();
     expect(complete).not.toHaveBeenCalled();
     expect(mocks.restart).not.toHaveBeenCalled();
@@ -946,20 +1319,25 @@ describe("verified package rollback", () => {
       );
     }
     const outcome = await rollbackFailedUpdate({
+      profiles: [
+        createRollbackProfile({
+          configSnapshot,
+          schemaVersions,
+          previousVerified: true,
+          preManagedServiceStop: {
+            stopped: true,
+            inspected: true,
+            runtimeInspected: true,
+            running: true,
+            serviceEnv: env,
+          },
+        }),
+      ],
+
       result,
       previousRoot,
-      configSnapshot,
       opts: { json: true },
       timeoutMs: 1_000,
-      schemaVersions,
-      previousVerified: true,
-      preManagedServiceStop: {
-        stopped: true,
-        inspected: true,
-        runtimeInspected: true,
-        running: true,
-        serviceEnv: env,
-      },
       packageTransaction: {
         backupRoot: "/backup",
         complete: vi.fn(async () => {}),

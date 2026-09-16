@@ -18,7 +18,11 @@ import {
 } from "./update-run-legacy-expiry.js";
 import type { UpdateRunRecord } from "./update-run-record.js";
 import type { UpdateRunReportHealth } from "./update-run-report-health.js";
-import { updateRunStepsFromResultStep, updateRunWarningMessages } from "./update-run-step.js";
+import {
+  normalizeControlPlaneUpdateResult,
+  updateRunStepsFromResultStep,
+  updateRunWarningMessages,
+} from "./update-run-step.js";
 import type { UpdateRunResult } from "./update-runner-types.js";
 import { formatUpdateSnapshotCapacity } from "./update-snapshot-capacity.js";
 
@@ -104,7 +108,7 @@ export function renderUpdateRunNotice(
   const target = run.after.version ?? run.target.version;
   const to = target ? bounded(target, 120) : undefined;
   if (kind === "ack") {
-    return `⬆️ Updating OpenClaw ${from ?? "the current version"} → ${to ?? "the latest release"}. The gateway stays available while the update is validated; you'll get a message here when it finishes.`;
+    return `⬆️ Updating OpenClaw ${from ?? "the current version"} → ${to ?? "the latest release"}. You'll get a message here when it finishes.`;
   }
   if (kind === "activating" || kind === "parking") {
     return `⏳ Restarting the gateway now${from && to ? ` (v${from} → v${to})` : ""}…`;
@@ -344,7 +348,8 @@ export function renderUpdateRunReport(
 }
 
 /** Old CLI finalization paths still return runner results; all wording stays in the report. */
-export function updateRunReportInputFromResult(result: UpdateRunResult): ReportInput {
+export function updateRunReportInputFromResult(input: UpdateRunResult): ReportInput {
+  const result = normalizeControlPlaneUpdateResult(input);
   return {
     status: result.status === "ok" ? "succeeded" : result.status === "error" ? "failed" : "skipped",
     phase: "finished",

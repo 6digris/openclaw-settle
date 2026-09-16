@@ -103,13 +103,13 @@ function resolvePreflightWorktreeDir(preflightRoot: string) {
   return path.join(preflightRoot, PREFLIGHT_WORKTREE_DIRNAME);
 }
 
-async function createPreflightRoot(gitRoot: string) {
+async function createPreflightRoot(artifactRoot: string) {
   // On POSIX, ignored artifact storage keeps interrupted worktrees out of Git status.
   // Honor existing redirects like build-all-cache; only the mkdtemp child is private.
   const baseDir =
     process.platform === "win32" && path.sep === "\\"
       ? path.win32.join(process.env.SystemDrive ?? "C:", WINDOWS_PREFLIGHT_BASE_DIR)
-      : path.join(await fs.realpath(gitRoot), ".artifacts");
+      : path.join(await fs.realpath(artifactRoot), ".artifacts");
   await fs.mkdir(baseDir, { recursive: true });
   return fs.mkdtemp(path.join(baseDir, PREFLIGHT_TEMP_PREFIX));
 }
@@ -316,7 +316,7 @@ function classifyPreflightFailure(step: UpdateStepResult): "failed" | "insuffici
 }
 
 async function testPreflightCandidate(params: {
-  gitRoot: string;
+  artifactRoot: string;
   worktreeDir: string;
   preflightRoot: string;
   sha: string;
@@ -324,7 +324,6 @@ async function testPreflightCandidate(params: {
   runLint: boolean;
   beforeCandidate?: (revision: string) => Promise<void>;
   validateCandidate?: (root: string) => Promise<void>;
-  inspectGitCandidate?: UpdateRunnerOptions["inspectGitCandidate"];
   prepareGitExposure?: UpdateRunnerOptions["prepareGitExposure"];
   prepareCandidate?: (root: string, cleanupRoot: string) => Promise<void>;
   runCommand: CommandRunner;
@@ -429,7 +428,7 @@ async function testPreflightCandidate(params: {
     const buildArgs = managerScriptArgs(manager.manager, "build");
     const buildEnv = resolveBuildEnv(
       candidateCommand.env,
-      path.join(params.gitRoot, ".artifacts", "build-all-cache"),
+      path.join(params.artifactRoot, ".artifacts", "build-all-cache"),
     );
     const configArgs = managerScriptArgs(manager.manager, "openclaw", [
       "config",
@@ -512,7 +511,6 @@ async function testPreflightCandidate(params: {
         "Candidate source differs from the selected commit. Repair the source revision before retrying the update.";
       return { status: "failed" };
     }
-    await params.inspectGitCandidate?.(params.worktreeDir);
     await params.prepareCandidate?.(params.worktreeDir, params.preflightRoot);
     return { status: "ok", candidateSha };
   } finally {
@@ -522,12 +520,12 @@ async function testPreflightCandidate(params: {
 
 export async function runGitCandidatePreflight(params: {
   gitRoot: string;
+  artifactRoot: string;
   devTarget?: DevUpdateTarget;
   targetRevision?: string;
   beforeSha?: string | null;
   beforeGitStaging?: UpdateRunnerOptions["beforeGitStaging"];
   validateCandidate?: (root: string) => Promise<void>;
-  inspectGitCandidate?: UpdateRunnerOptions["inspectGitCandidate"];
   prepareGitExposure?: UpdateRunnerOptions["prepareGitExposure"];
   prepareCandidate?: (root: string, cleanupRoot: string) => Promise<void>;
   needsCheckoutMain: boolean;
@@ -619,7 +617,7 @@ export async function runGitCandidatePreflight(params: {
   await params.beforeCandidate?.(preflightBaseSha);
   let preflightRoot: string;
   try {
-    preflightRoot = await createPreflightRoot(params.gitRoot);
+    preflightRoot = await createPreflightRoot(params.artifactRoot);
   } catch (error) {
     return {
       status: "error",

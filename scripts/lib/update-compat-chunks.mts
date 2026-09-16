@@ -13,9 +13,8 @@ export const UPDATE_COMPATIBILITY_INVENTORY_FILE = "update-compat-inventory.json
 const HASHED_CHUNK = /-[A-Za-z0-9_-]{8}\.m?js$/;
 const POST_SWAP_OWNER = /^src\/(?:cli\/update-cli\/|daemon\/|cli\/runtime-cleanup\.ts$)/;
 
-// These verified releases coalesced lifecycle declarations under the cache module's region.
-// Keep this provenance correction only while those releases remain in the supported upgrade window.
-const COALESCED_REGISTRY_RELEASES = [
+// Verified release layout corrections expire with their supported upgrade window.
+const VERIFIED_RELEASE_LAYOUTS = [
   {
     version: "2026.9.1",
     buildId: "2026.9.1-release-ad6fe23aecb9-2026-09-03T15-04-19.382Z",
@@ -39,6 +38,7 @@ const COALESCED_REGISTRY_RELEASES = [
     integrity:
       "sha512-CzDHMeHdnjlIZ76ZyBb1lvLO4H/yBIMYXupFGGBN87x0853y3hg5nLAnKfxSKqLzqhbUKqy9ebDRAWWV4t8aew==",
     chunk: "registry-lifecycle-BxSg6w0a.mjs",
+    executionPreloadImporter: "update-command-BOxZcaCa.mjs",
   },
   {
     version: "2026.9.4",
@@ -47,6 +47,7 @@ const COALESCED_REGISTRY_RELEASES = [
     integrity:
       "sha512-lTQpEEe1Xm3u2PCHaPEr+vP8paGk1vLdHuzdItsNToaLI6hAqRVvgJYg+GxukJhETJp4tPy/S1Gftl4KuB8n7A==",
     chunk: "registry-lifecycle-Dbi3yP7o.mjs",
+    executionPreloadImporter: "update-command-Cbsq6P3O.mjs",
   },
 ];
 
@@ -389,13 +390,13 @@ export function recordUpdateCompatibilityRelease(params: {
       "Update compatibility inventory requires an OpenClaw release build and npm SHA-512 integrity",
     );
   }
-  const historicalRegistryChunk = COALESCED_REGISTRY_RELEASES.find(
+  const verifiedLayout = VERIFIED_RELEASE_LAYOUTS.find(
     (release) =>
       release.version === packageJson.version &&
       release.buildId === build.buildId &&
       release.commit === build.commit &&
       release.integrity === params.integrity,
-  )?.chunk;
+  );
   const graph = new ModuleGraph();
   const chunks = new Map<string, UpdateCompatibilityChunk>();
   for (const file of moduleFiles(distDir)) {
@@ -424,6 +425,16 @@ export function recordUpdateCompatibilityRelease(params: {
             if (relative.startsWith("../")) {
               throw new Error(`Post-swap import escapes dist: ${relative}`);
             }
+            // These published drivers load this namespace before calling its
+            // executeMutableUpdate binding. Their no-op and post-core branches
+            // also import before work; later calls retain the loaded functions.
+            if (
+              relative === "update-execution.runtime.js" &&
+              owner === "src/cli/update-cli/update-command.ts" &&
+              portable(path.relative(distDir, file)) === verifiedLayout?.executionPreloadImporter
+            ) {
+              return;
+            }
             const names = consumedExports(node) ?? graph.names(target);
             const chunk = chunks.get(relative) ?? { path: relative, imports: [], exports: [] };
             chunk.imports.push({
@@ -442,7 +453,7 @@ export function recordUpdateCompatibilityRelease(params: {
                 );
               }
               if (
-                relative === historicalRegistryChunk &&
+                relative === verifiedLayout?.chunk &&
                 exported === "markPluginRegistryRetired" &&
                 origin.module === "src/plugins/loader-cache-state.ts" &&
                 origin.symbol === "markPluginRegistryRetired"

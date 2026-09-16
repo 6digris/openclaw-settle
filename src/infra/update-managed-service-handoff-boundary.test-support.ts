@@ -47,7 +47,6 @@ import {
 } from "./update-managed-service-handoff-state.test-support.js";
 import {
   createManagedServiceActivationScript,
-  readNativeState,
   readSavedFailure,
 } from "./update-managed-service-native.test-support.js";
 import { createUpdateRun, getUpdateRun } from "./update-run-ledger.js";
@@ -76,6 +75,9 @@ export function createManagedServiceManagerBoundary({
     tempDirs.add(root);
     const commandsPath = path.join(root, "manager-commands.log");
     const statePath = path.join(root, "manager-state.json");
+    const selectedDriverPath = options?.selectedDriver
+      ? path.join(root, `selected-driver-${options.selectedDriver}.cjs`)
+      : undefined;
     const updaterPath = path.join(root, "updater-ran");
     const validationStartedPath = path.join(root, "validation-started");
     const validationReleasePath = path.join(root, "validation-release");
@@ -84,6 +86,7 @@ export function createManagedServiceManagerBoundary({
     const mutationPath = path.join(root, "cancelled-service-mutation");
     const updaterPidPath = path.join(root, "updater-pid");
     const commandTimingsPath = path.join(root, "manager-command-timings.jsonl");
+    const stopSettlementPath = path.join(root, "stop-settlement.json");
     const recoveryModulePath = path.join(root, "recovery-health.mjs");
     const stateDatabasePath = resolveOpenClawStateSqlitePath({ OPENCLAW_STATE_DIR: root });
     const consumeNotification = `const db = new (require("node:sqlite").DatabaseSync)(${JSON.stringify(stateDatabasePath)}); const cleared = db.prepare("DELETE FROM gateway_restart_sentinel WHERE sentinel_key = 'current'").run(); db.close(); if (cleared.changes !== 1) throw new Error("expected one published notification before recovery consumed it"); ${managedServiceStateUpdateScript(statePath, "state.consumedNotifications = Number(cleared.changes)")};`;
@@ -184,7 +187,7 @@ export function createManagedServiceManagerBoundary({
         invocationCwd,
         requester: options?.requester,
         execPath: resolveTestNodeExecPath(),
-        argv1: process.argv[1],
+        argv1: selectedDriverPath ?? process.argv[1],
         handoffId: `${kind}-boundary`,
         env,
         meta: { handoffId: `${kind}-boundary` },
@@ -276,8 +279,6 @@ export function createManagedServiceManagerBoundary({
               ? `process.stdout.write(JSON.stringify({root:${JSON.stringify(root)},status:${JSON.stringify(options.validationResult === "failed" ? "error" : "skipped")},mode:"npm",reason:${JSON.stringify(options.validationResult === "failed" ? "candidate-validation-failed" : "already-current")}}));`
               : createManagedServiceActivationScript({
                   ...options,
-                  installRoot: root,
-                  runId: run?.runId,
                   sourceRuntimeImport,
                   statePath,
                   updaterScript,
@@ -293,6 +294,16 @@ export function createManagedServiceManagerBoundary({
           ${continuation}
         }, 5);
       `;
+      }
+      if (selectedDriverPath) {
+        expect(generated.commandArgv).toEqual([
+          resolveTestNodeExecPath(),
+          selectedDriverPath,
+          "update",
+          "--yes",
+          "--json",
+        ]);
+        await fs.writeFile(selectedDriverPath, updaterScript);
       }
       await fs.writeFile(
         paramsPath,
@@ -313,9 +324,11 @@ export function createManagedServiceManagerBoundary({
           ...commandFixture,
           // Triage hangs must reach the diagnostic cap without timing out healthy recovery.
           ...(options?.recoveryHang ? { recoveryTimeoutMs: 1000 } : {}),
-          recovery: { serviceRestartSafe: true, version: "1.0.0" },
+          recovery: options?.originalRecovery ?? { serviceRestartSafe: true, version: "1.0.0" },
           recoveryModulePath,
-          commandArgv: [resolveTestNodeExecPath(), "-e", updaterScript],
+          ...(selectedDriverPath
+            ? {}
+            : { commandArgv: [resolveTestNodeExecPath(), "-e", updaterScript] }),
         }),
       );
       if (options?.recoverySentinel) {
@@ -390,6 +403,55 @@ export function createManagedServiceManagerBoundary({
           }),
         );
         helperEnv = { ...helperEnv, NODE_OPTIONS: `--require ${preloadPath}` };
+      }
+      if (options?.expireParentWhileStopPending) {
+        // Advance only the helper after native dispatch; the stop subprocess keeps real time.
+        // Observe close before failure handling as well as terminal cleanup, which may be slower.
+        const preloadPath = path.join(root, "parent-expiry-preload.cjs");
+        await fs.writeFile(
+          preloadPath,
+          `if (process.argv[1] === ${JSON.stringify(scriptPath)}) {
+            const fs = require("node:fs");
+            const children = require("node:child_process");
+            const spawn = children.spawn;
+            const now = Date.now;
+            const append = fs.appendFileSync;
+            const kill = process.kill.bind(process);
+            let stop;
+            let parentKilledWhileStopPending;
+            let failedWhileStopPending;
+            children.spawn = (command, args, options) => {
+              const child = spawn(command, args, options);
+              if ((command === "systemctl" && args.includes("stop")) ||
+                  (command === "launchctl" && args[0] === "bootout")) {
+                stop = { pid: child.pid, closed: false, code: null, signal: null };
+                child.once("close", (code, signal) => { stop.closed = true; stop.code = code; stop.signal = signal; });
+              }
+              return child;
+            };
+            process.kill = (pid, signal) => {
+              if (pid === ${parentPid} && signal === "SIGKILL") parentKilledWhileStopPending = stop && !stop.closed;
+              return kill(pid, signal);
+            };
+            Date.now = () => {
+              let parked = false;
+              try { parked = JSON.parse(fs.readFileSync(${JSON.stringify(statePath)}, "utf8")).parked === true; } catch {}
+              return now() + (parked ? ${Number(generated.parentExitTimeoutMs) + 1} : 0);
+            };
+            fs.appendFileSync = (pathname, data, ...args) => {
+              if (pathname === ${JSON.stringify(generated.logPath)}) {
+                if (String(data).includes("managed update activation failed:")) failedWhileStopPending = stop && !stop.closed;
+                if (String(data).includes("managed update helper completed code="))
+                  fs.writeFileSync(${JSON.stringify(stopSettlementPath)}, JSON.stringify({ ...stop, parentKilledWhileStopPending, failedWhileStopPending }));
+              }
+              return append(pathname, data, ...args);
+            };
+          }`,
+        );
+        helperEnv = {
+          ...helperEnv,
+          NODE_OPTIONS: `${helperEnv.NODE_OPTIONS ?? ""} --require ${preloadPath}`.trim(),
+        };
       }
       const runningHelper = spawn(resolveTestNodeExecPath(), [scriptPath, paramsPath], {
         env: helperEnv,
@@ -476,6 +538,13 @@ export function createManagedServiceManagerBoundary({
               ? waitForHandoffResponse(runningHelper.stdout, "before-park")
               : undefined;
             await fs.writeFile(validationReleasePath, "activate");
+            if (selectedDriverPath) {
+              await waitForFile(statePath + ".park-prefix", 5_000);
+              await expect(pathExists(commandsPath)).resolves.toBe(false);
+              expect(parent.exitCode).toBeNull();
+              expect(parent.signalCode).toBeNull();
+              await fs.writeFile(statePath + ".park-tail", "complete request");
+            }
             if (options.repair) {
               await Promise.race([
                 options.repair.inferencePending,
@@ -525,11 +594,7 @@ export function createManagedServiceManagerBoundary({
           !options.validationResult &&
           !options.cancelDuringValidation &&
           !options.cancelAtActivation &&
-          !options.revokeWhileValidating &&
-          options.nativePreparation !== "refuse-stop" &&
-          options.nativePreparation !== "fail-preparation" &&
-          options.nativePreparation !== "fail-persistence-ack" &&
-          options.nativePreparation !== "fail-commit-ack";
+          !options.revokeWhileValidating;
         if (activated) {
           await vi.waitFor(
             async () => {
@@ -540,15 +605,21 @@ export function createManagedServiceManagerBoundary({
             // The spawn fallback imports the actual activation API before requesting the stop.
             { timeout: 30_000 },
           );
-          parent.stdin?.end();
+          if (options.expireParentWhileStopPending) {
+            await vi.waitFor(() => expect(parent.signalCode).toBe("SIGKILL"), { timeout: 5_000 });
+            await parentClosed;
+          } else {
+            parent.stdin?.end();
+          }
         }
         const code = await completion;
         const helperLog = await fs.readFile(String(generated.logPath), "utf8").catch(() => "");
         if (!options.repair) {
           expect(code, `${stderr}\n${helperLog}`).toBe(options.helperExitCode ?? 0);
         }
-        const updated = activated && options.nativePreparation !== "timeout-stop";
-        await expect(pathExists(updaterPath)).resolves.toBe(updated);
+        await expect(pathExists(updaterPath)).resolves.toBe(
+          activated && !options.expireParentWhileStopPending,
+        );
       } else if (options?.parentExitTimeoutMs !== undefined) {
         const timeout = options.parentExitTimeoutMs + (options.launchdTeardown ? 8_000 : 3_000);
         let timer: ReturnType<typeof setTimeout> | undefined;
@@ -629,12 +700,15 @@ export function createManagedServiceManagerBoundary({
             }
           : {}),
         ...(run ? { run: getUpdateRun(run.runId, { env }) } : {}),
+        ...(options?.expireParentWhileStopPending
+          ? { stopSettlement: JSON.parse(await fs.readFile(stopSettlementPath, "utf8")) }
+          : {}),
         commands: (await fs.readFile(commandsPath, "utf8").catch(() => ""))
           .trim()
           .split("\n")
           .filter(Boolean),
         parentSignal: parent.signalCode,
-        state: await readNativeState(statePath),
+        state: JSON.parse(await fs.readFile(statePath, "utf8").catch(() => "{}")),
         sentinel: readRestartSentinelPayload({ OPENCLAW_STATE_DIR: root }),
         log: await fs.readFile(String(generated.logPath), "utf8"),
         ...(options?.triageHang

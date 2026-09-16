@@ -1,5 +1,5 @@
 import type { ServiceInspectionReason } from "../../daemon/service-inspection-error.js";
-import type { UpdateRunResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import type { WindowsTaskAutoStartRecovery } from "./update-command-windows-task.js";
 
 export type ManagedGatewayUpdateVerdict =

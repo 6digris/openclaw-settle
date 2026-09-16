@@ -19,14 +19,9 @@ async function git(root: string, ...args: string[]): Promise<string> {
   return result.stdout.trim();
 }
 
-it.each([
-  { current: true, inspection: false },
-  { current: true, inspection: true },
-  { current: false, inspection: false },
-  { current: false, inspection: true },
-])(
-  "checks snapshot space after the Git no-op decision (current=$current, inspection=$inspection)",
-  async ({ current, inspection }) => {
+it.each([true, false])(
+  "checks snapshot space after the Git no-op decision (current=%s)",
+  async (current) => {
     await withTestDir({ prefix: "git-update-snapshot-" }, async (base) => {
       const root = path.join(base, "checkout");
       const stateDir = path.join(base, "state");
@@ -93,16 +88,20 @@ it.each([
           startedAt: Date.now(),
           progress: {},
           channel: "dev",
-          tag: "latest",
           devTarget: { mode: "detached", ref: target },
           beforeGitMutation,
           validateCandidate,
-          inspectGitTarget: inspection ? async () => {} : undefined,
-          getManagedServiceEnv: () => undefined,
+          inspectGitTarget: async (metadata) => {
+            expect(metadata).toMatchObject({ version: "2026.9.1" });
+            expect(metadata.metadataUnreadable).toBeUndefined();
+            expect(await git(root, "rev-parse", "HEAD")).toBe(before);
+          },
+          getManagedServiceEnvs: () => [],
+          runDoctor: async () => {
+            throw new Error("Doctor must not run before candidate activation");
+          },
           getSnapshotSource,
           jsonMode: true,
-          allowGatewayServiceRepair: false,
-          allowGatewayActivation: false,
         });
         expect(result).toMatchObject(
           current

@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
-import { createRetainedUpdateRecovery } from "../../infra/update-retained-recovery.test-support.js";
 import { createUpdateRun, recordUpdateRunStep } from "../../infra/update-run-ledger.js";
 import { loadUpdateRecovery } from "../../infra/update-run-recovery.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
@@ -8,7 +7,7 @@ import { verifyUpdatedGateway } from "./update-command-verification.js";
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => closeOpenClawStateDatabaseForTest());
 
-import type { UpdateRunResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import { defaultRuntime } from "../../runtime.js";
 
 const mocks = vi.hoisted(() => ({
@@ -313,40 +312,6 @@ describe("maybeRestartService", () => {
       expect(loadUpdateRecovery(admitted.runId, options)).toBeUndefined();
     },
   );
-
-  it("refuses a supplied legacy readiness context before any probe or acknowledgement", async () => {
-    const home = tempDirs.make("readiness-retained-refusal-");
-    const options = { env: { HOME: home, OPENCLAW_STATE_DIR: home } };
-    const admitted = createUpdateRun({ trigger: "cli" }, options);
-    const runtime = {
-      root: home,
-      nodePath: process.execPath,
-      version: gateway.version,
-      buildId: gateway.buildId,
-    };
-    const record = createRetainedUpdateRecovery(
-      { runId: admitted.runId, from: runtime, to: runtime },
-      options,
-    );
-    const onVerified = vi.fn();
-    await expect(
-      verifyUpdatedGateway({
-        opts: {
-          json: true,
-          run: { runId: admitted.runId, env: options.env },
-          recovery: { getRecord: () => record },
-        },
-        result: { status: "ok", mode: "npm", steps: [], durationMs: 0 },
-        serviceEnv: options.env,
-        gatewayPort: 18789,
-        onVerified,
-      }),
-    ).rejects.toMatchObject({ name: "UpdateCommandRecoveryPendingError" });
-    expect(mocks.waitForGatewayHealthyRestart).not.toHaveBeenCalled();
-    expect(mocks.waitForGatewayHttpReadiness).not.toHaveBeenCalled();
-    expect(onVerified).not.toHaveBeenCalled();
-    expect(loadUpdateRecovery(record.runId, options)).toEqual(record);
-  });
 
   it.each(["seal refused", "target install failed", "missing entrypoint"])(
     "never falls back to restart after gated install failure: %s",

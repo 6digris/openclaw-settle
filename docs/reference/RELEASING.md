@@ -539,7 +539,7 @@ release, rebuilds binaries, republishes assets or changes registry selectors.
 
 Before freezing the release, refresh `scripts/lib/update-compat-inventory.json`
 from every release in the supported upgrade window. The current window includes
-2026.9.1, 2026.9.2, and 2026.9.3. Download each npm tarball and verify it against
+2026.9.1, 2026.9.2, 2026.9.3, and 2026.9.4. Download each npm tarball and verify it against
 its published `dist.integrity` before extracting it. Pass each verified artifact
 to the recorder with a repeatable `--release` argument:
 
@@ -547,7 +547,8 @@ to the recorder with a repeatable `--release` argument:
 pnpm update:compat:gen \
   --release '<unpacked-2026.9.1-directory>=<verified-npm-dist.integrity>' \
   --release '<unpacked-2026.9.2-directory>=<verified-npm-dist.integrity>' \
-  --release '<unpacked-2026.9.3-directory>=<verified-npm-dist.integrity>'
+  --release '<unpacked-2026.9.3-directory>=<verified-npm-dist.integrity>' \
+  --release '<unpacked-2026.9.4-directory>=<verified-npm-dist.integrity>'
 ```
 
 The recorder writes releases in version order and replaces the recorded set.
@@ -556,14 +557,20 @@ the inventory must not accumulate indefinitely. A release with no post-swap
 imports still has an entry with an empty chunk list, so coverage is explicit.
 Conflicting origins for the same chunk export across releases fail generation.
 
-The recorder corrects one verified historical bundler annotation: the 2026.9.1,
-2026.9.2, and 2026.9.3 registry-lifecycle chunks grouped the retirement function
-under the cache module's source region. The correction requires the exact release
-version, build identity, commit, npm integrity, chunk and export. It changes only
-recorded source provenance; missing or ambiguous current exports still fail the
-build. Remove each correction when its release leaves the supported upgrade
-window. Regenerate the inventory from verified tarballs rather than editing its
-origins by hand.
+The recorder corrects verified historical bundler annotations: the 2026.9.1
+through 2026.9.4 registry-lifecycle chunks grouped the retirement function under
+the cache module's source region. These provenance corrections require the exact
+release version, build identity, commit, npm integrity, chunk and export.
+
+The verified 2026.9.3 and 2026.9.4 updater imports of
+`update-execution.runtime.js` also precede mutation: the current-core branch
+imports it before making changes, and the mutable branch retains the full
+namespace before calling its updater. The post-core child loads its own target
+runtime. The recorder therefore excludes only those imports, matching the exact
+release identity, importer, source owner and target; downstream imports remain
+recorded. Missing or ambiguous required exports still fail the build. Remove
+each correction when its release leaves the supported upgrade window, and
+regenerate the inventory from verified tarballs rather than editing it by hand.
 
 `pnpm update:compat:check` reads `npm view openclaw dist-tags --json` and requires
 the versions tagged `latest` and `beta` to be present, even when both tags refer

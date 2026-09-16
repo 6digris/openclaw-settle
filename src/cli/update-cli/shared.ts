@@ -31,7 +31,11 @@ import type { UpdateRequesterAuthority } from "../../infra/update-requester-auth
 import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
 import { runStep } from "../../infra/update-runner-command.js";
 import { resolveUnmanagedUpdateInstallReason } from "../../infra/update-runner-install-surface.js";
-import type { UpdateStepProgress, UpdateStepResult } from "../../infra/update-runner.js";
+import type {
+  UpdateRunResult,
+  UpdateStepProgress,
+  UpdateStepResult,
+} from "../../infra/update-runner-types.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import { defaultRuntime } from "../../runtime.js";
 import { UPDATE_INSTALL_SKIP_GUIDANCE } from "../../shared/update-outcome.js";
@@ -40,7 +44,10 @@ import { COMPLETION_SKIP_PLUGIN_COMMANDS_ENV } from "../completion-runtime.js";
 import { isJsonOutputModeActive } from "../json-output-mode.js";
 
 export type UpdateCommandOptions = {
-  /** In-process executor only; workers must reacquire authority, never deserialize this. */
+  /** Doctor's accepted source update targets dev without changing the saved channel. */
+  sourceUpdate?: { root: string };
+  /** In-process reporting only, after the update owner settles. Never serialized. */
+  onResult?: (result: UpdateRunResult) => void;
   /** Legacy live context is unsupported; its presence is refusal-only. */
   recovery?: unknown;
   reapplyLocalOverrides?: boolean;
@@ -50,6 +57,10 @@ export type UpdateCommandOptions = {
     defaultStepTimeoutMs?: number;
     activationTimeoutMs?: number;
     env: NodeJS.ProcessEnv;
+    /** Completion routing only; the executor and requester still own mutation authority. */
+    completionOwner?: "gateway-restart";
+    /** The same live helper acknowledged this foreground Gateway's actual closure. */
+    gatewayRestartRequired?: true;
     /** Prepared before replacement; never load the old authority graph after activation. */
     requesterAuthority?: UpdateRequesterAuthority;
     /** Live local executor only. A child must independently acquire its owner. */

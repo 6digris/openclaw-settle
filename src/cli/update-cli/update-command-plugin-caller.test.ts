@@ -188,14 +188,18 @@ describe("connected in-process plugin finalization authority", () => {
                 mutationStarted: false,
                 shouldRestart: false,
                 installKindChanged: false,
-                configSnapshot,
-                requestedChannel: null,
-                storedChannel: "stable",
+                profiles: [
+                  {
+                    configSnapshot,
+                    requestedChannel: null,
+                    storedChannel: "stable",
+                    preUpdatePluginInstallRecords,
+                  },
+                ],
                 channel: "stable",
                 downgradeRisk: false,
                 opts: { json: true, yes: true, run },
                 controlPlaneUpdateSentinelMeta: null,
-                preUpdatePluginInstallRecords,
                 startedAt: Date.now(),
                 updateStepTimeoutMs: 1_000,
               };

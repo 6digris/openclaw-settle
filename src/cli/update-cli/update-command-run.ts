@@ -35,6 +35,7 @@ import {
 } from "../../infra/update-freebsd-pkg-ownership.js";
 import { resolveUpdateInstallRoot } from "../../infra/update-install-root.js";
 import { cleanupStaleManagedServiceUpdateHandoffs } from "../../infra/update-managed-service-handoff-cleanup.js";
+import { isCurrentForegroundUpdateHandoffProcess } from "../../infra/update-managed-service-handoff.js";
 import {
   POST_CORE_UPDATE_CHANNEL_ENV,
   POST_CORE_UPDATE_ENV,
@@ -43,7 +44,6 @@ import {
   createManagedUpdateRequesterAuthority,
   resolveManagedUpdateRequester,
 } from "../../infra/update-requester-authority.js";
-import { normalizeControlPlaneUpdateResult } from "../../infra/update-restart-sentinel-payload.js";
 import { readUpdateRunDriver } from "../../infra/update-run-driver.js";
 import {
   adoptUpdateRun,
@@ -62,13 +62,16 @@ import {
   loadUpdateRecovery,
   type UpdateRecoveryFence,
 } from "../../infra/update-run-recovery.js";
-import { updateRunStepsFromResultStep } from "../../infra/update-run-step.js";
+import {
+  normalizeControlPlaneUpdateResult,
+  updateRunStepsFromResultStep,
+} from "../../infra/update-run-step.js";
 import {
   AUTO_UPDATE_STEP_TIMEOUT_MS,
   DEFAULT_UPDATE_STEP_TIMEOUT_MS,
   UPDATE_RUNNER_TIMEOUT_MS,
 } from "../../infra/update-run-timeouts.js";
-import type { UpdateRunResult, UpdateStepProgress } from "../../infra/update-runner.js";
+import type { UpdateRunResult, UpdateStepProgress } from "../../infra/update-runner-types.js";
 import { loadInstalledPluginIndexInstallRecords } from "../../plugins/installed-plugin-index-records.js";
 import { defaultRuntime } from "../../runtime.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
@@ -256,10 +259,16 @@ export async function admitUpdateCommandRun(params: {
   const requesterAuthority = requester
     ? await createManagedUpdateRequesterAuthority(requester, env)
     : undefined;
+  const meta = await readControlPlaneUpdateSentinelMeta(env);
   const run = {
     runId: record.runId,
     defaultStepTimeoutMs: record.trigger === "campaign" ? AUTO_UPDATE_STEP_TIMEOUT_MS : undefined,
     env,
+    ...(record.trigger !== "cli" &&
+    meta?.runId === record.runId &&
+    meta.completionOwner === "gateway-restart"
+      ? { completionOwner: "gateway-restart" as const }
+      : {}),
     ...(requesterAuthority ? { requesterAuthority } : {}),
   };
   if (
@@ -451,7 +460,6 @@ export function completeUpdateCommandRun(
       runId: run.runId,
     };
   }
-  const normalized = normalizeControlPlaneUpdateResult({ ...result, runId: run.runId });
   const recordOptions = { env: run.env, redactPaths: result.root ? [result.root] : [] };
   const active = getUpdateRun(run.runId, recordOptions);
   if (active) {
@@ -472,19 +480,26 @@ export function completeUpdateCommandRun(
     result.recovery?.serviceRestartSafe === true &&
     result.recovery.packageRollbackVerified === true &&
     result.recovery.service === undefined;
-  if (!helperRecoveryPending) {
+  const gatewayRestartPending =
+    run.completionOwner === "gateway-restart" &&
+    run.gatewayRestartRequired === true &&
+    result.status === "ok" &&
+    !completion.rolledBack;
+  if (gatewayRestartPending) {
+    recordUpdateRunPhase(run.runId, "restarting", {}, recordOptions);
+  } else if (!helperRecoveryPending) {
     finishUpdateRun(
       run.runId,
       {
         status: completion.rolledBack
           ? "rolled-back"
-          : normalized.status === "ok"
+          : result.status === "ok"
             ? "succeeded"
-            : normalized.status === "error"
+            : result.status === "error"
               ? "failed"
               : "skipped",
-        reason: normalized.reason,
-        after: normalized.after,
+        reason: result.reason,
+        after: result.after,
         downtimeMs: completion.downtimeMs,
       },
       recordOptions,
@@ -547,8 +562,11 @@ export async function prepareUpdateCommand(opts: UpdateCommandOptions) {
   }
   // The shim can move during preparation; the loaded module owns the executing generation.
   const executingRoot = resolveOpenClawPackageRootSync({ moduleUrl: import.meta.url });
-  const discoveredRoot = await resolveUpdateRoot();
+  const discoveredRoot = opts.sourceUpdate?.root ?? (await resolveUpdateRoot());
   const installKind = await resolveUpdateInstallKind(discoveredRoot, { timeoutMs });
+  if (opts.sourceUpdate && installKind !== "git") {
+    throw new Error("Doctor source update requires the accepted Git checkout.");
+  }
   const pkgOwnership = createFreeBsdPkgOwnershipInspection(timeoutMs ?? UPDATE_RUNNER_TIMEOUT_MS);
   // Inspect the invoking installation before a service can redirect its root,
   // runtime or state. This also covers package-to-Git and preview requests.
@@ -559,7 +577,12 @@ export async function prepareUpdateCommand(opts: UpdateCommandOptions) {
     continuation: postCoreUpdateResume ? opts.run?.executorFence : undefined,
   });
   const servicePlan =
-    installKind === "package"
+    installKind === "package" &&
+    !(await isCurrentForegroundUpdateHandoffProcess({
+      root: discoveredRoot,
+      runId: process.env[UPDATE_RUN_ID_ENV],
+      env: process.env,
+    }))
       ? await resolveManagedServicePackageUpdatePlan({ root: discoveredRoot, pkgOwnership })
       : undefined;
   if (servicePlan?.rootRedirect) {

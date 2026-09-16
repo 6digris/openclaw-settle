@@ -8,7 +8,7 @@ import { normalizeUpdatePostInstallDoctorWarnings } from "../../infra/update-doc
 import { updateInstallRootsMatch } from "../../infra/update-install-root.js";
 import { recordUpdateRunStep } from "../../infra/update-run-ledger.js";
 import { updateRunStepsFromResultStep } from "../../infra/update-run-step.js";
-import type { UpdateRunResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult, UpdateStepResult } from "../../infra/update-runner-types.js";
 import { loadInstalledPluginIndexInstallRecords } from "../../plugins/installed-plugin-index-records.js";
 import { withPluginLifecycleLease } from "../../plugins/plugin-lifecycle-lease.js";
 import { defaultRuntime } from "../../runtime.js";
@@ -43,6 +43,7 @@ export async function convergeUpdatePlugins(params: {
   packageUpdateNodeRunner?: string;
   updateStepTimeoutMs: number;
   beforeDoctor?: () => Promise<void>;
+  beforeRuntimePublication?: () => Promise<void>;
   assertCurrent?: () => void;
 }): Promise<{
   resultWithPostUpdate: UpdateRunResult;
@@ -132,6 +133,31 @@ export async function convergeUpdatePlugins(params: {
       let postCorePluginUpdate;
       const doctorWarnings: string[] = [];
       let pluginsUpdatedInFreshProcess = false;
+      const runtimeStartedAt = Date.now();
+      const runtime = await withPluginLifecycleLease({ assertCurrent }, (lease) =>
+        completeSourceUpdateRuntime({
+          root: postUpdateRoot,
+          timeoutMs: params.updateStepTimeoutMs,
+          lease,
+          beforePersistentEffect: assertCurrent,
+          beforePublication: params.beforeRuntimePublication,
+        }),
+      );
+      assertCurrent?.();
+      const runtimeStep: UpdateStepResult | undefined = runtime.changed
+        ? {
+            name: "source runtime publication",
+            command: "openclaw update",
+            cwd: postUpdateRoot,
+            durationMs: Math.max(0, Date.now() - runtimeStartedAt),
+            exitCode: 0,
+          }
+        : undefined;
+      if (runtimeStep && params.opts.run) {
+        for (const step of updateRunStepsFromResultStep(runtimeStep)) {
+          recordUpdateRunStep(params.opts.run.runId, step, { env: params.opts.run.env });
+        }
+      }
       if (shouldResumePostCoreInFreshProcess) {
         const freshProcessResult = await continuePostCoreUpdateInFreshProcess({
           root: postUpdateRoot,
@@ -173,14 +199,7 @@ export async function convergeUpdatePlugins(params: {
       }
 
       if (!pluginsUpdatedInFreshProcess) {
-        postCorePluginUpdate = await withPluginLifecycleLease({ assertCurrent }, async (lease) => {
-          await completeSourceUpdateRuntime({
-            root: postUpdateRoot,
-            timeoutMs: params.updateStepTimeoutMs,
-            lease,
-            beforePersistentEffect: assertCurrent,
-          });
-          assertCurrent?.();
+        postCorePluginUpdate = await withPluginLifecycleLease({ assertCurrent }, async () => {
           const preparedConfig = await preparePostCorePluginConfig({
             requestedChannel: params.requestedChannel,
             preUpdateConfig,
@@ -227,7 +246,7 @@ export async function convergeUpdatePlugins(params: {
 
       const resultWithPostUpdate: UpdateRunResult = {
         ...params.result,
-        steps: [...params.result.steps],
+        steps: [...params.result.steps, ...(runtimeStep ? [runtimeStep] : [])],
         ...(postCorePluginUpdate
           ? {
               status: postCorePluginUpdate.status === "error" ? "error" : params.result.status,
@@ -285,7 +304,8 @@ export async function convergeUpdatePlugins(params: {
       if (
         params.coreAlreadyCurrent &&
         resultWithPostUpdate.status !== "error" &&
-        (postCorePluginUpdate?.changed ||
+        (runtime.changed ||
+          postCorePluginUpdate?.changed ||
           (params.requestedChannel !== null && params.requestedChannel !== params.storedChannel))
       ) {
         resultWithPostUpdate.status = "ok";

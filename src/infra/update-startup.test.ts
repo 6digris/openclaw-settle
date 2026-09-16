@@ -31,7 +31,6 @@ const {
   getRuntimeConfigMock,
   runUpdateFailureTriageMock,
   refreshRemoteModelCatalogMock,
-  runGatewayUpdatePreflightMock,
   scheduleGatewaySigusr1RestartMock,
   startManagedServiceUpdateHandoffMock,
   transferManagedServiceUpdateHandoffMock,
@@ -52,8 +51,6 @@ const {
     models: 1,
     generatedAt: 1_753_500_000_000,
   })),
-  runGatewayUpdatePreflightMock:
-    vi.fn<typeof import("./update-runner.js").runGatewayUpdatePreflight>(),
   scheduleGatewaySigusr1RestartMock: vi.fn(() => ({ scheduled: true })),
   startManagedServiceUpdateHandoffMock: vi.fn<
     typeof import("./update-managed-service-handoff.js").startManagedServiceUpdateHandoff
@@ -130,11 +127,6 @@ vi.mock("./update-check.js", async () => {
     compareSemverStrings,
     resolveNpmChannelTag: vi.fn(),
   };
-});
-
-vi.mock("./update-runner.js", async () => {
-  const actual = await vi.importActual<typeof import("./update-runner.js")>("./update-runner.js");
-  return { ...actual, runGatewayUpdatePreflight: runGatewayUpdatePreflightMock };
 });
 
 vi.mock("../version.js", () => ({
@@ -292,8 +284,6 @@ describe("update-startup", () => {
     getRuntimeConfigMock.mockReset();
     getRuntimeConfigMock.mockReturnValue({});
     refreshRemoteModelCatalogMock.mockClear();
-    runGatewayUpdatePreflightMock.mockReset();
-    runGatewayUpdatePreflightMock.mockResolvedValue(undefined);
     detectRespawnSupervisorMock.mockReset();
     detectRespawnSupervisorMock.mockReturnValue(null);
     scheduleGatewaySigusr1RestartMock.mockClear();
@@ -1355,28 +1345,23 @@ describe("update-startup", () => {
       upstreamSha: "frozen-upstream-sha",
     });
     expect(handoffParams?.timeoutMs).toBeUndefined();
-    expect(runGatewayUpdatePreflightMock).toHaveBeenCalledWith(
-      "/opt/openclaw",
-      45 * 60 * 1000,
-      handoffParams?.devTarget,
-      expect.any(AbortSignal),
-    );
+    expect(transferManagedServiceUpdateHandoffMock).toHaveBeenCalledOnce();
+    expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
   });
 
   it.each([
     { status: "error", reason: "preflight-no-good-commit" },
     { status: "skipped", reason: "already-current" },
   ] as const)(
-    "keeps serving when managed dev preflight returns $reason",
+    "records a dev campaign's terminal $reason outcome without restarting",
     async ({ status, reason }) => {
       mockDevGitStatus({ upstreamSha: "frozen-upstream-sha" });
       detectRespawnSupervisorMock.mockReturnValue("launchd");
-      runGatewayUpdatePreflightMock.mockResolvedValueOnce({
-        status,
-        mode: "git",
-        reason,
-        steps: [],
-        durationMs: 1,
+      const runAutoUpdate = vi.fn().mockResolvedValue({
+        status: status === "skipped" ? "skipped" : "failed",
+        result: { status, mode: "git", reason, steps: [], durationMs: 1 },
+        message:
+          status === "skipped" ? "The selected version is already current." : "Update failed.",
       });
       const log = { info: vi.fn() };
       const terminalSentinels: Array<ReturnType<typeof readRestartSentinel>> = [];
@@ -1387,6 +1372,7 @@ describe("update-startup", () => {
         isNixMode: false,
         allowInTests: true,
         activeWorkInspectors: idleActiveWorkInspectors(),
+        runAutoUpdate,
         onUpdateScheduleChange: (schedule) => {
           if (!schedule.campaign) {
             terminalSentinels.push(readRestartSentinel());
@@ -2270,54 +2256,20 @@ describe("update-startup", () => {
     },
   );
 
-  it("joins cancelled preflight without launching a managed update after stop", async () => {
-    mockDevGitStatus();
-    detectRespawnSupervisorMock.mockReturnValue("systemd");
-    let releasePreflight!: () => void;
-    runGatewayUpdatePreflightMock.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          releasePreflight = () => resolve(undefined);
-        }),
-    );
-    process.env.NODE_ENV = "production";
-    const stop = scheduleGatewayUpdateCheck({
-      cfg: { update: { channel: "dev", auto: { enabled: true } } },
-      log: { info: vi.fn() },
-      isNixMode: false,
-      activeWorkInspectors: idleActiveWorkInspectors(),
-    });
-    try {
-      await vi.advanceTimersByTimeAsync(60_000);
-      expect(releasePreflight).toEqual(expect.any(Function));
-      let stopped = false;
-      const stopping = stop().then(() => {
-        stopped = true;
-      });
-      await vi.advanceTimersByTimeAsync(0);
-      expect(stopped).toBe(false);
-      expect(runGatewayUpdatePreflightMock.mock.calls[0]?.[3]?.aborted).toBe(true);
-      releasePreflight();
-      await stopping;
-
-      expect(startManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
-      expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
-      expect(runUpdateFailureTriageMock).not.toHaveBeenCalled();
-    } finally {
-      releasePreflight?.();
-      await stop();
-    }
-  });
-
   it.each([
-    { joined: false, cancelled: "restored-in-process" as const },
-    { joined: true, cancelled: "restored-in-process" as const },
-    { joined: false, cancelled: false as const },
-    { joined: false, cancelled: "restart-after-exit" as const },
+    { channel: "dev", joined: false, cancelled: "restored-in-process" as const },
+    { channel: "beta", joined: false, cancelled: "restored-in-process" as const },
+    { channel: "beta", joined: true, cancelled: "restored-in-process" as const },
+    { channel: "beta", joined: false, cancelled: false as const },
+    { channel: "beta", joined: false, cancelled: "restart-after-exit" as const },
   ])(
-    "reconciles a late handoff after stop with joined=$joined and cancellation=$cancelled",
-    async ({ joined, cancelled }) => {
-      mockPackageUpdateStatus("beta", "2.0.0-beta.1");
+    "reconciles a late $channel handoff after stop with joined=$joined and cancellation=$cancelled",
+    async ({ channel, joined, cancelled }) => {
+      if (channel === "dev") {
+        mockDevGitStatus();
+      } else {
+        mockPackageUpdateStatus("beta", "2.0.0-beta.1");
+      }
       detectRespawnSupervisorMock.mockReturnValue("systemd");
       cancelManagedServiceUpdateHandoffMock.mockResolvedValueOnce(cancelled);
       let releaseHandoff!: () => void;
@@ -2341,7 +2293,10 @@ describe("update-startup", () => {
       process.env.NODE_ENV = "production";
       const log = { info: vi.fn() };
       const stop = scheduleGatewayUpdateCheck({
-        cfg: createBetaAutoUpdateConfig(),
+        cfg:
+          channel === "dev"
+            ? { update: { channel: "dev", auto: { enabled: true } } }
+            : createBetaAutoUpdateConfig(),
         log,
         isNixMode: false,
         activeWorkInspectors: idleActiveWorkInspectors(),

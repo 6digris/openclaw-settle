@@ -8,7 +8,25 @@ import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-version
 import type { UpdateCommandOptions } from "./shared.js";
 import type { UpdateRestartParams } from "./update-command-service-context-types.js";
 import type { UpdateServiceLoadBoundary } from "./update-command-service-load.js";
-export type FinishUpdateParams = UpdateRestartParams & {
+export type UpdateProfileContext = Pick<
+  UpdateRestartParams,
+  "preManagedServiceStop" | "ownedManagedUpdateEnv"
+> & {
+  configSnapshot: ConfigFileSnapshot;
+  requestedChannel: UpdateChannel | null;
+  storedChannel: UpdateChannel | null;
+  preUpdatePluginInstallRecords: Awaited<ReturnType<typeof loadInstalledPluginIndexInstallRecords>>;
+  schemaVersions?: UpdateStateSchemaVersion[];
+  previousVerified?: boolean;
+  activationConfig?: import("./update-command-config-snapshot.js").UpdateConfigSnapshot;
+  packageUpdateNodeRunner?: string;
+  serviceRuntimeRefreshRequired?: boolean;
+};
+
+type SharedUpdateFinalization = Omit<
+  UpdateRestartParams,
+  "preManagedServiceStop" | "ownedManagedUpdateEnv" | "serviceRuntimeRefreshRequired"
+> & {
   coreAlreadyCurrent?: boolean;
   serviceLoadBoundary?: UpdateServiceLoadBoundary;
   failure?: { cause: unknown; detail: string };
@@ -16,21 +34,19 @@ export type FinishUpdateParams = UpdateRestartParams & {
   expectedVersion?: string;
   previousInstallRoot?: string;
   installKindChanged: boolean;
-  configSnapshot: ConfigFileSnapshot;
-  requestedChannel: UpdateChannel | null;
-  storedChannel: UpdateChannel | null;
   channel: UpdateChannel;
   downgradeRisk: boolean;
   opts: UpdateCommandOptions;
   controlPlaneUpdateSentinelMeta: Awaited<ReturnType<typeof readControlPlaneUpdateSentinelMeta>>;
-  preUpdatePluginInstallRecords: Awaited<ReturnType<typeof loadInstalledPluginIndexInstallRecords>>;
   startedAt: number;
   packageUpdateNodeRunner?: string;
   packageTransaction?: PackageUpdateTransaction;
-  schemaVersions?: UpdateStateSchemaVersion[];
   candidateSchemaVersions?: OpenClawSchemaVersions;
   previousSchemaVersions?: OpenClawSchemaVersions;
-  previousVerified?: boolean;
-  activationConfig?: import("./update-command-config-snapshot.js").UpdateConfigSnapshot;
   rollbackBlockedReason?: "state-migrated-no-rollback" | "rollback-state-unverified";
+};
+
+export type ProfileFinishUpdateParams = SharedUpdateFinalization & UpdateProfileContext;
+export type FinishUpdateParams = SharedUpdateFinalization & {
+  profiles: UpdateProfileContext[];
 };

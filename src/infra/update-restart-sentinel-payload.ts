@@ -1,13 +1,26 @@
 // Builds restart sentinel payloads for update handoff reporting.
 import { formatDoctorNonInteractiveHint, type RestartSentinelPayload } from "./restart-sentinel.js";
-import { isUpdateGatewayReadinessPending } from "./update-run-step.js";
-import type { UpdateRunResult } from "./update-runner.js";
+import { normalizeControlPlaneUpdateResult } from "./update-run-step.js";
+import type { UpdateRunResult } from "./update-runner-types.js";
+
+export type ForegroundUpdateOrigin = {
+  owner: string;
+  pid: number;
+  host: string;
+  startedAt: number;
+  port: number;
+  stateDatabasePath: string;
+  configPath: string;
+};
 
 // Update restart sentinel payloads carry update result details across a process
 // restart so the next gateway can report completion or failure.
 /** Metadata needed to route update restart continuation messages. */
 export type UpdateRestartSentinelMeta = {
   runId?: string;
+  /** The foreground replacement Gateway verifies success after the CLI settles. */
+  completionOwner?: "gateway-restart";
+  foregroundOrigin?: ForegroundUpdateOrigin;
   /** Internal helper fact: when the owning service stop was issued. */
   serviceStoppedAtMs?: number;
   root?: string;
@@ -23,26 +36,6 @@ export type UpdateRestartSentinelMeta = {
   note?: string | null;
   continuationMessage?: string | null;
 };
-
-export function normalizeControlPlaneUpdateResult(result: UpdateRunResult): UpdateRunResult {
-  if (
-    (result.status === "ok" ||
-      (result.status === "skipped" && result.reason === "already-current")) &&
-    isUpdateGatewayReadinessPending(result)
-  ) {
-    return { ...result, status: "skipped", reason: "gateway-readiness-unverified" };
-  }
-  const beforeSha = result.before?.sha?.trim();
-  const afterSha = result.after?.sha?.trim();
-  return result.status === "ok" &&
-    result.mode === "git" &&
-    result.postUpdate?.plugins?.changed !== true &&
-    beforeSha &&
-    afterSha &&
-    beforeSha === afterSha
-    ? { ...result, status: "skipped", reason: "already-current" }
-    : result;
-}
 
 function resolvePersistedRecovery(result: UpdateRunResult): UpdateRunResult["recovery"] {
   if (!result.recovery) {

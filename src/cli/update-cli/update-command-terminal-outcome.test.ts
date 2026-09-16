@@ -4,6 +4,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { finalizeRestartUpdateRun } from "../../gateway/server-restart-update-run.js";
 import { writePackageRoot } from "../../infra/package-update-steps.test-support.js";
 import {
   swapStagedPackageInstall,
@@ -15,13 +16,19 @@ import {
 } from "../../infra/package-update-swap.test-support.js";
 import { readRestartSentinel } from "../../infra/restart-sentinel.js";
 import * as temporaryRoot from "../../infra/tmp-openclaw-dir.js";
+import {
+  CONTROL_PLANE_UPDATE_SENTINEL_META_ENV,
+  UPDATE_RUN_ID_ENV,
+} from "../../infra/update-control-plane-sentinel.js";
 import { createManagedHandoffLeaseStore } from "../../infra/update-managed-service-handoff-lease.js";
+import * as updateHandoff from "../../infra/update-managed-service-handoff.js";
 import { prepareNativePackageStage } from "../../infra/update-native-package-stage.js";
 import { createUpdateRun, finishUpdateRun, getUpdateRun } from "../../infra/update-run-ledger.js";
 import { renderUpdateRunReport } from "../../infra/update-run-report.js";
-import type { UpdateStepResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult, UpdateStepResult } from "../../infra/update-runner-types.js";
 import { defaultRuntime } from "../../runtime.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import { VERSION } from "../../version.js";
 import type { UpdateCommandOptions } from "./shared.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
 import {
@@ -32,6 +39,7 @@ import {
   UpdateCommandFailure,
   UpdateCommandPendingRecoveryFailure,
 } from "./update-command-result.js";
+import { admitUpdateCommandRun } from "./update-command-run.js";
 import { withUpdateCommandTerminalResult } from "./update-command-terminal.js";
 import { withUpdateFailureTriage } from "./update-command-triage.js";
 
@@ -333,6 +341,19 @@ async function scenario(
   let repeatedCompletion: UpdateStepResult | void = undefined;
   let repeatedFailure: string | undefined;
   let failure: unknown;
+  const notifications: UpdateRunResult[] = [];
+  const onResult = (result: UpdateRunResult) => {
+    expect(() => run.executorFence!.assertCurrent()).toThrow();
+    expect(getUpdateRun(run.runId, { env: run.env })).toMatchObject({
+      status: result.status === "ok" ? "succeeded" : "failed",
+      ...(result.reason ? { reason: result.reason } : {}),
+    });
+    if (json) {
+      expect(jsonOutput).toHaveLength(1);
+      expect(jsonOutput[0]).toMatchObject(result);
+    }
+    notifications.push(structuredClone(result));
+  };
   const execute = () =>
     withUpdateCommandExecutor(run.runId, async (executor) => {
       run.executorFence = await executor.enter(swap.packageRoot);
@@ -409,10 +430,18 @@ async function scenario(
     });
   try {
     if (deferred) {
-      await withUpdateCommandTerminalResult((registerRun) => {
-        registerRun(run);
-        return execute();
-      });
+      await withUpdateCommandTerminalResult(
+        (registerRun) => {
+          registerRun(run);
+          return execute();
+        },
+        {
+          json,
+          ...(kind === "healthy" || kind === "release-failure" || kind === "revoked"
+            ? { onResult }
+            : {}),
+        },
+      );
     } else {
       await execute();
     }
@@ -467,6 +496,7 @@ async function scenario(
     sentinel: preparedRecovery ? await readRestartSentinel(run.env) : undefined,
     humanOutput,
     history,
+    notifications,
     report,
     beforeRepeat,
     afterRepeat,
@@ -653,7 +683,7 @@ describe("composed cleanup and terminal outcome", () => {
     expect(value.afterRepeat).toEqual(value.beforeRepeat);
   });
   it.each(["release-failure", "revoked"] as const)(
-    "publishes one failed outcome after %s",
+    "publishes and notifies one settled failure after %s",
     async (kind) => {
       const value = await scenario(kind, true);
       expect(value.injected).toBe(true);
@@ -661,6 +691,15 @@ describe("composed cleanup and terminal outcome", () => {
       expect(value.package.version).toBe("2.0.0");
       expect(value.jsonOutput).toHaveLength(1);
       expect(value.jsonOutput[0]).toMatchObject({ status: "error" });
+      expect(value.notifications).toEqual([
+        expect.objectContaining({
+          status: "error",
+          reason: "update-executor-settlement-failed",
+          steps: expect.arrayContaining([
+            expect.objectContaining({ name: "update executor settlement", exitCode: 1 }),
+          ]),
+        }),
+      ]);
       expect(value.history?.status).toBe("failed");
       expect(value.report.toLowerCase()).toContain("failed");
       expect(value.afterRepeat).toEqual(value.beforeRepeat);
@@ -675,13 +714,20 @@ describe("composed cleanup and terminal outcome", () => {
     expect(value.afterRepeat).toEqual(value.beforeRepeat);
   });
   it.each([true, false])(
-    "keeps healthy cleanup and terminal output consistent (json=%s)",
+    "notifies once after healthy cleanup and terminal publication (json=%s)",
     async (json) => {
       const value = await scenario("healthy", json);
       expect(value.exitCode).toBe(0);
       expect(value.retainedExists).toBe(false);
       expect(value.history?.status).toBe("succeeded");
       expect(value.lease).toBe("absent");
+      expect(value.notifications).toEqual([
+        expect.objectContaining({
+          status: "ok",
+          runId: value.run.runId,
+          after: { version: "2.0.0" },
+        }),
+      ]);
       if (json) {
         expect(value.jsonOutput).toHaveLength(1);
         expect(value.jsonOutput[0]).toMatchObject({ status: "ok" });
@@ -692,3 +738,92 @@ describe("composed cleanup and terminal outcome", () => {
     },
   );
 });
+
+it("keeps foreground success pending until the replacement Gateway observes the final sentinel", async () => {
+  vi.spyOn(updateHandoff, "parkForegroundUpdateHandoff").mockResolvedValue(undefined);
+  await writePackageRoot(base, VERSION);
+  const created = createUpdateRun({ trigger: "api" });
+  const meta = { runId: created.runId, completionOwner: "gateway-restart" as const };
+  const metaPath = path.join(base, "sentinel-meta.json");
+  await fs.writeFile(metaPath, JSON.stringify({ version: 1, meta }));
+  vi.stubEnv(UPDATE_RUN_ID_ENV, created.runId);
+  vi.stubEnv(CONTROL_PLANE_UPDATE_SENTINEL_META_ENV, metaPath);
+  const run = await admitUpdateCommandRun({ opts: { json: true }, root: base });
+  expect(run.completionOwner).toBe("gateway-restart");
+  run.gatewayRestartRequired = true;
+  await withUpdateCommandTerminalResult(async (registerRun) => {
+    registerRun(run);
+    await withUpdateCommandExecutor(run.runId, async (executor) => {
+      run.executorFence = await executor.enter(base);
+      await finishSuccessfulPackageSwitch(
+        { packageRoot: base, run, json: true },
+        {
+          shouldRestart: false,
+          installKindChanged: false,
+          downgradeRisk: false,
+          controlPlaneUpdateSentinelMeta: meta,
+          result: {
+            status: "ok",
+            mode: "git",
+            root: base,
+            before: { version: "1.0.0", sha: "aaa" },
+            after: { version: VERSION, sha: "bbb" },
+            steps: [],
+            durationMs: 0,
+          },
+        },
+      );
+    });
+  });
+  expect(jsonOutput).toHaveLength(1);
+  expect(jsonOutput[0]).toMatchObject({ runId: run.runId, status: "ok" });
+  expect(getUpdateRun(run.runId)).toMatchObject({
+    trigger: "api",
+    status: "running",
+    phase: "restarting",
+    after: { version: VERSION },
+  });
+  const sentinel = await readRestartSentinel();
+  expect(sentinel?.payload).toMatchObject({
+    kind: "update",
+    status: "ok",
+    stats: { runId: run.runId },
+  });
+  expect(sentinel?.payload.stats?.handoffId).toBeUndefined();
+  if (!sentinel) throw new Error("Expected the canonical final sentinel");
+  await finalizeRestartUpdateRun(sentinel.payload);
+  expect(getUpdateRun(run.runId)).toMatchObject({
+    status: "succeeded",
+    verification: { booted: true, serviceRunning: true, versionMatch: true },
+  });
+});
+
+it.each([
+  { status: "error" as const, reason: "build-failed", expected: "failed" },
+  { status: "skipped" as const, reason: "already-current", expected: "skipped" },
+  { status: "ok" as const, reason: undefined, expected: "succeeded" },
+])(
+  "terminalizes the foreground $expected outcome without waiting for restart",
+  async ({ status, reason, expected }) => {
+    const { completeUpdateCommandRun } = await import("./update-command-run.js");
+    const created = createUpdateRun({ trigger: "api" });
+    completeUpdateCommandRun(
+      {
+        status,
+        reason,
+        mode: "git",
+        root: base,
+        before: { sha: "aaa" },
+        after: { sha: "aaa" },
+        steps: [],
+        durationMs: 0,
+      },
+      { runId: created.runId, env: { ...process.env }, completionOwner: "gateway-restart" },
+    );
+    expect(getUpdateRun(created.runId)).toMatchObject({
+      status: expected,
+      phase: "finished",
+      ...(reason ? { reason } : {}),
+    });
+  },
+);

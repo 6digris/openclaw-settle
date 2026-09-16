@@ -7,8 +7,10 @@ import type {
   WithDistArtifactOwnership,
 } from "../../../scripts/lib/runtime-artifact-contract.js";
 import { hasErrnoCode } from "../../infra/errno.js";
+import { formatErrorMessage } from "../../infra/errors.js";
 import { resolveUpdateInstallKind } from "../../infra/update-check.js";
 import type { PluginLifecycleLeaseContext } from "../../plugins/plugin-lifecycle-lease.js";
+import { UpdatePreMutationError } from "./shared.js";
 import { withGatewayRuntimeArtifactPublication } from "./update-command-service-maintenance.js";
 
 type SourceRuntimeStaging = { prepareBundledPluginRuntime: PrepareBundledPluginRuntime };
@@ -28,6 +30,7 @@ export async function completeSourceUpdateRuntime(params: {
   timeoutMs: number;
   lease: PluginLifecycleLeaseContext;
   beforePersistentEffect?: () => void | Promise<void>;
+  beforePublication?: () => Promise<void>;
 }): Promise<{ changed: boolean }> {
   params.lease.assertOwned();
   const installKind = await resolveUpdateInstallKind(params.root, {
@@ -84,6 +87,13 @@ export async function completeSourceUpdateRuntime(params: {
     try {
       params.lease.assertOwned();
       if (prepared.changed) {
+        if (params.beforePublication && prepared.originalsIntact !== true) {
+          throw new Error(
+            "Installed source runtime cannot attest original restoration before parking Gateways. Stop the affected Gateways through their service owners and retry.",
+          );
+        }
+        await params.beforePublication?.();
+        params.lease.assertOwned();
         await withGatewayRuntimeArtifactPublication(
           {
             root,
@@ -101,18 +111,29 @@ export async function completeSourceUpdateRuntime(params: {
         );
       }
     } catch (error) {
+      let failure = error;
       try {
         await prepared.cleanup();
       } catch (cleanupError) {
-        throw new AggregateError(
+        failure = new AggregateError(
           [error, cleanupError],
           "Runtime completion and staging cleanup failed.",
-          {
-            cause: cleanupError,
-          },
+          { cause: cleanupError },
         );
       }
-      throw error;
+      if (prepared.originalsIntact === true) {
+        throw new UpdatePreMutationError(
+          "runtime-artifact-publication",
+          formatErrorMessage(failure),
+          { cause: failure },
+        );
+      }
+      // Older generators cannot attest restoration after a failed publication.
+      // Their nested pre-mutation refusal must not grant restart authority.
+      if (failure instanceof UpdatePreMutationError) {
+        throw new Error(failure.message, { cause: failure });
+      }
+      throw failure;
     }
     await prepared.cleanup();
     return { changed: prepared.changed };

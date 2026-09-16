@@ -1,7 +1,7 @@
 import { readGatewayServiceState, resolveGatewayService } from "../../daemon/service.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { recordUpdateRunStep } from "../../infra/update-run-ledger.js";
-import type { UpdateRunResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import type { UpdateCommandOptions } from "./shared.js";
 import { appendPluginUpdateWarnings } from "./update-command-plugins-internals.js";
 import { runUpdateCommandRepair } from "./update-command-repair.js";
@@ -20,6 +20,7 @@ export async function repairUpdateService(params: {
   root: string;
   env: NodeJS.ProcessEnv;
   opts: UpdateCommandOptions;
+  recordGatewayVerification?: boolean;
   gatewayPort: number;
   nodeRunner?: string;
   timeoutMs: number;
@@ -83,6 +84,7 @@ export async function repairUpdateService(params: {
         verifyUpdatedGateway({
           result: params.result,
           opts: params.opts,
+          recordGatewayVerification: params.recordGatewayVerification,
           serviceEnv: params.env,
           gatewayPort: params.gatewayPort,
           timeoutMs: params.timeoutMs,

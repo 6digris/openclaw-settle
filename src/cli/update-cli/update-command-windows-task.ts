@@ -2,6 +2,7 @@ import {
   resumeScheduledTaskAutoStartAfterUpdate,
   suspendScheduledTaskAutoStartForUpdate,
 } from "../../daemon/schtasks.js";
+import { formatErrorMessage } from "../../infra/errors.js";
 import { finishUpdateRun } from "../../infra/update-run-ledger.js";
 import { defaultRuntime } from "../../runtime.js";
 import {
@@ -30,6 +31,33 @@ export type WindowsTaskAutoStartRecovery = {
   complete: (restartSafe?: boolean) => Promise<void>;
   interrupted: () => boolean;
 };
+
+export async function completeWindowsTaskAutoStartRecoveries(
+  recoveries: readonly (WindowsTaskAutoStartRecovery | undefined)[],
+  restartSafe: boolean | ((index: number) => boolean),
+  assertCurrent?: () => void,
+): Promise<void> {
+  const failures: unknown[] = [];
+  for (const [index, recovery] of recoveries.entries()) {
+    assertCurrent?.();
+    try {
+      if (recovery) {
+        await recovery.complete(
+          typeof restartSafe === "function" ? restartSafe(index) : restartSafe,
+        );
+      }
+    } catch (cause) {
+      failures.push(cause);
+    }
+    assertCurrent?.();
+  }
+  if (failures.length === 1) {
+    throw failures[0];
+  }
+  if (failures.length > 1) {
+    throw new AggregateError(failures, failures.map(formatErrorMessage).join("; "));
+  }
+}
 
 export function createWindowsTaskAutoStartRecovery(params: {
   serviceEnv: NodeJS.ProcessEnv;

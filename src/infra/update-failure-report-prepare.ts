@@ -28,7 +28,7 @@ import {
 import type { UpdateRunRecord } from "./update-run-record.js";
 import { readUpdateRunReportHealth } from "./update-run-report-health.js";
 import { formatUpdateRunCurrentHealth, formatUpdateRunIdentity } from "./update-run-report.js";
-import type { UpdateRunResult, UpdateStepResult } from "./update-runner.js";
+import type { UpdateRunResult, UpdateStepResult } from "./update-runner-types.js";
 
 const UPDATE_REPORT_BODY_MAX_BYTES = 16_000;
 const UPDATE_REPORT_FIELD_MAX_BYTES = 512;

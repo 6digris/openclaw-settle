@@ -230,7 +230,7 @@ describe("restart sentinel notice recovery", () => {
       ).toEqual(
         destination === "owner"
           ? [
-              "⬆️ Updating OpenClaw 2026.9.1 → 2026.9.2. The gateway stays available while the update is validated; you'll get a message here when it finishes.",
+              "⬆️ Updating OpenClaw 2026.9.1 → 2026.9.2. You'll get a message here when it finishes.",
               "⏳ Restarting the gateway now (v2026.9.1 → v2026.9.2)…",
               "🔁 Back on v2026.9.2, verifying…",
               renderUpdateRunReport(run).markdown,

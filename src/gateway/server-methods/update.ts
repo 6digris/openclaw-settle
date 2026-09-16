@@ -6,8 +6,12 @@ import { validateUpdateRunParams } from "../../../packages/gateway-protocol/src/
 import { isConfiguredCommandOwner } from "../../auto-reply/command-auth.js";
 import { formatCommandOwnerHint } from "../../commands/doctor-command-owner.js";
 import { isRestartEnabled } from "../../config/commands.flags.js";
+import { resolveConfigPath } from "../../config/paths.js";
 import { extractDeliveryInfo } from "../../config/sessions.js";
+import { resolveGatewayInstallEntrypoint } from "../../daemon/gateway-entrypoint.js";
+import { resolvePathViaExistingAncestorSync } from "../../infra/boundary-path.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { readGatewayOwnerLease } from "../../infra/gateway-owner-lease.js";
 import {
   EXTERNAL_SUPERVISOR_UPDATE_REQUIRED_REASON,
   isGatewayExternallySupervised,
@@ -35,36 +39,28 @@ import { devUpdateTargetFromGitTarget } from "../../infra/update-dev-target.js";
 import { FreeBsdPkgOwnershipError } from "../../infra/update-freebsd-pkg-ownership.js";
 import { resolveUpdateInstallRoot } from "../../infra/update-install-root.js";
 import {
-  buildManagedServiceHandoffUnavailableMessage,
   cancelManagedServiceUpdateHandoff,
   transferManagedServiceUpdateHandoff,
-  formatManagedServiceUpdateCommand,
   startManagedServiceUpdateHandoff,
 } from "../../infra/update-managed-service-handoff.js";
 import {
-  foldPostCoreFinalizeIntoResult,
-  readPreUpdateConfigForPostCoreFinalize,
-  runPostCoreFinalizeAfterGatewayUpdate,
-} from "../../infra/update-post-core-finalize.js";
-import {
   buildUpdateRestartSentinelPayload,
-  normalizeControlPlaneUpdateResult,
   type UpdateRestartSentinelMeta,
+  type ForegroundUpdateOrigin,
 } from "../../infra/update-restart-sentinel-payload.js";
 import {
-  adoptUpdateRun,
   createUpdateRun,
   finishUpdateRun,
   getUpdateRun,
-  heartbeatUpdateRun,
   recordUpdateRunPhase,
   recordUpdateRunStep,
   recordUpdateRunVerification,
 } from "../../infra/update-run-ledger.js";
 import { renderUpdateRunNotice } from "../../infra/update-run-report.js";
-import { updateRunStepsFromResultStep } from "../../infra/update-run-step.js";
-import { runGatewayUpdate, runGatewayUpdatePreflight } from "../../infra/update-runner.js";
+import { resolveUnmanagedUpdateInstallReason } from "../../infra/update-runner-install-surface.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import { getUpdateAvailable } from "../../infra/update-startup.js";
+import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { mergeDeliveryContext } from "../../utils/delivery-context.shared.js";
 import {
   INTERNAL_MESSAGE_CHANNEL,
@@ -159,7 +155,7 @@ export const updateHandlers: GatewayRequestHandlers = {
     });
     wakeUpdateRunWatcher();
 
-    let result: Awaited<ReturnType<typeof runGatewayUpdate>>;
+    let result: UpdateRunResult;
     let handoff:
       | { status: "started"; pid?: number; command: string }
       | { status: "already-running" | "unavailable"; command: string; message: string }
@@ -232,7 +228,7 @@ export const updateHandlers: GatewayRequestHandlers = {
         outcome: "error" | "skipped",
         reason: string,
         beforeVersion?: string | null,
-      ): Awaited<ReturnType<typeof runGatewayUpdate>> => ({
+      ): UpdateRunResult => ({
         status: outcome,
         mode: installSurface.mode,
         ...(installRoot ? { root: installRoot } : {}),
@@ -325,19 +321,34 @@ export const updateHandlers: GatewayRequestHandlers = {
         ackQueued = ack.owned;
         return true;
       };
-      const supervisor = detectRespawnSupervisor(process.env, process.platform, {
+      const detectedSupervisor = detectRespawnSupervisor(process.env, process.platform, {
         includeLinuxOpenClawGatewayServiceMarker: true,
       });
-      const requiresManagedServiceHandoff =
-        installSurface.kind === "global" || (installSurface.kind === "git" && supervisor !== null);
-      const managedGitPreflightFailure =
-        !targetFailureReason &&
-        installSurface.kind === "git" &&
-        effectiveChannel === "dev" &&
-        supervisor &&
-        !isGatewayExternallySupervised()
-          ? await runGatewayUpdatePreflight(installRoot, timeoutMs, devTarget)
+      const gatewayOwner = readGatewayOwnerLease({ current: true });
+      const foregroundOrigin: ForegroundUpdateOrigin | undefined =
+        gatewayOwner?.mode === "foreground" &&
+        gatewayOwner.state === "live" &&
+        gatewayOwner.pid === process.pid &&
+        gatewayOwner.startedAt !== null
+          ? {
+              owner: gatewayOwner.owner,
+              pid: gatewayOwner.pid,
+              host: gatewayOwner.host,
+              startedAt: gatewayOwner.startedAt,
+              port: gatewayOwner.port,
+              stateDatabasePath: resolvePathViaExistingAncestorSync(
+                resolveOpenClawStateSqlitePath(),
+              ),
+              configPath: resolvePathViaExistingAncestorSync(resolveConfigPath()),
+            }
           : undefined;
+      const supervisor = foregroundOrigin ? null : detectedSupervisor;
+      const handoffChannel =
+        installSurface.kind === "git"
+          ? undefined
+          : effectiveChannel === "extended-stable"
+            ? effectiveChannel
+            : (configChannel ?? undefined);
       if (targetFailureReason) {
         result = refusedUpdate("error", targetFailureReason);
       } else if (installSurface.kind === "missing") {
@@ -349,8 +360,12 @@ export const updateHandlers: GatewayRequestHandlers = {
           EXTERNAL_SUPERVISOR_UPDATE_REQUIRED_REASON,
           beforeVersion,
         );
-      } else if (configChannel === "extended-stable" && installSurface.kind === "git") {
-        result = refusedUpdate("error", "unsupported_git_channel");
+      } else if (installSurface.kind === "package-root") {
+        result = refusedUpdate(
+          "skipped",
+          resolveUnmanagedUpdateInstallReason(),
+          await readPackageVersion(installSurface.root),
+        );
       } else if (!isRestartEnabled(config) && !supervisor) {
         // Package updates need a restart path to finish safely. Dev/git installs
         // can report the disabled restart directly, but global installs must not
@@ -363,202 +378,154 @@ export const updateHandlers: GatewayRequestHandlers = {
           installSurface.kind === "global" ? "restart-unavailable" : "restart-disabled",
           beforeVersion,
         );
-      } else if (managedGitPreflightFailure) {
-        result = managedGitPreflightFailure;
-      } else if (requiresManagedServiceHandoff) {
+      } else {
         if (!installRoot) {
           throw new Error("managed update install root is unavailable");
         }
-        const handoffChannel =
-          installSurface.kind === "git"
-            ? undefined
-            : effectiveChannel === "extended-stable"
-              ? effectiveChannel
-              : (configChannel ?? undefined);
-        const command = formatManagedServiceUpdateCommand({
-          timeoutMs,
-          ...(handoffChannel ? { channel: handoffChannel } : {}),
-          ...(adoptedPackageTargetVersion ? { tag: adoptedPackageTargetVersion } : {}),
-        });
-        if (supervisor) {
-          try {
-            const beforeVersion = await readPackageVersion(installRoot);
-            const startedAt = Date.now();
-            const handoffId = randomUUID();
-            sentinelMeta.handoffId = handoffId;
-            sentinelMeta.root = resolveUpdateInstallRoot(installRoot);
-            // Await delivery under root RPC admission before the helper can park this process.
-            if (!(await acknowledgeUpdate(beforeVersion))) {
-              return;
-            }
-            // Recheck after the awaited acknowledgement, immediately before the effect.
-            const refusal = refuseUnauthorizedChatUpdate();
-            if (refusal) {
-              if (ackDelivered || ackQueued) {
-                await notify(refusal, "finished");
-              }
-              return;
-            }
-            const started = await startManagedServiceUpdateHandoff({
-              runId,
-              beforePark: async () => {
-                // Parking and stop completion preserve the phase so the updater can record staging/validation.
-                const current = getUpdateRun(runId);
-                if (!current) {
-                  throw new Error("Update run disappeared before managed Gateway parking.");
-                }
-                await notify(current, current.phase === "requested" ? "parking" : "activating");
-              },
-              requester: params.requester,
-              root: installRoot,
-              timeoutMs,
-              restartDrainTimeoutMs: resolveGatewayRestartDeferralTimeoutMs(),
-              restartDelayMs: requestedRestartDelayMs === undefined ? 0 : restartDelayMs,
-              ...(handoffChannel ? { channel: handoffChannel } : {}),
-              ...(adoptedPackageTargetVersion ? { tag: adoptedPackageTargetVersion } : {}),
-              ...(devTarget ? { devTarget } : {}),
-              meta: sentinelMeta,
-              handoffId,
-              supervisor,
-            });
-            ownsUpdateOutcome = started.status === "started";
-            sentinelMeta.handoffId = started.handoffId ?? handoffId;
-            // Transfer follows sentinel persistence; validation keeps this Gateway serving.
-            if (started.status === "started") {
-              handoff = {
-                status: "started",
-                ...(started.pid ? { pid: started.pid } : {}),
-                command: started.command,
-              };
-              managedHandoffOwner = {
-                kind: "managed-update-handoff",
-                handoffId: started.handoffId,
-                installRoot: started.installRoot,
-              };
-              recordUpdateRunStep(runId, {
-                step: "managed-service update handoff",
-                status: "completed",
-                startedAtMs: startedAt,
-                endedAtMs: Date.now(),
-              });
-            } else {
-              // A restart sentinel has one continuation owner. Reject this RPC
-              // instead of accepting metadata that the active handoff cannot persist.
-              handoff = {
-                status: "already-running",
-                command: started.command,
-                message: "Another managed update is already running; retry after it completes.",
-              };
-            }
-            result = {
-              status: "skipped",
-              mode: installSurface.mode,
-              root: installRoot,
-              reason: ownsUpdateOutcome
-                ? CONTROL_PLANE_UPDATE_HANDOFF_STARTED_REASON
-                : MANAGED_HANDOFF_ALREADY_RUNNING_REASON,
-              ...(beforeVersion ? { before: { version: beforeVersion } } : {}),
-              steps: ownsUpdateOutcome
-                ? [
-                    {
-                      name: "managed-service update handoff",
-                      command: started.command,
-                      cwd: installRoot,
-                      durationMs: Date.now() - startedAt,
-                      exitCode: null,
-                    },
-                  ]
-                : [],
-              durationMs: Date.now() - startedAt,
-            };
-          } catch (err) {
-            context?.logGateway?.warn(
-              `update.run managed-service handoff failed ${formatControlPlaneActor(actor)} error=${formatErrorMessage(err)}`,
-            );
-            result = recordHandoffFailure(
-              runId,
-              err,
-              refusedUpdate("error", "managed-service-handoff-failed"),
-            );
-          }
-        } else {
+        if (!supervisor && !foregroundOrigin) {
+          throw new Error("The current foreground Gateway owner could not be verified.");
+        }
+        try {
           const beforeVersion = await readPackageVersion(installRoot);
-          handoff = {
-            status: "unavailable",
-            command,
-            message: buildManagedServiceHandoffUnavailableMessage(command),
-          };
-          result = refusedUpdate("skipped", "managed-service-handoff-unavailable", beforeVersion);
-        }
-      } else {
-        const preUpdateConfig =
-          installSurface.kind === "git"
-            ? await readPreUpdateConfigForPostCoreFinalize().catch((err: unknown) => {
-                context?.logGateway?.warn(
-                  `update.run could not capture pre-update config ${formatControlPlaneActor(actor)} error=${formatErrorMessage(err)}`,
-                );
-                return undefined;
-              })
+          const foregroundEntrypoint = foregroundOrigin
+            ? await resolveGatewayInstallEntrypoint(installRoot)
             : undefined;
-        // This unsupervised path must not let Doctor terminate the RPC server.
-        // Load delivery before a package swap rotates dist chunk hashes.
-        if (!(await acknowledgeUpdate(await readPackageVersion(installSurface.root)))) {
-          return;
-        }
-        // Recheck after the awaited acknowledgement, immediately before the effect.
-        const refusal = refuseUnauthorizedChatUpdate();
-        if (refusal) {
-          if (ackDelivered || ackQueued) {
-            await notify(refusal, "finished");
+          if (foregroundOrigin && !foregroundEntrypoint) {
+            throw new Error("The foreground installation's update entrypoint is unavailable.");
           }
-          return;
-        }
-        const driver = adoptUpdateRun(runId).origin.driver;
-        recordUpdateRunPhase(runId, "staging");
-        result = await runGatewayUpdate({
-          runId,
-          progress: {
-            onHeartbeat: () => heartbeatUpdateRun(runId, driver),
-            onStepStart: (step) =>
-              recordUpdateRunStep(runId, {
-                step: step.name,
-                status: "in_progress",
-                startedAtMs: Date.now(),
-              }),
-            onStepComplete: (step) => {
-              for (const entry of updateRunStepsFromResultStep(step)) {
-                recordUpdateRunStep(runId, { ...entry, endedAtMs: Date.now() });
+          const startedAt = Date.now();
+          const handoffId = randomUUID();
+          sentinelMeta.handoffId = handoffId;
+          sentinelMeta.root = resolveUpdateInstallRoot(installRoot);
+          if (foregroundOrigin) {
+            sentinelMeta.completionOwner = "gateway-restart";
+            sentinelMeta.foregroundOrigin = foregroundOrigin;
+          }
+          // Await delivery under root RPC admission before the helper can park this process.
+          if (!(await acknowledgeUpdate(beforeVersion))) {
+            return;
+          }
+          // Recheck after the awaited acknowledgement, immediately before the effect.
+          const refusal = refuseUnauthorizedChatUpdate();
+          if (refusal) {
+            if (ackDelivered || ackQueued) {
+              await notify(refusal, "finished");
+            }
+            return;
+          }
+          const started = await startManagedServiceUpdateHandoff({
+            runId,
+            beforePark: async () => {
+              const assertMayPark = () => {
+                const current = getUpdateRun(runId);
+                if (current?.status !== "running") {
+                  throw new Error("Update run disappeared before Gateway parking.");
+                }
+                if (foregroundOrigin) {
+                  const config = getConfig();
+                  if (
+                    !managedHandoffOwner ||
+                    !isRestartEnabled(config) ||
+                    (params.requester?.channel &&
+                      !isInternalMessageChannel(params.requester.channel) &&
+                      !isConfiguredCommandOwner(config, params.requester))
+                  ) {
+                    throw new Error("Foreground update authority changed before parking.");
+                  }
+                }
+                return current;
+              };
+              const current = assertMayPark();
+              await notify(current, current.phase === "requested" ? "parking" : "activating");
+              assertMayPark();
+              if (foregroundOrigin) {
+                scheduleGatewaySigusr1Restart({
+                  delayMs: 0,
+                  reason: "update.run",
+                  successorOwner: managedHandoffOwner,
+                  audit: {
+                    actor: actor.actor,
+                    deviceId: actor.deviceId,
+                    clientIp: actor.clientIp,
+                    changedPaths: [],
+                  },
+                });
               }
             },
-          },
-          timeoutMs,
-          cwd: installSurface.root,
-          channel:
-            installSurface.kind === "git"
-              ? (configChannel ?? undefined)
-              : effectiveChannel === "extended-stable"
-                ? effectiveChannel
-                : (configChannel ?? undefined),
-          ...(adoptedPackageTargetVersion ? { tag: adoptedPackageTargetVersion } : {}),
-          ...(devTarget ? { devTarget } : {}),
-          allowGatewayServiceRepair: false,
-          allowGatewayActivation: false,
-        });
-        // Match CLI post-core convergence so official plugins do not remain stale.
-        recordUpdateRunPhase(runId, "validating");
-        const finalizeOutcome = await runPostCoreFinalizeAfterGatewayUpdate({
-          result,
-          channel: configChannel ?? undefined,
-          serviceRepairPolicy: "external",
-          ...(timeoutMs === undefined ? {} : { timeoutMs }),
-          ...(preUpdateConfig ? { preUpdateConfig } : {}),
-        });
-        if (finalizeOutcome.status === "error") {
+            requester: params.requester,
+            root: installRoot,
+            timeoutMs,
+            restartDrainTimeoutMs: resolveGatewayRestartDeferralTimeoutMs(),
+            restartDelayMs: requestedRestartDelayMs === undefined ? 0 : restartDelayMs,
+            ...(handoffChannel ? { channel: handoffChannel } : {}),
+            ...(adoptedPackageTargetVersion ? { tag: adoptedPackageTargetVersion } : {}),
+            ...(devTarget ? { devTarget } : {}),
+            meta: sentinelMeta,
+            handoffId,
+            supervisor,
+            ...(foregroundOrigin ? { foregroundOrigin, argv1: foregroundEntrypoint } : {}),
+          });
+          ownsUpdateOutcome = started.status === "started";
+          sentinelMeta.handoffId = started.handoffId ?? handoffId;
+          // Transfer follows sentinel persistence; validation keeps this Gateway serving.
+          if (started.status === "started") {
+            handoff = {
+              status: "started",
+              ...(started.pid ? { pid: started.pid } : {}),
+              command: started.command,
+            };
+            managedHandoffOwner = {
+              kind: "managed-update-handoff",
+              handoffId: started.handoffId,
+              installRoot: started.installRoot,
+            };
+            recordUpdateRunStep(runId, {
+              step: "managed-service update handoff",
+              status: "completed",
+              exitCode: null,
+              startedAtMs: startedAt,
+              endedAtMs: Date.now(),
+            });
+          } else {
+            // A restart sentinel has one continuation owner. Reject this RPC
+            // instead of accepting metadata that the active handoff cannot persist.
+            handoff = {
+              status: "already-running",
+              command: started.command,
+              message: "Another managed update is already running; retry after it completes.",
+            };
+          }
+          result = {
+            status: "skipped",
+            mode: installSurface.mode,
+            root: installRoot,
+            reason: ownsUpdateOutcome
+              ? CONTROL_PLANE_UPDATE_HANDOFF_STARTED_REASON
+              : MANAGED_HANDOFF_ALREADY_RUNNING_REASON,
+            ...(beforeVersion ? { before: { version: beforeVersion } } : {}),
+            steps: ownsUpdateOutcome
+              ? [
+                  {
+                    name: "managed-service update handoff",
+                    command: started.command,
+                    cwd: installRoot,
+                    durationMs: Date.now() - startedAt,
+                    exitCode: null,
+                  },
+                ]
+              : [],
+            durationMs: Date.now() - startedAt,
+          };
+        } catch (err) {
           context?.logGateway?.warn(
-            `update.run post-core plugin finalize failed ${formatControlPlaneActor(actor)} reason=${finalizeOutcome.reason}`,
+            `update.run managed-service handoff failed ${formatControlPlaneActor(actor)} error=${formatErrorMessage(err)}`,
+          );
+          result = recordHandoffFailure(
+            runId,
+            err,
+            refusedUpdate("error", "managed-service-handoff-failed"),
           );
         }
-        result = foldPostCoreFinalizeIntoResult(result, finalizeOutcome);
       }
     } catch (error) {
       if (error instanceof FreeBsdPkgOwnershipError) {
@@ -574,39 +541,18 @@ export const updateHandlers: GatewayRequestHandlers = {
       };
     }
 
-    result = normalizeControlPlaneUpdateResult(result);
-    if (result.status === "ok") {
-      const activating = recordUpdateRunPhase(runId, "activating", {
-        before: result.before,
-        after: result.after,
-      });
-      await notify(activating, "activating");
-    }
-    let outcomeRun = recordUpdateRunPhase(
-      runId,
-      result.status === "ok" ? "restarting" : "requested",
-      {
-        before: result.before,
-        after: result.after,
-        ...(outcomeMessage
-          ? { origin: { nextAction: outcomeMessage } }
-          : handoff && "message" in handoff
-            ? { origin: { nextAction: handoff.message } }
-            : {}),
-      },
-    );
-    for (const step of result.steps) {
-      for (const entry of updateRunStepsFromResultStep(step)) {
-        if (entry.step === step.name && step.exitCode === null && result.status !== "error") {
-          entry.status = "completed";
-          delete entry.detail;
-        }
-        recordUpdateRunStep(runId, entry);
-      }
-    }
+    let outcomeRun = recordUpdateRunPhase(runId, "requested", {
+      before: result.before,
+      after: result.after,
+      ...(outcomeMessage
+        ? { origin: { nextAction: outcomeMessage } }
+        : handoff && "message" in handoff
+          ? { origin: { nextAction: handoff.message } }
+          : {}),
+    });
     // A managed orchestrator or the replacement Gateway owns terminal success;
     // refusals and synchronous failures have no later process to finish the run.
-    if (result.status !== "ok" && handoff?.status !== "started") {
+    if (handoff?.status !== "started") {
       outcomeRun = finishUpdateRun(runId, {
         status: result.status === "skipped" ? "skipped" : "failed",
         reason: result.reason,
@@ -614,15 +560,15 @@ export const updateHandlers: GatewayRequestHandlers = {
       });
     }
 
+    // Rejected requests and retired campaigns cannot replace another update's outcome.
+    if (ownsUpdateOutcome && adoptedCampaignId !== undefined) {
+      ownsUpdateOutcome = gatewayUpdateCampaign.getState()?.id === adoptedCampaignId;
+    }
     const payload: RestartSentinelPayload = buildUpdateRestartSentinelPayload({
       result,
       meta: sentinelMeta,
     });
 
-    // Rejected requests and retired campaigns cannot replace another update's outcome.
-    if (ownsUpdateOutcome && adoptedCampaignId !== undefined) {
-      ownsUpdateOutcome = gatewayUpdateCampaign.getState()?.id === adoptedCampaignId;
-    }
     let sentinelPersisted = false;
     if (ownsUpdateOutcome) {
       try {
@@ -630,18 +576,7 @@ export const updateHandlers: GatewayRequestHandlers = {
         sentinelPersisted = true;
         recordLatestUpdateRestartSentinel(payload);
       } catch {
-        if (result.status === "ok" && handoff?.status !== "started") {
-          outcomeMessage =
-            "The update was installed, but its restart notice could not be saved. Run openclaw update status after the gateway restarts.";
-          recordUpdateRunPhase(runId, "restarting", {
-            origin: { nextAction: outcomeMessage },
-          });
-          outcomeRun = finishUpdateRun(runId, {
-            status: "failed",
-            reason: "unexpected-error",
-            after: result.after,
-          });
-        }
+        // Transfer below cancels an updater whose accepted notice could not be saved.
       }
     }
 
@@ -672,7 +607,6 @@ export const updateHandlers: GatewayRequestHandlers = {
     // read it. Recheck ownership after persistence may have yielded to a replacement.
     if (
       ownsUpdateOutcome &&
-      result.status !== "ok" &&
       handoff?.status !== "started" &&
       adoptedCampaignId !== undefined &&
       gatewayUpdateCampaign.getState()?.id === adoptedCampaignId
@@ -683,49 +617,24 @@ export const updateHandlers: GatewayRequestHandlers = {
       });
     }
 
-    // Failed installs can leave a broken runtime; restart only after success.
-    const updateWasPackageSwap = result.status === "ok" && result.mode !== "git";
-    const restart =
-      result.status === "ok"
-        ? scheduleGatewaySigusr1Restart({
-            delayMs: updateWasPackageSwap ? 0 : restartDelayMs,
-            reason: "update.run",
-            // Package swaps should restart without waiting for normal
-            // deferral/cooldown windows; the new code is already staged.
-            skipDeferral: updateWasPackageSwap,
-            skipCooldown: updateWasPackageSwap,
-            audit: {
-              actor: actor.actor,
-              deviceId: actor.deviceId,
-              clientIp: actor.clientIp,
-              changedPaths: [],
-            },
-          })
-        : null;
-    if ((ackDelivered || ackQueued) && result.status !== "ok" && handoff?.status !== "started") {
+    if ((ackDelivered || ackQueued) && handoff?.status !== "started") {
       await notify(outcomeRun, "finished");
     }
     context?.logGateway?.info(
       `update.run completed ${formatControlPlaneActor(actor)} changedPaths=<n/a> restartReason=update.run status=${result.status}`,
     );
-    if (restart?.coalesced) {
-      context?.logGateway?.warn(
-        `update.run restart coalesced ${formatControlPlaneActor(actor)} delayMs=${restart.delayMs}`,
-      );
-    }
-
     respond(
       true,
       {
         runId,
-        ok: result.status === "ok" || handoff?.status === "started",
+        ok: handoff?.status === "started",
         ackDelivered,
         ackQueued,
         acknowledgement,
         ...(outcomeMessage ? { message: outcomeMessage } : {}),
         result,
         ...(handoff ? { handoff } : {}),
-        restart,
+        restart: null,
         sentinel: {
           persisted: sentinelPersisted,
           payload,

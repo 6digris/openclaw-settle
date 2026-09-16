@@ -45,6 +45,7 @@ vi.mock("../cli/update-cli/update-command-terminal.js", () => ({
     run(vi.fn()),
 }));
 vi.mock("../cli/update-cli/update-command-windows-task.js", () => ({
+  completeWindowsTaskAutoStartRecoveries: vi.fn(),
   createWindowsTaskAutoStartRecovery: vi.fn(),
 }));
 vi.mock("../state/openclaw-state-db.js", () => ({

@@ -5,11 +5,8 @@ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js"
 import * as container from "../../infra/container-environment.js";
 import { prepareUpdateFailureReport } from "../../infra/update-failure-report-prepare.js";
 import { listUpdateRuns } from "../../infra/update-run-ledger.js";
-import {
-  renderUpdateRunReport,
-  updateRunReportInputFromResult,
-} from "../../infra/update-run-report.js";
-import { runGatewayUpdate } from "../../infra/update-runner.js";
+import { renderUpdateRunReport } from "../../infra/update-run-report.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import * as processRunner from "../../process/exec.js";
 import { defaultRuntime } from "../../runtime.js";
 import { isReportableUpdateRun } from "../../shared/update-outcome.js";
@@ -105,6 +102,13 @@ it.each([
     });
     expect(renderUpdateRunReport(run).markdown).toContain(action);
     expect(isReportableUpdateRun(run)).toBe(false);
+    await expect(
+      prepareUpdateFailureReport({
+        attemptId: run.runId,
+        // SAFETY: Captured from the real CLI JSON publisher and checked above.
+        result: output[0] as UpdateRunResult,
+      }),
+    ).rejects.toThrow("Only a final failed update");
     expect(output[0]).toMatchObject({ runId: run.runId, run: { origin: run.origin } });
     expect(triage).not.toHaveBeenCalled();
     await expect(fs.readFile(path.join(root, "package.json"), "utf8")).resolves.toContain(
@@ -144,26 +148,4 @@ it("renders the container non-outcome in terminal output", async () => {
   expect(lines.join("\n")).toContain("Pull or build");
   expect(lines.join("\n")).not.toContain("rollback");
   expect(triage).not.toHaveBeenCalled();
-});
-
-it("keeps the Git runner's untouched container result out of failure reports", async () => {
-  vi.spyOn(container, "isContainerEnvironment").mockReturnValue(true);
-  const result = await runGatewayUpdate({
-    cwd: root,
-    argv1: path.join(root, "openclaw.mjs"),
-    runCommand: processRunner.runCommandWithTimeout,
-  });
-  expect(result).toMatchObject({
-    status: "skipped",
-    mode: "unknown",
-    reason: "container-image-install",
-    steps: [],
-  });
-  expect(result.recovery).toBeUndefined();
-  expect(renderUpdateRunReport(updateRunReportInputFromResult(result)).markdown).toContain(
-    "Pull or build",
-  );
-  await expect(
-    prepareUpdateFailureReport({ attemptId: "untouched-container", result }),
-  ).rejects.toThrow("Only a final failed update");
 });

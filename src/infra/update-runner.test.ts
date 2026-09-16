@@ -3,23 +3,26 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { runPackageUpdateDoctor } from "../cli/update-cli/update-command-package.js";
 import * as processExec from "../process/exec.js";
 import { createSuiteTempRootTracker } from "../test-helpers/temp-dir.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { withMockedWindowsPlatform } from "../test-utils/vitest-spies.js";
 import { pathExists } from "../utils.js";
-import * as container from "./container-environment.js";
 import { resolveStableNodePath } from "./stable-node-path.js";
 import type { UpdateChannel } from "./update-channels.js";
 import type { DevUpdateTarget } from "./update-dev-target.js";
 import { renderUpdateRunReport, updateRunReportInputFromResult } from "./update-run-report.js";
+import { buildUpdateCommandRunner } from "./update-runner-command.js";
 import { buildUpdateDoctorEnv } from "./update-runner-doctor.js";
-import {
-  resolveUpdateDoctorExecutionPolicy,
-  resolveUpdateInstallSurface,
-  runGatewayUpdate,
-  runGatewayUpdatePreflight,
-} from "./update-runner.js";
+import { resolveUpdateDoctorExecutionPolicy } from "./update-runner-doctor.js";
+import { updateGitCheckout } from "./update-runner-git.js";
+import { resolveUpdateInstallSurface } from "./update-runner-install-surface.js";
+import type {
+  CommandRunner,
+  UpdateRunnerOptions,
+  UpdateStepProgress,
+} from "./update-runner-types.js";
 
 const { runCommandWithTimeout } = processExec;
 const execFileSyncMock = vi.hoisted(() => vi.fn(() => "/tmp/openclaw-test-global-npmrc\n"));
@@ -136,7 +139,7 @@ describe("resolveUpdateDoctorExecutionPolicy", () => {
   );
 });
 
-describe("runGatewayUpdate", () => {
+describe("updateGitCheckout", () => {
   const preflightPrefixPattern = /(?:openclaw-update-preflight-|ocu-pf-)/;
 
   let tempDir: string;
@@ -180,7 +183,7 @@ describe("runGatewayUpdate", () => {
     const calls: string[] = [];
     let uiBuildCount = 0;
     const doctorNodePath = await resolveStableNodePath(process.execPath);
-    const doctorKey = `${doctorNodePath} ${path.join(tempDir, "openclaw.mjs")} doctor --non-interactive --fix`;
+    const doctorKey = `${doctorNodePath} ${path.join(tempDir, "dist", "entry.js")} doctor --non-interactive`;
 
     const runCommand = async (argv: string[], options?: TestCommandOptions) => {
       const key = argv.join(" ");
@@ -585,7 +588,7 @@ describe("runGatewayUpdate", () => {
   }
 
   it.each(["build", "locked worktree creation"] as const)(
-    "cancels preflight %s and removes its Git worktree before returning",
+    "settles cancelled candidate %s and removes its Git worktree before returning",
     async (phase) => {
       const { localRoot, baseSha, targetSha } = await createTrackedGitFixture(false);
       const controller = new AbortController();
@@ -637,14 +640,24 @@ describe("runGatewayUpdate", () => {
           };
         });
       try {
-        await expect(
-          runGatewayUpdatePreflight(
-            localRoot,
-            5000,
-            { mode: "tracked", upstreamRef: "origin/main", upstreamSha: targetSha },
-            controller.signal,
-          ),
-        ).rejects.toBe(stopped);
+        const fixtureRunner = await buildUpdateCommandRunner((argv, options) =>
+          processExec.runCommandWithTimeout(argv, {
+            ...options,
+            signal: options.signal ?? controller.signal,
+          }),
+        );
+        const result = await updateGitCheckout({
+          gitRoot: localRoot,
+          ...fixtureRunner,
+          timeoutMs: 5000,
+          startedAt: Date.now(),
+          opts: {
+            ...fixtureAdmission(localRoot, fixtureRunner.runCommand),
+            devTarget: { mode: "tracked", upstreamRef: "origin/main", upstreamSha: targetSha },
+          },
+        });
+        expect(controller.signal.reason).toBe(stopped);
+        expect(result.status).toBe("error");
       } finally {
         commandSpy.mockRestore();
       }
@@ -661,20 +674,18 @@ describe("runGatewayUpdate", () => {
   );
 
   function createRealGitUpdateRunner(params: { finalHead?: { root: string; sha: string } } = {}) {
-    let headReads = 0;
+    let doctorRan = false;
     return async (argv: string[], options: TestCommandOptions) => {
       if (argv[0] === "git") {
         const finalHead = params.finalHead;
         if (
           finalHead &&
+          doctorRan &&
           argv[2] === finalHead.root &&
           argv[3] === "rev-parse" &&
           argv[4] === "HEAD"
         ) {
-          headReads += 1;
-          if (headReads === 3) {
-            return toCommandResult({ stdout: finalHead.sha });
-          }
+          return toCommandResult({ stdout: finalHead.sha });
         }
         return await runCommandWithTimeout(argv, {
           cwd: options.cwd,
@@ -682,6 +693,9 @@ describe("runGatewayUpdate", () => {
           env: options.env,
           timeoutMs: options.timeoutMs ?? 5000,
         });
+      }
+      if (argv.includes("doctor")) {
+        doctorRan = true;
       }
       if (argv[0] === "pnpm" && argv[1] === "--version") {
         return toCommandResult({ stdout: PNPM_VERSION });
@@ -691,6 +705,7 @@ describe("runGatewayUpdate", () => {
         const uiDir = path.join(cwd, "dist", "control-ui");
         await fs.mkdir(uiDir, { recursive: true });
         await fs.writeFile(path.join(uiDir, "index.html"), "ok\n");
+        await fs.writeFile(path.join(cwd, "dist", "entry.js"), "export {};\n");
       }
       return toCommandResult();
     };
@@ -701,6 +716,8 @@ describe("runGatewayUpdate", () => {
   ) {
     const heads = new Map<string, string>();
     const worktrees = new Set<string>();
+    const packHash = "f".repeat(40);
+    let upstreamSha: string | undefined;
     let activated = false;
     return async (argv: string[], options?: TestCommandOptions): Promise<CommandResult> => {
       const executable = argv[0];
@@ -728,6 +745,39 @@ describe("runGatewayUpdate", () => {
       }
       if (executable === "git" && root) {
         const command = argv[3];
+        if (command === "show" && argv[4]?.endsWith(":package.json") && !result.stdout) {
+          return toCommandResult({
+            stdout: await fs.readFile(
+              path.join(worktrees.has(root) ? root : tempDir, "package.json"),
+              "utf8",
+            ),
+          });
+        }
+        if (argv.includes("pack-objects")) {
+          const prefix = argv.at(-1);
+          assert.ok(prefix);
+          await fs.writeFile(`${prefix}-${packHash}.pack`, "synthetic Git transport pack\n");
+          return toCommandResult({ stdout: packHash });
+        }
+        const keepPath = path.join(root, ".git", "objects", "pack", `pack-${packHash}.keep`);
+        if (command === "index-pack") {
+          expect(Buffer.isBuffer(options?.input)).toBe(true);
+          const keep = argv.find((arg) => arg.startsWith("--keep="));
+          assert.ok(keep);
+          await fs.mkdir(path.dirname(keepPath), { recursive: true });
+          await fs.writeFile(keepPath, `${keep.slice("--keep=".length)}\n`);
+        }
+        if (command === "rev-parse" && argv.includes("--git-path")) {
+          return toCommandResult({ stdout: keepPath });
+        }
+        if (
+          command === "rev-parse" &&
+          (argv[4]?.includes("@{upstream}") || argv[4]?.startsWith("refs/remotes/"))
+        ) {
+          if (result.stdout) upstreamSha = result.stdout.trim();
+          else if (argv[4].startsWith("refs/remotes/") && upstreamSha)
+            return toCommandResult({ stdout: upstreamSha });
+        }
         if (command === "worktree" && argv[4] === "add") {
           const candidate = argv[6];
           const revision = argv[7];
@@ -778,6 +828,67 @@ describe("runGatewayUpdate", () => {
     };
   }
 
+  function fixtureAdmission(
+    root: string,
+    runCommand: CommandRunner,
+    progress: UpdateStepProgress = {},
+    overrides: Partial<Pick<UpdateRunnerOptions, "inspectGitTarget" | "beforeGitMutation">> = {},
+  ) {
+    let inspected = false;
+    let activated = false;
+    return {
+      inspectGitTarget: async (target: Parameters<UpdateRunnerOptions["inspectGitTarget"]>[0]) => {
+        if (overrides.inspectGitTarget) {
+          await overrides.inspectGitTarget(target);
+        } else {
+          expect(target.metadataUnreadable).toBeUndefined();
+          expect(target.version ?? target.schemaVersions).toBeDefined();
+        }
+        inspected = true;
+      },
+      beforeGitMutation: async (
+        target: Parameters<UpdateRunnerOptions["beforeGitMutation"]>[0],
+      ) => {
+        expect(inspected).toBe(true);
+        await overrides.beforeGitMutation?.(target);
+        activated = true;
+      },
+      runGitDoctor: async (doctorRoot: string) => {
+        expect(activated).toBe(true);
+        expect(doctorRoot).toBe(root);
+        const stateDir = await fixtureRootTracker.make("doctor-state");
+        const nodeRunner = await resolveStableNodePath(process.execPath);
+        const transport = vi
+          .spyOn(processExec, "runCommandWithTimeout")
+          .mockImplementation(async (argv, options) => {
+            assert.ok(typeof options === "object");
+            expect(argv).toContain("doctor");
+            expect(options.cwd).toBe(root);
+            return {
+              signal: null,
+              killed: false,
+              termination: "exit",
+              ...(await runCommand(argv, options)),
+            };
+          });
+        try {
+          return await runPackageUpdateDoctor({
+            root,
+            timeoutMs: 5000,
+            progress,
+            nodeRunner,
+            managedServiceEnv: {
+              OPENCLAW_STATE_DIR: stateDir,
+              OPENCLAW_CONFIG_PATH: path.join(stateDir, "openclaw.json"),
+            },
+          });
+        } finally {
+          transport.mockRestore();
+        }
+      },
+    };
+  }
+
   async function runWithCommand(
     runCommand: (
       argv: string[],
@@ -785,24 +896,17 @@ describe("runGatewayUpdate", () => {
     ) => Promise<CommandResult>,
     options?: {
       channel?: UpdateChannel;
-      tag?: string;
       cwd?: string;
       devTarget?: DevUpdateTarget;
-      progress?: NonNullable<Parameters<typeof runGatewayUpdate>[0]>["progress"];
-      deferConfiguredPluginInstallRepair?: boolean;
-      allowGatewayServiceRepair?: boolean;
-      allowGatewayActivation?: boolean;
-      beforeGitMutation?: (target: {
-        schemaVersions?: { state: number; agent: number };
-      }) => Promise<{
-        allowGatewayServiceRepair?: boolean;
-        allowGatewayActivation?: boolean;
-      } | void>;
+      progress?: Parameters<typeof updateGitCheckout>[0]["opts"]["progress"];
+      inspectGitTarget?: UpdateRunnerOptions["inspectGitTarget"];
+      beforeGitMutation?: UpdateRunnerOptions["beforeGitMutation"];
     },
   ) {
     // These callers script Git responses, including clone's filesystem result.
-    // Native Git cases call runGatewayUpdate directly and never use this adapter.
+    // Native Git cases call updateGitCheckout directly and never use this adapter.
     const mirrors = new Map<string, string>();
+    const fixtureCommand = withGitCandidateFixture(runCommand);
     const scriptedCommand = async (
       argv: string[],
       runOptions: Parameters<typeof runCommand>[1],
@@ -811,7 +915,7 @@ describe("runGatewayUpdate", () => {
         const commandRoot = argv[2];
         assert.ok(commandRoot);
         if (argv[3] === "clone" && argv[4] === "--mirror") {
-          const result = await runCommand(argv, runOptions);
+          const result = await fixtureCommand(argv, runOptions);
           if (result.code === 0) {
             const mirror = argv.at(-1);
             assert.ok(mirror);
@@ -823,30 +927,25 @@ describe("runGatewayUpdate", () => {
         const mirror = argv[3]?.startsWith("--git-dir=") ? argv[3].slice(10) : commandRoot;
         const original = mirrors.get(mirror);
         if (original) {
-          return runCommand(
+          return fixtureCommand(
             ["git", "-C", original, ...argv.slice(argv[3]?.startsWith("--git-dir=") ? 4 : 3)],
             runOptions,
           );
         }
       }
-      return runCommand(argv, runOptions);
+      return fixtureCommand(argv, runOptions);
     };
-    return runGatewayUpdate({
-      cwd: options?.cwd ?? tempDir,
-      runCommand: withGitCandidateFixture(scriptedCommand),
+    return updateGitCheckout({
+      gitRoot: options?.cwd ?? tempDir,
+      ...(await buildUpdateCommandRunner(scriptedCommand)),
       timeoutMs: 5000,
-      ...(options?.channel ? { channel: options.channel } : {}),
-      ...(options?.tag ? { tag: options.tag } : {}),
-      ...(options?.devTarget ? { devTarget: options.devTarget } : {}),
-      ...(options?.deferConfiguredPluginInstallRepair
-        ? { deferConfiguredPluginInstallRepair: true }
-        : {}),
-      ...(options?.allowGatewayServiceRepair === undefined
-        ? {}
-        : { allowGatewayServiceRepair: options.allowGatewayServiceRepair }),
-      ...(options?.allowGatewayActivation ? { allowGatewayActivation: true } : {}),
-      ...(options?.beforeGitMutation ? { beforeGitMutation: options.beforeGitMutation } : {}),
-      ...(options?.progress ? { progress: options.progress } : {}),
+      startedAt: Date.now(),
+      opts: {
+        ...fixtureAdmission(options?.cwd ?? tempDir, runCommand, options?.progress, options),
+        ...(options?.channel ? { channel: options.channel } : {}),
+        ...(options?.devTarget ? { devTarget: options.devTarget } : {}),
+        ...(options?.progress ? { progress: options.progress } : {}),
+      },
     });
   }
 
@@ -854,16 +953,10 @@ describe("runGatewayUpdate", () => {
     runner: (argv: string[]) => Promise<CommandResult>,
     options?: {
       channel?: UpdateChannel;
-      tag?: string;
       cwd?: string;
       devTarget?: DevUpdateTarget;
-      deferConfiguredPluginInstallRepair?: boolean;
-      beforeGitMutation?: (target: {
-        schemaVersions?: { state: number; agent: number };
-      }) => Promise<{
-        allowGatewayServiceRepair?: boolean;
-        allowGatewayActivation?: boolean;
-      } | void>;
+      inspectGitTarget?: UpdateRunnerOptions["inspectGitTarget"];
+      beforeGitMutation?: UpdateRunnerOptions["beforeGitMutation"];
     },
   ) {
     return runWithCommand(runner, options);
@@ -960,7 +1053,7 @@ describe("runGatewayUpdate", () => {
       expect(result.status).toBe("skipped");
       expect(result.reason).toBe("no-upstream");
       expect(beforeGitMutation).not.toHaveBeenCalled();
-      expect(calls).toContain(`git -C ${tempDir} rev-parse --show-toplevel`);
+      expect(calls).not.toContain(`git -C ${tempDir} rev-parse --show-toplevel`);
     } finally {
       cwdSpy.mockRestore();
     }
@@ -997,7 +1090,7 @@ describe("runGatewayUpdate", () => {
     await setupGitPackageManagerFixture();
     const upstreamSha = "upstream123";
     const doctorNodePath = await resolveStableNodePath(process.execPath);
-    const doctorCommand = `${doctorNodePath} ${path.join(tempDir, "openclaw.mjs")} doctor --non-interactive --fix`;
+    const doctorCommand = `${doctorNodePath} ${path.join(tempDir, "dist", "entry.js")} doctor --non-interactive`;
     const beforeGitMutation = vi.fn(async () => {
       calls.push("beforeGitMutation");
     });
@@ -1157,10 +1250,10 @@ describe("runGatewayUpdate", () => {
     expect(calls).not.toContain(`git -C ${tempDir} checkout --detach ${targetSha}`);
   });
 
-  it("hands beforeGitMutation an unreadable marker when target metadata cannot be read", async () => {
+  it("surfaces unreadable target metadata to admission before mutation", async () => {
     await setupGitCheckout();
     const upstreamSha = "b".repeat(40);
-    const beforeGitMutation = vi.fn(async () => {
+    const inspectGitTarget = vi.fn(async () => {
       throw new Error("refused by caller");
     });
     const { runner } = createRunner({
@@ -1179,10 +1272,10 @@ describe("runGatewayUpdate", () => {
       },
     });
 
-    await expect(runWithRunner(runner, { channel: "dev", beforeGitMutation })).rejects.toThrow(
+    await expect(runWithRunner(runner, { channel: "dev", inspectGitTarget })).rejects.toThrow(
       "refused by caller",
     );
-    expect(beforeGitMutation).toHaveBeenCalledWith({
+    expect(inspectGitTarget).toHaveBeenCalledWith({
       sha: upstreamSha,
       metadataUnreadable: `git show ${upstreamSha}:package.json exited 128`,
     });
@@ -1408,7 +1501,7 @@ describe("runGatewayUpdate", () => {
     await setupGitPackageManagerFixture();
     const targetSha = "2222222222222222222222222222222222222222";
     const doctorNodePath = await resolveStableNodePath(process.execPath);
-    const doctorCommand = `${doctorNodePath} ${path.join(tempDir, "openclaw.mjs")} doctor --non-interactive --fix`;
+    const doctorCommand = `${doctorNodePath} ${path.join(tempDir, "dist", "entry.js")} doctor --non-interactive`;
     const { runner, calls } = createRunner({
       ...buildGitWorktreeProbeResponses(),
       [`git -C ${tempDir} fetch --all --prune --no-tags --no-prune-tags`]: { stdout: "" },
@@ -1564,7 +1657,7 @@ describe("runGatewayUpdate", () => {
       installCommand: "pnpm install",
       buildCommand: "pnpm build",
       uiBuildCommand: "pnpm ui:build",
-      doctorCommand: `${doctorNodePath} ${path.join(tempDir, "openclaw.mjs")} doctor --non-interactive --fix`,
+      doctorCommand: `${doctorNodePath} ${path.join(tempDir, "dist", "entry.js")} doctor --non-interactive`,
       onCommand: (key, options) => {
         if (key === "pnpm install") {
           installEnvs.push(options?.env ?? {});
@@ -1602,7 +1695,7 @@ describe("runGatewayUpdate", () => {
         installCommand: "pnpm install",
         buildCommand: "pnpm build",
         uiBuildCommand: "pnpm ui:build",
-        doctorCommand: `${doctorNodePath} ${path.join(tempDir, "openclaw.mjs")} doctor --non-interactive --fix`,
+        doctorCommand: `${doctorNodePath} ${path.join(tempDir, "dist", "entry.js")} doctor --non-interactive`,
         onCommand: (key, options) => {
           if (key === "pnpm install") {
             installEnvs.push(options?.env ?? {});
@@ -1641,7 +1734,7 @@ describe("runGatewayUpdate", () => {
         installCommand: "pnpm install",
         buildCommand: "pnpm build",
         uiBuildCommand: "pnpm ui:build",
-        doctorCommand: `${doctorNodePath} ${path.join(tempDir, "openclaw.mjs")} doctor --non-interactive --fix`,
+        doctorCommand: `${doctorNodePath} ${path.join(tempDir, "dist", "entry.js")} doctor --non-interactive`,
         onCommand: (key, options) => {
           if (key === "pnpm config get prefer-offline") {
             return configResponse;
@@ -1662,13 +1755,13 @@ describe("runGatewayUpdate", () => {
     },
   );
 
-  it("marks git update doctor passes for configured-plugin repair deferral when requested", async () => {
+  it("delegates Git activation Doctor with native mutation denied and plugin repair deferred", async () => {
     await setupGitCheckout({ packageManager: PNPM_PACKAGE_MANAGER });
     await setupUiIndex();
     const stableTag = "v1.0.1-1";
     let doctorEnv: NodeJS.ProcessEnv | undefined;
     const doctorNodePath = await resolveStableNodePath(process.execPath);
-    const doctorCommand = `${doctorNodePath} ${path.join(tempDir, "openclaw.mjs")} doctor --non-interactive --fix`;
+    const doctorCommand = `${doctorNodePath} ${path.join(tempDir, "dist", "entry.js")} doctor --non-interactive`;
     const { runCommand } = createGitInstallRunner({
       stableTag,
       installCommand: "pnpm install",
@@ -1685,9 +1778,6 @@ describe("runGatewayUpdate", () => {
 
     const result = await runWithCommand(runCommand, {
       channel: "stable",
-      deferConfiguredPluginInstallRepair: true,
-      allowGatewayServiceRepair: true,
-      allowGatewayActivation: true,
     });
 
     expect(result.status).toBe("ok");
@@ -1695,45 +1785,8 @@ describe("runGatewayUpdate", () => {
     expect(doctorEnv?.OPENCLAW_UPDATE_DEFER_CONFIGURED_PLUGIN_INSTALL_REPAIR).toBe("1");
     expect(doctorEnv?.OPENCLAW_UPDATE_PARENT_SUPPORTS_DOCTOR_CONFIG_WRITE).toBe("1");
     expect(doctorEnv?.OPENCLAW_UPDATE_PARENT_SUPPORTS_GATEWAY_RESTART).toBe("1");
-    expect(doctorEnv?.OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_SERVICE_REPAIR).toBe("1");
-    expect(doctorEnv?.OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION).toBe("1");
-  });
-
-  it("uses the pre-mutation activation decision for the git update doctor pass", async () => {
-    await setupGitCheckout({ packageManager: PNPM_PACKAGE_MANAGER });
-    await setupUiIndex();
-    const stableTag = "v1.0.1-1";
-    let doctorEnv: NodeJS.ProcessEnv | undefined;
-    const doctorNodePath = await resolveStableNodePath(process.execPath);
-    const doctorCommand = `${doctorNodePath} ${path.join(tempDir, "openclaw.mjs")} doctor --non-interactive`;
-    const { runCommand } = createGitInstallRunner({
-      stableTag,
-      installCommand: "pnpm install",
-      buildCommand: "pnpm build",
-      uiBuildCommand: "pnpm ui:build",
-      doctorCommand,
-      onCommand: (key, options) => {
-        if (key === doctorCommand) {
-          doctorEnv = options?.env;
-        }
-        return undefined;
-      },
-    });
-
-    const result = await runWithCommand(runCommand, {
-      channel: "stable",
-      allowGatewayServiceRepair: true,
-      allowGatewayActivation: true,
-      beforeGitMutation: async () => ({
-        allowGatewayServiceRepair: false,
-        allowGatewayActivation: false,
-      }),
-    });
-
-    expect(result.status).toBe("ok");
     expect(doctorEnv?.OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_SERVICE_REPAIR).toBe("0");
     expect(doctorEnv?.OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION).toBe("0");
-    expect(doctorEnv?.OPENCLAW_SERVICE_REPAIR_POLICY).toBeUndefined();
   });
 
   it("uses pnpm highest resolution mode for dev preflight installs", async () => {
@@ -1917,18 +1970,11 @@ describe("runGatewayUpdate", () => {
     expect(preflightInstallCommands).toEqual(["pnpm install"]);
   });
 
-  it
-    .runIf(process.platform !== "win32")
-    .each(
-      [false, true].flatMap((redirected) =>
-        [false, true].map((admission) => ({ redirected, admission })),
-      ),
-    )(
-    "stages dev preflight without dirtying the checkout (redirected: $redirected, admission: $admission)",
-    async ({ redirected, admission }) => {
+  it.runIf(process.platform !== "win32").each([false, true])(
+    "stages inspected dev preflight without dirtying the checkout (redirected: %s)",
+    async (redirected) => {
       const parent = path.join(tempDir, "parent");
       const checkout = path.join(parent, "checkout");
-      const alias = path.join(tempDir, "checkout-link");
       const artifacts = redirected
         ? path.join(tempDir, "external-artifacts")
         : path.join(checkout, ".artifacts");
@@ -1937,7 +1983,6 @@ describe("runGatewayUpdate", () => {
       await runRealGit(checkout, "init", "--initial-branch=main");
       await runRealGit(checkout, "config", "user.name", "OpenClaw Test");
       await runRealGit(checkout, "config", "user.email", "openclaw@example.com");
-      await fs.symlink(checkout, alias, "dir");
       await fs.mkdir(artifacts);
       await fs.copyFile(
         new URL("../../.gitignore", import.meta.url),
@@ -1951,7 +1996,10 @@ describe("runGatewayUpdate", () => {
       }
       await runRealGit(checkout, "add", ".gitignore", "package.json", "openclaw.mjs");
       await runRealGit(checkout, "commit", "-m", "artifact storage");
+      const baseSha = await runRealGit(checkout, "rev-parse", "HEAD");
+      await runRealGit(checkout, "commit", "--allow-empty", "-m", "candidate");
       const targetSha = await runRealGit(checkout, "rev-parse", "HEAD");
+      await runRealGit(checkout, "checkout", "--detach", baseSha);
       await fs.writeFile(path.join(artifacts, "keep.txt"), "existing artifact\n");
       await fs.chmod(checkout, 0o755);
       await fs.chmod(artifacts, 0o750);
@@ -1966,54 +2014,58 @@ describe("runGatewayUpdate", () => {
       const stagedStatuses: string[] = [];
       try {
         await fs.chmod(parent, 0o555);
-        const result = await runGatewayUpdate({
-          cwd: alias,
-          channel: "dev",
-          prepareGitExposure: async () => {},
-          devTarget: { mode: "detached", ref: targetSha },
+        const fixtureRunner = await buildUpdateCommandRunner(async (argv, options) => {
+          if (
+            argv[0] === "pnpm" &&
+            argv[1] === "install" &&
+            options.cwd &&
+            options.cwd !== checkout
+          ) {
+            const root = await fs.realpath(path.dirname(options.cwd));
+            preflightRoots.push(root);
+            const stat = await fs.stat(root);
+            modes.push(stat.mode & 0o777);
+            devices.push(stat.dev);
+            stagedStatuses.push(await runRealGit(checkout, "status", "--porcelain"));
+          }
+          return runner(argv, options);
+        });
+        const result = await updateGitCheckout({
+          gitRoot: checkout,
+          ...fixtureRunner,
           timeoutMs: 5000,
-          runCommand: async (argv, options) => {
-            if (
-              argv[0] === "pnpm" &&
-              argv[1] === "install" &&
-              options.cwd &&
-              options.cwd !== checkout
-            ) {
-              const root = await fs.realpath(path.dirname(options.cwd));
-              preflightRoots.push(root);
-              const stat = await fs.stat(root);
-              modes.push(stat.mode & 0o777);
-              devices.push(stat.dev);
-              stagedStatuses.push(await runRealGit(checkout, "status", "--porcelain"));
-            }
-            return runner(argv, options);
-          },
-          ...(admission
-            ? {
-                inspectGitTarget: async () => undefined,
-                beforeGitMutation: async () => {
+          startedAt: Date.now(),
+          opts: {
+            ...fixtureAdmission(
+              checkout,
+              fixtureRunner.runCommand,
+              {},
+              {
+                beforeGitMutation: async (target) => {
+                  expect(target.sha).toBe(targetSha);
                   for (const root of preflightRoots) {
                     expect(await pathExists(root)).toBe(false);
                   }
                   expect(await runRealGit(checkout, "status", "--porcelain")).toBe("");
+                  expect(await runRealGit(checkout, "rev-parse", "HEAD")).toBe(baseSha);
                 },
-              }
-            : {}),
+              },
+            ),
+
+            channel: "dev",
+            devTarget: { mode: "detached", ref: targetSha },
+          },
         });
         expect(result.status).toBe("ok");
+        expect(await runRealGit(checkout, "rev-parse", "HEAD")).toBe(targetSha);
         expect(stagedStatuses).toEqual([initialStatus]);
         expect(preflightRoots).toHaveLength(1);
         for (const root of preflightRoots) {
-          expect(root.startsWith(`${artifacts}${path.sep}`)).toBe(!admission);
-          if (admission) {
-            expect(root.startsWith(`${checkout}${path.sep}`)).toBe(false);
-          }
+          expect(root.startsWith(`${artifacts}${path.sep}`)).toBe(true);
           expect(await pathExists(root)).toBe(false);
         }
         expect(modes).toEqual([0o700]);
-        if (!admission) {
-          expect(devices).toEqual([artifactDevice]);
-        }
+        expect(devices).toEqual([artifactDevice]);
         expect((await fs.stat(checkout)).mode & 0o777).toBe(0o755);
         expect((await fs.stat(parent)).mode & 0o777).toBe(0o555);
         expect((await fs.stat(artifacts)).mode & 0o777).toBe(0o750);
@@ -2184,7 +2236,7 @@ describe("runGatewayUpdate", () => {
     const calls: string[] = [];
     let managerVersionProbeCount = 0;
     const doctorNodePath = await resolveStableNodePath(process.execPath);
-    const doctorCommand = `${doctorNodePath} ${path.join(tempDir, "openclaw.mjs")} doctor --non-interactive --fix`;
+    const doctorCommand = `${doctorNodePath} ${path.join(tempDir, "dist", "entry.js")} doctor --non-interactive`;
 
     const writeCandidatePackageManager = async (key: string, packageManager: string) => {
       const match = /^git -C (?<root>\S+) checkout --detach /u.exec(key);
@@ -2372,24 +2424,25 @@ describe("runGatewayUpdate", () => {
     await setupUiIndex();
     const stableTag = "v1.0.1-1";
     const doctorNodePath = await resolveStableNodePath(process.execPath);
+    const doctorCommand = `${doctorNodePath} ${path.join(tempDir, "dist", "entry.js")} doctor --non-interactive`;
     const { runner, calls } = createRunner({
       ...buildStableTagResponses(stableTag),
       [`git -C ${tempDir} rev-parse --abbrev-ref HEAD`]: { stdout: "main" },
       "pnpm install": { stdout: "" },
       "pnpm build": { stdout: "" },
       "pnpm ui:build": { stdout: "" },
-      [`${doctorNodePath} ${path.join(tempDir, "openclaw.mjs")} doctor --non-interactive --fix`]: {
+      [doctorCommand]: {
         stdout: "",
       },
     });
-    let revParseHeadCount = 0;
+    let doctorRan = false;
     const runCommand = async (argv: string[]) => {
       const key = argv.join(" ");
-      if (key === `git -C ${tempDir} rev-parse HEAD`) {
-        revParseHeadCount += 1;
-        if (revParseHeadCount === 3) {
-          return toCommandResult({ code: 1, stderr: "fatal: not a valid object name HEAD" });
-        }
+      if (key === doctorCommand) {
+        doctorRan = true;
+      }
+      if (doctorRan && key === `git -C ${tempDir} rev-parse HEAD`) {
+        return toCommandResult({ code: 1, stderr: "fatal: not a valid object name HEAD" });
       }
       return runner(argv);
     };
@@ -2398,6 +2451,7 @@ describe("runGatewayUpdate", () => {
 
     expect(result.status).toBe("error");
     expect(result.reason).toBe("head-verification-failed");
+    expect(doctorRan).toBe(true);
     expect(result.after).toBeUndefined();
     expect(calls).not.toContain(`git -C ${tempDir} reset --hard`);
     expect(calls).not.toContain(`git -C ${tempDir} checkout --force main`);
@@ -2415,7 +2469,7 @@ describe("runGatewayUpdate", () => {
       "pnpm install": { stdout: "" },
       "pnpm build": { stdout: "" },
       "pnpm ui:build": { stdout: "" },
-      [`${doctorNodePath} ${path.join(tempDir, "openclaw.mjs")} doctor --non-interactive --fix`]: {
+      [`${doctorNodePath} ${path.join(tempDir, "dist", "entry.js")} doctor --non-interactive`]: {
         stdout: "",
       },
     });
@@ -2440,7 +2494,7 @@ describe("runGatewayUpdate", () => {
       "pnpm install": { stdout: "" },
       "pnpm build": { stdout: "" },
       "pnpm ui:build": { stdout: "" },
-      [`${doctorNodePath} ${path.join(tempDir, "openclaw.mjs")} doctor --non-interactive --fix`]: {
+      [`${doctorNodePath} ${path.join(tempDir, "dist", "entry.js")} doctor --non-interactive`]: {
         stdout: "",
       },
     });
@@ -2460,7 +2514,7 @@ describe("runGatewayUpdate", () => {
       installCommand: "pnpm install",
       buildCommand: "pnpm build",
       uiBuildCommand: "pnpm ui:build",
-      doctorCommand: `${process.execPath} ${path.join(tempDir, "openclaw.mjs")} doctor --non-interactive`,
+      doctorCommand: `${process.execPath} ${path.join(tempDir, "dist", "entry.js")} doctor --non-interactive`,
       onCommand: (key, options) => {
         if (key === "pnpm --version") {
           const envPath = options?.env?.PATH ?? options?.env?.Path ?? "";
@@ -2502,7 +2556,7 @@ describe("runGatewayUpdate", () => {
       installCommand: "pnpm install",
       buildCommand: "pnpm build",
       uiBuildCommand: "pnpm ui:build",
-      doctorCommand: `${process.execPath} ${path.join(tempDir, "openclaw.mjs")} doctor --non-interactive`,
+      doctorCommand: `${process.execPath} ${path.join(tempDir, "dist", "entry.js")} doctor --non-interactive`,
       onCommand: (key) => {
         if (key === "pnpm --version") {
           pnpmVersionChecks += 1;
@@ -2521,12 +2575,7 @@ describe("runGatewayUpdate", () => {
       },
     });
 
-    const result = await runGatewayUpdate({
-      cwd: tempDir,
-      runCommand: withGitCandidateFixture(runCommand),
-      timeoutMs: 5000,
-      channel: "stable",
-    });
+    const result = await runWithCommand(runCommand, { channel: "stable" });
 
     expect(result.status).toBe("ok");
     expect(calls).toContain("corepack enable");
@@ -2849,16 +2898,21 @@ describe("runGatewayUpdate", () => {
     async ({ detached }) => {
       const { localRoot, targetSha } = await createTrackedGitFixture(detached);
 
-      const result = await runGatewayUpdate({
-        cwd: localRoot,
-        channel: "dev",
-        devTarget: {
-          mode: "tracked",
-          upstreamRef: "origin/main",
-          upstreamSha: targetSha,
-        },
+      const fixtureRunner = await buildUpdateCommandRunner(createRealGitUpdateRunner());
+      const result = await updateGitCheckout({
+        gitRoot: localRoot,
+        ...fixtureRunner,
         timeoutMs: 5000,
-        runCommand: createRealGitUpdateRunner(),
+        startedAt: Date.now(),
+        opts: {
+          ...fixtureAdmission(localRoot, fixtureRunner.runCommand),
+          channel: "dev",
+          devTarget: {
+            mode: "tracked",
+            upstreamRef: "origin/main",
+            upstreamSha: targetSha,
+          },
+        },
       });
 
       expect(result.status).toBe("ok");
@@ -2876,17 +2930,22 @@ describe("runGatewayUpdate", () => {
     await runRealGit(sourceRoot, "commit", "-m", "unrelated target");
     const beforeGitMutation = vi.fn<() => Promise<void>>();
 
-    const result = await runGatewayUpdate({
-      cwd: localRoot,
-      channel: "dev",
-      devTarget: {
-        mode: "tracked",
-        upstreamRef: "origin/unrelated",
-        upstreamSha: targetSha,
-      },
+    const fixtureRunner = await buildUpdateCommandRunner(createRealGitUpdateRunner());
+    const result = await updateGitCheckout({
+      gitRoot: localRoot,
+      ...fixtureRunner,
       timeoutMs: 5000,
-      runCommand: createRealGitUpdateRunner(),
-      beforeGitMutation,
+      startedAt: Date.now(),
+      opts: {
+        ...fixtureAdmission(localRoot, fixtureRunner.runCommand, {}, { beforeGitMutation }),
+
+        channel: "dev",
+        devTarget: {
+          mode: "tracked",
+          upstreamRef: "origin/unrelated",
+          upstreamSha: targetSha,
+        },
+      },
     });
 
     expect(result.status).toBe("error");
@@ -2903,17 +2962,22 @@ describe("runGatewayUpdate", () => {
     const { localRoot, baseSha, targetSha } = await createTrackedGitFixture(false);
     const beforeGitMutation = vi.fn<() => Promise<void>>();
 
-    const result = await runGatewayUpdate({
-      cwd: localRoot,
-      channel: "dev",
-      devTarget: {
-        mode: "tracked",
-        upstreamRef: "origin/missing",
-        upstreamSha: targetSha,
-      },
+    const fixtureRunner = await buildUpdateCommandRunner(createRealGitUpdateRunner());
+    const result = await updateGitCheckout({
+      gitRoot: localRoot,
+      ...fixtureRunner,
       timeoutMs: 5000,
-      runCommand: createRealGitUpdateRunner(),
-      beforeGitMutation,
+      startedAt: Date.now(),
+      opts: {
+        ...fixtureAdmission(localRoot, fixtureRunner.runCommand, {}, { beforeGitMutation }),
+
+        channel: "dev",
+        devTarget: {
+          mode: "tracked",
+          upstreamRef: "origin/missing",
+          upstreamSha: targetSha,
+        },
+      },
     });
 
     expect(result.status).toBe("error");
@@ -2929,16 +2993,23 @@ describe("runGatewayUpdate", () => {
   it("rejects a tracked result whose final HEAD differs from the frozen SHA", async () => {
     const { localRoot, baseSha, targetSha } = await createTrackedGitFixture(false);
 
-    const result = await runGatewayUpdate({
-      cwd: localRoot,
-      channel: "dev",
-      devTarget: {
-        mode: "tracked",
-        upstreamRef: "origin/main",
-        upstreamSha: targetSha,
-      },
+    const fixtureRunner = await buildUpdateCommandRunner(
+      createRealGitUpdateRunner({ finalHead: { root: localRoot, sha: baseSha } }),
+    );
+    const result = await updateGitCheckout({
+      gitRoot: localRoot,
+      ...fixtureRunner,
       timeoutMs: 5000,
-      runCommand: createRealGitUpdateRunner({ finalHead: { root: localRoot, sha: baseSha } }),
+      startedAt: Date.now(),
+      opts: {
+        ...fixtureAdmission(localRoot, fixtureRunner.runCommand),
+        channel: "dev",
+        devTarget: {
+          mode: "tracked",
+          upstreamRef: "origin/main",
+          upstreamSha: targetSha,
+        },
+      },
     });
 
     expect(result.status).toBe("error");
@@ -2964,7 +3035,7 @@ describe("runGatewayUpdate", () => {
     expect(calls).not.toContain(`git -C ${tempDir} rebase ${targetSha}`);
   });
 
-  it("falls back to the cloned cwd when git root probing misses a fresh checkout", async () => {
+  it("uses the explicit fresh checkout without rediscovering its root", async () => {
     await setupGitPackageManagerFixture();
     await fs.mkdir(path.join(tempDir, ".git"), { recursive: true });
     const calls: string[] = [];
@@ -3009,12 +3080,13 @@ describe("runGatewayUpdate", () => {
     };
 
     const result = await runWithCommand(runCommand, {
+      cwd: gitRoot,
       channel: "dev",
       devTarget: { mode: "detached", ref: "main" },
     });
 
     expect(result.status).toBe("ok");
-    expect(calls).toContain(`git -C ${tempDir} rev-parse --show-toplevel`);
+    expect(calls).not.toContain(`git -C ${tempDir} rev-parse --show-toplevel`);
     expect(calls).toContain(`git -C ${gitRoot} checkout --detach ${targetSha}`);
     expect(calls).not.toContain(`git -C ${gitRoot} rev-parse @{upstream}`);
   });
@@ -3052,94 +3124,6 @@ describe("runGatewayUpdate", () => {
     expect(calls).not.toContain("pnpm install");
   });
 
-  it("skips update when no git root", async () => {
-    vi.spyOn(container, "isContainerEnvironment").mockReturnValueOnce(false);
-    await fs.writeFile(
-      path.join(tempDir, "package.json"),
-      JSON.stringify({ name: "openclaw", packageManager: PNPM_PACKAGE_MANAGER }),
-      "utf-8",
-    );
-    await fs.writeFile(path.join(tempDir, "pnpm-lock.yaml"), "", "utf-8");
-    const { runner, calls } = createRunner({
-      [`git -C ${tempDir} rev-parse --show-toplevel`]: { code: 1 },
-      "npm root -g": { code: 1 },
-      "pnpm root -g": { code: 1 },
-    });
-
-    const result = await runWithRunner(runner);
-
-    expect(result.status).toBe("skipped");
-    expect(result.reason).toBe("unmanaged-package-install");
-    expect(result.recovery).toBeUndefined();
-    const pnpmGlobalInstallCalls = calls.filter((call) => call.startsWith("pnpm add -g"));
-    const npmGlobalInstallCalls = calls.filter((call) => call.startsWith("npm i -g"));
-    expect(pnpmGlobalInstallCalls).toStrictEqual([]);
-    expect(npmGlobalInstallCalls).toStrictEqual([]);
-  });
-
-  it("leaves package-manager updates to the CLI transaction owner", async () => {
-    const nodeModules = path.join(tempDir, "node_modules");
-    const pkgRoot = path.join(nodeModules, "openclaw");
-    await fs.mkdir(pkgRoot, { recursive: true });
-    await fs.writeFile(
-      path.join(pkgRoot, "package.json"),
-      JSON.stringify({ name: "openclaw", version: "1.0.0" }),
-    );
-    const { runner, calls } = createRunner({
-      [`git -C ${pkgRoot} rev-parse --show-toplevel`]: { code: 128 },
-      "npm root -g": { stdout: nodeModules },
-      "pnpm root -g": { code: 1 },
-    });
-
-    const result = await runWithCommand(runner, { cwd: pkgRoot });
-
-    expect(result).toMatchObject({
-      status: "skipped",
-      mode: "unknown",
-      root: pkgRoot,
-      reason: "package-update-requires-cli",
-      before: { version: "1.0.0" },
-      steps: [],
-    });
-    expect(calls.some((call) => /^npm (?:i|install|pack) /u.test(call))).toBe(false);
-  });
-
-  it("rejects git roots that are not a openclaw checkout", async () => {
-    await fs.mkdir(path.join(tempDir, ".git"));
-    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(tempDir);
-    const { runner, calls } = createRunner({
-      [`git -C ${tempDir} rev-parse --show-toplevel`]: { stdout: tempDir },
-    });
-
-    const result = await runWithRunner(runner);
-
-    cwdSpy.mockRestore();
-
-    expect(result.status).toBe("error");
-    expect(result.reason).toBe("not-openclaw-root");
-    expect(calls.filter((call) => call.includes("status --porcelain"))).toEqual([]);
-  });
-
-  it("fails with a clear reason when openclaw.mjs is missing", async () => {
-    await setupGitCheckout({ packageManager: PNPM_PACKAGE_MANAGER });
-    await fs.rm(path.join(tempDir, "openclaw.mjs"), { force: true });
-
-    const stableTag = "v1.0.1-1";
-    const { runner } = createRunner({
-      ...buildStableTagResponses(stableTag),
-      "pnpm install": { stdout: "" },
-      "pnpm build": { stdout: "" },
-      "pnpm ui:build": { stdout: "" },
-    });
-
-    const result = await runWithRunner(runner, { channel: "stable" });
-
-    expect(result.status).toBe("error");
-    expect(result.reason).toBe("doctor-entry-missing");
-    expect(result.steps.some((step) => step.name === "openclaw doctor entry")).toBe(true);
-    expect(result.steps.at(-1)?.name).toMatch(/^git rollback/);
-  });
-
   it.each(["doctor-error", "doctor-throw", "post-doctor-head"] as const)(
     "retains the candidate after the migration boundary: %s",
     async (failure) => {
@@ -3149,7 +3133,7 @@ describe("runGatewayUpdate", () => {
       let doctorRan = false;
       const stableTag = "v1.0.1";
       const doctorNodePath = await resolveStableNodePath(process.execPath);
-      const doctorCommand = `${doctorNodePath} ${path.join(tempDir, "openclaw.mjs")} doctor --non-interactive --fix`;
+      const doctorCommand = `${doctorNodePath} ${path.join(tempDir, "dist", "entry.js")} doctor --non-interactive`;
       const { runCommand, calls } = createGitInstallRunner({
         stableTag,
         installCommand: "pnpm install",

@@ -7,7 +7,7 @@ import {
   type GatewayService,
 } from "../../daemon/service.js";
 import { getUpdateRun, recordUpdateRunRepairAttempt } from "../../infra/update-run-ledger.js";
-import type { UpdateRunResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import { defaultRuntime } from "../../runtime.js";
 import { formatCliCommand } from "../command-format.js";
 import {

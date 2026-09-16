@@ -1,9 +1,10 @@
 import { formatErrorMessage } from "../../infra/errors.js";
-import { assertUpdateRecoveryAdmission } from "../../infra/update-run-recovery-admission.js";
 import { UpdateRecoveryRequiredError } from "../../infra/update-run-recovery.js";
-import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import type { UpdateCommandOptions } from "./shared.js";
-import { UpdateCommandRecoveryPendingError } from "./update-command-recovery.js";
+import {
+  assertUpdateProfileRecoveryAdmission,
+  UpdateCommandRecoveryPendingError,
+} from "./update-command-recovery.js";
 import {
   UpdateCommandFailure,
   UpdateCommandFinalizedRecoveryFailure,
@@ -13,6 +14,7 @@ import {
 import { completeUpdateCommandRun, failUpdateCommandRun } from "./update-command-run.js";
 import type { UpdateCommandRecoveryState } from "./update-command-service-maintenance.js";
 import { hasDeferredUpdateCommandTerminalResult } from "./update-command-terminal.js";
+import { completeWindowsTaskAutoStartRecoveries } from "./update-command-windows-task.js";
 
 /** Unwind only legacy updates; pending publication cannot authorize compensation or diagnostics. */
 export async function withUpdateCommandRecoveryUnwind(
@@ -54,8 +56,7 @@ export async function withUpdateCommandRecoveryUnwind(
     }
     if (
       error instanceof UpdateCommandRecoveryPendingError ||
-      error instanceof UpdateRecoveryRequiredError ||
-      opts.recovery
+      error instanceof UpdateRecoveryRequiredError
     ) {
       throw new UpdateCommandPendingRecoveryFailure(
         primaryResult(error),
@@ -65,20 +66,15 @@ export async function withUpdateCommandRecoveryUnwind(
     }
     failure = { error };
   }
-  if (opts.recovery) {
-    // Durable finalization alone owns native/terminal effects. Never replay
-    // legacy compensation, including after an already-finalized failure.
-    if (failure) {
-      throw failure.error;
-    }
-    return;
-  }
   if (recoveryState.ledgerHandoffOwned && !recoveryState.ledgerHandoffCompleted) {
     let cause = failure?.error ?? new Error("Candidate finalization has no confirmed outcome.");
     try {
       // Settle the existing guarded suspension without enabling a runtime whose
       // handoff did not finish. The native owner retains its own identity checks.
-      await recoveryState.windowsTaskAutoStartRecovery?.complete(false);
+      await completeWindowsTaskAutoStartRecoveries(
+        recoveryState.windowsTaskAutoStartRecoveries ?? [],
+        false,
+      );
     } catch (error) {
       cause = new AggregateError([cause, error], "Migrated handoff recovery remains pending", {
         cause,
@@ -96,15 +92,13 @@ export async function withUpdateCommandRecoveryUnwind(
     try {
       // A lost live context or a successful callback is not fresh-install proof.
       // Reconcile all affected state roots read-only before native compensation.
-      const paths = new Set<string>();
-      for (const env of [run.env, recoveryState.triageTarget.env]) {
-        const file = resolveOpenClawStateSqlitePath(env);
-        if (paths.has(file)) {
-          continue;
-        }
-        paths.add(file);
-        await assertUpdateRecoveryAdmission({ env });
-      }
+      await assertUpdateProfileRecoveryAdmission([
+        run.env,
+        recoveryState.triageTarget.env,
+        ...(recoveryState.profiles ?? []).map(
+          (profile) => profile.ownedManagedUpdateEnv ?? run.env,
+        ),
+      ]);
     } catch (error) {
       throw new UpdateCommandPendingRecoveryFailure(
         primaryResult(failure?.error),
@@ -114,12 +108,25 @@ export async function withUpdateCommandRecoveryUnwind(
     }
   }
   try {
-    await recoveryState.windowsTaskAutoStartRecovery?.restore();
-    await recoveryState.windowsTaskAutoStartRecovery?.complete();
+    const failures: unknown[] = [];
+    for (const recovery of recoveryState.windowsTaskAutoStartRecoveries ?? []) {
+      try {
+        await recovery.restore();
+        await recovery.complete();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length) {
+      throw new AggregateError(failures, "Windows task autostart recovery failed");
+    }
   } catch (restoreError) {
     let error = restoreError;
     try {
-      await recoveryState.windowsTaskAutoStartRecovery?.complete(false);
+      await completeWindowsTaskAutoStartRecoveries(
+        recoveryState.windowsTaskAutoStartRecoveries ?? [],
+        false,
+      );
     } catch (compensationError) {
       error = new AggregateError(
         [error, compensationError],

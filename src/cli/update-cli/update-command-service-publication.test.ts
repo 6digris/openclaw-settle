@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import * as serviceInventory from "../../daemon/inspect.js";
 import { withGatewayServiceOperationLock } from "../../daemon/service-operation-lock.js";
 import type { GatewayService } from "../../daemon/service.js";
 import {
@@ -18,14 +19,21 @@ import { withEnvAsync } from "../../test-utils/env.js";
 import { mockProcessPlatform } from "../../test-utils/vitest-spies.js";
 import { withGatewayRuntimeArtifactPublication } from "./update-command-service-maintenance.js";
 
-const mocks = vi.hoisted(() => ({ service: vi.fn<() => GatewayService>() }));
+const mocks = vi.hoisted(() => ({
+  service: vi.fn<() => GatewayService>(),
+  candidates: vi.fn<typeof import("../../daemon/service.js").readGatewayServiceCandidates>(),
+}));
 vi.mock("../../daemon/service.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../daemon/service.js")>()),
   resolveGatewayService: mocks.service,
+  readGatewayServiceCandidates: mocks.candidates,
 }));
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-beforeEach(() => mockSystemAccountHome());
+beforeEach(() => {
+  mockSystemAccountHome();
+  mocks.candidates.mockReset().mockResolvedValue([]);
+});
 afterEach(() => vi.restoreAllMocks());
 
 async function withServiceHome(run: (home: string) => Promise<void>): Promise<void> {
@@ -467,3 +475,137 @@ it("holds native and Gateway exclusion through publication rollback and closes i
     expect(released).not.toBeNull();
     released?.release();
   }));
+
+it.each(["stopped", "running", "new-consumer", "shared-state"] as const)(
+  "holds all physical publication consumers without stopping them (%s)",
+  (scenario) =>
+    withRuntimePublicationFixture(async ({ root, home, env, service, coordinatorPath }) => {
+      const serviceModule = await import("../../daemon/service.js");
+      const siblingEnv = {
+        ...env,
+        OPENCLAW_PROFILE: "ops",
+        OPENCLAW_STATE_DIR: scenario === "shared-state" ? undefined : path.join(home, "ops-state"),
+      };
+      const siblingDatabase =
+        scenario === "shared-state"
+          ? resolveOpenClawStateSqlitePath(env)
+          : resolveOpenClawStateSqlitePath(siblingEnv);
+      if (scenario === "shared-state") {
+        siblingEnv.OPENCLAW_STATE_DIR = path.dirname(path.dirname(siblingDatabase));
+      }
+      const siblingCoordinator = acquireGatewayLifecycleCoordinator({
+        databasePath: siblingDatabase,
+        busyTimeoutMs: 0,
+      });
+      siblingCoordinator.release();
+      vi.mocked(service.readRuntime).mockImplementation(async (selectedEnv) => ({
+        status:
+          scenario === "running" && selectedEnv.OPENCLAW_PROFILE === "ops" ? "running" : "stopped",
+        systemd: { managerUid: 2001 },
+      }));
+      let publishing = false;
+      mocks.candidates.mockImplementation(async (_service, args) => {
+        if (!args?.knownServiceEnvs?.some((candidate) => candidate.OPENCLAW_PROFILE === "ops")) {
+          return [await serviceModule.readGatewayServiceState(service, { env: siblingEnv })];
+        }
+        if (publishing && scenario === "new-consumer") {
+          return [
+            await serviceModule.readGatewayServiceState(service, {
+              env: { ...siblingEnv, OPENCLAW_PROFILE: "new" },
+            }),
+          ];
+        }
+        return [];
+      });
+      const write = vi.fn();
+      const publication = withGatewayRuntimeArtifactPublication(
+        { root, env, timeoutMs: 200, assertCurrent() {} },
+        async (assertCurrent) => {
+          publishing = true;
+          await assertCurrent();
+          expect(tryAcquireExclusiveSqliteCoordinator(coordinatorPath)).toBeNull();
+          expect(tryAcquireExclusiveSqliteCoordinator(siblingCoordinator.path)).toBeNull();
+          write();
+          return "published";
+        },
+      );
+      if (scenario === "running" || scenario === "new-consumer") {
+        await expect(publication).rejects.toThrow(/affected Gateway/);
+        expect(write).not.toHaveBeenCalled();
+      } else {
+        await expect(publication).resolves.toBe("published");
+        expect(write).toHaveBeenCalledOnce();
+      }
+    }),
+);
+
+it.each(["shared-running", "foreign-running", "foreign-to-shared"] as const)(
+  "preserves a same-name system service's actual read scope before publication (%s)",
+  (scenario) =>
+    withRuntimePublicationFixture(async ({ root, home, env, service }) => {
+      const foreignRoot = path.join(home, "foreign-install");
+      await fs.mkdir(path.join(foreignRoot, "dist"), { recursive: true });
+      await fs.writeFile(path.join(foreignRoot, "package.json"), '{"name":"openclaw"}');
+      await fs.writeFile(path.join(foreignRoot, "dist", "entry.js"), "export {};\n");
+      const artifact = path.join(root, "dist-runtime", "publication-proof.txt");
+      await fs.writeFile(artifact, "original");
+      const unitName = "openclaw-gateway.service";
+      const unitPath = `/etc/systemd/system/${unitName}`;
+      env.OPENCLAW_SYSTEMD_UNIT = unitName;
+      let systemRoot = scenario === "shared-running" ? root : foreignRoot;
+      vi.mocked(service.readCommand).mockImplementation(async (_env, options) => ({
+        programArguments: [
+          process.execPath,
+          path.join(
+            options?.systemdReadTarget?.scope === "system" ? systemRoot : root,
+            "dist",
+            "entry.js",
+          ),
+          "gateway",
+        ],
+      }));
+      vi.mocked(service.readRuntime).mockImplementation(async (_env, options) => ({
+        status: options?.systemdReadTarget?.scope === "system" ? "running" : "stopped",
+        systemd: { managerUid: options?.systemdReadTarget?.scope === "system" ? 0 : 2001 },
+      }));
+      vi.spyOn(serviceInventory, "findGatewayServices").mockResolvedValue({
+        services: [
+          {
+            platform: "linux",
+            scope: "system",
+            label: unitName,
+            detail: `unit: ${unitPath}`,
+            marker: "openclaw",
+          },
+        ],
+        errors: [],
+      });
+      const actual =
+        await vi.importActual<typeof import("../../daemon/service.js")>("../../daemon/service.js");
+      mocks.candidates.mockImplementation(actual.readGatewayServiceCandidates);
+      let enteredPublication = false;
+      const publication = withGatewayRuntimeArtifactPublication(
+        { root, env, timeoutMs: 200, assertCurrent() {} },
+        async (assertCurrent) => {
+          enteredPublication = true;
+          if (scenario === "foreign-to-shared") systemRoot = root;
+          await assertCurrent();
+          await fs.writeFile(artifact, "published");
+        },
+      );
+      if (scenario === "foreign-running") {
+        await expect(publication).resolves.toBeUndefined();
+        expect(await fs.readFile(artifact, "utf8")).toBe("published");
+      } else {
+        await expect(publication).rejects.toThrow(/affected Gateway/);
+        expect(await fs.readFile(artifact, "utf8")).toBe("original");
+      }
+      expect(enteredPublication).toBe(scenario !== "shared-running");
+      expect(service.readCommand).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({
+          systemdReadTarget: { scope: "system", unitName, unitPath },
+        }),
+      );
+    }),
+);

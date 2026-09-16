@@ -524,6 +524,24 @@ describe("update candidate canary", () => {
       expect(result).not.toHaveProperty("checkpointContinuation");
     },
   );
+  it.each([undefined, false, "true", true])(
+    "reports observed shared-install finalization support (%s)",
+    async (profileContexts) => {
+      runtimeContract = {
+        state: 2,
+        agent: 3,
+        profileContexts,
+        gatewayRestartCompletion: profileContexts,
+      };
+      stubHealthyGateway();
+      const result = await validateUpdateCandidateCanary(canaryStateOptions(3_000));
+      expect(result).toMatchObject({
+        status: "ok",
+        profileContexts: profileContexts === true,
+        gatewayRestartCompletion: profileContexts === true,
+      });
+    },
+  );
   it("reports unavailable validation when the candidate predates the migration-continuation contract", async () => {
     await fs.rm(path.join(root, "dist", "infra", "update-migrated-finalize.worker.js"));
     stubHealthyGateway();
@@ -534,6 +552,7 @@ describe("update candidate canary", () => {
     });
     expect(result).toMatchObject({ status: "ok", phase: "runtime" });
     expect(result.candidateSchemaVersions).toBeUndefined();
+    expect(result.profileContexts).toBe(false);
     expect(result).not.toHaveProperty("checkpointContinuation");
     expect(result.steps).toEqual([
       expect.objectContaining({

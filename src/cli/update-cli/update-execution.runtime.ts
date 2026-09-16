@@ -4,7 +4,6 @@
 import "../../config/io.write.js";
 
 export { executeMutableUpdate } from "./update-command-execution.js";
-export { finishAlreadyCurrentUpdate } from "./update-command-noop.js";
 export {
   continueMigratedUpdateInFreshProcess,
   inspectActivatedUpdateState,

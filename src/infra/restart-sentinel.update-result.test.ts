@@ -66,6 +66,42 @@ describe("control-plane update restart sentinel", () => {
     },
   );
 
+  it("retains helper ownership while foreground preparation is pending and hands final verification to Gateway startup", async () => {
+    await withRestartSentinelStateDir(async () => {
+      const run = createUpdateRun({ trigger: "api" });
+      const meta: UpdateRestartSentinelMeta = {
+        runId: run.runId,
+        handoffId: "prepared-helper",
+        completionOwner: "gateway-restart",
+      };
+      await writeControlPlaneUpdateRestartSentinel({
+        meta,
+        result: {
+          status: "skipped",
+          reason: "managed-service-handoff-started",
+          mode: "git",
+          steps: [],
+          durationMs: 0,
+        },
+      });
+      expect((await readRestartSentinel())?.payload.stats?.handoffId).toBe("prepared-helper");
+      await writeControlPlaneUpdateRestartSentinel({
+        meta,
+        result: {
+          status: "ok",
+          mode: "git",
+          before: { sha: "same" },
+          after: { sha: "same" },
+          steps: [],
+          durationMs: 0,
+        },
+      });
+      const final = (await readRestartSentinel())?.payload;
+      expect(final?.status).toBe("ok");
+      expect(final?.stats?.handoffId).toBeUndefined();
+      expect(getUpdateRun(run.runId)?.status).toBe("running");
+    });
+  });
   it.each(["handoff", "restart", "rollback", "unsafe", "success"] as const)(
     "does not publish a targetless CLI %s notice for a restored runtime",
     async (phase) => {
@@ -413,10 +449,11 @@ describe("control-plane update restart sentinel", () => {
     },
   );
 
-  it("reports a successful same-revision Git run as already current", () => {
+  it("preserves the update owner's same-revision no-op result", () => {
     const payload = buildUpdateRestartSentinelPayload({
       result: {
-        status: "ok",
+        status: "skipped",
+        reason: "already-current",
         mode: "git",
         before: { sha: "aaaaaaaa" },
         after: { sha: "aaaaaaaa" },

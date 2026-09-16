@@ -15,7 +15,7 @@ import {
   recordUpdateRunPhase,
   recordUpdateRunVerification,
 } from "../../infra/update-run-ledger.js";
-import type { UpdateRunResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import { defaultRuntime } from "../../runtime.js";
 import { CLI_NAME } from "../cli-name.js";
 import { formatCliCommand } from "../command-format.js";
@@ -59,7 +59,6 @@ export {
   maybeResumeWindowsTaskAutoStartAfterPackageUpdate,
   maybeStopManagedServiceBeforeMutableUpdate,
   revalidateManagedGatewayServiceAfterUpdate,
-  resolvePreparedGatewayUpdatePolicy,
   shouldBlockMutableUpdateFromGatewayServiceEnv,
   UpdateCommandAbort,
   type PreManagedServiceStop,
@@ -218,6 +217,7 @@ export async function maybeRestartService(params: {
   shouldRestart: boolean;
   result: UpdateRunResult;
   opts: UpdateCommandOptions;
+  recordGatewayVerification?: boolean;
   refreshServiceEnv: boolean;
   serviceRuntimeRefreshRequired?: boolean;
   serviceEnv?: NodeJS.ProcessEnv;
@@ -237,6 +237,7 @@ export async function maybeRestartService(params: {
   onVerified?: (verifiedAtMs: number) => void;
 }): Promise<"ok" | "readiness-pending" | "failed" | "restart-health-failed"> {
   const run = params.opts.run;
+  const verificationRun = params.recordGatewayVerification === false ? undefined : run;
   const executor = run?.executorFence;
   const assertCurrent = () => {
     if (params.opts.run !== run || run?.executorFence !== executor) {
@@ -259,7 +260,7 @@ export async function maybeRestartService(params: {
   const failed = async (outcome: "failed" | "restart-health-failed" = "failed") => {
     // A restart can fail before health verification starts; recovery owns that phase.
     recordPhase("verifying");
-    await recordFailedUpdateGatewayState(params.opts.run, serviceEnv);
+    await recordFailedUpdateGatewayState(verificationRun, serviceEnv);
     assertCurrent();
     return outcome;
   };
@@ -310,6 +311,7 @@ export async function maybeRestartService(params: {
     const verification = await verifyUpdatedGateway({
       result: activation.result,
       opts: activation.opts,
+      recordGatewayVerification: params.recordGatewayVerification,
       serviceEnv: activation.serviceEnv,
       gatewayPort: activation.gatewayPort,
       timeoutMs: activation.timeoutMs,
@@ -443,7 +445,7 @@ export async function maybeRestartService(params: {
             assertCurrent();
             refreshedGatewayHealth =
               health.healthy || health.waitOutcome === "timeout" ? health : undefined;
-            recordUpdateGatewayHealth(params.opts.run, health, activation.gatewayPort);
+            recordUpdateGatewayHealth(verificationRun, health, activation.gatewayPort);
           }
         } catch (err) {
           assertCurrent();

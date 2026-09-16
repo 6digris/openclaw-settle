@@ -1,3 +1,4 @@
+import { render } from "lit";
 import { describe, expect, it, vi } from "vitest";
 import type { GatewaySessionRow, SessionsListResult } from "../api/types.ts";
 import { createTestGatewayClient } from "../test-helpers/gateway-client.ts";
@@ -10,7 +11,8 @@ import {
   resolveSidebarMainSessionKey,
 } from "./app-sidebar-session-navigation-logic.ts";
 import { projectSessionTree } from "./app-sidebar-session-tree.ts";
-import type { SidebarRecentSession } from "./app-sidebar-session-types.ts";
+import type { SidebarRecentSession, SidebarSessionAttention } from "./app-sidebar-session-types.ts";
+import { renderTeamSessionSlots } from "./session-attention-presentation.ts";
 
 it.each([
   ["global before hello", "global", undefined, "global"],
@@ -717,6 +719,83 @@ describe("sidebar navigation lineage ownership", () => {
       ]);
     },
   );
+
+  it("counts repeated requests once across depths while expanded rows keep their own attention", () => {
+    const shared = {
+      kind: "approval",
+      id: "shared",
+      preview: "Review deployment",
+      count: 1,
+      createdAtMs: 1,
+    } as const;
+    const question = {
+      kind: "question",
+      id: "question",
+      preview: "Choose a region",
+      count: 2,
+      createdAtMs: 2,
+    } as const;
+    const later = {
+      kind: "approval",
+      id: "later",
+      preview: "Confirm rollout",
+      count: 1,
+      createdAtMs: 3,
+    } as const;
+    const root = {
+      key: "root",
+      kind: "direct",
+      childSessions: ["child"],
+    } satisfies GatewaySessionRow;
+    const rows: GatewaySessionRow[] = [
+      root,
+      {
+        key: "child",
+        kind: "direct",
+        status: "queued",
+        hasActiveRun: true,
+        childSessions: ["grandchild"],
+      },
+      { key: "grandchild", kind: "direct", status: "failed" },
+    ];
+    const attention: Record<string, SidebarSessionAttention> = {
+      root: { kind: "approval", requests: [shared] },
+      child: { kind: "question", requests: [question] },
+      grandchild: { kind: "approval", requests: [shared, later] },
+    };
+    const [tree] = projectSessionTree({
+      roots: [root],
+      rowsByKey: new Map(rows.map((row) => [row.key, row])),
+      loadingChildKeys: new Set(),
+      resolveAttention: () => ({ kind: "none" }),
+      toSidebarSession: (row, isChild) => ({
+        ...projectSidebarSession(row),
+        isChild: isChild === true,
+        attention: attention[row.key]!,
+      }),
+    });
+    expect(tree).toMatchObject({
+      ownAttention: attention.root,
+      runningChildCount: 1,
+      queuedChildCount: 1,
+      failedChildCount: 1,
+      attention: { kind: "approval", requests: [shared, question, later] },
+    });
+    const container = document.createElement("div");
+    for (const [row, includeChildren, label] of [
+      [tree!, true, "2 requests need approval\nReview deployment\n+1 more"],
+      [tree!, false, "Waiting for approval\nReview deployment"],
+      [tree!.children[0]!, false, "2 questions need your answer\nChoose a region\n+1 more"],
+    ] as const) {
+      render(
+        renderTeamSessionSlots([row], includeChildren, row.childSessionKeys.length),
+        container,
+      );
+      expect(container.querySelector("[data-session-attention]")?.getAttribute("aria-label")).toBe(
+        label,
+      );
+    }
+  });
 
   it("walks a directly opened child through its navigation parent, not its controller", async () => {
     const knownRows = new Map(

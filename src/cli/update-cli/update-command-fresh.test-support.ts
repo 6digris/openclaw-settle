@@ -72,12 +72,18 @@ export function installFreshUpdateFixture() {
       pkgOwnership: createFreeBsdPkgOwnershipInspection(5_000),
     }));
     vi.spyOn(servicePlan, "isGatewayServiceManagementAllowedForUpdate").mockReturnValue(false);
-    vi.spyOn(databaseContext, "inspectUpdateDatabaseContexts").mockImplementation(async () => ({
-      service: undefined,
-      services: new Map(),
-      contexts: [await captureTargetDatabaseSchemaContext(process.env)],
-      managedEnv: undefined,
-    }));
+    vi.spyOn(databaseContext, "inspectUpdateDatabaseContexts").mockImplementation(
+      async ({ roots, scope = "installation" }) => {
+        const context = await captureTargetDatabaseSchemaContext(process.env);
+        return {
+          scope,
+          roots,
+          profiles: [{ root: fixture.root, context }],
+          contexts: [context],
+          externalConsumers: [],
+        };
+      },
+    );
     vi.spyOn(shared, "resolveGlobalManager").mockResolvedValue("npm");
     vi.spyOn(shared, "resolveTargetVersion").mockResolvedValue("2026.9.2");
     vi.spyOn(updateGlobal, "createGlobalInstallEnv").mockResolvedValue({ ...process.env });

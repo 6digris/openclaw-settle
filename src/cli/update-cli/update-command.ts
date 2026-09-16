@@ -2,13 +2,14 @@ import { randomUUID } from "node:crypto";
 import { theme } from "../../../packages/terminal-core/src/theme.js";
 import { resolveConfigPath } from "../../config/paths.js";
 import { resolvePathViaExistingAncestorSync } from "../../infra/boundary-path.js";
-import { resolveUpdateFinalizationTimeoutMs } from "../../infra/update-finalization-budget.js";
 import { canResolveRegistryVersionForPackageTarget } from "../../infra/update-global.js";
 import { finishUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import { DEFAULT_UPDATE_STEP_TIMEOUT_MS } from "../../infra/update-run-timeouts.js";
+import { loadInstalledPluginIndexInstallRecords } from "../../plugins/installed-plugin-index-records.js";
 import { defaultRuntime } from "../../runtime.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../../state/openclaw-state-db-contract.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
+import { assertOpenClawStateWriteAllowedAtPath } from "../../state/openclaw-state-ownership.js";
 import { VERSION } from "../../version.js";
 import { createUpdateProgress, type UpdateDisplayProgress } from "./progress.js";
 import {
@@ -403,7 +404,6 @@ async function updateCommandInternal(
     root,
     updateInstallKind,
     configSnapshot,
-    legacyConfigPlan,
     storedChannel,
     channel,
     switchToGit,
@@ -412,15 +412,10 @@ async function updateCommandInternal(
     currentVersion,
     targetVersion,
     downgradeRisk,
-    packageInstallSpec,
-    packageInstallEnv,
     packageInstallTarget,
     packageAlreadyCurrent,
-    packageTargetSchemaVersions,
     packageRuntimeTarget,
-    managedServiceRootRedirect,
     managedServiceNodeRunner,
-    devTarget,
   } = target;
   let { packageUpdateNodeRunner } = target;
   const reportContext = {
@@ -472,55 +467,8 @@ async function updateCommandInternal(
     });
   }
 
-  const currentCoreFinalization = {
-    legacyConfigPlan,
-    root,
-    previousInstallRoot: discoveredRoot,
-    requestedChannel,
-    storedChannel,
-    channel,
-    shouldRestart,
-    updateStepTimeoutMs,
-    invocationCwd,
-    startedAt,
-    controlPlaneUpdateSentinelMeta,
-    packageUpdateNodeRunner: packageUpdateNodeRunner ?? managedServiceNodeRunner,
-    packageInstallSpec,
-    runtimeTarget: packageRuntimeTarget,
-    managedServiceRootRedirect,
-    stop: presentation.stop,
-    refuseUpdate,
-  };
-  const pluginCount = Object.keys(configSnapshot.config.plugins?.entries ?? {}).length;
-  const activateCurrentCore = async () => {
-    run.executorFence = await executor.enter(root, {
-      preflight: true,
-      activationTimeoutMs: (run.activationTimeoutMs ??= await resolveUpdateFinalizationTimeoutMs(
-        updateStepTimeoutMs,
-        { env: run.env, pluginCount },
-      )),
-    });
-  };
-  if (packageAlreadyCurrent) {
-    await activateCurrentCore();
-    const { finishAlreadyCurrentUpdate } = await import("./update-execution.runtime.js");
-    return await finishAlreadyCurrentUpdate({
-      ...currentCoreFinalization,
-      opts,
-      result: {
-        status: "skipped",
-        mode: packageInstallTarget?.manager ?? "unknown",
-        root,
-        reason: "already-current",
-        before: { version: currentVersion },
-        after: { version: currentVersion },
-        steps: [],
-        durationMs: Date.now() - startedAt,
-      },
-    });
-  }
-
   if (
+    !packageAlreadyCurrent &&
     downgradeRisk &&
     !opts.yes &&
     !initialization?.downgradeConfirmed &&
@@ -535,7 +483,7 @@ async function updateCommandInternal(
     );
   }
 
-  if (updateInstallKind === "package") {
+  if (updateInstallKind === "package" && !packageAlreadyCurrent) {
     const runtimePreflight = await resolvePackageRuntimePreflight({
       root,
       shouldRestart,
@@ -568,57 +516,87 @@ async function updateCommandInternal(
   const {
     executeMutableUpdate,
     finishUpdate,
-    finishAlreadyCurrentUpdate,
     continueMigratedUpdateInFreshProcess,
     inspectActivatedUpdateState,
   } = await import("./update-execution.runtime.js");
 
   const progress = createUpdateRunProgress(run, presentation.progress);
-  let preUpdatePluginInstallRecords: Awaited<ReturnType<typeof prepareMutableUpdateRuntime>> = {};
-  let mutableUpdatePrepared = false;
-  const prepareMutableUpdate = async (env?: NodeJS.ProcessEnv, activationTimeoutMs?: number) => {
-    if (!mutableUpdatePrepared) {
+  const preparedProfiles = new Map<
+    string,
+    Awaited<ReturnType<typeof prepareMutableUpdateRuntime>>
+  >();
+  const prepareMutableUpdate = async (
+    env?: NodeJS.ProcessEnv,
+    activationTimeoutMs?: number,
+    preflight?: true,
+  ) => {
+    if (!preflight && !preparedProfiles.size) {
       assertUpdatePackageActivationAdmission(root);
     }
-    const fence = await executor.enter(root, { activationTimeoutMs });
+    const fence = await executor.enter(root, {
+      activationTimeoutMs,
+      ...(preflight ? { preflight } : {}),
+    });
     run.executorFence = fence;
     run.activationTimeoutMs ??= activationTimeoutMs;
     fence.assertCurrent();
-    if (mutableUpdatePrepared) {
-      return;
+    if (preflight) {
+      await assertOpenClawStateWriteAllowedAtPath({
+        databasePath: resolveOpenClawStateSqlitePath(env ?? run.env),
+        env: env ?? run.env,
+      });
+      fence.assertCurrent();
+      const records = await loadInstalledPluginIndexInstallRecords({ env: env ?? run.env });
+      fence.assertCurrent();
+      return records;
+    }
+    const key = resolveOpenClawStateSqlitePath(env ?? run.env);
+    const prepared = preparedProfiles.get(key);
+    if (prepared) {
+      return prepared;
     }
     assertUpdatePackageActivationAdmission(captureUpdateCommandExecutorAuthority(fence).installKey);
-    preUpdatePluginInstallRecords = await prepareMutableUpdateRuntime(env, fence);
-    mutableUpdatePrepared = true;
+    const records = await prepareMutableUpdateRuntime(env, fence);
+    preparedProfiles.set(key, records);
+    return records;
   };
 
   const execution = await executeMutableUpdate({
-    legacyConfigPlan,
-    root,
+    ...target,
     installKind,
-    updateInstallKind,
-    switchToGit,
     timeoutMs,
     updateStepTimeoutMs,
     startedAt,
     progress,
     stop: presentation.stop,
-    channel,
-    tag,
     opts,
     shouldRestart,
-    devTarget,
-    packageInstallSpec,
-    packageInstallEnv,
-    packageInstallTarget,
     stagedPackage: initialization?.stagedPackage,
-    packageTargetSchemaVersions,
     packageTargetVersion: targetVersion ?? undefined,
     packageUpdateNodeRunner,
-    managedServiceNodeRunner,
-    managedServiceRootRedirect,
     invocationCwd,
     recoveryState,
+    initialProfile: {
+      configSnapshot,
+      requestedChannel,
+      storedChannel,
+      ownedManagedUpdateEnv: run.env,
+      preUpdatePluginInstallRecords: {},
+    },
+    ...(packageAlreadyCurrent
+      ? {
+          alreadyCurrentResult: {
+            status: "skipped" as const,
+            mode: packageInstallTarget?.manager ?? "unknown",
+            root,
+            reason: "already-current",
+            before: { version: currentVersion },
+            after: { version: currentVersion },
+            steps: [],
+            durationMs: Date.now() - startedAt,
+          },
+        }
+      : {}),
     prepareMutableUpdate,
     onActivation: () => {
       presentation.suspend();
@@ -629,62 +607,50 @@ async function updateCommandInternal(
   if (!execution) {
     return;
   }
-  const { ownedManagedUpdateContext, recoveryEnv, ...executionState } = execution;
+  const { recoveryEnv, ...executionState } = execution;
+  const origin = execution.profiles[0]!;
   const { result } = executionState;
   result.runId = run.runId;
-  if (result.status === "skipped" && result.reason === "already-current") {
-    await activateCurrentCore();
-    presentation.stop();
-    return await finishAlreadyCurrentUpdate({
-      ...currentCoreFinalization,
-      root: result.root ?? root,
-      opts,
-      result,
-      ownedManagedUpdateEnv: ownedManagedUpdateContext?.env,
-      packageUpdateNodeRunner: packageUpdateNodeRunner ?? managedServiceNodeRunner,
-    });
-  }
   recoveryState.triageTarget.root = result.root ?? root;
   recoveryState.triageTarget.failureResult = result;
   recoveryState.triageTarget.env =
-    recoveryEnv ?? ownedManagedUpdateContext?.env ?? recoveryState.triageTarget.env;
+    recoveryEnv ?? origin.ownedManagedUpdateEnv ?? recoveryState.triageTarget.env;
   presentation.stop();
   const finalization = {
     ...executionState,
     expectedVersion: targetVersion ?? undefined,
-    root,
+    root: execution.coreAlreadyCurrent ? (result.root ?? root) : root,
     previousInstallRoot: discoveredRoot,
-    installKindChanged: switchToGit || switchToPackage,
-    configSnapshot: ownedManagedUpdateContext?.configSnapshot ?? configSnapshot,
-    requestedChannel,
-    storedChannel,
+    installKindChanged: !execution.coreAlreadyCurrent && (switchToGit || switchToPackage),
     channel,
-    downgradeRisk,
+    downgradeRisk: !execution.coreAlreadyCurrent && downgradeRisk,
     shouldRestart,
     opts,
-    ownedManagedUpdateEnv: ownedManagedUpdateContext?.env,
     controlPlaneUpdateSentinelMeta,
-    preUpdatePluginInstallRecords:
-      ownedManagedUpdateContext?.pluginInstallRecords ?? preUpdatePluginInstallRecords,
     startedAt,
-    packageUpdateNodeRunner,
+    packageUpdateNodeRunner: execution.coreAlreadyCurrent
+      ? (origin.packageUpdateNodeRunner ?? packageUpdateNodeRunner)
+      : packageUpdateNodeRunner,
     updateStepTimeoutMs,
     invocationCwd,
   };
-  const rollbackBlockedReason = opts.recovery
-    ? undefined
-    : await inspectActivatedUpdateState({
-        result,
-        root,
-        packageUpdateNodeRunner,
-        schemaVersions: execution.schemaVersions,
-        candidateSchemaVersions: execution.candidateSchemaVersions,
-        config: finalization.configSnapshot.config,
-        env: ownedManagedUpdateContext?.env ?? run.env,
-        timeoutMs: updateStepTimeoutMs,
-      });
+  let rollbackBlockedReason: "state-migrated-no-rollback" | "rollback-state-unverified" | undefined;
+  for (const profile of execution.profiles) {
+    const reason = await inspectActivatedUpdateState({
+      result,
+      root,
+      packageUpdateNodeRunner,
+      schemaVersions: profile.schemaVersions,
+      candidateSchemaVersions: execution.candidateSchemaVersions,
+      config: profile.configSnapshot.config,
+      env: profile.ownedManagedUpdateEnv ?? run.env,
+      timeoutMs: updateStepTimeoutMs,
+    });
+    rollbackBlockedReason =
+      reason === "rollback-state-unverified" ? reason : (rollbackBlockedReason ?? reason);
+  }
   run.executorFence?.assertCurrent();
-  if (opts.recovery || rollbackBlockedReason) {
+  if (rollbackBlockedReason) {
     // Only candidate code may reopen migrated state, including during reporting and cleanup.
     recoveryState.ledgerHandoffOwned = true;
     const continued = await continueMigratedUpdateInFreshProcess(
@@ -692,6 +658,7 @@ async function updateCommandInternal(
       progress.pendingSteps,
     );
     recoveryState.ledgerHandoffCompleted = true;
+    opts.onResult?.(continued.result);
     if (continued.exitCode !== 0) {
       throw new UpdateCommandFailure(continued.result, continued.exitCode, undefined, {
         automaticTriage: continued.automaticTriage,

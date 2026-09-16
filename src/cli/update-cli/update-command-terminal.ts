@@ -8,14 +8,17 @@ import { getUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledge
 import { assertUpdateRecoveryAdmission } from "../../infra/update-run-recovery-admission.js";
 import { isUpdateGatewayReadinessPending } from "../../infra/update-run-step.js";
 import { readCurrentGitUpdateRecovery } from "../../infra/update-runner-git-recovery.js";
-import type { UpdateRunResult, UpdateStepResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult, UpdateStepResult } from "../../infra/update-runner-types.js";
 import { defaultRuntime } from "../../runtime.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { exitCliAfterOutput } from "../one-shot-exit.js";
 import { printResult } from "./progress.js";
 import { parseUpdateTimeoutMs, type UpdateCommandOptions } from "./shared.js";
 import { UpdateActivationTimeoutError } from "./update-command-activation.js";
-import type { FinishUpdateParams } from "./update-command-finish-types.js";
+import type {
+  FinishUpdateParams,
+  ProfileFinishUpdateParams,
+} from "./update-command-finish-types.js";
 import { UpdateCommandRecoveryPendingError } from "./update-command-recovery.js";
 import {
   recordUpdateResultNextAction,
@@ -52,7 +55,7 @@ export function hasDeferredUpdateCommandTerminalResult(run: Run): boolean {
 /** Enclose the real executor so its final checks and release precede terminal output. */
 export async function withUpdateCommandTerminalResult<T>(
   operation: (registerRun: (run: Run) => void) => Promise<T>,
-  opts: Pick<UpdateCommandOptions, "json"> = {},
+  opts: Pick<UpdateCommandOptions, "json" | "onResult"> = {},
 ): Promise<T> {
   const owner: { publish?: Publisher } = {};
   let run: Run | undefined;
@@ -102,6 +105,7 @@ export async function withUpdateCommandTerminalResult<T>(
   }
   if (owner.publish) {
     const result = await owner.publish("error" in outcome ? outcome.error : undefined);
+    opts.onResult?.(result);
     if ("error" in outcome) {
       const failure = outcome.error;
       if (
@@ -134,7 +138,8 @@ export async function withUpdateCommandTerminalResult<T>(
 
 /** Resolve diagnostic output without reusing a released mutation fence. */
 export async function resolveSettledUpdateCommandResult(
-  params: Pick<FinishUpdateParams, "opts" | "ownedManagedUpdateEnv" | "root">,
+  params: Pick<ProfileFinishUpdateParams, "opts" | "ownedManagedUpdateEnv" | "root"> &
+    Partial<Pick<FinishUpdateParams, "profiles">>,
   pendingResult: UpdateRunResult,
   failure?: unknown,
 ): Promise<{ result: UpdateRunResult; settlementFailed: boolean }> {
@@ -168,12 +173,17 @@ export async function resolveSettledUpdateCommandResult(
   // The mutation owner is now closed. This is diagnostic publication only,
   // never authority to reopen displaced state or replace another terminal row.
   try {
-    const env = params.ownedManagedUpdateEnv ?? params.opts.run?.env;
-    // Keep the first target stable if selectors change during admission.
-    const targetPath = resolveOpenClawStateSqlitePath(env);
-    await assertUpdateRecoveryAdmission({ env, path: targetPath });
+    const admittedPaths = new Set<string>();
+    for (const profile of params.profiles ?? [params]) {
+      const env = profile.ownedManagedUpdateEnv ?? params.opts.run?.env;
+      const targetPath = resolveOpenClawStateSqlitePath(env);
+      if (!admittedPaths.has(targetPath)) {
+        await assertUpdateRecoveryAdmission({ env, path: targetPath });
+        admittedPaths.add(targetPath);
+      }
+    }
     if (params.opts.run) {
-      if (resolveOpenClawStateSqlitePath(params.opts.run.env) !== targetPath) {
+      if (!admittedPaths.has(resolveOpenClawStateSqlitePath(params.opts.run.env))) {
         await assertUpdateRecoveryAdmission({ env: params.opts.run.env });
       }
       const prior = getUpdateRun(params.opts.run.runId, { env: params.opts.run.env });
@@ -379,7 +389,7 @@ async function publishPreMutationUpdateOutcome(
 
 /** Write the terminal ledger and its visible result together after settlement. */
 export function publishUpdateCommandTerminalResult(
-  params: Pick<FinishUpdateParams, "opts" | "coreAlreadyCurrent" | "ownedManagedUpdateEnv">,
+  params: Pick<ProfileFinishUpdateParams, "opts" | "coreAlreadyCurrent" | "ownedManagedUpdateEnv">,
   input: UpdateRunResult,
   outcome: { rolledBack: boolean; downtimeMs?: number },
 ): UpdateRunResult {

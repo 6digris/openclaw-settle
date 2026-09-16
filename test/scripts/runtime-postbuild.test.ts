@@ -1344,6 +1344,71 @@ describe("previous release update compatibility", () => {
   }
 
   it.each(
+    [
+      { version: "2026.9.3", importer: "update-command-BOxZcaCa.mjs" },
+      { version: "2026.9.4", importer: "update-command-Cbsq6P3O.mjs" },
+    ].flatMap((release) =>
+      ["exact", "version", "buildId", "commit", "integrity", "importer", "owner", "target"].map(
+        (changed) => ({ ...release, changed }),
+      ),
+    ),
+  )(
+    "omits only verified pre-mutation execution imports ($version, $changed)",
+    ({ version, importer, changed }) => {
+      const release = previousReleaseInventory.releases.find((entry) => entry.version === version);
+      if (!release) {
+        throw new Error(`Missing published fixture identity for ${version}`);
+      }
+      const identity = {
+        version: changed === "version" ? "2026.9.99" : version,
+        buildId: changed === "buildId" ? "different-build" : release.buildId,
+        commit: changed === "commit" ? "0".repeat(40) : release.commit,
+        integrity: changed === "integrity" ? integrity : release.integrity,
+      };
+      const root = createTempDir("update-compat-preload-");
+      const owner =
+        changed === "owner"
+          ? "src/cli/update-cli/another-command.ts"
+          : "src/cli/update-cli/update-command.ts";
+      const target = changed === "target" ? "different.runtime.js" : "update-execution.runtime.js";
+      write(root, "package.json", JSON.stringify({ name: "openclaw", version: identity.version }));
+      write(root, "dist/build-info.json", JSON.stringify(identity));
+      write(
+        root,
+        `dist/${changed === "importer" ? "different-command.mjs" : importer}`,
+        [
+          `//#region ${owner}`,
+          `export async function update() { const { finishAlreadyCurrentUpdate } = await import("./${target}"); return finishAlreadyCurrentUpdate(); }`,
+          'export async function afterSwap() { return (await import("./late-abcdefgh.js")).complete(); }',
+        ].join("\n"),
+      );
+      write(
+        root,
+        `dist/${target}`,
+        "//#region src/cli/update-cli/update-command-noop.ts\nexport function finishAlreadyCurrentUpdate() {}",
+      );
+      write(
+        root,
+        "dist/late-abcdefgh.js",
+        "//#region src/cli/update-cli/complete.ts\nexport function complete() {}",
+      );
+      const recorded = recordUpdateCompatibilityRelease({
+        packageDir: root,
+        integrity: identity.integrity,
+      });
+      expect(recorded.chunks.map((chunk) => chunk.path).sort()).toEqual(
+        changed === "exact" ? ["late-abcdefgh.js"] : [target, "late-abcdefgh.js"].sort(),
+      );
+      expect(recorded.chunks.find((chunk) => chunk.path === "late-abcdefgh.js")?.exports).toEqual([
+        {
+          exported: "complete",
+          origin: { module: "src/cli/update-cli/complete.ts", symbol: "complete" },
+        },
+      ]);
+    },
+  );
+
+  it.each(
     previousReleaseInventory.releases.flatMap((release) =>
       ["exact", "version", "buildId", "commit", "integrity", "chunk", "owner", "symbol"].map(
         (changed) => ({ release, changed }),

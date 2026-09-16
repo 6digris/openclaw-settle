@@ -23,13 +23,10 @@ export const sentinelState: {
   capturedPayload?: RestartSentinelPayload;
   restartSentinelWriteError: Error | null;
 } = { restartSentinelWriteError: null };
-
-export const runGatewayUpdateMock =
-  vi.fn<typeof import("../../infra/update-runner.js").runGatewayUpdate>();
-export const runGatewayUpdatePreflightMock =
-  vi.fn<typeof import("../../infra/update-runner.js").runGatewayUpdatePreflight>();
 export const resolveUpdateInstallSurfaceMock =
-  vi.fn<typeof import("../../infra/update-runner.js").resolveUpdateInstallSurface>();
+  vi.fn<
+    typeof import("../../infra/update-runner-install-surface.js").resolveUpdateInstallSurface
+  >();
 export const initializeGatewayUpdateStatusMock =
   vi.fn<typeof import("../../infra/update-startup.js").initializeGatewayUpdateStatus>();
 const getLatestUpdateRestartSentinelMock = vi.fn<() => RestartSentinelPayload | null>(() => null);
@@ -228,9 +225,8 @@ export const scheduleGatewaySigusr1RestartMock = vi.fn(
   ) => ({ scheduled: true }),
 );
 
-export const runPostCoreFinalizeAfterGatewayUpdateMock = vi.fn<
-  typeof import("../../infra/update-post-core-finalize.js").runPostCoreFinalizeAfterGatewayUpdate
->(async () => ({ status: "skipped", reason: "not-git-update" }));
+export const readGatewayOwnerLeaseMock =
+  vi.fn<typeof import("../../infra/gateway-owner-lease.js").readGatewayOwnerLease>();
 
 export type UpdateRunPayload = {
   runId: string;
@@ -319,23 +315,20 @@ vi.mock("../../infra/update-campaign.js", () => ({
   gatewayUpdateCampaign: { adopt: adoptUpdateCampaignMock },
 }));
 
-vi.mock("../../infra/update-runner.js", () => ({
+vi.mock("../../infra/update-runner-install-surface.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../infra/update-runner-install-surface.js")>()),
   resolveUpdateInstallSurface: resolveUpdateInstallSurfaceMock,
-  runGatewayUpdate: runGatewayUpdateMock,
-  runGatewayUpdatePreflight: runGatewayUpdatePreflightMock,
 }));
 
-// Keep the real `foldPostCoreFinalizeIntoResult` so the restart-gate behavior on
-// finalize failure is exercised; only stub the subprocess-spawning finalizer.
-vi.mock("../../infra/update-post-core-finalize.js", async () => {
-  const actual = await vi.importActual<typeof import("../../infra/update-post-core-finalize.js")>(
-    "../../infra/update-post-core-finalize.js",
-  );
-  return {
-    ...actual,
-    runPostCoreFinalizeAfterGatewayUpdate: runPostCoreFinalizeAfterGatewayUpdateMock,
-  };
-});
+vi.mock("../../daemon/gateway-entrypoint.js", async (original) => ({
+  ...(await original<typeof import("../../daemon/gateway-entrypoint.js")>()),
+  resolveGatewayInstallEntrypoint: async (root: string) => `${root}/dist/index.js`,
+}));
+
+vi.mock("../../infra/gateway-owner-lease.js", async (original) => ({
+  ...(await original<typeof import("../../infra/gateway-owner-lease.js")>()),
+  readGatewayOwnerLease: readGatewayOwnerLeaseMock,
+}));
 
 vi.mock("../../../packages/gateway-protocol/src/index.js", () => ({
   validateUpdateRunsGetParams: () => true,
@@ -415,16 +408,6 @@ beforeEach(() => {
   });
   detectRespawnSupervisorMock.mockReset();
   detectRespawnSupervisorMock.mockReturnValue(null);
-  runGatewayUpdateMock.mockReset();
-  runGatewayUpdateMock.mockResolvedValue({
-    status: "ok",
-    mode: "npm",
-    after: { version: "2.0.0" },
-    steps: [],
-    durationMs: 100,
-  });
-  runGatewayUpdatePreflightMock.mockReset();
-  runGatewayUpdatePreflightMock.mockResolvedValue(undefined);
   resolveUpdateInstallSurfaceMock.mockReset();
   resolveUpdateInstallSurfaceMock.mockImplementation(async ({ root, installKind }) =>
     root && installKind === "git"
@@ -456,11 +439,21 @@ beforeEach(() => {
   }));
   scheduleGatewaySigusr1RestartMock.mockClear();
   scheduleGatewaySigusr1RestartMock.mockReturnValue({ scheduled: true });
-  runPostCoreFinalizeAfterGatewayUpdateMock.mockClear();
-  runPostCoreFinalizeAfterGatewayUpdateMock.mockResolvedValue({
-    status: "skipped",
-    reason: "not-git-update",
-  });
+  readGatewayOwnerLeaseMock.mockReset().mockImplementation(() =>
+    detectRespawnSupervisorMock.mock.results.at(-1)?.value
+      ? undefined
+      : {
+          owner: "foreground-owner",
+          pid: process.pid,
+          host: "fixture-host",
+          startedAt: 1,
+          port: 18789,
+          mode: "foreground",
+          supervisor: null,
+          state: "live",
+          expired: false,
+        },
+  );
 });
 
 export async function invokeUpdateRun(

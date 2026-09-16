@@ -82,6 +82,35 @@ openclaw --profile ops gateway install --port 19789
 
 Use the rescue-bot quickstart for a fallback operator lane. Use the general profile pattern for multiple long-lived Gateways across different channels, tenants, workspaces, or operational roles.
 
+## Updating a shared installation
+
+When profiles share one installation, the current updater discovers native user
+services for the invoking account and verifies their effective launchers before
+coordinating the update. On Linux it also inspects the standard systemd system-unit
+directories. A system service using the same installation requires its deployment
+owner to coordinate the update; the user-service updater refuses before replacing
+the shared runtime. A service proven to use another installation is left alone.
+
+macOS coordination covers the account's LaunchAgents. Custom system LaunchDaemons
+and external supervisors retain their own deployment workflow. The scan covers
+supported native service locations. Have the deployment owner account for
+foreground processes, unreadable custom definitions without identifiable Gateway
+names, and services in other locations.
+
+On Windows, discovery reads Task Scheduler registration and the actual supported
+CMD or generated VBS launcher, including custom task names and folders. An unknown
+registration or an unreadable identifiable Gateway launcher requires inspection;
+only a proven missing task can use the existing Startup-folder fallback.
+
+Unreadable unrelated service files do not block updates. Unreadable recognizable
+Gateway definitions, the selected custom service definition, or an entire service
+directory still require inspection before the updater can proceed. Readable custom
+service names are discovered from their Gateway command or service markers.
+
+An older installed updater runs its own coordination logic for the first upgrade.
+Installing a newer target does not add sibling-service handling to that running
+updater. Have the deployment owner stop the affected profiles for that first upgrade.
+
 ## Isolation checklist
 
 Keep these unique per Gateway instance:

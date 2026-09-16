@@ -21,7 +21,7 @@ import {
 } from "../../infra/update-run-ledger.js";
 import { defaultRuntime } from "../../runtime.js";
 import { finishUpdate, type FinishUpdateParams } from "./update-command-post-update.js";
-import { taskRecovery } from "./update-command-post-update.test-support.js";
+import { successfulPluginUpdate, taskRecovery } from "./update-command-post-update.test-support.js";
 import { repairUpdateService } from "./update-command-repair-service.js";
 import { revalidateManagedGatewayServiceAfterUpdate } from "./update-command-service-maintenance.js";
 import { verifyUpdatedGateway } from "./update-command-verification.js";
@@ -42,7 +42,7 @@ const mocks = vi.hoisted(() => ({
   readyz: vi.fn(),
   print: vi.fn(),
   revalidate: vi.fn(),
-  converge: vi.fn(),
+  converge: vi.fn<typeof import("./update-command-convergence.js").convergeUpdatePlugins>(),
   readService: vi.fn<typeof import("../../daemon/service.js").readGatewayServiceState>(),
   execSchtasks: vi.fn<typeof import("../../daemon/schtasks-exec.js").execSchtasks>(),
 }));
@@ -155,42 +155,46 @@ function fixture(): FinishUpdateParams {
     },
     root: "/candidate",
     installKindChanged: false,
-    configSnapshot: {
-      path: configPath,
-      exists: false,
-      raw: null,
-      parsed: {},
-      sourceConfig: asResolvedSourceConfig({}),
-      resolved: asResolvedSourceConfig({}),
-      valid: true,
-      runtimeConfig: asRuntimeConfig({}),
-      config: asRuntimeConfig({}),
-      issues: [],
-      warnings: [],
-      legacyIssues: [],
-    },
-    requestedChannel: null,
-    storedChannel: "stable",
     channel: "stable",
     downgradeRisk: false,
     shouldRestart: true,
     opts: { json: true, run },
-    ownedManagedUpdateEnv: env,
-    preManagedServiceStop: {
-      stopped: true,
-      running: true,
-      inspected: true,
-      runtimeInspected: true,
-      serviceEnv: env,
-      serviceUpdateVerdict: {
-        kind: "owned",
-        root: "/candidate",
-        fingerprint: "fixture",
-        refreshDefinition: false,
-      },
-    },
     controlPlaneUpdateSentinelMeta: null,
-    preUpdatePluginInstallRecords: {},
+    profiles: [
+      {
+        configSnapshot: {
+          path: configPath,
+          exists: false,
+          raw: null,
+          parsed: {},
+          sourceConfig: asResolvedSourceConfig({}),
+          resolved: asResolvedSourceConfig({}),
+          valid: true,
+          runtimeConfig: asRuntimeConfig({}),
+          config: asRuntimeConfig({}),
+          issues: [],
+          warnings: [],
+          legacyIssues: [],
+        },
+        requestedChannel: null,
+        storedChannel: "stable",
+        ownedManagedUpdateEnv: env,
+        preManagedServiceStop: {
+          stopped: true,
+          running: true,
+          inspected: true,
+          runtimeInspected: true,
+          serviceEnv: env,
+          serviceUpdateVerdict: {
+            kind: "owned",
+            root: "/candidate",
+            fingerprint: "fixture",
+            refreshDefinition: false,
+          },
+        },
+        preUpdatePluginInstallRecords: {},
+      },
+    ],
     startedAt: Date.now(),
     updateStepTimeoutMs: 1_000,
     rollbackBlockedReason: "state-migrated-no-rollback",
@@ -210,7 +214,7 @@ describe("post-activation repair after rollback refusal or failure", () => {
       env: process.env,
       command: { programArguments: ["node", "/candidate/dist/entry.js", "gateway"] },
     });
-    mocks.converge.mockImplementation(async (params: { result: unknown }) => ({
+    mocks.converge.mockImplementation(async (params) => ({
       resultWithPostUpdate: params.result,
     }));
     mocks.revalidate.mockResolvedValue({
@@ -252,8 +256,8 @@ describe("post-activation repair after rollback refusal or failure", () => {
       params.result.root = packageRoot;
       params.packageTransaction = transaction;
       const windowsRecovery = taskRecovery();
-      params.preManagedServiceStop!.windowsTaskAutoStartRecovery = windowsRecovery;
-      params.preManagedServiceStop!.stoppedAtMs = Date.now() - 90_000;
+      params.profiles[0]!.preManagedServiceStop!.windowsTaskAutoStartRecovery = windowsRecovery;
+      params.profiles[0]!.preManagedServiceStop!.stoppedAtMs = Date.now() - 90_000;
       const complete = vi.spyOn(transaction, "complete");
       const observation =
         "Gateway readiness exceeded 90000ms; service running (PID 7376), waiting for Gateway listener. Gateway left starting.";
@@ -327,14 +331,230 @@ describe("post-activation repair after rollback refusal or failure", () => {
     },
   );
 
+  it.each(["healthy", "hard-failed", "code-safe-hard-failed"] as const)(
+    "preserves a pending sibling and compensates only an unverified Windows profile (origin=%s)",
+    async (originOutcome) => {
+      const params = fixture();
+      params.rollbackBlockedReason = undefined;
+      const run = params.opts.run!;
+      const { transaction, packageRoot } = await createRetainedPackageSwap(
+        dirs.make("group-readiness-"),
+      );
+      params.root = packageRoot;
+      params.result.root = packageRoot;
+      params.packageTransaction = transaction;
+      const completePackage = vi.spyOn(transaction, "complete");
+      const origin = params.profiles[0]!;
+      const enabled = { origin: false, ops: false };
+      const windows = (name: keyof typeof enabled) => ({
+        ...taskRecovery(),
+        restore: vi.fn(async () => {
+          enabled[name] = true;
+        }),
+        complete: vi.fn(async (safe = true) => {
+          if (!safe) enabled[name] = false;
+        }),
+      });
+      const originWindows = windows("origin");
+      const opsWindows = windows("ops");
+      origin.ownedManagedUpdateEnv = { ...run.env, OPENCLAW_PROFILE: "origin" };
+      origin.preManagedServiceStop = {
+        ...origin.preManagedServiceStop!,
+        serviceEnv: origin.ownedManagedUpdateEnv,
+        windowsTaskAutoStartRecovery: originWindows,
+      };
+      const opsEnv = {
+        ...run.env,
+        OPENCLAW_PROFILE: "ops",
+        OPENCLAW_STATE_DIR: path.join(run.env.OPENCLAW_STATE_DIR!, "ops"),
+        OPENCLAW_CONFIG_PATH: path.join(run.env.OPENCLAW_STATE_DIR!, "ops", "openclaw.json"),
+      };
+      params.profiles.push({
+        ...origin,
+        ownedManagedUpdateEnv: opsEnv,
+        configSnapshot: { ...origin.configSnapshot, path: opsEnv.OPENCLAW_CONFIG_PATH },
+        preManagedServiceStop: {
+          ...origin.preManagedServiceStop,
+          serviceEnv: opsEnv,
+          windowsTaskAutoStartRecovery: opsWindows,
+        },
+      });
+      mocks.restart.mockImplementation(async ({ result, onVerified, onVerificationFailure }) => {
+        const pending = process.env.OPENCLAW_PROFILE === "ops";
+        const failed = !pending && originOutcome === "hard-failed";
+        const step = {
+          name: "gateway verification",
+          command: "gateway verification",
+          cwd: packageRoot,
+          durationMs: pending ? 90_000 : 1,
+          exitCode: failed ? 1 : 0,
+          ...(pending
+            ? {
+                termination: "timeout" as const,
+                advisory: {
+                  kind: "recoverable-maintenance" as const,
+                  message: "Ops Gateway left starting with readiness unverified.",
+                },
+              }
+            : {}),
+        };
+        const index = result.steps.findIndex((entry) => entry.name === step.name);
+        if (index < 0) result.steps.push(step);
+        else result.steps[index] = step;
+        if (pending) return "readiness-pending";
+        if (failed) {
+          onVerificationFailure?.("restart-unhealthy");
+          return "restart-health-failed";
+        }
+        onVerified?.(Date.now());
+        return "ok";
+      });
+      if (originOutcome === "code-safe-hard-failed") {
+        // The earlier owner restored code and attempted autostart; its aggregate
+        // recovery metadata cannot replace the individual readiness outcomes.
+        await originWindows.restore();
+        await opsWindows.restore();
+        params.result.status = "error";
+        params.result.reason = "restart-unhealthy";
+        params.result.recovery = {
+          serviceRestartSafe: true,
+          packageRollbackVerified: true,
+          version: "1.0.0",
+          service: "healthy",
+        };
+        params.result.steps.push(
+          {
+            name: "profile 2: gateway verification",
+            command: "gateway verification",
+            cwd: packageRoot,
+            durationMs: 90_000,
+            exitCode: 0,
+            termination: "timeout",
+            advisory: {
+              kind: "recoverable-maintenance",
+              message: "Ops Gateway left starting with readiness unverified.",
+            },
+          },
+          {
+            name: "gateway verification",
+            command: "gateway verification",
+            cwd: packageRoot,
+            durationMs: 1,
+            exitCode: 1,
+          },
+        );
+      }
+      const finished = finishUpdate(params);
+      if (originOutcome === "healthy") {
+        await expect(finished).resolves.toMatchObject({
+          status: "skipped",
+          reason: "gateway-readiness-unverified",
+        });
+      } else {
+        await expect(finished).rejects.toMatchObject({
+          result: { status: "error", reason: "restart-unhealthy" },
+        });
+      }
+      expect(mocks.restart).toHaveBeenCalledTimes(
+        originOutcome === "code-safe-hard-failed" ? 0 : 2,
+      );
+      expect(mocks.rollback).not.toHaveBeenCalled();
+      expect(mocks.repair).not.toHaveBeenCalled();
+      expect(mocks.stop).not.toHaveBeenCalled();
+      expect(completePackage).not.toHaveBeenCalled();
+      expect(enabled).toEqual({ ops: true, origin: originOutcome === "healthy" });
+      expect(opsWindows.complete).not.toHaveBeenCalledWith(false);
+      expect(originWindows.complete).toHaveBeenCalledWith(originOutcome === "healthy");
+      expect(getUpdateRun(run.runId, { env: run.env })).toMatchObject({
+        status: originOutcome === "healthy" ? "skipped" : "failed",
+      });
+      expect(params.result.steps).toContainEqual(
+        expect.objectContaining({
+          name: "profile 2: gateway verification",
+          termination: "timeout",
+        }),
+      );
+      await expect(fs.stat(transaction.backupRoot)).resolves.toBeDefined();
+    },
+  );
+
+  it("does not launch another repair when rollback reports a starting Gateway", async () => {
+    const params = fixture();
+    params.rollbackBlockedReason = undefined;
+    const { transaction, packageRoot } = await createRetainedPackageSwap(
+      dirs.make("rollback-starting-finalizer-"),
+    );
+    params.root = packageRoot;
+    params.result.root = packageRoot;
+    params.packageTransaction = transaction;
+    const completion = vi.spyOn(transaction, "complete");
+    const windowsRecovery = taskRecovery();
+    params.profiles[0]!.preManagedServiceStop!.windowsTaskAutoStartRecovery = windowsRecovery;
+    mocks.rollback.mockImplementation(async ({ result }) => ({
+      result: {
+        ...result,
+        recovery: { serviceRestartSafe: true, packageRollbackVerified: true, version: "1.0.0" },
+        steps: [
+          ...result.steps,
+          {
+            name: "rollback gateway verification",
+            command: "gateway verification",
+            cwd: packageRoot,
+            durationMs: 90_000,
+            exitCode: 0,
+            termination: "timeout",
+            advisory: {
+              kind: "recoverable-maintenance",
+              message: "Restored Gateway left starting with readiness unverified.",
+            },
+          },
+        ],
+      },
+      rolledBack: false,
+    }));
+    await expect(finishUpdate(params)).rejects.toMatchObject({
+      result: { status: "error", reason: "readyz-unhealthy" },
+    });
+    expect(mocks.rollback).toHaveBeenCalledOnce();
+    expect(mocks.restart).toHaveBeenCalledOnce();
+    expect(mocks.repair).not.toHaveBeenCalled();
+    expect(mocks.stop).not.toHaveBeenCalled();
+    expect(mocks.restartCommand).not.toHaveBeenCalled();
+    expect(completion).not.toHaveBeenCalled();
+    expect(windowsRecovery.complete).toHaveBeenCalledWith(true);
+    expect(windowsRecovery.complete).not.toHaveBeenCalledWith(false);
+    await expect(fs.stat(transaction.backupRoot)).resolves.toBeDefined();
+    expect(getUpdateRun(params.opts.run!.runId, { env: params.opts.run!.env })).toMatchObject({
+      status: "failed",
+      reason: "readyz-unhealthy",
+    });
+  });
+
   it("terminalizes a failed final native read after current-core plugin parking", async () => {
     const params = fixture();
+    const root = await fs.realpath(dirs.make("current-core-final-native-read-"));
+    await fs.writeFile(
+      path.join(root, "package.json"),
+      JSON.stringify({
+        name: "openclaw",
+        version: params.result.after!.version,
+        engines: { node: ">=22" },
+      }),
+    );
+    params.root = root;
+    params.result.root = root;
+    params.profiles[0]!.preManagedServiceStop!.serviceUpdateVerdict = {
+      kind: "owned",
+      root,
+      fingerprint: "fixture",
+      refreshDefinition: false,
+    };
     params.coreAlreadyCurrent = true;
-    params.preManagedServiceStop!.stopped = false;
+    params.profiles[0]!.preManagedServiceStop!.stopped = false;
     params.result.status = "skipped";
     params.result.reason = "already-current";
     params.result.before = params.result.after;
-    mocks.stop.mockResolvedValue({ ...params.preManagedServiceStop!, stopped: true });
+    mocks.stop.mockResolvedValue({ ...params.profiles[0]!.preManagedServiceStop!, stopped: true });
     mocks.converge.mockImplementation(
       async (convergence: {
         result: FinishUpdateParams["result"];
@@ -345,9 +565,9 @@ describe("post-activation repair after rollback refusal or failure", () => {
         return {
           resultWithPostUpdate: {
             ...convergence.result,
-            postUpdate: { plugins: { status: "ok", changed: true } },
+            postUpdate: { plugins: { ...successfulPluginUpdate, changed: true } },
           },
-          postUpdateConfigSnapshot: params.configSnapshot,
+          postUpdateConfigSnapshot: params.profiles[0]!.configSnapshot,
         };
       },
     );
@@ -396,7 +616,7 @@ describe("post-activation repair after rollback refusal or failure", () => {
       if (rollback === "unavailable") {
         params.result.mode = "git";
         params.rollbackBlockedReason = undefined;
-        params.schemaVersions = [];
+        params.profiles[0]!.schemaVersions = [];
       }
       if (rollback === "failed") {
         params.rollbackBlockedReason = undefined;
@@ -428,8 +648,8 @@ describe("post-activation repair after rollback refusal or failure", () => {
         );
         params.result.root = candidateRoot;
         params.root = previousRoot;
-        params.preManagedServiceStop = {
-          ...params.preManagedServiceStop!,
+        params.profiles[0]!.preManagedServiceStop = {
+          ...params.profiles[0]!.preManagedServiceStop!,
           serviceUpdateVerdict: {
             kind: "owned",
             root: candidateRoot,
@@ -442,7 +662,7 @@ describe("post-activation repair after rollback refusal or failure", () => {
         );
         mocks.rollback.mockImplementation(actual.rollbackFailedUpdate);
         mocks.stop.mockResolvedValue({
-          ...params.preManagedServiceStop!,
+          ...params.profiles[0]!.preManagedServiceStop!,
           windowsTaskAutoStartRecovery: {
             suspended: Promise.resolve(true),
             beginMutation: () => {},
@@ -453,8 +673,8 @@ describe("post-activation repair after rollback refusal or failure", () => {
           },
         });
         params.rollbackBlockedReason = undefined;
-        params.previousVerified = true;
-        params.schemaVersions = await readUpdateStateSchemaVersions({
+        params.profiles[0]!.previousVerified = true;
+        params.profiles[0]!.schemaVersions = await readUpdateStateSchemaVersions({
           stateDir: run.env.OPENCLAW_STATE_DIR!,
           config: {},
           env: run.env,
@@ -626,10 +846,10 @@ describe("post-activation repair after rollback refusal or failure", () => {
         definitionMutationCapability: { kind: "sealed", reason: "system-owned" },
       };
       state.runtime!.systemd = { managerUid: 2001 };
-      params.preManagedServiceStop!.serviceManagerUid = 2001;
+      params.profiles[0]!.preManagedServiceStop!.serviceManagerUid = 2001;
       params.root = root;
       params.result.root = root;
-      params.preManagedServiceStop!.serviceUpdateVerdict =
+      params.profiles[0]!.preManagedServiceStop!.serviceUpdateVerdict =
         await revalidateManagedGatewayServiceAfterUpdate({ state, root });
       mocks.readService.mockResolvedValue(state);
       mocks.revalidate.mockImplementation(revalidateManagedGatewayServiceAfterUpdate);
@@ -669,12 +889,15 @@ describe("post-activation repair after rollback refusal or failure", () => {
       try {
         await originalRecovery.suspended;
         originalRecovery.beginMutation();
-        params.preManagedServiceStop!.windowsTaskAutoStartRecovery = originalRecovery;
+        params.profiles[0]!.preManagedServiceStop!.windowsTaskAutoStartRecovery = originalRecovery;
         mocks.stop.mockImplementation(async () => {
           const recovery = createRecovery();
           await recovery.suspended;
           mocks.healthy = false;
-          return { ...params.preManagedServiceStop!, windowsTaskAutoStartRecovery: recovery };
+          return {
+            ...params.profiles[0]!.preManagedServiceStop!,
+            windowsTaskAutoStartRecovery: recovery,
+          };
         });
         mocks.restart.mockImplementation(async (restart) => {
           await startTask();
@@ -737,9 +960,9 @@ describe("post-activation repair after rollback refusal or failure", () => {
             return {
               resultWithPostUpdate: {
                 ...convergence.result,
-                postUpdate: { plugins: { status: "ok", changed: true } },
+                postUpdate: { plugins: { ...successfulPluginUpdate, changed: true } },
               },
-              postUpdateConfigSnapshot: params.configSnapshot,
+              postUpdateConfigSnapshot: params.profiles[0]!.configSnapshot,
             };
           },
         );
@@ -818,7 +1041,7 @@ describe("post-activation repair after rollback refusal or failure", () => {
         opts: params.opts,
         gatewayPort: 19101,
         timeoutMs: 1_000,
-        expectedService: params.preManagedServiceStop!,
+        expectedService: params.profiles[0]!.preManagedServiceStop!,
         onVerified,
       });
       expect(onVerified).not.toHaveBeenCalled();

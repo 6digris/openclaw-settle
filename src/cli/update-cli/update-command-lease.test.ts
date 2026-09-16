@@ -218,16 +218,22 @@ async function invoke(lane: Lane, recoveryRunIds: readonly string[] = []): Promi
     },
     root: state.root,
     installKindChanged: false,
-    configSnapshot: await readConfigFileSnapshot({ skipPluginValidation: true }),
-    requestedChannel: null,
-    storedChannel: "stable",
+    profiles: [
+      {
+        configSnapshot: await readConfigFileSnapshot({ skipPluginValidation: true }),
+        requestedChannel: null,
+        storedChannel: "stable",
+        ownedManagedUpdateEnv: { ...process.env },
+        preUpdatePluginInstallRecords: {
+          stale: { source: "path", sourcePath: state.path("stale") },
+        },
+      },
+    ],
     channel: "stable",
     downgradeRisk: lane !== "fresh-process",
     shouldRestart: false,
     opts: { json: true, yes: true },
-    ownedManagedUpdateEnv: { ...process.env },
     controlPlaneUpdateSentinelMeta: null,
-    preUpdatePluginInstallRecords: { stale: { source: "path", sourcePath: state.path("stale") } },
     startedAt: Date.now(),
     updateStepTimeoutMs: 15_000,
   });
