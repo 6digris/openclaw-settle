@@ -77,7 +77,10 @@ describe("createOpenClawAgentHarness", () => {
     const onAttemptDeadlineChanged = vi.fn();
     const onAttemptTimeoutArmed = vi.fn();
     const onAgentEvent = vi.fn<NonNullable<EmbeddedRunAttemptParams["onAgentEvent"]>>();
+    const sessionManager = { getSessionTarget: () => undefined };
     const attempt = {
+      sessionManager,
+      sessionPersistence: "detached",
       prompt: "finalize",
       disableTools: false,
       extraSystemPrompt: "ambient system context",
@@ -107,6 +110,8 @@ describe("createOpenClawAgentHarness", () => {
     ]);
     expect(runEmbeddedAttempt).toHaveBeenCalledWith(
       expect.objectContaining({
+        sessionManager,
+        sessionPersistence: "detached",
         prompt: "finalize",
         disableTools: true,
         disableTrajectory: true,
