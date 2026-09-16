@@ -5,6 +5,7 @@ import {
   createTestInboundDebounceFlush,
 } from "openclaw/plugin-sdk/channel-test-helpers";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { expect, vi, type Mock } from "vitest";
 import type { ClawdbotConfig, PluginRuntime, RuntimeEnv } from "../../runtime-api.js";
 import { getFeishuLifecycleTestMocks } from "../lifecycle.test-support.js";
@@ -21,6 +22,7 @@ export async function stopFeishuLifecycleMonitors(): Promise<void> {
     monitor.controller.abort();
   }
   const results = await Promise.allSettled(monitors.map((monitor) => monitor.completion));
+  await closeOpenClawStateDatabaseAsync();
   for (const result of results) {
     if (result.status === "rejected") {
       throw result.reason;
