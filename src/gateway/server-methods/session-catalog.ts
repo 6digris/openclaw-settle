@@ -39,15 +39,17 @@ import {
   type SessionCatalogInstances,
 } from "./session-catalog-entry-snapshot.js";
 import {
-  catalogListCache,
+  getSessionCatalogListCache,
   createSessionCatalogListLifetime,
   invalidateSessionCatalogLists,
   sessionCatalogListKey,
-  type CatalogFinalResponsePermit,
   type CatalogListCacheEntry,
   type CatalogListEnumeration,
   type CatalogListResult,
-  type SessionCatalogListLifetime,
+} from "./session-catalog-list-cache.js";
+import type {
+  CatalogFinalResponsePermit,
+  SessionCatalogListLifetime,
 } from "./session-catalog-list-lifetime.js";
 import {
   allowProcessHomeFallback,
@@ -364,49 +366,44 @@ export const sessionCatalogHandlers: GatewayRequestHandlers = {
       allowProcessHomeFallback: allowHomeFallback,
       visibilityKey: resolveSessionCatalogVisibility(client, config).cacheKey,
     });
-    const cacheState = catalogListCache(context, config, catalogRegistrations);
-    const cache = cacheState.entries;
-    const cached = cache.get(listKey);
-    if (
-      cached &&
-      !cached.progress.invalidated &&
-      (cached.expiresAt === undefined || cached.expiresAt > Date.now())
-    ) {
-      // progressId is connection-owned and excluded from the work key. Active followers register
-      // for the remaining host frames; settled followers receive only the authoritative result.
-      const pending = cached.expiresAt === undefined;
-      const response = pending ? cached.progress.joinFinalResponse(isCallerCurrent) : undefined;
-      if (!pending || response) {
+    const cacheState = getSessionCatalogListCache(context, config, catalogRegistrations);
+    const { pending: pendingLists, entries: cache } = cacheState;
+    const pending = pendingLists.get(listKey);
+    if (pending && !pending.progress.invalidated) {
+      const response = pending.progress.joinFinalResponse(isCallerCurrent);
+      if (response) {
         try {
-          if (pending) {
-            subscribe(cached.progress);
-          }
-          cache.delete(listKey);
-          cache.set(listKey, cached);
-          const result = await cached.result;
-          let projected: CatalogListResult;
-          if (response) {
-            projected = projectSessionCatalogFinalResult({
-              result,
-              progress: cached.progress,
-              response,
-              project: projectResult,
-            });
-          } else {
-            assertCallerCurrent();
-            projected = projectResult(result);
-            assertCallerCurrent();
-          }
-          if (cached.progress.invalidated && cache.get(listKey) === cached) {
-            cache.delete(listKey);
+          subscribe(pending.progress);
+          const projected = projectSessionCatalogFinalResult({
+            result: await pending.result,
+            progress: pending.progress,
+            response,
+            project: projectResult,
+          });
+          if (pending.progress.invalidated && pendingLists.get(listKey) === pending) {
+            pendingLists.delete(listKey);
           }
           respond(true, projected);
           return;
         } finally {
-          response?.release();
+          response.release();
         }
       }
       assertCallerCurrent();
+    }
+    if (pending && pendingLists.get(listKey) === pending) {
+      pendingLists.delete(listKey);
+    }
+    const cached = cache.get(listKey);
+    if (cached && !cached.progress.invalidated && cached.expiresAt > Date.now()) {
+      cache.delete(listKey);
+      cache.set(listKey, cached);
+      const result = await cached.result;
+      assertCallerCurrent();
+      const projected = projectResult(result);
+      assertCallerCurrent();
+      respond(true, projected);
+      return;
     }
     if (cached && cache.get(listKey) === cached) {
       cache.delete(listKey);
@@ -502,10 +499,7 @@ export const sessionCatalogHandlers: GatewayRequestHandlers = {
         return { catalogs: catalogList, instances };
       })();
       entry = { progress, result: operation };
-      // Raw enumeration stays shareable for 3s within the caller's authority partition. Privacy
-      // and creator projection are refreshed per delivery, independently of metadata expiry.
-      cache.set(listKey, entry);
-      pruneMapToMaxSize(cache, SESSION_CATALOG_LIST_CACHE_MAX_ENTRIES);
+      pendingLists.set(listKey, entry);
       const result = await operation;
       const projected = projectSessionCatalogFinalResult({
         result,
@@ -513,11 +507,14 @@ export const sessionCatalogHandlers: GatewayRequestHandlers = {
         response,
         project: projectResult,
       });
-      if (cache.get(listKey) === entry) {
-        if (progress.invalidated) {
-          cache.delete(listKey);
-        } else {
-          entry.expiresAt = Date.now() + SESSION_CATALOG_SHARE_WINDOW_MS;
+      if (pendingLists.get(listKey) === entry) {
+        pendingLists.delete(listKey);
+        if (!progress.invalidated) {
+          cache.set(
+            listKey,
+            Object.assign(entry, { expiresAt: Date.now() + SESSION_CATALOG_SHARE_WINDOW_MS }),
+          );
+          pruneMapToMaxSize(cache, SESSION_CATALOG_LIST_CACHE_MAX_ENTRIES);
         }
       }
       respond(true, projected);
@@ -528,6 +525,9 @@ export const sessionCatalogHandlers: GatewayRequestHandlers = {
       }
       throw error;
     } finally {
+      if (entry && pendingLists.get(listKey) === entry) {
+        pendingLists.delete(listKey);
+      }
       try {
         response?.release();
       } finally {

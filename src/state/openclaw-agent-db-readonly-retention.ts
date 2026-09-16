@@ -36,13 +36,18 @@ type ReadOnlyStamp = {
   files: Array<fs.BigIntStats | undefined> | undefined;
 };
 
+type ReadDisposal = {
+  close: (() => void) | undefined;
+  unregister: () => void;
+};
+
 type RetainedRead = Extract<
   ReturnType<typeof retainOpenClawAgentDatabaseReadOnly>,
   { found: true }
 > & {
   stamp?: ReadOnlyStamp;
   filePaths?: readonly string[];
-  unregister: () => void;
+  disposal: ReadDisposal;
 };
 
 function readFileStamp(filePaths: readonly string[] | undefined): ReadOnlyStamp["files"] {
@@ -122,16 +127,13 @@ export function retainOpenClawAgentDatabaseReads(options: {
   let reading = false;
   let deferredClose: RetainedRead | undefined;
 
-  const close = (read: RetainedRead) => {
+  const close = (disposal: ReadDisposal) => {
     const wasReading = reading;
     reading = true;
     try {
-      read.claim.release();
-      // Claims revoke once; an owned native close can still need the resource owner's retry.
-      if (read.kind === "read-only" && read.database.db.isOpen) {
-        read.database.close();
-      }
-      read.unregister();
+      disposal.close?.();
+      disposal.close = undefined;
+      disposal.unregister();
     } catch (error) {
       if (!released) {
         released = true;
@@ -149,7 +151,7 @@ export function retainOpenClawAgentDatabaseReads(options: {
       if (reading) {
         deferredClose = read;
       } else {
-        close(read);
+        close(read.disposal);
       }
     }
   };
@@ -170,8 +172,8 @@ export function retainOpenClawAgentDatabaseReads(options: {
       assertCurrent();
       getOpenClawDatabaseMaintenanceScope()?.assertAdmission();
       const agentId = normalizeAgentId(databaseOptions.agentId);
-      const selected = { ...databaseOptions, agentId };
-      const pathname = resolveOpenClawAgentSqlitePath(selected);
+      const pathname = resolveOpenClawAgentSqlitePath({ ...databaseOptions, agentId });
+      const selected = { ...databaseOptions, agentId, path: pathname };
       const wasReading = reading;
       let readFailed = false;
       try {
@@ -230,28 +232,15 @@ export function retainOpenClawAgentDatabaseReads(options: {
         }
         if (!current) {
           reading = true;
-          const retained = retainOpenClawAgentDatabaseReadOnly(selected, { freshOnly });
-          if (!retained.found) {
-            return retained;
-          }
-          const filename =
-            retained.kind === "read-only"
-              ? readOpenClawAgentDatabaseIdentity(retained.database).filename
-              : undefined;
-          const read: RetainedRead = {
-            ...retained,
-            filePaths: filename
-              ? [...resolveSqliteDatabaseFilePaths(filename), path.dirname(filename)]
-              : undefined,
-            unregister: () => {},
-          };
-          current = read;
-          read.unregister = registerOpenClawAgentDatabaseAsyncResource({
-            agentId: read.database.agentId,
-            path: read.database.path,
+          let read: RetainedRead | undefined;
+          let opening = true;
+          const disposal: ReadDisposal = { close: undefined, unregister: () => unregister() };
+          const unregister: () => void = registerOpenClawAgentDatabaseAsyncResource({
+            agentId,
+            path: pathname,
             revoke: () => {
               // Maintenance can keep this callback after a newer leaf replaces its claim.
-              if (!released && current === read) {
+              if (!released && (read ? current === read : opening)) {
                 try {
                   release();
                 } catch {
@@ -261,8 +250,53 @@ export function retainOpenClawAgentDatabaseReads(options: {
               }
             },
             // SQLite reads are synchronous; deferred native close runs before this microtask.
-            close: () => Promise.resolve().then(() => close(read)),
+            close: () => Promise.resolve().then(() => close(disposal)),
           });
+          try {
+            const retained = retainOpenClawAgentDatabaseReadOnly(selected, {
+              freshOnly,
+              ownClose: (nativeClose) => {
+                disposal.close = nativeClose;
+              },
+            });
+            if (!retained.found) {
+              return retained;
+            }
+            // Record the exact leaf before identity reads; opening can synchronously revoke it.
+            read = { ...retained, disposal };
+            current = read;
+            disposal.close = () => {
+              retained.claim.release();
+              // Claim revocation is final; native disposal can still need the owner's retry.
+              if (retained.kind === "read-only" && retained.database.db.isOpen) {
+                retained.database.close();
+              }
+            };
+            assertCurrent();
+            const filename =
+              read.kind === "read-only"
+                ? readOpenClawAgentDatabaseIdentity(read.database).filename
+                : undefined;
+            read.filePaths = filename
+              ? [...resolveSqliteDatabaseFilePaths(filename), path.dirname(filename)]
+              : undefined;
+          } catch (error) {
+            readFailed = true;
+            throw error;
+          } finally {
+            opening = false;
+            if (!read) {
+              if (readFailed) {
+                try {
+                  close(disposal);
+                } catch {
+                  // Keep validation primary; failed native disposal stays with this resource.
+                }
+              } else {
+                close(disposal);
+              }
+            }
+          }
         }
         const read = current;
         read.claim.assertCurrent();
@@ -285,7 +319,7 @@ export function retainOpenClawAgentDatabaseReads(options: {
         if (!result.found) {
           discard();
         } else if (before) {
-          // Reopening reruns the canonical cold scan; never bless an earlier read with a later token.
+          // Never bless an earlier read with a token captured after an intervening write.
           if (sameStamp(before, readStamp(read))) {
             read.stamp = before;
           } else {
@@ -313,12 +347,12 @@ export function retainOpenClawAgentDatabaseReads(options: {
           deferredClose = undefined;
           if (readFailed) {
             try {
-              close(read);
+              close(read.disposal);
             } catch {
               // Disposal stays registered without replacing the primary read failure.
             }
           } else {
-            close(read);
+            close(read.disposal);
           }
         }
       }

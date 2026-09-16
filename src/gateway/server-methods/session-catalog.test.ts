@@ -131,6 +131,30 @@ describe("session catalog Gateway methods", () => {
     }
   });
 
+  it("retains 128 completed lists and evicts the least recently reused result", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const list = vi.fn(async () => []);
+    hoisted.activeRegistry.sessionCatalogs = [{ provider: provider("fixture", { list }) }];
+    const context = createCatalogTestContext();
+    const client = { connId: "requester" };
+    const query = (index: number) =>
+      call("sessions.catalog.list", { search: `query-${index}` }, context, client);
+    try {
+      for (let index = 0; index < 128; index += 1) {
+        await query(index);
+      }
+      await query(0);
+      expect(list).toHaveBeenCalledTimes(128);
+      await query(128);
+      await query(0);
+      expect(list).toHaveBeenCalledTimes(129);
+      await query(1);
+      expect(list).toHaveBeenCalledTimes(130);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it("projects authoritative creator ownership onto streamed and final catalog rows", async () => {
     const broadcastToConnIds = vi.fn();
     const host = {

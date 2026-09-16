@@ -204,10 +204,10 @@ describe("retained session listings", () => {
     },
   );
 
-  it("does not bless a cold read with a data version changed during its canonical scan", () => {
+  it("does not bless an uncertified cold read with a data version changed during its canonical scan", () => {
     const { options, scope, seed } = fixture();
     seed();
-    closeOpenClawAgentDatabaseByPath(options.path);
+    closeOpenClawAgentDatabasesForTest();
     const writer = new DatabaseSync(options.path);
     let changed = false;
     const restore = spyOnSqlitePrepare((_database, sql, statement) => {
@@ -398,7 +398,7 @@ describe("retained session listings", () => {
     },
   );
 
-  it("retries a missing table after its real schema is restored on the same owner", () => {
+  it("rejects a missing validation schema and recovers after restoration on the same owner", () => {
     const { options, scope, seed } = fixture();
     const database = openOpenClawAgentDatabase(options);
     const definitions = database.db
@@ -408,7 +408,9 @@ describe("retained session listings", () => {
       .all();
     database.db.exec("DROP TABLE session_nodes");
     const { reads, onRevoked } = retain();
-    expect(reads.list(scope)).toEqual([]);
+    const schemaError = /Session canonical validation schema is missing or drifted/u;
+    expect(() => listSessionEntriesReadOnly(scope)).toThrow(schemaError);
+    expect(() => reads.list(scope)).toThrow(schemaError);
     for (const { sql } of definitions) {
       if (typeof sql !== "string") {
         throw new Error("Expected captured session table schema");
@@ -416,7 +418,9 @@ describe("retained session listings", () => {
       database.db.exec(sql);
     }
     seed();
-    expect(reads.list(scope)).toHaveLength(2);
+    const restored = reads.list(scope);
+    expect(restored).toHaveLength(2);
+    expect(restored).toEqual(listSessionEntriesReadOnly(scope));
     expect(onRevoked).not.toHaveBeenCalled();
   });
 
@@ -716,7 +720,7 @@ describe("retained listings across maintenance scopes", () => {
     let closing: Promise<void> | undefined;
     const connections = new Set<DatabaseSync>();
     const restore = spyOnSqlitePrepare((database, sql, statement) => {
-      if (sql.includes('"retained_window"')) {
+      if (sql.includes('from "session_nodes" order by "session_key"')) {
         connections.add(database);
         const closeAfterRows = () => {
           if (!closing) {
@@ -894,10 +898,10 @@ describe.skipIf(process.platform === "win32" || process.geteuid?.() === 0)(
         closeOpenClawAgentDatabaseByPath(canonicalPath);
         const { reads, onRevoked } = retain();
         const opened: DatabaseSync[] = [];
-        const open = agentReadOnly.openOpenClawAgentDatabaseReadOnly;
+        const open = agentReadOnly.openOpenClawAgentDatabaseReadOnlyWithDisposalOwner;
         let nativeFailure: unknown;
         const opening = vi
-          .spyOn(agentReadOnly, "openOpenClawAgentDatabaseReadOnly")
+          .spyOn(agentReadOnly, "openOpenClawAgentDatabaseReadOnlyWithDisposalOwner")
           .mockImplementation((...args) => {
             try {
               const result = open(...args);

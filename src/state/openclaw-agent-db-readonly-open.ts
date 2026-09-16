@@ -99,6 +99,22 @@ export function openOpenClawAgentDatabaseReadOnly(
   options: OpenClawAgentDatabaseOptions,
   behavior: { allowExtension?: boolean } = {},
 ): OpenClawAgentDatabaseReadOnlyOpenResult {
+  return openReadOnlyDatabase(options, behavior);
+}
+
+/** Give the core retention owner only disposal custody until read admission succeeds. */
+export function openOpenClawAgentDatabaseReadOnlyWithDisposalOwner(
+  options: OpenClawAgentDatabaseOptions,
+  ownClose: (close: () => void) => void,
+): OpenClawAgentDatabaseReadOnlyOpenResult {
+  return openReadOnlyDatabase(options, {}, ownClose);
+}
+
+function openReadOnlyDatabase(
+  options: OpenClawAgentDatabaseOptions,
+  behavior: { allowExtension?: boolean },
+  ownClose?: (close: () => void) => void,
+): OpenClawAgentDatabaseReadOnlyOpenResult {
   const agentId = normalizeAgentId(options.agentId);
   const pathname = resolveOpenClawAgentSqlitePath({ ...options, agentId });
   if (isIncognitoOpenClawAgentSqlitePath(pathname, { agentId, env: options.env })) {
@@ -123,16 +139,25 @@ export function openOpenClawAgentDatabaseReadOnly(
     db.close();
     closed = true;
   };
+  let closeOwned = false;
   try {
+    if (ownClose) {
+      ownClose(close);
+      closeOwned = true;
+    }
     registerOpenClawAgentDatabaseIdentity(db);
     const database = { agentId, db, path: pathname, close };
     if (!hasOpenClawAgentReadOnlySchema(database)) {
-      close();
+      if (!closeOwned) {
+        close();
+      }
       return { found: false, reason: "schema-missing" };
     }
     return { found: true, database };
   } catch (error) {
-    close();
+    if (!closeOwned) {
+      close();
+    }
     throw error;
   }
 }

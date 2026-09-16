@@ -1,7 +1,6 @@
+import type { CatalogListEnumeration, CatalogListResult } from "./session-catalog-list-cache.js";
 import type {
   CatalogFinalResponsePermit,
-  CatalogListEnumeration,
-  CatalogListResult,
   SessionCatalogListLifetime,
 } from "./session-catalog-list-lifetime.js";
 

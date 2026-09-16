@@ -21,7 +21,7 @@ import {
   runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { invalidateSessionCatalogLists } from "./session-catalog-list-lifetime.js";
+import { invalidateSessionCatalogLists } from "./session-catalog-list-cache.js";
 import { sessionCatalogHandlers } from "./session-catalog.js";
 import type { GatewayClient, GatewayRequestContext } from "./types.js";
 

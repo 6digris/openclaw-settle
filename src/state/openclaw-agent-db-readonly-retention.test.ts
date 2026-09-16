@@ -77,6 +77,98 @@ it.each(["release", "read"])(
   },
 );
 
+it.skipIf(!supportsQueryDiagnostics).each(["revocation", "validation"] as const)(
+  "keeps failed native disposal owned after opening %s",
+  async (failure) => {
+    const options = {
+      agentId: "main",
+      env: { OPENCLAW_STATE_DIR: tempDirs.make("retained-read-opening-close-") },
+    };
+    const pathname = resolveOpenClawAgentSqlitePath(options);
+    const writer = openOpenClawAgentDatabase(options);
+    if (failure === "validation") {
+      writer.db.prepare("UPDATE schema_meta SET agent_id = ?").run("another-agent");
+    }
+    closeOpenClawAgentDatabaseByPath(pathname);
+    const onRevoked = vi.fn();
+    const reads = retainOpenClawAgentDatabaseReads({ onRevoked });
+    const operation = vi.fn(() => 1);
+    const closeFailure = new Error("synthetic native close failure during admission");
+    const queryChannel = channel("sqlite.db.query");
+    let database: DatabaseSync | undefined;
+    let closing: Promise<void> | undefined;
+    let closingError: unknown;
+    let restoreClose: (() => void) | undefined;
+    const closePath = () =>
+      closeOpenClawAgentDatabaseByPathAsync(pathname, options.agentId).then(
+        () => undefined,
+        (error: unknown) => {
+          closingError = error;
+        },
+      );
+    const onQuery = (message: unknown) => {
+      const event = message as { database?: DatabaseSync; sql?: string };
+      if (
+        database ||
+        event.sql !== "PRAGMA user_version" ||
+        event.database?.location() !== pathname
+      ) {
+        return;
+      }
+      database = event.database;
+      const close = vi.spyOn(database, "close").mockImplementation(() => {
+        throw closeFailure;
+      });
+      restoreClose = () => close.mockRestore();
+      if (failure === "revocation") {
+        closing = closePath();
+      }
+    };
+    queryChannel.subscribe(onQuery);
+    try {
+      let readError: unknown;
+      try {
+        reads.read(operation, options);
+      } catch (error) {
+        readError = error;
+      }
+      if (failure === "validation") {
+        closing = closePath();
+      }
+      expect(database?.isOpen).toBe(true);
+      expect(closing).toBeDefined();
+      await closing;
+      expect(hasOpenClawAgentDatabaseAsyncResources()).toBe(true);
+      expect(operation).not.toHaveBeenCalled();
+      expect(readError).toMatchObject({
+        message: expect.stringMatching(
+          failure === "revocation"
+            ? /no longer current/u
+            : /belongs to agent another-agent; requested agent main/u,
+        ),
+      });
+      expect(readError).not.toBe(closeFailure);
+      expect(closingError).toMatchObject({ errors: [closeFailure] });
+      expect(onRevoked).toHaveBeenCalledOnce();
+
+      restoreClose?.();
+      await closeOpenClawAgentDatabaseByPathAsync(pathname, options.agentId);
+      expect(database?.isOpen).toBe(false);
+      expect(hasOpenClawAgentDatabaseAsyncResources()).toBe(false);
+      expect(() => reads.read(operation, options)).toThrow(/no longer current/u);
+    } finally {
+      queryChannel.unsubscribe(onQuery);
+      restoreClose?.();
+      reads.release();
+      await closing;
+      await closeOpenClawAgentDatabaseByPathAsync(pathname, options.agentId);
+      if (database?.isOpen) {
+        database.close();
+      }
+    }
+  },
+);
+
 it.skipIf(!supportsQueryDiagnostics).each([
   { temperature: "cold", target: "same path" },
   { temperature: "warm", target: "missing path" },

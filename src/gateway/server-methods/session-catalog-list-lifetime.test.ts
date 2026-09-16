@@ -15,11 +15,11 @@ import {
 import { createDeferredCore } from "../../shared/deferred.js";
 import { GatewayConnectionWork } from "../server-connection-work.js";
 import {
-  catalogListCache,
+  getSessionCatalogListCache,
   createSessionCatalogListLifetime,
   invalidateSessionCatalogLists,
-  SessionCatalogListLifetime,
-} from "./session-catalog-list-lifetime.js";
+} from "./session-catalog-list-cache.js";
+import { SessionCatalogListLifetime } from "./session-catalog-list-lifetime.js";
 import type { CatalogRegistrationSnapshot } from "./session-catalog-provider-access.js";
 import type { GatewayRequestContext } from "./types.js";
 
@@ -51,7 +51,7 @@ function cacheFixture(config: OpenClawConfig = {}) {
     config,
     context,
     registrations,
-    cache: catalogListCache(context, config, registrations),
+    cache: getSessionCatalogListCache(context, config, registrations),
     setConfig: (next: OpenClawConfig) => {
       currentConfig = next;
     },
@@ -86,10 +86,10 @@ describe("catalog cache lifetime custody", () => {
         root!.release();
         lifetime.finishListing();
         const nextRegistrations = { ...registrations };
-        catalogListCache(context, config, nextRegistrations);
+        getSessionCatalogListCache(context, config, nextRegistrations);
         const nextConfig = { ...config };
         setConfig(nextConfig);
-        const updated = catalogListCache(context, nextConfig, nextRegistrations);
+        const updated = getSessionCatalogListCache(context, nextConfig, nextRegistrations);
         expect(updated.active.has(lifetime)).toBe(true);
         expect(lifetime.invalidated).toBe(false);
         expect(() => response.assertCurrent()).not.toThrow();
@@ -120,16 +120,16 @@ describe("catalog cache lifetime custody", () => {
     let replacement: SessionCatalogListLifetime | undefined;
     const finished = createDeferredCore();
     const result = Promise.resolve({ catalogs: [], instances: new Map() });
-    cache.entries.set("original", { progress: original, result });
+    cache.pending.set("original", { progress: original, result });
     const listing = original.runProvider(undefined, async ({ signal }) => {
       signal.addEventListener(
         "abort",
         () => {
           const nextConfig = { ...config };
           setConfig(nextConfig);
-          const current = catalogListCache(context, nextConfig, registrations);
+          const current = getSessionCatalogListCache(context, nextConfig, registrations);
           replacement = createSessionCatalogListLifetime(current, () => true, []);
-          current.entries.set("replacement", { progress: replacement, result });
+          current.pending.set("replacement", { progress: replacement, result });
           finished.resolve();
         },
         { once: true },
@@ -138,8 +138,8 @@ describe("catalog cache lifetime custody", () => {
     });
     try {
       invalidateSessionCatalogLists(context);
-      expect(cache.entries.has("original")).toBe(false);
-      expect(cache.entries.has("replacement")).toBe(true);
+      expect(cache.pending.has("original")).toBe(false);
+      expect(cache.pending.has("replacement")).toBe(true);
       expect(replacement?.invalidated).toBe(false);
       await listing;
       original.finishListing();
