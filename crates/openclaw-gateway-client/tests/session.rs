@@ -953,6 +953,72 @@ async fn surfaces_websocket_ping_as_transport_activity() {
 }
 
 #[tokio::test]
+async fn websocket_ping_remains_available_when_rpc_capacity_is_full() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (request_seen_tx, request_seen_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut socket = accept_async(tcp).await.unwrap();
+        send_json(
+            &mut socket,
+            json!({
+                "type":"event", "event":"connect.challenge",
+                "payload":{"nonce":"nonce-saturated-ping","ts":1_700_000_000_123_u64}
+            }),
+        )
+        .await;
+        let connect = receive_json(&mut socket).await;
+        send_json(
+            &mut socket,
+            json!({
+                "type":"res", "id":connect["id"], "ok":true,
+                "payload":{"type":"hello-ok","protocol":4}
+            }),
+        )
+        .await;
+
+        let request = receive_json(&mut socket).await;
+        assert_eq!(request["method"], "node.blocked");
+        request_seen_tx.send(()).unwrap();
+        let ping = socket.next().await.unwrap().unwrap();
+        let Message::Ping(payload) = ping else {
+            panic!("expected websocket ping while request capacity is full");
+        };
+        socket.send(Message::Pong(payload)).await.unwrap();
+        send_json(
+            &mut socket,
+            json!({
+                "type":"res", "id":request["id"], "ok":true,
+                "payload":{"released":true}
+            }),
+        )
+        .await;
+    });
+
+    let session = GatewayClient::connect(
+        GatewayClientConfig::new(format!("ws://{address}"))
+            .unwrap()
+            .request_timeout(Duration::from_secs(1))
+            .max_in_flight(1),
+        |_| async { Ok::<_, io::Error>(json!({"role":"node"})) },
+    )
+    .await
+    .unwrap();
+    let request_session = session.clone();
+    let request =
+        tokio::spawn(async move { request_session.request("node.blocked", json!({})).await });
+    request_seen_rx.await.unwrap();
+
+    tokio::time::timeout(Duration::from_secs(1), session.ping())
+        .await
+        .expect("ping must not wait for RPC capacity")
+        .unwrap();
+    assert_eq!(request.await.unwrap().unwrap(), json!({"released":true}));
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn malformed_idle_text_is_activity_and_does_not_close_the_session() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

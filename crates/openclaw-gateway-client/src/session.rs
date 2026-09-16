@@ -562,7 +562,9 @@ where
     // timeout cannot overtake its request. Each request carries its
     // semaphore permit through the session task, bounding queued and
     // pending requests even if the caller drops its future.
-    let command_capacity = config.max_in_flight.max(1);
+    // Keep one command slot available for control traffic when every RPC slot
+    // is occupied by a caller-owned request.
+    let command_capacity = config.max_in_flight.max(1).saturating_add(1);
     let (command_tx, command_rx) = mpsc::channel(command_capacity);
     let events = Arc::new(EventHub::new(
         config.event_capacity,
@@ -596,6 +598,7 @@ where
         next_request_id: Arc::new(AtomicU64::new(1)),
         request_timeout: config.request_timeout,
         in_flight: Arc::new(Semaphore::new(config.max_in_flight.max(1))),
+        control_in_flight: Arc::new(Semaphore::new(1)),
     })
 }
 
@@ -677,21 +680,23 @@ pub struct GatewaySession {
     next_request_id: Arc<AtomicU64>,
     request_timeout: Duration,
     in_flight: Arc<Semaphore>,
+    control_in_flight: Arc<Semaphore>,
 }
 
 impl GatewaySession {
     /// Send a WebSocket keepalive and wait for its matching pong.
-    /// This shares the request bound and socket owner without creating Gateway RPC traffic.
+    /// This uses separately bounded control capacity and never consumes a Gateway RPC slot.
     pub async fn ping(&self) -> Result<(), ClientError> {
         let id = format!(
             "rust-gateway-ping-{}",
             self.next_request_id.fetch_add(1, Ordering::Relaxed)
         );
         let deadline = Instant::now() + self.request_timeout;
-        let permit = tokio::time::timeout_at(deadline, self.in_flight.clone().acquire_owned())
-            .await
-            .map_err(|_| ClientError::RequestTimeout("ping".into()))?
-            .map_err(|_| ClientError::Closed("session retired".into()))?;
+        let permit =
+            tokio::time::timeout_at(deadline, self.control_in_flight.clone().acquire_owned())
+                .await
+                .map_err(|_| ClientError::RequestTimeout("ping".into()))?
+                .map_err(|_| ClientError::Closed("session retired".into()))?;
         let (reply, response) = oneshot::channel();
         let cancelled = Arc::new(AtomicBool::new(false));
         let mut cancellation =

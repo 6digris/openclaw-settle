@@ -1114,7 +1114,7 @@ async fn native_signed_connect_preserves_product_fields_and_rejects_invalid_node
         Some("command"),
     ] {
         let mut params = signed.clone();
-        let rejected = !matches!(invalid, None | Some("omitted") | Some("empty"));
+        let rejected = !matches!(invalid, None | Some("omitted" | "empty"));
         match invalid {
             Some("omitted") => {
                 params.as_object_mut().unwrap().remove("commands");

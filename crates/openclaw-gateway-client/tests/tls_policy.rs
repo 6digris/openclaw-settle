@@ -124,6 +124,7 @@ fn acceptor(wrong_key: bool) -> TlsAcceptor {
 }
 
 #[tokio::test]
+#[allow(clippy::result_large_err)]
 async fn approved_native_and_pinned_trust_upgrade_the_same_socket() {
     for native_policy in [true, false] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
