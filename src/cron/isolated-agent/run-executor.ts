@@ -230,13 +230,17 @@ function buildCronDeliveryTargetRuntimeContext(params: {
   ].join("\n");
 }
 
-/** Result envelope returned after an isolated cron prompt completes. */
-export type CronExecutionResult = {
+type CronCompletedPromptRun = {
   runResult: CronPromptRunResult;
   fallbackProvider: string;
   fallbackModel: string;
   runStartedAt: number;
   runEndedAt: number;
+};
+
+/** Result envelope returned after an isolated cron prompt completes. */
+export type CronExecutionResult = CronCompletedPromptRun & {
+  completedPromptRuns?: CronCompletedPromptRun[];
   liveSelection: CronLiveSelection;
 };
 
@@ -1070,6 +1074,8 @@ export async function executeCronRun(params: CronRunExecutionParams): Promise<Cr
   if (!runResult) {
     throw new Error("cron isolated run returned no result");
   }
+  let previousPromptRun: CronCompletedPromptRun | undefined;
+  let finalPromptStartedAt = runStartedAt;
 
   if (!params.isAborted()) {
     const interimPayloads = runResult.payloads ?? [];
@@ -1122,6 +1128,14 @@ export async function executeCronRun(params: CronRunExecutionParams): Promise<Cr
         "Do not send a status update like 'on it'.",
         "Use tools when needed, including sessions_spawn for parallel subtasks, wait for spawned subagents to finish, then return only the final summary.",
       ].join(" ");
+      previousPromptRun = {
+        runResult,
+        fallbackProvider,
+        fallbackModel,
+        runStartedAt,
+        runEndedAt,
+      };
+      finalPromptStartedAt = Date.now();
       await executor.runPrompt(continuationPrompt);
       ({ runResult, fallbackProvider, fallbackModel, runEndedAt } = executor.getState());
     }
@@ -1136,6 +1150,20 @@ export async function executeCronRun(params: CronRunExecutionParams): Promise<Cr
     fallbackModel,
     runStartedAt,
     runEndedAt,
+    ...(previousPromptRun
+      ? {
+          completedPromptRuns: [
+            previousPromptRun,
+            {
+              runResult,
+              fallbackProvider,
+              fallbackModel,
+              runStartedAt: finalPromptStartedAt,
+              runEndedAt,
+            },
+          ],
+        }
+      : {}),
     liveSelection: params.liveSelection,
   };
 }
