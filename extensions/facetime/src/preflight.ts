@@ -78,14 +78,16 @@ function parseCoreAudioDevices(systemProfilerOutput: string): CoreAudioDevicePro
     const entries = Array.isArray(parsed.SPAudioDataType) ? parsed.SPAudioDataType : [];
     const deviceEntries = entries.flatMap((entry): unknown[] => {
       const record = asRecord(entry);
-      return Array.isArray(record._items) ? record._items : [record];
+      const items = record["_items"];
+      return Array.isArray(items) ? items : [record];
     });
     const devices = deviceEntries.flatMap((entry): CoreAudioDeviceProfile[] => {
       const record = asRecord(entry);
-      return typeof record._name === "string"
+      const name = record["_name"];
+      return typeof name === "string"
         ? [
             {
-              name: record._name,
+              name,
               virtual: record.coreaudio_device_transport === "coreaudio_device_type_virtual",
             },
           ]
@@ -189,12 +191,12 @@ export async function runFaceTimePreflight(params: {
     { timeoutMs: 10_000 },
   );
   const audioDevices = profiler.code === 0 ? parseCoreAudioDevices(profiler.stdout ?? "") : [];
-  const deviceNames = audioDevices.map((device) => device.name);
+  const deviceNames = new Set(audioDevices.map((device) => device.name));
   for (const [id, label, deviceName] of [
     ["paired-driver-mic", "OpenClaw microphone device", FACETIME_MIC_DEVICE_NAME],
     ["paired-driver-feed", "OpenClaw feed device", FACETIME_FEED_DEVICE_NAME],
   ] as const) {
-    const found = deviceNames.includes(deviceName);
+    const found = deviceNames.has(deviceName);
     pushCheck(checks, {
       id,
       label,
