@@ -13381,6 +13381,9 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     expect(checksFastRun.run).not.toContain("resolve_manual_merge_base");
     expect(checksFastRun.run).not.toContain("+${merge_base}:refs/remotes/origin/ci-ratchet-base");
     expect(checksFastRun.run).toContain('pnpm check:max-lines-ratchet --base "$base_ref"');
+    expect(checksFastRun.run).toMatch(
+      /if \[\[ -n "\$\{RATCHET_PR_HEAD_SHA:-\}" \]\]; then\s+pnpm check:line-cap-ratchet --base "\$base_ref"\s+fi/u,
+    );
     expect(checksFastRun.run).toContain('pnpm check:assertion-safety --base "$base_ref"');
     expect(checksFastRun.run).toContain("pnpm config:docs:check");
     expect(checksFastRun.run).toContain("pnpm plugins:inventory:check");
