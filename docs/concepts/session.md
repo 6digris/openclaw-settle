@@ -34,6 +34,10 @@ commands, skills, replies, and background task notifications retain the
 agent selected by the route or explicit request.
 Session lists, model filters, previews, and sharing controls also retain the
 stored conversation's agent, rather than the aggregate view's default agent.
+Sidebar question and approval indicators, including Home and their tooltip
+details, stay with that agent even before its session row has loaded. Pending
+question cards, approval cards, and resolved-question summaries appear only in
+that agent's conversation.
 
 ## DM isolation
 

@@ -400,7 +400,7 @@ describe("sidebar navigation lineage ownership", () => {
         childRowsByParent: {},
       }),
       loadingChildKeys: new Set(),
-      knownSessionAttention: [],
+      resolveAttention: () => ({ kind: "none" }),
       toSidebarSession: (row, isChild) =>
         ({
           key: row.key,
@@ -445,7 +445,7 @@ describe("sidebar navigation lineage ownership", () => {
       roots: [parent],
       rowsByKey,
       loadingChildKeys: new Set(),
-      knownSessionAttention: [],
+      resolveAttention: () => ({ kind: "none" }),
       toSidebarSession: (row, isChild) => ({
         ...projectSidebarSession(row),
         isChild: isChild === true,
@@ -473,7 +473,7 @@ describe("sidebar navigation lineage ownership", () => {
         childRowsByParent: {},
       }),
       loadingChildKeys: new Set(),
-      knownSessionAttention: [],
+      resolveAttention: () => ({ kind: "none" }),
       toSidebarSession: (row, isChild) =>
         ({
           key: row.key,
@@ -530,7 +530,7 @@ describe("sidebar navigation lineage ownership", () => {
           childRowsByParent: {},
         }),
         loadingChildKeys: new Set(),
-        knownSessionAttention: [],
+        resolveAttention: () => ({ kind: "none" }),
         toSidebarSession: (row, isChild) => ({
           ...projectSidebarSession(row),
           isChild: isChild === true,
@@ -569,7 +569,7 @@ describe("sidebar navigation lineage ownership", () => {
         roots: [root],
         rowsByKey,
         loadingChildKeys: new Set(["root"]),
-        knownSessionAttention: [],
+        resolveAttention: () => ({ kind: "none" }),
         toSidebarSession: (row, isChild) => {
           calls.push(`${row.key}:${isChild}`);
           return { ...projectSidebarSession(row), isChild: isChild === true };
@@ -635,25 +635,21 @@ describe("sidebar navigation lineage ownership", () => {
         roots: [root],
         rowsByKey: collectSidebarSessionRowsByKey({ rows, childRowsByParent: {} }),
         loadingChildKeys: new Set(),
-        knownSessionAttention: known
-          ? [
-              {
-                sessionKey: "missing",
-                attention: {
-                  kind: "approval",
-                  requests: [
-                    {
-                      kind: "approval",
-                      id: "missing",
-                      preview: "Approve?",
-                      count: 1,
-                      createdAtMs: 1,
-                    },
-                  ],
-                },
-              },
-            ]
-          : [],
+        resolveAttention: ({ key }) =>
+          known && key === "missing"
+            ? {
+                kind: "approval",
+                requests: [
+                  {
+                    kind: "approval",
+                    id: "missing",
+                    preview: "Approve?",
+                    count: 1,
+                    createdAtMs: 1,
+                  },
+                ],
+              }
+            : { kind: "none" },
         toSidebarSession: (row, isChild) => ({
           ...projectSidebarSession(row),
           isChild: isChild === true,
@@ -750,7 +746,7 @@ describe("sidebar navigation lineage ownership", () => {
         childRowsByParent: {},
       }),
       loadingChildKeys: new Set(),
-      knownSessionAttention: [],
+      resolveAttention: () => ({ kind: "none" }),
       toSidebarSession: (row, isChild) =>
         ({
           key: row.key,

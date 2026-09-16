@@ -6,13 +6,17 @@ import type {
   TaskSummary,
   TasksCancelResult,
 } from "../../../../packages/gateway-protocol/src/schema/tasks.js";
+import { findTranscriptEvent } from "../../../config/sessions/session-accessor.js";
+import { emitAgentEventIfCurrent } from "../../../infra/agent-events.js";
 import { isTruthyEnvValue } from "../../../infra/env.js";
+import { getActiveGatewayRootWorkHolders } from "../../../process/gateway-work-admission.js";
 import { isLiveTestEnabled } from "../../live-test-helpers.js";
 import { onSubagentRegistryPersisted } from "../registry/subagent-registry-state.js";
 import {
   countPendingDescendantRuns,
   listSubagentRunsForRequester,
 } from "../registry/subagent-registry.test-helpers.js";
+import { testing as announceOutputTesting } from "./subagent-announce-output.test-support.js";
 import {
   boundedCount,
   commandOutcomes,
@@ -29,6 +33,153 @@ const enabled = isLiveTestEnabled() && isTruthyEnvValue(process.env.OPENCLAW_LIV
 const describeLive = enabled ? describe : describe.skip;
 
 describeLive("OpenAI subagent yield and operator resume stress", () => {
+  it(
+    "delivers a yielded child's result once after an equivalent completion during result preparation",
+    async () => {
+      await runWithLiveSubagentGateway(
+        {},
+        async ({ gateway, gates, start, record, waitForFinal }) => {
+          const id = randomUUID().replaceAll("-", "");
+          const parentKey = `agent:main:live-duplicate-completion:${id}`;
+          const parentMarker = `DUPLICATE_PARENT_${id}`;
+          const childResult = `DUPLICATE_CHILD_${randomUUID()}`;
+          const gate = gates.create();
+          await start(
+            parentKey,
+            [
+              `Call sessions_spawn exactly once with ${JSON.stringify({ taskName: "duplicate_completion_worker", task: gateTask(gate.url), cleanup: "keep", context: "isolated" })}.`,
+              "After acceptance call sessions_yield immediately. Wait for the child's actual result. Do not call any other tools or create more children.",
+              `Your only final reply must be ${parentMarker} on the first line, then the child's exact result on the next line.`,
+            ].join("\n"),
+          );
+          await until("child request held by gate", () =>
+            gate.snapshot().waiting === 1 ? true : undefined,
+          );
+          const child = await until("requester yield freezes the original child batch", () =>
+            listSubagentRunsForRequester(parentKey).find(
+              (run) =>
+                run.taskName === "duplicate_completion_worker" &&
+                run.execution.status === "running" &&
+                run.requesterSettleWake?.requesterYieldBatch === true,
+            ),
+          );
+          const childRunId = child.runId;
+          const childGeneration = child.generation;
+          const childTaskRunId = child.taskRunId ?? child.runId;
+          const batchRunIds = [...(child.requesterSettleWake?.batchRunIds ?? [])];
+          const batchGeneration = child.requesterSettleWake?.rearmGeneration;
+          expect(batchRunIds).toEqual([childRunId]);
+          expect(successfulYields(await history(parentKey))).toBeGreaterThan(0);
+          expect(finalReplies(await history(parentKey), parentMarker)).toEqual([]);
+          const { tasks } = await gateway.request<{ tasks: TaskSummary[] }>("tasks.list", {
+            sessionKey: parentKey,
+            limit: 100,
+          });
+          const originalTask = tasks.find((task) => task.childSessionKey === child.childSessionKey);
+          expect(originalTask, "original child task exists before completion").toBeDefined();
+
+          let duplicate: { accepted: boolean; runId: string; batchRunIds: string[] } | undefined;
+          announceOutputTesting.setDepsForTest({
+            findTranscriptEvent: async (scope, match) => {
+              const result = await findTranscriptEvent(scope, match);
+              if (
+                duplicate ||
+                scope.sessionKey !==
+                  (child.execution.transcriptTarget?.sessionKey ?? child.childSessionKey) ||
+                typeof child.cleanupCompletedAt !== "number" ||
+                child.requesterSettleWake?.requesterYieldBatch !== true ||
+                child.requesterSettleWake.rearmGeneration !== batchGeneration ||
+                child.execution.outcome?.status !== "ok" ||
+                child.completion?.terminalReply?.disposition !== "visible"
+              ) {
+                return result;
+              }
+              // Retain the real DB result while the duplicate lifecycle callback settles.
+              duplicate = {
+                accepted: false,
+                runId: child.runId,
+                batchRunIds: [...(child.requesterSettleWake.batchRunIds ?? [])],
+              };
+              duplicate.accepted = emitAgentEventIfCurrent({
+                runId: child.runId,
+                sessionKey: child.childSessionKey,
+                stream: "lifecycle",
+                data: {
+                  phase: "end",
+                  status: "ok",
+                  startedAt: child.execution.startedAt,
+                  endedAt: child.execution.endedAt,
+                  terminalReply: structuredClone(child.completion.terminalReply),
+                },
+              });
+              await until(
+                "injected completion callback has drained",
+                () =>
+                  getActiveGatewayRootWorkHolders().some(
+                    (holder) =>
+                      holder.startsWith("subagents:completion") ||
+                      holder.startsWith("subagents:lifecycle-complete"),
+                  )
+                    ? undefined
+                    : true,
+                60_000,
+              );
+              record("duplicate-callback-drained-before-result-read", {
+                runId: child.runId,
+                batchGeneration: child.requesterSettleWake?.rearmGeneration,
+              });
+              return result;
+            },
+          });
+          try {
+            gate.release(childResult);
+            await until("duplicate completion enters the original settlement", () => duplicate);
+            record("duplicate-completion-injected", { duplicate, childRunId, batchGeneration });
+            expect(duplicate).toEqual({ accepted: true, runId: childRunId, batchRunIds });
+            await until(
+              "requester receives the child result without dropping its delivery",
+              async () => {
+                if (child.delivery?.status === "failed" || child.delivery?.status === "suspended") {
+                  record("duplicate-completion-dropped", {
+                    runId: child.runId,
+                    delivery: child.delivery,
+                  });
+                  throw new Error(
+                    `Equivalent completion dropped child delivery: ${child.delivery.lastError}`,
+                  );
+                }
+                return finalReplies(await history(parentKey), parentMarker)[0];
+              },
+            );
+            await waitForFinal(parentKey, parentMarker, `${parentMarker}\n${childResult}`);
+            const completed = listSubagentRunsForRequester(parentKey);
+            expect(completed).toHaveLength(1);
+            expect(completed[0]).toMatchObject({
+              runId: childRunId,
+              generation: childGeneration,
+              execution: { status: "terminal", outcome: { status: "ok" } },
+              delivery: { status: "delivered" },
+            });
+            expect(completed[0]?.taskRunId ?? completed[0]?.runId).toBe(childTaskRunId);
+            expect(completed[0]?.requesterSettleWake).toBeUndefined();
+            const { task } = await gateway.request<{ task: TaskSummary }>("tasks.get", {
+              taskId: originalTask!.id,
+            });
+            expect(task).toMatchObject({
+              id: originalTask!.id,
+              status: "completed",
+              deliveryStatus: "delivered",
+            });
+            record("duplicate-completion-delivered-once", { task, childRunId, batchRunIds });
+          } finally {
+            announceOutputTesting.setDepsForTest();
+          }
+        },
+      );
+    },
+    10 * 60_000,
+  );
+
   it(
     "settles concurrent children and preserves a resumed worker's task and parent batch",
     async () => {

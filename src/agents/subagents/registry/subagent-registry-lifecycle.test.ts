@@ -5265,6 +5265,81 @@ describe("subagent registry lifecycle hardening", () => {
     await expect(firstCompletion).resolves.toBeUndefined();
   });
 
+  it.each(["reading", "delivering"] as const)(
+    "keeps the completion handoff valid when an equivalent callback arrives while %s",
+    async (phase) => {
+      const entry = createRunEntry({
+        expectsCompletionMessage: true,
+        execution: {
+          status: "running",
+          transcriptTarget: {
+            agentId: "main",
+            sessionId: "child-session",
+            sessionKey: "agent:main:subagent:child",
+            storePath: "/tmp/subagent-completion-store",
+          },
+        },
+      });
+      const entered = createDeferredCore();
+      const release = createDeferredCore();
+      const deliveredResults: string[] = [];
+      const runSubagentAnnounceFlow = vi.fn<LifecycleControllerParams["runSubagentAnnounceFlow"]>(
+        async () => {
+          const prepared = await readSubagentRunAnnounceResultUsing(entry, {
+            getRuntimeConfig: () => ({}),
+            readSubagentSessionEntry: () => undefined,
+            resolveAgentIdFromSessionKey: () => "main",
+            resolveSessionStorePathCore: () => "/tmp/subagent-completion-store",
+            findSessionTranscriptArchiveEventReadOnly: async () => undefined,
+            findTranscriptEvent: async () => {
+              if (phase === "reading") {
+                entered.resolve();
+                await release.promise;
+              }
+              return {
+                event: {
+                  type: "message",
+                  message: {
+                    role: "assistant",
+                    content: [{ type: "text", text: "complete child answer" }],
+                    __openclaw: { runId: entry.runId },
+                  },
+                },
+              };
+            },
+          });
+          if (phase === "delivering") {
+            entered.resolve();
+            await release.promise;
+          }
+          if (!prepared.isCurrent()) {
+            return "intentional_non_delivery";
+          }
+          deliveredResults.push(prepared.text ?? "");
+          return "delivered";
+        },
+      );
+      const controller = createLifecycleController({ entry, runSubagentAnnounceFlow });
+      const completion = makeSubagentCompletion(entry, {
+        triggerCleanup: true,
+        terminalReply: { disposition: "visible", text: "complete child answer" },
+      });
+      try {
+        await controller.completeSubagentRun(completion);
+        await entered.promise;
+        await controller.completeSubagentRun(structuredClone(completion));
+        release.resolve();
+
+        await waitForLifecycleState(() => expect(entry.delivery?.status).toBe("delivered"));
+        expect(deliveredResults).toEqual(["complete child answer"]);
+        expect(runSubagentAnnounceFlow).toHaveBeenCalledOnce();
+      } finally {
+        release.resolve();
+        controller.clearScheduledResumeTimers();
+      }
+    },
+  );
+
   it("does not invalidate an active timeout tail when a published timeout is observed again", async () => {
     const entry = createRunEntry({
       expectsCompletionMessage: true,

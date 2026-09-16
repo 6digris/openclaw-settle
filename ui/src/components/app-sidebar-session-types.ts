@@ -46,12 +46,6 @@ export type SidebarSessionAttention =
   | { kind: "agent"; note: string; icon: SessionAgentAttentionIconId }
   | { kind: "error"; reason: string; childLabel?: string };
 
-/** Client-owned attention that can name a session before its row is loaded. */
-export type SidebarKnownSessionAttention = {
-  sessionKey: string;
-  attention: Extract<SidebarSessionAttention, { kind: "question" } | { kind: "approval" }>;
-};
-
 export const SIDEBAR_SESSION_NO_ATTENTION: SidebarSessionAttention = { kind: "none" };
 
 function sidebarSessionAttentionPriority(attention: SidebarSessionAttention): number {

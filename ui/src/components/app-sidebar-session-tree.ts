@@ -2,11 +2,11 @@ import type { GatewaySessionRow } from "../api/types.ts";
 import {
   areUiSessionKeysEquivalent,
   isSubagentSessionKey,
+  parseAgentSessionKey,
   resolveUiSessionNavigationParentKey,
 } from "../lib/sessions/session-key.ts";
 import {
   summarizeSidebarSessionAttention,
-  type SidebarKnownSessionAttention,
   type SidebarRecentSession,
   type SidebarSessionAttention,
 } from "./app-sidebar-session-types.ts";
@@ -30,10 +30,10 @@ export function projectSessionTree(params: {
   roots: readonly GatewaySessionRow[];
   rowsByKey: ReadonlyMap<string, GatewaySessionRow>;
   loadingChildKeys: ReadonlySet<string>;
-  knownSessionAttention: readonly SidebarKnownSessionAttention[];
+  resolveAttention: (row: Pick<GatewaySessionRow, "key" | "agentId">) => SidebarSessionAttention;
   toSidebarSession: (row: GatewaySessionRow, isChild?: boolean) => SidebarRecentSession;
 }): SidebarRecentSession[] {
-  const { roots, rowsByKey, loadingChildKeys, knownSessionAttention, toSidebarSession } = params;
+  const { roots, rowsByKey, loadingChildKeys, resolveAttention, toSidebarSession } = params;
   const childKeysByParent = new Map<string, string[]>();
   const hasRootCategory = (row: GatewaySessionRow | undefined) =>
     typeof row?.category === "string" &&
@@ -96,11 +96,12 @@ export function projectSessionTree(params: {
             attributeChildAttention(child.ownAttention ?? child.attention, child.label),
             ...(child.childAttention ?? []),
           ]),
-          ...knownSessionAttention
-            .filter((entry) =>
-              unloadedChildKeys.some((key) => areUiSessionKeysEquivalent(entry.sessionKey, key)),
-            )
-            .map((entry) => entry.attention),
+          ...unloadedChildKeys.map((key) =>
+            resolveAttention({
+              key,
+              agentId: parseAgentSessionKey(key)?.agentId ?? projected.agentId,
+            }),
+          ),
         ]
           .filter((value) => value.kind !== "none")
           .map((value) => [JSON.stringify(value), value]),

@@ -22,6 +22,7 @@ export async function reconcileAcceptedRecovery(params: {
   childSessionKey: string;
   currentSessionId?: string;
   currentSessionLifecycleRevision?: string;
+  currentSessionLifecycleRunId?: string;
   clearAcceptedRecovery: RestartRecoveryParams["clearAcceptedRecovery"];
   clearPendingNotice: RestartRecoveryParams["clearPendingNotice"];
   entry: SubagentRunRecord;
@@ -53,6 +54,22 @@ export async function reconcileAcceptedRecovery(params: {
     params.gatewayRuntime !== undefined;
   if (!ownsRecoveryGateway()) {
     return { status: "deferred" };
+  }
+  if (
+    !params.currentSessionId ||
+    params.currentSessionId !== params.receipt.sessionId ||
+    (params.receipt.sessionLifecycleRevision !== undefined &&
+      params.currentSessionLifecycleRevision !== params.receipt.sessionLifecycleRevision) ||
+    (params.receipt.sessionLifecycleRunId !== undefined &&
+      params.currentSessionLifecycleRunId !== params.receipt.sessionLifecycleRunId)
+  ) {
+    return {
+      status: "terminal",
+      error:
+        "accepted subagent restart recovery lost its exact session before ownership settlement",
+      suppressSessionEffects: true,
+      target: { runId: owner.runId, entry: owner },
+    };
   }
   if (params.runId !== params.receipt.idempotencyKey) {
     let remapped = false;
@@ -111,21 +128,6 @@ export async function reconcileAcceptedRecovery(params: {
     isRestartRecoveryLifecycleCurrent(params.receipt) &&
     ownsRecoveryGateway();
 
-  if (
-    !params.currentSessionId ||
-    params.currentSessionId !== params.receipt.sessionId ||
-    (params.receipt.sessionLifecycleRevision !== undefined &&
-      params.currentSessionLifecycleRevision !== params.receipt.sessionLifecycleRevision)
-  ) {
-    return {
-      status: "terminal",
-      error:
-        "accepted subagent restart recovery lost its exact session before ownership settlement",
-      suppressSessionEffects: true,
-      target: { runId: owner.runId, entry: owner },
-    };
-  }
-
   try {
     if (
       !(await settleAcceptedRecoverySession({
@@ -134,6 +136,7 @@ export async function reconcileAcceptedRecovery(params: {
         isOwnerCurrent: ownsAcceptedTarget,
         sessionId: params.receipt.sessionId,
         sessionLifecycleRevision: params.receipt.sessionLifecycleRevision,
+        sessionLifecycleRunId: params.receipt.sessionLifecycleRunId,
         now: params.now,
         runId: owner.runId,
         storePath: params.storePath,

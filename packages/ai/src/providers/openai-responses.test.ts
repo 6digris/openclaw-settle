@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { configureAiTransportHost } from "../host.js";
+import { configureAiTransportHost, getAiTransportHost } from "../host.js";
 import type { Context, Model } from "../types.js";
 
 const openAiMockState = vi.hoisted(() => ({
@@ -170,6 +170,60 @@ describe("OpenAI Responses provider", () => {
     }
     expect(openAiMockState.requestOptions[0]).toMatchObject({ maxRetries: 0 });
   });
+
+  it.each([
+    { route: "proxy", supportsStrictMode: undefined, optional: true, strict: undefined },
+    { route: "proxy", supportsStrictMode: false, optional: true, strict: undefined },
+    { route: "proxy", supportsStrictMode: true, optional: true, strict: false },
+    { route: "native", supportsStrictMode: undefined, optional: false, strict: true },
+    { route: "native", supportsStrictMode: false, optional: true, strict: false },
+  ] as const)(
+    "preserves $route tool optionality with configured strict support=$supportsStrictMode (optional=$optional)",
+    async ({ route, supportsStrictMode, optional, strict }) => {
+      const native = route === "native";
+      const capabilities = getAiTransportHost().resolveProviderRequestCapabilities({});
+      configureAiTransportHost({
+        resolveProviderRequestCapabilities: () => ({
+          ...capabilities,
+          endpointClass: native ? "openai-public" : "custom",
+        }),
+        resolveOpenAIStrictToolSetting: (_model, options) =>
+          native ? true : options?.supportsStrictMode ? false : undefined,
+      });
+      const requestModel = model({
+        baseUrl: native ? "https://api.openai.com/v1" : "https://proxy.example/v1",
+        ...(supportsStrictMode === undefined ? {} : { compat: { supportsStrictMode } }),
+      });
+      const parameters = Object.freeze({
+        type: "object",
+        properties: Object.freeze({ prompt: { type: "string" }, note: { type: "string" } }),
+        required: Object.freeze(optional ? ["prompt"] : ["prompt", "note"]),
+        additionalProperties: false,
+      });
+      const toolContext: Context = {
+        ...context,
+        tools: [{ name: "record_note", description: "Record a note", parameters }],
+      };
+      const options = { apiKey: "synthetic-key" };
+      const transportParams = buildOpenAIResponsesParams(requestModel, toolContext, options);
+      await streamOpenAIResponses(requestModel, toolContext, options).result();
+
+      for (const params of [transportParams, openAiMockState.params[0]]) {
+        expect(params).toHaveProperty("tools", [
+          {
+            type: "function",
+            name: "record_note",
+            description: "Record a note",
+            parameters,
+            ...(strict === undefined ? {} : { strict }),
+          },
+        ]);
+        if (strict === undefined) {
+          expect(params).not.toHaveProperty("tools.0.strict");
+        }
+      }
+    },
+  );
 
   it.each([
     { id: "gpt-5.6-sol", cacheRetention: "short", ttl: undefined, retention: undefined },
