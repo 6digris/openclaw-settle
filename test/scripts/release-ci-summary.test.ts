@@ -2342,6 +2342,168 @@ describe("release CI summary child correlation", () => {
     });
   });
 
+  it.each([2, 3] as const)(
+    "reads the unsplit inspector's previous and current advisory projections in manifest v%s",
+    (version) => {
+      const composite = composeReleaseAttemptJobs(
+        [
+          {
+            runAttempt: 1,
+            jobs: [
+              {
+                name: "plugin-prerelease-inspector",
+                status: "completed",
+                conclusion: "success",
+              },
+            ],
+          },
+        ],
+        { effectiveRunAttempt: 1, plannedRunAttempt: 1 },
+      );
+      const childEvidence = {
+        pluginPrerelease: {
+          compositeJobsSha256: composite.sha256,
+          dispatchActor: "github-actions[bot]",
+          effectiveRunAttempt: 1,
+          jobs: composite.jobs,
+          observedRunAttempts: [1],
+          plannedRunAttempt: 1,
+          repository: "openclaw/openclaw",
+          runId: "202",
+          triggeringActor: "github-actions[bot]",
+        },
+      };
+      const current = [
+        {
+          child: "pluginPrerelease",
+          job: "plugin-prerelease-inspector",
+          status: "completed",
+          conclusion: "success",
+          policy: "advisory",
+        },
+      ];
+      for (const advisoryJobs of [[], current]) {
+        const saved = JSON.stringify({
+          ...rawManifest({ version, workflowSha: "0".repeat(40) }),
+          childEvidence,
+          advisoryJobs,
+        });
+        expect(
+          validateParentManifest(JSON.parse(saved), {
+            runId: "29090000000",
+            runAttempt: 2,
+          }).advisoryJobs,
+        ).toEqual(current);
+      }
+    },
+  );
+
+  it.each(["previous", "current"])(
+    "authenticates %s-producer saved advisory evidence without relaxing required jobs",
+    async (producer) => {
+      const fixture = trustedMainNpmFixture();
+      const jobsByRun = new Map(
+        fixture.executionPlan.children
+          .filter((child) => child.selected)
+          .map((child) => {
+            const jobs = structuredClone(fixture.client.getRunAttemptJobs(child.runId));
+            if (child.key.startsWith("pluginPrerelease")) {
+              jobs.push({ ...fixture.parentJob, name: "plugin-prerelease-inspector" });
+            } else if (child.key === "releaseChecksCandidate") {
+              jobs.push({
+                ...fixture.parentJob,
+                name: "cross_os_release_checks / Windows / packaged fresh",
+                conclusion: "failure",
+              });
+            }
+            return [child.runId, jobs] as const;
+          }),
+      );
+      fixture.client.getRunAttemptJobs.mockImplementation((runId) =>
+        expectDefined(jobsByRun.get(runId), "retained child jobs"),
+      );
+      const childEvidence = Object.fromEntries(
+        [...jobsByRun].map(([runId, jobs]) => {
+          const composite = composeReleaseAttemptJobs([{ jobs, runAttempt: 1 }], {
+            effectiveRunAttempt: 1,
+            plannedRunAttempt: 1,
+          });
+          const child = expectDefined(
+            fixture.executionPlan.children.find((entry) => entry.runId === runId),
+            "planned child",
+          );
+          return [
+            child.key,
+            {
+              compositeJobsSha256: composite.sha256,
+              dispatchActor: "github-actions[bot]",
+              effectiveRunAttempt: 1,
+              jobs: composite.jobs,
+              observedRunAttempts: [1],
+              plannedRunAttempt: 1,
+              repository: "openclaw/openclaw",
+              runId,
+              triggeringActor: "github-actions[bot]",
+            },
+          ];
+        }),
+      );
+      const currentProjection = releaseAdvisoryJobEvidence(childEvidence, "beta", "main");
+      // Persist the previous producer's literal projection, not a call to the new classifier.
+      const previousProjection = [
+        {
+          child: "releaseChecksCandidate",
+          job: "cross_os_release_checks / Windows / packaged fresh",
+          status: "completed",
+          conclusion: "failure",
+          policy: "advisory",
+        },
+      ];
+      const manifest = Object.assign(fixture.manifest, {
+        childEvidence,
+        advisoryJobs: producer === "previous" ? previousProjection : currentProjection,
+      });
+      const savedBytes = JSON.stringify(manifest);
+      const options = {
+        runId: fixture.runId,
+        verifierSourceContent: readFileSync(SCRIPT),
+        verifierSourceSha: "c".repeat(40),
+      };
+      const expected = { runId: fixture.runId, runAttempt: 1 };
+      // The summary reader projects current advisories without rewriting the saved artifact.
+      expect(validateParentManifest(JSON.parse(savedBytes), expected).advisoryJobs).toEqual(
+        currentProjection,
+      );
+      expect((await validateReleaseRunEvidence(options, fixture.client)).valid).toBe(true);
+      expect(JSON.stringify(manifest)).toBe(savedBytes);
+
+      const inspector = expectDefined(
+        currentProjection.find((job) => job.child === "pluginPrereleaseCandidate"),
+        "inspector advisory",
+      );
+      for (const advisoryJobs of [
+        [], // Existing Windows evidence cannot be omitted.
+        [...previousProjection, inspector], // A partial new projection is not historical evidence.
+        [...previousProjection, { ...inspector, conclusion: "failure" }],
+        [...previousProjection, { ...inspector, job: "test" }],
+        [...currentProjection, inspector], // Duplicated evidence is not canonical.
+      ]) {
+        expect(() => validateParentManifest({ ...manifest, advisoryJobs }, expected)).toThrow(
+          "release validation advisory jobs differ from canonical policy evidence",
+        );
+      }
+      const requiredRun = expectDefined(
+        fixture.executionPlan.children.find((child) => child.key === "normalCi"),
+        "CI child",
+      );
+      const requiredJobs = expectDefined(jobsByRun.get(requiredRun.runId), "CI jobs");
+      expectDefined(requiredJobs[0], "required CI job").conclusion = "failure";
+      await expect(validateReleaseRunEvidence(options, fixture.client)).rejects.toThrow(
+        "manifest child composite evidence mismatch",
+      );
+    },
+  );
+
   it("verifies all five selected children for sealed npm beta coverage", async () => {
     const fixture = trustedMainNpmFixture();
     const options = {

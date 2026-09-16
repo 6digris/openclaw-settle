@@ -1196,12 +1196,21 @@ export function validateParentManifest(value, expected) {
   }
   const childEvidence = normalizeManifestChildEvidence(value.childEvidence);
   const advisoryJobs = releaseAdvisoryJobEvidence(childEvidence, releaseProfile, value.workflowRef);
-  if (
-    value.advisoryJobs !== undefined &&
-    JSON.stringify(sortReleaseJsonValueKeys(value.advisoryJobs)) !==
-      JSON.stringify(sortReleaseJsonValueKeys(advisoryJobs))
-  ) {
-    throw new Error("release validation advisory jobs differ from canonical policy evidence");
+  if (value.advisoryJobs !== undefined) {
+    // Persisted v2-v4 manifests predating inspector advisories projected only
+    // release-check jobs. Accept that exact projection, never a partial list or
+    // altered evidence; readers still return the current canonical projection.
+    const previousAdvisoryJobs = advisoryJobs.filter(({ child }) =>
+      /^releaseChecks(?:Independent|Candidate)?$/u.test(child),
+    );
+    const saved = JSON.stringify(sortReleaseJsonValueKeys(value.advisoryJobs));
+    if (
+      ![advisoryJobs, previousAdvisoryJobs].some(
+        (projection) => saved === JSON.stringify(sortReleaseJsonValueKeys(projection)),
+      )
+    ) {
+      throw new Error("release validation advisory jobs differ from canonical policy evidence");
+    }
   }
   const childRuns = value.childRuns;
   if (!childRuns || typeof childRuns !== "object" || Array.isArray(childRuns)) {
