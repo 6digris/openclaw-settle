@@ -584,6 +584,8 @@ describe("triageCommand", () => {
               expect.stringContaining("& muse exec --prompt-file"),
               expect.stringContaining("& grok --prompt-file"),
               expect.stringContaining("| & cursor-agent --print"),
+              expect.stringContaining("& kimi --prompt"),
+              expect.stringContaining("| & qwen"),
               expect.stringContaining("& openclaw triage --run"),
             ]
           : [
@@ -594,6 +596,8 @@ describe("triageCommand", () => {
               `${targetEnv} muse exec --prompt-file ${promptPath}`,
               `${targetEnv} grok --prompt-file ${promptPath}`,
               `${targetEnv} cursor-agent --print < '${promptPath}'`,
+              `${targetEnv} kimi --prompt 'Read the debugging prompt at ${promptPath} and follow its repair and verification instructions.'`,
+              `${targetEnv} qwen < '${promptPath}'`,
               `${targetEnv} openclaw triage --run`,
             ],
     });
@@ -605,6 +609,8 @@ describe("triageCommand", () => {
   it.each([
     { executable: "codex", detectedAgents: ["codex"] },
     { executable: "cursor-agent", detectedAgents: ["cursor"] },
+    { executable: "kimi", detectedAgents: ["kimi"] },
+    { executable: "qwen", detectedAgents: ["qwen"] },
     { executable: "cursor", detectedAgents: [] },
     { executable: "agent", detectedAgents: [] },
   ])(

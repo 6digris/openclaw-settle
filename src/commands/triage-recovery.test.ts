@@ -41,7 +41,17 @@ vi.mock("../process/exec.js", async (importOriginal) => ({
   runUtf8CommandWithTimeout: mocks.runUtf8CommandWithTimeout,
 }));
 
-const agents = ["codex", "claude", "pi", "opencode", "muse", "grok", "cursor"] as const;
+const agents = [
+  "codex",
+  "claude",
+  "pi",
+  "opencode",
+  "muse",
+  "grok",
+  "cursor",
+  "kimi",
+  "qwen",
+] as const;
 const printOnlyModes = [
   { mode: "JSON", json: true, nonInteractive: false, terminal: true },
   { mode: "--non-interactive", json: false, nonInteractive: true, terminal: true },
@@ -111,9 +121,10 @@ describe("triage external recovery handoff", () => {
     mocks.resolveExecutablePath.mockImplementation((binary: string) =>
       available.has(binary) ? `/usr/local/bin/${binary}` : undefined,
     );
+    const runtime = createTriageRuntime();
     await withOpenClawTestState({ layout: "split" }, async () => {
       await withTriageTerminal(true, () =>
-        triageCommand(createTriageRuntime(), {
+        triageCommand(runtime, {
           noExport: true,
           agent: explicit ? agent : undefined,
         }),
@@ -123,11 +134,18 @@ describe("triage external recovery handoff", () => {
       `/usr/local/bin/${agent === "cursor" ? "cursor-agent" : agent}`,
       agent === "claude"
         ? ["--safe-mode", expect.any(String)]
-        : agent === "opencode"
-          ? ["--prompt", expect.any(String)]
-          : [expect.any(String)],
+        : agent === "qwen"
+          ? ["--prompt-interactive", expect.any(String)]
+          : agent === "opencode" || agent === "kimi"
+            ? ["--prompt", expect.any(String)]
+            : [expect.any(String)],
       expect.objectContaining({ stdio: "inherit" }),
     );
+    if (agent === "kimi") {
+      expect(runtime.log).toHaveBeenCalledWith(
+        expect.stringContaining("native automatic permission policy (no approval prompts)"),
+      );
+    }
   });
 
   it.skipIf(process.platform === "win32").each(["default", "custom"])(
@@ -161,9 +179,11 @@ describe("triage external recovery handoff", () => {
           "codex",
           "cursor-agent",
           "grok",
+          "kimi",
           "muse",
           "opencode",
           "pi",
+          "qwen",
           "openclaw",
         ]) {
           const readPrompt =
@@ -173,7 +193,9 @@ describe("triage external recovery handoff", () => {
                 ? 'test "$1" = exec && test "$2" = --prompt-file && cat "$3"\n'
                 : command === "grok"
                   ? 'test "$1" = --prompt-file && cat "$2"\n'
-                  : "cat\n";
+                  : command === "kimi"
+                    ? 'test "$1" = --prompt && prompt_path=${2#Read the debugging prompt at } && prompt_path=${prompt_path% and follow its repair and verification instructions.} && cat "$prompt_path"\n'
+                    : "cat\n";
           await fs.writeFile(
             path.join(bin, command),
             `#!/bin/sh\nprintf "%s\\n" "$OPENCLAW_STATE_DIR" "$OPENCLAW_CONFIG_PATH" "$OPENCLAW_WORKSPACE_DIR"\n${readPrompt}`,
@@ -193,7 +215,7 @@ describe("triage external recovery handoff", () => {
             timeout: 10_000,
           });
           expect(stdout).toBe(
-            `${originalState}\n${configPath}\n${defaultWorkspaceDir}\n${index < 7 ? prompt : ""}`,
+            `${originalState}\n${configPath}\n${defaultWorkspaceDir}\n${index < agents.length ? prompt : ""}`,
           );
         }
         expect(await fs.readFile(report.promptPath, "utf8")).not.toContain(home);
@@ -210,6 +232,8 @@ describe("triage external recovery handoff", () => {
           { agent: "muse", command: "muse exec --prompt-file" },
           { agent: "grok", command: "grok --prompt-file" },
           { agent: "cursor", command: "cursor-agent --print" },
+          { agent: "kimi", command: "kimi --prompt" },
+          { agent: "qwen", command: "qwen" },
         ] as const
       ).map((agent) => Object.assign({}, mode, agent)),
     ),
@@ -231,11 +255,13 @@ describe("triage external recovery handoff", () => {
                 expect.stringContaining("muse exec --prompt-file"),
                 expect.stringContaining("grok --prompt-file"),
                 expect.stringContaining("cursor-agent --print"),
+                expect.stringContaining("kimi --prompt"),
+                expect.stringContaining("qwen"),
               ]),
             }),
             2,
           );
-          expect(runtime.writeJson.mock.calls[0]?.[0].suggestedCommands).toHaveLength(8);
+          expect(runtime.writeJson.mock.calls[0]?.[0].suggestedCommands).toHaveLength(10);
         } else {
           const output = runtime.log.mock.calls.flat().join("\n");
           const commands = runtime.log.mock.calls.filter(([line]) => String(line).startsWith("  "));
@@ -328,7 +354,7 @@ describe("triage external recovery handoff", () => {
     );
   });
 
-  it.each(["pi", "muse", "grok", "cursor"] as const)(
+  it.each(["pi", "muse", "grok", "cursor", "kimi", "qwen"] as const)(
     "reports missing %s without falling back to an available agent",
     async (agent) => {
       mocks.resolveExecutablePath.mockImplementation((binary: string) =>
