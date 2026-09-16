@@ -5,15 +5,15 @@ import { drainingRelaySessions } from "./state.js";
 export function createRelaySessionTestLifecycle() {
   const activeSessions = new Map<string, string>();
   return {
-    track(relaySessionId: string, connId: string): void {
+    track: (relaySessionId: string, connId: string): void => {
       activeSessions.set(relaySessionId, connId);
     },
-    stop(params: Parameters<typeof stopTalkRealtimeRelaySession>[0]) {
+    stop: (params: Parameters<typeof stopTalkRealtimeRelaySession>[0]) => {
       const completion = stopTalkRealtimeRelaySession(params);
       activeSessions.delete(params.relaySessionId);
       return completion;
     },
-    async drain(): Promise<void> {
+    drain: async (): Promise<void> => {
       try {
         for (const [relaySessionId, connId] of activeSessions) {
           try {
