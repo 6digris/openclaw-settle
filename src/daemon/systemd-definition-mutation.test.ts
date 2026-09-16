@@ -1022,6 +1022,19 @@ describe.skipIf(process.platform === "win32")("systemd definition mutation owner
   );
 
   it("bounds manager inspection by the mutation deadline", async () => {
+    let monotonicNow = 0;
+    // Filesystem scheduling must not consume this budget-propagation fixture's clock.
+    vi.spyOn(performance, "now").mockImplementation(() => monotonicNow);
+    busctl.mockImplementation(async (serviceEnv) => {
+      monotonicNow += 5;
+      return {
+        code: 1,
+        termination: "exit",
+        stdout: "",
+        stderr: `Call failed: Unit ${serviceEnv.OPENCLAW_SYSTEMD_UNIT}.service not found.`,
+      };
+    });
+
     await withSystemdDefinitionMutation(env, env, async () => undefined, { timeoutMs: 50 });
 
     expect(busctl).toHaveBeenCalled();
@@ -1030,6 +1043,7 @@ describe.skipIf(process.platform === "win32")("systemd definition mutation owner
       expect(timeoutMs).toBeGreaterThan(0);
       expect(timeoutMs).toBeLessThanOrEqual(50);
     }
+    expect(busctl.mock.calls.map((call) => call[2])).toEqual([16, 15]);
   });
 
   it("bounds lock acquisition by the mutation deadline", async () => {
