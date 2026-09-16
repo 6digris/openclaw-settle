@@ -203,8 +203,8 @@ export function captureRuntimeConfigAsyncReader(
       },
       {
         assertCurrent: assertSourceCurrent,
-        retainSnapshotCurrent: (assertCurrent) => {
-          assertSnapshotCurrent = assertCurrent;
+        retainSnapshotCurrent: (assertSelectedSnapshotCurrent) => {
+          assertSnapshotCurrent = assertSelectedSnapshotCurrent;
         },
       },
     ));
