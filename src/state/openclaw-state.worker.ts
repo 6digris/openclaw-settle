@@ -1,3 +1,4 @@
+import { loadSubagentSessionListRunsFromSqlite } from "../agents/subagents/registry/subagent-registry.store.sqlite.js";
 import { readClawInstallSchemaVersionRows } from "../claws/provenance-runtime-read.kernel.js";
 import {
   patchConfigHealthEntryInDatabase,
@@ -137,6 +138,12 @@ function createSharedStateWorkerBackend(
     execute(command) {
       if (closed) {
         throw new Error("Shared-state worker is closed");
+      }
+      if (command.type === "subagents.sessionList") {
+        return withExistingOpenClawStateDatabaseReadOnly(
+          (database) => loadSubagentSessionListRunsFromSqlite(undefined, database),
+          { path: context.databasePath, env: getSqliteWorkerStateContext().environment },
+        );
       }
       if (command.type === "tasks.statusSummary") {
         const read = () =>
