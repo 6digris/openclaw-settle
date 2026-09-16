@@ -18,6 +18,8 @@ Record selected checks and the reason in the existing review. Revisit each page'
 
 ## Use the result
 
+[Subsequent audit findings](evidence.md#subsequent-audit-findings) apply these checks to later verified cases and distinguish repair dates, release exposure, and evidence limits. They are separate from the counted support above.
+
 For an applicable check, cite the actual path from input to outcome and the proof or remaining gap. A finding must name the changed decision and a reachable failure. A missing test alone is not proof of a defect. Keep valid behavior and refusal cases in the same review.
 
 Read incident records when tracing a cause or resolving ambiguity. Do not load the full historical corpus for every PR. Historical dates identify evidence; current owner contracts decide applicability. For a release regression audit or a lesson update, follow [refreshing the playbook](maintenance.md).
