@@ -117,7 +117,7 @@ const previewAdmissions = new WeakMap<
 
 /** Root custody does not authorize automatic or restart-bearing update requests. */
 export function assertFreeBsdUpdateCommandMode(
-  opts: UpdateCommandOptions,
+  opts: Pick<UpdateCommandOptions, "restart">,
   env: NodeJS.ProcessEnv = process.env,
 ): void {
   if (
@@ -133,7 +133,9 @@ export function assertFreeBsdUpdateCommandMode(
 
 /** Call only after native custody admits this exact environment for read-only inspection. */
 export function assertFreeBsdUpdateCommandRunOrigin(
-  opts: UpdateCommandOptions,
+  opts: Pick<UpdateCommandOptions, "restart"> & {
+    run?: Pick<NonNullable<UpdateCommandOptions["run"]>, "runId">;
+  },
   env: NodeJS.ProcessEnv,
   initializedRunId?: string,
 ): void {
