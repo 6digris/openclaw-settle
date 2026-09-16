@@ -248,7 +248,8 @@ function sanitizeDiagnosticEvent(event: DiagnosticEventPayload): DiagnosticStabi
     case "gateway.event_loop.sample":
     case "diagnostic.gc":
     case "diagnostic.child_process.spawn":
-      // Runtime measurements are exporter-only and excluded by the subscription.
+    case "model.runtime_choice":
+      // Exporter measurements and runtime guard facts stay outside the stability ring.
       break;
     case "model.usage":
       record.channel = event.channel;
@@ -868,6 +869,7 @@ export function startDiagnosticStabilityRecorder(): void {
         "log.record",
         "telemetry.exporter",
         "gateway.rpc",
+        "model.runtime_choice",
         "gateway.event_loop.sample",
         "diagnostic.gc",
         "diagnostic.child_process.spawn",
