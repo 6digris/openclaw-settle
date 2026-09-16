@@ -138,7 +138,7 @@ describe("PDF document extractor", () => {
       pagesProcessed: Array.from({ length: 20 }, (_, index) => index + 1),
       truncated: { text: true, images: false },
     });
-    const result = await extractPdfContent(request({ minTextChars: 5 }));
+    const result = await extractPdfContent(request({ minTextChars: 5, maxPages: 20 }));
 
     expect(result).toEqual({
       text: "enough text",
@@ -204,7 +204,7 @@ describe("PDF document extractor", () => {
 
   it("rejects selected pages outside the PDF page count before extraction", async () => {
     pdfDocument.pageCount = 1;
-    pdfDocument.extract.mockResolvedValueOnce(extractionResult("", [1]));
+    pdfDocument.extract.mockResolvedValueOnce(extractionResult("", []));
     await expect(extractPdfContent(request({ pageNumbers: [2] }))).rejects.toThrow(
       "No requested PDF pages exist in this 1-page document.",
     );
@@ -216,7 +216,7 @@ describe("PDF document extractor", () => {
       images: [],
       metadata: {
         pages: {
-          processed: [1],
+          processed: [],
           total: 1,
           selection: "explicit",
           truncated: false,
