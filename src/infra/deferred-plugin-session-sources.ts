@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { z } from "zod";
 import {
   MigrationArtifactSchema,
@@ -14,11 +16,14 @@ import {
   listSessionSqliteMigrationManifestPaths,
   readSessionSqliteMigrationManifest,
 } from "../commands/doctor-session-sqlite-migration-run.js";
+import { tryResolveLegacyCompatibilityAgentId } from "../config/legacy.default-agent-owner.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import { withExistingOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-readonly.js";
 import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
+import { readFileDescriptorBoundedSync } from "./boundary-file-read.js";
 import type { DeferredPluginMigration } from "./deferred-plugin-migrations.js";
 import {
   readLegacyMigrationReceiptFromDatabase,
@@ -154,6 +159,91 @@ export function readDeferredPluginSessionImport(params: {
     }
   }
   return recorded;
+}
+
+/** Global file-era rows keep their original owner while each agent imports its partition. */
+export function resolveLegacyGlobalSessionEntryAgentId(
+  cfg: OpenClawConfig,
+  sessionKey: string,
+): string | undefined {
+  const ownerAgentId =
+    parseAgentSessionKey(sessionKey)?.agentId ??
+    cfg.agents?.defaults?.sessionStore?.agentId?.trim() ??
+    tryResolveLegacyCompatibilityAgentId(cfg);
+  return ownerAgentId ? normalizeAgentId(ownerAgentId) : undefined;
+}
+
+function readVerifiedRetainedIndexKeys(
+  source: DeferredPluginSessionImport["sources"][number],
+): string[] {
+  const fd = fs.openSync(
+    source.path,
+    fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0),
+  );
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.size !== source.identity.size) {
+      throw new Error("Retained session migration index changed before admission.");
+    }
+    const bytes = readFileDescriptorBoundedSync(fd, source.identity.size);
+    if (
+      createHash("sha256").update(bytes).digest("hex") !== source.identity.sha256 ||
+      !sameMigrationArtifact(readMigrationArtifactIdentity(source.path), source.identity)
+    ) {
+      throw new Error("Retained session migration index changed before admission.");
+    }
+    const value: unknown = JSON.parse(bytes.toString("utf8"));
+    if (!isRecord(value)) {
+      throw new Error("Retained session migration index is not an object.");
+    }
+    return Object.keys(value);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/** Admit empty global partitions only from an existing import's exact verified source bytes. */
+export function prepareRetainedLegacyGlobalSessionAdmission(params: {
+  cfg: OpenClawConfig;
+  env: NodeJS.ProcessEnv;
+  targets: readonly SessionImportTarget[];
+}): (target: SessionImportTarget) => boolean {
+  const covered = new Set<string>();
+  const indexes = new Map<string, DeferredPluginSessionImport["sources"][number]>();
+  for (const target of params.targets) {
+    const receipt = readDeferredPluginSessionImport({ target, env: params.env });
+    if (!receipt) {
+      continue;
+    }
+    covered.add(sourceKey(target));
+    const index = receipt.sources.find((source) => source.path === path.resolve(target.storePath));
+    if (index) {
+      indexes.set(path.resolve(target.storePath), index);
+    }
+  }
+  const ownersBySource = new Map<string, Set<string | undefined>>();
+  for (const target of params.targets) {
+    if (covered.has(sourceKey(target))) {
+      continue;
+    }
+    const index = indexes.get(path.resolve(target.storePath));
+    if (!index) {
+      continue;
+    }
+    let owners = ownersBySource.get(index.path);
+    if (!owners) {
+      owners = new Set(
+        readVerifiedRetainedIndexKeys(index).map((key) =>
+          resolveLegacyGlobalSessionEntryAgentId(params.cfg, key),
+        ),
+      );
+      ownersBySource.set(index.path, owners);
+    }
+    if (!owners.has(normalizeAgentId(target.agentId))) {
+      covered.add(sourceKey(target));
+    }
+  }
+  return (target) => covered.has(sourceKey(target));
 }
 
 /** Reuse verified source bytes only within one uninterrupted synchronous migration loop. */

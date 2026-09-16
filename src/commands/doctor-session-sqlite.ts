@@ -5,7 +5,6 @@ import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { tryResolveDefaultAgentId } from "../agents/agent-scope.js";
 import { getRuntimeConfig } from "../config/config.js";
-import { tryResolveLegacyCompatibilityAgentId } from "../config/legacy.default-agent-owner.js";
 import { resolveStateDir } from "../config/paths.js";
 import { isPrimarySessionTranscriptFileName } from "../config/sessions/artifacts.js";
 import { importSqliteSessionRowsBatch } from "../config/sessions/session-accessor.sqlite-import.js";
@@ -31,6 +30,7 @@ import {
 } from "../infra/deferred-plugin-migrations.js";
 import {
   deferredPluginSessionStoreIds,
+  resolveLegacyGlobalSessionEntryAgentId,
   readDeferredPluginSessionImport,
   recordDeferredPluginSessionImport,
   type DeferredPluginSessionImport,
@@ -40,11 +40,7 @@ import { prepareLegacyAcpMigrationSource } from "../infra/legacy-acp-migration-s
 import { isPathInside } from "../infra/path-guards.js";
 import { resolveSqliteDatabaseFilePaths } from "../infra/sqlite-files.js";
 import { normalizeLegacySessionEntryDelivery as normalizeSessionEntryDelivery } from "../infra/state-migrations.legacy-session-store.js";
-import {
-  LEGACY_IMPLICIT_AGENT_ID,
-  normalizeAgentId,
-  parseAgentSessionKey,
-} from "../routing/session-key.js";
+import { LEGACY_IMPLICIT_AGENT_ID, normalizeAgentId } from "../routing/session-key.js";
 import { migrateLegacySessionCreator } from "../state/creator-namespace-migration.js";
 import {
   readMigrationArtifactIdentity,
@@ -1171,14 +1167,9 @@ function isLegacySessionRecordOwnedByTarget(
   sessionKey: string,
 ): boolean {
   if (target.sqlitePath) {
-    const parsed = parseAgentSessionKey(sessionKey);
-    const ownerAgentId =
-      parsed?.agentId ??
-      cfg.agents?.defaults?.sessionStore?.agentId?.trim() ??
-      tryResolveLegacyCompatibilityAgentId(cfg);
-    return ownerAgentId
-      ? normalizeAgentId(ownerAgentId) === normalizeAgentId(target.agentId)
-      : false;
+    return (
+      resolveLegacyGlobalSessionEntryAgentId(cfg, sessionKey) === normalizeAgentId(target.agentId)
+    );
   }
   const ownerAgentId = resolveStoredSessionOwnerAgentId({
     cfg,

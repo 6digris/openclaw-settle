@@ -160,6 +160,9 @@ describe("session sources needed by deferred plugin migrations", () => {
           mode: "import",
         });
         expect(pendingChanged).toBe(pendingPhase === "concurrent");
+        expect(() =>
+          assertSessionStoreMigrationComplete({ cfg, env: state.env, operation: "doctor" }),
+        ).not.toThrow();
         expect(report.targets.find((target) => target.agentId === "ops")?.legacyEntries).toBe(0);
         expect(fs.existsSync(path.join(state.agentDir("ops"), "openclaw-agent.sqlite"))).toBe(
           false,
@@ -174,6 +177,29 @@ describe("session sources needed by deferred plugin migrations", () => {
       });
     },
   );
+
+  it("keeps an unimported owner blocked in a verified shared retained index", async () => {
+    await withOpenClawTestState({ label: "deferred-plugin-unimported-owner" }, async (state) => {
+      const { cfg, storePath } = seed(state, "legacy-root");
+      const store = JSON.parse(fs.readFileSync(storePath, "utf8"));
+      const transcript = path.join(path.dirname(storePath), "unimported-ops.jsonl");
+      fs.writeFileSync(transcript, '{"type":"session","version":3,"id":"unimported-ops"}\n');
+      store["agent:ops:pending"] = {
+        sessionId: "unimported-ops",
+        sessionFile: transcript,
+        updatedAt: 20,
+      };
+      fs.writeFileSync(storePath, JSON.stringify(store));
+      await runDoctorSessionSqlite({ cfg, env: state.env, allAgents: true, mode: "import" });
+      cfg.agents!.entries!.ops = {};
+      expect(fs.existsSync(path.join(state.agentDir("ops"), "openclaw-agent.sqlite"))).toBe(false);
+      expect(() =>
+        assertSessionStoreMigrationComplete({ cfg, env: state.env, operation: "doctor" }),
+      ).toThrow("Legacy session store requires migration");
+      expect(fs.existsSync(storePath)).toBe(true);
+      expect(fs.readFileSync(transcript, "utf8")).toContain("unimported-ops");
+    });
+  });
 
   it.each([
     { kind: "transcript", layout: "external" },

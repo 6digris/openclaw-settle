@@ -4,6 +4,7 @@ import { formatCliCommand } from "../../cli/command-format.js";
 import { readDeferredPluginMigrations } from "../../infra/deferred-plugin-migrations.js";
 import {
   deferredPluginSessionStoreIds,
+  prepareRetainedLegacyGlobalSessionAdmission,
   readDeferredPluginSessionImport,
 } from "../../infra/deferred-plugin-session-sources.js";
 import { formatDoctorStateRepairFailure } from "../../infra/state-repair-message.js";
@@ -56,6 +57,14 @@ export function assertSessionStoreMigrationComplete(params: {
         storePath: legacyRootStore,
       }))
     : [];
+  const retainedGlobalAdmission =
+    pending.length > 0
+      ? prepareRetainedLegacyGlobalSessionAdmission({
+          cfg: params.cfg,
+          env,
+          targets: legacyTargets,
+        })
+      : undefined;
   const sources: readonly { agentId?: string; storePath: string; sqlitePath?: string }[] = [
     ...(legacyTargets.length > 0 ? legacyTargets : [{ storePath: legacyRootStore }]),
     ...targets,
@@ -71,6 +80,13 @@ export function assertSessionStoreMigrationComplete(params: {
         pending,
       }).length > 0
     ) {
+      if (target.storePath === legacyRootStore && target.sqlitePath && retainedGlobalAdmission) {
+        return !retainedGlobalAdmission({
+          agentId: target.agentId,
+          storePath: target.storePath,
+          sqlitePath: target.sqlitePath,
+        });
+      }
       const sqlite = resolveSqliteTargetFromSessionStorePath(target.storePath, {
         agentId: target.agentId,
         env,
