@@ -7,6 +7,10 @@ import {
   withDelegatedUpdateCommandExecutor,
   withUpdateCommandExecutor,
 } from "../cli/update-cli/update-command-executor.js";
+import {
+  assertFreeBsdUpdateCommandMode,
+  assertFreeBsdUpdateCommandRunOrigin,
+} from "../cli/update-cli/update-command-freebsd-policy.js";
 import type {
   UpdateDoctorInput,
   MigratedUpdateFinalizationInput,
@@ -17,10 +21,6 @@ import {
   formatUpdateFinalizationError,
   UpdateCommandFailure,
 } from "../cli/update-cli/update-command-result.js";
-import {
-  assertFreeBsdUpdateCommandMode,
-  assertFreeBsdUpdateCommandRunOrigin,
-} from "../cli/update-cli/update-command-run.js";
 import { createWindowsTaskAutoStartGuard } from "../cli/update-cli/update-command-service-maintenance.js";
 import { withUpdateCommandTerminalResult } from "../cli/update-cli/update-command-terminal.js";
 import { createWindowsTaskAutoStartRecovery } from "../cli/update-cli/update-command-windows-task.js";

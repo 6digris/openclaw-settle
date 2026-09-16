@@ -82,13 +82,12 @@ import { VERSION } from "../../version.js";
 import { exitCliAfterOutput } from "../one-shot-exit.js";
 import { registerSignalExitBarrier, waitForSignalExitBarriers } from "../signal-exit-barrier.js";
 import type { UpdateDisplayProgress } from "./progress.js";
-import {
-  parseUpdateTimeoutMs,
-  resolveUpdateRoot,
-  UpdatePreMutationError,
-  type UpdateCommandOptions,
-} from "./shared.js";
+import { parseUpdateTimeoutMs, resolveUpdateRoot, type UpdateCommandOptions } from "./shared.js";
 import { suppressDeprecations } from "./suppress-deprecations.js";
+import {
+  assertFreeBsdUpdateCommandMode,
+  assertFreeBsdUpdateCommandRunOrigin,
+} from "./update-command-freebsd-policy.js";
 import { revalidateUpdateDatabaseContext } from "./update-command-managed-context.js";
 import {
   admitMutableUpdateSignalRun,
@@ -114,52 +113,6 @@ const previewAdmissions = new WeakMap<
   object,
   { record: UpdateRunRecord; env: NodeJS.ProcessEnv }
 >();
-
-/** Root custody does not authorize automatic or restart-bearing update requests. */
-export function assertFreeBsdUpdateCommandMode(
-  opts: Pick<UpdateCommandOptions, "restart">,
-  env: NodeJS.ProcessEnv = process.env,
-): void {
-  if (
-    process.platform === "freebsd" &&
-    (opts.restart !== false || env.OPENCLAW_UPDATE_RUN_HANDOFF === "1")
-  ) {
-    throw new UpdatePreMutationError(
-      "freebsd-update-mode",
-      "FreeBSD foreground updates require an explicit manual `openclaw update --no-restart` invocation without a managed-service handoff.",
-    );
-  }
-}
-
-/** Call only after native custody admits this exact environment for read-only inspection. */
-export function assertFreeBsdUpdateCommandRunOrigin(
-  opts: Pick<UpdateCommandOptions, "restart"> & {
-    run?: Pick<NonNullable<UpdateCommandOptions["run"]>, "runId">;
-  },
-  env: NodeJS.ProcessEnv,
-  initializedRunId?: string,
-): void {
-  if (process.platform !== "freebsd") {
-    return;
-  }
-  assertFreeBsdUpdateCommandMode(opts, env);
-  const runIds = [env[UPDATE_RUN_ID_ENV]?.trim(), opts.run?.runId].filter((id): id is string =>
-    Boolean(id),
-  );
-  const runId = runIds[0];
-  if (
-    (!runId && env[POST_CORE_UPDATE_ENV] === "1") ||
-    (runId &&
-      ((initializedRunId !== undefined && initializedRunId !== runId) ||
-        runIds.some((id) => id !== runId) ||
-        getUpdateRun(runId, { env })?.trigger !== "cli"))
-  ) {
-    throw new UpdatePreMutationError(
-      "freebsd-update-mode",
-      "FreeBSD foreground continuation requires the same existing manual CLI update run. Start `openclaw update --no-restart` without inherited update-run or handoff selectors.",
-    );
-  }
-}
 
 export async function resolveUpdateCommandAdmissionEnv(params: {
   opts: UpdateCommandOptions;

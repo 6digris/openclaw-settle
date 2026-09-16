@@ -16,13 +16,12 @@ import { withTestDir } from "../../test-helpers/temp-dir.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { withMockedPlatform } from "../../test-utils/vitest-spies.js";
 import * as shared from "./shared.js";
-import { updateGitInstall } from "./update-command-git.js";
 import {
   assertFreeBsdUpdateCommandMode,
   assertFreeBsdUpdateCommandRunOrigin,
-  prepareUpdateCommand,
-  resolveUpdateCommandAdmissionEnv,
-} from "./update-command-run.js";
+} from "./update-command-freebsd-policy.js";
+import { updateGitInstall } from "./update-command-git.js";
+import { prepareUpdateCommand, resolveUpdateCommandAdmissionEnv } from "./update-command-run.js";
 import { resolveManagedServicePackageUpdatePlan } from "./update-command-service-plan.js";
 import { resolveUpdateCommandTarget } from "./update-command-target.js";
 
