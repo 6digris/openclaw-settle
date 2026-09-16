@@ -10,6 +10,7 @@ import {
 } from "openclaw/plugin-sdk/agent-runtime-test-contracts";
 import { Type } from "typebox";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { PluginInstance } from "../../plugins/plugin-instance.js";
 import { getPluginToolMeta, setPluginToolMeta } from "../../plugins/tool-metadata.js";
 import {
   isToolWrappedWithBeforeToolCallHook,
@@ -62,7 +63,7 @@ describe("AgentRuntimePlan tool policy helpers", () => {
         workspaceDir: "/tmp/openclaw-runtime-plan-tools",
         model,
       }),
-    ).toBe(normalized);
+    ).toEqual(normalized);
     expect(normalize).toHaveBeenCalledWith(tools, {
       workspaceDir: "/tmp/openclaw-runtime-plan-tools",
       modelApi: "openai-responses",
@@ -165,7 +166,7 @@ describe("AgentRuntimePlan tool policy helpers", () => {
         provider: "openai",
         modelApi: null,
       }),
-    ).toBe(tools);
+    ).toEqual(tools);
     expect(normalize).toHaveBeenCalledWith(tools, {
       workspaceDir: undefined,
       modelApi: undefined,
@@ -219,45 +220,69 @@ describe("AgentRuntimePlan tool policy helpers", () => {
     expect(mocks.normalizeProviderToolSchemas).not.toHaveBeenCalled();
   });
 
-  it("preserves plugin metadata when provider schema normalization clones tools", () => {
-    // Provider normalization may clone tool objects; plugin metadata has to move
-    // with the clone so later dispatch still knows the owning plugin/MCP server.
-    const tool = createParameterFreeTool("fixture__lookup_note") as AgentTool;
-    const metadata: Parameters<typeof setPluginToolMeta>[1] = {
-      pluginId: "bundle-mcp",
-      kind: "memory",
-      optional: true,
-      replaySafe: true,
-      sideEffecting: true,
-      trustedLocalMedia: false,
-      mcp: {
-        serverName: "fixture",
-        safeServerName: "fixture",
-        toolName: "lookup_note",
-        operation: "tool",
-        deniedBySession: true,
-        codexApproval: {
-          mode: "prompt",
-          annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+  it.each([false, true])(
+    "preserves plugin metadata across normalized wrappers (plugin view: %s)",
+    async (pluginView) => {
+      // Provider normalization may clone tool objects; plugin metadata has to move
+      // with the clone so later dispatch still knows the owning plugin/MCP server.
+      const tool = {
+        ...createParameterFreeTool("fixture__lookup_note"),
+        label: "Fixture note",
+        execute: async () => ({ content: [], details: {} }),
+      } as AgentTool;
+      const metadata: Parameters<typeof setPluginToolMeta>[1] = {
+        pluginId: "bundle-mcp",
+        kind: "memory",
+        optional: true,
+        replaySafe: true,
+        sideEffecting: true,
+        trustedLocalMedia: false,
+        mcp: {
+          serverName: "fixture",
+          safeServerName: "fixture",
+          toolName: "lookup_note",
+          operation: "tool",
+          deniedBySession: true,
+          codexApproval: {
+            mode: "prompt",
+            annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+          },
+          node: { id: "fixture-node", displayName: "Fixture node" },
         },
-        node: { id: "fixture-node", displayName: "Fixture node" },
-      },
-    };
-    setPluginToolMeta(tool, metadata);
-    const normalized = {
-      ...tool,
-      parameters: normalizedParameterFreeSchema(),
-    };
-    mocks.normalizeProviderToolSchemas.mockReturnValueOnce([normalized]);
+      };
+      setPluginToolMeta(tool, metadata);
+      const normalized = {
+        ...tool,
+        parameters: normalizedParameterFreeSchema(),
+      };
+      const instance = new PluginInstance("normalizer");
+      const provider = instance.wrap({
+        normalizeToolSchemas: ({ tools }: { tools: AgentTool[] }) => tools,
+      });
+      const normalizedTools = pluginView
+        ? provider.normalizeToolSchemas({ tools: [tool] })
+        : [normalized];
+      mocks.normalizeProviderToolSchemas.mockReturnValueOnce(normalizedTools);
 
-    const result = normalizeAgentRuntimeTools({
-      tools: [tool],
-      provider: "openai",
-    });
+      try {
+        const result = normalizeAgentRuntimeTools({
+          tools: [tool],
+          provider: "openai",
+        });
 
-    expect(result[0]).toBe(normalized);
-    expect(getPluginToolMeta(expectDefined(result[0], "result[0] test invariant"))).toBe(metadata);
-  });
+        expect(result[0]).toBe(normalizedTools[0]);
+        expect(getPluginToolMeta(expectDefined(result[0], "result[0] test invariant"))).toBe(
+          metadata,
+        );
+        const wrapped = result.map((entry) => wrapToolWithBeforeToolCallHook(entry));
+        expect(getPluginToolMeta(expectDefined(wrapped[0], "wrapped[0] test invariant"))).toBe(
+          metadata,
+        );
+      } finally {
+        await instance.dispose();
+      }
+    },
+  );
 
   it.each([true, false, undefined])(
     "preserves output schemas and channel-progress visibility (%s) across runtime clones",

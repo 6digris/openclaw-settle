@@ -136,7 +136,9 @@ export function normalizeAgentRuntimeTools<
           runtimeHandle: params.runtimeHandle,
           allowRuntimePluginLoad: params.allowProviderRuntimePluginLoad,
         }));
-  const normalizedTools = Array.isArray(normalized) ? normalized : normalizableTools;
+  // Keep guarded tool views, but let host wrappers map without a plugin array
+  // wrapping their results again and losing identity-backed metadata.
+  const normalizedTools = Array.isArray(normalized) ? [...normalized] : normalizableTools;
   return preserveRuntimeToolMetadata(normalizableTools, normalizedTools);
 }
 
