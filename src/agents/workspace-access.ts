@@ -12,6 +12,11 @@ import type { AnyAgentTool } from "./tools/common.js";
 /** A host-owned binding; callers still enforce their own allowed files and operations. */
 export type AgentWorkspaceAccess = {
   bridge: SandboxFsBridge;
+  /** Restricted attachment roots on the Harness; uses the existing outbound media pipeline. */
+  outboundMedia?: {
+    localRoots: readonly string[];
+    readFile: (filePath: string, maxBytes: number) => Promise<Buffer>;
+  };
   /** Complete catalog from provisioned Harness skill roots; Gateway policy still filters it. */
   loadSkills?: (params: {
     limits: ResolvedSkillDiscoveryLimits;

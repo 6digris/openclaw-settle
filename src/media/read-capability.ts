@@ -7,6 +7,7 @@ import { resolveManagedMediaRoot } from "../agents/sandbox-paths.js";
 import { resolveSenderToolPolicy } from "../agents/sender-tool-policy.js";
 import { resolveEffectiveToolFsRootExpansionAllowed } from "../agents/tool-fs-policy.js";
 import { isToolAllowedByPolicies } from "../agents/tool-policy-match.js";
+import { getAgentWorkspaceAccess } from "../agents/workspace-access.js";
 import { resolveWorkspaceRoot } from "../agents/workspace-dir.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isPathInside } from "../infra/path-guards.js";
@@ -14,7 +15,10 @@ import { resolveConfigDir } from "../utils.js";
 import { createBoundedOutboundMediaReadFile, readOutboundMediaFile } from "./bounded-read-file.js";
 import type { OutboundMediaAccess, OutboundMediaReadFile } from "./load-options.js";
 import { readLocalMediaFile } from "./local-media-access.js";
-import { getAgentScopedMediaLocalRootsForSources } from "./local-roots.js";
+import {
+  getAgentScopedMediaLocalRoots,
+  getAgentScopedMediaLocalRootsForSources,
+} from "./local-roots.js";
 
 type OutboundHostMediaPolicyContext = {
   sessionKey?: string;
@@ -170,14 +174,57 @@ export function resolveAgentScopedOutboundMediaAccess(
     (params.agentId ? resolveAgentWorkspaceDir(params.cfg, params.agentId) : undefined);
   const mediaReadAllowed = isAgentScopedMediaReadAllowedByToolPolicy(params);
   const managedLocalRoots = getManagedMediaLocalRoots(params.mediaSources);
-  const hostLocalRoots =
+  // Already materialized attachments remain available while the Harness is offline.
+  const managedSourcesOnly =
+    params.mediaSources?.length &&
+    params.mediaSources.every(
+      (source) =>
+        path.isAbsolute(source) && managedLocalRoots.some((root) => isPathInside(root, source)),
+    );
+  const workspaceAccess =
+    resolvedWorkspaceDir && !params.workspaceMediaAccess && !managedSourcesOnly
+      ? getAgentWorkspaceAccess(resolvedWorkspaceDir)
+      : undefined;
+  if (workspaceAccess && !workspaceAccess.outboundMedia) {
+    throw new Error("Remote workspace attachment access is unavailable");
+  }
+  const remoteMedia = workspaceAccess?.outboundMedia;
+  const workspaceMediaAccess = remoteMedia
+    ? {
+        localRoots: remoteMedia.localRoots,
+        readFile: createBoundedOutboundMediaReadFile(async (filePath, options) => {
+          const assertCurrent = () => {
+            if (getAgentWorkspaceAccess(resolvedWorkspaceDir!) !== workspaceAccess) {
+              throw new Error("Workspace access changed during attachment read");
+            }
+          };
+          assertCurrent();
+          const result = await remoteMedia.readFile(
+            filePath,
+            options?.maxBytes ?? Number.MAX_SAFE_INTEGER,
+          );
+          assertCurrent();
+          return result;
+        }),
+      }
+    : params.workspaceMediaAccess;
+  const configuredHostLocalRoots =
     params.mediaAccess?.localRoots ??
-    getAgentScopedMediaLocalRootsForSources({
-      cfg: params.cfg,
-      agentId: params.agentId,
-      mediaSources: params.mediaSources,
-    });
-  const workspaceLocalRoots = params.workspaceMediaAccess?.localRoots ?? [];
+    (workspaceAccess
+      ? getAgentScopedMediaLocalRoots(params.cfg, params.agentId)
+      : getAgentScopedMediaLocalRootsForSources({
+          cfg: params.cfg,
+          agentId: params.agentId,
+          mediaSources: params.mediaSources,
+        }));
+  // A stale Gateway workspace copy must never serve as a remote file fallback.
+  const hostLocalRoots = workspaceAccess
+    ? configuredHostLocalRoots.filter(
+        (root) =>
+          !isPathInside(root, resolvedWorkspaceDir!) && !isPathInside(resolvedWorkspaceDir!, root),
+      )
+    : configuredHostLocalRoots;
+  const workspaceLocalRoots = workspaceMediaAccess?.localRoots ?? [];
   const baseLocalRoots = mediaReadAllowed
     ? workspaceLocalRoots.length > 0
       ? Array.from(
@@ -185,9 +232,10 @@ export function resolveAgentScopedOutboundMediaAccess(
         )
       : hostLocalRoots
     : managedLocalRoots;
-  const localRoots = mediaReadAllowed
-    ? appendWorkspaceDirToLocalRoots(baseLocalRoots, resolvedWorkspaceDir)
-    : baseLocalRoots;
+  const localRoots =
+    mediaReadAllowed && !workspaceAccess
+      ? appendWorkspaceDirToLocalRoots(baseLocalRoots, resolvedWorkspaceDir)
+      : baseLocalRoots;
   const hostReadFile =
     params.mediaAccess?.readFile ??
     params.mediaReadFile ??
@@ -209,7 +257,7 @@ export function resolveAgentScopedOutboundMediaAccess(
     });
   const readFile = mediaReadAllowed
     ? createWorkspaceAwareMediaReadFile({
-        workspaceMediaAccess: params.workspaceMediaAccess,
+        workspaceMediaAccess,
         hostReadFile,
         localRoots: localRoots ?? [],
       })
