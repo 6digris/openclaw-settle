@@ -528,6 +528,8 @@ function packChangedExtensionConfigShards(
       ) &&
       bin.reduce((seconds, entry) => seconds + entry.predictedSeconds, shard.predictedSeconds) <=
         CHANGED_EXTENSION_JOB_SECONDS,
+    // Exchange complete envelopes before adding another runner registration.
+    true,
   );
   // Singleton objects keep their full metadata and original relative order.
   return bins

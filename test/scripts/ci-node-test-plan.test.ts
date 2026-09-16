@@ -3615,6 +3615,29 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     expect(owners[0]?.pretestBuildMode).toBe("runtime");
   });
 
+  it("keeps the manifest's shared-session PR matrix within 120 non-dist jobs", () => {
+    const changedPaths = [
+      "src/config/sessions/combined-store-gateway.test.ts",
+      "src/config/sessions/combined-store-gateway.ts",
+      "src/gateway/server-methods/usage-session-selection.ts",
+      "src/gateway/server-methods/usage.sessions-usage.test.ts",
+      "src/gateway/sessions-resolve-projection.test.ts",
+      "src/plugin-sdk/session-transcript-hit.projection.test.ts",
+      "src/plugin-sdk/session-transcript-hit.ts",
+    ];
+    expect(createChangedNodeTestShards(changedPaths, { runnerBackend: "github" })).toBeNull();
+    const shards = [
+      ...createNodeTestShardBundles({
+        changedPaths,
+        includeReleaseOnlyPluginShards: false,
+        compactMode: "pull-request",
+        runnerBackend: "github",
+      }),
+      ...createChangedExtensionFallbackShards(changedPaths),
+    ];
+    expect(shards.filter((shard) => !shard.requiresDist).length).toBeLessThanOrEqual(120);
+  });
+
   it("retains the changed host plugin test when the store-alias diff forces fallback", () => {
     expect(createChangedNodeTestShards(STORE_ALIAS_CHANGED_PATHS)).toBeNull();
     const options = {
