@@ -49,7 +49,10 @@ import {
 import { listCronSelfJob } from "./cron-tool-self-list.js";
 import { assertNoCronShellExecution, updateCronJobFromAgentTool } from "./cron-tool-write.js";
 import type { CronToolDeps, CronToolOptions } from "./cron-tool.types.js";
-import { getGatewayToolCallerIdentity, withGatewayToolCallerIdentity } from "./gateway-caller-context.js";
+import {
+  getGatewayToolCallerIdentity,
+  withGatewayToolCallerIdentity,
+} from "./gateway-caller-context.js";
 import { callGatewayTool, readGatewayCallOptions, type GatewayCallOptions } from "./gateway.js";
 import { resolveInternalSessionKey, resolveMainSessionAlias } from "./sessions-helpers.js";
 

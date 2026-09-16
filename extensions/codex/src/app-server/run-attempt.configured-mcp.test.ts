@@ -692,5 +692,4 @@ describe("runCodexAppServerAttempt configured MCP ownership", () => {
     expect(mcpMocks.dispose).toHaveBeenCalledOnce();
     expect(mcpMocks.requesterDispose).toHaveBeenCalledOnce();
   });
-
 });

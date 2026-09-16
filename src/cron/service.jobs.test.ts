@@ -723,7 +723,6 @@ describe("cron jobs do not capture new tool lists", () => {
       payload: { kind: "systemEvent", text: "wake" },
       trigger: { script: "return true" },
     });
-
   });
 
   it("preserves explicit empty caps and leaves transport-only jobs capless", () => {

@@ -274,15 +274,14 @@ describe("Codex app inventory across physical process restart", () => {
                       {
                         name: "codex_apps",
                         serverInfo: { name: "codex_apps", version: "1" },
-                        tools:
-                          accountRevoked
-                            ? {}
-                            : {
-                                list: {
-                                  _meta: { connector_id: appId },
-                                  annotations: { destructiveHint: false, openWorldHint: false },
-                                },
+                        tools: accountRevoked
+                          ? {}
+                          : {
+                              list: {
+                                _meta: { connector_id: appId },
+                                annotations: { destructiveHint: false, openWorldHint: false },
                               },
+                            },
                       },
                     ]),
                 {
@@ -649,20 +648,23 @@ describe("Codex app inventory across physical process restart", () => {
     },
   );
 
-  it.each([false, true])("keeps current account revocation after a cold process restart, scheduled=%s", async (scheduled) => {
-    const f = await continuation(scheduled, "cold");
-    f.revokeAccount();
-    const boundary = f.calls.length;
-    const second = await f.process.run();
-    expect(second.pluginAppPolicyContext?.apps).not.toHaveProperty(appId);
-    expect(f.readBinding()?.pluginAppPolicyContext?.apps).not.toHaveProperty(appId);
-    const reads = f.calls
-      .slice(boundary)
-      .filter((call) => ["app/installed", "app/read"].includes(call.method));
-    expect(reads.length).toBeGreaterThan(0);
-    expect(reads.some((call) => call.params.threadId && call.loaded)).toBe(true);
-    expect(reads.every((call) => !call.params.threadId || call.loaded)).toBe(true);
-  });
+  it.each([false, true])(
+    "keeps current account revocation after a cold process restart, scheduled=%s",
+    async (scheduled) => {
+      const f = await continuation(scheduled, "cold");
+      f.revokeAccount();
+      const boundary = f.calls.length;
+      const second = await f.process.run();
+      expect(second.pluginAppPolicyContext?.apps).not.toHaveProperty(appId);
+      expect(f.readBinding()?.pluginAppPolicyContext?.apps).not.toHaveProperty(appId);
+      const reads = f.calls
+        .slice(boundary)
+        .filter((call) => ["app/installed", "app/read"].includes(call.method));
+      expect(reads.length).toBeGreaterThan(0);
+      expect(reads.some((call) => call.params.threadId && call.loaded)).toBe(true);
+      expect(reads.every((call) => !call.params.threadId || call.loaded)).toBe(true);
+    },
+  );
 
   it.each(["cold", "warm"])(
     "rejects active inherited MCP servers on a restricted %s continuation",
@@ -774,7 +776,9 @@ describe("Codex app inventory across physical process restart", () => {
               name: "CodexThreadPolicyHandoffError",
               outcome: "not-written",
               cause: expect.objectContaining({
-                message: expect.stringContaining("restricted-tool-surface MCP attestation found active server inherited"),
+                message: expect.stringContaining(
+                  "restricted-tool-surface MCP attestation found active server inherited",
+                ),
               }),
             }
           : { name: "CodexAppServerUnsafeSubscriptionError" },

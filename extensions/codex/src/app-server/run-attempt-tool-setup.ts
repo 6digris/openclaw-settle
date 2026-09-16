@@ -337,24 +337,24 @@ export async function prepareCodexAttemptTools(runtime: CodexAttemptRuntime) {
   };
   try {
     scopedMcpTools = await materializeRequesterScopedMcpToolsForHarnessRun({
-          sessionId: params.sessionId,
-          sessionKey: params.sessionKey,
-          workspaceDir: effectiveWorkspace,
-          agentDir: policyContext.agentDir,
-          cfg: params.config,
-          manifestRegistry: bundleManifestRegistry,
-          toolOverrides: codexMcpToolOverrides,
-          requesterSenderId: params.senderId,
-          agentAccountId: params.agentAccountId,
-          messageChannel: params.messageChannel ?? params.messageProvider,
-          reservedToolNames: [
-            ...reservedToolNames,
-            ...(configuredMcp?.tools.map((tool) => tool.name) ?? []),
-          ],
-          toolsAllow: params.toolsAllow,
-          policyContext,
-          warn: (message) => embeddedAgentLog.warn(message),
-        });
+      sessionId: params.sessionId,
+      sessionKey: params.sessionKey,
+      workspaceDir: effectiveWorkspace,
+      agentDir: policyContext.agentDir,
+      cfg: params.config,
+      manifestRegistry: bundleManifestRegistry,
+      toolOverrides: codexMcpToolOverrides,
+      requesterSenderId: params.senderId,
+      agentAccountId: params.agentAccountId,
+      messageChannel: params.messageChannel ?? params.messageProvider,
+      reservedToolNames: [
+        ...reservedToolNames,
+        ...(configuredMcp?.tools.map((tool) => tool.name) ?? []),
+      ],
+      toolsAllow: params.toolsAllow,
+      policyContext,
+      warn: (message) => embeddedAgentLog.warn(message),
+    });
     // Restricted dynamic-tool profiles (private QA, exclusion lists) gate scoped
     // MCP tools exactly like every other dynamic tool. Filter both lists with the
     // same rule so execution and advertised specs stay name-aligned.
