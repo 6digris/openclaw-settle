@@ -4,7 +4,11 @@ import path from "node:path";
 import { resolveConfigPath, resolveStateDir } from "../config/paths.js";
 import { runCommandBuffered } from "../process/exec.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
-import { ABSOLUTE_DEADLINE_EXPIRED, awaitWithinDeadline } from "../utils/absolute-deadline.js";
+import {
+  ABSOLUTE_DEADLINE_EXPIRED,
+  awaitWithinDeadline,
+  scheduleAbsoluteDeadline,
+} from "../utils/absolute-deadline.js";
 import { resolveRequiredHomeDir, resolveRequiredOsHomeDir } from "./home-dir.js";
 import { hasNodeErrorCode } from "./path-guards.js";
 
@@ -56,6 +60,8 @@ export async function assertFreeBsdUpdateRootOwnership(params: {
   }
   const env = params.env ?? process.env;
   const deadline = Date.now() + admissionBudget(params.timeoutMs);
+  const controller = new AbortController();
+  const cancelDeadline = scheduleAbsoluteDeadline(deadline, () => controller.abort());
   const read = async <T>(operation: () => Promise<T>): Promise<T> => {
     const value = await awaitWithinDeadline(operation, deadline);
     return value === ABSOLUTE_DEADLINE_EXPIRED ? refuse() : value;
@@ -70,17 +76,65 @@ export async function assertFreeBsdUpdateRootOwnership(params: {
       }),
     );
   const query = async (argv: string[]) => {
-    const result = await read(() =>
-      runCommandBuffered(argv, {
-        timeoutMs: Math.max(1, deadline - Date.now()),
-        env: { LC_ALL: "C" },
-        maxOutputBytes: { stdout: 8192, stderr: 8192 },
-      }),
-    );
-    if (result.termination !== "exit" || result.code !== 0 || result.stderr.length !== 0) {
+    if (controller.signal.aborted || Date.now() >= deadline) {
+      refuse();
+    }
+    // The decision deadline cancels native work, but cleanup can finish later.
+    // Await its owner rather than abandon a running query in a deadline race.
+    const result = await runCommandBuffered(argv, {
+      timeoutMs: Math.max(1, deadline - Date.now()),
+      signal: controller.signal,
+      env: { LC_ALL: "C" },
+      maxOutputBytes: { stdout: 8192, stderr: 8192 },
+    });
+    if (
+      controller.signal.aborted ||
+      Date.now() >= deadline ||
+      result.termination !== "exit" ||
+      result.code !== 0 ||
+      result.stderr.length !== 0
+    ) {
       refuse();
     }
     return result.stdout.toString("utf8");
+  };
+  const inspectAcls = async (files: string[], defaults: boolean) => {
+    let batch: string[] = [];
+    let bytes = 0;
+    const flush = async () => {
+      if (batch.length === 0) {
+        return;
+      }
+      const output = await query([
+        "/bin/getfacl",
+        ...(defaults ? ["-d"] : []),
+        "-q",
+        "-n",
+        ...(defaults ? [] : ["-s"]),
+        "--",
+        ...batch,
+      ]);
+      // -s emits nothing for trivial access ACLs. Empty POSIX default ACLs
+      // still have one native separator between paths; actual entries refuse.
+      if (output !== (defaults ? "\n".repeat(batch.length - 1) : "")) {
+        refuse();
+      }
+      batch = [];
+      bytes = 0;
+    };
+    for (const file of files) {
+      const size = Buffer.byteLength(file, "utf8") + 1;
+      // Bound argv below FreeBSD's ARG_MAX, independently of the path-count cap.
+      if (size > 16_384) {
+        refuse();
+      }
+      if (batch.length === 32 || bytes + size > 16_384) {
+        await flush();
+      }
+      batch.push(file);
+      bytes += size;
+    }
+    await flush();
   };
   try {
     const database = resolveOpenClawStateSqlitePath(env);
@@ -117,28 +171,25 @@ export async function assertFreeBsdUpdateRootOwnership(params: {
         cursor = parent;
       }
     }
+    // Native access batching preserves each vnode's ACL predicate. ACL_NFS4
+    // must still be queried per directory: NFS can report different models.
+    await inspectAcls(
+      [...observations].flatMap(([file, observed]) => (observed ? [file] : [])),
+      false,
+    );
+    const defaultAclPaths: string[] = [];
     for (const [file, observed] of observations) {
-      if (!observed) {
-        continue;
-      }
-      // FreeBSD's native predicate covers NFSv4 rights not represented by mode
-      // bits. POSIX default ACLs are separate: even three entries may inherit.
-      if ((await query(["/bin/getfacl", "-q", "-n", "-s", "--", file])) !== "") {
-        refuse();
-      }
-      if (observed.isDirectory()) {
+      if (observed?.isDirectory()) {
         const nfs4 = await query(["/usr/bin/getconf", "ACL_NFS4", file]);
         if (nfs4 !== "0\n" && nfs4 !== "1\n") {
           refuse();
         }
-        if (
-          nfs4 === "0\n" &&
-          (await query(["/bin/getfacl", "-d", "-q", "-n", "--", file])) !== ""
-        ) {
-          refuse();
+        if (nfs4 === "0\n") {
+          defaultAclPaths.push(file);
         }
       }
     }
+    await inspectAcls(defaultAclPaths, true);
     // No cached result authorizes a later phase. Reject identity/ACL metadata
     // changes during these awaits, including an entry appearing under a trusted parent.
     for (const [file, before] of observations) {
@@ -158,6 +209,8 @@ export async function assertFreeBsdUpdateRootOwnership(params: {
     }
   } catch {
     refuse();
+  } finally {
+    cancelDeadline();
   }
 }
 

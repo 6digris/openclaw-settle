@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
-import { runCommandBuffered } from "../process/exec.js";
+import { describe, expect, it, vi } from "vitest";
+import * as exec from "../process/exec.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
 import { assertFreeBsdUpdateRootOwnership } from "./update-freebsd-root-ownership.js";
@@ -12,7 +12,7 @@ import {
 } from "./update-freebsd-root-ownership.test-support.js";
 
 async function native(argv: string[]): Promise<string> {
-  const result = await runCommandBuffered(argv, {
+  const result = await exec.runCommandBuffered(argv, {
     timeoutMs: 5_000,
     env: { LC_ALL: "C" },
     maxOutputBytes: { stdout: 8192, stderr: 8192 },
@@ -68,6 +68,51 @@ describe.skipIf(!nativeFreeBsdRoot)("native FreeBSD root path admission", () => 
       ).resolves.toBeUndefined();
       await expect(fs.stat(env.OPENCLAW_STATE_DIR!)).rejects.toMatchObject({ code: "ENOENT" });
       await expect(fs.stat(env.OPENCLAW_CONFIG_PATH!)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+
+  it("cancels at the admission deadline and joins native query settlement", async () => {
+    await withFreeBsdRootFixture(async ({ root, env }) => {
+      const nativeProbe = exec.runCommandBuffered;
+      let query: ReturnType<typeof nativeProbe> | undefined;
+      let querySignal: AbortSignal | undefined;
+      let querySettled = false;
+      const probe = vi
+        .spyOn(exec, "runCommandBuffered")
+        .mockImplementationOnce((_argv, options) => {
+          querySignal = options?.signal;
+          // The real runner must finish its TERM/KILL cleanup before admission
+          // rejects, even when the child does not cooperate with the first signal.
+          query = nativeProbe(
+            [
+              process.execPath,
+              "-e",
+              "process.on('SIGTERM', () => {}); process.stdout.write(String(process.pid)); setInterval(() => {}, 1000)",
+            ],
+            options,
+          ).then((result) => {
+            querySettled = true;
+            return result;
+          });
+          return query;
+        });
+      try {
+        await expect(
+          assertFreeBsdUpdateRootOwnership({ roots: [root], env, timeoutMs: 1_000 }),
+        ).rejects.toMatchObject({ reason: "freebsd-update-ownership" });
+        expect(querySettled).toBe(true);
+        expect(querySignal?.aborted).toBe(true);
+        const result = await query;
+        expect(result).toBeDefined();
+        expect(["signal", "timeout"]).toContain(result!.termination);
+        expect(result!.stdout.toString()).toMatch(/^\d+$/);
+        const pid = Number(result!.stdout.toString());
+        expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
+        await expect(fs.stat(env.OPENCLAW_STATE_DIR!)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        await query;
+        probe.mockRestore();
+      }
     });
   });
 
@@ -156,10 +201,19 @@ describe.skipIf(!nativeFreeBsdRoot)("native FreeBSD root path admission", () => 
         await expect(
           assertFreeBsdUpdateRootOwnership({ roots: [root], env }),
         ).resolves.toBeUndefined();
-        const access = path.join(root, "access");
-        const inheritance = path.join(root, "inheritance");
+        // Put the violating path beyond the first native argv batch. These
+        // names must remain literal operands, including shell syntax and LF.
+        const prefix = Array.from({ length: 32 }, (_, index) => path.join(root, `plain-${index}`));
+        for (const file of prefix) {
+          await fs.writeFile(file, "trivial ACL", { mode: 0o600 });
+        }
+        const access = path.join(root, "access-'$;\n");
+        const inheritance = path.join(root, "inheritance-'$;\n");
         await fs.mkdir(access, { mode: 0o700 });
         await fs.mkdir(inheritance, { mode: 0o700 });
+        await expect(
+          assertFreeBsdUpdateRootOwnership({ roots: [...prefix, access, inheritance], env }),
+        ).resolves.toBeUndefined();
         if (nfs4 === "1\n") {
           // write_acl and inherit-only permissions are not represented by mode 0022.
           await native(["/bin/setfacl", "-a", "0", "u:65534:write_acl::allow", access]);
@@ -176,7 +230,7 @@ describe.skipIf(!nativeFreeBsdRoot)("native FreeBSD root path admission", () => 
           const before = await native(argv);
           expect(before).not.toBe("");
           await expect(
-            assertFreeBsdUpdateRootOwnership({ roots: [selected], env }),
+            assertFreeBsdUpdateRootOwnership({ roots: [...prefix, selected], env }),
           ).rejects.toMatchObject({
             reason: "freebsd-update-ownership",
           });
