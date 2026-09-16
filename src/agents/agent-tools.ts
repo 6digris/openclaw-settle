@@ -41,15 +41,13 @@ import {
 } from "./agent-tool-metadata.js";
 import type { ToolOutcomeObserver } from "./agent-tools.before-tool-call.js";
 import { finalizeAgentTools } from "./agent-tools.finalize.js";
+import { selectMemoryFlushTools } from "./agent-tools.memory-flush-policy.js";
 import {
   filterToolsByMessageProvider,
   messageProviderExcludesTool,
 } from "./agent-tools.message-provider-policy.js";
 import { applyModelProviderToolPolicy } from "./agent-tools.model-provider-policy.js";
-import {
-  type SkillInstructionDeliveryCache,
-  wrapToolMemoryFlushAppendOnlyWrite,
-} from "./agent-tools.read.js";
+import type { SkillInstructionDeliveryCache } from "./agent-tools.read.js";
 import {
   getActiveAgentRingZeroTools,
   mergeAgentRingZeroTools,
@@ -133,8 +131,6 @@ import {
 import type { CronToolOptions } from "./tools/cron-tool.types.js";
 import { wrapToolWithGatewayCallerIdentity } from "./tools/gateway-caller-context.js";
 import type { QuestionPromptDelivery } from "./tools/question-prompt-send.js";
-
-const MEMORY_FLUSH_ALLOWED_TOOL_NAMES = new Set(["read", "write"]);
 
 export { resolveToolLoopDetectionConfig } from "./tool-loop-detection-config.js";
 
@@ -947,30 +943,21 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
     options?.swarmCollector && options.swarmOutputSchema
       ? tools.find((tool) => tool.name === "structured_output")
       : undefined;
-  const toolsForMemoryFlush: AnyAgentTool[] = isMemoryFlushRun && memoryFlushWritePath ? [] : tools;
-  if (isMemoryFlushRun && memoryFlushWritePath) {
-    for (const tool of tools) {
-      if (!MEMORY_FLUSH_ALLOWED_TOOL_NAMES.has(tool.name)) {
-        continue;
-      }
-      if (tool.name === "write") {
-        toolsForMemoryFlush.push(
-          wrapToolMemoryFlushAppendOnlyWrite(tool, {
-            root: memoryFlushWriteRoot,
-            relativePath: memoryFlushWritePath,
-            memoryWriteProvenance,
-            containerWorkdir: sandbox?.containerWorkdir,
-            sandbox:
-              sandboxRoot && sandboxFsBridge
-                ? { root: sandboxRoot, bridge: sandboxFsBridge }
-                : undefined,
-          }),
-        );
-        continue;
-      }
-      toolsForMemoryFlush.push(tool);
-    }
-  }
+  const toolsForMemoryFlush = selectMemoryFlushTools(
+    tools,
+    isMemoryFlushRun && memoryFlushWritePath
+      ? {
+          root: memoryFlushWriteRoot,
+          relativePath: memoryFlushWritePath,
+          memoryWriteProvenance,
+          containerWorkdir: sandbox?.containerWorkdir,
+          sandbox:
+            sandboxRoot && sandboxFsBridge
+              ? { root: sandboxRoot, bridge: sandboxFsBridge }
+              : undefined,
+        }
+      : undefined,
+  );
   const unavailableCoreToolReason =
     isMemoryFlushRun && memoryFlushWritePath
       ? "memory-triggered compaction runs expose only read and append-only write"
