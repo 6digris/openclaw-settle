@@ -13,7 +13,10 @@ import {
 import * as workspaceReconcile from "../gateway/worker-environments/workspace-reconcile-core.js";
 import { readActualWorkspaceManifest } from "../gateway/worker-environments/workspace-reconcile.js";
 import { runExec } from "../process/exec.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseAsync,
+  closeOpenClawStateDatabaseForTest,
+} from "../state/openclaw-state-db.js";
 import type { NodeWorkerPreparedWorkspaceBinding } from "../worker/node-workspace-prepared-protocol.js";
 import { NODE_WORKSPACE_DRAIN_COMMAND } from "../worker/node-workspace-protocol.js";
 import { NodeWorkerPreparedWorkspaceStore } from "./node-worker-prepared-workspace-store.js";
@@ -28,8 +31,13 @@ import { listen } from "./node-worker-transfer-client.test-support.js";
 import * as workspaceCommands from "./node-worker-workspace-commands.js";
 import { NodeWorkerWorkspaceRuntime } from "./node-worker-workspace.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-afterEach(() => closeOpenClawStateDatabaseForTest());
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    await closeOpenClawStateDatabaseAsync();
+    closeOpenClawStateDatabaseForTest();
+    cleanup();
+  }),
+);
 afterEach(() => vi.restoreAllMocks());
 const preparationKey = "a".repeat(64);
 const cacheKey = "c".repeat(64);

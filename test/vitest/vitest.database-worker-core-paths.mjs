@@ -115,6 +115,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/node-host/runtime.worker-supervisor.test.ts",
   "src/node-host/runner.inventory.test.ts",
   "src/node-host/node-worker-workspace-retention.test.ts",
+  "src/node-host/node-worker-prepared-workspace.test.ts",
 ];
 
 const databaseWorkerCoreTestFileSet = new Set(databaseWorkerCoreTestFiles);
