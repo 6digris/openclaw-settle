@@ -1,6 +1,7 @@
 import type { ProgressCard } from "@openclaw/gateway-protocol";
 import { html, nothing } from "lit";
 import { findInlineApproval } from "../../app/approval-presentation.ts";
+import { gatewayPresentationScope } from "../../app/gateway-presentation-scope.ts";
 import { hasOperatorAdminAccess, hasOperatorWriteAccess } from "../../app/operator-access.ts";
 import { patchSettings } from "../../app/settings.ts";
 import { readPresenceEntries, resolveCurrentSelfUser } from "../../app/user-profile.ts";
@@ -82,7 +83,8 @@ export class ChatPane extends ChatPaneLayoutRender {
       return html`<main class="app-shell app-shell--booting" aria-busy="true"></main>`;
     }
     const selectedSession = selectedChatSessionRow(state);
-    const swarmTarget = this.resolveChatReadTarget();
+    const readTarget = this.resolveChatReadTarget();
+    const progressPresentation = this.progressCardPresentation;
     const selectedSessionArchived = this.isCurrentSessionArchived(state);
     const mutationAccess = readChatPaneMutationAccess(
       this.context.gateway.snapshot,
@@ -401,7 +403,10 @@ export class ChatPane extends ChatPaneLayoutRender {
       compactionStatus: state.compactionStatus,
       fallbackStatus: state.fallbackStatus,
       providerPolicyNotice: catalogKey ? null : state.providerPolicyNotice,
-      progressCard: this.progressCard.card,
+      progressCard: progressPresentation?.card ?? null,
+      progressCardIdentity: progressPresentation?.identity,
+      gatewayScope: gatewayPresentationScope(this.context.gateway),
+      progressCardInitialLoading: this.progressCardInitialLoading,
       collapseTaskProgress: state.settings.chatCollapseTaskProgress === true,
       readingHistory: state.chatReadingHistory,
       onDismissProgressCard,
@@ -520,7 +525,7 @@ export class ChatPane extends ChatPaneLayoutRender {
               (composerState.capabilityMenuView === "skills" ||
                 composerState.capabilityMenuView.startsWith("library:")),
           ),
-      swarm: swarmTarget ? { ...swarmTarget, sessions: this.swarmHydrator?.rows ?? [] } : undefined,
+      swarm: readTarget ? { ...readTarget, sessions: this.swarmHydrator?.rows ?? [] } : undefined,
       sessionHost: {
         assistantAgentId: state.assistantAgentId,
         agentsList: state.agentsList,

@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Bash 5.3+ can deadlock writing heredoc pipes on macOS before the reader starts.
+if [[ ${OSTYPE:-} == darwin* && $BASH != /bin/bash ]] && ((BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 3))); then
+  exec /bin/bash "$0" "$@"
+fi
 set -Eeuo pipefail
 # Signal traps inherit the foreground command's redirections. Keep harness stdout separate so the
 # final summary location cannot corrupt a command artifact when the run is interrupted.
@@ -10,6 +14,10 @@ source scripts/e2e/lib/upgrade-survivor/plugin-dependency-fixtures.sh
 source scripts/e2e/lib/upgrade-survivor/backup-rollback.sh
 
 SCENARIO="${OPENCLAW_UPGRADE_SURVIVOR_SCENARIO:-base}"
+WORKER_CELL=0
+if [ "$SCENARIO" = "projects-doctor" ] || [ "$SCENARIO" = "taskflow-restoration" ]; then
+  WORKER_CELL=1
+fi
 
 export npm_config_loglevel=error
 export npm_config_fund=false
@@ -43,7 +51,7 @@ if [ "$SCENARIO" = "mobile-pairing-reconnect" ]; then
     node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex"))'
   )"
 fi
-if [ "$SCENARIO" = "watchos-direct-node" ] || [ "$SCENARIO" = "mobile-pairing-reconnect" ]; then
+if [ "$SCENARIO" = "watchos-direct-node" ] || [ "$SCENARIO" = "mobile-pairing-reconnect" ] || [ "$WORKER_CELL" = "1" ]; then
   unset OPENAI_API_KEY DISCORD_BOT_TOKEN TELEGRAM_BOT_TOKEN
 else
   export OPENAI_API_KEY="sk-openclaw-upgrade-survivor"
@@ -69,6 +77,12 @@ chmod 700 "$RUNTIME_ROOT"
 export TMPDIR="${OPENCLAW_UPGRADE_SURVIVOR_TMPDIR:-$RUNTIME_ROOT/tmp}"
 export OPENCLAW_TEST_STATE_TMPDIR="${OPENCLAW_UPGRADE_SURVIVOR_TEST_STATE_TMPDIR:-$RUNTIME_ROOT/state-tmp}"
 mkdir -p "$TMPDIR" "$OPENCLAW_TEST_STATE_TMPDIR"
+if [ "$WORKER_CELL" = "1" ]; then
+  export XDG_CACHE_HOME="$RUNTIME_ROOT/xdg-cache"
+  export OPENCLAW_SKIP_CRON=1
+  export OPENCLAW_SKIP_STARTUP_MODEL_PREWARM=1
+  mkdir -p "$XDG_CACHE_HOME"
+fi
 if [ "$SCENARIO" = "legacy-operator-state" ]; then
   export npm_config_prefix="$RUNTIME_ROOT/npm-prefix"
 else
@@ -1942,11 +1956,89 @@ assertAgentReplyContainsMarker(process.argv[2], process.argv[3]);
 NODE
 }
 
+prepare_worker_cell_package() {
+  node scripts/e2e/lib/upgrade-survivor/worker-cell-package.mjs candidate "$(package_root)" "$CANDIDATE_SPEC"
+  OPENCLAW_UPGRADE_SURVIVOR_CANDIDATE_COMMIT="$(node -e \
+    'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).buildInfo.commit)' \
+    "$ARTIFACT_ROOT/candidate-package-identity.json")"
+  export OPENCLAW_UPGRADE_SURVIVOR_CANDIDATE_COMMIT
+}
+
+assert_worker_cell_update() {
+  if [ "$update_outcome" != "success" ] || [ "$update_repair_required" != "0" ]; then
+    echo "$SCENARIO requires successful original-driver update without follow-up repair" >&2
+    return 1
+  fi
+  node scripts/e2e/lib/upgrade-survivor/worker-cell-package.mjs installed "$(package_root)" "$CANDIDATE_SPEC"
+}
+
+run_projects_doctor() {
+  local stage="$1"
+  openclaw_e2e_maybe_timeout "$COMMAND_TIMEOUT" env \
+    -u OPENCLAW_UPDATE_IN_PROGRESS \
+    -u OPENCLAW_UPDATE_POST_CORE_CONVERGENCE \
+    -u OPENCLAW_UPDATE_PARENT_SUPPORTS_DOCTOR_CONFIG_WRITE \
+    -u OPENCLAW_UPDATE_DEFER_CONFIGURED_PLUGIN_INSTALL_REPAIR \
+    openclaw doctor --lint --only core/doctor/project-clone-shape --json \
+    >"$ARTIFACT_ROOT/projects-doctor-$stage.json" 2>"$ARTIFACT_ROOT/projects-doctor-$stage.err"
+}
+
+validate_worker_cell() {
+  if [ "$WORKER_CELL" != "1" ]; then
+    return 0
+  fi
+  if [ "$BASELINE_RAW" != "openclaw@2026.9.4" ] || [ "$CANDIDATE_KIND" != "tarball" ] ||
+    [ "$UPDATE_RESTART_MODE" != "manual" ] || [ "$ROOT_MANAGED_VPS" != "0" ] || [ "$LIVE_OPENAI" != "0" ]; then
+    echo "$SCENARIO requires published openclaw@2026.9.4, a candidate tarball, isolated manual restart, and no live provider" >&2
+    return 1
+  fi
+}
+
 phase storage-preflight storage_preflight
 phase validate-update-restart-mode validate_update_restart_mode
+phase validate-worker-cell validate_worker_cell
 phase reset-run-state reset_run_state
 phase install-baseline install_baseline
 phase initialize-state initialize_state
+if [ "$WORKER_CELL" = "1" ]; then
+  phase worker-baseline-identity node scripts/e2e/lib/upgrade-survivor/worker-cell-package.mjs baseline "$(package_root)"
+  if [ "$SCENARIO" = "projects-doctor" ]; then
+    phase seed-projects-inventory node scripts/e2e/lib/upgrade-survivor/projects-doctor.mjs seed "$(package_root)"
+  else
+    phase seed-taskflow node scripts/e2e/lib/upgrade-survivor/taskflow-restoration.mjs seed --package-root "$(package_root)"
+  fi
+  phase validate-baseline-config validate_baseline_config
+  phase resolve-worker-candidate resolve_candidate_version
+  phase worker-candidate-identity prepare_worker_cell_package
+  phase update-worker-candidate update_candidate
+  phase assert-worker-installed-identity assert_worker_cell_update
+  if [ "$SCENARIO" = "projects-doctor" ]; then
+    phase projects-after-update node scripts/e2e/lib/upgrade-survivor/projects-doctor.mjs snapshot after-update "$(package_root)"
+    phase projects-before-doctor node scripts/e2e/lib/upgrade-survivor/projects-doctor.mjs snapshot before-doctor "$(package_root)"
+    phase projects-doctor run_projects_doctor first
+    phase projects-after-doctor node scripts/e2e/lib/upgrade-survivor/projects-doctor.mjs snapshot after-doctor "$(package_root)"
+    phase assert-projects-doctor node scripts/e2e/lib/upgrade-survivor/projects-doctor.mjs \
+      assert-doctor "$ARTIFACT_ROOT/projects-doctor-first.json" before-doctor after-doctor
+    phase projects-before-repeat node scripts/e2e/lib/upgrade-survivor/projects-doctor.mjs snapshot before-repeat "$(package_root)"
+    phase projects-doctor-repeat run_projects_doctor repeat
+    phase projects-after-repeat node scripts/e2e/lib/upgrade-survivor/projects-doctor.mjs snapshot after-repeat "$(package_root)"
+    phase assert-projects-doctor-repeat node scripts/e2e/lib/upgrade-survivor/projects-doctor.mjs \
+      assert-doctor "$ARTIFACT_ROOT/projects-doctor-repeat.json" before-repeat after-repeat
+    phase assert-projects-preservation node scripts/e2e/lib/upgrade-survivor/projects-doctor.mjs assert-final
+  else
+    phase gateway-start start_gateway
+    phase gateway-probes check_gateway_probes
+    phase taskflow-sdk-and-pages node scripts/e2e/lib/upgrade-survivor/taskflow-restoration.mjs probe \
+      --package-root "$(package_root)" --url ws://127.0.0.1:18789 \
+      --expected-commit "$OPENCLAW_UPGRADE_SURVIVOR_CANDIDATE_COMMIT"
+    phase gateway-stop stop_gateway
+    phase assert-taskflow-persistence node scripts/e2e/lib/upgrade-survivor/taskflow-restoration.mjs assert-state \
+      --package-root "$(package_root)" --expected-commit "$OPENCLAW_UPGRADE_SURVIVOR_CANDIDATE_COMMIT"
+  fi
+  run_completed="1"
+  echo "Upgrade survivor Docker E2E passed baseline=${baseline_spec} scenario=${SCENARIO} candidate=${candidate_version}."
+  exit 0
+fi
 if [ "$SCENARIO" = "workshop-doctor-recovery" ]; then
   if [ "$baseline_spec" != "openclaw@2026.9.4" ]; then
     echo "workshop-doctor-recovery requires the exact published openclaw@2026.9.4 baseline" >&2
