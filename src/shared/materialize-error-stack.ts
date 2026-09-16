@@ -5,11 +5,12 @@ export function materializeErrorStack(failure: unknown): void {
   while (error instanceof Error && !seen.has(error)) {
     seen.add(error);
     try {
-      error.stack = String(error.stack);
+      // Worker errors already have formatted, readonly stacks; a refused write is harmless.
+      Reflect.set(error, "stack", String(error.stack));
     } catch {
       // V8's setter releases private frames even when formatting throws;
       // coercion also detaches CallSites returned by a custom formatter.
-      error.stack = "Stack trace unavailable: custom formatter failed";
+      Reflect.set(error, "stack", "Stack trace unavailable: custom formatter failed");
     }
     // Nested causes retain their original identity while releasing their caller frames.
     error = error.cause;
