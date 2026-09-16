@@ -335,10 +335,12 @@ export async function mutateSessionGoal(
         const next = mergeSessionEntry(fresh.entry, { goal });
         const identityKeys = collectSessionEntryLookupKeys(database, resolved.sessionKey);
         const previousIdentity = readSessionIdentitySnapshot(database, identityKeys);
-        writeSessionEntry(database, resolved.sessionKey, next, {
+        const persisted = writeSessionEntry(database, resolved.sessionKey, next, {
           canonicalPreviousEntry: previousIdentity.get(resolved.sessionKey) ?? null,
         });
-        const currentIdentity = readSessionIdentitySnapshot(database, identityKeys);
+        // The writer changes only this canonical node; keep case-distinct lookup siblings
+        // in the publication snapshot without rereading their saved prompt payloads.
+        const currentIdentity = new Map(previousIdentity).set(resolved.sessionKey, persisted);
         const result = writeSessionGoalOperationReceipt(
           database.db,
           resolved.sessionKey,
