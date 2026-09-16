@@ -186,7 +186,7 @@ describe("typed Goal operation persistence", () => {
       [lowerKey, "lower-session", "!roomabc:example.org"],
     ] as const) {
       await replaceSessionEntry(
-        { ...scope(), sessionKey: key, sessionId: id },
+        { agentId: "main", sessionKey: key, storePath: fixture.storePath() },
         {
           sessionId: id,
           updatedAt: now,
@@ -194,7 +194,7 @@ describe("typed Goal operation persistence", () => {
         },
       );
     }
-    const mixedScope = { ...scope(), sessionKey: mixedKey, sessionId: "mixed-session" };
+    const mixedScope = { agentId: "main", sessionKey: mixedKey, storePath: fixture.storePath() };
     const goal = await createSessionGoal({ ...mixedScope, objective: "before" });
     const readSibling = () =>
       database().db.prepare("SELECT * FROM session_nodes WHERE session_key = ?").get(lowerKey);
