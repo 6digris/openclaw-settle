@@ -1,7 +1,9 @@
 import { execFileSync } from "node:child_process";
+import { once } from "node:events";
 import { chmod, mkdir, readFile, readdir, stat, symlink, writeFile } from "node:fs/promises";
+import net from "node:net";
 import path from "node:path";
-import { afterEach, describe, expect, expectTypeOf, it } from "vitest";
+import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import {
   desktopProofAssets,
   desktopProofCommit,
@@ -11,6 +13,8 @@ import {
   desktopResizeStages,
   exportDesktopResizeProof,
   inspectDesktopSshdRuntimeDirectory,
+  observeDesktopProofRfbLifecycle,
+  readDesktopProofGatewayCloses,
   readDesktopProofPhase,
   readDesktopProofNodeStreamCloses,
   readDesktopProofTestReport,
@@ -18,9 +22,12 @@ import {
   withDesktopProofCleanup,
 } from "../../scripts/lib/desktop-resize-proof.mts";
 import { hasUnjoinedWork } from "../../scripts/lib/managed-child-process.mts";
+import type { DesktopClient } from "../../ui/src/components/desktop/desktop-client.ts";
+import { observeDesktopEndpointPackets } from "../../ui/src/e2e/desktop-resize-real.test-support.ts";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
+afterEach(() => vi.unstubAllGlobals());
 const head = "a".repeat(40);
 const base = "b".repeat(40);
 const merge = "c".repeat(40);
@@ -90,6 +97,306 @@ const proof = (carrier: "node" | "ssh" = "node") => ({
 });
 
 describe("desktop proof identity and public evidence", () => {
+  it("binds real-client callbacks to the exact socket and preserves recovery callbacks after factory restoration", async () => {
+    type Options = Parameters<DesktopClient["connect"]>[0];
+    const sockets: Array<{ url: string }> = [];
+    const browser = {
+      desktopProofSockets: sockets,
+      location: { href: "https://fixture.invalid/" },
+    };
+    vi.stubGlobal("window", browser);
+    let observed: Options | undefined;
+    const result = Promise.resolve({} as Awaited<ReturnType<DesktopClient["connect"]>>);
+    const client = {
+      connect: vi.fn(function (this: unknown, options: Options) {
+        expect(this).toBe(client);
+        observed = options;
+        return result;
+      }),
+    };
+    const factory = vi.fn(function (this: unknown) {
+      expect(this).toBe(panel);
+      return client;
+    });
+    const panel = { desktopClientFactory: factory };
+    observeDesktopProofRfbLifecycle(panel as unknown as Element);
+    const snapshot = () =>
+      Reflect.get(browser, "desktopProofRfbLifecycle")() as {
+        events: Array<{
+          ordinal: number;
+          socketIndex: number | null;
+          phase: string;
+          connectedObserved: boolean;
+          clean: boolean | null;
+          securityStatus: number | null;
+        }>;
+        omitted: number;
+      };
+    const detail = { clean: false, reason: "private-reason" };
+    const callbacks: string[] = [];
+    const options: Options = {
+      target: {} as HTMLElement,
+      viewOnly: true,
+      isCurrent: () => true,
+      wsUrl: "/desktop/observe?token=private-token",
+      gatewayUrl: "wss://fixture.invalid/base",
+      onConnect() {
+        expect(this).toBe(options);
+        callbacks.push("connected");
+        expect(snapshot().events.at(-1)?.phase).toBe("connected");
+      },
+      onDisconnect(value) {
+        expect(this).toBe(options);
+        expect(value).toBe(detail);
+        callbacks.push("disconnected");
+      },
+      onSecurityFailure(value) {
+        expect(this).toBe(options);
+        expect(value).toEqual({ status: 2, reason: "private-reason" });
+        callbacks.push("security");
+      },
+    };
+    expect(panel.desktopClientFactory().connect(options)).toBe(result);
+    expect(panel.desktopClientFactory).toBe(factory);
+    expect(snapshot().events[0]?.socketIndex).toBeNull();
+    sockets.push({ url: "wss://fixture.invalid/desktop/observe?token=earlier" });
+    sockets.push({ url: "wss://fixture.invalid/desktop/observe?token=private-token" });
+    sockets.push({ url: "wss://fixture.invalid/desktop/observe?token=later" });
+    observed!.onConnect!();
+    observed!.onSecurityFailure!({ status: 2, reason: "private-reason" });
+    observed!.onDisconnect!(detail);
+    expect(callbacks).toEqual(["connected", "security", "disconnected"]);
+    expect(
+      snapshot().events.map((event) => [event.socketIndex, event.phase, event.connectedObserved]),
+    ).toEqual([
+      [1, "connecting", false],
+      [1, "connected", true],
+      [1, "security-failure", true],
+      [1, "disconnected", true],
+    ]);
+    expect(JSON.stringify(snapshot())).not.toMatch(/private|token|reason|url|fixture/u);
+    sockets.push(sockets[1]!);
+    expect(snapshot().events.every((event) => event.socketIndex === null)).toBe(true);
+    await result;
+  });
+
+  it("bounds RFB events without suppressing callback exceptions or inferring a completed handshake", () => {
+    vi.stubGlobal("window", {
+      desktopProofSockets: [],
+      location: { href: "https://fixture.invalid" },
+    });
+    type Options = Parameters<DesktopClient["connect"]>[0];
+    let observed: Options | undefined;
+    const client = {
+      connect: (options: Options) => {
+        observed = options;
+        return Promise.resolve({} as Awaited<ReturnType<DesktopClient["connect"]>>);
+      },
+    };
+    const factory = () => client;
+    const panel = { desktopClientFactory: factory };
+    observeDesktopProofRfbLifecycle(panel as unknown as Element);
+    const failure = new Error("original callback failed");
+    const callback = vi.fn(() => {
+      throw failure;
+    });
+    panel.desktopClientFactory().connect({
+      target: {} as HTMLElement,
+      viewOnly: true,
+      isCurrent: () => true,
+      wsUrl: "/desktop/observe?token=hidden",
+      onDisconnect: callback,
+    });
+    for (let index = 0; index < 10; index++) {
+      expect(() => observed!.onDisconnect!({ clean: false })).toThrow(failure);
+    }
+    const snapshot = Reflect.get(window, "desktopProofRfbLifecycle")();
+    expect(callback).toHaveBeenCalledTimes(10);
+    expect(snapshot.events).toHaveLength(8);
+    expect(snapshot.omitted).toBe(3);
+    expect(
+      snapshot.events.every((event: { connectedObserved: boolean }) => !event.connectedObserved),
+    ).toBe(true);
+  });
+
+  it.each(["upstream", "client", "fixture"] as const)(
+    "records the tap's first %s terminal event before cascading close",
+    async (side) => {
+      const server = net.createServer();
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("missing fixture address");
+      }
+      const tap = await observeDesktopEndpointPackets(address.port, new AbortController().signal);
+      const accepted = once(server, "connection");
+      const client = net.connect({ host: "127.0.0.1", port: tap.port });
+      const [upstream] = (await accepted) as [net.Socket];
+      try {
+        expect(tap.terminalSnapshot()).toEqual({ events: [], omitted: 0 });
+        if (side === "fixture") {
+          await tap.close();
+        } else {
+          (side === "upstream" ? upstream : client).end();
+        }
+        await vi.waitFor(() => expect(tap.terminalSnapshot().events).toHaveLength(1));
+        expect(tap.terminalSnapshot().events[0]).toMatchObject({
+          connectionIndex: 0,
+          side,
+          event: side === "fixture" ? "cleanup" : "end",
+        });
+        await tap.close();
+        expect(tap.terminalSnapshot().events).toHaveLength(1);
+      } finally {
+        client.destroy();
+        upstream.destroy();
+        await tap.close();
+        await new Promise<void>((resolve, reject) =>
+          server.close((error) => (error ? reject(error) : resolve())),
+        );
+      }
+    },
+  );
+
+  it("projects bounded gateway owner facts and never publishes raw identity or stderr", async () => {
+    const file = path.join(dirs.make("desktop-gateway-log-"), "gateway.log");
+    const record = (message: string, metadata: unknown) =>
+      JSON.stringify({ "0": '{"subsystem":"gateway/desktop"}', "1": metadata, "2": message });
+    const lines = Array.from({ length: 10 }, () =>
+      record("desktop observer closed", {
+        trigger: "stream-close",
+        cleanupCode: 1000,
+        closeCode: 1000,
+        sourceKey: "private-worker",
+        streamId: "private-stream",
+        ownerEpoch: 3,
+      }),
+    );
+    lines.push(
+      record("desktop SSH tunnel exited", {
+        code: null,
+        signal: "SIGTERM",
+        stopRequested: true,
+        stderr: "private-error",
+      }),
+    );
+    await writeFile(file, lines.join("\n"));
+    const value = await readDesktopProofGatewayCloses(file);
+    expect(value?.observerCloses?.events).toHaveLength(8);
+    expect(value?.observerCloses?.omitted).toBe(2);
+    expect(value?.sshTunnelExits).toEqual({
+      events: [{ code: null, signal: "SIGTERM", stopRequested: true }],
+      omitted: 0,
+    });
+    expect(JSON.stringify(value)).not.toMatch(/private|sourceKey|streamId|ownerEpoch|stderr/u);
+    await writeFile(file, Buffer.alloc(1024 * 1024, 32));
+    expect(await readDesktopProofGatewayCloses(file)).toEqual({
+      observerCloses: { events: [], omitted: 0 },
+      sshTunnelExits: { events: [], omitted: 0 },
+    });
+    await writeFile(file, Buffer.alloc(1024 * 1024 + 1));
+    expect(await readDesktopProofGatewayCloses(file)).toBeNull();
+    expect(await readDesktopProofGatewayCloses(file + ".missing")).toBeNull();
+    const link = file + ".link";
+    await symlink(file, link);
+    expect(await readDesktopProofGatewayCloses(link)).toBeNull();
+  });
+
+  it("bounds repeated tap closures and retains a fixed upstream error category", async () => {
+    const server = net.createServer();
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("missing fixture address");
+    }
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+    const tap = await observeDesktopEndpointPackets(address.port, new AbortController().signal);
+    const clients: net.Socket[] = [];
+    try {
+      for (let index = 0; index < 10; index++) {
+        const client = net.connect({ host: "127.0.0.1", port: tap.port });
+        client.on("error", () => {});
+        clients.push(client);
+        await vi.waitFor(() =>
+          expect(tap.terminalSnapshot().events.at(-1)?.connectionIndex).toBe(index),
+        );
+      }
+      expect(tap.terminalSnapshot()).toEqual({
+        events: Array.from({ length: 8 }, (_, index) => ({
+          connectionIndex: index + 2,
+          side: "upstream",
+          event: "error",
+          errorCategory: "refused",
+          hadError: null,
+        })),
+        omitted: 2,
+      });
+    } finally {
+      clients.forEach((client) => client.destroy());
+      await tap.close();
+    }
+  });
+
+  it("projects SSH, tap and RFB diagnostics with closed fields and explicit omitted counts", () => {
+    const endpoint = {
+      connectionIndex: 2,
+      side: "upstream",
+      event: "error",
+      errorCategory: "reset",
+      hadError: null,
+    };
+    const rfb = {
+      ordinal: 4,
+      socketIndex: 2,
+      phase: "disconnected",
+      connectedObserved: false,
+      clean: false,
+      securityStatus: null,
+    };
+    const diagnostic = {
+      ...viewerFailure,
+      endpointCloses: { events: [{ ...endpoint, address: "private-host" }], omitted: 3 },
+      rfbLifecycle: { events: [{ ...rfb, url: "https://private.invalid/token" }], omitted: 1 },
+      gatewayCloses: {
+        observerCloses: { events: [], omitted: 0 },
+        sshTunnelExits: { events: [], omitted: 0 },
+      },
+    };
+    const project = (value: unknown) =>
+      desktopProofTestReport(rawTestReport(undefined, { desktopViewerResizeFailure: value }))
+        .files[0]?.assertions[0]?.viewerResize;
+    expect(project(diagnostic)).toMatchObject({
+      endpointCloses: { events: [endpoint], omitted: 3 },
+      rfbLifecycle: { events: [rfb], omitted: 1 },
+    });
+    expect(JSON.stringify(project(diagnostic))).not.toMatch(/private|token|address|url/u);
+    for (const override of [
+      { endpointCloses: { events: Array.from({ length: 9 }, () => endpoint), omitted: 0 } },
+      { endpointCloses: { events: [{ ...endpoint, side: "private-host" }], omitted: 0 } },
+      { rfbLifecycle: { events: [rfb], omitted: -1 } },
+      { rfbLifecycle: { events: [{ ...rfb, socketIndex: -1 }], omitted: 0 } },
+      { rfbLifecycle: { events: [{ ...rfb, phase: "private-error" }], omitted: 0 } },
+      {
+        gatewayCloses: {
+          observerCloses: {
+            events: [{ trigger: "private-error", cleanupCode: 1000, closeCode: 1000 }],
+            omitted: 0,
+          },
+          sshTunnelExits: null,
+        },
+      },
+    ]) {
+      expect(() => project({ ...diagnostic, ...override })).toThrow();
+    }
+    expect(
+      project({ ...viewerFailure, endpointCloses: null, rfbLifecycle: null, gatewayCloses: null }),
+    ).toMatchObject({ endpointCloses: null, rfbLifecycle: null, gatewayCloses: null });
+  });
+
   it("retains node close categories from the existing JSON file logger", async () => {
     const file = path.join(dirs.make("desktop-node-log-"), "node.log");
     execFileSync(

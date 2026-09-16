@@ -51,6 +51,16 @@ export async function observeDesktopEndpointPackets(port: number, signal: AbortS
     reject: (error: Error) => void;
   };
   const peers = new Set<Socket>();
+  const terminalEvents: Array<{
+    connectionIndex: number;
+    side: "client" | "upstream" | "fixture";
+    event: "end" | "error" | "close" | "cleanup";
+    errorCategory: "reset" | "broken-pipe" | "refused" | "timeout" | "other" | null;
+    hadError: boolean | null;
+  }> = [];
+  const pendingTerminals = new Set<() => void>();
+  let connectionCount = 0;
+  let omitted = 0;
   const tails = new Map<Socket, Buffer>();
   let pending: Probe | undefined;
   let closed = false;
@@ -106,14 +116,50 @@ export async function observeDesktopEndpointPackets(port: number, signal: AbortS
       return;
     }
     const upstream = net.connect({ host: "127.0.0.1", port });
+    const connectionIndex = connectionCount++;
+    let terminal = false;
+    const recordTerminal = (
+      side: (typeof terminalEvents)[number]["side"],
+      event: (typeof terminalEvents)[number]["event"],
+      errorCategory: (typeof terminalEvents)[number]["errorCategory"] = null,
+      hadError: boolean | null = null,
+    ) => {
+      if (terminal) {
+        return;
+      }
+      terminal = true;
+      pendingTerminals.delete(recordCleanup);
+      terminalEvents.push({ connectionIndex, side, event, errorCategory, hadError });
+      if (terminalEvents.length > 8) {
+        terminalEvents.shift();
+        omitted += 1;
+      }
+    };
+    const recordCleanup = () => recordTerminal("fixture", "cleanup");
+    pendingTerminals.add(recordCleanup);
     for (const socket of [client, upstream]) {
+      const side = socket === client ? "client" : "upstream";
       peers.add(socket);
-      socket.on("error", () => {
+      socket.once("end", () => recordTerminal(side, "end"));
+      socket.on("error", (error: NodeJS.ErrnoException) => {
+        const category =
+          error.code === "ECONNRESET"
+            ? "reset"
+            : error.code === "EPIPE"
+              ? "broken-pipe"
+              : error.code === "ECONNREFUSED"
+                ? "refused"
+                : error.code === "ETIMEDOUT"
+                  ? "timeout"
+                  : "other";
+        // Latch before destroying the paired socket; its later close is a consequence.
+        recordTerminal(side, "error", category);
         fail("Desktop endpoint connection failed during observation");
         client.destroy();
         upstream.destroy();
       });
-      socket.once("close", () => {
+      socket.once("close", (hadError) => {
+        recordTerminal(side, "close", null, hadError);
         peers.delete(socket);
         tails.delete(client);
         if (pending) {
@@ -132,6 +178,9 @@ export async function observeDesktopEndpointPackets(port: number, signal: AbortS
       closed = true;
       signal.removeEventListener("abort", abort);
       fail("Desktop endpoint observation ended before completion");
+      for (const record of pendingTerminals) {
+        record();
+      }
       const stopped = [...peers].map(
         (socket) =>
           new Promise<void>((resolve) => {
@@ -162,6 +211,7 @@ export async function observeDesktopEndpointPackets(port: number, signal: AbortS
   }
   return {
     port: address.port,
+    terminalSnapshot: () => ({ events: terminalEvents.map((event) => ({ ...event })), omitted }),
     expectPacket: (bytes: number[]) => {
       signal.throwIfAborted();
       if (closed || pending || bytes.length > 32 * 1024) {
