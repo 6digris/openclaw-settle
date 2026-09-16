@@ -21,82 +21,10 @@ async fn public_runtime_completes_allowed_work_and_suppresses_wire_cancelled_eff
     let address = listener.local_addr().unwrap();
     let cancelled_handler_entered = Arc::new(Notify::new());
     let server_handler_entered = Arc::clone(&cancelled_handler_entered);
-    let server = tokio::spawn(async move {
-        let (tcp, _) = listener.accept().await.unwrap();
-        let mut socket = accept_async(tcp).await.unwrap();
-        send_json(
-            &mut socket,
-            json!({
-                "type":"event", "event":"connect.challenge", "payload":{"nonce":"node-nonce","ts":1_700_000_000_123_u64}
-            }),
-        )
-        .await;
-        let connect = receive_json(&mut socket).await;
-        assert_eq!(connect["params"]["client"]["mode"], "node");
-        assert_eq!(connect["params"]["role"], "node");
-        assert_eq!(connect["params"]["commands"], json!(["example.status"]));
-        assert_eq!(connect["params"]["device"]["nonce"], "node-nonce");
-        send_json(
-            &mut socket,
-            json!({
-                "type":"res", "id":connect["id"], "ok":true,
-                "payload":{"type":"hello-ok","protocol":4}
-            }),
-        )
-        .await;
-        send_json(
-            &mut socket,
-            json!({
-                "type":"event", "event":"node.invoke.request",
-                "payload":{"id":"allowed","nodeId":"node-1","command":"example.status",
-                    "paramsJSON":"{\"verbose\":true}",
-                    "sessionKey":"agent:main:main"}
-            }),
-        )
-        .await;
-        let result = receive_json(&mut socket).await;
-        assert_eq!(result["method"], "node.invoke.result");
-        assert_eq!(result["params"]["id"], "allowed");
-        assert_eq!(result["params"]["payload"], json!({"ready":true}));
-        send_json(
-            &mut socket,
-            json!({
-                "type":"res", "id":result["id"], "ok":true, "payload":{"accepted":true}
-            }),
-        )
-        .await;
-        send_json(
-            &mut socket,
-            json!({
-                "type":"event", "event":"node.invoke.request",
-                "payload":{"id":"cancelled","nodeId":"node-1","command":"example.status",
-                    "paramsJSON":"{\"verbose\":false}"}
-            }),
-        )
-        .await;
-        server_handler_entered.notified().await;
-        send_json(
-            &mut socket,
-            json!({
-                "type":"event", "event":"node.invoke.cancel",
-                "payload":{"invokeId":"cancelled","nodeId":"node-1"}
-            }),
-        )
-        .await;
-        let cancelled = receive_json(&mut socket).await;
-        assert_eq!(cancelled["method"], "node.invoke.result");
-        assert_eq!(cancelled["params"]["id"], "cancelled");
-        assert_eq!(cancelled["params"]["ok"], false);
-        assert_eq!(cancelled["params"]["error"]["code"], "CANCELLED_BY_GATEWAY");
-        send_json(
-            &mut socket,
-            json!({
-                "type":"res", "id":cancelled["id"], "ok":true, "payload":{"accepted":true}
-            }),
-        )
-        .await;
-        socket.close(None).await.unwrap();
-    });
+    let server = tokio::spawn(serve_public_runtime_authority(
+        listener,
+        server_handler_entered,
+    ));
 
     let native_effects = Arc::new(AtomicUsize::new(0));
     let handler_effects = Arc::clone(&native_effects);
@@ -144,6 +72,73 @@ async fn public_runtime_completes_allowed_work_and_suppresses_wire_cancelled_eff
     assert!(runtime.run(session).await.is_err());
     server.await.unwrap();
     assert_eq!(native_effects.load(Ordering::SeqCst), 1);
+}
+
+async fn serve_public_runtime_authority(listener: TcpListener, handler_entered: Arc<Notify>) {
+    let (tcp, _) = listener.accept().await.unwrap();
+    let mut socket = accept_async(tcp).await.unwrap();
+    send_json(
+        &mut socket,
+        json!({
+            "type":"event", "event":"connect.challenge",
+            "payload":{"nonce":"node-nonce","ts":1_700_000_000_123_u64}
+        }),
+    )
+    .await;
+    let connect = receive_json(&mut socket).await;
+    assert_eq!(connect["params"]["client"]["mode"], "node");
+    assert_eq!(connect["params"]["role"], "node");
+    assert_eq!(connect["params"]["commands"], json!(["example.status"]));
+    assert_eq!(connect["params"]["device"]["nonce"], "node-nonce");
+    send_json(
+        &mut socket,
+        json!({"type":"res","id":connect["id"],"ok":true,
+            "payload":{"type":"hello-ok","protocol":4}}),
+    )
+    .await;
+    send_json(
+        &mut socket,
+        json!({"type":"event","event":"node.invoke.request","payload":{
+            "id":"allowed","nodeId":"node-1","command":"example.status",
+            "paramsJSON":"{\"verbose\":true}","sessionKey":"agent:main:main"
+        }}),
+    )
+    .await;
+    let allowed = receive_json(&mut socket).await;
+    assert_eq!(allowed["method"], "node.invoke.result");
+    assert_eq!(allowed["params"]["id"], "allowed");
+    assert_eq!(allowed["params"]["payload"], json!({"ready":true}));
+    send_json(
+        &mut socket,
+        json!({"type":"res","id":allowed["id"],"ok":true,"payload":{"accepted":true}}),
+    )
+    .await;
+    send_json(
+        &mut socket,
+        json!({"type":"event","event":"node.invoke.request","payload":{
+            "id":"cancelled","nodeId":"node-1","command":"example.status",
+            "paramsJSON":"{\"verbose\":false}"
+        }}),
+    )
+    .await;
+    handler_entered.notified().await;
+    send_json(
+        &mut socket,
+        json!({"type":"event","event":"node.invoke.cancel",
+            "payload":{"invokeId":"cancelled","nodeId":"node-1"}}),
+    )
+    .await;
+    let cancelled = receive_json(&mut socket).await;
+    assert_eq!(cancelled["method"], "node.invoke.result");
+    assert_eq!(cancelled["params"]["id"], "cancelled");
+    assert_eq!(cancelled["params"]["ok"], false);
+    assert_eq!(cancelled["params"]["error"]["code"], "CANCELLED_BY_GATEWAY");
+    send_json(
+        &mut socket,
+        json!({"type":"res","id":cancelled["id"],"ok":true,"payload":{"accepted":true}}),
+    )
+    .await;
+    socket.close(None).await.unwrap();
 }
 
 #[tokio::test]
