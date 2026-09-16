@@ -1,8 +1,10 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, expect, it, vi } from "vitest";
+import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { createServiceChildRelayAdapter } from "./service-child-relay-host.js";
 
@@ -10,14 +12,17 @@ const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 it
   .runIf(process.platform === "linux" || process.platform === "darwin")
-  .each(["open", "close-before-open", "stdin-closed"] as const)(
-  "keeps a real owned worker behind the legacy IPC start gate (%s)",
+  .each(["open", "close-before-open", "stdin-closed", "delayed-output"] as const)(
+  "runs a real owned worker through its IPC start gate and output drain (%s)",
   async (action) => {
     const home = tempDirs.make("openclaw-owned-worker-gate-");
     const marker = path.join(home, "started.txt");
     const onWorkerMessage = vi.fn<(message: unknown) => void>();
     let adapter: Awaited<ReturnType<typeof createServiceChildRelayAdapter>> | undefined;
     let cleanup: Promise<void> | undefined;
+    const expectedOutput =
+      action === "delayed-output" ? "x".repeat(256 * 1024) : "owned worker finished\n";
+    const rootExited = createDeferred();
     let output = "";
     let stderr = "";
     try {
@@ -31,7 +36,7 @@ it
               }
               fs.appendFileSync(${JSON.stringify(marker)}, "started\\n");
               process.send({ phase: "started", message }, () => {
-                process.stdout.write("owned worker finished\\n", () => process.disconnect());
+                process.stdout.write(${action === "delayed-output" ? '"x".repeat(256 * 1024)' : JSON.stringify(expectedOutput)}, () => process.disconnect());
               });
             });
             process.send({ phase: "waiting", pid: process.pid, parentPid: process.ppid });
@@ -60,9 +65,13 @@ it
           void pending.catch(() => undefined);
         },
       });
-      adapter.onStdout((chunk) => {
+      const collectOutput = (chunk: string) => {
         output += chunk;
-      });
+      };
+      if (action !== "delayed-output") {
+        adapter.onStdout(collectOutput);
+      }
+      adapter.onExit(() => rootExited.resolve());
       adapter.onStderr((chunk) => {
         stderr = (stderr + chunk).slice(-8192);
       });
@@ -89,6 +98,16 @@ it
           expect(stderr).toBe("");
         }
         await Promise.all([adapter.openStartGate!(), adapter.openStartGate!()]);
+        if (action === "delayed-output") {
+          await withTestTimeout(
+            rootExited.promise,
+            5_000,
+            "worker did not exit with buffered output",
+          );
+          // Leave the host pipe backpressured while the anchor processes root exit.
+          await delay(100);
+          adapter.onStdout(collectOutput);
+        }
         await expect(adapter.wait()).resolves.toEqual({ code: 0, signal: null });
         expect(onWorkerMessage).toHaveBeenCalledWith({
           phase: "started",
@@ -96,7 +115,8 @@ it
         });
         expect(onWorkerMessage).toHaveBeenCalledTimes(2);
         expect(await readFile(marker, "utf8")).toBe("started\n");
-        expect(output).toBe("owned worker finished\n");
+        expect(output.length).toBe(expectedOutput.length);
+        expect(output).toBe(expectedOutput);
       } else {
         adapter.closeStartGate!();
         await expect(adapter.openStartGate!()).rejects.toThrow("closed before startup");

@@ -33,10 +33,8 @@ import {
   closeOpenClawAgentDatabasesForTest,
   resolveIncognitoOpenClawAgentSqlitePath,
 } from "../state/openclaw-agent-db.js";
-import {
-  closeOpenClawStateDatabaseForTest,
-  openOpenClawStateDatabase,
-} from "../state/openclaw-state-db.js";
+import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db-cache.js";
+import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { withStateDirEnv } from "../test-helpers/state-dir-env.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { listSessionFixture } from "./session-list.test-support.js";
@@ -62,9 +60,9 @@ async function seedSessionEntry(
 }
 
 describe("session list subagent metadata", () => {
-  afterEach(() => {
+  afterEach(async () => {
     resetAgentEventsForTest({ preserveListeners: true });
-    closeOpenClawStateDatabaseForTest();
+    await closeOpenClawStateDatabaseAsync();
     resetSubagentRegistryForTests({ persist: false });
   });
   beforeEach(() => {
@@ -162,7 +160,7 @@ describe("session list subagent metadata", () => {
             expect(unrelatedInspections).toBe(0);
           }
         } finally {
-          closeOpenClawStateDatabaseForTest();
+          await closeOpenClawStateDatabaseAsync();
           nativeJson.close();
           resetConfigRuntimeState();
         }
@@ -1258,7 +1256,7 @@ describe("session list subagent metadata", () => {
       expect(row?.endedAt).toBe(now - 1_800);
       expect(row?.runtimeMs).toBe(100);
     } finally {
-      closeOpenClawStateDatabaseForTest();
+      await closeOpenClawStateDatabaseAsync();
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
@@ -1315,7 +1313,7 @@ describe("session list subagent metadata", () => {
 
     const snapshotSpy = vi.spyOn(
       subagentRegistryState,
-      "getSubagentSessionListRunsSnapshotForRead",
+      "withSubagentSessionListRunsSnapshotForRead",
     );
     try {
       const result = await withEnvAsync(
@@ -1338,7 +1336,7 @@ describe("session list subagent metadata", () => {
       expect(snapshotSpy).toHaveBeenCalledTimes(1);
     } finally {
       snapshotSpy.mockRestore();
-      closeOpenClawStateDatabaseForTest();
+      await closeOpenClawStateDatabaseAsync();
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
@@ -1351,7 +1349,7 @@ describe("session list subagent metadata", () => {
 
     const snapshotSpy = vi.spyOn(
       subagentRegistryState,
-      "getSubagentSessionListRunsSnapshotForRead",
+      "withSubagentSessionListRunsSnapshotForRead",
     );
     try {
       const result = await withEnvAsync(
@@ -1377,7 +1375,7 @@ describe("session list subagent metadata", () => {
       expect(snapshotSpy).not.toHaveBeenCalled();
     } finally {
       snapshotSpy.mockRestore();
-      closeOpenClawStateDatabaseForTest();
+      await closeOpenClawStateDatabaseAsync();
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });

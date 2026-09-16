@@ -191,6 +191,9 @@ export function runServiceChildGroupAnchor(): void {
       // anchor keeps its own lineage reader until their existing cleanup completes.
       await settled;
       await rootResultDelivery;
+      if (!forceCleanup) {
+        await Promise.race([rootSettledDone.promise, termGraceDone, forceCleanupRequested.promise]);
+      }
       await closeAuthority(reason, true);
       return;
     }

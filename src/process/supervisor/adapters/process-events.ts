@@ -1,5 +1,5 @@
 import type { Readable } from "node:stream";
-import { onDecodedOutput } from "../../decoded-output.js";
+import { createAwaitedDecodedOutput, onDecodedOutput } from "../../decoded-output.js";
 import type { SpawnProcessAdapter } from "../types.js";
 
 type ProcessEvents = Required<
@@ -54,7 +54,8 @@ export function createProcessAdapterEvents() {
   };
 }
 
-export function createOutputRelay(stream?: Readable, piped = false) {
+export function createOutputRelay(stream?: Readable, piped = false, onFailure?: () => void) {
+  const consumer = onFailure && stream ? createAwaitedDecodedOutput(stream, onFailure) : undefined;
   const listeners = new Set<(chunk: string) => void>();
   const rawListeners = new Set<(chunk: Buffer) => void>();
   const pending: Array<string | Buffer> = [];
@@ -103,7 +104,7 @@ export function createOutputRelay(stream?: Readable, piped = false) {
     ended = true;
   };
   if (stream) {
-    if (!piped) {
+    if (!piped && !consumer) {
       onDecodedOutput(stream, push, push);
     }
     stream.once("end", end);
@@ -116,14 +117,19 @@ export function createOutputRelay(stream?: Readable, piped = false) {
     push,
     end,
     subscribe: (listener: (chunk: string) => void, onRaw?: (chunk: Buffer) => void) => {
+      if (consumer) {
+        throw new Error("Process stdout requires its awaited consumer");
+      }
       listeners.add(listener);
       if (onRaw) {
         rawListeners.add(onRaw);
       }
       activate(true);
     },
-    drain: () => activate(false),
+    consume: consumer?.consume,
+    drain: () => (consumer ? consumer.drain() : activate(false)),
     clear: () => {
+      consumer?.close();
       listeners.clear();
       rawListeners.clear();
       pending.length = 0;
