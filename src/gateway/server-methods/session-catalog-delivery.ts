@@ -38,16 +38,21 @@ export function projectSessionCatalogFinalResult(params: {
         instances: new Map(),
       }
     : params.result;
+  let projected: CatalogListResult;
   try {
-    const projected = params.project(delivery, progress.listEntries);
-    if (retired) {
-      response.assertResponseCurrent();
-    } else {
-      response.assertCurrent();
+    projected = params.project(delivery, progress.listEntries);
+    if (!retired) {
+      progress.assertCurrent();
     }
-    return projected;
   } catch (error) {
     progress.failResult(error);
     throw error;
   }
+  // Caller authority belongs to this permit; shared projection failures are handled above.
+  if (retired) {
+    response.assertResponseCurrent();
+  } else {
+    response.assertCurrent();
+  }
+  return projected;
 }
