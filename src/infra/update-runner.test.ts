@@ -14,8 +14,11 @@ import type { UpdateChannel } from "./update-channels.js";
 import type { DevUpdateTarget } from "./update-dev-target.js";
 import { renderUpdateRunReport, updateRunReportInputFromResult } from "./update-run-report.js";
 import { buildUpdateCommandRunner } from "./update-runner-command.js";
-import { buildUpdateDoctorEnv } from "./update-runner-doctor.js";
-import { resolveUpdateDoctorExecutionPolicy } from "./update-runner-doctor.js";
+import {
+  buildUpdateDoctorEnv,
+  resolveUpdateDoctorExecutionPolicy,
+} from "./update-runner-doctor.js";
+import { writePreflightPackageManagerFixture } from "./update-runner-git-candidate.test-support.js";
 import { updateGitCheckout } from "./update-runner-git.js";
 import { resolveUpdateInstallSurface } from "./update-runner-install-surface.js";
 import type {
@@ -255,8 +258,9 @@ describe("updateGitCheckout", () => {
     }));
 
     try {
-      const { buildUpdateCommandRunner } = await import("./update-runner-command.js");
-      const { runCommand } = await buildUpdateCommandRunner();
+      const { buildUpdateCommandRunner: buildMockedUpdateCommandRunner } =
+        await import("./update-runner-command.js");
+      const { runCommand } = await buildMockedUpdateCommandRunner();
 
       await runCommand(["pnpm", "install"], { cwd: tempDir, timeoutMs: 500 });
 
@@ -372,18 +376,6 @@ describe("updateGitCheckout", () => {
   async function setupGitPackageManagerFixture(packageManager = PNPM_PACKAGE_MANAGER) {
     await setupGitCheckout({ packageManager });
     return await setupUiIndex();
-  }
-
-  async function writePreflightPackageManagerFixture(
-    root: string,
-    packageManager = PNPM_PACKAGE_MANAGER,
-  ) {
-    await fs.mkdir(root, { recursive: true });
-    await fs.writeFile(
-      path.join(root, "package.json"),
-      JSON.stringify({ name: "openclaw", version: "1.0.0", packageManager }),
-      "utf-8",
-    );
   }
 
   async function writePreflightPackageManagerFixtureFromWorktreeAdd(
@@ -774,9 +766,11 @@ describe("updateGitCheckout", () => {
           command === "rev-parse" &&
           (argv[4]?.includes("@{upstream}") || argv[4]?.startsWith("refs/remotes/"))
         ) {
-          if (result.stdout) upstreamSha = result.stdout.trim();
-          else if (argv[4].startsWith("refs/remotes/") && upstreamSha)
+          if (result.stdout) {
+            upstreamSha = result.stdout.trim();
+          } else if (argv[4].startsWith("refs/remotes/") && upstreamSha) {
             return toCommandResult({ stdout: upstreamSha });
+          }
         }
         if (command === "worktree" && argv[4] === "add") {
           const candidate = argv[6];
@@ -1978,7 +1972,7 @@ describe("updateGitCheckout", () => {
       const artifacts = redirected
         ? path.join(tempDir, "external-artifacts")
         : path.join(checkout, ".artifacts");
-      await writePreflightPackageManagerFixture(checkout);
+      await writePreflightPackageManagerFixture(checkout, PNPM_PACKAGE_MANAGER);
       await fs.copyFile(path.join(tempDir, "openclaw.mjs"), path.join(checkout, "openclaw.mjs"));
       await runRealGit(checkout, "init", "--initial-branch=main");
       await runRealGit(checkout, "config", "user.name", "OpenClaw Test");

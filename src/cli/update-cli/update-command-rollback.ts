@@ -66,7 +66,7 @@ export async function rollbackFailedUpdate(params: {
 }> {
   const { packageTransaction, opts } = params;
   const invocationEnv = { ...process.env };
-  const profiles = params.profiles.map((profile) => {
+  const prepareProfile = (profile: UpdateProfileContext) => {
     const before = profile.preManagedServiceStop;
     const env =
       before?.serviceEnv ?? profile.ownedManagedUpdateEnv ?? opts.run?.env ?? invocationEnv;
@@ -82,10 +82,10 @@ export async function rollbackFailedUpdate(params: {
         raw: profile.configSnapshot.raw,
         hash: hashConfigRaw(profile.configSnapshot.raw),
       },
-      port: undefined as number | undefined,
     };
-  });
-  type Profile = (typeof profiles)[number];
+  };
+  type Profile = ReturnType<typeof prepareProfile> & { port?: number };
+  const profiles: Profile[] = params.profiles.map(prepareProfile);
   const run = opts.run;
   const executor = run?.executorFence;
   const assertCurrent = () => {
@@ -153,7 +153,7 @@ export async function rollbackFailedUpdate(params: {
       return false;
     }
     const baselineVersions = new Map(
-      baseline.map((entry) => [entry.path, resolveUpdateStateContentVersion(entry)]),
+      baseline.map((store) => [store.path, resolveUpdateStateContentVersion(store)]),
     );
     for (const store of current) {
       const version = resolveUpdateStateContentVersion(store);
@@ -377,7 +377,7 @@ export async function rollbackFailedUpdate(params: {
           .filter(({ configSnapshot }) => configSnapshot.hash !== hashConfigRaw(configSnapshot.raw))
           .map((profile) => [path.resolve(profile.configSnapshot.path), profile] as const),
       ),
-    ].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    ].toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
     const withLocks = async (index: number): ReturnType<typeof restore> => {
       const lock = configLocks[index];
       return lock

@@ -138,14 +138,14 @@ function fixture(relativeRemote = false, partialClone = false) {
             const doctor = await runPackageUpdateDoctor({
               root: installedRoot,
               timeoutMs: 15_000,
-              progress: undefined,
+              progress: {},
               managedServiceEnv: {
                 OPENCLAW_STATE_DIR: path.join(root, "state"),
                 OPENCLAW_CONFIG_PATH: path.join(root, "state", "openclaw.json"),
               },
               nodeRunner: (await resolveCandidateNodeRuntimeForTest()).path,
             });
-            expect(doctor?.exitCode, doctor?.stderrTail).toBe(0);
+            expect(doctor?.exitCode, doctor?.stderrTail ?? undefined).toBe(0);
             expect(JSON.parse(doctor?.stdoutTail ?? "")).toMatchObject({
               version: targets.get(installedSha)?.version,
               openclaw: { schemaVersions: targets.get(installedSha)?.schemaVersions },
@@ -238,16 +238,14 @@ describe("Git database admission", () => {
         return result;
       };
       const result = await state.run(
-        {
-          ...(publish
-            ? {
-                publishGitCheckout: async () => {
-                  fs.renameSync(state.install, published);
-                  return published;
-                },
-              }
-            : {}),
-        },
+        publish
+          ? {
+              publishGitCheckout: async () => {
+                fs.renameSync(state.install, published);
+                return published;
+              },
+            }
+          : {},
         command,
       );
       const installed = publish ? published : state.install;

@@ -209,27 +209,38 @@ describe("runDoctorHealthFlow update outcomes", () => {
               : new UpdateCommandFailure(updateResult);
           mocks.updateCommand.mockImplementation(async ({ onResult }) => {
             onResult?.(updateResult);
-            if (outcome === "failed" || outcome === "pending") throw failure;
+            if (outcome === "failed" || outcome === "pending") {
+              throw failure;
+            }
           });
           const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
           const doctor = runDoctorHealthFlow(runtime);
-          if (outcome === "failed" || outcome === "pending")
+          if (outcome === "failed" || outcome === "pending") {
             await expect(doctor).rejects.toBe(failure);
-          else await doctor;
+          } else {
+            await doctor;
+          }
           expect(mocks.updateCommand).toHaveBeenCalledOnce();
           expect(mocks.config).toHaveBeenCalledTimes(outcome === "skipped" ? 1 : 0);
           expect(mocks.runContributions).toHaveBeenCalledTimes(outcome === "skipped" ? 1 : 0);
-          if (outcome === "skipped") expect(mocks.outro).toHaveBeenCalledWith("Doctor complete.");
-          else expect(mocks.outro).not.toHaveBeenCalledWith("Doctor complete.");
-          if (outcome === "ok")
+          if (outcome === "skipped") {
+            expect(mocks.outro).toHaveBeenCalledWith("Doctor complete.");
+          } else {
+            expect(mocks.outro).not.toHaveBeenCalledWith("Doctor complete.");
+          }
+          if (outcome === "ok") {
             expect(mocks.outro).toHaveBeenCalledWith(
               "Update completed (doctor already ran as part of the update).",
             );
+          }
           expect(mocks.triageCommand).not.toHaveBeenCalled();
         });
       } finally {
-        if (stdinIsTty) Object.defineProperty(process.stdin, "isTTY", stdinIsTty);
-        else delete (process.stdin as Partial<typeof process.stdin>).isTTY;
+        if (stdinIsTty) {
+          Object.defineProperty(process.stdin, "isTTY", stdinIsTty);
+        } else {
+          delete (process.stdin as Partial<typeof process.stdin>).isTTY;
+        }
       }
     },
   );

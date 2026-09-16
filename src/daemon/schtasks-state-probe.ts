@@ -100,8 +100,8 @@ function readTaskSnapshot(value: unknown): ScheduledTaskSnapshot | undefined {
   let parsedActions: ScheduledTaskSnapshot["actions"];
   if (Array.isArray(actions)) {
     parsedActions = [];
-    for (const value of actions) {
-      const action = asOptionalRecord(value);
+    for (const rawAction of actions) {
+      const action = asOptionalRecord(rawAction);
       const { type, path, arguments: args, workingDirectory } = action ?? {};
       if (
         typeof type !== "number" ||

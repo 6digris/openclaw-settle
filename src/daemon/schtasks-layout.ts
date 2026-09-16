@@ -544,15 +544,14 @@ export async function readScheduledTaskCommand(
     ) {
       throw new Error("Scheduled Task selector changed during inspection");
     }
-    const hasEnvironment = Object.keys(environment).length > 0;
     return {
       // The task-only outer process owns the Job Object; diagnostics and lifecycle
       // controls must compare against its inner Gateway child, which omits this flag.
       programArguments,
       ...(workingDirectory ? { workingDirectory } : {}),
-      ...(hasEnvironment ? { environment } : {}),
-      ...(hasEnvironment
+      ...(Object.keys(environment).length > 0
         ? {
+            environment,
             environmentValueSources: Object.fromEntries(
               Object.keys(environment).map((key) => [key, "inline"]),
             ),

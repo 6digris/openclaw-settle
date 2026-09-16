@@ -29,8 +29,10 @@ import {
 import type { UpdateRequester } from "../../infra/update-requester-authority.js";
 import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
 import { normalizeFallbackFailureReason } from "../../infra/update-runner-command.js";
-import { buildUpdateDoctorEnv } from "../../infra/update-runner-doctor.js";
-import { resolveUpdateDoctorExecutionPolicy } from "../../infra/update-runner-doctor.js";
+import {
+  buildUpdateDoctorEnv,
+  resolveUpdateDoctorExecutionPolicy,
+} from "../../infra/update-runner-doctor.js";
 import type { UpdateRunResult, UpdateStepResult } from "../../infra/update-runner-types.js";
 import { runCommandWithTimeout, runUtf8CommandWithTimeout } from "../../process/exec.js";
 import { createDeferredCore } from "../../shared/deferred.js";

@@ -32,8 +32,9 @@ vi.mock("../../daemon/schtasks.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../daemon/schtasks.js")>()),
   suspendScheduledTaskAutoStartForUpdate: vi.fn<
     typeof import("../../daemon/schtasks.js").suspendScheduledTaskAutoStartForUpdate
-  >(async (env = process.env, options) => {
-    const profile = env.OPENCLAW_PROFILE ?? "default";
+  >(async (env, options) => {
+    const serviceEnv = env === undefined ? process.env : env;
+    const profile = serviceEnv.OPENCLAW_PROFILE ?? "default";
     const enabled = mocks.enabled.get(profile) ?? true;
     if (enabled) {
       await options?.beforeMutation?.();
@@ -43,9 +44,10 @@ vi.mock("../../daemon/schtasks.js", async (importOriginal) => ({
   }),
   resumeScheduledTaskAutoStartAfterUpdate: vi.fn<
     typeof import("../../daemon/schtasks.js").resumeScheduledTaskAutoStartAfterUpdate
-  >(async (env = process.env, options) => {
+  >(async (env, options) => {
+    const serviceEnv = env === undefined ? process.env : env;
     await options?.beforeMutation?.();
-    mocks.enabled.set(env.OPENCLAW_PROFILE ?? "default", true);
+    mocks.enabled.set(serviceEnv.OPENCLAW_PROFILE ?? "default", true);
     return true;
   }),
 }));

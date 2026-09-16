@@ -24,6 +24,7 @@ import {
   withTransferredUpdateHandoff,
   recordLatestUpdateRestartSentinelMock,
   isRestartEnabledMock,
+  initializeGatewayUpdateStatusMock,
   detectRespawnSupervisorMock,
   normalizeUpdateChannelMock,
   getUpdateAvailableMock,
@@ -700,8 +701,11 @@ describe("update.run restart scheduling", () => {
   it.each(["git", "global"])(
     "accepts foreground %s updates through the restart lifecycle",
     async (kind) => {
-      if (kind === "git") mockGitInstallSurface("/tmp/openclaw-git");
-      else mockGlobalInstallSurface();
+      if (kind === "git") {
+        mockGitInstallSurface("/tmp/openclaw-git");
+      } else {
+        mockGlobalInstallSurface();
+      }
       const payload = await captureUpdateRunPayload();
       expect(startManagedServiceUpdateHandoffMock).toHaveBeenCalledOnce();
       expect(payload).toMatchObject({
@@ -885,7 +889,9 @@ describe("update.run prepared foreground handoff", () => {
 
 describe("update.run unexpected-error logging", () => {
   it("logs the caught error instead of swallowing it silently", async () => {
-    runGatewayUpdateMock.mockRejectedValueOnce(new Error("disk write refused: EACCES"));
+    initializeGatewayUpdateStatusMock.mockRejectedValueOnce(
+      new Error("disk write refused: EACCES"),
+    );
     const logGateway = { warn: vi.fn(), error: vi.fn(), info: vi.fn() };
     let payload: UpdateRunPayload | undefined;
     await invokeUpdateRun(
@@ -897,7 +903,20 @@ describe("update.run unexpected-error logging", () => {
       { logGateway },
     );
 
-    expect(payload?.result).toMatchObject({ status: "error", reason: "unexpected-error" });
+    expect(payload).toMatchObject({
+      ok: false,
+      ackDelivered: false,
+      result: { status: "error", reason: "unexpected-error" },
+    });
+    expect(getUpdateRun(expectDefined(payload, "failed update response").runId)).toMatchObject({
+      status: "failed",
+      phase: "finished",
+      reason: "unexpected-error",
+    });
+    expect(startManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
+    expect(transferManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
+    expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+    expect(logGateway.warn).toHaveBeenCalledOnce();
     expect(logGateway.warn).toHaveBeenCalledWith(
       expect.stringContaining("disk write refused: EACCES"),
     );

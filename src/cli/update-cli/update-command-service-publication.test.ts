@@ -588,7 +588,9 @@ it.each(["shared-running", "foreign-running", "foreign-to-shared"] as const)(
         { root, env, timeoutMs: 200, assertCurrent() {} },
         async (assertCurrent) => {
           enteredPublication = true;
-          if (scenario === "foreign-to-shared") systemRoot = root;
+          if (scenario === "foreign-to-shared") {
+            systemRoot = root;
+          }
           await assertCurrent();
           await fs.writeFile(artifact, "published");
         },

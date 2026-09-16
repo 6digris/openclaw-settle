@@ -551,9 +551,9 @@ async function updateCommandInternal(
       return records;
     }
     const key = resolveOpenClawStateSqlitePath(env ?? run.env);
-    const prepared = preparedProfiles.get(key);
-    if (prepared) {
-      return prepared;
+    const cachedRecords = preparedProfiles.get(key);
+    if (cachedRecords) {
+      return cachedRecords;
     }
     assertUpdatePackageActivationAdmission(captureUpdateCommandExecutorAuthority(fence).installKey);
     const records = await prepareMutableUpdateRuntime(env, fence);

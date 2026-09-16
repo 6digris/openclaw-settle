@@ -656,7 +656,7 @@ export async function updateGitInstall(params: {
       ]);
       // Source publication can fail after stopping an untouched package service.
       // Recover that exact package; its version alone cannot authorize Git source.
-      if (packageOwner && gitOwner && packageOwner !== gitOwner && serviceUsesPackage === true) {
+      if (packageOwner && gitOwner && packageOwner !== gitOwner && serviceUsesPackage) {
         updateResult.recovery = cancelled.recovery;
       }
       steps.push(...cancelled.steps);

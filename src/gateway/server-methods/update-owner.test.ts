@@ -12,11 +12,12 @@ import {
   detectRespawnSupervisorMock,
   initializeGatewayUpdateStatusMock,
   mockGlobalInstallSurface,
-  runGatewayUpdateMock,
+  readGatewayOwnerLeaseMock,
   scheduleGatewaySigusr1RestartMock,
   sendGatewayLifecycleNoticeMock,
   sentinelState,
   startManagedServiceUpdateHandoffMock,
+  transferManagedServiceUpdateHandoffMock,
 } from "./update.test-harness.js";
 
 const host = vi.hoisted(() => ({ context: undefined as GatewayRequestContext | undefined }));
@@ -81,7 +82,12 @@ describe("update.run current owner authority", () => {
       const allowed = change === "unchanged" || change === "webchat" || change === "channel-less";
       expect(result.details).toMatchObject({ ok: allowed });
       if (allowed) {
-        expect(runGatewayUpdateMock).toHaveBeenCalledOnce();
+        expect(startManagedServiceUpdateHandoffMock).toHaveBeenCalledOnce();
+        expect(transferManagedServiceUpdateHandoffMock).toHaveBeenCalledOnce();
+        expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+        const run = expectDefined(listUpdateRuns()[0], "accepted update run");
+        expect(run.status).toBe("running");
+        expect(sentinelState.capturedPayload?.stats?.runId).toBe(run.runId);
       } else {
         expect(result.details).toMatchObject({
           reason: "owner_required",
@@ -100,8 +106,8 @@ describe("update.run current owner authority", () => {
         ]);
         expect(adoptUpdateCampaignMock).not.toHaveBeenCalled();
         expect(sendGatewayLifecycleNoticeMock).not.toHaveBeenCalled();
-        expect(runGatewayUpdateMock).not.toHaveBeenCalled();
         expect(startManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
+        expect(transferManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
         expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
         expect(sentinelState.capturedPayload).toBeUndefined();
       }
@@ -174,29 +180,61 @@ describe("update.run current owner authority", () => {
         requesterSenderId: "model-supplied-sender",
       });
 
+      expect(result.details).toMatchObject({ ok: true, handoff: { status: "started" } });
+      expect(startManagedServiceUpdateHandoffMock).toHaveBeenCalledOnce();
+      expect(transferManagedServiceUpdateHandoffMock).toHaveBeenCalledOnce();
+      expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+      const handoff = expectDefined(
+        startManagedServiceUpdateHandoffMock.mock.calls[0]?.[0],
+        "prepared update handoff",
+      );
+      expect(handoff).toMatchObject({
+        supervisor,
+        requester: { channel, accountId: "primary", senderId: "owner" },
+      });
+      expect(transferManagedServiceUpdateHandoffMock).toHaveBeenCalledExactlyOnceWith({
+        kind: "managed-update-handoff",
+        handoffId: handoff.handoffId,
+        installRoot: handoff.root,
+      });
+      expect(sentinelState.capturedPayload?.stats).toMatchObject({
+        runId: handoff.runId,
+        handoffId: handoff.handoffId,
+      });
+      if (!supervisor) {
+        expect(readGatewayOwnerLeaseMock).toHaveBeenCalledWith({ current: true });
+        const owner = expectDefined(
+          readGatewayOwnerLeaseMock.mock.results.at(-1)?.value,
+          "current foreground Gateway owner",
+        );
+        expect(owner).toMatchObject({ mode: "foreground", state: "live", pid: process.pid });
+        expect(owner.startedAt).not.toBeNull();
+        expect(handoff).toMatchObject({
+          argv1: "/tmp/openclaw-global/dist/index.js",
+          foregroundOrigin: {
+            owner: owner.owner,
+            pid: owner.pid,
+            host: owner.host,
+            startedAt: owner.startedAt,
+            port: owner.port,
+          },
+          meta: { completionOwner: "gateway-restart" },
+        });
+      }
+      await expectDefined(handoff.beforePark, "prepared update parking callback")();
       if (supervisor) {
-        expect(result.details).toMatchObject({ ok: true, handoff: { status: "started" } });
-        expect(startManagedServiceUpdateHandoffMock).toHaveBeenCalledWith(
+        expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+      } else {
+        expect(scheduleGatewaySigusr1RestartMock).toHaveBeenCalledExactlyOnceWith(
           expect.objectContaining({
-            requester: { channel, accountId: "primary", senderId: "owner" },
+            reason: "update.run",
+            successorOwner: transferManagedServiceUpdateHandoffMock.mock.calls[0]?.[0],
           }),
         );
-        expect(guidance).toContain("only on an explicit owner request");
-      } else {
-        expect(result.details).toMatchObject({
-          ok: false,
-          reason: "managed-service-handoff-unavailable",
-          handoff: {
-            status: "unavailable",
-            command: expect.stringContaining("openclaw update"),
-            message: expect.stringContaining("Stop the foreground Gateway"),
-          },
-        });
-        expect(startManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
-        expect(guidance).toContain("relay the tool's exact recovery instructions");
-        expect(guidance).toContain("operator to run outside the Gateway service");
       }
-      expect(runGatewayUpdateMock).not.toHaveBeenCalled();
+      expect(guidance).toContain("only on an explicit owner request");
+      expect(guidance).toContain("relay the tool's exact recovery instructions");
+      expect(guidance).toContain("operator to run outside the Gateway service");
       expect(guidance).toContain(
         "Never run openclaw update, npm install -g openclaw, swap installations, or stop/restart the gateway service via exec or detached jobs.",
       );
@@ -229,8 +267,8 @@ describe("update.run current owner authority", () => {
         expect.objectContaining({ phase: "finished", status: "failed", reason: "owner_required" }),
       ]);
       expect(sendGatewayLifecycleNoticeMock).not.toHaveBeenCalled();
-      expect(runGatewayUpdateMock).not.toHaveBeenCalled();
       expect(startManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
+      expect(transferManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
       expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
       expect(sentinelState.capturedPayload).toBeUndefined();
     },
@@ -253,8 +291,8 @@ describe("update.run current owner authority", () => {
         'openclaw config set commands.ownerAllowFrom \'["replacement","slack:owner"]\'',
       ),
     });
-    expect(runGatewayUpdateMock).not.toHaveBeenCalled();
     expect(startManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
+    expect(transferManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
     expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
     expect(sentinelState.capturedPayload).toBeUndefined();
     expect(sendGatewayLifecycleNoticeMock).toHaveBeenCalledOnce();

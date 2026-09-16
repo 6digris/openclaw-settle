@@ -1,7 +1,32 @@
 import { EventEmitter } from "node:events";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { vi } from "vitest";
+import { onTestFinished, vi } from "vitest";
+import { createUpdateProgress } from "../cli/update-cli/progress.js";
+import { defaultRuntime } from "../runtime.js";
+import type { UpdateStepResult } from "./update-runner-types.js";
+
+export async function writeCanaryRuntime(root: string) {
+  await fs.mkdir(path.join(root, "dist", "infra"), { recursive: true });
+  await fs.writeFile(path.join(root, "dist", "index.js"), "");
+  await fs.writeFile(path.join(root, "dist", "infra", "update-migrated-finalize.worker.js"), "");
+  await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ version: "2026.9.1" }));
+}
+
+export function renderCanarySteps(steps: UpdateStepResult[]) {
+  const log = vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
+  const presentation = createUpdateProgress(true);
+  onTestFinished(() => {
+    presentation.dispose();
+    log.mockRestore();
+  });
+  for (const [index, step] of steps.entries()) {
+    presentation.progress.onStepComplete?.({ ...step, index, total: steps.length });
+  }
+  return log.mock.calls.flat().join("\n");
+}
 
 export class FakeChild extends EventEmitter {
   pid: number;

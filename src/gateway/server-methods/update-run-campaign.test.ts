@@ -152,8 +152,6 @@ vi.mock("../../infra/update-channels.js", async () => {
 });
 
 vi.mock("../../infra/update-managed-service-handoff.js", () => ({
-  buildManagedServiceHandoffUnavailableMessage: () => "handoff unavailable",
-  formatManagedServiceUpdateCommand: () => "openclaw update --yes",
   startManagedServiceUpdateHandoff: startManagedServiceUpdateHandoffMock,
   transferManagedServiceUpdateHandoff: transferManagedServiceUpdateHandoffMock,
   cancelManagedServiceUpdateHandoff: cancelManagedServiceUpdateHandoffMock,

@@ -9,7 +9,6 @@ import {
   initializeGatewayUpdateStatusMock,
   isRestartEnabledMock,
   resolveUpdateInstallSurfaceMock,
-  runGatewayUpdateMock,
   scheduleGatewaySigusr1RestartMock,
   sendGatewayLifecycleNoticeMock,
   sentinelState,
@@ -81,7 +80,6 @@ describe("update.run chat restart permission", () => {
       status: "skipped",
       reason: "restart-disabled",
     });
-    expect(runGatewayUpdateMock).not.toHaveBeenCalled();
     expect(startManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
     expect(transferManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
     expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();

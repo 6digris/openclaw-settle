@@ -287,8 +287,8 @@ describe("restart sentinel", () => {
         const payload = { kind: "update" as const, status: "error" as const, ts: 2 };
         const clock = vi.spyOn(Date, "now").mockReturnValue(first.revision - 1);
         try {
-          const written = runOpenClawStateWriteTransaction(({ db }) =>
-            writeRestartSentinelRowIfRevisionSync(db, payload, null),
+          const written = runOpenClawStateWriteTransaction(({ db: transactionDb }) =>
+            writeRestartSentinelRowIfRevisionSync(transactionDb, payload, null),
           );
           if (state === "missing") {
             expect(written).toMatchObject({ payload, revision: first.revision + 1 });
@@ -300,8 +300,8 @@ describe("restart sentinel", () => {
           }
           const settled = rows();
           expect(
-            runOpenClawStateWriteTransaction(({ db }) =>
-              writeRestartSentinelRowIfRevisionSync(db, payload, null),
+            runOpenClawStateWriteTransaction(({ db: transactionDb }) =>
+              writeRestartSentinelRowIfRevisionSync(transactionDb, payload, null),
             ),
           ).toBeNull();
           expect(rows()).toEqual(settled);

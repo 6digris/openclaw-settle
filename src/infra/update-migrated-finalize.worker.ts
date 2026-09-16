@@ -46,7 +46,7 @@ import { adoptUpdateRun, getUpdateRun, recordUpdateRunStep } from "./update-run-
 import type { UpdateRecoveryFence } from "./update-run-recovery.js";
 import {
   isUpdateGatewayReadinessPending,
-  getUpdateProfileVerification,
+  getUpdateGatewayVerification,
 } from "./update-run-step.js";
 
 function normalizeFinalizationInput(
@@ -133,8 +133,8 @@ async function finalizeMigratedUpdate(): Promise<void> {
     // SAFETY: The typed parent sends this private input only after binding this child.
     return await runDelegatedDoctor(JSON.parse(text) as UpdateDoctorInput);
   }
-  // SAFETY: Only the typed parent continuation serializes this private input.
   const input = normalizeFinalizationInput(
+    // SAFETY: Only the typed parent continuation serializes this private input.
     JSON.parse(text) as MigratedUpdateFinalizationInput | LegacyMigratedUpdateFinalizationInput,
   );
   if (input.params.opts.json) {
@@ -410,7 +410,7 @@ async function finalizeInput(
           ((result.status !== "error" && isUpdateGatewayReadinessPending(result)) ||
             (profiles.length === 1
               ? isUpdateGatewayReadinessPending(result)
-              : getUpdateProfileVerification(result, index + 1)?.exitCode === 0))),
+              : getUpdateGatewayVerification(result, index + 1)?.exitCode === 0))),
     );
   }
   executorFence.assertCurrent();

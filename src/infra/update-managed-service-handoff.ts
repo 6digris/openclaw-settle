@@ -8,14 +8,10 @@ import { once } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { formatCliCommand } from "../cli/command-format.js";
 import { formatInstallationTargetCommand } from "../cli/installation-target-format.js";
 import { resolveUpdatedInstallCommandEnv } from "../cli/update-cli/update-command-service-env.js";
 import type { TriageFailureContext } from "../commands/triage-prompt.js";
 import { resolveConfigPath, resolveStateDir } from "../config/paths.js";
-import { resolveGatewayWindowsTaskName } from "../daemon/constants.js";
-import { resolveLaunchAgentLabel } from "../daemon/launchd-label.js";
-import { resolveLaunchAgentPlistPath } from "../daemon/launchd-service-files.js";
 import { resolveServiceManagerEnv } from "../daemon/service-process-env.js";
 import { findInstalledSystemdGatewayScope } from "../daemon/systemd-scope.js";
 import { resolveSystemdServiceName } from "../daemon/systemd-service-files.js";
@@ -47,6 +43,11 @@ import { resolvePnpmGlobalInstallOwner, verifyPackageUpdateRecovery } from "./up
 import { resolveUpdateInstallRoot } from "./update-install-root.js";
 import { MANAGED_SERVICE_UPDATE_HANDOFF_TEMP_PREFIX } from "./update-managed-service-handoff-cleanup.js";
 import {
+  formatManagedServiceUpdateCommand,
+  resolveManagedServiceCliArgv,
+  resolveUpdateCliArgv,
+} from "./update-managed-service-handoff-command.js";
+import {
   assertManagedUpdateLeaseDatabaseIdentity,
   captureManagedUpdateLeaseDatabaseIdentity,
   createManagedHandoffLeaseDatabase,
@@ -58,6 +59,7 @@ import {
 } from "./update-managed-service-handoff-lease.js";
 import { MANAGED_HANDOFF_RUNTIME_ENTRY } from "./update-managed-service-handoff-runtime-assets.js";
 import { stageManagedHandoffRuntime } from "./update-managed-service-handoff-runtime.js";
+import { resolveGatewayServiceRecovery } from "./update-managed-service-handoff-service.js";
 import { resolveManagedUpdateRequester } from "./update-requester-authority.js";
 import type {
   ForegroundUpdateOrigin,
@@ -1790,75 +1792,6 @@ let automaticRequested = false;
 });
 `;
 
-function resolveUpdateCliArgv(params: {
-  timeoutMs?: number;
-  channel?: UpdateChannel;
-  tag?: string;
-  acceptCapabilities?: boolean;
-  reapplyLocalOverrides?: boolean;
-  execPath?: string;
-  argv1?: string;
-}): string[] {
-  const updateArgs = ["update", "--yes", "--json"];
-  if (params.reapplyLocalOverrides) {
-    updateArgs.push("--reapply-local-overrides");
-  }
-  if (params.acceptCapabilities) {
-    updateArgs.push("--accept-capabilities");
-  }
-  if (params.channel) {
-    updateArgs.push("--channel", params.channel);
-  }
-  if (params.tag) {
-    updateArgs.push("--tag", params.tag);
-  }
-  if (typeof params.timeoutMs === "number" && Number.isFinite(params.timeoutMs)) {
-    updateArgs.push("--timeout", String(Math.max(1, Math.ceil(params.timeoutMs / 1000))));
-  }
-
-  return resolveManagedServiceCliArgv(params, updateArgs);
-}
-
-function resolveManagedServiceCliArgv(
-  params: { execPath?: string; argv1?: string },
-  args: string[],
-): string[] {
-  const execPath = params.execPath?.trim();
-  const argv1 = params.argv1?.trim();
-  if (execPath && argv1) {
-    return [execPath, argv1, ...args];
-  }
-  if (execPath && !/^(?:node|bun)(?:\.exe)?$/iu.test(path.basename(execPath))) {
-    return [execPath, ...args];
-  }
-  return ["openclaw", ...args];
-}
-
-export function formatManagedServiceUpdateCommand(
-  params?: {
-    timeoutMs?: number;
-    channel?: UpdateChannel;
-    tag?: string;
-    acceptCapabilities?: boolean;
-    reapplyLocalOverrides?: boolean;
-  },
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  return formatCliCommand(
-    resolveUpdateCliArgv(params ?? {})
-      .toSpliced(3, 1)
-      .join(" "),
-    env,
-  );
-}
-
-export function buildManagedServiceHandoffUnavailableMessage(command: string): string {
-  return [
-    "OpenClaw updates cannot safely run inside the live gateway process without a managed-service handoff.",
-    `Stop the foreground Gateway, run \`${command}\` from a shell, then launch the Gateway again. For a managed deployment, use its host's stop, update, and restart workflow.`,
-  ].join("\n");
-}
-
 type ManagedServiceUpdateHandoffParams = {
   runId?: string;
   beforePark?: () => Promise<void>;
@@ -1916,31 +1849,6 @@ type ActiveManagedServiceUpdateHandoff = {
 };
 const activeManagedServiceUpdateHandoffs = new Map<string, ActiveManagedServiceUpdateHandoff>();
 
-type GatewayServiceRecovery =
-  | { kind: "systemd"; unit: string }
-  | { kind: "launchd"; uid: number; label: string; plistPath: string }
-  | { kind: "schtasks"; taskName: string };
-
-function resolveGatewayServiceRecovery(
-  supervisor: RespawnSupervisor | null | undefined,
-  env: NodeJS.ProcessEnv,
-): GatewayServiceRecovery | undefined {
-  if (supervisor === "systemd") {
-    return { kind: "systemd", unit: `${resolveSystemdServiceName(env)}.service` };
-  }
-  if (supervisor === "launchd") {
-    const label = resolveLaunchAgentLabel(env);
-    const uid = typeof process.getuid === "function" ? process.getuid() : 501;
-    return { kind: "launchd", uid, label, plistPath: resolveLaunchAgentPlistPath(env) };
-  }
-  if (supervisor === "schtasks") {
-    const taskName =
-      env.OPENCLAW_WINDOWS_TASK_NAME?.trim() || resolveGatewayWindowsTaskName(env.OPENCLAW_PROFILE);
-    return { kind: "schtasks", taskName };
-  }
-  return undefined;
-}
-
 function waitForHandoffResponse(
   child: HandoffChild,
   timeoutMs: number,
@@ -1988,7 +1896,9 @@ function waitForHandoffResponse(
       finish(err);
     };
     const onInputClose = () => {
-      if (command !== "closed") finish(new Error("managed update handoff control input closed"));
+      if (command !== "closed") {
+        finish(new Error("managed update handoff control input closed"));
+      }
     };
     const onData = (chunk: Buffer | string) => {
       buffered = `${buffered}${chunk.toString()}`.slice(-1024);
@@ -2004,13 +1914,14 @@ function waitForHandoffResponse(
     };
     // The canonical updater owns activation/finalization budgets. Once closed,
     // the parent joins its helper instead of inventing a shorter shutdown timer.
-    if (command !== "closed")
+    if (command !== "closed") {
       cancelTimeout = scheduleAbsoluteDeadline(Date.now() + timeoutMs, () => {
         const phase = command ? "respond" : "signal readiness";
         onOutputError(
           new Error(`managed update handoff did not ${phase} within ${timeoutMs / 1000} seconds`),
         );
       });
+    }
     if (settled) {
       return;
     }
@@ -2575,7 +2486,9 @@ export async function assertForegroundUpdateOrigin(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
   const matchesOwner = () => {
-    if (!hasForegroundUpdatePaths(origin, env)) return false;
+    if (!hasForegroundUpdatePaths(origin, env)) {
+      return false;
+    }
     const owner = readGatewayOwnerLease({ env, current: true });
     return closed
       ? owner === undefined
@@ -2587,7 +2500,9 @@ export async function assertForegroundUpdateOrigin(
           owner.startedAt === origin.startedAt &&
           owner.port === origin.port;
   };
-  if (!matchesOwner()) throw new Error("Foreground Gateway owner or paths changed");
+  if (!matchesOwner()) {
+    throw new Error("Foreground Gateway owner or paths changed");
+  }
   const lock = await readActiveGatewayLockIdentity({ env, requireInspection: true });
   if (
     closed
@@ -2596,10 +2511,12 @@ export async function assertForegroundUpdateOrigin(
   ) {
     throw new Error("Foreground Gateway locks do not match its handoff phase");
   }
-  if (closed && (await probePortUsage(origin.port)) !== "free")
+  if (closed && (await probePortUsage(origin.port)) !== "free") {
     throw new Error("Foreground Gateway port is not verified free");
-  if (!matchesOwner())
+  }
+  if (!matchesOwner()) {
     throw new Error("Foreground Gateway owner or paths changed during inspection");
+  }
 }
 
 async function exchangeForegroundUpdateHandoff(
@@ -2619,8 +2536,9 @@ async function exchangeForegroundUpdateHandoff(
     !process.connected ||
     !process.send ||
     !(await isCurrentManagedServiceUpdateHandoffProcess(params))
-  )
+  ) {
     return false;
+  }
   const lease = readManagedServiceUpdateHandoffLease(resolveUpdateInstallRoot(params.root));
   const requestId = randomUUID();
   const accepted = await new Promise<boolean>((resolve) => {
@@ -2636,8 +2554,9 @@ async function exchangeForegroundUpdateHandoff(
         message === null ||
         !("requestId" in message) ||
         message.requestId !== requestId
-      )
+      ) {
         return;
+      }
       finish(
         "type" in message &&
           message.type === operation &&
@@ -2653,7 +2572,9 @@ async function exchangeForegroundUpdateHandoff(
     );
     process.on("message", onMessage).once("disconnect", onDisconnect);
     process.send!({ type: operation, version: 2, requestId }, (error: Error | null) => {
-      if (error) finish(false);
+      if (error) {
+        finish(false);
+      }
     });
   });
   const current = readManagedServiceUpdateHandoffLease(resolveUpdateInstallRoot(params.root));
@@ -2710,9 +2631,9 @@ export async function completeForegroundUpdateHandoffAfterClose(
   ) {
     return { respawn: false };
   }
-  const exited = new Promise<boolean>((resolve) =>
-    child.once("exit", (code, signal) => resolve(code !== null && signal === null)),
-  );
+  const exited = new Promise<boolean>((resolve) => {
+    child.once("exit", (code, signal) => resolve(code !== null && signal === null));
+  });
   const response = await sendManagedServiceUpdateHandoffCommand(identity, "closed");
   // The helper's settled reply is sent only after joining the updater and releasing its lease.
   // Join its process too; a timeout or unknown outcome never reopens the old module graph.
@@ -2722,8 +2643,9 @@ export async function completeForegroundUpdateHandoffAfterClose(
     successful &&
     activeManagedServiceUpdateHandoffs.get(root) === owner &&
     readManagedServiceUpdateHandoffLease(root) === null;
-  if (activeManagedServiceUpdateHandoffs.get(root) === owner)
+  if (activeManagedServiceUpdateHandoffs.get(root) === owner) {
     activeManagedServiceUpdateHandoffs.delete(root);
+  }
   return { respawn };
 }
 
@@ -2777,7 +2699,9 @@ export async function requestManagedServiceUpdateHandoffPark(
   }
   const root = resolveUpdateInstallRoot(identity.installRoot);
   const owner = activeManagedServiceUpdateHandoffs.get(root);
-  if (owner?.foregroundOrigin) return true;
+  if (owner?.foregroundOrigin) {
+    return true;
+  }
   await owner?.beforePark?.();
   // A notice can await transport recovery. Only the same live helper may
   // receive park after that await; a replacement never inherits this effect.

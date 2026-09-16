@@ -102,16 +102,7 @@ const testAllowedToolCallProviders = new Set(["openai", "openai-codex", "opencod
 const reasoningReplayIdentity = { sessionId: "session-a", authProfileId: "profile-a" };
 
 function createAssistantOutput(): AssistantMessage {
-  return {
-    role: "assistant",
-    api: nativeOpenAIModel.api,
-    provider: nativeOpenAIModel.provider,
-    model: nativeOpenAIModel.id,
-    usage: createZeroUsage(),
-    stopReason: "stop",
-    timestamp: 0,
-    content: [],
-  };
+  return { ...createResponsesAssistantOutput(nativeOpenAIModel), timestamp: 0 };
 }
 
 async function* responseEvents(events: Array<Record<string, unknown>>) {

@@ -57,7 +57,7 @@ type UpdateCampaignAdoption = ReturnType<
 export const adoptUpdateCampaignMock = vi.fn<() => UpdateCampaignAdoption>(() => ({
   status: "absent",
 }));
-export const readConfigFileSnapshotMock = vi.fn<() => Promise<ConfigFileSnapshot>>();
+const readConfigFileSnapshotMock = vi.fn<() => Promise<ConfigFileSnapshot>>();
 export const startManagedServiceUpdateHandoffMock = vi.fn<
   typeof import("../../infra/update-managed-service-handoff.js").startManagedServiceUpdateHandoff
 >(async (params) => ({

@@ -1,13 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { formatCliFailureLines, formatCliJsonFailure } from "../cli/failure-output.js";
-import { createUpdateProgress } from "../cli/update-cli/progress.js";
 import { createInvalidConfigError } from "../config/io.invalid-config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { defaultRuntime } from "../runtime.js";
 import * as diskSpace from "./disk-space.js";
 import * as readiness from "./update-candidate-canary-readiness.test-support.js";
 import { validateUpdateCandidateCanary } from "./update-candidate-canary.js";
@@ -15,7 +13,9 @@ import {
   completeCanaryCommand,
   createCanarySnapshotResult,
   FakeChild,
+  renderCanarySteps,
   stubHealthyGateway,
+  writeCanaryRuntime,
 } from "./update-candidate-canary.test-support.js";
 import { prepareUpdateCandidateRehearsal } from "./update-candidate-rehearsal.js";
 import { CONTROL_PLANE_UPDATE_SENTINEL_META_ENV } from "./update-control-plane-sentinel.js";
@@ -30,7 +30,6 @@ import {
 } from "./update-post-core-context.js";
 import { renderUpdateRunReport, updateRunReportInputFromResult } from "./update-run-report.js";
 import { updateRunStepsFromResultStep, updateRunWarningMessages } from "./update-run-step.js";
-import type { UpdateStepResult } from "./update-runner-types.js";
 
 const mocks = vi.hoisted(() => ({ spawn: vi.fn(), snapshot: vi.fn(), signal: vi.fn() }));
 vi.mock("node:child_process", async (importOriginal) => ({
@@ -63,19 +62,6 @@ function canaryStateOptions(timeoutMs?: number) {
   return { root, stateDir: root, config: {}, env: {}, timeoutMs };
 }
 
-function renderSteps(steps: UpdateStepResult[]) {
-  const log = vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
-  const presentation = createUpdateProgress(true);
-  onTestFinished(() => {
-    presentation.dispose();
-    log.mockRestore();
-  });
-  for (const [index, step] of steps.entries()) {
-    presentation.progress.onStepComplete?.({ ...step, index, total: steps.length });
-  }
-  return log.mock.calls.flat().join("\n");
-}
-
 beforeEach(async () => {
   vi.clearAllMocks();
   pluginErrors = false;
@@ -85,10 +71,7 @@ beforeEach(async () => {
   lintReport = { ok: true, checksRun: 1, findings: [], warnings: [] };
   databasePath = undefined;
   root = path.join(await fs.realpath(tempDirs.make("canary-unit-")), "candidate");
-  await fs.mkdir(path.join(root, "dist", "infra"), { recursive: true });
-  await fs.writeFile(path.join(root, "dist", "index.js"), "");
-  await fs.writeFile(path.join(root, "dist", "infra", "update-migrated-finalize.worker.js"), "");
-  await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ version: "2026.9.1" }));
+  await writeCanaryRuntime(root);
   mocks.snapshot.mockImplementation(async (_command, options: { input: string }) =>
     createCanarySnapshotResult(options.input, databasePath),
   );
@@ -780,7 +763,7 @@ describe("update candidate canary", () => {
         scenario.endsWith("multiline") ? "Invalid config" : "Unable to resolve health API",
       );
       if (scenario !== "lint") {
-        const output = renderSteps([failed]);
+        const output = renderCanarySteps([failed]);
         if (scenario.endsWith("multiline")) {
           expect(output).toContain("gateway.port: invalid");
           expect(output).toContain("gateway.host: unknown");
@@ -899,7 +882,7 @@ describe("update candidate canary", () => {
       expect(result.status).toBe(failure === "readiness" ? "ok" : "error");
       expect(result.phase).toBe(failure);
       if (failure === "plugins") {
-        expect(renderSteps(result.steps)).toContain("incompatible plugin");
+        expect(renderCanarySteps(result.steps)).toContain("incompatible plugin");
       }
       if (failure === "readiness") {
         readiness.expectCanaryReadinessWarning(result.steps.at(-1), "readyz", 503);

@@ -790,7 +790,9 @@ it("keeps foreground success pending until the replacement Gateway observes the 
     stats: { runId: run.runId },
   });
   expect(sentinel?.payload.stats?.handoffId).toBeUndefined();
-  if (!sentinel) throw new Error("Expected the canonical final sentinel");
+  if (!sentinel) {
+    throw new Error("Expected the canonical final sentinel");
+  }
   await finalizeRestartUpdateRun(sentinel.payload);
   expect(getUpdateRun(run.runId)).toMatchObject({
     status: "succeeded",

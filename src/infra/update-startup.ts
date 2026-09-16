@@ -61,8 +61,10 @@ import { devUpdateTargetFromGitTarget, type TrackedDevUpdateTarget } from "./upd
 import { updateInstallRootsMatch } from "./update-install-root.js";
 import {
   buildManagedServiceHandoffUnavailableMessage,
-  cancelManagedServiceUpdateHandoff,
   formatManagedServiceUpdateCommand,
+} from "./update-managed-service-handoff-command.js";
+import {
+  cancelManagedServiceUpdateHandoff,
   startManagedServiceUpdateHandoff,
   transferManagedServiceUpdateHandoff,
 } from "./update-managed-service-handoff.js";

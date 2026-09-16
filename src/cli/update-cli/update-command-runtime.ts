@@ -131,7 +131,7 @@ export async function completeSourceUpdateRuntime(params: {
       // Older generators cannot attest restoration after a failed publication.
       // Their nested pre-mutation refusal must not grant restart authority.
       if (failure instanceof UpdatePreMutationError) {
-        throw new Error(failure.message, { cause: failure });
+        throw new Error(failure.message, { cause: error });
       }
       throw failure;
     }

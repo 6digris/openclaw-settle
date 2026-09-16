@@ -1,29 +1,15 @@
 import path from "node:path";
-import { resolveStateDir } from "../../config/paths.js";
 import { ScheduledTaskAutoStartRecoveryError } from "../../daemon/schtasks-update-recovery.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { tryReadJson } from "../../infra/json-files.js";
 import type { PackageUpdateTransaction } from "../../infra/package-update-steps.js";
-import { validateUpdateCandidateCanary } from "../../infra/update-candidate-canary.js";
-import type { UpdateCandidateRehearsal } from "../../infra/update-candidate-rehearsal.js";
-import {
-  readUpdateStateSchemaVersions,
-  resolveUpdateStateContentVersion,
-} from "../../infra/update-candidate-state.js";
 import { normalizeUpdateChannel } from "../../infra/update-channels.js";
-import {
-  createUpdateDoctorConfigWarningStep,
-  type UpdateDoctorConfigChange,
-} from "../../infra/update-doctor-config.js";
 import { resolveUpdateFinalizationTimeoutMs } from "../../infra/update-finalization-budget.js";
 import {
   canResolveRegistryVersionForPackageTarget,
   verifyPackageUpdateRecovery,
 } from "../../infra/update-global.js";
-import {
-  isCurrentForegroundUpdateHandoffProcess,
-  parkForegroundUpdateHandoff,
-} from "../../infra/update-managed-service-handoff.js";
+import { isCurrentForegroundUpdateHandoffProcess } from "../../infra/update-managed-service-handoff.js";
 import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
 import { recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import { readCurrentGitUpdateRecovery } from "../../infra/update-runner-git-recovery.js";
@@ -36,7 +22,6 @@ import {
   parsePackageOpenClawSchemaVersions,
   type OpenClawSchemaVersions,
 } from "../../state/openclaw-schema-versions.js";
-import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { formatCliCommand } from "../command-format.js";
 import {
   checkTargetDatabaseSchemasForContexts,
@@ -49,6 +34,7 @@ import {
   resolveGitInstallDir,
   UpdatePreMutationError,
 } from "./shared.js";
+import { UpdateCandidateValidation } from "./update-command-candidate-validation.js";
 import { maybeRepairLegacyConfigForUpdateChannel } from "./update-command-config.js";
 import { inspectUpdateDatabaseContexts } from "./update-command-database-context.js";
 import type { MutableUpdateExecutionParams } from "./update-command-execution.types.js";
@@ -69,16 +55,11 @@ import {
   type PackageInstallUpdateParams,
 } from "./update-command-package.js";
 import { assertUpdateCommandRecovery } from "./update-command-recovery.js";
-import { runUpdateCommandRepair } from "./update-command-repair.js";
 import {
   createUpdateCommandFailureResult,
   type MutableUpdateExecutionResult,
 } from "./update-command-result.js";
-import { isUpdatedInstallGatewayExecutorSupported } from "./update-command-service-command.js";
-import {
-  resolveUpdatedInstallCommandEnv,
-  withOwnedManagedUpdateEnv,
-} from "./update-command-service-env.js";
+import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
 import {
   collectServiceInspectionFailureFacts,
   GatewayServiceUpdateOwnershipError,
@@ -90,10 +71,6 @@ import {
   UpdateCommandAbort,
   type PreManagedServiceStop,
 } from "./update-command-service.js";
-import {
-  recordPreviousGatewayVerification,
-  verifyPreviousGatewayForUpdate,
-} from "./update-command-verification.js";
 
 export async function executeMutableUpdate(
   params: MutableUpdateExecutionParams,
@@ -120,33 +97,10 @@ export async function executeMutableUpdate(
     !canResolveRegistryVersionForPackageTarget(params.packageInstallSpec ?? params.tag);
   const profiles: UpdateProfileContext[] = [params.initialProfile];
   params.recoveryState.profiles = profiles;
-  type ProfileValidation = {
-    root: string;
-    doctorConfigWrites: boolean;
-    doctorConfigChanges: UpdateDoctorConfigChange[];
-    validatedConfig?: {
-      config: UpdateCandidateRehearsal["sourceConfig"];
-      hash: UpdateCandidateRehearsal["sourceConfigHash"];
-    };
-    observedGatewayStartupMs?: number;
-    profileContexts: boolean;
-    gatewayRestartCompletion: boolean;
-    generation: number;
-  };
-  const profileValidation = new Map<UpdateProfileContext, ProfileValidation>();
-  const envFor = (profile: UpdateProfileContext) =>
-    profile.ownedManagedUpdateEnv ?? opts.run?.env ?? process.env;
-  const nodeFor = (profile: UpdateProfileContext) =>
-    profile.packageUpdateNodeRunner ?? params.packageUpdateNodeRunner;
   let admission: Awaited<ReturnType<typeof inspectUpdateDatabaseContexts>> | undefined;
   let gitContextPrepared = false;
-  let admittedTargetSchemaVersions = params.packageTargetSchemaVersions;
   let recoveryEnv: NodeJS.ProcessEnv | undefined;
   let packageTransaction: PackageUpdateTransaction | undefined;
-  let candidateSchemaVersions: OpenClawSchemaVersions | undefined;
-  let previousSchemaVersions: OpenClawSchemaVersions | undefined;
-  let candidateFailureReason: string | undefined;
-  let candidateGeneration = 0;
   const recheckSchemas = async (versions: OpenClawSchemaVersions | undefined) => {
     if (!admission) {
       throw new UpdatePreMutationError(
@@ -177,23 +131,25 @@ export async function executeMutableUpdate(
         formatSchemaRefusalLines(schemas).join("\n"),
       );
     }
-    admittedTargetSchemaVersions = versions;
+    candidate.admittedSchemaVersions = versions;
   };
   const prepareProfiles = async () => {
     for (const profile of profiles) {
-      profile.preUpdatePluginInstallRecords = await params.prepareMutableUpdate(envFor(profile));
+      profile.preUpdatePluginInstallRecords = await params.prepareMutableUpdate(
+        candidate.envFor(profile),
+      );
       assertExecutionCurrent();
     }
   };
   const preflightPlugins = async (targetVersion: string | null, selected = profiles) => {
-    await recheckSchemas(admittedTargetSchemaVersions);
+    await recheckSchemas(candidate.admittedSchemaVersions);
     const { preflightConfiguredNpmPluginTargets } =
       await import("./update-command-plugin-preflight.js");
     assertExecutionCurrent();
     for (const profile of selected) {
       const warnings = await preflightConfiguredNpmPluginTargets({
         config: profile.configSnapshot.sourceConfig,
-        env: envFor(profile),
+        env: candidate.envFor(profile),
         targetVersion,
         channel: params.channel,
         timeoutMs: updateStepTimeoutMs,
@@ -203,19 +159,19 @@ export async function executeMutableUpdate(
         defaultRuntime[opts.json ? "error" : "log"](warning.message);
       }
     }
-    await recheckSchemas(admittedTargetSchemaVersions);
+    await recheckSchemas(candidate.admittedSchemaVersions);
   };
   const runDoctor = async (root: string): Promise<UpdateStepResult | null> => {
     const steps: UpdateStepResult[] = [];
     for (const profile of profiles) {
-      const validation = profileValidation.get(profile)!;
+      const validation = candidate.profileValidation.get(profile)!;
       assertExecutionCurrent();
       const step = await runPackageUpdateDoctor({
         root,
-        managedServiceEnv: envFor(profile),
+        managedServiceEnv: candidate.envFor(profile),
         timeoutMs: updateStepTimeoutMs,
         invocationCwd: params.invocationCwd,
-        nodeRunner: nodeFor(profile),
+        nodeRunner: candidate.nodeFor(profile),
         progress: params.progress,
         onConfigSnapshot: (snapshot) => {
           profile.activationConfig = snapshot;
@@ -269,7 +225,7 @@ export async function executeMutableUpdate(
     }
     try {
       for (const profile of selected) {
-        const root = profileValidation.get(profile)!.root;
+        const root = candidate.profileValidation.get(profile)!.root;
         if (
           profile === profiles[0] &&
           !profile.preManagedServiceStop &&
@@ -277,7 +233,7 @@ export async function executeMutableUpdate(
           (await isCurrentForegroundUpdateHandoffProcess({
             root,
             runId: opts.run.runId,
-            env: envFor(profile),
+            env: candidate.envFor(profile),
           }))
         ) {
           assertExecutionCurrent();
@@ -301,7 +257,7 @@ export async function executeMutableUpdate(
           await maybeStopManagedServiceBeforeMutableUpdate({
             updateInstallKind: params.updateInstallKind,
             root,
-            env: envFor(profile),
+            env: candidate.envFor(profile),
             shouldRestart: params.shouldRestart,
             jsonMode: Boolean(opts.json),
             timeoutMs: updateStepTimeoutMs,
@@ -330,7 +286,9 @@ export async function executeMutableUpdate(
                 mode,
                 timeoutMs: updateStepTimeoutMs,
                 devTarget: params.devTarget,
-                nodeRunner: currentCoreResult ? nodeFor(profile) : params.packageUpdateNodeRunner,
+                nodeRunner: currentCoreResult
+                  ? candidate.nodeFor(profile)
+                  : params.packageUpdateNodeRunner,
                 invocationCwd: params.invocationCwd,
                 stopProgress: params.stop,
               }),
@@ -389,14 +347,13 @@ export async function executeMutableUpdate(
 
   let result: UpdateRunResult;
   let failure: MutableUpdateExecutionResult["failure"];
-  let mutationStarted = false;
   const prepareProfileRuntime = async (
     profile: UpdateProfileContext,
     root: string,
     assertCurrent?: () => void,
   ) => {
     const before = profile.preManagedServiceStop;
-    const runtime = await withOwnedManagedUpdateEnv(envFor(profile), () =>
+    const runtime = await withOwnedManagedUpdateEnv(candidate.envFor(profile), () =>
       resolvePackageRuntimePreflight({
         target: currentCoreResult ? params.packageRuntimeTarget : undefined,
         installedRoot: root,
@@ -416,188 +373,38 @@ export async function executeMutableUpdate(
     profile.packageUpdateNodeRunner = runtime.value.nodeRunner;
     profile.serviceRuntimeRefreshRequired = runtime.value.replacedNodeRunner !== undefined;
   };
-  const validateProfile = async (
-    profile: UpdateProfileContext,
-    root: string,
-    allowRepair: boolean,
-  ) => {
-    const state = profileValidation.get(profile)!;
-    assertExecutionCurrent();
-    const env = envFor(profile);
-    if (opts.run) {
-      recordUpdateRunPhase(opts.run.runId, "validating", undefined, { env: opts.run.env });
-    }
-    const validate = async (
-      signal?: AbortSignal,
-      rehearsal?: UpdateCandidateRehearsal,
-      assertCurrent?: () => void,
-    ) => {
-      signal?.throwIfAborted();
-      try {
-        await prepareProfileRuntime(profile, root, assertCurrent);
-        if (params.updateInstallKind === "package") {
-          // The staged manifest owns schema support, including artifacts without registry metadata.
-          await recheckSchemas(
-            parsePackageOpenClawSchemaVersions(
-              await tryReadJson<unknown>(path.join(root, "package.json")),
-            ) ?? admittedTargetSchemaVersions,
-          );
-          signal?.throwIfAborted();
-          assertCurrent?.();
-        }
-      } catch (error) {
-        if (error instanceof UpdatePreMutationError) {
-          candidateFailureReason = error.reason;
-        }
-        throw error;
-      }
-      if (
-        params.shouldRestart &&
-        opts.run &&
-        profile.preManagedServiceStop?.serviceUpdateVerdict?.kind === "owned"
-      ) {
-        const executor = opts.run.executorFence;
-        if (!executor) {
-          throw new UpdatePreMutationError(
-            "target-native-unsupported",
-            "Native candidate admission requires its original update executor.",
-          );
-        }
-        const supported = await isUpdatedInstallGatewayExecutorSupported({
-          root,
-          env: resolveUpdatedInstallCommandEnv({
-            processEnv: env,
-            invocationCwd: params.invocationCwd,
-          }),
-          executor,
-          timeoutMs: updateStepTimeoutMs,
-          nodeRunner: nodeFor(profile),
-          signal,
-        });
-        assertExecutionCurrent();
-        if (!supported) {
-          candidateFailureReason = "target-native-unsupported";
-          throw new UpdatePreMutationError(
-            candidateFailureReason,
-            "Target runtime cannot fence update-owned native commands; refusing before Gateway stop or package activation.",
-          );
-        }
-      }
-      const snapshot = rehearsal
-        ? { config: rehearsal.sourceConfig, hash: rehearsal.sourceConfigHash }
-        : (state.validatedConfig ??
-          (await readUpdateCandidateSource(env, params.legacyConfigPlan)));
-      const validation = await validateUpdateCandidateCanary({
-        root,
-        config: snapshot.config,
-        stateDir: resolveStateDir(env),
-        env,
-        signal,
-        rehearsal,
-        assertCurrent: () => {
-          assertExecutionCurrent();
-          assertCurrent?.();
-        },
-        nodeRunner: nodeFor(profile),
-        timeoutMs: params.timeoutMs,
-        onStep: (step) => params.progress?.onStepComplete?.({ ...step, index: 0, total: 0 }),
-      });
-      assertExecutionCurrent();
-      state.doctorConfigChanges.push(...(validation.doctorConfigChanges ?? []));
-      if (validation.status === "ok") {
-        state.validatedConfig = snapshot;
-        candidateSchemaVersions = validation.candidateSchemaVersions;
-        state.profileContexts = validation.profileContexts;
-        state.gatewayRestartCompletion = validation.gatewayRestartCompletion;
-        state.generation = candidateGeneration;
-        state.doctorConfigWrites = validation.doctorConfigWrites === true;
-        state.observedGatewayStartupMs = validation.steps.find(
-          (step) => step.name === "candidate gateway canary" && step.exitCode === 0,
-        )?.durationMs;
-      }
-      return validation;
-    };
-    let validation = await validate();
-    if (validation.status === "error") {
-      candidateFailureReason = validation.reason;
-      if (!allowRepair) {
-        return validation.steps;
-      }
-      candidateGeneration += 1;
-      const repair = await runUpdateCommandRepair({
-        root: params.root,
-        candidateRoot: root,
-        env,
-        run: opts.run,
-        phase: "validating",
-        nodeRunner: nodeFor(profile),
-        result: {
-          status: "error",
-          mode,
-          root,
-          reason: validation.reason,
-          before: { version: await readPackageVersion(params.root) },
-          after: { version: await readPackageVersion(root) },
-          steps: validation.steps,
-          durationMs: validation.durationMs,
-        },
-        validate: async (signal, assertCurrent, rehearsal) => {
-          const repairValidation = await validate(signal, rehearsal, assertCurrent);
-          return {
-            ok: repairValidation.status === "ok",
-            score: repairValidation.steps.filter((step) => step.exitCode === 0).length,
-            summary:
-              repairValidation.status === "ok"
-                ? "Candidate validation passed."
-                : repairValidation.logTail.join("\n"),
-          };
-        },
-      });
-      if (repair.status !== "repaired") {
-        if (repair.reason === "requester-revoked") {
-          candidateFailureReason = repair.reason;
-        }
-        return validation.steps;
-      }
-      candidateFailureReason = undefined;
-      // Repair's disposable state is gone; only surviving candidate changes may authorize activation.
-      validation = await validate();
-      candidateFailureReason = validation.status === "error" ? validation.reason : undefined;
-    }
-    if (
-      validation.status === "ok" &&
-      !state.doctorConfigWrites &&
-      state.doctorConfigChanges.length
-    ) {
-      const warning = createUpdateDoctorConfigWarningStep(root, state.doctorConfigChanges);
-      validation.steps.push(warning);
-      params.progress?.onStepComplete?.({ ...warning, index: 0, total: 0 });
-    }
-    return validation.steps;
-  };
+  const candidate = new UpdateCandidateValidation(params, profiles, {
+    mode,
+    opts,
+    updateStepTimeoutMs,
+    assertCurrent: assertExecutionCurrent,
+    recheckSchemas,
+    prepareProfileRuntime,
+    stopManagedServices,
+  });
   const validateCandidate = async (root: string) => {
     try {
       if (stagedPluginAdmission) {
         await recheckSchemas(
           parsePackageOpenClawSchemaVersions(
             await tryReadJson<unknown>(path.join(root, "package.json")),
-          ) ?? admittedTargetSchemaVersions,
+          ) ?? candidate.admittedSchemaVersions,
         );
         await preflightPlugins(await readPackageVersion(root));
         await prepareProfiles();
       }
     } catch (error) {
       if (error instanceof UpdatePreMutationError) {
-        candidateFailureReason = error.reason;
+        candidate.failureReason = error.reason;
       }
       throw error;
     }
     const steps: UpdateStepResult[] = [];
     const appendValidation = async (profile: UpdateProfileContext, allowRepair: boolean) => {
-      const validated = await validateProfile(profile, root, allowRepair);
+      const validated = await candidate.validateProfile(profile, root, allowRepair);
       steps.push(...validated);
       return (
-        !candidateFailureReason && validated.every((step) => step.exitCode === 0 || step.advisory)
+        !candidate.failureReason && validated.every((step) => step.exitCode === 0 || step.advisory)
       );
     };
     for (const profile of profiles) {
@@ -609,122 +416,13 @@ export async function executeMutableUpdate(
     // profiles again without repair so every activation proof names that source.
     for (const profile of profiles) {
       if (
-        profileValidation.get(profile)!.generation !== candidateGeneration &&
+        candidate.profileValidation.get(profile)!.generation !== candidate.generation &&
         !(await appendValidation(profile, false))
       ) {
         return steps;
       }
     }
     return steps;
-  };
-  const captureProfileSchemas = async (profile: UpdateProfileContext) => {
-    const state = profileValidation.get(profile)!;
-    const env = envFor(profile);
-    profile.schemaVersions = candidateSchemaVersions
-      ? await readUpdateStateSchemaVersions({
-          stateDir: resolveStateDir(env),
-          config: state.validatedConfig?.config ?? profile.configSnapshot.config,
-          env,
-          timeoutMs: updateStepTimeoutMs,
-          nodeRunner: nodeFor(profile),
-        })
-      : undefined;
-    assertExecutionCurrent();
-    const candidate = candidateSchemaVersions;
-    const missingCompletionOwner =
-      opts.run?.completionOwner === "gateway-restart" && !state.gatewayRestartCompletion;
-    if (candidate && ((profiles.length > 1 && !state.profileContexts) || missingCompletionOwner)) {
-      const sharedPath = resolveOpenClawStateSqlitePath(env);
-      const schemaTransition = profile.schemaVersions?.some((entry) => {
-        const version = resolveUpdateStateContentVersion(entry);
-        return (
-          version !== null && version !== candidate[entry.path === sharedPath ? "state" : "agent"]
-        );
-      });
-      if (schemaTransition) {
-        throw new UpdatePreMutationError(
-          "target-native-unsupported",
-          missingCompletionOwner
-            ? "Target runtime cannot preserve the foreground Gateway's completion owner after state migration; refusing activation."
-            : "Target runtime cannot finalize migrated state for every profile sharing this installation; refusing activation.",
-        );
-      }
-    }
-  };
-  const beforeActivate = async () => {
-    assertExecutionCurrent();
-    await recheckSchemas(admittedTargetSchemaVersions);
-    previousSchemaVersions = parsePackageOpenClawSchemaVersions(
-      await tryReadJson<unknown>(path.join(params.root, "package.json")),
-    );
-    assertExecutionCurrent();
-    let activationTimeoutMs = 0;
-    for (const profile of profiles) {
-      const state = profileValidation.get(profile)!;
-      const env = envFor(profile);
-      const snapshot = await readUpdateCandidateSource(env, params.legacyConfigPlan);
-      assertExecutionCurrent();
-      if (
-        state.validatedConfig?.hash !== undefined &&
-        snapshot.hash !== state.validatedConfig.hash
-      ) {
-        throw new UpdatePreMutationError(
-          "invalid-config",
-          "Config changed during candidate validation; rerun the update before activating.",
-        );
-      }
-      await captureProfileSchemas(profile);
-      profile.previousVerified = false;
-      if (
-        profile.preManagedServiceStop?.running &&
-        profile.preManagedServiceStop.serviceUpdateVerdict?.kind === "owned"
-      ) {
-        profile.previousVerified = await verifyPreviousGatewayForUpdate({
-          root: state.root,
-          config: snapshot.config,
-          env,
-          opts,
-          timeoutMs: params.timeoutMs,
-          observedStartupMs: state.observedGatewayStartupMs,
-          assertCurrent: assertExecutionCurrent,
-        });
-        assertExecutionCurrent();
-        if (profile === profiles[0]) {
-          recordPreviousGatewayVerification(opts.run, profile.previousVerified);
-        }
-      }
-      activationTimeoutMs += await resolveUpdateFinalizationTimeoutMs(updateStepTimeoutMs, {
-        env,
-        databases: profile.schemaVersions,
-        observedStartupMs: state.observedGatewayStartupMs,
-        pluginCount: Object.keys(snapshot.config.plugins?.entries ?? {}).length,
-        nodeRunner: nodeFor(profile),
-      });
-      assertExecutionCurrent();
-    }
-    // Candidate and readiness work can outlive any inspected service/config generation.
-    await recheckSchemas(admittedTargetSchemaVersions);
-    assertExecutionCurrent();
-    if (opts.run?.completionOwner === "gateway-restart") {
-      await parkForegroundUpdateHandoff({ root: params.root, run: opts.run });
-      assertExecutionCurrent();
-    }
-    await params.prepareMutableUpdate(envFor(profiles[0]!), activationTimeoutMs);
-    assertExecutionCurrent();
-    if (opts.run) {
-      recordUpdateRunPhase(opts.run.runId, "activating", undefined, { env: opts.run.env });
-    }
-    await stopManagedServices("prepare");
-    await recheckSchemas(admittedTargetSchemaVersions);
-    for (const profile of profiles) {
-      await captureProfileSchemas(profile);
-    }
-    assertExecutionCurrent();
-    for (const profile of profiles) {
-      profile.preManagedServiceStop?.windowsTaskAutoStartRecovery?.beginMutation();
-    }
-    mutationStarted = true;
-    params.onActivation?.();
   };
   const prepareCurrentCore = async (current: UpdateRunResult): Promise<UpdateRunResult> => {
     currentCoreResult = {
@@ -738,7 +436,7 @@ export async function executeMutableUpdate(
       },
     };
     const origin = profiles[0]!;
-    const env = envFor(origin);
+    const env = candidate.envFor(origin);
     await prepareProfileRuntime(origin, current.root ?? params.root);
     await preflightPlugins(currentCoreResult.after!.version ?? null, [origin]);
     await stopManagedServices("inspect", [origin]);
@@ -746,7 +444,7 @@ export async function executeMutableUpdate(
       await Promise.all(
         profiles.map((profile) =>
           resolveUpdateFinalizationTimeoutMs(updateStepTimeoutMs, {
-            env: envFor(profile),
+            env: candidate.envFor(profile),
             pluginCount: Object.keys(profile.configSnapshot.config.plugins?.entries ?? {}).length,
             nodeRunner:
               profile.packageUpdateNodeRunner ??
@@ -825,7 +523,7 @@ export async function executeMutableUpdate(
         })),
       );
       admission.profiles.forEach(({ root }, index) =>
-        profileValidation.set(profiles[index]!, {
+        candidate.profileValidation.set(profiles[index]!, {
           root,
           doctorConfigWrites: false,
           doctorConfigChanges: [],
@@ -834,7 +532,7 @@ export async function executeMutableUpdate(
           generation: -1,
         }),
       );
-      params.recoveryState.triageTarget.env = envFor(profiles[0]!);
+      params.recoveryState.triageTarget.env = candidate.envFor(profiles[0]!);
     }
     if (currentCoreResult) {
       result = await prepareCurrentCore(currentCoreResult);
@@ -863,7 +561,7 @@ export async function executeMutableUpdate(
         installEnv: params.packageInstallEnv,
         installTarget: params.packageInstallTarget,
         validateCandidate,
-        beforeActivate,
+        beforeActivate: candidate.beforeActivate,
         assertCurrent: assertExecutionCurrent,
         managedServiceEnv: profiles[0]?.preManagedServiceStop?.serviceEnv,
         onTransaction: (transaction) => {
@@ -914,9 +612,9 @@ export async function executeMutableUpdate(
           packageTransaction = transaction;
         },
         runDoctor,
-        getManagedServiceEnvs: () => profiles.map(envFor),
+        getManagedServiceEnvs: () => profiles.map(candidate.envFor),
         getSnapshotSource: async () => {
-          const env = envFor(profiles[0]!);
+          const env = candidate.envFor(profiles[0]!);
           const source = await readUpdateCandidateSource(env, params.legacyConfigPlan);
           return { config: source.config, env };
         },
@@ -941,8 +639,8 @@ export async function executeMutableUpdate(
               `Update refused: could not inspect the target's schema support (${target.metadataUnreadable}). Retry, or see ${OPENCLAW_DATABASE_SCHEMA_DOCS_URL}.`,
             );
           }
-          admittedTargetSchemaVersions = target.schemaVersions;
-          await beforeActivate();
+          candidate.admittedSchemaVersions = target.schemaVersions;
+          await candidate.beforeActivate();
         },
       });
     }
@@ -970,18 +668,18 @@ export async function executeMutableUpdate(
     });
   }
 
-  if (candidateFailureReason && result.status === "error") {
-    result.reason = candidateFailureReason;
+  if (candidate.failureReason && result.status === "error") {
+    result.reason = candidate.failureReason;
   }
   return {
     ...(currentCoreResult ? { coreAlreadyCurrent: true } : {}),
     result,
     failure,
-    mutationStarted,
+    mutationStarted: candidate.mutationStarted,
     profiles,
     recoveryEnv,
     packageTransaction,
-    candidateSchemaVersions,
-    previousSchemaVersions,
+    candidateSchemaVersions: candidate.schemaVersions,
+    previousSchemaVersions: candidate.previousSchemaVersions,
   };
 }

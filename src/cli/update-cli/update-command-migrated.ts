@@ -15,7 +15,7 @@ import { resolveUpdateFinalizationTimeoutMs } from "../../infra/update-finalizat
 import type { UpdateRunStep } from "../../infra/update-run-record.js";
 import {
   isUpdateGatewayReadinessPending,
-  getUpdateProfileVerification,
+  getUpdateGatewayVerification,
 } from "../../infra/update-run-step.js";
 import { runUtf8CommandWithTimeout } from "../../process/exec.js";
 import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
@@ -242,13 +242,11 @@ export async function continueMigratedUpdateInFreshProcess(
               }),
             );
           }
-          return {
-            ...profile,
-            preManagedServiceStop: stopped,
-            ...(windowsTaskAutoStartRecovery
-              ? { windowsTaskAutoStartSuspended: true as const }
-              : {}),
-          };
+          return Object.assign(
+            profile,
+            { preManagedServiceStop: stopped },
+            windowsTaskAutoStartRecovery ? { windowsTaskAutoStartSuspended: true as const } : {},
+          );
         }),
         opts: {
           ...workerOpts,
@@ -338,7 +336,7 @@ export async function continueMigratedUpdateInFreshProcess(
             isUpdateGatewayReadinessPending(response.result)) ||
           (params.profiles.length === 1
             ? isUpdateGatewayReadinessPending(response.result)
-            : getUpdateProfileVerification(response.result, index + 1)?.exitCode === 0),
+            : getUpdateGatewayVerification(response.result, index + 1)?.exitCode === 0),
       );
     } catch (cause) {
       throw new UpdateCommandFailure(

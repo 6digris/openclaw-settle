@@ -26,11 +26,7 @@ export type UpdateRestartSentinelMeta = {
   root?: string;
   target?: string;
   sessionKey?: string;
-  deliveryContext?: {
-    channel?: string;
-    to?: string;
-    accountId?: string;
-  };
+  deliveryContext?: RestartSentinelPayload["deliveryContext"];
   threadId?: string;
   handoffId?: string;
   note?: string | null;

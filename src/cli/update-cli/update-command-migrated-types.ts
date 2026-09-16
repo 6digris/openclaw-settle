@@ -18,7 +18,7 @@ export type UpdateDoctorInput = {
   repair: boolean;
 };
 
-export type MigratedUpdateProfileContext = Omit<UpdateProfileContext, "preManagedServiceStop"> & {
+type MigratedUpdateProfileContext = Omit<UpdateProfileContext, "preManagedServiceStop"> & {
   preManagedServiceStop?: Omit<
     NonNullable<UpdateProfileContext["preManagedServiceStop"]>,
     "windowsTaskAutoStartRecovery"

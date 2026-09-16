@@ -60,8 +60,11 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
-  if (stdinIsTty) Object.defineProperty(process.stdin, "isTTY", stdinIsTty);
-  else delete (process.stdin as Partial<typeof process.stdin>).isTTY;
+  if (stdinIsTty) {
+    Object.defineProperty(process.stdin, "isTTY", stdinIsTty);
+  } else {
+    delete (process.stdin as Partial<typeof process.stdin>).isTTY;
+  }
 });
 
 describe("Doctor source update delegation", () => {
@@ -82,8 +85,9 @@ describe("Doctor source update delegation", () => {
   it.each(["nonInteractive", "yes", "repair", "non-TTY", "missing root"] as const)(
     "does not offer an update for %s",
     async (gate) => {
-      if (gate === "non-TTY")
+      if (gate === "non-TTY") {
         Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: false });
+      }
       const options =
         gate === "nonInteractive" || gate === "yes" || gate === "repair" ? { [gate]: true } : {};
       await expect(
@@ -140,15 +144,17 @@ describe("Doctor source update delegation", () => {
         timeout: "1200",
         onResult: expect.any(Function),
       });
-      if (reason === "gateway-readiness-unverified")
+      if (reason === "gateway-readiness-unverified") {
         expect(mocks.outro).toHaveBeenCalledWith(
           expect.stringContaining("Gateway readiness remains unverified. Keep recovery backups"),
         );
-      else if (status === "ok")
+      } else if (status === "ok") {
         expect(mocks.outro).toHaveBeenCalledWith(
           "Update completed (doctor already ran as part of the update).",
         );
-      else expect(mocks.outro).not.toHaveBeenCalled();
+      } else {
+        expect(mocks.outro).not.toHaveBeenCalled();
+      }
     },
   );
 
@@ -202,8 +208,9 @@ describe("Doctor source update delegation", () => {
   it.each(["missing git", "inspection failed"])(
     "avoids misleading package guidance when %s",
     async (kind) => {
-      if (kind === "missing git") mocks.git.mockRejectedValue(new Error("spawn git ENOENT"));
-      else
+      if (kind === "missing git") {
+        mocks.git.mockRejectedValue(new Error("spawn git ENOENT"));
+      } else {
         mocks.git.mockResolvedValue({
           code: 128,
           stdout: "",
@@ -212,6 +219,7 @@ describe("Doctor source update delegation", () => {
           signal: null,
           termination: "exit",
         });
+      }
       await expect(offer()).resolves.toEqual({ updated: false });
       expect(mocks.note).not.toHaveBeenCalled();
       expect(mocks.confirm).not.toHaveBeenCalled();

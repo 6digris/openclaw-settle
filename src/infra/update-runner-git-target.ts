@@ -249,7 +249,7 @@ export function resolveReleaseTagRemote(
   return remotes.includes("origin") ? "origin" : remotes.length === 1 ? remotes[0] : undefined;
 }
 
-export async function resolveChannelTag(
+async function resolveChannelTag(
   runCommand: CommandRunner,
   root: string,
   timeoutMs: number,

@@ -422,13 +422,13 @@ export const updateHandlers: GatewayRequestHandlers = {
                   throw new Error("Update run disappeared before Gateway parking.");
                 }
                 if (foregroundOrigin) {
-                  const config = getConfig();
+                  const currentConfig = getConfig();
                   if (
                     !managedHandoffOwner ||
-                    !isRestartEnabled(config) ||
+                    !isRestartEnabled(currentConfig) ||
                     (params.requester?.channel &&
                       !isInternalMessageChannel(params.requester.channel) &&
-                      !isConfiguredCommandOwner(config, params.requester))
+                      !isConfiguredCommandOwner(currentConfig, params.requester))
                   ) {
                     throw new Error("Foreground update authority changed before parking.");
                   }

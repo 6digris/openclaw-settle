@@ -46,7 +46,9 @@ beforeEach(() => {
 afterEach(async () => {
   await Promise.all([...processCleanups].map((cleanup) => cleanup()));
   processCleanups.clear();
-  for (const cleanup of leaseCleanups) cleanup();
+  for (const cleanup of leaseCleanups) {
+    cleanup();
+  }
   cleanupTempDirs(tempDirs);
   vi.restoreAllMocks();
   vi.resetModules();
@@ -117,7 +119,9 @@ describe("foreground update through the prepared managed helper", () => {
     const [scriptPath, paramsPath] = args;
     tempDirs.add(path.dirname(scriptPath!));
     spawnMock.mock.results.at(-1)!.value.emit("exit", 0, null);
-    for (const cleanup of leaseCleanups) cleanup();
+    for (const cleanup of leaseCleanups) {
+      cleanup();
+    }
 
     const bootstrap = `
       import fs from "node:fs";
@@ -349,7 +353,9 @@ describe("foreground update through the prepared managed helper", () => {
     });
     parent.stdout.on("data", (bytes) => {
       stdout += bytes;
-      if (stdout.includes("FOREGROUND_FIXTURE_FAILED")) failedFixture(new Error(stderr));
+      if (stdout.includes("FOREGROUND_FIXTURE_FAILED")) {
+        failedFixture(new Error(stderr));
+      }
     });
     parent.stderr.on("data", (bytes) => (stderr += bytes));
     try {
@@ -432,19 +438,24 @@ describe("foreground update through the prepared managed helper", () => {
             ? "skipped"
             : "failed",
       );
-      if (result.notices)
+      if (result.notices) {
         expect(result.output, log).toContain(
           `foreground-settled:${["success", "safe-recovery", "pending-sibling"].includes(mode) ? "respawn" : "stopped"}\n`,
         );
-      if (mode.startsWith("pending-sibling"))
+      }
+      if (mode.startsWith("pending-sibling")) {
         expect(result.runReason, log).toBe("gateway-readiness-unverified");
+      }
       if (mode === "admission-busy" || mode === "finalize-admission-busy") {
         expect(result.runReason, log).toBe("update-ledger-busy");
         expect(result.output, log).not.toContain("foreground-settled:respawn");
       }
-      if (result.descendant) await expect.poll(() => isPidAlive(result.descendant!)).toBe(false);
-      if (mode === "lost-claim" || mode === "lost-terminal-claim")
+      if (result.descendant) {
+        await expect.poll(() => isPidAlive(result.descendant!)).toBe(false);
+      }
+      if (mode === "lost-claim" || mode === "lost-terminal-claim") {
         expect(result.replacementOwner, log).toBe("replacement-owner");
+      }
     } finally {
       await cleanup();
       await parentJoined;

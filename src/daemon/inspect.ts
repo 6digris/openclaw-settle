@@ -133,16 +133,10 @@ export function detectMarkerLineWithGateway(contents: string): Marker | null {
 
 function hasGatewayServiceMarker(content: string): boolean {
   const lower = normalizeLowercaseStringOrEmpty(content);
-  const markerKeys = ["openclaw_service_marker"];
-  const kindKeys = ["openclaw_service_kind"];
-  const markerValues = [normalizeLowercaseStringOrEmpty(GATEWAY_SERVICE_MARKER)];
-  const hasMarkerKey = markerKeys.some((key) => lower.includes(key));
-  const hasKindKey = kindKeys.some((key) => lower.includes(key));
-  const hasMarkerValue = markerValues.some((value) => lower.includes(value));
   return (
-    hasMarkerKey &&
-    hasKindKey &&
-    hasMarkerValue &&
+    lower.includes("openclaw_service_marker") &&
+    lower.includes("openclaw_service_kind") &&
+    lower.includes(normalizeLowercaseStringOrEmpty(GATEWAY_SERVICE_MARKER)) &&
     lower.includes(normalizeLowercaseStringOrEmpty(GATEWAY_SERVICE_KIND))
   );
 }
@@ -189,32 +183,7 @@ function detectLaunchdGatewayExecutionMarker(contents: string): Marker | null {
   const launchCommand = normalizeLowercaseStringOrEmpty(
     [...program, ...programArguments].filter(Boolean).join("\n"),
   );
-  for (const marker of EXTRA_MARKERS) {
-    if (launchCommand.includes(marker)) {
-      return marker;
-    }
-  }
-  return null;
-}
-
-function isOpenClawGatewayLaunchdService(label: string, contents: string): boolean {
-  if (hasGatewayServiceMarker(contents)) {
-    return true;
-  }
-  if (detectLaunchdGatewayExecutionMarker(contents) !== "openclaw") {
-    return false;
-  }
-  return label.startsWith("ai.openclaw.");
-}
-
-function isOpenClawGatewaySystemdService(name: string, contents: string): boolean {
-  if (hasGatewayServiceMarker(contents)) {
-    return true;
-  }
-  if (!name.startsWith("openclaw-gateway")) {
-    return false;
-  }
-  return normalizeLowercaseStringOrEmpty(contents).includes("gateway");
+  return EXTRA_MARKERS.find((marker) => launchCommand.includes(marker)) ?? null;
 }
 
 function isOpenClawGatewayTaskName(name: string): boolean {
@@ -355,7 +324,8 @@ async function scanLaunchdDir(params: {
     if (
       !params.includeManagedOpenClaw &&
       (label === resolveGatewayLaunchAgentLabel() ||
-        (marker === "openclaw" && isOpenClawGatewayLaunchdService(label, contents)))
+        (marker === "openclaw" &&
+          (serviceMarker || (executionMarker === "openclaw" && label.startsWith("ai.openclaw.")))))
     ) {
       continue;
     }
@@ -389,16 +359,17 @@ async function scanSystemdDir(params: {
   });
 
   for (const { entry, name, fullPath, contents } of candidates) {
-    const marker = hasGatewayServiceMarker(contents)
-      ? "openclaw"
-      : detectMarkerLineWithGateway(contents);
+    const serviceMarker = hasGatewayServiceMarker(contents);
+    const marker = serviceMarker ? "openclaw" : detectMarkerLineWithGateway(contents);
     if (!marker) {
       continue;
     }
     if (
       !params.includeManagedOpenClaw &&
       marker === "openclaw" &&
-      isOpenClawGatewaySystemdService(name, contents)
+      (serviceMarker ||
+        (name.startsWith("openclaw-gateway") &&
+          normalizeLowercaseStringOrEmpty(contents).includes("gateway")))
     ) {
       continue;
     }
@@ -574,8 +545,8 @@ async function scanGatewayServices(
       const description = `${name}\n${taskToRun}`;
       let gateway =
         isOpenClawGatewayTaskName(name) || Boolean(detectMarkerLineWithGateway(description));
-      let marker: Marker | undefined = EXTRA_MARKERS.find((marker) =>
-        description.toLowerCase().includes(marker),
+      let marker: Marker | undefined = EXTRA_MARKERS.find((candidate) =>
+        description.toLowerCase().includes(candidate),
       );
       const selected =
         name.replace(/^\\+/, "").toLowerCase() ===
