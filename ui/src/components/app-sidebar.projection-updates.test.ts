@@ -55,12 +55,12 @@ it("keeps session invalidation when a list update is batched with a menu click",
   const project = vi.spyOn(sidebar.sessionProjection, "project");
   const result = harness.sessions.state.result!;
   trigger.click();
+  const sessions = result.sessions.slice();
+  sessions[0] = { ...sessions[0]!, label: "Updated task" };
   harness.publish({
     result: {
       ...result,
-      sessions: result.sessions.map((row, index) =>
-        index === 0 ? { ...row, label: "Updated task" } : row,
-      ),
+      sessions,
     },
   });
   // An event handler before Lit renders must not read the retained old projection.
