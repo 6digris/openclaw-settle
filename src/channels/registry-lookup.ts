@@ -1,9 +1,6 @@
 // Cached lookup view for active channel plugin registry entries and aliases.
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
-import type {
-  ActivePluginChannelRegistration,
-  ActivePluginChannelRegistry,
-} from "../plugins/channel-registry-state.types.js";
+import type { ActivePluginChannelRegistration } from "../plugins/channel-registry-state.types.js";
 import { getActivePluginChannelRegistrySnapshotFromState } from "../plugins/runtime-channel-state.js";
 
 type RegisteredChannelPluginEntry = ActivePluginChannelRegistration & {
@@ -17,7 +14,6 @@ type RegisteredChannelPluginEntry = ActivePluginChannelRegistration & {
 };
 
 type RegisteredChannelPluginLookup = {
-  registry: ActivePluginChannelRegistry | null;
   channels: ActivePluginChannelRegistration[] | undefined;
   channelCount: number;
   version: number;
@@ -26,7 +22,9 @@ type RegisteredChannelPluginLookup = {
   byId: Map<string, RegisteredChannelPluginEntry>;
 };
 
-let registeredChannelPluginLookup: RegisteredChannelPluginLookup | undefined;
+// Alias reads may stop before retirement; cached entries must follow their registry's lifetime.
+const emptyRegistry = {};
+const lookupsByRegistry = new WeakMap<object, RegisteredChannelPluginLookup>();
 
 function setLookupEntry(
   map: Map<string, RegisteredChannelPluginEntry>,
@@ -42,10 +40,10 @@ function buildRegisteredChannelPluginLookup(): RegisteredChannelPluginLookup {
   const { registry, version } = getActivePluginChannelRegistrySnapshotFromState();
   const channels = Array.isArray(registry?.channels) ? registry.channels : undefined;
   const channelCount = channels?.length ?? 0;
-  const cached = registeredChannelPluginLookup;
+  const key = registry ?? emptyRegistry;
+  const cached = lookupsByRegistry.get(key);
   if (
     cached &&
-    cached.registry === registry &&
     cached.channels === channels &&
     cached.channelCount === channelCount &&
     cached.version === version
@@ -66,8 +64,7 @@ function buildRegisteredChannelPluginLookup(): RegisteredChannelPluginLookup {
       setLookupEntry(byKey, normalizeOptionalLowercaseString(alias), entry);
     }
   }
-  registeredChannelPluginLookup = {
-    registry,
+  const lookup = {
     channels,
     channelCount,
     version,
@@ -75,7 +72,8 @@ function buildRegisteredChannelPluginLookup(): RegisteredChannelPluginLookup {
     byKey,
     byId,
   };
-  return registeredChannelPluginLookup;
+  lookupsByRegistry.set(key, lookup);
+  return lookup;
 }
 
 /** Lists active channel plugin registrations from the current registry snapshot. */

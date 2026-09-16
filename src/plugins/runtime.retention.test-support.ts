@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { setImmediate } from "node:timers/promises";
+import { createChannelTestPluginBase, createTestRegistry } from "../test-utils/channel-plugins.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import {
   createPluginCache,
@@ -14,7 +15,12 @@ import {
 import { bindPluginInstanceModuleLoader } from "./plugin-instance-module-loader.js";
 import { PluginInstance } from "./plugin-instance.js";
 import { createEmptyPluginRegistry } from "./registry-empty.js";
-import { disposePluginRegistryInstances, waitForPluginRegistryRetirement } from "./runtime.js";
+import {
+  clearActivePluginRegistry,
+  disposePluginRegistryInstances,
+  setActivePluginRegistry,
+  waitForPluginRegistryRetirement,
+} from "./runtime.js";
 import { createPluginRecord } from "./status.test-helpers.js";
 
 const emptyResult = { cleanupCount: 0, failures: [] };
@@ -28,6 +34,83 @@ async function collect() {
     gc();
   }
   assert.equal(control.deref(), undefined, "Unowned control must collect");
+}
+
+function createProjectionRegistry(label: string) {
+  const marker = { label };
+  const registry = createTestRegistry([
+    {
+      pluginId: "retention",
+      source: "test",
+      plugin: createChannelTestPluginBase({
+        id: "retention",
+        label,
+        config: { resolveAccount: () => marker },
+      }),
+    },
+  ]);
+  registry.reloads.push({
+    pluginId: "retention",
+    pluginName: "Retention",
+    source: "test",
+    registration: { hotPrefixes: [`fixture.${label}`] },
+  });
+  registry.sessionCatalogs.push({
+    pluginId: "retention",
+    source: "test",
+    provider: {
+      id: "retention",
+      label,
+      list: async () => [],
+      read: async ({ hostId, threadId }) => ({ hostId, threadId, items: [], label: marker.label }),
+    },
+  });
+  return { registry, marker: new WeakRef(marker) };
+}
+
+async function retireProjection(read: () => string | undefined, scoped: boolean) {
+  const previous = createProjectionRegistry("previous");
+  const reference = new WeakRef(previous.registry);
+  setActivePluginRegistry(previous.registry);
+  assert.equal(read(), "previous");
+  setActivePluginRegistry(createProjectionRegistry("current").registry);
+  if (scoped) {
+    const { withPluginRuntimeRegistryScope } = await import("./runtime/gateway-request-scope.js");
+    withPluginRuntimeRegistryScope(previous.registry, () => assert.equal(read(), "previous"));
+  }
+  await waitForPluginRegistryRetirement(previous.registry);
+  return { reference, marker: previous.marker };
+}
+
+async function resolveProjectionReader(mode: string) {
+  if (mode === "projection-reload-policy") {
+    const { listConfigReloadRefinementPrefixes } = await import("../gateway/config-reload-plan.js");
+    return () =>
+      listConfigReloadRefinementPrefixes()
+        .find((prefix) => prefix.startsWith("fixture."))
+        ?.slice("fixture.".length);
+  }
+  if (mode === "projection-channel-lookup") {
+    const { findRegisteredChannelPluginEntry } = await import("../channels/registry-lookup.js");
+    return () => findRegisteredChannelPluginEntry("retention")?.plugin.meta?.label;
+  }
+  const { catalogRegistrationSnapshot } =
+    await import("../gateway/server-methods/session-catalog-provider-access.js");
+  if (mode.startsWith("projection-session-list")) {
+    const { getSessionCatalogListCache, retireSessionCatalogLists } =
+      await import("../gateway/server-methods/session-catalog-list-cache.js");
+    // The config remains live through the post-GC successor read, as it can across a plugin reload.
+    const config = {};
+    return () => {
+      const snapshot = catalogRegistrationSnapshot();
+      getSessionCatalogListCache(config, snapshot);
+      if (mode.endsWith("-retired")) {
+        retireSessionCatalogLists(config);
+      }
+      return snapshot.providers[0]?.label;
+    };
+  }
+  return () => catalogRegistrationSnapshot().providers[0]?.label;
 }
 
 async function retireSuccessors() {
@@ -145,6 +228,77 @@ async function recoverOwner(root: string, kind: "source" | "bundled-cjs" | "bund
 }
 
 switch (process.argv[2]) {
+  case "projection-reload-policy":
+  case "projection-channel-lookup":
+  case "projection-session-catalog":
+  case "projection-session-catalog-scoped":
+  case "projection-session-list":
+  case "projection-session-list-retired": {
+    const mode = process.argv[2];
+    const read = await resolveProjectionReader(mode);
+    try {
+      const { reference, marker } = await retireProjection(read, mode.endsWith("-scoped"));
+      // A second lookup would refresh the old strong cache and conceal idle retention.
+      await collect();
+      assert.equal(reference.deref(), undefined, "Projection retained its retired registry");
+      assert.equal(marker.deref(), undefined, "Projection retained retired callback state");
+      assert.equal(read(), "current");
+    } finally {
+      await clearActivePluginRegistry();
+    }
+    assert.equal(read(), undefined);
+    break;
+  }
+  case "catalog-cache-lifetime": {
+    const { catalogRegistrationSnapshot } =
+      await import("../gateway/server-methods/session-catalog-provider-access.js");
+    const { getSessionCatalogListCache, retireSessionCatalogLists } =
+      await import("../gateway/server-methods/session-catalog-list-cache.js");
+    const { SessionCatalogListLifetime } =
+      await import("../gateway/server-methods/session-catalog-list-lifetime.js");
+    const config = {};
+    const { registry } = createProjectionRegistry("current");
+    const read = () => getSessionCatalogListCache(config, catalogRegistrationSnapshot());
+    const progresses: InstanceType<typeof SessionCatalogListLifetime>[] = [];
+    try {
+      setActivePluginRegistry(registry);
+      const reference = new WeakRef(read());
+      await collect();
+      assert.equal(reference.deref(), read(), "Live registry/config lost their cache");
+      const previous = read();
+      setActivePluginRegistry(createEmptyPluginRegistry());
+      read();
+      setActivePluginRegistry(registry);
+      const current = read();
+      assert.notEqual(
+        current,
+        previous,
+        "Returning to an earlier selection reused stale list work",
+      );
+      for (const entries of [current.pending, current.entries]) {
+        const progress = new SessionCatalogListLifetime(() => true, []);
+        progresses.push(progress);
+        const entry = {
+          progress,
+          result: Promise.resolve({ catalogs: [], instances: new Map() }),
+          expiresAt: Date.now() + 60_000,
+        };
+        entries.set("fixture", entry);
+      }
+      retireSessionCatalogLists(config);
+      assert.equal(current.pending.size, 0);
+      assert.equal(current.entries.size, 0);
+      for (const progress of progresses) {
+        assert.throws(() => progress.assertCurrent());
+      }
+    } finally {
+      for (const progress of progresses) {
+        progress.finishListing();
+      }
+      await clearActivePluginRegistry();
+    }
+    break;
+  }
   case "recovery-source":
   case "recovery-bundled-cjs":
   case "recovery-bundled-mjs": {

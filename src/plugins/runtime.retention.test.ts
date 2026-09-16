@@ -15,6 +15,18 @@ it.each([
   { mode: "registry", name: "releases successors while a retired registry remains reachable" },
   { mode: "cache", name: "releases callback captures while a retired cache remains reachable" },
   { mode: "formatter", name: "finishes cache retirement when a custom stack formatter throws" },
+  ...[
+    "reload-policy",
+    "channel-lookup",
+    "session-catalog",
+    "session-catalog-scoped",
+    "session-list",
+    "session-list-retired",
+  ].map((kind) => ({
+    mode: `projection-${kind}`,
+    name: `releases retired ${kind} state without another projection read`,
+  })),
+  { mode: "catalog-cache-lifetime", name: "keeps live catalog caches and retires selected work" },
   {
     mode: "instance",
     name: "releases captured source lookups while a retired instance remains reachable",

@@ -286,20 +286,25 @@ const DEFAULT_RELOAD_POLICIES: ReloadPolicy[] = [
   { prefixes: ["gateway", "discovery"], kind: "restart" },
 ];
 
-let cachedCatalog:
-  | {
-      registry: ReturnType<typeof getActivePluginRegistry>;
-      version: number;
-      rules: ReloadRule[];
-      refinementPrefixes: string[];
-    }
-  | undefined;
+// A quiet catalog must not keep retired registry callbacks alive until another config change.
+const emptyRegistry = {};
+const catalogsByRegistry = new WeakMap<
+  object,
+  {
+    registry: ReturnType<typeof getActivePluginRegistry>;
+    version: number;
+    rules: ReloadRule[];
+    refinementPrefixes: string[];
+  }
+>();
 
 function getReloadPolicyCatalog() {
   const registry = getActivePluginRegistry();
   const version = getActivePluginRegistryVersion();
+  const key = registry ?? emptyRegistry;
+  const cachedCatalog = catalogsByRegistry.get(key);
   // Only process-root registry publication changes plugin/channel policy.
-  if (cachedCatalog?.registry === registry && cachedCatalog.version === version) {
+  if (cachedCatalog?.version === version) {
     return cachedCatalog;
   }
   const channelPlugins = listChannelPlugins();
@@ -383,13 +388,14 @@ function getReloadPolicyCatalog() {
   // Narrow config contracts must override broad owner fallbacks. Sort once per
   // registry snapshot so the hot path can retain first-match semantics.
   rules.sort(compareReloadRules);
-  cachedCatalog = {
+  const catalog = {
     registry,
     version,
     rules,
     refinementPrefixes: rules.map((rule) => rule.prefix),
   };
-  return cachedCatalog;
+  catalogsByRegistry.set(key, catalog);
+  return catalog;
 }
 
 export function listConfigReloadRefinementPrefixes(): string[] {

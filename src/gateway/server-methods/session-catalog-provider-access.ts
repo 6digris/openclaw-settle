@@ -191,15 +191,16 @@ export type CatalogRegistrationSnapshot = {
   shareRoutes: ReadonlyMap<SessionCatalogProvider, SessionCatalogShareRoute>;
 };
 
-let cachedCatalogRegistrations: CatalogRegistrationSnapshot | undefined;
+// Completed scoped reads must not leave the process cache owning their retired providers.
+const emptyRegistry = {};
+const catalogsByRegistry = new WeakMap<object, CatalogRegistrationSnapshot>();
 
 export function catalogRegistrationSnapshot(): CatalogRegistrationSnapshot {
   const registry = resolveSessionCatalogRegistry();
   const source = registry?.sessionCatalogs;
-  if (
-    cachedCatalogRegistrations?.registry === registry &&
-    cachedCatalogRegistrations.source === source
-  ) {
+  const key = registry ?? emptyRegistry;
+  const cachedCatalogRegistrations = catalogsByRegistry.get(key);
+  if (cachedCatalogRegistrations && cachedCatalogRegistrations.source === source) {
     return cachedCatalogRegistrations;
   }
   const sortedRegistrations = (source ?? []).toSorted((left, right) =>
@@ -225,14 +226,15 @@ export function catalogRegistrationSnapshot(): CatalogRegistrationSnapshot {
   // Plugin registration arrays are process-stable until the active registry seam changes. Hoisting
   // this sort avoids rebuilding identical order every poll; registry/list identity invalidates it.
   // A stale snapshot would route requests to retired plugin instances, so callers share this owner.
-  cachedCatalogRegistrations = {
+  const snapshot = {
     registry,
     source,
     registrations: sortedRegistrations,
     providers: providerList,
     shareRoutes,
   };
-  return cachedCatalogRegistrations;
+  catalogsByRegistry.set(key, snapshot);
+  return snapshot;
 }
 
 export function createSessionCatalogRequestNodeSnapshot(): NonNullable<

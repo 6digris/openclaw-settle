@@ -15,27 +15,40 @@ type CatalogListCacheEntry = {
 };
 
 type CatalogListCacheState = {
-  registrations: CatalogRegistrationSnapshot;
   pending: Map<string, CatalogListCacheEntry>;
   entries: Map<string, CatalogListCacheEntry & { expiresAt: number }>;
 };
 
-const catalogListsByConfig = new WeakMap<OpenClawConfig, CatalogListCacheState>();
+// A shared config can outlive a plugin generation. Its selected cache must also
+// depend on the registration snapshot, including completed result and progress captures.
+const catalogListsByConfig = new WeakMap<
+  OpenClawConfig,
+  {
+    registrations: WeakRef<CatalogRegistrationSnapshot>;
+    states: WeakMap<CatalogRegistrationSnapshot, CatalogListCacheState>;
+  }
+>();
 
 export function getSessionCatalogListCache(
   config: OpenClawConfig,
   registrations: CatalogRegistrationSnapshot,
 ): CatalogListCacheState {
-  let state = catalogListsByConfig.get(config);
-  if (!state || state.registrations !== registrations) {
-    state = { registrations, pending: new Map(), entries: new Map() };
-    catalogListsByConfig.set(config, state);
+  let state = catalogListsByConfig.get(config)?.states.get(registrations);
+  if (!state) {
+    state = { pending: new Map(), entries: new Map() };
+    // Replace the single selection: returning to an older snapshot starts a fresh listing.
+    catalogListsByConfig.set(config, {
+      registrations: new WeakRef(registrations),
+      states: new WeakMap([[registrations, state]]),
+    });
   }
   return state;
 }
 
 export function retireSessionCatalogLists(config: OpenClawConfig): void {
-  const cache = catalogListsByConfig.get(config);
+  const selected = catalogListsByConfig.get(config);
+  const registrations = selected?.registrations.deref();
+  const cache = registrations ? selected?.states.get(registrations) : undefined;
   if (!cache) {
     return;
   }
