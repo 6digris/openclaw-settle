@@ -759,7 +759,7 @@ describe("registerMaintenanceCommands doctor action", () => {
         updateResult: "/tmp/update-failure.json",
       },
     },
-    ...["claude", "codex", "opencode", "pi"].map((agent) => ({
+    ...["claude", "codex", "cursor", "grok", "muse", "opencode", "pi"].map((agent) => ({
       args: ["--agent", agent],
       options: { json: false, noExport: false, run: false, agent },
     })),
@@ -805,7 +805,7 @@ describe("registerMaintenanceCommands doctor action", () => {
       await runMaintenanceCli(["triage", "--agent", "unknown-agent", ...(json ? ["--json"] : [])]);
 
       expect(triageCommand).not.toHaveBeenCalled();
-      const message = "Invalid --agent. Use claude, codex, opencode, or pi.";
+      const message = "Invalid --agent. Use claude, codex, cursor, grok, muse, opencode, or pi.";
       if (json) {
         expect(runtime.writeJson).toHaveBeenCalledWith(jsonFailure(message));
         expect(runtime.error).not.toHaveBeenCalled();
