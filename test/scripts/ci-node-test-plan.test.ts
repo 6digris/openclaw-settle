@@ -1,12 +1,24 @@
 // Ci Node Test Plan tests cover ci node test plan script behavior.
-import { existsSync, globSync, readdirSync, writeFileSync } from "node:fs";
-import { isAbsolute, join, matchesGlob, relative, resolve } from "node:path";
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+  existsSync,
+  globSync,
+  readdirSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { delimiter, dirname, isAbsolute, join, matchesGlob, relative, resolve } from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { parse } from "yaml";
+import { resolveTestGitCommits } from "../../.github/actions/git-owner/test-prerequisites.mjs";
+import { resolveShardPlans } from "../../scripts/ci-run-node-test-shard.mts";
 import {
   createChangedExtensionFallbackShards,
   createChangedNodeTestShards,
 } from "../../scripts/lib/ci-changed-node-test-plan.mts";
+import * as nodeTestPlan from "../../scripts/lib/ci-node-test-plan.mts";
 import {
   type CompactNodeTestShard,
   createNodeTestShardBundles,
@@ -29,6 +41,7 @@ import {
 import { expectNoNodeFsScans } from "../../src/test-utils/fs-scan-assertions.js";
 import { listGitTrackedFiles, sortRepoPaths, toRepoPath } from "../../src/test-utils/repo-files.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
+import { resolveWorkflowBash } from "../helpers/workflow-bash.js";
 import { createAgentsCoreVitestConfig } from "../vitest/vitest.agents-core.config.ts";
 import {
   agentVitestProjectOwners,
@@ -3625,17 +3638,185 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       "src/plugin-sdk/session-transcript-hit.projection.test.ts",
       "src/plugin-sdk/session-transcript-hit.ts",
     ];
-    expect(createChangedNodeTestShards(changedPaths, { runnerBackend: "github" })).toBeNull();
-    const shards = [
-      ...createNodeTestShardBundles({
-        changedPaths,
-        includeReleaseOnlyPluginShards: false,
-        compactMode: "pull-request",
-        runnerBackend: "github",
-      }),
-      ...createChangedExtensionFallbackShards(changedPaths),
-    ];
-    expect(shards.filter((shard) => !shard.requiresDist).length).toBeLessThanOrEqual(120);
+    const core = createNodeTestShardBundles({
+      changedPaths,
+      includeReleaseOnlyPluginShards: false,
+      compactMode: "pull-request",
+      runnerBackend: "github",
+    });
+    // Observe the complete producer input, before placement can omit or alter a process.
+    // This observer stays in the test process; the manifest child uses unmodified planners.
+    const pluginInputs: unknown[][] = [];
+    const pack = nodeTestPlan.packNodeTestGroups;
+    const packing = vi
+      .spyOn(nodeTestPlan, "packNodeTestGroups")
+      .mockImplementation((groups, admits, exchange) => {
+        pluginInputs.push(structuredClone([...groups]));
+        return pack(groups, admits, exchange);
+      });
+    try {
+      createChangedExtensionFallbackShards(changedPaths);
+      expect(packing).toHaveBeenCalledTimes(1);
+    } finally {
+      packing.mockRestore();
+    }
+    const plugins = expectDefined(pluginInputs[0], "complete plugin producer input") as ReturnType<
+      typeof createChangedExtensionFallbackShards
+    >;
+    const ripgrepFiles = new Set([
+      "src/agents/sessions/agent-session-runtime-projection.test.ts",
+      "src/agents/sessions/tools/index.test.ts",
+      "src/agents/sessions/tools/grep.byte-path.test.ts",
+      "src/agents/filesystem-tools-output-contract.test.ts",
+    ]);
+    const expected = [
+      ...core.map((shard) => ({ shard, groups: shard.groups })),
+      ...plugins.map((shard) => ({ shard, groups: [{ ...shard, shard_name: shard.shardName }] })),
+    ]
+      .filter(({ shard }) => !shard.requiresDist)
+      .flatMap(({ shard, groups }) => {
+        const requiresGo = groups.some((group) =>
+          group.includePatterns?.includes("test/scripts/docs-i18n.test.ts"),
+        );
+        const requiresRipgrep = groups.some((group) =>
+          group.includePatterns
+            ? group.includePatterns.some((file) => ripgrepFiles.has(file))
+            : ["agentic-agents-support", "agentic-agents-core-runtime"].includes(group.shard_name),
+        );
+        return groups.map((group) => [
+          group.shard_name,
+          group.configs,
+          group.env,
+          group.includePatterns,
+          "timing_key" in group ? group.timing_key : group.shard_name,
+          shard.runner,
+          shard.requiresDist,
+          shard.pretestBuildMode,
+          shard.planConcurrency,
+          shard.timeoutMinutes,
+          resolveTestGitCommits(shard),
+          requiresGo,
+          requiresRipgrep,
+        ]);
+      });
+    const repo = process.cwd();
+    const root = tempDirs.make("ci-real-manifest-");
+    // The step gets a private output/harness root and the exact checkout's code and inventory.
+    for (const entry of readdirSync(repo, { withFileTypes: true })) {
+      if ([".agents", ".artifacts", ".ci-harness", ".worktrees"].includes(entry.name)) {
+        continue;
+      }
+      symlinkSync(
+        join(repo, entry.name),
+        join(root, entry.name),
+        entry.isDirectory() ? "dir" : "file",
+      );
+    }
+    symlinkSync(repo, join(root, ".ci-harness"), "dir");
+    const outputPath = join(root, "manifest.out");
+    const summaryPath = join(root, "summary.md");
+    writeFileSync(outputPath, "");
+    const workflow = parse(readFileSync(".github/workflows/ci.yml", "utf8"), {
+      maxAliasCount: -1,
+    });
+    const step = expectDefined(
+      workflow.jobs.preflight.steps.find(
+        (entry: { name?: string }) => entry.name === "Build CI manifest",
+      ),
+      "registered manifest step",
+    );
+    const revision = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    const result = spawnSync(
+      resolveWorkflowBash(),
+      ["--noprofile", "--norc", "-euo", "pipefail", "-c", step.run],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}`,
+          GITHUB_OUTPUT: outputPath,
+          GITHUB_STEP_SUMMARY: summaryPath,
+          GITHUB_EVENT_NAME: "pull_request",
+          GITHUB_RUN_ATTEMPT: "1",
+          RUNNER_TEMP: root,
+          OPENCLAW_CI_EVENT_NAME: "pull_request",
+          OPENCLAW_CI_REPOSITORY: "openclaw/openclaw",
+          OPENCLAW_CI_CHECKOUT_REVISION: revision,
+          OPENCLAW_CI_WORKFLOW_REVISION: revision,
+          OPENCLAW_CI_RUN_NODE: "true",
+          OPENCLAW_CI_RUNNER_PROFILE: "github",
+          OPENCLAW_CI_CHANGED_PATHS_JSON: JSON.stringify(changedPaths),
+        },
+      },
+    );
+    expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+    const outputs = Object.fromEntries(
+      readFileSync(outputPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => {
+          const separator = line.indexOf("=");
+          return [line.slice(0, separator), line.slice(separator + 1)];
+        }),
+    );
+    expect(outputs.run_checks_node_core_nondist).toBe("true");
+    expect(readFileSync(summaryPath, "utf8")).toContain(revision);
+    type MatrixRow = {
+      runtime: string;
+      task: string;
+      shard_name: string;
+      configs?: string[];
+      env?: Record<string, string>;
+      includePatterns?: string[];
+      targets?: string[];
+      groups_gzip_base64?: string;
+      runner: string;
+      requires_dist: boolean;
+      pretest_build_mode?: string;
+      plan_concurrency?: number;
+      timeout_minutes?: number;
+      git_commits: string[];
+      requires_go: boolean;
+      requires_ripgrep: boolean;
+    };
+    const matrix = JSON.parse(
+      expectDefined(outputs.checks_node_core_nondist_matrix, "published Node matrix"),
+    ) as { include: MatrixRow[] };
+    expect(matrix.include.length).toBeLessThanOrEqual(120);
+    const actual = matrix.include.flatMap((row) => {
+      expect(row.runtime).toBe("node");
+      expect(row.task).toBe("test-shard");
+      return resolveShardPlans({
+        OPENCLAW_NODE_TEST_TARGETS_JSON: JSON.stringify(row.targets),
+        OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64: row.groups_gzip_base64,
+        OPENCLAW_NODE_TEST_CONFIGS_JSON: JSON.stringify(row.configs),
+        OPENCLAW_NODE_TEST_ENV_JSON: JSON.stringify(row.env),
+        OPENCLAW_NODE_TEST_INCLUDE_PATTERNS_JSON: JSON.stringify(row.includePatterns),
+        OPENCLAW_VITEST_SHARD_NAME: row.shard_name,
+      }).map((entry) => {
+        if (entry.kind !== "group") {
+          throw new Error("Expected a complete config process");
+        }
+        return [
+          entry.name,
+          entry.plan.configs,
+          entry.plan.env ?? undefined,
+          entry.plan.includePatterns ?? undefined,
+          entry.timingKey,
+          row.runner,
+          row.requires_dist,
+          row.pretest_build_mode,
+          row.plan_concurrency,
+          row.timeout_minutes,
+          row.git_commits,
+          row.requires_go,
+          row.requires_ripgrep,
+        ];
+      });
+    });
+    const order = (entries: unknown[][]) =>
+      entries.toSorted((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    expect(order(actual)).toEqual(order(expected));
   });
 
   it("retains the changed host plugin test when the store-alias diff forces fallback", () => {
