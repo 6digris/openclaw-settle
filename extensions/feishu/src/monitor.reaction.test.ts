@@ -51,15 +51,21 @@ vi.mock("./thread-bindings.js", () => ({
 
 afterEach(async () => {
   try {
-    await stopDebounceMonitor?.();
-  } finally {
-    try {
-      await closeOpenClawStateDatabaseAsync();
-    } finally {
-      stopDebounceMonitor = undefined;
-      vi.useRealTimers();
-      vi.restoreAllMocks();
+    const results = await Promise.allSettled([stopDebounceMonitor?.()]);
+    results.push(...(await Promise.allSettled([closeOpenClawStateDatabaseAsync()])));
+    const errors = results.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    );
+    if (errors.length === 1) {
+      throw errors[0];
     }
+    if (errors.length > 1) {
+      throw new AggregateError(errors, "Feishu reaction test cleanup failed");
+    }
+    stopDebounceMonitor = undefined;
+    vi.restoreAllMocks();
+  } finally {
+    vi.useRealTimers();
   }
 });
 
