@@ -77,7 +77,12 @@ describe("typed Goal operation persistence", () => {
 
   it("commits the literal objective, exact intent identity, lifecycle and receipt together", async () => {
     const skillsSnapshot = { prompt: "p".repeat(64 * 1024), skills: [] };
-    await upsertSessionEntryCore(scope(), { ...loadSessionEntry(scope())!, skillsSnapshot });
+    const lifecycleRevision = "goal-lifecycle-1";
+    await upsertSessionEntryCore(scope(), {
+      ...loadSessionEntry(scope())!,
+      skillsSnapshot,
+      lifecycleRevision,
+    });
     const identityMutation = vi.fn();
     const unsubscribe = onSessionIdentityMutation(identityMutation);
     const reads = trackSqliteStatementExecutions(database().db, ["sessionNodeSelects"], (sql) =>
@@ -147,6 +152,7 @@ describe("typed Goal operation persistence", () => {
           ? "sessionNodeSelects"
           : null,
     );
+    const unsubscribeEdit = onSessionIdentityMutation(identityMutation);
     let edited: Awaited<ReturnType<typeof mutateSessionGoal>>;
     try {
       edited = await mutateSessionGoal({
@@ -154,17 +160,23 @@ describe("typed Goal operation persistence", () => {
         expectedSessionId: sessionId,
         operation: editOperation,
       });
-      expect.soft(editReads.counts.sessionNodeSelects).toBeLessThanOrEqual(3);
+      expect.soft(editReads.counts.sessionNodeSelects).toBeLessThanOrEqual(2);
       expect.soft(editReads.rowCounts.sessionNodeSelects).toBeGreaterThan(0);
       expect
         .soft(editReads.textBytes.sessionNodeSelects)
-        .toBeLessThan(3.5 * Buffer.byteLength(skillsSnapshot.prompt));
+        .toBeLessThan(1.5 * Buffer.byteLength(skillsSnapshot.prompt));
+      expect(identityMutation).not.toHaveBeenCalled();
     } finally {
       editReads.restore();
+      unsubscribeEdit();
     }
     expect(edited.result.goal?.objective).toBe(editedObjective);
     expect(edited.sessionEntry?.skillsSnapshot).toEqual(skillsSnapshot);
-    expect(loadSessionEntry(scope())?.goal?.objective).toBe(editedObjective);
+    expect(loadSessionEntry(scope())).toMatchObject({
+      sessionId,
+      lifecycleRevision,
+      goal: { objective: editedObjective },
+    });
     expect(
       lookupSessionGoalOperation({
         ...scope(),

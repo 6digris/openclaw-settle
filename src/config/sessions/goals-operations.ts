@@ -28,13 +28,7 @@ import {
   buildUpdatedSessionGoalStatus,
 } from "./goals-transitions.js";
 import type { SessionAccessScope } from "./session-accessor.sqlite-contract.js";
-import {
-  collectSessionEntryLookupKeys,
-  readSessionEntryRow,
-  readSessionIdentitySnapshot,
-  writeSessionEntry,
-} from "./session-accessor.sqlite-entry-store.js";
-import { prepareSessionIdentityPublication } from "./session-accessor.sqlite-identity.js";
+import { readSessionEntryRow, writeSessionEntry } from "./session-accessor.sqlite-entry-store.js";
 import {
   getSessionKysely,
   resolveSqliteScope,
@@ -297,7 +291,7 @@ export function writeSessionGoalOperationReceipt(
   return result;
 }
 
-/** Management-only Goal actions do not enter chat or fabricate user turns. */
+/** Management-only Goal actions preserve session identity and do not create turns. */
 export async function mutateSessionGoal(
   options: GoalOperationScope & {
     /** Revalidate the Gateway-owned authorization after waiting for the writer queue. */
@@ -333,12 +327,9 @@ export async function mutateSessionGoal(
         }
         const goal = applySessionGoalOperation(fresh.entry, options.operation, Date.now());
         const next = mergeSessionEntry(fresh.entry, { goal });
-        const identityKeys = collectSessionEntryLookupKeys(database, resolved.sessionKey);
-        const previousIdentity = readSessionIdentitySnapshot(database, identityKeys);
         writeSessionEntry(database, resolved.sessionKey, next, {
-          canonicalPreviousEntry: previousIdentity.get(resolved.sessionKey) ?? null,
+          canonicalPreviousEntry: fresh.entry,
         });
-        const currentIdentity = readSessionIdentitySnapshot(database, identityKeys);
         const result = writeSessionGoalOperationReceipt(
           database.db,
           resolved.sessionKey,
@@ -350,17 +341,8 @@ export async function mutateSessionGoal(
           result,
           replayed: false,
           next,
-          publish: prepareSessionIdentityPublication(
-            database,
-            resolved.agentId,
-            previousIdentity,
-            currentIdentity,
-          ),
         };
       }, databaseOptions);
-      if (committed.next) {
-        committed.publish();
-      }
       return {
         result: committed.result,
         replayed: committed.replayed,
