@@ -82,6 +82,14 @@ export function hasRetiredAgentStateLeaseSchema(database: DatabaseSync): boolean
   );
 }
 
+function assertNoRetiredAgentStateLeaseSchema(database: DatabaseSync, pathname: string): void {
+  if (hasRetiredAgentStateLeaseSchema(database)) {
+    throw new Error(
+      `OpenClaw agent database ${pathname} retains retired state_leases storage; run openclaw doctor --fix before using it.`,
+    );
+  }
+}
+
 export function assertOpenClawAgentSchemaContains(
   database: DatabaseSync,
   pathname: string,
@@ -119,11 +127,7 @@ export function assertOpenClawAgentCurrentRuntimeSchema(
       `OpenClaw agent database ${options.pathname} metadata schema version ${metadata.schemaVersion ?? "invalid"} does not match ${OPENCLAW_AGENT_SCHEMA_VERSION}; run openclaw doctor --fix before using it.`,
     );
   }
-  if (hasRetiredAgentStateLeaseSchema(database)) {
-    throw new Error(
-      `OpenClaw agent database ${options.pathname} retains retired state_leases storage; run openclaw doctor --fix before using it.`,
-    );
-  }
+  assertNoRetiredAgentStateLeaseSchema(database, options.pathname);
   assertOpenClawAgentSchemaContains(database, options.pathname, OPENCLAW_AGENT_SCHEMA_SQL);
 }
 
@@ -196,4 +200,13 @@ export function assertOpenClawAgentDatabaseForMaintenance(
     );
   }
   assertOpenClawAgentSchemaContains(database, options.pathname, OPENCLAW_AGENT_SCHEMA_SQL);
+}
+
+/** Check version markers and runtime schema compatibility on the caller's existing connection. */
+export function assertOpenClawAgentDatabaseForRuntime(
+  database: DatabaseSync,
+  options: { agentId: string; pathname: string },
+): void {
+  assertOpenClawAgentDatabaseForMaintenance(database, options);
+  assertNoRetiredAgentStateLeaseSchema(database, options.pathname);
 }

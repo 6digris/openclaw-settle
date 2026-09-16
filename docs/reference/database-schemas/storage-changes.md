@@ -704,13 +704,13 @@ preflight does not authorize checkpoint replay or replacement of live databases.
 
 ### Validate an existing agent connection
 
-Connection owners can use the same synchronous schema assertion through the
-focused SDK entry:
+Connection owners can check runtime schema compatibility synchronously through
+the focused SDK entry:
 
 ```ts
-import { assertOpenClawAgentDatabaseForMaintenance } from "openclaw/plugin-sdk/sqlite-agent-schema";
+import { assertOpenClawAgentDatabaseForRuntime } from "openclaw/plugin-sdk/sqlite-agent-schema";
 
-assertOpenClawAgentDatabaseForMaintenance(database, {
+assertOpenClawAgentDatabaseForRuntime(database, {
   agentId: "main",
   pathname: databasePath,
 });
@@ -718,13 +718,16 @@ assertOpenClawAgentDatabaseForMaintenance(database, {
 
 `database` is an already-open `node:sqlite` `DatabaseSync`; `pathname` labels
 diagnostics and does not open or select another database. The function returns
-`void` on success and throws for an incompatible owner, version marker, or schema.
-It requires the exact stored agent identity and current schema version, preserves
-the native allowances for compatible additive columns and nonunique indexes, and
-does not repair schema or change the caller's transaction or connection lifetime.
+`void` on success and throws for an incompatible owner, version marker, schema,
+or retired agent-local lease storage. It applies the native ownership checks and
+current schema version, preserves the native allowances for compatible additive
+columns and nonunique indexes, and does not repair schema or change the caller's
+transaction or connection lifetime. The existing maintenance assertion retains
+its separate maintenance compatibility contract.
 
 The caller owns a consistent read transaction, WAL coordination, and any authority
 required by its next action. Validation describes that transaction's schema; it
 does not establish future freshness, physical integrity, transcript preservation,
-or completed pending-session validation. Use the copied-file command above when
+completed pending-session validation, startup readiness, or authority to act.
+Use the copied-file command above when
 you also need its integrity and consolidated-file checks.

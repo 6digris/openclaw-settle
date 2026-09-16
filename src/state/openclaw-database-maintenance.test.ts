@@ -2,8 +2,8 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { ensureMemoryIndexSchema } from "../../packages/memory-host-sdk/src/host/memory-schema.js";
 import { assertSqliteSchemaContains } from "../infra/sqlite-schema-contract.js";
-import { assertOpenClawAgentDatabaseForMaintenance } from "../plugin-sdk/sqlite-agent-schema.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "./openclaw-agent-db-contract.js";
+import { assertOpenClawAgentDatabaseForMaintenance } from "./openclaw-agent-schema-validation.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
 import {
   CLAW_LAZY_ADDITIVE_STATE_COLUMN_DEFINITIONS,
