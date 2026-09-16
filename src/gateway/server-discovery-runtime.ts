@@ -243,7 +243,9 @@ export async function startGatewayDiscovery(params: {
           timer.unref?.();
         }),
       ]);
+      // Even cleared timers retain Node async context; stopOwned shares this scope.
       clearTimeout(timer);
+      timer = undefined;
     }
   };
   const update: GatewayDiscovery["update"] = (next, nextClaim = claim) => {

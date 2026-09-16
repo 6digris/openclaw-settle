@@ -228,6 +228,12 @@ async function recoverOwner(root: string, kind: "source" | "bundled-cjs" | "bund
 }
 
 switch (process.argv[2]) {
+  case "discovery-timer": {
+    const { verifyDiscoveryTimerRetention } =
+      await import("../gateway/server-discovery-runtime.retention.test-support.js");
+    await verifyDiscoveryTimerRetention(collect);
+    break;
+  }
   case "channel-fence": {
     const { verifyPublishedChannelFenceRetention } =
       await import("../gateway/server-channels.retention.test-support.js");
