@@ -25,7 +25,11 @@ import type { TaskRecord } from "./task-registry.types.js";
 const log = createSubsystemLogger("tasks/registry");
 const TASK_FLOW_SYNC_RETRY_DELAYS_MS = [1_000, 5_000, 25_000, 120_000, 600_000] as const;
 type TaskFlowSyncLiveOwner = {
-  prepare: (context: OpenClawStateWorkerContext, store: TaskRegistryStore) => Promise<boolean>;
+  prepare: (
+    context: OpenClawStateWorkerContext,
+    store: TaskRegistryStore,
+    maxAttempts: number,
+  ) => Promise<boolean>;
   assertCurrent: (context: OpenClawStateWorkerContext, store: TaskRegistryStore) => void;
   selectCurrent: () => TaskLiveFlowSelection | undefined;
 };
@@ -43,8 +47,11 @@ async function syncLiveTaskFlow(
   store: TaskRegistryStore,
   owner: TaskFlowSyncLiveOwner,
 ): Promise<TaskLiveFlowSyncOutcome> {
-  await owner.prepare(context, store);
+  const prepared = await owner.prepare(context, store, 1);
   owner.assertCurrent(context, store);
+  if (!prepared) {
+    return { kind: "retry", reason: "projection_changed" };
+  }
   const selected = owner.selectCurrent();
   if (!selected) {
     return { kind: "not-selected" };

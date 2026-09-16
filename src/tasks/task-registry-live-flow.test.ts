@@ -14,7 +14,8 @@ import {
 import { getTaskFlowById } from "./task-flow-registry.js";
 import type { TaskFlowRecord } from "./task-flow-registry.types.js";
 import { publishTaskRecordAfterAtomicStore } from "./task-registry-publication.js";
-import { markTaskTerminalById } from "./task-registry-record-api.js";
+import { getTaskById } from "./task-registry-query.js";
+import { markTaskTerminalById, updateTaskNotifyPolicyById } from "./task-registry-record-api.js";
 import {
   ensureTaskRegistryReadyAsync,
   runTaskRegistryWorkerMutation,
@@ -126,6 +127,92 @@ it("retains the existing next retry delay after settled storage contention", asy
     status: "blocked",
   });
 });
+
+it.each(["converging", "exhausted"] as const)(
+  "bounds %s projection churn within live retry attempts without losing pending publication",
+  async (outcome) => {
+    const unrelated: TaskRecord = { ...task, taskId: "live-unrelated" };
+    delete unrelated.parentFlowId;
+    unrelated.cleanupAfter = resolveTaskCleanupAfter(unrelated);
+    const { store, flows, context } = await fixture([task, unrelated]);
+    vi.spyOn(flows, "upsertFlow").mockImplementationOnce(() => {
+      throw new Error("Controlled initial flow refusal");
+    });
+    expect(replay()?.status).toBe("succeeded");
+    const readRows = store.loadSnapshot.bind(store);
+    const published: string[] = [];
+    configureTaskRegistryRuntime({
+      observers: {
+        onEvent(event) {
+          if (event.kind === "upserted" && event.task.taskId === task.taskId) {
+            published.push(event.task.notifyPolicy);
+          }
+        },
+      },
+    });
+    const release = createDeferred();
+    const publication = runTaskRegistryWorkerMutation(
+      { scope: { taskId: task.taskId, flowId: flow.flowId }, admission: context.admission },
+      async () => {
+        await release.promise;
+        store.upsertTaskWithDeliveryState({ task: { ...task, notifyPolicy: "state_changes" } });
+      },
+      async () => readRows(),
+    );
+    let invalidations = 0;
+    const asyncRead = vi.spyOn(store, "loadMutationSnapshotAsync").mockImplementation(async () => {
+      const snapshot = readRows();
+      if (invalidations < (outcome === "converging" ? 3 : 5)) {
+        invalidations += 1;
+        updateTaskNotifyPolicyById({
+          taskId: unrelated.taskId,
+          notifyPolicy: invalidations % 2 === 1 ? "state_changes" : "silent",
+        });
+      }
+      return snapshot;
+    });
+    const live = vi.spyOn(store, "syncLiveTaskFlowAsync");
+    try {
+      await vi.advanceTimersByTimeAsync(1_000);
+      await setImmediate();
+      expect({
+        reads: asyncRead.mock.calls.length,
+        syncs: live.mock.calls.length,
+        rootWork: getActiveGatewayRootWorkCount(),
+        flowRevision: flows.loadSnapshot().flows.get(flow.flowId)?.revision,
+      }).toEqual({ reads: 1, syncs: 0, rootWork: 0, flowRevision: 4 });
+      let expectedReads = 1;
+      const delays =
+        outcome === "converging" ? [5_000, 25_000, 120_000] : [5_000, 25_000, 120_000, 600_000];
+      for (const delay of delays) {
+        await vi.advanceTimersByTimeAsync(delay - 1);
+        expect(asyncRead).toHaveBeenCalledTimes(expectedReads);
+        await vi.advanceTimersByTimeAsync(1);
+        await setImmediate();
+        expectedReads += 1;
+        expect(asyncRead).toHaveBeenCalledTimes(expectedReads);
+        expect(live).toHaveBeenCalledTimes(outcome === "converging" && expectedReads === 4 ? 1 : 0);
+        expect(getActiveGatewayRootWorkCount()).toBe(0);
+      }
+      if (outcome === "exhausted") {
+        await vi.advanceTimersByTimeAsync(600_000);
+        await setImmediate();
+        expect(asyncRead).toHaveBeenCalledTimes(5);
+        expect(live).not.toHaveBeenCalled();
+      }
+      expect(flows.loadSnapshot().flows.get(flow.flowId)?.revision).toBe(
+        outcome === "converging" ? 5 : 4,
+      );
+      expect(getActiveGatewayRootWorkCount()).toBe(0);
+    } finally {
+      release.resolve();
+      await publication;
+      configureTaskRegistryRuntime({ observers: null });
+    }
+    expect(getTaskById(task.taskId)?.notifyPolicy).toBe("state_changes");
+    expect(published.filter((policy) => policy === "state_changes")).toEqual(["state_changes"]);
+  },
+);
 
 it("repairs a terminal no-op from the flow revision current at store entry", async () => {
   const { store, flows } = await fixture();

@@ -32,7 +32,7 @@ export type TaskLiveFlowSelection = {
 
 export type TaskLiveFlowSyncOutcome =
   | { kind: "not-selected" }
-  | { kind: "retry"; reason: "storage_contention" }
+  | { kind: "retry"; reason: "storage_contention" | "projection_changed" }
   | { kind: "result"; result: TaskFlowSyncResult };
 
 export type TaskLiveFlowAuthority = {
