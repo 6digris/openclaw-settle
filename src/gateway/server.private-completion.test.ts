@@ -26,7 +26,10 @@ import {
   ensureSessionInputCompletionsSchema,
   ensureSessionPendingInputsSchema,
 } from "../state/openclaw-agent-pending-inputs-schema.js";
-import { setAbortedAgentDedupeEntries } from "./agent-turn/agent-dedupe.js";
+import {
+  setAbortedAgentDedupeEntries,
+  setGatewayDedupeEntries,
+} from "./agent-turn/agent-dedupe.js";
 import { abortChatRunById } from "./chat-abort.js";
 import { dispatchGatewayMethodInProcess } from "./server-plugin-in-process-dispatch.js";
 import { startGatewayServerHarness, type GatewayServerHarness } from "./server.e2e-ws-harness.js";
@@ -548,12 +551,28 @@ describe("private subagent completion processing receipts", () => {
       release.resolve();
       await observed;
     }
-    await settleSubagentRegistryPersistenceWork();
     expect(
       loadSubagentRunsForControllerFromSqlite(sessionKey).find(
         (run) => run.runId === descendantRunId,
       ),
     ).toMatchObject({ endedReason: "subagent-killed", execution: { status: "terminal" } });
+    // Registration starts a real completion observer. The synthetic child has no
+    // runner to publish settlement after Stop persists its provisional kill.
+    setGatewayDedupeEntries({
+      dedupe: kernel.gatewayRequestContext.dedupe,
+      keys: [`agent:${descendantRunId}`],
+      entry: {
+        ts: Date.now(),
+        ok: true,
+        payload: {
+          runId: descendantRunId,
+          status: "timeout",
+          summary: "aborted",
+          stopReason: "rpc",
+        },
+      },
+    });
+    await settleSubagentRegistryPersistenceWork();
     expect(completions()).toMatchObject([{ succeeded: 0 }]);
     expect(JSON.parse(String(completions()[0]?.outcome_json))).toMatchObject({
       reason: "cancelled",
