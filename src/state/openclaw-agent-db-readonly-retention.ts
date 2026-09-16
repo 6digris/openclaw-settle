@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { readSqliteDataVersion } from "../infra/node-sqlite.js";
 import { resolveSqliteDatabaseFilePaths } from "../infra/sqlite-files.js";
+import { readSqliteSchemaCookie } from "../infra/sqlite-schema-contract.js";
 import { readSqliteUserVersion } from "../infra/sqlite-user-version.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import type { OpenClawAgentDatabaseOptions } from "./openclaw-agent-db-contract.js";
@@ -72,7 +73,7 @@ function canReuseReadPath(database: OpenClawAgentReadOnlyDatabase): boolean {
 
 function readStamp(read: RetainedRead): ReadOnlyStamp {
   const dataVersion = readSqliteDataVersion(read.database.db);
-  const schemaVersion = read.database.db.prepare("PRAGMA schema_version").get()?.schema_version;
+  const schemaVersion = readSqliteSchemaCookie(read.database.db);
   if (typeof schemaVersion !== "number") {
     throw new Error("SQLite did not return a numeric PRAGMA schema_version");
   }

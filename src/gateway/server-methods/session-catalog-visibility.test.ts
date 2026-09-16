@@ -42,6 +42,12 @@ vi.mock("../../config/sessions/session-accessor.js", async (importOriginal) => (
   ...(await importOriginal<typeof import("../../config/sessions/session-accessor.js")>()),
   listSessionEntriesReadOnly: hoisted.listSessionEntriesReadOnly,
 }));
+vi.mock("../../config/sessions/session-accessor.sqlite-list-read-retention.js", () => ({
+  retainSessionEntryListReads: () => ({
+    list: hoisted.listSessionEntriesReadOnly,
+    release: () => {},
+  }),
+}));
 vi.mock("../../state/user-profiles.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../state/user-profiles.js")>()),
   getUserProfileRole: hoisted.getUserProfileRole,
@@ -54,6 +60,7 @@ vi.mock("../session-sharing.js", async (importOriginal) => ({
 }));
 
 const { sessionCatalogHandlers } = await import("./session-catalog.js");
+let gatewayContext = { getRuntimeConfig: (): Record<string, unknown> => ({}) };
 
 function client(profileId: string, scopes = ["operator.read", "operator.write"]): TestClient {
   return { connect: { scopes }, authenticatedUserProfile: { profileId } };
@@ -103,11 +110,12 @@ async function call(
   contextOverrides: Record<string, unknown> = {},
 ) {
   const respond = vi.fn();
+  Object.assign(gatewayContext, { getRuntimeConfig: () => config }, contextOverrides);
   await sessionCatalogHandlers[method]?.({
     params,
     respond,
     client: requestClient,
-    context: { getRuntimeConfig: () => config, ...contextOverrides },
+    context: gatewayContext,
   } as never);
   return respond;
 }
@@ -143,6 +151,7 @@ function roleConfig(others: "none" | "view" | "suggest" | "write", agents: "*" |
 
 describe("session catalog caller visibility", () => {
   beforeEach(() => {
+    gatewayContext = { getRuntimeConfig: () => ({}) };
     hoisted.activeRegistry = createEmptyPluginRegistry() as TestPluginRegistry;
     markPluginRegistryActive(hoisted.activeRegistry as PluginRegistry);
     hoisted.hasMultipleSessionSharingIdentities.mockReset().mockReturnValue(false);
