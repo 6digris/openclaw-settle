@@ -5,17 +5,14 @@ import { openRootFileSync, readFileDescriptorBoundedSync } from "../infra/bounda
 import { resolveRootPathSync } from "../infra/boundary-path.js";
 import { FsSafeError } from "../infra/fs-safe.js";
 import { readRegularFileSync } from "../infra/regular-file.js";
+import { materializeErrorStack } from "../shared/materialize-error-stack.js";
 import { parseJsonWithJson5Fallback } from "../utils/parse-json-compat.js";
 import type {
   PluginEntryCheck,
   PluginFileCacheEntry,
   PluginJsonCacheResult,
 } from "./plugin-cache-files.types.js";
-import {
-  bindPluginCacheRoot,
-  getPluginCacheRoot,
-  materializePluginCacheError,
-} from "./plugin-cache.js";
+import { bindPluginCacheRoot, getPluginCacheRoot } from "./plugin-cache.js";
 
 const DEFAULT_PLUGIN_METADATA_MAX_BYTES = 16 * 1024 * 1024;
 
@@ -122,7 +119,7 @@ export function readPluginCacheDirectory(targetPath: string): fs.Dirent[] {
     try {
       root.directory = { ok: true, entries: fs.readdirSync(targetPath, { withFileTypes: true }) };
     } catch (error) {
-      materializePluginCacheError(error);
+      materializeErrorStack(error);
       root.directory = { ok: false, error };
     }
   }
@@ -183,7 +180,7 @@ export function checkPluginCacheEntry(params: {
     }
   }
   if (!checked.ok) {
-    materializePluginCacheError(checked.error);
+    materializeErrorStack(checked.error);
   }
   root.checkedEntries.set(key, checked);
   return checked;
@@ -291,7 +288,7 @@ export function readPluginCacheFile(params: {
   // fs-safe can report size rejection as a generic validation failure. Only successful
   // bytes satisfy other limits; failures retain the policy under which they were checked.
   if (!entry.ok) {
-    materializePluginCacheError(entry.failure.error);
+    materializeErrorStack(entry.failure.error);
   }
   root.files.set(entry.ok ? key : limitKey, entry);
   return entry;
@@ -332,7 +329,7 @@ function readPluginCacheRegularFile(params: {
       Object.assign(pathFacts(absolutePath), { exists: true, stat });
       root.files.set(key, entry);
     } catch (error) {
-      materializePluginCacheError(error);
+      materializeErrorStack(error);
       entry = { ok: false, failure: { ok: false, reason: "io", error } };
       // A size rejection cannot stand in for an uncapped reader's policy.
       root.files.set(
@@ -385,7 +382,7 @@ export function parsePluginCacheJson(
         value: options.json5 ? parseJsonWithJson5Fallback(source) : JSON.parse(source),
       };
     } catch (error) {
-      materializePluginCacheError(error);
+      materializeErrorStack(error);
       file[key] = { ok: false, error };
     }
   }

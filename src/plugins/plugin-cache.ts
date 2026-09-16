@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { extractErrorCode } from "@openclaw/normalization-core/error-coercion";
 import { createDeferredCore } from "../shared/deferred.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
+import { materializeErrorStack } from "../shared/materialize-error-stack.js";
 import type { PluginHostCleanupResult } from "./host-hook-cleanup.types.js";
 import {
   createPluginCacheArtifacts,
@@ -47,24 +48,6 @@ export interface PluginCache
 }
 
 const PLUGIN_CACHE_FACT_INVALIDATED = "PLUGIN_CACHE_FACT_INVALIDATED";
-
-/** Cached diagnostics must not retain the caller through V8's lazy stack frames. */
-export function materializePluginCacheError(failure: unknown): void {
-  let error = failure;
-  const seen = new Set<Error>();
-  while (error instanceof Error && !seen.has(error)) {
-    seen.add(error);
-    try {
-      error.stack = String(error.stack);
-    } catch {
-      // V8's setter releases private frames even when formatting throws;
-      // coercion also detaches CallSites returned by a custom formatter.
-      error.stack = "Stack trace unavailable: custom formatter failed";
-    }
-    // Bounded file readers wrap their original failure without replacing its stack.
-    error = error.cause;
-  }
-}
 
 /** Explicit fact invalidation cancels its preparation. */
 export class PluginCacheFactInvalidatedError extends Error {
@@ -380,7 +363,7 @@ export function retirePluginCache(
   retained.retirement = completion.promise;
   // Abort listeners may reenter retirement or release the final generation immediately.
   retained.controller.abort();
-  materializePluginCacheError(retained.controller.signal.reason);
+  materializeErrorStack(retained.controller.signal.reason);
   const begin = () => beginPluginCacheRetirement(cache, beforeRetire);
   void (retained.references.size ? retained.settled.promise.then(begin) : begin()).then(
     completion.resolve,

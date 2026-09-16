@@ -15,6 +15,18 @@ it.each([
   { mode: "registry", name: "releases successors while a retired registry remains reachable" },
   { mode: "cache", name: "releases callback captures while a retired cache remains reachable" },
   { mode: "formatter", name: "finishes cache retirement when a custom stack formatter throws" },
+  ...["default", "cause"].map((kind) => ({
+    mode: `work-scope-${kind}`,
+    name: `releases closed work scope ${kind} callers`,
+  })),
+  ...[false, true].map((retired) => ({
+    mode: retired ? "policy-cache-retired" : "policy-cache",
+    name: `releases retired policy cache state with a ${retired ? "retired" : "live"} cache owner`,
+  })),
+  {
+    mode: "policy-cache-managed",
+    name: "releases a retired managed policy instance from its cache",
+  },
   ...[
     "reload-policy",
     "channel-lookup",

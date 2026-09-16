@@ -43,12 +43,14 @@ export type PluginCacheMetadata = {
     };
     bundledProviderPolicySurfaces: Map<
       string,
-      {
-        registry: object | null;
-        version: number | undefined;
-        selection: PluginCacheMetadata["metadata"]["bundledPluginsDir"];
-        read: () => BundledProviderPolicySurface | null;
-      }
+      WeakMap<
+        object,
+        {
+          version: number | undefined;
+          selection: PluginCacheMetadata["metadata"]["bundledPluginsDir"];
+          read: () => BundledProviderPolicySurface | null;
+        }
+      >
     >;
     bundledDiscoveryMode?: { value: "compat" | "allowlist" | undefined };
     current: CurrentPluginMetadataCacheState;

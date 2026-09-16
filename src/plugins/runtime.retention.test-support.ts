@@ -228,6 +228,20 @@ async function recoverOwner(root: string, kind: "source" | "bundled-cjs" | "bund
 }
 
 switch (process.argv[2]) {
+  case "work-scope-default":
+  case "work-scope-cause": {
+    const { runWorkScopeRetention } =
+      await import("../shared/async-work-scope.retention.test-support.js");
+    await runWorkScopeRetention(process.argv[2] === "work-scope-cause", collect);
+    break;
+  }
+  case "policy-cache":
+  case "policy-cache-retired":
+  case "policy-cache-managed": {
+    const { runPolicyCacheRetention } = await import("./runtime.retention-policy.test-support.js");
+    await runPolicyCacheRetention(process.argv[2], collect);
+    break;
+  }
   case "projection-reload-policy":
   case "projection-channel-lookup":
   case "projection-session-catalog":

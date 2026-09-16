@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createDeferredCore } from "./deferred.js";
 import { resolveGlobalSingleton } from "./global-singleton.js";
+import { materializeErrorStack } from "./materialize-error-stack.js";
 
 // Lazy runtime chunks share the context carrier, never the lifetime of its owners.
 const currentWorkScope = resolveGlobalSingleton(
@@ -73,6 +74,8 @@ export class AsyncWorkScope {
     }
     this.phase = "closing";
     this.controller.abort(reason);
+    // A retained cancellation signal must not keep the closing caller through lazy stack frames.
+    materializeErrorStack(this.controller.signal.reason);
   }
 
   /** Starts the next phase in the same continuation that observes settled pending work. */

@@ -91,13 +91,11 @@ export function resolveDirectBundledProviderPolicySurface(
   const metadata = getPluginCache().metadata;
   resolveBundledPluginsDir();
   const selection = metadata.bundledPluginsDir;
-  const cached = cacheable ? metadata.bundledProviderPolicySurfaces.get(pluginId) : undefined;
-  if (
-    cached &&
-    cached.registry === registry &&
-    cached.version === version &&
-    cached.selection === selection
-  ) {
+  const key = registry ?? metadata;
+  const cached = cacheable
+    ? metadata.bundledProviderPolicySurfaces.get(pluginId)?.get(key)
+    : undefined;
+  if (cached && cached.version === version && cached.selection === selection) {
     return cached.read();
   }
   const mod = loadBundledPluginPublicArtifactModuleFromCandidatesSync<Record<string, unknown>>({
@@ -107,12 +105,13 @@ export function resolveDirectBundledProviderPolicySurface(
   const surface = mod ? extractBundledProviderPolicySurface(mod) : null;
   if (cacheable) {
     const instance = mod ? getPluginValueInstance(mod) : undefined;
-    metadata.bundledProviderPolicySurfaces.set(pluginId, {
-      registry,
+    const entry = {
       version,
       selection,
       read: instance ? () => instance.run(() => surface) : () => surface,
-    });
+    };
+    // Keep one selection per plugin without an idle inventory owning retired callback graphs.
+    metadata.bundledProviderPolicySurfaces.set(pluginId, new WeakMap([[key, entry]]));
   }
   return surface;
 }
