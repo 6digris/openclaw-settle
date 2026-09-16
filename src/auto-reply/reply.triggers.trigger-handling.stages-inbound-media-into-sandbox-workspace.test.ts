@@ -3,6 +3,8 @@ import fs from "node:fs/promises";
 import path, { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { SandboxFsBridge } from "../agents/sandbox/fs-bridge.types.js";
+import { registerAgentWorkspaceAccess } from "../agents/workspace-access.js";
 import { resolveStagedInputMediaPaths } from "../media/staged-inputs.js";
 import { MEDIA_MAX_BYTES } from "../media/store.js";
 import { SANDBOX_MEDIA_MAX_BYTES, stageSandboxMedia } from "./reply/stage-sandbox-media.js";
@@ -79,6 +81,34 @@ async function writeInboundMedia(
 }
 
 describe("stageSandboxMedia", () => {
+  it("keeps remote-workspace originals for Gateway media processing without a local mirror", async () => {
+    await withSandboxMediaTempHome("openclaw-remote-media-", async (home) => {
+      const workspaceDir = join(home, "absent-workspace");
+      const mediaPath = await writeInboundMedia(home, "photo.png", "original-image-bytes");
+      const { ctx, sessionCtx } = createSandboxMediaContexts(mediaPath);
+      const originalMedia = ctx.media;
+      const release = registerAgentWorkspaceAccess(workspaceDir, {
+        bridge: {} as SandboxFsBridge,
+      });
+      try {
+        const result = await stageSandboxMedia({
+          ctx,
+          sessionCtx,
+          cfg: createSandboxMediaStageConfig(home),
+          sessionKey: "agent:main:main",
+          workspaceDir,
+        });
+        expect(result.staged.size).toBe(0);
+        expect(ctx.media).toBe(originalMedia);
+        expect(sessionCtx.media?.[0]?.path).toBe(mediaPath);
+        expect(sandboxMocks.ensureSandboxWorkspaceForSession).not.toHaveBeenCalled();
+        await expect(fs.stat(workspaceDir)).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(fs.readFile(mediaPath, "utf8")).resolves.toBe("original-image-bytes");
+      } finally {
+        release();
+      }
+    });
+  });
   it("stages managed inbound media URIs into the sandbox workspace", async () => {
     await withSandboxMediaTempHome("openclaw-triggers-", async (home) => {
       const { cfg, workspaceDir, sandboxDir } = await setupSandboxWorkspace(home);

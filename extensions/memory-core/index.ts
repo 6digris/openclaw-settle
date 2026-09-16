@@ -1,3 +1,5 @@
+import { getAgentWorkspaceAccess } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { resolveAgentWorkspaceDir } from "openclaw/plugin-sdk/agent-runtime";
 import { resolveSessionAgentIdsStrict } from "openclaw/plugin-sdk/agent-scope-runtime";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 // Memory Core plugin entrypoint registers its OpenClaw integration.
@@ -65,6 +67,49 @@ function createLazyMemoryTool(params: {
     description: params.contract.describe(initialContext.sources),
     parameters: params.contract.parameters,
     execute: async (toolCallId, toolParams, signal, onUpdate) => {
+      const context = resolveMemoryToolContext(params.options);
+      if (!context) {
+        return jsonResult({
+          disabled: true,
+          unavailable: true,
+          error: "memory search unavailable",
+        });
+      }
+      const access = getAgentWorkspaceAccess(
+        resolveAgentWorkspaceDir(context.cfg, context.agentId),
+      );
+      if (access && !access.getMemorySearchManager) {
+        if (params.options.conversationRecall) {
+          return jsonResult({
+            unavailable: true,
+            error: "Conversation recall is not supported by the workspace memory transport",
+          });
+        }
+        if (!access.executeMemoryTool) {
+          return jsonResult({
+            unavailable: true,
+            error: "Workspace memory transport is unavailable",
+          });
+        }
+        const result = await access.executeMemoryTool(
+          params.contract.name,
+          toolCallId,
+          toolParams,
+          signal,
+          onUpdate,
+        );
+        signal?.throwIfAborted();
+        const latestContext = resolveMemoryToolContext(params.options);
+        if (
+          !latestContext ||
+          getAgentWorkspaceAccess(
+            resolveAgentWorkspaceDir(latestContext.cfg, latestContext.agentId),
+          ) !== access
+        ) {
+          throw new Error("Workspace memory binding changed during the request");
+        }
+        return result;
+      }
       const tool = await loadTool();
       if (!tool) {
         return jsonResult({

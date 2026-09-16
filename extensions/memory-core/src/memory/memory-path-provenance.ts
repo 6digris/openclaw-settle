@@ -1,6 +1,10 @@
 // Memory Core plugin module classifies indexed workspace paths by provenance owner.
 import fs from "node:fs/promises";
 import path from "node:path";
+import {
+  getAgentWorkspaceAccess,
+  type AgentWorkspaceAccess,
+} from "openclaw/plugin-sdk/agent-harness-runtime";
 import { isPathStrictlyInside } from "openclaw/plugin-sdk/file-access-runtime";
 import type {
   MemoryEntryProvenance,
@@ -23,11 +27,27 @@ export async function resolveMemoryPathClassification(params: {
   }
   let workspacePath: string;
   let filePath: string;
+  let access: AgentWorkspaceAccess | undefined;
   try {
-    [workspacePath, filePath] = await Promise.all([
-      fs.realpath(params.workspaceDir),
-      fs.realpath(params.absolutePath),
-    ]);
+    access = getAgentWorkspaceAccess(params.workspaceDir);
+    if (access) {
+      workspacePath = path.resolve(params.workspaceDir);
+      filePath = path.resolve(params.absolutePath);
+      if (!isPathStrictlyInside(workspacePath, filePath)) {
+        return { curatedRoot: false, originClass: "untrusted" };
+      }
+      const stat = await access.bridge.stat({
+        filePath: path.relative(workspacePath, filePath).replaceAll(path.sep, "/"),
+      });
+      if (stat?.type !== "file" || getAgentWorkspaceAccess(params.workspaceDir) !== access) {
+        return { curatedRoot: false, originClass: "untrusted" };
+      }
+    } else {
+      [workspacePath, filePath] = await Promise.all([
+        fs.realpath(params.workspaceDir),
+        fs.realpath(params.absolutePath),
+      ]);
+    }
   } catch {
     return { curatedRoot: false, originClass: "untrusted" };
   }
@@ -54,6 +74,15 @@ export async function resolveMemoryPathClassification(params: {
         relativePath: normalizedRelativePath,
       })
     : undefined;
+  if (access) {
+    try {
+      if (getAgentWorkspaceAccess(params.workspaceDir) !== access) {
+        return { curatedRoot: false, originClass: "untrusted" };
+      }
+    } catch {
+      return { curatedRoot: false, originClass: "untrusted" };
+    }
+  }
   if (recorded) {
     return { curatedRoot, originClass: recorded.originClass };
   }

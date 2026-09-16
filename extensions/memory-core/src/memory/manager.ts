@@ -2,6 +2,7 @@
 import { formatErrorMessage, toErrorObject } from "openclaw/plugin-sdk/error-runtime";
 import {
   createSubsystemLogger,
+  resolveAgentContextLimits,
   resolveAgentWorkspaceDir,
   resolveMemorySearchConfig,
   type OpenClawConfig,
@@ -458,6 +459,7 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
       relPath: params.relPath,
       from: params.from,
       lines: params.lines,
+      maxChars: resolveAgentContextLimits(this.cfg, this.agentId)?.memoryGetMaxChars,
     });
   }
 

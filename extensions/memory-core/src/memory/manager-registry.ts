@@ -74,16 +74,22 @@ export class MemoryManagerRegistry<T extends ClosableMemoryManager> {
   private readonly scopeOperations: Map<string, Promise<void>>;
   private readonly globalLifecycle: MemoryManagerRegistryGlobalLifecycle;
 
-  constructor() {
-    const managedCache = resolveSingletonManagedCache<T>(MEMORY_INDEX_MANAGER_CACHE_KEY);
+  constructor(
+    keys = {
+      cache: MEMORY_INDEX_MANAGER_CACHE_KEY,
+      scopeOperations: MEMORY_INDEX_MANAGER_SCOPE_CLOSES_KEY,
+      globalLifecycle: MEMORY_INDEX_MANAGER_GLOBAL_LIFECYCLE_KEY,
+    },
+  ) {
+    const managedCache = resolveSingletonManagedCache<T>(keys.cache);
     this.cache = managedCache.cache;
     this.pending = managedCache.pending;
     this.scopeOperations = resolveGlobalSingleton<Map<string, Promise<void>>>(
-      MEMORY_INDEX_MANAGER_SCOPE_CLOSES_KEY,
+      keys.scopeOperations,
       () => new Map(),
     );
     this.globalLifecycle = resolveGlobalSingleton<MemoryManagerRegistryGlobalLifecycle>(
-      MEMORY_INDEX_MANAGER_GLOBAL_LIFECYCLE_KEY,
+      keys.globalLifecycle,
       () => ({ closePromise: null, closeFailed: false }),
     );
   }

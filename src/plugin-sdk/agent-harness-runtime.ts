@@ -47,6 +47,24 @@ import { redactToolDetail } from "../logging/redact.js";
 import type { PromptImageOrderEntry } from "../media/prompt-image-order.js";
 import { truncateUtf16Safe } from "../utils.js";
 
+/** Reuse native worker attachment transfer with a host-owned workspace transport. */
+export async function prepareWorkspaceTurnAttachments(
+  params: Parameters<
+    typeof import("../gateway/worker-environments/worker-turn-attachments.js").prepareWorkerTurnAttachments
+  >[0],
+): Promise<string | undefined> {
+  const { prepareWorkerTurnAttachments } =
+    await import("../gateway/worker-environments/worker-turn-attachments.js");
+  return prepareWorkerTurnAttachments(params);
+}
+
+export {
+  declareAgentWorkspaceAccess,
+  registerAgentWorkspaceAccess,
+  getAgentWorkspaceAccess,
+  type AgentWorkspaceAccess,
+} from "../agents/workspace-access.js";
+
 /** Default truncation limit for user-facing tool progress output. */
 export const TOOL_PROGRESS_OUTPUT_MAX_CHARS = 8_000;
 

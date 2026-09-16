@@ -58,6 +58,8 @@ import {
   sanitizeAgentIdentityLine,
 } from "../../agents/identity-file.js";
 import { resolveAgentIdentity } from "../../agents/identity.js";
+import { getAgentWorkspaceAccess } from "../../agents/workspace-access.js";
+import { MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES } from "../../agents/workspace-bootstrap-read.js";
 import {
   prepareLegacyWorkspaceStateReset,
   removeLegacyWorkspaceStateForReset,
@@ -253,6 +255,23 @@ async function openWorkspaceRootSafely(workspaceDir: string): Promise<WorkspaceR
 }
 
 async function listAgentFiles(workspaceDir: string, options?: { hideBootstrap?: boolean }) {
+  const access = getAgentWorkspaceAccess(workspaceDir);
+  if (access) {
+    const names = options?.hideBootstrap ? CORE_FILE_NAMES_POST_ONBOARDING : CORE_FILE_NAMES;
+    return await Promise.all(
+      names.map(async (name) => {
+        const stat = await access.bridge.stat({ filePath: name });
+        return {
+          name,
+          path: path.join(workspaceDir, name),
+          missing: stat === null,
+          expectedAbsent: stat === null ? isExpectedAbsentBootstrapFile(name) : undefined,
+          size: stat?.size,
+          updatedAtMs: stat?.mtimeMs,
+        };
+      }),
+    );
+  }
   const files: Array<{
     name: string;
     path: string;
@@ -1569,6 +1588,35 @@ export const agentsHandlers: GatewayRequestHandlers = {
     }
     const { agentId, workspaceDir, name } = resolved;
     const filePath = path.join(workspaceDir, name);
+    const access = getAgentWorkspaceAccess(workspaceDir);
+    if (access) {
+      const stat = await access.bridge.stat({ filePath: name });
+      if (!stat) {
+        respondWorkspaceFileMissing({ respond, agentId, workspaceDir, name, filePath });
+        return;
+      }
+      const data = await access.bridge.readFile({
+        filePath: name,
+        maxBytes: MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES,
+      });
+      respond(
+        true,
+        {
+          agentId,
+          workspace: workspaceDir,
+          file: {
+            name,
+            path: filePath,
+            missing: false,
+            size: data.length,
+            updatedAtMs: Math.floor(stat.mtimeMs),
+            content: new TextDecoder("utf-8", { fatal: true }).decode(data),
+          },
+        },
+        undefined,
+      );
+      return;
+    }
     let safeRead: ReadResult;
     try {
       const workspaceRoot = await agentsHandlerDeps.root(workspaceDir);
@@ -1618,6 +1666,30 @@ export const agentsHandlers: GatewayRequestHandlers = {
       return;
     }
     const { agentId, workspaceDir, name } = resolved;
+    const access = getAgentWorkspaceAccess(workspaceDir);
+    if (access) {
+      if (Buffer.byteLength(params.content) > MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES) {
+        throw new Error("Workspace document exceeds its write bound");
+      }
+      await access.bridge.writeFile({ filePath: name, data: params.content, mkdir: false });
+      respond(
+        true,
+        {
+          ok: true,
+          agentId,
+          workspace: workspaceDir,
+          file: {
+            name,
+            path: path.join(workspaceDir, name),
+            missing: false,
+            size: Buffer.byteLength(params.content),
+            content: params.content,
+          },
+        },
+        undefined,
+      );
+      return;
+    }
     await fs.mkdir(workspaceDir, { recursive: true });
     const filePath = path.join(workspaceDir, name);
     const content = params.content;

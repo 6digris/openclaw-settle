@@ -11,6 +11,10 @@ import type {
 } from "./backend-handle.types.js";
 import { SANDBOX_FILE_IDENTITY } from "./file-mutation-identity.js";
 import {
+  parseSandboxDirectoryEntries,
+  validateSandboxDirectoryLimit,
+} from "./fs-bridge-directory.js";
+import {
   SANDBOX_CREATE_EXISTS_EXIT_CODE,
   SANDBOX_PINNED_MUTATION_PYTHON,
 } from "./fs-bridge-mutation-helper.js";
@@ -277,6 +281,27 @@ class RemoteShellSandboxFsBridge implements SandboxFsBridge {
     });
   }
 
+  async listDirectory(params: Parameters<NonNullable<SandboxFsBridge["listDirectory"]>>[0]) {
+    validateSandboxDirectoryLimit(params.maxEntries);
+    const target = this.resolveTarget(params);
+    const pinned = await this.resolvePinnedParent({
+      containerPath: target.containerPath,
+      mountRootPath: target.mountRootPath,
+      action: "list directories",
+      signal: params.signal,
+    });
+    const result = await this.runMutation({
+      args: [
+        "list",
+        pinned.mountRootPath,
+        path.posix.join(pinned.relativeParentPath, pinned.basename),
+        String(params.maxEntries),
+      ],
+      signal: params.signal,
+    });
+    return parseSandboxDirectoryEntries(result.stdout, params.maxEntries);
+  }
+
   async remove(params: {
     filePath: string;
     cwd?: string;
@@ -383,7 +408,12 @@ class RemoteShellSandboxFsBridge implements SandboxFsBridge {
     const output = result.stdout.toString("utf8").trim();
     const [kindRaw = "", sizeRaw = "0", mtimeRaw = "0"] = output.split("|");
     return {
-      type: kindRaw === "directory" ? "directory" : kindRaw === "regular file" ? "file" : "other",
+      type:
+        kindRaw === "directory"
+          ? "directory"
+          : kindRaw === "regular file" || kindRaw === "regular empty file"
+            ? "file"
+            : "other",
       size: parseSandboxStatSize(sizeRaw),
       mtimeMs: parseSandboxStatMtimeMs(mtimeRaw),
     };
@@ -628,7 +658,10 @@ class RemoteShellSandboxFsBridge implements SandboxFsBridge {
       return;
     }
     const [kind = "", linksRaw = "1"] = output.split("|");
-    if (kind === "regular file" && hasMultipleHardlinks(linksRaw)) {
+    if (
+      (kind === "regular file" || kind === "regular empty file") &&
+      hasMultipleHardlinks(linksRaw)
+    ) {
       throw new Error(
         `Hardlinked path is not allowed under sandbox mount root: ${params.containerPath}`,
       );

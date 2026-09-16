@@ -94,11 +94,32 @@ describe("readBoundedCodexRemoteWorkspaceFile", () => {
       expect.objectContaining({
         command: ["node", "-e", expect.any(String), "--", filePath, "64", "0", "524288"],
         env: { NODE_OPTIONS: null, NODE_PATH: null },
+        sandboxPolicy: { type: "readOnly" },
         timeoutMs: expect.any(Number),
       }),
       { signal: undefined, timeoutMs: expect.any(Number) },
     );
     expect(client.request.mock.calls[0]?.[1]).not.toHaveProperty("outputBytesCap");
+  });
+
+  it("uses the declared remote workspace for the read-only command", async () => {
+    const filePath = path.join(localWorkspaceRoot, "output.txt");
+    await writeFile(filePath, "result");
+    const client = createLocalCommandClient();
+    await readBoundedCodexRemoteWorkspaceFile({
+      client,
+      path: filePath,
+      workspaceRoot: localWorkspaceRoot,
+      maxBytes: 64,
+    });
+    expect(client.request).toHaveBeenCalledWith(
+      "command/exec",
+      expect.objectContaining({
+        cwd: localWorkspaceRoot,
+        sandboxPolicy: { type: "readOnly" },
+      }),
+      expect.any(Object),
+    );
   });
 
   it("reassembles multi-frame files beneath the Windows-safe native output cap", async () => {

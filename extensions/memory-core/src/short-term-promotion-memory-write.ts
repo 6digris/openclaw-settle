@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { replaceFileAtomic } from "openclaw/plugin-sdk/security-runtime";
+import { getMemoryWorkspaceBridge, readMemoryWorkspaceFile } from "./memory-workspace-files.js";
 
 export function buildPromotionMarker(candidateKey: string): string {
   return `<!-- openclaw-memory-promotion:${candidateKey} -->`;
@@ -22,6 +23,9 @@ export class MemoryWriteConflictError extends Error {
 }
 
 export async function resolveMemoryWritePath(filePath: string): Promise<string> {
+  if (getMemoryWorkspaceBridge(path.dirname(filePath), filePath)) {
+    return filePath;
+  }
   try {
     return await fs.realpath(filePath);
   } catch (err) {
@@ -57,12 +61,14 @@ export async function resolveMemoryWritePath(filePath: string): Promise<string> 
 }
 
 export async function readMemoryContent(filePath: string): Promise<string> {
-  return await fs.readFile(filePath, "utf-8").catch((error: unknown) => {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return "";
-    }
-    throw error;
-  });
+  return await readMemoryWorkspaceFile(path.dirname(filePath), filePath)
+    .then((content) => content.toString("utf-8"))
+    .catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return "";
+      }
+      throw error;
+    });
 }
 
 export function isAtomicReplacePermissionError(error: unknown): boolean {
@@ -131,6 +137,24 @@ export async function writeMemoryContent(params: {
   allowInPlaceFallback?: boolean;
   content: string;
 }): Promise<void> {
+  const workspaceDir = path.dirname(params.memoryPath);
+  const bridge = getMemoryWorkspaceBridge(workspaceDir, params.memoryPath);
+  if (bridge) {
+    if (
+      params.expectedHash &&
+      hashMemoryContent(await readMemoryContent(params.memoryPath)) !== params.expectedHash
+    ) {
+      throw new MemoryWriteConflictError();
+    }
+    // Match the native best-effort editor race contract; the bridge owns atomic replacement.
+    await bridge.writeFile({
+      filePath: params.memoryPath,
+      cwd: workspaceDir,
+      data: params.content,
+      mkdir: true,
+    });
+    return;
+  }
   const memoryDirMode = (await fs.stat(path.dirname(params.memoryWritePath))).mode & 0o7777;
   try {
     await replaceFileAtomic({

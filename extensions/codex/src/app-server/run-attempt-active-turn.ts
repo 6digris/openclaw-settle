@@ -4,6 +4,7 @@ import {
   detectAndLoadAgentHarnessPromptImages,
   embeddedAgentLog,
   formatErrorMessage,
+  getAgentWorkspaceAccess,
   resolveAttemptFsWorkspaceOnly,
   setActiveEmbeddedRun,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
@@ -247,11 +248,15 @@ export async function activateCodexAttemptTurn(
       { threadId: resourceState.thread.threadId, turnId: activeTurnId },
     );
   }
+  const workspaceAccess = getAgentWorkspaceAccess(params.workspaceDir);
   const assertSteeringActive = () => {
     params.hostCapabilities.assertActive();
     runAbortController.signal.throwIfAborted();
     if (state.completed || state.terminalTurnNotificationQueued || state.timedOut) {
       throw new Error("codex app-server turn is no longer accepting steering");
+    }
+    if (getAgentWorkspaceAccess(params.workspaceDir) !== workspaceAccess) {
+      throw new Error("Workspace access changed during Codex steering");
     }
   };
   const workspaceOnly = resolveAttemptFsWorkspaceOnly({ config: params.config, sessionAgentId });
@@ -276,6 +281,7 @@ export async function activateCodexAttemptTurn(
     signal: runAbortController.signal,
     assertActive: assertSteeringActive,
     prepareMessage: async (text, options) => {
+      assertSteeringActive();
       const result = await detectAndLoadAgentHarnessPromptImages({
         ...imageContext,
         prompt: text,
@@ -284,12 +290,34 @@ export async function activateCodexAttemptTurn(
         media: options.media,
         userTurnTranscriptRecorder: options.userTurnTranscriptRecorder,
       });
+      assertSteeringActive();
       if (result.failedMediaCount) {
         throw new Error(
           `failed to hydrate ${result.failedMediaCount} structured image attachment(s) for Codex steering`,
         );
       }
-      return buildCodexUserInput(text, result.images);
+      let attachmentNote: string | undefined;
+      if (workspaceAccess) {
+        if (!workspaceAccess.prepareTurnAttachments) {
+          throw new Error("Remote workspace attachment preparation is unavailable");
+        }
+        attachmentNote = await workspaceAccess.prepareTurnAttachments(
+          {
+            config: params.config,
+            media: options.media,
+            timeoutMs: params.timeoutMs,
+            abortSignal: runAbortController.signal,
+            userTurnTranscriptRecorder: options.userTurnTranscriptRecorder,
+          },
+          assertSteeringActive,
+        );
+        assertSteeringActive();
+      }
+      // Originals and transcript text stay at ingress; only native input needs the remote paths.
+      return buildCodexUserInput(
+        attachmentNote ? `${text}\n\n${attachmentNote}` : text,
+        result.images,
+      );
     },
     beforeConfirmConsumed: async (items) => {
       const inboundItems = items.filter((item) => item.isInboundUserMessage === true);

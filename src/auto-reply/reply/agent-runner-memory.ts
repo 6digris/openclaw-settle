@@ -1,7 +1,5 @@
 /** Preflight compaction and memory flush helpers for agent runner sessions. */
 import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
@@ -76,6 +74,7 @@ import {
   resolveModelFallbackOptions,
 } from "./agent-runner-utils.js";
 import type { CompactionNoticePhase } from "./compaction-notice.js";
+import { ensureMemoryFlushTargetFile } from "./memory-flush-target.js";
 import {
   hasAlreadyFlushedForCurrentCompaction,
   resolveMaxActiveTranscriptBytes,
@@ -149,30 +148,6 @@ async function updateSessionEntryDefault(
       takeCacheOwnership: params.takeCacheOwnership,
     },
   );
-}
-
-async function ensureMemoryFlushTargetFile(params: {
-  workspaceDir: string;
-  relativePath: string;
-}): Promise<void> {
-  const workspaceDir = normalizeOptionalString(params.workspaceDir);
-  const relativePath = normalizeOptionalString(params.relativePath);
-  if (!workspaceDir || !relativePath || path.isAbsolute(relativePath)) {
-    throw new Error("Invalid memory flush target path");
-  }
-  const workspaceRoot = path.resolve(workspaceDir);
-  const targetPath = path.resolve(workspaceRoot, relativePath);
-  const targetRelativePath = path.relative(workspaceRoot, targetPath);
-  if (
-    !targetRelativePath ||
-    targetRelativePath.startsWith("..") ||
-    path.isAbsolute(targetRelativePath)
-  ) {
-    throw new Error("Memory flush target path must stay inside the workspace");
-  }
-  await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
-  const handle = await fs.promises.open(targetPath, "a");
-  await handle.close();
 }
 
 const memoryDeps = {

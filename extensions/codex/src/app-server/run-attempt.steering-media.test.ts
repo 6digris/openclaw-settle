@@ -3,8 +3,10 @@ import path from "node:path";
 import {
   detectAndLoadAgentHarnessPromptImages,
   queueAgentHarnessMessage,
+  registerAgentWorkspaceAccess,
   resolveActiveEmbeddedRunSessionId,
   runAgentHarnessGatewayQuestion,
+  type AgentWorkspaceAccess,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
@@ -204,7 +206,125 @@ async function notifyConsumed(harness: StartedHarness, clientId: string, turnId 
   });
 }
 
+function registerSteeringWorkspace(
+  fixture: MediaFixture,
+  prepareTurnAttachments?: AgentWorkspaceAccess["prepareTurnAttachments"],
+) {
+  const unexpectedOperation = () => {
+    throw new Error("Unexpected workspace document operation");
+  };
+  return registerAgentWorkspaceAccess(fixture.params.workspaceDir, {
+    bridge: {
+      resolvePath: unexpectedOperation,
+      readFile: unexpectedOperation,
+      writeFile: unexpectedOperation,
+      mkdirp: unexpectedOperation,
+      remove: unexpectedOperation,
+      rename: unexpectedOperation,
+      stat: async () => null,
+    },
+    prepareTurnAttachments,
+  });
+}
+
 describe("Codex active-run steering media", () => {
+  it("prepares workspace attachments for native steering without changing images or transcript", async () => {
+    const fixture = await createMediaFixture("resolved");
+    const note = "Attachments are available in /remote/workspace/.inputs/steered-turn.";
+    const prepare = vi.fn<NonNullable<AgentWorkspaceAccess["prepareTurnAttachments"]>>(
+      async (_turn, assertCurrent) => {
+        assertCurrent();
+        return note;
+      },
+    );
+    const release = registerSteeringWorkspace(fixture, prepare);
+    const harness = createStartedThreadHarness();
+    try {
+      await withActiveMediaTurn(fixture, harness, async () => {
+        const accepted = vi.fn();
+        expect(
+          queueAgentHarnessMessage(fixture.params.sessionId, fixture.message.content, {
+            ...fixture.options,
+            onQueueAccepted: accepted,
+          }),
+        ).toBe(true);
+        await vi.waitFor(() => expect(accepted).toHaveBeenCalledExactlyOnceWith(true), fastWait);
+        const steer = harness.requests.find((entry) => entry.method === "turn/steer")
+          ?.params as SteerRequest;
+        expect(steer.input).toEqual([
+          { type: "text", text: `${fixture.message.content}\n\n${note}`, text_elements: [] },
+          ...fixture.expectedImages,
+        ]);
+        expect(prepare).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            media: fixture.options.media,
+            userTurnTranscriptRecorder: fixture.recorder,
+            config: fixture.params.config,
+            abortSignal: expect.any(AbortSignal),
+          }),
+          expect.any(Function),
+        );
+        await notifyConsumed(harness, steer.clientUserMessageId);
+        expect(await fixture.readSteeredMessages()).toEqual([fixture.message]);
+      });
+    } finally {
+      release();
+    }
+  });
+
+  it.each(["missing", "failed", "revoked", "host-closed", "aborted"] as const)(
+    "rejects %s workspace attachment preparation before native steering",
+    async (failure) => {
+      const fixture = await createMediaFixture("resolved");
+      const closeHost = await bindProductionHarnessHostCapabilitiesForTest(fixture.params);
+      const prepared = createDeferred<string>();
+      const prepare = vi.fn<NonNullable<AgentWorkspaceAccess["prepareTurnAttachments"]>>(
+        async () => {
+          if (failure === "failed") {
+            throw new Error("Workspace attachment transfer failed");
+          }
+          return await prepared.promise;
+        },
+      );
+      const release = registerSteeringWorkspace(
+        fixture,
+        failure === "missing" ? undefined : prepare,
+      );
+      const harness = createStartedThreadHarness();
+      try {
+        await withActiveMediaTurn(fixture, harness, async (controller) => {
+          const accepted = vi.fn();
+          expect(
+            queueAgentHarnessMessage(fixture.params.sessionId, fixture.message.content, {
+              ...fixture.options,
+              onQueueAccepted: accepted,
+            }),
+          ).toBe(true);
+          if (failure !== "missing" && failure !== "failed") {
+            await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce(), fastWait);
+            expect(harness.requests.filter((entry) => entry.method === "turn/steer")).toEqual([]);
+            if (failure === "revoked") {
+              release();
+            } else if (failure === "host-closed") {
+              closeHost();
+            } else {
+              controller.abort();
+            }
+            prepared.resolve("Attachments prepared.");
+          }
+          await vi.waitFor(() => expect(accepted).toHaveBeenCalledExactlyOnceWith(false), fastWait);
+          expect(harness.requests.filter((entry) => entry.method === "turn/steer")).toEqual([]);
+          expect(fixture.recorder.persistApproved).not.toHaveBeenCalled();
+          expect(await fixture.readSteeredMessages()).toEqual([]);
+        });
+      } finally {
+        prepared.resolve("Attachments prepared.");
+        closeHost();
+        release();
+      }
+    },
+  );
+
   it("keeps consumed question answers accepted when their host closes during the response", async () => {
     const fixture = await createMediaFixture("offloaded");
     const closeHost = await bindProductionHarnessHostCapabilitiesForTest(fixture.params);

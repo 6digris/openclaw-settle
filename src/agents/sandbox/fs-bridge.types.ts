@@ -71,4 +71,11 @@ export type SandboxFsBridge = {
     cwd?: string;
     signal?: AbortSignal;
   }): Promise<SandboxFsStat | null>;
+  /** List direct children only; reject rather than truncate a directory over the limit. */
+  listDirectory?(params: {
+    filePath: string;
+    cwd?: string;
+    maxEntries: number;
+    signal?: AbortSignal;
+  }): Promise<Array<{ name: string; type: SandboxFsStat["type"] }> | null>;
 };

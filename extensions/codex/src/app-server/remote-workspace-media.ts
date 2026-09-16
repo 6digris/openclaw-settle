@@ -139,6 +139,10 @@ export async function readBoundedCodexRemoteWorkspaceFile(params: {
           ],
           // Prevent inherited Node preload hooks from changing the fixed reader.
           env: { NODE_OPTIONS: null, NODE_PATH: null },
+          // A fixed file reader needs neither the default working directory nor
+          // writable mounts inherited from the app-server's launch policy.
+          ...(params.workspaceRoot ? { cwd: params.workspaceRoot } : {}),
+          sandboxPolicy: { type: "readOnly" },
           ...(timeoutMs === undefined ? {} : { timeoutMs }),
         },
         { signal: params.signal, timeoutMs },

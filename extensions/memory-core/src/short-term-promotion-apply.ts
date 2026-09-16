@@ -23,6 +23,7 @@ import {
 import { applyMemoryConsolidationPlan, consolidateMemory } from "./dreaming-consolidation.js";
 import { compactMemoryForBudget, DEFAULT_MEMORY_FILE_MAX_CHARS } from "./memory-budget.js";
 import { pruneMemoryEntryOrigins, reserveMemoryEntryOrigins } from "./memory-entry-origins.js";
+import { readMemoryWorkspaceFile } from "./memory-workspace-files.js";
 import { withMemoryWorkspaceLock } from "./memory-workspace-lock.js";
 import {
   buildPromotionMarker,
@@ -202,7 +203,7 @@ async function promotionSourceFingerprint(
 ): Promise<string> {
   for (const sourcePath of resolveShortTermSourcePathCandidates(workspaceDir, candidate.path)) {
     try {
-      const content = await fs.readFile(sourcePath);
+      const content = await readMemoryWorkspaceFile(workspaceDir, sourcePath);
       return createHash("sha256").update(content).digest("hex");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -365,12 +366,14 @@ export async function applyShortTermPromotions(
   // Promotions historically follow user-managed MEMORY.md symlinks. Replace the
   // final target atomically without severing the chain, matching the prior writeFile path.
   let memoryWritePath = await resolveMemoryWritePath(memoryPath);
-  let existingMemory = await fs.readFile(memoryWritePath, "utf-8").catch((err: unknown) => {
-    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
-      return "";
-    }
-    throw err;
-  });
+  let existingMemory = await readMemoryWorkspaceFile(workspaceDir, memoryWritePath)
+    .then((content) => content.toString("utf-8"))
+    .catch((err: unknown) => {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+        return "";
+      }
+      throw err;
+    });
   let existingMarkers = new Set(extractPromotionKeys(existingMemory));
   let alreadyWritten = rehydratedSelected.filter((candidate) => existingMarkers.has(candidate.key));
   let toAppend = rehydratedSelected.filter((candidate) => !existingMarkers.has(candidate.key));
@@ -454,12 +457,14 @@ export async function applyShortTermPromotions(
         }
       }
       memoryWritePath = await resolveMemoryWritePath(memoryPath);
-      existingMemory = await fs.readFile(memoryWritePath, "utf-8").catch((err: unknown) => {
-        if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
-          return "";
-        }
-        throw err;
-      });
+      existingMemory = await readMemoryWorkspaceFile(workspaceDir, memoryWritePath)
+        .then((content) => content.toString("utf-8"))
+        .catch((err: unknown) => {
+          if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+            return "";
+          }
+          throw err;
+        });
       existingMarkers = new Set(extractPromotionKeys(existingMemory));
       alreadyWritten = authoritativeSelected.filter((candidate) =>
         existingMarkers.has(candidate.key),

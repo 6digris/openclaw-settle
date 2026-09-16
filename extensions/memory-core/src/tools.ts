@@ -1,4 +1,6 @@
 // Memory Core plugin module implements tools behavior.
+import { getAgentWorkspaceAccess } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { resolveAgentWorkspaceDir } from "openclaw/plugin-sdk/memory-core-host-engine-foundation";
 import {
   resolveMemorySearchStaleness,
   stripMemoryAnnotationCarriers,
@@ -583,14 +585,42 @@ export function createMemoryGetTool(options: MemoryToolOptions) {
           });
         }
         return await executeMemoryReadResult({
-          read: async () =>
-            await readAgentMemoryFile({
+          read: async () => {
+            const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
+            const access = getAgentWorkspaceAccess(workspaceDir);
+            if (access) {
+              callerSignal?.throwIfAborted();
+              const memory = await getMemoryManagerContextWithPurpose({
+                cfg,
+                agentId,
+                purpose: options.oneShotCliRun ? "cli" : undefined,
+                acquireLocalService: options.acquireLocalService,
+              });
+              if ("error" in memory) {
+                throw new Error(memory.error ?? "Remote workspace memory manager is unavailable");
+              }
+              try {
+                callerSignal?.throwIfAborted();
+                if (getAgentWorkspaceAccess(workspaceDir) !== access) {
+                  throw new Error("Workspace memory binding changed during the request");
+                }
+                const result = await memory.manager.readFile({ relPath, from, lines });
+                callerSignal?.throwIfAborted();
+                return result;
+              } finally {
+                if (options.oneShotCliRun) {
+                  await memory.manager.close?.();
+                }
+              }
+            }
+            return await readAgentMemoryFile({
               cfg,
               agentId,
               relPath,
               from: from ?? undefined,
               lines: lines ?? undefined,
-            }),
+            });
+          },
           requestedCorpus,
           relPath,
           from: from ?? undefined,

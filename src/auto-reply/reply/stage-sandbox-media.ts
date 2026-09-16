@@ -8,6 +8,7 @@ import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { assertSandboxPath } from "../../agents/sandbox-paths.js";
 import { ensureSandboxWorkspaceForSession } from "../../agents/sandbox.js";
 import { slugifySessionKey } from "../../agents/sandbox/shared.js";
+import { getAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { logVerbose } from "../../globals.js";
 import { root as fsRoot, FsSafeError, readLocalFileSafely } from "../../infra/fs-safe.js";
@@ -53,6 +54,11 @@ export async function stageSandboxMedia(params: {
   remoteMediaMode?: "sandbox-or-cache" | "cache";
 }): Promise<StageSandboxMediaResult> {
   const { ctx, sessionCtx, cfg, sessionKey, workspaceDir } = params;
+  if (getAgentWorkspaceAccess(workspaceDir)) {
+    // Keep managed originals available to Gateway media processing. The shared
+    // harness dispatch transfers them before the turn, without a local mirror.
+    return EMPTY_STAGE_RESULT;
+  }
   const media = normalizeMediaFacts(ctx.media);
   const pathEntries = media.flatMap((fact, index) => {
     const mediaPath = normalizeOptionalString(fact.path);

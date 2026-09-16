@@ -747,7 +747,7 @@ extensions/memory-core/src/cli-status.runtime.ts	2
 extensions/memory-core/src/cli.ts	1
 extensions/memory-core/src/concept-vocabulary.ts	1
 extensions/memory-core/src/dreaming-narrative.ts	1
-extensions/memory-core/src/dreaming-phases.ts	2
+extensions/memory-core/src/dreaming-phases.ts	1
 extensions/memory-core/src/dreaming.ts	1
 extensions/memory-core/src/memory/embeddings.ts	2
 extensions/memory-core/src/memory/hybrid.ts	1
@@ -778,7 +778,6 @@ extensions/memory-core/src/session-reset-recall-metadata.ts	3
 extensions/memory-core/src/session-search-visibility.ts	2
 extensions/memory-core/src/short-term-promotion-apply.ts	4
 extensions/memory-core/src/short-term-promotion-memory-write.ts	4
-extensions/memory-core/src/short-term-promotion-record.ts	1
 extensions/memory-core/src/short-term-promotion-rehydrate.ts	1
 extensions/memory-core/src/short-term-promotion-utils.ts	4
 extensions/memory-core/src/short-term-promotion.ts	1

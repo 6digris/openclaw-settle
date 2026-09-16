@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { getAgentWorkspaceAccess } from "openclaw/plugin-sdk/agent-harness-runtime";
 import {
   resolveAgentWorkspaceDir,
   type OpenClawConfig,
@@ -327,6 +328,9 @@ export async function forgetMemoryEntries(params: MemoryForgetParams): Promise<M
     throw new Error("memory forget requires a session, hook source, or participant selector");
   }
   const workspaceDir = resolveAgentWorkspaceDir(params.cfg, params.agentId);
+  if (getAgentWorkspaceAccess(workspaceDir)) {
+    throw new Error("Remote memory deletion requires an index maintenance capability");
+  }
   // Plan against the same locked state we remove; staging and promotion must
   // not publish an earlier snapshot after a successful purge. Preview never writes a lock.
   return params.dryRun

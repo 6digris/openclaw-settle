@@ -8,6 +8,7 @@ import {
   buildBootstrapContextForFiles,
   buildWatchedSessionsHarnessContext,
   embeddedAgentLog,
+  getAgentWorkspaceAccess,
   resolveBootstrapFilesForRun,
   type AgentMessage,
   type ContextEngineProjection,
@@ -293,6 +294,10 @@ export async function buildCodexWorkspaceBootstrapContext(params: {
         : undefined,
     };
   } catch (error) {
+    // A configured remote workspace must not silently become an empty prompt.
+    if (getAgentWorkspaceAccess(params.resolvedWorkspace)) {
+      throw error;
+    }
     embeddedAgentLog.warn("failed to load codex workspace bootstrap instructions", { error });
     return { bootstrapFiles: [], contextFiles: [], inheritsAgentWorkspace: false };
   }

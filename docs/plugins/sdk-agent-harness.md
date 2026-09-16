@@ -16,6 +16,46 @@ Use this surface only for bundled or trusted native plugins. The contract is
 still experimental because the parameter types intentionally mirror the
 current embedded runner.
 
+## Provisioned workspace access (prototype)
+
+A trusted platform plugin can bind an existing workspace with
+`registerAgentWorkspaceAccess(workspaceDir, { bridge })` from
+`openclaw/plugin-sdk/agent-harness-runtime`. The bridge implements the existing
+`SandboxFsBridge` contract and belongs to the host service, independently of a
+running harness process. Register it when that service starts and call the
+returned release function when it stops. During plugin registration, call
+`declareAgentWorkspaceAccess(workspaceDir)` first so requests arriving before
+service startup fail instead of reading an old local copy. Repeated declarations
+do not replace an active binding.
+
+This prototype routes `agents.files.list/get/set` and bootstrap loading through
+that binding. The caller retains authorization; the platform bridge must limit
+the permitted files and operations. Releasing a binding makes subsequent access
+fail instead of falling back to local files. Workspaces without a binding retain
+their existing local behavior.
+
+The optional `executeMemoryTool` binding runs the existing `memory_search` and
+`memory_get` tools beside the workspace. A remote workspace never falls back to
+a Gateway index when this binding is missing. Automatic recall and other memory
+manager consumers are not yet supported for these workspaces. Trusted
+conversation-recall requests are rejected rather than searched against workspace
+files with different visibility rules.
+
+This does not yet route identity updates, skill installation, general
+workspace browsing, or workspace lifecycle operations. It does not add content
+hash preconditions to `writeFile`. Do not treat the prototype as a complete
+remote-workspace deployment contract.
+The platform must still validate that a required workspace plugin is enabled;
+a plugin that never loads cannot declare remote ownership.
+
+The `prepareTurnAttachments` binding runs before harness dispatch. The platform
+can reuse `prepareWorkspaceTurnAttachments` with its existing command transport:
+this is the native worker transfer, including managed-original checks, chunking,
+checksums, private directories, and cleanup. Gateway media processing retains
+the originals; the harness prompt gets a note pointing to the transferred files.
+Remote workspaces skip local workspace staging. A missing binding or failed
+transfer stops the turn instead of relying on an old synchronized copy.
+
 ## When to use a harness
 
 Register an agent harness when a model family has its own native session

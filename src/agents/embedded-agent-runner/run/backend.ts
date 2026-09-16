@@ -8,6 +8,7 @@ import {
 import type { AgentHarness } from "../../harness/types.js";
 import type { AgentRuntimeModelAttempt, AgentRuntimePlan } from "../../runtime-plan/types.js";
 import { settleRequesterAfterSessionSpawns } from "../../subagents/registry/subagent-registry.js";
+import { prepareAgentWorkspaceTurn } from "../../workspace-access.js";
 import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptResult } from "./types.js";
 
 /** Replaces backend-retained provenance with the exact prepared request fact. */
@@ -30,7 +31,7 @@ export function resolveRuntimeModelAttempt(
 export async function runEmbeddedAttemptWithBackend(
   params: EmbeddedRunAttemptParams,
 ): Promise<EmbeddedRunAttemptResult> {
-  const result = await runAgentHarnessAttempt(params);
+  const result = await runAgentHarnessAttempt(await prepareAgentWorkspaceTurn(params));
   if (
     result.agentHarnessId !== "openclaw" &&
     params.sessionKey &&

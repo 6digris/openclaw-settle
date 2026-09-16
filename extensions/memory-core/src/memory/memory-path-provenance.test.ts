@@ -1,6 +1,10 @@
 // Memory Core tests cover workspace path provenance classification.
 import fs from "node:fs/promises";
 import path from "node:path";
+import {
+  registerAgentWorkspaceAccess,
+  type AgentWorkspaceAccess,
+} from "openclaw/plugin-sdk/agent-harness-runtime";
 import { readMemoryArtifactProvenance } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -11,8 +15,31 @@ vi.mock("openclaw/plugin-sdk/memory-core-host-runtime-core", { spy: true });
 
 createMemoryCoreTestHarness();
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const workspaceReleases: Array<() => void> = [];
+
+function remoteWorkspace(workspaceDir: string) {
+  const bridge = {
+    resolvePath: vi.fn(),
+    readFile: vi.fn(),
+    writeFile: vi.fn(),
+    mkdirp: vi.fn(),
+    remove: vi.fn(),
+    rename: vi.fn(),
+    stat: vi.fn<AgentWorkspaceAccess["bridge"]["stat"]>(async () => ({
+      type: "file",
+      size: 10,
+      mtimeMs: 1,
+    })),
+  } satisfies AgentWorkspaceAccess["bridge"];
+  const release = registerAgentWorkspaceAccess(workspaceDir, { bridge });
+  workspaceReleases.push(release);
+  return { bridge, release };
+}
 
 afterEach(() => {
+  for (const release of workspaceReleases.splice(0)) {
+    release();
+  }
   vi.restoreAllMocks();
 });
 
@@ -91,5 +118,72 @@ describe("memory path provenance", () => {
     await expect(
       resolveMemoryPathClassification({ absolutePath, source: "memory", workspaceDir }),
     ).resolves.toEqual({ curatedRoot: true, originClass: "untrusted" });
+  });
+
+  it("classifies remote memory against Gateway provenance without a local file", async () => {
+    const workspaceDir = path.join(tempDirs.make("remote-provenance-"), "absent-gateway-workspace");
+    const { bridge } = remoteWorkspace(workspaceDir);
+    vi.mocked(readMemoryArtifactProvenance).mockResolvedValueOnce({
+      fileHash: "0".repeat(64),
+      originClass: "untrusted",
+      observedAt: 1,
+    });
+    const absolutePath = path.join(workspaceDir, "memory", "daily.md");
+    await expect(
+      resolveMemoryPathClassification({ absolutePath, source: "memory", workspaceDir }),
+    ).resolves.toEqual({ curatedRoot: false, originClass: "untrusted" });
+    expect(readMemoryArtifactProvenance).toHaveBeenCalledWith({
+      workspaceDir,
+      relativePath: "memory/daily.md",
+    });
+    expect(bridge.stat).toHaveBeenCalledWith({ filePath: "memory/daily.md" });
+    await expect(
+      resolveMemoryPathClassification({
+        absolutePath: path.join(workspaceDir, "MEMORY.md"),
+        source: "memory",
+        workspaceDir,
+      }),
+    ).resolves.toEqual({ curatedRoot: true, originClass: "agent" });
+  });
+
+  it.each(["missing", "directory", "symlink"])(
+    "rejects remote %s even with a Gateway decoy",
+    async (kind) => {
+      const workspaceDir = tempDirs.make("remote-provenance-decoy-");
+      const absolutePath = path.join(workspaceDir, "MEMORY.md");
+      await fs.writeFile(absolutePath, "trusted local decoy");
+      const { bridge } = remoteWorkspace(workspaceDir);
+      if (kind === "symlink") {
+        vi.mocked(bridge.stat).mockRejectedValueOnce(new Error("outside workspace"));
+      } else {
+        vi.mocked(bridge.stat).mockResolvedValueOnce(
+          kind === "missing" ? null : { type: "directory", size: 0, mtimeMs: 1 },
+        );
+      }
+      await expect(
+        resolveMemoryPathClassification({ absolutePath, source: "memory", workspaceDir }),
+      ).resolves.toEqual({ curatedRoot: false, originClass: "untrusted" });
+    },
+  );
+
+  it.each(["stat", "provenance"])("withholds classification revoked during %s", async (stage) => {
+    const workspaceDir = tempDirs.make("remote-provenance-revoke-");
+    const absolutePath = path.join(workspaceDir, "MEMORY.md");
+    await fs.writeFile(absolutePath, "trusted local decoy");
+    const { bridge, release } = remoteWorkspace(workspaceDir);
+    if (stage === "stat") {
+      vi.mocked(bridge.stat).mockImplementationOnce(async () => {
+        release();
+        return { type: "file", size: 10, mtimeMs: 1 };
+      });
+    } else {
+      vi.mocked(readMemoryArtifactProvenance).mockImplementationOnce(async () => {
+        release();
+        return { fileHash: "0".repeat(64), originClass: "agent", observedAt: 1 };
+      });
+    }
+    await expect(
+      resolveMemoryPathClassification({ absolutePath, source: "memory", workspaceDir }),
+    ).resolves.toEqual({ curatedRoot: false, originClass: "untrusted" });
   });
 });

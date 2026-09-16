@@ -4,6 +4,7 @@ import path from "node:path";
 import { extractErrorCode } from "openclaw/plugin-sdk/error-runtime";
 import { replaceManagedMarkdownBlock } from "openclaw/plugin-sdk/memory-host-markdown";
 import { readRegularFile, replaceFileAtomic } from "openclaw/plugin-sdk/security-runtime";
+import { getMemoryWorkspaceBridge, readMemoryWorkspaceFile } from "./memory-workspace-files.js";
 import { withMemoryWorkspaceLock } from "./memory-workspace-lock.js";
 
 export const DREAMS_FILENAMES = ["DREAMS.md", "dreams.md"] as const;
@@ -14,6 +15,13 @@ export async function resolveDreamsPath(workspaceDir: string): Promise<string> {
   for (const name of DREAMS_FILENAMES) {
     const target = path.join(workspaceDir, name);
     try {
+      const bridge = getMemoryWorkspaceBridge(workspaceDir, target);
+      if (bridge) {
+        if (await bridge.stat({ filePath: target, cwd: workspaceDir })) {
+          return target;
+        }
+        continue;
+      }
       await fs.access(target);
       return target;
     } catch (err) {
@@ -43,6 +51,11 @@ function isEmptyDreamsReadError(err: unknown): boolean {
 
 export async function readDreamsFile(dreamsPath: string): Promise<string> {
   try {
+    if (getMemoryWorkspaceBridge(path.dirname(dreamsPath), dreamsPath)) {
+      return (await readMemoryWorkspaceFile(path.dirname(dreamsPath), dreamsPath)).toString(
+        "utf-8",
+      );
+    }
     return (await readRegularFile({ filePath: dreamsPath })).buffer.toString("utf-8");
   } catch (err) {
     if (isEmptyDreamsReadError(err)) {
@@ -99,11 +112,24 @@ export async function updateDreamsFile<T>(params: {
   // cannot write a pre-deletion file snapshot back over the scrubbed contents.
   return await withMemoryWorkspaceLock(params.workspaceDir, async () => {
     const dreamsPath = await resolveDreamsPath(params.workspaceDir);
-    await fs.mkdir(path.dirname(dreamsPath), { recursive: true });
+    const bridge = getMemoryWorkspaceBridge(params.workspaceDir, dreamsPath);
+    if (!bridge) {
+      await fs.mkdir(path.dirname(dreamsPath), { recursive: true });
+    }
     const existing = await readDreamsFile(dreamsPath);
     const { content, result, shouldWrite = true } = await params.updater(existing, dreamsPath);
     if (shouldWrite) {
-      await writeDreamsFileAtomic(dreamsPath, content.endsWith("\n") ? content : `${content}\n`);
+      const updated = content.endsWith("\n") ? content : `${content}\n`;
+      if (bridge) {
+        await bridge.writeFile({
+          filePath: dreamsPath,
+          cwd: params.workspaceDir,
+          data: updated,
+          mkdir: true,
+        });
+      } else {
+        await writeDreamsFileAtomic(dreamsPath, updated);
+      }
     }
     return result;
   });

@@ -188,53 +188,59 @@ describe("remote sandbox fs bridge", () => {
     });
   });
 
-  it("normalizes stat output locale and saturates unsafe sizes", async () => {
-    // Remote stat output is untrusted shell text; unsafe numeric fields should
-    // clamp to deterministic values instead of leaking NaN into callers.
-    await withTempDir("openclaw-remote-fs-bridge-stat-", async (stateDir) => {
-      const workspaceDir = path.join(stateDir, "workspace");
-      await fs.mkdir(workspaceDir, { recursive: true });
-      const runtime = createStatRuntime(workspaceDir, {
-        hardlinks: () => "regular file|1",
-        stat: (script) =>
-          `${script.includes('LC_ALL=C stat -c "%F|%s|%y"') ? "regular file" : "reguläre Datei"}|9007199254740992|8640000000001`,
-      });
-      const bridge = createRemoteShellSandboxFsBridge({
-        sandbox: createSandbox({
-          workspaceDir,
-          agentWorkspaceDir: workspaceDir,
-        }),
-        runtime,
-      });
+  it.each(["regular file", "regular empty file"])(
+    "normalizes stat output locale and saturates unsafe sizes for %s",
+    async (kind) => {
+      // Remote stat output is untrusted shell text; unsafe numeric fields should
+      // clamp to deterministic values instead of leaking NaN into callers.
+      await withTempDir("openclaw-remote-fs-bridge-stat-", async (stateDir) => {
+        const workspaceDir = path.join(stateDir, "workspace");
+        await fs.mkdir(workspaceDir, { recursive: true });
+        const runtime = createStatRuntime(workspaceDir, {
+          hardlinks: () => `${kind}|1`,
+          stat: (script) =>
+            `${script.includes('LC_ALL=C stat -c "%F|%s|%y"') ? kind : "reguläre Datei"}|9007199254740992|8640000000001`,
+        });
+        const bridge = createRemoteShellSandboxFsBridge({
+          sandbox: createSandbox({
+            workspaceDir,
+            agentWorkspaceDir: workspaceDir,
+          }),
+          runtime,
+        });
 
-      await expect(bridge.stat({ filePath: "note.txt" })).resolves.toEqual({
-        type: "file",
-        size: Number.MAX_SAFE_INTEGER,
-        mtimeMs: 0,
+        await expect(bridge.stat({ filePath: "note.txt" })).resolves.toEqual({
+          type: "file",
+          size: Number.MAX_SAFE_INTEGER,
+          mtimeMs: 0,
+        });
       });
-    });
-  });
+    },
+  );
 
-  it("rejects hardlinked files under localized remote shells", async () => {
-    await withTempDir("openclaw-remote-fs-bridge-hardlink-locale-", async (stateDir) => {
-      const workspaceDir = path.join(stateDir, "workspace");
-      await fs.mkdir(workspaceDir, { recursive: true });
-      const runtime = createStatRuntime(workspaceDir, {
-        hardlinks: (script) =>
-          `${script.includes('LC_ALL=C stat -c "%F|%h"') ? "regular file" : "reguläre Datei"}|2`,
-        stat: () => "regular file|12|2026-05-29 12:00:00.000000000 +0000",
-      });
-      const bridge = createRemoteShellSandboxFsBridge({
-        sandbox: createSandbox({
-          workspaceDir,
-          agentWorkspaceDir: workspaceDir,
-        }),
-        runtime,
-      });
+  it.each(["regular file", "regular empty file"])(
+    "rejects hardlinked %s under localized remote shells",
+    async (kind) => {
+      await withTempDir("openclaw-remote-fs-bridge-hardlink-locale-", async (stateDir) => {
+        const workspaceDir = path.join(stateDir, "workspace");
+        await fs.mkdir(workspaceDir, { recursive: true });
+        const runtime = createStatRuntime(workspaceDir, {
+          hardlinks: (script) =>
+            `${script.includes('LC_ALL=C stat -c "%F|%h"') ? kind : "reguläre Datei"}|2`,
+          stat: () => `${kind}|0|2026-05-29 12:00:00.000000000 +0000`,
+        });
+        const bridge = createRemoteShellSandboxFsBridge({
+          sandbox: createSandbox({
+            workspaceDir,
+            agentWorkspaceDir: workspaceDir,
+          }),
+          runtime,
+        });
 
-      await expect(bridge.stat({ filePath: "note.txt" })).rejects.toThrow(/Hardlinked path/);
-    });
-  });
+        await expect(bridge.stat({ filePath: "note.txt" })).rejects.toThrow(/Hardlinked path/);
+      });
+    },
+  );
 
   it("does not reject malformed non-decimal hardlink counts", async () => {
     await withTempDir("openclaw-remote-fs-bridge-hardlink-", async (stateDir) => {

@@ -29,6 +29,7 @@ import { isCronSessionKey, isSubagentSessionKey } from "../routing/session-key.j
 import { deriveSessionChatTypeFromKey } from "../sessions/session-chat-type-shared.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
 import { resolveUserPath } from "../utils.js";
+import { getAgentWorkspaceAccess } from "./workspace-access.js";
 import {
   MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES,
   readWorkspaceBootstrapFile,
@@ -88,7 +89,7 @@ let gitAvailabilityPromise: Promise<boolean> | null = null;
 const workspaceFileCache = new Map<string, { content: string; identity: string }>();
 type WorkspaceFileSourceIdentity = readonly [
   canonicalPath: string,
-  stat: FileIdentityStat,
+  stat: FileIdentityStat | undefined,
   exactIdentity: string,
 ];
 // Loader-owned records retain the pinned-open identity through final session filtering.
@@ -131,7 +132,10 @@ export function workspaceFilesShareSourceIdentity(left: object, right: object): 
     return false;
   }
   return (
-    leftIdentity[0] === rightIdentity[0] || sameFileIdentity(leftIdentity[1], rightIdentity[1])
+    leftIdentity[0] === rightIdentity[0] ||
+    (leftIdentity[1] !== undefined &&
+      rightIdentity[1] !== undefined &&
+      sameFileIdentity(leftIdentity[1], rightIdentity[1]))
   );
 }
 
@@ -928,6 +932,11 @@ export async function ensureAgentWorkspace(params?: {
 }> {
   const rawDir = params?.dir?.trim() ? params.dir.trim() : DEFAULT_AGENT_WORKSPACE_DIR;
   const dir = resolveUserPath(rawDir);
+  if (getAgentWorkspaceAccess(dir)) {
+    // Remote workspace initialization belongs to the host that provisions it.
+    // Do not seed a second workspace or Git repository on Gateway.
+    return { dir, bootstrapPending: false };
+  }
   if (params?.provisioning === "runtime-managed-implicit") {
     // The workspace belongs to a runtime-managed agent with a distinct cwd.
     // Provision the directory (cwd fallback, media staging) without scaffolding
@@ -1159,38 +1168,53 @@ export async function ensureAgentWorkspace(params?: {
 export async function loadWorkspaceBootstrapFiles(dir: string): Promise<WorkspaceBootstrapFile[]> {
   const resolvedDir = resolveUserPath(dir);
 
-  const entries: Array<{
-    name: WorkspaceBootstrapFileName;
-    filePath: string;
-  }> = [
-    {
-      name: DEFAULT_AGENTS_FILENAME,
-      filePath: path.join(resolvedDir, DEFAULT_AGENTS_FILENAME),
-    },
-    {
-      name: DEFAULT_SOUL_FILENAME,
-      filePath: path.join(resolvedDir, DEFAULT_SOUL_FILENAME),
-    },
-    {
-      name: DEFAULT_IDENTITY_FILENAME,
-      filePath: path.join(resolvedDir, DEFAULT_IDENTITY_FILENAME),
-    },
-    {
-      name: DEFAULT_USER_FILENAME,
-      filePath: path.join(resolvedDir, DEFAULT_USER_FILENAME),
-    },
-    {
-      name: DEFAULT_BOOTSTRAP_FILENAME,
-      filePath: path.join(resolvedDir, DEFAULT_BOOTSTRAP_FILENAME),
-    },
-    {
-      name: DEFAULT_MEMORY_FILENAME,
-      filePath: path.join(resolvedDir, DEFAULT_MEMORY_FILENAME),
-    },
-  ];
+  const access = getAgentWorkspaceAccess(resolvedDir);
+  const entries = WORKSPACE_BOOTSTRAP_FILENAMES.map((name) => ({
+    name,
+    filePath: path.join(resolvedDir, name),
+  }));
 
   const result: WorkspaceBootstrapFile[] = [];
+  const assertCurrentAccess = () => {
+    if (getAgentWorkspaceAccess(resolvedDir) !== access) {
+      throw new Error("Workspace access changed while loading bootstrap files");
+    }
+  };
   for (const entry of entries) {
+    if (access) {
+      const stat = await access.bridge.stat({ filePath: entry.name });
+      assertCurrentAccess();
+      if (!stat) {
+        if (entry.name !== DEFAULT_MEMORY_FILENAME && entry.name !== DEFAULT_USER_FILENAME) {
+          result.push({ name: entry.name, path: entry.filePath, missing: true });
+        }
+        continue;
+      }
+      const data = await access.bridge.readFile({
+        filePath: entry.name,
+        maxBytes: MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES,
+      });
+      assertCurrentAccess();
+      if (data.length > MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES) {
+        throw new Error(`Workspace bootstrap file exceeds its read bound: ${entry.name}`);
+      }
+      const content = new TextDecoder("utf-8", { fatal: true }).decode(data);
+      const file: WorkspaceBootstrapFile = {
+        name: entry.name,
+        path: entry.filePath,
+        content,
+        missing: false,
+      };
+      // The path is the logical workspace identity used by existing privacy
+      // filters. Do not fabricate a local inode for a remote file.
+      setWorkspaceFileSourceIdentity(file, [
+        entry.filePath,
+        undefined,
+        `${entry.filePath}:${createHash("sha256").update(content).digest("hex")}`,
+      ]);
+      result.push(file);
+      continue;
+    }
     if (
       (entry.name === DEFAULT_MEMORY_FILENAME || entry.name === DEFAULT_USER_FILENAME) &&
       !(await exactWorkspaceEntryExists(resolvedDir, entry.name))

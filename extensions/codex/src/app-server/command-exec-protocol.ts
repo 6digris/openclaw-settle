@@ -1,6 +1,8 @@
 /** Bounded, sandboxed argv execution over the existing app-server connection. */
 export type CodexCommandExecParams = {
   command: string[];
+  cwd?: string;
+  sandboxPolicy?: { type: "readOnly" };
   env?: Partial<Record<string, string | null>> | null;
   outputBytesCap?: number | null;
   timeoutMs?: number | null;

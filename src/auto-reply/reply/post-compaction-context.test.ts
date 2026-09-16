@@ -2,10 +2,13 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { getAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 import { MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES } from "../../agents/workspace-bootstrap-read.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { readPostCompactionContext } from "./post-compaction-context.js";
+
+vi.mock("../../agents/workspace-access.js", () => ({ getAgentWorkspaceAccess: vi.fn() }));
 
 describe("readPostCompactionContext", () => {
   let tmpDir = "";
@@ -18,6 +21,7 @@ describe("readPostCompactionContext", () => {
   } satisfies OpenClawConfig;
 
   beforeEach(() => {
+    vi.resetAllMocks();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "test-post-compaction-"));
   });
 
@@ -74,6 +78,52 @@ describe("readPostCompactionContext", () => {
     const result = await readPostCompactionContext(tmpDir);
     expect(result).toBeNull();
   });
+
+  it.each(["available", "revoked", "oversized", "unavailable"] as const)(
+    "uses the remote workspace after compaction when it is %s",
+    async (state) => {
+      fs.writeFileSync(path.join(tmpDir, "AGENTS.md"), "## Session Startup\nStale local rules.");
+      const unavailableOperation = () => {
+        throw new Error("Unexpected filesystem operation");
+      };
+      const readFile = vi.fn(async () => {
+        if (state === "unavailable") {
+          throw new Error("Workspace is unavailable");
+        }
+        if (state === "revoked") {
+          vi.mocked(getAgentWorkspaceAccess).mockReturnValue(undefined);
+        }
+        return Buffer.from(
+          "## Session Startup\nRemote workspace rules." +
+            (state === "oversized" ? "x".repeat(MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES) : ""),
+        );
+      });
+      vi.mocked(getAgentWorkspaceAccess).mockReturnValue({
+        bridge: {
+          resolvePath: unavailableOperation,
+          readFile,
+          writeFile: unavailableOperation,
+          mkdirp: unavailableOperation,
+          remove: unavailableOperation,
+          rename: unavailableOperation,
+          stat: unavailableOperation,
+        },
+      });
+
+      const result = await readDefaultPostCompactionContext();
+
+      if (state === "available") {
+        expect(result).toContain("Remote workspace rules.");
+        expect(result).not.toContain("Stale local rules.");
+        expect(readFile).toHaveBeenCalledWith({
+          filePath: "AGENTS.md",
+          maxBytes: MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES,
+        });
+      } else {
+        expect(result).toBeNull();
+      }
+    },
+  );
 
   it("returns null when AGENTS.md has no relevant sections", async () => {
     fs.writeFileSync(path.join(tmpDir, "AGENTS.md"), "# My Agent\n\nSome content.\n");

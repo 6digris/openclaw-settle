@@ -1,7 +1,13 @@
+import {
+  declareAgentWorkspaceAccess,
+  registerAgentWorkspaceAccess,
+  type AgentWorkspaceAccess,
+} from "openclaw/plugin-sdk/agent-harness-runtime";
 // Memory Core tests cover index plugin behavior.
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { OpenClawPluginApi, OpenClawPluginCommandDefinition } from "openclaw/plugin-sdk/core";
 import type { MemoryPluginRuntime } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
+import type { AnyAgentTool } from "openclaw/plugin-sdk/plugin-entry";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -101,16 +107,26 @@ function captureMemoryModelContract(initialConfig: OpenClawConfig) {
     config: initialConfig,
     getRuntimeConfig: () => initialConfig,
   };
-  const search = factories.get("memory_search")?.(context) as
-    | { description: string; parameters: unknown }
-    | undefined;
-  const get = factories.get("memory_get")?.(context) as
-    | { description: string; parameters: unknown }
-    | undefined;
+  const search = factories.get("memory_search")?.(context) as AnyAgentTool | undefined;
+  const get = factories.get("memory_get")?.(context) as AnyAgentTool | undefined;
   if (!search || !get || !promptBuilder) {
     throw new Error("expected memory model contract");
   }
   return { search, get, promptBuilder };
+}
+
+function createMemoryTestBridge(): AgentWorkspaceAccess["bridge"] {
+  return {
+    resolvePath: () => {
+      throw new Error("Memory tools must not read Gateway files");
+    },
+    readFile: vi.fn(),
+    writeFile: vi.fn(),
+    mkdirp: vi.fn(),
+    remove: vi.fn(),
+    rename: vi.fn(),
+    stat: vi.fn(),
+  };
 }
 
 describe("buildPromptSection", () => {
@@ -234,6 +250,92 @@ describe("memory-core plugin runtime registration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
+
+  it.each(["search", "get"] as const)(
+    "executes remote memory %s without a Gateway index",
+    async (key) => {
+      const workspace = `/tmp/openclaw-remote-memory-${key}`;
+      const cfg: OpenClawConfig = {
+        agents: { defaults: { workspace } },
+        memory: { search: { provider: "none", sources: ["memory"] } },
+      };
+      const result = {
+        content: [{ type: "text" as const, text: "Harness memory result" }],
+        details: {},
+      };
+      const executeMemoryTool = vi.fn(async () => result);
+      declareAgentWorkspaceAccess(workspace);
+      const tool = captureMemoryModelContract(cfg)[key];
+      const args = key === "search" ? { query: "preference" } : { path: "memory/preferences.md" };
+      await expect(tool.execute("before-start", args)).rejects.toThrow("not ready");
+      const release = registerAgentWorkspaceAccess(workspace, {
+        bridge: createMemoryTestBridge(),
+        executeMemoryTool,
+      });
+      try {
+        // Repeated plugin discovery must not revoke a running service.
+        declareAgentWorkspaceAccess(workspace);
+        const signal = new AbortController().signal;
+        expect(await tool.execute("call-1", args, signal)).toEqual(result);
+        expect(executeMemoryTool).toHaveBeenCalledWith(
+          `memory_${key}`,
+          "call-1",
+          args,
+          signal,
+          undefined,
+        );
+        executeMemoryTool.mockImplementationOnce(async () => {
+          release();
+          return result;
+        });
+        await expect(tool.execute("call-2", args)).rejects.toThrow("stopped");
+        await expect(tool.execute("call-3", args)).rejects.toThrow("stopped");
+        expect(executeMemoryTool).toHaveBeenCalledTimes(2);
+      } finally {
+        release();
+      }
+    },
+  );
+
+  it.each(["search", "get"] as const)(
+    "uses the native memory %s factory when the workspace supplies a manager",
+    async (key) => {
+      const workspace = `/tmp/openclaw-manager-memory-${key}`;
+      const cfg: OpenClawConfig = {
+        agents: { defaults: { workspace } },
+        memory: { search: { provider: "none", sources: ["memory"] } },
+      };
+      const tool = captureMemoryModelContract(cfg)[key];
+      const result = {
+        content: [{ type: "text" as const, text: "native memory result" }],
+        details: {},
+      };
+      const nativeExecute = vi.fn(async () => result);
+      const module = await import("./src/tools.js");
+      const factory = vi
+        .spyOn(module, key === "search" ? "createMemorySearchTool" : "createMemoryGetTool")
+        .mockReturnValue({ ...tool, execute: nativeExecute });
+      const executeMemoryTool = vi.fn();
+      const release = registerAgentWorkspaceAccess(workspace, {
+        bridge: createMemoryTestBridge(),
+        getMemorySearchManager: async () => {
+          throw new Error("Factory stub owns this test");
+        },
+        executeMemoryTool,
+      });
+      try {
+        const args = key === "search" ? { query: "preference" } : { path: "MEMORY.md" };
+        const signal = new AbortController().signal;
+        expect(await tool.execute("native", args, signal)).toEqual(result);
+        expect(factory).toHaveBeenCalledOnce();
+        expect(nativeExecute).toHaveBeenCalledWith("native", args, signal, undefined);
+        expect(executeMemoryTool).not.toHaveBeenCalled();
+      } finally {
+        release();
+        factory.mockRestore();
+      }
+    },
+  );
 
   it("does not resolve prompt config when no memory tools are exposed", () => {
     let promptBuilder:
