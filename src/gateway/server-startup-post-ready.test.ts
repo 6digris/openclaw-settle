@@ -76,7 +76,9 @@ describe("Gateway post-ready startup work", () => {
           controlUiEnabled: false,
           sidecarStartup: "defer",
         });
+        console.info("SR");
         await realStartup;
+        console.info("ST");
         // Let both production grace periods elapse while published startup is pending.
         await delay(600);
         expect(startMaintenance).not.toHaveBeenCalled();
@@ -88,9 +90,12 @@ describe("Gateway post-ready startup work", () => {
             shouldClearNativeTimers: true,
           });
           closeOutcome = server.close();
+          console.info("CR");
           await postReadyWork;
+          console.info("PR");
           expect(resumed).toHaveBeenCalledExactlyOnceWith(true);
           startup.resolve();
+          console.info("CW");
           await closeOutcome;
           expect(startMaintenance).not.toHaveBeenCalled();
           expect(vi.getTimerCount()).toBe(0);
@@ -108,6 +113,7 @@ describe("Gateway post-ready startup work", () => {
           await closeOutcome;
           await server?.close();
           await postReadyWork;
+          console.info("SC");
           await state.cleanup();
         } finally {
           vi.useRealTimers();
