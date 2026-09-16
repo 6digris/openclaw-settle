@@ -2,7 +2,6 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
-import { emitDiagnosticEventWithTrustedTraceContext } from "../infra/diagnostic-events.js";
 import { recordDiagnosticToolExecutionDeadline } from "../infra/diagnostic-tool-execution-liveness.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import {
@@ -55,6 +54,7 @@ import {
   renderExecOutputText,
   renderExecUpdateText,
 } from "./bash-tools.exec-output.js";
+import { emitExecProcessCompleted } from "./bash-tools.exec-runtime.diagnostics.js";
 import type { ExecToolDetails } from "./bash-tools.exec-types.js";
 import type { BashSandboxConfig } from "./bash-tools.shared.js";
 import { chunkString, clampWithDefault, readEnvInt } from "./bash-tools.shared.js";
@@ -165,42 +165,6 @@ export type ExecProcessHandle = {
   /** Immediately suppress all future `onUpdate` calls for this handle. */
   disableUpdates: () => void;
 };
-
-function normalizeExecExitSignal(signal: NodeJS.Signals | number | null): string | undefined {
-  if (signal === null) {
-    return undefined;
-  }
-  return String(signal);
-}
-
-function emitExecProcessCompleted(params: {
-  command: string;
-  mode: "child" | "pty";
-  outcome: ExecProcessOutcome;
-  sessionKey?: string;
-  target: "host" | "sandbox";
-}): void {
-  const exitSignal = normalizeExecExitSignal(params.outcome.exitSignal);
-  // Payload stays untrusted, but the ambient trace context is the OpenClaw run
-  // scope, so exporters may use it to nest the exec span under its run.
-  emitDiagnosticEventWithTrustedTraceContext({
-    type: "exec.process.completed",
-    target: params.target,
-    mode: params.mode,
-    outcome: params.outcome.status,
-    durationMs: params.outcome.durationMs,
-    commandLength: params.command.length,
-    ...(params.sessionKey?.trim() ? { sessionKey: params.sessionKey.trim() } : {}),
-    ...(typeof params.outcome.exitCode === "number" ? { exitCode: params.outcome.exitCode } : {}),
-    ...(exitSignal ? { exitSignal } : {}),
-    ...(params.outcome.status === "failed"
-      ? {
-          timedOut: params.outcome.timedOut,
-          failureKind: params.outcome.failureKind,
-        }
-      : {}),
-  });
-}
 
 /** Renders a host label for user-facing exec policy messages. */
 function renderExecHostLabel(host: ExecHost) {
