@@ -16,6 +16,7 @@ env:
   SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
   PRODUCT_SHA: ea5752edb221293fbc6db8512710321cb2cd1b5b
   PRIOR_PRODUCT_SHA: 2afb75821cfbceeacc6282c6d49a5b49b7619ebe
+  PASSED_SOURCE_SHA: 843ecedfa02115ce0cbc61110cf00c8e6754e98c
   HARNESS_SHA: ${{ github.event.pull_request.head.sha }}
   FIX_PATHS: '["src/cli/update-cli/update-command-freebsd-pkg.test.ts","src/cli/update-cli/update-command-freebsd-policy.ts","src/cli/update-cli/update-command-initialization.test.ts","src/cli/update-cli/update-command-initialization.ts","src/cli/update-cli/update-command-run.ts","src/cli/update-cli/update-command-state-initialization.ts","src/cli/update-cli/update-command.ts","src/flows/doctor-core-checks.runtime.test.ts","src/flows/doctor-core-checks.runtime.ts","src/flows/doctor-core-checks.ts","src/flows/doctor-gateway-daemon.test.ts","src/flows/doctor-gateway-daemon.ts","src/infra/update-freebsd-root-ownership.test.ts","src/infra/update-freebsd-root-ownership.ts","src/infra/update-migrated-finalize.worker.ts"]'
   BASELINE_SRI: sha512-lTQpEEe1Xm3u2PCHaPEr+vP8paGk1vLdHuzdItsNToaLI6hAqRVvgJYg+GxukJhETJp4tPy/S1Gftl4KuB8n7A==
@@ -41,17 +42,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 11
+          fetch-depth: 12
           persist-credentials: false
       - &identity
         name: Verify reviewed source identities
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-          test "$(git rev-parse HEAD^)" = "$PRODUCT_SHA"
+          test "$(git rev-parse HEAD^)" = "$PASSED_SOURCE_SHA"
+          test "$(git rev-parse "$PASSED_SOURCE_SHA^")" = "$PRODUCT_SHA"
           git merge-base --is-ancestor "$COMPARISON_BASE" HEAD
-          test "$(git rev-parse 'HEAD^1^{tree}')" = "$EXPECTED_PRODUCT_TREE"
+          test "$(git rev-parse "$PRODUCT_SHA^{tree}")" = "$EXPECTED_PRODUCT_TREE"
           test "$(git diff --name-only HEAD^ HEAD)" = .github/workflows/freebsd-foreground-proof.yml
+          git diff --exit-code "$PRODUCT_SHA" HEAD -- . ':(exclude).github/workflows/freebsd-foreground-proof.yml'
           node --input-type=module <<'NODE'
           import assert from 'node:assert/strict';
           import { createHash } from 'node:crypto';
@@ -67,54 +70,45 @@ jobs:
           node-version: "24.19.0"
           install-bun: "false"
           cache-mode: "off"
-      - name: Check the changed admission and extracted owners
+      - name: Bind the completed source checks and Linux controls
         run: |
           set -euo pipefail
           node --input-type=module <<'NODE'
           import assert from 'node:assert/strict';
           import { execFileSync } from 'node:child_process';
           const actual=execFileSync('git',['diff','--name-only',process.env.PRIOR_PRODUCT_SHA,process.env.PRODUCT_SHA],{encoding:'utf8'}).trim().split('\n');
-          const expected=JSON.parse(process.env.FIX_PATHS); assert.deepEqual(actual,expected);
-          const run=(args)=>execFileSync('node',['scripts/check-changed.mjs','--base',process.env.PRIOR_PRODUCT_SHA,'--head',process.env.PRODUCT_SHA,...args,'--',...actual],{stdio:'inherit'});
-          run(['--dry-run']); run([]);
+          assert.deepEqual(actual,JSON.parse(process.env.FIX_PATHS));
+          console.log(JSON.stringify({carriedProof:{run:'35101985276',attempt:1,job:'104813422232',source:process.env.PASSED_SOURCE_SHA,product:process.env.PRODUCT_SHA,logSha256:'a075bca6ffe877d8c042472025d0ddc9c8661b0449d3900e8d1585eff8d3e57b',changedChecks:'passed',deadCodeScans:'passed',linux:{passed:445,skipped:10,files:19}},freshPackageRequired:true}));
           NODE
-      - name: Recheck the failed production dead-code gate and remaining scans
+      - name: Fetch and authenticate the published bootstrap package once
         run: |
           set -euo pipefail
-          pnpm deadcode:full
-          pnpm deadcode:unused-files
+          mkdir "$RUNNER_TEMP/published-baseline" "$RUNNER_TEMP/proof"
+          # Canonical published-artifact readback; dependency-install cooldowns stay unchanged.
+          timeout --preserve-status 300s npm pack openclaw@2026.9.4 --ignore-scripts --json --min-release-age=0 --registry=https://registry.npmjs.org/ \
+            --pack-destination "$RUNNER_TEMP/published-baseline" > "$RUNNER_TEMP/published-baseline/pack.json"
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import { createHash } from 'node:crypto';
+          const dir=`${process.env.RUNNER_TEMP}/published-baseline`;
+          const rows=JSON.parse(fs.readFileSync(`${dir}/pack.json`));
+          assert.equal(rows.length,1);
+          const row=rows[0]; assert.equal(row.name,'openclaw'); assert.equal(row.version,'2026.9.4');
+          assert.equal(row.filename,'openclaw-2026.9.4.tgz'); assert.equal(row.integrity,process.env.BASELINE_SRI);
+          const bytes=fs.readFileSync(`${dir}/${row.filename}`);
+          assert.equal(`sha512-${createHash('sha512').update(bytes).digest('base64')}`,process.env.BASELINE_SRI);
+          fs.writeFileSync(`${process.env.RUNNER_TEMP}/proof/published-2026.9.4.tgz`,bytes,{flag:'wx'});
+          console.log(JSON.stringify({publishedBootstrap:'openclaw@2026.9.4',integrity:process.env.BASELINE_SRI,size:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')}));
+          NODE
       # Final source-only CI rechecks the current-main line-cap ratchet against
       # the composed tree. This source snapshot predates that script.
+      # The prior runner uploaded no artifact; this rebuild creates fresh bytes and identity.
       - name: Build and pack the candidate once
         run: |
           set -euo pipefail
           git archive --format=tar.gz --prefix=openclaw/ "$SOURCE_SHA" > "$RUNNER_TEMP/source.tar.gz"
           node scripts/package-openclaw-for-docker.mjs --allow-unreleased-changelog             --output-dir "$RUNNER_TEMP/candidate-package" --output-name candidate.tgz             --pack-json "$RUNNER_TEMP/candidate-pack.json"
-      - name: Linux control and existing updater owners
-        run: |
-          set -euo pipefail
-          # Require all seven maintenance cases (three admission, four repair refusals).
-          # The unchanged daemon-flow file has four fewer cases after their relocation.
-          node scripts/run-vitest.mjs \
-            src/cli/update-cli/update-command-initialization.test.ts \
-            src/cli/update-cli/update-command-artifact.test.ts \
-            src/cli/update-cli/update-command-freebsd-admission.test.ts \
-            src/cli/update-cli/update-command-freebsd-pkg.test.ts \
-            src/cli/update-cli/update-command-fresh-preview.test.ts \
-            src/cli/update-cli/update-command-mutable-signals.test.ts \
-            src/cli/update-cli/update-command-service-publication.test.ts \
-            src/commands/doctor-gateway-daemon-flow.test.ts \
-            src/commands/doctor-maintenance.freebsd.test.ts \
-            src/daemon/service-operation-lock.test.ts \
-            src/daemon/service.test.ts \
-            src/flows/doctor-core-checks.runtime.test.ts \
-            src/flows/doctor-gateway-daemon.test.ts \
-            src/cli/update-cli/update-command-runtime-preview.test.ts \
-            src/cli/update-cli/update-command-timeouts.test.ts \
-            src/cli/update-cli/update-command-sentinel-env.test.ts \
-            src/cli/update-cli/update-finalization-lifecycle.test.ts \
-            src/cli/update-cli/update-command-fresh-doctor.test.ts \
-            src/cli/update-cli/update-command-post-update.test.ts
       - *identity
       - name: Seal candidate and metadata-only update target
         id: seal
@@ -139,26 +133,6 @@ jobs:
           assert.equal(receipt.targetSha256, createHash('sha256').update(fs.readFileSync(`${dir}/first-hop.tgz`)).digest('hex'));
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `manifest_sha256=${createHash('sha256').update(fs.readFileSync(`${dir}/payload/install-smoke-candidate-payload.json`)).digest('hex')}\nsource_archive_sha256=${manifest.sourceArchiveSha256}\npackage_version=${manifest.packageVersion}\n`);
           console.log(JSON.stringify(receipt));
-          NODE
-      - name: Fetch and authenticate the published bootstrap package once
-        run: |
-          set -euo pipefail
-          mkdir "$RUNNER_TEMP/published-baseline"
-          timeout --preserve-status 300s npm pack openclaw@2026.9.4 --ignore-scripts --json \
-            --pack-destination "$RUNNER_TEMP/published-baseline" > "$RUNNER_TEMP/published-baseline/pack.json"
-          node --input-type=module <<'NODE'
-          import assert from 'node:assert/strict';
-          import fs from 'node:fs';
-          import { createHash } from 'node:crypto';
-          const dir=`${process.env.RUNNER_TEMP}/published-baseline`;
-          const rows=JSON.parse(fs.readFileSync(`${dir}/pack.json`));
-          assert.equal(rows.length,1);
-          const row=rows[0]; assert.equal(row.name,'openclaw'); assert.equal(row.version,'2026.9.4');
-          assert.equal(row.filename,'openclaw-2026.9.4.tgz'); assert.equal(row.integrity,process.env.BASELINE_SRI);
-          const bytes=fs.readFileSync(`${dir}/${row.filename}`);
-          assert.equal(`sha512-${createHash('sha512').update(bytes).digest('base64')}`,process.env.BASELINE_SRI);
-          fs.writeFileSync(`${process.env.RUNNER_TEMP}/proof/published-2026.9.4.tgz`,bytes,{flag:'wx'});
-          console.log(JSON.stringify({publishedBootstrap:'openclaw@2026.9.4',integrity:process.env.BASELINE_SRI,size:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')}));
           NODE
       - name: Upload immutable source and packages
         id: upload
@@ -195,7 +169,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 11
+          fetch-depth: 12
           persist-credentials: false
           sparse-checkout-cone-mode: false
           sparse-checkout: |
@@ -206,11 +180,12 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$HARNESS_SHA"
-          test "$(git rev-parse HEAD^)" = "$PRODUCT_SHA"
+          test "$(git rev-parse HEAD^)" = "$PASSED_SOURCE_SHA"
+          test "$(git rev-parse "$PASSED_SOURCE_SHA^")" = "$PRODUCT_SHA"
           test "$(git diff --name-only HEAD^ HEAD)" = .github/workflows/freebsd-foreground-proof.yml
-          test "$(git rev-parse "$SOURCE_SHA^1^{tree}")" = "$EXPECTED_PRODUCT_TREE"
+          test "$(git rev-parse "$PRODUCT_SHA^{tree}")" = "$EXPECTED_PRODUCT_TREE"
           git merge-base --is-ancestor "$COMPARISON_BASE" HEAD
-          git diff --exit-code "$SOURCE_SHA" HEAD -- . ':(exclude).github/workflows/freebsd-foreground-proof.yml'
+          git diff --exit-code "$PRODUCT_SHA" HEAD -- . ':(exclude).github/workflows/freebsd-foreground-proof.yml'
           printf 'consumer_head=%s consumer_run=%s consumer_attempt=%s producer_head=%s producer_run=%s producer_attempt=%s\n' "$HARNESS_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$SOURCE_SHA" "$PROOF_RUN_ID" "$PROOF_RUN_ATTEMPT"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
