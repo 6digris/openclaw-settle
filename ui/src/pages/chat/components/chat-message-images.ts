@@ -57,6 +57,7 @@ class MessageImageResourceDirective extends AsyncDirective {
   private managed = false;
   private pendingPreview: Promise<string | null> | undefined;
   private presentationKey = Symbol("image-presentation");
+  private frameStyle: string | undefined;
   private retained: RetainedInlineImage | { status: "unavailable" } | undefined;
   // Resource updates stay in this part; row ResizeObserver owns layout changes.
   private readonly refreshImage = () => {
@@ -96,12 +97,14 @@ class MessageImageResourceDirective extends AsyncDirective {
       this.releaseRetainedImage();
       // The gallery binds the exact submission/slot. Retain only pixels this
       // mounted IMG has loaded, never another pane's cached preview.
-      this.retained =
+      const canonicalHandoff =
         image.factIndex !== undefined &&
-        previous &&
+        previous !== undefined &&
         isInlineImageSource(previous.url) &&
         previous.artifactId === image.artifactId &&
-        isCanonicalInboundMediaSource(image.url) &&
+        isCanonicalInboundMediaSource(image.url);
+      this.retained =
+        canonicalHandoff &&
         this.element?.getAttribute("src") === previous.url &&
         this.element.naturalWidth > 0
           ? { status: "retaining", previewUrl: previous.url }
@@ -114,6 +117,9 @@ class MessageImageResourceDirective extends AsyncDirective {
       if (!this.retained && !inlineReplacement) {
         this.element = undefined;
         this.presentationKey = Symbol("image-presentation");
+        if (!canonicalHandoff) {
+          this.frameStyle = undefined;
+        }
       }
       releaseChatMediaResourceSubscriber(this.refreshImage);
     }
@@ -283,26 +289,29 @@ class MessageImageResourceDirective extends AsyncDirective {
     content: TemplateResult | typeof nothing,
     state?: "checking" | "loading" | "unavailable",
   ) {
+    const pending = state === "checking" || state === "loading";
+    const compact = state === "unavailable" || state === "checking";
     const sized =
       Number.isFinite(img.width) &&
       img.width! > 0 &&
       Number.isFinite(img.height) &&
       img.height! > 0;
-    const ratio = sized ? img.width! / img.height! : undefined;
-    const pending = state === "checking" || state === "loading";
-    const compact = state === "unavailable" || state === "checking" || (!sized && pending);
-    const previewWidth = ratio
+    const ratio = sized ? img.width! / img.height! : 3 / 2;
+    const previewWidth = sized
       ? img.width! < MIN_CHAT_IMAGE_PREVIEW_WIDTH
         ? MIN_CHAT_IMAGE_PREVIEW_WIDTH
         : Math.min(img.width!, 400, 360 * ratio)
       : 400;
     const width = compact ? Math.max(MIN_CHAT_IMAGE_PREVIEW_WIDTH, previewWidth) : previewWidth;
-    const height = ratio ? Math.min(360, width / ratio) : undefined;
-    // Only loadable images with known dimensions reserve preview geometry.
-    // Unknown images use their intrinsic size; gallery tiles keep their own layout.
+    const height = Math.min(360, width / ratio);
+    const style = `--chat-image-width: ${width}px; --chat-image-ratio: ${compact ? "auto" : `${width} / ${height}`}`;
+    if (!compact) {
+      // Late facts and canonical handoff must not resize already presented pixels.
+      this.frameStyle ??= style;
+    }
     return html`<span
-      class="chat-image-frame ${sized || compact ? "chat-image-frame--image" : ""} ${this.managed && !compact ? "chat-image-frame--managed" : ""} ${compact ? "chat-image-frame--compact" : ""}"
-      style=${`--chat-image-width: ${width}px; --chat-image-min-width: ${MIN_CHAT_IMAGE_PREVIEW_WIDTH}px; --chat-image-ratio: ${!compact && height ? `${width} / ${height}` : "auto"}`}
+      class="chat-image-frame chat-image-frame--image ${this.managed && !compact ? "chat-image-frame--managed" : ""} ${compact ? "chat-image-frame--compact" : ""}"
+      style=${compact ? style : this.frameStyle}
       aria-busy=${pending ? "true" : "false"}
       role=${pending ? "status" : nothing}
       aria-label=${pending ? t("common.loading") : nothing}
