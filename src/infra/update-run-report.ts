@@ -45,7 +45,7 @@ type UpdateRunIdentity =
   | { kind: "unavailable" }
   | { kind: "mismatch"; field: "version" | "build" };
 
-function resolveUpdateRunIdentity(
+export function resolveUpdateRunIdentity(
   facts: UpdateRunRecord["verification"],
   expected: UpdateRunRecord["after"],
 ): UpdateRunIdentity {
@@ -196,7 +196,10 @@ export function renderUpdateRunReport(
           : `⚠️ OpenClaw update failed: ${reason}.${running ? ` The gateway is running ${running}.` : ""}`;
       break;
     case "skipped":
-      headline = `ℹ️ OpenClaw update skipped: ${reason}.`;
+      headline =
+        run.reason === "gateway-readiness-unverified"
+          ? `ℹ️ OpenClaw${after ? ` ${after}` : ""} installed; Gateway readiness unverified; recovery backups retained.`
+          : `ℹ️ OpenClaw update skipped: ${reason}.`;
       break;
     case "rolled-back":
       headline = `↩️ OpenClaw update rolled back to ${after ?? running ?? before ?? "the previous version"}: ${reason}.`;

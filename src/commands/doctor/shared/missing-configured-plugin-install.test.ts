@@ -3,10 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { PLUGIN_CAPABILITY_CONSENT_REQUIRED } from "../../../../packages/gateway-protocol/src/capability-consent-error-details.js";
-import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.js";
-import { withIsolatedTestHome } from "../../../../test/test-env.js";
 import type { OpenClawConfig, PluginsConfig } from "../../../config/types.js";
 import { resolveRegistryUpdateChannel } from "../../../infra/update-channels.js";
 import { resolvePluginArtifactDeclaredSurface } from "../../../plugins/capability-artifact.js";
@@ -21,10 +19,11 @@ import { resolveInstalledPluginIndexPolicyHash } from "../../../plugins/installe
 import { readPersistedInstalledPluginIndex } from "../../../plugins/installed-plugin-index-store.js";
 import { isTrustedOfficialPluginInstallRecord } from "../../../plugins/official-external-install-records.js";
 import { withPluginLifecycleLease } from "../../../plugins/plugin-lifecycle-lease.js";
+import { createPluginMetadataSnapshotFixture } from "../../../plugins/plugin-metadata.test-support.js";
 import type { BundledProviderPolicySurface } from "../../../plugins/provider-policy-surface.js";
 import { createColdPluginFixture } from "../../../plugins/test-helpers/cold-plugin-fixtures.js";
 import { seedInstalledPluginIndex } from "../../../plugins/test-helpers/installed-plugin-index.js";
-import { closeOpenClawStateDatabaseByPath } from "../../../state/openclaw-state-db-cache.js";
+import { closeOpenClawStateDatabaseByPathAsync } from "../../../state/openclaw-state-db-cache.js";
 import { resolveOpenClawStateSqlitePath } from "../../../state/openclaw-state-db.paths.js";
 import { expectObjectFields } from "../../../test-utils/mock-call-assertions.js";
 import { VERSION } from "../../../version.js";
@@ -36,6 +35,7 @@ import {
   installedRecords,
   officialPluginEntry,
   officialWebSearchPluginEntry,
+  setupPluginInstallTestState,
   successfulInstall,
   successfulUpdate,
 } from "./missing-configured-plugin-install.test-helpers.js";
@@ -106,7 +106,7 @@ const mocks = vi.hoisted(() => ({
   listChannelPluginCatalogEntries: vi.fn(),
   listOfficialExternalChannelEnvVars: vi.fn(() => []),
   listOfficialExternalPluginCatalogEntries: vi.fn(),
-  loadInstalledPluginIndex: vi.fn(),
+  loadPluginManifestRegistryCore: vi.fn(),
   loadInstalledPluginIndexInstallRecords: vi.fn(),
   loadPluginMetadataSnapshot: vi.fn(),
   getOfficialExternalPluginCatalogManifest: vi.fn(
@@ -172,17 +172,7 @@ const mocks = vi.hoisted(() => ({
     >(),
 }));
 
-const testHome = withIsolatedTestHome({ mode: "hermetic" });
-const testEnv: NodeJS.ProcessEnv = {
-  HOME: testHome.tempHome,
-  OPENCLAW_HOME: testHome.tempHome,
-  OPENCLAW_STATE_DIR: path.join(testHome.tempHome, ".openclaw"),
-};
-afterAll(() => {
-  closeOpenClawStateDatabaseByPath(resolveOpenClawStateSqlitePath(testEnv));
-  testHome.cleanup();
-});
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const { testEnv, tempDirs } = setupPluginInstallTestState();
 
 const prepareManagedPluginArtifactConsentHandler = vi.hoisted(() =>
   vi.fn<
@@ -199,10 +189,9 @@ function mockCurrentBundledPlugin(
   packageName: string,
   rootDir = `/tmp/bundled/${pluginId}`,
 ): void {
-  mocks.loadInstalledPluginIndex.mockReturnValue({
-    plugins: [{ pluginId, origin: "bundled", packageName, rootDir }],
+  mocks.loadPluginManifestRegistryCore.mockReturnValue({
+    plugins: [{ id: pluginId, origin: "bundled", packageName, rootDir }],
     diagnostics: [],
-    installRecords: {},
   });
 }
 
@@ -293,10 +282,26 @@ vi.mock("../../../plugins/installed-plugin-index-records.js", async (importOrigi
     mocks.writePersistedInstalledPluginIndexInstallRecordsWithLease,
 }));
 
-vi.mock("../../../plugins/installed-plugin-index.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../plugins/installed-plugin-index.js")>()),
-  loadInstalledPluginIndex: mocks.loadInstalledPluginIndex,
-}));
+vi.mock("../../../plugins/manifest-registry.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../plugins/manifest-registry.js")>();
+  return {
+    ...actual,
+    loadPluginManifestRegistryCore: (
+      params: Parameters<typeof actual.loadPluginManifestRegistryCore>[0],
+    ) => {
+      // Staged consent inspects real artifact manifests, not the synthetic bundled inventory.
+      if (
+        params?.candidates !== undefined ||
+        params?.discovery !== undefined ||
+        !params?.installRecords ||
+        Object.keys(params.installRecords).length > 0
+      ) {
+        return actual.loadPluginManifestRegistryCore(params);
+      }
+      return mocks.loadPluginManifestRegistryCore(params);
+    },
+  };
+});
 
 vi.mock("../../../plugins/install-paths.js", () => ({
   resolveDefaultPluginExtensionsDir: mocks.resolveDefaultPluginExtensionsDir,
@@ -328,14 +333,18 @@ vi.mock("../../../plugins/clawhub.js", () => ({
   installPluginFromClawHub: mocks.installPluginFromClawHub,
 }));
 
-vi.mock("../../../plugins/plugin-metadata-snapshot.js", () => ({
+vi.mock("../../../plugins/plugin-metadata-snapshot.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../plugins/plugin-metadata-snapshot.js")>()),
   loadPluginMetadataSnapshot: mocks.loadPluginMetadataSnapshot,
   resolvePluginMetadataSnapshot: mocks.loadPluginMetadataSnapshot,
 }));
 
 vi.mock("../../../plugins/manifest-contract-eligibility.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../plugins/manifest-contract-eligibility.js")>()),
-  loadManifestMetadataSnapshot: mocks.loadPluginMetadataSnapshot,
+  loadManifestMetadataSnapshot: () => ({
+    ...mocks.loadPluginMetadataSnapshot(),
+    index: createPluginMetadataSnapshotFixture(mocks.loadPluginManifestRegistryCore()).index,
+  }),
 }));
 
 vi.mock("../../../plugins/official-external-plugin-catalog.js", async (importOriginal) => ({
@@ -1030,10 +1039,9 @@ describe("repairMissingConfiguredPluginInstalls", () => {
       plugins: [],
       diagnostics: [],
     });
-    mocks.loadInstalledPluginIndex.mockReturnValue({
+    mocks.loadPluginManifestRegistryCore.mockReturnValue({
       plugins: [],
       diagnostics: [],
-      installRecords: {},
     });
     mocks.loadInstalledPluginIndexInstallRecords.mockResolvedValue({});
     mocks.listChannelPluginCatalogEntries.mockReturnValue([]);
@@ -1132,6 +1140,7 @@ describe("repairMissingConfiguredPluginInstalls", () => {
         clawpackSize: 1234,
       },
     });
+    mocks.installPluginFromNpmSpec.mockReset();
     mocks.installPluginFromNpmSpec.mockResolvedValue({
       ok: true,
       pluginId: "matrix",
@@ -1362,23 +1371,23 @@ describe("repairMissingConfiguredPluginInstalls", () => {
     await useRealInstallIndexWrites();
     const records = { retained: { source: "npm" as const, spec: "retained@1.0.0" } };
     const baselineRecords = { replacement: { source: "npm" as const, spec: "replacement@2.0.0" } };
-    await seedInstalledPluginIndex(records, {
-      env,
-      config: cfg,
-      candidates: [],
-    });
-    const before = await readPersistedInstalledPluginIndex({ env });
-    let current = true;
-    const failure = new Error("update authority revoked after planning");
-    const beforePersistentEffect = vi.fn(async () => {
-      // Returning a fulfilled promise still yields before the owner's next statement.
-      queueMicrotask(() => {
-        current = false;
-      });
-    });
-    const { repairMissingPluginInstallsForIds } =
-      await import("./missing-configured-plugin-install.js");
     try {
+      await seedInstalledPluginIndex(records, {
+        env,
+        config: cfg,
+        candidates: [],
+      });
+      const before = await readPersistedInstalledPluginIndex({ env });
+      let current = true;
+      const failure = new Error("update authority revoked after planning");
+      const beforePersistentEffect = vi.fn(async () => {
+        // Returning a fulfilled promise still yields before the owner's next statement.
+        queueMicrotask(() => {
+          current = false;
+        });
+      });
+      const { repairMissingPluginInstallsForIds } =
+        await import("./missing-configured-plugin-install.js");
       await expect(
         withPluginLifecycleLease(
           {
@@ -1404,7 +1413,7 @@ describe("repairMissingConfiguredPluginInstalls", () => {
       expect(await readPersistedInstalledPluginIndex({ env })).toEqual(before);
       expect(before?.installRecords).toEqual(records);
     } finally {
-      closeOpenClawStateDatabaseByPath(resolveOpenClawStateSqlitePath(env));
+      await closeOpenClawStateDatabaseByPathAsync(resolveOpenClawStateSqlitePath(env));
     }
   });
 
@@ -4852,24 +4861,27 @@ describe("repairMissingConfiguredPluginInstalls", () => {
         }),
       );
       await useRealInstallIndexWrites();
-      await seedInstalledPluginIndex({ brave: priorRecord }, { env, config: cfg, candidates: [] });
-      const before = await readPersistedInstalledPluginIndex({ env });
-      const failure = new Error("update authority revoked after replacement planning");
-      let current = true;
-      let callbackChecks = 0;
-      const beforePersistentEffect = vi.fn(async () => {
-        if (revoke === "one-shot-callback" && callbackChecks++ === 0) {
-          throw failure;
-        }
-        if (revoke === true || (revoke === "one-shot-lease" && callbackChecks++ === 0)) {
-          queueMicrotask(() => {
-            current = false;
-          });
-        }
-      });
-      const { repairMissingConfiguredPluginInstalls } =
-        await import("./missing-configured-plugin-install.js");
       try {
+        await seedInstalledPluginIndex(
+          { brave: priorRecord },
+          { env, config: cfg, candidates: [] },
+        );
+        const before = await readPersistedInstalledPluginIndex({ env });
+        const failure = new Error("update authority revoked after replacement planning");
+        let current = true;
+        let callbackChecks = 0;
+        const beforePersistentEffect = vi.fn(async () => {
+          if (revoke === "one-shot-callback" && callbackChecks++ === 0) {
+            throw failure;
+          }
+          if (revoke === true || (revoke === "one-shot-lease" && callbackChecks++ === 0)) {
+            queueMicrotask(() => {
+              current = false;
+            });
+          }
+        });
+        const { repairMissingConfiguredPluginInstalls } =
+          await import("./missing-configured-plugin-install.js");
         const operation = withPluginLifecycleLease(
           {
             env,
@@ -4898,7 +4910,7 @@ describe("repairMissingConfiguredPluginInstalls", () => {
         expect(beforePersistentEffect).toHaveBeenCalled();
         expect(fs.existsSync(path.join(replacementDir, "package.json"))).toBe(true);
       } finally {
-        closeOpenClawStateDatabaseByPath(resolveOpenClawStateSqlitePath(env));
+        await closeOpenClawStateDatabaseByPathAsync(resolveOpenClawStateSqlitePath(env));
       }
     },
   );

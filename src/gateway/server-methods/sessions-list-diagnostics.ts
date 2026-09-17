@@ -1,3 +1,4 @@
+import { channel } from "node:diagnostics_channel";
 import { performance } from "node:perf_hooks";
 import { isMainThread, threadId } from "node:worker_threads";
 import { areDiagnosticsEnabledForProcess } from "../../infra/diagnostic-events.js";
@@ -24,11 +25,23 @@ type Phase =
   | "response"
   | "handlerExit";
 type CacheRole = "unreached" | "completed-hit" | "in-flight-follower" | "projection-owner";
+type SynchronousCpuMetric =
+  | "storeLoadThreadCpuMs"
+  | "prepareThreadCpuMs"
+  | "rowThreadCpuMs"
+  | "cacheSelectionThreadCpuMs"
+  | "cachePublicationThreadCpuMs"
+  | "responseThreadCpuMs";
+const sessionListDiagnostics = channel("openclaw.session.list");
 
 export type SessionListDiagnostics = NonNullable<ReturnType<typeof startSessionListDiagnostics>>;
 
-function startSessionListDiagnostics(respond: RespondFn) {
-  if (!areDiagnosticsEnabledForProcess() || !sessionLog.isEnabled("warn")) {
+function startSessionListDiagnostics(
+  respond: RespondFn,
+  operation: "sessions.list" | "sessions.subscribe",
+) {
+  const logEnabled = areDiagnosticsEnabledForProcess() && sessionLog.isEnabled("warn");
+  if (!logEnabled && !sessionListDiagnostics.hasSubscribers) {
     return undefined;
   }
   let checkpoint = performance.now();
@@ -47,6 +60,30 @@ function startSessionListDiagnostics(respond: RespondFn) {
     | undefined;
   let selectedRowCount: number | undefined;
   let responseOutcome: "none" | "ok" | "error" | "threw" = "none";
+  let cpuMetrics: Partial<Record<SynchronousCpuMetric, number>> | undefined = {};
+  const startSyncCpu = (): NodeJS.CpuUsage | undefined => {
+    if (!cpuMetrics) {
+      return undefined;
+    }
+    try {
+      return process.threadCpuUsage();
+    } catch {
+      cpuMetrics = undefined;
+      return undefined;
+    }
+  };
+  const finishSyncCpu = (metric: SynchronousCpuMetric, started: NodeJS.CpuUsage | undefined) => {
+    if (!started || !cpuMetrics) {
+      return;
+    }
+    try {
+      const used = process.threadCpuUsage(started);
+      cpuMetrics[metric] = (cpuMetrics[metric] ?? 0) + (used.user + used.system) / 1_000;
+    } catch {
+      // Failed probes omit CPU totals for this request without replacing its result.
+      cpuMetrics = undefined;
+    }
+  };
   const mark = (next: Phase) => {
     checkpoint = performance.now();
     timing.mark(phase);
@@ -55,6 +92,8 @@ function startSessionListDiagnostics(respond: RespondFn) {
   return {
     trace,
     mark,
+    startSyncCpu,
+    finishSyncCpu,
     get projection() {
       return projection;
     },
@@ -76,12 +115,14 @@ function startSessionListDiagnostics(respond: RespondFn) {
     respond: ((...args) => {
       mark("response");
       responseOutcome = args[0] ? "ok" : "error";
+      const responseCpu = startSyncCpu();
       try {
         return respond(...args);
       } catch (error) {
         responseOutcome = "threw";
         throw error;
       } finally {
+        finishSyncCpu("responseThreadCpuMs", responseCpu);
         mark("handlerExit");
       }
     }) satisfies RespondFn,
@@ -91,7 +132,9 @@ function startSessionListDiagnostics(respond: RespondFn) {
     finish(handlerOutcome: "returned" | "threw") {
       mark("handlerExit");
       const handlerElapsedMs = checkpoint - startedAt;
-      if (handlerElapsedMs < 1_000 || !areDiagnosticsEnabledForProcess()) {
+      const shouldLog =
+        logEnabled && handlerElapsedMs >= 1_000 && areDiagnosticsEnabledForProcess();
+      if (!shouldLog && !sessionListDiagnostics.hasSubscribers) {
         return;
       }
       try {
@@ -100,26 +143,37 @@ function startSessionListDiagnostics(respond: RespondFn) {
         for (const stage of timing.snapshot().stages) {
           phaseDurationsMs[stage.name] = (phaseDurationsMs[stage.name] ?? 0) + stage.durationMs;
         }
-        runWithDiagnosticTraceContext(trace, () =>
-          sessionLog.warn("slow session list", {
-            operation: "sessions.list",
-            pid: process.pid,
-            threadId,
-            isMainThread,
-            handlerElapsedMs: Math.round(handlerElapsedMs),
-            cacheRole,
-            ...(workTrace ? { workTraceId: workTrace.traceId, workSpanId: workTrace.spanId } : {}),
-            phaseDurationsMs,
-            ...(projection
-              ? Object.fromEntries(
-                  Object.entries(projection).map(([key, value]) => [key, Math.round(value)]),
-                )
-              : {}),
-            ...(selectedRowCount === undefined ? {} : { selectedRowCount }),
-            handlerOutcome,
-            responseOutcome,
-          }),
-        );
+        const fields = {
+          operation,
+          pid: process.pid,
+          threadId,
+          isMainThread,
+          handlerElapsedMs: Math.round(handlerElapsedMs),
+          cacheRole,
+          phaseDurationsMs,
+          ...cpuMetrics,
+          ...(projection
+            ? Object.fromEntries(
+                Object.entries(projection).map(([key, value]) => [key, Math.round(value)]),
+              )
+            : {}),
+          ...(selectedRowCount === undefined ? {} : { selectedRowCount }),
+          handlerOutcome,
+          responseOutcome,
+        };
+        if (sessionListDiagnostics.hasSubscribers) {
+          sessionListDiagnostics.publish(fields);
+        }
+        if (shouldLog) {
+          runWithDiagnosticTraceContext(trace, () =>
+            sessionLog.warn("slow session list", {
+              ...fields,
+              ...(workTrace
+                ? { workTraceId: workTrace.traceId, workSpanId: workTrace.spanId }
+                : {}),
+            }),
+          );
+        }
       } catch {
         // Diagnostic sinks cannot replace the response or original exception.
       }
@@ -134,7 +188,10 @@ export function withSessionListDiagnostics(
   ) => Promise<void>,
 ): GatewayRequestHandler {
   return async (args) => {
-    const diagnostics = startSessionListDiagnostics(args.respond);
+    const diagnostics = startSessionListDiagnostics(
+      args.respond,
+      args.req.method === "sessions.subscribe" ? "sessions.subscribe" : "sessions.list",
+    );
     let outcome: "returned" | "threw" = "returned";
     try {
       await handler(diagnostics ? { ...args, respond: diagnostics.respond } : args, diagnostics);

@@ -34,7 +34,7 @@ on:
         default: false
         type: boolean
       telegram_waiver:
-        description: Reviewed Telegram waiver (2026.8.1 or 2026.9.1) for stable/full validation
+        description: Reviewed stable/full waiver; 2026.8.1/9.1 cover Telegram, 2026.9.5 covers Telegram and Matrix QA-live
         required: false
         default: ""
         type: string
@@ -456,9 +456,10 @@ jobs:
           context_ref="${context_ref#refs/tags/}"
           target_version="$(jq -er '.version | select(type == "string")' target/package.json)"
           if [[ -n "${TELEGRAM_WAIVER:-}" ]]; then
+            waived_channels="$(
             TARGET_VERSION="$target_version" node --input-type=module <<'NODE'
-          import { normalizeReleaseTelegramWaiver } from './workflow/scripts/full-release-validation-policy.mjs';
-          normalizeReleaseTelegramWaiver({
+          import { releaseWaivedIntegrationChannels } from './workflow/scripts/full-release-validation-policy.mjs';
+          console.log(JSON.stringify(releaseWaivedIntegrationChannels({
             telegramWaiver: process.env.TELEGRAM_WAIVER,
             targetVersion: process.env.TARGET_VERSION,
             releaseProfile: process.env.RELEASE_PROFILE,
@@ -467,8 +468,10 @@ jobs:
             releasePackageSpec: process.env.RELEASE_PACKAGE_SPEC,
             packageAcceptancePackageSpec: process.env.PACKAGE_ACCEPTANCE_PACKAGE_SPEC,
             npmTelegramPackageSpec: process.env.NPM_TELEGRAM_PACKAGE_SPEC,
-          });
+          })));
           NODE
+            )"
+            printf 'waived_integration_channels=%s\n' "$waived_channels" >> "$GITHUB_OUTPUT"
           fi
           release_context="$(TARGET_VERSION="$target_version" node --input-type=module <<'NODE'
           import { resolveReleaseContextIdentity } from './workflow/scripts/lib/release-context.mjs';
@@ -755,6 +758,7 @@ jobs:
           COVERAGE_POLICY: ${{ steps.release_inputs.outputs.coverage_policy }}
           CI_RELEASE_SCOPE: ${{ steps.release_inputs.outputs.ci_release_scope }}
           TELEGRAM_WAIVER: ${{ inputs.telegram_waiver }}
+          WAIVED_INTEGRATION_CHANNELS: ${{ steps.release_inputs.outputs.waived_integration_channels }}
           ALLOW_UNRELEASED_CHANGELOG: ${{ inputs.allow_unreleased_changelog || (inputs.target_context_ref == '' && (inputs.ref == 'main' || inputs.ref == 'refs/heads/main')) }}
           RERUN_GROUP: ${{ inputs.rerun_group }}
           LIVE_SUITE_FILTER: ${{ steps.filters.outputs.live_suite_filter }}
@@ -778,6 +782,7 @@ jobs:
             echo "- Package Acceptance Telegram E2E deferred: \`${SKIP_PACKAGE_TELEGRAM_E2E}\`"
             if [[ -n "$TELEGRAM_WAIVER" ]]; then
               echo "- Telegram integration checks: waived/not run (\`${TELEGRAM_WAIVER}\`); not a pass"
+              echo "- Owner-waived QA-live channels: $(jq -r 'join(", ")' <<< "$WAIVED_INTEGRATION_CHANNELS"); waived/not run, not a pass"
             fi
             echo "- Allow Unreleased changelog packaging: \`${ALLOW_UNRELEASED_CHANGELOG}\`"
             echo "- Rerun group: \`${RERUN_GROUP}\`"
@@ -1131,6 +1136,13 @@ jobs:
                 <<< "$candidate_run_json" >/dev/null; then
                 printf '%s\n' "$candidate_run_json"
                 return 0
+              fi
+              if jq -e '.status == "completed" and .conclusion == "startup_failure"' \
+                <<< "$candidate_run_json" >/dev/null; then
+                echo "::error::Refusing to adopt ${workflow} run ${candidate_run_id}: GitHub rejected the child before any jobs started (startup_failure)." >&2
+                jq '{id, workflow_id, path, display_title, head_branch, head_sha, event, status, conclusion, html_url}' \
+                  <<< "$candidate_run_json" >&2
+                return 1
               fi
               echo "Waiting for ${workflow} run ${candidate_run_id} display title (attempt ${attempt})." >&2
               sleep 5

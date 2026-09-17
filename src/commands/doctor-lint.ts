@@ -10,7 +10,7 @@ import {
   registerBundledHealthChecks,
   resolveBundledHealthCheckPluginStateMode,
 } from "../flows/bundled-health-checks.js";
-import { configValidationIssuesToHealthFindings } from "../flows/doctor-core-checks.js";
+import { configValidationIssuesToHealthFindings } from "../flows/doctor-config-validation-findings.js";
 import { scrubDoctorErrorMessage } from "../flows/doctor-error-message.js";
 import { resolveDoctorContributionHealthChecks } from "../flows/doctor-health-contributions.js";
 import {
@@ -27,6 +27,10 @@ import {
   type HealthCheckContext,
   type HealthFinding,
 } from "../flows/health-checks.js";
+import {
+  readDeferredPluginMigrations,
+  type DeferredPluginMigration,
+} from "../infra/deferred-plugin-migrations.js";
 import { prepareSqliteReadOnlyLocationSync } from "../infra/sqlite-snapshot-source.js";
 import {
   resolvePluginInstallRoots,
@@ -132,31 +136,35 @@ async function prepareDoctorLintExecution(
   const updateReadiness = isPostCoreConvergencePass(sourceEnv) ? "post-plugin" : undefined;
   const effectiveOpts: DoctorLintCliOptions = updateReadiness ? { ...opts, updateReadiness } : opts;
   const pluginStateMode = resolveBundledHealthCheckPluginStateMode(effectiveOpts);
+  const readConfigSnapshot = (deferredPluginMigrations?: readonly DeferredPluginMigration[]) =>
+    pluginStateMode === "direct"
+      ? readConfigFileSnapshot({ observe: false })
+      : createConfigIO({
+          env: sourceEnv,
+          configPath: resolveConfigPath(sourceEnv, resolveStateDir(sourceEnv)),
+          observe: false,
+          pluginValidation: pluginStateMode === "deferred" ? "core-only" : undefined,
+          deferredPluginMigrations,
+        }).readConfigFileSnapshot();
   const stateView: DoctorLintStateView = {
     pluginMetadataEnv: sourceEnv,
     sourceEnv,
-    readConfigSnapshot: () =>
-      pluginStateMode === "direct"
-        ? readConfigFileSnapshot({ observe: false })
-        : createConfigIO({
-            env: sourceEnv,
-            configPath: resolveConfigPath(sourceEnv, resolveStateDir(sourceEnv)),
-            observe: false,
-            pluginValidation: pluginStateMode === "deferred" ? "core-only" : undefined,
-          }).readConfigFileSnapshot(),
+    readConfigSnapshot,
     runWithPluginStateSnapshot: async (run) => withReadOnlyPluginStateSnapshot(sourceEnv, run),
   };
   if (pluginStateMode !== "isolated") {
     return await executeDoctorLint(runtime, effectiveOpts, sevMin, stateView);
   }
   try {
-    return await withReadOnlyPluginStateSnapshot(sourceEnv, async (pluginMetadataEnv) =>
-      executeDoctorLint(runtime, effectiveOpts, sevMin, {
+    return await withReadOnlyPluginStateSnapshot(sourceEnv, async (pluginMetadataEnv) => {
+      const pending = readDeferredPluginMigrations({ env: pluginMetadataEnv });
+      return executeDoctorLint(runtime, effectiveOpts, sevMin, {
         ...stateView,
         pluginMetadataEnv,
+        readConfigSnapshot: () => readConfigSnapshot(pending),
         runWithPluginStateSnapshot: async (run) => run(pluginMetadataEnv),
-      }),
-    );
+      });
+    });
   } catch (error) {
     if (!(error instanceof DoctorLintStateSnapshotError)) {
       throw error;
@@ -220,14 +228,14 @@ async function executeDoctorLint(
     allowExecSecretRefs: opts.allowExec === true,
     ...(snapshot.path !== undefined ? { configPath: snapshot.path } : {}),
   };
-  registerBundledHealthChecks({
+  const availabilityFindings = registerBundledHealthChecks({
     cfg: snapshot.config,
     cwd: ctx.cwd,
     env: stateView.pluginMetadataEnv,
     runWithPluginStateSnapshot: stateView.runWithPluginStateSnapshot,
     updateReadiness: opts.updateReadiness,
   });
-  const registeredExtensionChecks = listExtensionHealthChecksForDoctor([]);
+  const registeredExtensionChecks = listExtensionHealthChecksForDoctor([], availabilityFindings);
   const onlyRegisteredExtensionChecks =
     opts.onlyIds !== undefined &&
     opts.onlyIds.length > 0 &&
@@ -237,7 +245,7 @@ async function executeDoctorLint(
     : await resolveDoctorContributionHealthChecks();
   const extensionChecks = onlyRegisteredExtensionChecks
     ? registeredExtensionChecks
-    : listExtensionHealthChecksForDoctor(coreChecks);
+    : listExtensionHealthChecksForDoctor(coreChecks, availabilityFindings);
   const runWithPrivateStateSnapshot: DoctorLintStateRunner = async (run) =>
     await stateView.runWithPluginStateSnapshot(async () => await run());
   // Update readiness keeps every declared check private until restart.
@@ -251,7 +259,7 @@ async function executeDoctorLint(
   };
 
   const checks = [
-    ...coreChecks.map((check) => withCoreLintContext(check, coreCtx)),
+    ...coreChecks.map((check) => withCoreLintContext(check, coreCtx, availabilityFindings)),
     ...extensionChecks,
   ];
   const runOpts: DoctorLintRunOptions = {
@@ -463,11 +471,15 @@ function withCoreLintContext(
     readonly runWithPrivateStateSnapshot: DoctorLintStateRunner;
     readonly runWithSourceState: DoctorLintStateRunner;
   },
+  availabilityFindings: readonly HealthFinding[],
 ): HealthCheck {
   return {
     ...check,
     detect(_ctx, scope) {
-      const detect = async () => await check.detect(ctx, scope);
+      const detect = async () => [
+        ...(await check.detect(ctx, scope)),
+        ...availabilityFindings.filter((finding) => finding.checkId === check.id),
+      ];
       if (check.id === SKILLS_READINESS_CHECK_ID) {
         // Discovery needs source-profile eligibility; generated links use the private install roots.
         return ctx.runWithPrivateStateSnapshot(() => ctx.runWithSourceState(detect));
@@ -506,6 +518,7 @@ function toJsonFinding(f: HealthFinding): Record<string, unknown> {
     severity: f.severity,
     message: f.message,
     ...(f.source !== undefined ? { source: f.source } : {}),
+    ...(f.errorCode !== undefined ? { errorCode: f.errorCode } : {}),
     ...(f.path !== undefined ? { path: f.path } : {}),
     ...(f.line !== undefined ? { line: f.line } : {}),
     ...(f.column !== undefined ? { column: f.column } : {}),

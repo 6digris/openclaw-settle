@@ -1,5 +1,6 @@
 // Memory Core plugin module implements manager db behavior.
-import fs from "node:fs";
+import type { Dirent, Stats } from "node:fs";
+import fs from "node:fs/promises";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import {
@@ -25,6 +26,7 @@ import {
 import { withMemoryWorkspaceLock } from "../memory-workspace-lock.js";
 import { withMemoryIndexPublishGeneration } from "./manager-index-generation-lease.js";
 import { waitForMemoryReindexLock } from "./manager-reindex-lock.js";
+import { markMemoryVectorIndexClean } from "./manager-vector-rebuild-state.js";
 
 const MEMORY_REINDEX_SCHEMA = "memory_reindex";
 const MEMORY_INDEX_STATE_ID = 1;
@@ -54,9 +56,9 @@ function resolveMemoryReindexBaseName(
   return undefined;
 }
 
-function isRegularFile(filePath: string): boolean {
+async function isRegularFile(filePath: string): Promise<boolean> {
   try {
-    return fs.statSync(filePath).isFile();
+    return (await fs.stat(filePath)).isFile();
   } catch {
     return false;
   }
@@ -99,7 +101,9 @@ export function readMemoryDatabaseRevision(db: DatabaseSync): number {
   return row.revision;
 }
 
-export class MemoryIndexRevisionConflictError extends Error {}
+export class MemoryIndexRevisionConflictError extends Error {
+  override name = "MemoryIndexRevisionConflictError";
+}
 
 /** Reset derived content without replacing the shared agent database or its schema. */
 export async function resetMemoryDatabase(params: {
@@ -215,35 +219,29 @@ function replaceMemoryPathFtsTable(db: DatabaseSync): void {
   );
 }
 
-/** Prepare a shadow publication; its caller admits the synchronous commit on the borrowed owner. */
-export async function prepareMemoryDatabasePublication(params: {
+/** The native publication owner receives prepared connection and source facts. */
+type MemoryDatabasePublication = {
   targetDb: DatabaseSync;
   sourcePath: string;
   metaKey: string;
   expectedRevision: number;
-  sourceHasVectors: boolean;
-  vectorExtensionPath?: string;
-}): Promise<() => void> {
-  if (params.sourceHasVectors && !hasSqliteVecExtension(params.targetDb)) {
-    const loaded = await loadSqliteVecExtension({
-      db: params.targetDb,
-      extensionPath: params.vectorExtensionPath,
-    });
-    if (!loaded.ok) {
-      throw new Error(
-        `Failed to load sqlite-vec before publishing the full memory reindex: ` +
-          (loaded.error ?? "unknown sqlite-vec load error"),
-      );
-    }
-  }
-  return () => {
-    ensureMemoryRecallMetadataSchema(params.targetDb);
-    // Existing pre-provenance databases need this before the publication writes it.
-    ensureMemoryChunkProvenance(params.targetDb);
-    // Admission precedes ATTACH; no shadow attachment or transaction crosses an await.
-    params.targetDb.prepare(`ATTACH DATABASE ? AS ${MEMORY_REINDEX_SCHEMA}`).run(params.sourcePath);
-    try {
-      runSqliteImmediateTransactionSync(params.targetDb, () => {
+  onBegin?: () => void;
+  withCommit?: (commit: () => void) => void;
+  vectorIndexComplete?: boolean;
+};
+
+/** The admitted connection owns ATTACH, atomic replacement, COMMIT and DETACH. */
+export function publishMemoryDatabaseTables(params: MemoryDatabasePublication): void {
+  ensureMemoryRecallMetadataSchema(params.targetDb);
+  // Existing pre-provenance databases need this before the publication writes it.
+  ensureMemoryChunkProvenance(params.targetDb);
+  // Admission precedes ATTACH; no shadow attachment or transaction crosses an await.
+  params.targetDb.prepare(`ATTACH DATABASE ? AS ${MEMORY_REINDEX_SCHEMA}`).run(params.sourcePath);
+  try {
+    runSqliteImmediateTransactionSync(
+      params.targetDb,
+      () => {
+        params.onBegin?.();
         const liveRevision = readMemoryDatabaseRevision(params.targetDb);
         if (liveRevision !== params.expectedRevision) {
           throw new MemoryIndexRevisionConflictError(
@@ -316,31 +314,38 @@ export async function prepareMemoryDatabasePublication(params: {
           // rebuild before that table can be queried again.
           ignoreDropErrorWhenSourceMissing: true,
         });
-      });
-    } finally {
-      params.targetDb.exec(`DETACH DATABASE ${MEMORY_REINDEX_SCHEMA}`);
-    }
-  };
+        if (params.vectorIndexComplete) {
+          markMemoryVectorIndexClean(params.targetDb);
+        }
+      },
+      { withCommit: params.withCommit },
+    );
+  } finally {
+    params.targetDb.exec(`DETACH DATABASE ${MEMORY_REINDEX_SCHEMA}`);
+  }
 }
 
 /** Remove one closed shadow memory database and its journal-mode sidecars. */
-export function removeMemoryDatabaseFiles(dbPath: string): void {
+export async function removeMemoryDatabaseFiles(dbPath: string): Promise<void> {
   for (const suffix of MEMORY_DATABASE_FILE_SUFFIXES) {
-    fs.rmSync(`${dbPath}${suffix}`, { force: true });
+    await fs.rm(`${dbPath}${suffix}`, { force: true });
   }
 }
 
 /** Remove crash-left shadows while the caller owns the reindex lease. */
-export function cleanupAgedMemoryReindexTempFiles(dbPath: string, nowMs = Date.now()): void {
-  if (!isRegularFile(dbPath)) {
+export async function cleanupAgedMemoryReindexTempFiles(
+  dbPath: string,
+  nowMs = Date.now(),
+): Promise<void> {
+  if (!(await isRegularFile(dbPath))) {
     return;
   }
   const dir = path.dirname(dbPath);
   const databaseBaseName = path.basename(dbPath);
   const shadowBaseNames = new Set<string>();
-  let entries: fs.Dirent[];
+  let entries: Dirent[];
   try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
+    entries = await fs.readdir(dir, { withFileTypes: true });
   } catch {
     return;
   }
@@ -359,11 +364,11 @@ export function cleanupAgedMemoryReindexTempFiles(dbPath: string, nowMs = Date.n
     const filePaths = MEMORY_DATABASE_FILE_SUFFIXES.map((suffix) =>
       path.join(dir, `${shadowBaseName}${suffix}`),
     );
-    const stats: fs.Stats[] = [];
+    const stats: Stats[] = [];
     let hasUnknownFileState = false;
     for (const filePath of filePaths) {
       try {
-        stats.push(fs.statSync(filePath));
+        stats.push(await fs.stat(filePath));
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
           hasUnknownFileState = true;
@@ -379,18 +384,23 @@ export function cleanupAgedMemoryReindexTempFiles(dbPath: string, nowMs = Date.n
     }
     for (const filePath of filePaths) {
       try {
-        fs.rmSync(filePath, { force: true });
+        await fs.rm(filePath, { force: true });
       } catch {}
     }
   }
 }
 
-export function openMemoryDatabaseAtPath(dbPath: string, allowExtension: boolean): DatabaseSync {
+export function openMemoryDatabaseAtPath(
+  dbPath: string,
+  allowExtension: boolean,
+  runMaintenance?: (operation: () => boolean) => boolean,
+): DatabaseSync {
   const db = openNodeSqliteDatabase(dbPath, { allowExtension });
   try {
     configureMemorySqliteWalMaintenance(db, {
       busyTimeoutMs: 5000,
       databasePath: dbPath,
+      ...(runMaintenance ? { runMaintenance } : {}),
     });
     return db;
   } catch (err) {

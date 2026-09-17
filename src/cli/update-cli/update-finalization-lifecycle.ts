@@ -19,6 +19,7 @@ import {
   heartbeatUpdateRun,
   recordUpdateRunDiagnostic,
   recordUpdateRunPhase,
+  recordUpdateRunRepairContinuation,
   recordUpdateRunStep,
 } from "../../infra/update-run-ledger.js";
 import {
@@ -71,33 +72,38 @@ export class UpdateFinalizationLifecycle {
     private readonly stopChildren: () => void,
   ) {}
 
-  attachLedger(): string {
+  attachLedger(repair = false): string {
     this.driver = readUpdateRunDriver();
     const inherited = process.env[UPDATE_RUN_ID_ENV]?.trim();
     this.ledgerOptions = { env: { ...process.env } };
+    const admissionOptions = { ...this.ledgerOptions, busyTimeoutMs: this.budget("preflight") };
     this.runId = createUpdateRun(
       { runId: inherited || undefined, trigger: "cli" },
-      this.ledgerOptions,
+      admissionOptions,
     ).runId;
     this.ownsRun = !inherited;
-    adoptUpdateRun(this.runId, this.ledgerOptions);
+    adoptUpdateRun(this.runId, admissionOptions);
+    if (repair && this.ownsRun) {
+      recordUpdateRunRepairContinuation(this.runId, this.runId, admissionOptions);
+    }
     if (this.active) {
       recordUpdateRunStep(
         this.runId,
         { step: this.active.step, status: "in_progress", startedAtMs: this.active.startedAtMs },
-        this.ledgerOptions,
+        admissionOptions,
       );
     }
     return this.runId;
   }
 
-  recordInstallKind(installKind: "git" | "package" | "unknown"): void {
+  recordInstallKind(installKind: "git" | "package" | "unknown", version?: string | null): void {
     if (this.runId && this.ownsRun && installKind !== "unknown") {
       recordUpdateRunPhase(
         this.runId,
         "requested",
         {
-          target: { kind: installKind },
+          target: { kind: installKind, ...(version ? { version } : {}) },
+          ...(version ? { after: { version } } : {}),
           ...(installKind === "package" && this.ledgerOptions?.env[POST_CORE_UPDATE_ENV] !== "1"
             ? {
                 step: {
@@ -120,12 +126,14 @@ export class UpdateFinalizationLifecycle {
     at: number,
     detail?: string,
     failureFacts?: UpdateFailureFact[],
+    exitCode?: number | null,
   ): void {
     const step = {
       step: active.step,
       status,
       ...(detail ? { detail } : {}),
       ...(failureFacts?.length ? { failureFacts } : {}),
+      ...(exitCode !== undefined ? { exitCode } : {}),
       ...(status === "failed"
         ? {
             reason:
@@ -196,22 +204,33 @@ export class UpdateFinalizationLifecycle {
     this.active = active;
     this.record(active, "in_progress", startedAtMs);
     const output = new UpdateFinalizationOutput();
-    const heartbeat = setInterval(() => {
-      try {
-        if (this.runId) {
-          heartbeatUpdateRun(this.runId, this.driver, this.ledgerOptions);
-        }
-      } catch (error) {
-        if (!this.warnedHeartbeat) {
-          this.warnedHeartbeat = true;
-          console.warn(
-            `[update finalize] Could not refresh the update heartbeat; continuing: ${formatErrorMessage(error).slice(0, 500)}`,
-          );
-        }
-      }
-    }, UPDATE_RUN_HEARTBEAT_MS);
-    heartbeat.unref();
-    const end = (result: Outcome, detail?: string, failureFacts?: UpdateFailureFact[]) => {
+    // Doctor holds the state-lifecycle coordinator while repairing shared state.
+    // Keep its parent out of that database; recorded driver liveness still
+    // prevents abandonment while phase-start and phase-end records report progress.
+    const heartbeat =
+      phase === "doctor" || phase === "targetConfigConvergence"
+        ? undefined
+        : setInterval(() => {
+            try {
+              if (this.runId) {
+                heartbeatUpdateRun(this.runId, this.driver, this.ledgerOptions);
+              }
+            } catch (error) {
+              if (!this.warnedHeartbeat) {
+                this.warnedHeartbeat = true;
+                console.warn(
+                  `[update finalize] Could not refresh the update heartbeat; continuing: ${formatErrorMessage(error).slice(0, 500)}`,
+                );
+              }
+            }
+          }, UPDATE_RUN_HEARTBEAT_MS);
+    heartbeat?.unref();
+    const end = (
+      result: Outcome,
+      detail?: string,
+      failureFacts?: UpdateFailureFact[],
+      exitCode?: number | null,
+    ) => {
       this.phaseTimings.push({
         phase,
         startedOffsetMs: Math.max(0, Math.round(startedAt - this.startedAt)),
@@ -224,6 +243,7 @@ export class UpdateFinalizationLifecycle {
         Date.now(),
         detail,
         failureFacts,
+        exitCode,
       );
     };
     // Borrowed invocations keep awaiting the phase without taking over their host's lifetime.
@@ -295,6 +315,7 @@ export class UpdateFinalizationLifecycle {
           stateDir: resolveStateDir(process.env),
         }),
         facts,
+        error instanceof UpdateDoctorError ? error.exitCode : undefined,
       );
       throw error;
     } finally {

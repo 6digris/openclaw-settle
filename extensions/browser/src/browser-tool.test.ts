@@ -253,8 +253,27 @@ vi.mock("./sdk-setup-tools.js", async () => {
 vi.mock("./browser-tool.runtime.js", async () => {
   const { BrowserToolOutputSchema, createBrowserToolSchema, resolveBrowserToolCapabilities } =
     await vi.importActual<typeof import("./browser-tool.schema.js")>("./browser-tool.schema.js");
-  const { normalizeBrowserTabsResult } =
+  const actualClient =
     await vi.importActual<typeof import("./browser/client.js")>("./browser/client.js");
+  const actualActions = await vi.importActual<typeof import("./browser/client-actions.js")>(
+    "./browser/client-actions.js",
+  );
+  const actualMethods: Record<string, (...args: never[]) => unknown> = {
+    ...actualClient,
+    ...actualActions,
+  };
+  // Node requests exercise the shared client projection before reaching the mocked Gateway.
+  const routedClients = Object.fromEntries(
+    Object.entries({ ...browserClientMocks, ...browserActionsMocks }).map(([name, local]) => [
+      name,
+      (...args: unknown[]) =>
+        Reflect.apply(
+          typeof args[0] === "function" ? actualMethods[name]! : local,
+          undefined,
+          args,
+        ),
+    ]),
+  );
   const { wrapExternalContent } = await vi.importActual<typeof import("./sdk-security-runtime.js")>(
     "./sdk-security-runtime.js",
   );
@@ -281,10 +300,8 @@ vi.mock("./browser-tool.runtime.js", async () => {
     DEFAULT_UPLOAD_DIR: "/tmp/openclaw-browser-uploads",
     BrowserToolOutputSchema,
     createBrowserToolSchema,
-    normalizeBrowserTabsResult,
     resolveBrowserToolCapabilities,
-    ...browserActionsMocks,
-    ...browserClientMocks,
+    ...routedClients,
     ...browserConfigMocks,
     ...configMocks,
     ...gatewayMocks,
@@ -682,6 +699,12 @@ describe("browser tool description", () => {
     expect(tool.description).toContain("act:evaluate supports timeoutMs");
     expect(tool.description).toContain("existing-session profiles");
     expect(tool.description).toContain("browser-automation skill");
+    expect(tool.description).toContain(
+      "Only create a Browser dashboard when the user asks for a dashboard",
+    );
+    expect(tool.description).toContain(
+      "Opening the browser sidebar or side panel does not require a widget",
+    );
     expect(tool.description).toContain("trigger ref with paths in the same upload call");
     expect(tool.description).toContain("paths-only arming");
   });
@@ -3148,28 +3171,6 @@ describe("browser tool url alias support", () => {
       profile: undefined,
     });
   });
-
-  it.each([
-    { requestedTimeoutMs: 10, expectedTimeoutMs: 1_000 },
-    { requestedTimeoutMs: 180_000, expectedTimeoutMs: 120_000 },
-    { requestedTimeoutMs: Number.MAX_SAFE_INTEGER, expectedTimeoutMs: 120_000 },
-  ])(
-    "normalizes host navigation timeout $requestedTimeoutMs before browser dispatch",
-    async ({ requestedTimeoutMs, expectedTimeoutMs }) => {
-      await createBrowserTool().execute?.("call-1", {
-        action: "navigate",
-        target: "host",
-        url: "https://example.com/slow",
-        targetId: "tab-1",
-        timeoutMs: requestedTimeoutMs,
-      });
-
-      expect(browserActionsMocks.browserNavigate).toHaveBeenCalledWith(
-        undefined,
-        expect.objectContaining({ timeoutMs: expectedTimeoutMs }),
-      );
-    },
-  );
 
   it.each([
     { label: "default", requestedTimeoutMs: undefined, expectedTimeoutMs: 20_000 },

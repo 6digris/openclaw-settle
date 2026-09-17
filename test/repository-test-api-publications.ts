@@ -26,7 +26,6 @@ const publications: Record<string, string | symbol> = {
   "src/agents/command/attempt-execution.helpers.ts": Symbol.for(
     "openclaw.attemptExecutionHelpersTestApi",
   ),
-  "src/agents/compaction.ts": Symbol.for("openclaw.compactionTestApi"),
   "src/agents/embedded-agent-runner/context-engine-maintenance.ts": Symbol.for(
     "openclaw.contextEngineMaintenanceTestApi",
   ),
@@ -85,9 +84,6 @@ const publications: Record<string, string | symbol> = {
   "src/commands/doctor/shared/stale-oauth-profile-shadows.ts": Symbol.for(
     "openclaw.staleOAuthProfileShadowsTestApi",
   ),
-  "src/commands/onboard-non-interactive/local.ts": Symbol.for(
-    "openclaw.onboardNonInteractiveLocalTestApi",
-  ),
   "src/cron/service/active-run-cancellation.ts": Symbol.for("openclaw.activeCronTaskRunTestApi"),
   "src/cron/service/timer.ts": Symbol.for("openclaw.cronTimerTestApi"),
   "src/cron/session-reaper.ts": Symbol.for("openclaw.cronSessionReaperTestApi"),
@@ -112,7 +108,6 @@ const publications: Record<string, string | symbol> = {
   "src/sessions/user-turn-transcript.ts": Symbol.for("openclaw.userTurnTranscriptTestApi"),
   "src/skills/lifecycle/install.ts": Symbol.for("openclaw.skillsInstallTestApi"),
   "src/skills/lifecycle/upload-store.ts": Symbol.for("openclaw.skillUploadStoreTestApi"),
-  "src/skills/runtime/refresh.ts": Symbol.for("openclaw.skillsRefreshTestApi"),
   "src/skills/runtime/remote-skills.ts": Symbol.for("openclaw.remoteNodeSkillsTestApi"),
   "src/system-agent/agent-turn.ts": Symbol.for("openclaw.systemAgentTurnTestApi"),
   "src/system-agent/assistant-timeout.ts": Symbol.for("openclaw.systemAgentTimeoutTestApi"),

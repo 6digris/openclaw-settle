@@ -2574,6 +2574,34 @@ describe("handleToolExecutionEnd timeout metadata", () => {
     ]);
   });
 
+  it.each([
+    { status: "deferred", itemStatus: "completed" },
+    { status: "error", itemStatus: "failed" },
+  ] as const)(
+    "reports a sessions_yield $status result as a $itemStatus progress item",
+    async ({ status, itemStatus }) => {
+      const { ctx, onAgentEvent } = createTestContext();
+      await executeTool(ctx, {
+        toolName: "sessions_yield",
+        toolCallId: "tool-yield",
+        args: {},
+        isError: false,
+        result: { content: [{ type: "text", text: status }], details: { status } },
+      });
+
+      expect(onAgentEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stream: "item",
+          data: expect.objectContaining({
+            itemId: "tool:tool-yield",
+            phase: "end",
+            status: itemStatus,
+          }),
+        }),
+      );
+    },
+  );
+
   async function executeProcessResult(
     ctx: ToolHandlerContext,
     params: {
@@ -2675,8 +2703,11 @@ describe("handleToolExecutionEnd timeout metadata", () => {
       const { ctx } = createTestContext();
       await executeProcessResult(ctx, { details });
 
-      expect(ctx.state.lastToolError?.terminalDiagnostic).toMatchObject({ reason });
-      expect(ctx.state.lastToolError?.terminalDiagnostic?.reason).not.toHaveProperty("exitCode");
+      expect(ctx.state.lastToolError?.terminalDiagnostic).toEqual({
+        kind: "process",
+        sessionId: "wild-lagoon",
+        reason,
+      });
     },
   );
 

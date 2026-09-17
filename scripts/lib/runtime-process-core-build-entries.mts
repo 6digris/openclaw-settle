@@ -20,12 +20,14 @@ export const runtimeProcessCoreBuildEntries = createRuntimeProcessBuildEntries(
   Object.values(runtimeProcessEntrypoints),
 );
 
-// Short-lived snapshot children own a separate bundle; parents retain shared runtime identity.
+// Keep small helper processes out of the shared runtime bundle.
 export const standaloneRuntimeProcessBuildEntries = createRuntimeProcessBuildEntries([
   runtimeProcessEntrypoints.sqliteReadOnly,
+  runtimeProcessEntrypoints.nativeHookRelayClient,
+  runtimeProcessEntrypoints.spawnBroker,
 ]);
 
-export function shouldBundleStandaloneRuntimeDependency(id: string): boolean {
+export function shouldBundleRuntimeSqliteDependency(id: string): boolean {
   return id === "kysely" || id.startsWith("kysely/");
 }
 

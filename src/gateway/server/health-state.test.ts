@@ -36,7 +36,7 @@ vi.mock("../../config/runtime-snapshot.js", () => ({
   getRuntimeConfigSourceSnapshot: () => null,
 }));
 
-vi.mock("../../infra/update-startup.js", () => ({
+vi.mock("../../infra/update-status-state.js", () => ({
   getUpdateAvailable: getUpdateAvailableMock,
   getUpdateSchedule: getUpdateScheduleMock,
 }));

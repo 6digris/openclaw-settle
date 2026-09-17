@@ -16,6 +16,7 @@ import {
 } from "../../../infra/agent-run-registry.js";
 import { enqueueCommandInLane, getCommandLaneSnapshot } from "../../../process/command-queue.js";
 import { resetCommandQueueStateForTest } from "../../../process/command-queue.test-support.js";
+import { runSynchronousWork } from "../../../shared/synchronous-work.js";
 import { finalizeTaskRunByRunId } from "../../../tasks/detached-task-runtime.js";
 import { findTaskByRunId } from "../../../tasks/task-registry.js";
 import {
@@ -34,7 +35,10 @@ import {
 import { useSubagentControlFixture } from "./subagent-control.test-support.js";
 import { buildSubagentList } from "./subagent-list.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
-import { buildSubagentRunReadIndexFromRuns } from "./subagent-registry-queries.js";
+import {
+  buildSubagentRunReadIndexFromRuns,
+  buildSubagentRunReadIndexWork,
+} from "./subagent-registry-queries.js";
 import {
   buildSubagentSessionListReadIndex,
   countActiveDescendantRuns,
@@ -139,10 +143,10 @@ it("retains quiet admitted execution in listing, admission count, and requester 
     expect
       .soft(
         buildSubagentList({ cfg: getRuntimeConfig(), runs: [entry], recentMinutes: 30 }).active.map(
-          (row) => row.runId,
+          (row) => ({ runId: row.runId, execution: row.execution.state }),
         ),
       )
-      .toEqual([entry.runId]);
+      .toEqual([{ runId: entry.runId, execution: "running" }]);
     // A persisted completed sibling already owns an unfrozen settle outbox.
     addSubagentRunForTests({
       runId: "settled-sibling",
@@ -227,11 +231,20 @@ it("retains an exact queued collector reservation without calling it executor-li
   expect
     .soft(
       buildSubagentList({ cfg: getRuntimeConfig(), runs: [entry], recentMinutes: 30 }).active.map(
-        (row) => row.status,
+        (row) => ({ status: row.status, execution: row.execution.state }),
       ),
     )
-    .toEqual(["queued"]);
+    .toEqual([{ status: "queued", execution: "queued" }]);
+  const work = buildSubagentRunReadIndexWork(
+    { runs: new Map([[projected.runId, projected]]), inMemoryRuns: [entry], now: olderThanCutoff },
+    () => true,
+  );
+  expect(work.next().done).toBe(false);
   expect(removeQueuedSwarmRun(entry.runId)).toBe(true);
+  const cooperative = runSynchronousWork(work);
+  expect(cooperative.countActiveDescendantRuns(parent)).toBe(0);
+  expect(cooperative.countPendingDescendantRuns(parent)).toBe(0);
+  expect(cooperative.hasDescendantRunAwaitingSettle(parent)).toBe(false);
   expect(isSubagentRunQueued(entry)).toBe(false);
   expect(countActiveRunsForSession(parent, { collect: true })).toBe(0);
   expect(hasDescendantRunAwaitingSettle(parent)).toBe(false);

@@ -2,12 +2,19 @@ import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import {
+  readTaskBackingInstance,
+  sameTaskBackingInstance,
+  selectLatestCanonicalTaskBacking,
+} from "./task-backing-records.js";
+import { getTaskMirroredFlowIds } from "./task-flow-runtime-internal.js";
 import { clearTaskActivity } from "./task-registry-activity.js";
 import { isActiveTaskStatus } from "./task-registry-common.js";
 import type { TaskRegistryControlRuntime } from "./task-registry-control.types.js";
 import { ensureLinkedTaskFlowRegistryReady } from "./task-registry-flow-link.js";
 import {
   cloneTaskRecord,
+  listTasksFromIndex,
   cloneTaskRecordForObserver,
   normalizeTaskTimestamps,
   compareTasksNewestFirst,
@@ -327,29 +334,58 @@ export function getTaskById(taskId: string): TaskRecord | undefined {
 
 export function findTaskByRunId(runId: string): TaskRecord | undefined {
   ensureTaskRegistryReady();
-  const task = pickPreferredRunIdTask(getTasksByRunId(runId));
-  return task ? cloneTaskRecord(task) : undefined;
-}
-
-function listTasksFromIndex(index: Map<string, Set<string>>, key: string): TaskRecord[] {
-  const ids = index.get(key);
-  if (!ids || ids.size === 0) {
-    return [];
+  const matches = getTasksByRunId(runId);
+  const acpScopes = new Map<
+    string,
+    { childSessionKey: string; scopeKind: TaskRecord["scopeKind"]; candidates: TaskRecord[] }
+  >();
+  for (const task of matches) {
+    const childSessionKey = normalizeOptionalString(task.childSessionKey);
+    if (task.runtime !== "acp" || !childSessionKey) {
+      continue;
+    }
+    const scope = JSON.stringify([
+      task.scopeKind,
+      resolveTaskSessionAgentId(task.childSessionKey, task.agentId),
+      childSessionKey,
+    ]);
+    const group = acpScopes.get(scope);
+    if (group) {
+      group.candidates.push(task);
+    } else {
+      acpScopes.set(scope, { childSessionKey, scopeKind: task.scopeKind, candidates: [task] });
+    }
   }
-  return [...ids]
-    .map((taskId, insertionIndex) => {
-      const task = tasks.get(taskId);
-      return task ? Object.assign({}, cloneTaskRecord(task), { insertionIndex }) : null;
-    })
-    .filter(
-      (
-        task,
-      ): task is TaskRecord & {
-        insertionIndex: number;
-      } => Boolean(task),
-    )
-    .toSorted(compareTasksNewestFirst)
-    .map(({ insertionIndex: _insertionIndex, ...task }) => task);
+  const superseded = new Set<string>();
+  let mirroredFlowIds: ReadonlySet<string> | undefined;
+  for (const { childSessionKey, scopeKind, candidates } of acpScopes.values()) {
+    const current = selectLatestCanonicalTaskBacking({
+      runtime: "acp",
+      scopeKind,
+      childSessionKey,
+      candidates,
+      isTaskMirroredFlow: (flowId) => {
+        // Admit flows only when a candidate needs them, once for this synchronous lookup.
+        mirroredFlowIds ??= getTaskMirroredFlowIds(
+          matches.flatMap((task) => (task.parentFlowId ? [task.parentFlowId.trim()] : [])),
+        );
+        return mirroredFlowIds.has(flowId);
+      },
+    });
+    if (!current) {
+      continue;
+    }
+    for (const candidate of candidates) {
+      const backing = readTaskBackingInstance(candidate.detail);
+      if (!backing || !sameTaskBackingInstance(backing, current.instance)) {
+        superseded.add(candidate.taskId);
+      }
+    }
+  }
+  const task = pickPreferredRunIdTask(
+    matches.filter((candidate) => !superseded.has(candidate.taskId)),
+  );
+  return task ? cloneTaskRecord(task) : undefined;
 }
 
 export function listTasksForAgentId(agentId: string): TaskRecord[] {
@@ -363,18 +399,13 @@ export function listTasksForAgentId(agentId: string): TaskRecord[] {
     .toSorted(compareTasksNewestFirst);
 }
 
-export function findLatestTaskForFlowId(flowId: string): TaskRecord | undefined {
-  const task = listTasksForFlowId(flowId)[0];
-  return task ? cloneTaskRecord(task) : undefined;
-}
-
 export function listTasksForOwnerKey(ownerKey: string): TaskRecord[] {
   ensureTaskRegistryReady();
   const key = normalizeOptionalString(ownerKey);
   if (!key) {
     return [];
   }
-  return listTasksFromIndex(taskIdsByOwnerKey, key);
+  return listTasksFromIndex(tasks, taskIdsByOwnerKey, key);
 }
 
 export async function listFreshTasksForOwnerKey(ownerKey: string): Promise<TaskRecord[]> {
@@ -402,7 +433,7 @@ export async function listFreshTasksForOwnerKey(ownerKey: string): Promise<TaskR
     }
   }
 
-  return listTasksFromIndex(taskIdsByOwnerKey, key);
+  return listTasksFromIndex(tasks, taskIdsByOwnerKey, key);
 }
 
 export function listTasksForFlowId(flowId: string): TaskRecord[] {
@@ -411,7 +442,7 @@ export function listTasksForFlowId(flowId: string): TaskRecord[] {
   if (!key) {
     return [];
   }
-  return listTasksFromIndex(taskIdsByParentFlowId, key);
+  return listTasksFromIndex(tasks, taskIdsByParentFlowId, key);
 }
 
 function findLatestTaskForRelatedSessionKey(sessionKey: string): TaskRecord | undefined {
@@ -428,7 +459,7 @@ export function listTasksForRelatedSessionKey(
   if (!key) {
     return [];
   }
-  return listTasksFromIndex(taskIdsByRelatedSessionKey, key).filter((task) =>
+  return listTasksFromIndex(tasks, taskIdsByRelatedSessionKey, key).filter((task) =>
     taskMatchesRelatedSession(task, key, sessionAgentId),
   );
 }

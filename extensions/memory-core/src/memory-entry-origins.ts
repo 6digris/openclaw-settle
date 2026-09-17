@@ -1,6 +1,12 @@
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import {
+  ensureMemoryEntryOriginsSchema,
+  readMemoryEntryOriginsInDatabase,
+  recordMemoryEntryOriginsInDatabase,
+  type MemoryEntryOrigin,
+} from "openclaw/plugin-sdk/memory-core-host-engine-storage";
+import {
   executeSqliteQuerySync,
   getNodeSqliteKysely,
   openOpenClawAgentDatabase,
@@ -15,31 +21,13 @@ import {
 } from "./memory-session-tombstones.js";
 import { extractPromotionKeys } from "./short-term-promotion-memory-write.js";
 
-type MemoryOriginClass = "owner" | "agent" | "untrusted" | "system";
-
-export type MemoryEntryOrigin = {
-  entryKey: string;
-  agentId: string;
-  sessionId: string;
-  sessionKey: string | null;
-  originClass: MemoryOriginClass;
-  observedAt: number;
-};
+export type { MemoryEntryOrigin };
 
 type MemorySessionTombstone = {
   sessionId: string;
   agentId: string;
   reason: string;
   createdAt: number;
-};
-
-type MemoryEntryOriginRow = {
-  entry_key: string;
-  agent_id: string;
-  session_id: string;
-  session_key: string | null;
-  origin_class: MemoryOriginClass;
-  observed_at: number;
 };
 
 type MemorySessionTombstoneRow = {
@@ -50,7 +38,7 @@ type MemorySessionTombstoneRow = {
 };
 
 type MemoryOriginDatabase = {
-  memory_entry_origins: MemoryEntryOriginRow;
+  memory_entry_origins: { entry_key: string; agent_id: string; session_id: string };
   memory_session_tombstones: MemorySessionTombstoneRow;
   memory_index_state: { id: number; revision: number };
   memory_index_chunks: { text: string; source: string };
@@ -62,29 +50,10 @@ const ensuredDatabases = new WeakSet<DatabaseSync>();
 function openMemoryOriginDatabase(agentId: string): DatabaseSync {
   const db = openOpenClawAgentDatabase({ agentId }).db;
   if (!ensuredDatabases.has(db)) {
-    db.exec(`CREATE TABLE IF NOT EXISTS memory_entry_origins (
-      entry_key TEXT NOT NULL,
-      agent_id TEXT NOT NULL,
-      session_id TEXT NOT NULL,
-      session_key TEXT,
-      origin_class TEXT NOT NULL CHECK (origin_class IN ('owner', 'agent', 'untrusted', 'system')),
-      observed_at INTEGER NOT NULL,
-      PRIMARY KEY (entry_key, agent_id, session_id)
-    ) STRICT`);
+    ensureMemoryEntryOriginsSchema(db);
     ensuredDatabases.add(db);
   }
   return db;
-}
-
-function readOrigin(row: MemoryEntryOriginRow): MemoryEntryOrigin {
-  return {
-    entryKey: row.entry_key,
-    agentId: row.agent_id,
-    sessionId: row.session_id,
-    sessionKey: row.session_key,
-    originClass: row.origin_class,
-    observedAt: row.observed_at,
-  };
 }
 
 export function listMemoryEntryOrigins(params: {
@@ -99,21 +68,7 @@ export function listMemoryEntryOrigins(params: {
     if (!ensuredDatabases.has(db) && !tableExists(db, "memory_entry_origins")) {
       return [];
     }
-    const kysely = getNodeSqliteKysely<MemoryOriginDatabase>(db);
-    let query = kysely
-      .selectFrom("memory_entry_origins")
-      .selectAll()
-      .where("agent_id", "=", params.agentId);
-    if (params.sessionIds) {
-      query = query.where("session_id", "in", params.sessionIds);
-    }
-    if (params.entryKeys) {
-      query = query.where("entry_key", "in", params.entryKeys);
-    }
-    return executeSqliteQuerySync(
-      db,
-      query.orderBy("entry_key", "asc").orderBy("session_id", "asc"),
-    ).rows.map(readOrigin);
+    return readMemoryEntryOriginsInDatabase(db, params);
   }, params);
   return result.found ? result.value : [];
 }
@@ -205,31 +160,9 @@ export function recordMemoryEntryOrigins(params: {
     return [];
   }
   const db = openMemoryOriginDatabase(params.agentId);
-  return runSqliteImmediateTransactionSync(db, () => {
-    const kysely = getNodeSqliteKysely<MemoryOriginDatabase>(db);
-    return params.origins.flatMap((origin) => {
-      if (origin.agentId !== params.agentId) {
-        throw new Error("memory entry origin belongs to another agent");
-      }
-      return executeSqliteQuerySync(
-        db,
-        kysely
-          .insertInto("memory_entry_origins")
-          .values({
-            entry_key: params.entryKey ?? origin.entryKey,
-            agent_id: origin.agentId,
-            session_id: origin.sessionId,
-            session_key: origin.sessionKey,
-            origin_class: origin.originClass,
-            observed_at: origin.observedAt,
-          })
-          .onConflict((conflict) =>
-            conflict.columns(["entry_key", "agent_id", "session_id"]).doNothing(),
-          )
-          .returningAll(),
-      ).rows.map(readOrigin);
-    });
-  });
+  return runSqliteImmediateTransactionSync(db, () =>
+    recordMemoryEntryOriginsInDatabase(db, params),
+  );
 }
 
 export function deleteMemoryEntryOrigins(params: {

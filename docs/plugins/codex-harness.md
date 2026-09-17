@@ -14,6 +14,25 @@ native compaction, and app-server execution. OpenClaw still owns chat
 channels, session files, model selection, OpenClaw dynamic tools, approvals,
 media delivery, and the visible transcript mirror.
 
+The native session catalog requests at most 64 threads per page and shortens
+previews to 500 characters before delivering them to catalog consumers. An unfiltered
+first list fetches one native page; older pages load on demand. Title searches retain
+their bounded scan. A single native preview
+can still make its response large because the native API has no preview byte limit.
+Pages use native recency order with tie-safe cursors.
+
+Polls reuse the existing 32-second page cache. The plugin remembers bounded display
+rows and an update watermark in memory. An unchanged newest thread can satisfy a
+refresh with a one-row probe; tied timestamps require a page and an overlap read.
+Every tenth refresh rechecks the bounded head page for title, status, or archive
+changes that do not advance the newest timestamp. Refreshes update only the walked
+prefix, and native cursors keep older sessions available after cache eviction.
+Nothing is persisted, and restarting the Gateway starts with an empty cache.
+Within each source's 32 cached pages, up to 20 recent-page entries are favored over
+older discovery pages across all queries. Scanning older sessions therefore does
+not discard the entire recent listing before the next poll. Expiry and native
+pagination remain unchanged.
+
 Pasted text saved as a `.txt` attachment is extracted by OpenClaw and included in
 the current turn as untrusted external content, subject to the existing file
 extraction limits. This also applies to adopted and forked Codex sessions with
@@ -69,6 +88,11 @@ If native shell and filesystem access is intended, the operator can choose
 `coding` or `full`. Other explicit tool and sandbox restrictions still apply;
 an explicit finite tool allowlist still blocks native execution. OpenClaw does
 not broaden tool access or replace externally owned threads automatically.
+
+Scheduled and other runtime tool allowlists use the same aliases, groups, and
+wildcards as the OpenClaw harness, including `cron`, `group:runtime`, and `web_*`.
+An explicit empty runtime allowlist disables tools. Independent restrictions
+must all permit a tool before OpenClaw registers it with Codex.
 
 Eligible native-shell turns also retain `gateway_exec` and `gateway_process`
 as a distinct OpenClaw execution path. Use `gateway_exec` only when a command
@@ -127,6 +151,27 @@ selected login, even when the normal harness uses a native home or remote server
 Each request fetches current quotas for the selected saved subscription login.
 The request requires `operator.admin` and rejects changed or removed credentials.
 Proxy launch arguments are rejected to avoid changing a shared daemon's login.
+
+## Native subagent status
+
+Native Codex subagents appear under their parent in OpenClaw's task view.
+Their current execution, task result, and result delivery are separate facts.
+An approval or input request shows what needs attention. A native mailbox wait
+shows that the agent is waiting for messages; it does not invent a list of child
+dependencies. Idle, interrupted, or unloaded native threads do not prove that
+the delegated task succeeded. A resumed native turn clears the previous turn's
+current tool activity while retaining the task identity.
+
+Codex owns native subagent execution and controls. Follow up through the parent
+session, which can use Codex's native collaboration tools. OpenClaw's task view
+observes those children and delivers results after a parent yields. The native
+foreground parent already receives completion messages, so OpenClaw does not
+send another continuation for a result it has consumed. Explicit OpenClaw or ACP
+delegation continues to use `sessions_spawn`.
+
+For native Codex V1 agents, a completed `wait` result also records delivery to
+the foreground parent. OpenClaw does not start another continuation for that
+same child result after the parent replies.
 
 ## Requirements
 

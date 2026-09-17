@@ -17,6 +17,7 @@ import { readCurrentGitUpdateRecovery } from "./update-runner-git-recovery.js";
 import { prepareGitRuntimePromotion } from "./update-runner-git-runtime.js";
 import {
   resolveGitDoctorEntry,
+  runGitCleanCheckStep,
   runGitDoctorStep,
   runGitUpstreamStep,
 } from "./update-runner-git-steps.js";
@@ -370,12 +371,11 @@ export async function updateGitCheckout(params: {
     return tags.exitCode === 0;
   };
 
-  const statusCheck = await runStep(step("clean check", gitCleanCheckArgs(gitRoot), gitRoot));
+  const { result: statusCheck, dirty } = await runGitCleanCheckStep(
+    step("clean check", gitCleanCheckArgs(gitRoot), gitRoot),
+  );
   if (statusCheck.exitCode !== 0) {
-    return buildError("clean-check-failed");
-  }
-  if (statusCheck.stdoutTail?.trim()) {
-    return buildError("dirty", "skipped");
+    return buildError(dirty ? "dirty" : "clean-check-failed");
   }
   const checkSourceUnchanged = async () => {
     const currentHead = await runCommand(["git", "-C", gitRoot, "rev-parse", "HEAD"], {
@@ -395,7 +395,7 @@ export async function updateGitCheckout(params: {
       currentBranch !== branch ||
       currentStatus.stdout.trim()
     ) {
-      return { status: "skipped" as const, reason: "dirty" as const };
+      return { status: "error" as const, reason: "dirty" as const };
     }
     return undefined;
   };
@@ -416,7 +416,7 @@ export async function updateGitCheckout(params: {
           beforeSha,
           installedRoot: gitRoot,
           upstreamRef,
-          step: inspectionStep("git pack candidate", [], inspectionRoot),
+          step: inspectionStep("git pack update", [], inspectionRoot),
         });
         if (!transfer) {
           return { status: "error" as const, reason: "fetch-failed" };
@@ -454,6 +454,7 @@ export async function updateGitCheckout(params: {
         channel,
         devTarget,
         beforeSha,
+        beforeGitStaging: opts.beforeGitStaging,
         needsCheckoutMain,
         timeoutMs,
         defaultCommandEnv,
@@ -468,14 +469,14 @@ export async function updateGitCheckout(params: {
             timeoutMs,
           });
           if (candidate.code !== 0 || !candidate.stdout.trim()) {
-            throw new Error("Cannot inspect the validated Git candidate");
+            throw new Error("Cannot inspect the validated Git update");
           }
           await inspectTarget(candidate.stdout.trim(), root);
           if (opts.publishGitCheckout) {
             // A new checkout must settle its destination before runtime relocation
             // records absolute paths. Candidate build/validation has already finished.
             if ((await importCandidate(candidate.stdout.trim())).status !== "ok") {
-              throw new Error("Cannot import the admitted Git candidate");
+              throw new Error("Cannot import the admitted Git update");
             }
             gitRoot = await opts.publishGitCheckout();
             publishedCandidate = true;
@@ -544,6 +545,7 @@ export async function updateGitCheckout(params: {
         devTarget,
         targetRevision: tag ?? undefined,
         beforeSha,
+        beforeGitStaging: opts.beforeGitStaging,
         needsCheckoutMain,
         runCommand,
         timeoutMs,
@@ -712,7 +714,7 @@ export async function updateGitCheckout(params: {
       error instanceof UpdateRequesterRevokedError ? error.code : "unexpected-error",
     );
   } finally {
-    await candidateTransfer?.cleanup(step("git candidate pack cleanup", [], gitRoot));
+    await candidateTransfer?.cleanup(step("git update pack cleanup", [], gitRoot));
     await runtimePromotion?.cleanup();
   }
 }

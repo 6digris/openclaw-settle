@@ -113,6 +113,8 @@ export function createFixture(
     ".bin",
     "@openclaw/fs-safe",
     "playwright-core",
+    "web-tree-sitter",
+    "tree-sitter-bash",
     "tsx",
     ...(groups === TSDOWN_NON_SDK_DTS_CONFIG_GROUPS ? ["pretty-ms"] : []),
   ]) {
@@ -161,13 +163,15 @@ export function createFixture(
   fs.cpSync(path.join(sourceRoot, "scripts/lib"), path.join(root, "scripts/lib"), {
     recursive: true,
   });
-  // These owners derive runtime inputs from import.meta.url; keep that graph inside the fixture.
+  // Keep the generator's source owners and import.meta.url lookups inside the fixture.
   const runtimeEntryOwners = new Set([
     ...Object.values(runtimeProcessDeclarationEntries),
     "src/infra/update-managed-service-handoff-runtime-assets.ts",
     "src/infra/update-managed-service-handoff-native-loader.ts",
     "src/shared/freebsd-process-identity.ts",
     "src/infra/node-runtime-executable.ts",
+    "src/infra/runtime-dependency-ownership.ts",
+    "src/shared/non-packaged-plugin-dirs.ts",
     "packages/normalization-core/src/mountinfo-path.ts",
     "packages/normalization-core/src/record-coerce.ts",
   ]);
@@ -186,6 +190,7 @@ export function createFixture(
     "src/worker/worker-deploy-browser-runtime.ts",
     "extensions/browser/src/browser/playwright-core.runtime.ts",
     "src/infra/net/undici-dispatcher-options.ts",
+    "src/infra/command-explainer/tree-sitter-runtime.ts",
     "packages/gateway-client/src/websocket.ts",
     "src/gateway/desktop/node-stream-broker.ts",
     "src/gateway/desktop/observe-bridge.ts",

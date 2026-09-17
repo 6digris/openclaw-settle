@@ -35,7 +35,6 @@ import { isLiveTestEnabled } from "../agents/live-test-helpers.js";
 import type { OpenClawConfig } from "../config/config.js";
 import type { AgentEventPayload } from "../infra/agent-events.js";
 import { isTruthyEnvValue } from "../infra/env.js";
-import { pluginStateEntriesInKeyRange } from "../plugin-state/plugin-state-store.js";
 import { runCommandWithTimeout } from "../process/exec.js";
 import { extractFirstTextBlock } from "../shared/chat-message-content.js";
 import type { GatewayClient } from "./client.js";
@@ -1949,7 +1948,6 @@ async function verifyCodexSubagentProbe(params: {
 }
 
 async function verifyCodexNativeSubagentBridgeProbe(params: {
-  stateEnv: NodeJS.ProcessEnv;
   client: GatewayClient;
   events: EventFrame[];
   sessionKey: string;
@@ -1971,6 +1969,10 @@ async function verifyCodexNativeSubagentBridgeProbe(params: {
       "Wait for the subagent result. Do not answer from your own knowledge.",
       `After the subagent result returns, reply exactly ${parentToken} ${childToken} and nothing else.`,
     ].join("\n"),
+  });
+  recordCodexAttemptIdentity({
+    events: events.filter((event) => event.sessionKey === params.sessionKey),
+    sessionKey: params.sessionKey,
   });
   logCodexLiveStep("native-subagent-bridge-probe:initial-reply", { text });
   expect(
@@ -2000,24 +2002,7 @@ async function verifyCodexNativeSubagentBridgeProbe(params: {
     // authoritative enough to select the thread for this ownership probe.
     const childThreadId = deliveredTask?.sourceId?.match(/^codex-thread:(.+)$/)?.[1];
     expect(childThreadId).toBeTypeOf("string");
-    const sessionId = await readCodexHarnessSessionId(params);
-    const readBinding = () => {
-      const row = pluginStateEntriesInKeyRange({
-        env: params.stateEnv,
-        pluginId: "codex",
-        namespace: "app-server-thread-bindings",
-        keyStartInclusive: "session-key:dev:",
-        keyEndExclusive: "session-key:dev;",
-        limit: 100,
-      }).find((entry) => asOptionalRecord(entry.value)?.sessionId === sessionId);
-      // Lease acquisition refreshes the KV write timestamp even when binding content is unchanged.
-      return row ? { key: row.key, value: row.value } : undefined;
-    };
-    const bindingBefore = readBinding();
-    expect(bindingBefore).toBeDefined();
-    const threadIdBefore = asOptionalRecord(
-      asOptionalRecord(bindingBefore?.value)?.binding,
-    )?.threadId;
+    const threadIdBefore = observedCodexThreadIds.get(params.sessionKey);
     expect(threadIdBefore).toBeTypeOf("string");
     expect(threadIdBefore).not.toBe(childThreadId);
     await requestCodexCommandText({
@@ -2025,17 +2010,13 @@ async function verifyCodexNativeSubagentBridgeProbe(params: {
       command: `/codex resume ${childThreadId}`,
       expectedText: "controlled by its parent",
     });
-    expect(readBinding()).toEqual(bindingBefore);
     await requestAgentText({
       client: params.client,
       sessionKey: params.sessionKey,
       message: "Reply exactly PARENT-STILL-ATTACHED and nothing else.",
       expectedReply: "PARENT-STILL-ATTACHED",
     });
-    expect(readBinding()?.key).toBe(bindingBefore?.key);
-    expect(asOptionalRecord(asOptionalRecord(readBinding()?.value)?.binding)?.threadId).toBe(
-      threadIdBefore,
-    );
+    expect(observedCodexThreadIds.get(params.sessionKey)).toBe(threadIdBefore);
     logCodexLiveStep("native-subagent-direct-input:rejected", { childThreadId });
   } else {
     logCodexLiveStep("native-subagent-direct-input:legacy-not-applicable");
@@ -2061,7 +2042,6 @@ async function verifyCodexNativeSubagentBridgeProbe(params: {
 }
 
 async function verifyCodexSessionDeletion(params: {
-  stateEnv: NodeJS.ProcessEnv;
   client: GatewayClient;
   events: EventFrame[];
   modelKey: string;
@@ -2071,17 +2051,6 @@ async function verifyCodexSessionDeletion(params: {
   const threadId = observedCodexThreadIds.get(sessionKey);
   expect(threadId).toBeTypeOf("string");
   const sessionId = await readCodexHarnessSessionId({ client, sessionKey });
-  const readBindings = () =>
-    pluginStateEntriesInKeyRange({
-      env: params.stateEnv,
-      pluginId: "codex",
-      namespace: "app-server-thread-bindings",
-      keyStartInclusive: "session-key:dev:",
-      keyEndExclusive: "session-key:dev;",
-      limit: 100,
-    });
-  const before = readBindings().find((row) => asOptionalRecord(row.value)?.sessionId === sessionId);
-  expect(before).toBeDefined();
   const siblingKey = `${sessionKey}:deletion-sibling`;
   const selectModel = async (key: string) =>
     requestCodexCommandText({
@@ -2099,11 +2068,7 @@ async function verifyCodexSessionDeletion(params: {
     message: "Reply with exactly SIBLING-READY and nothing else.",
   });
   const siblingThreadId = observedCodexThreadIds.get(siblingKey);
-  const siblingSessionId = await readCodexHarnessSessionId({ client, sessionKey: siblingKey });
-  const siblingBinding = readBindings().find(
-    (row) => asOptionalRecord(row.value)?.sessionId === siblingSessionId,
-  );
-  expect(siblingBinding).toBeDefined();
+  expect(await readCodexHarnessSessionId({ client, sessionKey: siblingKey })).not.toBe(sessionId);
 
   // A competing attachment must reject before displacing either native owner.
   await requestCodexCommandText({
@@ -2113,15 +2078,25 @@ async function verifyCodexSessionDeletion(params: {
     command: `/codex resume ${siblingThreadId}`,
     expectedText: "owned by another OpenClaw session or conversation",
   });
-  expect(readBindings().find((row) => row.key === before?.key)).toEqual(before);
-  expect(readBindings().find((row) => row.key === siblingBinding?.key)).toEqual(siblingBinding);
+  await requestAgentText({
+    client,
+    sessionKey,
+    expectedReply: "OWNER-STILL-ATTACHED",
+    message: "Reply with exactly OWNER-STILL-ATTACHED and nothing else.",
+  });
+  await requestAgentText({
+    client,
+    sessionKey: siblingKey,
+    expectedReply: "SIBLING-STILL-ATTACHED",
+    message: "Reply with exactly SIBLING-STILL-ATTACHED and nothing else.",
+  });
+  expect(observedCodexThreadIds.get(sessionKey)).toBe(threadId);
+  expect(observedCodexThreadIds.get(siblingKey)).toBe(siblingThreadId);
 
   const deletion = await client.request<{ deleted: boolean }>("sessions.delete", {
     key: sessionKey,
   });
   expect(deletion.deleted).toBe(true);
-  expect(readBindings().some((row) => row.key === before?.key)).toBe(false);
-  expect(readBindings().find((row) => row.key === siblingBinding?.key)).toEqual(siblingBinding);
   await requestAgentText({
     client,
     sessionKey: siblingKey,
@@ -2682,7 +2657,6 @@ describeLive("gateway live (Codex harness)", () => {
               await verifyCodexSubagentProbe({ client: activeClient, sessionKey });
               logCodexLiveStep("native-subagent-bridge-probe:start", { sessionKey });
               await verifyCodexNativeSubagentBridgeProbe({
-                stateEnv: instance.env,
                 client: activeClient,
                 events: gatewayEvents,
                 sessionKey,
@@ -3025,7 +2999,6 @@ describeLive("gateway live (Codex harness)", () => {
           }
         }
         await verifyCodexSessionDeletion({
-          stateEnv: instance.env,
           client,
           events: gatewayEvents,
           modelKey,

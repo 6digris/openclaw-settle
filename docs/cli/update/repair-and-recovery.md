@@ -88,6 +88,14 @@ openclaw update repair --json
 openclaw update repair --accept-capabilities
 ```
 
+If an older updater publishes the new core but then reports
+`update-executor-settlement-failed` with `Parent executor is suspended for its candidate.`,
+wait for that updater to exit and run `openclaw update repair --yes --json` from
+the updated installation, preserving its profile and state/config overrides.
+This finishes Doctor and post-core convergence through a fresh owner. Check the
+repair result before restarting an already stopped Gateway through its service
+owner. Updating the candidate cannot change the older updater already in memory.
+
 | Flag                                             | Description                                                                                                                                                                                                                                                                                      |
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `--channel <stable\|extended-stable\|beta\|dev>` | Persist the core update channel before repair. For extended-stable, eligible official npm and trusted official ClawHub plugins that follow bare/default or `latest` intent target the exact installed core version. Extended-stable repair is rejected on Git checkouts without changing config. |
@@ -120,8 +128,9 @@ JSON output identifies reconciled run IDs in
 `reconciledRuns`, with `status: "ok"`, `mode: "repair"`, and `restart: false`.
 
 Repair invoked within the owning update can continue when its inherited run ID
-and live process identity match that owner. The run records the continuation,
-and Doctor can use its normal maintenance lifecycle: stop the owned Gateway,
+and live process identity match that owner. Standalone repair records the same
+continuation for its new run and passes that run ID to its Doctor children.
+Doctor can then use its normal maintenance lifecycle: stop the owned Gateway,
 repair state, then restore and verify the same service. Doctor only restarts a
 service that it stopped; an already stopped service stays stopped. The owning
 run remains active while its driver is alive. If that driver exits during
@@ -132,7 +141,8 @@ restart the Gateway. Normal update finalization without this explicit repair
 continuation still leaves activation to its parent.
 
 An unrelated update whose driver is live or cannot be inspected still blocks
-repair, even after a long period without activity. The refusal identifies the
+repair, even after a long period without activity. Manual `doctor --fix` also
+refuses to stop a service while that update is active. The refusal identifies the
 owning run, phase, driver PID, host, start and last-activity times and ages, and observed liveness (`alive` or
 `not observed`). Wait for that update to finish, or stop the named driver on its
 host and rerun `openclaw update repair` after it exits. Elapsed inactivity alone
@@ -160,9 +170,9 @@ refreshes the plugin registry, and writes converged install-record metadata.
 Configured runtime plugins whose versions follow OpenClaw are checked against
 the newly installed core during post-update repair, even when the updater process
 started on the previous version.
-It does not install a new core package or request update activation. Standalone
-repair does not restart the Gateway; a verified owning-run continuation can
-restore the service after Doctor maintenance as described above.
+It does not install a new core package or request update activation. Doctor can
+restore a service stopped for maintenance by a verified repair invocation,
+including standalone repair, as described above.
 Human output ends with a finalization result that distinguishes completion,
 completion with warnings, and failure.
 
@@ -272,9 +282,19 @@ it does not approve future capability additions.
 
 ### Skipped legacy audit recovery
 
-Doctor can leave a legacy audit source in place when its raw archive has no
-checkpoint and begins with ambiguous whitespace, changed other than by append,
-or cannot obtain another durable raw-archive checkpoint. These conditions produce
+When a legacy audit raw archive changed other than by append, Doctor preserves it
+beside itself with a `.quarantined-<date>-<id>` suffix. The warning names the
+quarantined path and explains the expected append-only growth and observed change.
+An empty raw archive without a checkpoint is also quarantined when its sanitized
+companion still contains history. Doctor keeps the sanitized records and existing
+SQLite rows, continues later repairs, and does not repeat the warning on subsequent
+runs. Quarantine does not import the changed bytes or delete the archive or backups.
+Quarantined raw archives remain local and are excluded from portable backups;
+sanitized companions and retained SQLite audit history are backed up normally.
+
+Doctor can leave other legacy audit sources in place when a raw archive has no
+checkpoint and begins with ambiguous whitespace, or cannot obtain another durable
+raw-archive checkpoint. These conditions produce
 a `skipped` migration receipt with a warning. Other repairs continue, and update
 finalization can complete with warnings. An unsafe recovery failure, such as an
 interrupted archive that cannot be restored, still stops Doctor.
@@ -286,8 +306,8 @@ before attempting recovery, and include the warning and archive filenames when
 requesting help. Do not delete or rewrite archives or checkpoints to suppress
 the warning.
 
-The warning repeats on later Doctor or `openclaw update repair` runs until the
-archive is resolved. Successful finalization does not mean this historical audit
+Warnings for sources left in place repeat on later Doctor or `openclaw update repair`
+runs until the archive is resolved. Successful finalization does not mean this historical audit
 data was imported. There is currently no supported sanitized-only import when
 the raw archive is unusable: accepting the companion as a recovery source needs
 an explicit reconciliation procedure that preserves duplicate events, retained

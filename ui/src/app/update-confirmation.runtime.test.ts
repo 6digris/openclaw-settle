@@ -1,6 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import type { UpdateAvailable, UpdateScheduleState } from "../api/types.ts";
 import { getRenderedModalDialog, installDialogPolyfill } from "../test-helpers/modal-dialog.ts";
 import { createUpdateRunFixture } from "../test-helpers/update-run.ts";
@@ -129,8 +130,15 @@ it("shows the git target when no package version is available", async () => {
   const { settled } = startUpdate({
     updateAvailable: null,
     updateSchedule: {
-      target: { commitsBehind: 3, kind: "git" },
-    } as unknown as UpdateScheduleState,
+      channel: "dev",
+      autoEnabled: false,
+      target: {
+        commitsBehind: 3,
+        kind: "git",
+        upstreamRef: "origin/main",
+        upstreamSha: "abc1234",
+      },
+    },
   });
   const { modal } = await getRenderedModalDialog(document.body);
 
@@ -423,6 +431,19 @@ it("keeps the failure visible until the operator explicitly opens its review act
   expect(document.body.querySelector("openclaw-modal-dialog")?.textContent).toContain(
     "Read the recorded cause",
   );
+  await stream.push({
+    run: null,
+    busy: false,
+    connected: true,
+    failure: "Read the recorded cause before retrying.",
+    readError: "Could not check for updates: timeout",
+  });
+  expect(document.body.querySelector("openclaw-modal-dialog")?.textContent).toContain(
+    "Read the recorded cause",
+  );
+  expect(document.body.querySelector("openclaw-modal-dialog")?.textContent).toContain(
+    "Could not check for updates: timeout",
+  );
   expect(onReviewUpdate).not.toHaveBeenCalled();
   findButton("Review update").click();
   await settled;
@@ -475,6 +496,7 @@ it.each([
     });
     let admitted = entry === "existing";
     let rejectRunReads = false;
+    let statusResponse: Promise<void> = Promise.resolve();
     const request = vi.fn<RequestFn>(async (method) => {
       if (method === "update.run") {
         admitted = true;
@@ -486,6 +508,9 @@ it.each([
         }
         return { run };
       }
+      if (method === "update.status") {
+        await statusResponse;
+      }
       return method === "update.status" && admitted
         ? { [status === "running" ? "activeRun" : "lastRun"]: run }
         : {};
@@ -493,6 +518,7 @@ it.each([
     const harness = updateRunHarness(request);
     const overlays = createApplicationOverlays(harness.gateway);
     let operation: Promise<void> | undefined;
+    let statusOperation: Promise<boolean> | undefined;
     let settled: Promise<void> | undefined;
     try {
       await overlays.refreshUpdateStatus();
@@ -501,7 +527,7 @@ it.each([
         startGatewayUpdate: () => {
           operation = overlays.runUpdate();
         },
-        onCheckStatus: () => overlays.refreshUpdateStatus(),
+        onCheckStatus: () => (statusOperation = overlays.refreshUpdateStatus()),
         watchUpdateProgress: createUpdateProgressWatcher({ gateway: harness.gateway, overlays }),
         updateAvailable: UPDATE_AVAILABLE,
         updateSchedule: null,
@@ -531,10 +557,52 @@ it.each([
           ),
         ).toBe(false);
       }
+      const pendingStatus = createDeferred();
+      statusResponse = pendingStatus.promise;
+      const statusReadsBeforeCheck = request.mock.calls.filter(
+        ([method]) => method === "update.status",
+      ).length;
       check.click();
       await flushMicrotasks();
+      expect(findButton("Checking status…").disabled).toBe(true);
+      if (status === "failed") {
+        expect(findButton("Retry update").disabled).toBe(true);
+      }
+      check.click();
+      pendingStatus.resolve();
+      await statusOperation;
       expect(modal.textContent).not.toContain("Run status read failed");
+      expect(modal.querySelector('[role="status"]')?.textContent).toContain("Status refreshed.");
       expect(view.run).toEqual(run);
+      expect(request.mock.calls.filter(([method]) => method === "update.status")).toHaveLength(
+        statusReadsBeforeCheck + 1,
+      );
+
+      statusResponse = Promise.reject(new Error("Status refresh unavailable"));
+      findButton("Check status").click();
+      await statusOperation;
+      expect(modal.textContent).toContain(
+        "Could not check for updates: Status refresh unavailable",
+      );
+      expect(modal.textContent).not.toContain("Status refreshed.");
+      expect(findButton("Check status").disabled).toBe(false);
+      expect(view.run).toEqual(run);
+      statusResponse = Promise.resolve();
+      findButton("Check status").click();
+      await statusOperation;
+      expect(modal.textContent).not.toContain("Could not check for updates");
+      expect(view.run).toEqual(run);
+      harness.update({ phase: "connecting", client: null });
+      await flushMicrotasks();
+      expect(findButton("Check status").disabled).toBe(true);
+      expect(modal.textContent).toContain("Reconnect to the Gateway");
+      if (status === "failed") {
+        expect(findButton("Retry update").disabled).toBe(true);
+      }
+      findButton("Check status").click();
+      expect(request.mock.calls.filter(([method]) => method === "update.status")).toHaveLength(
+        statusReadsBeforeCheck + 3,
+      );
       expect(request.mock.calls.filter(([method]) => method === "update.run")).toHaveLength(
         entry === "started" ? 1 : 0,
       );

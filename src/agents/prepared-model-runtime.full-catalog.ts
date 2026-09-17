@@ -13,10 +13,7 @@ import { modelCatalogRowToEntry } from "./model-catalog-entry.js";
 import { normalizeCatalogRouteBaseUrl } from "./model-catalog-metadata.js";
 import { compareModelCatalogEntries } from "./model-catalog-order.js";
 import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
-import {
-  createModelCatalogIdentityKeyResolver,
-  resolveModelCatalogIdentityKey,
-} from "./openai-model-routes.js";
+import { createModelCatalogIdentityKeyResolver } from "./openai-model-routes.js";
 import {
   copyPreparedModelFullCatalogAuth,
   getPreparedModelFullCatalogAuth,
@@ -35,7 +32,10 @@ import type {
   PreparedModelRuntimeCatalogFacts,
   PreparedModelRuntimeCatalogSource,
 } from "./prepared-model-runtime.catalog-contract.js";
-import { completeConfiguredRuntimeModels } from "./prepared-model-runtime.configured-completion.js";
+import {
+  completeConfiguredRuntimeModels,
+  prepareConfiguredModelAliases,
+} from "./prepared-model-runtime.configured-completion.js";
 import {
   acquirePreparedMediaCapabilityProviders,
   buildPreparedPluginModelCatalog,
@@ -113,7 +113,7 @@ export async function prepareFullCatalogFacts(
       staticEntries:
         input.config.models?.mode === "replace"
           ? []
-          : dedupeByKey(providerStaticModels, resolveModelCatalogIdentityKey).map(
+          : dedupeByKey(providerStaticModels, createModelCatalogIdentityKeyResolver()).map(
               modelCatalogRowToEntry,
             ),
       ...(providerOutcomes.length > 0 ? { providerOutcomes } : {}),
@@ -143,6 +143,7 @@ export function mergePreparedNativeCatalog(
   native: ModelCatalogSnapshot,
   providers: ModelCatalogSnapshot,
 ): ModelCatalogSnapshot {
+  const keyOf = createModelCatalogIdentityKeyResolver();
   // Harness-only host rows are a current projection, not provider discovery facts.
   return {
     ...providers,
@@ -151,7 +152,7 @@ export function mergePreparedNativeCatalog(
         ...native.entries.filter((entry) => entry.nativeRuntime),
         ...providers.entries.filter((entry) => !entry.nativeRuntime),
       ],
-      resolveModelCatalogIdentityKey,
+      keyOf,
     ),
     routeVariants: dedupeByKey(
       [
@@ -160,7 +161,8 @@ export function mergePreparedNativeCatalog(
       ],
       (entry) =>
         JSON.stringify([
-          resolveModelCatalogIdentityKey(entry),
+          keyOf(entry),
+          entry.nativeRuntime ?? "",
           entry.api ?? "",
           normalizeCatalogRouteBaseUrl(entry.baseUrl) ?? "",
         ]),
@@ -220,7 +222,7 @@ export function prepareModelCatalogPublication(
     ...discovered,
     entries: dedupeByKey(
       [...discovered.entries, ...discovered.routeVariants].filter((entry) => !entry.nativeRuntime),
-      resolveModelCatalogIdentityKey,
+      createModelCatalogIdentityKeyResolver(),
     ),
     routeVariants: discovered.routeVariants.filter((entry) => !entry.nativeRuntime),
   };
@@ -279,7 +281,9 @@ export function prepareModelCatalogPublication(
   const retain = (
     current: ModelCatalogSnapshot["entries"],
     retained: ModelCatalogSnapshot["entries"],
-    key: (entry: ModelCatalogSnapshot["entries"][number]) => string,
+    key: (
+      entry: ModelCatalogSnapshot["entries"][number],
+    ) => string = createModelCatalogIdentityKeyResolver(),
   ) =>
     dedupeByKey(
       [
@@ -293,16 +297,13 @@ export function prepareModelCatalogPublication(
       ],
       key,
     ).toSorted(compareModelCatalogEntries);
+  // Route dedupe follows another round of normalization callbacks; acquire its policy afresh.
+  const routeKeyOf = createModelCatalogIdentityKeyResolver();
   const published: ModelCatalogSnapshot = {
     ...catalog,
-    entries: retain(catalog.entries, previous?.entries ?? [], resolveModelCatalogIdentityKey),
+    entries: retain(catalog.entries, previous?.entries ?? []),
     routeVariants: retain(catalog.routeVariants, previous?.routeVariants ?? [], (entry) =>
-      JSON.stringify([
-        resolveModelCatalogIdentityKey(entry),
-        entry.api,
-        entry.baseUrl,
-        entry.nativeRuntime,
-      ]),
+      JSON.stringify([routeKeyOf(entry), entry.api, entry.baseUrl, entry.nativeRuntime]),
     ),
     authoritative: false,
   };
@@ -404,6 +405,7 @@ export function createPreparedModelRuntimeSnapshot(
   pluginGeneration: PreparedModelRuntimePluginGeneration,
   catalogFacts: PreparedModelRuntimeCatalogFacts,
   catalogAccess: PreparedModelRuntimeCatalogAccess,
+  publishedConfig = agentFacts.input.config,
 ): PreparedModelRuntimeSnapshot {
   const { credentials, input } = agentFacts;
   const {
@@ -439,7 +441,7 @@ export function createPreparedModelRuntimeSnapshot(
     activeProjectKeys: [],
     ...(input.inheritedAuthDir ? { inheritedAuthDir: input.inheritedAuthDir } : {}),
     ...(input.workspaceDir ? { workspaceDir: input.workspaceDir } : {}),
-    config: input.config,
+    config: publishedConfig,
     observationConfig: input.config,
     isCurrent: catalogAccess.isCurrent,
     authModes: resolveUsableAgentCredentialModes(credentials),
@@ -463,6 +465,12 @@ export function createPreparedModelRuntimeSnapshot(
     readPublishedModels: catalogAccess.readPublishedModels,
     loadFullModelCatalog: catalogAccess.loadFullModelCatalog,
     configuredRuntimeModels,
+    configuredModelAliases: prepareConfiguredModelAliases(
+      agentFacts,
+      pluginGeneration,
+      templateModelRegistry,
+      configuredRuntimeModels,
+    ),
     inlineProviderModels,
     createStores,
     routeModelResolutionMemo: new Map<string, Promise<Model>>(),
