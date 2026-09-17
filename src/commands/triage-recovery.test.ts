@@ -6,6 +6,8 @@ import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveInstallationTarget } from "../infra/installation-target-context.js";
 import { readRestartSentinelReadOnly, writeRestartSentinel } from "../infra/restart-sentinel.js";
+import { readUpdateRunDriver } from "../infra/update-run-driver.js";
+import { createUpdateRun } from "../infra/update-run-ledger.js";
 import type { UpdateRunResult } from "../infra/update-runner-types.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { triageCommand } from "./triage.js";
@@ -620,6 +622,24 @@ describe("standalone triage update evidence", () => {
       const prompt = await fs.readFile(runtime.writeJson.mock.calls[0]?.[0]?.promptPath, "utf8");
       expect(prompt).toContain("injected-doctor-failure");
       expect(prompt).not.toContain("older-pending-failure");
+    });
+  });
+
+  it("does not recommend nested maintenance beneath the active update driver", async () => {
+    await withOpenClawTestState({ layout: "split" }, async (state) => {
+      const run = createUpdateRun({ trigger: "cli", origin: { driver: readUpdateRunDriver() } });
+      const updateFailure = failedUpdate(state.statePath("install"));
+      updateFailure.runId = run.runId;
+      const runtime = createTriageRuntime();
+      await triageCommand(runtime, {
+        json: true,
+        noExport: true,
+        recovery: { target: resolveInstallationTarget(), updateFailure: { result: updateFailure } },
+      });
+      const prompt = await fs.readFile(runtime.writeJson.mock.calls[0]?.[0]?.promptPath, "utf8");
+      expect(prompt).toContain(`Active update driver PID ${process.pid}`);
+      expect(prompt).toContain("Do not run `openclaw doctor --fix` or `openclaw update repair`");
+      expect(prompt).not.toContain("including `openclaw doctor --fix`");
     });
   });
 
