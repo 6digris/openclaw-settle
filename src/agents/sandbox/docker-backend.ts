@@ -3,7 +3,6 @@
  *
  * Creates/reuses Docker containers and exposes backend-neutral exec and shell-command handles.
  */
-import { randomUUID } from "node:crypto";
 import { createContainerEnvFile } from "../../infra/container-env-file.js";
 import { toErrorObject } from "../../infra/errors.js";
 import type { SandboxBackendCommandParams } from "./backend-handle.types.js";
@@ -27,7 +26,7 @@ import {
   validateSandboxContainerEngineTarget,
 } from "./docker.js";
 import { resolveSandboxContainerOnlyMounts } from "./mount-plan.js";
-import { removeRegistryEntry, type SandboxRegistryEntry } from "./registry.js";
+import { type SandboxRegistryEntry } from "./registry.js";
 
 type ContainerExecFinalizeToken = () => Promise<void>;
 
@@ -109,10 +108,19 @@ async function createContainerSandboxBackend(
     engine: boundEngine,
     containerName,
   });
+  const identity = await execContainer(boundEngine, ["inspect", "-f", "{{.Id}}", containerName], {
+    allowFailure: true,
+  });
+  if (identity.code !== 0 || !identity.stdout.trim()) {
+    throw new Error(
+      `Failed to identify ${boundEngine.displayName} sandbox runtime ${containerName}`,
+    );
+  }
   const { createSandboxFsBridge } = await import("./fs-bridge.js");
   const handle = createContainerSandboxBackendHandle({
     engine: boundEngine,
     containerName,
+    containerId: identity.stdout.trim(),
     workdir: params.cfg.docker.workdir,
     env: params.cfg.docker.env,
     image: params.cfg.docker.image,
@@ -137,11 +145,26 @@ export async function createPodmanSandboxBackend(
 function createContainerSandboxBackendHandle(params: {
   engine: SandboxContainerEngine;
   containerName: string;
+  containerId: string;
   workdir: string;
   env?: Record<string, string>;
   image: string;
   podmanTarget?: SandboxContainerEngineTarget;
 }): SandboxBackendHandle {
+  const disposeRuntime = async () => {
+    await validateSandboxContainerEngineTarget(params.engine, params.podmanTarget);
+    const result = await execContainer(params.engine, ["rm", "-f", params.containerId], {
+      allowFailure: true,
+    });
+    if (result.code !== 0) {
+      const detail = result.stderr.trim() || result.stdout.trim() || `exit ${result.code}`;
+      if (!/No such (container|object)|does not exist/iu.test(detail)) {
+        throw new Error(
+          `Failed to dispose ${params.engine.displayName} sandbox runtime ${params.containerName}: ${detail}`,
+        );
+      }
+    }
+  };
   return {
     id: params.engine.id,
     runtimeId: params.containerName,
@@ -194,24 +217,11 @@ function createContainerSandboxBackendHandle(params: {
         engine: params.engine,
         containerName: params.containerName,
         podmanTarget: params.podmanTarget,
+        terminateRuntime: disposeRuntime,
         ...command,
       });
     },
-    async disposeRuntime() {
-      await validateSandboxContainerEngineTarget(params.engine, params.podmanTarget);
-      const result = await execContainer(params.engine, ["rm", "-f", params.containerName], {
-        allowFailure: true,
-      });
-      if (result.code !== 0) {
-        const detail = result.stderr.trim() || result.stdout.trim() || `exit ${result.code}`;
-        if (!/No such (container|object)|does not exist/iu.test(detail)) {
-          throw new Error(
-            `Failed to dispose ${params.engine.displayName} sandbox runtime ${params.containerName}: ${detail}`,
-          );
-        }
-      }
-      await removeRegistryEntry(params.containerName);
-    },
+    disposeRuntime,
   };
 }
 
@@ -220,17 +230,11 @@ async function runContainerSandboxShellCommand(
     engine: SandboxContainerEngine;
     containerName: string;
     podmanTarget?: SandboxContainerEngineTarget;
+    terminateRuntime?: () => Promise<void>;
   } & SandboxBackendCommandParams,
 ) {
   await validateSandboxContainerEngineTarget(params.engine, params.podmanTarget);
   const envFile = params.env ? await createContainerEnvFile(params.env) : undefined;
-  const controlPath = params.terminateOnAbort
-    ? `/tmp/openclaw-command-${randomUUID()}.pid`
-    : undefined;
-  const cancelPath = controlPath ? `${controlPath}.cancel` : undefined;
-  const wrapper = controlPath
-    ? 'control="$1"; cancel="$2"; script="$3"; shift 3; [ ! -e "$cancel" ] || exit 130; setsid sh -c \'control="$1"; cancel="$2"; script="$3"; shift 3; echo "$$" > "$control"; [ ! -e "$cancel" ] || exit 130; exec sh -c "$script" openclaw-sandbox-fs "$@"\' openclaw-sandbox-group "$control" "$cancel" "$script" "$@"; code=$?; rm -f -- "$control" "$cancel"; exit "$code"'
-    : params.script;
   const dockerArgs = [
     "exec",
     "-i",
@@ -238,17 +242,14 @@ async function runContainerSandboxShellCommand(
     params.containerName,
     "sh",
     "-c",
-    wrapper,
+    params.script,
     "openclaw-sandbox-fs",
   ];
-  if (controlPath) {
-    dockerArgs.push(controlPath, cancelPath!, params.script);
-  }
   if (params.args?.length) {
     dockerArgs.push(...params.args);
   }
   try {
-    if (!controlPath || !params.signal) {
+    if (!params.terminateOnAbort || !params.signal) {
       params.beforeRun?.();
       return await execContainerRaw(params.engine, dockerArgs, {
         input: params.stdin,
@@ -257,6 +258,10 @@ async function runContainerSandboxShellCommand(
       });
     }
     params.signal.throwIfAborted();
+    const terminateRuntime = params.terminateRuntime;
+    if (!terminateRuntime) {
+      throw new Error("Container runtime revocation is unavailable.");
+    }
     params.beforeRun?.();
     const clientAbort = new AbortController();
     const execution = execContainerRaw(params.engine, dockerArgs, {
@@ -280,18 +285,11 @@ async function runContainerSandboxShellCommand(
     }
     let terminationError: unknown;
     try {
-      await terminateContainerCommand({
-        engine: params.engine,
-        containerName: params.containerName,
-        controlPath,
-        cancelPath: cancelPath!,
-      });
+      await terminateRuntime();
     } catch (error) {
       terminationError = error;
     }
-    // The side-channel terminator is best-effort. Even when it fails, settle the
-    // original engine client so the owning executor can revoke the exact runtime
-    // instead of waiting forever with writable mounts still admitted.
+    // Runtime removal is the revocation boundary; settle the attached client too.
     clientAbort.abort();
     await execution.catch(() => undefined);
     if (terminationError) {
@@ -300,35 +298,6 @@ async function runContainerSandboxShellCommand(
     throw params.signal.reason instanceof Error ? params.signal.reason : new Error("Aborted");
   } finally {
     await envFile?.cleanup();
-  }
-}
-
-async function terminateContainerCommand(params: {
-  engine: SandboxContainerEngine;
-  containerName: string;
-  controlPath: string;
-  cancelPath: string;
-}): Promise<void> {
-  const script =
-    'control="$1"; cancel="$2"; : > "$cancel"; i=0; while [ ! -s "$control" ] && [ "$i" -lt 50 ]; do sleep 0.02; i=$((i + 1)); done; [ -s "$control" ] || exit 0; pid=$(cat "$control"); kill -TERM -- "-$pid" 2>/dev/null || true; i=0; while kill -0 -- "-$pid" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.02; i=$((i + 1)); done; kill -KILL -- "-$pid" 2>/dev/null || true; while kill -0 -- "-$pid" 2>/dev/null; do sleep 0.02; done';
-  const result = await execContainerRaw(
-    params.engine,
-    [
-      "exec",
-      params.containerName,
-      "sh",
-      "-c",
-      script,
-      "openclaw-sandbox-kill",
-      params.controlPath,
-      params.cancelPath,
-    ],
-    { allowFailure: true },
-  );
-  if (result.code !== 0) {
-    throw new Error(
-      `Failed to terminate sandbox command process group (exit ${result.code}): ${result.stderr.toString("utf8").trim()}`,
-    );
   }
 }
 

@@ -332,6 +332,18 @@ describe("docker sandbox backend manager", () => {
     await expect(createDockerExecBackend()).rejects.toThrow("inspect failed");
   });
 
+  it("removes the captured runtime identity when its filesystem grants are disposed", async () => {
+    const backend = await createDockerExecBackend();
+    dockerMocks.execContainer.mockResolvedValueOnce({ code: 0, stdout: "", stderr: "" });
+
+    await backend.disposeRuntime?.();
+
+    expect(dockerMocks.execContainer).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "docker" }),
+      ["rm", "-f", "unused-image"],
+      { allowFailure: true },
+    );
+  });
   it("binds Podman provisioning and later execs to the resolved target", async () => {
     dockerMocks.ensureSandboxContainer.mockResolvedValueOnce("sandbox-podman");
     const podmanTarget = {
@@ -445,9 +457,11 @@ describe("docker sandbox backend manager", () => {
           finishExecution = resolve;
         }),
     );
-    dockerMocks.execContainerRaw.mockImplementationOnce(async () => {
-      finishExecution?.({ stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), code: 143 });
-      return { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), code: 0 };
+    dockerMocks.execContainer.mockImplementationOnce(async (_engine, args: string[]) => {
+      if (args[0] === "rm") {
+        finishExecution?.({ stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), code: 143 });
+      }
+      return { stdout: "", stderr: "", code: 0 };
     });
 
     const running = backend.runShellCommand({
@@ -465,13 +479,14 @@ describe("docker sandbox backend manager", () => {
     expect(executionArgs.join(" ")).not.toContain("configured-secret");
     expect(executionArgs).toContain("--env-file");
     expect(stagedEnvironment).toContain("GIT_AUTH_TOKEN=configured-secret\n");
-    expect(executionArgs.join(" ")).toContain('[ ! -e "$cancel" ]');
+    expect(executionArgs.join(" ")).not.toContain("configured-secret");
     const envFile = executionArgs[executionArgs.indexOf("--env-file") + 1]!;
     expect(fs.existsSync(envFile)).toBe(false);
-    const terminationArgs = dockerMocks.execContainerRaw.mock.calls[1]?.[1] as string[];
-    expect(terminationArgs.join(" ")).toContain("kill -TERM");
-    expect(terminationArgs.join(" ")).toContain("kill -KILL");
-    expect(terminationArgs.join(" ")).toContain(': > "$cancel"');
+    expect(dockerMocks.execContainer).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "docker" }),
+      ["rm", "-f", "unused-image"],
+      { allowFailure: true },
+    );
   });
 
   it("does not launch a terminating shell command when cancellation already happened", async () => {
@@ -550,8 +565,13 @@ describe("docker sandbox backend manager", () => {
 
     const executionArgs = dockerMocks.execContainerRaw.mock.calls[0]?.[1] as string[];
     const terminationArgs = dockerMocks.execContainerRaw.mock.calls[1]?.[1] as string[];
-    expect(executionArgs.join(" ")).toContain('[ ! -e "$cancel" ]');
-    expect(terminationArgs.join(" ")).toContain(': > "$cancel"');
+    expect(executionArgs.join(" ")).not.toContain("openclaw-command");
+    expect(terminationArgs).toBeUndefined();
+    expect(dockerMocks.execContainer).toHaveBeenCalledWith(
+      expect.anything(),
+      ["rm", "-f", "unused-image"],
+      { allowFailure: true },
+    );
   });
 
   it("settles the engine client when process-group termination fails", async () => {
@@ -569,9 +589,7 @@ describe("docker sandbox backend manager", () => {
           );
         }),
     );
-    dockerMocks.execContainerRaw.mockRejectedValueOnce(
-      new Error("termination exec could not start"),
-    );
+    dockerMocks.execContainer.mockRejectedValueOnce(new Error("runtime removal failed"));
 
     const running = backend.runShellCommand({
       script: "exec git fetch origin",
@@ -581,9 +599,9 @@ describe("docker sandbox backend manager", () => {
     await vi.waitFor(() => expect(dockerMocks.execContainerRaw).toHaveBeenCalledTimes(1));
     controller.abort();
 
-    await expect(running).rejects.toThrow("termination exec could not start");
+    await expect(running).rejects.toThrow("runtime removal failed");
     expect(executionSignal?.aborted).toBe(true);
-    expect(dockerMocks.execContainerRaw).toHaveBeenCalledTimes(2);
+    expect(dockerMocks.execContainerRaw).toHaveBeenCalledOnce();
   });
 
   it.each([
