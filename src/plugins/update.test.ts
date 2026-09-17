@@ -2512,7 +2512,7 @@ describe("updateNpmInstalledPlugins", () => {
   });
 
   it.runIf(process.platform !== "win32")(
-    "never repairs external, developer-owned, or aliased host packages after an npm update",
+    "repairs managed ClawHub hosts without traversing external or developer aliases after an npm update",
     async () => {
       const plugins = [
         { pluginId: "sibling", packageName: "@acme/sibling" },

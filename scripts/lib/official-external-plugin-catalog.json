@@ -318,7 +318,7 @@
           {
             "id": "firecrawl-free",
             "label": "Firecrawl Search (Free)",
-            "hint": "Free web search via Firecrawl's hosted starter tier \u2014 no API key required",
+            "hint": "Free web search via Firecrawl's hosted starter tier — no API key required",
             "onboardingScopes": [
               "text-inference"
             ],
@@ -486,6 +486,28 @@
       }
     },
     {
+      "name": "@openclaw/memory-wiki",
+      "description": "OpenClaw persistent wiki plugin",
+      "source": "official",
+      "kind": "plugin",
+      "openclaw": {
+        "plugin": {
+          "id": "memory-wiki",
+          "label": "Memory Wiki"
+        },
+        "catalog": {
+          "featured": true,
+          "order": 30
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@openclaw/memory-wiki",
+          "npmSpec": "@openclaw/memory-wiki",
+          "defaultChoice": "clawhub",
+          "minHostVersion": ">=2026.9.4"
+        }
+      }
+    },
+    {
       "name": "@openclaw/llama-cpp-provider",
       "description": "OpenClaw managed llama.cpp server provider plugin",
       "source": "official",
@@ -509,24 +531,6 @@
       }
     },
     {
-      "name": "@openclaw/memory-wiki",
-      "description": "OpenClaw persistent wiki plugin",
-      "source": "official",
-      "kind": "plugin",
-      "openclaw": {
-        "plugin": {
-          "id": "memory-wiki",
-          "label": "Memory Wiki"
-        },
-        "install": {
-          "clawhubSpec": "clawhub:@openclaw/memory-wiki",
-          "npmSpec": "@openclaw/memory-wiki",
-          "defaultChoice": "clawhub",
-          "minHostVersion": ">=2026.9.4"
-        }
-      }
-    },
-    {
       "name": "@openclaw/mxc-sandbox",
       "description": "OpenClaw MXC sandbox execution plugin for MXC-capable hosts",
       "source": "official",
@@ -545,24 +549,6 @@
       }
     },
     {
-      "name": "@openclaw/onepassword",
-      "description": "1Password SecretRef resolver and audited agent secrets broker for OpenClaw",
-      "source": "official",
-      "kind": "plugin",
-      "openclaw": {
-        "plugin": {
-          "id": "onepassword",
-          "label": "1Password"
-        },
-        "install": {
-          "clawhubSpec": "clawhub:@openclaw/onepassword",
-          "npmSpec": "@openclaw/onepassword",
-          "defaultChoice": "clawhub",
-          "minHostVersion": ">=2026.9.4"
-        }
-      }
-    },
-    {
       "name": "@openclaw/openshell-sandbox",
       "description": "OpenClaw OpenShell sandbox backend",
       "source": "official",
@@ -577,6 +563,29 @@
           "npmSpec": "@openclaw/openshell-sandbox",
           "defaultChoice": "npm",
           "minHostVersion": ">=2026.5.12-beta.1"
+        }
+      }
+    },
+    {
+      "name": "@openclaw/onepassword",
+      "description": "1Password SecretRef resolver and audited agent secrets broker for OpenClaw",
+      "source": "official",
+      "kind": "plugin",
+      "openclaw": {
+        "plugin": {
+          "id": "onepassword",
+          "label": "1Password"
+        },
+        "contracts": {
+          "tools": [
+            "onepassword"
+          ]
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@openclaw/onepassword",
+          "npmSpec": "@openclaw/onepassword",
+          "defaultChoice": "clawhub",
+          "minHostVersion": ">=2026.9.4"
         }
       }
     },
@@ -617,7 +626,7 @@
           {
             "id": "parallel-free",
             "label": "Parallel Search (Free)",
-            "hint": "Free web search via Parallel's hosted Search MCP \u2014 no API key required",
+            "hint": "Free web search via Parallel's hosted Search MCP — no API key required",
             "onboardingScopes": [
               "text-inference"
             ],
@@ -656,7 +665,7 @@
           {
             "id": "perplexity",
             "label": "Perplexity Search",
-            "hint": "Requires Perplexity API key or OpenRouter API key \u00b7 structured results",
+            "hint": "Requires Perplexity API key or OpenRouter API key · structured results",
             "onboardingScopes": [
               "text-inference"
             ],

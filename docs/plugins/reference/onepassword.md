@@ -15,7 +15,7 @@ openclaw-plugin-reference:manual-end comment markers. -->
 ## Distribution
 
 - Package: `@openclaw/onepassword`
-- Install route: ClawHub: `clawhub:@openclaw/onepassword` or npm
+- Install route: included in OpenClaw
 
 ## Surface
 
