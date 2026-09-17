@@ -5,6 +5,7 @@ import { createDeferredCore } from "../shared/deferred.js";
 import {
   declareAgentWorkspaceAccess,
   getAgentWorkspaceAccess,
+  prepareAgentWorkspaceAttachments,
   registerAgentWorkspaceAccess,
   type AgentWorkspaceAccess,
 } from "./workspace-access.js";
@@ -110,5 +111,116 @@ describe("host-owned workspace access", () => {
     release();
     pending.resolve({ data: Buffer.from("late result"), canonicalPath: "/remote/AGENTS.md" });
     await rejected;
+  });
+});
+
+describe("workspace attachment preparation", () => {
+  const turn = { timeoutMs: 1_000, media: [{ path: "media://inbound/report.pdf" }] };
+
+  it("requires no attachment capability for plain or factless inline-image input", async () => {
+    const root = workspace();
+    const release = registerAgentWorkspaceAccess(root, provider());
+    try {
+      for (const media of [undefined, [], [{ kind: "image" as const }]]) {
+        await expect(
+          prepareAgentWorkspaceAttachments({
+            workspaceDir: root,
+            turn: { timeoutMs: 1_000, media },
+            assertCurrent: () => {},
+          }),
+        ).resolves.toBeUndefined();
+      }
+      await expect(
+        prepareAgentWorkspaceAttachments({
+          workspaceDir: root,
+          turn,
+          assertCurrent: () => {},
+        }),
+      ).rejects.toThrow("attachment preparation is unavailable");
+    } finally {
+      release();
+    }
+  });
+
+  it("does not call an attachment provider for plain text", async () => {
+    const root = workspace();
+    const prepare = vi.fn(async () => "unused");
+    const release = registerAgentWorkspaceAccess(root, {
+      ...provider(),
+      prepareTurnAttachments: prepare,
+    });
+    try {
+      await prepareAgentWorkspaceAttachments({
+        workspaceDir: root,
+        turn: { timeoutMs: 1_000 },
+        assertCurrent: () => {},
+      });
+      expect(prepare).not.toHaveBeenCalled();
+    } finally {
+      release();
+    }
+  });
+
+  it.each(["before", "during"])(
+    "fences attachment preparation revoked %s dispatch",
+    async (when) => {
+      const root = workspace();
+      const host = provider();
+      let assertUploadCurrent!: () => void;
+      host.prepareTurnAttachments = vi.fn<
+        NonNullable<AgentWorkspaceAccess["prepareTurnAttachments"]>
+      >(async (_turn, assertCurrent) => {
+        assertUploadCurrent = assertCurrent;
+        release();
+        expect(assertCurrent).toThrow("stopped or not ready");
+        return "obsolete note";
+      });
+      const release = registerAgentWorkspaceAccess(root, host);
+      const retained = getAgentWorkspaceAccess(root)!.prepareTurnAttachments!;
+      if (when === "before") {
+        release();
+      }
+      await expect(retained(turn, () => {})).rejects.toThrow("stopped or not ready");
+      expect(host.prepareTurnAttachments).toHaveBeenCalledTimes(when === "before" ? 0 : 1);
+      if (when === "during") {
+        expect(assertUploadCurrent).toThrow("stopped or not ready");
+      }
+    },
+  );
+
+  it.each(["caller", "abort"])("fences %s closure during attachment transfer", async (closure) => {
+    const root = workspace();
+    const controller = new AbortController();
+    let active = true;
+    const prepare = vi.fn<NonNullable<AgentWorkspaceAccess["prepareTurnAttachments"]>>(
+      async (_turn, assertCurrent) => {
+        if (closure === "caller") {
+          active = false;
+        } else {
+          controller.abort(new Error("aborted attachment"));
+        }
+        expect(assertCurrent).toThrow();
+        return "obsolete note";
+      },
+    );
+    const release = registerAgentWorkspaceAccess(root, {
+      ...provider(),
+      prepareTurnAttachments: prepare,
+    });
+    try {
+      await expect(
+        prepareAgentWorkspaceAttachments({
+          workspaceDir: root,
+          turn: { ...turn, abortSignal: controller.signal },
+          assertCurrent: () => {
+            if (!active) {
+              throw new Error("caller closed");
+            }
+          },
+        }),
+      ).rejects.toThrow(closure === "caller" ? "caller closed" : "aborted attachment");
+    } finally {
+      release();
+    }
   });
 });

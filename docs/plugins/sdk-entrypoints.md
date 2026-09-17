@@ -92,3 +92,13 @@ Use `openclaw/plugin-sdk/agent-workspace-runtime` to declare, register, and acqu
 configured remote workspace during registration so callers cannot fall back to
 local files before its service starts. Register its bridge when ready and release
 it when the service stops. Callers keep their existing document authorization.
+
+The same entrypoint exposes `prepareAgentWorkspaceAttachments` for harness
+callers. It invokes the registered host's optional `prepareTurnAttachments`
+callback with the current run and service lifetime checks. Keep its returned
+Harness-path note in execution input, not canonical media or transcript records.
+Hosts with an existing filesystem bridge can use `createWorkspaceAttachmentPreparer`.
+Supply the remote workspace root and a per-turn bridge factory over the same
+backend. The factory binds the supplied authority assertion and abort signal to
+each transport command; it does not provision a backend or acquire credentials.
+See [remote workspace attachments](/plugins/sdk-agent-harness/core-ownership#attachments-for-a-remote-workspace).
