@@ -82,6 +82,13 @@ Run `openclaw status` on the old machine to confirm your state directory path. C
     sure their targets are correct for the new location. See the
     [backup symbolic-link caveat](/cli/backup#what-gets-backed-up).
 
+    Keep complete managed input folders under `workspace/media/inbound/`,
+    including their hidden `.gitignore` ownership markers. Native image and
+    video replay can use an exact copied staged input when its recorded original
+    file is absent. Existing originals keep priority, and normal local-file
+    access limits still apply. Ordinary paths in message text or tool arguments
+    are not rewritten.
+
     <Warning>
     Restoring older channel state can desynchronize ratcheting credentials such
     as WhatsApp. Approvals and delivery/dedupe state also roll back, and plugin

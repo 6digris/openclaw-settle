@@ -23,6 +23,7 @@ import {
 import { resolveMediaReferenceLocalPath } from "../../../media/media-reference.js";
 import type { PromptImageOrderEntry } from "../../../media/prompt-image-order.js";
 import { finalizeRuntimePromptImages } from "../../../media/runtime-prompt-image-provenance.js";
+import { resolveRelocatedStagedInputPath } from "../../../media/staged-inputs.js";
 import { loadWebMedia, type WebMediaResult } from "../../../media/web-media.js";
 import type { UserTurnTranscriptRecorder } from "../../../sessions/user-turn-transcript.types.js";
 import { resolveUserPath } from "../../../utils.js";
@@ -206,7 +207,7 @@ function rawAliasDedupeKey(alias: string): string | undefined {
 }
 
 async function loadMediaFromRef(
-  ref: MediaFileRef,
+  ref: MediaFileRef & { workspaceDir?: string },
   workspaceDir: string,
   options?: {
     label?: string;
@@ -224,6 +225,14 @@ async function loadMediaFromRef(
 
     if (!options?.sandbox) {
       targetPath = await resolveMediaReferenceLocalPath(targetPath);
+      if (ref.type === "path" && ref.workspaceDir) {
+        targetPath =
+          (await resolveRelocatedStagedInputPath({
+            sourcePath: targetPath,
+            sourceWorkspaceDir: ref.workspaceDir,
+            workspaceDir,
+          })) ?? targetPath;
+      }
     }
 
     if (options?.sandbox) {
@@ -245,7 +254,7 @@ async function loadMediaFromRef(
         return null;
       }
     } else if (!path.isAbsolute(targetPath)) {
-      targetPath = path.resolve(workspaceDir, targetPath);
+      targetPath = path.resolve(ref.workspaceDir ?? workspaceDir, targetPath);
     }
 
     const media = options?.sandbox
@@ -254,12 +263,10 @@ async function loadMediaFromRef(
           sandboxValidated: true,
           readFile: createSandboxBridgeReadFile({ sandbox: options.sandbox }),
         })
-      : await loadWebMedia(
-          targetPath,
-          options?.workspaceOnly || options?.localRoots
-            ? { maxBytes: options.maxBytes, localRoots: options.localRoots ?? [workspaceDir] }
-            : options?.maxBytes,
-        );
+      : await loadWebMedia(targetPath, {
+          maxBytes: options?.maxBytes,
+          localRoots: options?.localRoots ?? (options?.workspaceOnly ? [workspaceDir] : undefined),
+        });
 
     options?.signal?.throwIfAborted();
     return media;
@@ -273,7 +280,7 @@ async function loadMediaFromRef(
 }
 
 async function loadImageFromRef(
-  ref: MediaFileRef,
+  ref: MediaFileRef & { workspaceDir?: string },
   workspaceDir: string,
   options?: Parameters<typeof loadMediaFromRef>[2],
 ): Promise<ImageContent | null> {
@@ -431,7 +438,7 @@ export async function detectAndLoadPromptImages(params: {
   let failedMediaCount = 0;
   let skippedCount = 0;
   const loadRef = async (ref: MediaFileRef & { workspaceDir?: string }) => {
-    const image = await loadImageFromRef(ref, ref.workspaceDir ?? params.workspaceDir, {
+    const image = await loadImageFromRef(ref, params.workspaceDir, {
       maxBytes: params.maxBytes,
       workspaceOnly: params.workspaceOnly,
       localRoots: params.localRoots ?? (params.workspaceOnly ? [params.workspaceDir] : undefined),
@@ -519,7 +526,7 @@ async function materializeVideoFact(
   }
   const ref = resolveMediaFactLocalRef(fact);
   const loaded = ref
-    ? await loadMediaFromRef(ref, fact.workspaceDir ?? options.workspaceDir, {
+    ? await loadMediaFromRef({ ...ref, workspaceDir: fact.workspaceDir }, options.workspaceDir, {
         label: "Native video",
         maxBytes: budget.remaining,
         signal: options.signal,

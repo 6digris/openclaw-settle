@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
 import path from "node:path";
+import { hasErrnoCode } from "../infra/errno.js";
 import { root as fsRoot, sanitizeUntrustedFileName, type Root } from "../infra/fs-safe.js";
 import type { MediaFact } from "./media-facts.js";
 
@@ -89,6 +91,50 @@ export function stagedInputDirectory(identity: string): string {
 export function stagedInputFileName(name: string): string {
   // A generic prefix keeps uploaded Git control filenames ordinary input files.
   return sanitizeUntrustedFileName(`input-${name}`, "input-attachment");
+}
+
+/** A copied input retains its full staged identity; ordinary historical paths do not. */
+export async function resolveRelocatedStagedInputPath(params: {
+  sourcePath: string;
+  sourceWorkspaceDir: string;
+  workspaceDir: string;
+}): Promise<string | undefined> {
+  if (
+    !path.isAbsolute(params.sourcePath) ||
+    !path.isAbsolute(params.sourceWorkspaceDir) ||
+    path.normalize(params.sourcePath) !== params.sourcePath ||
+    path.resolve(params.sourceWorkspaceDir) === path.resolve(params.workspaceDir)
+  ) {
+    return undefined;
+  }
+  const relative = path
+    .relative(params.sourceWorkspaceDir, params.sourcePath)
+    .split(path.sep)
+    .join("/");
+  const directory = stagedInputPathDirectory(relative);
+  const fileName = path.posix.basename(relative);
+  if (
+    !directory ||
+    relative !== `${directory}/${fileName}` ||
+    !fileName.startsWith("input-") ||
+    fileName.includes("\\")
+  ) {
+    return undefined;
+  }
+  try {
+    // Existing files and links keep their original identity, including rejected links.
+    await fs.lstat(params.sourcePath);
+    return undefined;
+  } catch (error) {
+    if (!hasErrnoCode(error, "ENOENT")) {
+      return undefined;
+    }
+  }
+  const root = await fsRoot(params.workspaceDir);
+  if (!(await createStagedInputPathMatcher(root)(relative)) || !(await root.exists(relative))) {
+    return undefined;
+  }
+  return path.resolve(params.workspaceDir, relative);
 }
 
 /** Maps producer-stamped upload handles to exact private paths for the current turn. */
