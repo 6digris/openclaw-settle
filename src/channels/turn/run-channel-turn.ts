@@ -9,7 +9,6 @@ import {
 import type {
   AssembledChannelTurn,
   ChannelEventClass,
-  ChannelProviderOwnedMessageSendingDeliveryAdapter,
   ChannelTurnAdmission,
   ChannelTurnDeliveryAdapter,
   ChannelTurnLogEvent,
@@ -145,20 +144,6 @@ export async function recordDroppedChannelTurnHistory(params: {
   });
 }
 
-export async function runChannelTurn<
-  TRaw,
-  TDispatchResult = DispatchedChannelTurnResult["dispatchResult"],
->(
-  params: RunChannelTurnParams<
-    TRaw,
-    TDispatchResult,
-    ChannelProviderOwnedMessageSendingDeliveryAdapter
-  >,
-): Promise<ChannelTurnResult<TDispatchResult>>;
-export async function runChannelTurn<
-  TRaw,
-  TDispatchResult = DispatchedChannelTurnResult["dispatchResult"],
->(params: RunChannelTurnParams<TRaw, TDispatchResult>): Promise<ChannelTurnResult<TDispatchResult>>;
 export async function runChannelTurn<
   TRaw,
   TDispatchResult = DispatchedChannelTurnResult["dispatchResult"],
