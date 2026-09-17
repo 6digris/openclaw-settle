@@ -53,13 +53,6 @@ import { truncateUtf16Safe } from "../utils.js";
 export { projectAgentActivityItem } from "../agents/agent-activity-presentation.js";
 export { projectAgentToolActivity } from "../infra/agent-activity-events.js";
 
-export {
-  declareAgentWorkspaceAccess,
-  registerAgentWorkspaceAccess,
-  getAgentWorkspaceAccess,
-  type AgentWorkspaceAccess,
-} from "../agents/workspace-access.js";
-
 /** Default truncation limit for user-facing tool progress output. */
 export const TOOL_PROGRESS_OUTPUT_MAX_CHARS = 8_000;
 
