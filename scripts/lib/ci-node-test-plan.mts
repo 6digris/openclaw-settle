@@ -147,7 +147,7 @@ export function hasCompleteStartupCorpusCoverage(
   );
   const stateShards = stateShardOwners
     .map((group) => group.env?.OPENCLAW_TEST_STARTUP_CORPUS_SHARD)
-    .toSorted();
+    .toSorted((a, b) => (a ?? "").localeCompare(b ?? ""));
   return (
     configOwners.length === 1 &&
     ((unshardedStateOwners.length === 1 && stateOwners.length === 1) ||
