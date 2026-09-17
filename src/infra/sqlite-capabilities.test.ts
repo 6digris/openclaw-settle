@@ -90,6 +90,86 @@ describe("SQLite NUL capability probe", () => {
     });
   });
 
+  it.each(["supported", "nul-truncation", "unsafe-wal"] as const)(
+    "probes %s SQLite without granting worker or child-process permission",
+    (runtime) => {
+      const moduleUrl = new URL("../../node-sqlite.mjs", import.meta.url).href;
+      const output = execFileSync(
+        process.execPath,
+        [
+          "--permission",
+          "--allow-fs-read=*",
+          "--input-type=module",
+          "-e",
+          `
+            import { DatabaseSync, StatementSync } from "node:sqlite";
+            const runtime = ${JSON.stringify(runtime)};
+            const originalGet = StatementSync.prototype.get;
+            StatementSync.prototype.get = function (...args) {
+              const row = Reflect.apply(originalGet, this, args);
+              if (runtime === "nul-truncation" && row?.text_value !== undefined) {
+                row.text_value = "a";
+              }
+              if (runtime === "unsafe-wal" && row?.version !== undefined) {
+                row.version = "3.51.2";
+              }
+              return row;
+            };
+            let databasesClosed = 0;
+            const originalClose = DatabaseSync.prototype.close;
+            DatabaseSync.prototype.close = function (...args) {
+              databasesClosed++;
+              return Reflect.apply(originalClose, this, args);
+            };
+            let workersStarted = 0;
+            process.on("worker", () => workersStarted++);
+            const { detectCurrentSqliteCapabilities, nodeRuntimeFailure } =
+              await import(${JSON.stringify(moduleUrl)});
+            const pending = detectCurrentSqliteCapabilities();
+            const samePending = pending === detectCurrentSqliteCapabilities();
+            const capabilities = await pending;
+            process.stdout.write(JSON.stringify({
+              asynchronous: pending instanceof Promise,
+              samePending,
+              sameResult: capabilities === await detectCurrentSqliteCapabilities(),
+              capabilities,
+              failure: nodeRuntimeFailure(process.versions.node, capabilities),
+              databasesClosed,
+              workersStarted,
+              permissions: Object.fromEntries(["worker", "child", "fs.write"].map(
+                (scope) => [scope, process.permission.has(scope)],
+              )),
+            }));
+          `,
+        ],
+        { encoding: "utf8", timeout: 10_000 },
+      );
+      const result = JSON.parse(output);
+      expect(result).toMatchObject({
+        asynchronous: true,
+        samePending: true,
+        sameResult: true,
+        capabilities: {
+          available: true,
+          version: runtime === "unsafe-wal" ? "3.51.2" : expect.any(String),
+          text: runtime !== "nul-truncation",
+          blob: true,
+          json: true,
+        },
+        databasesClosed: 1,
+        workersStarted: 0,
+        permissions: { worker: false, child: false, "fs.write": false },
+      });
+      if (runtime === "supported") {
+        expect(result.failure).toBeNull();
+      } else {
+        expect(result.failure).toContain(
+          runtime === "nul-truncation" ? "truncates TEXT" : "not WAL-reset-safe",
+        );
+      }
+    },
+  );
+
   it("shares one worker probe and joins its exit before returning capabilities", () => {
     const moduleUrl = new URL("../../node-sqlite.mjs", import.meta.url).href;
     const output = execFileSync(
