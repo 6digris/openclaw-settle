@@ -17,7 +17,6 @@ xcodebuild="$xcode_developer/usr/bin/xcodebuild"
 toolchain="$xcode_developer/Toolchains/XcodeDefault.xctoolchain/usr/bin"
 clang="$toolchain/clang"
 clangxx="$toolchain/clang++"
-linker="$toolchain/ld"
 libtool="$toolchain/libtool"
 script_dir=$(CDPATH='' cd -- "$(/usr/bin/dirname -- "$0")" && pwd)
 trust_verifier="$script_dir/verify-xcode-trust.sh"
@@ -102,7 +101,7 @@ build_and_install() {
   /usr/libexec/PlistBuddy -c "Set :CFPlugInTypes:$plugin_type_uuid:0 $factory_uuid" "$plist"
 
   # The verified, non-writable Xcode bundle is the trust envelope for every
-  # internal build subprocess. Explicit tool settings pin the compiler/linker.
+  # internal build subprocess. Explicit tool settings pin the compiler and link drivers.
   "$trust_verifier" "$xcode_app"
   # shellcheck disable=SC2016
   /usr/bin/env -i \
@@ -121,8 +120,8 @@ build_and_install() {
     PRODUCT_BUNDLE_IDENTIFIER="$bundle_id" \
     CC="$clang" \
     CPLUSPLUS="$clangxx" \
-    LD="$linker" \
-    LDPLUSPLUS="$linker" \
+    LD="$clang" \
+    LDPLUSPLUS="$clangxx" \
     LIBTOOL="$libtool" \
     'GCC_PREPROCESSOR_DEFINITIONS=$GCC_PREPROCESSOR_DEFINITIONS kNumber_Of_Channels=2 kPlugIn_BundleID=\"ai.openclaw.BlackHoleBridge\" kDriver_Name=\"OpenClawBridge\" kHas_Driver_Name_Format=false kDevice_Name=\"OpenClaw-Mic\" kDevice2_Name=\"OpenClaw-Feed\" kDevice_IsHidden=false kDevice2_IsHidden=false kDevice_HasInput=true kDevice_HasOutput=false kDevice2_HasInput=false kDevice2_HasOutput=true'
 
