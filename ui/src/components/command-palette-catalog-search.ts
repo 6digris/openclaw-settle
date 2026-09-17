@@ -1,6 +1,11 @@
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
-import type { AgentsListResult, CronJobsListResult, SkillStatusReport } from "../api/types.ts";
+import type {
+  AgentsListResult,
+  CronJobsListResult,
+  ModelCatalogResult,
+  SkillStatusReport,
+} from "../api/types.ts";
 import {
   SETTINGS_SEARCHABLE_SUBPAGE_ROUTES,
   settingsNavigationLabelForRoute,
@@ -8,10 +13,10 @@ import {
   visibleSettingsNavigationGroups,
 } from "../app-navigation.ts";
 import type { RouteId } from "../app-route-paths.ts";
+import type { ApplicationContext } from "../app/context.ts";
 import type { NativeDeviceSettingsCapability } from "../app/native-device-settings.ts";
 import { t } from "../i18n/index.ts";
 import { registerAppsEnglish } from "../i18n/locales/en-apps.ts";
-import { loadModelCatalog, modelCatalogRefreshError } from "../lib/model-catalog-store.ts";
 import type { PluginListResult } from "../lib/plugins/index.ts";
 import { SETTINGS_SEARCH_TARGETS } from "../pages/config/settings-targets.ts";
 import type { IconName } from "./icons.ts";
@@ -44,6 +49,87 @@ export type CommandPaletteItem = Omit<CommandPaletteCatalogItem, "routeId" | "ca
   category: "search" | "navigation" | "chats" | CommandPaletteCatalogCategory;
   action: string;
 };
+
+export type CommandPaletteActions = {
+  basePath: string;
+  onToggle: () => void;
+  onActiveIdChange: (id: string) => void;
+  onNavigate?: ApplicationContext<RouteId>["navigate"];
+  onSelectSession?: (sessionKey: string) => void;
+  onSlashCommand?: (command: string) => void;
+};
+
+export function groupCommandPaletteItems(
+  items: CommandPaletteItem[],
+): Array<[string, CommandPaletteItem[]]> {
+  const map = new Map<string, CommandPaletteItem[]>();
+  for (const item of items) {
+    const group = map.get(item.category) ?? [];
+    group.push(item);
+    map.set(item.category, group);
+  }
+  return [...map.entries()];
+}
+
+export function focusCommandPaletteInput(el: Element | undefined) {
+  if (el instanceof HTMLInputElement) {
+    requestAnimationFrame(() => {
+      if (el.isConnected) {
+        el.focus();
+      }
+    });
+  }
+}
+
+function scrollActiveIntoView() {
+  requestAnimationFrame(() => {
+    const el = document.querySelector(".cmd-palette__item--active");
+    el?.scrollIntoView({ block: "nearest" });
+  });
+}
+
+export function handleCommandPaletteKeydown(
+  e: KeyboardEvent,
+  props: CommandPaletteActions,
+  items: CommandPaletteItem[],
+  activeIndex: number,
+  selectItem: (item: CommandPaletteItem) => void,
+) {
+  if (e.isComposing || e.keyCode === 229) {
+    // Keep composition keys out of document shortcuts and the modal's Escape handler.
+    e.stopPropagation();
+    return;
+  }
+  if (items.length === 0 && (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter")) {
+    return;
+  }
+  switch (e.key) {
+    case "ArrowDown":
+      e.preventDefault();
+      props.onActiveIdChange(items[(activeIndex + 1) % items.length]!.id);
+      scrollActiveIntoView();
+      break;
+    case "ArrowUp":
+      e.preventDefault();
+      props.onActiveIdChange(items[(activeIndex - 1 + items.length) % items.length]!.id);
+      scrollActiveIntoView();
+      break;
+    case "Enter":
+      e.preventDefault();
+      {
+        const item = items[activeIndex];
+        if (item) {
+          selectItem(item);
+        }
+      }
+      break;
+    case "Escape":
+      e.preventDefault();
+      e.stopPropagation();
+      props.onToggle();
+      break;
+  }
+}
 
 export function commandPaletteCategoryLabel(category: string): string {
   switch (category) {
@@ -298,11 +384,7 @@ export async function loadCommandPaletteCatalogItems(params: {
   agentId: string;
   agents: () => Promise<AgentsListResult | null>;
   methodAvailable: (method: string) => boolean;
-}): Promise<{
-  items: CommandPaletteCatalogItem[];
-  modelRequestFailed: boolean;
-  modelSearchError: string | null;
-}> {
+}): Promise<CommandPaletteCatalogItem[]> {
   const requestIfAvailable = async <T>(
     method: string,
     requestParams: unknown,
@@ -310,7 +392,7 @@ export async function loadCommandPaletteCatalogItems(params: {
     params.methodAvailable(method)
       ? params.client.request<T>(method, requestParams).catch(() => null)
       : null;
-  const [agents, automations, skills, plugins, models] = await Promise.all([
+  const [agents, automations, skills, plugins] = await Promise.all([
     params.agents().catch(() => null),
     requestIfAvailable<CronJobsListResult>("cron.list", {
       includeDisabled: true,
@@ -322,10 +404,9 @@ export async function loadCommandPaletteCatalogItems(params: {
     }),
     requestIfAvailable<SkillStatusReport>("skills.status", { agentId: params.agentId }),
     requestIfAvailable<PluginListResult>("plugins.list", {}),
-    loadModelCatalog(params.client, { agentId: params.agentId }).catch(() => null),
   ]);
 
-  const items: CommandPaletteCatalogItem[] = [
+  return [
     ...(agents?.agents ?? []).map((agent) => ({
       id: `agent-${agent.id}`,
       label: agent.identity?.name ?? agent.name ?? agent.id,
@@ -367,22 +448,22 @@ export async function loadCommandPaletteCatalogItems(params: {
         .filter(Boolean)
         .join(" "),
     })),
-    ...(models?.models ?? []).map((model) => ({
-      // Both IDs can contain separators; selection needs a lossless pair.
-      id: `model-${JSON.stringify([model.provider, model.id])}`,
-      label: model.name || model.id,
-      icon: "brain" as const,
-      category: "models" as const,
-      routeId: "model-providers" as const,
-      description: model.provider,
-      searchText: [model.id, model.provider, model.alias, model.tags?.join(" ")]
-        .filter(Boolean)
-        .join(" "),
-    })),
   ];
-  return {
-    items,
-    modelRequestFailed: models === null,
-    modelSearchError: models ? modelCatalogRefreshError(models) : t("palette.modelSearchFailed"),
-  };
+}
+
+export function getCommandPaletteModelItems(
+  result: ModelCatalogResult | undefined,
+): CommandPaletteCatalogItem[] {
+  return (result?.models ?? []).map((model) => ({
+    // Both IDs can contain separators; selection needs a lossless pair.
+    id: `model-${JSON.stringify([model.provider, model.id])}`,
+    label: model.name || model.id,
+    icon: "brain" as const,
+    category: "models" as const,
+    routeId: "model-providers" as const,
+    description: model.provider,
+    searchText: [model.id, model.provider, model.alias, model.tags?.join(" ")]
+      .filter(Boolean)
+      .join(" "),
+  }));
 }

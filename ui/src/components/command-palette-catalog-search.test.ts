@@ -2,50 +2,36 @@ import { describe, expect, it, vi } from "vitest";
 import { createTestGatewayClient } from "../test-helpers/gateway-client.ts";
 import {
   filterCommandPaletteItems,
+  getCommandPaletteModelItems,
   getStaticCommandPaletteCatalogItems,
   loadCommandPaletteCatalogItems,
 } from "./command-palette-catalog-search.ts";
 
 describe("command palette catalog search", () => {
-  it("reads the core model catalog without optional feature advertisement", async () => {
-    const request = vi.fn(async () => ({
+  it("projects core model rows separately from optional catalogs", () => {
+    const items = getCommandPaletteModelItems({
       models: [{ provider: "fixture", id: "current", name: "Current model" }],
-    }));
-    const result = await loadCommandPaletteCatalogItems({
-      client: createTestGatewayClient(request),
-      agentId: "worker",
-      agents: async () => null,
-      methodAvailable: () => false,
     });
-    expect(result.items).toContainEqual(
-      expect.objectContaining({ category: "models", label: "Current model" }),
+    expect(items).toContainEqual(
+      expect.objectContaining({
+        category: "models",
+        label: "Current model",
+        routeId: "model-providers",
+      }),
     );
-    expect(request).toHaveBeenCalledExactlyOnceWith("models.list", {
-      agentId: "worker",
-      view: "configured",
-    });
-    expect(result.modelSearchError).toBeNull();
   });
 
-  it("reports failed acquisition from a successful catalog read while keeping its rows", async () => {
-    const result = await loadCommandPaletteCatalogItems({
-      client: createTestGatewayClient(async () => ({
-        models: [{ provider: "ollama", id: "retained", name: "Retained model", available: true }],
-        refreshFailed: true,
-        providerOutcomes: [{ provider: "ollama", status: "unavailable" }],
-      })),
-      agentId: "main",
-      agents: async () => null,
-      methodAvailable: (method) => method === "models.list",
+  it("projects the returned rows from a partial catalog without restoring old rows", () => {
+    const items = getCommandPaletteModelItems({
+      models: [{ provider: "ollama", id: "retained", name: "Retained model", available: true }],
+      refreshFailed: true,
+      providerOutcomes: [{ provider: "ollama", status: "unavailable" }],
     });
 
-    expect(result.items).toContainEqual(
+    expect(items).toContainEqual(
       expect.objectContaining({ category: "models", label: "Retained model" }),
     );
-    expect(result.modelSearchError).toBe(
-      "Some models could not be refreshed. Open Models to try again.",
-    );
-    expect(result.modelRequestFailed).toBe(false);
+    expect(getCommandPaletteModelItems({ models: [] })).toEqual([]);
   });
 
   it("opens meeting transcripts from search without querying agent chat history", () => {
@@ -118,23 +104,12 @@ describe("command palette catalog search", () => {
               },
             ],
           };
-        case "models.list":
-          return {
-            models: [
-              {
-                id: "gpt-search",
-                name: "Search model",
-                provider: "openai",
-                tags: ["fast"],
-              },
-            ],
-          };
         default:
           throw new Error(`Unexpected method: ${method}`);
       }
     });
 
-    const { items } = await loadCommandPaletteCatalogItems({
+    const items = await loadCommandPaletteCatalogItems({
       client: createTestGatewayClient(request),
       agentId: "main",
       agents: async () => ({
@@ -152,7 +127,6 @@ describe("command palette catalog search", () => {
         expect.objectContaining({ category: "automations", label: "Nightly invoices" }),
         expect.objectContaining({ category: "skills", label: "Forecast brief" }),
         expect.objectContaining({ category: "plugins", label: "Weather helper", icon: "plug" }),
-        expect.objectContaining({ category: "models", label: "Search model" }),
       ]),
     );
     expect(request).toHaveBeenCalledWith(
@@ -161,9 +135,10 @@ describe("command palette catalog search", () => {
     );
     expect(request).toHaveBeenCalledWith("skills.status", { agentId: "main" });
     expect(request).toHaveBeenCalledWith("plugins.list", {});
-    expect(request).toHaveBeenCalledWith("models.list", {
-      view: "configured",
-      agentId: "main",
-    });
+    expect(request.mock.calls.map(([method]) => method)).toEqual([
+      "cron.list",
+      "skills.status",
+      "plugins.list",
+    ]);
   });
 });

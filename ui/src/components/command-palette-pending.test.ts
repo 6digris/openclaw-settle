@@ -3,9 +3,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionsSearchResult } from "../../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import type { SessionsListResult } from "../api/types.ts";
+import type { AgentsListResult, ModelCatalogResult, SessionsListResult } from "../api/types.ts";
 import type { RouteId } from "../app-route-paths.ts";
 import type { ApplicationContext } from "../app/context.ts";
+import { loadModelCatalog } from "../lib/model-catalog-store.ts";
 import { installDialogPolyfill } from "../test-helpers/modal-dialog.ts";
 import {
   createContext,
@@ -30,6 +31,260 @@ describe("CommandPalette pending searches", () => {
     restoreDialogPolyfill();
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it.each([false, true])(
+    "publishes model navigation while every unrelated source waits (cached: %s)",
+    async (cached) => {
+      const optional = createDeferred<unknown>();
+      const agents = createDeferred<AgentsListResult | null>();
+      const sessions = createDeferred<SessionsListResult | null>();
+      const request = vi.fn((method: string) =>
+        method === "models.list"
+          ? { models: [{ provider: "fixture", id: "ready", name: "Needle ready" }] }
+          : optional.promise,
+      );
+      const { gateway } = createGateway(true, {
+        methods: ["cron.list", "skills.status", "plugins.list"],
+        request,
+      });
+      if (cached) {
+        await loadModelCatalog(gateway.snapshot.client!, { agentId: "main" });
+      }
+      const context = createContext(gateway, () => sessions.promise);
+      context.agents.ensureList = () => agents.promise;
+      const { palette } = await mountPalette(context);
+      await enterQuery(palette, "needle");
+      await vi.advanceTimersByTimeAsync(50);
+      await palette.updateComplete;
+      expect(findPaletteOption(palette, "Needle ready")).toBeDefined();
+      expect(palette.textContent).not.toContain("No results");
+      expect(request.mock.calls.filter(([method]) => method === "models.list")).toEqual([
+        ["models.list", { agentId: "main", view: "configured" }],
+      ]);
+      expect(request.mock.calls.map(([method]) => method)).toEqual(
+        expect.arrayContaining(["cron.list", "skills.status", "plugins.list"]),
+      );
+      palette.querySelector("input")?.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+        }),
+      );
+      expect(palette.onNavigate).toHaveBeenCalledExactlyOnceWith("model-providers");
+      expect(
+        request.mock.calls.filter(([method]) =>
+          [
+            "sessions.patch",
+            "sessions.create",
+            "config.set",
+            "config.patch",
+            "config.apply",
+          ].includes(method),
+        ),
+      ).toEqual([]);
+      optional.resolve({ jobs: [], skills: [], plugins: [] });
+      agents.resolve(null);
+      sessions.resolve(null);
+      await vi.advanceTimersByTimeAsync(0);
+    },
+  );
+
+  it("recovers model errors on input before an unrelated catalog settles", async () => {
+    const optional = createDeferred<unknown>();
+    const recovery = createDeferred<ModelCatalogResult>();
+    const models = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("catalog unavailable"))
+      .mockReturnValueOnce(recovery.promise);
+    const request = vi.fn((method: string) =>
+      method === "models.list" ? models() : optional.promise,
+    );
+    const { gateway } = createGateway(true, { methods: ["cron.list"], request });
+    const { palette } = await mountPalette(createContext(gateway, async () => null));
+    await enterQuery(palette, "needle");
+    await vi.advanceTimersByTimeAsync(50);
+    await palette.updateComplete;
+    expect(palette.textContent).toContain("Model search unavailable");
+    await enterQuery(palette, "needle ready");
+    await vi.advanceTimersByTimeAsync(50);
+    expect(models).toHaveBeenCalledTimes(2);
+    expect(palette.textContent).toContain("Model search unavailable");
+    recovery.resolve({ models: [{ provider: "fixture", id: "ready", name: "Needle ready" }] });
+    await vi.advanceTimersByTimeAsync(0);
+    await palette.updateComplete;
+    expect(findPaletteOption(palette, "Needle ready")).toBeDefined();
+    expect(palette.textContent).not.toContain("Model search unavailable");
+    optional.resolve({ jobs: [] });
+    await vi.advanceTimersByTimeAsync(0);
+    await palette.updateComplete;
+    expect(findPaletteOption(palette, "Needle ready")).toBeDefined();
+    expect(palette.textContent).not.toContain("Model search unavailable");
+  });
+
+  it("replaces partial and empty model snapshots before optional completion", async () => {
+    const optional = createDeferred<unknown>();
+    const models = vi
+      .fn()
+      .mockResolvedValueOnce({ models: [{ provider: "fixture", id: "old", name: "Needle old" }] })
+      .mockResolvedValueOnce({
+        models: [{ provider: "fixture", id: "new", name: "Needle new" }],
+        refreshFailed: true,
+      })
+      .mockResolvedValueOnce({ models: [] });
+    const request = vi.fn((method: string) =>
+      method === "models.list" ? models() : optional.promise,
+    );
+    const harness = createGateway(true, { methods: ["cron.list"], request });
+    const { palette } = await mountPalette(createContext(harness.gateway, async () => null));
+    await enterQuery(palette, "needle");
+    await vi.advanceTimersByTimeAsync(50);
+    expect(findPaletteOption(palette, "Needle old")).toBeDefined();
+    harness.emit("config.changed");
+    await vi.advanceTimersByTimeAsync(0);
+    await palette.updateComplete;
+    expect(findPaletteOption(palette, "Needle old")).toBeUndefined();
+    expect(findPaletteOption(palette, "Needle new")).toBeDefined();
+    expect(palette.textContent).toContain("Some models could not be refreshed");
+    await enterQuery(palette, "needle");
+    await vi.advanceTimersByTimeAsync(50);
+    await palette.updateComplete;
+    expect(findPaletteOption(palette, "Needle new")).toBeUndefined();
+    expect(palette.textContent).not.toContain("Some models could not be refreshed");
+    expect(palette.textContent).not.toContain("No results");
+    optional.resolve({ jobs: [] });
+    await vi.advanceTimersByTimeAsync(0);
+    await palette.updateComplete;
+    expect(palette.querySelectorAll('[role="option"]')).toHaveLength(0);
+    expect(palette.textContent).toContain("No results");
+    expect(palette.textContent).not.toContain("Some models could not be refreshed");
+  });
+
+  it("fences the first agent read after switching away and back", async () => {
+    const old = createDeferred<ModelCatalogResult>();
+    let mainReads = 0;
+    const request = vi.fn((_method: string, params: unknown) => {
+      const agentId = (params as { agentId: string }).agentId;
+      if (agentId === "main" && ++mainReads === 1) {
+        return old.promise;
+      }
+      return { models: [{ provider: "fixture", id: agentId, name: `Needle ${agentId}` }] };
+    });
+    const { gateway } = createGateway(true, { request });
+    const context = createContext(gateway, async () => null);
+    const { palette } = await mountPalette(context);
+    await enterQuery(palette, "needle");
+    await vi.advanceTimersByTimeAsync(50);
+    context.agentSelection.set("reviewer");
+    await vi.advanceTimersByTimeAsync(50);
+    expect(findPaletteOption(palette, "Needle reviewer")).toBeDefined();
+    context.agentSelection.set("main");
+    await vi.advanceTimersByTimeAsync(50);
+    expect(findPaletteOption(palette, "Needle reviewer")).toBeUndefined();
+    old.resolve({ models: [{ provider: "fixture", id: "old", name: "Needle old" }] });
+    await vi.advanceTimersByTimeAsync(0);
+    await palette.updateComplete;
+    expect(findPaletteOption(palette, "Needle old")).toBeUndefined();
+    expect(findPaletteOption(palette, "Needle main")).toBeDefined();
+    expect(mainReads).toBe(2);
+  });
+
+  it.each([false, true])(
+    "keeps an accepted publication when an older read fails (partial: %s)",
+    async (partial) => {
+      const old = createDeferred<ModelCatalogResult>();
+      const request = vi
+        .fn()
+        .mockReturnValueOnce(old.promise)
+        .mockResolvedValueOnce({
+          models: [{ provider: "fixture", id: "accepted", name: "Needle accepted" }],
+          refreshFailed: partial,
+        });
+      const { gateway } = createGateway(true, { request });
+      const { palette } = await mountPalette(createContext(gateway, async () => null));
+      await enterQuery(palette, "needle");
+      await vi.advanceTimersByTimeAsync(50);
+      await loadModelCatalog(gateway.snapshot.client!, { agentId: "main", timeoutMs: 1_000 });
+      await palette.updateComplete;
+      expect(findPaletteOption(palette, "Needle accepted")).toBeDefined();
+      old.reject(new Error("retired read failed"));
+      await vi.advanceTimersByTimeAsync(0);
+      await palette.updateComplete;
+      expect(findPaletteOption(palette, "Needle accepted")).toBeDefined();
+      expect(palette.textContent).not.toContain("Model search unavailable");
+      expect(palette.textContent?.includes("Some models could not be refreshed")).toBe(partial);
+    },
+  );
+
+  it.each(["close", "detach", "source"])(
+    "preserves another consumer's shared read through palette %s",
+    async (transition) => {
+      const result = createDeferred<ModelCatalogResult>();
+      const request = vi.fn(() => result.promise);
+      const { gateway } = createGateway(true, { request });
+      const { palette, provider } = await mountPalette(createContext(gateway, async () => null));
+      await enterQuery(palette, "needle");
+      await vi.advanceTimersByTimeAsync(50);
+      const shared = loadModelCatalog(gateway.snapshot.client!, { agentId: "main" });
+      if (transition === "close") {
+        palette.togglePalette();
+      } else if (transition === "detach") {
+        palette.remove();
+      } else {
+        provider.setContext(createContext({ ...gateway }, async () => null));
+      }
+      await palette.updateComplete;
+      const accepted = {
+        models: [{ provider: "fixture", id: "accepted", name: "Needle accepted" }],
+      };
+      result.resolve(accepted);
+      await expect(shared).resolves.toEqual(accepted);
+      if (transition === "detach") {
+        provider.append(palette);
+      }
+      await enterQuery(palette, "needle");
+      await vi.advanceTimersByTimeAsync(50);
+      expect(findPaletteOption(palette, "Needle accepted")).toBeDefined();
+      expect(request).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("keeps the highlighted model when an earlier category arrives", async () => {
+    const optional = createDeferred<unknown>();
+    const request = vi.fn((method: string) =>
+      method === "cron.list"
+        ? optional.promise
+        : {
+            models: [
+              { provider: "fixture", id: "first", name: "Needle first" },
+              { provider: "fixture", id: "second", name: "Needle second" },
+            ],
+          },
+    );
+    const { gateway } = createGateway(true, { methods: ["cron.list"], request });
+    const { palette } = await mountPalette(createContext(gateway, async () => null));
+    await enterQuery(palette, "needle");
+    await vi.advanceTimersByTimeAsync(50);
+    palette.querySelector("input")?.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "ArrowDown",
+        bubbles: true,
+      }),
+    );
+    await palette.updateComplete;
+    expect(palette.querySelector('[aria-selected="true"]')?.textContent).toContain("Needle second");
+    optional.resolve({ jobs: [{ id: "earlier", name: "Needle earlier" }] });
+    await vi.advanceTimersByTimeAsync(0);
+    await palette.updateComplete;
+    expect(findPaletteOption(palette, "Needle earlier")).toBeDefined();
+    expect(palette.querySelector('[aria-selected="true"]')?.textContent).toContain("Needle second");
+    palette.querySelector("input")?.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        bubbles: true,
+      }),
+    );
+    expect(palette.onNavigate).toHaveBeenCalledExactlyOnceWith("model-providers");
   });
 
   it.each(["match", "empty", "failure"])(
