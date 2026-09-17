@@ -699,6 +699,12 @@ describe("standalone triage update evidence", () => {
       const coordinator = acquireGatewayLifecycleCoordinator({
         databasePath: resolveOpenClawStateSqlitePath(process.env),
       });
+      const coordinatorPath = coordinator.path;
+      coordinator.release();
+      const holder = tryAcquireExclusiveSqliteCoordinator(coordinatorPath, { busyTimeoutMs: 0 });
+      if (!holder) {
+        throw new Error("Test Gateway lifecycle holder could not be acquired");
+      }
       try {
         const runtime = createTriageRuntime();
         await triageCommand(runtime, {
@@ -710,10 +716,11 @@ describe("standalone triage update evidence", () => {
           },
         });
         const prompt = await fs.readFile(runtime.writeJson.mock.calls[0]?.[0]?.promptPath, "utf8");
+        expect(mocks.readActiveGatewayLockIdentity).toHaveBeenCalledOnce();
         expect(prompt).not.toContain(`Active update driver PID ${process.pid}`);
         expect(prompt).toContain("including `openclaw doctor --fix`");
       } finally {
-        coordinator.release();
+        holder.release();
       }
     });
   });
