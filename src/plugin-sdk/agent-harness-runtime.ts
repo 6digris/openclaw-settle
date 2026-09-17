@@ -50,6 +50,13 @@ import { redactToolDetail } from "../logging/redact.js";
 import type { PromptImageOrderEntry } from "../media/prompt-image-order.js";
 import { truncateUtf16Safe } from "../utils.js";
 
+export {
+  declareAgentWorkspaceAccess,
+  registerAgentWorkspaceAccess,
+  getAgentWorkspaceAccess,
+  type AgentWorkspaceAccess,
+} from "../agents/workspace-access.js";
+
 /** Default truncation limit for user-facing tool progress output. */
 export const TOOL_PROGRESS_OUTPUT_MAX_CHARS = 8_000;
 
