@@ -99,9 +99,11 @@ describe("update.run handoff refusal diagnostics", () => {
         },
       });
       if (failure === "sentinel-write") {
-        expect.soft(report.body).toContain(
-          "Failing check managed-service-handoff-failed (managed-service-handoff-failed): [redacted-diagnostic]",
-        );
+        expect
+          .soft(report.body)
+          .toContain(
+            "Failing check managed-service-handoff-failed (managed-service-handoff-failed): [redacted-diagnostic]",
+          );
         expect.soft(report.body).not.toContain(message);
       } else {
         expect.soft(report.body).toContain(`Failed phase requested: ${message}`);

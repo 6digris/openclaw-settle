@@ -577,37 +577,51 @@ describe("post-plugin update readiness", () => {
     });
   });
 
-  it("retains posture warnings while accepting post-plugin readiness", async () => {
-    mocks.runExec.mockImplementation(async (_command, args: string[]) => ({
-      stdout: args.includes("--lint")
-        ? JSON.stringify({
-            ok: true,
-            checksRun: 1,
-            findings: [],
-            warnings: [
-              {
-                checkId: "core/doctor/security",
-                severity: "warning",
-                message: "Open group policy permits mention-gated requests.",
-                fixHint: "Review the group allowlist.",
-              },
-            ],
-          })
-        : "",
-      stderr: "",
-    }));
-    const result = await completePostCorePluginUpdate(updateOptions);
-    expect(result.pluginUpdate).toMatchObject({
-      status: "warning",
-      warnings: [
-        {
-          reason: "doctor-advisory",
-          message: "Open group policy permits mention-gated requests.",
-          guidance: ["Review the group allowlist."],
-        },
-      ],
-    });
-  });
+  it.each([
+    {
+      checkId: "core/doctor/security",
+      message: "Open group policy permits mention-gated requests.",
+      fixHint: "Review the group allowlist.",
+    },
+    {
+      checkId: "core/doctor/lint-state-inspection",
+      message: "Temporary doctor lint state snapshot cleanup did not complete.",
+      fixHint: "Rerun doctor after the update.",
+    },
+  ])(
+    "retains $checkId warnings while accepting post-plugin readiness",
+    async ({ checkId, message, fixHint }) => {
+      mocks.runExec.mockImplementation(async (_command, args: string[]) => ({
+        stdout: args.includes("--lint")
+          ? JSON.stringify({
+              ok: true,
+              checksRun: 1,
+              findings: [],
+              warnings: [
+                {
+                  checkId,
+                  severity: "warning",
+                  message,
+                  fixHint,
+                },
+              ],
+            })
+          : "",
+        stderr: "",
+      }));
+      const result = await completePostCorePluginUpdate(updateOptions);
+      expect(result.pluginUpdate).toMatchObject({
+        status: "warning",
+        warnings: [
+          {
+            reason: "doctor-advisory",
+            message,
+            guidance: [fixHint],
+          },
+        ],
+      });
+    },
+  );
 
   it.each([
     {
