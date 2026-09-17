@@ -107,6 +107,10 @@ it.runIf(process.platform === "linux")(
     delete env.DBUS_SESSION_BUS_ADDRESS;
     const invocations: string[][] = [];
     vi.mocked(execFileUtf8).mockImplementation(async (command, args) => {
+      if (command === "systemctl") {
+        expect(args).toEqual(["--system", "is-system-running"]);
+        return { code: 0, termination: "exit", stdout: "running\n", stderr: "" };
+      }
       expect(command).toBe("busctl");
       invocations.push([...args]);
       const result = spawnSync(process.execPath, [shim, ...args], { encoding: "utf8", env });
@@ -121,6 +125,10 @@ it.runIf(process.platform === "linux")(
       reason: "systemd-user-bus-unavailable",
     });
     expect(invocations).toEqual([["--machine", "testuser@", ...versionArgs]]);
+    expect(vi.mocked(execFileUtf8).mock.calls.map(([command]) => command)).toEqual([
+      "busctl",
+      "systemctl",
+    ]);
     console.info("original Doctor argv:", JSON.stringify(invocations[0]));
   },
 );
