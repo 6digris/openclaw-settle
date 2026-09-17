@@ -15,6 +15,7 @@ import {
   markReplyOperationExecutionStarted,
 } from "../../auto-reply/reply/reply-run-registry.js";
 import { SqliteBoardStore } from "../../boards/sqlite-board-store.js";
+import * as combinedStores from "../../config/sessions/combined-store-gateway.js";
 import {
   loadSessionEntry,
   persistSessionTranscriptTurn,
@@ -445,7 +446,7 @@ it.each([{ activeMinutes: 1 }, { activeOnly: true }])(
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const { clock, config } = await seedSessionsWithActivityTimes();
       const context = requestContext(config);
-      const loads = vi.spyOn(sessionUtils, "loadCombinedSessionStoreForGatewayCore");
+      const loads = vi.spyOn(combinedStores, "loadCombinedSessionStoreForGatewayAsync");
       context.chatAbortControllers.set("active-run", {
         agentId: "main",
         sessionKey: "agent:main:active",
@@ -486,7 +487,7 @@ it.each(["settled", "replaced"] as const)(
           sessionId: `${agentId}-active`,
         } as never);
       }
-      const loads = vi.spyOn(sessionUtils, "loadCombinedSessionStoreForGatewayCore");
+      const loads = vi.spyOn(combinedStores, "loadCombinedSessionStoreForGatewayAsync");
       const project = sessionUtils.listSessionsFromStoreAsync;
       const projections = vi
         .spyOn(sessionUtils, "listSessionsFromStoreAsync")
@@ -578,71 +579,99 @@ it.each([false, true])(
   },
 );
 
-it("reconciles a completed fallback when the active run settles during projection", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    const config = await seedSessions();
-    config.agents = {
-      ...config.agents,
-      defaults: { model: { primary: "selected-provider/selected-model" } },
-    };
-    const context = requestContext(config);
-    const sessionKey = "agent:main:active";
-    const sessionId = "main-active";
-    const runId = "settling-model-run";
-    registerChatAbortController({
-      chatAbortControllers: context.chatAbortControllers,
-      runId,
-      agentId: "main",
-      sessionKey,
-      sessionId,
-      timeoutMs: 60_000,
-    });
-    registerAgentRunContext(runId, {
-      agentId: "main",
-      sessionKey,
-      sessionId,
-      projectSessionActive: true,
-    });
-    emitAgentEventForRunContext(
-      {
-        runId,
-        stream: "lifecycle",
-        data: { phase: "model", provider: "attempt-provider", model: "attempt-model" },
-      },
-      getAgentRunContext(runId)!,
-    );
-
-    const project = sessionUtils.listSessionsFromStoreAsync;
-    vi.spyOn(sessionUtils, "listSessionsFromStoreAsync").mockImplementationOnce(async (params) => {
-      const result = await project(params);
-      context.chatAbortControllers.delete(runId);
-      clearAgentRunContext(runId);
-      const scope = { agentId: "main", sessionKey };
-      const entry = expectDefined(loadSessionEntry(scope), "settling session");
-      await replaceSessionEntry(scope, {
-        ...entry,
-        status: "done",
-        lastRunId: runId,
-        modelProvider: "fallback-provider",
-        model: "fallback-model",
-        fallbackNotice: {
-          kind: "active",
-          selectedModel: "selected-provider/selected-model",
-          activeModel: "fallback-provider/fallback-model",
+it.each(["configured", "inherited"] as const)(
+  "reconciles a completed fallback when the active run settles during projection (%s selection)",
+  async (selection) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const config = await seedSessions();
+      config.agents = {
+        ...config.agents,
+        defaults: {
+          model: {
+            primary:
+              selection === "inherited"
+                ? "default-provider/default-model"
+                : "selected-provider/selected-model",
+          },
         },
+      };
+      const context = requestContext(config);
+      const sessionKey = "agent:main:active";
+      const sessionId = "main-active";
+      const runId = "settling-model-run";
+      if (selection === "inherited") {
+        config.session = { ...config.session, scope: "global" };
+        await upsertSessionEntryCore(
+          { agentId: "work", sessionKey: "global" },
+          {
+            sessionId: "work-parent",
+            providerOverride: "selected-provider",
+            modelOverride: "selected-model",
+            modelOverrideSource: "user",
+            modelOverrideRouteResolution: "resolved",
+          },
+        );
+        const scope = { agentId: "main", sessionKey };
+        const entry = expectDefined(loadSessionEntry(scope), "child session");
+        await replaceSessionEntry(scope, { ...entry, parentSessionKey: "agent:work:main" });
+      }
+      registerChatAbortController({
+        chatAbortControllers: context.chatAbortControllers,
+        runId,
+        agentId: "main",
+        sessionKey,
+        sessionId,
+        timeoutMs: 60_000,
       });
-      return result;
-    });
+      registerAgentRunContext(runId, {
+        agentId: "main",
+        sessionKey,
+        sessionId,
+        projectSessionActive: true,
+      });
+      emitAgentEventForRunContext(
+        {
+          runId,
+          stream: "lifecycle",
+          data: { phase: "model", provider: "attempt-provider", model: "attempt-model" },
+        },
+        getAgentRunContext(runId)!,
+      );
 
-    const result = await listSessions({
-      client: identifiedClient("viewer@example.com"),
-      context,
-      request: { agentId: "main", limit: 100 },
+      const project = sessionUtils.listSessionsFromStoreAsync;
+      vi.spyOn(sessionUtils, "listSessionsFromStoreAsync").mockImplementationOnce(
+        async (params) => {
+          const result = await project(params);
+          context.chatAbortControllers.delete(runId);
+          clearAgentRunContext(runId);
+          const scope = { agentId: "main", sessionKey };
+          const entry = expectDefined(loadSessionEntry(scope), "settling session");
+          await replaceSessionEntry(scope, {
+            ...entry,
+            status: "done",
+            lastRunId: runId,
+            modelProvider: "fallback-provider",
+            model: "fallback-model",
+            fallbackNotice: {
+              kind: "active",
+              selectedModel: "selected-provider/selected-model",
+              activeModel: "fallback-provider/fallback-model",
+            },
+          });
+          return result;
+        },
+      );
+
+      const result = await listSessions({
+        client: identifiedClient("viewer@example.com"),
+        context,
+        request: { agentId: "main", limit: 100 },
+      });
+      expect(result.sessions.find((session) => session.key === sessionKey)).toMatchObject({
+        hasActiveRun: false,
+        activeModelProvider: "fallback-provider",
+        activeModel: "fallback-model",
+      });
     });
-    expect(result.sessions.find((session) => session.key === sessionKey)).toMatchObject({
-      hasActiveRun: false,
-      activeModelProvider: "fallback-provider",
-      activeModel: "fallback-model",
-    });
-  });
-});
+  },
+);

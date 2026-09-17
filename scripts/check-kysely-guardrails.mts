@@ -87,7 +87,6 @@ const rawSqliteAllowPathGroups = {
     "src/snapshot/git-backup-codec.ts",
     "src/snapshot/local-repository.ts",
   ],
-  "agent auth profile read-only bootstrap": ["src/agents/auth-profiles/sqlite.ts"],
   "read-only shared state database access": [
     "src/claws/package-resume.ts",
     "src/state/openclaw-agent-db-readonly.ts",
@@ -105,7 +104,7 @@ const rawSqliteAllowPathGroups = {
     "src/state/openclaw-quarantine-store.ts",
   ],
   "read-only SQLite status probes": [
-    "src/commands/doctor-db-bloat.ts",
+    "src/commands/doctor-db-bloat.read.ts",
     "src/commands/status.scan.shared.ts",
   ],
   "doctor SQLite maintenance and legacy state migration": [

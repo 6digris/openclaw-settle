@@ -54,7 +54,7 @@ Skill collection review runs every 7 days. It is enabled when `skills.workshop.a
   Skip workspace bootstrap file injection.
 </ParamField>
 <ParamField path="--tools" type="string">
-  Restrict which tools the job can use, for example `--tools exec,read`.
+  Restrict which tools the job can use, for example `--tools exec,read`. Pass `--tools ""` for an empty allowlist that disables all agent tools, including tools used by a condition trigger.
 </ParamField>
 
 New jobs that can run tools always store an explicit tool policy. Jobs created by an agent
@@ -63,6 +63,53 @@ stored list. Jobs created by an authenticated operator without `--tools` store a
 unrestricted `*` policy; `automations edit --clear-tools` restores that explicit unrestricted
 policy. Existing jobs that predate an explicit tool policy retain their current behavior
 until their tool policy is explicitly edited or the job is recreated.
+
+Changing an account-bound job to a payload that does not run tools and later back
+to an agent turn preserves its account restriction. A payload conversion does not
+reauthorize that job as an operator-created job.
+
+Management edits cannot restore missing policy metadata as operator authority.
+For a legacy job that has lost its policy, an authenticated operator can explicitly
+reauthorize it, or an authenticated creator can recreate it with a fresh tool cap.
+
+When the creator's `exec` capability is fixed to the Gateway, the automation also
+retains that target. With `tools.exec.host: "auto"`, the saved target determines
+placement. A conflicting current explicit host setting or required sandbox
+isolation blocks the command instead of moving it to another host. Current tool
+and approval policies still apply.
+
+With `message` in the tool cap, scheduled agent turns can read messages and channel
+information on supported channel plugins without an inbound chat. Operator-created
+jobs use the current operator read policy. Agent-created jobs retain their recorded
+creator origin and account, and the channel's delegated read restrictions still
+apply. Delivery settings do not grant read access.
+
+Current global, agent, profile, and provider tool policy is checked when each new
+scheduled message invocation starts. Configuration changes apply to later invocations;
+an invocation already admitted retains its configuration. Disabling or removing a job,
+withdrawing its `message` capability, or revoking its caller or plugin authority stops
+further affected reads from that occurrence, including pending reads before another
+provider request or result delivery. Re-enabling the job does not restore an
+occurrence's revoked access. Older agent-created jobs
+without recorded creator origin need to be recreated or explicitly reauthorized
+from a fresh authenticated creator turn.
+
+Scheduled turns can also `edit`, `delete`, `pin`, and `unpin` Discord messages.
+Agent-created jobs use their recorded creator account and Discord's delegated
+target restrictions. Operator-created jobs use Discord's operator target policy.
+Trusted operator jobs can additionally use `channel-edit`, including the existing
+channel and thread edit options; account-created jobs do not inherit operator
+administration.
+
+For these writes, the job needs `message` in its tool policy, an enabled account
+and action, and the bot's required Discord permissions. Use an updated Discord plugin with
+[scheduled write support](/plugins/sdk-channel-plugins#scheduled-channel-administration).
+
+Channel-name lookup and subsequent write requests retain the current job and
+plugin authority. Configuration changes apply to the next message invocation;
+disabling or narrowing the job itself stops later requests and retries in the
+current invocation. A confirmed write still returns its result if authority ends
+while the response is pending.
 
 `--model` sets the job's primary model; it does not replace a session `/model` override, so configured fallback chains still apply on top of it. An unresolved or disallowed model fails the run with an explicit validation error rather than silently falling back to the default. If a job has `--model` but no explicit or configured fallback list, OpenClaw passes an empty fallback override instead of silently appending the agent primary as a hidden retry target.
 
@@ -110,6 +157,8 @@ openclaw automations create "*/15 * * * *" \
 `--command <shell>` stores `argv: ["sh", "-lc", <shell>]`. Use `--command-argv '["node","scripts/report.mjs"]'` for exact argv execution without shell parsing. Optional `--command-env KEY=VALUE` (repeatable), `--command-input`, `--timeout-seconds` (default 10 minutes), `--no-output-timeout-seconds`, and `--output-max-bytes` control the process environment, stdin, and output bounds.
 
 Delivered text is derived from process output: non-empty stdout wins; if stdout is empty and stderr is non-empty, stderr is delivered; if both are present, the scheduler sends a small `stdout:` / `stderr:` block. Exit code `0` records the run `ok`; non-zero exit, signal, timeout, or no-output timeout records `error` and can trigger failure alerts. A command that prints only `NO_REPLY` uses the normal automation silent-token suppression and posts nothing back to chat.
+
+When the run deadline stops a command, run history retains its captured output and command timeout reason after bounded process cleanup. Completion delivery does not start after that deadline.
 
 ### Script payloads
 

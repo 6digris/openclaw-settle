@@ -168,6 +168,15 @@ During healthy worker provisioning or workspace preparation, accepted input stay
 
 - **Fire-and-forget:** set `timeoutSeconds: 0` to enqueue and return immediately.
 - **Wait for reply:** set a timeout and get the response inline.
+- **Resume a paused child task:** use `mode: "resume"` with the continuation message. The calling session must control the native child task, and that task must be paused by `sessions_yield`. This preserves its task identity and original completion recipient. Ordinary `followup` messages do not resume tasks.
+
+Task resume returns `status: "accepted"`, `mode: "resume"`, the successor `runId`,
+the original `taskRunId`, and `completion: "task"`. The existing task owner delivers
+the eventual result once; the tool does not wait for the answer or start a separate
+reply-back loop. Omit `watch` and `timeoutSeconds`, or set `timeoutSeconds: 0`;
+`watch: true` and positive waits are rejected. Resume requires trusted in-process
+Gateway admission. Unrelated callers, completed tasks, and changed child sessions
+are rejected rather than falling back to ordinary messaging.
 
 `timeoutSeconds` limits the sending tool's wait, not the receiver's execution
 budget. For nonblocking coordination, use `sessions_send` with `timeoutSeconds: 0`.
@@ -195,7 +204,14 @@ Thread-scoped chat sessions, such as keys ending in `:thread:<id>`, are not vali
 
 Messages and A2A follow-up replies are marked as inter-session data in the receiving prompt (`[Inter-session message ... isUser=false]`) and in transcript provenance. The receiving agent should treat them as tool-routed data, not as a direct end-user-authored instruction.
 
-After the target responds, OpenClaw can run a **reply-back loop** where the agents alternate messages up to the built-in limit. The target agent can reply `REPLY_SKIP` to stop early.
+After an independent peer responds, OpenClaw can run a **reply-back loop** where the agents alternate messages up to the built-in limit. The target agent can reply `REPLY_SKIP` to stop early.
+
+Outside isolated scheduled jobs, native parent/child exchanges do not start peer
+reply-back loops or target-channel announcements. A waited reply returns inline once; a reply that arrives after the
+wait ends is handed back to the requester once. Ordinary UI threads and unrelated
+sessions remain independent peers. Isolated scheduled jobs retain their existing
+no-reply-back announcement policy. ACP children retain their task-owned completion
+path.
 
 Pass `watch: true` to also register the sender as a state-change watcher of the target: when another actor later sends the target a direct human message or changes its goal, the sender receives a system notice pointing at `session_status` `changesSince`. Registration happens after successful dispatch, targets the session that actually received the message, and starts at its current state version, so only later changes produce notices. The result reports `watched: true` when registration succeeded. See [Session state awareness](/concepts/session-state).
 

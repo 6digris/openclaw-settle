@@ -1,6 +1,7 @@
 // Gateway chat runtime projects agent events into chat/session subscriber
 // streams, lifecycle persistence, heartbeat visibility, and live UI updates.
 import { performance } from "node:perf_hooks";
+import { readStringValue } from "@openclaw/normalization-core/string-coerce";
 import { Value } from "typebox/value";
 import {
   ChatStatusEventSchema,
@@ -803,6 +804,9 @@ export function createAgentEventHandler({
               abortErrorMessage: readToolValidationErrorSummary(evt.data?.toolErrorSummary),
               yielded: yieldedWaiting ? true : undefined,
               errorObservation: evt.data?.errorObservation,
+              assistantTranscriptIdempotencyKey: readStringValue(
+                evt.data?.assistantTranscriptIdempotencyKey,
+              ),
             },
           );
         }
@@ -1014,13 +1018,11 @@ export function createAgentEventHandler({
         return;
       }
       const projected = chatRunState.resolveBuffer(clientRunId);
-      if (
-        projected.suppress ||
-        shouldHideHeartbeatChatOutput(clientRunId, sourceRunId, isHeartbeat)
-      ) {
+      if (shouldHideHeartbeatChatOutput(clientRunId, sourceRunId, isHeartbeat)) {
         return;
       }
-      broadcastChatDelta(sessionKey, agentId, clientRunId, sourceRunId, seq, projected.text, {
+      const mergedText = projected.suppress ? "" : projected.text;
+      broadcastChatDelta(sessionKey, agentId, clientRunId, sourceRunId, seq, mergedText, {
         controlUiVisible,
       });
     };
@@ -1077,13 +1079,10 @@ export function createAgentEventHandler({
       return;
     }
     const projected = chatRunState.resolveBuffer(clientRunId);
-    const mergedText = projected.text;
-    if (
-      projected.suppress ||
-      shouldHideHeartbeatChatOutput(clientRunId, sourceRunId, opts?.isHeartbeat)
-    ) {
+    if (shouldHideHeartbeatChatOutput(clientRunId, sourceRunId, opts?.isHeartbeat)) {
       return;
     }
+    const mergedText = projected.suppress ? "" : projected.text;
     broadcastChatDelta(sessionKey, agentId, clientRunId, sourceRunId, seq, mergedText, opts);
   };
 
@@ -1141,11 +1140,14 @@ export function createAgentEventHandler({
       sourceRunId,
       opts?.isHeartbeat,
     );
-    if (!text || shouldSuppressSilent || shouldSuppressHeartbeatStreaming) {
+    if (shouldSuppressHeartbeatStreaming) {
       return;
     }
 
-    broadcastChatDelta(sessionKey, agentId, clientRunId, sourceRunId, seq, text, opts);
+    // Suppression replaces a prior visible snapshot; omission would leave the UI
+    // materializing stale text at a message-less final. Empty untouched runs no-op.
+    const mergedText = shouldSuppressSilent ? "" : text;
+    broadcastChatDelta(sessionKey, agentId, clientRunId, sourceRunId, seq, mergedText, opts);
   };
 
   const sendLivePayload = (
@@ -1206,6 +1208,7 @@ export function createAgentEventHandler({
       abortErrorMessage?: string;
       yielded?: true;
       errorObservation?: unknown;
+      assistantTranscriptIdempotencyKey?: string;
       isHeartbeat?: boolean;
     },
   ) => {
@@ -1250,6 +1253,14 @@ export function createAgentEventHandler({
                   role: "assistant",
                   content: text ? [{ type: "text", text }] : [],
                   timestamp: Date.now(),
+                  ...(opts?.assistantTranscriptIdempotencyKey
+                    ? {
+                        __openclaw: {
+                          runId: clientRunId,
+                          idempotencyKey: opts.assistantTranscriptIdempotencyKey,
+                        },
+                      }
+                    : {}),
                 },
                 canvasBlocks,
               )
@@ -1270,6 +1281,22 @@ export function createAgentEventHandler({
       ...(spawnedBy && { spawnedBy }),
       seq,
       state: "error" as const,
+      ...(opts?.assistantTranscriptIdempotencyKey && text && !shouldSuppressSilent
+        ? {
+            message: appendChatCanvasBlocksToMessage(
+              {
+                role: "assistant",
+                content: [{ type: "text", text }],
+                timestamp: Date.now(),
+                __openclaw: {
+                  runId: clientRunId,
+                  idempotencyKey: opts.assistantTranscriptIdempotencyKey,
+                },
+              },
+              chatRunState.runs.get(clientRunId)?.canvasBlocks ?? [],
+            ),
+          }
+        : {}),
       errorMessage: error ? formatForLog(error) : undefined,
       ...(errorKind && { errorKind }),
       ...(errorDetail ? { errorDetail } : {}),

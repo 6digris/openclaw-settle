@@ -13,7 +13,9 @@ import {
   resolveAuthProfileDatabasePath,
 } from "../agents/auth-profiles/sqlite.js";
 import { saveAuthProfileStore } from "../agents/auth-profiles/store-runtime.js";
+import * as reconcilePool from "../config/sessions/session-transcript-reconcile-pool.js";
 import {
+  isSessionTranscriptIndexReconcileRunning,
   startSessionTranscriptIndexReconcile,
   waitForSessionTranscriptIndexReconcile,
 } from "../config/sessions/session-transcript-reconcile.js";
@@ -456,6 +458,44 @@ describe("openclaw test state", () => {
     await expectPathMissing(state.root);
   });
 
+  it("restores late env additions before the next fixture", async () => {
+    const previous = {
+      OPENCLAW_TEST_LATE_ABSENT: undefined,
+      OPENCLAW_TEST_LATE_EMPTY: "",
+      OPENCLAW_TEST_LATE_PRESENT: "original",
+    };
+    await withEnvAsync(previous, async () => {
+      const state = await createOpenClawTestState({ label: "late-env" });
+      try {
+        Object.assign(state.envVars, {
+          OPENCLAW_TEST_LATE_ABSENT: "first",
+          OPENCLAW_TEST_LATE_EMPTY: "first",
+          OPENCLAW_TEST_LATE_PRESENT: undefined,
+        });
+        state.applyEnv();
+        expect(process.env.OPENCLAW_TEST_LATE_ABSENT).toBe("first");
+        expect(process.env.OPENCLAW_TEST_LATE_EMPTY).toBe("first");
+        expect(process.env.OPENCLAW_TEST_LATE_PRESENT).toBeUndefined();
+        for (const key of Object.keys(previous)) {
+          state.envVars[key] = "second";
+        }
+        state.applyEnv();
+        for (const key of Object.keys(previous)) {
+          expect(process.env[key]).toBe("second");
+        }
+      } finally {
+        await state.cleanup();
+      }
+      await state.cleanup();
+      await withOpenClawTestState({ label: "after-late-env" }, async (next) => {
+        for (const [key, value] of Object.entries(previous)) {
+          expect(process.env[key]).toBe(value);
+          expect(next.env[key]).toBe(value);
+        }
+      });
+    });
+  });
+
   it("supports state-only layout without overriding HOME", async () => {
     const previousHome = process.env.HOME;
 
@@ -700,12 +740,16 @@ describe("openclaw test state", () => {
     const options = { agentId: "main", env: state.env };
     const agent = openOpenClawAgentDatabase(options);
     const shared = openOpenClawStateDatabase({ env: state.env });
-    const realSetImmediate = globalThis.setImmediate;
-    let resumeReconcile: (() => void) | undefined;
-    const immediateSpy = vi.spyOn(globalThis, "setImmediate").mockImplementationOnce((callback) => {
-      resumeReconcile = () => callback();
-      return realSetImmediate(() => undefined);
-    });
+    const resumeReconcile = createDeferredCore();
+    const runOperation = reconcilePool.runSessionTranscriptReconcileOperation;
+    const operationSpy = vi
+      .spyOn(reconcilePool, "runSessionTranscriptReconcileOperation")
+      .mockImplementationOnce((generation, run) =>
+        runOperation(generation, async (operation) => {
+          await resumeReconcile.promise;
+          return run(operation);
+        }),
+      );
     const originalRm = fs.rm;
     let removalStarted = false;
     const rmSpy = vi.spyOn(fs, "rm").mockImplementation((...args) => {
@@ -720,14 +764,12 @@ describe("openclaw test state", () => {
     try {
       startSessionTranscriptIndexReconcile(options);
       reconcile = waitForSessionTranscriptIndexReconcile(options);
-      expect(resumeReconcile).toBeDefined();
+      expect(isSessionTranscriptIndexReconcileRunning(options)).toBe(true);
       cleanup = state.cleanup();
 
       // Empty drains settle before this real event-loop checkpoint. Old cleanup
       // reaches rm; repaired cleanup must keep the fixture alive for the owner.
-      await new Promise<void>((resolve) => {
-        realSetImmediate(resolve);
-      });
+      await nextTurn();
       if (removalStarted) {
         await cleanup;
         expect(agent.db.isOpen).toBe(false);
@@ -736,7 +778,7 @@ describe("openclaw test state", () => {
         expect(agent.db.isOpen).toBe(true);
         expect(process.env.OPENCLAW_STATE_DIR).toBe(state.stateDir);
       }
-      resumeReconcile?.();
+      resumeReconcile.resolve();
       await reconcile;
       await cleanup;
 
@@ -748,8 +790,8 @@ describe("openclaw test state", () => {
       expect(shared.db.isOpen).toBe(false);
       expect(openSpy.mock.calls.filter(([pathname]) => pathname === agent.path)).toEqual([]);
     } finally {
-      immediateSpy.mockRestore();
-      resumeReconcile?.();
+      operationSpy.mockRestore();
+      resumeReconcile.resolve();
       await reconcile;
       await cleanup;
       await state.cleanup();

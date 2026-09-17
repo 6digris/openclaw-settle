@@ -18,6 +18,7 @@ import {
   createOpenClawDatabaseMaintenanceScope,
   type OpenClawDatabaseMaintenanceScope,
 } from "../state/openclaw-state-db-async-lifecycle.js";
+import { openDoctorStateSchemaReadAdmission } from "../state/openclaw-state-db-doctor-schema.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import type { DoctorOptions } from "./doctor-prompter.js";
 import { isDoctorUpdateRepairMode, resolveDoctorRepairMode } from "./doctor-repair-mode.js";
@@ -51,12 +52,13 @@ function assertDoctorMaintenanceInspection(
   env: NodeJS.ProcessEnv,
 ): void {
   const kind = inspection.serviceUpdateVerdict?.kind;
-  // Non-owned services grant no stop authority. The native lifecycle owner
-  // must prove them offline before Doctor can repair its own selected state.
+  // Unavailable inspection grants no service authority. The state coordinators
+  // and agent leases below still exclude live writers before repair.
   if (
     !inspection.blockMessage &&
-    inspection.inspected &&
-    (kind === "owned" || kind === "absent" || inspection.offline === true)
+    (kind === "unavailable" ||
+      (inspection.inspected &&
+        (kind === "owned" || kind === "absent" || inspection.offline === true)))
   ) {
     return;
   }
@@ -75,6 +77,7 @@ export async function beginDoctorMaintenance(params: {
       run<T>(operation: () => T): T;
       release(): Promise<void>;
       finish(cfg: OpenClawConfig): Promise<void>;
+      warnings?: string[];
     }
   | undefined
 > {
@@ -92,6 +95,7 @@ export async function beginDoctorMaintenance(params: {
     | typeof import("../cli/update-cli/update-command-service-maintenance.js")
     | undefined;
   const coordinators: Array<{ release(): void }> = [];
+  const warnings: string[] = [];
   let repairStoresMayBeOpen = false;
   let resources: OpenClawDatabaseMaintenanceScope | undefined;
   let inspectingActivation = false;
@@ -136,6 +140,7 @@ export async function beginDoctorMaintenance(params: {
           const runs = listUpdateRuns(
             { active: true, limit: 100, includeRunId: inheritedRunId },
             { env },
+            openDoctorStateSchemaReadAdmission,
           );
           const admission = inspectUpdateRepairDriverAdmission(runs, inheritedRunId);
           if (admission.kind === "conflict") {
@@ -162,7 +167,7 @@ export async function beginDoctorMaintenance(params: {
       if (
         parentActivation !== undefined &&
         !assertContinuationCurrent &&
-        inspection.serviceUpdateVerdict?.kind !== "absent" &&
+        inspection.serviceUpdateVerdict?.kind === "owned" &&
         inspection.offline !== true
       ) {
         throw new Error(
@@ -191,6 +196,9 @@ export async function beginDoctorMaintenance(params: {
             params.runtime.log("Stopped the managed Gateway for Doctor repair.");
           }
         }
+      } else if (inspection.serviceUpdateVerdict?.kind === "unavailable") {
+        warnings.push(inspection.serviceUpdateVerdict.message);
+        params.runtime.log(inspection.serviceUpdateVerdict.message);
       } else if (inspection.serviceUpdateVerdict?.kind !== "absent") {
         params.runtime.log(
           "The stopped Gateway service was left unchanged; repairing Doctor's selected state only.",
@@ -209,7 +217,7 @@ export async function beginDoctorMaintenance(params: {
     const { assertNoOpenClawAgentDatabaseLeasesReadOnly, OpenClawAgentDatabaseLeaseActiveError } =
       await import("../state/openclaw-agent-db-lease.js");
     try {
-      assertNoOpenClawAgentDatabaseLeasesReadOnly({ env });
+      assertNoOpenClawAgentDatabaseLeasesReadOnly({ env }, openDoctorStateSchemaReadAdmission);
     } catch (error) {
       if (error instanceof OpenClawAgentDatabaseLeaseActiveError) {
         throw error;
@@ -220,6 +228,7 @@ export async function beginDoctorMaintenance(params: {
       const schemas = await preflightOpenClawDatabaseSchemas({
         env,
         scope: "state",
+        openStateSchemaReadAdmission: openDoctorStateSchemaReadAdmission,
       });
       const unreadable = schemas.indeterminate.find((database) => database.kind === "state");
       if (unreadable) {
@@ -247,6 +256,7 @@ export async function beginDoctorMaintenance(params: {
     throw refusal;
   }
   return {
+    warnings,
     run: (operation) => resources!.run(operation),
     release,
     async finish(cfg) {
@@ -289,6 +299,7 @@ export async function beginDoctorMaintenance(params: {
                   loadForInspection: {
                     managerUid: before.serviceManagerUid,
                     assertCurrent: assertMaintenanceCurrent,
+                    assertReadCurrent: assertCurrent,
                   },
                 }
               : {}),

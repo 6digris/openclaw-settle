@@ -3,10 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { PLUGIN_CAPABILITY_CONSENT_REQUIRED } from "../../../../packages/gateway-protocol/src/capability-consent-error-details.js";
-import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.js";
-import { withIsolatedTestHome } from "../../../../test/test-env.js";
 import type { OpenClawConfig, PluginsConfig } from "../../../config/types.js";
 import { resolveRegistryUpdateChannel } from "../../../infra/update-channels.js";
 import { resolvePluginArtifactDeclaredSurface } from "../../../plugins/capability-artifact.js";
@@ -21,6 +19,7 @@ import { resolveInstalledPluginIndexPolicyHash } from "../../../plugins/installe
 import { readPersistedInstalledPluginIndex } from "../../../plugins/installed-plugin-index-store.js";
 import { isTrustedOfficialPluginInstallRecord } from "../../../plugins/official-external-install-records.js";
 import { withPluginLifecycleLease } from "../../../plugins/plugin-lifecycle-lease.js";
+import { createPluginMetadataSnapshotFixture } from "../../../plugins/plugin-metadata.test-support.js";
 import type { BundledProviderPolicySurface } from "../../../plugins/provider-policy-surface.js";
 import { createColdPluginFixture } from "../../../plugins/test-helpers/cold-plugin-fixtures.js";
 import { seedInstalledPluginIndex } from "../../../plugins/test-helpers/installed-plugin-index.js";
@@ -36,6 +35,7 @@ import {
   installedRecords,
   officialPluginEntry,
   officialWebSearchPluginEntry,
+  setupPluginInstallTestState,
   successfulInstall,
   successfulUpdate,
 } from "./missing-configured-plugin-install.test-helpers.js";
@@ -106,7 +106,7 @@ const mocks = vi.hoisted(() => ({
   listChannelPluginCatalogEntries: vi.fn(),
   listOfficialExternalChannelEnvVars: vi.fn(() => []),
   listOfficialExternalPluginCatalogEntries: vi.fn(),
-  loadInstalledPluginIndex: vi.fn(),
+  loadPluginManifestRegistryCore: vi.fn(),
   loadInstalledPluginIndexInstallRecords: vi.fn(),
   loadPluginMetadataSnapshot: vi.fn(),
   getOfficialExternalPluginCatalogManifest: vi.fn(
@@ -172,17 +172,7 @@ const mocks = vi.hoisted(() => ({
     >(),
 }));
 
-const testHome = withIsolatedTestHome({ mode: "hermetic" });
-const testEnv: NodeJS.ProcessEnv = {
-  HOME: testHome.tempHome,
-  OPENCLAW_HOME: testHome.tempHome,
-  OPENCLAW_STATE_DIR: path.join(testHome.tempHome, ".openclaw"),
-};
-afterAll(async () => {
-  await closeOpenClawStateDatabaseByPathAsync(resolveOpenClawStateSqlitePath(testEnv));
-  testHome.cleanup();
-});
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const { testEnv, tempDirs } = setupPluginInstallTestState();
 
 const prepareManagedPluginArtifactConsentHandler = vi.hoisted(() =>
   vi.fn<
@@ -199,10 +189,9 @@ function mockCurrentBundledPlugin(
   packageName: string,
   rootDir = `/tmp/bundled/${pluginId}`,
 ): void {
-  mocks.loadInstalledPluginIndex.mockReturnValue({
-    plugins: [{ pluginId, origin: "bundled", packageName, rootDir }],
+  mocks.loadPluginManifestRegistryCore.mockReturnValue({
+    plugins: [{ id: pluginId, origin: "bundled", packageName, rootDir }],
     diagnostics: [],
-    installRecords: {},
   });
 }
 
@@ -293,10 +282,26 @@ vi.mock("../../../plugins/installed-plugin-index-records.js", async (importOrigi
     mocks.writePersistedInstalledPluginIndexInstallRecordsWithLease,
 }));
 
-vi.mock("../../../plugins/installed-plugin-index.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../plugins/installed-plugin-index.js")>()),
-  loadInstalledPluginIndex: mocks.loadInstalledPluginIndex,
-}));
+vi.mock("../../../plugins/manifest-registry.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../plugins/manifest-registry.js")>();
+  return {
+    ...actual,
+    loadPluginManifestRegistryCore: (
+      params: Parameters<typeof actual.loadPluginManifestRegistryCore>[0],
+    ) => {
+      // Staged consent inspects real artifact manifests, not the synthetic bundled inventory.
+      if (
+        params?.candidates !== undefined ||
+        params?.discovery !== undefined ||
+        !params?.installRecords ||
+        Object.keys(params.installRecords).length > 0
+      ) {
+        return actual.loadPluginManifestRegistryCore(params);
+      }
+      return mocks.loadPluginManifestRegistryCore(params);
+    },
+  };
+});
 
 vi.mock("../../../plugins/install-paths.js", () => ({
   resolveDefaultPluginExtensionsDir: mocks.resolveDefaultPluginExtensionsDir,
@@ -328,14 +333,18 @@ vi.mock("../../../plugins/clawhub.js", () => ({
   installPluginFromClawHub: mocks.installPluginFromClawHub,
 }));
 
-vi.mock("../../../plugins/plugin-metadata-snapshot.js", () => ({
+vi.mock("../../../plugins/plugin-metadata-snapshot.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../plugins/plugin-metadata-snapshot.js")>()),
   loadPluginMetadataSnapshot: mocks.loadPluginMetadataSnapshot,
   resolvePluginMetadataSnapshot: mocks.loadPluginMetadataSnapshot,
 }));
 
 vi.mock("../../../plugins/manifest-contract-eligibility.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../plugins/manifest-contract-eligibility.js")>()),
-  loadManifestMetadataSnapshot: mocks.loadPluginMetadataSnapshot,
+  loadManifestMetadataSnapshot: () => ({
+    ...mocks.loadPluginMetadataSnapshot(),
+    index: createPluginMetadataSnapshotFixture(mocks.loadPluginManifestRegistryCore()).index,
+  }),
 }));
 
 vi.mock("../../../plugins/official-external-plugin-catalog.js", async (importOriginal) => ({
@@ -1030,10 +1039,9 @@ describe("repairMissingConfiguredPluginInstalls", () => {
       plugins: [],
       diagnostics: [],
     });
-    mocks.loadInstalledPluginIndex.mockReturnValue({
+    mocks.loadPluginManifestRegistryCore.mockReturnValue({
       plugins: [],
       diagnostics: [],
-      installRecords: {},
     });
     mocks.loadInstalledPluginIndexInstallRecords.mockResolvedValue({});
     mocks.listChannelPluginCatalogEntries.mockReturnValue([]);

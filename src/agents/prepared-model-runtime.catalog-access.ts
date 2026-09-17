@@ -58,10 +58,12 @@ const MODEL_CATALOG_FOREGROUND_WAIT_MS = 5_000;
 
 export function createFullModelCatalogAccess(params: {
   agentFacts: PreparedModelRuntimeAgentFacts;
+  nativeConfigFingerprint: string;
   catalogFacts: PreparedModelRuntimeCatalogFacts;
   pluginGeneration: PreparedModelRuntimePluginGeneration;
   isCurrent: () => boolean;
-  inventoryOwner: Pick<PreparedModelRuntimeOwner, "catalogInventory" | "catalogAttempt">;
+  inventoryOwner: Pick<PreparedModelRuntimeOwner, "catalogInventory" | "catalogAttempt"> &
+    Partial<Pick<PreparedModelRuntimeOwner, "provenance">>;
 }): PreparedModelRuntimeCatalogAccess {
   const readUsage = createPreparedRuntimeAuthProfileUsageReader(
     params.agentFacts.input.agentDir,
@@ -92,8 +94,7 @@ export function createFullModelCatalogAccess(params: {
   const inventoryKey = preparedModelInventoryKey(params.agentFacts.input);
   const nativeSource = fingerprintPreparedRuntimeFacts({
     runtimePluginSelections: params.agentFacts.input.runtimePluginSelections,
-    agents: params.agentFacts.input.config.agents,
-    plugins: params.agentFacts.input.config.plugins,
+    config: params.nativeConfigFingerprint,
     configuredModelRefs: params.agentFacts.configuredModelRefs,
   });
   const previousInventory = params.inventoryOwner.catalogInventory;
@@ -607,7 +608,8 @@ export function createFullModelCatalogAccess(params: {
   return {
     isCurrent: params.isCurrent,
     withRefreshStatus: attempt.withRefreshStatus,
-    loadAuth: ({ providerIds, profileIds }) => {
+    loadAuth: async ({ providerIds, profileIds }) => {
+      assertCurrent();
       const cacheKey = [providerIds, profileIds ?? []]
         .map((ids) =>
           [...new Set(ids)].toSorted((left, right) => left.localeCompare(right)).join("\0"),
@@ -653,6 +655,10 @@ export function createFullModelCatalogAccess(params: {
       return publishedRuntimeModels;
     },
     loadFullModelCatalog: async (options) => {
+      // Standalone commands cannot publish background discovery after their process exits.
+      if (options?.refresh && params.inventoryOwner.provenance === "standalone") {
+        return await acquireCatalog(options);
+      }
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         return await Promise.race([

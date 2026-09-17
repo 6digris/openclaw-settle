@@ -1,3 +1,4 @@
+import { createAbortError, isAbortError } from "../../infra/abort-signal.js";
 import { enqueueCommandInLane } from "../../process/command-queue.js";
 import { runWithGatewayIndependentRootWorkContinuation } from "../../process/gateway-work-admission.js";
 import { CommandLane } from "../../process/lanes.js";
@@ -6,12 +7,14 @@ import {
   CronRunReceiptRevisionError,
   finishCronRunReceipt,
   releaseLocalCronRunReceiptOwnership,
+  type CronRunReceiptSettlementDisposition,
 } from "../store/run-receipt-store.js";
 import { isCronRunTriggerStateRetiredInDatabase } from "../store/run-receipt-trigger-state.js";
 import type { CronJob } from "../types.js";
 import { normalizeCronRunErrorText } from "./execution-errors.js";
 import { failureNotificationDeliveryFromJobState } from "./failure-alerts.js";
 import { locked } from "./locked.js";
+import { waitForRunSettlement } from "./ops-lifecycle.js";
 import {
   activatePreparedManualRun,
   type ActivatedManualRun,
@@ -19,6 +22,8 @@ import {
   inspectManualRunDisposition,
   type ManualRunOptions,
   type ManualRunTerminalTracker,
+  type OnExitRunOptions,
+  type PreparedManualRun,
   prepareManualRun,
   releasePreparedManualReservationAfterReloadWithRetry,
   releasePreparedManualReservationWithRetry,
@@ -29,11 +34,7 @@ import {
   runWithCronAdmission,
   supersedeActivatedCronRun,
 } from "./run-admission.js";
-import {
-  cronRunReceiptPersistHooks,
-  resolveCronRunReceiptTerminalStatus,
-  type CronRunReceiptSettlementDisposition,
-} from "./run-receipts.js";
+import { cronRunReceiptPersistHooks, resolveCronRunReceiptTerminalStatus } from "./run-receipts.js";
 import { recomputeUnownedCronSchedules } from "./run-recovery.js";
 import { applyCronRuntimeRowsToState, commitCronRuntimeRows } from "./runtime-store.js";
 import type {
@@ -72,21 +73,27 @@ async function finishPreparedManualRun(
   try {
     let coreResult: Awaited<ReturnType<typeof executeJobCoreWithTimeout>>;
     try {
-      coreResult = await executeJobCoreWithTimeout(state, executionJob, {
-        runId: taskRunId,
-        activeJobMarker: prepared.activeJobMarker,
-        owningCronLaneTaskMarker: prepared.owningCronLaneTaskMarker,
-        streamBatch: prepared.streamBatch,
-        streamScheduleKey: prepared.streamScheduleKey,
-        streamSourceIdentity: prepared.streamSourceIdentity,
-        runReceipt: prepared.runReceipt,
-        executionIdentity: createCronOwnerExecutionIdentityAdmission({
-          state,
+      const execute = () =>
+        executeJobCoreWithTimeout(state, executionJob, {
+          runId: taskRunId,
+          activeJobMarker: prepared.activeJobMarker,
+          owningCronLaneTaskMarker: prepared.owningCronLaneTaskMarker,
+          streamBatch: prepared.streamBatch,
+          streamScheduleKey: prepared.streamScheduleKey,
+          streamSourceIdentity: prepared.streamSourceIdentity,
           runReceipt: prepared.runReceipt,
-          taskId: prepared.taskId,
-          flowId: prepared.flowId,
-        }),
-      });
+          executionIdentity: createCronOwnerExecutionIdentityAdmission({
+            state,
+            runReceipt: prepared.runReceipt,
+            taskId: prepared.taskId,
+            flowId: prepared.flowId,
+          }),
+        });
+      coreResult =
+        (prepared.onExit !== undefined || prepared.streamBatch !== undefined) &&
+        state.deps.runSchedulerOwned
+          ? await state.deps.runSchedulerOwned(execute)
+          : await execute();
     } catch (err) {
       if (err instanceof CronRunReceiptRevisionError && err.reason === "owner-unavailable") {
         receiptSettlementDisposition = "owner-unavailable";
@@ -387,31 +394,78 @@ export async function run(
   if (!prepared.ok || !prepared.ran) {
     return prepared;
   }
-  const admission = await runWithCronAdmission(state, async () => {
-    let activeRun: Awaited<ReturnType<typeof activatePreparedManualRun>>;
-    try {
-      activeRun = await activatePreparedManualRun(state, prepared, mode);
-    } catch (error) {
-      // Activation failures still own the original durable reservation. Once
-      // activation succeeds, finishPreparedManualRun releases it after execution.
-      try {
-        await locked(state, async () => {
-          await releasePreparedManualReservationWithRetry(state, prepared);
-        });
-      } catch (cleanupError) {
-        state.deps.log.warn(
-          { jobId: prepared.jobId, err: String(cleanupError) },
-          "cron: failed to release manual run reservation after activation error",
-        );
+  return await executePreparedManualRun(state, prepared, mode);
+}
+
+/** Consumes an observed exit only when its payload owns the durable reservation. */
+export async function runOnExit(state: CronServiceState, id: string, opts: OnExitRunOptions) {
+  const generation = state.lifecycleGeneration;
+  const commitGuard = () => {
+    if (opts.signal.aborted || state.stopped || generation !== state.lifecycleGeneration) {
+      throw createAbortError("cron on-exit admission cancelled");
+    }
+    opts.commitGuard();
+  };
+  try {
+    while (await waitForRunSettlement(state, id, opts.signal)) {
+      commitGuard();
+      const prepared = await prepareManualRun(state, id, "force", {
+        onExit: { ...opts, commitGuard },
+        commitGuard,
+      });
+      if (!prepared.ok || !prepared.ran) {
+        if (prepared.ok && prepared.reason === "already-running") {
+          // Another caller won the receipt after our wait. The exit is still
+          // unconsumed, so follow that receipt before attempting admission again.
+          continue;
+        }
+        return prepared;
       }
+      return await executePreparedManualRun(state, prepared, "force");
+    }
+  } catch (error) {
+    if (!isAbortError(error)) {
       throw error;
     }
-    if (!activeRun.ran) {
-      return activeRun;
-    }
-    await finishPreparedManualRun(state, activeRun, mode);
-    return { ok: true, ran: true } as const;
-  });
+  }
+  return { ok: true, ran: false, reason: "stopped" } as const;
+}
+
+async function executePreparedManualRun(
+  state: CronServiceState,
+  prepared: Extract<PreparedManualRun, { ran: true }>,
+  mode?: CronRunMode,
+) {
+  const admission = await runWithCronAdmission(
+    state,
+    async () => {
+      let activeRun: Awaited<ReturnType<typeof activatePreparedManualRun>>;
+      try {
+        activeRun = await activatePreparedManualRun(state, prepared, mode);
+      } catch (error) {
+        // Activation failures still own the original durable reservation. Once
+        // activation succeeds, finishPreparedManualRun releases it after execution.
+        try {
+          await locked(state, async () => {
+            await releasePreparedManualReservationWithRetry(state, prepared);
+          });
+        } catch (cleanupError) {
+          state.deps.log.warn(
+            { jobId: prepared.jobId, err: String(cleanupError) },
+            "cron: failed to release manual run reservation after activation error",
+          );
+        }
+        throw error;
+      }
+      if (!activeRun.ran) {
+        return activeRun;
+      }
+      await finishPreparedManualRun(state, activeRun, mode);
+      return { ok: true, ran: true } as const;
+    },
+    undefined,
+    prepared.onExit?.signal,
+  );
   if (admission.kind === "stopped") {
     await releasePreparedManualReservationAfterReloadWithRetry(state, prepared);
     return { ok: true, ran: false, reason: "stopped" } as const;

@@ -46,12 +46,19 @@ export class CodexCatalogVisiblePage {
     }
     let rawPage: CodexSessionCatalogPage;
     try {
-      rawPage = await params.control.listPage({
-        limit: params.limit - this.sessions.length,
-        ...(this.cursor ? { cursor: this.cursor } : {}),
-        ...(params.searchTerm ? { searchTerm: params.searchTerm } : {}),
-        ...(params.cwd ? { cwd: params.cwd } : {}),
-      });
+      rawPage = await params.control.listPage(
+        {
+          limit: params.limit - this.sessions.length,
+          ...(this.cursor ? { cursor: this.cursor } : {}),
+          ...(params.searchTerm ? { searchTerm: params.searchTerm } : {}),
+          ...(params.cwd ? { cwd: params.cwd } : {}),
+        },
+        undefined,
+        {
+          headWalk: !params.cursor,
+          maxScanPages: MAX_TITLE_SEARCH_CATALOG_PAGES - this.pages,
+        },
+      );
     } finally {
       if (diagnostics && !diagnostics.closed) {
         diagnostics.fields.controlWaitSumMs =
@@ -60,9 +67,10 @@ export class CodexCatalogVisiblePage {
     }
     params.signal?.throwIfAborted();
     const page = filterCatalogPageByTitle(parseCatalogPage(rawPage), params.searchTerm);
-    if (this.pages++ === 0) {
+    if (this.pages === 0) {
       this.backwardsCursor = page.backwardsCursor;
     }
+    this.pages += rawPage.scannedPages ?? 1;
     let excludedFromPage = false;
     for (const managed of rawPage.managedThreads ?? []) {
       excludedFromPage = true;

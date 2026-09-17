@@ -78,6 +78,10 @@ if [ -n "${OPENCLAW_PR_ANCHOR_REPO_ROOT:-}" ]; then
     exit 1
   fi
   canonical_repo_root="$OPENCLAW_PR_ANCHOR_REPO_ROOT"
+  # Older parents pin only their own dependency set. The anchored child owns
+  # completing its installation before any loader, supervisor, or lock starts.
+  node "$script_parent_dir/pr-lib/materialize-dependencies.mjs" \
+    "$canonical_repo_root/node_modules" "$script_parent_dir/../node_modules"
 elif common_git_dir=$(git -C "$script_parent_dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
   canonical_repo_root="$(dirname "$common_git_dir")"
   canonical_self="$canonical_repo_root/scripts/$(basename "${BASH_SOURCE[0]}")"
@@ -206,28 +210,14 @@ elif common_git_dir=$(git -C "$script_parent_dir" rev-parse --path-format=absolu
             # Only third-party tooling comes from the installed canonical tree.
             # Pin package directories: a later install may replace top-level aliases.
             # A whole node_modules link could load unanchored workspace source.
-            if ! node --input-type=module - "$canonical_repo_root/node_modules" "$anchor_exec_dir/node_modules" <<'EOF_NODE'
-import { mkdirSync, realpathSync, statSync, symlinkSync } from "node:fs";
-import { join } from "node:path";
-const dependencies = ["tsx", "zod", "minimatch", "yaml"].map((dependency) => {
-  const installedPath = join(process.argv[2], dependency);
-  try {
-    const target = realpathSync(installedPath);
-    if (!statSync(target).isDirectory()) throw new Error("not a package directory");
-    return { dependency, target };
-  } catch {
-    console.error(`Cannot resolve installed scripts/pr dependency '${dependency}' at ${installedPath}.`);
-    console.error("Restore frozen dependencies in a clean trusted-main checkout before retrying; no dependencies were installed.");
-    process.exit(1);
-  }
-});
-mkdirSync(process.argv[3]);
-for (const { dependency, target } of dependencies) {
-  // Native junctions avoid Git Bash copying package directories on Windows.
-  symlinkSync(target, join(process.argv[3], dependency),
-    process.platform === "win32" ? "junction" : "dir");
-}
-EOF_NODE
+            anchor_dependency_owner="$anchor_exec_dir/scripts/pr-lib/materialize-dependencies.mjs"
+            # Older anchors still rely on their parent to prepare dependencies.
+            # Keep that bootstrap in this caller, using the extracted manifest.
+            if [ ! -f "$anchor_dependency_owner" ]; then
+              anchor_dependency_owner="$script_parent_dir/pr-lib/materialize-dependencies.mjs"
+            fi
+            if ! node "$anchor_dependency_owner" \
+              "$canonical_repo_root/node_modules" "$anchor_exec_dir/node_modules"
             then
               rm -rf "$anchor_exec_dir"
               exit 1
@@ -294,7 +284,7 @@ if [ "${1-}" = merge-run ] || [ "${1-}" = merge-recover ]; then
     fi
     merge_cli_args+=("$merge_cli_arg")
     merge_cli_body_next=false
-    [ "$merge_cli_arg" != --body-file ] || merge_cli_body_next=true
+    if [ "$merge_cli_arg" = --body-file ] || [ "$merge_cli_arg" = --legacy-refusal ]; then merge_cli_body_next=true; fi
   done
   set -- "${merge_cli_args[@]}"
 fi
@@ -346,7 +336,7 @@ Usage:
     --body-file snapshots a regular UTF-8 file relative to the caller, replacing squash prose.
     Empty files are valid. Explicit/source co-authors and preview credit backed by tree-changing PR commits or PR authorship are retained; known machine credit is excluded. Queue merges reject it.
     Repeated merge-run reconciles retained outcomes; it never retries an uncertain dispatch.
-  scripts/pr merge-recover <PR> <OUTCOME_OID> --confirmed-operator-recovery [--replacement-head <SHA>] [--body-file <path>]
+  scripts/pr merge-recover <PR> <OUTCOME_OID> --confirmed-operator-recovery [--replacement-head <SHA>] [--body-file <path>] [--legacy-refusal <evidence-directory>]
     Explicitly authorize one new attempt after inspecting the retained outcome and remote history.
     Defaults to the retained head; replacement requires an explicitly approved full lowercase 40-character SHA,
     freshly authored exact-head review/preparation and completed CI proof. Never rebases automatically.
@@ -359,6 +349,7 @@ Usage:
   classified advisory. OPENCLAW_PR_DEV_WRAPPER=1 is equivalent.
 
 Required commands: git, gh, jq, rg (ripgrep), pnpm, node.
+When macOS blocks ps, PR operation locks require Python 3 with ctypes on PATH.
 USAGE
 }
 
@@ -448,7 +439,7 @@ main() {
         [[ "$2" =~ ^[0-9a-f]{40}$ ]] && [ "$3" = --confirmed-operator-completion ] || { usage; exit 2; }
       ;;
     merge-run | merge-recover)
-      local merge_pr="${1-}" auto_merge=false recovery_oid="" replacement_head="" body_path=""
+      local merge_pr="${1-}" auto_merge=false recovery_oid="" replacement_head="" body_path="" legacy_directory=""
       [ -n "$merge_pr" ] || { usage; exit 2; }
       shift
       if [ "$cmd" = merge-recover ]; then
@@ -469,6 +460,11 @@ main() {
             body_path="$2"
             shift 2
             ;;
+          --legacy-refusal)
+            [ "$cmd" = merge-recover ] && [ "$#" -ge 2 ] && [ -n "$2" ] && [ -z "$legacy_directory" ] || { usage; exit 2; }
+            legacy_directory="$2"
+            shift 2
+            ;;
           --replacement-head)
             [ "$cmd" = merge-recover ] && [ "$#" -ge 2 ] &&
               [[ "$2" =~ ^[0-9a-f]{40}$ ]] && [ -z "$replacement_head" ] || { usage; exit 2; }
@@ -481,6 +477,7 @@ main() {
       if [ "$cmd" = merge-run ] && [ "${OPENCLAW_PR_AUTO_MERGE:-}" = 1 ]; then
         auto_merge=true
       fi
+      [ -z "$legacy_directory" ] || [ -n "$replacement_head" ] || { usage; exit 2; }
       set -- "$merge_pr"
       ;;
     review-init | review-checkout-main | review-checkout-pr | review-claim | review-guard | review-artifacts-init | review-validate-artifacts | prepare-init | prepare-validate-commit | prepare-gates | prepare-push | prepare-sync-head | prepare-run | ci-dispatch | merge-verify)
@@ -605,7 +602,7 @@ main() {
       merge_verify "$pr"
       ;;
     merge-run | merge-recover)
-      merge_run "$merge_pr" "$auto_merge" "$recovery_oid" "$replacement_head" "$body_path"
+      merge_run "$merge_pr" "$auto_merge" "$recovery_oid" "$replacement_head" "$body_path" "$legacy_directory"
       ;;
     merge-complete)
       merge_complete "$1" "$2"

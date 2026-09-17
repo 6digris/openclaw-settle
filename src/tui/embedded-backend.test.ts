@@ -7,6 +7,7 @@ import {
   INTERNAL_RUNTIME_CONTEXT_END,
 } from "../agents/internal-runtime-context.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.types.js";
+import { resolveThinkingDefault } from "../agents/model-thinking-default.js";
 import type { LoadPreparedModelCatalogParams } from "../agents/prepared-model-catalog.js";
 import { setPreparedModelRuntimeAuthStore } from "../agents/prepared-model-runtime-auth.js";
 import type { PreparedModelRuntimeSnapshot } from "../agents/prepared-model-runtime.types.js";
@@ -28,6 +29,7 @@ import { notifyListeners } from "../shared/listeners.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import type { EmbeddedTuiBackend as EmbeddedTuiBackendType } from "./embedded-backend.js";
+import { registerEmbeddedBackendStreamTests } from "./embedded-backend.stream.test-support.js";
 import type { TuiModelChoice } from "./tui-backend.js";
 
 type EmbeddedAgentResult = {
@@ -88,7 +90,7 @@ const getRuntimeConfigMock = vi.fn(() => ({}));
 const loadPreparedModelCatalogMock = vi.fn(
   (_params?: LoadPreparedModelCatalogParams): ModelCatalogEntry[] => [],
 );
-const resolveThinkingDefaultMock = vi.fn<(...args: unknown[]) => string | undefined>();
+const resolveThinkingDefaultMock = vi.fn<typeof resolveThinkingDefault>();
 const buildModelsListResultMock = vi.fn(
   async (
     _params: Parameters<
@@ -247,7 +249,8 @@ vi.mock("../agents/defaults.js", () => ({
 }));
 
 vi.mock("../agents/model-selection.js", () => ({
-  resolveThinkingDefault: (...args: unknown[]) => resolveThinkingDefaultMock(...args),
+  resolveThinkingDefault: (...args: Parameters<typeof resolveThinkingDefault>) =>
+    resolveThinkingDefaultMock(...args),
 }));
 
 vi.mock("../agents/prepared-model-catalog.js", () => ({
@@ -297,8 +300,11 @@ vi.mock("../gateway/server-methods/chat.js", () => ({
   replaceOversizedChatHistoryMessages: ({ messages }: { messages: unknown[] }) => ({ messages }),
 }));
 
-vi.mock("../gateway/server-methods/chat-history-pages.js", () => ({
+vi.mock("../gateway/server-methods/chat-history-page-kernel.js", () => ({
   enrichChatHistoryCompactionMarkers: (messages: unknown[]) => messages,
+}));
+
+vi.mock("../gateway/server-methods/chat-history-pages.js", () => ({
   readChatHistoryPage: (params: unknown) => readChatHistoryPageMock(params),
 }));
 
@@ -1389,14 +1395,24 @@ describe("EmbeddedTuiBackend", () => {
     },
   );
 
-  it("loads history thinking defaults from the selected owner's prepared catalog", async () => {
+  it("loads history thinking defaults from the selected owner's model config and prepared catalog", async () => {
     const catalog: ModelCatalogEntry[] = [
       { id: "gpt-5.4", name: "Reasoning model", provider: "openai", reasoning: true },
     ];
     loadPreparedModelCatalogMock.mockReturnValue(catalog);
-    resolveThinkingDefaultMock.mockReturnValueOnce("low");
+    resolveThinkingDefaultMock.mockImplementationOnce(resolveThinkingDefault);
     loadSessionEntryMock.mockReturnValue({
       cfg: {
+        agents: {
+          defaults: {
+            models: { "openai/gpt-5.4": { params: { thinking: "high" } } },
+          },
+          entries: {
+            work: {
+              models: { "openai/gpt-5.4": { params: { thinking: "low" } } },
+            },
+          },
+        },
         models: {
           mode: "replace",
           providers: {
@@ -1406,20 +1422,21 @@ describe("EmbeddedTuiBackend", () => {
           },
         },
       },
-      agentId: "main",
-      canonicalKey: "agent:main:main",
+      agentId: "work",
+      canonicalKey: "agent:work:main",
       entry: {},
     });
 
     const backend = new EmbeddedTuiBackend();
 
-    await expect(backend.loadHistory({ sessionKey: "agent:main:main" })).resolves.toMatchObject({
-      sessionKey: "agent:main:main",
+    await expect(backend.loadHistory({ sessionKey: "agent:work:main" })).resolves.toMatchObject({
+      sessionKey: "agent:work:main",
       messages: [],
       thinkingLevel: "low",
+      sessionInfo: { thinkingLevel: "low" },
     });
     expect(loadPreparedModelCatalogMock).toHaveBeenCalledWith(
-      expect.objectContaining({ agentId: "main", readOnly: true }),
+      expect.objectContaining({ agentId: "work", readOnly: true }),
     );
     expect(resolveThinkingDefaultMock).toHaveBeenCalledWith(
       expect.objectContaining({ provider: "openai", model: "gpt-5.4", catalog }),
@@ -2117,14 +2134,6 @@ describe("EmbeddedTuiBackend", () => {
     const first = deferred<EmbeddedAgentResult>();
     agentCommandFromIngressMock.mockReturnValueOnce(first.promise);
     resolveActiveEmbeddedRunSessionIdMock.mockReturnValue("active-session");
-    loadSessionEntryMock.mockImplementation((sessionKey: string, opts?: { agentId?: string }) => ({
-      cfg: {},
-      agentId: opts?.agentId ?? parseAgentSessionKey(sessionKey)?.agentId ?? "main",
-      canonicalKey: sessionKey,
-      storePath: "/tmp/openclaw-sessions.json",
-      store: {},
-      entry: {},
-    }));
     queueEmbeddedAgentMessageWithOutcomeAsyncMock.mockResolvedValue({
       queued: true,
       sessionId: "active-session",
@@ -2191,14 +2200,6 @@ describe("EmbeddedTuiBackend", () => {
       .mockReturnValueOnce(first.promise)
       .mockReturnValueOnce(second.promise);
     resolveActiveEmbeddedRunSessionIdMock.mockReturnValue("active-session");
-    loadSessionEntryMock.mockImplementation((sessionKey: string, opts?: { agentId?: string }) => ({
-      cfg: {},
-      agentId: opts?.agentId ?? parseAgentSessionKey(sessionKey)?.agentId ?? "main",
-      canonicalKey: sessionKey,
-      storePath: "/tmp/openclaw-sessions.json",
-      store: {},
-      entry: {},
-    }));
     queueEmbeddedAgentMessageWithOutcomeAsyncMock.mockResolvedValue({
       queued: false,
       sessionId: "active-session",
@@ -3615,121 +3616,14 @@ describe("EmbeddedTuiBackend", () => {
     });
   });
 
-  it.each([
-    {
-      name: "unkeyed replacement snapshots",
-      updates: [{ text: "Hello world" }, { text: "Goodbye world" }],
-      expectedDeltas: [
-        { deltaText: "Hello world", replace: undefined },
-        { deltaText: "Goodbye world", replace: true },
-      ],
-      expectedText: "Goodbye world",
-    },
-    {
-      name: "identical snapshots from distinct assistant items",
-      updates: [
-        { itemId: "first", text: "Echo" },
-        { itemId: "second", text: "Echo" },
-      ],
-      expectedDeltas: [
-        { deltaText: "Echo", replace: undefined },
-        { deltaText: "\n\nEcho", replace: undefined },
-      ],
-      expectedText: "Echo\n\nEcho",
-    },
-    {
-      name: "a new assistant item extending an earlier item's text",
-      updates: [
-        { itemId: "first", text: "Echo", delta: "Echo" },
-        { itemId: "second", text: "Echo!", delta: "Echo!" },
-      ],
-      expectedDeltas: [
-        { deltaText: "Echo", replace: undefined },
-        { deltaText: "\n\nEcho!", replace: undefined },
-      ],
-      expectedText: "Echo\n\nEcho!",
-    },
-    {
-      name: "replayed and growing snapshots of one assistant item",
-      updates: [
-        { itemId: "answer", text: "Echo", delta: "Echo" },
-        { itemId: "answer", text: "Echo", delta: "Echo" },
-        { itemId: "answer", text: "Echo again", delta: " again" },
-      ],
-      expectedDeltas: [
-        { deltaText: "Echo", replace: undefined },
-        { deltaText: " again", replace: undefined },
-      ],
-      expectedText: "Echo again",
-    },
-    {
-      name: "item-scoped deltas without snapshots",
-      updates: [
-        { itemId: "first", delta: "Echo" },
-        { itemId: "first", delta: "Echo" },
-        { itemId: "second", delta: "!" },
-      ],
-      expectedDeltas: [
-        { deltaText: "Echo", replace: undefined },
-        { deltaText: "Echo", replace: undefined },
-        { deltaText: "\n\n!", replace: undefined },
-      ],
-      expectedText: "EchoEcho\n\n!",
-    },
-    {
-      name: "empty corrections that remove only the current assistant item",
-      updates: [
-        { itemId: "first", text: "Hello" },
-        { itemId: "second", text: " world" },
-        { itemId: "second", text: "" },
-      ],
-      expectedDeltas: [
-        { deltaText: "Hello", replace: undefined },
-        { deltaText: "\n\n world", replace: undefined },
-        { deltaText: "Hello", replace: true },
-      ],
-      expectedText: "Hello",
-    },
-  ])("projects local embedded $name", async ({ updates, expectedDeltas, expectedText }) => {
-    const pending = deferred<EmbeddedAgentResult>();
-    agentCommandFromIngressMock.mockReturnValueOnce(pending.promise);
-
-    const backend = new EmbeddedTuiBackend();
-    const events = captureBackendEvents(backend);
-
-    backend.start();
-    await sendMainChat(backend, "replace", "run-local-replace");
-
-    for (const data of updates) {
-      registeredListener?.({ runId: "run-local-replace", stream: "assistant", data });
-    }
-
-    pending.resolve({ payloads: [], meta: {} });
-    await flushMicrotasks();
-
-    const chatPayloads = events
-      .filter((entry) => entry.event === "chat")
-      .map(
-        (entry) =>
-          entry.payload as {
-            state?: string;
-            deltaText?: string;
-            replace?: boolean;
-            message?: { content?: Array<{ text?: string }> };
-          },
-      );
-    expect(
-      chatPayloads
-        .filter((payload) => payload.state === "delta")
-        .map((payload) => ({
-          deltaText: payload.deltaText,
-          replace: payload.replace,
-        })),
-    ).toEqual(expectedDeltas);
-    expect(chatPayloads.at(-1)).toMatchObject({
-      state: "final",
-      message: { content: [{ text: expectedText }] },
-    });
+  registerEmbeddedBackendStreamTests({
+    createBackend: () => new EmbeddedTuiBackend(),
+    createPendingReply: () => deferred<EmbeddedAgentResult>(),
+    prepareReply: (reply) => agentCommandFromIngressMock.mockReturnValueOnce(reply),
+    emitAgentEvent: (event) => registeredListener?.(event),
+    captureBackendEvents,
+    flushMicrotasks,
+    embeddedEventTimestamp,
   });
 
   it("keeps internal context private when local deltas split its delimiters", async () => {

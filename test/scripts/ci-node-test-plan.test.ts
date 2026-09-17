@@ -547,6 +547,30 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     ]);
   });
 
+  it("selects provisioning for extracted sources without replacing their test owners", () => {
+    const provision = "test/scripts/pr-worktree-provision.test.ts";
+    const manifest = "scripts/pr-lib/wrapper-components.txt";
+    for (const changedPath of [
+      "scripts/pr",
+      "scripts/pr-lib/worktree.sh",
+      "src/plugins/discovery.ts",
+      "src/plugins/discovery-availability.ts",
+    ]) {
+      expect(resolvePolicyTestTargets([changedPath]), changedPath).toContain(provision);
+      expect(isPolicyTestOwnedPath(changedPath), changedPath).toBe(false);
+    }
+    expect(resolvePolicyTestTargets(["src/plugins/unrelated-new-plugin.ts"])).not.toContain(
+      provision,
+    );
+    expect(isPolicyTestOwnedPath(manifest)).toBe(true);
+    const shards = expectDefined(createChangedNodeTestShards([manifest]), "manifest test plan");
+    const owners = shards
+      .flatMap((shard) => shard.groups ?? [])
+      .filter((group) => group.includePatterns?.includes(provision));
+    expect(owners).toHaveLength(1);
+    expect(owners[0]?.configs).toEqual(["test/vitest/vitest.tooling.config.ts"]);
+  });
+
   it("matches policy owners only for exact changed paths", () => {
     const changedPath = "ui/src/styles/base.css";
     expect(isPolicyTestOwnedPath(changedPath)).toBe(true);
@@ -1481,9 +1505,16 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
             "original hybrid runner anchor",
           )
         : undefined;
-      const promoted = originalHybridJob?.planConcurrency === 2 && shard.planConcurrency === 1;
+      if (originalHybridJob?.planConcurrency === 2 && shard.planConcurrency === 1) {
+        expect(shard.pretestBuildMode).toBe("runtime");
+      }
+      const promoted =
+        originalHybridJob !== undefined &&
+        originalHybridJob.pretestBuildMode === undefined &&
+        shard.pretestBuildMode === "runtime";
       if (promoted) {
         expect(shard.pretestBuildMode).toBe("runtime");
+        expect(shard.planConcurrency).toBe(1);
         expect(exclusiveCount).toBe(0);
         expect(shard.requiresDist).toBe(false);
         for (const original of originalHybridJob.groups) {
@@ -1491,10 +1522,14 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
             shard.groups.find((group) => group.shard_name === original.shard_name),
             "retained ordinary group",
           );
-          expect(retained).toEqual({
-            ...original,
-            env: { OPENCLAW_VITEST_MAX_WORKERS: "2", ...original.env },
-          });
+          if (originalHybridJob.planConcurrency === 2) {
+            expect(retained).toEqual({
+              ...original,
+              env: { OPENCLAW_VITEST_MAX_WORKERS: "2", ...original.env },
+            });
+          } else {
+            expect(retained).toStrictEqual(original);
+          }
         }
       }
       if (
@@ -2008,8 +2043,11 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       "src/commands/doctor-session-incognito-key-repair.test.ts",
       "src/commands/doctor-session-snapshots.test.ts",
       "src/commands/doctor-session-sqlite-readers.test.ts",
+      "src/commands/doctor-session-sqlite.codex-binding.test.ts",
       "src/commands/doctor-session-sqlite.deferred-plugin.test.ts",
       "src/commands/doctor-session-sqlite.discovery.test.ts",
+      "src/commands/doctor-session-sqlite.retained-source-verification.test.ts",
+      "src/commands/doctor-session-sqlite.shared-orphan.test.ts",
       "src/commands/doctor-session-sqlite.shared-store.test.ts",
       "src/commands/doctor-session-state-providers.test.ts",
       "src/commands/doctor-session-transcript-headers.test.ts",
@@ -2017,6 +2055,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       "src/commands/doctor-session-transcripts.incident.test.ts",
       "src/commands/doctor-session-transcripts.sqlite.test.ts",
       "src/commands/doctor-session-transcripts.test.ts",
+      "src/commands/doctor-session-worktree-workspace.test.ts",
     ]);
     const commandFiles = commandShards.flatMap((shard) => shard.includePatterns ?? []).toSorted();
     expect(commandFiles).toEqual(listMatchedTestFiles(createCommandsVitestConfig({})));
@@ -2543,6 +2582,38 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       expect(bin.reduce((sum, value) => sum + value, 0)).toBeLessThanOrEqual(210);
     }
   });
+
+  it.each(["runner", "dist", "preparation"] as const)(
+    "keeps group exchanges within the owner's %s boundary",
+    (boundary) => {
+      const groups = [144, 120, 72, 48, 48, 48].map((seconds, index) => ({
+        index,
+        seconds,
+        runner: boundary === "runner" && index === 2 ? "other" : "shared",
+        requiresDist: boundary === "dist" && index === 2,
+        preparation: boundary === "preparation" && index === 2,
+      }));
+      const bins = packNodeTestGroups(
+        groups,
+        (bin, group) =>
+          !group.preparation &&
+          bin.every(
+            (entry) =>
+              !entry.preparation &&
+              entry.runner === group.runner &&
+              entry.requiresDist === group.requiresDist,
+          ) &&
+          bin.reduce((sum, entry) => sum + entry.seconds, group.seconds) <= 240,
+        true,
+      );
+      expect(bins).toHaveLength(3);
+      expect(bins.flat().toSorted((a, b) => a.index - b.index)).toEqual(groups);
+      expect(bins.find((bin) => bin.some((group) => group.index === 2))).toEqual([groups[2]]);
+      for (const bin of bins) {
+        expect(bin.reduce((sum, group) => sum + group.seconds, 0)).toBeLessThanOrEqual(240);
+      }
+    },
+  );
 
   it("keeps hosted tooling within the GitHub job cap when its inventory grows", async () => {
     const unitFastPaths = await vi.importActual<
@@ -3202,7 +3273,6 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       "agentic-control-plane-runtime",
       "agentic-control-plane-runtime-config",
       "agentic-control-plane-runtime-cron",
-      "agentic-control-plane-runtime-network",
       "agentic-control-plane-runtime-server",
       "agentic-control-plane-runtime-shared-token",
       "agentic-control-plane-runtime-state",
@@ -3383,6 +3453,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         configs: ["test/vitest/vitest.agents-core.config.ts"],
         includePatterns: agentShards[7]?.includePatterns,
         requiresDist: false,
+        pretestBuildMode: "runtime",
         runner: DEFAULT_NODE_TEST_RUNNER,
         shardName: "agentic-agents-core-runner-commands",
       },
@@ -3493,6 +3564,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           "src/gateway/gateway-concurrent-streams.test.ts",
           "src/gateway/gateway-cron-process-identity.windows.test.ts",
           "src/gateway/gateway-route-model-reuse.test.ts",
+          "src/gateway/gateway-ssh-upload-signal.test.ts",
         ],
         pretestBuildMode: "runtime",
         requiresDist: false,

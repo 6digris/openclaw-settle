@@ -10,6 +10,7 @@ import { resolveVitestSpawnParams, spawnWatchedVitestProcess } from "../../scrip
 import { createVitestProcessCompletion } from "../../scripts/vitest-process-group.mts";
 import { createFixtureLifetime } from "../helpers/fixture-lifetime.js";
 import { runNodeScript } from "../helpers/run-node-script.js";
+import { fixturePreloadEnv } from "./fixtures/ci-fixture-runtime.cjs";
 
 const root = process.cwd();
 const artifacts = path.join(root, ".artifacts");
@@ -175,7 +176,11 @@ export function createWorkerArtifactTest() {
 }
 
 /** Reuse the shutdown fixture's executable boundary, keeping real owners and IPC. */
-export function createControlledWorkerCompiler(directory: string, env: NodeJS.ProcessEnv) {
+export function createControlledWorkerCompiler(
+  directory: string,
+  env: NodeJS.ProcessEnv,
+  runtime: "node" | "bun" = "node",
+) {
   const input = writeFixture(directory, "worker-input.mjs", "export const fixture = true;\n");
   const receipt = path.join(directory, "fixture-compilers.jsonl");
   const compiler = fileURLToPath(new URL("./fixtures/vitest-worker-compiler.mjs", import.meta.url));
@@ -192,10 +197,17 @@ export function createControlledWorkerCompiler(directory: string, env: NodeJS.Pr
     syncFixtureBuiltinExports(["node:child_process"]);
   `,
   );
+  const preloadEnv = Object.fromEntries(
+    Object.entries(fixturePreloadEnv(preload, runtime)).map(([key, value]) => [
+      key,
+      `${env[key] ?? ""} ${value}`.trim(),
+    ]),
+  );
   return {
+    args: (generation: string) => [compiler, generation, input, receipt],
     env: {
       ...env,
-      NODE_OPTIONS: `${env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(preload).href}`.trim(),
+      ...preloadEnv,
     },
     read: (): Array<{ pid: number; directory: string; inputs: number; outputs: number }> =>
       fs
@@ -253,16 +265,9 @@ export function workerBorrowingProbe(directory: string) {
 export function workerProbe(
   directory: string,
   holdSecond = false,
-  mode: "compiled" | "source" | "auto" = "compiled",
-  cacheProof: false | "single" | "projects" = false,
+  mode: "compiled" | "source" = "compiled",
 ) {
   const value = writeFixture(directory, "value.ts", 'export const value: string = "first";');
-  const configuredValue = writeFixture(
-    directory,
-    "configured-value.ts",
-    'export const value: string = "configured";',
-  );
-  const parent = path.join(root, "src/infra/sqlite-snapshot-source.ts");
   const test = writeFixture(
     directory,
     "child.test.ts",
@@ -283,6 +288,7 @@ export function workerProbe(
     import { cliCompactionBackendEntrypoints } from ${JSON.stringify(path.join(root, "src/agents/command/cli-compaction-runtime.test-support.ts"))};
     import { resolveRuntimeWorkerUrl } from ${JSON.stringify(path.join(root, "src/infra/runtime-worker-url.ts"))};
     import { prepareSqliteReadOnlyLocation } from ${JSON.stringify(path.join(root, "src/infra/sqlite-snapshot-source.ts"))};
+    import { openNodeSqliteDatabase } from ${JSON.stringify(path.join(root, "src/infra/node-sqlite.ts"))};
     import { runSqliteTranscriptArchivePublishWorker } from ${JSON.stringify(path.join(root, "src/config/sessions/session-accessor.sqlite-archive.ts"))};
     const tuiUrls = Object.values(tuiPtyRuntimeEntrypoints).map(entry => resolveRuntimeWorkerUrl(entry).href);
     const setupUrls = cliCompactionBackendEntrypoints.map(entry => resolveRuntimeWorkerUrl(entry).href);
@@ -300,7 +306,7 @@ export function workerProbe(
       const launcherArgv = inject('launcherArgv');
       expect(path.isAbsolute(launcherArgv[1])).toBe(true);
       expect(path.basename(launcherArgv[1])).toBe('vitest.mjs');
-      expect(Object.values(runtimeProcessBuildEntries)).toHaveLength(Object.keys(runtimeProcessEntrypoints).length + 4);
+      expect(Object.values(runtimeProcessBuildEntries)).toHaveLength(Object.keys(runtimeProcessEntrypoints).length + 5);
       for (const source of Object.values(runtimeProcessBuildEntries)) {
         expect(source).not.toContain('/dist/');
         expect(source).toMatch(/\\.ts$/);
@@ -321,13 +327,13 @@ export function workerProbe(
       try {
         const prepared = await prepareSqliteReadOnlyLocation(file);
         try {
-          const snapshot = new DatabaseSync(prepared.location, {readOnly:true});
+          const snapshot = openNodeSqliteDatabase(prepared.location, {readOnly:true});
           expect(snapshot.prepare('SELECT value FROM probe').get()).toEqual({value:'current source'});
           snapshot.close();
           const args = cp.execFile.mock.calls[0][1];
           // The executable identifies the generation; its descriptor may live in a shared chunk.
           const generation = resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.sqliteReadOnly).href;
-          const sourceMode = ${mode === "auto" ? "generation.endsWith('.ts')" : mode === "source"};
+          const sourceMode = ${mode === "source"};
           await expect(runSqliteTranscriptArchivePublishWorker([])).resolves.toEqual([]);
           const [archiveUrl] = Worker.mock.calls.at(-1);
           expect(archiveUrl.href.endsWith(sourceMode ? '.ts' : '.js')).toBe(true);
@@ -355,24 +361,15 @@ export function workerProbe(
     });
   `,
   );
-  const transformFiles = [value, configuredValue, parent].map((file) => file.replaceAll("\\", "/"));
   const shared = pathToFileURL(path.join(root, "test/vitest/vitest.shared.config.ts")).href;
-  const cacheDirectory = path.join(directory, "cache");
-  // Vitest keeps invocation metadata at the root cache even for inline projects.
-  // Share the fixture's transform directory so cleanup owns both.
-  const cacheConfig = cacheProof ? { fsModuleCache: true, fsModuleCachePath: cacheDirectory } : {};
   const config = writeFixture(
     directory,
     "vitest.config.mts",
     `
-    import fs from 'node:fs';
     import {sharedVitestConfig as shared} from ${JSON.stringify(shared)};
-    const probe = {name:'fixture:transform-counter', transform(code,id) {
-      if (${Boolean(cacheProof)} && ${JSON.stringify(transformFiles)}.includes(id)) fs.appendFileSync(${JSON.stringify(path.join(directory, "transforms.jsonl"))},JSON.stringify(id)+'\\n');
-    }};
-    const project = name => ({extends:false,plugins:[...shared.plugins,probe],resolve:{...shared.resolve,alias:[{find:'#fixture-value',replacement:${JSON.stringify(value)}},...shared.resolve.alias]},test:{name,include:[${JSON.stringify(convertPathToPattern(test))}],pool:'forks',maxWorkers:1,testTimeout:shared.test.testTimeout,...${JSON.stringify(cacheConfig)},provide:{launcherArgv:process.argv,configValue:'first',releaseFile:${holdSecond} && name==='second' ? ${JSON.stringify(path.join(directory, "release"))} : null}}});
-    export default async () => ({root:${JSON.stringify(root)},${cacheProof === "single" ? "...project('first')" : `plugins:shared.plugins,test:{${cacheProof ? `...${JSON.stringify(cacheConfig)},` : ""}projects:[project('first'),project('second')]}`}});
+    const project = name => ({extends:false,plugins:shared.plugins,resolve:{...shared.resolve,alias:[{find:'#fixture-value',replacement:${JSON.stringify(value)}},...shared.resolve.alias]},test:{name,include:[${JSON.stringify(convertPathToPattern(test))}],pool:'forks',maxWorkers:1,testTimeout:shared.test.testTimeout,provide:{launcherArgv:process.argv,configValue:'first',releaseFile:${holdSecond} && name==='second' ? ${JSON.stringify(path.join(directory, "release"))} : null}}});
+    export default async () => ({root:${JSON.stringify(root)},plugins:shared.plugins,test:{projects:[project('first'),project('second')]}});
   `,
   );
-  return { config, value, configuredValue, parent, cacheDirectory };
+  return { config };
 }

@@ -8,6 +8,7 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { ModelCatalogSnapshot } from "../agents/model-catalog.types.js";
 import type { ModelProviderConfig } from "../config/types.models.js";
 import { createPluginCache, retirePluginCache, withPluginCache } from "./plugin-cache.js";
+import { bindPluginInstanceModuleLoader } from "./plugin-instance-module-loader.js";
 import { getPluginValueInstance } from "./plugin-instance-scope.js";
 import { PluginInstance } from "./plugin-instance.js";
 import { clearPluginMetadataLifecycleCaches } from "./plugin-metadata-lifecycle.js";
@@ -15,7 +16,6 @@ import {
   createPluginManifestRecordFixture,
   createPluginMetadataSnapshotFixture,
 } from "./plugin-metadata.test-support.js";
-import { bindPluginInstanceModuleLoader } from "./plugin-module-loader-cache.js";
 import { resolveDirectBundledProviderPolicySurface } from "./provider-policy-surface.js";
 import {
   listTrustedExternalProviderPolicyOwners,
@@ -248,10 +248,10 @@ describe("provider public artifacts", () => {
         [null, undefined, undefined],
         [[], undefined, undefined],
         [["none", "off"], ["off"], "off"],
-        [["max", "high", "low", "high", "none"], ["off", "max", "high", "low"], "high"],
+        [["max", "high", "low", "high", "none"], ["off", "low", "high", "max"], "high"],
         [
           ["high", "medium", "low", "minimal", "xhigh"],
-          ["off", "high", "medium", "low", "minimal", "xhigh"],
+          ["off", "minimal", "low", "medium", "high", "xhigh"],
           "medium",
         ],
         [["low"], ["off", "low"], "low"],
@@ -288,8 +288,8 @@ describe("provider public artifacts", () => {
     const surface = resolveBundledProviderPolicySurface("opencode-go");
 
     for (const [modelId, levelIds, defaultLevel] of [
-      ["deepseek-v4-pro", ["off", "high", "max"], "high"],
-      ["kimi-k3", ["off", "max"], "off"],
+      ["deepseek-v4-pro", ["off", "low"], "low"],
+      ["kimi-k3", ["off", "low"], "low"],
       ["kimi-k2.6", ["off"], "off"],
     ] as const) {
       expect(

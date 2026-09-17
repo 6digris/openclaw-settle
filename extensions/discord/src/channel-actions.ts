@@ -283,6 +283,7 @@ export const discordMessageActions: ChannelMessageActionAdapter = {
     "voice-status",
     "event-list",
   ],
+  writeAuthorityActions: ["channel-edit", "delete", "edit", "pin", "unpin"],
   // Credential-only Discord actions run in the gateway when one is available.
   // Send/file-style actions stay local because core owns their thread, media,
   // component, and client-local payload semantics.
@@ -372,6 +373,7 @@ export const discordMessageActions: ChannelMessageActionAdapter = {
     inboundEventKind,
     conversationReadOrigin,
     reply,
+    assertDirectAdapterHandoff,
   }) => {
     return await (
       await loadDiscordChannelActionsRuntime()
@@ -391,6 +393,7 @@ export const discordMessageActions: ChannelMessageActionAdapter = {
       ...(requesterAccountId ? { requesterAccountId } : {}),
       ...(conversationReadOrigin ? { conversationReadOrigin } : {}),
       ...(reply ? { reply } : {}),
+      ...(assertDirectAdapterHandoff ? { assertDirectAdapterHandoff } : {}),
     });
   },
 };

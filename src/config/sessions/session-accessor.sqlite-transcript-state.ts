@@ -11,10 +11,10 @@ import { publishSessionEntryCacheInvalidation } from "./session-accessor.sqlite-
 import { getSessionKysely, type ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
 import { parseSessionEntryJson } from "./session-accessor.sqlite-status.js";
 import {
-  assertCanonicalSqliteSessionKeysCurrent,
-  assertCanonicalSessionKeyWriteMatchesDatabase,
+  assertCanonicalSqliteSessionRootWrite,
   canonicalSessionKeyMigrationRequiredError,
 } from "./session-canonical-key.js";
+import { certifyCanonicalSessionValidationRow } from "./session-canonical-validation.js";
 import {
   assertSessionTranscriptHot,
   readSessionColdTranscript,
@@ -120,9 +120,9 @@ export function ensureTranscriptSessionRoot(
   options: { allowStoredAlias?: boolean } = {},
 ): void {
   const db = getSessionKysely(database.db);
+  let nodeExists = false;
   if (!options.allowStoredAlias) {
-    assertCanonicalSqliteSessionKeysCurrent(database);
-    assertCanonicalSessionKeyWriteMatchesDatabase(database, scope.sessionKey);
+    assertCanonicalSqliteSessionRootWrite(database, scope.sessionKey);
     const persistedSessionKey = executeSqliteQueryTakeFirstSync(
       database.db,
       db
@@ -177,6 +177,7 @@ export function ensureTranscriptSessionRoot(
       }
     }
     const existing = candidates.find((candidate) => candidate.session_key === scope.sessionKey);
+    nodeExists = existing !== undefined;
     if (existing && existing.entry_valid !== 1) {
       const retainedWindow =
         existing.entry_json === "{}"
@@ -196,28 +197,30 @@ export function ensureTranscriptSessionRoot(
       }
     }
   }
-  const insertedNode = executeSqliteQuerySync(
-    database.db,
-    db
-      .insertInto("session_nodes")
-      .values({
-        session_key: scope.sessionKey,
-        current_session_id: scope.sessionId,
-        entry_json: "{}",
-        entry_valid: -1,
-        updated_at: updatedAt,
-      })
-      .onConflict((conflict) => conflict.column("session_key").doNothing()),
-  );
-  if ((insertedNode.numAffectedRows ?? 0n) > 0n) {
-    executeSqliteQuerySync(
+  if (!nodeExists) {
+    const insertedNode = executeSqliteQuerySync(
       database.db,
       db
-        .updateTable("session_nodes")
-        .set({ entry_valid: -1 })
-        .where("session_key", "=", scope.sessionKey),
+        .insertInto("session_nodes")
+        .values({
+          session_key: scope.sessionKey,
+          current_session_id: scope.sessionId,
+          entry_json: "{}",
+          entry_valid: -1,
+          updated_at: updatedAt,
+        })
+        .onConflict((conflict) => conflict.column("session_key").doNothing()),
     );
-    publishSessionEntryCacheInvalidation(database);
+    if ((insertedNode.numAffectedRows ?? 0n) > 0n) {
+      executeSqliteQuerySync(
+        database.db,
+        db
+          .updateTable("session_nodes")
+          .set({ entry_valid: -1 })
+          .where("session_key", "=", scope.sessionKey),
+      );
+      publishSessionEntryCacheInvalidation(database);
+    }
   }
   executeSqliteQuerySync(
     database.db,
@@ -238,6 +241,9 @@ export function ensureTranscriptSessionRoot(
         }),
       ),
   );
+  if (!options.allowStoredAlias) {
+    certifyCanonicalSessionValidationRow(database, scope.sessionKey);
+  }
 }
 
 export function readNextTranscriptSeq(database: OpenClawAgentDatabase, sessionId: string): number {

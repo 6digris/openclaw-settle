@@ -66,6 +66,20 @@ export type ProcessAdapterConstruction = {
   onSpawnCleanup?: (cleanup: Promise<void>) => void;
 };
 
+export type AwaitedStdoutConsumer = {
+  /** Subscribe once; EOF, decoder flush, and every accepted chunk settle before resolution. */
+  consumeStdout: (listener: (chunk: string) => void | Promise<void>) => Promise<void>;
+};
+
+export type ProcessCleanupResult = {
+  readonly reason: "forced-relay-exit";
+  readonly signalRequested: "SIGKILL";
+  readonly signalError?: Error;
+  readonly exit: { readonly code: number | null; readonly signal: NodeJS.Signals | null };
+  readonly durationMs: number;
+  readonly escalationAfterMs: number;
+};
+
 export type SpawnProcessAdapter<WaitSignal = NodeJS.Signals | number | null> = {
   pid?: number;
   stdin?: ManagedRunStdin;
@@ -80,6 +94,7 @@ export type SpawnProcessAdapter<WaitSignal = NodeJS.Signals | number | null> = {
   ) => void;
   wait: () => Promise<{ code: number | null; signal: WaitSignal }>;
   waitForExtinction?: () => Promise<void>;
+  readonly cleanupResult?: ProcessCleanupResult;
   kill: (signal?: NodeJS.Signals) => void;
   dispose: () => void;
 };

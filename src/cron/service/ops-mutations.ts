@@ -24,7 +24,8 @@ import {
   systemOwnedDeclarationKeyNamespace,
 } from "../system-owned-declaration.js";
 import { normalizeCronTaskRunJobId } from "../task-run-history.js";
-import type { CronJob, CronJobCreate, CronJobPatch, CronStoredJob } from "../types.js";
+import type { CronJob, CronJobCreate, CronJobPatch } from "../types.js";
+import { declarativeFields } from "./jobs-declarative.js";
 import {
   computeJobNextRunAtMs,
   findJobOrThrow,
@@ -35,6 +36,7 @@ import {
 } from "./jobs-scheduling.js";
 import {
   consumeRuntimeAuthorityMutationOptions,
+  cronJobMessageActionAuthorityInputsEqual,
   reconcileRuntimeAuthority,
 } from "./jobs-tool-policy.js";
 import {
@@ -224,11 +226,23 @@ async function persistUpdatedJob(params: {
   persistStore: typeof persistOrRestore;
 }) {
   const { state, snapshot, previousJob, nextJob, persistStore } = params;
+  const reservation = state.queuedRunReservationsByJobId.get(nextJob.id);
+  const preservesOnExitRearm =
+    reservation?.onExit === true &&
+    reservation.lifecycleGeneration === state.lifecycleGeneration &&
+    reservation.markerAtMs === previousJob.state.queuedAtMs &&
+    previousJob.schedule.kind === "on-exit" &&
+    !previousJob.enabled &&
+    nextJob.enabled &&
+    resolveCronJobConfigRevision(previousJob) ===
+      resolveCronJobConfigRevision({ ...nextJob, enabled: false });
   if (
     nextJob.state.queuedAtMs !== undefined &&
+    !preservesOnExitRearm &&
     resolveCronJobConfigRevision(previousJob) !== resolveCronJobConfigRevision(nextJob)
   ) {
-    // Retire the occurrence with its owning edit; A→B→A cannot revive a queued snapshot.
+    // A consumed on-exit arm keeps its reservation when enabling its successor.
+    // Other edits retire the queued occurrence; A→B→A cannot revive it.
     delete nextJob.state.queuedAtMs;
   }
   if (state.store) {
@@ -248,6 +262,9 @@ async function persistUpdatedJob(params: {
     ((previousJob.payload.kind === "script" || nextJob.payload.kind === "script") &&
       !isDeepStrictEqual(previousJob.payload, nextJob.payload));
   const scheduleChanged = !cronSchedulingInputsEqual(previousJob, nextJob);
+  const messageActionAuthorityChanged =
+    (isJobEnabled(previousJob) && !isJobEnabled(nextJob)) ||
+    !cronJobMessageActionAuthorityInputsEqual(previousJob, nextJob);
   await persistStore(state, snapshot, {
     suppressScheduledJobId: nextJob.id,
     transactionHooks: cronRunReceiptMutationHooks({
@@ -255,6 +272,7 @@ async function persistUpdatedJob(params: {
       jobId: nextJob.id,
       ownerChanged,
       triggerStateChanged,
+      messageActionAuthorityChanged,
       ...(scheduleChanged ? { scheduleChangedJob: nextJob } : {}),
     }),
   });
@@ -273,23 +291,6 @@ async function persistUpdatedJob(params: {
     job: nextJob,
     nextRunAtMs: nextJob.state.nextRunAtMs,
   });
-}
-
-function declarativeFields(job: CronStoredJob, includeEnabled: boolean) {
-  return {
-    schedule: job.schedule,
-    pacing: job.pacing,
-    trigger: job.trigger,
-    payload: job.payload,
-    scheduledToolPolicy: job.scheduledToolPolicy,
-    toolsAllowProvenance: job.toolsAllowProvenance,
-    toolsAllowExecTarget: job.toolsAllowExecTarget,
-    runtimeAuthority: job.runtimeAuthority,
-    runtimeAuthorityRecoveryRequired: job.runtimeAuthorityRecoveryRequired,
-    delivery: job.delivery,
-    displayName: job.displayName,
-    ...(includeEnabled ? { enabled: job.enabled } : {}),
-  };
 }
 
 /** Adds or converges a declaration-keyed cron job inside one store lock and write transaction. */

@@ -7,11 +7,16 @@ import {
   resolveWindowsSpawnProgramCandidate,
 } from "../../../plugin-sdk/windows-spawn.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
-import { onDecodedOutput } from "../../decoded-output.js";
+import {
+  createAwaitedDecodedOutput,
+  joinProcessCompletionAndOutput,
+  onDecodedOutput,
+} from "../../decoded-output.js";
 import { killProcessTree, signalProcessTree } from "../../kill-tree.js";
 import { prepareOomScoreAdjustedSpawn } from "../../linux-oom-score.js";
 import { pipeProcessOutput } from "../../pipe-output.js";
 import { scheduleAdoptedChildZombieReapAfterExit } from "../../scoped-child-reaper.js";
+import { SpawnBrokerError } from "../../spawn-broker/protocol.js";
 import { prepareSecretInputStdio, type SpawnStdioEntry } from "../../spawn-secret-input.js";
 import { spawnWithFallback } from "../../spawn-utils.js";
 import {
@@ -23,6 +28,7 @@ import {
 import { GRACEFUL_CANCEL_TIMEOUT_MS } from "../cancellation-policy.js";
 import { createServiceChildRelayAdapter } from "../service-child-relay-host.js";
 import type {
+  AwaitedStdoutConsumer,
   ProcessAdapterConstruction,
   ProcessAdapterStartup,
   SpawnProcessAdapter,
@@ -85,6 +91,7 @@ type WorkerChildAdapter = ChildAdapter & {
   closeStartGate?: () => void;
   openStartGate?: () => Promise<void>;
 };
+export type AwaitedStdoutChildAdapter = WorkerChildAdapter & AwaitedStdoutConsumer;
 
 const WORKER_START_MESSAGE = { type: "openclaw-worker-start-v1" } as const;
 
@@ -107,15 +114,21 @@ type ChildAdapterInput = ProcessAdapterConstruction & {
   secretInput?: SpawnSecretInput;
   stderrDestination?: Writable;
 } & (
-    | { argv: string[]; anchoredShellCommand?: never }
-    | { argv?: never; anchoredShellCommand: string }
+    | { argv: string[]; anchoredShellCommand?: never; stdoutConsumption?: "awaited" }
+    | { argv?: never; anchoredShellCommand: string; stdoutConsumption?: never }
   );
 
+export function createChildAdapter(
+  params: ChildAdapterInput & { stdoutConsumption: "awaited" },
+): Promise<ProcessAdapterStartup<AwaitedStdoutChildAdapter>>;
+export function createChildAdapter(
+  params: ChildAdapterInput,
+): Promise<ProcessAdapterStartup<WorkerChildAdapter>>;
 export async function createChildAdapter(
   params: ChildAdapterInput,
 ): Promise<ProcessAdapterStartup<WorkerChildAdapter>> {
   if (params.anchoredShellCommand !== undefined) {
-    const adapter = await createServiceChildRelayAdapter({
+    const startup = await createServiceChildRelayAdapter({
       assertCurrent: params.assertCurrent,
       beforeSpawn: params.beforeSpawn,
       command: process.platform === "win32" ? params.anchoredShellCommand : "/bin/sh",
@@ -129,7 +142,7 @@ export async function createChildAdapter(
       onSpawnCleanup: params.onSpawnCleanup,
       stderrDestination: params.stderrDestination,
     });
-    return { adapter, ready: Promise.resolve() };
+    return startup;
   }
 
   const baseEnv = params.env ? toStringEnv(params.env) : undefined;
@@ -157,7 +170,7 @@ export async function createChildAdapter(
     params.ownedWorker === undefined &&
     (params.ownProcessTree === true || process.env.OPENCLAW_SERVICE_MARKER?.trim())
   ) {
-    const adapter = await createServiceChildRelayAdapter({
+    const startup = await createServiceChildRelayAdapter({
       assertCurrent: params.assertCurrent,
       beforeSpawn: params.beforeSpawn,
       command: preparedSpawn.command,
@@ -172,8 +185,9 @@ export async function createChildAdapter(
       abortSignal: params.abortSignal,
       onSpawnCleanup: params.onSpawnCleanup,
       stderrDestination: params.stderrDestination,
+      stdoutConsumption: params.stdoutConsumption,
     });
-    return { adapter, ready: Promise.resolve() };
+    return startup;
   }
 
   // A detached POSIX child is still a descendant in the service cgroup/job, but
@@ -244,6 +258,14 @@ export async function createChildAdapter(
   const childStdin = spawned.child.stdin;
   const stdin = createManagedChildStdin(childStdin);
   const outputUnsubscribers: Array<() => void> = [];
+  const awaitedStdout =
+    params.stdoutConsumption === "awaited"
+      ? createAwaitedDecodedOutput(child.stdout, () => {
+          if (!hardKillRequested) {
+            kill("SIGKILL");
+          }
+        })
+      : undefined;
   if (params.stderrDestination) {
     outputUnsubscribers.push(
       pipeProcessOutput(child.stderr, params.stderrDestination, (error) =>
@@ -252,6 +274,9 @@ export async function createChildAdapter(
     );
   }
   const onStdout: ChildAdapter["onStdout"] = (listener, onRaw) => {
+    if (awaitedStdout) {
+      throw new Error("Process stdout requires its awaited consumer");
+    }
     outputUnsubscribers.push(onDecodedOutput(child.stdout, listener, onRaw));
   };
 
@@ -320,10 +345,14 @@ export async function createChildAdapter(
   };
 
   const scheduleForceKillWaitFallback = (signal: NodeJS.Signals) => {
-    clearForceKillWaitFallback();
+    // Repeated hard cancellation must not postpone the owner's terminal result.
+    if (forceKillWaitFallbackTimer || waitSettled) {
+      return;
+    }
     // Some Windows child processes never emit `close` after a hard kill.
     forceKillWaitFallbackTimer = setTimeout(() => {
       cleanup.reject(new Error("child cleanup could not be confirmed before the kill deadline"));
+      awaitedStdout?.close();
       settleWait({ code: null, signal });
     }, FORCE_KILL_WAIT_FALLBACK_MS);
     forceKillWaitFallbackTimer.unref?.();
@@ -416,7 +445,7 @@ export async function createChildAdapter(
   // Worker IPC failures close authority; ordinary post-spawn errors are nonterminal.
   child.on("error", (error) => {
     events.emitError(error, "process");
-    if (params.ownedWorker) {
+    if (params.ownedWorker || error instanceof SpawnBrokerError) {
       rejectPendingWait(error);
     }
   });
@@ -435,7 +464,12 @@ export async function createChildAdapter(
     settleObservedClose(resolveObservedExitState(childCloseState));
   });
 
-  const wait = async () => await completion.promise;
+  const wait = async () => {
+    if (!awaitedStdout) {
+      return await completion.promise;
+    }
+    return await joinProcessCompletionAndOutput(completion.promise, awaitedStdout.drain());
+  };
 
   // The actual detachment of the spawned child can differ from `useDetached`:
   // when the detached spawn fails, `spawnWithFallback` retries with the
@@ -540,6 +574,7 @@ export async function createChildAdapter(
   };
 
   const dispose = () => {
+    awaitedStdout?.close();
     clearForceKillWaitFallback();
     clearForcedWindowsCloseTimer();
     if (params.ownedWorker !== undefined) {
@@ -590,6 +625,7 @@ export async function createChildAdapter(
     oomScoreWrapperSelected: preparedSpawn.wrapped,
     supportsRawOutput: true,
     onStdout,
+    ...(awaitedStdout ? { consumeStdout: awaitedStdout.consume } : {}),
     onStderr,
     onExit: events.onExit,
     onError: events.onError,

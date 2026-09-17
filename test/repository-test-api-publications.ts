@@ -26,7 +26,6 @@ const publications: Record<string, string | symbol> = {
   "src/agents/command/attempt-execution.helpers.ts": Symbol.for(
     "openclaw.attemptExecutionHelpersTestApi",
   ),
-  "src/agents/compaction.ts": Symbol.for("openclaw.compactionTestApi"),
   "src/agents/embedded-agent-runner/context-engine-maintenance.ts": Symbol.for(
     "openclaw.contextEngineMaintenanceTestApi",
   ),
@@ -97,7 +96,6 @@ const publications: Record<string, string | symbol> = {
   "src/logging/secret-redaction-registry.ts": Symbol.for("openclaw.secretRedactionRegistryTestApi"),
   "src/media/playback-transcode.ts": Symbol.for("openclaw.playbackTranscodeTestApi"),
   "src/model-catalog/remote-overlay.ts": Symbol.for("openclaw.remoteModelCatalogOverlayTestApi"),
-  "src/node-host/invoke.ts": Symbol.for("openclaw.nodeHostInvokeTestApi"),
   "src/node-host/plugin-node-host.ts": Symbol.for("openclaw.nodeHostPluginTestApi"),
   "src/plugin-state/plugin-state-store.sqlite.ts": Symbol.for("openclaw.pluginStateSqliteTestApi"),
   "src/plugin-state/plugin-state-store.ts": Symbol.for("openclaw.pluginStateStoreTestApi"),

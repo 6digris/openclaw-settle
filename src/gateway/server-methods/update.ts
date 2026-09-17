@@ -64,7 +64,7 @@ import {
 import { renderUpdateRunNotice } from "../../infra/update-run-report.js";
 import { updateRunStepsFromResultStep } from "../../infra/update-run-step.js";
 import { runGatewayUpdate, runGatewayUpdatePreflight } from "../../infra/update-runner.js";
-import { getUpdateAvailable } from "../../infra/update-startup.js";
+import { getUpdateAvailable } from "../../infra/update-status-state.js";
 import { mergeDeliveryContext } from "../../utils/delivery-context.shared.js";
 import {
   INTERNAL_MESSAGE_CHANNEL,
@@ -564,6 +564,7 @@ export const updateHandlers: GatewayRequestHandlers = {
       if (error instanceof FreeBsdPkgOwnershipError) {
         outcomeMessage = error.message;
       }
+      context?.logGateway?.warn(`update.run failed error=${formatErrorMessage(error)}`);
       result = {
         status: "error",
         mode: "unknown",

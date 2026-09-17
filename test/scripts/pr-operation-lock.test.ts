@@ -177,6 +177,9 @@ function setSparseCheckout(repoDir: string) {
 function enterPrWorktree(repoDir: string, pr: number) {
   const result = runLockShell(repoDir, [
     "ensure_gh_api_auth() { return 0; }",
+    // Cold provisioning validates the live lock, even when entered without the CLI.
+    `acquire_pr_operation_lock ${pr}`,
+    "trap release_pr_operation_lock EXIT",
     `enter_worktree ${pr}`,
   ]);
   expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
@@ -292,6 +295,8 @@ function createFreshMainTemplate() {
     "sh",
     "sleep",
     "xargs",
+    "uname",
+    ...(process.platform === "darwin" ? ["python3"] : []),
   ]) {
     symlinkSync(
       execFileSync("which", [command], { encoding: "utf8", env: setupEnv }).trim(),
@@ -817,6 +822,8 @@ describePosix("scripts/pr per-PR operation lock", () => {
       const template = (freshMainTemplate ??= createFreshMainTemplate());
       const repoDir = tempDirs.make("openclaw-pr-fresh-main-");
       cpSync(template.repoDir, repoDir, { recursive: true });
+      // The copied CLI now executes the cold provisioner, not only shell preflights.
+      linkPrWrapperDependencies(repoDir);
       const { cachedMain, canonicalTree } = template;
       const stateDir = join(repoDir, "fixture-state");
       const homeDir = join(stateDir, "home");
@@ -893,11 +900,12 @@ describePosix("scripts/pr per-PR operation lock", () => {
         JSON.stringify({
           number: 42,
           title: "Fixture",
-          url: "https://example.invalid/pull/42",
+          url: "https://github.com/fixture/fixture/pull/42",
           state: "OPEN",
           isDraft: false,
           author: { login: "fixture-author" },
           baseRefName: "main",
+          baseRefOid: remoteMain,
           headRefName: "fixture-pr",
           headRefOid: pullHead,
           headRepository: {
@@ -923,15 +931,16 @@ describePosix("scripts/pr per-PR operation lock", () => {
         "set -euo pipefail",
         'case "$*" in',
         '  "auth token") printf "token:1\\n" >> "$OPENCLAW_TEST_GH_EVENTS"; exit 1 ;;',
+        '  "repo view --json nameWithOwner,url") printf \'{"nameWithOwner":"fixture/fixture","url":"https://github.com/fixture/fixture"}\\n\' ;;',
         '  "api graphql -f query=query { viewer { login } } --include")',
         '    if [ "$OPENCLAW_TEST_AUTH_FAILURE" = 1 ]; then',
         '      printf "viewer:1\\n" >> "$OPENCLAW_TEST_GH_EVENTS"; exit 1',
         "    fi",
         '    printf "viewer:0\\n" >> "$OPENCLAW_TEST_GH_EVENTS"',
         '    printf \'HTTP/2.0 200 OK\\n\\n{"data":{"viewer":{"login":"fixture-user"}}}\\n\' ;;',
-        '  "pr view 42 --json headRefOid"|"pr view 42 --json headRefName,headRefOid,headRepository,headRepositoryOwner")',
+        '  "pr view 42 --json number,url,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,headRepositoryOwner"|"pr view 42 --json headRefOid"|"pr view 42 --json headRefName,headRefOid,headRepository,headRepositoryOwner")',
         '    cat "$OPENCLAW_TEST_PR_METADATA"; printf "head:0\\n" >> "$OPENCLAW_TEST_GH_EVENTS" ;;',
-        '  "pr view 42 --json number,title,state,isDraft,author,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,url,body,labels,assignees,changedFiles,additions,deletions,statusCheckRollup,files")',
+        '  "pr view 42 --json number,title,state,isDraft,author,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,headRepositoryOwner,url,body,labels,assignees,changedFiles,additions,deletions,statusCheckRollup,files")',
         '    cat "$OPENCLAW_TEST_PR_METADATA"; printf "metadata:0\\n" >> "$OPENCLAW_TEST_GH_EVENTS" ;;',
         '  *) printf "unexpected:99\\n" >> "$OPENCLAW_TEST_GH_EVENTS"; echo "unexpected fixture gh request" >&2; exit 99 ;;',
         "esac",
@@ -1031,7 +1040,7 @@ describePosix("scripts/pr per-PR operation lock", () => {
             .soft(ghEvents, output)
             .toEqual(
               command === "review-init"
-                ? ["metadata:0", "head:0", "token:1", "viewer:1"]
+                ? ["token:1", "metadata:0", "head:0", "token:1", "viewer:1"]
                 : ["token:1", "viewer:1"],
             );
           expect.soft(controller.exitCode, output).toBe(1);
@@ -1939,7 +1948,8 @@ describePosix("scripts/pr per-PR operation lock", () => {
         {
           cwd: worktreeDir,
           encoding: "utf8",
-          timeout: 15_000,
+          // Linked landing verifies the full transitive anchor before starting cleanup.
+          timeout: wrapper === "linked" ? 120_000 : 15_000,
           env: {
             ...process.env,
             canonical_repo_root: join(repoDir, "untrusted-root"),

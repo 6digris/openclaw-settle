@@ -24,11 +24,7 @@ import {
 import type { SessionCapability } from "../../lib/sessions/index.ts";
 import type { SessionPatchOptions } from "../../lib/sessions/patch.ts";
 import { createTestSessionCapability } from "../../lib/sessions/session-capability.test-support.ts";
-import {
-  areUiSessionKeysEquivalent,
-  isUiGlobalScopeConfigured,
-  uiSessionRowMatchesSelectedChat,
-} from "../../lib/sessions/session-key.ts";
+import { areUiSessionKeysEquivalent } from "../../lib/sessions/session-key.ts";
 import {
   createModelCatalog,
   createSessionsListResult,
@@ -51,6 +47,7 @@ import * as chatThread from "./chat-thread.ts";
 import { resetChatViewState } from "./chat-view-state.ts";
 import {
   appendChatBubble,
+  createChatProps,
   createPasteEvent,
   createTestTranscript,
   stubAnimationFrames,
@@ -71,7 +68,7 @@ import {
   resetTranscriptTestDom,
 } from "./components/chat-transcript.test-support.ts";
 import { renderWelcomeState } from "./components/chat-welcome.ts";
-import { RealtimeTalkLevelSignal } from "./realtime-talk-level.ts";
+import { RealtimeTalkLevelSignal } from "./talk/level.ts";
 import {
   workspaceConflictPathForDisplay,
   workspaceResultConflictFromTranscript,
@@ -695,93 +692,6 @@ function createDragEvent(type: string, types = ["Files"]): Event {
 
 function itemAt<T>(items: ArrayLike<T>, index: number, label: string): T {
   return expectDefined(items[index], `${label} ${index}`);
-}
-
-function createChatProps(overrides: Partial<ChatProps> = {}): ChatProps {
-  const transcript = createTestTranscript();
-  const sessionKey = overrides.sessionKey ?? "main";
-  const sessionHost = overrides.sessionHost;
-  const exactSelectedSession = overrides.sessions?.sessions.find((row) =>
-    areUiSessionKeysEquivalent(row.key, sessionKey),
-  );
-  const selectedSession = Object.hasOwn(overrides, "selectedSession")
-    ? overrides.selectedSession
-    : (exactSelectedSession ??
-      (sessionHost && isUiGlobalScopeConfigured(sessionHost)
-        ? overrides.sessions?.sessions.find((row) =>
-            uiSessionRowMatchesSelectedChat(sessionHost, row.key, sessionKey),
-          )
-        : undefined));
-  return {
-    transcript,
-    paneId: "single",
-    sessionKey,
-    onSessionKeyChange: () => undefined,
-    thinkingLevel: null,
-    showThinking: false,
-    showToolCalls: true,
-    loading: false,
-    sending: false,
-    compactionStatus: null,
-    fallbackStatus: null,
-    messages: [],
-    toolMessages: [],
-    streamSegments: [],
-    stream: null,
-    streamStartedAt: null,
-    assistantAvatarUrl: null,
-    draft: "",
-    modelCatalog: [],
-    modelSwitching: false,
-    queue: [],
-    realtimeTalkActive: false,
-    realtimeTalkStatus: "idle",
-    realtimeTalkDetail: null,
-    connected: true,
-    canSend: true,
-    disabledReason: null,
-    error: null,
-    runError: null,
-    approvalCanGrant: false,
-    sessions: null,
-    selectedSession,
-    canvasPluginSurfaceUrl: null,
-    embedSandboxMode: "scripts",
-    allowExternalEmbedUrls: false,
-    assistantName: "Val",
-    sendShortcut: "enter",
-    assistantAvatar: null,
-    userName: null,
-    userAvatar: null,
-    assistantAttachmentAuthToken: null,
-    autoExpandToolCalls: false,
-    attachments: [],
-    onAttachmentsChange: () => undefined,
-    showNewMessages: false,
-    onScrollToBottom: () => undefined,
-    onRefresh: () => undefined,
-    getDraft: () => "",
-    onDraftChange: () => undefined,
-    onRequestUpdate: () => undefined,
-    onSend: () => undefined,
-    onToggleRealtimeTalk: () => undefined,
-    onToggleRealtimeCamera: () => undefined,
-    onDismissError: () => undefined,
-    onAbort: () => undefined,
-    onQueueRemove: () => undefined,
-    onQueueSteer: () => undefined,
-    onClearHistory: () => undefined,
-    onOpenSessionCheckpoints: () => undefined,
-    agentsList: null,
-    currentAgentId: "main",
-    onAgentChange: () => undefined,
-    onNavigateToAgent: () => undefined,
-    onSessionSelect: () => undefined,
-    onOpenSidebar: () => undefined,
-    onChatScroll: () => undefined,
-    basePath: "",
-    ...overrides,
-  };
 }
 
 function renderChatView(overrides: Partial<ChatProps> = {}) {
@@ -1558,6 +1468,9 @@ describe("chat history pagination", () => {
       "earlier history action",
     ) as HTMLButtonElement;
     expect(button.textContent).toContain("Show earlier");
+    expect(button.getAttribute("aria-label")).toBe("Show earlier");
+    expect(button.getAttribute("aria-busy")).toBe("false");
+    expect(button.disabled).toBe(false);
     expect(button.closest(".chat-thread")).not.toBeNull();
     button.click();
     expect(onShowEarlier).toHaveBeenCalledOnce();
@@ -1570,10 +1483,13 @@ describe("chat history pagination", () => {
       ".chat-history-boundary__action",
       "loading earlier history action",
     ) as HTMLButtonElement;
-    expect(loadingButton.textContent).toContain("Loading earlier history");
+    expect(loadingButton.textContent?.trim()).toBe("Loading earlier…");
+    expect(loadingButton.getAttribute("aria-label")).toBe("Loading earlier…");
     expect(loadingButton.getAttribute("aria-busy")).toBe("true");
     expect(loadingButton.disabled).toBe(true);
     expect(loadingButton.closest(".chat-history-boundary--loading")).not.toBeNull();
+    loadingButton.click();
+    expect(onShowEarlier).toHaveBeenCalledOnce();
 
     renderChatInto(container, {
       historyPagination: { hasMore: true, loading: false, onShowEarlier },
@@ -1583,6 +1499,9 @@ describe("chat history pagination", () => {
       ".chat-history-boundary__action",
       "retry earlier history action",
     ) as HTMLButtonElement;
+    expect(retryButton.textContent?.trim()).toBe("Show earlier");
+    expect(retryButton.getAttribute("aria-label")).toBe("Show earlier");
+    expect(retryButton.getAttribute("aria-busy")).toBe("false");
     expect(retryButton.disabled).toBe(false);
     retryButton.click();
     expect(onShowEarlier).toHaveBeenCalledTimes(2);
@@ -7675,7 +7594,7 @@ describe("chat model controls", () => {
       activeRunIds: ["current-run"],
       activeModel: undefined,
     },
-  ])("shows a pending model instead of the $name during a new run", (row) => {
+  ])("keeps the selected model while starting instead of the $name", (row) => {
     const { state } = createChatHeaderState({
       model: "primary",
       modelProvider: "example",
@@ -7693,11 +7612,84 @@ describe("chat model controls", () => {
       activeModelProvider: row.activeModel ? "example" : undefined,
     });
     const trigger = getChatModelSelect(renderModelControls(state));
-    expect(trigger.getAttribute("aria-label")).toBe("Chat model: Model pending");
-    expect(trigger.textContent).not.toContain("Primary");
+    expect(trigger.getAttribute("aria-label")).toBe("Chat model: Primary · Starting…");
+    expect(trigger.getAttribute("aria-busy")).toBe("true");
+    expect(trigger.querySelector(".btn__spinner")).not.toBeNull();
+    expect(trigger.textContent).toContain("Primary");
+    expect(trigger.textContent).not.toContain("Model pending");
     expect(trigger.textContent).not.toContain("Fallback");
     expect(trigger.dataset.chatSelectValue).toBe("example/primary");
   });
+
+  it.each([
+    {
+      name: "saved choice",
+      model: "primary",
+      defaultModel: "example/default",
+      locked: false,
+      expected: "Primary",
+      starting: true,
+    },
+    {
+      name: "inherited default",
+      model: null,
+      defaultModel: "example/default",
+      locked: false,
+      expected: "Default",
+      starting: true,
+    },
+    {
+      name: "locked known choice",
+      model: "primary",
+      defaultModel: "example/default",
+      locked: true,
+      expected: "Primary",
+      starting: true,
+    },
+    {
+      name: "locked unknown choice",
+      model: null,
+      defaultModel: "example/default",
+      locked: true,
+      expected: "Model pending",
+      starting: false,
+    },
+    {
+      name: "unknown choice",
+      model: null,
+      defaultModel: "",
+      locked: false,
+      expected: "Model pending",
+      starting: false,
+    },
+  ])(
+    "preserves the $name during send admission",
+    ({ model, defaultModel, locked, expected, starting }) => {
+      const { state } = createChatHeaderState({
+        model,
+        modelProvider: model ? "example" : null,
+        models: [
+          { id: "primary", name: "Primary", provider: "example" },
+          { id: "default", name: "Default", provider: "example" },
+        ],
+      });
+      const trigger = getChatModelSelect(
+        renderModelControls(state, {
+          sending: true,
+          agentDefaultModel: defaultModel,
+          sessionsResult: null,
+          modelSelectionLocked: locked,
+        }),
+      );
+      expect(trigger.textContent).toContain(expected);
+      expect(trigger.getAttribute("aria-label")).toBe(
+        "Chat model: " + expected + (starting ? " · Starting…" : ""),
+      );
+      expect(trigger.getAttribute("aria-busy")).toBe(String(starting));
+      expect(trigger.querySelector(".btn__spinner") !== null).toBe(starting);
+      expect(trigger.querySelector(".chat-controls__model-trigger-skeleton")).toBeNull();
+    },
+  );
 
   it("does not borrow selected-model metadata for an unknown active fallback", () => {
     const { state } = createChatHeaderState({
