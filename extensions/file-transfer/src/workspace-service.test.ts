@@ -1,12 +1,23 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { getAgentWorkspaceAccess } from "openclaw/plugin-sdk/agent-workspace-runtime";
+import {
+  getAgentWorkspaceAccess,
+  prepareAgentWorkspaceAttachments,
+} from "openclaw/plugin-sdk/agent-workspace-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
-import type { OpenClawPluginApi, OpenClawPluginService } from "openclaw/plugin-sdk/plugin-entry";
+import { saveMediaBuffer } from "openclaw/plugin-sdk/media-store";
+import type { OpenClawPluginNodeHostCommandIo } from "openclaw/plugin-sdk/node-host";
+import type {
+  OpenClawPluginApi,
+  OpenClawPluginService,
+  OpenClawPluginServiceContext,
+} from "openclaw/plugin-sdk/plugin-entry";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleDirList } from "./node-host/dir-list.js";
+import { handleFileCreate } from "./node-host/file-create.js";
 import { handleFileFetch } from "./node-host/file-fetch.js";
 import { handleFileStat } from "./node-host/file-stat.js";
 import { handleFileWrite } from "./node-host/file-write.js";
@@ -29,11 +40,19 @@ let nodePolicy: {
 };
 let invoke: ReturnType<typeof vi.fn<OpenClawPluginApi["runtime"]["nodes"]["invoke"]>>;
 
+let openDuplex: OpenClawPluginServiceContext["openNodeDuplex"];
 function context() {
-  return { config: api.config, logger: api.logger, stateDir: local, invokeNode: invoke };
+  return {
+    config: api.config,
+    logger: api.logger,
+    stateDir: local,
+    invokeNode: invoke,
+    openNodeDuplex: openDuplex,
+  };
 }
 
 beforeEach(async () => {
+  openDuplex = undefined;
   const parent = await fs.realpath(tempDirs.make("node-workspace-test-"));
   local = path.join(parent, "gateway");
   remote = path.join(parent, "harness");
@@ -110,6 +129,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await service.stop?.(context());
+  vi.unstubAllEnvs();
 });
 
 describe("registered node workspace service", () => {
@@ -309,5 +329,164 @@ describe("registered node workspace service", () => {
     expect(signal?.aborted).toBe(true);
     response.resolve({ payload: {} });
     await expect(pending).rejects.toThrow(/stopped/);
+  });
+});
+
+/** Real policy and file handlers; only the paired connection is replaced here. */
+function enableAttachmentTransport(afterChunk?: () => void) {
+  openDuplex = async (request) => {
+    const controller = new AbortController();
+    const signal = request.signal
+      ? AbortSignal.any([controller.signal, request.signal])
+      : controller.signal;
+    const ready = createDeferred<void>();
+    let receive: ((message: Uint8Array) => void | Promise<void>) | undefined;
+    let acknowledge: ((message: Uint8Array) => void | Promise<void>) | undefined;
+    const io: OpenClawPluginNodeHostCommandIo = {
+      signal,
+      emitChunk: async () => {},
+      onInput: () => {},
+      frames: {
+        onMessage: (listener) => {
+          receive = listener;
+          ready.resolve();
+          return () => {
+            receive = undefined;
+          };
+        },
+        send: async (message) => {
+          await acknowledge?.(message);
+        },
+      },
+    };
+    const { ctx, invokeNode } = createCtx({
+      command: request.command,
+      params: request.params as Record<string, unknown>,
+      pluginConfig: api.config.plugins!.entries!["file-transfer"]!.config,
+    });
+    invokeNode.mockImplementation(async ({ params } = {}) => {
+      request.assertCurrent?.();
+      signal.throwIfAborted();
+      return { ok: true, payload: await handleFileCreate(params as Record<string, unknown>, io) };
+    });
+    const closed = createFileTransferNodeInvokePolicy()
+      .handle(ctx)
+      .then((result) => {
+        if (!result.ok) {
+          throw new Error(`${result.code}: ${result.message}`);
+        }
+        return result;
+      });
+    await Promise.race([
+      ready.promise,
+      closed.then(() => {
+        throw new Error("closed before upload ready");
+      }),
+    ]);
+    return {
+      send: async (message) => {
+        request.assertCurrent?.();
+        signal.throwIfAborted();
+        if (!receive) {
+          throw new Error("input receiver missing");
+        }
+        await receive(message);
+        if (message.byteLength) {
+          afterChunk?.();
+        }
+      },
+      onMessage: (listener) => {
+        acknowledge = listener;
+        return () => {
+          acknowledge = undefined;
+        };
+      },
+      close: () => controller.abort(new Error("test connection closed")),
+      closed,
+    };
+  };
+}
+
+async function attachmentInput(sizeMiB: number) {
+  vi.stubEnv("OPENCLAW_STATE_DIR", path.join(local, "state"));
+  const bytes = Buffer.alloc(sizeMiB * 1024 * 1024, 0x6d);
+  const saved = await saveMediaBuffer(
+    bytes,
+    "application/octet-stream",
+    "inbound",
+    bytes.length,
+    "report.bin",
+  );
+  expect(saved.path.startsWith(local + path.sep)).toBe(true);
+  const inputDirectory = `media/inbound/openclaw-staged-${createHash("sha256").update(saved.path).digest("hex")}`;
+  const target = path.join(remote, inputDirectory, `input-${path.basename(saved.path)}`);
+  nodePolicy.allowReadPaths = [
+    `${remote}/AGENTS.md`,
+    `${remote}/media/inbound/openclaw-staged-*`,
+    `${remote}/media/inbound/openclaw-staged-*/**`,
+  ];
+  nodePolicy.allowWritePaths.push(`${remote}/media/inbound/openclaw-staged-*/**`);
+  return { bytes, target, turn: { media: [{ path: saved.path }], timeoutMs: 60_000 } };
+}
+
+describe("node workspace attachment caller", () => {
+  it.each([17, 50])(
+    "transfers %i MiB through registered access and retains Harness edits",
+    async (size) => {
+      const input = await attachmentInput(size);
+      enableAttachmentTransport();
+      await service.start(context());
+      const params = { workspaceDir: local, turn: input.turn, assertCurrent: () => {} };
+      const original = JSON.stringify(input.turn);
+      const note = await prepareAgentWorkspaceAttachments(params);
+      expect(note).toBe(`[media attached: ${input.target}]`);
+      expect(
+        createHash("sha256")
+          .update(await fs.readFile(input.target))
+          .digest("hex"),
+      ).toBe(createHash("sha256").update(input.bytes).digest("hex"));
+      expect(JSON.stringify(input.turn)).toBe(original);
+      expect(await fs.readFile(path.join(local, "AGENTS.md"), "utf8")).toBe("Gateway decoy");
+      await expect(fs.stat(path.join(local, "media"))).rejects.toMatchObject({ code: "ENOENT" });
+      await fs.writeFile(input.target, "Harness edit");
+      expect(await prepareAgentWorkspaceAttachments(params)).toBe(note);
+      expect(await fs.readFile(input.target, "utf8")).toBe("Harness edit");
+    },
+  );
+
+  it("requires explicit input-path permission without widening owner document writes", async () => {
+    const input = await attachmentInput(1);
+    nodePolicy.allowWritePaths = [`${remote}/AGENTS.md`];
+    enableAttachmentTransport();
+    await service.start(context());
+    await expect(
+      prepareAgentWorkspaceAttachments({
+        workspaceDir: local,
+        turn: input.turn,
+        assertCurrent: () => {},
+      }),
+    ).rejects.toThrow();
+    expect(await fs.readdir(remote)).toEqual(["AGENTS.md"]);
+  });
+
+  it("revokes a turn during transfer without publishing partial input", async () => {
+    const input = await attachmentInput(17);
+    let current = true;
+    enableAttachmentTransport(() => {
+      current = false;
+    });
+    await service.start(context());
+    await expect(
+      prepareAgentWorkspaceAttachments({
+        workspaceDir: local,
+        turn: input.turn,
+        assertCurrent() {
+          if (!current) {
+            throw new Error("turn ended");
+          }
+        },
+      }),
+    ).rejects.toThrow("turn ended");
+    await expect(fs.stat(input.target)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });

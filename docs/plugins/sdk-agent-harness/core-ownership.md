@@ -102,9 +102,15 @@ are readable by the Harness. A failed transfer prevents dispatch. Plain text
 needs no attachment callback, and unconfigured local workspaces keep their
 existing path.
 
-This is caller integration, not a transport. The `file-transfer` workspace bridge
-alone does not supply it: inline `file.write` is capped at 16 MiB. A deployment
-must provide and verify an attachment adapter before removing synchronization.
+The File Transfer workspace service supplies this callback through native node
+`file.create`. It uses the existing binary channel in small frames, verifies the
+admitted size and digest, and creates the file without replacing an existing
+input. Enable that command on both ends. Under the configured workspace, grant
+read access to `media/inbound/openclaw-staged-*` (the directory check) and read/write
+access to `media/inbound/openclaw-staged-*/**` (its files). Existing node
+path and byte limits still apply; the owner document API retains its allowlist.
+Unary `file.write` remains capped at 16 MiB and keeps its existing behavior.
+
 Remote worker transfer already has its own environment/session authorization;
 a Codex adapter cannot borrow that authority.
 

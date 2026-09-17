@@ -1,5 +1,6 @@
 import path from "node:path";
 import {
+  createWorkspaceAttachmentPreparer,
   declareAgentWorkspaceAccess,
   registerAgentWorkspaceAccess,
 } from "openclaw/plugin-sdk/agent-workspace-runtime";
@@ -83,6 +84,21 @@ export function registerNodeWorkspaces(api: OpenClawPluginApi): void {
         for (const entry of bindings.values()) {
           releases.push(
             registerAgentWorkspaceAccess(entry.workspaceDir, {
+              ...(ctx.openNodeDuplex
+                ? {
+                    prepareTurnAttachments: createWorkspaceAttachmentPreparer({
+                      remoteRoot: entry.remoteRoot,
+                      createBridge: (assertCurrent, signal) =>
+                        createNodeWorkspaceBridge({
+                          ...entry,
+                          invoke,
+                          signal: AbortSignal.any([controller.signal, signal]),
+                          openDuplex: ctx.openNodeDuplex,
+                          assertCurrent,
+                        }),
+                    }),
+                  }
+                : {}),
               bridge: createNodeWorkspaceBridge({
                 ...entry,
                 invoke,
