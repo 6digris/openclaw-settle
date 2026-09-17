@@ -2,6 +2,7 @@ import { isPromise } from "node:util/types";
 import { deserialize, serialize } from "node:v8";
 import { parentPort, type MessagePort } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { routeLogsToStderr } from "../logging/console.js";
 import { encodeOpenClawStateWorkerError } from "../state/openclaw-state-worker-error.js";
 import {
   SQLITE_WORKER_MAX_RESULT_BYTES,
@@ -35,6 +36,9 @@ const port = parentPort;
 if (!port) {
   throw new Error("SQLite store worker requires its host port");
 }
+// Worker logging state is independent; diagnostics must not enter the caller's stdout.
+routeLogsToStderr();
+
 const actors = new Map<number, SqliteWorkerBackend<SqliteWorkerOperations>>();
 const transfers = createSqliteWorkerTransferOwner();
 let pendingResult: { requestId: number; actor: number; transferId: number } | undefined;
