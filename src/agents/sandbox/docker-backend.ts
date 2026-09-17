@@ -184,7 +184,7 @@ function createContainerSandboxBackendHandle(params: {
           params.engine.command,
           ...(params.engine.globalArgs ?? []),
           ...buildContainerExecArgs({
-            containerName: params.containerName,
+            containerName: params.containerId,
             command,
             workdir: workdir ?? params.workdir,
             env,
@@ -215,7 +215,7 @@ function createContainerSandboxBackendHandle(params: {
     runShellCommand(command) {
       return runContainerSandboxShellCommand({
         engine: params.engine,
-        containerName: params.containerName,
+        containerName: params.containerId,
         podmanTarget: params.podmanTarget,
         terminateRuntime: disposeRuntime,
         ...command,

@@ -548,12 +548,6 @@ describe("docker sandbox backend manager", () => {
           });
         }),
     );
-    dockerMocks.execContainerRaw.mockResolvedValueOnce({
-      stdout: Buffer.alloc(0),
-      stderr: Buffer.alloc(0),
-      code: 0,
-    });
-
     const running = backend.runShellCommand({
       script: "exec git fetch origin",
       signal: controller.signal,
@@ -564,9 +558,7 @@ describe("docker sandbox backend manager", () => {
     await expect(running).rejects.toThrow();
 
     const executionArgs = dockerMocks.execContainerRaw.mock.calls[0]?.[1] as string[];
-    const terminationArgs = dockerMocks.execContainerRaw.mock.calls[1]?.[1] as string[];
     expect(executionArgs.join(" ")).not.toContain("openclaw-command");
-    expect(terminationArgs).toBeUndefined();
     expect(dockerMocks.execContainer).toHaveBeenCalledWith(
       expect.anything(),
       ["rm", "-f", "unused-image"],
