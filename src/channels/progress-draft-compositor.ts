@@ -558,6 +558,7 @@ export function createChannelProgressDraftCompositor(params: ChannelProgressDraf
     pushToolProgress: noteProgress,
     ...progressEventHandlers,
     async pushApprovalEvent(
+      this: void,
       payload: Parameters<typeof progressEventHandlers.pushApprovalEvent>[0],
     ) {
       if (payload.phase === "resolved" && payload.approvalId) {
