@@ -342,6 +342,8 @@ src/config/io.plugin-metadata.ts
 src/config/io.read-helpers.ts
 src/config/io.recovery.ts
 src/config/io.runtime.ts
+src/config/io.snapshot-preparation.ts
+src/config/io.snapshot-preparation.types.ts
 src/config/io.snapshot-shared.ts
 src/config/io.snapshot.ts
 src/config/io.state.ts
@@ -425,6 +427,7 @@ src/config/validation-plugin-config.ts
 src/config/validation-plugin-registry.ts
 src/config/validation-plugin-rules.ts
 src/config/validation.ts
+src/config/validation.types.ts
 src/config/version.ts
 src/config/web-search-legacy-provider-keys.ts
 src/config/write-lock.ts
