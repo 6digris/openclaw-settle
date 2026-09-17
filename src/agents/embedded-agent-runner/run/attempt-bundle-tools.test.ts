@@ -373,6 +373,18 @@ describe("prepareEmbeddedAttemptBundleTools", () => {
     expect(sessionSendToolAllowlist).toEqual(["sessions_send", "server__read"]);
   });
 
+  it("does not transfer tools denied by this run's execution ceiling", async () => {
+    const sessionSendToolAllowlist: string[] = [];
+    const input = createInput(
+      [],
+      [{ name: "sessions_send" }, { name: "apply_patch" }],
+      sessionSendToolAllowlist,
+    );
+    input.attempt.toolExecutionAllow = ["sessions_send", "write"];
+    await prepareEmbeddedAttemptBundleTools(input);
+    expect(sessionSendToolAllowlist).toEqual(["sessions_send"]);
+  });
+
   it("never adds policy-denied bundled tools to spawned-child inheritance", async () => {
     const inheritedToolAllowlist = ["sessions_spawn"];
     mocks.acquireSessionMcpRuntime.mockResolvedValue({ runtime: {}, releaseLease: () => {} });

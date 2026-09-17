@@ -12,6 +12,7 @@ import { filterLocalModelLeanTools } from "../../local-model-lean.js";
 import { recordAgentCleanupFailure } from "../../run-cleanup-timeout.js";
 import { normalizeAgentRuntimeTools } from "../../runtime-plan/tools.js";
 import { createRuntimeToolMatcher } from "../../tool-policy-match.js";
+import { createToolExecutionMatcher } from "../../tool-policy-shared.js";
 import { replaceWithEffectiveToolAllowlist } from "../../tool-policy.js";
 import { filterRuntimeCompatibleTools } from "../../tool-schema-projection.js";
 import { logRuntimeToolSchemaQuarantine } from "../../tool-schema-quarantine.js";
@@ -206,6 +207,9 @@ export async function prepareEmbeddedAttemptBundleTools(params: {
     const normalizedBundledTools = (
       filteredBundledTools.length > 0 ? normalizeTools(filteredBundledTools) : filteredBundledTools
     ).map((tool) => wrapToolWithBeforeToolCallHook(tool, params.preparedToolBase.toolHookContext));
+    const transferable = params.attempt.toolExecutionAllow
+      ? createToolExecutionMatcher(params.attempt.toolExecutionAllow)
+      : undefined;
     const projectTools = (coreTools: typeof toolsRaw) => {
       const projectedTools = filterLocalModelLeanTools({
         tools: [...coreTools, ...normalizedBundledTools].map((tool) =>
@@ -216,8 +220,11 @@ export async function prepareEmbeddedAttemptBundleTools(params: {
         preserveToolNames: localModelLeanPreserveToolNames,
       });
       const schemaProjection = filterRuntimeCompatibleTools(projectedTools);
+      const transferableTools = transferable
+        ? schemaProjection.tools.filter((tool) => transferable(tool.name))
+        : schemaProjection.tools;
       if (sessionSendToolAllowlist) {
-        replaceWithEffectiveToolAllowlist(sessionSendToolAllowlist, schemaProjection.tools);
+        replaceWithEffectiveToolAllowlist(sessionSendToolAllowlist, transferableTools);
       }
       if (cronCreatorToolAllowlistCaptureRef) {
         // Cron is constructed before bundled tools; capture only the executable
@@ -233,7 +240,7 @@ export async function prepareEmbeddedAttemptBundleTools(params: {
         // Spawn tools close over this ref before MCP/LSP materialize. Refresh it
         // only after final policy and schema projection so children inherit the
         // parent's complete authorized surface, never denied bundled tools.
-        replaceWithEffectiveToolAllowlist(inheritedToolAllowlist, schemaProjection.tools);
+        replaceWithEffectiveToolAllowlist(inheritedToolAllowlist, transferableTools);
       }
       logRuntimeToolSchemaQuarantine({
         diagnostics: schemaProjection.diagnostics,

@@ -1299,7 +1299,8 @@ async function prepareCliRunContextWithinReadFence(
       ? { ...mcpContextBase, toolsAllow: [...requestedLoopbackToolsAllow] }
       : mcpContextBase;
   const resolveProjectedTools =
-    runtimeToolsAllowPolicy !== undefined || (rootedExecution && rootedToolsAllow === undefined)
+    !params.toolsAllowExact &&
+    (runtimeToolsAllowPolicy !== undefined || (rootedExecution && rootedToolsAllow === undefined))
       ? prepareDeps.resolveMcpLoopbackPolicyTools
       : prepareDeps.resolveMcpLoopbackScopedTools;
   params.assertCurrent?.();

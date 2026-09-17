@@ -399,6 +399,11 @@ async function agentCommandInternal(
       await prepareDeliveryForRun(sessionEntry);
 
       if (!isRawModelRun && acpResolution?.kind === "ready" && sessionKey) {
+        if (opts.toolExecutionAllow !== undefined) {
+          throw new Error(
+            "ACP does not enforce delegated tool restrictions; OpenClaw did not start the handoff.",
+          );
+        }
         assertAgentRunLifecycleGenerationCurrent(lifecycleGeneration);
         preparedRunAdmission = prepareAgentCommandExecutionIdentity({
           opts,
