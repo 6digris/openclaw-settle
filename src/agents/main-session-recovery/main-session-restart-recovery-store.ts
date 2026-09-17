@@ -515,6 +515,44 @@ export async function recoverStore(params: {
     const hasRecoveryRuns = Boolean(entry.restartRecoveryRuns?.length);
     let replaySafeCheckpoint = false;
     let recoverySource: MainSessionRestartRecoverySource | undefined;
+    const harnessCompletion = entry.restartRecoveryHarnessCompletion;
+    let recoverableHarnessCompletion: boolean;
+    try {
+      recoverableHarnessCompletion = Boolean(
+        harnessCompletion &&
+        harnessCompletion.requesterSessionKey === sessionKey &&
+        harnessCompletion.requesterAgentId === agentId &&
+        harnessCompletion.sourceRunId === entry.restartRecoveryDeliverySourceRunId &&
+        Boolean(entry.restartRecoveryDeliveryRunId) &&
+        entry.restartRecoverySourceIngress === "internal" &&
+        Boolean(getOwedHarnessCompletionTask(harnessCompletion, entry)) &&
+        readAdmittedHarnessCompletionInput({
+          claim: harnessCompletion,
+          entry,
+          storePath: params.storePath,
+          operationalRunId: entry.restartRecoveryDeliveryRunId,
+        }),
+      );
+    } catch (error) {
+      mainSessionRecoveryLog.warn(
+        `harness completion input unavailable for ${sessionKey}: ${String(error)}`,
+      );
+      result.failed++;
+      continue;
+    }
+    if (
+      harnessCompletion &&
+      getOwedHarnessCompletionTask(harnessCompletion, entry) &&
+      !recoverableHarnessCompletion
+    ) {
+      // The completion claim can be durable before its transcript input. Retain
+      // custody without dispatching until that exact source becomes readable.
+      mainSessionRecoveryLog.warn(
+        `harness completion input unresolved for ${sessionKey}; retaining its claim`,
+      );
+      result.failed++;
+      continue;
+    }
     let fullAccess: boolean;
     let messages: unknown[];
     try {
@@ -598,45 +636,6 @@ export async function recoverStore(params: {
       : !hasRecoveryRuns && recoverySource === "completion"
         ? "transcript"
         : undefined;
-    const harnessCompletion = entry.restartRecoveryHarnessCompletion;
-    let recoverableHarnessCompletion: boolean;
-    try {
-      recoverableHarnessCompletion = Boolean(
-        harnessCompletion &&
-        harnessCompletion.requesterSessionKey === sessionKey &&
-        harnessCompletion.requesterAgentId === agentId &&
-        harnessCompletion.sourceRunId === entry.restartRecoveryDeliverySourceRunId &&
-        Boolean(entry.restartRecoveryDeliveryRunId) &&
-        entry.restartRecoverySourceIngress === "internal" &&
-        Boolean(getOwedHarnessCompletionTask(harnessCompletion, entry)) &&
-        readAdmittedHarnessCompletionInput({
-          claim: harnessCompletion,
-          entry,
-          storePath: params.storePath,
-          operationalRunId: entry.restartRecoveryDeliveryRunId,
-        }),
-      );
-    } catch (error) {
-      mainSessionRecoveryLog.warn(
-        `harness completion input unavailable for ${sessionKey}: ${String(error)}`,
-      );
-      result.failed++;
-      continue;
-    }
-
-    if (
-      harnessCompletion &&
-      getOwedHarnessCompletionTask(harnessCompletion, entry) &&
-      !recoverableHarnessCompletion
-    ) {
-      // A missing or stale input projection is not evidence that an admitted task
-      // stopped being owed. Retain custody for a later read; do not retire it.
-      mainSessionRecoveryLog.warn(
-        `harness completion input unresolved for ${sessionKey}; retaining its claim`,
-      );
-      result.failed++;
-      continue;
-    }
     if ((completionSource || harnessCompletion) && !recoverableHarnessCompletion) {
       if (stopped()) {
         return result;

@@ -47,6 +47,7 @@ export function registerHarnessCompletionRecoveryCases(
     "long-initial",
     "long-recovery",
     "missing-source",
+    "empty-source",
     "reserved-successor",
     "human-before-recovery",
     "cancel-after-dispatch",
@@ -176,7 +177,14 @@ export function registerHarnessCompletionRecoveryCases(
               }))
             : []),
         ]);
-        if (phase === "missing-source" || phase === "human-before-recovery") {
+        if (phase === "empty-source") {
+          await writeTranscript(sessionsDir, entry.sessionId, []);
+        }
+        if (
+          phase === "missing-source" ||
+          phase === "empty-source" ||
+          phase === "human-before-recovery"
+        ) {
           await expectRecovery({ started: 0, settled: 0, failed: 1, skipped: 0 });
           expect(callGateway).not.toHaveBeenCalled();
           expect(
