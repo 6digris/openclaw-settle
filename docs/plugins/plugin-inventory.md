@@ -50,7 +50,7 @@ Each entry lists the package, distribution route, and description.
 
 ## Core npm package
 
-60 plugins
+57 plugins
 
 - **[a2a](/plugins/reference/a2a)** (`@openclaw/a2a`) - included in OpenClaw. A2A v1.0 Agent-to-Agent protocol channel plugin.
 
@@ -110,11 +110,7 @@ Each entry lists the package, distribution route, and description.
 
 - **[lmstudio](/plugins/reference/lmstudio)** (`@openclaw/lmstudio-provider`) - included in OpenClaw. Adds LM Studio model provider support to OpenClaw.
 
-- **[logbook](/plugins/reference/logbook)** (`@openclaw/logbook`) - included in OpenClaw, and also from ClawHub: `clawhub:@openclaw/logbook` or npm. Automatic work journal: captures periodic screen snapshots from a paired node and turns them into a reviewable timeline of your day.
-
 - **[memory-core](/plugins/reference/memory-core)** (`@openclaw/memory-core`) - included in OpenClaw. Adds agent-callable tools.
-
-- **[memory-wiki](/plugins/reference/memory-wiki)** (`@openclaw/memory-wiki`) - included in OpenClaw, and also from ClawHub: `clawhub:@openclaw/memory-wiki` or npm. Persistent wiki compiler and Obsidian-friendly knowledge vault for OpenClaw.
 
 - **[microsoft](/plugins/reference/microsoft)** (`@openclaw/microsoft-speech`) - included in OpenClaw. Adds text-to-speech provider support.
 
@@ -131,8 +127,6 @@ Each entry lists the package, distribution route, and description.
 - **[oc-path](/plugins/reference/oc-path)** (`@openclaw/oc-path`) - included in OpenClaw. Adds the openclaw path CLI for oc:// workspace file addressing.
 
 - **[ollama](/plugins/reference/ollama)** (`@openclaw/ollama-provider`) - included in OpenClaw. Adds Ollama, Ollama Cloud model provider support to OpenClaw.
-
-- **[onepassword](/plugins/reference/onepassword)** (`@openclaw/onepassword`) - included in OpenClaw, and also from ClawHub: `clawhub:@openclaw/onepassword` or npm. 1Password SecretRef resolver and curated agent broker with approval policy and SQLite audit history.
 
 - **[openai](/plugins/reference/openai)** (`@openclaw/openai-provider`) - included in OpenClaw. Adds OpenAI model provider support to OpenClaw.
 
@@ -174,7 +168,7 @@ Each entry lists the package, distribution route, and description.
 
 ## Official external packages
 
-92 plugins
+95 plugins
 
 - **[acpx](/plugins/reference/acpx)** (`@openclaw/acpx`) - npm or ClawHub: `clawhub:@openclaw/acpx`. OpenClaw ACP runtime backend with plugin-owned session and transport management.
 
@@ -264,6 +258,8 @@ Each entry lists the package, distribution route, and description.
 
 - **[lobster](/plugins/reference/lobster)** (`@openclaw/lobster`) - npm or ClawHub: `clawhub:@openclaw/lobster`. Lobster workflow tool plugin for typed pipelines and resumable approvals.
 
+- **[logbook](/plugins/reference/logbook)** (`@openclaw/logbook`) - ClawHub: `clawhub:@openclaw/logbook` or npm. Automatic work journal: captures periodic screen snapshots from a paired node and turns them into a reviewable timeline of your day.
+
 - **[longcat](/plugins/reference/longcat)** (`@openclaw/longcat-provider`) - npm or ClawHub: `clawhub:@openclaw/longcat-provider`. OpenClaw LongCat provider plugin.
 
 - **[matrix](/plugins/reference/matrix)** (`@openclaw/matrix`) - npm or ClawHub: `clawhub:@openclaw/matrix`. OpenClaw Matrix channel plugin for rooms and direct messages.
@@ -271,6 +267,8 @@ Each entry lists the package, distribution route, and description.
 - **[mattermost](/plugins/reference/mattermost)** (`@openclaw/mattermost`) - npm or ClawHub: `clawhub:@openclaw/mattermost`. OpenClaw Mattermost channel plugin.
 
 - **[memory-lancedb](/plugins/reference/memory-lancedb)** (`@openclaw/memory-lancedb`) - npm or ClawHub: `clawhub:@openclaw/memory-lancedb`. OpenClaw LanceDB-backed long-term memory plugin with auto-recall, auto-capture, and vector search.
+
+- **[memory-wiki](/plugins/reference/memory-wiki)** (`@openclaw/memory-wiki`) - ClawHub: `clawhub:@openclaw/memory-wiki` or npm. Persistent wiki compiler and Obsidian-friendly knowledge vault for OpenClaw.
 
 - **[meta](/plugins/reference/meta)** (`@openclaw/meta-provider`) - npm or ClawHub: `clawhub:@openclaw/meta-provider`. Adds Meta model provider support to OpenClaw.
 
@@ -287,6 +285,8 @@ Each entry lists the package, distribution route, and description.
 - **[nostr](/plugins/reference/nostr)** (`@openclaw/nostr`) - npm or ClawHub: `clawhub:@openclaw/nostr`. OpenClaw Nostr channel plugin for NIP-04 encrypted direct messages.
 
 - **[novita](/plugins/reference/novita)** (`@openclaw/novita-provider`) - npm or ClawHub: `clawhub:@openclaw/novita-provider`. Adds Novita, Novita AI, Novitaai model provider support to OpenClaw.
+
+- **[onepassword](/plugins/reference/onepassword)** (`@openclaw/onepassword`) - ClawHub: `clawhub:@openclaw/onepassword` or npm. 1Password SecretRef resolver and curated agent broker with approval policy and SQLite audit history.
 
 - **[opencode](/plugins/reference/opencode)** (`@openclaw/opencode-provider`) - npm or ClawHub: `clawhub:@openclaw/opencode-provider`. Adds OpenCode model provider support to OpenClaw.
 

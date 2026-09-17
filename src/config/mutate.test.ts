@@ -24,6 +24,7 @@ import {
   transformConfigFileWithRetry,
   withConfigMutationExclusive,
 } from "./mutate.js";
+import { createSnapshot } from "./mutate.test-support.js";
 import { resolveConfigPath } from "./paths.js";
 import {
   registerRuntimeConfigWriteListener,
@@ -91,34 +92,6 @@ vi.mock("../infra/file-lock.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../infra/file-lock.js")>()),
   withFileLock: fileLockMocks.withFileLock,
 }));
-
-function createSnapshot(params: {
-  hash: string;
-  path?: string;
-  parsed?: unknown;
-  sourceConfig: OpenClawConfig;
-  runtimeConfig?: OpenClawConfig;
-}): ConfigFileSnapshot {
-  const runtimeConfig = (params.runtimeConfig ??
-    params.sourceConfig) as ConfigFileSnapshot["config"];
-  const sourceConfig = params.sourceConfig as ConfigFileSnapshot["sourceConfig"];
-  const parsed = params.parsed ?? params.sourceConfig;
-  return {
-    path: params.path ?? "/tmp/openclaw.json",
-    exists: true,
-    raw: `${JSON.stringify(parsed, null, 2)}\n`,
-    parsed,
-    sourceConfig,
-    resolved: sourceConfig,
-    valid: true,
-    runtimeConfig,
-    config: runtimeConfig,
-    hash: params.hash,
-    issues: [],
-    warnings: [],
-    legacyIssues: [],
-  };
-}
 
 async function createPluginIncludeFixture(home: string) {
   const configPath = path.join(home, ".openclaw", "openclaw.json");

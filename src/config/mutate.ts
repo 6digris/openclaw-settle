@@ -77,6 +77,7 @@ import {
   assertManagedRuntimeEnvGeneration,
   assertBaseHashMatches,
   assertExpectedConfigPathMatches,
+  assertRootConfigStillMatchesSnapshot,
 } from "./mutate-guards.js";
 import { ConfigMutationConflictError } from "./mutation-conflict.js";
 import type { ConfigMutationBase } from "./mutation-types.js";
@@ -568,22 +569,6 @@ async function readRootBoundFileRawIfExists(target: RootBoundIncludeFile): Promi
       return null;
     }
     throw error;
-  }
-}
-
-async function assertRootConfigStillMatchesSnapshot(snapshot: ConfigFileSnapshot): Promise<void> {
-  let currentRaw: string | null = null;
-  try {
-    currentRaw = await fs.readFile(snapshot.path, "utf-8");
-  } catch (error) {
-    if (!isMissingPathError(error)) {
-      throw error;
-    }
-  }
-  const currentHash = hashConfigIncludeRaw(currentRaw);
-  const expectedHash = hashConfigIncludeRaw(snapshot.exists ? (snapshot.raw ?? null) : null);
-  if (currentHash !== expectedHash) {
-    throw new ConfigMutationConflictError("config changed while preparing include write");
   }
 }
 

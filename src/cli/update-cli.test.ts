@@ -63,7 +63,7 @@ import type { TempHomeEnv } from "../test-utils/temp-home.js";
 import { VERSION } from "../version.js";
 import { quoteCliArg } from "./quote-cli-arg.js";
 import { createCliRuntimeCapture, getMockCallOutput } from "./test-runtime-capture.js";
-import type { UpdateCliFinalizationSuiteContext } from "./update-cli.finalization-context.js";
+import type { UpdateCliFinalizationSuiteContext } from "./update-cli.finalization.test-support.js";
 // Update CLI tests cover update command behavior, runtime calls, and output handling.
 
 // Jiti captures host path semantics at import, before service-platform spies run.
