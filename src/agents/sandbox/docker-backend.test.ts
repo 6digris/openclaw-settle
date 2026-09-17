@@ -161,7 +161,7 @@ describe("docker sandbox backend manager", () => {
     expect(bridge.resolvePath({ filePath: "cache/export/marker" }).hostPath).toBe(
       path.resolve("/host/export/marker"),
     );
-    expect(dockerMocks.execContainer).toHaveBeenCalledTimes(2);
+    expect(dockerMocks.execContainer).toHaveBeenCalledTimes(3);
     expect(dockerMocks.ensureSandboxContainer.mock.invocationCallOrder[0]).toBeLessThan(
       dockerMocks.execContainer.mock.invocationCallOrder[0]!,
     );
@@ -324,7 +324,7 @@ describe("docker sandbox backend manager", () => {
     for (const filePath of readable) {
       expect(bridge.resolvePath({ filePath }).containerPath).toBe(filePath);
     }
-    expect(dockerMocks.execContainer).toHaveBeenCalledTimes(2);
+    expect(dockerMocks.execContainer).toHaveBeenCalledTimes(3);
   });
 
   it("does not return a backend when its filesystem snapshot cannot be read", async () => {
