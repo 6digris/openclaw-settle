@@ -1,4 +1,5 @@
 // Telemetry runtime boundary tests cover real QA-channel evidence and honest task followthrough.
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -67,6 +68,9 @@ describe("telemetry runtime boundaries", () => {
     const evidence = validateQaEvidenceSummaryJson(
       JSON.parse(await fs.readFile(runtime.result.evidencePath, "utf8")),
     );
+    if (evidence.schemaVersion !== 3) {
+      throw new Error("Expected occurrence-bound QA evidence");
+    }
     expect(evidence.entries.map((entry) => entry.test.id)).toEqual([...SCENARIO_IDS]);
     expect(
       evidence.entries
@@ -76,7 +80,8 @@ describe("telemetry runtime boundaries", () => {
         .toSorted(),
     ).toEqual([...PRIMARY_COVERAGE_IDS].toSorted());
 
-    for (const entry of evidence.entries) {
+    const observationContents: string[] = [];
+    for (const [index, entry] of evidence.entries.entries()) {
       expect(entry.result.status).toBe("pass");
       expect(entry.execution).toMatchObject({
         runner: "host",
@@ -100,18 +105,46 @@ describe("telemetry runtime boundaries", () => {
         os: expect.any(String),
         nodeVersion: expect.stringMatching(/^v\d+/u),
       });
+      const occurrenceId = entry.binding.occurrenceId;
+      const observationArtifact = {
+        kind: "scenario-observation",
+        path: `artifacts/occurrences/${occurrenceId}.json`,
+        source: "qa-suite",
+      };
       expect(entry.execution?.artifacts).toEqual([
+        observationArtifact,
         { kind: "summary", path: "qa-suite-summary.json", source: "qa-suite" },
         { kind: "report", path: "qa-suite-report.md", source: "qa-suite" },
       ]);
+      const occurrence = evidence.occurrences.find((item) => item.id === occurrenceId);
+      const receipt = occurrence?.receipts.find((item) => item.id === entry.binding.receiptId);
+      expect(receipt?.phase).toBe("runtime");
+      const observationContent = await fs.readFile(
+        path.join(outputDir, observationArtifact.path),
+        "utf8",
+      );
+      expect(receipt?.artifact).toEqual({
+        ...observationArtifact,
+        sha256: createHash("sha256").update(observationContent).digest("hex"),
+      });
+      expect(runtime.result.scenarios[index]?.evidenceOccurrenceId).toBe(occurrenceId);
+      expect(JSON.parse(observationContent)).toEqual({
+        result: runtime.result.scenarios[index],
+        launch: occurrence?.launch,
+        runtime: receipt?.identity,
+      });
+      observationContents.push(observationContent);
     }
+    expect((await fs.readdir(path.join(outputDir, "artifacts", "occurrences"))).toSorted()).toEqual(
+      evidence.entries.map((entry) => `${entry.binding.occurrenceId}.json`).toSorted(),
+    );
 
     const artifactText = await Promise.all(
       [runtime.result.summaryPath, runtime.result.evidencePath, runtime.result.reportPath].map(
         async (artifactPath) => await fs.readFile(artifactPath, "utf8"),
       ),
     );
-    const serializedArtifacts = artifactText.join("\n");
+    const serializedArtifacts = [...artifactText, ...observationContents].join("\n");
     expect(serializedArtifacts).not.toContain(repoRoot);
     expect(serializedArtifacts).not.toContain("PERSONAL_TASK_LEDGER.md");
     expect(serializedArtifacts).not.toContain("FOLLOWTHROUGH_NOTE.md");
