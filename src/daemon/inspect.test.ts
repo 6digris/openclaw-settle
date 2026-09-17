@@ -609,6 +609,61 @@ ${xmlLabel === undefined ? "" : `<key>Label</key><string>${xmlLabel}</string>`}
   );
 });
 
+describe.skipIf(!nativePlistHost)("malformed native LaunchAgent discovery", () => {
+  it.each([
+    { kind: "unrelated", name: "com.vendor.helper", marked: false, selected: false, utf16: false },
+    { kind: "Gateway name", name: "ai.openclaw.ops", marked: false, selected: false, utf16: false },
+    {
+      kind: "selected custom",
+      name: "com.vendor.helper",
+      marked: false,
+      selected: true,
+      utf16: false,
+    },
+    {
+      kind: "marked custom",
+      name: "com.vendor.helper",
+      marked: true,
+      selected: false,
+      utf16: false,
+    },
+    {
+      kind: "UTF-16 marked custom",
+      name: "com.vendor.helper",
+      marked: true,
+      selected: false,
+      utf16: true,
+    },
+  ])(
+    "scopes malformed plist failures by Gateway relevance: $kind",
+    async ({ kind, name, marked, selected, utf16 }) => {
+      const tmpHome = tempDirs.make("openclaw-malformed-plist-", os.tmpdir());
+      const serviceDir = path.join(tmpHome, "Library", "LaunchAgents");
+      const brokenPath = path.join(serviceDir, `${name}.plist`);
+      const label = "ai.openclaw.gateway";
+      await fs.mkdir(serviceDir, { recursive: true });
+      await fs.writeFile(
+        path.join(serviceDir, `${label}.plist`),
+        `<plist><dict><key>Label</key><string>${label}</string><key>ProgramArguments</key><array><string>/usr/local/bin/openclaw</string><string>gateway</string></array></dict></plist>`,
+      );
+      const malformed = `<plist><dict><key>Label</key><string>${name}</string>${marked ? "<key>Program</key><string>/opt/OpenClaw/bin/gateway</string>" : ""}`;
+      await fs.writeFile(
+        brokenPath,
+        utf16 ? Buffer.from(`\uFEFF${malformed}`, "utf16le") : malformed,
+      );
+
+      const inventory = await findGatewayServices({
+        HOME: tmpHome,
+        ...(selected ? { OPENCLAW_LAUNCHD_LABEL: name } : {}),
+      });
+      expect(inventory.services.map((service) => service.label)).toEqual([label]);
+      expect(inventory.errors).toEqual(
+        kind === "unrelated" ? [] : [{ source: brokenPath, message: expect.any(String) }],
+      );
+    },
+  );
+});
+
 describe.each([
   { platform: "linux", directory: [".config", "systemd", "user"], extension: ".service" },
   { platform: "darwin", directory: ["Library", "LaunchAgents"], extension: ".plist" },

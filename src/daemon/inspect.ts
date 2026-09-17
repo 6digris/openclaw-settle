@@ -252,7 +252,15 @@ async function scanLaunchdDir(params: {
 
   for (const { name: labelFromName, fullPath, contents } of candidates) {
     const plist = await decodeLaunchdPlistMetadata(contents).catch(() => {
-      params.errors?.push({ source: fullPath, message: "Service plist could not be inspected." });
+      const contentHint = normalizeLowercaseStringOrEmpty(
+        contents.toString("utf8").replaceAll("\0", ""),
+      );
+      if (
+        isPotentialName(labelFromName) ||
+        EXTRA_MARKERS.some((marker) => contentHint.includes(marker))
+      ) {
+        params.errors?.push({ source: fullPath, message: "Service plist could not be inspected." });
+      }
       return undefined;
     });
     if (!plist) {

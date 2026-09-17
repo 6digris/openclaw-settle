@@ -102,10 +102,11 @@ CMD or generated VBS launcher, including custom task names and folders. An unkno
 registration or an unreadable identifiable Gateway launcher requires inspection;
 only a proven missing task can use the existing Startup-folder fallback.
 
-Unreadable unrelated service files do not block updates. Unreadable recognizable
-Gateway definitions, the selected custom service definition, or an entire service
-directory still require inspection before the updater can proceed. Readable custom
-service names are discovered from their Gateway command or service markers.
+Unrelated service files that cannot be read or decoded do not block updates.
+Recognizable Gateway definitions, the selected custom service definition, malformed
+plists containing OpenClaw or Clawdbot markers, or an unreadable service directory
+still require inspection before the updater can proceed. Readable custom service
+names are discovered from their Gateway command or service markers.
 
 An older installed updater runs its own coordination logic for the first upgrade.
 Installing a newer target does not add sibling-service handling to that running
