@@ -1,9 +1,14 @@
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import type { DispatchReplyFromConfig } from "../../auto-reply/reply/dispatch-from-config.types.js";
-import type { ChannelTurnPlan, RunChannelTurnParams } from "../../channels/turn/types.js";
+import type {
+  ChannelTurnDeliveryAdapter,
+  ChannelTurnPlan,
+  RunChannelTurnParams,
+} from "../../channels/turn/types.js";
 import { createRuntimeChannel } from "./runtime-channel.js";
+import type { PluginRuntime } from "./types.js";
 
 const unownedDispatch = vi.hoisted(() =>
   vi.fn<DispatchReplyFromConfig>(async ({ dispatcher }) => {
@@ -62,6 +67,17 @@ function createRawParams(plan: ChannelTurnPlan): RunChannelTurnParams<{ text: st
 
 describe("runtime raw inbound ownership", () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it("preserves the default plan contract derived from the injected runner", () => {
+    type RunParams = Parameters<PluginRuntime["channel"]["inbound"]["run"]>[0];
+    type ResolvedTurn = Awaited<ReturnType<RunParams["adapter"]["resolveTurn"]>>;
+    type RoutedPlan = Extract<ResolvedTurn, { route: unknown; delivery: unknown }>;
+
+    expectTypeOf<RoutedPlan>().toEqualTypeOf<ChannelTurnPlan>();
+    expectTypeOf<RoutedPlan["delivery"]["deliver"]>().toEqualTypeOf<
+      ChannelTurnPlan["delivery"]["deliver"]
+    >();
+  });
 
   it("delivers through the owning dispatcher without a plan override", async () => {
     const dispatch = createBoundDispatch();
@@ -159,6 +175,30 @@ describe("runtime raw inbound ownership", () => {
     expect(deliver).toHaveBeenCalledOnce();
   });
 
+  it.each(["core", "provider"] as const)(
+    "accepts a composed delivery union with %s-owned sending",
+    async (owner) => {
+      const dispatch = createBoundDispatch();
+      const channel = createRuntimeChannel({ dispatchReplyFromConfig: dispatch });
+      const { plan, deliver } = createPlan();
+      const delivery: ChannelTurnDeliveryAdapter =
+        owner === "core" ? { deliver } : { deliverWithProviderMessageSending: deliver };
+      const params: RunChannelTurnParams<string, unknown, ChannelTurnDeliveryAdapter> = {
+        channel: "test",
+        raw: "hello",
+        adapter: {
+          ingest: (raw) => ({ id: "message", rawText: raw }),
+          resolveTurn: () => ({ ...plan, delivery }),
+        },
+      };
+
+      await channel.inbound.run(params);
+
+      expect(dispatch).toHaveBeenCalledOnce();
+      expect(deliver).toHaveBeenCalledOnce();
+    },
+  );
+
   it("leaves prepared closures and their dispatch-result generic with the caller", async () => {
     const dispatch = createBoundDispatch();
     const channel = createRuntimeChannel({ dispatchReplyFromConfig: dispatch });
@@ -168,7 +208,10 @@ describe("runtime raw inbound ownership", () => {
       channel: "test",
       raw: 42,
       adapter: {
-        ingest: (raw) => ({ id: "message", rawText: String(raw) }),
+        ingest: (raw) => {
+          expectTypeOf(raw).toEqualTypeOf<number>();
+          return { id: "message", rawText: String(raw) };
+        },
         resolveTurn: () => ({
           ...plan,
           runDispatch,
@@ -177,6 +220,12 @@ describe("runtime raw inbound ownership", () => {
       },
     });
 
+    if (result.dispatched) {
+      expectTypeOf(result.dispatchResult).toEqualTypeOf<{
+        answer: number;
+        visibleReplySent: boolean;
+      }>();
+    }
     expect(result.dispatched && result.dispatchResult.answer).toBe(42);
     expect(runDispatch).toHaveBeenCalledOnce();
     expect(dispatch).not.toHaveBeenCalled();
