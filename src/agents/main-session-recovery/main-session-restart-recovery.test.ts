@@ -2093,7 +2093,7 @@ describe("main-session-restart-recovery", () => {
       restartRecoveryDeliveryRunId: "control-ui-run",
       restartRecoveryDeliverySourceRunId: "control-ui-run",
       restartRecoverySourceIngress: "internal",
-      restartRecoveryDeliveryRunId: "recovery-main",
+      restartRecoverySourceReplyDeliveryMode: "message_tool_only",
       deliveryContext: {
         channel: "discord",
         to: "discord:dm:stale",
@@ -4862,7 +4862,7 @@ describe("main-session-restart-recovery", () => {
     const { sessionsDir, storePath } = await makeMainSessionFixture({
       channel: "discord",
       lastTo: "discord:dm:fallback",
-      restartRecoverySourceReplyDeliveryMode: "message_tool_only",
+      restartRecoveryDeliveryRunId: "recovery-main",
     });
     await writeTranscript(sessionsDir, "main-session", [
       makeUserMessage("do not inherit a fallback route", {
