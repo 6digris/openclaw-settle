@@ -82,3 +82,11 @@ The returned client exposes three methods:
 - `stop()` closes admission, retires pending requests, and awaits startup settlement and owned-process cleanup. It rejects through `errors.unavailable` with `proxy cleanup could not be confirmed` if cleanup is uncertain. It never stops a separately started service reached through the proxy's socket.
 
 Malformed frames, incompatible initialization, write failures, and unexpected process exit also retire the whole connection. The first fatal error is retained. Create a new client to reconnect. Timeout classification follows the SDK error code, so a timeout-coded server error also retires the connection.
+
+## Workspace access
+
+Use `openclaw/plugin-sdk/agent-workspace-runtime` to declare, register, and acquire
+`AgentWorkspaceAccess` without loading the agent execution runtime. Declare a
+configured remote workspace during registration so callers cannot fall back to
+local files before its service starts. Register its bridge when ready and release
+it when the service stops. Callers keep their existing document authorization.

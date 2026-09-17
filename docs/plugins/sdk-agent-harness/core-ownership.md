@@ -35,7 +35,7 @@ ownership contract below.
 A trusted host plugin can bind the existing `agents.files.list/get/set` methods
 and the `agents.update` identity form
 to a provisioned remote workspace using `AgentWorkspaceAccess`, exported from
-`openclaw/plugin-sdk/agent-harness-runtime`. It supplies the `stat`, `readFile`,
+`openclaw/plugin-sdk/agent-workspace-runtime`. It supplies the `stat`, `readFile`,
 and `writeFile` methods of an existing `SandboxFsBridge`; no new file daemon is
 required.
 
