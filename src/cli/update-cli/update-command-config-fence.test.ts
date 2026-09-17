@@ -5,7 +5,6 @@ import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { createConfigIO } from "../../config/io.js";
 import { replaceConfigFile } from "../../config/mutate.js";
-import { GUARDED_CONFIG_INCLUDE_WRITE_ERROR } from "../../config/mutation-conflict.js";
 import { withConfigWriteLock } from "../../config/write-lock.js";
 import { openNodeSqliteDatabase } from "../../infra/node-sqlite.js";
 import * as temporaryState from "../../infra/tmp-openclaw-dir.js";
@@ -145,25 +144,29 @@ it.each([
         () => fence.assertCurrent(),
       );
     });
-    if (included) {
-      // These revocations were scheduled at commit/fsync. Guarded includes now
-      // refuse before either boundary; they must not reach those callbacks.
-      await expect(owned).rejects.toThrow(new Error(GUARDED_CONFIG_INCLUDE_WRITE_ERROR));
-      expect(reachedCommit).toBe(false);
-      expect(await captureFiles()).toEqual(beforeFiles);
-      expect([await fs.readdir(stateDir), await fs.readdir(path.dirname(includePath))]).toEqual(
-        beforeEntries,
-      );
+    if (revoked) {
+      await expect(owned).rejects.toThrow(/executor|ownership/i);
+      expect(await fs.readFile(configPath, "utf8")).toBe(original);
+      if (included) {
+        expect(await captureFiles()).toEqual(beforeFiles);
+        expect([await fs.readdir(stateDir), await fs.readdir(path.dirname(includePath))]).toEqual(
+          beforeEntries,
+        );
+      }
     } else {
-      if (revoked) {
-        await expect(owned).rejects.toThrow(/executor|ownership/i);
+      await owned;
+      if (included) {
         expect(await fs.readFile(configPath, "utf8")).toBe(original);
+        expect(JSON.parse(await fs.readFile(includePath, "utf8"))).toEqual({
+          mode: "local",
+          port: 18791,
+        });
+        expect(await fs.readFile(`${includePath}.bak`, "utf8")).toBe(includedRaw);
       } else {
-        await owned;
         expect(JSON.parse(await fs.readFile(configPath, "utf8")).gateway.port).toBe(18791);
       }
-      expect(reachedCommit).toBe(true);
     }
+    expect(reachedCommit).toBe(true);
     if (included && process.platform !== "win32") {
       expect((await fs.stat(path.dirname(includePath))).mode & 0o7777).toBe(0o3700);
     }

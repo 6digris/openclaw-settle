@@ -142,6 +142,7 @@ let runUtf8CommandWithTimeout: typeof import("./exec.js").runUtf8CommandWithTime
 let runExec: typeof import("./exec.js").runExec;
 let spawnCommand: typeof import("./exec.js").spawnCommand;
 let withCommandProcessScope: typeof import("./exec-spawn.js").withCommandProcessScope;
+let windowsJob: typeof import("./supervisor/service-child-windows-job-native.js");
 let getWindowsInstallRoots: typeof import("../infra/windows-install-roots.js").getWindowsInstallRoots;
 let getWindowsSystem32ExePath: typeof import("../infra/windows-install-roots.js").getWindowsSystem32ExePath;
 
@@ -183,6 +184,7 @@ describe("Windows command execution", () => {
     } = await import("./exec.js"));
     ({ runCommandBuffersWithTimeout } = await import("./exec-runner.js"));
     ({ withCommandProcessScope } = await import("./exec-spawn.js"));
+    windowsJob = await import("./supervisor/service-child-windows-job-native.js");
   });
 
   afterAll(() => {
@@ -522,8 +524,18 @@ describe("Windows command execution", () => {
       const command = createMockSubprocess({ autoFinish: false });
       const gracefulTaskkill = createMockSubprocess({ autoFinish: gracefulOutcome === "exits" });
       const forcedTaskkill = createMockSubprocess({ autoFinish: false });
+      let markStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      vi.spyOn(windowsJob, "areRetainedWindowsProcessJobChildrenSettled").mockImplementation(
+        () => command.exitCode !== null || command.signalCode !== null,
+      );
       execaMock
-        .mockImplementationOnce(() => command)
+        .mockImplementationOnce(() => {
+          markStarted();
+          return command;
+        })
         .mockImplementationOnce(() => gracefulTaskkill)
         .mockImplementationOnce(() => forcedTaskkill);
 
@@ -536,6 +548,7 @@ describe("Windows command execution", () => {
           });
         const resultPromise =
           interruption === "scope" ? withCommandProcessScope(run, controller.signal) : run();
+        await started;
         const cancelSignal = requireExecaCall(0)[2].cancelSignal as AbortSignal;
 
         if (interruption === "scope") {
@@ -614,6 +627,7 @@ describe("Windows command execution", () => {
           killProcessTree,
           timeoutMs: 80,
         });
+        await vi.advanceTimersByTimeAsync(0);
         const cancelSignal = requireExecaCall(0)[2].cancelSignal as AbortSignal;
 
         await vi.advanceTimersByTimeAsync(380);

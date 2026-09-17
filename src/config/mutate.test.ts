@@ -1056,7 +1056,7 @@ describe("config mutate helpers", () => {
     });
   });
 
-  it("refuses guarded include publication before changing config or backups", async () => {
+  it("honors include beforeCommit refusal before changing config or backups", async () => {
     const home = await suiteRootTracker.make("guarded-include");
     const { configPath, pluginsPath } = await createPluginIncludeFixture(home);
     const plugins = { entries: { demo: { enabled: false } } };
@@ -1069,7 +1069,9 @@ describe("config mutate helpers", () => {
       parsed: { plugins: { $include: "./config/plugins.json5" } },
       sourceConfig: { plugins },
     });
-    const beforeCommit = vi.fn();
+    const beforeCommit = vi.fn(() => {
+      throw new Error("include commit revoked");
+    });
 
     await expect(
       replaceConfigFile({
@@ -1083,9 +1085,9 @@ describe("config mutate helpers", () => {
         },
         nextConfig: { plugins: { entries: { demo: { enabled: true } } } },
       }),
-    ).rejects.toThrow("cannot update include-owned configuration. Use a trusted shell");
+    ).rejects.toThrow("include commit revoked");
 
-    expect(beforeCommit).not.toHaveBeenCalled();
+    expect(beforeCommit).toHaveBeenCalledOnce();
     expect(backupMocks.prepareConfigFileWrite).not.toHaveBeenCalled();
     expect(ioMocks.writeConfigFile).not.toHaveBeenCalled();
     expect(await fs.readFile(configPath, "utf-8")).toBe(rootRaw);
@@ -1093,7 +1095,7 @@ describe("config mutate helpers", () => {
   });
 
   it.each([false, true])(
-    "refuses custom-IO include authority before effects (revoked: %s)",
+    "uses custom-IO include authority through publication (revoked: %s)",
     async (revoke) => {
       const home = await suiteRootTracker.make("custom-include-authority");
       const { configPath, pluginsPath } = await createPluginIncludeFixture(home);
@@ -1118,29 +1120,42 @@ describe("config mutate helpers", () => {
             throw refusal;
           }
         });
-        await expect(
-          mutateConfigFile({
-            io: { ...io, writeConfigFile: fallbackWrite },
-            writeOptions: {
-              assertCurrent,
-              observe: false,
-              skipPluginValidation: true,
-              skipRuntimeSnapshotRefresh: true,
-            },
-            mutate: async (draft) => {
-              await Promise.resolve();
-              current = !revoke;
-              draft.plugins = { entries: { demo: { enabled: true } } };
-            },
-          }),
-        ).rejects.toThrow("cannot update include-owned configuration. Use a trusted shell");
-        expect(assertCurrent).toHaveBeenCalledOnce();
+        const mutation = mutateConfigFile({
+          io: { ...io, writeConfigFile: fallbackWrite },
+          writeOptions: {
+            assertCurrent,
+            observe: false,
+            skipPluginValidation: true,
+            skipRuntimeSnapshotRefresh: true,
+          },
+          mutate: async (draft) => {
+            await Promise.resolve();
+            current = !revoke;
+            draft.plugins = { entries: { demo: { enabled: true } } };
+          },
+        });
+        if (revoke) {
+          await expect(mutation).rejects.toBe(refusal);
+        } else {
+          await mutation;
+        }
+        expect(assertCurrent).toHaveBeenCalled();
         expect(fallbackWrite).not.toHaveBeenCalled();
-        expect(backupMocks.prepareConfigFileWrite).not.toHaveBeenCalled();
+        if (revoke) {
+          expect(backupMocks.prepareConfigFileWrite).not.toHaveBeenCalled();
+        }
         expect(await fs.readFile(configPath, "utf8")).toBe(rootRaw);
-        expect(await fs.readFile(pluginsPath, "utf8")).toBe(includedRaw);
-        expect(await fs.readFile(`${pluginsPath}.bak`, "utf8")).toBe(backupRaw);
-        await expect(fs.stat(`${pluginsPath}.bak.1`)).rejects.toMatchObject({ code: "ENOENT" });
+        if (revoke) {
+          expect(await fs.readFile(pluginsPath, "utf8")).toBe(includedRaw);
+          expect(await fs.readFile(`${pluginsPath}.bak`, "utf8")).toBe(backupRaw);
+          await expect(fs.stat(`${pluginsPath}.bak.1`)).rejects.toMatchObject({ code: "ENOENT" });
+        } else {
+          expect(JSON.parse(await fs.readFile(pluginsPath, "utf8"))).toEqual({
+            entries: { demo: { enabled: true } },
+          });
+          expect(await fs.readFile(`${pluginsPath}.bak`, "utf8")).toBe(includedRaw);
+          expect(await fs.readFile(`${pluginsPath}.bak.1`, "utf8")).toBe(backupRaw);
+        }
         await expect(fs.stat(path.dirname(selectedPath))).rejects.toMatchObject({ code: "ENOENT" });
       });
     },

@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { UpdateCommandExecutor } from "../cli/update-cli/update-command-executor.js";
+import type { UpdateCommandExecutor } from "../cli/update-cli/update-command-executor-contract.js";
 import type { UpdateRecoveryFence } from "./update-run-recovery.js";
 // In-process authority for the explicit, external-shell update bridge.
 // This is not a managed handoff grant and must never cross a process boundary.

@@ -153,7 +153,7 @@ export function assertUpdateDoctorConfigInputHash(configPath: string, inputHash:
   }
 }
 
-/** Include publication retains its legacy writer until fs-safe supports final-effect authority. */
+/** Keep Doctor authority attached through the canonical guarded include writer. */
 export async function runUpdateDoctorIncludeWrite<T>(
   configPath: string,
   inputHash: string,
@@ -165,7 +165,7 @@ export async function runUpdateDoctorIncludeWrite<T>(
   }
   context.authority.assertCurrent();
   assertUpdateDoctorConfigInputHash(configPath, inputHash);
-  const result = await doctorConfigWrites.run({ capture: context.capture }, run);
+  const result = await run();
   context.authority.assertCurrent();
   return result;
 }

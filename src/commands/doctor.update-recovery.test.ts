@@ -25,6 +25,8 @@ const mocks = vi.hoisted(() => ({
   outcome: vi.fn(),
   pending: vi.fn(),
   flow: vi.fn(),
+  forward: vi.fn(),
+  completeForward: vi.fn(),
   closeStores: vi.fn(),
   release: vi.fn(),
   driver: vi.fn(),
@@ -55,6 +57,10 @@ vi.mock("../infra/update-recovery-backup.js", async (importOriginal) => ({
   writeUpdateRecoveryBackupOutcome: mocks.outcome,
   findPendingUpdateRecoveryBackup: mocks.pending,
   readUpdateRecoveryBackupRef: JSON.parse,
+}));
+vi.mock("../infra/update-recovery-forward.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../infra/update-recovery-forward.js")>()),
+  prepareUpdateRecoveryForwardResolution: mocks.forward,
 }));
 vi.mock("../infra/openclaw-root.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../infra/openclaw-root.js")>()),
@@ -130,6 +136,7 @@ describe("update Doctor state recovery", () => {
       drivers: [],
     });
     mocks.pending.mockResolvedValue(null);
+    mocks.forward.mockResolvedValue(mocks.completeForward);
     mocks.activeRuns.mockImplementation(async () =>
       process.env.OPENCLAW_UPDATE_IN_PROGRESS === "1" ? [run] : [],
     );
@@ -677,38 +684,36 @@ describe("update Doctor state recovery", () => {
     expect(await fs.readFile(configPath, "utf8")).toBe("partially migrated config");
   });
 
-  it("restores an interrupted update before newer Doctor repair", async () => {
+  it("repairs current state without restoring an interrupted update baseline", async () => {
     vi.stubEnv("OPENCLAW_UPDATE_IN_PROGRESS", undefined);
     await fs.writeFile(backupPath, "original config");
     await fs.writeFile(configPath, "partially migrated config");
     mocks.pending.mockResolvedValue(ref);
     mocks.flow.mockImplementation(async () => {
-      expect(await fs.readFile(configPath, "utf8")).toBe("original config");
+      expect(await fs.readFile(configPath, "utf8")).toBe("partially migrated config");
       await fs.writeFile(configPath, "repaired config");
     });
     await doctorCommand(runtime, { repair: true });
     expect(await fs.readFile(configPath, "utf8")).toBe("repaired config");
+    expect(await fs.readFile(backupPath, "utf8")).toBe("original config");
     expect(mocks.create).not.toHaveBeenCalled();
-    expect(mocks.outcome).toHaveBeenCalledWith(
-      ref,
-      { status: "restored" },
-      {
-        assertOwned: expect.any(Function),
-      },
+    expect(mocks.restore).not.toHaveBeenCalled();
+    expect(mocks.outcome).not.toHaveBeenCalled();
+    expect(mocks.completeForward).toHaveBeenCalledOnce();
+    expect(mocks.closeStores.mock.invocationCallOrder.at(-1)).toBeLessThan(
+      mocks.completeForward.mock.invocationCallOrder[0]!,
     );
   });
 
   it.each(["repair", "bootstrap"])(
-    "restores the claimed capture again after subsequent %s fails",
+    "retains current state and the claimed capture after subsequent %s fails",
     async (phase) => {
       vi.stubEnv("OPENCLAW_UPDATE_IN_PROGRESS", undefined);
       await fs.writeFile(backupPath, "original config");
       await fs.writeFile(configPath, "partially migrated config");
       mocks.pending.mockResolvedValue(ref);
-      let terminalBeforeRepair = false;
       const mutateAndFail = async () => {
-        expect(await fs.readFile(configPath, "utf8")).toBe("original config");
-        terminalBeforeRepair = mocks.outcome.mock.calls.length > 0;
+        expect(await fs.readFile(configPath, "utf8")).toBe("partially migrated config");
         await fs.writeFile(configPath, "second partial migration");
         throw new Error("continued repair failed");
       };
@@ -720,22 +725,14 @@ describe("update Doctor state recovery", () => {
               await prepareDoctorUpdateRecovery({ repair: true });
               await mutateAndFail();
             });
-
       await expect(operation).rejects.toThrow("continued repair failed");
-      expect(await fs.readFile(configPath, "utf8")).toBe("original config");
-      expect(terminalBeforeRepair).toBe(false);
+      expect(await fs.readFile(configPath, "utf8")).toBe("second partial migration");
+      expect(await fs.readFile(backupPath, "utf8")).toBe("original config");
       expect(mocks.create).not.toHaveBeenCalled();
-      expect(mocks.restore).toHaveBeenCalledTimes(2);
-      expect(mocks.closeStores).toHaveBeenCalledTimes(2);
-      const closeOrder = mocks.closeStores.mock.invocationCallOrder[1];
-      const restoreOrder = mocks.restore.mock.invocationCallOrder[1];
-      assert(closeOrder !== undefined && restoreOrder !== undefined, "Recovery must settle stores");
-      expect(closeOrder).toBeLessThan(restoreOrder);
-      expect(mocks.outcome).toHaveBeenCalledExactlyOnceWith(
-        ref,
-        { status: "restored" },
-        { assertOwned: expect.any(Function) },
-      );
+      expect(mocks.restore).not.toHaveBeenCalled();
+      expect(mocks.outcome).not.toHaveBeenCalled();
+      expect(mocks.completeForward).not.toHaveBeenCalled();
+      expect(mocks.release).toHaveBeenCalledOnce();
     },
   );
 

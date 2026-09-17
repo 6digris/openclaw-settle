@@ -77,7 +77,11 @@ it.each(cases.flatMap((entry) => [true, false].map((json) => Object.assign({}, e
     if (current) {
       fs.writeFileSync(
         path.join(fixture.root, "package.json"),
-        JSON.stringify({ name: "openclaw", version: targetMetadata.version }),
+        JSON.stringify({
+          name: "openclaw",
+          version: targetMetadata.version,
+          engines: { node: ">=26.1.0" },
+        }),
       );
       const inspect = vi
         .mocked(databaseContext.inspectUpdateDatabaseContexts)

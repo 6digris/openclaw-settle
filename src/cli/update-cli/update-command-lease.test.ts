@@ -460,7 +460,7 @@ describe("update orchestration lifecycle ownership", () => {
   );
 
   it.each(["resume", "repair"] as const)(
-    "%s completes missing source artifacts before consumers and leaves an exact online retry untouched",
+    "%s completes missing source artifacts and preserves its publication on retry",
     async (lane) => {
       await writeScenario(lane, { runtimeRoot: state.root });
       const { aliasRoot, runtimeEntry, runtimeMetadata, aliasBefore } =
@@ -487,8 +487,13 @@ describe("update orchestration lifecycle ownership", () => {
       mocks.publication.mockImplementationOnce(async () => {
         throw new Error("A running Gateway cannot publish changed artifacts.");
       });
-      await invoke(lane);
-      expectSuccess(lane, lane === "repair");
+      if (lane === "repair") {
+        // Offline repair cannot certify Gateway health or retire its capture.
+        await expect(invoke(lane)).rejects.toThrow("another protected mutation is refused");
+      } else {
+        await invoke(lane);
+        expectSuccess(lane, false);
+      }
       expect(mocks.publication).toHaveBeenCalledOnce();
       expect(await fs.stat(runtimeEntry)).toMatchObject({
         ino: beforeRetry.ino,
@@ -931,10 +936,10 @@ describe("update orchestration lifecycle ownership", () => {
         env: {},
       });
       if (lane === "repair") {
-        // Protected repair restores the original bytes, including their version guard.
-        expect(persistedRaw).toBe(originalConfig);
-        expect(persisted.meta?.lastTouchedVersion).toBe(futureVersion);
-        expect(startupBlock).not.toBeNull();
+        // Uncertified reverse publication is refused. Preserve newer Doctor output
+        // and the exact prior config in B, without reporting a restored outcome.
+        expect(persisted.meta?.lastTouchedVersion).toBe(valid ? VERSION : futureVersion);
+        expect(startupBlock === null).toBe(valid);
         expect(mocks.restart).not.toHaveBeenCalled();
         const { inspectUpdateRecoveryBackups, verifyUpdateRecoveryBackup } =
           await import("../../infra/update-recovery-backup.js");
@@ -942,14 +947,21 @@ describe("update orchestration lifecycle ownership", () => {
         expect(captures).toHaveLength(1);
         const [capture] = captures;
         if (!capture) {
-          throw new Error("Expected the failed repair's retained recovery capture");
+          throw new Error("Expected failed repair retained capture");
         }
-        expect(capture.terminalOutcome).toBe("restored");
+        expect(capture.terminalOutcome).not.toBe("restored");
         const manifest = await verifyUpdateRecoveryBackup(capture.ref);
-        expect(getUpdateRun(manifest.runId)).toMatchObject({
-          status: "failed",
-          origin: { updateRecoveryCapture: { restored: true } },
-        });
+        const original = manifest.entries.find((entry) => entry.sourcePath === state.configPath);
+        if (original?.kind !== "file") {
+          throw new Error("Expected baseline config payload");
+        }
+        expect(
+          await fs.readFile(path.join(capture.ref.directory, original.archivePath), "utf8"),
+        ).toBe(originalConfig);
+        const failedRun = getUpdateRun(manifest.runId);
+        expect(failedRun?.status).toBe("failed");
+        expect(failedRun?.origin.updateRecoveryCapture?.restored).not.toBe(true);
+        expect(failedRun?.origin.updateRecoveryCapture?.forwardResolution).toBeUndefined();
       } else {
         expect(persisted.meta?.lastTouchedVersion).toBe(valid ? VERSION : futureVersion);
         expect(startupBlock === null).toBe(valid);

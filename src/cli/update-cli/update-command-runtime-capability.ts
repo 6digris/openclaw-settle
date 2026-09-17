@@ -11,7 +11,7 @@ export async function inspectUpdateRuntimeCapability(params: {
     cwd: params.root,
     baseEnv: {},
     env: params.env,
-    timeoutMs: Math.min(30_000, params.timeoutMs ?? 30_000),
+    timeoutMs: params.timeoutMs ?? 30_000,
     killProcessTree: true,
     requireProcessTreeExtinction: true,
     killGraceMs: 500,

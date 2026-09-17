@@ -12,7 +12,7 @@ import { cleanupStaleManagedServiceUpdateHandoffs } from "../infra/update-manage
 import { withEnvAsync } from "../test-utils/env.js";
 import { createCommandResult as commandResult } from "../test-utils/npm-spec-install-test-helpers.js";
 import { VERSION } from "../version.js";
-import type { UpdateCliFinalizationSuiteContext } from "./update-cli.test.js";
+import type { UpdateCliFinalizationSuiteContext } from "./update-cli.test-support.js";
 
 export function registerUpdateCliFinalizationTests(read: () => UpdateCliFinalizationSuiteContext) {
   it("merges current auth refs with captured service selectors for updated install refresh", async () => {

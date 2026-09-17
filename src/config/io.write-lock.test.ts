@@ -346,9 +346,9 @@ describe("direct config writer exclusion", () => {
 });
 
 describe("included config writer exclusion", () => {
-  it.each([false, true])(
-    "refuses inherited include authority before preparation (revoke=%s)",
-    async (revoke) => {
+  it.each(["active", "before", "preflight"] as const)(
+    "revalidates inherited include authority through publication (%s)",
+    async (phase) => {
       const stateDir = tempDirs.make("openclaw-include-source-guard-");
       const configPath = path.join(stateDir, "openclaw.json");
       const includePath = path.join(stateDir, "gateway.json5");
@@ -371,7 +371,7 @@ describe("included config writer exclusion", () => {
             const mutation = withConfigWriteLock(
               configPath,
               () => {
-                if (revoke) {
+                if (phase === "before") {
                   revokeExecutor();
                 }
                 return replaceConfigFile({
@@ -384,6 +384,10 @@ describe("included config writer exclusion", () => {
                     skipRuntimeSnapshotRefresh: true,
                     preCommitRuntimePreflight: async () => {
                       preflightReached = true;
+                      await Promise.resolve();
+                      if (phase === "preflight") {
+                        revokeExecutor();
+                      }
                     },
                   },
                 });
@@ -391,20 +395,29 @@ describe("included config writer exclusion", () => {
               env,
               assertCurrent,
             );
-            if (revoke) {
+            if (phase !== "active") {
               await expect(mutation).rejects.toThrow(
                 /executor ownership is no longer current|source ownership changed/,
               );
             } else {
-              await expect(mutation).rejects.toThrow(
-                "cannot update include-owned configuration. Use a trusted shell",
-              );
+              await mutation;
             }
-            expect(preflightReached).toBe(false);
+            expect(preflightReached).toBe(phase !== "before");
             expect(await fs.readFile(configPath, "utf8")).toBe(rootRaw);
-            expect(await fs.readFile(includePath, "utf8")).toBe(includeRaw);
-            expect(await fs.readFile(`${includePath}.bak`, "utf8")).toBe(backupRaw);
-            await expect(fs.stat(`${includePath}.bak.1`)).rejects.toMatchObject({ code: "ENOENT" });
+            if (phase !== "active") {
+              expect(await fs.readFile(includePath, "utf8")).toBe(includeRaw);
+              expect(await fs.readFile(`${includePath}.bak`, "utf8")).toBe(backupRaw);
+              await expect(fs.stat(`${includePath}.bak.1`)).rejects.toMatchObject({
+                code: "ENOENT",
+              });
+            } else {
+              expect(JSON.parse(await fs.readFile(includePath, "utf8"))).toEqual({
+                mode: "local",
+                port: 19001,
+              });
+              expect(await fs.readFile(`${includePath}.bak`, "utf8")).toBe(includeRaw);
+              expect(await fs.readFile(`${includePath}.bak.1`, "utf8")).toBe(backupRaw);
+            }
           });
         },
       );

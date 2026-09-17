@@ -298,7 +298,10 @@ describe("post-activation repair after rollback refusal or failure", () => {
       expect(mocks.restartCommand).not.toHaveBeenCalled();
       expect(windowsRecovery.complete).toHaveBeenCalledWith(true);
       expect(windowsRecovery.complete).not.toHaveBeenCalledWith(false);
-      expect(complete).toHaveBeenCalledTimes(ready ? 1 : 0);
+      expect(complete).toHaveBeenCalledExactlyOnceWith(
+        { activationVerified: ready },
+        expect.any(Function),
+      );
       if (ready) {
         await expect(fs.stat(transaction.backupRoot)).rejects.toMatchObject({ code: "ENOENT" });
       } else {

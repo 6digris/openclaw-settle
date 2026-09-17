@@ -750,7 +750,7 @@ describe("update recovery backup", () => {
       });
       await fs.writeFile(state.configPath, "");
       await expect(restoreUpdateRecoveryBackup(ref, authority)).rejects.toThrow(
-        /config ownership is unresolved/,
+        /JSON5 parse failed:.*invalid end of input/,
       );
       expect(await fs.readFile(state.configPath, "utf8")).toBe("");
     });

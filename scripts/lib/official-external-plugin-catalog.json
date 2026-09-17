@@ -318,7 +318,7 @@
           {
             "id": "firecrawl-free",
             "label": "Firecrawl Search (Free)",
-            "hint": "Free web search via Firecrawl's hosted starter tier — no API key required",
+            "hint": "Free web search via Firecrawl's hosted starter tier \u2014 no API key required",
             "onboardingScopes": [
               "text-inference"
             ],
@@ -446,6 +446,24 @@
       }
     },
     {
+      "name": "@openclaw/logbook",
+      "description": "OpenClaw automatic work journal plugin",
+      "source": "official",
+      "kind": "plugin",
+      "openclaw": {
+        "plugin": {
+          "id": "logbook",
+          "label": "Logbook"
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@openclaw/logbook",
+          "npmSpec": "@openclaw/logbook",
+          "defaultChoice": "clawhub",
+          "minHostVersion": ">=2026.9.5"
+        }
+      }
+    },
+    {
       "name": "@openclaw/memory-lancedb",
       "description": "OpenClaw LanceDB-backed long-term memory plugin with auto-recall/capture",
       "source": "official",
@@ -491,6 +509,24 @@
       }
     },
     {
+      "name": "@openclaw/memory-wiki",
+      "description": "OpenClaw persistent wiki plugin",
+      "source": "official",
+      "kind": "plugin",
+      "openclaw": {
+        "plugin": {
+          "id": "memory-wiki",
+          "label": "Memory Wiki"
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@openclaw/memory-wiki",
+          "npmSpec": "@openclaw/memory-wiki",
+          "defaultChoice": "clawhub",
+          "minHostVersion": ">=2026.9.4"
+        }
+      }
+    },
+    {
       "name": "@openclaw/mxc-sandbox",
       "description": "OpenClaw MXC sandbox execution plugin for MXC-capable hosts",
       "source": "official",
@@ -505,6 +541,24 @@
           "npmSpec": "@openclaw/mxc-sandbox",
           "defaultChoice": "npm",
           "minHostVersion": ">=2026.6.11"
+        }
+      }
+    },
+    {
+      "name": "@openclaw/onepassword",
+      "description": "1Password SecretRef resolver and audited agent secrets broker for OpenClaw",
+      "source": "official",
+      "kind": "plugin",
+      "openclaw": {
+        "plugin": {
+          "id": "onepassword",
+          "label": "1Password"
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@openclaw/onepassword",
+          "npmSpec": "@openclaw/onepassword",
+          "defaultChoice": "clawhub",
+          "minHostVersion": ">=2026.9.4"
         }
       }
     },
@@ -563,7 +617,7 @@
           {
             "id": "parallel-free",
             "label": "Parallel Search (Free)",
-            "hint": "Free web search via Parallel's hosted Search MCP — no API key required",
+            "hint": "Free web search via Parallel's hosted Search MCP \u2014 no API key required",
             "onboardingScopes": [
               "text-inference"
             ],
@@ -602,7 +656,7 @@
           {
             "id": "perplexity",
             "label": "Perplexity Search",
-            "hint": "Requires Perplexity API key or OpenRouter API key · structured results",
+            "hint": "Requires Perplexity API key or OpenRouter API key \u00b7 structured results",
             "onboardingScopes": [
               "text-inference"
             ],

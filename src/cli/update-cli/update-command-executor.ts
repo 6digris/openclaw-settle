@@ -21,17 +21,11 @@ import {
   type ChildOperation,
   type UpdateCommandChildGrant,
 } from "./update-command-executor-children.js";
+import type { UpdateCommandExecutor } from "./update-command-executor-contract.js";
 import { createUpdateIdentityWarningReporter } from "./update-command-identity-warning.js";
 import { UpdateCommandRecoveryPendingError } from "./update-command-recovery.js";
 
-/** A live invocation, never a serialized claim, PID or recovered history row. */
-export type UpdateCommandExecutor = {
-  /** Acquire only after read-only service admission, before the first mutable phase. */
-  enter(
-    root: string,
-    options?: { preflight?: true; activationTimeoutMs?: number },
-  ): Promise<UpdateRecoveryFence>;
-};
+export type { UpdateCommandExecutor } from "./update-command-executor-contract.js";
 
 type ManagedUpdateLeaseAuthority = ManagedUpdateLeaseDatabaseIdentity &
   Readonly<{ installKey: string; owner: string }>;
