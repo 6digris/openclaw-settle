@@ -245,6 +245,15 @@ const GATEWAY_STARTUP_CORE_RUNNER = DEFAULT_NODE_TEST_RUNNER;
 const GATEWAY_STARTUP_HEALTH_RUNTIME_ENV = {
   OPENCLAW_VITEST_NO_OUTPUT_TIMEOUT_MS: "60000",
 };
+export const gatewayServerHeavyIsolatedTestFiles = [
+  "src/gateway/server.cli-watchdog.test.ts",
+  "src/gateway/server.codex-failure-recovery.test.ts",
+  "src/gateway/server.chat-cli-auth.test.ts",
+] as const;
+const gatewayServerHeavyIsolatedTestFileSet = new Set<string>(gatewayServerHeavyIsolatedTestFiles);
+const gatewayServerResidualIsolatedTestFiles = gatewayServerIsolatedTestFiles.filter(
+  (file) => !gatewayServerHeavyIsolatedTestFileSet.has(file),
+);
 // The first embedded-agent file owns 157 serial tests and can stay quiet for
 // more than five minutes on a cold GitHub-hosted fork runner. Keep the outer
 // watchdog above the scoped 600-second hook budget so it cannot preempt Vitest.
@@ -733,6 +742,12 @@ function isParallelCompactGroup(group: NodeTestShardGroup): boolean {
   return !isExclusiveCompactGroup(group) && !group.requiresDist && !group.pretestBuildMode;
 }
 
+const DEDICATED_BLACKSMITH_COMPACT_GROUPS = new Set([
+  "agentic-gateway-server-isolated-chat-cli-auth",
+  "agentic-gateway-server-isolated-cli-watchdog",
+  "agentic-gateway-server-isolated-codex-failure-recovery",
+]);
+
 // Spawn/signal/PTY-timing suites also flake under high in-process worker
 // counts; pin them to the proven 2-worker budget while the job-level default
 // scales with the runner class. infra-process spawns child processes per test
@@ -932,6 +947,9 @@ const KEEP_LARGE_NODE_TEST_RUNNER = new Set([
   "agentic-gateway-core-3",
   "agentic-gateway-methods",
   "agentic-gateway-server-isolated",
+  "agentic-gateway-server-isolated-chat-cli-auth",
+  "agentic-gateway-server-isolated-cli-watchdog",
+  "agentic-gateway-server-isolated-codex-failure-recovery",
   "auto-reply-reply-dispatch",
   "auto-reply-reply-dispatch-core",
   "auto-reply-reply-dispatch-delivery",
@@ -2004,8 +2022,20 @@ const SPLIT_NODE_SHARDS = new Map<string, NodeTestSplitShard[]>([
           "test/vitest/vitest.gateway-server-isolated.config.ts",
           "test/vitest/vitest.gateway-database-workers.config.ts",
         ],
+        includePatterns: [
+          ...gatewayServerResidualIsolatedTestFiles,
+          ...gatewayDatabaseWorkerTestFiles,
+        ],
         requiresDist: false,
       },
+      ...gatewayServerHeavyIsolatedTestFiles.map((file) => ({
+        shardName: `agentic-gateway-server-isolated-${file
+          .slice("src/gateway/server.".length, -".test.ts".length)
+          .replaceAll(".", "-")}`,
+        configs: ["test/vitest/vitest.gateway-server-isolated.config.ts"],
+        includePatterns: [file],
+        requiresDist: false,
+      })),
       // Split per config: the combined pair owned a ~206s hosted wall that no
       // bin packing could shorten, while the halves fit normal lanes.
       {
@@ -3208,6 +3238,16 @@ function createCompactNodeTestShardBundles(
       candidate: readonly [NodeTestShardGroup, ...NodeTestShardGroup[]],
       group: NodeTestShardGroup,
     ) => {
+      // These measured long-running files only shorten the Blacksmith critical
+      // path on separate runners. GitHub retains ordinary packing for its hard
+      // 80-job fallback cap.
+      if (
+        isBlacksmithProfile &&
+        (DEDICATED_BLACKSMITH_COMPACT_GROUPS.has(group.shard_name) ||
+          candidate.some((entry) => DEDICATED_BLACKSMITH_COMPACT_GROUPS.has(entry.shard_name)))
+      ) {
+        return false;
+      }
       const exclusive = isExclusiveCompactGroup(group);
       // Keep ordinary work off serial runtime hosts. Hybrid exclusive/dist bins
       // retain their existing prerequisite sharing and admission policy.

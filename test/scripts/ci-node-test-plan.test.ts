@@ -13,6 +13,7 @@ import {
   createNodeTestShards,
   createSelectedNodeTestShardBundles,
   createVitestCacheWarmGroups,
+  gatewayServerHeavyIsolatedTestFiles,
   hasCompleteStartupCorpusCoverage,
   isExclusiveCompactShardName,
   isPolicyTestOwnedPath,
@@ -1720,7 +1721,6 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         .concat(
           embeddedBaseOwnerFiles,
           gatewayMethodsOwnerFiles,
-          gatewayServerIsolatedOwnerFiles,
           listMatchedTestFiles(createCliProcessVitestConfig({})),
           listMatchedTestFiles(createPluginSdkVitestConfig({})),
           listMatchedTestFiles(createPluginSdkLightVitestConfig({})),
@@ -1738,7 +1738,6 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         .concat(
           embeddedBaseOwnerFiles,
           gatewayMethodsOwnerFiles,
-          gatewayServerIsolatedOwnerFiles,
           listMatchedTestFiles(createCliProcessVitestConfig({})),
           listMatchedTestFiles(createPluginSdkVitestConfig({})),
           listMatchedTestFiles(createPluginSdkLightVitestConfig({})),
@@ -3183,6 +3182,47 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         createGatewayDatabaseWorkersVitestConfig({ OPENCLAW_VITEST_INCLUDE_FILE: includeFile }),
       ),
     ).toEqual([gatewayDatabaseWorkerTestFiles[0]]);
+  });
+
+  it("runs measured heavy Gateway isolation files in distinct CI jobs", () => {
+    const ownerPrefix = "agentic-gateway-server-isolated";
+    const owners = defaultShards.filter((shard) => shard.shardName.startsWith(ownerPrefix));
+    const actualFiles = owners.flatMap((shard) => shard.includePatterns ?? []);
+    const expectedFiles = [
+      ...listMatchedTestFiles(createGatewayServerIsolatedVitestConfig({})),
+      ...gatewayDatabaseWorkerTestFiles,
+    ];
+
+    expect(actualFiles.toSorted()).toEqual(expectedFiles.toSorted());
+    expect(new Set(actualFiles).size).toBe(actualFiles.length);
+    for (const file of gatewayServerHeavyIsolatedTestFiles) {
+      const matches = owners.filter(
+        (owner) => owner.includePatterns?.length === 1 && owner.includePatterns[0] === file,
+      );
+      expect(matches, file).toHaveLength(1);
+      expect(matches[0]?.configs).toEqual(["test/vitest/vitest.gateway-server-isolated.config.ts"]);
+    }
+
+    for (const compactMode of ["push", "pull-request"] as const) {
+      const plan = createNodeTestShardBundles({ compactMode });
+      const heavyJobs = plan.filter((job) =>
+        job.groups.some((group) =>
+          gatewayServerHeavyIsolatedTestFiles.some((file) => group.includePatterns?.includes(file)),
+        ),
+      );
+      expect(heavyJobs, compactMode).toHaveLength(gatewayServerHeavyIsolatedTestFiles.length);
+      expect(
+        heavyJobs.every(
+          (job) =>
+            job.groups.filter((group) =>
+              gatewayServerHeavyIsolatedTestFiles.some((file) =>
+                group.includePatterns?.includes(file),
+              ),
+            ).length === 1,
+        ),
+        compactMode,
+      ).toBe(true);
+    }
   });
 
   it("keeps host-owned database consumers in forks and out of their former projects", () => {
