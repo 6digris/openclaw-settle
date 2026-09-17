@@ -86,6 +86,8 @@ const rawSqliteAllowPathGroups = {
     "src/infra/backup-create.ts",
     "src/snapshot/git-backup-codec.ts",
     "src/snapshot/local-repository.ts",
+    // Private B/C/T preparation compares exact sqlite_schema and supported agent images.
+    "src/infra/update-recovery-preparation.ts",
   ],
   "agent auth profile read-only bootstrap": ["src/agents/auth-profiles/sqlite.ts"],
   "read-only shared state database access": [
@@ -132,6 +134,9 @@ const rawSqliteAllowPathGroups = {
     "src/infra/state-migrations.transcript-directives.ts",
     // Doctor integrity PRAGMAs and lossless native 64-bit orphan-row preservation.
     "src/state/openclaw-state-db-task-delivery-recovery.ts",
+    // Private recovery migration reconstructs historical DDL and preserves rowids/int64 values.
+    // Current live stores remain under their existing Kysely owners; B/C are read-only.
+    "src/state/openclaw-state-recovery-preparation.ts",
   ],
   "session entry cache connection-local validity counters": [
     "src/config/sessions/session-accessor.sqlite-entry-cache.ts",
