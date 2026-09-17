@@ -1187,7 +1187,7 @@ describe("runHeartbeatOnce", () => {
     expect(sendWhatsApp).toHaveBeenCalledTimes(2);
     expectWhatsAppSendCall(sendWhatsApp, 0, {
       to: "+15555550166",
-      text: 'First heartbeat alert: your bot runs periodic background checks and messages you only when something needs attention. Set agents.defaults.heartbeat.target: "none" to keep these internal.\nFirst alert',
+      text: 'I run periodic background checks and message you when something needs attention. To change what I check, ask me to update my heartbeat instructions. For example: "Update my heartbeat instructions to check for upcoming deadlines."\nFirst alert',
     });
     expectWhatsAppSendCall(sendWhatsApp, 1, {
       to: "+15555550166",
