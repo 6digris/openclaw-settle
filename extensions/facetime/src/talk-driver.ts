@@ -44,12 +44,6 @@ export type FaceTimeTalkDriver = {
   close(reason?: string): Promise<void>;
 };
 
-const FACETIME_INITIAL_GREETING = "Say exactly: Hi, I'm here and listening.";
-// The carrier can report active before its newly enabled media route is audible.
-// Give that route one short settling window, and abandon the greeting if the
-// caller starts speaking first so it cannot collide with their opening words.
-const FACETIME_GREETING_MEDIA_SETTLE_MS = 750;
-
 export async function startFaceTimeTalkDriver(params: {
   config: FaceTimeConfig;
   fullConfig: OpenClawConfig;
@@ -154,10 +148,9 @@ export async function startFaceTimeTalkDriver(params: {
   };
 
   const initialGreeting = createFaceTimeInitialGreeting({
-    delayMs: FACETIME_GREETING_MEDIA_SETTLE_MS,
-    speak: () => {
+    speak: (instructions) => {
       if (!stopped && !mediaSuspended && activated && providerReady) {
-        bridge?.triggerGreeting(FACETIME_INITIAL_GREETING);
+        bridge?.triggerGreeting(instructions);
       }
     },
   });
@@ -466,7 +459,7 @@ export async function startFaceTimeTalkDriver(params: {
           }),
           autoRespondToAudio: true,
           triggerGreetingOnReady: false,
-          initialGreetingInstructions: FACETIME_INITIAL_GREETING,
+          initialGreetingInstructions: initialGreeting.instructions,
           markStrategy: "ack-immediately",
           tools: resolveRealtimeVoiceAgentConsultTools(params.config.realtime.toolPolicy, [
             FACETIME_END_CALL_TOOL,
