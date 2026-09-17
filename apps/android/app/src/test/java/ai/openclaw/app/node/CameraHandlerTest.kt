@@ -49,6 +49,19 @@ class CameraHandlerTest {
   }
 
   @Test
+  fun retiredPhotoRequestFailsBeforeOpeningACamera() {
+    val app = RuntimeEnvironment.getApplication()
+    shadowOf(app).grantPermissions(Manifest.permission.CAMERA)
+
+    val error =
+      assertThrows(IllegalStateException::class.java) {
+        runBlocking { CameraCaptureManager(app).snap(null, isCurrent = { false }) }
+      }
+
+    assertEquals("UNAVAILABLE: camera request is no longer active", error.message)
+  }
+
+  @Test
   fun clipFailsImmediatelyWhenCameraPermissionIsMissing() {
     val app = RuntimeEnvironment.getApplication()
     shadowOf(app).denyPermissions(Manifest.permission.CAMERA)

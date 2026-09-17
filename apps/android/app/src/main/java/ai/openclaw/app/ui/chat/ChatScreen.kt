@@ -288,9 +288,10 @@ internal fun resolveChatComposerPrimaryAction(
   talkActive: Boolean,
   runActive: Boolean,
   hasContent: Boolean,
+  allowSendDuringTalk: Boolean = false,
 ): ChatComposerPrimaryAction =
   when {
-    hasContent && !talkActive -> ChatComposerPrimaryAction.Send
+    hasContent && (!talkActive || allowSendDuringTalk) -> ChatComposerPrimaryAction.Send
     runActive -> ChatComposerPrimaryAction.Stop
     talkActive -> ChatComposerPrimaryAction.None
     else -> ChatComposerPrimaryAction.StartTalk
@@ -405,6 +406,7 @@ internal fun ChatScreen(
   val micCooldown by viewModel.micCooldown.collectAsState()
   val talkModeEnabled by viewModel.talkModeEnabled.collectAsState()
   val talkModeListening by viewModel.talkModeListening.collectAsState()
+  val chatTalkCall by viewModel.chatTalkCall.collectAsState()
   val inlineMediaPlaybackBlocked = messageSpeechState?.isActive == true || talkModeEnabled || talkModeListening
   val thinkingSupported =
     chatThinkingSupported(
@@ -1050,6 +1052,18 @@ internal fun ChatScreen(
     },
   ) { onJumpToLatest, compactHeight, tabletop ->
     ChatComposer(
+      callCard = chatTalkCall?.takeIf { talkModeEnabled }?.let { call ->
+        { openDetails ->
+          key(call.start) {
+            ChatCallCard(
+              viewModel = viewModel,
+              call = call,
+              photoOwnerReady = composerOwnerReady && composerOwner == call.start.owner,
+              onOpenDetails = openDetails,
+            )
+          }
+        }
+      },
       ownerReady = composerOwnerReady,
       compactHeight = compactHeight,
       detailsExpanded = detailsExpanded,
@@ -3173,6 +3187,7 @@ private fun minimumChatInputHeight(): Dp {
 
 @Composable
 private fun ChatComposer(
+  callCard: (@Composable (onOpenDetails: () -> Unit) -> Unit)?,
   ownerReady: Boolean,
   compactHeight: Boolean,
   detailsExpanded: Boolean,
@@ -3238,7 +3253,7 @@ private fun ChatComposer(
   val sendEnabled =
     chatComposerSendEnabled(
       voiceNoteState = voiceNoteState,
-      talkActive = talkActive,
+      talkActive = talkActive && callCard == null,
       hasContent = hasContent,
       shareStaging = shareStaging,
       sendInFlight = sendInFlight,
@@ -3286,6 +3301,7 @@ private fun ChatComposer(
     if (attachments.isNotEmpty()) {
       AttachmentStrip(attachments = attachments, onRemoveAttachment = onRemoveAttachment)
     }
+    callCard?.invoke { onDetailsExpandedChange(true) }
 
     if (shouldShowSlashCommandMenu(value)) {
       SlashCommandPanel(
@@ -3316,12 +3332,18 @@ private fun ChatComposer(
   }
 
   BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
-    val inputHeightLimit = if (compactHeight) maxHeight else maxOf(minimumChatInputHeight(), maxHeight - ClawTheme.spacing.touchTarget)
+    val inputHeightLimit =
+      when {
+        // Reserve a usable text/action row; the existing auxiliary scroller owns card/preview overflow.
+        callCard != null -> minOf(minimumChatInputHeight(), maxHeight)
+        compactHeight -> maxHeight
+        else -> maxOf(minimumChatInputHeight(), maxHeight - ClawTheme.spacing.touchTarget)
+      }
     Column(
       modifier = if (detailsExpanded) Modifier.clearAndSetSemantics {} else Modifier,
-      verticalArrangement = Arrangement.spacedBy(if (attachedProgress && !compactHeight && !detailsExpanded) (-18).dp else 4.dp),
+      verticalArrangement = Arrangement.spacedBy(if (attachedProgress && callCard == null && !compactHeight && !detailsExpanded) (-18).dp else 4.dp),
     ) {
-      if (!compactHeight && !detailsExpanded) {
+      if ((!compactHeight || callCard != null) && !detailsExpanded) {
         BoxWithConstraints(Modifier.weight(1f, fill = false)) {
           val auxiliaryHeight = maxHeight
           Column(
@@ -3362,6 +3384,7 @@ private fun ChatComposer(
             dictationEnabled = ownerReady && dictationEnabled,
             onToggleDictation = onToggleDictation,
             talkActive = talkActive,
+            allowSendDuringTalk = callCard != null,
             onToggleTalk = { if (ownerReady) onToggleTalk() },
             runActive = pendingRunCount > 0,
             onAbort = onAbort,
@@ -4259,6 +4282,7 @@ private fun ChatInputPill(
   dictationEnabled: Boolean,
   onToggleDictation: () -> Unit,
   talkActive: Boolean,
+  allowSendDuringTalk: Boolean,
   onToggleTalk: () -> Unit,
   runActive: Boolean,
   onAbort: () -> Unit,
@@ -4390,7 +4414,7 @@ private fun ChatInputPill(
             onStartVoiceNote = onStartVoiceNote,
           )
         }
-        when (resolveChatComposerPrimaryAction(talkActive = talkActive, runActive = runActive, hasContent = hasContent)) {
+        when (resolveChatComposerPrimaryAction(talkActive = talkActive, runActive = runActive, hasContent = hasContent, allowSendDuringTalk = allowSendDuringTalk)) {
           ChatComposerPrimaryAction.Send -> SendButton(enabled = inputEnabled && sendEnabled, onClick = onSend)
           ChatComposerPrimaryAction.StartTalk -> LiveTalkButton(active = false, onClick = onToggleTalk)
           ChatComposerPrimaryAction.Stop -> StopButton(onClick = onAbort)

@@ -26,6 +26,8 @@ internal fun UnifiedChatShellScreen(
   features: List<DisplayFeature> = emptyList(),
 ) {
   val talkModeEnabled by viewModel.talkModeEnabled.collectAsState()
+  val chatCall by viewModel.chatTalkCall.collectAsState()
+  val capturedCall = chatCall
   val startTalk = rememberChatRealtimeTalkLauncher(viewModel)
   LaunchedEffect(viewModel) { viewModel.refreshTalkSetupReadiness() }
 
@@ -40,7 +42,11 @@ internal fun UnifiedChatShellScreen(
       onOpenSidebar = onOpenSidebar,
       onToggleTalk = {
         if (talkModeEnabled) {
-          viewModel.setTalkModeEnabled(false)
+          if (capturedCall != null) {
+            viewModel.endChatTalk(capturedCall.start)
+          } else if (viewModel.chatTalkCall.value == null) {
+            viewModel.setTalkModeEnabled(false)
+          }
         } else {
           startTalk()
         }

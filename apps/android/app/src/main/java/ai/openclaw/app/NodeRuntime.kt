@@ -1142,7 +1142,13 @@ class NodeRuntime private constructor(
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
   private val tlsProbeRunner = GatewayTlsProbeRunner(scope, tlsFingerprintProbe)
   private val deviceAuthStore = DeviceAuthStore(prefs)
-  val camera = CameraCaptureManager(appContext) { prefs.preferredCameraFacing.value }
+  val camera =
+    CameraCaptureManager(
+      context = appContext,
+      isForeground = { _isForeground.value },
+      cameraEnabled = { prefs.cameraEnabled.value },
+      defaultFacing = { prefs.preferredCameraFacing.value },
+    )
   val location = LocationCaptureManager(appContext)
   val sms = SmsManager(appContext)
   private val json = Json { ignoreUnknownKeys = true }
@@ -1622,6 +1628,7 @@ class NodeRuntime private constructor(
   private var voiceNoteOwnsMic = false
   private var dictationOwnsMic = false
   private var cameraAudioOwnsMic = false
+  private var chatTalkStart: TalkModeManager.ChatStart? = null
   private val voiceReplySpeechDepth = AtomicInteger(0)
   private val voiceCapturePreparationMutex = Mutex()
 
@@ -2424,6 +2431,9 @@ class NodeRuntime private constructor(
 
   val talkModeStatusText: StateFlow<String>
     get() = talkMode.statusText
+
+  internal val chatTalkCall: StateFlow<TalkModeManager.ChatCall?>
+    get() = talkMode.chatCall
 
   private val wearRealtimeLifecycleMutex = Mutex()
 
@@ -3391,6 +3401,11 @@ class NodeRuntime private constructor(
     }
 
     scope.launch {
+      combine(chatSelectionGeneration, gatewayConnectionHandoff, gatewayCatalogRevision, activeGatewayStableId) { _, _, _, _ -> Unit }
+        .collect { cancelStaleChatTalkStart() }
+    }
+
+    scope.launch {
       chatModelCatalog.drop(1).distinctUntilChanged().collect {
         // Chat metadata arrives after the connection event. Invalidate the Watch snapshot so
         // its Home model picker cannot stay empty until the user refreshes manually.
@@ -3428,7 +3443,7 @@ class NodeRuntime private constructor(
       }
     } else {
       stopMessageSpeech()
-      stopActiveVoiceSession()
+      stopActiveVoiceSession(keepAdmittedChatCall = true)
       publishNodePresenceAliveBeacon(NodePresenceAliveBeacon.Trigger.Background, throttleRecentSuccess = true)
     }
   }
@@ -3998,6 +4013,101 @@ class NodeRuntime private constructor(
     setVoiceCaptureMode(if (value) VoiceCaptureMode.TalkMode else VoiceCaptureMode.Off)
   }
 
+  internal fun captureChatTalkStart(
+    owner: ChatComposerOwner,
+    selectionGeneration: Long,
+    isCurrentSelection: () -> Boolean,
+  ): TalkModeManager.ChatStart? {
+    if (!_isForeground.value) return null
+    if (!owner.routingVerified || !chat.isCurrentComposerOwner(owner)) return null
+    val gatewayId = owner.gatewayStableId ?: return null
+    val lease = operatorSession.captureRequestLease(gatewayId) ?: return null
+    val lifecycleEpoch = voiceLifecycleEpoch.get()
+    fun canAdmit() =
+      _isForeground.value && voiceLifecycleEpoch.get() == lifecycleEpoch &&
+        !gatewayConnectionHandoff.value.pending && isCurrentSelection()
+    return TalkModeManager.ChatStart(
+      owner = owner,
+      lease = lease,
+      withCurrentSelection = { claim ->
+        chat.withCurrentComposerOwner(owner, selectionGeneration) {
+          canAdmit() && claim()
+        }
+      },
+      isCurrentSelection = ::canAdmit,
+    ).takeIf { it.isCurrent() }
+  }
+
+  internal fun startChatTalk(start: TalkModeManager.ChatStart) {
+    setVoiceCaptureMode(VoiceCaptureMode.TalkMode, chatStart = start)
+  }
+
+  internal fun endChatTalk(start: TalkModeManager.ChatStart) {
+    setVoiceCaptureMode(VoiceCaptureMode.Off, expectedChatCall = start)
+  }
+
+  internal fun toggleChatTalkAudio(start: TalkModeManager.ChatStart) {
+    synchronized(voiceCaptureOwnershipLock) {
+      if (talkMode.chatCall.value?.start !== start) return
+      setSpeakerEnabled(!speakerEnabled.value)
+    }
+  }
+
+  /** Capture for the original composer's preview; only its normal Send may admit the image. */
+  internal suspend fun stageChatTalkPhoto(
+    start: TalkModeManager.ChatStart,
+    requestPermission: suspend () -> Boolean,
+    isCurrentOwner: () -> Boolean,
+    stage: (String) -> Int?,
+    capturePhoto: suspend (() -> Boolean) -> CameraCaptureManager.Payload,
+  ): NativeText {
+    if (!talkMode.isActiveChatCall(start)) return nativeText("Call is no longer active.")
+    val selection = chatSelectionGeneration.value
+    val lifecycle = voiceLifecycleEpoch.get()
+    fun isCurrent() =
+      isCurrentOwner() && _isForeground.value && voiceLifecycleEpoch.get() == lifecycle &&
+        chatSelectionGeneration.value == selection && chat.isCurrentComposerOwner(start.owner) &&
+        !gatewayConnectionHandoff.value.pending && talkMode.isActiveChatCall(start)
+    if (!isCurrent()) return nativeText("Return to the call's chat before taking a photo.")
+    if (!cameraEnabled.value) return nativeText("Enable Camera in Settings before taking a photo.")
+    if (!requestPermission()) return nativeText("Camera permission required")
+    fun canCapture() =
+      isCurrent() && cameraEnabled.value &&
+        ContextCompat.checkSelfPermission(appContext, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+    if (!canCapture()) return nativeText("Photo cancelled because the call or camera access changed.")
+    val photo = capturePhoto(::canCapture)
+    if (!canCapture()) return nativeText("Photo cancelled because the call or camera access changed.")
+    val payload = json.parseToJsonElement(photo.payloadJson).asObjectOrNull()
+    val image =
+      payload?.get("base64").asStringOrNull()?.takeIf { it.isNotBlank() }
+        ?: return nativeText("Could not capture a photo. Try again.")
+    kotlin.coroutines.coroutineContext.ensureActive()
+    var omitted: Int? = null
+    chat.withCurrentComposerOwner(start.owner, selection) {
+      if (!canCapture()) false else {
+        omitted = stage(image)
+        true
+      }
+    }
+    return when (omitted) {
+      0 -> nativeText("Photo ready to send.")
+      null -> nativeText("Photo cancelled because the call or camera access changed.")
+      else -> nativeText("Photo not added. Remove an attachment and try again.")
+    }
+  }
+
+  private fun cancelStaleChatTalkStart() {
+    val ownershipEpoch =
+      synchronized(voiceCaptureOwnershipLock) {
+        val start = chatTalkStart ?: return
+        // Admission and retirement compete for one claim. Navigation does not end an admitted call.
+        if (start.isCurrent() || !start.cancelPending()) return
+        talkMode.stopAllCapture()
+        voiceCaptureOwnershipEpoch.get()
+      }
+    finishTalkModeAfterRelayClose(ownershipEpoch) { true }
+  }
+
   private suspend fun handleTalkPttStart(): GatewaySession.InvokeResult =
     runTalkPttCommand {
       talkMode.finishingPushToTalkCaptureId?.let {
@@ -4269,6 +4379,7 @@ class NodeRuntime private constructor(
         talkPttCommandEpoch.incrementAndGet()
         voiceCaptureOwnershipEpoch.incrementAndGet()
         _voiceCaptureMode.value = VoiceCaptureMode.Off
+        chatTalkStart = null
         talkMode.ttsOnAllResponses = false
         NodeForegroundService.setVoiceCaptureMode(appContext, VoiceCaptureMode.Off)
         setExternalAudioCaptureActiveLocked(false)
@@ -4495,11 +4606,15 @@ class NodeRuntime private constructor(
   private fun setVoiceCaptureMode(
     mode: VoiceCaptureMode,
     persistManualMic: Boolean = true,
+    chatStart: TalkModeManager.ChatStart? = null,
+    expectedChatCall: TalkModeManager.ChatStart? = null,
   ) {
     var startAfterSuppression: VoiceCaptureMode? = null
     var ownershipEpoch = 0L
     val suppressionUpdate =
       synchronized(voiceCaptureOwnershipLock) {
+        if (expectedChatCall != null && talkMode.chatCall.value?.start !== expectedChatCall) return
+        if (chatStart != null && !chatStart.isCurrent()) return
         if (mode != VoiceCaptureMode.Off && (gatewayConnectionHandoff.value.pending || voiceNoteOwnsMic || dictationOwnsMic)) return
         if (mode != VoiceCaptureMode.Off && cameraAudioOwnsMic) return
         // Every mode command cancels queued PTT intent; only a real transition replaces the capture owner.
@@ -4511,6 +4626,7 @@ class NodeRuntime private constructor(
         ownershipEpoch = voiceCaptureOwnershipEpoch.incrementAndGet()
         talkPttOwnership.set(null)
         _voiceCaptureMode.value = captureMode
+        chatTalkStart = chatStart.takeIf { captureMode == VoiceCaptureMode.TalkMode }
         _activeAudioInputDevicePreference.value = null
         when (captureMode) {
           VoiceCaptureMode.Off -> {
@@ -4568,6 +4684,7 @@ class NodeRuntime private constructor(
             if (voiceCaptureOwnershipEpoch.get() != ownershipEpoch) return@launch
             voiceCaptureOwnershipEpoch.incrementAndGet()
             _voiceCaptureMode.value = VoiceCaptureMode.Off
+            chatTalkStart = null
             talkMode.ttsOnAllResponses = false
             talkMode.stopAllCapture(nativeText("Start failed: \$message", error.message.orEmpty()))
             prefs.setVoiceMicEnabled(false)
@@ -4577,11 +4694,15 @@ class NodeRuntime private constructor(
         applyVoiceWakeSuppression(failed)
         return@launch
       }
+      if (chatStart?.canStart() == false) {
+        cancelStaleChatTalkStart()
+        return@launch
+      }
       synchronized(voiceCaptureOwnershipLock) {
         if (voiceCaptureOwnershipEpoch.get() != ownershipEpoch || _voiceCaptureMode.value != startAfterSuppression) return@launch
         when (startAfterSuppression) {
           VoiceCaptureMode.ManualMic -> micCapture.setMicEnabled(true)
-          VoiceCaptureMode.TalkMode -> talkMode.setEnabled(true)
+          VoiceCaptureMode.TalkMode -> talkMode.setEnabled(true, chatStart)
           else -> Unit
         }
       }
@@ -4593,12 +4714,18 @@ class NodeRuntime private constructor(
     setVoiceCaptureMode(VoiceCaptureMode.Off)
   }
 
-  private fun stopActiveVoiceSession() {
+  private fun stopActiveVoiceSession(keepAdmittedChatCall: Boolean = false) {
     val suppressionUpdate =
       synchronized(voiceCaptureOwnershipLock) {
+        if (keepAdmittedChatCall && _voiceCaptureMode.value == VoiceCaptureMode.TalkMode &&
+          externalAudioCaptureActive.value && hasRecordAudioPermission() && talkMode.canKeepChatCallInBackground()
+        ) {
+          return
+        }
         talkPttCommandEpoch.incrementAndGet()
         voiceCaptureOwnershipEpoch.incrementAndGet()
         talkPttOwnership.set(null)
+        chatTalkStart = null
         talkMode.ttsOnAllResponses = false
         talkMode.stopAllCapture()
         stopVoicePlayback()

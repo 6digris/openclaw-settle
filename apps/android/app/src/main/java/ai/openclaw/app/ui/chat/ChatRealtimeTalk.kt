@@ -2,7 +2,10 @@ package ai.openclaw.app.ui.chat
 
 import ai.openclaw.app.MainViewModel
 import ai.openclaw.app.gatewayTalkSetupDescription
+import ai.openclaw.app.i18n.nativeText
+import ai.openclaw.app.i18n.resolveNativeText
 import ai.openclaw.app.requiresSetup
+import ai.openclaw.app.voice.TalkModeManager
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
@@ -12,7 +15,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 
@@ -38,6 +44,7 @@ internal fun rememberChatRealtimeTalkLauncher(viewModel: MainViewModel): () -> U
   val context = LocalContext.current
   val talkSetupReadiness by viewModel.talkSetupReadiness.collectAsState()
   val currentTalkSetup by rememberUpdatedState(talkSetupReadiness.realtimeTalk)
+  var pendingStart by remember(viewModel) { mutableStateOf<TalkModeManager.ChatStart?>(null) }
   val showSetupMessage = {
     Toast
       .makeText(context, gatewayTalkSetupDescription(currentTalkSetup), Toast.LENGTH_LONG)
@@ -45,24 +52,41 @@ internal fun rememberChatRealtimeTalkLauncher(viewModel: MainViewModel): () -> U
   }
   val requestMicPermission =
     rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-      if (!granted) return@rememberLauncherForActivityResult
+      val start = pendingStart
+      pendingStart = null
+      if (!granted || start == null || !start.isCurrent()) return@rememberLauncherForActivityResult
       if (currentTalkSetup.requiresSetup) {
         showSetupMessage()
       } else {
-        viewModel.setTalkModeEnabled(true)
+        viewModel.startChatTalk(start)
       }
     }
 
-  return {
-    when (
+  return launchTalk@ {
+    if (pendingStart != null) return@launchTalk
+    val action =
       resolveChatRealtimeTalkLaunch(
         hasMicPermission = context.hasRecordAudioPermission(),
         requiresSetup = talkSetupReadiness.realtimeTalk.requiresSetup,
       )
-    ) {
-      ChatRealtimeTalkLaunch.RequestPermission -> requestMicPermission.launch(Manifest.permission.RECORD_AUDIO)
-      ChatRealtimeTalkLaunch.ShowSetupMessage -> showSetupMessage()
-      ChatRealtimeTalkLaunch.StartTalk -> viewModel.setTalkModeEnabled(true)
+    if (action == ChatRealtimeTalkLaunch.ShowSetupMessage) {
+      showSetupMessage()
+      return@launchTalk
+    }
+    // Permission belongs to this tap, not whichever chat is visible when Android replies.
+    val start = viewModel.captureChatTalkStart()
+    if (start == null) {
+      val message =
+        if (currentTalkSetup.requiresSetup) gatewayTalkSetupDescription(currentTalkSetup)
+        else nativeText("Talk is not ready. Check the Gateway connection and try again.").resolveNativeText()
+      Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+      return@launchTalk
+    }
+    if (action == ChatRealtimeTalkLaunch.RequestPermission) {
+      pendingStart = start
+      requestMicPermission.launch(Manifest.permission.RECORD_AUDIO)
+    } else {
+      viewModel.startChatTalk(start)
     }
   }
 }
