@@ -3,7 +3,7 @@ import path from "node:path";
 import { expect, it } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { makeUserMessage } from "../../../test/helpers/user-message.js";
-import { retireSessionMcpRuntime } from "../../agents/agent-bundle-mcp-manager-api.js";
+import { getSessionMcpRuntimeManagerForTesting } from "../../agents/agent-bundle-mcp-manager-api.js";
 import { waitForSessionMaintenance } from "../../agents/session-maintenance/coordinator.js";
 import { createSessionMaintenanceFollowup } from "../../agents/session-maintenance/run.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
@@ -383,10 +383,14 @@ it.each(["completed", "interrupted"] as const)(
         admission?.release();
         await waitForSessionMaintenance(scope.sessionKey);
         mcpSessionsBeforeForegroundCleanup = mcpSessions.size;
-        await retireSessionMcpRuntime({
-          sessionId: scope.sessionId,
-          reason: "private-memory-fixture-cleanup",
-        });
+        // Runs release their leases, but MCP runtimes live until session closure.
+        // Retire this fixture's foreground and hidden sessions before removing its state.
+        const mcpManager = getSessionMcpRuntimeManagerForTesting();
+        for (const sessionId of mcpManager.listSessionIds()) {
+          if (mcpManager.peekSession({ sessionId })?.workspaceDir === state.workspaceDir) {
+            await mcpManager.disposeSession(sessionId);
+          }
+        }
         mcpSessionsAfterForegroundCleanup = mcpSessions.size;
         clearMemoryPluginState();
         clearRuntimeConfigSnapshot();

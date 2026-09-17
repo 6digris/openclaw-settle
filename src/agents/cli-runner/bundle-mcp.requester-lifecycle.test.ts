@@ -87,6 +87,9 @@ it("keeps requester tools callable across static native preflight until session 
   try {
     await withEnvAsync({ OPENCLAW_STATE_DIR: workspaceDir }, async () => {
       await withPluginRuntimeRegistryScope(registry.registry, async () => {
+        const manager = getSessionMcpRuntimeManagerForTesting();
+        const previousRuntimeKeys = manager.listRuntimeKeys();
+        expect(manager.listSessionIds()).not.toContain(sessionId);
         const config: OpenClawConfig = {
           plugins: { enabled: false },
           mcp: {
@@ -160,7 +163,7 @@ it("keeps requester tools callable across static native preflight until session 
         }
         expect(sessions.size).toBe(0);
         expect(deleted.toSorted()).toEqual(["requester-session", "static-session"]);
-        expect(getSessionMcpRuntimeManagerForTesting().listRuntimeKeys()).toEqual([]);
+        expect(manager.listRuntimeKeys()).toEqual(previousRuntimeKeys);
       });
     });
   } finally {

@@ -431,12 +431,16 @@ export async function createServiceChildRelayAdapter(
           // Observation only: signalling a retired numeric PGID could hit a reused group.
           process.kill(-anchorPid, 0);
         } catch (cause) {
-          if (extractErrorCode(cause) === "ESRCH") {
+          const code = extractErrorCode(cause);
+          if (code === "ESRCH") {
             finishAuthorityClose(missingReceiptError);
-          } else {
-            loseIdentity("owned process group disappearance could not be confirmed", { cause });
+            return;
           }
-          return;
+          if (code !== "EPERM") {
+            loseIdentity("owned process group disappearance could not be confirmed", { cause });
+            return;
+          }
+          // EPERM proves presence, not lost ownership. Keep observing within the same deadline.
         }
       }
       const remainingMs = cleanupDeadline! - performance.now();
