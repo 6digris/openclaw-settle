@@ -94,15 +94,15 @@ export async function startGatewayDiscovery(params: {
       return;
     }
     generation.waiting = true;
-    // A reservation may reject. Wait outside the operation queue: committing its
-    // successor can itself await a mode update on this owner.
+    // Claims fence acquisition; discovery updates/stop own retained handles.
+    // Wait outside the queue: a successor can itself await a mode update.
     void generation.claim
       .waitForUnblocked()
       .then((accepted) =>
         enqueue(async () => {
           generation.waiting = false;
-          if (isCurrent(generation)) {
-            await (accepted ? advertise(generation) : stopGeneration(generation));
+          if (accepted && isCurrent(generation)) {
+            await advertise(generation);
           }
         }),
       )

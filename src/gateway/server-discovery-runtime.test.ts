@@ -538,7 +538,12 @@ describe("startGatewayDiscovery", () => {
     },
   );
 
-  it.each(["ready", "pending"] as const)(
+  it.each([
+    "ready",
+    "pending during reservation",
+    "pending after commit",
+    "pending after publication",
+  ] as const)(
     "retains an unchanged %s advertisement across selective replacement",
     async (phase) => {
       useDevelopmentDiscoveryEnv();
@@ -549,7 +554,7 @@ describe("startGatewayDiscovery", () => {
       const retained = makeDiscoveryService({
         id: "retained",
         advertise: vi.fn(() =>
-          phase === "pending" ? result.promise : Promise.resolve({ stop: retainedStop }),
+          phase === "ready" ? Promise.resolve({ stop: retainedStop }) : result.promise,
         ),
       });
       const changedStop = vi.fn();
@@ -562,14 +567,26 @@ describe("startGatewayDiscovery", () => {
       await vi.advanceTimersByTimeAsync(10);
       const discovery = await starting;
       const reservation = pluginOwner.reserve();
+      const peer = makeDiscoveryService({ id: "peer" });
       try {
-        await discovery.update({ gatewayDiscoveryServices: [retained] });
+        await discovery.update({ gatewayDiscoveryServices: [retained, peer] });
         expect(changedStop).toHaveBeenCalledOnce();
         expect(retainedStop).not.toHaveBeenCalled();
+        if (phase === "pending during reservation") {
+          result.resolve({ stop: retainedStop });
+          await vi.advanceTimersByTimeAsync(0);
+        }
         const next = makeDiscoveryService({ id: "changed" });
         reservation.commit();
+        if (phase === "pending after commit") {
+          result.resolve({ stop: retainedStop });
+        }
+        // Reload awaits memory and sidecar activation before publishing discovery entries.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(retainedStop).not.toHaveBeenCalled();
+        expect(peer.service.advertise).not.toHaveBeenCalled();
         const updating = discovery.update(
-          { gatewayDiscoveryServices: [next, retained] },
+          { gatewayDiscoveryServices: [next, retained, peer] },
           reservation.claim,
         );
         await vi.advanceTimersByTimeAsync(10);
@@ -579,6 +596,7 @@ describe("startGatewayDiscovery", () => {
         expect(retained.service.advertise).toHaveBeenCalledOnce();
         expect(retainedStop).not.toHaveBeenCalled();
         expect(next.service.advertise).toHaveBeenCalledOnce();
+        expect(peer.service.advertise).toHaveBeenCalledOnce();
       } finally {
         reservation.reject();
         result.resolve({ stop: retainedStop });
