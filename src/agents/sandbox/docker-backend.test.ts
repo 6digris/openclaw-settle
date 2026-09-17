@@ -417,7 +417,7 @@ describe("docker sandbox backend manager", () => {
     expect(execSpec.argv).toContain("-t");
     expect(execSpec.argv).toContain("-w");
     expect(execSpec.argv).toContain("/workspace/project");
-    expect(execSpec.argv.slice(-4, -1)).toEqual(["sandbox-container", "/bin/sh", "-lc"]);
+    expect(execSpec.argv.slice(-4, -1)).toEqual(["unused-image", "/bin/sh", "-lc"]);
     expect(execSpec.argv.at(-1)).toBe(
       'export PATH="${OPENCLAW_PREPEND_PATH}:$PATH"; unset OPENCLAW_PREPEND_PATH; printf ready',
     );
