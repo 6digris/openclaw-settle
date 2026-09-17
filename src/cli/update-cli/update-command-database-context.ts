@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { LegacyConfigUpdatePlan } from "../../commands/doctor/legacy-config-repair.js";
 import { resolveConfigPath } from "../../config/paths.js";
 import {
@@ -14,14 +15,15 @@ import { UpdatePreMutationError } from "./shared.js";
 import { formatUpdateAncestryBlockMessage } from "./update-command-handoff.js";
 import { captureOwnedManagedUpdatePreflightContext } from "./update-command-managed-context.js";
 import {
+  maybeStopManagedServiceBeforeMutableUpdate,
+  type PreManagedServiceStop,
+} from "./update-command-service-maintenance.js";
+import {
   collectServiceInspectionFailureFacts,
   GatewayServiceUpdateOwnershipError,
   type ManagedServiceRootRedirect,
 } from "./update-command-service-plan.js";
-import {
-  maybeStopManagedServiceBeforeMutableUpdate,
-  type PreManagedServiceStop,
-} from "./update-command-service.js";
+import { inspectGatewayRuntimePublicationSurface } from "./update-command-service-publication.js";
 
 export type UpdateDatabaseProfileAdmission = {
   root: string;
@@ -91,21 +93,17 @@ export async function inspectUpdateDatabaseContexts(params: {
       }
       throw error;
     });
-    const unavailable =
-      inspected.serviceUpdateVerdict?.kind === "unavailable"
-        ? inspected.serviceUpdateVerdict
-        : undefined;
-    if (inspected.blockMessage || unavailable) {
+    const blockMessage =
+      inspected.blockMessage ??
+      (inspected.serviceUpdateVerdict?.kind === "unavailable" &&
+      inspected.serviceUpdateVerdict.inspectionReason === "launchd-system-owned"
+        ? inspected.serviceUpdateVerdict.message
+        : undefined);
+    if (blockMessage) {
       throw new UpdatePreMutationError(
         "managed-service-preflight",
-        formatUpdateAncestryBlockMessage(inspected.blockMessage ?? unavailable!.message),
+        formatUpdateAncestryBlockMessage(blockMessage),
         { failureFacts: collectServiceInspectionFailureFacts(inspected.serviceUpdateVerdict) },
-      );
-    }
-    if (inspected.serviceUpdateVerdict?.kind === "unresolved") {
-      throw new UpdatePreMutationError(
-        "managed-service-preflight",
-        "Gateway service installation ownership is unresolved. Run `openclaw gateway status --deep` and retry before changing package or Git files.",
       );
     }
     return inspected;
@@ -167,6 +165,9 @@ export async function inspectUpdateDatabaseContexts(params: {
       knownServiceEnvs: profiles.flatMap((profile) =>
         profile.stopState?.serviceEnv ? [profile.stopState.serviceEnv] : [],
       ),
+      onInspectionUnavailable: (error) =>
+        fallbackStopState?.serviceUpdateVerdict?.kind === "unavailable" &&
+        fallbackStopState.serviceUpdateVerdict.inspectionReason === error.reason,
     }).catch((error: unknown) => {
       throw new UpdatePreMutationError(
         "managed-service-preflight",
@@ -176,25 +177,60 @@ export async function inspectUpdateDatabaseContexts(params: {
       );
     });
     for (const state of candidates) {
+      const externalPlist = state.externalLaunchdPlist;
+      const refuseExternal = () =>
+        new UpdatePreMutationError(
+          "managed-service-preflight",
+          `Gateway system service ${JSON.stringify(resolveManagedGatewayServiceIdentity(state.env))}${externalPlist ? ` from ${JSON.stringify(externalPlist)}` : ""} uses this installation or has unverified state. Have its deployment owner coordinate this update; automatic user-service updates do not manage system services.`,
+        );
       for (const root of roots) {
-        const inspected = await inspect(root, state.env, undefined, state);
-        if (inspected.serviceUpdateVerdict?.kind === "owned") {
-          if (state.systemdInstallation?.kind === "system") {
-            if (scope === "installation") {
-              throw new UpdatePreMutationError(
-                "managed-service-preflight",
-                `Gateway system service ${JSON.stringify(resolveManagedGatewayServiceIdentity(state.env))} uses this installation. Have its deployment owner coordinate the shared installation update; automatic user-service updates do not manage system services.`,
-              );
-            }
-            externalConsumers.push({ root, state });
-          } else {
-            await admit(root, inspected);
+        const inspected = externalPlist
+          ? undefined
+          : await inspect(root, state.env, undefined, state);
+        if (externalPlist) {
+          const surface = await inspectGatewayRuntimePublicationSurface({
+            root,
+            readState: async () => state,
+            assertCurrent() {},
+          }).catch(() => {
+            throw refuseExternal();
+          });
+          if (surface.disjoint) {
+            continue;
           }
-          break;
+        } else if (inspected?.serviceUpdateVerdict?.kind !== "owned") {
+          continue;
         }
+        if (externalPlist || state.systemdInstallation?.kind === "system") {
+          if (scope === "installation") {
+            throw refuseExternal();
+          }
+          // Only explicit paths attest an external profile; the caller's HOME cannot supply them.
+          const metadata = state.command?.environment;
+          if (
+            externalPlist &&
+            (!path.isAbsolute(metadata?.OPENCLAW_STATE_DIR ?? "") ||
+              !path.isAbsolute(metadata?.OPENCLAW_CONFIG_PATH ?? ""))
+          ) {
+            throw refuseExternal();
+          }
+          externalConsumers.push({
+            root,
+            state: externalPlist
+              ? {
+                  ...state,
+                  env: { ...metadata, OPENCLAW_LAUNCHD_LABEL: state.env.OPENCLAW_LAUNCHD_LABEL },
+                }
+              : state,
+          });
+        } else if (inspected) {
+          await admit(root, inspected);
+        }
+        break;
       }
     }
   }
+
   if (params.managedServiceRootRedirect && profiles.length === 0) {
     throw new UpdatePreMutationError(
       "managed-service-preflight",

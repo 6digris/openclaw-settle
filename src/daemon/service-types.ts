@@ -342,6 +342,8 @@ export function resolveManagedGatewayServiceProcessEnv(
 }
 
 export type GatewayServiceState = {
+  /** Exact external definition for read-only consumer checks, never native authority. */
+  externalLaunchdPlist?: string;
   systemdInstallation?: SystemdGatewayInstallation;
   inspectionReason?: ServiceInspectionReason;
   installed: boolean;

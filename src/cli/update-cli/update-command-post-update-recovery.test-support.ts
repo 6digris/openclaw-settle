@@ -26,7 +26,7 @@ const mocks = vi.hoisted(() => ({
   })),
   restart:
     vi.fn<
-      typeof import("./update-command-service.js").maybeRestartServiceAfterFailedMutableUpdate
+      typeof import("./update-command-service-recovery.js").maybeRestartServiceAfterFailedMutableUpdate
     >(),
   restoreWindowsAutoStart: vi.fn(async () => true),
   freshProcess: vi.fn(),
@@ -65,15 +65,20 @@ vi.mock("../../daemon/service.js", async (importOriginal) => ({
 vi.mock("./update-command-service-maintenance.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./update-command-service-maintenance.js")>()),
   revalidateManagedGatewayServiceAfterUpdate: mocks.revalidateService,
+  maybeResumeWindowsTaskAutoStartAfterPackageUpdate: mocks.restoreWindowsAutoStart,
+  maybeStopManagedServiceBeforeMutableUpdate: mocks.stopCandidate,
 }));
 vi.mock("./update-command-service.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./update-command-service.js")>()),
-  maybeRestartServiceAfterFailedMutableUpdate: mocks.restart,
-  maybeResumeWindowsTaskAutoStartAfterPackageUpdate: mocks.restoreWindowsAutoStart,
   maybeRestartService: mocks.restartCandidate,
-  maybeStopManagedServiceBeforeMutableUpdate: mocks.stopCandidate,
+}));
+vi.mock("./update-command-service-recovery.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./update-command-service-recovery.js")>()),
+  maybeRestartServiceAfterFailedMutableUpdate: mocks.restart,
+}));
+vi.mock("./update-command-service-plan.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./update-command-service-plan.js")>()),
   resolveUpdatedGatewayRestartPort: async () => 19101,
-  revalidateManagedGatewayServiceAfterUpdate: mocks.revalidateService,
 }));
 vi.mock("./update-command-post-core.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./update-command-post-core.js")>()),

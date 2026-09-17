@@ -2,7 +2,7 @@ import { afterEach, beforeEach, vi } from "vitest";
 import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import type { captureTargetDatabaseSchemaContext } from "./schema-preflight.js";
 import type { executeMutableUpdate } from "./update-command-execution.js";
-import type { PreManagedServiceStop } from "./update-command-service.js";
+import type { PreManagedServiceStop } from "./update-command-service-maintenance.js";
 
 const mocks = vi.hoisted(() => ({
   captureManagedPreflight:
@@ -115,18 +115,11 @@ vi.mock("./update-command-package.js", async (importOriginal) => ({
   runPackageUpdateDoctor: mocks.runDoctor,
 }));
 
-vi.mock("./update-command-service.js", async () => {
-  const actual = await vi.importActual<typeof import("./update-command-service-maintenance.js")>(
-    "./update-command-service-maintenance.js",
-  );
-  const { resolveUpdatedGatewayRestartPort } = await import("./update-command-service-plan.js");
-  return {
-    maybeStopManagedServiceBeforeMutableUpdate: mocks.maybeStopService,
-    shouldBlockMutableUpdateFromGatewayServiceEnv: mocks.shouldBlockServiceUpdate,
-    UpdateCommandAbort: actual.UpdateCommandAbort,
-    resolveUpdatedGatewayRestartPort,
-  };
-});
+vi.mock("./update-command-service-maintenance.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./update-command-service-maintenance.js")>()),
+  maybeStopManagedServiceBeforeMutableUpdate: mocks.maybeStopService,
+  shouldBlockMutableUpdateFromGatewayServiceEnv: mocks.shouldBlockServiceUpdate,
+}));
 
 const successfulUpdate: UpdateRunResult = {
   status: "ok",

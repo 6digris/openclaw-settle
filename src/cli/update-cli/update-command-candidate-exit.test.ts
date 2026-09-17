@@ -25,7 +25,7 @@ const mocks = vi.hoisted(() => ({
     vi.fn<typeof import("./schema-preflight.js").captureTargetDatabaseSchemaContext>(),
   inspectService:
     vi.fn<
-      typeof import("./update-command-service.js").maybeStopManagedServiceBeforeMutableUpdate
+      typeof import("./update-command-service-maintenance.js").maybeStopManagedServiceBeforeMutableUpdate
     >(),
   validateCanary:
     vi.fn<typeof import("../../infra/update-candidate-canary.js").validateUpdateCandidateCanary>(),
@@ -44,9 +44,12 @@ vi.mock("./update-command-managed-context.js", async (original) => ({
   captureOwnedManagedUpdatePreflightContext: mocks.captureManagedPreflight,
   revalidateUpdateDatabaseContext: async (context: unknown) => context,
 }));
-vi.mock("./update-command-service.js", async (original) => ({
-  ...(await original<typeof import("./update-command-service.js")>()),
+vi.mock("./update-command-service-maintenance.js", async (original) => ({
+  ...(await original<typeof import("./update-command-service-maintenance.js")>()),
   maybeStopManagedServiceBeforeMutableUpdate: mocks.inspectService,
+}));
+vi.mock("./update-command-service-recovery.js", async (original) => ({
+  ...(await original<typeof import("./update-command-service-recovery.js")>()),
   maybeRestartServiceAfterFailedMutableUpdate: async () => undefined,
 }));
 vi.mock("../../daemon/inspect.js", () => ({

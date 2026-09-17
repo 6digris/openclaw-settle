@@ -1,7 +1,11 @@
 /** Platform service registry and shared gateway service start/repair logic. */
+import path from "node:path";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { assertGatewayServiceMutationAllowed } from "../infra/gateway-supervision.js";
 import { assertFutureConfigActionAllowed } from "./future-config-guard.js";
+import { resolveLaunchAgentLabel } from "./launchd-label.js";
+import { readLaunchAgentProgramArgumentsFromFile } from "./launchd-plist.js";
+import { inspectSystemLaunchDaemonOwnership } from "./launchd-system.js";
 import {
   installLaunchAgent,
   isLaunchAgentEnabled,
@@ -34,7 +38,10 @@ import {
   uninstallScheduledTask,
 } from "./schtasks.js";
 import { mergeGatewayServiceEnv } from "./service-env-merge.js";
-import { ServiceInspectionError } from "./service-inspection-error.js";
+import {
+  ServiceDefinitionInspectionError,
+  ServiceInspectionError,
+} from "./service-inspection-error.js";
 import {
   withGatewayServiceOperationLock,
   withSystemdServiceReadBinding,
@@ -124,6 +131,7 @@ export type GatewayService = {
 };
 
 type ReadGatewayServiceStateArgs = GatewayServiceEnvArgs & {
+  externalLaunchdPlist?: string;
   systemdReadTarget?: GatewayServiceReadOptions["systemdReadTarget"];
   systemdInstallation?: GatewayServiceState["systemdInstallation"];
   requireEffective?: boolean;
@@ -170,8 +178,51 @@ export async function readGatewayServiceState(
 ): Promise<GatewayServiceState> {
   let args = input;
   const baseEnv = args.env ?? (process.env as GatewayServiceEnv);
-  if (service.readCommand === readSystemdServiceExecStart && !args.systemdReadTarget) {
-    const installation = await findSystemdGatewayInstallation(baseEnv);
+  const { externalLaunchdPlist } = args;
+  if (externalLaunchdPlist) {
+    const label = resolveLaunchAgentLabel(baseEnv);
+    const command = await readLaunchAgentProgramArgumentsFromFile(externalLaunchdPlist, {
+      requireEffective: true,
+      timeoutMs: args.timeoutMs,
+      expectedLabel: label,
+      generatedEnvironmentLabel: label,
+    });
+    if (!command) {
+      throw new ServiceDefinitionInspectionError(externalLaunchdPlist);
+    }
+    const absent =
+      path.dirname(externalLaunchdPlist) === "/Library/LaunchDaemons" &&
+      (
+        await inspectSystemLaunchDaemonOwnership(label, {
+          scanInstalledPlists: false,
+          timeoutMs: args.timeoutMs,
+        })
+      ).status === "absent";
+    return {
+      externalLaunchdPlist,
+      command,
+      env: baseEnv,
+      installed: true,
+      running: false,
+      loadState: absent
+        ? { status: "not-loaded" }
+        : { status: "unknown", detail: "External launchd service requires its deployment owner." },
+      runtime: { status: absent ? "stopped" : "unknown" },
+      definitionMutationCapability: {
+        kind: "sealed",
+        reason: "system-owned",
+        artifact: "service-file",
+        path: externalLaunchdPlist,
+      },
+    };
+  }
+  const supplied = args.systemdInstallation;
+  const selected = supplied?.kind === "system" || supplied?.kind === "user" ? supplied : undefined;
+  if (
+    !args.systemdReadTarget &&
+    (selected || service.readCommand === readSystemdServiceExecStart)
+  ) {
+    const installation = selected ?? (await findSystemdGatewayInstallation(baseEnv));
     if (installation.kind === "dueling" && args.requireEffective && args.requireLoadedCommand) {
       throw new Error(
         "Both user and system systemd units own this Gateway name. Run openclaw doctor interactively to inspect the competing supervisors before maintenance.",
@@ -223,6 +274,8 @@ async function readGatewayServiceStateWithBinding(
   const deadline = performance.now() + (timeoutMs && timeoutMs > 0 ? timeoutMs : 5000);
   systemdReadBinding?.verify();
   let absent = await service.isAbsent?.({ env: baseEnv, timeoutMs }).catch(() => false);
+  // Initial systemd absence proves no manager; strict absence below only proves no unit.
+  const managerAbsent = absent && service.readCommand === readSystemdServiceExecStart;
   systemdReadBinding?.verify();
   let commandInspection: GatewayServiceCommandInspection | undefined;
   const command = absent
@@ -281,13 +334,15 @@ async function readGatewayServiceStateWithBinding(
     }
   }
   if (absent) {
+    const inspectionReason = managerAbsent ? "service-manager-unavailable" : undefined;
     return {
+      inspectionReason,
       installed: false,
       loadState: { status: "not-loaded" },
       running: false,
       env,
       command: null,
-      runtime: { status: "stopped", missingUnit: true },
+      runtime: { status: "stopped", missingUnit: true, inspectionReason },
     };
   }
   const [installed, loadState, runtime, definitionMutationCapability] = await Promise.all([

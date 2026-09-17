@@ -1,4 +1,5 @@
 // Daemon inspect tests cover service inspection and diagnostic output.
+import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -10,8 +11,29 @@ import {
   findGatewayServices,
   renderGatewayServiceCleanupHints,
 } from "./inspect.js";
+import { readLaunchAgentProgramArgumentsFromFile } from "./launchd-plist.js";
 import * as taskLayout from "./schtasks-layout.js";
 import * as taskProbe from "./schtasks-state-probe.js";
+
+const nativePlistHost = vi.hoisted(() => process.platform === "darwin");
+vi.mock("../process/exec.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../process/exec.js")>();
+  const { decodeLaunchAgentPlistFixture } = await import("./launchd-plist.test-support.js");
+  return {
+    ...actual,
+    runExec: vi.fn(async (...args: Parameters<typeof actual.runExec>) => {
+      if (nativePlistHost) {
+        return actual.runExec(...args);
+      }
+      const options = args[2];
+      const input = typeof options === "object" ? options.input : undefined;
+      if (input === undefined) {
+        throw new Error("Native parser requires captured plist bytes");
+      }
+      return decodeLaunchAgentPlistFixture(input, args[1][1]);
+    }),
+  };
+});
 
 // File-scope cleanup cannot prevent the nested platform-restoration hooks from running.
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -402,6 +424,79 @@ describe("findExtraGatewayServices (darwin / scanLaunchdDir) — real filesystem
     });
   });
 
+  it.skipIf(!nativePlistHost).each(["xml1", "binary1"])(
+    "discovers commands despite unrelated native date/data fields in %s plists",
+    async (format) => {
+      const home = tempDirs.make("native-plist-metadata-", os.tmpdir());
+      const directory = path.join(home, "Library", "LaunchAgents");
+      await fs.mkdir(directory, { recursive: true });
+      for (const [label, executable, subcommand] of [
+        ["org.synthetic.foreign", "/usr/bin/worker", "sync"],
+        ["org.synthetic.gateway", "/usr/bin/openclaw", "gateway"],
+      ]) {
+        const fixture = path.join(directory, `${label}.plist`);
+        await fs.writeFile(
+          fixture,
+          `<plist><dict>
+<key>Label</key><string>${label}</string>
+<key>ProgramArguments</key><array><string>${executable}</string><string>${subcommand}</string></array>
+<key>Payload</key><data>c3ludGhldGlj</data>
+<key>Created</key><date>2026-09-17T00:00:00Z</date>
+<key>EnvironmentVariables</key><dict><key>LITERAL</key><string>&lt;data&gt;preserve literal text&lt;/data&gt;</string></dict>
+</dict></plist>`,
+        );
+        execFileSync("/usr/bin/plutil", ["-convert", format, "--", fixture]);
+      }
+      expect(await findGatewayServices({ HOME: home })).toEqual({
+        services: [expect.objectContaining({ label: "org.synthetic.gateway", marker: "openclaw" })],
+        errors: [],
+      });
+      const command = await readLaunchAgentProgramArgumentsFromFile(
+        path.join(directory, "org.synthetic.gateway.plist"),
+        { requireEffective: true, expectedLabel: "org.synthetic.gateway" },
+      );
+      expect(command?.environment?.LITERAL).toBe("<data>preserve literal text</data>");
+    },
+  );
+
+  it
+    .skipIf(!nativePlistHost)
+    .each(
+      [
+        "Label",
+        "ProgramArguments",
+        "WorkingDirectory",
+        "EnvironmentVariables",
+        "environment entry",
+      ].flatMap((field) => ["data", "date"].map((scalar) => ({ field, scalar }))),
+    )("rejects native $scalar in the strict $field contract", async ({ field, scalar }) => {
+    const home = tempDirs.make("native-plist-invalid-field-", os.tmpdir());
+    const fixture = path.join(home, "gateway.plist");
+    const value =
+      scalar === "data" ? "<data>c3ludGhldGlj</data>" : "<date>2026-09-17T00:00:00Z</date>";
+    const fields = new Map([
+      ["Label", "<string>org.synthetic.gateway</string>"],
+      [
+        "ProgramArguments",
+        "<array><string>/usr/bin/openclaw</string><string>gateway</string></array>",
+      ],
+    ]);
+    fields.set(
+      field === "environment entry" ? "EnvironmentVariables" : field,
+      field === "environment entry" ? `<dict><key>INVALID</key>${value}</dict>` : value,
+    );
+    await fs.writeFile(
+      fixture,
+      `<plist><dict>${Array.from(fields, ([key, element]) => `<key>${key}</key>${element}`).join("")}</dict></plist>`,
+    );
+    await expect(
+      readLaunchAgentProgramArgumentsFromFile(fixture, {
+        requireEffective: true,
+        expectedLabel: "org.synthetic.gateway",
+      }),
+    ).rejects.toThrow("Effective LaunchAgent service command could not be inspected");
+  });
+
   it("discovers default and named LaunchAgents without reporting them as extra services", async () => {
     const tmpHome = tempDirs.make("openclaw-test-", os.tmpdir());
     const launchdDir = path.join(tmpHome, "Library", "LaunchAgents");
@@ -474,36 +569,44 @@ describe("findExtraGatewayServices (darwin / scanLaunchdDir) — real filesystem
     expect(result).toStrictEqual([]);
   });
 
-  it("reports custom LaunchAgents that execute openclaw gateway", async () => {
-    const tmpHome = tempDirs.make("openclaw-test-", os.tmpdir());
-    const launchdDir = path.join(tmpHome, "Library", "LaunchAgents");
-    const plistPath = path.join(launchdDir, "com.example.openclaw-gateway.plist");
-    await fs.mkdir(launchdDir, { recursive: true });
-    await fs.writeFile(
-      plistPath,
-      `<?xml version="1.0" encoding="UTF-8"?>
+  it.each([
+    { xmlLabel: "com.example.openclaw-gateway", label: "com.example.openclaw-gateway" },
+    { xmlLabel: "org.synthetic.a&amp;b", label: "org.synthetic.a&b" },
+    { xmlLabel: "", label: "com.example.openclaw-gateway" },
+    { xmlLabel: undefined, label: "com.example.openclaw-gateway" },
+  ])(
+    "reports custom LaunchAgents with decoded or absent labels: $xmlLabel",
+    async ({ xmlLabel, label }) => {
+      const tmpHome = tempDirs.make("openclaw-test-", os.tmpdir());
+      const launchdDir = path.join(tmpHome, "Library", "LaunchAgents");
+      const plistPath = path.join(launchdDir, "com.example.openclaw-gateway.plist");
+      await fs.mkdir(launchdDir, { recursive: true });
+      await fs.writeFile(
+        plistPath,
+        `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
-<key>Label</key><string>com.example.openclaw-gateway</string>
+${xmlLabel === undefined ? "" : `<key>Label</key><string>${xmlLabel}</string>`}
 <key>ProgramArguments</key><array><string>/usr/local/bin/openclaw</string><string>gateway</string><string>--port</string><string>18888</string></array>
 </dict></plist>`,
-    );
-    const result = await findExtraGatewayServices({ HOME: tmpHome });
-    expect(result).toEqual([
-      {
-        platform: "darwin",
-        label: "com.example.openclaw-gateway",
-        detail: `plist: ${plistPath}`,
-        scope: "user",
-        marker: "openclaw",
-        legacy: false,
-      },
-    ]);
-    expect(renderGatewayServiceCleanupHints(result)).toEqual([
-      "launchctl bootout gui/$UID/com.example.openclaw-gateway",
-      `rm ${plistPath}`,
-    ]);
-    expect((await findGatewayServices({ HOME: tmpHome })).services).toEqual(result);
-  });
+      );
+      const result = await findExtraGatewayServices({ HOME: tmpHome });
+      expect(result).toEqual([
+        {
+          platform: "darwin",
+          label,
+          detail: `plist: ${plistPath}`,
+          scope: "user",
+          marker: "openclaw",
+          legacy: false,
+        },
+      ]);
+      expect(renderGatewayServiceCleanupHints(result)).toEqual([
+        `launchctl bootout gui/$UID/${label.includes("&") ? `'${label}'` : label}`,
+        `rm ${plistPath}`,
+      ]);
+      expect((await findGatewayServices({ HOME: tmpHome })).services).toEqual(result);
+    },
+  );
 });
 
 describe.each([

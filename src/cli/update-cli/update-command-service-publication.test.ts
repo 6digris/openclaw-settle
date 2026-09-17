@@ -1,8 +1,12 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import * as serviceInventory from "../../daemon/inspect.js";
+import { buildLaunchAgentPlist } from "../../daemon/launchd-plist.js";
+import { decodeLaunchAgentPlistFixture } from "../../daemon/launchd-plist.test-support.js";
+import * as launchdSystem from "../../daemon/launchd-system.js";
 import { withGatewayServiceOperationLock } from "../../daemon/service-operation-lock.js";
 import type { GatewayService } from "../../daemon/service.js";
 import {
@@ -14,6 +18,7 @@ import * as portProbe from "../../infra/ports-probe.js";
 import { tryAcquireExclusiveSqliteCoordinator } from "../../infra/sqlite-coordinator.js";
 import { acquireGatewayLifecycleCoordinator } from "../../infra/state-database-coordinator.js";
 import * as openClawTmp from "../../infra/tmp-openclaw-dir.js";
+import * as processExec from "../../process/exec.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { mockProcessPlatform } from "../../test-utils/vitest-spies.js";
@@ -614,5 +619,227 @@ it.each(["shared-running", "foreign-running", "foreign-to-shared"] as const)(
           systemdReadTarget: { scope: "system", unitName, unitPath },
         }),
       );
+    }),
+);
+
+it.each([
+  "shared",
+  "shared-offline",
+  "foreign",
+  "loaded-foreign",
+  "native-unavailable",
+  "global-agent",
+  "unreadable",
+  "unknown",
+  "same-label",
+  "alias",
+  "foreign-to-shared",
+] as const)("preserves external macOS plist scope across runtime publication: %s", (scenario) =>
+  withRuntimePublicationFixture(async ({ home, root, env }) => {
+    mockProcessPlatform("darwin");
+    const label = "org.synthetic.external-gateway";
+    env.OPENCLAW_LAUNCHD_LABEL = label;
+    const foreignRoot = path.join(home, "foreign-package");
+    await fs.mkdir(path.join(foreignRoot, "dist"), { recursive: true });
+    await fs.writeFile(path.join(foreignRoot, "package.json"), '{"name":"openclaw"}');
+    await fs.writeFile(path.join(foreignRoot, "dist", "entry.js"), "export {};\n");
+    const artifact = path.join(root, "dist-runtime", "marker");
+    await fs.writeFile(artifact, "original");
+    const plistPaths = [
+      scenario === "global-agent"
+        ? "/Library/LaunchAgents/org.synthetic.external-gateway.plist"
+        : "/Library/LaunchDaemons/org.synthetic.external-gateway.plist",
+    ];
+    if (scenario === "same-label") {
+      plistPaths.push("/Library/LaunchDaemons/org.synthetic.same-label-another-file.plist");
+    }
+    const fixtures = new Map(
+      plistPaths.map((file) => [file, path.join(home, path.basename(file))]),
+    );
+    const writePlist = async (file: string, installRoot: string) => {
+      await fs.writeFile(
+        fixtures.get(file)!,
+        buildLaunchAgentPlist({
+          label,
+          programArguments:
+            scenario === "unknown"
+              ? ["unknown-wrapper", "gateway"]
+              : [process.execPath, path.join(installRoot, "dist", "entry.js"), "gateway"],
+          stdoutPath: "/tmp/synthetic.stdout",
+          stderrPath: "/tmp/synthetic.stderr",
+          environment: { OPENCLAW_STATE_DIR: path.join(home, "external-state") },
+        }),
+      );
+    };
+    for (const [index, file] of plistPaths.entries()) {
+      await writePlist(
+        file,
+        scenario === "shared" ||
+          scenario === "shared-offline" ||
+          (scenario === "same-label" && index === 1)
+          ? root
+          : foreignRoot,
+      );
+    }
+    const readFile = fs.readFile;
+    vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+      const fixture = typeof args[0] === "string" ? fixtures.get(args[0]) : undefined;
+      if (fixture) {
+        if (scenario === "unreadable") {
+          throw Object.assign(new Error("fixture access denied"), { code: "EACCES" });
+        }
+        args[0] = fixture;
+      }
+      return readFile(...args);
+    });
+    const nativeProbe = vi
+      .spyOn(launchdSystem, "inspectSystemLaunchDaemonOwnership")
+      .mockImplementation(async (selectedLabel, options) => {
+        expect(selectedLabel).toBe(label);
+        expect(options?.scanInstalledPlists).toBe(false);
+        const serviceTarget = `system/${selectedLabel}`;
+        return scenario === "native-unavailable"
+          ? {
+              status: "unverifiable",
+              serviceTarget,
+              operation: "launchctl",
+              detail: "fixture unavailable",
+            }
+          : {
+              status: scenario === "shared" || scenario === "loaded-foreign" ? "loaded" : "absent",
+              serviceTarget,
+            };
+      });
+    vi.spyOn(processExec, "runExec").mockImplementation(async (command, args, options) => {
+      expect(command).toBe("/usr/bin/plutil");
+      if (typeof options !== "object" || !options.input) {
+        throw new Error("Missing captured plist bytes");
+      }
+      return decodeLaunchAgentPlistFixture(options.input, args[1]);
+    });
+    const discover = vi
+      .spyOn(serviceInventory, "findGatewayServices")
+      .mockImplementation(async (_env, options) => ({
+        services: options?.deep
+          ? plistPaths.map((file) => ({
+              platform: "darwin",
+              scope: "system",
+              label,
+              detail: `plist: ${file}`,
+              marker: "openclaw",
+            }))
+          : [],
+        errors: [],
+      }));
+    const actual = await vi.importActual<typeof import("../../daemon/service-candidates.js")>(
+      "../../daemon/service-candidates.js",
+    );
+    mocks.candidates.mockImplementation(actual.readGatewayServiceCandidates);
+    let entered = false;
+    const publishing = withGatewayRuntimeArtifactPublication(
+      { root, env, timeoutMs: 200, assertCurrent() {} },
+      async (assertCurrent) => {
+        entered = true;
+        if (scenario === "foreign-to-shared") {
+          await writePlist(plistPaths[0]!, root);
+        }
+        if (scenario === "alias") {
+          await fs.symlink(
+            path.join(root, "dist-runtime"),
+            path.join(foreignRoot, "dist-runtime"),
+            "dir",
+          );
+        }
+        await assertCurrent();
+        await fs.writeFile(artifact, "published");
+      },
+    );
+    const allowed =
+      scenario === "foreign" || scenario === "shared-offline" || scenario === "same-label";
+    if (allowed) {
+      await expect(publishing).resolves.toBeUndefined();
+      expect(await fs.readFile(artifact, "utf8")).toBe("published");
+    } else {
+      await expect(publishing).rejects.toThrow(/affected Gateway/);
+      expect(await fs.readFile(artifact, "utf8")).toBe("original");
+    }
+    expect(entered).toBe(allowed || scenario === "foreign-to-shared" || scenario === "alias");
+    expect(discover).toHaveBeenCalledWith(env, { deep: true });
+    if (scenario === "same-label") {
+      const candidates = await mocks.candidates.mock.results[0]!.value;
+      expect(
+        candidates.map(
+          (candidate: { externalLaunchdPlist?: string }) => candidate.externalLaunchdPlist,
+        ),
+      ).toEqual(plistPaths);
+    }
+    if (scenario === "global-agent" || scenario === "unreadable") {
+      expect(nativeProbe).not.toHaveBeenCalled();
+    }
+  }),
+);
+
+it.skipIf(process.platform !== "darwin").each(["Program", "ProgramArguments"] as const)(
+  "discovers a binary command-only LaunchDaemon before publishing runtime artifacts: %s",
+  (commandField) =>
+    withRuntimePublicationFixture(async ({ home, root, env }) => {
+      mockProcessPlatform("darwin");
+      const label = "org.synthetic.worker";
+      const plistPath = "/Library/LaunchDaemons/org.synthetic.autostart.plist";
+      const daemonDir = path.join(home, "LaunchDaemons");
+      const agentDir = path.join(home, "LaunchAgents");
+      await fs.mkdir(daemonDir);
+      await fs.mkdir(agentDir);
+      const fixture = path.join(daemonDir, path.basename(plistPath));
+      const command = path.join(root, "openclaw.mjs");
+      await fs.writeFile(
+        fixture,
+        JSON.stringify({
+          Label: label,
+          ...(commandField === "Program" ? { Program: command } : {}),
+          ProgramArguments: [commandField === "Program" ? "worker" : command, "gateway"],
+        }),
+      );
+      execFileSync("/usr/bin/plutil", ["-convert", "binary1", "--", fixture]);
+      const readFile = fs.readFile;
+      const readdir = fs.readdir;
+      vi.spyOn(fs, "readFile").mockImplementation((...args) => {
+        if (args[0] === plistPath) {
+          args[0] = fixture;
+        }
+        return readFile(...args);
+      });
+      vi.spyOn(fs, "readdir").mockImplementation((...args) => {
+        if (args[0] === "/Library/LaunchDaemons") {
+          args[0] = daemonDir;
+        }
+        if (args[0] === "/Library/LaunchAgents") {
+          args[0] = agentDir;
+        }
+        return readdir(...args);
+      });
+      vi.spyOn(launchdSystem, "inspectSystemLaunchDaemonOwnership").mockResolvedValue({
+        status: "loaded",
+        serviceTarget: `system/${label}`,
+      });
+      const actual = await vi.importActual<typeof import("../../daemon/service-candidates.js")>(
+        "../../daemon/service-candidates.js",
+      );
+      mocks.candidates.mockImplementation(actual.readGatewayServiceCandidates);
+      const artifact = path.join(root, "dist-runtime", "marker");
+      await fs.writeFile(artifact, "original");
+      await expect(
+        withGatewayRuntimeArtifactPublication(
+          { root, env, timeoutMs: 200, assertCurrent() {} },
+          () => fs.writeFile(artifact, "published"),
+        ),
+      ).rejects.toThrow(/affected Gateway/);
+      expect(await fs.readFile(artifact, "utf8")).toBe("original");
+      expect(await serviceInventory.findGatewayServices(env, { deep: true })).toEqual({
+        services: [
+          expect.objectContaining({ label, scope: "system", detail: `plist: ${plistPath}` }),
+        ],
+        errors: [],
+      });
     }),
 );

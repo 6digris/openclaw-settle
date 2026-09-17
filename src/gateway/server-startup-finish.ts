@@ -149,12 +149,12 @@ export async function finishGatewayStartup(params: {
     getPluginNodeCapabilities,
   } = runtime;
   const startupPluginRuntimeClaim = kernel.pluginRuntimeGeneration.currentClaim();
-  const { attachGatewayWsHandlers } = await startupTrace.measure(
+  const { attachGatewayWsConnectionHandler } = await startupTrace.measure(
     "gateway.ws-imports",
-    () => import("./server-ws-runtime.js"),
+    () => import("./server/ws-connection.js"),
   );
   await startupTrace.measure("gateway.ws-attach", () =>
-    attachGatewayWsHandlers({
+    attachGatewayWsConnectionHandler({
       wss,
       clients,
       connectionWork: runtime.connectionWork,
@@ -182,7 +182,8 @@ export async function finishGatewayStartup(params: {
       getMethodRegistry: () => getAttachedGatewayMethodRegistry(),
       ...(workerEnvironmentService ? { workerConnectionService: workerEnvironmentService } : {}),
       broadcast,
-      context: gatewayRequestContext,
+      refreshHealthSnapshot: gatewayRequestContext.refreshHealthSnapshot,
+      buildRequestContext: () => gatewayRequestContext,
     }),
   );
   await startupTrace.measure("http.listen", () => startListening());

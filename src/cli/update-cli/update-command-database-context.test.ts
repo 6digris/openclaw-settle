@@ -7,14 +7,19 @@ import {
   resolveGatewayWindowsTaskName,
 } from "../../daemon/constants.js";
 import * as serviceInventory from "../../daemon/inspect.js";
+import { buildLaunchAgentPlist } from "../../daemon/launchd-plist.js";
+import { decodeLaunchAgentPlistFixture } from "../../daemon/launchd-plist.test-support.js";
+import * as launchdSystem from "../../daemon/launchd-system.js";
 import * as taskProbe from "../../daemon/schtasks-state-probe.js";
 import { resolveManagedGatewayServiceIdentity } from "../../daemon/service-candidates.js";
+import { ServiceInspectionError } from "../../daemon/service-inspection-error.js";
 import { readGatewayServiceState, type GatewayService } from "../../daemon/service.js";
 import {
   createMockGatewayService,
   mockSystemAccountHome,
 } from "../../daemon/service.test-helpers.js";
 import * as updateHandoff from "../../infra/update-managed-service-handoff.js";
+import * as processExec from "../../process/exec.js";
 import { mockProcessPlatform } from "../../test-utils/vitest-spies.js";
 import { inspectUpdateDatabaseContexts } from "./update-command-database-context.js";
 import { maybeStopManagedServiceBeforeMutableUpdate } from "./update-command-service-maintenance.js";
@@ -209,16 +214,94 @@ describe("shared-install database admission", () => {
     },
   );
 
-  it("does not bypass an unavailable native route when foreground ownership is unverified", async () => {
+  it("keeps an unavailable caller diagnostic-only while admitting its verified sibling", async () => {
     const f = await fixture();
     f.definitions.delete(resolveGatewaySystemdServiceName("primary"));
     await fs.unlink(path.join(f.unitDir, "openclaw-gateway-primary.service"));
     vi.spyOn(updateHandoff, "isCurrentForegroundUpdateHandoffProcess").mockResolvedValue(false);
-    await expect(inspectUpdateDatabaseContexts(f.params)).rejects.toMatchObject({
-      reason: "managed-service-preflight",
-    });
+    const admitted = await inspectUpdateDatabaseContexts(f.params);
+    expect(admitted.profiles.map(({ stopState }) => stopState?.serviceUpdateVerdict?.kind)).toEqual(
+      ["unavailable", "owned"],
+    );
+    expect(admitted.profiles[0]?.stopState).not.toHaveProperty("serviceEnv");
+    expect(admitted.profiles[0]?.stopState).toMatchObject({ serviceMutationAllowed: false });
     expect(f.service.stop).not.toHaveBeenCalled();
   });
+
+  it.each(["shared", "system", "mismatched", "untyped", "inventory", "system-owned"] as const)(
+    "continues a matching unavailable manager inspection without losing later consumers: %s",
+    async (outcome) => {
+      const f = await fixture();
+      const primary = resolveGatewaySystemdServiceName("primary");
+      const readCommand = vi.mocked(f.service.readCommand).getMockImplementation();
+      if (!readCommand) {
+        throw new Error("Fixture service reader is missing");
+      }
+      let primaryReads = 0;
+      vi.mocked(f.service.readCommand).mockImplementation(async (env, options) => {
+        if (resolveManagedGatewayServiceIdentity(env) === primary) {
+          primaryReads += 1;
+          if (primaryReads > 1 && outcome === "untyped") {
+            throw new Error("unverified candidate definition");
+          }
+          throw new ServiceInspectionError(
+            outcome === "system-owned"
+              ? "launchd-system-owned"
+              : primaryReads > 1 && outcome === "mismatched"
+                ? "systemd-user-bus-unavailable"
+                : "service-manager-unavailable",
+          );
+        }
+        return await readCommand(env, options);
+      });
+      vi.spyOn(serviceInventory, "findGatewayServices").mockResolvedValue({
+        services: (outcome === "system-owned"
+          ? []
+          : [primary, resolveGatewaySystemdServiceName("ops")]
+        ).map((label, index) => ({
+          platform: "linux",
+          scope: outcome === "system" && index === 1 ? "system" : "user",
+          label,
+          detail: `unit: ${path.join(f.unitDir, `${label}.service`)}`,
+          marker: "openclaw",
+        })),
+        errors:
+          outcome === "inventory"
+            ? [{ source: "unreadable.service", message: "Service definition is unreadable" }]
+            : [],
+      });
+      if (outcome === "shared") {
+        const admitted = await inspectUpdateDatabaseContexts(f.params);
+        expect(
+          admitted.profiles.map(({ stopState }) => stopState?.serviceUpdateVerdict?.kind),
+        ).toEqual(["unavailable", "owned"]);
+        expect(admitted.profiles[0]?.stopState).toEqual({
+          stopped: false,
+          inspected: false,
+          runtimeInspected: false,
+          running: false,
+          serviceMutationAllowed: false,
+          serviceUpdateVerdict: {
+            kind: "unavailable",
+            inspectionReason: "service-manager-unavailable",
+            message: expect.stringContaining("Restart the Gateway you launched manually"),
+          },
+          serviceMutationSkipMessage: expect.stringContaining(
+            "Restart the Gateway you launched manually",
+          ),
+        });
+        expect(admitted.profiles[1]?.stopState?.serviceEnv).toMatchObject(f.secondary.env);
+      } else {
+        await expect(inspectUpdateDatabaseContexts(f.params)).rejects.toMatchObject({
+          reason: "managed-service-preflight",
+          ...(outcome === "system"
+            ? { message: expect.stringContaining("Gateway system service") }
+            : {}),
+        });
+      }
+      expect(f.service.stop).not.toHaveBeenCalled();
+    },
+  );
   it.each(
     (["prepare", undefined] as const).flatMap((phase) =>
       [false, true].map((externalSystem) => ({ phase, externalSystem })),
@@ -616,3 +699,106 @@ describe("shared-install database admission", () => {
     );
   });
 });
+
+it.each([
+  { scope: "installation", target: "shared", overlap: "none", refused: true },
+  { scope: "installation", target: "foreign", overlap: "none", refused: false },
+  { scope: "profile-maintenance", target: "shared", overlap: "none", refused: false },
+  { scope: "profile-maintenance", target: "shared", overlap: "config", refused: true },
+  { scope: "profile-maintenance", target: "shared", overlap: "database", refused: true },
+  { scope: "profile-maintenance", target: "shared", overlap: "unknown", refused: true },
+] as const)(
+  "keeps external macOS state read-only during $scope: $target/$overlap",
+  async ({ scope, target, overlap, refused }) => {
+    const f = await fixture();
+    mockProcessPlatform("darwin");
+    const label = "org.synthetic.external-gateway";
+    const plistPath = "/Library/LaunchDaemons/org.synthetic.external-admission.plist";
+    const fixturePath = path.join(f.home, "custom-name.plist");
+    const environment =
+      overlap === "unknown"
+        ? {}
+        : {
+            OPENCLAW_STATE_DIR:
+              overlap === "database"
+                ? f.primary.env.OPENCLAW_STATE_DIR
+                : path.join(f.home, "external-state"),
+            OPENCLAW_CONFIG_PATH:
+              overlap === "config"
+                ? f.primary.env.OPENCLAW_CONFIG_PATH
+                : path.join(f.home, "external-state", "openclaw.json"),
+          };
+    await fs.writeFile(
+      fixturePath,
+      buildLaunchAgentPlist({
+        label,
+        programArguments: [
+          process.execPath,
+          path.join(target === "shared" ? f.root : f.foreignRoot, "dist", "entry.js"),
+          "gateway",
+        ],
+        stdoutPath: "/tmp/synthetic.stdout",
+        stderrPath: "/tmp/synthetic.stderr",
+        environment,
+      }),
+    );
+    const readFile = fs.readFile;
+    vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+      if (args[0] === plistPath) {
+        args[0] = fixturePath;
+      }
+      return readFile(...args);
+    });
+    vi.spyOn(launchdSystem, "inspectSystemLaunchDaemonOwnership").mockResolvedValue({
+      status: "absent",
+      serviceTarget: `system/${label}`,
+    });
+    vi.spyOn(processExec, "runExec").mockImplementation(async (command, args, options) => {
+      expect(command).toBe("/usr/bin/plutil");
+      if (typeof options !== "object" || !options.input) {
+        throw new Error("Missing captured plist bytes");
+      }
+      return decodeLaunchAgentPlistFixture(options.input, args[1]);
+    });
+    vi.spyOn(serviceInventory, "findGatewayServices").mockImplementation(async (_env, options) => ({
+      services: options?.deep
+        ? [
+            {
+              platform: "darwin",
+              scope: "system",
+              label,
+              detail: `plist: ${plistPath}`,
+              marker: "openclaw",
+            },
+          ]
+        : [],
+      errors: [],
+    }));
+    const pending = inspectUpdateDatabaseContexts({ ...f.params, scope });
+    if (refused) {
+      await expect(pending).rejects.toMatchObject({ reason: "managed-service-preflight" });
+    } else {
+      const admitted = await pending;
+      expect(admitted.profiles).toHaveLength(1);
+      expect(admitted.profiles[0]?.stopState?.serviceUpdateVerdict?.kind).toBe("owned");
+      if (target === "shared") {
+        expect(admitted.externalConsumers).toEqual([
+          expect.objectContaining({
+            state: expect.objectContaining({
+              externalLaunchdPlist: plistPath,
+              env: { ...environment, OPENCLAW_LAUNCHD_LABEL: label },
+            }),
+          }),
+        ]);
+      } else {
+        expect(admitted.externalConsumers).toEqual([]);
+      }
+    }
+    expect(f.service.readCommand).not.toHaveBeenCalledWith(
+      expect.objectContaining({ OPENCLAW_LAUNCHD_LABEL: label }),
+      expect.anything(),
+    );
+    expect(f.service.stop).not.toHaveBeenCalled();
+    expect(f.service.install).not.toHaveBeenCalled();
+  },
+);

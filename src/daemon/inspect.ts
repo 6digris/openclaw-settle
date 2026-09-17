@@ -14,8 +14,7 @@ import {
   resolveNodeLaunchAgentLabel,
 } from "./constants.js";
 import { resolveLaunchAgentLabel } from "./launchd-label.js";
-import { parseLaunchdPlistLabel } from "./launchd-plist.js";
-import { readLaunchDaemonPlistLabel } from "./launchd-system.js";
+import { decodeLaunchdPlistMetadata } from "./launchd-plist.js";
 import { resolveDaemonHomeDir } from "./paths.js";
 import { readScheduledTaskCommand, resolveTaskName } from "./schtasks-layout.js";
 import { listScheduledTasks } from "./schtasks-state-probe.js";
@@ -96,10 +95,7 @@ export function renderGatewayServiceCleanupHints(
 type Marker = (typeof EXTRA_MARKERS)[number];
 
 function hasGatewaySubcommandArg(args: string[]): boolean {
-  return args.some((arg) => {
-    const normalized = normalizeLowercaseStringOrEmpty(arg);
-    return normalized === "gateway" || /(^|\s)gateway(\s|$)/.test(normalized);
-  });
+  return args.some((arg) => /(^|\s)gateway(\s|$)/.test(normalizeLowercaseStringOrEmpty(arg)));
 }
 
 export function detectMarkerLineWithGateway(contents: string): Marker | null {
@@ -142,47 +138,17 @@ function hasGatewayServiceMarker(content: string): boolean {
   );
 }
 
-function extractPlistKeyBlock(
-  contents: string,
-  key: string,
-  tag: "array" | "string",
-): string | null {
-  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(
-    `<key>${escapedKey}<\\/key>\\s*<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`,
-    "i",
-  );
-  const match = contents.match(pattern);
-  return match?.[1]?.trim() || null;
-}
-
-function extractPlistStringValues(
-  contents: string,
-  key: string,
-  tag: "array" | "string",
-): string[] {
-  const block = extractPlistKeyBlock(contents, key, tag);
-  if (!block) {
-    return [];
-  }
-  if (tag === "string") {
-    return [block];
-  }
-  return Array.from(block.matchAll(/<string>([\s\S]*?)<\/string>/gi))
-    .map((match) => match[1]?.trim() ?? "")
-    .filter(Boolean);
-}
-
-function detectLaunchdGatewayExecutionMarker(contents: string): Marker | null {
-  const program = extractPlistStringValues(contents, "Program", "string");
-  const programArguments = extractPlistStringValues(contents, "ProgramArguments", "array");
+function detectLaunchdGatewayExecutionMarker(plist: Record<string, unknown>): Marker | null {
+  const programArguments = Array.isArray(plist.ProgramArguments)
+    ? plist.ProgramArguments.filter((arg): arg is string => typeof arg === "string")
+    : [];
   if (!hasGatewaySubcommandArg(programArguments)) {
     return null;
   }
   // Only execution command fields identify gateway jobs; labels alone catch too
   // many unrelated helper jobs.
   const launchCommand = normalizeLowercaseStringOrEmpty(
-    [...program, ...programArguments].filter(Boolean).join("\n"),
+    [typeof plist.Program === "string" ? plist.Program : "", ...programArguments].join("\n"),
   );
   return EXTRA_MARKERS.find((marker) => launchCommand.includes(marker)) ?? null;
 }
@@ -231,7 +197,7 @@ type ServiceFileEntry = {
   entry: string;
   name: string;
   fullPath: string;
-  contents: string;
+  contents: Buffer;
 };
 
 async function collectServiceFiles(params: {
@@ -254,7 +220,7 @@ async function collectServiceFiles(params: {
     const fullPath = path.join(params.dir, entry);
     const contents = await readServicePath(
       fullPath,
-      () => fs.readFile(fullPath, "utf8"),
+      () => fs.readFile(fullPath),
       params.isPotentialName(name) ? params.errors : undefined,
     );
     if (contents === null) {
@@ -285,30 +251,21 @@ async function scanLaunchdDir(params: {
   });
 
   for (const { name: labelFromName, fullPath, contents } of candidates) {
-    const parsedLabel = parseLaunchdPlistLabel(contents);
-    const executionMarker = detectLaunchdGatewayExecutionMarker(contents);
-    const serviceMarker = hasGatewayServiceMarker(contents);
-    const relevant =
-      isPotentialName(labelFromName) ||
-      (parsedLabel && isPotentialName(parsedLabel)) ||
-      executionMarker ||
-      serviceMarker;
-    const errors = relevant ? params.errors : undefined;
-    const nativeLabel =
-      params.includeManagedOpenClaw && (!parsedLabel || params.scope === "system")
-        ? await readServicePath(fullPath, () => readLaunchDaemonPlistLabel(fullPath), errors)
-        : null;
-    if (nativeLabel?.status === "unreadable" || nativeLabel?.status === "unverifiable") {
-      errors?.push({ source: fullPath, message: "Service plist could not be inspected." });
+    const plist = await decodeLaunchdPlistMetadata(contents).catch(() => {
+      params.errors?.push({ source: fullPath, message: "Service plist could not be inspected." });
+      return undefined;
+    });
+    if (!plist) {
+      continue;
     }
-    const label = nativeLabel?.status === "ok" ? nativeLabel.label : (parsedLabel ?? labelFromName);
+    const label = typeof plist.Label === "string" && plist.Label ? plist.Label : labelFromName;
+    const executionMarker = detectLaunchdGatewayExecutionMarker(plist);
+    const serviceMarker = hasGatewayServiceMarker(JSON.stringify(plist.EnvironmentVariables) ?? "");
     const legacyLabel = isLegacyLabel(labelFromName) || isLegacyLabel(label);
     const marker =
-      label === params.managedLabel || serviceMarker || executionMarker === "openclaw"
+      label === params.managedLabel || serviceMarker
         ? "openclaw"
-        : executionMarker === "clawdbot" || legacyLabel
-          ? "clawdbot"
-          : null;
+        : (executionMarker ?? (legacyLabel ? "clawdbot" : null));
     if (!marker) {
       continue;
     }
@@ -351,7 +308,8 @@ async function scanSystemdDir(params: {
     errors: params.errors,
   });
 
-  for (const { entry, name, fullPath, contents } of candidates) {
+  for (const { entry, name, fullPath, contents: bytes } of candidates) {
+    const contents = bytes.toString("utf8");
     const serviceMarker = hasGatewayServiceMarker(contents);
     const marker = serviceMarker ? "openclaw" : detectMarkerLineWithGateway(contents);
     if (!marker) {
@@ -420,8 +378,7 @@ async function scanGatewayServices(
 
   if (process.platform === "darwin") {
     try {
-      const home = resolveDaemonHomeDir(env);
-      const userDir = path.join(home, "Library", "LaunchAgents");
+      const userDir = path.join(resolveDaemonHomeDir(env), "Library", "LaunchAgents");
       for (const svc of await scanLaunchdDir({
         dir: userDir,
         scope: "user",
@@ -432,24 +389,18 @@ async function scanGatewayServices(
         push(svc);
       }
       if (opts.deep) {
-        for (const svc of await scanLaunchdDir({
-          dir: path.join(path.sep, "Library", "LaunchAgents"),
-          scope: "system",
-          includeManagedOpenClaw: opts.includeManagedOpenClaw,
-          selectedName: resolveLaunchAgentLabel(env),
-          errors,
-        })) {
-          push(svc);
-        }
-        for (const svc of await scanLaunchdDir({
-          dir: path.join(path.sep, "Library", "LaunchDaemons"),
-          scope: "system",
-          includeManagedOpenClaw: true,
-          managedLabel: resolveLaunchAgentLabel(env),
-          selectedName: resolveLaunchAgentLabel(env),
-          errors,
-        })) {
-          push(svc);
+        for (const directory of ["LaunchAgents", "LaunchDaemons"]) {
+          const systemDaemon = directory === "LaunchDaemons";
+          for (const svc of await scanLaunchdDir({
+            dir: path.join(path.sep, "Library", directory),
+            scope: "system",
+            includeManagedOpenClaw: systemDaemon || opts.includeManagedOpenClaw,
+            managedLabel: systemDaemon ? resolveLaunchAgentLabel(env) : undefined,
+            selectedName: resolveLaunchAgentLabel(env),
+            errors,
+          })) {
+            push(svc);
+          }
         }
       }
     } catch {

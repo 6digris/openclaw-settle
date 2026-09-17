@@ -137,6 +137,9 @@ describe("createSlackBoltApp", () => {
 
   class FakeSocketModeReceiver {
     args: Record<string, unknown>;
+    client = Object.assign(new EventEmitter(), {
+      send: vi.fn<(envelopeId: string) => Promise<void>>().mockResolvedValue(undefined),
+    });
 
     constructor(args: Record<string, unknown>) {
       this.args = args;

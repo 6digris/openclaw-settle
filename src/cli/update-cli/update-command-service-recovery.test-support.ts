@@ -14,11 +14,9 @@ import * as runtimeUtils from "../../utils.js";
 import { VERSION } from "../../version.js";
 import type { UpdateCommandOptions } from "./shared.js";
 import { completeUpdateCommandRun } from "./update-command-run.js";
-import {
-  maybeRestartService,
-  maybeStopManagedServiceBeforeMutableUpdate,
-  maybeRestartServiceAfterFailedMutableUpdate,
-} from "./update-command-service.js";
+import { maybeStopManagedServiceBeforeMutableUpdate } from "./update-command-service-maintenance.js";
+import { maybeRestartServiceAfterFailedMutableUpdate } from "./update-command-service-recovery.js";
+import { maybeRestartService } from "./update-command-service.js";
 
 export async function createServiceActivationFixture() {
   const root = await fs.realpath(

@@ -55,18 +55,6 @@ import {
 } from "./update-command-service-recovery.js";
 import { recordUpdateGatewayHealth, verifyUpdatedGateway } from "./update-command-verification.js";
 
-export {
-  maybeResumeWindowsTaskAutoStartAfterPackageUpdate,
-  maybeStopManagedServiceBeforeMutableUpdate,
-  revalidateManagedGatewayServiceAfterUpdate,
-  shouldBlockMutableUpdateFromGatewayServiceEnv,
-  UpdateCommandAbort,
-  type PreManagedServiceStop,
-  type UpdateCommandRecoveryState,
-} from "./update-command-service-maintenance.js";
-export { resolveUpdatedGatewayRestartPort } from "./update-command-service-plan.js";
-export { maybeRestartServiceAfterFailedMutableUpdate } from "./update-command-service-recovery.js";
-
 export function shouldPrepareUpdatedInstallRestart(params: {
   updateMode: UpdateRunResult["mode"];
   serviceInstalled: boolean;

@@ -25,7 +25,7 @@ import {
 import * as rollbackModule from "./update-command-rollback.js";
 import * as sourceRuntime from "./update-command-runtime.js";
 import { UpdateServiceLoadBoundaryError } from "./update-command-service-load.js";
-import { resolveUpdatedGatewayRestartPort } from "./update-command-service.js";
+import { resolveUpdatedGatewayRestartPort } from "./update-command-service-plan.js";
 
 const { expectFailureReport, expectUpdateFailure, mocks, tempDirs } =
   await import("./update-command-post-update-mocks.test-support.js");

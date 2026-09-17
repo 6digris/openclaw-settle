@@ -187,7 +187,7 @@ it("retains the live update run while recovering a failed update before reportin
     let recoveryRun: typeof run | undefined;
     const recoverService = vi
       .spyOn(
-        await import("./update-command-service.js"),
+        await import("./update-command-service-recovery.js"),
         "maybeRestartServiceAfterFailedMutableUpdate",
       )
       .mockImplementation(async (request) => {

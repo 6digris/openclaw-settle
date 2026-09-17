@@ -9,16 +9,16 @@ import {
   resolveUpdatedInstallCommandEnv,
   stripGatewayServiceMarkerEnv,
 } from "./update-command-service-env.js";
+import { revalidateManagedGatewayServiceAfterUpdate } from "./update-command-service-maintenance.js";
 import {
   assertGatewayServiceManagementAllowedForUpdate,
   GatewayServiceUpdateOwnershipError,
   isGatewayServiceManagementAllowedForUpdate,
   resolveGatewayServiceManagementBlockMessageForUpdate,
+  resolveUpdatedGatewayRestartPort,
 } from "./update-command-service-plan.js";
 import {
-  revalidateManagedGatewayServiceAfterUpdate,
   resolvePostUpdateServiceStateReadEnv,
-  resolveUpdatedGatewayRestartPort,
   shouldPrepareUpdatedInstallRestart,
 } from "./update-command-service.js";
 

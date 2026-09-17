@@ -35,15 +35,15 @@ import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
 import {
   createWindowsTaskAutoStartGuard,
   revalidateManagedGatewayServiceAfterUpdate,
-} from "./update-command-service-maintenance.js";
-import { assertGatewayServiceManagementAllowedForUpdate } from "./update-command-service-plan.js";
-import {
-  maybeRestartService,
   maybeResumeWindowsTaskAutoStartAfterPackageUpdate,
   maybeStopManagedServiceBeforeMutableUpdate,
-  resolveUpdatedGatewayRestartPort,
   type PreManagedServiceStop,
-} from "./update-command-service.js";
+} from "./update-command-service-maintenance.js";
+import {
+  assertGatewayServiceManagementAllowedForUpdate,
+  resolveUpdatedGatewayRestartPort,
+} from "./update-command-service-plan.js";
+import { maybeRestartService } from "./update-command-service.js";
 
 /** Restores the previous generation only while schemas and activation-owned config stay intact. */
 export async function rollbackFailedUpdate(params: {

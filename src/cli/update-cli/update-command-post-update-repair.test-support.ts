@@ -18,7 +18,7 @@ const mocks = vi.hoisted(() => ({
   healthy: false,
   version: "2026.9.3",
   stop: vi.fn<
-    typeof import("./update-command-service.js").maybeStopManagedServiceBeforeMutableUpdate
+    typeof import("./update-command-service-maintenance.js").maybeStopManagedServiceBeforeMutableUpdate
   >(),
   readyz: vi.fn(),
   print: vi.fn(),
@@ -81,10 +81,16 @@ vi.mock("./update-command-service-recovery.js", async (importOriginal) => ({
 vi.mock("./update-command-service.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./update-command-service.js")>()),
   maybeRestartService: mocks.restart,
+  tryInstallShellCompletion: async () => {},
+}));
+vi.mock("./update-command-service-maintenance.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./update-command-service-maintenance.js")>()),
   maybeStopManagedServiceBeforeMutableUpdate: mocks.stop,
   revalidateManagedGatewayServiceAfterUpdate: mocks.revalidate,
+}));
+vi.mock("./update-command-service-plan.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./update-command-service-plan.js")>()),
   resolveUpdatedGatewayRestartPort: async () => 19101,
-  tryInstallShellCompletion: async () => {},
 }));
 vi.mock("./update-command-service-command.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./update-command-service-command.js")>()),

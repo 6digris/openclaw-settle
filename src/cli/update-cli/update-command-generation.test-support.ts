@@ -16,10 +16,8 @@ import { readUpdateConfigSnapshot } from "./update-command-config-snapshot.js";
 import { finishUpdate } from "./update-command-post-update.js";
 import { UpdateCommandFailure } from "./update-command-result.js";
 import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
-import {
-  maybeRestartService,
-  maybeStopManagedServiceBeforeMutableUpdate,
-} from "./update-command-service.js";
+import { maybeStopManagedServiceBeforeMutableUpdate } from "./update-command-service-maintenance.js";
+import { maybeRestartService } from "./update-command-service.js";
 
 export function registerGenerationRecoveryTests(
   fixture: () => {

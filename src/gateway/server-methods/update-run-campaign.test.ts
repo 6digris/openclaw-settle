@@ -161,9 +161,12 @@ vi.mock("../../infra/update-runner-install-surface.js", () => ({
   resolveUpdateInstallSurface: resolveUpdateInstallSurfaceMock,
 }));
 
-vi.mock("../../infra/update-startup.js", () => ({
+vi.mock("../../infra/update-status-state.js", () => ({
   getUpdateAvailable: () => null,
   getUpdateSchedule: () => updateSchedule,
+}));
+
+vi.mock("../../infra/update-startup.js", () => ({
   initializeGatewayUpdateStatus: initializeGatewayUpdateStatusMock,
 }));
 

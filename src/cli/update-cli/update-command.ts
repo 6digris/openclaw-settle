@@ -41,8 +41,8 @@ import {
   resolveUpdateTargetEnv,
   withUpdateInProgressEnv,
 } from "./update-command-service-env.js";
+import type { UpdateCommandRecoveryState } from "./update-command-service-maintenance.js";
 import { resolvePackageRuntimePreflight } from "./update-command-service-plan.js";
-import type { UpdateCommandRecoveryState } from "./update-command-service.js";
 import { resolveUpdateCommandTarget } from "./update-command-target.js";
 import {
   reportPreMutationUpdateResult,

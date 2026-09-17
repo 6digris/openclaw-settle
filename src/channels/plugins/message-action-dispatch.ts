@@ -50,6 +50,7 @@ type PreparedMessageActionReadContext = {
   actionPolicy: ChannelMessageActionReadPolicy;
   enforcement: MessageActionReadEnforcement;
   scheduledAccess?: ScheduledMessageActionAccess;
+  assertDashboardReadCurrent?: () => void;
   hasRegistrationAuthority: boolean;
   assertReadAuthorityCurrent?: () => void;
   assertAliasAuthorityCurrent: () => void;
@@ -356,12 +357,22 @@ function prepareMessageActionReadContext(
     conversationReadOrigin: origin,
   };
   const assertCallerCurrent = ctx.assertDirectAdapterHandoff;
+  // A dashboard grant cannot replace native provider/account context or a job grant.
+  const assertDashboardReadCurrent =
+    enforcement.kind === "provider-owned" &&
+    enforcement.fenced &&
+    !ctx.messageActionAuthorization?.scheduled &&
+    ctx.toolContext === undefined &&
+    ctx.requesterAccountId === undefined
+      ? ctx.messageActionAuthorization?.assertDashboardReadCurrent
+      : undefined;
   const assertReadAuthorityCurrent =
     (origin !== "direct-operator" || scheduledAccess) &&
     enforcement.kind === "provider-owned" &&
     enforcement.fenced
       ? () => {
           assertCallerCurrent?.();
+          assertDashboardReadCurrent?.();
           scheduledAccess?.assertCurrent();
           if (!authority?.()) {
             throw new Error(`Plugin ${ctx.channel} read authority is no longer active.`);
@@ -375,10 +386,12 @@ function prepareMessageActionReadContext(
     actionPolicy,
     enforcement,
     scheduledAccess,
+    assertDashboardReadCurrent,
     hasRegistrationAuthority,
     assertReadAuthorityCurrent,
     assertAliasAuthorityCurrent: () => {
       assertCallerCurrent?.();
+      assertDashboardReadCurrent?.();
       scheduledAccess?.assertCurrent();
       const current =
         registration.captureReadAuthority && !authority?.()
@@ -415,6 +428,7 @@ type MessageActionConversationReadGateParams = {
   actionPolicy: ChannelMessageActionReadPolicy;
   enforcement: MessageActionReadEnforcement;
   scheduledAccess?: ScheduledMessageActionAccess;
+  assertDashboardReadCurrent?: () => void;
 };
 
 /** The shared host decision before any read-capable plugin callback runs. */
@@ -430,6 +444,7 @@ function resolveMessageActionConversationReadGate(
       params.enforcement.fenced &&
       params.enforcement.pluginTrust === "external" &&
       !params.scheduledAccess &&
+      !params.assertDashboardReadCurrent &&
       (!hasMatchingCurrentProviderContext(params.ctx) ||
         !hasMatchingCurrentAccountContext(params.ctx) ||
         !hasCurrentConversationTarget(params.ctx))

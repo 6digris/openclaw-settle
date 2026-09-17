@@ -21,12 +21,12 @@ import {
 } from "./update-command-result.js";
 import { rollbackFailedUpdate } from "./update-command-rollback.js";
 import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
-import { createWindowsTaskAutoStartGuard } from "./update-command-service-maintenance.js";
 import {
-  recordFailedUpdateGatewayState,
-  maybeRestartServiceAfterFailedMutableUpdate,
+  createWindowsTaskAutoStartGuard,
   maybeResumeWindowsTaskAutoStartAfterPackageUpdate,
-} from "./update-command-service.js";
+} from "./update-command-service-maintenance.js";
+import { maybeRestartServiceAfterFailedMutableUpdate } from "./update-command-service-recovery.js";
+import { recordFailedUpdateGatewayState } from "./update-command-service.js";
 import {
   deferUpdateCommandTerminalResult,
   recordUpdatePackageCompletion,

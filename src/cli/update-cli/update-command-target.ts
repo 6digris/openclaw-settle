@@ -56,12 +56,12 @@ import {
   readDevUpdateTarget,
   type prepareUpdateCommand,
 } from "./update-command-run.js";
+import type { UpdateCommandRecoveryState } from "./update-command-service-maintenance.js";
 import {
   resolveManagedServicePackageUpdatePlan,
   formatManagedServicePackageUpdatePlan,
   type ManagedServiceRootRedirect,
 } from "./update-command-service-plan.js";
-import type { UpdateCommandRecoveryState } from "./update-command-service.js";
 import { reportPreMutationUpdateResult } from "./update-command-terminal.js";
 
 export async function resolveUpdateCommandTarget(

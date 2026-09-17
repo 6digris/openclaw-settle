@@ -23,9 +23,9 @@ import {
   resolveOwnedManagedUpdateEnv,
   resolveUpdatedInstallCommandEnv,
 } from "./update-command-service-env.js";
+import { resolveUpdatedGatewayRestartPort } from "./update-command-service-plan.js";
 import {
   resolvePostUpdateServiceStateReadEnv,
-  resolveUpdatedGatewayRestartPort,
   shouldPrepareUpdatedInstallRestart,
 } from "./update-command-service.js";
 import { testing as updateCommandServiceTesting } from "./update-command-service.test-support.js";

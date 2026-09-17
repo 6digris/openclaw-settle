@@ -29,16 +29,14 @@ import { prepareUpdateRestart } from "./update-command-restart-context.js";
 import { UpdateCommandFailure } from "./update-command-result.js";
 import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
 import { UpdateServiceLoadBoundaryError } from "./update-command-service-load.js";
+import { maybeStopManagedServiceBeforeMutableUpdate } from "./update-command-service-maintenance.js";
 import {
+  collectServiceInspectionFailureFacts,
   GatewayServiceUpdateOwnershipError,
   resolvePackageRuntimePreflight,
   resolveUpdatedGatewayRestartPort,
 } from "./update-command-service-plan.js";
-import {
-  maybeRestartService,
-  maybeStopManagedServiceBeforeMutableUpdate,
-  tryInstallShellCompletion,
-} from "./update-command-service.js";
+import { maybeRestartService, tryInstallShellCompletion } from "./update-command-service.js";
 
 export type { FinishUpdateParams } from "./update-command-finish-types.js";
 
@@ -62,6 +60,20 @@ export async function finishUpdate(
   assertCurrent();
   await assertUpdateCommandPackageFinalization(params);
   assertCurrent();
+  for (const [index, profile] of params.profiles.entries()) {
+    const verdict = profile.preManagedServiceStop?.serviceUpdateVerdict;
+    if (verdict?.kind === "unavailable") {
+      params.result.steps.push({
+        name: `${params.profiles.length > 1 ? `profile ${index + 1}: ` : ""}managed-service`,
+        command: "openclaw gateway status --deep",
+        cwd: params.root,
+        durationMs: 0,
+        exitCode: 0,
+        advisory: { kind: "recoverable-maintenance", message: verdict.message },
+        failureFacts: collectServiceInspectionFailureFacts(verdict),
+      });
+    }
+  }
   const {
     state: finalizationState,
     origin,

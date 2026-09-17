@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { createConfigIO } from "../../config/config.js";
-import type { PreManagedServiceStop } from "./update-command-service.js";
+import type { PreManagedServiceStop } from "./update-command-service-maintenance.js";
 
 const mocks = vi.hoisted(() => ({
   stop: vi.fn(),
@@ -26,19 +26,20 @@ vi.mock("./update-command-service-maintenance.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./update-command-service-maintenance.js")>()),
   createWindowsTaskAutoStartGuard: () => async () => {},
   revalidateManagedGatewayServiceAfterUpdate: mocks.revalidateService,
-}));
-vi.mock("./update-command-service-command.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./update-command-service-command.js")>()),
-  runUpdatedInstallGatewayCommand: async () => "accepted",
-}));
-vi.mock("./update-command-service.js", () => ({
   maybeStopManagedServiceBeforeMutableUpdate: mocks.stop,
-  maybeRestartService: mocks.restart,
   maybeResumeWindowsTaskAutoStartAfterPackageUpdate: async (
     stopped: PreManagedServiceStop | undefined,
     safe: boolean,
     guard?: () => Promise<void>,
   ) => stopped?.windowsTaskAutoStartRecovery?.restore(safe, guard),
+}));
+vi.mock("./update-command-service-command.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./update-command-service-command.js")>()),
+  runUpdatedInstallGatewayCommand: async () => "accepted",
+}));
+vi.mock("./update-command-service.js", () => ({ maybeRestartService: mocks.restart }));
+vi.mock("./update-command-service-plan.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./update-command-service-plan.js")>()),
   resolveUpdatedGatewayRestartPort: async () => 19101,
 }));
 

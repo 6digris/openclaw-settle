@@ -7,8 +7,8 @@ import type { createUpdateProgress } from "./progress.js";
 import type { UpdateCommandOptions } from "./shared.js";
 import type { UpdateProfileContext } from "./update-command-finish-types.js";
 import type { StagedPackageInstallUpdate } from "./update-command-package.js";
+import type { UpdateCommandRecoveryState } from "./update-command-service-maintenance.js";
 import type { ManagedServiceRootRedirect } from "./update-command-service-plan.js";
-import type { UpdateCommandRecoveryState } from "./update-command-service.js";
 
 export type MutableUpdateExecutionParams = {
   root: string;

@@ -24,11 +24,11 @@ const mocks = vi.hoisted(() => ({
   restartService: vi.fn<typeof import("./update-command-service.js").maybeRestartService>(),
   stopService:
     vi.fn<
-      typeof import("./update-command-service.js").maybeStopManagedServiceBeforeMutableUpdate
+      typeof import("./update-command-service-maintenance.js").maybeStopManagedServiceBeforeMutableUpdate
     >(),
   revalidateService:
     vi.fn<
-      typeof import("./update-command-service.js").revalidateManagedGatewayServiceAfterUpdate
+      typeof import("./update-command-service-maintenance.js").revalidateManagedGatewayServiceAfterUpdate
     >(),
   updatePlugins: vi.fn(),
   writeSentinel: vi.fn<
@@ -94,6 +94,9 @@ vi.mock("./restart-helper.js", () => ({
 vi.mock("./update-command-service.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./update-command-service.js")>()),
   maybeRestartService: mocks.restartService,
+}));
+vi.mock("./update-command-service-maintenance.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./update-command-service-maintenance.js")>()),
   maybeStopManagedServiceBeforeMutableUpdate: mocks.stopService,
   revalidateManagedGatewayServiceAfterUpdate: mocks.revalidateService,
 }));

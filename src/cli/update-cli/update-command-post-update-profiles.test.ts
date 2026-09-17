@@ -44,6 +44,61 @@ describe("successful update finalization ordering", () => {
       identity.restore();
     });
 
+    it.each([1, 2])(
+      "retains inspection diagnostics in the origin report for %i profiles",
+      async (count) => {
+        const message = servicePlan.GATEWAY_SERVICE_INSPECTION_WARNING;
+        const profiles: FinishUpdateParams["profiles"] = Array.from(
+          { length: count },
+          (_, index) => ({
+            configSnapshot: {
+              ...validConfigSnapshot,
+              path: path.join(identity.home, `profile-${index}.json`),
+            },
+            requestedChannel: null,
+            storedChannel: null,
+            preUpdatePluginInstallRecords: {},
+            preManagedServiceStop: {
+              stopped: false,
+              inspected: false,
+              runtimeInspected: false,
+              running: false,
+              serviceMutationAllowed: false,
+              serviceMutationSkipMessage: message,
+              serviceUpdateVerdict: {
+                kind: "unavailable",
+                message,
+                inspectionReason: "service-manager-unavailable",
+              },
+            },
+          }),
+        );
+        await finishSuccessfulPackageSwitch({ json: true }, { profiles, shouldRestart: false });
+        const result = mocks.printResult.mock.calls.at(-1)?.[0];
+        expect(result).toMatchObject({ status: "ok" });
+        const warnings = result.steps.filter((step: { name: string }) =>
+          step.name.endsWith("managed-service"),
+        );
+        expect(warnings.map((step: { name: string }) => step.name)).toEqual(
+          count === 1
+            ? ["managed-service"]
+            : ["profile 1: managed-service", "profile 2: managed-service"],
+        );
+        for (const warning of warnings) {
+          expect(warning).toMatchObject({
+            exitCode: 0,
+            advisory: { kind: "recoverable-maintenance", message },
+            failureFacts: [{ check: "managed-service", code: "service-manager-unavailable" }],
+          });
+        }
+        expect(mocks.writeSentinel.mock.calls.at(-1)?.[0].result.steps).toEqual(result.steps);
+        expect(mocks.stopService).not.toHaveBeenCalled();
+        expect(
+          mocks.restartService.mock.calls.every(([params]) => params.shouldRestart === false),
+        ).toBe(true);
+      },
+    );
+
     it("keeps origin-native credentials out of sibling installs during migrated finalization", async () => {
       const commonEnv: NodeJS.ProcessEnv = {
         ...process.env,
@@ -205,7 +260,7 @@ describe("successful update finalization ordering", () => {
             version: "2026.4.24",
             buildId: "current",
           });
-        const service = await import("./update-command-service.js");
+        const service = await import("./update-command-service-recovery.js");
         if (commandFailed) {
           const native = await import("../../daemon/service.js");
           vi.spyOn(native, "resolveGatewayService").mockReturnValue({

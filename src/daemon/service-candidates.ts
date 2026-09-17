@@ -21,23 +21,25 @@ import { readGatewayServiceState, type GatewayService } from "./service.js";
 import { resolveSystemdServiceName } from "./systemd-service-files.js";
 
 export function resolveManagedGatewayServiceIdentity(env: GatewayServiceEnv): string {
-  const resolveName =
-    process.platform === "darwin"
-      ? resolveLaunchAgentLabel
-      : process.platform === "win32"
-        ? resolveTaskName
-        : resolveSystemdServiceName;
-  const name = resolveName(env);
-  return process.platform === "win32" ? normalizeWindowsTaskIdentity(name) : name;
+  return process.platform === "win32"
+    ? normalizeWindowsTaskIdentity(resolveTaskName(env))
+    : process.platform === "darwin"
+      ? resolveLaunchAgentLabel(env)
+      : resolveSystemdServiceName(env);
 }
 
 /** Native snapshots are discovery facts; callers still prove target ownership before mutation. */
 export async function readGatewayServiceCandidates(
   service: GatewayService,
-  args: GatewayServiceEnvArgs & { knownServiceEnvs?: readonly GatewayServiceEnv[] } = {},
+  args: GatewayServiceEnvArgs & {
+    knownServiceEnvs?: readonly GatewayServiceEnv[];
+    onInspectionUnavailable?: (error: ServiceInspectionError) => boolean;
+  } = {},
 ): Promise<GatewayServiceState[]> {
   const baseEnv = args.env ?? process.env;
-  const inventory = await findGatewayServices(baseEnv, { deep: process.platform === "linux" });
+  const inventory = await findGatewayServices(baseEnv, {
+    deep: process.platform === "linux" || process.platform === "darwin",
+  });
   if (inventory.errors.length > 0) {
     throw new ServiceDefinitionInspectionError(
       inventory.errors.map((error) => error.source).join(", "),
@@ -51,13 +53,13 @@ export async function readGatewayServiceCandidates(
   );
   const states: GatewayServiceState[] = [];
   for (const candidate of inventory.services) {
-    if (
-      candidate.marker !== "openclaw" ||
-      candidate.platform !== process.platform ||
-      (candidate.platform === "darwin" && candidate.scope !== "user")
-    ) {
+    if (candidate.marker !== "openclaw" || candidate.platform !== process.platform) {
       continue;
     }
+    const externalLaunchdPlist =
+      candidate.platform === "darwin" && candidate.scope === "system"
+        ? candidate.detail.slice("plist: ".length)
+        : undefined;
     const env = cloneEnvWithPlatformSemantics(baseEnv);
     for (const key of [
       ...GATEWAY_SERVICE_SELECTOR_ENV_KEYS,
@@ -79,7 +81,7 @@ export async function readGatewayServiceCandidates(
           ? "OPENCLAW_SYSTEMD_UNIT"
           : "OPENCLAW_WINDOWS_TASK_NAME";
     env[selector] = candidate.label;
-    const identity = `${candidate.scope}:${resolveManagedGatewayServiceIdentity(env)}`;
+    const identity = `${candidate.scope}:${resolveManagedGatewayServiceIdentity(env)}${externalLaunchdPlist ? `\0${externalLaunchdPlist}` : ""}`;
     if (known.has(identity)) {
       continue;
     }
@@ -95,20 +97,26 @@ export async function readGatewayServiceCandidates(
           : undefined;
       state = await readGatewayServiceState(service, {
         env,
-        ...(systemdReadTarget
-          ? {
-              systemdReadTarget,
-              systemdInstallation: { kind: "system", system: systemdReadTarget } as const,
-            }
-          : {}),
+        externalLaunchdPlist,
+        systemdInstallation: systemdReadTarget
+          ? { kind: "system", system: systemdReadTarget }
+          : undefined,
         requireEffective: true,
         requireLoadedCommand: true,
         timeoutMs: args.timeoutMs,
       });
     } catch (error) {
-      throw error instanceof ServiceInspectionError
+      if (
+        error instanceof ServiceInspectionError &&
+        error.reason !== "launchd-system-owned" &&
+        args.onInspectionUnavailable?.(error)
+      ) {
+        continue;
+      }
+      throw error instanceof ServiceInspectionError ||
+        error instanceof ServiceDefinitionInspectionError
         ? error
-        : new ServiceDefinitionInspectionError(candidate.label);
+        : new ServiceDefinitionInspectionError(externalLaunchdPlist ?? candidate.label);
     }
     const entrypointIndex =
       state.command && resolveServiceEntrypointIndex(state.command.programArguments);

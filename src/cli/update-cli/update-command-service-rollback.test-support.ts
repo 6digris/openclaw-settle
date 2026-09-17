@@ -15,8 +15,8 @@ import { VERSION } from "../../version.js";
 import { rollbackFailedUpdate } from "./update-command-rollback.js";
 import { createRollbackProfile } from "./update-command-rollback.test-support.js";
 import type { PreManagedServiceStop } from "./update-command-service-context-types.js";
+import { maybeStopManagedServiceBeforeMutableUpdate } from "./update-command-service-maintenance.js";
 import type { InstallRootTransitionFixture } from "./update-command-service-transition.test-support.js";
-import { maybeStopManagedServiceBeforeMutableUpdate } from "./update-command-service.js";
 
 export function registerPackageRootRollbackTests(
   getFixture: () => InstallRootTransitionFixture & {

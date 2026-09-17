@@ -7,15 +7,18 @@ import { maybeStopManagedServiceBeforeMutableUpdate } from "../cli/update-cli/up
 import { withEnvAsync } from "../test-utils/env.js";
 import { mockProcessPlatform } from "../test-utils/vitest-spies.js";
 import type { ExecResult } from "./exec-file.js";
-import type { SystemdServiceReadTarget } from "./service-types.js";
+import type { SystemdGatewayInstallation, SystemdServiceReadTarget } from "./service-types.js";
 
 const exec = vi.hoisted(() => vi.fn<typeof import("./exec-file.js").execFileUtf8>());
 const discovery = vi.hoisted(() => vi.fn<() => Promise<SystemdServiceReadTarget>>());
+const installationDiscovery = vi.hoisted(() =>
+  vi.fn<typeof import("./systemd-scope.js").findSystemdGatewayInstallation>(),
+);
 vi.mock("./exec-file.js", () => ({ execFileUtf8: exec }));
 vi.mock("./systemd-scope.js", async (original) => ({
   ...(await original<typeof import("./systemd-scope.js")>()),
   findInstalledSystemdGatewayScope: discovery,
-  findSystemdGatewayInstallation: async () => ({ kind: "system", system: await discovery() }),
+  findSystemdGatewayInstallation: installationDiscovery,
   isSystemdServiceAbsent: async () => false,
 }));
 
@@ -51,6 +54,7 @@ it("admits offline maintenance through the registered system-scope reader and pr
     `[Service]\nUser=gateway\nExecStart=${process.execPath} ${entrypoint} gateway\n`,
   );
   discovery.mockResolvedValue(target);
+  installationDiscovery.mockResolvedValue({ kind: "system", system: target });
   mockProcessPlatform("linux");
   vi.spyOn(os, "userInfo").mockReturnValue({
     username: "gateway",
@@ -134,21 +138,58 @@ it("admits offline maintenance through the registered system-scope reader and pr
       OPENCLAW_SERVICE_KIND: undefined,
     },
     async () => {
-      const state = await readGatewayServiceState(resolveGatewayService(), {
-        requireEffective: true,
-        requireLoadedCommand: true,
-      });
-      expect(state).toMatchObject({
-        systemdInstallation: { kind: "system", system: target },
-        installed: true,
-        running: false,
-        loadState: { status: "loaded" },
-        runtime: {
-          status: "stopped",
-          systemd: { scope: "system", unit: target.unitName, managerUid: 0 },
-        },
-        definitionMutationCapability: { kind: "sealed", reason: "system-owned" },
-      });
+      for (const selection of [
+        "discovered",
+        "supplied",
+        "delegated",
+        "none",
+        "dueling",
+        "explicit",
+      ] as const) {
+        const supplied: SystemdGatewayInstallation | undefined =
+          selection === "none" || selection === "explicit"
+            ? { kind: "none" }
+            : selection === "dueling"
+              ? { kind: "dueling", user: { ...target, scope: "user" }, system: target }
+              : selection === "discovered"
+                ? undefined
+                : { kind: "system", system: target };
+        const service = { ...resolveGatewayService() };
+        if (selection === "delegated") {
+          const readCommand = service.readCommand;
+          service.readCommand = (...args) => readCommand(...args);
+        }
+        const shouldDiscover =
+          selection === "discovered" || selection === "none" || selection === "dueling";
+        installationDiscovery.mockReset();
+        if (shouldDiscover) {
+          installationDiscovery.mockResolvedValue({ kind: "system", system: target });
+        } else {
+          installationDiscovery.mockRejectedValue(
+            new Error("Supplied target must retain its scope"),
+          );
+        }
+        const state = await readGatewayServiceState(service, {
+          requireEffective: true,
+          requireLoadedCommand: true,
+          systemdInstallation: supplied,
+          systemdReadTarget: selection === "explicit" ? target : undefined,
+        });
+        expect(installationDiscovery, selection).toHaveBeenCalledTimes(shouldDiscover ? 1 : 0);
+        expect(state, selection).toMatchObject({
+          systemdInstallation:
+            selection === "explicit" ? { kind: "none" } : { kind: "system", system: target },
+          installed: true,
+          running: false,
+          loadState: { status: "loaded" },
+          runtime: {
+            status: "stopped",
+            systemd: { scope: "system", unit: target.unitName, managerUid: 0 },
+          },
+          definitionMutationCapability: { kind: "sealed", reason: "system-owned" },
+        });
+      }
+      installationDiscovery.mockResolvedValue({ kind: "system", system: target });
       const admitted = await maybeStopManagedServiceBeforeMutableUpdate({
         root,
         updateInstallKind: "package",

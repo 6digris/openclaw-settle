@@ -59,7 +59,7 @@ import {
 import { renderUpdateRunNotice } from "../../infra/update-run-report.js";
 import { resolveUnmanagedUpdateInstallReason } from "../../infra/update-runner-install-surface.js";
 import type { UpdateRunResult } from "../../infra/update-runner-types.js";
-import { getUpdateAvailable } from "../../infra/update-startup.js";
+import { getUpdateAvailable } from "../../infra/update-status-state.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { mergeDeliveryContext } from "../../utils/delivery-context.shared.js";
 import {

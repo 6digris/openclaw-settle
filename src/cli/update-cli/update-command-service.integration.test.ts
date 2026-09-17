@@ -24,6 +24,10 @@ import { addGatewayServiceCommands } from "../daemon-cli/register-service-comman
 import * as startRepair from "../daemon-cli/start-repair.js";
 import type { UpdateCommandOptions } from "./shared.js";
 import { registerGenerationRecoveryTests } from "./update-command-generation.test-support.js";
+import {
+  maybeStopManagedServiceBeforeMutableUpdate,
+  revalidateManagedGatewayServiceAfterUpdate,
+} from "./update-command-service-maintenance.js";
 import { assertGatewayServiceManagementAllowedForUpdate } from "./update-command-service-plan.js";
 import {
   createServiceActivationFixture,
@@ -37,11 +41,7 @@ import {
   registerPluginMaintenanceTests,
   registerRestartOutcomeTests,
 } from "./update-command-service-transition.test-support.js";
-import {
-  maybeRestartService,
-  maybeStopManagedServiceBeforeMutableUpdate,
-  revalidateManagedGatewayServiceAfterUpdate,
-} from "./update-command-service.js";
+import { maybeRestartService } from "./update-command-service.js";
 
 const mocks = vi.hoisted(() => ({
   launchctl: vi.fn<typeof import("../../daemon/launchd-exec.js").execLaunchctl>(),
@@ -190,8 +190,8 @@ vi.mock("../../process/exec.js", async (importOriginal) => {
       return mocks.child(...args);
     },
     runExec: vi.fn(
-      async (_command: string, _args: string[], options: { input: string | Uint8Array }) =>
-        decodeLaunchAgentPlistFixture(options.input),
+      async (_command: string, args: string[], options: { input: string | Uint8Array }) =>
+        decodeLaunchAgentPlistFixture(options.input, args[1]),
     ),
   };
 });

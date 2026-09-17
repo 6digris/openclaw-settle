@@ -6,13 +6,13 @@ import type { UpdateCommandOptions } from "./shared.js";
 import { appendPluginUpdateWarnings } from "./update-command-plugins-internals.js";
 import { runUpdateCommandRepair } from "./update-command-repair.js";
 import { runUpdatedInstallGatewayCommand } from "./update-command-service-command.js";
-import { createWindowsTaskAutoStartGuard } from "./update-command-service-maintenance.js";
-import { assertGatewayServiceManagementAllowedForUpdate } from "./update-command-service-plan.js";
 import {
+  createWindowsTaskAutoStartGuard,
   maybeResumeWindowsTaskAutoStartAfterPackageUpdate,
   revalidateManagedGatewayServiceAfterUpdate,
   type PreManagedServiceStop,
-} from "./update-command-service.js";
+} from "./update-command-service-maintenance.js";
+import { assertGatewayServiceManagementAllowedForUpdate } from "./update-command-service-plan.js";
 import { verifyUpdatedGateway } from "./update-command-verification.js";
 
 export async function repairUpdateService(params: {

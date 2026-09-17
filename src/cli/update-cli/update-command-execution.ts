@@ -60,16 +60,16 @@ import {
 } from "./update-command-result.js";
 import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
 import {
-  collectServiceInspectionFailureFacts,
-  GatewayServiceUpdateOwnershipError,
-  resolvePackageRuntimePreflight,
-} from "./update-command-service-plan.js";
-import {
   maybeStopManagedServiceBeforeMutableUpdate,
   shouldBlockMutableUpdateFromGatewayServiceEnv,
   UpdateCommandAbort,
   type PreManagedServiceStop,
-} from "./update-command-service.js";
+} from "./update-command-service-maintenance.js";
+import {
+  collectServiceInspectionFailureFacts,
+  GatewayServiceUpdateOwnershipError,
+  resolvePackageRuntimePreflight,
+} from "./update-command-service-plan.js";
 
 export async function executeMutableUpdate(
   params: MutableUpdateExecutionParams,
