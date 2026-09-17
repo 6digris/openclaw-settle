@@ -31,6 +31,49 @@ function toolResult(
 }
 
 describe("projectSettledCodexMessages", () => {
+  it.each([
+    {
+      kind: "string",
+      content: "This turn ended before a reply: connection interrupted.",
+    },
+    {
+      kind: "text blocks",
+      content: [{ type: "text", text: "This turn ended before a reply: connection interrupted." }],
+    },
+  ])("preserves durable custom notes as historical user context ($kind)", ({ content }) => {
+    expect(
+      projectSettledCodexMessages([
+        message({
+          role: "custom",
+          customType: "run-failed-before-reply",
+          content,
+          display: true,
+          __openclaw: { upstreamUserText: "User prompt metadata is not custom-note content." },
+        }),
+        toolCall(),
+        toolResult(),
+      ]),
+    ).toEqual([
+      {
+        type: "message",
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: "This turn ended before a reply: connection interrupted.",
+          },
+        ],
+      },
+      {
+        type: "function_call",
+        call_id: "call-1",
+        name: "message",
+        arguments: '{"action":"send"}',
+      },
+      { type: "function_call_output", call_id: "call-1", output: "Message sent." },
+    ]);
+  });
+
   it("projects a canonical completed tool exchange without exposing reasoning", () => {
     expect(
       projectSettledCodexMessages([

@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import type { AgentMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { isRecord, normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { isCodexDurableCustomMessage } from "./context-engine-projection.js";
 import { CodexHistoryRejection } from "./history-rejection.js";
 import type { JsonValue } from "./protocol.js";
 import { readUpstreamUserText } from "./upstream-prompt-provenance.js";
@@ -286,6 +287,15 @@ class HistoryProjection {
       projectAssistantMessage(message, this);
     } else if (message.role === "toolResult") {
       projectToolResult(message, this);
+    } else if (message.role === "custom") {
+      if (isCodexDurableCustomMessage(message)) {
+        // Canonical harness replay treats durable custom notes as user context.
+        // Preserve their content without borrowing actual-user prompt metadata.
+        projectUserMessage(
+          { role: "user", content: message.content, timestamp: message.timestamp },
+          this,
+        );
+      }
     } else {
       throw new CodexHistoryRejection("unsupported_content");
     }
