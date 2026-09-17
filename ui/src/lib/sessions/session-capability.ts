@@ -38,6 +38,12 @@ import type { SessionPatchRoute } from "./patch.ts";
 import type { SessionChangedResult, SessionReconcileOptions } from "./reconcile.ts";
 import type { SessionRunTerminal } from "./session-run-terminal.ts";
 
+export type SessionAgentSelection = {
+  readonly state: { readonly selectedId: string | null };
+  readonly intentRevision?: number;
+  subscribe: (listener: () => void) => () => void;
+};
+
 export type SessionState = {
   result: SessionsListResult | null;
   resultCached?: boolean;

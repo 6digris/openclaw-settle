@@ -304,13 +304,13 @@ export function createSessionScopedOperations(host: SessionScopedOperationsHost)
     subscribeMessages,
     switchBranch,
     unsubscribeMessages,
-    retireConnection(previousClient: GatewayBrowserClient | null) {
+    retireConnection(this: void, previousClient: GatewayBrowserClient | null) {
       if (previousClient) {
         resetGatewaySessionMessageSubscriptionCoordinator(previousClient);
       }
       ownedSubscriptions.clear();
     },
-    dispose() {
+    dispose(this: void) {
       for (const subscription of ownedSubscriptions) {
         void unsubscribeMessages(subscription).catch(() => undefined);
       }

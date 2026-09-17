@@ -65,6 +65,7 @@ import { createCliRuntimeCapture, getMockCallOutput } from "./test-runtime-captu
 import {
   buildUpdateCliArgs,
   makeOkUpdateResult,
+  registerPostCoreWarningReportingTest,
   reportCandidateSteps,
   requireValue,
   statfsFixture,
@@ -5477,125 +5478,14 @@ describe("update-cli", () => {
     });
   });
 
-  it("preserves fresh-process plugin warning details in parent json output", async () => {
-    const advisories = [
-      {
-        pluginId: "demo",
-        reason: "plugin-target-unavailable",
-        message: "Retained demo; the requested package version is unavailable.",
-        guidance: ["openclaw plugins update demo"],
-      },
-      {
-        reason: "doctor-advisory",
-        message: "Review the group allowlist after updating.",
-        guidance: ["openclaw doctor"],
-      },
-      {
-        reason: "configured-plugin-path-unavailable",
-        source: "/fixture/offline-plugin",
-        message: "Configured plugin path is unavailable; configuration is preserved.",
-        guidance: ["Restore the path, then run openclaw doctor --fix."],
-      },
-      {
-        reason: "configured-plugin-path-inspection-failed",
-        source: "/fixture/unreadable-plugin",
-        errorCode: "EACCES",
-        message: "Configured plugin path is unreadable; configuration is preserved.",
-        guidance: ["Fix permissions, then run openclaw doctor --fix."],
-      },
-    ];
-    const sourceBundledMessage = "source-demo remains owned by the bundled source checkout.";
-    setupUpdatedRootRefresh();
-    spawn.mockImplementationOnce((_node, _argv, options) => {
-      const child = new EventEmitter() as EventEmitter & {
-        once: EventEmitter["once"];
-      };
-      const env = (options as { env?: NodeJS.ProcessEnv }).env;
-      queueMicrotask(() => {
-        void (async () => {
-          const resultPath = env?.OPENCLAW_UPDATE_POST_CORE_RESULT_PATH;
-          if (resultPath) {
-            await fs.writeFile(
-              resultPath,
-              JSON.stringify({
-                status: "warning",
-                changed: false,
-                warnings: [
-                  {
-                    pluginId: "demo",
-                    reason: "Failed to update demo: registry timeout",
-                    message:
-                      'Plugin "demo" could not be processed after the core update: Failed to update demo: registry timeout Run openclaw update repair to retry post-update plugin repair. Run openclaw plugins inspect demo --runtime --json for details.',
-                    guidance: [
-                      "Run openclaw update repair to retry post-update plugin repair.",
-                      "Run openclaw plugins inspect demo --runtime --json for details.",
-                    ],
-                  },
-                  ...advisories,
-                ],
-                sync: {
-                  changed: false,
-                  switchedToBundled: [],
-                  switchedToNpm: [],
-                  warnings: [],
-                  errors: [],
-                },
-                npm: {
-                  changed: false,
-                  outcomes: [
-                    {
-                      pluginId: "demo",
-                      status: "error",
-                      message: "Failed to update demo: registry timeout",
-                    },
-                    {
-                      pluginId: "source-demo",
-                      status: "skipped",
-                      code: "source-bundled-plugin",
-                      message: sourceBundledMessage,
-                    },
-                  ],
-                },
-                integrityDrifts: [],
-              }),
-              "utf-8",
-            );
-          }
-          child.emit("exit", 0, null);
-          child.emit("close", 0, null);
-        })();
-      });
-      return child;
-    });
-    vi.mocked(defaultRuntime.writeJson).mockClear();
-
-    await updateCommand({ yes: true, json: true, restart: false });
-
-    const jsonOutput = lastWriteJsonCall() as UpdateRunResult | undefined;
-    expect(defaultRuntime.exit).not.toHaveBeenCalledWith(1);
-    expect(jsonOutput?.status).toBe("ok");
-    expect(jsonOutput?.reason).toBeUndefined();
-    expect(jsonOutput?.postUpdate?.plugins?.warnings?.[0]?.guidance).toContain(
-      "Run openclaw update repair to retry post-update plugin repair.",
-    );
-    expect(jsonOutput?.postUpdate?.plugins?.npm.outcomes[0]?.message).toContain("registry timeout");
-    expect(jsonOutput?.postUpdate?.plugins?.warnings?.[0]?.reason).toBe(
-      "Failed to update demo: registry timeout",
-    );
-    expect(jsonOutput?.postUpdate?.plugins?.warnings?.slice(1)).toEqual(advisories);
-    closeOpenClawStateDatabaseForTest();
-    const run = listUpdateRuns({ limit: 1 })[0];
-    expect(run).toMatchObject({ status: "succeeded" });
-    expect(
-      run?.steps
-        .filter((step) => step.step.startsWith("warning:finalize:plugins:"))
-        .map(({ status, detail }) => ({ status, detail })),
-    ).toEqual(
-      [...advisories.map((warning) => warning.message), sourceBundledMessage].map((detail) => ({
-        status: "completed",
-        detail,
-      })),
-    );
+  registerPostCoreWarningReportingTest({
+    setupUpdatedRootRefresh,
+    spawn,
+    updateCommand,
+    defaultRuntime,
+    lastWriteJsonCall,
+    listUpdateRuns,
+    closeOpenClawStateDatabaseForTest,
   });
 
   it.each([

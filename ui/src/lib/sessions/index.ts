@@ -4,9 +4,12 @@ import type { ConnectionBootstrapCoordinator } from "../../app/connection-bootst
 import { formatUiError } from "../format-error.ts";
 import { createGatewayConnectionLifecycle } from "../gateway-connection-lifecycle.ts";
 import type { SessionCreateOutcome } from "./create.ts";
-import type { SessionChangedResult, SessionReconcileOptions } from "./reconcile.ts";
-import { subscribeAgentSelection, type SessionAgentSelection } from "./session-agent-selection.ts";
-import type { SessionCapability, SessionGateway, SessionState } from "./session-capability.ts";
+import type {
+  SessionAgentSelection,
+  SessionCapability,
+  SessionGateway,
+  SessionState,
+} from "./session-capability.ts";
 import { createSessionDeletions } from "./session-deletions.ts";
 import { createSessionEventSubscriptionOwner } from "./session-event-subscription.ts";
 import { createSessionGitHubPublication } from "./session-github-publication.ts";
@@ -19,7 +22,6 @@ import { sessionRetryDelayMs } from "./session-retry.ts";
 import { createSessionRosterCacheLifecycle } from "./session-roster-cache-lifecycle.ts";
 import type { SessionRosterCacheOptions } from "./session-roster-cache.ts";
 import { createSessionRosterRefresh } from "./session-roster-refresh.ts";
-import type { SessionRunTerminal } from "./session-run-terminal.ts";
 import { createSessionScopedOperations } from "./session-scoped-operations.ts";
 import { createSessionThinkingClaims } from "./session-thinking-claims.ts";
 import { SwarmActivityTracker } from "./swarm-activity.ts";
@@ -324,7 +326,11 @@ export function createSessionCapability(
     retire: mutations.retireDeletedSession,
   });
 
-  const operations = createSessionScopedOperations({
+  const {
+    retireConnection,
+    dispose: disposeOperations,
+    ...operations
+  } = createSessionScopedOperations({
     connection,
     reconcileMutation: roster.reconcileMutation,
     notifyCreated,
@@ -384,10 +390,7 @@ export function createSessionCapability(
     );
   };
 
-  const reconcileChanged = (
-    payload: unknown,
-    options?: SessionReconcileOptions,
-  ): SessionChangedResult => {
+  const reconcileChanged: SessionCapability["reconcileChanged"] = (payload, options) => {
     const eventObservation = roster.captureEvent(payload);
     const {
       reconciled: base,
@@ -424,7 +427,7 @@ export function createSessionCapability(
     return reconciled;
   };
 
-  const reconcileRunTerminal = (terminal: SessionRunTerminal): boolean => {
+  const reconcileRunTerminal: SessionCapability["reconcileRunTerminal"] = (terminal) => {
     const event = roster.captureEvent(terminal);
     if (event.scope && !connection.isCurrent(event.scope)) {
       return false;
@@ -477,7 +480,7 @@ export function createSessionCapability(
       roster.reset();
       sessionEventSubscription.reset();
       sessionEventSubscriptionError = null;
-      operations.retireConnection(previousClient);
+      retireConnection(previousClient);
       groups.invalidate();
       swarmActivity.clear();
       mutations.retireConnection();
@@ -536,7 +539,18 @@ export function createSessionCapability(
     }
   });
 
-  const stopSelection = subscribeAgentSelection(agentSelection, (nextAgentId, foreground) => {
+  let selectedAgentId = agentSelection.state.selectedId;
+  let selectionIntentRevision = agentSelection.intentRevision;
+  const stopSelection = agentSelection.subscribe(() => {
+    const nextAgentId = agentSelection.state.selectedId;
+    const foreground =
+      agentSelection.intentRevision !== undefined &&
+      agentSelection.intentRevision !== selectionIntentRevision;
+    selectionIntentRevision = agentSelection.intentRevision;
+    if (selectedAgentId === nextAgentId) {
+      return;
+    }
+    selectedAgentId = nextAgentId;
     retirePresentation();
     notifySubscribers();
     // Selection publishes before Gateway hydration. A new connection bootstraps
@@ -635,6 +649,7 @@ export function createSessionCapability(
   });
 
   return {
+    ...operations,
     get state() {
       return state;
     },
@@ -674,7 +689,6 @@ export function createSessionCapability(
     refreshReplacement: roster.refreshReplacement,
     createResult: mutations.createResult,
     create: mutations.create,
-    recover: operations.recover,
     patch: mutations.patch,
     patchMany: mutations.patchMany,
     archiveVisibility: mutations.archiveVisibility,
@@ -691,19 +705,6 @@ export function createSessionCapability(
     deleteMany: deletions.deleteMany,
     deletionState: deletions.deletionState,
     reset: mutations.reset,
-    compact: operations.compact,
-    listFiles: operations.listFiles,
-    getFile: operations.getFile,
-    setFile: operations.setFile,
-    subscribeMessages: operations.subscribeMessages,
-    unsubscribeMessages: operations.unsubscribeMessages,
-    listCheckpoints: operations.listCheckpoints,
-    branchCheckpoint: operations.branchCheckpoint,
-    restoreCheckpoint: operations.restoreCheckpoint,
-    rewind: operations.rewind,
-    forkAtMessage: operations.forkAtMessage,
-    listBranches: operations.listBranches,
-    switchBranch: operations.switchBranch,
     groupsLoad: groups.load,
     groupsGeneration: groups.generation,
     groupsStatus: groups.status,
@@ -725,7 +726,7 @@ export function createSessionCapability(
       cacheLifecycle.dispose();
       githubPublication.clear();
       roster.dispose();
-      operations.dispose();
+      disposeOperations();
       connection.dispose();
       groups.dispose();
       hydratedClient = null;
