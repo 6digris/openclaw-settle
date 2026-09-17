@@ -461,7 +461,9 @@ vi.mock("./monitor/conversation.runtime.js", async () => {
   };
 });
 
-vi.mock("@slack/bolt", () => {
+vi.mock("@slack/bolt", async (importOriginal) => {
+  const { SocketModeReceiver: SdkSocketModeReceiver } =
+    await importOriginal<typeof import("@slack/bolt")>();
   const { handlers, client: slackClient } = ensureSlackTestRuntime();
   class App {
     client = slackClient;
@@ -514,13 +516,15 @@ vi.mock("@slack/bolt", () => {
     requestListener = (...args: unknown[]) => slackTestState.httpRequestListenerMock(...args);
   }
   class SocketModeReceiver {
-    client = {
-      ...slackClient,
-      on: vi.fn(),
-      off: vi.fn(),
-    };
+    client: InstanceType<typeof SdkSocketModeReceiver>["client"];
 
-    constructor(args: { logger?: { error: (...args: unknown[]) => void } }) {
+    constructor(args: ConstructorParameters<typeof SdkSocketModeReceiver>[0]) {
+      this.client = new SdkSocketModeReceiver(args).client;
+      Reflect.set(
+        this.client,
+        "send",
+        vi.fn(async () => {}),
+      );
       slackTestState.socketModeLogger = args.logger;
     }
   }
