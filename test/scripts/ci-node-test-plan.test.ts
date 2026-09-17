@@ -946,7 +946,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       fallback
         .filter((shard) => !shard.requiresDist)
         // Dedicated startup corpus jobs retain their measured fixture floor;
-        // their three-way fanout is bounded by the partition contract below.
+        // their three-way fanout is checked by the partition contract below.
         .filter(
           (shard) =>
             !shard.groups.some((group) =>
