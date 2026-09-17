@@ -30,6 +30,7 @@ import {
   REALTIME_READY_TIMEOUT_MS,
   resolveFaceTimeRealtimeProvider,
 } from "./talk-driver-config.js";
+import { createFaceTimeInitialGreeting } from "./talk-initial-greeting.js";
 
 export type FaceTimeTalkDriver = {
   readonly callUUID: string;
@@ -44,6 +45,10 @@ export type FaceTimeTalkDriver = {
 };
 
 const FACETIME_INITIAL_GREETING = "Say exactly: Hi, I'm here and listening.";
+// The carrier can report active before its newly enabled media route is audible.
+// Give that route one short settling window, and abandon the greeting if the
+// caller starts speaking first so it cannot collide with their opening words.
+const FACETIME_GREETING_MEDIA_SETTLE_MS = 750;
 
 export async function startFaceTimeTalkDriver(params: {
   config: FaceTimeConfig;
@@ -148,6 +153,15 @@ export async function startFaceTimeTalkDriver(params: {
     startupFailureDeferred.reject(error);
   };
 
+  const initialGreeting = createFaceTimeInitialGreeting({
+    delayMs: FACETIME_GREETING_MEDIA_SETTLE_MS,
+    speak: () => {
+      if (!stopped && !mediaSuspended && activated && providerReady) {
+        bridge?.triggerGreeting(FACETIME_INITIAL_GREETING);
+      }
+    },
+  });
+
   const reportFailure = (error: Error): Promise<boolean> => {
     if (failurePromise) {
       return failurePromise;
@@ -166,6 +180,7 @@ export async function startFaceTimeTalkDriver(params: {
     // callback must not report a second failure or restart any media path.
     mediaSuspended = true;
     activated = false;
+    initialGreeting.cancel();
     providerReady = false;
     mediaSuspensionError ??= new Error(`FaceTime model media suspended: ${reason}`);
     mediaSuspendedDeferred.reject(mediaSuspensionError);
@@ -503,7 +518,10 @@ export async function startFaceTimeTalkDriver(params: {
             });
             if (role === "user" && final) {
               if (text.trim()) {
+                initialGreeting.cancel();
                 consultController.cancelInterrupted(inputSpeechGeneration);
+              } else {
+                initialGreeting.schedule();
               }
               remember({
                 type: "input.audio.committed",
@@ -530,6 +548,7 @@ export async function startFaceTimeTalkDriver(params: {
               });
             }
             if (event.type === "input_audio_buffer.speech_started") {
+              initialGreeting.pause();
               inputSpeechGeneration += 1;
               // VAD can fire on brief line noise. Mark the in-flight consult now,
               // but only cancel it after this speech produces a real final transcript.
@@ -546,6 +565,8 @@ export async function startFaceTimeTalkDriver(params: {
                 finishOutputAudio("barge-in");
               }
               resetResponsePlayback();
+            } else if (event.type === "input_audio_buffer.speech_stopped") {
+              initialGreeting.schedule();
             } else if (event.type === "response.created") {
               startResponse(event.responseId);
             } else if (event.type === "session.continuity.reset") {
@@ -692,13 +713,14 @@ export async function startFaceTimeTalkDriver(params: {
         return;
       }
       activated = true;
-      bridge?.triggerGreeting(FACETIME_INITIAL_GREETING);
+      initialGreeting.schedule();
     },
     suspendMedia,
     async failClosed(reason = "fail-closed") {
       mediaSuspended = true;
       stopped = true;
       activated = false;
+      initialGreeting.cancel();
       providerReady = false;
       consultController.abortForClose();
       await bridge?.close();

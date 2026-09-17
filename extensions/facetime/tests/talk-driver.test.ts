@@ -85,7 +85,9 @@ vi.mock("openclaw/plugin-sdk/realtime-voice", () => ({
   get REALTIME_VOICE_AGENT_CONSULT_SENDER_AUTH_VERSION() {
     return mocks.senderAuthVersion;
   },
-  buildRealtimeVoiceAgentConsultPolicyInstructions: vi.fn(() => "Consult behavior: always."),
+  buildRealtimeVoiceAgentConsultPolicyInstructions: vi.fn(
+    ({ consultPolicy }: { consultPolicy?: string }) => `Consult behavior: ${consultPolicy}.`,
+  ),
   buildRealtimeVoiceAgentCancelProviderResult: mocks.buildCancelResult,
   buildRealtimeVoiceAgentConsultWorkingResponse: vi.fn(),
   consultRealtimeVoiceAgent: mocks.consult,
@@ -611,17 +613,23 @@ describe("FaceTime talk driver lifecycle", () => {
     expect(mocks.pump.stop).toHaveBeenCalledOnce();
   });
 
-  it("activates the greeting only after the call is answered", async () => {
+  it("greets after the answered call's media route has settled", async () => {
     const driver = await startReadyFaceTimeTalkDriver();
 
-    expect(mocks.bridge.triggerGreeting).not.toHaveBeenCalled();
-    driver.activate();
-    driver.activate();
+    vi.useFakeTimers();
+    try {
+      expect(mocks.bridge.triggerGreeting).not.toHaveBeenCalled();
+      driver.activate();
+      driver.activate();
+      await vi.advanceTimersByTimeAsync(750);
 
-    expect(mocks.bridge.triggerGreeting).toHaveBeenCalledWith(
-      "Say exactly: Hi, I'm here and listening.",
-    );
-    expect(mocks.bridge.triggerGreeting).toHaveBeenCalledOnce();
+      expect(mocks.bridge.triggerGreeting).toHaveBeenCalledWith(
+        "Say exactly: Hi, I'm here and listening.",
+      );
+      expect(mocks.bridge.triggerGreeting).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("ends the current call directly without consulting the agent", async () => {
@@ -1093,7 +1101,10 @@ describe("FaceTime talk driver lifecycle", () => {
     expect(mocks.sessionParams?.instructions).toContain(
       "authenticated owner/user described by the loaded workspace profile context",
     );
-    expect(mocks.sessionParams?.instructions).toContain("Consult behavior: always.");
+    expect(mocks.sessionParams?.instructions).toContain(
+      "Answer greetings, acknowledgements, and questions about your own identity or persona directly",
+    );
+    expect(mocks.sessionParams?.instructions).toContain("Consult behavior: substantive.");
     expect(mocks.sessionParams?.instructions).toContain("Never claim you retried");
     expect(mocks.sessionParams?.instructions).not.toContain("Lobster");
     expect(mocks.sessionParams?.instructions).not.toContain("Omar");

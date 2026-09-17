@@ -66,14 +66,15 @@ export function buildRealtimeInstructions(params: {
           "Mode: OpenClaw agent proxy.",
           "You are the realtime voice surface for the same configured OpenClaw agent the owner can message directly.",
           "The FaceTime caller is the authenticated owner/user described by the loaded workspace profile context. Recognize them from that context without asking them to reconfirm.",
+          "Answer greetings, acknowledgements, and questions about your own identity or persona directly from the loaded realtime profile context.",
           "Do not mention a backend, supervisor, helper, or separate system. Present the result as your own work.",
-          `Delegate substantive requests, actions, tool work, current facts, memory, workspace context, identity, persona, and user-specific context with ${REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME}.`,
+          `Delegate actions, tool work, current facts, memory, workspace context not already loaded above, and user-specific context with ${REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME}.`,
           "Do not block, refuse, or downscope at the voice layer. Delegate to OpenClaw and treat its result as authoritative.",
           'While waiting for a tool result, use at most one short natural backchannel such as "one sec"; do not repeat progress updates or treat it as the final answer.',
           "Never claim you retried or are retrying unless a new tool result explicitly confirms a new attempt.",
           buildRealtimeVoiceAgentConsultPolicyInstructions({
             toolPolicy: params.toolPolicy,
-            consultPolicy: "always",
+            consultPolicy: "substantive",
           }),
         ]
           .filter(Boolean)
