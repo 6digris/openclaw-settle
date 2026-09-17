@@ -38,8 +38,8 @@ type DiscoveryGeneration = {
 
 /** Mutable discovery owners stay outside retained host options so startup generations can collect. */
 export async function startGatewayDiscovery({
-  gatewayDiscoveryServices: services = [],
-  pluginRuntimeClaim: claim,
+  gatewayDiscoveryServices: initialServices = [],
+  pluginRuntimeClaim: initialClaim,
   ...params
 }: {
   discovery?: DiscoveryConfig;
@@ -52,6 +52,8 @@ export async function startGatewayDiscovery({
   tailscaleMode: "off" | "serve" | "funnel";
   logDiscovery: { info: (msg: string) => void; warn: (msg: string) => void };
 }): Promise<GatewayDiscovery> {
+  let services = initialServices;
+  let claim = initialClaim;
   let mode = params.discovery?.mdns?.mode ?? "minimal";
   let tlsFingerprint = params.gatewayTls?.fingerprintSha256;
   const wideAreaDomain = params.discovery?.wideArea?.domain;
