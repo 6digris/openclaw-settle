@@ -16,7 +16,7 @@ type GatewayMaintenanceParams = Parameters<StartGatewayMaintenanceTimers>[0];
 const loadRemoteSkillsRuntimeModule = async () => await import("../skills/runtime/remote.js");
 
 /** Start early Gateway side runtimes before the main server is fully ready. */
-export async function startGatewayEarlyRuntime(params: {
+export async function startGatewayEarlyRuntime(input: {
   minimalTestGateway: boolean;
   updateCanary?: boolean;
   cfgAtStart: OpenClawConfig;
@@ -59,46 +59,52 @@ export async function startGatewayEarlyRuntime(params: {
   getRuntimeConfig: () => OpenClawConfig;
   startupTrace?: GatewayStartupTrace;
 }) {
-  if (!params.minimalTestGateway) {
-    await measureStartup(params.startupTrace, "runtime.early.task-state", async () => {
-      const { ensureTaskRuntimeStateReady } = await import("../tasks/runtime-internal.js");
-      ensureTaskRuntimeStateReady();
-      const { reconcileRetainedHarnessCompletionDeliveries } =
-        await import("../agents/agent-harness-completion-delivery.js");
-      reconcileRetainedHarnessCompletionDeliveries();
-    });
+  let params: Omit<typeof input, "pluginRegistry" | "pluginRuntimeClaim">;
+  // Discovery alone owns the initial plugins; retained callbacks capture only host options.
+  {
+    const { pluginRegistry, pluginRuntimeClaim, ...runtimeParams } = input;
+    params = runtimeParams;
+    if (!params.minimalTestGateway) {
+      await measureStartup(params.startupTrace, "runtime.early.task-state", async () => {
+        const { ensureTaskRuntimeStateReady } = await import("../tasks/runtime-internal.js");
+        ensureTaskRuntimeStateReady();
+        const { reconcileRetainedHarnessCompletionDeliveries } =
+          await import("../agents/agent-harness-completion-delivery.js");
+        reconcileRetainedHarnessCompletionDeliveries();
+      });
+    }
+    // Startup failure can occur immediately after discovery; publish its owner first.
+    params.swapDiscovery(
+      await measureStartup(params.startupTrace, "runtime.early.discovery", async () => {
+        if (params.minimalTestGateway) {
+          return null;
+        }
+        const machineDisplayName = await measureStartup(
+          params.startupTrace,
+          "runtime.early.discovery.machine-name",
+          async () => (await import("../infra/machine-name.js")).getMachineDisplayName(),
+        );
+        return await measureStartup(
+          params.startupTrace,
+          "runtime.early.discovery.start",
+          async () => {
+            const { startGatewayDiscovery } = await import("./server-discovery-runtime.js");
+            return await startGatewayDiscovery({
+              machineDisplayName,
+              port: params.port,
+              gatewayTls: params.gatewayTls.enabled ? params.gatewayTls : undefined,
+              gatewayDirectReachable: params.gatewayDirectReachable,
+              discovery: params.cfgAtStart.discovery,
+              tailscaleMode: params.tailscaleMode,
+              gatewayDiscoveryServices: pluginRegistry?.gatewayDiscoveryServices,
+              pluginRuntimeClaim,
+              logDiscovery: params.logDiscovery,
+            });
+          },
+        );
+      }),
+    );
   }
-  // Startup failure can occur immediately after discovery; publish its owner first.
-  params.swapDiscovery(
-    await measureStartup(params.startupTrace, "runtime.early.discovery", async () => {
-      if (params.minimalTestGateway) {
-        return null;
-      }
-      const machineDisplayName = await measureStartup(
-        params.startupTrace,
-        "runtime.early.discovery.machine-name",
-        async () => (await import("../infra/machine-name.js")).getMachineDisplayName(),
-      );
-      return await measureStartup(
-        params.startupTrace,
-        "runtime.early.discovery.start",
-        async () => {
-          const { startGatewayDiscovery } = await import("./server-discovery-runtime.js");
-          return await startGatewayDiscovery({
-            machineDisplayName,
-            port: params.port,
-            gatewayTls: params.gatewayTls.enabled ? params.gatewayTls : undefined,
-            gatewayDirectReachable: params.gatewayDirectReachable,
-            discovery: params.cfgAtStart.discovery,
-            tailscaleMode: params.tailscaleMode,
-            gatewayDiscoveryServices: params.pluginRegistry?.gatewayDiscoveryServices,
-            pluginRuntimeClaim: params.pluginRuntimeClaim,
-            logDiscovery: params.logDiscovery,
-          });
-        },
-      );
-    }),
-  );
   let getActiveTaskCount = () => 0;
 
   if (!params.minimalTestGateway) {

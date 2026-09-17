@@ -235,6 +235,12 @@ switch (process.argv[2]) {
     await verifyDiscoveryStartupRetention(collect, process.argv[2] === "discovery-startup-late");
     break;
   }
+  case "early-startup": {
+    const { verifyEarlyStartupRetention } =
+      await import("../gateway/server-startup-early.retention.test-support.js");
+    await verifyEarlyStartupRetention(collect);
+    break;
+  }
   case "discovery-timer": {
     const { verifyDiscoveryTimerRetention } =
       await import("../gateway/server-discovery-runtime.retention.test-support.js");
