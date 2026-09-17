@@ -174,7 +174,7 @@ export function readAdmittedHarnessCompletionInput(params: {
     .filter((run) => Boolean(run.lifecycleGeneration))
     .map((run) => run.runId);
   let source: unknown;
-  const covered = everySessionTranscriptUserInputFrom(
+  return everySessionTranscriptUserInputFrom(
     scope,
     `${params.claim.sourceRunId}:user`,
     (message) => {
@@ -190,7 +190,6 @@ export function readAdmittedHarnessCompletionInput(params: {
       );
     },
   );
-  return source !== undefined && covered;
 }
 
 /** The existing admitted execution guard rechecks this before execution and delegated effects. */

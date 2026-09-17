@@ -575,6 +575,15 @@ export async function recoverStore(params: {
       if (stopped()) {
         return result;
       }
+      if (
+        recoverableHarnessCompletion ||
+        entry.restartRecoverySourceIngress === "channel" ||
+        entry.restartRecoverySourceIngress === "control-ui"
+      ) {
+        mainSessionRecoveryLog.warn(`transcript unavailable for ${sessionKey}; retaining custody`);
+        result.failed++;
+        continue;
+      }
       if (entry.pendingFinalDelivery?.kind === "replayable") {
         const tombstone = await tombstoneMainRestartRecoveryWithNotice({
           ...target,
