@@ -1,7 +1,7 @@
 // Root integration owns the shared threading helpers plus the public Slack adapter.
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { describe, expect, it, vi } from "vitest";
-import { slackPlugin } from "../extensions/slack/channel-plugin-api.js";
+import { slackPlugin } from "../extensions/slack/api.js";
 import {
   resolveAndApplyOutboundReplyToId,
   resolveAndApplyOutboundThreadId,
