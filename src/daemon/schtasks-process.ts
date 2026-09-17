@@ -219,7 +219,9 @@ async function resolveScheduledTaskGatewayOwnership(
   const isTaskSupervisor = (supervisor: NonNullable<typeof owner>["supervisor"]) =>
     supervisor?.kind === "schtasks" && supervisor.name?.toLowerCase() === taskName.toLowerCase();
   const pids = owner
-    ? owner.port === port && owner.state === "live" && isTaskSupervisor(owner.supervisor)
+    ? owner.port === port &&
+      (owner.state === "live" || owner.state === "unknown") &&
+      isTaskSupervisor(owner.supervisor)
       ? [owner.pid]
       : []
     : await resolveLegacyScheduledTaskOwnedGatewayPids(env, context, command);

@@ -280,7 +280,6 @@ describe("Scheduled Task stop/restart cleanup", () => {
   it.each([
     { mode: "foreground", state: "live" },
     { mode: "supervised", state: "dead" },
-    { mode: "supervised", state: "unknown" },
   ] as const)(
     "does not adopt a $state $mode recorded owner through matching task argv",
     async ({ mode, state }) => {
@@ -312,7 +311,7 @@ describe("Scheduled Task stop/restart cleanup", () => {
     },
   );
 
-  it.each(["before graceful stop", "before forced stop"])(
+  it.each(["before ownership discovery", "before graceful stop", "before forced stop"])(
     "refuses a recorded owner that changes %s",
     async (phase) => {
       await withPreparedGatewayTask(async ({ env }) => {
@@ -379,7 +378,9 @@ describe("Scheduled Task stop/restart cleanup", () => {
         readGatewayOwnerLease.mockImplementation(() =>
           unknown ? { ...GATEWAY_OWNER, state: "unknown" } : GATEWAY_OWNER,
         );
-        if (phase === "before graceful stop") {
+        if (phase === "before ownership discovery") {
+          unknown = true;
+        } else if (phase === "before graceful stop") {
           readGatewayOwnerLease.mockImplementationOnce(() => {
             unknown = true;
             return GATEWAY_OWNER;
@@ -421,7 +422,7 @@ describe("Scheduled Task stop/restart cleanup", () => {
           .filter(([command]) => command.toLowerCase().endsWith("taskkill.exe"))
           .map(([, args]) => args);
         expect(taskkillCalls).toEqual(
-          phase === "before graceful stop"
+          phase !== "before forced stop"
             ? [["/T", "/PID", "4242"]]
             : [
                 ["/T", "/PID", "4242"],
