@@ -149,7 +149,7 @@ export function renderTriagePrompt(params: {
     "## Completion goal",
     "",
     params.maintenanceBlock
-      ? "Do not run `openclaw doctor --fix` or `openclaw update repair` in this fixing subtree: both will refuse beneath the active update owner. Perform read-only diagnosis, then report that an independent operator must run maintenance outside this process tree after the named update driver settles. Do not bypass the refusal."
+      ? "Do not run `openclaw doctor --fix` in this fixing subtree: the active update owner currently excludes Gateway maintenance. `openclaw update repair` may continue only the matching inherited update run; otherwise it will refuse too. Perform read-only diagnosis, then either continue that exact run or report that an independent operator must run maintenance outside this process tree after the named update driver settles. Do not bypass a refusal."
       : "Diagnose and repair the original symptom using existing repair commands, including `openclaw doctor --fix` and, for unfinished updates, `openclaw update repair`. Respect installation ownership, locks, schema and capability approval refusals. If maintenance refuses to stop the Gateway from this fixing subtree, use read-only diagnosis or safe offline artifact repair and atomic restart, or report that an independent operator must run maintenance outside triage. Do not bypass the refusal.",
     failure?.gateway === "preserve"
       ? "Do not start or restart the Gateway: this invocation did not authorize activation. Preserve --no-restart and intentional stops. Use read-only status checks and report live health verification as deferred while it is intentionally stopped."
