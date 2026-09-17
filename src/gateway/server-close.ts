@@ -9,6 +9,7 @@ import { closePreparedModelRuntimeSnapshots } from "../agents/prepared-model-run
 import { fenceSessionSuspensionWritesForGatewayShutdown } from "../agents/session-suspension.js";
 import { closeSwarmScheduler } from "../agents/subagents/swarm/swarm-scheduler.js";
 import { type ChannelId, listChannelPlugins } from "../channels/plugins/index.js";
+import { closeSessionTranscriptReconcileWorkerPool } from "../config/sessions/session-transcript-reconcile-pool.js";
 import { createInternalHookEvent, triggerInternalHook } from "../hooks/internal-hooks.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import type { HeartbeatRunner } from "../infra/heartbeat-runner.js";
@@ -652,6 +653,7 @@ export async function completeGatewayClose(
         return params.pluginMetadata.close(async (retire) => {
           await closeSwarmScheduler().catch(recordResourceCleanupFailure);
           await closePreparedModelRuntimeSnapshots();
+          await closeSessionTranscriptReconcileWorkerPool();
           await retire();
           // Releasing agent leases still writes shared state; keep its owner alive until then.
           await closeOpenClawAgentDatabasesAsync();

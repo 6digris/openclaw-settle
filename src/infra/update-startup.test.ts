@@ -52,16 +52,8 @@ const {
     generatedAt: 1_753_500_000_000,
   })),
   scheduleGatewaySigusr1RestartMock: vi.fn(() => ({ scheduled: true })),
-  startManagedServiceUpdateHandoffMock: vi.fn<
-    typeof import("./update-managed-service-handoff.js").startManagedServiceUpdateHandoff
-  >(async () => ({
-    status: "started" as const,
-    pid: 12345,
-    command: "openclaw update --yes --channel beta",
-    logPath: "/tmp/openclaw-handoff.log",
-    handoffId: "auto-handoff-id",
-    installRoot: "/opt/openclaw",
-  })),
+  startManagedServiceUpdateHandoffMock:
+    vi.fn<typeof import("./update-managed-service-handoff.js").startManagedServiceUpdateHandoff>(),
   transferManagedServiceUpdateHandoffMock: vi.fn<
     typeof import("./update-managed-service-handoff.js").transferManagedServiceUpdateHandoff
   >(async () => true),
@@ -168,6 +160,7 @@ type PersistedUpdateCheckState = {
 describe("update-startup", () => {
   let tempDir: string;
   let testState: OpenClawTestState;
+  let handoffTransferStarted: ReturnType<typeof createDeferred<void>>;
   let triageResult: Extract<
     Awaited<ReturnType<typeof runUpdateFailureTriageMock>>,
     { status: "completed" }
@@ -272,8 +265,7 @@ describe("update-startup", () => {
     vi.mocked(checkUpdateStatus).mockClear();
     checkTelemetryUpdateMock.mockReset().mockResolvedValue(null);
     vi.mocked(resolveNpmChannelTag).mockClear();
-    vi.mocked(runCommandWithTimeout).mockReset();
-    vi.mocked(runCommandWithTimeout).mockResolvedValue({
+    vi.mocked(runCommandWithTimeout).mockReset().mockResolvedValue({
       stdout: "",
       stderr: "",
       code: 0,
@@ -288,7 +280,11 @@ describe("update-startup", () => {
     detectRespawnSupervisorMock.mockReturnValue(null);
     scheduleGatewaySigusr1RestartMock.mockClear();
     startManagedServiceUpdateHandoffMock.mockClear();
-    transferManagedServiceUpdateHandoffMock.mockReset().mockResolvedValue(true);
+    handoffTransferStarted = createDeferred();
+    transferManagedServiceUpdateHandoffMock.mockReset().mockImplementation(async () => {
+      handoffTransferStarted.resolve();
+      return true;
+    });
     cancelManagedServiceUpdateHandoffMock.mockReset().mockResolvedValue("restored-in-process");
     startManagedServiceUpdateHandoffMock.mockResolvedValue({
       status: "started",
@@ -1329,6 +1325,7 @@ describe("update-startup", () => {
       onUpdateRunCreated,
     });
     await vi.advanceTimersByTimeAsync(60_000);
+    await handoffTransferStarted.promise;
 
     const [handoffParams] = startManagedServiceUpdateHandoffMock.mock.calls[0] ?? [];
     const run = getUpdateRun(handoffParams!.meta!.runId!);
