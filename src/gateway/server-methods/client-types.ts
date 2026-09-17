@@ -21,6 +21,8 @@ export type TrustedAgentToolCaller = Readonly<{
   sessionKey: string;
   /** Exact admitted requester lifetime; identity alone does not establish live authority. */
   assertCurrent?: () => void;
+  /** Restriction copied only by an executable sessions_send tool. */
+  sessionsSendToolsAllow?: readonly string[];
 }>;
 
 /** Closure-bound streaming hooks attached only to trusted plugin-owned synthetic clients. */

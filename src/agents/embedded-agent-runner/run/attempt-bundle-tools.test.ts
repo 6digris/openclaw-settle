@@ -58,7 +58,11 @@ describe("prepareEmbeddedAttemptBundleTools", () => {
       .mockImplementation((tools: unknown[]) => ({ tools, diagnostics: [] }));
   });
 
-  function createInput(inheritedToolAllowlist: string[], toolsRaw: unknown[]) {
+  function createInput(
+    inheritedToolAllowlist: string[],
+    toolsRaw: unknown[],
+    sessionSendToolAllowlist?: string[],
+  ) {
     return {
       agentDir: "/tmp/agent",
       attempt: {
@@ -76,6 +80,7 @@ describe("prepareEmbeddedAttemptBundleTools", () => {
         cronCreatorToolAllowlist: [],
         effectiveToolsAllow: undefined,
         inheritedToolAllowlist,
+        sessionSendToolAllowlist,
         localModelLeanPreserveToolNames: [],
         runtimeCapabilityProfile: undefined,
         toolsEnabled: true,
@@ -354,6 +359,18 @@ describe("prepareEmbeddedAttemptBundleTools", () => {
     );
 
     expect(inheritedToolAllowlist).toEqual(["sessions_spawn", "server__read"]);
+  });
+
+  it("captures the exact sessions_send surface without requiring a restrictive config", async () => {
+    const sessionSendToolAllowlist: string[] = [];
+    mocks.acquireSessionMcpRuntime.mockResolvedValue({ runtime: {}, releaseLease: () => {} });
+    mocks.materializeBundleMcpToolsForRun.mockResolvedValue({ tools: [{ name: "server__read" }] });
+
+    await prepareEmbeddedAttemptBundleTools(
+      createInput([], [{ name: "sessions_send" }], sessionSendToolAllowlist),
+    );
+
+    expect(sessionSendToolAllowlist).toEqual(["sessions_send", "server__read"]);
   });
 
   it("never adds policy-denied bundled tools to spawned-child inheritance", async () => {

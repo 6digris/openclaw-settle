@@ -301,6 +301,8 @@ type OpenClawCodingToolsOptions = {
   inheritRuntimeToolAllowlist?: boolean;
   /** Mutable spawn capability snapshot refreshed after late-bound runtime tools are authorized. */
   inheritedToolAllowlistRef?: string[];
+  /** Mutable sessions_send capability snapshot refreshed after final tool projection. */
+  sessionSendToolAllowlistRef?: string[];
   /** Mutable cron creator cap ref for callers that append final runtime tools later. */
   cronCreatorToolAllowlistRef?: CronCreatorToolAllowlistEntry[];
   /** Mutable proof that the cron cap reached the final executable surface. */
@@ -708,6 +710,7 @@ export function createOpenClawCodingToolsInternal(
     ...ownerOnlyCoreToolDenylist,
   ];
   const inheritedToolDenylist = [...pluginToolDenylist];
+  const sessionSendToolAllowlist = options?.sessionSendToolAllowlistRef ?? [];
   // Passed by reference to sessions_spawn and populated after the final policy
   // pass so child sessions inherit the actual parent tool surface.
   const inheritedToolAllowlist = options?.inheritedToolAllowlistRef ?? [];
@@ -948,6 +951,7 @@ export function createOpenClawCodingToolsInternal(
             sessionId: options?.sessionId,
             conversationRecall: options?.conversationRecall,
             oneShotCliRun: options?.oneShotCliRun,
+            sessionSendToolAllowlist,
             inheritedToolAllowlist,
             inheritedToolDenylist,
             onYield: options?.onYield,
@@ -1034,6 +1038,7 @@ export function createOpenClawCodingToolsInternal(
     },
   );
   authorizedTools.forEach(bindAssembledAgentToolActionDescriptor);
+  replaceWithEffectiveToolAllowlist(sessionSendToolAllowlist, authorizedTools);
   processToolAvailabilityRef.value = authorizedTools.some((tool) => tool.name === "process");
   if (shouldInheritEffectiveToolAllowlist) {
     // Snapshot exporter only: this copies authorizedTools for descendants and

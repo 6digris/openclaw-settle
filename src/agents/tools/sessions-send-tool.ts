@@ -410,6 +410,7 @@ async function startAgentRun(params: {
   allowActiveRunQueueFallback?: boolean;
   expectedSessionId?: string;
   mode?: "steer" | "followup";
+  toolsAllow?: readonly string[];
 }): Promise<
   | {
       ok: true;
@@ -447,6 +448,11 @@ async function startAgentRun(params: {
       sourceReplyDeliveryMode,
     } = params.sendParams;
     if (activeRunSessionId && messageText) {
+      if (params.toolsAllow) {
+        throw new Error(
+          "The active target cannot safely accept this sender's tool policy. Retry with mode=followup and a positive timeout.",
+        );
+      }
       const queueOptions: EmbeddedAgentQueueMessageOptions = {
         steeringMode: "all",
         debounceMs: 0,
@@ -555,6 +561,8 @@ export function createSessionsSendTool(opts?: {
   /** Backend-owned downstream operation id; never sourced from model arguments. */
   idempotencyKey?: string;
   signal?: AbortSignal;
+  /** Mutable exact-name cap populated after final source tool projection. */
+  toolAllowlist?: string[];
 }): AnyAgentTool {
   return {
     label: "Session Send",
@@ -567,7 +575,28 @@ export function createSessionsSendTool(opts?: {
     execute: async (_toolCallId, args) => {
       const promptedAt = Date.now();
       const params = normalizeSessionsSendArguments(args);
-      const gatewayCall = opts?.callGateway ?? callAgentToolGatewayRequest;
+      const toolsAllow = opts?.toolAllowlist ? [...opts.toolAllowlist] : undefined;
+      const baseGatewayCall = opts?.callGateway ?? callAgentToolGatewayRequest;
+      const gatewayCall: GatewayCaller = async <T>(request: Parameters<GatewayCaller>[0]) => {
+        if (request.method !== "agent" || !toolsAllow) {
+          return await baseGatewayCall<T>(request);
+        }
+        const source = getGatewayToolCallerIdentity();
+        const assertCurrent = captureGatewayToolCallerAssertion();
+        if (!source || !assertCurrent) {
+          throw new Error("sessions_send requires an active source run for tool delegation");
+        }
+        assertCurrent();
+        return await baseGatewayCall<T>({
+          ...request,
+          agentToolCaller: {
+            agentId: source.agentId,
+            sessionKey: source.sessionKey,
+            assertCurrent,
+            sessionsSendToolsAllow: toolsAllow,
+          },
+        });
+      };
       const message = readToolStringParam(params, "message", { required: true, trim: false });
       if (!message.trim()) {
         throw new ToolInputError("message required");
@@ -612,6 +641,11 @@ export function createSessionsSendTool(opts?: {
         mode === "steer" || mode === "resume"
           ? 0
           : (readNonNegativeIntegerParam(params, "timeoutSeconds") ?? 30);
+      if (toolsAllow && (mode === "notify" || timeoutSeconds === 0 || params.watch === true)) {
+        throw new ToolInputError(
+          "Delegated tool policy requires mode=followup (or the default), a positive timeoutSeconds, and watch omitted so it cannot outlive its owner.",
+        );
+      }
       const {
         cfg,
         mainKey,
@@ -1210,7 +1244,8 @@ export function createSessionsSendTool(opts?: {
             });
           // A scoped grant belongs to one exact session incarnation. Do not create
           // post-return work or durable watches that could follow a reused key.
-          const skipDelayedA2AFlow = skipAcpA2AFlow || Boolean(expectedSessionId);
+          const skipDelayedA2AFlow =
+            skipAcpA2AFlow || Boolean(expectedSessionId) || Boolean(toolsAllow);
           // Native-parent suppression only covers a reply that already returned inline.
           // A send is not a registered spawn run, so when the wait expires before the
           // child finishes, nothing else delivers the late reply: keep that continuation.
@@ -1270,6 +1305,7 @@ export function createSessionsSendTool(opts?: {
             mode,
             sendParams,
             sessionKey: mode ? resolvedKey : displayKey,
+            toolsAllow,
             deliveryTimeoutMs: announceTimeoutMs,
             ...(timeoutSeconds === 0
               ? {

@@ -80,6 +80,8 @@ export type OpenClawToolsOptions = {
   /** Prepared profile authority for the gateway tool's configuration-read actions. */
   gatewayConfigReadAllowed?: boolean;
   runtimeToolAllowlist?: string[];
+  /** Exact final tool surface transferred by sessions_send. */
+  sessionSendToolAllowlist?: string[];
   /** Host-prepared proof that this exact session can request Gateway publication. */
   githubPublicationAvailable?: boolean;
   /** Effective caller tool surface to persist on isolated cron agentTurn jobs. */

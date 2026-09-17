@@ -610,6 +610,9 @@ export function createWorkerSessionToolExecutor(params: {
                     started.operationSeed,
                     "target-send",
                   )}`,
+                  toolsAllow: WORKER_TOOL_NAMES.filter((name) =>
+                    params.placements.isWorkerTurnToolAuthorized(source.turnClaim, name),
+                  ),
                   ...(operationRequest.signal ? { signal: operationRequest.signal } : {}),
                 });
           },

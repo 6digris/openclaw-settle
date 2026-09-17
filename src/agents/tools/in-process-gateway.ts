@@ -201,6 +201,11 @@ async function callAgentToolGatewayRequestBound<T>(
     ? bindInProcessGatewayContext(request.method, resolveGatewayContext)
     : undefined;
   if (forceTransport || !hasInProcessGatewayContext(boundGateway?.resolve)) {
+    if (request.method === "agent" && request.agentToolCaller?.sessionsSendToolsAllow) {
+      throw new Error(
+        "sessions_send tool policy requires trusted in-process Gateway dispatch. Retry through the owning Gateway.",
+      );
+    }
     if (readInProcessSubagentResume(request)) {
       throw new Error("Task resume requires trusted in-process Gateway dispatch.");
     }

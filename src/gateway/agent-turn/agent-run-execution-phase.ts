@@ -301,6 +301,16 @@ export async function startAgentRunExecution(params: {
           Array.isArray(params.client.internal.pluginSubagentToolsAllow)
             ? [...params.client.internal.pluginSubagentToolsAllow]
             : undefined;
+        const sessionsSendToolCaller =
+          params.inputProvenance?.kind === "inter_session" &&
+          params.inputProvenance.sourceTool === "sessions_send" &&
+          params.client?.internal?.agentToolCaller?.sessionsSendToolsAllow
+            ? params.client.internal.agentToolCaller
+            : undefined;
+        sessionsSendToolCaller?.assertCurrent?.();
+        if (sessionsSendToolCaller && !sessionsSendToolCaller.assertCurrent) {
+          throw new Error("sessions_send source authority is unavailable");
+        }
         const executionIdentityAdmission = resolveAgentRestartRecoveryExecutionIdentityAdmission({
           collectionEnabled: isExecutionIdentityCollectionEnabled(params.cfg),
           isRestartRecoveryResumeRun: params.isRestartRecoveryResumeRun,
@@ -351,6 +361,7 @@ export async function startAgentRunExecution(params: {
         }
         // Awaited routing can retire this owner before final dispatch.
         params.assertContextCurrent?.();
+        sessionsSendToolCaller?.assertCurrent?.();
         const gatewayContext = params.context.resolveGatewayContext?.();
         const skillLibraryAuthoring =
           gatewayContext && params.resolvedSessionKey
@@ -429,7 +440,12 @@ export async function startAgentRunExecution(params: {
                 extraSystemPrompt: params.request.extraSystemPrompt,
                 bootstrapContextMode: params.request.bootstrapContextMode,
                 bootstrapContextRunKind: params.effectiveBootstrapContextRunKind,
-                toolsAllow: pluginSubagentToolsAllow ?? params.restoredCronContinuation?.toolsAllow,
+                toolsAllow:
+                  (sessionsSendToolCaller?.sessionsSendToolsAllow
+                    ? [...sessionsSendToolCaller.sessionsSendToolsAllow]
+                    : undefined) ??
+                  pluginSubagentToolsAllow ??
+                  params.restoredCronContinuation?.toolsAllow,
                 runtimePluginToolGrant,
                 trustedInternalHandoff: prepared.trustedInternalHandoff,
                 pinnedWidgetAuthoring: restartRecoveryContext?.pinnedWidgetAuthoring,

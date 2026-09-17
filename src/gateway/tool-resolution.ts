@@ -272,6 +272,7 @@ export function resolveGatewayScopedTools(
   // Passed by reference to sessions_spawn and populated after the final policy
   // pass so child sessions inherit the actual parent tool surface.
   const inheritedToolAllowlist: string[] = [];
+  const sessionSendToolAllowlist: string[] = [];
   const cronCreatorToolAllowlist: CronCreatorToolAllowlistEntry[] = [];
   const cronCreatorToolAllowlistCaptureRef: CronToolsAllowCaptureRef | undefined =
     surface === "loopback" ? {} : undefined;
@@ -420,6 +421,7 @@ export function resolveGatewayScopedTools(
     pluginToolDenylist: explicitDenylist,
     cronCreatorToolAllowlist,
     cronCreatorToolAllowlistCaptureRef,
+    sessionSendToolAllowlist,
     inheritedToolAllowlist,
     inheritedToolDenylist,
   });
@@ -656,6 +658,7 @@ export function resolveGatewayScopedTools(
   if (shouldInheritEffectiveToolAllowlist) {
     replaceWithEffectiveToolAllowlist(inheritedToolAllowlist, inheritableTools);
   }
+  replaceWithEffectiveToolAllowlist(sessionSendToolAllowlist, inheritableTools);
   const nativeCapture = {
     canonicalToolNames: params.nativeCronCreatorToolAllowlist,
     // The loopback grant carries native authority only for Gateway-placed CLI runs.

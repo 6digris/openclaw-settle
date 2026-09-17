@@ -149,6 +149,7 @@ export function resolveSkillDispatchTools(
   ];
   const explicitDenylist = collectExplicitDenylist(explicitPolicyList);
   const inheritedToolAllowlist: string[] = [];
+  const sessionSendToolAllowlist: string[] = [];
   const cronCreatorToolAllowlist: CronCreatorToolAllowlistEntry[] = [];
   const beforeToolCallHookContext = params.skillCommand
     ? {
@@ -195,6 +196,7 @@ export function resolveSkillDispatchTools(
     pluginToolAllowlist: collectExplicitAllowlist(explicitPolicyList),
     pluginToolDenylist: explicitDenylist,
     cronCreatorToolAllowlist,
+    sessionSendToolAllowlist,
     inheritedToolAllowlist,
     inheritedToolDenylist: explicitDenylist,
   });
@@ -235,7 +237,7 @@ export function resolveSkillDispatchTools(
   replaceWithEffectiveCronCreatorToolAllowlist(cronCreatorToolAllowlist, policyFiltered, (tool) =>
     getPluginToolMeta(tool),
   );
-  return applyToolAvailabilityDescriptions(
-    filterRequesterYieldTools(policyFiltered, params.sessionKey),
-  );
+  const finalTools = filterRequesterYieldTools(policyFiltered, params.sessionKey);
+  replaceWithEffectiveToolAllowlist(sessionSendToolAllowlist, finalTools);
+  return applyToolAvailabilityDescriptions(finalTools);
 }

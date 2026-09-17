@@ -259,6 +259,34 @@ describe("startAgentRunExecution Gateway ownership", () => {
     expect(execution.runtimeRelease).toHaveBeenCalledOnce();
   });
 
+  it("applies the live sessions_send source cap to the receiving turn", async () => {
+    const execution = createExecution();
+    const assertCurrent = vi.fn();
+    execution.params.inputProvenance = {
+      kind: "inter_session",
+      sourceTool: "sessions_send",
+    };
+    execution.params.client = {
+      internal: {
+        agentToolCaller: {
+          agentId: "source",
+          sessionKey: "agent:source:main",
+          assertCurrent,
+          sessionsSendToolsAllow: ["sessions_send", "read"],
+        },
+      },
+    } as typeof execution.params.client;
+    dispatchAgentRunFromGateway.mockResolvedValueOnce(undefined);
+
+    await startAgentRunExecution(execution.params);
+
+    expect(dispatchAgentRunFromGateway.mock.calls[0]?.[0]?.ingressOpts.toolsAllow).toEqual([
+      "sessions_send",
+      "read",
+    ]);
+    expect(assertCurrent).toHaveBeenCalledTimes(2);
+  });
+
   it("releases the admitted runtime once when aborted before dispatch", async () => {
     const execution = createExecution({ aborted: true });
 

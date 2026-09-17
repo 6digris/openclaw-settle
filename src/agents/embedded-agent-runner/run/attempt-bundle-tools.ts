@@ -41,6 +41,7 @@ export async function prepareEmbeddedAttemptBundleTools(params: {
     cronCreatorToolAllowlistCaptureRef,
     effectiveToolsAllow,
     inheritedToolAllowlist,
+    sessionSendToolAllowlist,
     localModelLeanPreserveToolNames,
     runtimeCapabilityProfile,
     toolsEnabled,
@@ -215,6 +216,9 @@ export async function prepareEmbeddedAttemptBundleTools(params: {
         preserveToolNames: localModelLeanPreserveToolNames,
       });
       const schemaProjection = filterRuntimeCompatibleTools(projectedTools);
+      if (sessionSendToolAllowlist) {
+        replaceWithEffectiveToolAllowlist(sessionSendToolAllowlist, schemaProjection.tools);
+      }
       if (cronCreatorToolAllowlistCaptureRef) {
         // Cron is constructed before bundled tools; capture only the executable
         // surface that survived provider normalization and schema quarantine.

@@ -585,6 +585,7 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
             agentChannel: options?.agentChannel,
             sandboxed: options?.sandboxed,
             config: sessionConfig,
+            toolAllowlist: options?.sessionSendToolAllowlist,
           }),
         ]),
     ...(!embedded || options?.allowGatewaySubagentBinding === true

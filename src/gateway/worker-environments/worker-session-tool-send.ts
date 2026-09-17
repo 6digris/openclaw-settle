@@ -16,6 +16,7 @@ export async function executeWorkerSessionSend(operation: {
   target: ExactTarget;
   request: WorkerSessionsSendParams;
   idempotencyKey: string;
+  toolsAllow: readonly string[];
   assertSource: () => void;
   callGateway: AgentToolGatewayRequestCaller;
   signal?: AbortSignal;
@@ -42,6 +43,7 @@ export async function executeWorkerSessionSend(operation: {
       expectedTargetSessionId: operation.target.sessionId,
       idempotencyKey: operation.idempotencyKey,
       config,
+      toolAllowlist: [...operation.toolsAllow],
       ...(operation.signal ? { signal: operation.signal } : {}),
       callGateway: (request) => {
         assertCurrentTarget();
