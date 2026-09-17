@@ -50,6 +50,7 @@ public final class WebSocketRequestLifetime: @unchecked Sendable {
 
 // periphery:ignore - Native transports implement caller-owned request lifetime handling.
 public protocol WebSocketRequestSending: WebSocketTasking {
+    // periphery:ignore - The erased request adapter dispatches through this optional transport seam.
     func sendRequest(_ message: URLSessionWebSocketTask.Message, lifetime: WebSocketRequestLifetime) async throws
 }
 

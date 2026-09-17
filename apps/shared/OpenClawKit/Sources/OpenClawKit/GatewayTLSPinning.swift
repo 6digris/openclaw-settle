@@ -87,11 +87,13 @@ public enum GatewayBoundedDataError: Error, Equatable, Sendable {
 
 // periphery:ignore - Native session adapters expose typed TLS repair evidence to GatewayChannel.
 public protocol GatewayTLSFailureProviding: AnyObject {
+    // periphery:ignore - The shared channel consumes this through the optional provider seam.
     func consumeLastTLSFailure() -> GatewayTLSValidationFailure?
 }
 
 // periphery:ignore - Native session adapters declare whether their TLS path permits token retry.
 public protocol GatewayDeviceTokenRetryTrustProviding: AnyObject {
+    // periphery:ignore - The shared channel consumes this through the optional provider seam.
     var allowsDeviceTokenRetryAuth: Bool { get }
 }
 
