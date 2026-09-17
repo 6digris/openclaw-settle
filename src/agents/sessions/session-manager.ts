@@ -244,10 +244,11 @@ export class SessionManager extends SessionManagerBranching {
       cwd?: string;
       admission?: UserTurnTranscriptAdmissionReceipt;
       through?: TranscriptEntryAnchor;
+      limits?: SessionManagerBoundedContextLimits;
     } = {},
   ): SessionManager {
     const context = withSessionContextAdmission(target, options.admission, () =>
-      readSessionTranscriptModelContext(target, options.through),
+      readSessionTranscriptModelContext(target, options.through, options.limits),
     );
     return SessionManager.fromSelectedEntries(context.events, options.cwd);
   }
@@ -260,14 +261,23 @@ export class SessionManager extends SessionManagerBranching {
       admission?: UserTurnTranscriptAdmissionReceipt;
       signal?: AbortSignal;
       through?: TranscriptEntryAnchor;
+      limits?: SessionManagerBoundedContextLimits;
     } = {},
   ): Promise<SessionManager> {
     const readTarget = { ...target };
     const receipt = options.admission ?? resolveSessionTranscriptReadFence(readTarget);
     const admission = receipt ? { ...receipt } : undefined;
     const through = options.through ? { ...options.through } : undefined;
+    const limits = options.limits ? { ...options.limits } : undefined;
+    options.signal?.throwIfAborted();
     const context = await withSessionContextAdmission(readTarget, admission, () =>
-      readSessionTranscriptModelContextAsync(readTarget, admission, options.signal, through),
+      readSessionTranscriptModelContextAsync(
+        readTarget,
+        admission,
+        options.signal,
+        through,
+        limits,
+      ),
     );
     options.signal?.throwIfAborted();
     // Even process-local reads yield here. Admitted history may exclude later
