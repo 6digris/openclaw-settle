@@ -21,7 +21,7 @@ const mocks = vi.hoisted(() => ({
   })),
   nativePackageReady: vi.fn(async () => true),
   inspectDriver: vi.fn(async () => "current"),
-  uninstallDriver: vi.fn(async () => undefined),
+  uninstallDriver: vi.fn(async (_params?: unknown): Promise<void> => undefined),
   setup: vi.fn(async ({ nativePackageReady }: { nativePackageReady: boolean }) => ({
     ok: false,
     readyForTest: false,
@@ -51,6 +51,17 @@ vi.mock("./src/driver-setup.js", () => ({
   uninstallFaceTimeDriver: mocks.uninstallDriver,
 }));
 vi.mock("./src/setup.js", () => ({ runFaceTimeSetup: mocks.setup }));
+vi.mock("./src/config.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./src/config.js")>();
+  return {
+    ...actual,
+    validateFaceTimeConfig(config: import("./src/config.js").FaceTimeConfig) {
+      const validation = actual.validateFaceTimeConfig(config);
+      const errors = validation.errors.filter((error) => error !== "facetime requires macOS");
+      return { valid: errors.length === 0, errors };
+    },
+  };
+});
 
 import plugin from "./index.js";
 
