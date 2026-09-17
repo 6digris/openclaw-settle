@@ -4,7 +4,7 @@ openclaw-sidebar-agent-roster {
 }
 
 .sidebar-workspace-header__main {
-  gap: 4px;
+  gap: var(--sidebar-row-gap);
   padding-inline-end: 0;
 }
 .sidebar-workspace-header .sidebar-agent-card__name-text {
@@ -15,9 +15,10 @@ openclaw-sidebar-agent-roster {
 
 .sidebar-agent-roster__header {
   display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) auto;
+  grid-template-columns: var(--sidebar-column-width) minmax(0, 1fr) auto;
   align-items: center;
-  gap: 4px;
+  gap: var(--sidebar-row-gap);
+  padding-inline-start: var(--sidebar-inset);
   min-height: 48px;
   color: var(--muted);
   font-size: 12px;
@@ -36,7 +37,7 @@ openclaw-sidebar-agent-roster {
   background: transparent;
   color: var(--text);
   font: inherit;
-  text-align: left;
+  text-align: start;
   text-decoration: none;
 }
 
@@ -95,7 +96,15 @@ openclaw-sidebar-agent-roster {
 }
 
 .sidebar-agent-roster__row {
+  display: grid;
+  grid-template-columns: var(--sidebar-column-width) minmax(0, 1fr);
+  gap: var(--sidebar-row-gap);
   flex: 1;
+}
+
+.sidebar-agent-roster__row > .sidebar-agent-roster__avatar,
+.sidebar-agent-roster__header > .sidebar-agent-roster__chevron {
+  justify-self: center;
 }
 
 .sidebar-agent-roster__action,
@@ -164,8 +173,7 @@ openclaw-sidebar-agent-roster {
 
 /* Counts share the action slot; attention keeps its own reachable target. */
 .sidebar-agent-roster__header:has([data-session-attention]) {
-  grid-template-columns: 20px minmax(0, 1fr) auto auto;
-  column-gap: 2px;
+  grid-template-columns: var(--sidebar-column-width) minmax(0, 1fr) auto auto;
 
   .sidebar-agent-roster__signals,
   .sidebar-session-team-state {
@@ -221,20 +229,16 @@ openclaw-sidebar-agent-roster {
 .sidebar-agent-roster .sidebar-recent-sessions__list {
   gap: 0;
 }
-.sidebar-agent-roster .sidebar-session-tree__children {
-  margin-left: 0;
-  margin-inline-start: 16px;
-  background-position: 8px 0;
-}
 .sidebar-recent-session.sidebar-recent-session--team {
   display: grid;
-  grid-template-columns: 20px minmax(0, 1fr);
-  gap: 4px;
+  grid-template-columns: repeat(2, var(--sidebar-column-width)) minmax(0, 1fr);
+  gap: var(--sidebar-row-gap);
   min-height: 32px;
-  padding: 0;
+  padding-block: 0;
+  padding-inline: calc(var(--sidebar-inset) - var(--sidebar-session-border)) 0;
 }
 .sidebar-recent-session--team > .sidebar-recent-session__link {
-  grid-column: 2;
+  grid-column: 3;
   grid-row: 1;
   display: flex;
   gap: var(--team-slot-gap);
@@ -279,13 +283,17 @@ openclaw-sidebar-agent-roster {
   padding: 0;
   opacity: 1;
   pointer-events: auto;
+  justify-self: center;
+}
+.sidebar-recent-session--team.sidebar-recent-session--colored > .sidebar-child-session-toggle {
+  grid-column: 2;
 }
 .sidebar-recent-session--team .sidebar-child-session-toggle__icon svg {
   width: 12px;
   height: 12px;
 }
 .sidebar-recent-session.sidebar-recent-session--team > .sidebar-recent-session__aside {
-  grid-column: 2;
+  grid-column: 3;
   grid-row: 1;
   justify-self: end;
   position: static;
@@ -293,20 +301,20 @@ openclaw-sidebar-agent-roster {
   padding: 0;
 }
 .sidebar-recent-session--team:is(:hover, :focus-within) > .sidebar-recent-session__link {
-  padding-right: var(--session-row-actions-reserve);
+  padding-inline-end: var(--session-row-actions-reserve);
 }
 .sidebar-recent-session--team .sidebar-recent-session__name {
   font-weight: 450;
 }
 @media (hover: none), (pointer: coarse) {
   .sidebar-recent-session.sidebar-recent-session--team {
-    grid-template-columns: 20px minmax(0, 1fr) 92px;
+    grid-template-columns: repeat(2, var(--sidebar-column-width)) minmax(0, 1fr) 92px;
   }
   .sidebar-recent-session.sidebar-recent-session--team > .sidebar-recent-session__aside {
-    grid-column: 3;
+    grid-column: 4;
   }
   .sidebar-recent-session--team:is(:hover, :focus-within) > .sidebar-recent-session__link {
-    padding-right: 0;
+    padding-inline-end: 0;
   }
   .sidebar-agent-roster__header .sidebar-session-team-state__counts,
   .sidebar-agent-roster__header:not(:has([data-session-attention])) .sidebar-agent-roster__signals {

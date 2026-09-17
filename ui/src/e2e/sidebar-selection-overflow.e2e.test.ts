@@ -152,7 +152,11 @@ suite.define(() => {
             clipLeft = Math.max(clipLeft, ancestor.getBoundingClientRect().left);
           }
         }
+        const scroller = element.closest<HTMLElement>(".sidebar-shell__body")!;
         return {
+          gutter: getComputedStyle(scroller).scrollbarGutter,
+          overflows: scroller.scrollHeight > scroller.clientHeight,
+          scrollbarWidth: scroller.offsetWidth - scroller.clientWidth,
           clipLeft,
           outlineLeft:
             linkRect.left -
@@ -161,6 +165,9 @@ suite.define(() => {
         };
       });
 
+      expect(geometry.gutter).toBe("stable");
+      expect(geometry.overflows).toBe(false);
+      expect(geometry.scrollbarWidth).toBeGreaterThan(0);
       expect(geometry.outlineLeft, JSON.stringify(geometry)).toBeGreaterThanOrEqual(
         geometry.clipLeft,
       );
