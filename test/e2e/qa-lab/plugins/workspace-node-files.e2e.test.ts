@@ -62,7 +62,10 @@ describe("node workspace document access", () => {
           nodes: { commands: { allow: COMMANDS } },
         },
         agents: {
-          list: [{ id: "qa", default: true, workspace: state.workspaceDir }],
+          list: [
+            { id: "qa", default: true, workspace: state.workspaceDir },
+            { id: "local", workspace: state.path("local-workspace") },
+          ],
           defaults: {
             workspace: state.workspaceDir,
             skipBootstrap: true,
@@ -201,6 +204,23 @@ describe("node workspace document access", () => {
         expect(await fs.readFile(document, "utf8")).toBe("Owner edit");
         await fs.writeFile(document, "Harness edit");
         expect((await get()).file.content).toBe("Harness edit");
+        expect(await fs.readFile(localDocument, "utf8")).toBe("Stale Gateway copy");
+
+        // Saving a document also creates a missing workspace in the local path.
+        // Remote ownership must preserve that behavior without using the decoy.
+        await fs.rm(state.path("local-workspace"), { recursive: true, force: true });
+        await fs.rm(remote, { recursive: true });
+        for (const agentId of ["local", "qa"]) {
+          await owner.request("agents.files.set", {
+            agentId,
+            name: "AGENTS.md",
+            content: "Recreated workspace",
+          });
+        }
+        expect(await fs.readFile(state.path("local-workspace", "AGENTS.md"), "utf8")).toBe(
+          "Recreated workspace",
+        );
+        expect((await get()).file.content).toBe("Recreated workspace");
         expect(await fs.readFile(localDocument, "utf8")).toBe("Stale Gateway copy");
 
         await stopChildProcess(node, 5_000);
