@@ -1,13 +1,8 @@
 // Live-sweeps discovered model profiles with optional provider/model filters and probes.
 import { writeSync } from "node:fs";
-import { defaultApiRegistry } from "@openclaw/ai/internal/runtime";
-import {
-  prepareHeadersForSimpleCompletion,
-  prepareModelForSimpleCompletion,
-} from "@openclaw/ai/transports";
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { expectDefined } from "@openclaw/normalization-core";
-import { type Api, completeSimple, type Model } from "openclaw/plugin-sdk/llm";
+import type { Model } from "openclaw/plugin-sdk/llm";
 import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -42,6 +37,7 @@ import { normalizeDiscoveredAgentModel } from "./model-discovery-normalize.js";
 import { shouldSuppressBuiltInModelCore } from "./model-suppression.js";
 import { ensureOpenClawModelsJson } from "./models-config.js";
 import type { StreamFn } from "./runtime/index.js";
+import { createLiveModelCompletionRuntime } from "./test-helpers/live-model-completion-runtime.test-support.js";
 import { registerLiveModelCompletionWireTests } from "./test-helpers/live-model-completion-wire.test-support.js";
 import {
   appendPrioritizedDynamicLiveModels,
@@ -109,6 +105,11 @@ const LOCAL_OLLAMA_HOSTNAMES = new Set([
   "host.orb.internal",
 ]);
 let activeLiveCompletionConfig: OpenClawConfig | undefined;
+const { apiRegistry: liveModelApiRegistry, completeWithTimeout: completeSimpleWithTimeout } =
+  createLiveModelCompletionRuntime({
+    getConfig: () => activeLiveCompletionConfig,
+    withHeartbeat: withLiveHeartbeat,
+  });
 
 type OllamaRuntimeApi = {
   createConfiguredOllamaStreamFn: (params: {
@@ -270,7 +271,7 @@ async function ensureLiveProviderApisRegistered(params: {
   const providerConfig = params.config.models?.providers?.ollama;
   const providerBaseUrl = readConfiguredOllamaBaseUrl(providerConfig) || OLLAMA_DEFAULT_BASE_URL;
   ensureCustomApiRegistered(
-    defaultApiRegistry,
+    liveModelApiRegistry,
     "ollama",
     createLiveOllamaRuntimeStreamFn({
       createConfiguredOllamaStreamFn,
@@ -1311,52 +1312,6 @@ describe("resolveLiveSystemPrompt", () => {
     expect(isOpenAiCodexHtmlInterruption("Error: connection reset")).toBe(false);
   });
 });
-
-async function completeSimpleWithTimeout<TApi extends Api>(
-  model: Model<TApi>,
-  context: Parameters<typeof completeSimple<TApi>>[1],
-  options: Parameters<typeof completeSimple<TApi>>[2],
-  timeoutMs: number,
-  progressContext: string,
-) {
-  const maxTimeoutMs = Math.max(1, timeoutMs);
-  const controller = new AbortController();
-  const abortTimer = setTimeout(() => {
-    controller.abort();
-  }, maxTimeoutMs);
-  abortTimer.unref?.();
-  let hardTimer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    hardTimer = setTimeout(() => {
-      reject(new Error(`model call timed out after ${maxTimeoutMs}ms`));
-    }, maxTimeoutMs);
-    hardTimer.unref?.();
-  });
-  try {
-    const completionModel = prepareModelForSimpleCompletion({
-      apiRegistry: defaultApiRegistry,
-      model,
-      cfg: activeLiveCompletionConfig,
-    });
-    const headers = prepareHeadersForSimpleCompletion(completionModel, options);
-    return await withLiveHeartbeat(
-      Promise.race([
-        completeSimple(completionModel, context, {
-          ...options,
-          ...(headers ? { headers } : {}),
-          signal: controller.signal,
-        }),
-        timeout,
-      ]),
-      progressContext,
-    );
-  } finally {
-    clearTimeout(abortTimer);
-    if (hardTimer) {
-      clearTimeout(hardTimer);
-    }
-  }
-}
 
 registerLiveModelCompletionWireTests(completeSimpleWithTimeout);
 

@@ -179,7 +179,7 @@ export function registerLiveModelCompletionWireTests(completeProbe: CompleteProb
                 10_000,
                 "loopback wire probe",
               );
-              expect(requests).toHaveLength(offset + invocation + 1);
+              expect(requests, result.errorMessage).toHaveLength(offset + invocation + 1);
               const request = requests.at(-1)!;
               expect(request.path.split("?")[0]).toBe(expectedPath);
               expect(request.headers["x-opencode-session"], result.errorMessage).toBeTruthy();
