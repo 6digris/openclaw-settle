@@ -12,7 +12,10 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { GatewayRecoveryRuntime } from "../../gateway/server-instance-runtime.types.js";
-import { readSessionMessagesAsync } from "../../gateway/session-transcript-readers.js";
+import {
+  readSessionMessagesAsync,
+  readSessionMessagesPageWithStatsAsync,
+} from "../../gateway/session-transcript-readers.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { findDeliveryIntentOwner } from "../../infra/outbound/delivery-queue-storage.js";
 import {
@@ -39,8 +42,9 @@ import {
   resumeMainSession,
 } from "./main-session-restart-dispatch.js";
 import {
-  hasCompletionReportUserTail,
+  classifyMainSessionRestartRecoverySource,
   hasOnlyAnnounceRecoveryRuns,
+  type MainSessionRestartRecoverySource,
   markSessionCompletedAfterRecoveryCheckpoint,
   reconcileInterruptedCompletionReport,
 } from "./main-session-restart-recovery-checkpoint.js";
@@ -90,6 +94,31 @@ function pendingFinalRecoveryAction(
   // Records without notice identity cannot carry debt, so they keep the
   // visible fail path instead of completing silently.
   return pending.context && pending.intentId ? "notice" : "fail";
+}
+
+async function readRestartRecoverySource(
+  scope: Parameters<typeof readSessionMessagesPageWithStatsAsync>[0],
+): Promise<MainSessionRestartRecoverySource | undefined> {
+  let offset = 0;
+  let total: number | undefined;
+  while (true) {
+    const page = await readSessionMessagesPageWithStatsAsync(scope, { offset, maxMessages: 64 });
+    total ??= page.totalMessages;
+    if (page.totalMessages !== total) {
+      throw new Error("session transcript changed during restart recovery source lookup");
+    }
+    for (const message of page.messages.toReversed()) {
+      const source = classifyMainSessionRestartRecoverySource(message);
+      if (source) {
+        return source;
+      }
+    }
+    const consumed = page.transcriptEvents?.length ?? page.messages.length;
+    if (consumed === 0 || offset + consumed >= page.totalMessages) {
+      return undefined;
+    }
+    offset += consumed;
+  }
 }
 
 async function completePendingFinalRecoveryWithNotice(
@@ -470,41 +499,23 @@ export async function recoverStore(params: {
       result[completed ? "settled" : "skipped"]++;
       continue;
     }
-    if (pendingAction === "fail") {
-      await resumeCurrent({
-        ...(entry.pendingFinalDelivery?.kind === "replayable"
-          ? { pendingFinalDeliveryText: entry.pendingFinalDelivery.text }
-          : {}),
-        forceRestartSafeTools: true,
-      });
-      continue;
-    }
-
-    if (
-      entry.pendingFinalDelivery?.kind === "replayable" &&
-      entry.restartRecoveryForceSafeTools === true
-    ) {
-      await resumeCurrent({
-        pendingFinalDeliveryText: entry.pendingFinalDelivery.text,
-        forceRestartSafeTools: true,
-      });
-      continue;
-    }
-
     const execPolicy = resolveExecDefaults({
       cfg: params.cfg,
       agentId,
       sessionKey: dispatchSessionKey,
       sessionEntry: entry,
     });
-    const fullAccess =
+    const configuredFullAccess =
       execPolicy.mode === "full" &&
       execPolicy.security === "full" &&
       execPolicy.ask === "off" &&
       entry.restartRecoveryDeliveryMediaUrls === undefined &&
       entry.restartRecoveryDisableMessageTool !== true &&
       entry.restartRecoverySuppressTextDelivery !== true;
+    const hasRecoveryRuns = Boolean(entry.restartRecoveryRuns?.length);
     let replaySafeCheckpoint = false;
+    let recoverySource: MainSessionRestartRecoverySource | undefined;
+    let fullAccess: boolean;
     let messages: unknown[];
     try {
       const transcriptScope = {
@@ -517,6 +528,8 @@ export async function recoverStore(params: {
         maxMessages: 20,
         maxBytes: 256 * 1024,
       });
+      recoverySource = await readRestartRecoverySource(transcriptScope);
+      fullAccess = configuredFullAccess && recoverySource !== "inter_session";
       if (fullAccess && !entry.pendingFinalDelivery) {
         replaySafeCheckpoint = await readMainSessionReplaySafeCheckpoint(transcriptScope);
       }
@@ -525,12 +538,15 @@ export async function recoverStore(params: {
         return result;
       }
       if (entry.pendingFinalDelivery?.kind === "replayable") {
-        mainSessionRecoveryLog.warn(
-          `transcript unavailable for ${sessionKey}; resuming its durable pending final delivery`,
-        );
-        await resumeCurrent({
-          pendingFinalDeliveryText: entry.pendingFinalDelivery.text,
+        const tombstone = await tombstoneMainRestartRecoveryWithNotice({
+          ...target,
+          cfg: params.cfg,
+          entry,
+          gatewayRuntime: params.gatewayRuntime,
+          observation: recoveryView.observation,
+          reason: "delegated restart recovery authority could not be verified",
         });
+        result[tombstone === "notice_failed" ? "failed" : "skipped"]++;
         continue;
       }
       mainSessionRecoveryLog.warn(`failed to read transcript for ${sessionKey}: ${String(err)}`);
@@ -541,21 +557,45 @@ export async function recoverStore(params: {
     if (stopped()) {
       return result;
     }
+    if (
+      recoverySource === "inter_session" ||
+      (recoverySource === undefined && entry.restartRecoverySourceIngress === "internal")
+    ) {
+      const tombstone = await tombstoneMainRestartRecoveryWithNotice({
+        ...target,
+        cfg: params.cfg,
+        entry,
+        gatewayRuntime: params.gatewayRuntime,
+        observation: recoveryView.observation,
+        reason: "delegated restart recovery authority is unavailable",
+      });
+      result[tombstone === "notice_failed" ? "failed" : "skipped"]++;
+      continue;
+    }
+    if (pendingAction === "fail") {
+      await resumeCurrent({
+        ...(entry.pendingFinalDelivery?.kind === "replayable"
+          ? { pendingFinalDeliveryText: entry.pendingFinalDelivery.text }
+          : {}),
+        forceRestartSafeTools: true,
+      });
+      continue;
+    }
     if (entry.pendingFinalDelivery?.kind === "replayable") {
       await resumeCurrent({
         pendingFinalDeliveryText: entry.pendingFinalDelivery.text,
-        forceRestartSafeTools: hasReplaySafeCodeModeCheckpointInCurrentTurn(messages),
+        forceRestartSafeTools:
+          entry.restartRecoveryForceSafeTools === true ||
+          hasReplaySafeCodeModeCheckpointInCurrentTurn(messages),
       });
       continue;
     }
 
     // Completion reports are delivery turns, not human work. Same-process
     // rotation retains their announce run ids; a full restart can recover the
-    // same fact from the already-persisted user-message provenance.
-    const hasRecoveryRuns = Boolean(entry.restartRecoveryRuns?.length);
     const completionSource = hasOnlyAnnounceRecoveryRuns(entry)
       ? "announce_runs"
-      : !hasRecoveryRuns && hasCompletionReportUserTail(messages)
+      : !hasRecoveryRuns && recoverySource === "completion"
         ? "transcript"
         : undefined;
     const harnessCompletion = entry.restartRecoveryHarnessCompletion;
@@ -583,6 +623,7 @@ export async function recoverStore(params: {
       result.failed++;
       continue;
     }
+
     if (
       harnessCompletion &&
       getOwedHarnessCompletionTask(harnessCompletion, entry) &&

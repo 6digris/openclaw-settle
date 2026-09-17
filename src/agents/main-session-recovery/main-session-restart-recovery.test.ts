@@ -3313,6 +3313,28 @@ describe("main-session-restart-recovery", () => {
     });
   });
 
+  it("tombstones delegated recovery after the sender tool cap is lost", async () => {
+    const sessionsDir = await writeMainSessionTranscript([
+      {
+        role: "user",
+        content: "delegated work",
+        provenance: { kind: "inter_session", sourceTool: "sessions_send" },
+      },
+      ...Array.from({ length: 80 }, (_, index) => ({
+        role: index % 2 === 0 ? "assistant" : "toolResult",
+        content: `delegated detail ${index}`,
+      })),
+    ]);
+
+    await expectRecovery({ started: 0, settled: 0, failed: 0, skipped: 1 });
+    expect(callGateway).not.toHaveBeenCalled();
+    expect(readStore(path.join(sessionsDir, "sessions.json"))["agent:main:main"]).toMatchObject({
+      abortedLastRun: false,
+      status: "failed",
+      mainRestartRecovery: { tombstone: expect.any(Object) },
+    });
+  });
+
   it("does not scan ordinary running sessions without the restart-aborted marker", async () => {
     const sessionsDir = await makeSessionsDir();
     await writeStore(sessionsDir, {
