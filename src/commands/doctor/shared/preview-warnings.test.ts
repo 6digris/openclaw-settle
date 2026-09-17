@@ -5,7 +5,10 @@ import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../../config/config.js";
-import type { AgentToolsConfig } from "../../../config/types.tools.js";
+import {
+  agentRosterCases,
+  createMessagePolicyAgents,
+} from "./preview-agent-fixtures.test-support.js";
 import { collectDoctorPreviewNotes } from "./preview-warnings.js";
 
 async function collectDoctorPreviewWarnings(
@@ -23,23 +26,6 @@ async function collectProfileConfiguredToolSectionWarningsThroughDoctor(
   });
   return warnings.filter((warning) => warning.includes("is configured, but configured sections"));
 }
-
-const agentRosterCases = [
-  {
-    name: "list",
-    path: "agents.list[0]",
-    otherPath: "agents.entries",
-    agents: (tools: AgentToolsConfig) => ({ list: [{ id: "sage", tools }] }),
-  },
-  {
-    name: "keyed",
-    path: "agents.entries.sage",
-    otherPath: "agents.list",
-    agents: (tools: AgentToolsConfig) => ({
-      entries: { main: { default: true }, sage: { tools } },
-    }),
-  },
-];
 
 async function collectVisibleReplyToolPolicyWarningsThroughDoctor(
   cfg: OpenClawConfig,
@@ -59,26 +45,6 @@ async function collectChannelBoundMessageToolPolicyWarningsThroughDoctor(
     doctorFixCommand: "openclaw doctor --fix",
   });
   return warnings.filter((warning) => warning.includes("is routed from channel"));
-}
-
-function createMessagePolicyAgents(routedAgentId: string): NonNullable<OpenClawConfig["agents"]> {
-  return {
-    list: [
-      {
-        id: "main",
-        default: true,
-        tools: {
-          allow: ["read"],
-        },
-      },
-      {
-        id: routedAgentId,
-        tools: {
-          profile: "messaging",
-        },
-      },
-    ],
-  };
 }
 
 type TestManifestRecord = {
