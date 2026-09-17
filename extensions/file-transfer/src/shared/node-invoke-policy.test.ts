@@ -66,6 +66,25 @@ describe("file-transfer node invoke policy", () => {
     });
   });
 
+  it.each([undefined, true, false])(
+    "honors caller followSymlinks=%s within the configured permission",
+    async (followSymlinks) => {
+      const { ctx, invokeNode } = createCtx({
+        params: { path: "/tmp/file.txt", followSymlinks },
+        pluginConfig: {
+          nodes: {
+            "node-1": { allowReadPaths: ["/tmp/**"], followSymlinks: true, ask: "off" },
+          },
+        },
+      });
+      expect((await createFileTransferNodeInvokePolicy().handle(ctx)).ok).toBe(true);
+      expect(invokeNode).toHaveBeenCalledTimes(2);
+      for (const [request] of invokeNode.mock.calls) {
+        expect(request?.params).toMatchObject({ followSymlinks: followSymlinks !== false });
+      }
+    },
+  );
+
   it("normalizes string maxBytes before invoking the node", async () => {
     const policy = createFileTransferNodeInvokePolicy();
     const { ctx, invokeNode } = createCtx({
