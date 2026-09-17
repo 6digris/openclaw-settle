@@ -20,7 +20,7 @@ import {
   DASHSCOPE_WAN_VIDEO_MODELS,
   DEFAULT_DASHSCOPE_WAN_VIDEO_MODEL,
 } from "openclaw/plugin-sdk/video-generation";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 
 const {
   resolveApiKeyForProviderMock,
@@ -235,6 +235,10 @@ describe("qwen video generation provider", () => {
   });
 
   it("submits async Wan generation, polls task status, and downloads the resulting video", async () => {
+    // Keep the exact submission budget independent of elapsed wall time.
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 0, 1));
+    onTestFinished(() => clock.mockRestore());
+
     mockSuccessfulDashscopeVideoTask({ postJsonRequestMock, fetchWithTimeoutMock });
 
     const provider = qwenVideoGenerationProvider;
