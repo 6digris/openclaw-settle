@@ -5,7 +5,6 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { runCommandWithRuntime } from "../cli/cli-utils.js";
 import { resolveConfiguredAgentDatabaseTargets } from "../config/sessions/targets.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { runDoctorHealthFlow } from "../flows/doctor-health.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import { createLegacyDatabaseFixture } from "../infra/state-migrations.media-persistence.test-support.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../state/openclaw-agent-db-contract.js";
@@ -20,6 +19,7 @@ import { beginDoctorMaintenance } from "./doctor-maintenance.js";
 import "../flows/doctor-health.test-support.js";
 
 const { mocks } = await import("../flows/doctor-health.test-support.js");
+const { runDoctorHealthFlow } = await import("../flows/doctor-health.js");
 beforeEach(() => {
   mocks.config.mockReturnValue({});
   mocks.packageRoot.mockReturnValue(undefined);
@@ -30,23 +30,29 @@ beforeEach(() => {
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => vi.unstubAllEnvs());
 
-it("closes stores reopened after restoration while maintenance remains held", async () => {
+it("closes its owned stores without closing an independent caller's stores", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
     const maintenance = await beginDoctorMaintenance({
       options: { repair: true },
       root: null,
       runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
     });
-    expect(maintenance).toBeDefined();
+    if (!maintenance) {
+      throw new Error("Expected Doctor maintenance");
+    }
     try {
-      const beforeRestore = openOpenClawStateDatabase({ env: state.env });
-      await maintenance?.closeStores();
-      expect(beforeRestore.db.isOpen).toBe(false);
-      const afterRestore = openOpenClawStateDatabase({ env: state.env });
-      await maintenance?.closeStores();
-      expect(afterRestore.db.isOpen).toBe(false);
+      const owned = maintenance.run(() => openOpenClawStateDatabase({ env: state.env }));
+      await maintenance.closeStores();
+      expect(owned.db.isOpen).toBe(false);
+      const independent = openOpenClawStateDatabase({ env: state.env });
+      await maintenance.closeStores();
+      expect(independent.db.isOpen).toBe(true);
+      expect(() => maintenance.run(() => openOpenClawStateDatabase({ env: state.env }))).toThrow(
+        "Database maintenance resource scope is closed",
+      );
+      maintenance.assertCurrent();
     } finally {
-      await maintenance?.release();
+      await maintenance.release();
     }
   });
 });

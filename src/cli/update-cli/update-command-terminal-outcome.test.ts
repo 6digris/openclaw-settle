@@ -507,8 +507,14 @@ describe("composed cleanup and terminal outcome", () => {
       expect(JSON.stringify(report)).toContain("fixture original failure before recovery");
       expect(JSON.stringify(value.sentinel)).toContain("fixture original failure before recovery");
       if (settlementFailed) {
-        expect.soft(JSON.stringify(report)).not.toContain('"recovery":');
-        expect.soft(value.sentinel?.payload.stats?.recovery).toBeUndefined();
+        expect.soft(report).toMatchObject({
+          recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
+        });
+        expect.soft(value.sentinel?.payload.stats?.recovery).toEqual({
+          serviceRestartSafe: false,
+          reason: "runtime-verification-failed",
+        });
+        expect.soft(JSON.stringify(report)).not.toContain('"packageRollbackVerified":true');
         expect(value.lease).not.toBe("absent");
       } else {
         expect(report).toMatchObject({

@@ -497,9 +497,14 @@ it.each([false, true])(
       const run = listUpdateRuns()[0];
       expect(run?.status).toBe(fails ? "failed" : "succeeded");
       if (fails) {
-        expect(loadSessionEntryReadOnly(migrated)).toBeUndefined();
-        expect(await fs.readFile(state.configPath, "utf8")).toBe(initialConfig);
-        expect(run?.origin.updateRecoveryCapture?.restored).toBe(true);
+        // Plugin/Doctor writes after capture are newer state, not rollback input.
+        expect(loadSessionEntryReadOnly(migrated)?.sessionId).toBe("doctor-migration");
+        expect((await readConfigFileSnapshot()).config).toMatchObject({
+          update: { channel: "beta" },
+          logging: { level: "debug" },
+        });
+        expect(run?.origin.updateRecoveryCapture?.restored).not.toBe(true);
+        expect(captures[0]?.terminalOutcome).toBeUndefined();
       } else {
         expect(loadSessionEntryReadOnly(migrated)?.sessionId).toBe("doctor-migration");
         expect(defaultRuntime.error).toHaveBeenCalledWith(

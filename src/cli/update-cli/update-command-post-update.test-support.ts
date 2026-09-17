@@ -4,8 +4,11 @@ import { GATEWAY_SERVICE_SELECTOR_ENV_KEYS } from "../../daemon/constants.js";
 import type { GatewayServiceCommandConfig } from "../../daemon/service.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { captureEnv } from "../../test-utils/env.js";
+import { waitForSignalExitBarriers } from "../signal-exit-barrier.js";
 import type { PostCorePluginUpdateResult } from "./update-command-plugins.js";
 import { finishUpdate } from "./update-command-post-update.js";
+import * as rollbackModule from "./update-command-rollback.js";
+import { createWindowsTaskAutoStartRecovery } from "./update-command-windows-task.js";
 
 export function createManagedServiceIdentityFixture(home: string) {
   const keys = [
@@ -168,4 +171,48 @@ export function expectUpdateFailure(
     result: { status: "error", reason },
     ...details,
   });
+}
+
+export async function expectRollbackTaskOwnerSettlement() {
+  const before = process.listenerCount("SIGINT");
+  const recovery = createWindowsTaskAutoStartRecovery({ serviceEnv: {}, alreadySuspended: true });
+  const restore = vi.spyOn(recovery, "restore");
+  vi.spyOn(rollbackModule, "rollbackFailedUpdate").mockImplementationOnce(async ({ result }) => ({
+    result,
+    rolledBack: false,
+    pendingRecoveryReason: "retained generations cannot be published backward",
+    stoppedForRollback: {
+      inspected: true,
+      runtimeInspected: true,
+      running: false,
+      stopped: true,
+      windowsTaskAutoStartRecovery: recovery,
+    },
+  }));
+  try {
+    await expect(
+      finishSuccessfulPackageSwitch(
+        {},
+        {
+          result: {
+            status: "error",
+            mode: "npm",
+            reason: "doctor-failed",
+            steps: [],
+            durationMs: 1,
+          },
+          packageTransaction: {
+            backupRoot: "/tmp/previous-openclaw",
+            rollback: vi.fn(),
+            complete: vi.fn(),
+          },
+        },
+      ),
+    ).rejects.toThrow("retained generations cannot be published backward");
+    expect(restore).not.toHaveBeenCalled();
+    expect(process.listenerCount("SIGINT")).toBe(before);
+    await waitForSignalExitBarriers();
+  } finally {
+    await recovery.complete(false, { retainNativeState: true });
+  }
 }

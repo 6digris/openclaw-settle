@@ -178,6 +178,9 @@ export async function resolveSettledUpdateCommandResult(
         ...base,
         status: "error",
         reason: activationTimeout?.reason ?? "update-executor-settlement-failed",
+        // A failed owner cannot carry a previous success verdict, but the helper
+        // still needs the explicit unsafe result to keep its Gateway parked.
+        recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
         steps: [
           ...base.steps,
           {

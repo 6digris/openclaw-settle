@@ -16,6 +16,7 @@ import {
 import {
   resolveQaGatewayChildCommand,
   runQaGatewayCliCommand,
+  runQaGatewayRepairCommand,
   type QaGatewayChildCommand,
 } from "./gateway-child-command.js";
 import {
@@ -474,7 +475,7 @@ export async function prepareQaGatewayChild(
         );
         const consentArgs = help.includes("--accept-capabilities") ? ["--accept-capabilities"] : [];
         await runQaPackagedBootstrap("installed package plugin setup failed (update repair)", () =>
-          runQaGatewayCliCommand({
+          runQaGatewayRepairCommand({
             ...command,
             args: ["update", "repair", ...consentArgs, "--yes", "--no-restart", "--json"],
           }),

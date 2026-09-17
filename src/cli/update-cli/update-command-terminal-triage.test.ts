@@ -9,7 +9,10 @@ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js"
 import { hasErrnoCode } from "../../infra/errno.js";
 import { collectNestedErrorCandidates } from "../../infra/error-graph-internal.js";
 import * as temporaryRoot from "../../infra/tmp-openclaw-dir.js";
-import { CONTROL_PLANE_UPDATE_SENTINEL_META_ENV } from "../../infra/update-control-plane-sentinel.js";
+import {
+  CONTROL_PLANE_UPDATE_SENTINEL_META_ENV,
+  MANAGED_SERVICE_UPDATE_UNSAFE_EXIT_CODE,
+} from "../../infra/update-control-plane-sentinel.js";
 import {
   captureManagedUpdateLeaseDatabaseIdentity,
   createManagedHandoffLeaseDatabase,
@@ -340,7 +343,9 @@ it.each([
     }
     expect(exit).toBeInstanceOf(ExitError);
     const unsettled = trial.revoked || trial.releaseDenied;
-    expect(observation.exitCode).toBe(unsettled ? 1 : 7);
+    expect(observation.exitCode).toBe(
+      trial.revoked ? MANAGED_SERVICE_UPDATE_UNSAFE_EXIT_CODE : trial.releaseDenied ? 1 : 7,
+    );
     expect(statusAtPublication).toBe("running");
     expect(pendingAtPublication).toBe(trial.revoked);
     expect(releasePendingAtPublication).toBe(trial.releaseDenied);
@@ -411,4 +416,31 @@ it.each([
       }
     }
   }
+});
+
+it("replaces stale restart authority with an explicit unsafe settlement result", async () => {
+  const root = dirs.make("unsafe-terminal-owner-");
+  const result: UpdateRunResult = {
+    status: "ok",
+    mode: "npm",
+    root,
+    steps: [],
+    durationMs: 1,
+    recovery: {
+      serviceRestartSafe: true,
+      packageRollbackVerified: true,
+      version: "1.0.0",
+      service: "healthy",
+    },
+  };
+  const settled = await resolveSettledUpdateCommandResult(
+    { opts: {}, root, ownedManagedUpdateEnv: { OPENCLAW_STATE_DIR: path.join(root, "state") } },
+    result,
+    new Error("executor lost during publication"),
+  );
+  expect(settled.settlementFailed).toBe(true);
+  expect(settled.result.recovery).toEqual({
+    serviceRestartSafe: false,
+    reason: "runtime-verification-failed",
+  });
 });

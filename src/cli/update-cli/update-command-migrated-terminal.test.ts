@@ -353,10 +353,15 @@ it.each(["release-fails", "revoked"] as const)(
         expect.objectContaining({ name: "update executor settlement", exitCode: 1 }),
       ]),
     });
-    expect(observed.output[0]).not.toHaveProperty("recovery");
+    expect(observed.output[0]).toMatchObject({
+      recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
+    });
     expect(observed.sentinel?.payload.status).toBe("error");
     expect(observed.sentinel?.payload.stats?.reason).toBe("update-executor-settlement-failed");
-    expect(observed.sentinel?.payload.stats).not.toHaveProperty("recovery");
+    expect(observed.sentinel?.payload.stats?.recovery).toEqual({
+      serviceRestartSafe: false,
+      reason: "runtime-verification-failed",
+    });
     expect(observed.history).toMatchObject({ status: "failed" });
     expect(observed.history?.downtimeMs).toBeNull();
     expect(observed.publication[0]?.executorExited).toBe(true);

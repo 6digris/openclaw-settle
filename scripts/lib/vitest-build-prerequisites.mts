@@ -26,6 +26,12 @@ export type VitestRuntimeTestSelection = {
 // while unrelated workers may still be importing its public plugin facades.
 const runtimeConsumers = [
   {
+    file: "src/commands/doctor.update-retained-forward-recovery.test.ts",
+    configs: ["test/vitest/vitest.commands.config.ts"],
+    mode: "runtime",
+    dir: "src/commands",
+  },
+  {
     file: "src/gateway/setup-inference.first-signin.integration.test.ts",
     configs: [
       "test/vitest/vitest.gateway-database-workers.config.ts",

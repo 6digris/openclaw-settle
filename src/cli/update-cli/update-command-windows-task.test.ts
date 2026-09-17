@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { setImmediate } from "node:timers/promises";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
@@ -10,7 +11,10 @@ import {
 import * as openClawTmp from "../../infra/tmp-openclaw-dir.js";
 import { createManagedHandoffLeaseStore } from "../../infra/update-managed-service-handoff-lease.js";
 import { createUpdateRun, getUpdateRun } from "../../infra/update-run-ledger.js";
+import { waitForSignalExitBarriers } from "../signal-exit-barrier.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
+import { UpdateCommandPendingRecoveryFailure } from "./update-command-result.js";
+import { withUpdateCommandRecoveryUnwind } from "./update-command-unwind.js";
 import { createWindowsTaskAutoStartRecovery } from "./update-command-windows-task.js";
 vi.mock("../../daemon/schtasks.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../daemon/schtasks.js")>()),
@@ -243,4 +247,45 @@ it("retains the native failure when interrupted cleanup also loses its executor"
   expect(failure).toMatchObject({ errors: expect.arrayContaining([nativeFailure]) });
   expect(getUpdateRun(run.runId, { env })).toEqual(run);
   expect(process.listeners("SIGINT")).toEqual(listeners);
+});
+
+it("joins existing suspension and removes signal gates after retained publication refusal", async () => {
+  const suspended = createDeferred<boolean>();
+  vi.mocked(suspendScheduledTaskAutoStartForUpdate)
+    .mockReset()
+    .mockReturnValueOnce(suspended.promise);
+  vi.mocked(resumeScheduledTaskAutoStartAfterUpdate).mockReset();
+  const before = process.listenerCount("SIGINT");
+  const recovery = createWindowsTaskAutoStartRecovery({ serviceEnv: {} });
+  const result = { status: "error" as const, mode: "npm" as const, steps: [], durationMs: 0 };
+  const refusal = new UpdateCommandPendingRecoveryFailure(result, "retained publication");
+  let settled = false;
+  const outcome = withUpdateCommandRecoveryUnwind(
+    { run: { runId: "private-retained-refusal", env: {} } },
+    { triageTarget: { env: {} }, windowsTaskAutoStartRecovery: recovery },
+    async () => {
+      throw refusal;
+    },
+  )
+    .then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    .finally(() => {
+      settled = true;
+    });
+  try {
+    await setImmediate();
+    expect(settled, "the pending native operation must be joined").toBe(false);
+    suspended.resolve(true);
+    expect(await outcome).toBe(refusal);
+    expect(process.listenerCount("SIGINT")).toBe(before);
+    await expect(waitForSignalExitBarriers()).resolves.toBeUndefined();
+    expect(suspendScheduledTaskAutoStartForUpdate).toHaveBeenCalledOnce();
+    expect(resumeScheduledTaskAutoStartAfterUpdate).not.toHaveBeenCalled();
+  } finally {
+    suspended.resolve(true);
+    await outcome;
+    await recovery.complete(false, { retainNativeState: true });
+  }
 });

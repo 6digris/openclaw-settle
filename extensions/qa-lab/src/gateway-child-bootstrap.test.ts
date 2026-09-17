@@ -5,7 +5,7 @@ import path from "node:path";
 import { clearTimeout as clearRealTimeout, setTimeout as realTimeout } from "node:timers";
 import { inspect } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { runQaGatewayCliCommand } from "./gateway-child-command.js";
+import { runQaGatewayCliCommand, runQaGatewayRepairCommand } from "./gateway-child-command.js";
 import { QaGatewayChildLifecycle } from "./gateway-child-lifecycle.js";
 import { createQaGatewayChild } from "./gateway-child.js";
 import { isQaPosixProcessGroupAlive } from "./posix-process-group.js";
@@ -321,6 +321,54 @@ describe.skipIf(process.platform === "win32")("packaged QA bootstrap lifetime", 
     }
     f.assertStopped();
     expect(() => gateway.runCli(["hang"])).toThrow("lifecycle is closed");
+  });
+
+  it("queues repairs sharing an installation and cancels a waiter without spawning it", async () => {
+    const f = await fixture("repair", "running");
+    const first = new QaGatewayChildLifecycle();
+    const second = new QaGatewayChildLifecycle();
+    cleanups.push(async () => {
+      await Promise.all([first.stop(), second.stop()]);
+    });
+    const run = (lifetime: QaGatewayChildLifecycle) =>
+      f.track(
+        runQaGatewayRepairCommand({
+          ...f.command,
+          lifetime,
+          args: ["update", "repair"],
+          cwd: f.root,
+          env: { HOME: f.root },
+        }),
+      );
+    const active = run(first);
+    await f.ready();
+    let waiterSettled = false;
+    const queued = run(second).finally(() => {
+      waiterSettled = true;
+    });
+    await new Promise<void>((resolve) => {
+      realTimeout(resolve, 200);
+    });
+    expect(waiterSettled, "the contended repair must wait, not fail immediately").toBe(false);
+    expect(f.records().filter((entry) => entry.kind === "repair")).toHaveLength(1);
+    await bounded(second.stop());
+    expect(await bounded(queued)).toBeInstanceOf(Error);
+    expect(f.records().filter((entry) => entry.kind === "repair")).toHaveLength(1);
+    const next = new QaGatewayChildLifecycle();
+    cleanups.push(async () => {
+      await next.stop();
+    });
+    const admitted = run(next);
+    await new Promise<void>((resolve) => {
+      realTimeout(resolve, 200);
+    });
+    expect(f.records().filter((entry) => entry.kind === "repair")).toHaveLength(1);
+    await bounded(first.stop());
+    expect(await bounded(active)).toBeInstanceOf(Error);
+    await f.ready(2);
+    await bounded(next.stop());
+    expect(await bounded(admitted)).toBeInstanceOf(Error);
+    f.assertStopped();
   });
 
   it.each(["leader-exited", "closed-pipes"])(

@@ -292,6 +292,67 @@ describe("update Doctor state recovery", () => {
     },
   );
 
+  it.each(
+    ["2026.9.3", "2026.9.4"].flatMap((version) =>
+      (["owned", "foreign parent", "wrong phase", "wrong run", "owner changes"] as const).map(
+        (fault) => ({ version, fault }),
+      ),
+    ),
+  )("correlates the shipped $version deferred Doctor step: $fault", async ({ version, fault }) => {
+    const parent = readUpdateRunDriver(process.ppid);
+    assert(parent, "The published-driver fixture requires an observable parent");
+    // Published 2026.9.3/9.4 persist activation, then defer Doctor step writes
+    // until the child returns. A prior completed step is not active authority.
+    updateRunLedger.recordUpdateRunStep(runId, {
+      step: "openclaw doctor",
+      status: "completed",
+    });
+    updateRunLedger.recordUpdateRunPhase(
+      runId,
+      fault === "wrong phase" ? "validating" : "activating",
+      {
+        before: { version },
+        target: { kind: "package" },
+        origin: {
+          driver:
+            fault === "foreign parent"
+              ? { ...parent, startIdentity: String(Number(parent.startIdentity) + 1) }
+              : parent,
+        },
+      },
+    );
+    mocks.activeRuns.mockImplementation(async () =>
+      updateRunLedger.listUpdateRuns({ active: true }),
+    );
+    if (fault === "wrong run") {
+      vi.stubEnv("OPENCLAW_UPDATE_RUN_ID", "different-run");
+    }
+    if (fault === "owner changes") {
+      mocks.create.mockImplementation(async ({ assertOwned }: { assertOwned: () => void }) => {
+        updateRunLedger.recordUpdateRunPhase(runId, "activating", {
+          origin: {
+            driver: { ...parent, startIdentity: String(Number(parent.startIdentity) + 2) },
+          },
+        });
+        assertOwned();
+        return ref;
+      });
+    }
+    const command = doctorCommand(runtime, { repair: true, nonInteractive: true });
+    if (fault === "owned") {
+      await expect(command).resolves.toBeUndefined();
+      expect(mocks.create).toHaveBeenCalledOnce();
+      expect(mocks.flow).toHaveBeenCalledOnce();
+    } else {
+      await expect(command).rejects.toThrow(/admitted update run/);
+      expect(mocks.flow).not.toHaveBeenCalled();
+      if (fault !== "owner changes") {
+        expect(mocks.create).not.toHaveBeenCalled();
+      }
+    }
+    expect(mocks.restore).not.toHaveBeenCalled();
+  });
+
   it("keeps an identity-bearing rehearsal invocation on strict driver admission", async () => {
     await legacyRehearsal("2026.9.3");
     vi.stubEnv("OPENCLAW_UPDATE_RUN_ID", runId);

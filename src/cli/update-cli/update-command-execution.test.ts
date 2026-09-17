@@ -1,3 +1,4 @@
+import "./update-command-execution.test-support.js";
 import { once } from "node:events";
 import fs from "node:fs/promises";
 import { createServer } from "node:http";
@@ -32,7 +33,6 @@ import {
   GatewayServiceUpdateOwnershipError,
 } from "./update-command-service-plan.js";
 // Install the fixture mocks before loading the execution owner and its dependencies.
-import "./update-command-execution.test-support.js";
 
 const { executionParams, inspectOrStopService, mocks, schemaContext, successfulUpdate } =
   await import("./update-command-execution.test-support.js");

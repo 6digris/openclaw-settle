@@ -32,6 +32,24 @@ export async function withUpdateCommandRecoveryUnwind(
           steps: [],
           durationMs: 0,
         });
+  const retainFailure = async (error: unknown): Promise<never> => {
+    try {
+      await recoveryState.windowsTaskAutoStartRecovery?.complete(false, {
+        retainNativeState: true,
+      });
+    } catch (cause) {
+      throw new UpdateCommandPendingRecoveryFailure(
+        primaryResult(error),
+        formatErrorMessage(error),
+        {
+          cause: new AggregateError([error, cause], "Retained update signal cleanup failed", {
+            cause: error,
+          }),
+        },
+      );
+    }
+    throw error;
+  };
   let failure: { error: unknown } | undefined;
   try {
     await operation();
@@ -40,27 +58,27 @@ export async function withUpdateCommandRecoveryUnwind(
     try {
       run.executorFence?.assertCurrent();
     } catch (cause) {
-      throw new UpdateCommandPendingRecoveryFailure(
-        primaryResult(error),
-        formatErrorMessage(cause),
-        { cause: new AggregateError([error, cause], "Update executor was lost", { cause: error }) },
+      return await retainFailure(
+        new UpdateCommandPendingRecoveryFailure(primaryResult(error), formatErrorMessage(cause), {
+          cause: new AggregateError([error, cause], "Update executor was lost", { cause: error }),
+        }),
       );
     }
     if (
       error instanceof UpdateCommandPendingRecoveryFailure ||
       error instanceof UpdateCommandFinalizedRecoveryFailure
     ) {
-      throw error;
+      return await retainFailure(error);
     }
     if (
       error instanceof UpdateCommandRecoveryPendingError ||
       error instanceof UpdateRecoveryRequiredError ||
       opts.recovery
     ) {
-      throw new UpdateCommandPendingRecoveryFailure(
-        primaryResult(error),
-        formatErrorMessage(error),
-        { cause: error },
+      return await retainFailure(
+        new UpdateCommandPendingRecoveryFailure(primaryResult(error), formatErrorMessage(error), {
+          cause: error,
+        }),
       );
     }
     failure = { error };
@@ -69,8 +87,9 @@ export async function withUpdateCommandRecoveryUnwind(
     // Durable finalization alone owns native/terminal effects. Never replay
     // legacy compensation, including after an already-finalized failure.
     if (failure) {
-      throw failure.error;
+      return await retainFailure(failure.error);
     }
+    await recoveryState.windowsTaskAutoStartRecovery?.complete(false, { retainNativeState: true });
     return;
   }
   if (recoveryState.ledgerHandoffOwned && !recoveryState.ledgerHandoffCompleted) {
@@ -106,10 +125,12 @@ export async function withUpdateCommandRecoveryUnwind(
         await assertUpdateRecoveryAdmission({ env });
       }
     } catch (error) {
-      throw new UpdateCommandPendingRecoveryFailure(
-        primaryResult(failure?.error),
-        formatErrorMessage(error),
-        { cause: error },
+      return await retainFailure(
+        new UpdateCommandPendingRecoveryFailure(
+          primaryResult(failure?.error),
+          formatErrorMessage(error),
+          { cause: error },
+        ),
       );
     }
   }

@@ -187,7 +187,6 @@ describe("post-plugin update readiness", () => {
         env: { OPENCLAW_UPDATE_POST_CORE_CONVERGENCE: "1" },
       });
       expect(mocks.runExec.mock.calls.map((call) => call[2].timeoutMs)).toEqual([
-        timeoutMs,
         timeoutMs ?? 300_000,
         timeoutMs ?? 300_000,
       ]);
@@ -216,19 +215,19 @@ describe("post-plugin update readiness", () => {
       }
       await fs.truncate(databasePath, bytes);
     }
-    mocks.runExec.mockImplementationOnce(async () => {
+    mocks.runDoctor.mockImplementationOnce(async () => {
       for (const databasePath of databases) {
         await fs.truncate(`${databasePath}-wal`, bytes);
       }
-      return { stdout: "", stderr: "" };
+      return doctorExit;
     });
     const result = await completePostCorePluginUpdate({ ...updateOptions, timeoutMs: undefined });
     expect(result.pluginUpdate.status).toBe("ok");
     expect(mocks.runExec.mock.calls.map((call) => call[2].timeoutMs)).toEqual([
-      undefined,
       testCase.budget,
       testCase.budget,
     ]);
+    expect(mocks.runDoctor.mock.calls[0]?.[1].timeoutMs).toBeUndefined();
   });
 
   it("budgets configured agent stores without enumerating unrelated agent directories", async () => {
@@ -303,7 +302,8 @@ describe("post-plugin update readiness", () => {
       });
 
       expect(beforeDoctor).toHaveBeenCalledOnce();
-      expect(mocks.runExec.mock.calls[0]?.[1]).toEqual([
+      expect(mocks.runDoctor.mock.calls[0]?.[0]).toEqual([
+        "/usr/bin/node",
         "/opt/openclaw/dist/index.js",
         "doctor",
         "--repair",
@@ -311,7 +311,7 @@ describe("post-plugin update readiness", () => {
         "--no-workspace-suggestions",
         "--yes",
       ]);
-      expect(mocks.runExec.mock.calls[0]?.[2]).toMatchObject({
+      expect(mocks.runDoctor.mock.calls[0]?.[1]).toMatchObject({
         env: { OPENCLAW_UPDATE_POST_CORE_CONVERGENCE: "1" },
       });
     });
@@ -436,19 +436,12 @@ describe("post-plugin update readiness", () => {
         message: "Required session migration could not acquire its writer.",
       },
     ];
-    const runNormally = mocks.runExec.getMockImplementation()!;
-    mocks.runExec.mockImplementation(async (command, args: string[], options) => {
-      if (!args.includes("--repair")) {
-        return await runNormally(command, args, options);
-      }
+    mocks.runDoctor.mockImplementation(async (_args, options) => {
       await writeUpdatePostInstallDoctorResult({
         resultPath: options.env[UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV],
         result: { status: "error", failureFacts },
       });
-      throw Object.assign(new Error("Doctor exited"), {
-        exitCode: 23,
-        stderr: "Last cleanup message",
-      });
+      return { ...doctorExit, code: 23, stderr: "Last cleanup message" };
     });
     await expect(
       runUpdateFinalizationDoctorInFreshProcess({

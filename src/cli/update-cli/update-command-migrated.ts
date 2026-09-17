@@ -222,11 +222,6 @@ async function recoverMigratedUpdateInParent(
   let pendingResult = finalResult;
   const publishFinalResult = async (failure?: unknown) => {
     const settled = await resolveSettledUpdateCommandResult(params, pendingResult, failure);
-    if (settled.settlementFailed) {
-      // This caller's restored-runtime observation no longer qualifies a recovery
-      // claim after its executor loses ownership or fails to settle.
-      delete settled.result.recovery;
-    }
     await writeControlPlaneUpdateRestartSentinelBestEffort({
       meta: params.controlPlaneUpdateSentinelMeta,
       env: params.ownedManagedUpdateEnv ?? params.opts.run?.env,

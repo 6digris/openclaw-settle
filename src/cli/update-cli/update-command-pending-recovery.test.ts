@@ -524,7 +524,9 @@ describe("pending recovery finalizer", () => {
       expect(fs.readFileSync(f.displaced)).toEqual(before);
       expect(fs.readFileSync(context, "utf8")).toBe("unchanged");
       expect(f.windows.restore).not.toHaveBeenCalled();
-      expect(f.windows.complete).not.toHaveBeenCalled();
+      expect(f.windows.complete).toHaveBeenCalledExactlyOnceWith(false, {
+        retainNativeState: true,
+      });
       expect(f.rollback).not.toHaveBeenCalled();
       expect(f.complete).not.toHaveBeenCalled();
     },

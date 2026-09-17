@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { setImmediate } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
@@ -47,7 +48,7 @@ function fileIdentity(file: string): { identity: string; sha256: string } {
  * Production calls supply import.meta.url, never a user-selected substitute entry.
  * The explicit executable argument is used only by isolated fixture callers.
  */
-export function captureUpdateRecoveryRepairRuntime(
+export async function captureUpdateRecoveryRepairRuntime(
   repairRoot: string,
   actualModuleUrl: string,
   actualEntryUrl: string,
@@ -59,6 +60,10 @@ export function captureUpdateRecoveryRepairRuntime(
     return fail();
   }
   const rootIdentity = JSON.stringify([root, ...physical(rootStat)]);
+  const optionalSelectors = ["dist", "build-info.json", "openclaw.mjs"].map((relative) => ({
+    relative,
+    present: fs.lstatSync(path.join(root, relative), { throwIfNoEntry: false }) !== undefined,
+  }));
   const module = fileURLToPath(actualModuleUrl);
   const entry = fileURLToPath(actualEntryUrl);
   const trees = new Set<string>();
@@ -84,7 +89,13 @@ export function captureUpdateRecoveryRepairRuntime(
   const files: Record<string, { identity: string; sha256: string }> = {};
   const directories: Record<string, string> = {};
   const links: Record<string, { identity: string; target: string; resolved: string }> = {};
-  const walk = (directory: string): void => {
+  const visited = new Set<string>();
+  let readCount = 0;
+  const walk = async (directory: string): Promise<void> => {
+    if (visited.has(directory)) {
+      return;
+    }
+    visited.add(directory);
     const before = fs.lstatSync(directory, { bigint: true });
     if (!before.isDirectory()) {
       return fail();
@@ -94,22 +105,28 @@ export function captureUpdateRecoveryRepairRuntime(
       const file = path.join(directory, name);
       const stat = fs.lstatSync(file, { bigint: true });
       if (stat.isDirectory()) {
-        walk(file);
+        await walk(file);
       } else if (stat.isFile()) {
         files[path.relative(root, file)] = fileIdentity(file);
+        // Long source/pnpm inventories must yield to maintenance heartbeats.
+        if (++readCount % 64 === 0) {
+          await setImmediate();
+        }
       } else if (stat.isSymbolicLink()) {
-        // Source checkouts contain in-tree document aliases. Bind the link and
-        // require its resolved target in a tree whose complete contents we hash.
+        // Source aliases stay within inventoried code. Built plugin dependency
+        // links also reach workspace/pnpm packages; bind their complete closure,
+        // not just the link text. Visited directories break dependency cycles.
         const resolved = fs.realpathSync(file);
         const relative = path.relative(root, resolved);
         const targetTree = relative.split(path.sep)[0];
-        if (
-          !relative ||
-          path.isAbsolute(relative) ||
-          relative.startsWith(".." + path.sep) ||
-          !targetTree ||
-          !trees.has(targetTree)
-        ) {
+        const dependency = file.split(path.sep).includes("node_modules");
+        const inTree =
+          relative &&
+          !path.isAbsolute(relative) &&
+          !relative.startsWith(".." + path.sep) &&
+          targetTree &&
+          trees.has(targetTree);
+        if (!inTree && !dependency) {
           return fail();
         }
         links[path.relative(root, file)] = {
@@ -117,6 +134,17 @@ export function captureUpdateRecoveryRepairRuntime(
           target: fs.readlinkSync(file),
           resolved,
         };
+        // The openclaw self-link selects this already bound src/dist/package.
+        if (resolved !== root) {
+          const target = fs.lstatSync(resolved, { bigint: true });
+          if (target.isDirectory()) {
+            await walk(resolved);
+          } else if (target.isFile()) {
+            files[path.relative(root, resolved)] = fileIdentity(resolved);
+          } else {
+            return fail();
+          }
+        }
       } else {
         return fail();
       }
@@ -131,7 +159,7 @@ export function captureUpdateRecoveryRepairRuntime(
     directories[path.relative(root, directory)] = JSON.stringify(identity(before));
   };
   for (const tree of [...trees].toSorted()) {
-    walk(path.join(root, tree));
+    await walk(path.join(root, tree));
   }
   files["package.json"] = fileIdentity(path.join(root, "package.json"));
   for (const relative of ["build-info.json", "openclaw.mjs"]) {
@@ -151,42 +179,54 @@ export function captureUpdateRecoveryRepairRuntime(
   }
   const node = fs.realpathSync(executable);
   const nodeFile = fileIdentity(node);
-  // Detect a previously-read member being replaced while a later file was hashed.
-  for (const [relative, captured] of Object.entries(files)) {
-    if (
-      JSON.stringify(identity(fs.lstatSync(path.join(root, relative), { bigint: true }))) !==
-      captured.identity
-    ) {
-      return fail();
+  const assertCurrent = (): void => {
+    // Absence is part of the selection: a later build must not enter this repair.
+    for (const { relative, present } of optionalSelectors) {
+      if (
+        (fs.lstatSync(path.join(root, relative), { throwIfNoEntry: false }) !== undefined) !==
+        present
+      ) {
+        fail();
+      }
     }
-  }
-  for (const [relative, captured] of Object.entries(links)) {
-    const file = path.join(root, relative);
-    if (
-      JSON.stringify(identity(fs.lstatSync(file, { bigint: true }))) !== captured.identity ||
-      fs.readlinkSync(file) !== captured.target ||
-      fs.realpathSync(file) !== captured.resolved
-    ) {
-      return fail();
+    // Detect a previously-read member being replaced while a later file was hashed.
+    for (const [relative, captured] of Object.entries(files)) {
+      if (
+        JSON.stringify(identity(fs.lstatSync(path.join(root, relative), { bigint: true }))) !==
+        captured.identity
+      ) {
+        fail();
+      }
     }
-  }
-  for (const [relative, captured] of Object.entries(directories)) {
-    if (
-      JSON.stringify(identity(fs.lstatSync(path.join(root, relative), { bigint: true }))) !==
-      captured
-    ) {
-      return fail();
+    for (const [relative, captured] of Object.entries(links)) {
+      const file = path.join(root, relative);
+      if (
+        JSON.stringify(identity(fs.lstatSync(file, { bigint: true }))) !== captured.identity ||
+        fs.readlinkSync(file) !== captured.target ||
+        fs.realpathSync(file) !== captured.resolved
+      ) {
+        fail();
+      }
     }
-  }
-  if (
-    fs.realpathSync(executable) !== node ||
-    JSON.stringify(identity(fs.lstatSync(node, { bigint: true }))) !== nodeFile.identity ||
-    fs.realpathSync(repairRoot) !== root ||
-    JSON.stringify([root, ...physical(fs.lstatSync(root, { bigint: true }))]) !== rootIdentity
-  ) {
-    return fail();
-  }
-  return {
+    for (const [relative, captured] of Object.entries(directories)) {
+      if (
+        JSON.stringify(identity(fs.lstatSync(path.join(root, relative), { bigint: true }))) !==
+        captured
+      ) {
+        fail();
+      }
+    }
+    if (
+      fs.realpathSync(executable) !== node ||
+      JSON.stringify(identity(fs.lstatSync(node, { bigint: true }))) !== nodeFile.identity ||
+      fs.realpathSync(repairRoot) !== root ||
+      JSON.stringify([root, ...physical(fs.lstatSync(root, { bigint: true }))]) !== rootIdentity
+    ) {
+      fail();
+    }
+  };
+  assertCurrent();
+  const runtime = {
     root,
     packageSha256: files["package.json"].sha256,
     node,
@@ -199,4 +239,5 @@ export function captureUpdateRecoveryRepairRuntime(
       executableSha256: nodeFile.sha256,
     },
   };
+  return { runtime, assertCurrent };
 }

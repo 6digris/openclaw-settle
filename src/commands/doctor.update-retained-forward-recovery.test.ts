@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { UpdateCommandOptions } from "../cli/update-cli/shared.js";
 import {
   assertUpdateCommandBackupRecovery,
@@ -17,6 +17,7 @@ import {
   loadSessionEntryReadOnly,
 } from "../config/sessions/session-accessor.js";
 import { runDoctorHealthRepairs } from "../flows/doctor-repair-flow.js";
+import { ensureControlUiAssetsBuilt } from "../infra/control-ui-assets.js";
 import type { UpdateRecoveryBackupRef } from "../infra/update-recovery-backup-contract.js";
 import { verifyUpdateRecoveryBackup } from "../infra/update-recovery-backup.js";
 import { inspectUpdateRunDriver } from "../infra/update-run-driver.js";
@@ -29,7 +30,7 @@ import {
   createOpenClawTestState,
   withOpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
-import { VERSION } from "../version.js";
+import { VERSION, resolveRuntimeServiceBuildId } from "../version.js";
 import { doctorCommand } from "./doctor.js";
 
 function errors(value: unknown): string[] {
@@ -173,6 +174,18 @@ async function prepareRetainedFixture() {
 }
 
 describe("retained forward recovery through real owners", () => {
+  beforeAll(async () => {
+    // Full Doctor may repair missing UI assets. Prepare its real runtime before
+    // capture so the unchanged-runtime control cannot rebuild its own code tree.
+    const assets = await ensureControlUiAssetsBuilt(undefined, {
+      root: process.cwd(),
+      expectedBuildId: resolveRuntimeServiceBuildId(),
+    });
+    expect(assets, "Full Doctor requires complete runtime assets before capture").toMatchObject({
+      ok: true,
+    });
+  }, 120_000);
+
   describe("with a settled failed-update producer", () => {
     let fixture: Awaited<ReturnType<typeof prepareRetainedFixture>> | undefined;
     beforeEach(async () => {

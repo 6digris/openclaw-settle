@@ -207,6 +207,19 @@ async function convergeUpdatePluginsInternal(params: {
               ...params.result,
               status: "error" as const,
               reason: "post-core-update-failed",
+              // Recovery can itself refuse publication. Keep the child failure
+              // in the result before that boundary, not only in caller detail.
+              steps: [
+                ...params.result.steps,
+                {
+                  name: "post-update verification",
+                  command: "openclaw update",
+                  cwd: postUpdateRoot,
+                  durationMs: 0,
+                  exitCode: freshProcessResult.exitCode,
+                  ...(freshProcessResult.error ? { stderrTail: freshProcessResult.error } : {}),
+                },
+              ],
             },
             detail: freshProcessResult.error,
             cancelled: freshProcessResult.exitCode === 130 || freshProcessResult.exitCode === 143,

@@ -19,7 +19,7 @@ function fixture() {
   return { root, module, entry, node };
 }
 
-it("binds an unchanged actual source tree without inventing emitted build metadata", () => {
+it("binds an unchanged actual source tree without inventing emitted build metadata", async () => {
   const f = fixture();
   const read = () =>
     captureUpdateRecoveryRepairRuntime(
@@ -28,39 +28,43 @@ it("binds an unchanged actual source tree without inventing emitted build metada
       pathToFileURL(f.entry).href,
       f.node,
     );
-  const before = read();
-  expect(read()).toEqual(before);
+  const before = await read();
+  expect((await read()).runtime).toEqual(before.runtime);
+  expect(before.assertCurrent).not.toThrow();
   fs.appendFileSync(f.module, "// changed source");
-  expect(read().artifact.inventorySha256).not.toBe(before.artifact.inventorySha256);
+  expect(before.assertCurrent).toThrow(/runtime/);
+  expect((await read()).runtime.artifact.inventorySha256).not.toBe(
+    before.runtime.artifact.inventorySha256,
+  );
 });
 
-it("refuses a loaded entry outside the repairing root", () => {
+it("refuses a loaded entry outside the repairing root", async () => {
   const f = fixture();
-  expect(() =>
+  await expect(
     captureUpdateRecoveryRepairRuntime(
       f.root,
       pathToFileURL(f.module).href,
       import.meta.url,
       f.node,
     ),
-  ).toThrow(/runtime/);
+  ).rejects.toThrow(/runtime/);
 });
 
-it("refuses a symlinked runtime module even when it resolves to in-root bytes", () => {
+it("refuses a symlinked runtime module even when it resolves to in-root bytes", async () => {
   const f = fixture();
   const link = path.join(f.root, "src/linked.js");
   fs.symlinkSync(f.module, link);
-  expect(() =>
+  await expect(
     captureUpdateRecoveryRepairRuntime(
       f.root,
       pathToFileURL(link).href,
       pathToFileURL(f.entry).href,
       f.node,
     ),
-  ).toThrow(/runtime/);
+  ).rejects.toThrow(/runtime/);
 });
 
-it("binds in-tree aliases and target edits while rejecting aliases outside the inventoried trees", () => {
+it("binds in-tree aliases and target edits while rejecting aliases outside the inventoried trees", async () => {
   const f = fixture();
   const target = path.join(f.root, "src/AGENTS.md");
   const alias = path.join(f.root, "src/CLAUDE.md");
@@ -73,15 +77,73 @@ it("binds in-tree aliases and target edits while rejecting aliases outside the i
       pathToFileURL(f.entry).href,
       f.node,
     );
-  const initial = read();
-  expect(read()).toEqual(initial);
+  const initial = await read();
+  expect((await read()).runtime).toEqual(initial.runtime);
   fs.appendFileSync(target, " changed");
-  const changedTarget = read();
-  expect(changedTarget.artifact.inventorySha256).not.toBe(initial.artifact.inventorySha256);
+  const changedTarget = await read();
+  expect(changedTarget.runtime.artifact.inventorySha256).not.toBe(
+    initial.runtime.artifact.inventorySha256,
+  );
   fs.unlinkSync(alias);
   fs.symlinkSync("doctor.js", alias);
-  expect(read().artifact.inventorySha256).not.toBe(changedTarget.artifact.inventorySha256);
+  expect((await read()).runtime.artifact.inventorySha256).not.toBe(
+    changedTarget.runtime.artifact.inventorySha256,
+  );
   fs.unlinkSync(alias);
   fs.symlinkSync("../node-fixture", alias);
-  expect(read).toThrow(/runtime/);
+  await expect(read()).rejects.toThrow(/runtime/);
 });
+
+it("binds emitted plugin dependency links, self-cycles, and transitive code changes", async () => {
+  const f = fixture();
+  const dist = path.join(f.root, "dist");
+  const modules = path.join(dist, "extensions", "fixture", "node_modules");
+  fs.mkdirSync(modules, { recursive: true });
+  const dependency = dirs.make("repair-runtime-dependency-");
+  fs.mkdirSync(path.join(dependency, "node_modules"));
+  fs.writeFileSync(path.join(dependency, "package.json"), '{"name":"fixture"}');
+  const code = path.join(dependency, "index.js");
+  fs.writeFileSync(code, "export {}; ");
+  fs.symlinkSync(dependency, path.join(modules, "fixture"), "junction");
+  fs.symlinkSync(dependency, path.join(dependency, "node_modules", "fixture"), "junction");
+  fs.symlinkSync(f.root, path.join(modules, "openclaw"), "junction");
+  const read = () =>
+    captureUpdateRecoveryRepairRuntime(
+      f.root,
+      pathToFileURL(f.module).href,
+      pathToFileURL(f.entry).href,
+      f.node,
+    );
+  const before = await read();
+  expect((await read()).runtime).toEqual(before.runtime);
+  expect(before.assertCurrent).not.toThrow();
+  fs.appendFileSync(code, "// dependency changed");
+  expect(before.assertCurrent).toThrow(/runtime/);
+  expect((await read()).runtime.artifact.inventorySha256).not.toBe(
+    before.runtime.artifact.inventorySha256,
+  );
+  fs.unlinkSync(path.join(modules, "fixture"));
+  expect((await read()).runtime.artifact.inventorySha256).not.toBe(
+    before.runtime.artifact.inventorySha256,
+  );
+});
+
+it.each(["dist", "build-info.json", "openclaw.mjs"])(
+  "refuses a previously absent %s selector appearing before publication",
+  async (selector) => {
+    const f = fixture();
+    const captured = await captureUpdateRecoveryRepairRuntime(
+      f.root,
+      pathToFileURL(f.module).href,
+      pathToFileURL(f.entry).href,
+      f.node,
+    );
+    expect(captured.assertCurrent).not.toThrow();
+    if (selector === "dist") {
+      fs.mkdirSync(path.join(f.root, selector));
+    } else {
+      fs.writeFileSync(path.join(f.root, selector), "new generation");
+    }
+    expect(captured.assertCurrent).toThrow(/runtime/);
+  },
+);

@@ -23,7 +23,10 @@ const state = vi.hoisted(() => ({
   executorCurrent: true,
   events: [] as string[],
 }));
-vi.mock("../../process/exec.js", () => ({ runUtf8CommandWithTimeout: vi.fn() }));
+vi.mock("../../process/exec.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../process/exec.js")>()),
+  runUtf8CommandWithTimeout: vi.fn(),
+}));
 vi.mock("./update-command-executor.js", () => ({
   withUpdateCommandExecutorChild: async (
     _fence: UpdateRecoveryFence,
@@ -78,6 +81,7 @@ beforeEach(() => {
   state.childActive = false;
   state.executorCurrent = true;
   state.events.length = 0;
+  vi.mocked(rollbackFailedUpdate).mockReset();
   vi.mocked(writeUpdateRecoveryBackupOutcome).mockReset().mockResolvedValue(undefined);
 });
 

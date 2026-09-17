@@ -24,11 +24,7 @@ import {
   sameUpdateRunDriver,
   type UpdateRunDriver,
 } from "../infra/update-run-driver.js";
-import {
-  hasActiveUpdateDoctorStep,
-  hasVerifiedCompletedUpdate,
-  type UpdateRunRecord,
-} from "../infra/update-run-record.js";
+import { hasVerifiedCompletedUpdate, type UpdateRunRecord } from "../infra/update-run-record.js";
 import { captureUpdateRecoveryInvocationGuard } from "../infra/update-run-recovery-admission.js";
 import type { UpdateRecoveryFence } from "../infra/update-run-recovery.js";
 import { ExitError, type RuntimeEnv } from "../runtime.js";
@@ -538,10 +534,16 @@ export async function prepareDoctorUpdateRecovery(options: DoctorOptions = {}): 
   if (supplied !== undefined) {
     reference = backup.readUpdateRecoveryBackupRef(supplied);
   } else {
+    const { matchesLegacyDoctorCapture } = await import("./doctor-update-rehearsal.js");
     const inheritedRunId = process.env[UPDATE_RUN_ID_ENV]?.trim();
-    // Shipped 9.2 records this step before spawning Doctor but has no driver identities.
+    const parent = readUpdateRunDriver(process.ppid);
+    if (!parent) {
+      throw new Error(
+        "Doctor cannot identify its parent updater process for recovery. Inspect with openclaw update status --json; run npx openclaw@latest doctor --fix after resolving ownership.",
+      );
+    }
     const matchesDoctor = (run: UpdateRunRecord) =>
-      hasActiveUpdateDoctorStep(run) && (!inheritedRunId || run.runId === inheritedRunId);
+      (!inheritedRunId || run.runId === inheritedRunId) && matchesLegacyDoctorCapture(run, parent);
     const candidates = (await activeUpdateRuns()).filter(matchesDoctor);
     const run = candidates[0];
     if (!run || candidates.length !== 1) {
@@ -549,18 +551,14 @@ export async function prepareDoctorUpdateRecovery(options: DoctorOptions = {}): 
         "Doctor cannot identify one admitted update run with an active Doctor step for its capture. Inspect with openclaw update status --json; run npx openclaw@latest doctor --fix after resolving ownership.",
       );
     }
-    const parent = readUpdateRunDriver(process.ppid);
-    if (!parent) {
-      throw new Error(
-        "Doctor cannot identify its parent updater process for recovery. Inspect with openclaw update status --json; run npx openclaw@latest doctor --fix after resolving ownership.",
-      );
-    }
     const { listUpdateRuns } = await import("../infra/update-run-ledger.js");
     scope.assertRecoveryClaim = () => {
       const active = listUpdateRuns({ active: true, limit: 100 });
       const matching = active.filter(matchesDoctor);
+      const currentParent = readUpdateRunDriver(process.ppid);
       if (
-        process.ppid !== parent.pid ||
+        !currentParent ||
+        !sameUpdateRunDriver(currentParent, parent) ||
         active.length === 100 ||
         matching.length !== 1 ||
         matching[0]?.runId !== run.runId

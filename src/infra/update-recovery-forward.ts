@@ -154,7 +154,11 @@ export async function prepareUpdateRecoveryForwardResolution(
 ): Promise<() => Promise<void>> {
   const binding = await readBinding(ref, authority);
   authority.assertOwned();
-  const runtime = captureUpdateRecoveryRepairRuntime(repairRoot, import.meta.url, actualEntryUrl);
+  const { runtime, assertCurrent: assertRuntimeCurrent } = await captureUpdateRecoveryRepairRuntime(
+    repairRoot,
+    import.meta.url,
+    actualEntryUrl,
+  );
   authority.assertOwned();
   const repair = {
     ...runtime,
@@ -163,13 +167,13 @@ export async function prepareUpdateRecoveryForwardResolution(
   };
   const assertRepairCurrent = () => {
     authority.assertOwned();
-    if (
-      !isDeepStrictEqual(
-        captureUpdateRecoveryRepairRuntime(repairRoot, import.meta.url, actualEntryUrl),
-        runtime,
-      )
-    ) {
-      throw new Error("Forward recovery repair runtime changed before settlement.");
+    // The prepared inventory already hashed every file through an open descriptor.
+    // Revalidate every physical selector and ctime inside the transaction; never
+    // rehash the full dependency graph while holding the shared ledger write lock.
+    try {
+      assertRuntimeCurrent();
+    } catch (cause) {
+      throw new Error("Forward recovery repair runtime changed before settlement.", { cause });
     }
     authority.assertOwned();
   };

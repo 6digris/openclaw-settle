@@ -318,13 +318,9 @@ describe("update plugin lifecycle lease boundaries", () => {
           exitCode: 23,
         }),
       );
+      let triageRun: ReturnType<typeof listUpdateRuns>[number] | undefined;
       mocks.triage.mockImplementationOnce(async () => {
-        expect(listUpdateRuns()[0]).toMatchObject({
-          status: "failed",
-          reason: "doctor-failed",
-          target: { kind: "package", version: "2026.9.4" },
-          after: { version: "2026.9.4" },
-        });
+        triageRun = listUpdateRuns()[0];
         return { status: "completed", hint: "fixture" };
       });
       await expect(
@@ -346,8 +342,16 @@ describe("update plugin lifecycle lease boundaries", () => {
         expect(mocks.triage).not.toHaveBeenCalled();
       } else {
         expect(mocks.triage).toHaveBeenCalledOnce();
+        // Triage still belongs to this invocation; terminal status follows settlement.
+        expect(triageRun).toMatchObject({
+          status: "running",
+          reason: "doctor-failed",
+          target: { kind: "package", version: "2026.9.4" },
+          after: { version: "2026.9.4" },
+        });
       }
       expect(listUpdateRuns()).toHaveLength(1);
+      expect(listUpdateRuns()[0]).toMatchObject({ status: "failed", reason: "doctor-failed" });
       closeOpenClawStateDatabaseForTest();
       expect(listUpdateRuns()[0]?.steps).toContainEqual(
         expect.objectContaining({ step: "finalize:doctor", status: "failed", exitCode: 23 }),

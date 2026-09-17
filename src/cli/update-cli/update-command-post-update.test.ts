@@ -17,6 +17,7 @@ import { finishUpdate } from "./update-command-post-update.js";
 import {
   createManagedServiceIdentityFixture,
   expectUpdateFailure,
+  expectRollbackTaskOwnerSettlement,
   finishSuccessfulPackageSwitch,
   managedServiceState,
   programArguments,
@@ -175,6 +176,11 @@ describe("successful update finalization ordering", () => {
     vi.spyOn(defaultRuntime, "error").mockImplementation(() => undefined);
     vi.spyOn(defaultRuntime, "log").mockImplementation(() => undefined);
   });
+
+  it(
+    "closes a new rollback task owner when publication remains pending",
+    expectRollbackTaskOwnerSettlement,
+  );
 
   it("does not finalize or clean an active durable run without its live executor", async () => {
     const home = tempDirs.make("finalizer-pending-recovery-");

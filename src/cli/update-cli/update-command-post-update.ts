@@ -13,10 +13,7 @@ import { withCommandProcessScope } from "../../process/exec-spawn.js";
 import { defaultRuntime } from "../../runtime.js";
 import { classifyUpdateOutcome } from "../../shared/update-outcome.js";
 import { UpdatePreMutationError } from "./shared.js";
-import {
-  completeUpdateCommandBackup,
-  retainUpdatePackageBackup,
-} from "./update-command-backup-lifecycle.js";
+import { completeUpdateCommandBackup } from "./update-command-backup-lifecycle.js";
 import { refreshUpdateCompletion } from "./update-command-completion.js";
 import { convergeUpdatePlugins } from "./update-command-convergence.js";
 import { parkCurrentCoreUpdate } from "./update-command-current-core.js";
@@ -33,13 +30,15 @@ import {
   describeWindowsTaskRecoveryFailure,
   markControlPlaneUpdateRestartSentinelFailureBestEffort,
   UpdateCommandFailure,
-  UpdateCommandPendingRecoveryFailure,
   resolveAutomaticUpdateTriage,
   resolveCompletedUpdateResult,
   recordUpdateResultNextAction,
   writeControlPlaneUpdateRestartSentinelBestEffort,
 } from "./update-command-result.js";
-import { refuseUnsettledUpdateProcesses } from "./update-command-rollback-state.js";
+import {
+  refuseUnsettledUpdateProcesses,
+  refusePendingUpdateRollback,
+} from "./update-command-rollback-state.js";
 import { rollbackFailedUpdate } from "./update-command-rollback.js";
 import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
 import { UpdateServiceLoadBoundaryError } from "./update-command-service-load.js";
@@ -127,7 +126,6 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
   const publishFinalResult = async (failure?: unknown): Promise<UpdateRunResult> => {
     const settled = await resolveSettledUpdateCommandResult(params, pendingResult, failure);
     const result = completedResult(settled.result);
-    result.recovery = settled.settlementFailed ? undefined : result.recovery;
     const reportDowntime = !settled.settlementFailed && pendingRestartAtMs === undefined;
     if (pendingNotify) {
       await writeControlPlaneUpdateRestartSentinelBestEffort({ ...sentinelOptions, result });
@@ -180,14 +178,15 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
           invocationCwd: params.invocationCwd,
         }),
       );
+      rollbackStopState = rollback.stoppedForRollback;
       if (rollback.pendingRecoveryReason) {
-        throw new UpdateCommandPendingRecoveryFailure(
+        await refusePendingUpdateRollback(
           rollback.result,
           rollback.pendingRecoveryReason,
+          rollbackStopState?.windowsTaskAutoStartRecovery,
         );
       }
       result = rollback.result;
-      rollbackStopState = rollback.stoppedForRollback;
       rolledBack = rollback.rolledBack;
       pendingRestartAtMs ??= rollbackStopState?.stoppedAtMs;
       if (rollback.verifiedAtMs !== undefined) {
@@ -318,10 +317,11 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
     assertCurrent();
     const retireBackup =
       finalResult.status === "ok" || finalResult.recovery?.packageRollbackVerified === true;
-    if (params.packageTransaction && !retireBackup) {
-      await retainUpdatePackageBackup(params.packageTransaction, finalResult, assertCurrent);
-      assertCurrent();
-    }
+    // Retain before recovery notification; complete this transaction only once.
+    let cleanupFailure = !retireBackup
+      ? await recordUpdatePackageCompletion(params, finalResult, assertCurrent)
+      : undefined;
+    assertCurrent();
     if (finalResult.status === "error" && !rolledBack && currentServiceStop()?.stopped) {
       await recordFailedUpdateGatewayState(
         params.opts.run,
@@ -372,7 +372,9 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
           finalResult.recovery.service === "healthy"),
     );
     assertCurrent();
-    const cleanupFailure = await recordUpdatePackageCompletion(params, finalResult, assertCurrent);
+    if (retireBackup) {
+      cleanupFailure = await recordUpdatePackageCompletion(params, finalResult, assertCurrent);
+    }
     assertCurrent();
     pendingResult = completedResult(cleanupFailure?.result ?? finalResult);
     deferredTerminal = deferUpdateCommandTerminalResult(params.opts.run, publishFinalResult);

@@ -1,7 +1,11 @@
 // Qa Lab plugin module owns gateway child command bootstrap behavior.
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
+import fs from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { extractErrorCode } from "openclaw/plugin-sdk/error-runtime";
+import { acquireFileLock, FILE_LOCK_TIMEOUT_ERROR_CODE } from "openclaw/plugin-sdk/file-lock";
 import {
   appendQaChildOutput,
   appendQaChildOutputTail,
@@ -77,6 +81,42 @@ export async function runQaGatewayCliCommand(params: {
     child.stdin?.end(params.stdin);
   }
   return await result;
+}
+
+/** Fixtures share installed code even when their state directories are private. */
+export async function runQaGatewayRepairCommand(
+  params: Parameters<typeof runQaGatewayCliCommand>[0],
+): Promise<string> {
+  const directory = path.join(
+    await fs.realpath(params.cwd),
+    "node_modules",
+    ".cache",
+    "openclaw-qa",
+  );
+  await fs.mkdir(directory, { recursive: true });
+  const deadline = Date.now() + QA_GATEWAY_CLI_EXECUTION_TIMEOUT_MS;
+  let lock: Awaited<ReturnType<typeof acquireFileLock>> | undefined;
+  while (!lock) {
+    params.lifetime.assertOpen();
+    try {
+      lock = await acquireFileLock(path.join(directory, "update-repair"), {
+        retries: { retries: 0, factor: 1, minTimeout: 0, maxTimeout: 0 },
+        stale: QA_GATEWAY_CLI_EXECUTION_TIMEOUT_MS,
+        staleRecovery: "remove-if-definitely-stale",
+      });
+    } catch (error) {
+      if (extractErrorCode(error) !== FILE_LOCK_TIMEOUT_ERROR_CODE || Date.now() >= deadline) {
+        throw error;
+      }
+      // Cancellation must settle a queued fixture without waiting for its peer.
+      await delay(100, undefined, { signal: params.lifetime.signal });
+    }
+  }
+  try {
+    return await runQaGatewayCliCommand(params);
+  } finally {
+    await lock.release();
+  }
 }
 
 async function readQaGatewayCliCommand(

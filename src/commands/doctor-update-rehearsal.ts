@@ -2,11 +2,26 @@ import { lstatSync, readFileSync, realpathSync, type Stats } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { hasActiveUpdateDoctorStep } from "../infra/update-run-record.js";
+import { sameUpdateRunDriver, type UpdateRunDriver } from "../infra/update-run-driver.js";
+import { hasActiveUpdateDoctorStep, type UpdateRunRecord } from "../infra/update-run-record.js";
 import type { RuntimeEnv } from "../runtime.js";
 type DoctorMaintenance = NonNullable<
   Awaited<ReturnType<typeof import("./doctor-maintenance.js").beginDoctorMaintenance>>
 >;
+
+/** Shipped 9.2 persists Doctor steps without driver identities; 9.3/9.4 defer
+ * those writes during package activation until their actual Doctor child returns. */
+export function matchesLegacyDoctorCapture(run: UpdateRunRecord, parent: UpdateRunDriver): boolean {
+  return (
+    (run.status === "running" &&
+      ["2026.9.3", "2026.9.4"].includes(run.before.version ?? "") &&
+      run.target.kind === "package" &&
+      run.phase === "activating" &&
+      run.origin.driver !== undefined &&
+      sameUpdateRunDriver(run.origin.driver, parent)) ||
+    hasActiveUpdateDoctorStep(run)
+  );
+}
 
 const admissionMessage =
   "legacy driver rehearsal admitted: 2026.9.3-style invocation, disposable copy verified";

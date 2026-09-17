@@ -89,7 +89,7 @@ it.each([
       const originalCapture = runtimeIdentity.captureUpdateRecoveryRepairRuntime;
       const readRuntime = () =>
         originalCapture(root, pathToFileURL(code).href, pathToFileURL(entry).href, node);
-      const expectedRuntime = readRuntime();
+      const { runtime: expectedRuntime } = await readRuntime();
       // The artifact-location seam uses real physical/content capture on private
       // files. The forward owner, ledger, generations and executor fence are real.
       // Actual emitted Doctor/module URLs remain a separate built-entry proof gate.

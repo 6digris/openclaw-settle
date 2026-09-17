@@ -19,6 +19,7 @@ import {
   UpdateCommandFailure,
   UpdateCommandPendingRecoveryFailure,
 } from "./update-command-result.js";
+import type { WindowsTaskAutoStartRecovery } from "./update-command-windows-task.js";
 
 /** State admission precedes the first reverse package replacement. */
 export async function prepareUpdateRecoveryRollback(
@@ -151,4 +152,19 @@ export function refuseUnsettledUpdateProcesses(
       { cause: error },
     );
   }
+}
+
+/** Re-stopping may create a local native owner unknown to outer invocation unwind. */
+export async function refusePendingUpdateRollback(
+  result: UpdateRunResult,
+  reason: string,
+  windows?: WindowsTaskAutoStartRecovery,
+): Promise<never> {
+  let settlementFailure: unknown;
+  try {
+    await windows?.complete(false, { retainNativeState: true });
+  } catch (cause) {
+    settlementFailure = cause;
+  }
+  throw new UpdateCommandPendingRecoveryFailure(result, reason, { cause: settlementFailure });
 }

@@ -26,7 +26,7 @@ export type WindowsTaskAutoStartRecovery = {
     assertCurrent?: () => void,
   ) => Promise<void>;
   handoff: (guard: () => Promise<void>) => void;
-  complete: (restartSafe?: boolean) => Promise<void>;
+  complete: (restartSafe?: boolean, options?: { retainNativeState: true }) => Promise<void>;
   interrupted: () => boolean;
 };
 
@@ -110,7 +110,7 @@ export function createWindowsTaskAutoStartRecovery(params: {
       });
     return restorePromise;
   };
-  const complete = (restartSafe = true) => {
+  const complete = (restartSafe = true, options?: { retainNativeState: true }) => {
     if (settlement) {
       // The settling owner reports native failure once; retained cleanup handles
       // still drain it without replacing that already-reported outcome.
@@ -122,8 +122,18 @@ export function createWindowsTaskAutoStartRecovery(params: {
     settlement = (async () => {
       let failure: Error | undefined;
       try {
-        await restorePromise?.catch(() => undefined);
-        if (!restartSafe && restorationAttempted && (await suspensionPromise.catch(() => false))) {
+        // Even a refused updater must join its existing suspension before releasing
+        // process-local signal gates. Retention does not authorize native/history writes.
+        const [suspension] = await Promise.allSettled([suspensionPromise, restorePromise]);
+        if (suspension.status === "rejected") {
+          throw suspension.reason;
+        }
+        if (
+          !options?.retainNativeState &&
+          !restartSafe &&
+          restorationAttempted &&
+          suspension.value
+        ) {
           await suspendScheduledTaskAutoStartForUpdate(params.serviceEnv, {
             assertCurrent: params.assertCurrent,
             beforeMutation: async () => {
@@ -141,7 +151,7 @@ export function createWindowsTaskAutoStartRecovery(params: {
           cause instanceof Error ? cause : new Error("Windows native recovery failed", { cause });
       }
       try {
-        if (finishUpdate && recordInterruption && params.updateRun) {
+        if (!options?.retainNativeState && finishUpdate && recordInterruption && params.updateRun) {
           params.assertCurrent?.();
           const failed = restorationFailed || !restartSafe;
           finishUpdateRun(

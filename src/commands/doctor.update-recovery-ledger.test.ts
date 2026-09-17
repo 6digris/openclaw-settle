@@ -65,7 +65,7 @@ vi.mock("./doctor-maintenance.js", () => ({
   }),
 }));
 
-const authority = { assertOwned() {} };
+const authority = { assertOwned(this: void) {} };
 
 async function prepareState(state: OpenClawTestState) {
   const coordinator = state.path("coordinator");
@@ -312,7 +312,7 @@ describe("Doctor recovery ledger reconciliation", () => {
           async () => {
             await expect(
               doctorCommand(output(), { repair: true, nonInteractive: true }),
-            ).rejects.toThrow("synthetic legacy Doctor migration failure");
+            ).rejects.toThrow("Rollback publication is unavailable");
           },
         );
         const captures = await inspectUpdateRecoveryBackups();
@@ -328,7 +328,14 @@ describe("Doctor recovery ledger reconciliation", () => {
           pid: process.ppid,
           startIdentity: expect.stringMatching(/^\d+$/),
         });
-        expect(loadSessionEntryReadOnly(migrated)).toBeUndefined();
+        expect(loadSessionEntryReadOnly(migrated)?.sessionId).toBe("migration-created");
+        expect(getUpdateRun(current.runId)?.origin.updateRecoveryCapture?.restored).not.toBe(true);
+        expect(capture.captureStatus).toBe("restore-failed");
+        for (const generation of ["candidate", "prepared"]) {
+          expect(
+            (await fs.stat(path.join(capture.ref.directory, generation, "manifest.json"))).isFile(),
+          ).toBe(true);
+        }
         expect(loadSessionEntryReadOnly(original)?.sessionId).toBe("before-update");
         expect(listUpdateRuns({}, { env: state.env })).toHaveLength(other ? 2 : 1);
         if (other) {
@@ -481,89 +488,53 @@ describe("Doctor recovery ledger reconciliation", () => {
   });
 
   it.each(["legacy updater", "manual recovery"] as const)(
-    "keeps restored state terminal when outcome publication fails during %s",
+    "honors a historical restored receipt when outcome publication failed during %s",
     async (mode) => {
       await withOpenClawTestState({ layout: "state-only", scenario: "minimal" }, async (state) => {
         const original = await prepareState(state);
         const run = createUpdateRun({ trigger: "cli" }, { env: state.env });
-        recordUpdateRunStep(
-          run.runId,
-          {
-            step: "openclaw doctor",
-            status: "in_progress",
-            startedAtMs: Date.now(),
-          },
-          { env: state.env },
-        );
-        const migrated = {
-          agentId: "main",
-          sessionKey: "agent:main:failed-migration",
-          env: state.env,
-        };
-        if (mode === "manual recovery") {
-          await createUpdateRecoveryBackup({
-            ...authority,
-            runId: run.runId,
-            installRoot: state.path("install"),
-          });
-          await upsertSessionEntryCore(migrated, { sessionId: "migration-created", updatedAt: 2 });
-          finishUpdateRun(run.runId, { status: "failed" }, { env: state.env });
-        }
-        const failure = new Error("synthetic Doctor failure after migration");
-        vi.spyOn(doctorHealth, "runDoctorHealthFlow").mockImplementationOnce(async () => {
-          if (mode === "legacy updater") {
-            await upsertSessionEntryCore(migrated, {
-              sessionId: "migration-created",
-              updatedAt: 2,
-            });
-          }
-          throw failure;
+        const ref = await createUpdateRecoveryBackup({
+          ...authority,
+          runId: run.runId,
+          installRoot: state.path("install"),
         });
+        // Seed a shipped driver's already-completed restoration. Current Doctor
+        // must consume its receipt, never replay a destructive restore to create it.
+        recordUpdateRunRecoveryCapture(
+          run.runId,
+          { manifestSha256: ref.manifestSha256, restored: true },
+          authority.assertOwned,
+        );
+        recordUpdateRunStep(run.runId, {
+          step: "state rollback",
+          status: "completed",
+          endedAtMs: Date.now(),
+        });
+        const restored = getUpdateRun(run.runId, { env: state.env });
         const link = fs.link;
-        let publicationFailed = false;
         const publication = vi.spyOn(fs, "link").mockImplementation(async (from, to) => {
-          if (path.basename(String(to)) === "outcome.json") {
-            publicationFailed = true;
+          if (String(to) === path.join(ref.directory, "outcome.json")) {
             throw new Error("synthetic restored outcome publication failure");
           }
           await link(from, to);
         });
         try {
-          await withEnvAsync(
-            {
-              OPENCLAW_UPDATE_IN_PROGRESS: mode === "legacy updater" ? "1" : undefined,
-              [UPDATE_RUN_ID_ENV]: mode === "legacy updater" ? run.runId : undefined,
-            },
-            async () => {
-              await expect(
-                doctorCommand(output(), { repair: true, nonInteractive: true }),
-              ).rejects.toBe(failure);
-            },
-          );
+          await expect(
+            writeUpdateRecoveryBackupOutcome(ref, { status: "restored" }, authority),
+          ).rejects.toThrow("synthetic restored outcome publication failure");
         } finally {
           publication.mockRestore();
         }
-        expect(publicationFailed).toBe(true);
-        expect(loadSessionEntryReadOnly(migrated)).toBeUndefined();
-        expect(loadSessionEntryReadOnly(original)?.sessionId).toBe("before-update");
-        const restored = getUpdateRun(run.runId, { env: state.env });
-        // The older updater reports its failed attempt after its Doctor exits.
         finishUpdateRun(run.runId, { status: "failed" }, { env: state.env });
         if (mode === "legacy updater") {
-          // Tagged 9.2 parses origin through a schema without recovery receipts on its next write.
+          // Tagged 9.2 strips unknown origin fields but preserves completed steps.
           openOpenClawStateDatabase({ env: state.env })
             .db.prepare("UPDATE update_runs SET origin_json = '{}' WHERE run_id = ?")
             .run(run.runId);
         }
-        const captures = await inspectUpdateRecoveryBackups();
-        expect(captures).toHaveLength(1);
-        const capture = captures[0];
-        if (!capture) {
-          throw new Error("Expected the retained restored capture");
-        }
-        await expect(
-          fs.lstat(path.join(capture.ref.directory, "outcome.json")),
-        ).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(fs.lstat(path.join(ref.directory, "outcome.json"))).rejects.toMatchObject({
+          code: "ENOENT",
+        });
         const newer = { agentId: "main", sessionKey: "agent:main:after-restore", env: state.env };
         await upsertSessionEntryCore(newer, { sessionId: "after-restored-session", updatedAt: 3 });
         await closeOpenClawAgentDatabasesAsync();
@@ -571,20 +542,17 @@ describe("Doctor recovery ledger reconciliation", () => {
         const runtime = output();
         await doctorCommand(runtime, { repair: true, nonInteractive: true });
         expect(loadSessionEntryReadOnly(newer)?.sessionId).toBe("after-restored-session");
+        expect(loadSessionEntryReadOnly(original)?.sessionId).toBe("before-update");
         expect(restored?.origin.updateRecoveryCapture).toMatchObject({
-          manifestSha256: capture.ref.manifestSha256,
+          manifestSha256: ref.manifestSha256,
           restored: true,
         });
-        if (mode === "legacy updater") {
-          expect(restored?.steps).toContainEqual(
-            expect.objectContaining({ step: "state rollback", status: "completed" }),
-          );
-        }
-        expect(runtime.error).toHaveBeenCalledWith(expect.stringContaining("stale"));
-        expect(runtime.error).toHaveBeenCalledWith(
-          expect.stringContaining(capture.ref.manifestPath),
+        expect(restored?.steps).toContainEqual(
+          expect.objectContaining({ step: "state rollback", status: "completed" }),
         );
-        await expect(fs.lstat(capture.ref.directory)).rejects.toMatchObject({ code: "ENOENT" });
+        expect(runtime.error).toHaveBeenCalledWith(expect.stringContaining("stale"));
+        expect(runtime.error).toHaveBeenCalledWith(expect.stringContaining(ref.manifestPath));
+        await expect(fs.lstat(ref.directory)).rejects.toMatchObject({ code: "ENOENT" });
       });
     },
   );
@@ -734,7 +702,7 @@ describe("Doctor recovery ledger reconciliation", () => {
     });
   });
 
-  it("restores a single unresolved failed update after its owner exits", async () => {
+  it("repairs an unresolved failed update forward without replacing newer sessions", async () => {
     await withOpenClawTestState({ layout: "state-only", scenario: "minimal" }, async (state) => {
       const original = await prepareState(state);
       const run = createUpdateRun({ trigger: "cli" }, { env: state.env });
@@ -747,9 +715,13 @@ describe("Doctor recovery ledger reconciliation", () => {
       await upsertSessionEntryCore(migrated, { sessionId: "migration-created", updatedAt: 2 });
       finishUpdateRun(run.runId, { status: "failed" }, { env: state.env });
       await doctorCommand(output(), { repair: true, nonInteractive: true });
-      expect(loadSessionEntryReadOnly(migrated)).toBeUndefined();
+      expect(loadSessionEntryReadOnly(migrated)?.sessionId).toBe("migration-created");
+      expect(
+        getUpdateRun(run.runId)?.origin.updateRecoveryCapture?.forwardResolution,
+      ).toBeDefined();
+      expect(getUpdateRun(run.runId)?.status).toBe("failed");
       expect(loadSessionEntryReadOnly(original)?.sessionId).toBe("before-update");
-      await expect(fs.lstat(ref.directory)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(verifyUpdateRecoveryBackup(ref)).resolves.toMatchObject({ runId: run.runId });
     });
   });
 

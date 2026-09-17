@@ -1,7 +1,6 @@
 import path from "node:path";
 import { resolvePathViaExistingAncestorSync } from "../../infra/boundary-path.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import type { PackageUpdateTransaction } from "../../infra/package-update-steps.js";
 import type { UpdateRecoveryBackupRef } from "../../infra/update-recovery-backup-contract.js";
 import {
   assertNoUnresolvedUpdateRecoveryBackup,
@@ -443,28 +442,4 @@ export async function retireVerifiedUpdateCommandCapture(
     return `cleanup reporting or executor settlement failed: ${formatErrorMessage(error)}`;
   }
   return undefined;
-}
-
-export async function retainUpdatePackageBackup(
-  transaction: PackageUpdateTransaction,
-  result: UpdateRunResult,
-  assertCurrent: () => void,
-): Promise<void> {
-  const retained = await transaction.complete({ activationVerified: false }, assertCurrent);
-  assertCurrent();
-  if (retained) {
-    const backupPath = transaction.backupRoot;
-    result.steps = [
-      ...result.steps,
-      {
-        ...retained,
-        stderrTail:
-          retained.exitCode === 0 || retained.stderrTail?.includes(backupPath)
-            ? retained.stderrTail
-            : [retained.stderrTail, `Recovery transaction backup path: ${backupPath}`]
-                .filter(Boolean)
-                .join("\n"),
-      },
-    ];
-  }
 }

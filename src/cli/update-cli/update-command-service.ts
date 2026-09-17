@@ -459,6 +459,15 @@ export async function maybeRestartService(params: {
             `Failed to refresh gateway service environment from updated install: ${String(err)}`,
           );
           if (activation.serviceRuntimeRefreshRequired) {
+            // Preserve the initiating error even if reverse publication later refuses.
+            activation.result.steps.push({
+              name: "service definition refresh",
+              command: "openclaw gateway install",
+              cwd: activation.result.root ?? process.cwd(),
+              durationMs: 0,
+              exitCode: 1,
+              stderrTail: formatErrorMessage(err),
+            });
             params.onVerificationFailure?.("service-runtime-refresh-failed");
             throw err;
           }

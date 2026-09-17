@@ -1,3 +1,4 @@
+import "./update-command-execution.test-support.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -13,7 +14,6 @@ import { executeMutableUpdate } from "./update-command-execution.js";
 import { updateExecutorNativeEntrypoints } from "./update-command-executor-native-runtime.test-support.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
 import { runPackageUpdateDoctor } from "./update-command-package.js";
-import "./update-command-execution.test-support.js";
 
 const { executionParams, mocks, successfulUpdate } =
   await import("./update-command-execution.test-support.js");
