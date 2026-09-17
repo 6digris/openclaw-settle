@@ -492,14 +492,19 @@ vi.mock("./doctor-memory-search.js", () => ({
   noteMemoryRecallHealth,
 }));
 
-vi.mock("../plugins/doctor-contract-registry.js", () => ({
-  applyPluginDoctorCompatibilityMigrations: (config: unknown) => ({
-    config,
-    changes: [],
-  }),
-  collectDoctorConfigRepairPluginIds: () => [],
-  listPluginDoctorLegacyConfigRules,
-}));
+vi.mock("../plugins/doctor-contract-registry.js", async (importOriginal) => {
+  const { withDeferredPluginDoctorMigrations } =
+    await importOriginal<typeof import("../plugins/doctor-contract-registry.js")>();
+  return {
+    withDeferredPluginDoctorMigrations,
+    applyPluginDoctorCompatibilityMigrations: (config: unknown) => ({
+      config,
+      changes: [],
+    }),
+    collectDoctorConfigRepairPluginIds: () => [],
+    listPluginDoctorLegacyConfigRules,
+  };
+});
 
 vi.mock("../channels/plugins/doctor-contract-api.js", () => ({
   loadBundledChannelDoctorContractApi: vi.fn(() => undefined),
@@ -586,11 +591,16 @@ vi.mock("./onboard-helpers.js", () => ({
   randomToken: vi.fn(() => "test-gateway-token"),
 }));
 
-vi.mock("../infra/state-migrations.doctor.js", () => ({
-  autoMigrateLegacyState,
-  detectLegacyStateMigrations,
-  runLegacyStateMigrations,
-}));
+vi.mock("../infra/state-migrations.doctor.js", async (importOriginal) => {
+  const { prepareLegacyStateDatabaseSchema } =
+    await importOriginal<typeof import("../infra/state-migrations.doctor.js")>();
+  return {
+    autoMigrateLegacyState,
+    detectLegacyStateMigrations,
+    prepareLegacyStateDatabaseSchema,
+    runLegacyStateMigrations,
+  };
+});
 
 vi.mock("../infra/state-migrations.plugin-doctor.js", () => ({
   autoMigrateLegacyPluginDoctorState,
