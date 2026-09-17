@@ -17,6 +17,10 @@ it.each([
   { mode: "formatter", name: "finishes cache retirement when a custom stack formatter throws" },
   { mode: "channel-fence", name: "releases published channel fence snapshots" },
   { mode: "discovery-timer", name: "releases discovery startup request state" },
+  ...["settled", "late"].map((kind) => ({
+    mode: `discovery-startup-${kind}`,
+    name: `releases retired startup discovery registrations after ${kind} acquisition`,
+  })),
   ...["default", "cause"].map((kind) => ({
     mode: `work-scope-${kind}`,
     name: `releases closed work scope ${kind} callers`,

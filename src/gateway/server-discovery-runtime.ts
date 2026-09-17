@@ -36,8 +36,12 @@ type DiscoveryGeneration = {
   waiting: boolean;
 };
 
-/** One owner replaces local advertisements and keeps wide-area TXT policy in sync. */
-export async function startGatewayDiscovery(params: {
+/** Mutable discovery owners stay outside retained host options so startup generations can collect. */
+export async function startGatewayDiscovery({
+  gatewayDiscoveryServices: services = [],
+  pluginRuntimeClaim: claim,
+  ...params
+}: {
   discovery?: DiscoveryConfig;
   gatewayDiscoveryServices?: readonly PluginGatewayDiscoveryServiceRegistration[];
   pluginRuntimeClaim: GatewayPluginRuntimeClaim;
@@ -51,8 +55,6 @@ export async function startGatewayDiscovery(params: {
   let mode = params.discovery?.mdns?.mode ?? "minimal";
   let tlsFingerprint = params.gatewayTls?.fingerprintSha256;
   const wideAreaDomain = params.discovery?.wideArea?.domain;
-  let services = params.gatewayDiscoveryServices ?? [];
-  let claim = params.pluginRuntimeClaim;
   let current: DiscoveryGeneration | undefined;
   let closed = false;
   let pending = Promise.resolve();

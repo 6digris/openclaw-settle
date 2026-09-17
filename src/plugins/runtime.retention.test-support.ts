@@ -228,6 +228,13 @@ async function recoverOwner(root: string, kind: "source" | "bundled-cjs" | "bund
 }
 
 switch (process.argv[2]) {
+  case "discovery-startup-settled":
+  case "discovery-startup-late": {
+    const { verifyDiscoveryStartupRetention } =
+      await import("../gateway/server-discovery-runtime.retention.test-support.js");
+    await verifyDiscoveryStartupRetention(collect, process.argv[2] === "discovery-startup-late");
+    break;
+  }
   case "discovery-timer": {
     const { verifyDiscoveryTimerRetention } =
       await import("../gateway/server-discovery-runtime.retention.test-support.js");
