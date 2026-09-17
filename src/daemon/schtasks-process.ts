@@ -272,6 +272,7 @@ async function resolveScheduledTaskGatewayOwnership(
         current.port !== port ||
         current.host !== owner.host ||
         current.startedAt !== owner.startedAt ||
+        (current.state !== "live" && current.state !== "unknown") ||
         !isTaskSupervisor(current.supervisor)
       ) {
         throw new Error(`Gateway owner changed before terminating process ${pid}`);
