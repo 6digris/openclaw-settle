@@ -188,6 +188,13 @@ CURRENT_OPTIONAL_REVIEWED_PACKED_FINDING_COUNTS.set(
   1,
 );
 
+// The native catalog fixture launches the pinned app-server with a temporary home,
+// child-only environment, and denied outbound proxies; it always joins the child.
+CURRENT_OPTIONAL_REVIEWED_PACKED_FINDING_COUNTS.set(
+  "@openclaw/codex:dangerous-exec:src/session-catalog-native.test.ts",
+  1,
+);
+
 // Process-inspection fixtures added after 9.4 deliberately run bounded child commands.
 // Keep their exact reviewed counts out of the already-shipped inventories above.
 CURRENT_OPTIONAL_REVIEWED_PACKED_FINDING_COUNTS.set(
