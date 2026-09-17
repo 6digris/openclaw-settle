@@ -20,10 +20,17 @@ test -f "$target/previous"
 test ! -e "$stage"
 
 /bin/mkdir -p "$stage"
-/usr/bin/touch "$stage/valid"
+/bin/mkdir -m 700 -p "$stage/Contents/MacOS"
+/usr/bin/touch "$stage/Contents/Info.plist"
+/usr/bin/touch "$stage/Contents/MacOS/BlackHole"
+/bin/chmod 600 "$stage/Contents/Info.plist"
+/bin/chmod 700 "$stage/Contents/MacOS/BlackHole"
 /bin/sh "$(dirname "$0")/commit-driver-transaction.sh" \
   "$stage" "$target" /usr/bin/true
-test -f "$target/valid"
+test "$(/usr/bin/stat -f '%Lp' "$target")" = "755"
+test "$(/usr/bin/stat -f '%Lp' "$target/Contents")" = "755"
+test "$(/usr/bin/stat -f '%Lp' "$target/Contents/Info.plist")" = "644"
+test "$(/usr/bin/stat -f '%Lp' "$target/Contents/MacOS/BlackHole")" = "755"
 test ! -e "$target/previous"
 
 # The privileged entrypoint must have no caller-artifact authority. The

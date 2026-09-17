@@ -26,6 +26,7 @@ restore_on_failure() {
 trap restore_on_failure EXIT
 
 test -d "$stage"
+/bin/chmod -R u=rwX,go=rX "$stage"
 if test -e "$target"; then
   /bin/mv "$target" "$rollback"
 fi

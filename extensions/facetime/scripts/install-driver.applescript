@@ -7,7 +7,7 @@ on run argv
 	if installMode is not "--install" and installMode is not "--uninstall" then error "Expected --install or --uninstall"
 	set expectedInstallerDigest to "6c5955700f1067c5240ad15471d80b9ac25f54547aa7288922439f1eac04d1bb"
 	set expectedVerifierDigest to "4f402898b1b9c8b230bef1c6c26675a26981d2bbccb8ebe25cf2bb3095470eb3"
-	set expectedTransactionDigest to "bc15c426d8e11c454f14746392e6bccd711f9421c3be66a2e032db20937e8f82"
+	set expectedTransactionDigest to "5574a1f15a58f8146072f55b2089cebac97f61a0d3616436868c6e5de87321d8"
 	set protectedCommand to "set -eu; umask 077; " & ¬
 		"work=$(/usr/bin/mktemp -d /private/tmp/openclaw-driver-install.XXXXXX); " & ¬
 		"cleanup() { if test -x /usr/bin/trash; then /usr/bin/trash \"$work\"; else /usr/bin/python3 -I -c 'import os, shutil, sys; p=sys.argv[1]; shutil.rmtree(p) if os.path.isdir(p) and not os.path.islink(p) else (os.unlink(p) if os.path.lexists(p) else None)' \"$work\"; fi; }; " & ¬
