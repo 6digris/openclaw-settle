@@ -3,22 +3,13 @@ import {
   areUiSessionKeysEquivalent,
   isSubagentSessionKey,
   parseAgentSessionKey,
-  resolveUiSessionNavigationParentKey,
 } from "../lib/sessions/session-key.ts";
+import { resolveSidebarSessionParentKey } from "./app-sidebar-session-parent.ts";
 import {
   summarizeSidebarSessionAttention,
   type SidebarRecentSession,
   type SidebarSessionAttention,
 } from "./app-sidebar-session-types.ts";
-
-function attributeChildAttention(
-  attention: SidebarSessionAttention,
-  childLabel: string,
-): SidebarSessionAttention {
-  return attention.kind === "error" && attention.childLabel === undefined
-    ? { ...attention, childLabel }
-    : attention;
-}
 
 /**
  * Pure projection of flat session rows into the sidebar's parent/child tree.
@@ -28,12 +19,20 @@ function attributeChildAttention(
  */
 export function projectSessionTree(params: {
   roots: readonly GatewaySessionRow[];
+  mainSessionKeys?: ReadonlySet<string>;
   rowsByKey: ReadonlyMap<string, GatewaySessionRow>;
   loadingChildKeys: ReadonlySet<string>;
   resolveAttention: (row: Pick<GatewaySessionRow, "key" | "agentId">) => SidebarSessionAttention;
   toSidebarSession: (row: GatewaySessionRow, isChild?: boolean) => SidebarRecentSession;
 }): SidebarRecentSession[] {
-  const { roots, rowsByKey, loadingChildKeys, resolveAttention, toSidebarSession } = params;
+  const {
+    roots,
+    mainSessionKeys = new Set<string>(),
+    rowsByKey,
+    loadingChildKeys,
+    resolveAttention,
+    toSidebarSession,
+  } = params;
   const childKeysByParent = new Map<string, string[]>();
   const hasRootCategory = (row: GatewaySessionRow | undefined) =>
     typeof row?.category === "string" &&
@@ -54,16 +53,16 @@ export function projectSessionTree(params: {
       if (hasRootCategory(child)) {
         continue;
       }
-      const navigationParentKey = resolveUiSessionNavigationParentKey(child);
+      const navigationParentKey = resolveSidebarSessionParentKey(child, mainSessionKeys, row.key);
       // Runtime control and sidebar navigation can have different parents;
       // known children belong to their explicit navigation parent only.
-      if (!navigationParentKey || areUiSessionKeysEquivalent(navigationParentKey, row.key)) {
+      if (areUiSessionKeysEquivalent(navigationParentKey, row.key)) {
         appendChild(row.key, childKey);
       }
     }
   }
   for (const row of rowsByKey.values()) {
-    const parentKey = resolveUiSessionNavigationParentKey(row);
+    const parentKey = resolveSidebarSessionParentKey(row, mainSessionKeys);
     if (parentKey && !hasRootCategory(row)) {
       appendChild(parentKey, row.key);
     }
@@ -87,14 +86,15 @@ export function projectSessionTree(params: {
     }
     const projected = toSidebarSession(row, isChild);
     const unloadedChildKeys = childSessionKeys.filter((key) => !rowsByKey.has(key));
-    // Only direct unloaded children can match: parents carry their keys, but not grandchildren's.
-    // Grandchildren join the normal transitive fold after their branch is materialized.
-    // Unloaded terminal outcomes require the existing child-detail loader.
-    // Child attention is transitive just like live-run counts: a collapsed
-    // ancestor remains actionable even when the blocked descendant is hidden.
+    // Parents expose only direct unloaded keys. Loaded descendants fold transitively;
+    // terminal outcomes still require child details.
     const attention = summarizeSidebarSessionAttention([
       projected.attention,
-      ...children.map((child) => attributeChildAttention(child.attention, child.label)),
+      ...children.map(({ attention: childAttention, label }) =>
+        childAttention.kind === "error" && childAttention.childLabel === undefined
+          ? { ...childAttention, childLabel: label }
+          : childAttention,
+      ),
       ...unloadedChildKeys.map((key) =>
         resolveAttention({
           key,
@@ -158,7 +158,7 @@ export function projectSessionTree(params: {
       if (hasRootCategory(row)) {
         return true;
       }
-      const parentKey = resolveUiSessionNavigationParentKey(row);
+      const parentKey = resolveSidebarSessionParentKey(row, mainSessionKeys);
       return !parentKey || !rootKeys.has(parentKey);
     })
     .map((row) => build(row, false, new Set()));
