@@ -14,6 +14,7 @@ import {
   THEME_TYPEFACES,
   TYPEFACES,
 } from "../../app/typography.ts";
+import { renderExternalLinkLabel } from "../../components/external-link.ts";
 import { icons } from "../../components/icons.ts";
 import { renderPicker } from "../../components/select-picker.ts";
 import {
@@ -391,7 +392,7 @@ export function renderAppearanceSection(
                         target="_blank"
                         rel="noreferrer noopener"
                       >
-                        ${t("configView.appearance.browseTweakcn")} ${icons.externalLink}
+                        ${renderExternalLinkLabel(t("configView.appearance.browseTweakcn"))}
                       </a>
                       <label class="settings-theme-import__field">
                         <span class="settings-theme-import__label"

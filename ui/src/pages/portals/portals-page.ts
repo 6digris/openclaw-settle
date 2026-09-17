@@ -10,6 +10,7 @@ import { keyed } from "lit/directives/keyed.js";
 import { ref } from "lit/directives/ref.js";
 import { titleForRoute } from "../../app-navigation.ts";
 import { applicationContext, type ApplicationContext } from "../../app/context.ts";
+import { renderExternalLinkLabel } from "../../components/external-link.ts";
 import { icon } from "../../components/icons.ts";
 import { t } from "../../i18n/index.ts";
 import { formatUiError } from "../../lib/format-error.ts";
@@ -275,9 +276,7 @@ class PortalsPage extends OpenClawLightDomElement {
             rel="noopener noreferrer"
             title=${portalUrl}
           >
-            <span>${portalUrl}</span>
-            ${icon("externalLink")}
-            <span class="sr-only">${t("portalsPage.openNewTab")}</span>
+            <span>${renderExternalLinkLabel(portalUrl)}</span>
           </a>
           <button
             class="btn btn--icon btn--ghost portals-preview__close"
@@ -314,7 +313,7 @@ class PortalsPage extends OpenClawLightDomElement {
                       href=${portalUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      >${portalUrl}</a
+                      >${renderExternalLinkLabel(portalUrl)}</a
                     >
                     <button
                       class="btn"

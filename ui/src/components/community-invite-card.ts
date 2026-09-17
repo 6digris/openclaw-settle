@@ -3,6 +3,7 @@ import { inferControlUiPublicAssetPath } from "../app/public-assets.ts";
 import { t } from "../i18n/index.ts";
 import { buildExternalLinkRel, EXTERNAL_LINK_TARGET } from "../lib/external-link.ts";
 import { COMMUNITY_DISCORD_URL } from "../lib/product-links.ts";
+import { renderExternalLinkLabel } from "./external-link.ts";
 import "../styles/community-invite-card.css";
 import { icons } from "./icons.ts";
 
@@ -49,7 +50,9 @@ export function renderCommunityInviteCard(onDismiss: () => void) {
             rel=${buildExternalLinkRel()}
           >
             ${discordMark}
-            <span>${t("communityInvite.action")}</span>
+            <span
+              >${renderExternalLinkLabel(t("communityInvite.action"), COMMUNITY_DISCORD_URL)}</span
+            >
           </a>
         </div>
       </aside>

@@ -3,6 +3,7 @@ import { property } from "lit/decorators.js";
 import { t } from "../i18n/index.ts";
 import { OpenClawLightDomElement } from "../lit/openclaw-element.ts";
 import { DropdownMenuController } from "./dropdown-menu-controller.ts";
+import { renderExternalLinkLabel } from "./external-link.ts";
 import { icons } from "./icons.ts";
 import { activateMenuShortcut, menuShortcutHint } from "./menu-shortcuts.ts";
 import "./web-awesome.ts";
@@ -81,7 +82,9 @@ export class NativeLinkMenu extends OpenClawLightDomElement {
           <span slot="icon" class="session-menu__icon" aria-hidden="true"
             >${icons.externalLink}</span
           >
-          <span class="session-menu__text">${t("nativeLinkMenu.openExternal")}</span>
+          <span class="session-menu__text"
+            >${renderExternalLinkLabel(t("nativeLinkMenu.openExternal"), this.trigger?.href)}</span
+          >
           ${menuShortcutHint("b")}
         </wa-dropdown-item>
         <div class="session-menu__separator" role="separator"></div>

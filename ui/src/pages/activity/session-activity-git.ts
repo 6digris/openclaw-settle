@@ -2,6 +2,7 @@ import { html, nothing } from "lit";
 import { property } from "lit/decorators.js";
 import type { ControlUiSessionPullRequest } from "../../../../src/gateway/control-ui-contract.js";
 import type { ApplicationContext } from "../../app/context.ts";
+import { renderExternalLinkLabel, externalLinkAriaLabel } from "../../components/external-link.ts";
 import "../../components/github-link-hovercard-registration.ts";
 import { icons } from "../../components/icons.ts";
 import { t } from "../../i18n/index.ts";
@@ -37,15 +38,19 @@ function renderPullRequest(pr: ControlUiSessionPullRequest) {
     href=${pr.url}
     target="_blank"
     rel="noopener noreferrer"
-    aria-label=${t("activity.git.pullRequest", {
-      repository: `${pr.owner}/${pr.repo}`,
-      number: String(pr.number),
-      title: pr.title,
-      state: t(`activity.git.${pr.state}`),
-    })}
+    aria-label=${externalLinkAriaLabel(
+      t("activity.git.pullRequest", {
+        repository: `${pr.owner}/${pr.repo}`,
+        number: String(pr.number),
+        title: pr.title,
+        state: t(`activity.git.${pr.state}`),
+      }),
+    )}
   >
     <span class="activity-feed__git-icon" aria-hidden="true">${icon}</span>
-    <span class="activity-feed__git-label">${pr.repo}#${pr.number}</span>
+    <span class="activity-feed__git-label"
+      >${renderExternalLinkLabel(`${pr.repo}#${pr.number}`, pr.url, false)}</span
+    >
     ${renderDiff(pr)}
   </a>`;
 }

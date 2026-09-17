@@ -1,0 +1,14 @@
+.external-link-indicator {
+  white-space: nowrap;
+}
+
+.external-link-indicator::before {
+  content: " ";
+}
+
+.external-link-indicator > span > svg {
+  width: 1em;
+  height: 1em;
+  margin-inline-start: 0.1em;
+  vertical-align: -0.125em;
+}

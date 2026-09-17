@@ -6,13 +6,14 @@ import { canReloadControlUiDocument } from "../app/document-reload-guard.ts";
 import { controlUiPublicAssetPath } from "../app/public-assets.ts";
 import { retryStaleChunkReloadWhenReachable } from "../app/stale-chunk-reload.ts";
 import { t } from "../i18n/index.ts";
-import "../lib/toast.ts";
 import { registerLoginEnglish } from "../i18n/locales/en-login.ts";
+import "../lib/toast.ts";
 import { buildExternalLinkRel, EXTERNAL_LINK_TARGET } from "../lib/external-link.ts";
 import { formatGatewayHost } from "../lib/gateway-host.ts";
 import { classifyGatewaySecret } from "../lib/gateway-secret-shape.ts";
 import { OpenClawLightDomContentsElement } from "../lit/openclaw-element.ts";
 import { renderConnectCommand } from "./connect-command.ts";
+import { renderExternalLinkLabel } from "./external-link.ts";
 import { icons } from "./icons.ts";
 import {
   type LoginFailureFeedback,
@@ -96,7 +97,7 @@ function renderFailureFooter(feedback: LoginFailureFeedback) {
         href=${feedback.docsHref}
         target=${EXTERNAL_LINK_TARGET}
         rel=${buildExternalLinkRel()}
-        >${t("common.learnMore")}</a
+        >${renderExternalLinkLabel(t("common.learnMore"), feedback.docsHref)}</a
       >
     </footer>
   `;
@@ -331,7 +332,7 @@ function renderFormBody(params: { props: LoginGateProps; feedback: LoginFailureF
                     href="https://docs.openclaw.ai/web/dashboard"
                     target=${EXTERNAL_LINK_TARGET}
                     rel=${buildExternalLinkRel()}
-                    >${t("connection.help.docsLink")}</a
+                    >${renderExternalLinkLabel(t("connection.help.docsLink"))}</a
                   >
                 </div>
               </details>

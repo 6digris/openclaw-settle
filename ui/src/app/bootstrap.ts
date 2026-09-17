@@ -25,6 +25,7 @@ import { createAgentIdentityCapability } from "../lib/agents/identity.ts";
 import { createAgentCapability } from "../lib/agents/index.ts";
 import { createChannelCapability } from "../lib/channels/index.ts";
 import { createRuntimeConfigCapability } from "../lib/config/runtime-config-capability.ts";
+import { refreshExternalLinkPresentation } from "../lib/external-link-presentation.ts";
 import { loadCurrentDeviceAuthToken } from "../lib/nodes/index.ts";
 import { createSessionCapability } from "../lib/sessions/index.ts";
 import { parseAgentSessionKey } from "../lib/sessions/session-key.ts";
@@ -352,10 +353,12 @@ export function bootstrapApplication(): ApplicationRuntime {
       }
     },
     shouldOpenInControlUiBrowser: () =>
-      loadSettings().openLinksInControlUiBrowser === true &&
+      theme.settings.openLinksInControlUiBrowser === true &&
       isBrowserPanelAvailable(gateway.snapshot) &&
       document.querySelector("openclaw-app-shell")?.isConnected === true,
   });
+  const stopLinkPreferences = theme.subscribe(refreshExternalLinkPresentation);
+  const stopLinkGateway = gateway.subscribe(refreshExternalLinkPresentation);
   let nativeDeviceSettings: ApplicationContext["nativeDeviceSettings"] = null;
   let nativeNotifications: ApplicationContext["nativeNotifications"] = null;
   const webPush = createWebPushCapability(gateway, { connectionBootstrap });
@@ -700,6 +703,8 @@ export function bootstrapApplication(): ApplicationRuntime {
       overlays.dispose();
       theme.dispose();
       nativeChatDrafts.dispose();
+      stopLinkPreferences();
+      stopLinkGateway();
       nativeLinkRouting.dispose();
       webPush.dispose();
       chatSubmissions.clear();

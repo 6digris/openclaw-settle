@@ -1,6 +1,7 @@
 import { html, nothing, type TemplateResult } from "lit";
 import type { GitHubIdentityFacts } from "../../../../packages/gateway-protocol/src/schema/agents-models-skills.js";
 import { handleCopyButton } from "../../components/copy-button.ts";
+import { renderExternalLinkLabel } from "../../components/external-link.ts";
 import { icons } from "../../components/icons.ts";
 import {
   renderSettingsRow,
@@ -222,7 +223,7 @@ function renderGitHubAuthorization(controller: GitHubIdentityController) {
             target=${EXTERNAL_LINK_TARGET}
             rel=${buildExternalLinkRel()}
           >
-            ${t("agentTools.githubOpen")}
+            ${renderExternalLinkLabel(t("agentTools.githubOpen"), authorization.verificationUri)}
           </a>
           ${
             authorization.phase === "cancelling" || authorization.phase === "finishing"

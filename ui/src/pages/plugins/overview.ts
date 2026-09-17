@@ -1,4 +1,5 @@
 import { html, nothing, type TemplateResult } from "lit";
+import { renderExternalLinkLabel } from "../../components/external-link.ts";
 import { icons } from "../../components/icons.ts";
 import { t } from "../../i18n/index.ts";
 import { formatDateMs } from "../../lib/format.ts";
@@ -124,8 +125,8 @@ export function renderPluginMetadata(
               href=${repository.href}
               target="_blank"
               rel="noopener noreferrer"
-              >${repository.github ? icons.github : icons.externalLink}<span
-                >${repository.name}</span
+              >${repository.github ? icons.github : nothing}<span
+                >${renderExternalLinkLabel(repository.name, repository.href)}</span
               ></a
             >
           </section>`
@@ -136,7 +137,7 @@ export function renderPluginMetadata(
         ? html`<section class="plugin-metadata__section">
             <h2>${t("pluginsPage.detailDocumentation")}</h2>
             <a href=${documentation.href} target="_blank" rel="noopener noreferrer"
-              >${t("pluginsPage.detailDocumentation")} ${icons.arrowUpRight}</a
+              >${renderExternalLinkLabel(t("pluginsPage.detailDocumentation"), documentation.href)}</a
             >
           </section>`
         : nothing

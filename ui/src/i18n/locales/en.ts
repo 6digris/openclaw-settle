@@ -83,6 +83,7 @@ export const en: TranslationMap & {
   },
   agentsHome: {},
   common: {
+    opensInNewTab: "opens in a new tab",
     health: "Health",
     ok: "OK",
     yes: "Yes",

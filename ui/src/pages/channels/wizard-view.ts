@@ -1,7 +1,9 @@
 // Channel setup wizard modal: renders gateway wizard steps (note/select/text/
 // confirm/multiselect) plus the WhatsApp QR linking phase after config write.
+
 import { html, nothing, type TemplateResult } from "lit";
 import { renderChannelIcon } from "../../components/channel-icon.ts";
+import { renderExternalLinkLabel } from "../../components/external-link.ts";
 import {
   renderWizardBusyButton,
   renderWizardStepControls,
@@ -204,7 +206,7 @@ function renderExternalStepLink(step: ChannelWizardStep | null) {
         target="_blank"
         rel="noreferrer noopener"
       >
-        ${t("channels.setup.openLink")}
+        ${renderExternalLinkLabel(t("channels.setup.openLink"), step.externalUrl)}
       </a>
     </div>
   `;
@@ -273,7 +275,7 @@ export function renderChannelWizard(
                       href=${channelDocsUrl(channel)}
                       target="_blank"
                       rel="noreferrer noopener"
-                      >${t("channels.setup.viewDocs")}</a
+                      >${renderExternalLinkLabel(t("channels.setup.viewDocs"))}</a
                     >`
                   : nothing
               }

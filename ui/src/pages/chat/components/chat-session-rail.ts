@@ -1,10 +1,11 @@
-import "../../../styles/chat/session-rail.css";
 import { html, nothing, type PropertyValues, type TemplateResult } from "lit";
+import "../../../styles/chat/session-rail.css";
 import { property, state } from "lit/decorators.js";
 import { ref } from "lit/directives/ref.js";
 import type { SessionObserverDigest } from "../../../../../packages/gateway-protocol/src/schema/sessions.js";
 import type { ControlUiSessionPullRequest } from "../../../../../src/gateway/control-ui-contract.js";
 import type { ChatSendShortcut } from "../../../app/settings.ts";
+import { renderExternalLinkLabel } from "../../../components/external-link.ts";
 import { icons } from "../../../components/icons.ts";
 import { markdownBlocks } from "../../../components/markdown-blocks.ts";
 import { handleMarkdownCodeBlockClick } from "../../../components/markdown-code-blocks.ts";
@@ -408,7 +409,7 @@ export class ChatSessionRailElement extends OpenClawLightDomElement {
               rel="noopener noreferrer"
               title=${pullRequest.title}
             >
-              <span>#${pullRequest.number}</span>
+              <span>${renderExternalLinkLabel(`#${pullRequest.number}`)}</span>
               <span>${prStateLabel(pullRequest.state)}</span>
               ${
                 checks ? html`<span class="chat-session-rail__pr-checks">${checks}</span>` : nothing

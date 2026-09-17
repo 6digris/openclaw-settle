@@ -1,4 +1,6 @@
 // Control UI view renders the Apps & extensions promo page.
+
+import { renderExternalLinkLabel } from "../../components/external-link.ts";
 import { html, nothing, type TemplateResult } from "lit";
 import type { RouteId } from "../../app-route-paths.ts";
 import { inferControlUiPublicAssetPath } from "../../app/public-assets.ts";
@@ -227,7 +229,7 @@ function renderCta(cta: AppCardCta, index: number, props: AppsProps) {
       target=${EXTERNAL_LINK_TARGET}
       rel=${buildExternalLinkRel()}
     >
-      ${cta.label()}
+      ${renderExternalLinkLabel(cta.label(), cta.href)}
     </a>
   `;
 }
@@ -308,7 +310,7 @@ function renderCommunity() {
               rel=${buildExternalLinkRel()}
             >
               <span class="apps-pill__icon" aria-hidden="true">${link.icon}</span>
-              <span>${link.label()}</span>
+              <span>${renderExternalLinkLabel(link.label(), link.href)}</span>
             </a>
           `,
         )}

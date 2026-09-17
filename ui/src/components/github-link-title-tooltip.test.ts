@@ -206,7 +206,7 @@ it("keeps rendered GitHub links free of native titles across preview closure and
     }
   };
   expect(links).toHaveLength(15);
-  expect.soft(links[13]?.getAttribute("aria-label")).toBe("Issue details");
+  expect.soft(links[13]?.getAttribute("aria-label")).toBe("Issue details (opens in a new tab)");
   expect(links[14]?.getAttribute("href")).toBe(href.replace("https:", ""));
   noNativeTitles();
   const anchor = links[1]!;
@@ -241,22 +241,22 @@ it("keeps rendered GitHub links free of native titles across preview closure and
   expect(links[0]?.textContent).toBe("#99815");
   expect(anchor.textContent).toBe("the related issue");
   expect(links[2]?.querySelector("img")?.alt).toBe("Issue icon");
-  expect(links[3]?.getAttribute("aria-label")).toBe("Issue details");
+  expect(links[3]?.getAttribute("aria-label")).toBe("Issue details (opens in a new tab)");
   expect(links[4]?.textContent).toBe("<button>");
   expect(links[4]?.hasAttribute("aria-label")).toBe(false);
   expect(links[5]?.textContent).toBe("*");
   expect.soft(links[5]?.hasAttribute("aria-label")).toBe(false);
   expect(links[6]?.textContent).toBe("");
-  expect(links[6]?.getAttribute("aria-label")).toBe("Issue details");
+  expect(links[6]?.getAttribute("aria-label")).toBe("Issue details (opens in a new tab)");
   expect(links[7]?.querySelector("progress")?.value).toBe(1);
   expect(links[7]?.querySelector("progress")?.getAttribute("aria-label")).toBe("Build status");
   expect.soft(links[7]?.hasAttribute("aria-label")).toBe(false);
   expect(links[8]?.hasAttribute("aria-label")).toBe(false);
   expect.soft(links[8]?.querySelector("progress")?.getAttribute("aria-label")).toBe("Build status");
-  expect.soft(links[9]?.getAttribute("aria-label")).toBe("Issue details");
-  expect(links[10]?.getAttribute("aria-label")).toBe("Issue details");
+  expect.soft(links[9]?.getAttribute("aria-label")).toBe("Issue details (opens in a new tab)");
+  expect(links[10]?.getAttribute("aria-label")).toBe("Issue details (opens in a new tab)");
   expect(links[11]?.hasAttribute("aria-label")).toBe(false);
-  expect(links[12]?.getAttribute("aria-label")).toBe("Issue details");
+  expect(links[12]?.getAttribute("aria-label")).toBe("Issue details (opens in a new tab)");
   const ordinary = provider.querySelector<HTMLAnchorElement>('a[href="https://example.com"]')!;
   pointer(child, "pointerout", ordinary);
   pointer(anchor, "pointerleave", ordinary);

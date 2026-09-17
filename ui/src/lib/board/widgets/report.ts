@@ -2,6 +2,7 @@ import { html, nothing, svg, type PropertyValues } from "lit";
 import { property } from "lit/decorators.js";
 import { parseBoardReport, type BoardReport } from "../../../../../src/boards/board-report.ts";
 import { renderBoardWidgetError } from "../../../components/board/board-widget-cell-render.ts";
+import { renderExternalLinkLabel } from "../../../components/external-link.ts";
 import { t } from "../../../i18n/index.ts";
 import { OpenClawLightDomElement } from "../../../lit/openclaw-element.ts";
 import type { BoardWidget } from "../types.ts";
@@ -102,7 +103,9 @@ function renderReportBlock(block: ReportBlock) {
         <ul class="board-report__links">
           ${block.items.map(
             (item) => html`<li>
-              <a href=${item.url} target="_blank" rel="noopener noreferrer">${item.label}</a>
+              <a href=${item.url} target="_blank" rel="noopener noreferrer"
+                >${renderExternalLinkLabel(item.label, item.url)}</a
+              >
               ${item.detail ? html`<span>${item.detail}</span>` : nothing}
             </li>`,
           )}

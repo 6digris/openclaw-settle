@@ -3,6 +3,7 @@ import {
   GATEWAY_OWNER_PROFILE_ID,
   type UserProfile,
 } from "../../../../packages/gateway-protocol/src/index.ts";
+import { renderExternalLinkLabel } from "../../components/external-link.ts";
 import {
   renderSettingsRow,
   renderSettingsSection,
@@ -154,7 +155,7 @@ export function renderIdentitySection(props: IdentitySectionProps) {
                 >
                   <img class="settings-account__avatar" src=${githubIdentity.avatarUrl} alt="" />
                   <span class="settings-row__value settings-row__value--mono"
-                    >@${githubIdentity.login}</span
+                    >${renderExternalLinkLabel(`@${githubIdentity.login}`, githubIdentity.profileUrl)}</span
                   >
                 </a>
                 ${renderSettingsStatus({

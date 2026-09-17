@@ -139,11 +139,6 @@ openclaw-chat-sources {
   color: var(--link-hover);
   text-decoration: underline;
 }
-.chat-source-popover__open svg {
-  width: 13px;
-  height: 13px;
-}
-
 @media (max-width: 560px) {
   .chat-source-strip__item {
     flex: 1 1 180px;

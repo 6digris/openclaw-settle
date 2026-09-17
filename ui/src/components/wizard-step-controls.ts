@@ -4,6 +4,7 @@ import { t } from "../i18n/index.ts";
 import { formatUiExternalText } from "../lib/format-error.ts";
 import { renderChannelPicker } from "./channel-picker.ts";
 import { handleCopyButton } from "./copy-button.ts";
+import { renderExternalLinkLabel } from "./external-link.ts";
 import { renderPicker } from "./select-picker.ts";
 import { renderSensitiveInput } from "./sensitive-input.ts";
 import "../styles/wizard-step-controls.css";
@@ -87,7 +88,7 @@ function renderSignIn(step: WizardStep) {
       <p class="muted">${deviceCode?.message ?? t("modelSetup.wizard.browserInstructions")}</p>
       ${deviceCode ? html`<code class="wizard-step__sign-in-code">${deviceCode.code}</code>` : nothing}
       <div class="wizard-step__actions">
-        ${step.externalUrl ? html`<a class="btn primary wizard-step__external-link" href=${step.externalUrl} target="_blank" rel="noreferrer">${t("modelSetup.wizard.openSignIn")}</a>` : nothing}
+        ${step.externalUrl ? html`<a class="btn primary wizard-step__external-link" href=${step.externalUrl} target="_blank" rel="noreferrer">${renderExternalLinkLabel(t("modelSetup.wizard.openSignIn"), step.externalUrl)}</a>` : nothing}
         ${copyValue ? html`<button type="button" class="btn" @click=${(event: Event) => void handleCopyButton(event, copyValue, copyLabel)}><span data-copy-label>${copyLabel}</span></button>` : nothing}
       </div>
       <div class="muted" role="status" aria-live="polite">${t("modelSetup.wizard.waiting")}</div>

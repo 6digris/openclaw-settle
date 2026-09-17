@@ -8,6 +8,7 @@ import type {
   ControlUiSessionPullRequestCheckStep,
 } from "../../../../../src/gateway/control-ui-contract.js";
 import type { ApplicationGateway } from "../../../app/gateway.ts";
+import { renderExternalLinkLabel } from "../../../components/external-link.ts";
 import { strokeIcon } from "../../../components/icons-tools.ts";
 import { icons } from "../../../components/icons.ts";
 import { t } from "../../../i18n/index.ts";
@@ -425,7 +426,7 @@ export class ChatCiDetailsElement extends OpenClawLightDomElement {
                 href=${detailsUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                >${check.source === "actions" ? t("chat.pullRequests.openJob") : t("chat.pullRequests.openCheck")}${icons.externalLink}</a
+                >${renderExternalLinkLabel(check.source === "actions" ? t("chat.pullRequests.openJob") : t("chat.pullRequests.openCheck"))}</a
               >`
             : nothing
         }

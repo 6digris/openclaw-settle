@@ -23,7 +23,12 @@ export function anchorFromNavigationEvent(event: Event): HTMLAnchorElement | nul
 export function externalHttpLinkFromEvent(
   event: Event,
 ): { anchor: HTMLAnchorElement; url: URL } | null {
-  const anchor = anchorFromNavigationEvent(event);
+  return externalHttpLinkFromAnchor(anchorFromNavigationEvent(event));
+}
+
+export function externalHttpLinkFromAnchor(
+  anchor: HTMLAnchorElement | null,
+): { anchor: HTMLAnchorElement; url: URL } | null {
   if (!anchor || anchor.hasAttribute("download") || anchor.hasAttribute("data-file-path")) {
     return null;
   }

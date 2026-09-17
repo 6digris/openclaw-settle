@@ -1,11 +1,12 @@
 // Curated Updates settings presentation. The existing update config remains
 // the source of authored policy; the Gateway schedule DTO owns runtime status.
+
 import { parseDateStringTimestampMs } from "@openclaw/normalization-core/number-coercion";
 import { asNullableRecord as asConfigRecord } from "@openclaw/normalization-core/record-coerce";
 import { html, nothing, type TemplateResult } from "lit";
 import type { UpdateRunRecord } from "../../../../src/infra/update-run-record.ts";
-import "../../components/update-run-view.ts";
 import type { UpdateAvailable, UpdateScheduleState } from "../../api/types.ts";
+import "../../components/update-run-view.ts";
 import { deviceSettingsGroupLabelKey } from "../../app-navigation.ts";
 import type { NativeDeviceSettingsCapability } from "../../app/native-device-settings.ts";
 import type { UpdateFailureReportNotice } from "../../app/overlays-types.ts";
@@ -15,6 +16,7 @@ import {
   formatUpdateTargetLabel,
   isUpdateActionable,
 } from "../../app/update-schedule-projection.ts";
+import { renderExternalLinkLabel } from "../../components/external-link.ts";
 import { icons } from "../../components/icons.ts";
 import {
   renderSettingsPage,
@@ -213,7 +215,9 @@ function renderUpdateFailureReportNotice(notice: UpdateFailureReportNotice) {
       ${
         url
           ? html`<div>
-              <a href=${url} target="_blank" rel="noreferrer">${t("updates.page.openIssue")}</a>
+              <a href=${url} target="_blank" rel="noreferrer"
+                >${renderExternalLinkLabel(t("updates.page.openIssue"), url)}</a
+              >
             </div>`
           : nothing
       }
@@ -221,7 +225,7 @@ function renderUpdateFailureReportNotice(notice: UpdateFailureReportNotice) {
         fallbackUrl
           ? html`<div>
               <a href=${fallbackUrl} target="_blank" rel="noreferrer"
-                >${t("updates.page.openPrefilledIssue")}</a
+                >${renderExternalLinkLabel(t("updates.page.openPrefilledIssue"), fallbackUrl)}</a
               >
             </div>`
           : nothing
@@ -586,7 +590,7 @@ export function renderUpdates(props: UpdatesViewProps): TemplateResult {
         ]),
         html`<p class="settings-page__hint">
           <a href="https://docs.openclaw.ai/install/update-troubleshooting" target="_blank"
-            >${t("updates.page.troubleshoot")}</a
+            >${renderExternalLinkLabel(t("updates.page.troubleshoot"))}</a
           >
         </p>`,
       ])}

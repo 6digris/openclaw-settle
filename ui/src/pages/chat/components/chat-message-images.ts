@@ -5,7 +5,9 @@ import { keyed } from "lit/directives/keyed.js";
 import { repeat } from "lit/directives/repeat.js";
 import { normalizeBasePath } from "../../../app-route-paths.ts";
 import { fetchControlUiResource, subscribeBrowserAuthRestored } from "../../../app/browser-http.ts";
+import { renderExternalLinkAccessibleName } from "../../../components/external-link.ts";
 import { t } from "../../../i18n/index.ts";
+import { isExternalLinkHref } from "../../../lib/external-link.ts";
 import {
   reserveExternalWindowForDeferredNavigation,
   resolveSafeExternalUrl,
@@ -252,13 +254,16 @@ class MessageImageResourceDirective extends AsyncDirective {
     opts: ImageRenderOptions | undefined,
   ) {
     const title = img.alt?.trim() || t("chat.imageLightbox.untitled");
+    const label = t("chat.imageLightbox.open", { title });
+    const external = !opts?.onOpenImage && isExternalLinkHref(previewUrl);
     return this.renderImageFrame(
       img,
       html`
         <button
           type="button"
           class="chat-message-image-button"
-          aria-label=${t("chat.imageLightbox.open", { title })}
+          aria-label=${external ? renderExternalLinkAccessibleName(label) : label}
+          title=${external ? renderExternalLinkAccessibleName(label) : nothing}
           @click=${(event: MouseEvent) => {
             event.stopPropagation();
             openMessageImage(img, previewUrl, opts);

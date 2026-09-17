@@ -612,14 +612,6 @@
   text-decoration: underline;
 }
 
-.settings-theme-import__external svg {
-  width: 14px;
-  height: 14px;
-  stroke: currentColor;
-  fill: none;
-  flex: 0 0 auto;
-}
-
 .settings-theme-import__inline-hint {
   margin: 0;
   font-size: 12px;

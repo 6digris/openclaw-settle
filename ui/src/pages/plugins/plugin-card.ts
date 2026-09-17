@@ -1,4 +1,5 @@
 import { html, nothing, type TemplateResult } from "lit";
+import { renderExternalLinkLabel } from "../../components/external-link.ts";
 import { icons } from "../../components/icons.ts";
 import { t } from "../../i18n/index.ts";
 import { registerPluginManagementEnglish } from "../../i18n/locales/en-plugin-management.ts";
@@ -69,7 +70,7 @@ export function renderPluginAuthor(
         href=${`https://clawhub.ai/${encodeURIComponent(handle)}`}
         target="_blank"
         rel="noopener noreferrer"
-        >${label}</a
+        >${renderExternalLinkLabel(label)}</a
       >`
     : html`<span class="plugin-card-author">${label}</span>`;
 }

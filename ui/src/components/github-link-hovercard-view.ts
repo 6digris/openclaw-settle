@@ -1,9 +1,10 @@
-import { html, nothing, render, type TemplateResult } from "lit";
+import { html, nothing, render } from "lit";
 import type { ControlUiGitHubPreview } from "../../../src/gateway/control-ui-contract.js";
 import { t } from "../i18n/index.ts";
 import { registerGitHubPreviewEnglish } from "../i18n/locales/en-github-preview.ts";
 import { buildExternalLinkRel, EXTERNAL_LINK_TARGET } from "../lib/external-link.ts";
 import { formatRelativeTimestamp } from "../lib/format.ts";
+import { renderExternalLinkLabel } from "./external-link.ts";
 import { gitHubProfileUrl, type GitHubLinkTarget } from "./github-link-target.ts";
 
 registerGitHubPreviewEnglish();
@@ -81,13 +82,18 @@ function renderCoAuthors(preview: GitHubPreview) {
   >`;
 }
 
-function renderCardLink(className: string, href: string, content: string | TemplateResult) {
+function renderCardLink(
+  className: string,
+  href: string,
+  content: string,
+  leading: unknown = nothing,
+) {
   return html`<a
     class=${className}
     href=${href}
     target=${EXTERNAL_LINK_TARGET}
     rel=${buildExternalLinkRel()}
-    >${content}</a
+    >${leading}${renderExternalLinkLabel(content, href)}</a
   >`;
 }
 
@@ -151,7 +157,8 @@ export function renderGitHubPreview(
             ? renderCardLink(
                 "github-link-hovercard__author",
                 gitHubProfileUrl(preview.login),
-                html`${renderAvatar(preview.avatarDataUrl)}${preview.login}`,
+                preview.login,
+                renderAvatar(preview.avatarDataUrl),
               )
             : nothing
         }${renderCoAuthors(preview)}

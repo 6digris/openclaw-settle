@@ -3,6 +3,7 @@ import { html, nothing } from "lit";
 import { state } from "lit/decorators.js";
 import { titleForRoute } from "../../app-navigation.ts";
 import { applicationContext, type ApplicationContext } from "../../app/context.ts";
+import { renderExternalLinkLabel } from "../../components/external-link.ts";
 import {
   renderLearnMoreLink,
   renderSettingsPage,
@@ -137,7 +138,7 @@ class LabsPage extends OpenClawLightDomElement {
     const description = html`
       ${feature.description()}
       <a href=${feature.docsUrl} target=${EXTERNAL_LINK_TARGET} rel=${buildExternalLinkRel()}
-        >${t("labsPage.documentation")}</a
+        >${renderExternalLinkLabel(t("labsPage.documentation"), feature.docsUrl)}</a
       >${feature.restartHint ? html` <span>${feature.restartHint()}</span>` : nothing}
       <span>${defaultDescription}</span>
     `;

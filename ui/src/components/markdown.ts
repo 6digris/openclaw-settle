@@ -1,10 +1,12 @@
-import DOMPurify from "dompurify";
+import createDOMPurify from "dompurify";
 import { CONTROL_UI_ROOT_PUBLIC_ASSETS } from "../../../src/gateway/control-ui-root-assets.js";
 import { stripUnsupportedCitationControlMarkers } from "../../../src/shared/text/citation-control-markers.js";
 import { routeIdFromPath } from "../app-route-paths.ts";
 import { resolveControlUiPaths } from "../app/browser.ts";
 import { i18n, t } from "../i18n/index.ts";
+import { isExternalLinkHref } from "../lib/external-link.ts";
 import { truncateText } from "../lib/format.ts";
+import { renderExternalLinkAccessibleName } from "./external-link.ts";
 import { parseGitHubLinkTarget } from "./github-link-target.ts";
 import { createAssistantTranscriptPlainTextFallback } from "./markdown-assistant-transcript.ts";
 import { renderMarkdownCodeBlock } from "./markdown-code-blocks.ts";
@@ -18,6 +20,9 @@ import {
 } from "./markdown-render-options.ts";
 import { repairStreamingMarkdownTail, splitStableStreamingMarkdown } from "./markdown-streaming.ts";
 import { isMarkdownBlockArtText, normalizeMarkdownLineBreaks } from "./markdown-text.ts";
+
+// Each renderer module owns its hooks, including after a module reload.
+const DOMPurify = createDOMPurify();
 
 const allowedTags = [
   "a",
@@ -87,6 +92,9 @@ const sanitizeOptions = {
   ALLOWED_TAGS: allowedTags,
   ALLOWED_ATTR: allowedAttrs,
   ADD_DATA_URI_TAGS: ["img"],
+  CUSTOM_ELEMENT_HANDLING: {
+    tagNameCheck: /^openclaw-external-link$/,
+  },
 };
 const progressSanitizeOptions = {
   ...sanitizeOptions,
@@ -516,6 +524,25 @@ function installHooks() {
 
     node.setAttribute("rel", "noreferrer noopener");
     node.setAttribute("target", "_blank");
+    if (isExternalLinkHref(normalizedHref) && !node.classList.contains("markdown-session-link")) {
+      const label = node.getAttribute("aria-label");
+      const imageOnly = node.textContent?.trim() ? null : node.querySelector("img");
+      const indicator = document.createElement("openclaw-external-link");
+      if (label || imageOnly || (!hasMarkdownContentName(node) && node.hasAttribute("title"))) {
+        const imageLabel = [...node.querySelectorAll("img")]
+          .map((image) => image.getAttribute("alt")?.trim())
+          .filter(Boolean)
+          .join(" ");
+        const baseLabel = label || imageLabel || node.getAttribute("title") || "";
+        node.setAttribute("aria-label", renderExternalLinkAccessibleName(baseLabel));
+        indicator.setAttribute("data-label", baseLabel);
+        indicator.setAttribute("aria-hidden", "true");
+      }
+      if (imageOnly) {
+        indicator.setAttribute("data-icon-only", "");
+      }
+      node.append(indicator);
+    }
   });
 }
 

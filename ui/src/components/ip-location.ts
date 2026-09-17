@@ -2,6 +2,7 @@ import { html, nothing } from "lit";
 import { property, state } from "lit/decorators.js";
 import { lookupClientGeolocation, type ClientGeolocation } from "../lib/geolocation-lookup.ts";
 import { OpenClawLightDomContentsElement } from "../lit/openclaw-element.ts";
+import { externalLinkAriaLabel } from "./external-link.ts";
 import { icons } from "./icons.ts";
 
 // The first lookup on a fresh Gateway waits on a database download that can take
@@ -89,8 +90,8 @@ class OpenClawIpLocation extends OpenClawLightDomContentsElement {
               href=${attribution.url}
               target="_blank"
               rel="noreferrer noopener"
-              aria-label=${attribution.text}
-              title=${attribution.text}
+              aria-label=${externalLinkAriaLabel(attribution.text)}
+              title=${externalLinkAriaLabel(attribution.text)}
               >${icons.info}</a
             >`
           : nothing

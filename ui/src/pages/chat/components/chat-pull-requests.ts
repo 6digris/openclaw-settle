@@ -7,8 +7,12 @@ import type {
   ControlUiSessionPullRequest,
   ControlUiSessionPullRequestSnapshot,
 } from "../../../../../src/gateway/control-ui-contract.js";
-import "./chat-ci-details.ts";
 import type { ApplicationGateway } from "../../../app/gateway.ts";
+import "./chat-ci-details.ts";
+import {
+  renderExternalLinkLabel,
+  externalLinkAriaLabel,
+} from "../../../components/external-link.ts";
 import { icons } from "../../../components/icons.ts";
 import { t } from "../../../i18n/index.ts";
 import type { GitHubPublicationView } from "../../../lib/sessions/github-publication-controller.ts";
@@ -143,7 +147,7 @@ function renderChecks(
             href=${pullRequest.checksUrl ?? pullRequest.url}
             target="_blank"
             rel="noopener noreferrer"
-            aria-label=${t("chat.pullRequests.openChecks")}
+            aria-label=${externalLinkAriaLabel(t("chat.pullRequests.openChecks"))}
           >
             ${icons.externalLink}
           </a>
@@ -242,9 +246,9 @@ function renderCreatePullRequestLink(branch: ControlUiSessionBranch) {
           href=${branch.createUrl}
           target="_blank"
           rel="noopener noreferrer"
-          aria-label=${t("chat.pullRequests.createPrLabel", { branch: branch.branch })}
+          aria-label=${externalLinkAriaLabel(t("chat.pullRequests.createPrLabel", { branch: branch.branch }))}
         >
-          ${t("chat.pullRequests.createPr")}
+          ${renderExternalLinkLabel(t("chat.pullRequests.createPr"), undefined, false)}
         </a>
       `
     : nothing;
@@ -334,15 +338,19 @@ export function renderChatPullRequests(props: {
               href=${pullRequest.url}
               target="_blank"
               rel="noopener noreferrer"
-              aria-label=${t("chat.pullRequests.linkLabel", {
-                number: String(pullRequest.number),
-                title: pullRequest.title,
-              })}
+              aria-label=${externalLinkAriaLabel(
+                t("chat.pullRequests.linkLabel", {
+                  number: String(pullRequest.number),
+                  title: pullRequest.title,
+                }),
+              )}
             >
               <span class="chat-pr__icon" aria-hidden="true">
                 ${merged ? icons.gitMerge : icons.gitPullRequest}
               </span>
-              <span class="chat-pr__number">#${pullRequest.number}</span>
+              <span class="chat-pr__number"
+                >${renderExternalLinkLabel(`#${pullRequest.number}`, undefined, false)}</span
+              >
               <span class="chat-pr__identity">
                 <span class="chat-pr__repo">${pullRequest.repo}</span>
                 <span class="chat-pr__branch">${pullRequest.branch}</span>
