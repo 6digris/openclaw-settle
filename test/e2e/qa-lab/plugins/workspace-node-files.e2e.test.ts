@@ -19,7 +19,7 @@ const COMMANDS = ["file.fetch", "file.stat", "file.write"];
 
 describe("node workspace document access", () => {
   it(
-    "preserves reader access and live edits without using the Gateway copy",
+    "preserves reader access and live edits across node restarts without using the Gateway copy",
     { timeout: 180_000 },
     async () => {
       const state = await createOpenClawTestState({
@@ -137,23 +137,26 @@ describe("node workspace document access", () => {
         );
         // Exercise the shipped node launcher and plugin dispatch. The node gets
         // only its setup code; setupStatus below verifies that code was redeemed.
-        node = spawn(
-          process.execPath,
-          [
-            path.resolve("openclaw.mjs"),
-            "node",
-            "run",
-            "--pair",
-            setup.setupCode,
-            "--commands",
-            COMMANDS.join(","),
-          ],
-          { cwd: process.cwd(), env: state.env, stdio: ["ignore", "pipe", "pipe"] },
-        );
-        node.stdout?.resume();
-        node.stderr?.on("data", (chunk: Buffer) => {
-          nodeOutput = (nodeOutput + chunk.toString("utf8")).slice(-8192);
-        });
+        const startNode = (setupCode?: string) => {
+          nodeOutput = "";
+          node = spawn(
+            process.execPath,
+            [
+              path.resolve("openclaw.mjs"),
+              "node",
+              "run",
+              ...(setupCode ? ["--pair", setupCode] : []),
+              "--commands",
+              COMMANDS.join(","),
+            ],
+            { cwd: process.cwd(), env: state.env, stdio: ["ignore", "pipe", "pipe"] },
+          );
+          node.stdout?.resume();
+          node.stderr?.on("data", (chunk: Buffer) => {
+            nodeOutput = (nodeOutput + chunk.toString("utf8")).slice(-8192);
+          });
+        };
+        startNode(setup.setupCode);
         await vi.waitFor(
           async () => {
             expect(node!.exitCode, nodeOutput).toBeNull();
@@ -223,7 +226,7 @@ describe("node workspace document access", () => {
         expect((await get()).file.content).toBe("Recreated workspace");
         expect(await fs.readFile(localDocument, "utf8")).toBe("Stale Gateway copy");
 
-        await stopChildProcess(node, 5_000);
+        await stopChildProcess(node!, 5_000);
         node = undefined;
         await vi.waitFor(
           async () => {
@@ -237,6 +240,30 @@ describe("node workspace document access", () => {
           { timeout: 15_000 },
         );
         await expect(get()).rejects.toThrow(/node|connected|unavailable/i);
+        expect(await fs.readFile(localDocument, "utf8")).toBe("Stale Gateway copy");
+
+        // A setup code is single-use. Normal restarts reuse the node's saved
+        // endpoint, device identity and token, without provisioning new credentials.
+        startNode();
+        await vi.waitFor(
+          async () => {
+            expect(node!.exitCode, nodeOutput).toBeNull();
+            const result = await owner!.request<{
+              nodes?: Array<{ nodeId: string; connected?: boolean }>;
+            }>("node.list", {});
+            expect(result.nodes?.some((entry) => entry.nodeId === nodeId && entry.connected)).toBe(
+              true,
+            );
+          },
+          { timeout: 15_000 },
+        );
+        expect((await get()).file.content).toBe("Recreated workspace");
+        await owner.request("agents.files.set", {
+          agentId: "qa",
+          name: "AGENTS.md",
+          content: "Owner edit after node restart",
+        });
+        expect(await fs.readFile(document, "utf8")).toBe("Owner edit after node restart");
         expect(await fs.readFile(localDocument, "utf8")).toBe("Stale Gateway copy");
       } finally {
         if (node) {
