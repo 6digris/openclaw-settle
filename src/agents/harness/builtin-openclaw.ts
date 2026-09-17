@@ -29,6 +29,8 @@ function buildRestrictedFinalizationAttempt(
     sessionId: attempt.sessionId,
     sessionKey: attempt.sessionKey,
     sessionTarget: attempt.sessionTarget,
+    sessionManager: attempt.sessionManager,
+    sessionPersistence: attempt.sessionPersistence,
     lifecycleGeneration: attempt.lifecycleGeneration,
     promptCacheKey: attempt.promptCacheKey,
     sandboxSessionKey: attempt.sandboxSessionKey,

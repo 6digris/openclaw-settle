@@ -2241,7 +2241,7 @@ describe("loadPluginManifestRegistry", () => {
   });
 
   it("resolves a manifest provider catalog source only once per registry build", () => {
-    const dir = makeTempDir();
+    const dir = fs.realpathSync(makeTempDir());
     const providerDiscoverySource = path.join(dir, "provider-discovery.js");
     writeManifest(dir, {
       id: "cached-provider",
@@ -2250,7 +2250,7 @@ describe("loadPluginManifestRegistry", () => {
       configSchema: { type: "object" },
     });
     fs.writeFileSync(providerDiscoverySource, "export default {};\n", "utf8");
-    const realpathSpy = vi.spyOn(fs, "realpathSync");
+    const realpathSpy = vi.spyOn(fs.realpathSync, "native");
 
     const registry = loadSingleCandidateRegistry({
       idHint: "cached-provider",

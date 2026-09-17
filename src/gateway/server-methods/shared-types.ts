@@ -485,10 +485,7 @@ export type GatewayRequestHandlerOptionsV2 = {
 
 /** Existing import names select V2; no universal-WebSocket legacy adapter is served. */
 export type GatewayRequestHandlerOptions = GatewayRequestHandlerOptionsV2;
-export type GatewayRequestHandlerV2 = (
-  opts: GatewayRequestHandlerOptionsV2,
-) => Promise<void> | void;
-export type GatewayRequestHandler = GatewayRequestHandlerV2;
+export type GatewayRequestHandler = (opts: GatewayRequestHandlerOptionsV2) => Promise<void> | void;
 
 /** Registry fragment keyed by gateway protocol method name. */
 export type GatewayRequestHandlers = Record<string, GatewayRequestHandler>;

@@ -1,11 +1,12 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { readConfigFileSnapshot } from "../../config/config.js";
+import { readJsonIfExists } from "../../infra/json-files.js";
 import { normalizeUpdateChannel } from "../../infra/update-channels.js";
 import { compareSemverStrings } from "../../infra/update-check.js";
 import { UPDATE_RUN_ID_ENV } from "../../infra/update-control-plane-sentinel.js";
 import { hasDeferredUpdateModelRetirement } from "../../infra/update-deferred-model-retirement.js";
 import {
   POST_CORE_UPDATE_REQUESTED_CHANNEL_ENV,
-  POST_CORE_UPDATE_PARENT_FINALIZES_ENV,
   POST_CORE_UPDATE_INSTALL_RECORDS_PATH_ENV,
   POST_CORE_UPDATE_RESULT_PATH_ENV,
   POST_CORE_UPDATE_STARTED_AT_ENV,
@@ -96,6 +97,10 @@ async function resumePostCoreUpdateInternal(params: ResumePostCoreUpdateParams):
   const parentPluginInstallRecords = await readPostCorePluginInstallRecordsFile(
     process.env[POST_CORE_UPDATE_INSTALL_RECORDS_PATH_ENV],
   );
+  const resultPath = process.env[POST_CORE_UPDATE_RESULT_PATH_ENV];
+  const handoff = resultPath ? await readJsonIfExists<unknown>(resultPath) : null;
+  const parentDeclaresFinalization =
+    isRecord(handoff) && handoff.status === "pending" && handoff.parentFinalizes === true;
   const producedPluginUpdate = await withPluginLifecycleLease({}, async (lease) => {
     await completeSourceUpdateRuntime({ root: params.root, timeoutMs: params.timeoutMs, lease });
     // The core migration owner committed before activation. This fresh process
@@ -133,17 +138,15 @@ async function resumePostCoreUpdateInternal(params: ResumePostCoreUpdateParams):
   });
   // .6.34/.35 and .9.2 consume this result without another finalization pass.
   // .9.3 first moved that pass to the parent; its active run records the invoking
-  // version. A run ID alone cannot distinguish .9.2. New parents advertise the
-  // responsibility explicitly, including untracked handoffs. These facts select
+  // version. A run ID alone cannot distinguish .9.2. New parents seed the result
+  // channel with caller context, including untracked handoffs. These facts select
   // the caller, not mutation authority: fresh Doctor reacquires its own leases.
   const parentRunId = process.env[UPDATE_RUN_ID_ENV]?.trim();
   const parentRun =
-    process.env[POST_CORE_UPDATE_PARENT_FINALIZES_ENV] !== "1" && parentRunId
-      ? getUpdateRun(parentRunId)
-      : undefined;
+    !parentDeclaresFinalization && parentRunId ? getUpdateRun(parentRunId) : undefined;
   const parentVersion = parentRun?.status === "running" ? parentRun.before.version : undefined;
   const parentFinalizes =
-    process.env[POST_CORE_UPDATE_PARENT_FINALIZES_ENV] === "1" ||
+    parentDeclaresFinalization ||
     (compareSemverStrings(parentVersion ?? "", "2026.9.3") ?? -1) >= 0;
   // An already-current retained runtime skips the parent's unchanged-plugin
   // finalizer. Keep deferred retirement in this child regardless of parent role.
@@ -164,13 +167,10 @@ async function resumePostCoreUpdateInternal(params: ResumePostCoreUpdateParams):
   // Only the target process may restamp an unchanged downgrade config. Plugin
   // migrations that still invalidate it will write through the target Doctor later.
   await persistValidatedDowngradeConfig(await readConfigFileSnapshot());
-  if (process.env[POST_CORE_UPDATE_RESULT_PATH_ENV]) {
-    await writePostCorePluginUpdateResultFile(
-      process.env[POST_CORE_UPDATE_RESULT_PATH_ENV],
-      pluginUpdate,
-    );
+  if (resultPath) {
+    await writePostCorePluginUpdateResultFile(resultPath, pluginUpdate);
   }
-  if (params.opts.json && !process.env[POST_CORE_UPDATE_RESULT_PATH_ENV]) {
+  if (params.opts.json && !resultPath) {
     const result: UpdateRunResult = {
       status: pluginUpdate.status === "error" ? "error" : "ok",
       mode: "unknown",

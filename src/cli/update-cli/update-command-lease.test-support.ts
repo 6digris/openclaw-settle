@@ -21,6 +21,36 @@ export type LeaseScenario = {
   verifyRepairOwner?: boolean;
 };
 
+export const postCoreParentCases = [
+  {
+    parent: "legacy",
+    parentFinalizes: undefined,
+    parentVersion: undefined,
+    parentCompletes: false,
+  },
+  { parent: "current", parentFinalizes: true, parentVersion: undefined, parentCompletes: true },
+  {
+    parent: "completed-result",
+    parentFinalizes: "completed",
+    parentVersion: undefined,
+    parentCompletes: false,
+  },
+  {
+    parent: "9.2",
+    parentFinalizes: undefined,
+    parentVersion: "2026.9.2",
+    parentCompletes: false,
+  },
+  { parent: "9.3", parentFinalizes: undefined, parentVersion: "2026.9.3", parentCompletes: true },
+  { parent: "9.4", parentFinalizes: undefined, parentVersion: "2026.9.4", parentCompletes: true },
+  {
+    parent: "unknown",
+    parentFinalizes: undefined,
+    parentVersion: "unknown",
+    parentCompletes: false,
+  },
+];
+
 // A narrow child substitutes for the CLI, not for its cross-process lease.
 export async function runUpdateLeaseChild(): Promise<void> {
   const stateDir = process.env.OPENCLAW_STATE_DIR;

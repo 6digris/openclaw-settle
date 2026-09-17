@@ -29,7 +29,6 @@ import { resolveUpdateInstallRoot } from "../../infra/update-install-root.js";
 import {
   buildPostCoreHandoffEnv,
   POST_CORE_UPDATE_ENV,
-  POST_CORE_UPDATE_PARENT_FINALIZES_ENV,
   POST_CORE_UPDATE_CHANNEL_ENV,
   POST_CORE_UPDATE_RESULT_PATH_ENV,
   POST_CORE_UPDATE_INSTALL_RECORDS_PATH_ENV,
@@ -359,6 +358,9 @@ export async function continuePostCoreUpdateInFreshProcess(params: {
     }
     await writePostCorePluginInstallRecordsFile(installRecordsPath, pluginInstallRecords);
     await writePostCoreSourceConfigFile(sourceConfigPath, params.preUpdateConfig);
+    // The existing per-child result channel also carries initial caller context.
+    // Shipped readers ignore pending data until the child replaces it with its result.
+    await writeJson(resultPath, { status: "pending", parentFinalizes: true });
     const jsonMode = params.opts.json === true;
     const childStdio = resolvePostCoreUpdateChildStdio(process.platform, jsonMode);
     const handoffEnv = buildPostCoreHandoffEnv({
@@ -386,8 +388,6 @@ export async function continuePostCoreUpdateInFreshProcess(params: {
         OPENCLAW_UPDATE_IN_PROGRESS: "1",
         ...(params.opts.run ? { [UPDATE_RUN_ID_ENV]: params.opts.run.runId } : {}),
         [POST_CORE_UPDATE_ENV]: "1",
-        // This parent owns changed-plugin completion after child settlement.
-        [POST_CORE_UPDATE_PARENT_FINALIZES_ENV]: "1",
         [POST_CORE_UPDATE_CHANNEL_ENV]: params.channel,
         [POST_CORE_UPDATE_RESULT_PATH_ENV]: resultPath,
         [POST_CORE_UPDATE_INSTALL_RECORDS_PATH_ENV]: installRecordsPath,

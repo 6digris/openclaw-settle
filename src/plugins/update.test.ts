@@ -2756,10 +2756,16 @@ describe("updateNpmInstalledPlugins", () => {
       expect(fs.lstatSync(peerLinkPath("sibling")).isSymbolicLink()).toBe(true);
       expect(fs.lstatSync(peerLinkPath("updated")).isSymbolicLink()).toBe(true);
       for (const copiedHostDir of copiedHosts) {
-        expect(fs.lstatSync(copiedHostDir).isDirectory()).toBe(true);
-        expect(
-          JSON.parse(fs.readFileSync(path.join(copiedHostDir, "package.json"), "utf8")),
-        ).toEqual({ name: "openclaw", version: "2026.4.1" });
+        // ClawHub is registry-owned like npm; external and local copies remain untouched.
+        if (copiedHostDir === path.join(clawhubInstallPath, "node_modules", "openclaw")) {
+          expect(fs.lstatSync(copiedHostDir).isSymbolicLink()).toBe(true);
+          expect(fs.realpathSync(copiedHostDir)).toBe(fs.realpathSync(process.cwd()));
+        } else {
+          expect(fs.lstatSync(copiedHostDir).isDirectory()).toBe(true);
+          expect(
+            JSON.parse(fs.readFileSync(path.join(copiedHostDir, "package.json"), "utf8")),
+          ).toEqual({ name: "openclaw", version: "2026.4.1" });
+        }
       }
     },
   );

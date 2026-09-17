@@ -26,21 +26,20 @@ it.each(["activate", "refuse", "directory"] as const)(
       const home = path.join(base, "home");
       const canonicalState = path.join(home, "state");
       const canonicalConfig = path.join(canonicalState, "openclaw.json");
+      const continuationPath = path.join(canonicalState, "continuation");
+      const parentContext = '{"status":"pending","parentFinalizes":true}\n';
       const canonicalTmp = path.join(base, "inherited-tmp");
       await fs.mkdir(canonicalState, { recursive: true });
       await fs.mkdir(canonicalTmp);
       await fs.writeFile(canonicalConfig, "{}\n");
+      await fs.writeFile(continuationPath, parentContext);
       vi.stubEnv("HOME", home);
       vi.stubEnv("OPENCLAW_STATE_DIR", canonicalState);
       vi.stubEnv("OPENCLAW_CONFIG_PATH", canonicalConfig);
       vi.stubEnv("STATE_DIRECTORY", canonicalState);
       vi.stubEnv("NODE_COMPILE_CACHE", canonicalTmp);
       vi.stubEnv("OPENCLAW_AGENT_DIR", canonicalState);
-      vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_PARENT_FINALIZES", "1");
-      vi.stubEnv(
-        "OPENCLAW_UPDATE_POST_CORE_RESULT_PATH",
-        path.join(canonicalState, "continuation"),
-      );
+      vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_RESULT_PATH", continuationPath);
       const target = createNpmTarget(path.join(base, "prefix", "lib", "node_modules"));
       target.npmOwner = { version: "11.10.0", lifecyclePolicy: "unflagged" };
       const root = target.packageRoot!;
@@ -64,7 +63,7 @@ it.each(["activate", "refuse", "directory"] as const)(
       fs.mkdirSync(process.env.OPENCLAW_STATE_DIR,{recursive:true});
       fs.writeFileSync(path.join(process.env.OPENCLAW_STATE_DIR,'lifecycle'),'private');
       fs.writeFileSync(path.join(os.tmpdir(),'lifecycle'),'private');
-      fs.writeFileSync('lifecycle-paths.json',JSON.stringify({home:process.env.HOME,openclawHome:process.env.OPENCLAW_HOME,state:process.env.OPENCLAW_STATE_DIR,tmp:os.tmpdir(),parentFinalizes:process.env.OPENCLAW_UPDATE_POST_CORE_PARENT_FINALIZES}));
+      fs.writeFileSync('lifecycle-paths.json',JSON.stringify({home:process.env.HOME,openclawHome:process.env.OPENCLAW_HOME,state:process.env.OPENCLAW_STATE_DIR,tmp:os.tmpdir(),resultPath:process.env.OPENCLAW_UPDATE_POST_CORE_RESULT_PATH}));
       for(const key of ['STATE_DIRECTORY','OPENCLAW_AGENT_DIR','NODE_COMPILE_CACHE']) {
         if(process.env[key]) fs.writeFileSync(path.join(process.env[key],'leaked'),'bad');
       }
@@ -131,13 +130,17 @@ it.each(["activate", "refuse", "directory"] as const)(
           );
           isolatedHome = paths.openclawHome;
           expect(paths.home).toBe(home);
-          expect(paths).not.toHaveProperty("parentFinalizes");
-          expect(process.env.OPENCLAW_UPDATE_POST_CORE_PARENT_FINALIZES).toBe("1");
+          expect(paths).not.toHaveProperty("resultPath");
+          expect(process.env.OPENCLAW_UPDATE_POST_CORE_RESULT_PATH).toBe(continuationPath);
           expect(paths.state).not.toBe(canonicalState);
           expect(await fs.readFile(path.join(paths.state, "lifecycle"), "utf8")).toBe("private");
           expect(await fs.readFile(path.join(paths.tmp, "lifecycle"), "utf8")).toBe("private");
           expect(initialization.target.targetVersion).toBe("1.0.1");
-          expect(await fs.readdir(canonicalState)).toEqual(["openclaw.json"]);
+          expect((await fs.readdir(canonicalState)).toSorted()).toEqual([
+            "continuation",
+            "openclaw.json",
+          ]);
+          expect(await fs.readFile(continuationPath, "utf8")).toBe(parentContext);
           expect(await fs.readdir(canonicalTmp)).toEqual([]);
           expect(await fs.readFile(canonicalConfig, "utf8")).toBe("{}\n");
           if (action === "refuse") {
@@ -165,9 +168,12 @@ it.each(["activate", "refuse", "directory"] as const)(
         },
       );
       expect(await fs.readdir(canonicalTmp)).toEqual([]);
-      expect(await fs.readdir(canonicalState)).toEqual(
-        action !== "refuse" ? ["openclaw.json", "openclaw.json.pre-update"] : ["openclaw.json"],
+      expect((await fs.readdir(canonicalState)).toSorted()).toEqual(
+        action !== "refuse"
+          ? ["continuation", "openclaw.json", "openclaw.json.pre-update"]
+          : ["continuation", "openclaw.json"],
       );
+      expect(await fs.readFile(continuationPath, "utf8")).toBe(parentContext);
       expect(isolatedHome).toBeDefined();
       await expect(fs.stat(isolatedHome!)).rejects.toMatchObject({ code: "ENOENT" });
       if (action === "refuse") {

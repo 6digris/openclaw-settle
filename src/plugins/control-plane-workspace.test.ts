@@ -1,23 +1,30 @@
 import { describe, expect, it } from "vitest";
+import { retainLegacyDefaultAgentId } from "../config/legacy.default-agent-owner.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolvePluginControlPlaneWorkspace } from "./control-plane-workspace.js";
 
 describe("resolvePluginControlPlaneWorkspace", () => {
-  it("omits workspace scope for an ownerless explicit fleet", () => {
-    expect(
-      resolvePluginControlPlaneWorkspace({
-        config: {
-          agents: {
-            ownership: "explicit",
-            entries: { alpha: {}, beta: {} },
-          },
+  it.each([undefined, "alpha", "beta"])(
+    "omits workspace scope for an ownerless explicit fleet with retained agent %s",
+    (retainedAgentId) => {
+      const config: OpenClawConfig = {
+        agents: {
+          ownership: "explicit",
+          entries: { alpha: {}, beta: {} },
         },
-        env: { OPENCLAW_STATE_DIR: "/tmp/openclaw-control-plane" },
-      }),
-    ).toMatchObject({
-      workspaceScope: "omitted",
-      diagnostic: { code: "workspace-scope-omitted" },
-    });
-  });
+      };
+      retainLegacyDefaultAgentId(config, retainedAgentId);
+      expect(
+        resolvePluginControlPlaneWorkspace({
+          config,
+          env: { OPENCLAW_STATE_DIR: "/tmp/openclaw-control-plane" },
+        }),
+      ).toMatchObject({
+        workspaceScope: "omitted",
+        diagnostic: { code: "workspace-scope-omitted" },
+      });
+    },
+  );
 
   it("uses the configured system agent for control-plane workspace enrichment", () => {
     expect(

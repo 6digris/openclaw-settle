@@ -1,7 +1,10 @@
 // Live-sweeps discovered model profiles with optional provider/model filters and probes.
 import { writeSync } from "node:fs";
 import { defaultApiRegistry } from "@openclaw/ai/internal/runtime";
-import { prepareModelForSimpleCompletion } from "@openclaw/ai/transports";
+import {
+  prepareHeadersForSimpleCompletion,
+  prepareModelForSimpleCompletion,
+} from "@openclaw/ai/transports";
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { expectDefined } from "@openclaw/normalization-core";
 import { type Api, completeSimple, type Model } from "openclaw/plugin-sdk/llm";
@@ -39,6 +42,7 @@ import { normalizeDiscoveredAgentModel } from "./model-discovery-normalize.js";
 import { shouldSuppressBuiltInModelCore } from "./model-suppression.js";
 import { ensureOpenClawModelsJson } from "./models-config.js";
 import type { StreamFn } from "./runtime/index.js";
+import { registerLiveModelCompletionWireTests } from "./test-helpers/live-model-completion-wire.test-support.js";
 import {
   appendPrioritizedDynamicLiveModels,
   applyLiveProviderPluginDiscoveryCompat,
@@ -1334,10 +1338,12 @@ async function completeSimpleWithTimeout<TApi extends Api>(
       model,
       cfg: activeLiveCompletionConfig,
     });
+    const headers = prepareHeadersForSimpleCompletion(completionModel, options);
     return await withLiveHeartbeat(
       Promise.race([
         completeSimple(completionModel, context, {
           ...options,
+          ...(headers ? { headers } : {}),
           signal: controller.signal,
         }),
         timeout,
@@ -1351,6 +1357,8 @@ async function completeSimpleWithTimeout<TApi extends Api>(
     }
   }
 }
+
+registerLiveModelCompletionWireTests(completeSimpleWithTimeout);
 
 function requireToolChoicePayload(payload: unknown): unknown {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {

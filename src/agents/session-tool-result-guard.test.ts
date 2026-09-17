@@ -871,7 +871,7 @@ describe("installSessionToolResultGuard", () => {
       suppressNextUserMessagePersistence: true,
     });
 
-    guard.clearNextUserMessagePersistenceSuppression();
+    guard.setNextUserMessagePersistenceSuppression(false);
     sm.appendMessage(
       asAppendMessage({
         role: "user",

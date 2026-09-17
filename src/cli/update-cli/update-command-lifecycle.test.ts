@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
@@ -233,7 +234,6 @@ describe("update plugin lifecycle lease boundaries", () => {
     vi.stubEnv("OPENCLAW_STATE_DIR", path.dirname(path.dirname(mocks.databasePath)));
     vi.stubEnv("OPENCLAW_UPDATE_RUN_ID", undefined);
     vi.stubEnv("OPENCLAW_UPDATE_POST_CORE", undefined);
-    vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_PARENT_FINALIZES", "1");
     mocks.events = [];
     mocks.leaseActive = false;
     mocks.doctorWarnings = [];
@@ -514,6 +514,9 @@ describe("update plugin lifecycle lease boundaries", () => {
   });
 
   it("returns resumed package work to its finalizing parent and rereads state under the lease", async () => {
+    const resultPath = path.join(path.dirname(path.dirname(mocks.databasePath)), "post-core.json");
+    await fs.writeFile(resultPath, JSON.stringify({ status: "pending", parentFinalizes: true }));
+    vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_RESULT_PATH", resultPath);
     await resumePostCoreUpdate({
       root: "/tmp/openclaw",
       channel: "stable",
@@ -539,25 +542,28 @@ describe("update plugin lifecycle lease boundaries", () => {
 
   it.each(
     [
-      { parent: "explicit", marker: "1", version: VERSION },
-      { parent: "9.3", marker: undefined, version: "2026.9.3" },
-    ].flatMap(({ parent, marker, version }) =>
+      { parent: "explicit", parentFinalizes: true, version: VERSION },
+      { parent: "9.3", parentFinalizes: false, version: "2026.9.3" },
+    ].flatMap(({ parent, parentFinalizes, version }) =>
       [
         { changed: false, deferred: true },
         { changed: false, deferred: false },
         { changed: true, deferred: true },
-      ].map(({ changed, deferred }) => ({ parent, marker, version, changed, deferred })),
+      ].map(({ changed, deferred }) => ({ parent, parentFinalizes, version, changed, deferred })),
     ),
   )(
     "settles retained-runtime retirement through convergence (parent=$parent, changed=$changed, deferred=$deferred)",
-    async ({ marker, version, changed, deferred }) => {
+    async ({ parentFinalizes, version, changed, deferred }) => {
       const run = createUpdateRun({ trigger: "cli", before: { version } });
       vi.stubEnv("OPENCLAW_UPDATE_RUN_ID", run.runId);
-      vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_PARENT_FINALIZES", marker);
-      vi.stubEnv(
-        "OPENCLAW_UPDATE_POST_CORE_RESULT_PATH",
-        path.join(path.dirname(mocks.databasePath), "post-core-result.json"),
-      );
+      const resultPath = path.join(path.dirname(mocks.databasePath), "post-core-result.json");
+      vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_RESULT_PATH", resultPath);
+      if (parentFinalizes) {
+        await fs.writeFile(
+          resultPath,
+          JSON.stringify({ status: "pending", parentFinalizes: true }),
+        );
+      }
       if (deferred) {
         recordUpdateModelRetirement("deferred");
       }

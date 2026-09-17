@@ -4449,8 +4449,13 @@ describe("update-cli", () => {
         changes: ["Repaired configured plugin install records."],
       }),
     );
+    // Shipped 9.4 parents retain Doctor completion; a bare post-core marker also serves older parents.
+    const parentRun = createUpdateRun({ trigger: "cli", before: { version: "2026.9.4" } });
 
-    await runPostCoreCommand({ restart: false, json: true });
+    await runPostCoreCommand(
+      { restart: false, json: true },
+      { OPENCLAW_UPDATE_RUN_ID: parentRun.runId },
+    );
 
     expect(syncPluginCall()?.config).toBeDefined();
     expect(updateNpmInstalledPlugins).toHaveBeenCalledTimes(1);
@@ -4762,8 +4767,12 @@ describe("update-cli", () => {
 
   it("returns changed package results without Doctor output during JSON post-core resume", async () => {
     mockNpmPluginOutcomes([], true);
+    const parentRun = createUpdateRun({ trigger: "cli", before: { version: "2026.9.4" } });
 
-    await runPostCoreCommand({ json: true, restart: false });
+    await runPostCoreCommand(
+      { json: true, restart: false },
+      { OPENCLAW_UPDATE_RUN_ID: parentRun.runId },
+    );
 
     expect(
       vi
@@ -5489,8 +5498,12 @@ describe("update-cli", () => {
         ...postCoreConvergenceResult(),
         installRecords: records,
       });
+      const parentRun = createUpdateRun({ trigger: "cli", before: { version: "2026.9.4" } });
 
-      await runPostCoreCommand({ yes: true, json, restart: false });
+      await runPostCoreCommand(
+        { yes: true, json, restart: false },
+        { OPENCLAW_UPDATE_RUN_ID: parentRun.runId },
+      );
 
       expect(defaultRuntime.exit).not.toHaveBeenCalledWith(1);
       if (json) {

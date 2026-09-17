@@ -2816,7 +2816,7 @@ src/gateway/test-http-response.ts	4
 src/gateway/test-temp-config.ts	1
 src/gateway/tools-invoke-http.ts	1
 src/gateway/tools-invoke-shared.ts	6
-src/gateway/watch-node-http.ts	3
+src/gateway/watch-node-http.ts	2
 src/gateway/worker-environments/bundle.ts	6
 src/gateway/worker-environments/inference-control.ts	1
 src/gateway/worker-environments/inference-runtime.ts	2
@@ -3141,7 +3141,7 @@ src/plugin-sdk/channel-outbound.ts	1
 src/plugin-sdk/channel-replay-guard.ts	2
 src/plugin-sdk/core.ts	4
 src/plugin-sdk/dedupe-runtime.ts	1
-src/plugin-sdk/discord.ts	3
+src/plugin-sdk/discord.ts	2
 src/plugin-sdk/extension-shared.ts	6
 src/plugin-sdk/facade-activation-check.runtime.ts	2
 src/plugin-sdk/facade-loader.ts	2

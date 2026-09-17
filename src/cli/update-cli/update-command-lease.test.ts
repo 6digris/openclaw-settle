@@ -80,7 +80,7 @@ vi.mock("../../infra/update-triage.js", () => ({
 import { convergeUpdatePlugins } from "./update-command-convergence.js";
 import { updateExecutorNativeEntrypoints } from "./update-command-executor-native-runtime.test-support.js";
 import { updateFinalizeCommand } from "./update-command-finalize.js";
-import type { LeaseScenario } from "./update-command-lease.test-support.js";
+import { postCoreParentCases, type LeaseScenario } from "./update-command-lease.test-support.js";
 import type { ProducedPluginUpdateResult } from "./update-command-plugins-internals.js";
 import { finishUpdate } from "./update-command-post-update.js";
 import { resumePostCoreUpdate } from "./update-command-resume.js";
@@ -101,9 +101,13 @@ const sourceFixture = leaseFixtureUrl.pathname.endsWith(".ts");
 type Lane = LeaseScenario["lane"];
 let state: OpenClawTestState;
 let entrypoint: string;
+let ownedResumeResultPath: string | undefined;
+let resumedPluginResult: unknown;
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  ownedResumeResultPath = undefined;
+  resumedPluginResult = undefined;
   mocks.publication.mockReset().mockImplementation(async (params, publish) => {
     params.assertCurrent();
     return await publish(async () => params.assertCurrent());
@@ -113,7 +117,6 @@ beforeEach(async () => {
     env: {
       OPENCLAW_COMPATIBILITY_HOST_VERSION: undefined,
       OPENCLAW_UPDATE_POST_CORE_RESULT_PATH: undefined,
-      OPENCLAW_UPDATE_POST_CORE_PARENT_FINALIZES: "1",
       OPENCLAW_UPDATE_POST_CORE_INSTALL_RECORDS_PATH: undefined,
       OPENCLAW_UPDATE_POST_CORE_SOURCE_CONFIG_PATH: undefined,
       OPENCLAW_UPDATE_POST_CORE_REQUESTED_CHANNEL: undefined,
@@ -187,12 +190,24 @@ async function writeScenario(
 
 async function invoke(lane: Lane, recoveryRunIds: readonly string[] = []): Promise<void> {
   if (lane === "resume") {
-    return resumePostCoreUpdate({
+    let resultPath = process.env.OPENCLAW_UPDATE_POST_CORE_RESULT_PATH;
+    if (!resultPath || resultPath === ownedResumeResultPath) {
+      // Model the current untracked parent through its actual result-channel handoff.
+      resultPath = await state.writeJson("resume-result.json", {
+        status: "pending",
+        parentFinalizes: true,
+      });
+      ownedResumeResultPath = resultPath;
+      vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_RESULT_PATH", resultPath);
+    }
+    await resumePostCoreUpdate({
       root: state.root,
       channel: "stable",
       opts: { json: true, yes: true },
       timeoutMs: 15_000,
     });
+    resumedPluginResult = JSON.parse(await fs.readFile(resultPath, "utf8"));
+    return;
   }
   if (lane === "repair") {
     return updateFinalizeCommand(
@@ -292,17 +307,24 @@ function expectDoctorDiagnostics(): void {
 
 function expectSuccess(lane: Lane, doctorExpected = true): void {
   expect(defaultRuntime.exit).not.toHaveBeenCalledWith(1);
-  expect(reportedResult(lane)).toMatchObject({
-    status: "ok",
-    postUpdate: { plugins: { status: "ok" } },
-  });
+  expect(reportedResult(lane)).toMatchObject(
+    lane === "resume"
+      ? { status: "ok" }
+      : { status: "ok", postUpdate: { plugins: { status: "ok" } } },
+  );
+  if (lane === "resume") {
+    expect(defaultRuntime.writeJson).not.toHaveBeenCalled();
+  }
   if (doctorExpected) {
     expectDoctorDiagnostics();
   }
 }
 
 function reportedResult(lane: Lane): unknown {
-  return lane === "resume" || lane === "repair"
+  if (lane === "resume") {
+    return resumedPluginResult;
+  }
+  return lane === "repair"
     ? vi.mocked(defaultRuntime.writeJson).mock.lastCall?.[0]
     : mocks.print.mock.lastCall?.[0];
 }
@@ -666,36 +688,19 @@ describe("update orchestration lifecycle ownership", () => {
     },
   );
 
-  it.each([
-    {
-      parent: "legacy",
-      parentFinalizes: undefined,
-      parentVersion: undefined,
-      parentCompletes: false,
-    },
-    { parent: "current", parentFinalizes: "1", parentVersion: undefined, parentCompletes: true },
-    {
-      parent: "9.2",
-      parentFinalizes: undefined,
-      parentVersion: "2026.9.2",
-      parentCompletes: false,
-    },
-    { parent: "9.3", parentFinalizes: undefined, parentVersion: "2026.9.3", parentCompletes: true },
-    { parent: "9.4", parentFinalizes: undefined, parentVersion: "2026.9.4", parentCompletes: true },
-    {
-      parent: "unknown",
-      parentFinalizes: undefined,
-      parentVersion: "unknown",
-      parentCompletes: false,
-    },
-  ])(
+  it.each(postCoreParentCases)(
     "registered post-core update finalizes before publishing unless its parent owns completion ($parent)",
     async ({ parentFinalizes, parentVersion, parentCompletes }) => {
       await writeScenario("resume");
       const resultPath = state.path("post-core-result.json");
       vi.stubEnv("OPENCLAW_UPDATE_POST_CORE", "1");
       vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_CHANNEL", "stable");
-      vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_PARENT_FINALIZES", parentFinalizes);
+      const handoff = parentFinalizes
+        ? { status: parentFinalizes === true ? "pending" : "ok", parentFinalizes: true }
+        : undefined;
+      if (handoff) {
+        await fs.writeFile(resultPath, JSON.stringify(handoff));
+      }
       if (parentVersion) {
         const run = createUpdateRun({ trigger: "cli", before: { version: parentVersion } });
         vi.stubEnv("OPENCLAW_UPDATE_RUN_ID", run.runId);
@@ -706,7 +711,11 @@ describe("update orchestration lifecycle ownership", () => {
           timeoutMs: 15_000,
         });
         expect(probe.stdout).toBe("excluded");
-        await expect(fs.stat(resultPath)).rejects.toMatchObject({ code: "ENOENT" });
+        if (handoff) {
+          expect(JSON.parse(await fs.readFile(resultPath, "utf8"))).toEqual(handoff);
+        } else {
+          await expect(fs.stat(resultPath)).rejects.toMatchObject({ code: "ENOENT" });
+        }
         return pluginResult;
       });
 
@@ -719,6 +728,9 @@ describe("update orchestration lifecycle ownership", () => {
         status: "ok",
         changed: true,
       });
+      expect(JSON.parse(await fs.readFile(resultPath, "utf8"))).not.toHaveProperty(
+        "parentFinalizes",
+      );
       expect(await events()).toEqual(
         parentCompletes ? [] : ["post-attempt", "post-acquired", "validate", "readiness"],
       );
@@ -731,6 +743,29 @@ describe("update orchestration lifecycle ownership", () => {
     },
   );
 
+  it("legacy resume without a result channel finalizes before emitting standalone JSON", async () => {
+    await writeScenario("resume");
+    vi.stubEnv("OPENCLAW_UPDATE_POST_CORE", "1");
+    vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_CHANNEL", "stable");
+
+    await runRegisteredCli({
+      register: registerUpdateCli,
+      argv: ["update", "--json", "--yes", "--no-restart", "--timeout", "15"],
+    });
+
+    expect(defaultRuntime.writeJson).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "ok",
+        postUpdate: expect.objectContaining({
+          plugins: expect.objectContaining({ status: "ok", changed: true }),
+        }),
+      }),
+    );
+    expect(await events()).toEqual(["post-attempt", "post-acquired", "validate", "readiness"]);
+    expect(mocks.restart).not.toHaveBeenCalled();
+    expect(defaultRuntime.exit).toHaveBeenCalledWith(0);
+  });
+
   it.each([
     { failDoctor: "post" as const, reason: "post-plugin-doctor-execution-failed" },
     { invalidConfig: true, reason: "post-plugin-doctor-invalid-config" },
@@ -738,7 +773,6 @@ describe("update orchestration lifecycle ownership", () => {
   ])("legacy post-core handoff publishes finalization failure ($reason)", async (scenario) => {
     await writeScenario("resume", scenario);
     const resultPath = state.path("post-core-result.json");
-    vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_PARENT_FINALIZES", undefined);
     vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_RESULT_PATH", resultPath);
 
     await invoke("resume");

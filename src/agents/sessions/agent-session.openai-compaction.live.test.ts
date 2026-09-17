@@ -12,6 +12,7 @@ import { disposeOpenClawAgentDatabaseByPath } from "../../state/openclaw-agent-d
 import { prepareSystemAgentRunAdmission } from "../admitted-run-context.js";
 import { runEmbeddedAgent } from "../embedded-agent-runner.js";
 import { AgentSession } from "./agent-session.js";
+import { resolveCheckpointFixtureContextTokens } from "./agent-session.openai-compaction.live-helpers.js";
 import { AuthStorage } from "./auth-storage.js";
 import { createExtensionRuntime } from "./extensions/loader.js";
 import type { LoadExtensionsResult } from "./extensions/types.js";
@@ -199,7 +200,7 @@ describeLive("OpenAI AgentSession repeated compaction live", () => {
       const marker = `TOOL-MEMORY-${randomUUID()}`;
       const tailMarker = `SYNTHETIC-END-${randomUUID()}`;
       const sourceFile = join(workspaceDir, "synthetic-context.txt");
-      const sourceText = `The durable verification marker is ${marker}. Remember it.\n${buildContextChunk(24_000)}\n${tailMarker}\n`;
+      const sourceText = `The durable verification marker is ${marker}. Remember it.\n${buildContextChunk(48_000)}\n${tailMarker}\n`;
       await mkdir(workspaceDir, { recursive: true });
       await writeFile(sourceFile, sourceText);
       const modelDefinition = {
@@ -329,8 +330,8 @@ describeLive("OpenAI AgentSession repeated compaction live", () => {
         if (usage?.state !== "available") {
           throw new Error("seed turn did not report provider context usage");
         }
-        // A smaller configured window creates real host pressure without a large provider request.
-        modelDefinition.contextTokens = Math.max(8_000, usage.totalTokens + 1_024);
+        // Validate measured pressure without changing the runtime floor or compaction policy.
+        modelDefinition.contextTokens = resolveCheckpointFixtureContextTokens(usage.totalTokens);
         expect(modelDefinition.contextTokens).toBeLessThan(48_000);
         await rm(sourceFile);
         const compacted = await run(

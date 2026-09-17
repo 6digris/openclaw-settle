@@ -48,12 +48,13 @@ type GuardedSessionManager = SessionManager & {
   clearPendingToolResults?: () => void;
   /** Persist the next user message when an earlier canonical entry was removed. */
   clearNextUserMessagePersistenceSuppression?: () => void;
-  /** Refresh the exact owning run when a caller reuses this guarded manager. */
+  /** Refresh per-attempt transcript state, even when the owning run ID is unchanged. */
   setTranscriptRunContext?: (
     runId: string | undefined,
     prepareAssistantTranscriptMessage: PrepareAssistantTranscriptMessage | undefined,
     skipBeforeMessageWriteHooks: boolean | undefined,
     assistantErrorTranscript: AssistantErrorTranscript | undefined,
+    suppressNextUserMessagePersistence: boolean,
   ) => void;
 };
 
@@ -104,23 +105,26 @@ export function guardSessionManager(
   let prepareAssistantTranscriptMessage =
     opts?.trigger === "memory" ? undefined : opts?.prepareAssistantTranscriptMessage;
   let skipBeforeMessageWriteHooks = opts?.skipBeforeMessageWriteHooks;
-  if (typeof guardedSessionManager.flushPendingToolResults === "function") {
-    guardedSessionManager.setTranscriptRunContext?.(
-      opts?.runId,
-      prepareAssistantTranscriptMessage,
-      skipBeforeMessageWriteHooks,
-      opts?.assistantErrorTranscript,
-    );
-    return guardedSessionManager;
-  }
-
-  const hookRunner = getGlobalHookRunner();
   let pendingPreparedUserTurnMessage = opts?.preparedUserTurnMessage;
   const preparedUserReplayKey =
     opts?.preparedUserTurnTranscriptRecorder?.getPersistedMessage?.()?.idempotencyKey ===
     pendingPreparedUserTurnMessage?.idempotencyKey
       ? pendingPreparedUserTurnMessage?.idempotencyKey
       : undefined;
+  const suppressNextUserMessagePersistence =
+    preparedUserReplayKey === undefined && opts?.suppressNextUserMessagePersistence === true;
+  if (typeof guardedSessionManager.flushPendingToolResults === "function") {
+    guardedSessionManager.setTranscriptRunContext?.(
+      opts?.runId,
+      prepareAssistantTranscriptMessage,
+      skipBeforeMessageWriteHooks,
+      opts?.assistantErrorTranscript,
+      suppressNextUserMessagePersistence,
+    );
+    return guardedSessionManager;
+  }
+
+  const hookRunner = getGlobalHookRunner();
   let queuedUserTurnTranscriptRecorder: UserTurnTranscriptRecorder | undefined;
   const runtimeUserMessageByPersistedMessage = new WeakMap<
     AgentMessage,
@@ -284,8 +288,7 @@ export function guardSessionManager(
             contextWindowTokens: opts.contextWindowTokens,
           })
         : undefined,
-    suppressNextUserMessagePersistence:
-      preparedUserReplayKey === undefined && opts?.suppressNextUserMessagePersistence,
+    suppressNextUserMessagePersistence,
     suppressTranscriptOnlyAssistantPersistence: opts?.suppressTranscriptOnlyAssistantPersistence,
     assistantErrorTranscript: opts?.assistantErrorTranscript,
     onMessagePersisted: opts?.onMessagePersisted,
@@ -312,10 +315,11 @@ export function guardSessionManager(
   guardedSessionManager.hasPendingToolResults = guard.hasPendingToolResults;
   guardedSessionManager.flushPendingToolResults = guard.flushPendingToolResults;
   guardedSessionManager.clearPendingToolResults = guard.clearPendingToolResults;
-  guardedSessionManager.clearNextUserMessagePersistenceSuppression =
-    guard.clearNextUserMessagePersistenceSuppression;
-  guardedSessionManager.setTranscriptRunContext = (runId, prepare, skipHooks, errors) => {
+  guardedSessionManager.clearNextUserMessagePersistenceSuppression = () =>
+    guard.setNextUserMessagePersistenceSuppression(false);
+  guardedSessionManager.setTranscriptRunContext = (runId, prepare, skipHooks, errors, suppress) => {
     guard.setTranscriptRunId(runId, errors);
+    guard.setNextUserMessagePersistenceSuppression(suppress);
     prepareAssistantTranscriptMessage = prepare;
     skipBeforeMessageWriteHooks = skipHooks;
   };
