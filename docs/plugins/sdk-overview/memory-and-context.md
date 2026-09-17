@@ -65,3 +65,38 @@ read-only database access and vector primitives, and
 embedding input limits. These facades avoid loading provider registries or
 writable-store initialization into worker threads. They are bundled runtime
 contracts, not third-party typed SDK entrypoints.
+
+## Workspace Memory process
+
+When workspace files live on another host, Memory Core's public `worker-api.js`
+provides `createGatewayMemoryBinding({ cfg, agentId, agentDir, openWorker, signal })`.
+It returns the existing `MemorySearchManager` interface.
+
+```text
+Gateway                           Workspace host
+embedding provider + credentials  Memory files + native index
+         ↑ embedding inputs          │
+         └──── embedding vectors ────→│
+         ───── search / read ────────→│
+         ←──── results ───────────────┘
+```
+
+- `openWorker` starts the packaged
+  `dist/worker/memory-worker-entry.js <workspace> <stateDir> <agentId>` and returns
+  a process with duplex standard streams. SSH can carry those streams; a buffered
+  command response alone cannot.
+- Before upgrading an existing worker, stop it and run the same entry with
+  `--prepare <workspace> <stateDir> <agentId>`. This reuses native database
+  maintenance for its private index and refuses to run while another writer
+  holds the database. Ordinary search requests do not run maintenance.
+- Use a separate worker process per workspace/agent. The host supplies its runtime
+  package and transport. Memory Core owns indexing and search; the Gateway retains
+  embedding credentials. Close the returned manager when the binding ends.
+- This implementation supports workspace Memory files with an explicit embedding
+  provider, the native `auto` selection, or keyword-only search (`provider: "none"`), with
+  `fallback: "none"`. Set `rememberAcrossConversations: false` and
+  leave session Memory disabled. Session sources, extra paths, multimodal input,
+  and provider batch jobs are rejected rather than silently ignored.
+- A cancelled or timed-out operation closes the binding. Its owner must acquire a
+  new manager before further operations. Installing this API does not change the
+  default local Memory runtime or configure a remote host automatically.
