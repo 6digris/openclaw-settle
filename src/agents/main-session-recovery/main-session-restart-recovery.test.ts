@@ -2093,7 +2093,7 @@ describe("main-session-restart-recovery", () => {
       restartRecoveryDeliveryRunId: "control-ui-run",
       restartRecoveryDeliverySourceRunId: "control-ui-run",
       restartRecoverySourceIngress: "internal",
-      restartRecoverySourceReplyDeliveryMode: "message_tool_only",
+      restartRecoveryDeliveryRunId: "recovery-main",
       deliveryContext: {
         channel: "discord",
         to: "discord:dm:stale",
