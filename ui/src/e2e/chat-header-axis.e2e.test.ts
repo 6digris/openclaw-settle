@@ -75,22 +75,15 @@ suite.define(() => {
               const rect = node.getBoundingClientRect();
               return rect.top + rect.height / 2;
             };
-            const rect = (selector: string) => {
-              const node = root.querySelector(selector);
-              if (!node) {
-                throw new Error(`missing header element: ${selector}`);
-              }
-              return node.getBoundingClientRect().toJSON();
-            };
             return {
               nav: centerY(".chat-pane__nav-toggle svg"),
               projectIcon: centerY(".workspace-icon"),
-              projectText: centerY(".chat-pane__workspace-chip span"),
+              projectTextVisible: root
+                .querySelector<HTMLElement>(".chat-pane__workspace-chip > span")
+                ?.checkVisibility(),
               menu: centerY(".chat-header-session-menu__trigger svg"),
               parentText: centerY(".chat-pane__parent-session-text"),
               sessionText: centerY(".chat-pane__session-title-text"),
-              projectRow: rect(".chat-pane__project-row"),
-              sessionTrail: rect(".chat-pane__session-trail"),
               separatorDisplays: [
                 ...root.querySelectorAll<HTMLElement>(".chat-pane__crumb-sep"),
               ].map((node) => getComputedStyle(node).display),
@@ -107,7 +100,6 @@ suite.define(() => {
           if (viewport.label === "desktop") {
             for (const center of [
               geometry.projectIcon,
-              geometry.projectText,
               geometry.parentText,
               geometry.sessionText,
             ]) {
@@ -116,12 +108,13 @@ suite.define(() => {
               // optical lift to share the topbar's perceived horizontal axis.
               expect(geometry.nav - center, JSON.stringify(geometry)).toBeCloseTo(1, 1);
             }
-            expect(geometry.separatorDisplays).toEqual(["block", "block"]);
+            expect(geometry.separatorDisplays).toEqual(["none", "block"]);
           } else {
-            expect(geometry.projectRow.bottom - geometry.sessionTrail.top).toBeLessThanOrEqual(0.1);
+            expect(geometry.projectIcon).toBeCloseTo(geometry.parentText, 1);
             expect(geometry.parentText).toBeCloseTo(geometry.sessionText, 1);
-            expect(geometry.separatorDisplays).toEqual(["none", "none"]);
+            expect(geometry.separatorDisplays).toEqual(["none", "block"]);
           }
+          expect(geometry.projectTextVisible).toBe(false);
           expect(await header.locator(".chat-pane__crumb-sep").count()).toBe(2);
           const parent = header.locator(".chat-pane__parent-session");
           const nestedTrail = await header.evaluate((root) => {

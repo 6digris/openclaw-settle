@@ -453,6 +453,35 @@
   }
 }
 
+/* The icon component owns loading and decode fallback. Only its image can
+   replace the project name in a project / parent / session trail. */
+.chat-pane__crumbs:has(.chat-pane__parent-session):has(.workspace-icon) {
+  .chat-pane__workspace-chip > span,
+  .chat-pane__session-trail > .chat-pane__crumb-sep:first-child {
+    display: none;
+  }
+}
+
+@media (max-width: 768px), (max-width: 932px) and (max-height: 500px) and (orientation: landscape) {
+  .sidebar-region__header
+    > .chat-pane__header
+    .chat-pane__crumbs:has(.chat-pane__parent-session):has(.workspace-icon) {
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 6px;
+
+    .chat-pane__project-row,
+    .chat-pane__session-trail {
+      display: contents;
+    }
+
+    .chat-pane__crumb-sep:not(:first-child) {
+      display: block;
+    }
+  }
+}
+
 @media (display-mode: standalone) and (max-width: 768px),
   (display-mode: standalone) and (max-width: 932px) and (max-height: 500px) and (orientation: landscape) {
   .sidebar-region__header > .chat-pane__header {
