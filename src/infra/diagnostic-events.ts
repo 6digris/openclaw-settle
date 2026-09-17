@@ -3,9 +3,10 @@ import { randomUUID } from "node:crypto";
 import type { EmbeddedAgentExecutionPhase } from "../agents/embedded-agent-runner/execution-phase.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { TalkBrain, TalkEventType, TalkMode, TalkTransport } from "../talk/talk-events.js";
+import type { DiagnosticBaseEvent } from "./diagnostic-base-event.types.js";
 import {
-  isAsyncDiagnosticEventType,
-  isPriorityDiagnosticEventType,
+  ASYNC_DIAGNOSTIC_EVENT_TYPES as ASYNC_EVENT_TYPES,
+  PRIORITY_ASYNC_DIAGNOSTIC_EVENT_TYPES as PRIORITY_EVENT_TYPES,
 } from "./diagnostic-event-delivery-policy.js";
 import {
   resetInternalDiagnosticEventListenerPresence,
@@ -38,10 +39,7 @@ import {
   TOOL_EXECUTION_LIVENESS_METADATA_KEY,
   type DiagnosticToolExecutionLiveness,
 } from "./diagnostic-tool-execution-liveness.js";
-import {
-  getActiveDiagnosticTraceContext,
-  type DiagnosticTraceContext,
-} from "./diagnostic-trace-context.js";
+import { getActiveDiagnosticTraceContext } from "./diagnostic-trace-context.js";
 import {
   prepareDiagnosticTracePropagation,
   resetDiagnosticTracePropagationForTest,
@@ -51,11 +49,10 @@ import { isBlockedObjectKey } from "./prototype-keys.js";
 
 export type DiagnosticSessionState = "idle" | "processing" | "waiting";
 
-export type DiagnosticBaseEvent = {
-  ts: number;
-  seq: number;
-  trace?: DiagnosticTraceContext;
-};
+const ASYNC_DIAGNOSTIC_EVENT_TYPES = new Set<DiagnosticEventPayload["type"]>(ASYNC_EVENT_TYPES);
+const PRIORITY_ASYNC_DIAGNOSTIC_EVENT_TYPES = new Set<DiagnosticEventPayload["type"]>(
+  PRIORITY_EVENT_TYPES,
+);
 
 export type DiagnosticUsageEvent = DiagnosticBaseEvent & {
   type: "model.usage";
@@ -1211,7 +1208,7 @@ function cloneDiagnosticPrivateDataForOtelListener(
 }
 
 function isPriorityAsyncDiagnosticEvent(entry: QueuedDiagnosticEvent): boolean {
-  return entry.metadata.trusted && isPriorityDiagnosticEventType(entry.event.type);
+  return entry.metadata.trusted && PRIORITY_ASYNC_DIAGNOSTIC_EVENT_TYPES.has(entry.event.type);
 }
 
 function noteAsyncDiagnosticDrop(
@@ -1394,9 +1391,9 @@ function emitDiagnosticEventWithTrust(
   };
   const prepareTracePropagation = trusted && shouldPrepareDiagnosticTracePropagation(enriched);
 
-  if (isAsyncDiagnosticEventType(enriched.type)) {
+  if (ASYNC_DIAGNOSTIC_EVENT_TYPES.has(enriched.type)) {
     if (state.asyncQueue.length >= MAX_ASYNC_DIAGNOSTIC_EVENTS) {
-      if (!trusted || !isPriorityDiagnosticEventType(enriched.type)) {
+      if (!trusted || !PRIORITY_ASYNC_DIAGNOSTIC_EVENT_TYPES.has(enriched.type)) {
         noteAsyncDiagnosticDrop(state, { event: enriched, metadata, privateData, hostPluginId });
         return;
       }

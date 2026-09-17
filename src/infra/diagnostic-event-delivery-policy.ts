@@ -1,6 +1,4 @@
-import type { DiagnosticEventPayload } from "./diagnostic-events.js";
-
-const ASYNC_DIAGNOSTIC_EVENT_TYPES = new Set<DiagnosticEventPayload["type"]>([
+export const ASYNC_DIAGNOSTIC_EVENT_TYPES = [
   "diagnostic.gc",
   "gateway.event_loop.sample",
   "gateway.rpc",
@@ -26,8 +24,8 @@ const ASYNC_DIAGNOSTIC_EVENT_TYPES = new Set<DiagnosticEventPayload["type"]>([
   "harness.run.error",
   "context.assembled",
   "log.record",
-]);
-const PRIORITY_ASYNC_DIAGNOSTIC_EVENT_TYPES = new Set<DiagnosticEventPayload["type"]>([
+] as const;
+export const PRIORITY_ASYNC_DIAGNOSTIC_EVENT_TYPES = [
   // Trusted lifecycle terminals must displace best-effort diagnostics; dropping one
   // can strand the recorder's active span after its producer already finished.
   "tool.execution.completed",
@@ -37,9 +35,4 @@ const PRIORITY_ASYNC_DIAGNOSTIC_EVENT_TYPES = new Set<DiagnosticEventPayload["ty
   "model.call.error",
   "harness.run.completed",
   "harness.run.error",
-]);
-
-export const isAsyncDiagnosticEventType = (type: DiagnosticEventPayload["type"]) =>
-  ASYNC_DIAGNOSTIC_EVENT_TYPES.has(type);
-export const isPriorityDiagnosticEventType = (type: DiagnosticEventPayload["type"]) =>
-  PRIORITY_ASYNC_DIAGNOSTIC_EVENT_TYPES.has(type);
+] as const;
