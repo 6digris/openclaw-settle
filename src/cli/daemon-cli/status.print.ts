@@ -65,6 +65,15 @@ function formatConnectionLine(
   return `${pid}${ppid}${direction}${command}${address}${commandLine}`;
 }
 
+function formatProbeEventLoop(
+  eventLoop: NonNullable<NonNullable<DaemonStatus["rpc"]>["eventLoop"]>,
+) {
+  const state = eventLoop.degraded ? "degraded" : "ok";
+  return `${state} max=${Math.round(eventLoop.delayMaxMs)}ms p99=${Math.round(
+    eventLoop.delayP99Ms,
+  )}ms util=${eventLoop.utilization} cpu=${eventLoop.cpuCoreRatio}`;
+}
+
 export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean; deep?: boolean }) {
   if (opts.json) {
     defaultRuntime.writeJson({
@@ -83,6 +92,7 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean; d
   const reinstallCommand = formatCliCommand("openclaw gateway install --force");
 
   const { service, rpc, extraServices } = status;
+  const managerUnavailable = service.inspectionReason === "service-manager-unavailable";
   const serviceTargetsProbe = service.targetRole !== "diagnostic-only";
   const diagnosticOnlySuffix = serviceTargetsProbe
     ? ""
@@ -92,8 +102,15 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean; d
     ? okText(service.loadedText)
     : warnText(service.loadState.status === "not-loaded" ? service.notLoadedText : "unknown");
   defaultRuntime.log(
-    `${label("Service:")} ${accent(service.label)} (${serviceStatus})${diagnosticOnlySuffix}`,
+    `${label("Service:")} ${accent(service.label)}${managerUnavailable ? "" : ` (${serviceStatus})`}${diagnosticOnlySuffix}`,
   );
+  if (
+    managerUnavailable &&
+    (service.command ||
+      (service.systemdInstallation && service.systemdInstallation.kind !== "none"))
+  ) {
+    defaultRuntime.log(warnText("The recorded service unit is stale and was left unchanged."));
+  }
   const transport = service.runtime?.systemd?.transport;
   if (opts.deep && transport) {
     defaultRuntime.log(
@@ -105,7 +122,7 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean; d
   }
   if (service.command?.programArguments?.length) {
     defaultRuntime.log(
-      `${label("Command:")} ${infoText(service.command.programArguments.join(" "))}`,
+      `${label(managerUnavailable ? "Recorded command:" : "Command:")} ${infoText(service.command.programArguments.join(" "))}`,
     );
   }
   if (service.command?.sourcePath) {
@@ -142,9 +159,10 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean; d
       const detail = issue.detail ? ` (${issue.detail})` : "";
       defaultRuntime.error(`${warnText("Service config issue:")} ${issue.message}${detail}`);
     }
-    const recommendation =
-      installBlock ??
-      `Recommendation: run "${formatCliCommand("openclaw doctor")}" interactively for guided checks, or reinstall with "${reinstallCommand}".`;
+    const recommendation = managerUnavailable
+      ? `Run "${formatCliCommand("openclaw doctor")}" for guidance about this recorded service unit.`
+      : (installBlock ??
+        `Recommendation: run "${formatCliCommand("openclaw doctor")}" interactively for guided checks, or reinstall with "${reinstallCommand}".`);
     defaultRuntime.error(warnText(recommendation));
   }
 
@@ -300,7 +318,13 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean; d
     // port-conflict diagnostics below, so it keeps the warm-up hint (as does unknown health
     // from shallow status). A wedged gateway that owns the port is reported as healthy ===
     // true with no stale gateway PIDs, so it is steered by the first branch.
-    if (status.health?.healthy === true && status.health.staleGatewayPids.length === 0) {
+    if (rpc.timedOut && rpc.gatewayReached) {
+      defaultRuntime.log(
+        warnText(
+          "Gateway accepted the connection, but the read probe timed out. Inspect event-loop load and retry before treating the service as unreachable.",
+        ),
+      );
+    } else if (status.health?.healthy === true && status.health.staleGatewayPids.length === 0) {
       defaultRuntime.log(
         warnText(
           "Gateway process is running and owns the gateway port, so this is not a warm-up delay. Check the probe credentials/config, or restart the gateway and inspect its logs if it stays unresponsive.",
@@ -317,7 +341,19 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean; d
     if (rpc.ok) {
       defaultRuntime.log(`${label(probeLabel)} ${okText("ok")}`);
     } else {
-      defaultRuntime.error(`${label(probeLabel)} ${errorText("failed")}`);
+      const timeoutStatus = rpc.gatewayReached
+        ? rpc.eventLoop?.degraded
+          ? "timed out under event-loop load"
+          : "timed out after reaching Gateway"
+        : "timed out before reaching Gateway";
+      defaultRuntime.error(
+        `${label(probeLabel)} ${rpc.timedOut ? warnText(timeoutStatus) : errorText("failed")}`,
+      );
+      if (rpc.timedOut && rpc.eventLoop) {
+        defaultRuntime.error(
+          `${label("Gateway event loop:")} ${warnText(formatProbeEventLoop(rpc.eventLoop))}`,
+        );
+      }
       if (rpc.authWarning) {
         defaultRuntime.error(`${label("Probe auth:")} ${warnText(rpc.authWarning)}`);
       }
@@ -384,8 +420,16 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean; d
       ? service.loadState.detail
       : undefined;
   if (serviceInspectionDetail) {
-    defaultRuntime.error(errorText(`Service inspection failed: ${serviceInspectionDetail}`));
-    defaultRuntime.error(errorText(`Retry: ${formatCliCommand("openclaw gateway status --deep")}`));
+    defaultRuntime.error(
+      managerUnavailable
+        ? warnText(serviceInspectionDetail)
+        : errorText(`Service inspection failed: ${serviceInspectionDetail}`),
+    );
+    if (!managerUnavailable) {
+      defaultRuntime.error(
+        errorText(`Retry: ${formatCliCommand("openclaw gateway status --deep")}`),
+      );
+    }
     spacer();
   }
   const systemdUnavailableDetail =
