@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { stopRetainedRuntime } from "../src/runtime-lifecycle.js";
 
 describe("FaceTime runtime lifecycle", () => {
-  it("clears the runtime reference even when the host will swallow ordinary stop failure", async () => {
+  it("retains the runtime reference when carrier shutdown fails", async () => {
     const runtime = Promise.resolve({
       stop: vi.fn(async () => {
         throw new Error("carrier hangup pending");
@@ -13,7 +13,7 @@ describe("FaceTime runtime lifecycle", () => {
     await expect(stopRetainedRuntime(runtime, clearIfCurrent)).rejects.toThrow(
       "carrier hangup pending",
     );
-    expect(clearIfCurrent).toHaveBeenCalledWith(runtime);
+    expect(clearIfCurrent).not.toHaveBeenCalled();
   });
 
   it("clears a rejected runtime-construction promise so startup can recover", async () => {
