@@ -274,6 +274,35 @@ describe("matrix approval reactions", () => {
     expect(core.system.enqueueSystemEvent).not.toHaveBeenCalled();
   });
 
+  it("propagates a temporary Gateway failure and retains the deny reaction for replay", async () => {
+    const core = buildCore();
+    const cfg = buildConfig();
+    const client = createReactionClient();
+    const target = { roomId: "!ops:example.org", eventId: "$approval-msg" };
+    registerMatrixApprovalReactionTarget({
+      ...target,
+      approvalId: "req-123",
+      allowedDecisions: ["deny"],
+    });
+    const failure = new Error("gateway 503");
+    resolveMatrixApproval.mockRejectedValueOnce(failure);
+    const reaction = { client, core, cfg, reactionKey: "❌" };
+
+    await expect(handleReaction(reaction)).rejects.toBe(failure);
+    expect(
+      await resolveMatrixApprovalReactionTargetWithPersistence({ ...target, reactionKey: "❌" }),
+    ).toEqual({ approvalId: "req-123", decision: "deny" });
+    await handleReaction(reaction);
+    expect(resolveMatrixApproval).toHaveBeenCalledTimes(2);
+    expect(resolveMatrixApproval).toHaveBeenLastCalledWith({
+      cfg,
+      approvalId: "req-123",
+      decision: "deny",
+      senderId: "@owner:example.org",
+    });
+    expect(core.system.enqueueSystemEvent).not.toHaveBeenCalled();
+  });
+
   it("unregisters stale approval anchors after not-found resolution", async () => {
     const core = buildCore();
     resolveMatrixApproval.mockRejectedValueOnce(
