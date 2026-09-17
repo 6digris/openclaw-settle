@@ -305,7 +305,7 @@ function renderIdentityMenuHelpSubmenu() {
           >
             <span slot="icon" class="nav-item__icon" aria-hidden="true">${icons[link.icon]}</span>
             <span class="sidebar-customize-menu__text"
-              >${renderExternalLinkLabel(link.label(), link.href)}</span
+              >${renderExternalLinkLabel(link.label(), link.href, "menu")}</span
             >
           </a>
         </wa-dropdown-item>

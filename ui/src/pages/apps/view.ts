@@ -234,7 +234,7 @@ function renderCta(cta: AppCardCta, index: number, props: AppsProps) {
   }
   return html`
     <a
-      class=${className}
+      class=${cta.showExternalIndicator ? `${className} apps-card__cta--docs` : className}
       href=${cta.href}
       target=${EXTERNAL_LINK_TARGET}
       rel=${buildExternalLinkRel()}
