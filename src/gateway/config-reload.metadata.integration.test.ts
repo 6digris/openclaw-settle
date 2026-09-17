@@ -5,6 +5,8 @@ import { createDeferred } from "../../test/helpers/promise.js";
 import { readConfigFileSnapshotForRuntimeTransaction } from "../config/io.js";
 import { resolveConfigWidePluginMetadataSnapshotAsync } from "../config/io.plugin-metadata.js";
 import { hashConfigRaw } from "../config/io.read-helpers.js";
+import { prepareHostConfigSnapshot } from "../config/io.snapshot-preparation.js";
+import { registerManagedRuntimeConfigWriteOwner } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { setGatewayPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-snapshot.js";
 import { clearCurrentPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-state.js";
@@ -59,6 +61,11 @@ async function withPreparedReloader(
       plugins: { slots: { memory: "none" }, entries: { prepared: { enabled: true } } },
     };
     let reloader: ReturnType<typeof startGatewayConfigReloader> | undefined;
+    const unregister = registerManagedRuntimeConfigWriteOwner(
+      state.configPath,
+      undefined,
+      prepareHostConfigSnapshot,
+    );
     try {
       await state.writeConfig(config);
       const metadata = await resolveConfigWidePluginMetadataSnapshotAsync({ config });
@@ -116,6 +123,7 @@ async function withPreparedReloader(
       });
     } finally {
       await reloader?.stop();
+      unregister();
       vi.restoreAllMocks();
       clearCurrentPluginMetadataSnapshot();
       clearPluginMetadataLifecycleCaches();
