@@ -3,7 +3,6 @@ import { performance } from "node:perf_hooks";
 import { isDeepStrictEqual } from "node:util";
 import { listAgentIds, withAgentRosterFactsBatch } from "../agents/agent-scope-config.js";
 import { registerPreparedModelRuntimePublicationListener } from "../agents/prepared-model-runtime.publication-events.js";
-import { buildSubagentSessionListReadIndex } from "../agents/subagents/registry/subagent-registry-read.js";
 import { resolveSessionParentSessionKey } from "../channels/plugins/session-conversation.js";
 import {
   loadCombinedSessionStoreForGatewayCore,
@@ -17,7 +16,6 @@ import {
 import type { SessionStoreTarget } from "../config/sessions/targets.js";
 import type { InternalSessionEntry as SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { buildProjectedAgentRunIndex } from "../infra/agent-run-registry.js";
 import { isIncognitoSessionKey, parseAgentSessionKey } from "../routing/session-key.js";
 import { isAcpSessionKey } from "../sessions/session-key-utils.js";
 import {
@@ -39,6 +37,7 @@ import { compareSessionEntryPairs } from "./session-list-order.js";
 import { yieldSessionListWork } from "./session-projection-work.js";
 import { withPreparedSessionRows, type SessionRowReadView } from "./session-row-prepared-read.js";
 import { createSessionRowProjectionBackfill } from "./session-row-projection-backfill.js";
+import { createSessionRowProjectionContext } from "./session-row-projection-context.js";
 import {
   readResidentSessionRow,
   readSessionRowEntry,
@@ -46,7 +45,6 @@ import {
 import * as records from "./session-row-projection-record.js";
 import { prepareSessionRowScopes } from "./session-row-scope.js";
 import { resolveStoredSessionKeyForAgentStore } from "./session-store-key.js";
-import { buildSessionListRowMetadataContext } from "./session-utils-projection.js";
 import { resolveDeletedAgentIdFromSessionKey } from "./session-utils-store.js";
 
 /** Committed publications own invalidation; each admitted physical store is hydrated once. */
@@ -75,13 +73,11 @@ export async function createSessionRowProjection(params: {
   let topologyDirty = true,
     catalogDirty = params.getModelCatalog ? Symbol("catalog") : undefined,
     disposed = false;
-  let epoch = 0,
-    preparedEpoch = -1;
+  let epoch = 0;
   let materializedCount = 0;
   let scope: ReturnType<typeof prepareSessionRowScopes>;
   let pending: Promise<void> | undefined;
-  let context = buildSessionListRowMetadataContext({ now: Date.now() });
-  const subagentInputs = context.subagentRuns.inputs;
+  const metadata = createSessionRowProjectionContext();
   const backfill = createSessionRowProjectionBackfill({
     ready: ensureMaterialized,
     read: (id) => rows.get(id),
@@ -143,7 +139,7 @@ export async function createSessionRowProjection(params: {
       [
         storedEntry.parentSessionKey ?? resolveSessionParentSessionKey(row.key),
         storedEntry.spawnedBy,
-        ...(context.subagentRunsByChildSessionKey.get(row.key) ?? []).map(
+        ...(metadata.current.subagentRunsByChildSessionKey.get(row.key) ?? []).map(
           (run) => run.controllerSessionKey || run.requesterSessionKey,
         ),
       ].flatMap((key) =>
@@ -330,10 +326,8 @@ export async function createSessionRowProjection(params: {
   }
   function mark(change: SessionRowChange) {
     epoch++;
+    metadata.invalidate(change);
     if ("all" in change) {
-      if (change.scope === "profiles") {
-        context.userProfileIdentityById.clear();
-      }
       topologyDirty ||= change.scope === "stores" || change.scope === "config";
       if (params.getModelCatalog && (change.scope === "catalog" || change.scope === "config")) {
         catalogDirty = Symbol("catalog");
@@ -388,19 +382,6 @@ export async function createSessionRowProjection(params: {
       /* Dirty keys retain failed background work for the next reader. */
     });
   }
-  function prepare() {
-    if (preparedEpoch === epoch) {
-      return;
-    }
-    context = buildSessionListRowMetadataContext({
-      now: Date.now(),
-      subagentRuns: buildSubagentSessionListReadIndex(),
-      userProfileIdentityById: context.userProfileIdentityById,
-    });
-    context.projectedAgentRuns = buildProjectedAgentRunIndex();
-    Object.assign(subagentInputs, context.subagentRuns.inputs);
-    preparedEpoch = epoch;
-  }
   function materialize(row: records.Row, configuredAgentIds = new Set(listAgentIds(cfg))) {
     if (!row.entry) {
       return false;
@@ -419,8 +400,8 @@ export async function createSessionRowProjection(params: {
       cfg,
       modelCatalog,
       configuredAgentIds,
-      context,
-      subagentInputs,
+      context: metadata.current,
+      subagentInputs: metadata.subagentInputs,
       gatewayContext: params.context,
       links,
       readSourceEntry: (key) => {
@@ -444,7 +425,7 @@ export async function createSessionRowProjection(params: {
       return;
     }
     const started = performance.now();
-    prepare();
+    metadata.prepare(epoch);
     const configuredAgentIds = new Set(listAgentIds(cfg));
     for (const [offset, id] of ids.entries()) {
       if (offset > 0 && performance.now() - started >= 12) {
@@ -562,7 +543,7 @@ export async function createSessionRowProjection(params: {
       }
       let row = lookup(query);
       if (row && isIncognitoSessionKey(row.key)) {
-        prepare();
+        metadata.prepare(epoch);
         materialize(row);
       } else if (row && dirty.has(records.identity(row))) {
         // Keyed reads refresh only their owner; unrelated bulk work never gates a response.
@@ -629,7 +610,7 @@ export async function createSessionRowProjection(params: {
   const present = (
     record: NonNullable<ReturnType<typeof describe>>,
     options: records.SnapshotOptions = {},
-  ) => records.present(record, context, options);
+  ) => records.present(record, metadata.current, options);
   await inOwnerContext(refreshBatch).catch((error: unknown) => {
     dispose();
     throw error;
@@ -681,9 +662,9 @@ export async function createSessionRowProjection(params: {
         inOwnerContext(topology);
       }
       if (!disposed) {
-        prepare();
+        metadata.prepare(epoch);
       }
-      return { cfg, modelCatalog, rowContext: context, scope: scope.select };
+      return { cfg, modelCatalog, rowContext: metadata.current, scope: scope.select };
     },
     isCurrent,
     selectEntries,
