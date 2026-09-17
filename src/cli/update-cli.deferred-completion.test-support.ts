@@ -7,6 +7,7 @@ import type { ConfigFileSnapshot, OpenClawConfig } from "../config/types.opencla
 import { withEnvAsync } from "../test-utils/env.js";
 import type { TempHomeEnv } from "../test-utils/temp-home.js";
 import { createCliRuntimeCapture, getMockCallOutput } from "./test-runtime-capture.js";
+import { doctorProcessResult } from "./update-cli/update-command-doctor-process.test-support.js";
 
 export const readPackageVersion = vi.fn();
 export const syncPluginsForUpdateChannel = vi.fn();
@@ -25,6 +26,7 @@ vi.mock("../process/exec.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../process/exec.js")>()),
   runCommandWithTimeout: vi.fn(),
   runExec: vi.fn(),
+  runUtf8CommandWithTimeout: vi.fn(),
 }));
 vi.mock("../runtime.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../runtime.js")>()),
@@ -54,9 +56,11 @@ vi.mock("../plugins/installed-plugin-index-store-write.js", async (importOrigina
   ...(await importOriginal<typeof import("../plugins/installed-plugin-index-store-write.js")>()),
   restorePersistedInstalledPluginIndexIfCurrent: vi.fn(async () => true),
 }));
-vi.mock("../config/config.js", () => {
+vi.mock("../config/config.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../config/config.js")>();
   const readConfigFileSnapshot = vi.fn();
   return {
+    ...actual,
     createConfigIO: (
       options: {
         pluginValidation?: string;
@@ -174,7 +178,23 @@ const { createTempHomeEnv } = await import("../test-utils/temp-home.js");
 const existingHostUri = nodeSqlite.resolveExistingSqliteFileUri;
 const immutableHostUri = nodeSqlite.resolveImmutableSqliteFileUri;
 export const { runGatewayUpdate } = await import("../infra/update-runner.js");
-export const { runExec, runCommandWithTimeout } = await import("../process/exec.js");
+export const { runExec, runCommandWithTimeout, runUtf8CommandWithTimeout } =
+  await import("../process/exec.js");
+
+export function deferredCompletionCommands(): string[] {
+  return [
+    ...vi.mocked(runExec).mock.calls.map(([, args], index) => ({
+      command: args[1],
+      order: vi.mocked(runExec).mock.invocationCallOrder[index] ?? 0,
+    })),
+    ...vi.mocked(runUtf8CommandWithTimeout).mock.calls.map(([argv], index) => ({
+      command: argv[2],
+      order: vi.mocked(runUtf8CommandWithTimeout).mock.invocationCallOrder[index] ?? 0,
+    })),
+  ]
+    .toSorted((left, right) => left.order - right.order)
+    .flatMap(({ command }) => (command === "doctor" || command === "config" ? [command] : []));
+}
 export const { defaultRuntime, ExitError } = await import("../runtime.js");
 export const { readConfigFileSnapshot, replaceConfigFile, mutateConfigFileWithRetry } =
   await import("../config/config.js");
@@ -197,6 +217,8 @@ export function installDeferredCompletionFixture() {
   let fixtureCount = 0;
   const createCaseDir = (prefix: string) => path.join(fixtureRoot, `${prefix}-${fixtureCount++}`);
   const FRESH_POST_UPDATE_ENTRYPOINT = "/tmp/openclaw-updated-entry.mjs";
+  const getInstallRoot = () => path.join(fixtureRoot, "install");
+  const getConfigPath = () => baseSnapshot.path;
   const baseConfig = {} as OpenClawConfig;
   const baseSnapshot: ConfigFileSnapshot = {
     path: "/tmp/openclaw-config.json",
@@ -454,6 +476,25 @@ export function installDeferredCompletionFixture() {
     ]) {
       vi.stubEnv(key, undefined);
     }
+    const installRoot = getInstallRoot();
+    const stateDir = path.join(fixtureRoot, "state");
+    const workspace = path.join(fixtureRoot, "workspace");
+    await fs.mkdir(path.join(installRoot, "dist"), { recursive: true });
+    await fs.mkdir(stateDir, { recursive: true });
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(
+      path.join(installRoot, "package.json"),
+      JSON.stringify({ name: "openclaw", version: "1.0.0", type: "module" }),
+    );
+    await fs.writeFile(path.join(installRoot, "dist", "index.js"), "export {};\n");
+    baseConfig.agents = { ownership: "explicit", entries: { main: { workspace } } };
+    baseConfig.plugins = { enabled: false };
+    baseSnapshot.path = path.join(stateDir, "openclaw.json");
+    baseSnapshot.raw = JSON.stringify(baseConfig);
+    await fs.writeFile(baseSnapshot.path, baseSnapshot.raw);
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+    vi.stubEnv("OPENCLAW_CONFIG_PATH", baseSnapshot.path);
+    vi.spyOn(shared, "resolveUpdateRoot").mockResolvedValue(installRoot);
     vi.spyOn(shared, "readPackageVersion").mockImplementation(readPackageVersion);
     readPackageVersion.mockResolvedValue("1.0.0");
     vi.mocked(defaultRuntime.exit).mockImplementation(() => {});
@@ -464,10 +505,22 @@ export function installDeferredCompletionFixture() {
     updateNpmInstalledPlugins.mockImplementation(async ({ config }) =>
       npmPluginUpdateResult(config),
     );
-    const entrypoint = path.join(process.cwd(), "dist", "index.js");
+    const entrypoint = path.join(installRoot, "dist", "index.js");
     pathExists.mockImplementation(async (candidate: string) => candidate === entrypoint);
-    // Child completion may invoke only Doctor, config validation, and the parent's start probe.
-    vi.mocked(runExec).mockImplementation(async (file, args) => {
+    vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValue(entrypoint);
+    vi.mocked(runUtf8CommandWithTimeout).mockImplementation(async (argv) => {
+      if (argv[0] !== process.execPath || argv[2] !== "doctor") {
+        throw new Error(`Unexpected settled completion process: ${argv.join(" ")}`);
+      }
+      return doctorProcessResult();
+    });
+    const nativeExec =
+      await vi.importActual<typeof import("../process/exec.js")>("../process/exec.js");
+    // Preserve real read-only ACL inspection for capture; completion effects stay mocked.
+    vi.mocked(runExec).mockImplementation(async (file, args, options) => {
+      if (file === "/bin/ls" || (file.endsWith("/dsmemberutil") && args[0] === "getuuid")) {
+        return await nativeExec.runExec(file, args, options);
+      }
       if (file === process.execPath && (args[1] === "doctor" || args[1] === "config")) {
         return { stdout: "", stderr: "" };
       }
@@ -515,6 +568,8 @@ export function installDeferredCompletionFixture() {
   });
   return {
     runPostCoreCommand,
+    getInstallRoot,
+    getConfigPath,
     lastNpmPluginUpdateCall,
     postCoreConvergenceResult,
     syncPluginCall,
