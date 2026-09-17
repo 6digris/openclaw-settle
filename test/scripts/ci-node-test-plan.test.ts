@@ -890,6 +890,18 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         pretestBuildMode: undefined,
         predictedSeconds: 200,
       },
+      {
+        groups: [
+          {
+            configs: ["test/vitest/vitest.cli.config.ts"],
+            includePatterns: undefined,
+            pretestBuildMode: "runtime",
+          },
+        ],
+        planConcurrency: 1,
+        pretestBuildMode: "runtime",
+        predictedSeconds: 177,
+      },
     ]);
     const agentChatStripes = fallback
       .flatMap((shard) => shard.groups)
@@ -1142,10 +1154,11 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         planConcurrency: 1,
         runner: "blacksmith-16vcpu-ubuntu-2404",
       });
-      // The combined bin uses the larger CLI budget, beyond the 150s child limit.
+      // The measured CLI plus its required runtime build is oversized and must
+      // stay alone, without lending the non-build bin budget to another group.
       expect(cliJobs[0]!.predictedSeconds).toBeGreaterThan(150);
-      expect(cliJobs[0]!.pretestBuildMode).toBeUndefined();
-      expect(cliJobs[0]!.groups).toHaveLength(2);
+      expect(cliJobs[0]!.pretestBuildMode).toBe("runtime");
+      expect(cliJobs[0]!.groups).toHaveLength(1);
       expect(cliJobs[0]!.groups[0]!.includePatterns).toBeUndefined();
       const processGroups = plan.flatMap((job) =>
         job.groups.filter((group) =>
@@ -1159,7 +1172,9 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         combined.every((job) => job.predictedSeconds! <= 250 && job.planConcurrency === 1),
       ).toBe(true);
       for (const job of plan.filter((candidate) => candidate.pretestBuildMode)) {
-        expect(job.predictedSeconds).toBeLessThanOrEqual(150);
+        if (job !== cliJobs[0]) {
+          expect(job.predictedSeconds).toBeLessThanOrEqual(150);
+        }
         expect(job.groups.every((group) => group.pretestBuildMode === "runtime")).toBe(true);
       }
       const combinedProcessGroups = combined
@@ -3324,6 +3339,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       checkName: "checks-node-agentic-cli",
       shardName: "agentic-cli",
       configs: ["test/vitest/vitest.cli.config.ts"],
+      pretestBuildMode: "runtime",
       requiresDist: false,
       runner: DEFAULT_NODE_TEST_RUNNER,
     });
@@ -3369,7 +3385,8 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         checkName: `checks-node-${shard.shardName}`,
         configs: ["test/vitest/vitest.commands.config.ts"],
         includePatterns: shard.includePatterns,
-        ...(shard.shardName === "agentic-commands-doctor-config-state" ||
+        ...(shard.shardName === "agentic-commands-doctor" ||
+        shard.shardName === "agentic-commands-doctor-config-state" ||
         shard.shardName === "agentic-commands-doctor-plugins-tools"
           ? { pretestBuildMode: "runtime" }
           : {}),

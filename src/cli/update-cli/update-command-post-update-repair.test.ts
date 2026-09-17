@@ -287,7 +287,8 @@ describe("post-activation repair after rollback refusal or failure", () => {
         return "readiness-pending";
       });
 
-      await expect(finishUpdate(params)).resolves.toMatchObject(
+      const result = await finishUpdate(params);
+      expect(result).toMatchObject(
         ready ? { status: "ok" } : { status: "skipped", reason: "gateway-readiness-unverified" },
       );
 
@@ -298,13 +299,21 @@ describe("post-activation repair after rollback refusal or failure", () => {
       expect(mocks.restartCommand).not.toHaveBeenCalled();
       expect(windowsRecovery.complete).toHaveBeenCalledWith(true);
       expect(windowsRecovery.complete).not.toHaveBeenCalledWith(false);
-      expect(complete).toHaveBeenCalledExactlyOnceWith(
-        { activationVerified: ready },
-        expect.any(Function),
-      );
       if (ready) {
+        expect(complete).toHaveBeenCalledExactlyOnceWith(
+          { activationVerified: true },
+          expect.any(Function),
+        );
         await expect(fs.stat(transaction.backupRoot)).rejects.toMatchObject({ code: "ENOENT" });
       } else {
+        expect(complete).not.toHaveBeenCalled();
+        expect(result.steps).toContainEqual(
+          expect.objectContaining({
+            name: "global install backup retention",
+            exitCode: 0,
+            advisory: expect.objectContaining({ kind: "recoverable-maintenance" }),
+          }),
+        );
         await expect(
           fs.readFile(path.join(transaction.backupRoot, "package.json"), "utf8"),
         ).resolves.toContain('"version":"1.0.0"');

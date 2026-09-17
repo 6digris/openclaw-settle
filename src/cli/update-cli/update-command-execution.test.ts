@@ -622,6 +622,7 @@ describe("mutable update execution", () => {
           tag: "2026.9.2",
           packageInstallSpec: "openclaw@2026.9.2",
           packageTargetVersion: "2026.9.2",
+          packageTargetSchemaVersions: { state: 15, agent: 19 },
         });
 
         expect(mocks.validateCanary.mock.calls.length).toBe(0);

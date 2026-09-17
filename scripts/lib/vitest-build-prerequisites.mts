@@ -26,6 +26,12 @@ export type VitestRuntimeTestSelection = {
 // while unrelated workers may still be importing its public plugin facades.
 const runtimeConsumers = [
   {
+    file: "src/cli/update-cli.test.ts",
+    configs: ["test/vitest/vitest.cli.config.ts"],
+    mode: "runtime",
+    dir: "src/cli",
+  },
+  {
     file: "src/commands/doctor.update-retained-forward-recovery.test.ts",
     configs: ["test/vitest/vitest.commands.config.ts"],
     mode: "runtime",

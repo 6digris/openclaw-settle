@@ -6,7 +6,6 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { formatCliFailureLines, formatCliJsonFailure } from "../cli/failure-output.js";
 import { createInvalidConfigError } from "../config/io.invalid-config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { defaultRuntime } from "../runtime.js";
 import * as readiness from "./update-candidate-canary-readiness.test-support.js";
 import { validateUpdateCandidateCanary } from "./update-candidate-canary.js";
 import {
@@ -29,7 +28,6 @@ import {
 } from "./update-post-core-context.js";
 import { renderUpdateRunReport, updateRunReportInputFromResult } from "./update-run-report.js";
 import { updateRunStepsFromResultStep, updateRunWarningMessages } from "./update-run-step.js";
-import type { UpdateStepResult } from "./update-runner-types.js";
 const mocks = vi.hoisted(() => ({ spawn: vi.fn(), snapshot: vi.fn(), signal: vi.fn() }));
 vi.mock("node:child_process", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:child_process")>()),

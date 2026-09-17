@@ -343,9 +343,7 @@ it.each([
     }
     expect(exit).toBeInstanceOf(ExitError);
     const unsettled = trial.revoked || trial.releaseDenied;
-    expect(observation.exitCode).toBe(
-      trial.revoked ? MANAGED_SERVICE_UPDATE_UNSAFE_EXIT_CODE : trial.releaseDenied ? 1 : 7,
-    );
+    expect(observation.exitCode).toBe(unsettled ? MANAGED_SERVICE_UPDATE_UNSAFE_EXIT_CODE : 7);
     expect(statusAtPublication).toBe("running");
     expect(pendingAtPublication).toBe(trial.revoked);
     expect(releasePendingAtPublication).toBe(trial.releaseDenied);
