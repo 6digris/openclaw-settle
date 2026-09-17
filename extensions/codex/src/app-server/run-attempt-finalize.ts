@@ -444,6 +444,31 @@ export async function finalizeCodexAttempt(
           degradedSettlement,
         ]);
       }
+      if (activeTurn.prepareReplyMedia && !runAbortController.signal.aborted) {
+        state.pendingSettlementStage = "reply/media";
+        const transferAbort = new AbortController();
+        void settlementExpired.then(() =>
+          transferAbort.abort(new Error("Reply media settlement expired")),
+        );
+        try {
+          const prepared = await activeTurn.prepareReplyMedia(
+            { kind: "attempt", attempt: result },
+            transferAbort.signal,
+          );
+          if (prepared.kind !== "attempt") {
+            throw new Error("Reply media preparation returned the wrong result kind");
+          }
+          result.preparedReplyMedia = prepared.preparedMedia;
+        } catch (error) {
+          // Cancellation still returns this attempt's terminal outcome and completed
+          // effects. Media preparation must not turn it into a retryable exception.
+          if (!runAbortController.signal.aborted) {
+            throw error;
+          }
+        } finally {
+          transferAbort.abort();
+        }
+      }
       if (runAbortController.signal.aborted) {
         await state.abortCleanup;
       }
