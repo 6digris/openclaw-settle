@@ -92,7 +92,7 @@ describe.skipIf(typeof HTMLElement.prototype.checkVisibility !== "function")(
                   .toBe(true);
               }
             }
-            const compact = levels === 3 && hasImage;
+            const compact = width === 1440 && levels === 3 && hasImage;
             const label = container.querySelector<HTMLElement>(".chat-pane__workspace-chip > span");
             expect(label?.checkVisibility() ?? false).toBe(levels > 1 && !compact);
             const separators = [
@@ -103,6 +103,11 @@ describe.skipIf(typeof HTMLElement.prototype.checkVisibility !== "function")(
               ".chat-pane__session-title-button",
             )!;
             expect(title.checkVisibility()).toBe(true);
+            if (width === 390 && levels > 1) {
+              expect(label!.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+                title.getBoundingClientRect().top,
+              );
+            }
             if (levels > 1) {
               const chip = container.querySelector<HTMLButtonElement>(
                 ".chat-pane__workspace-chip",

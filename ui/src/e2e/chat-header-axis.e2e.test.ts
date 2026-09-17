@@ -14,15 +14,17 @@ const suite = createChatFlowE2eSuite();
 suite.define(() => {
   for (const colorScheme of ["light", "dark"] as const) {
     for (const viewport of [
-      { label: "desktop", width: 800 },
-      { label: "mobile", width: 760 },
+      { label: "desktop", width: 769, height: 520, mobile: false, mergedChrome: true },
+      { label: "mobile", width: 768, height: 520, mobile: true, mergedChrome: true },
+      { label: "landscape phone", width: 932, height: 500, mobile: true, mergedChrome: true },
+      { label: "wide landscape", width: 933, height: 500, mobile: false, mergedChrome: false },
     ] as const) {
       it(`lays out and navigates the ${viewport.label} project-parent-child trail in ${colorScheme} mode`, async () => {
         const context = await suite.newBrowserContext({
           colorScheme,
           locale: "en-US",
           serviceWorkers: "block",
-          viewport: { height: 520, width: viewport.width },
+          viewport: { height: viewport.height, width: viewport.width },
         });
         const page = await context.newPage();
         const favicon = await readFile(path.resolve(process.cwd(), "ui/public/favicon.svg"));
@@ -76,8 +78,11 @@ suite.define(() => {
               return rect.top + rect.height / 2;
             };
             return {
-              nav: centerY(".chat-pane__nav-toggle svg"),
+              nav: root.querySelector(".chat-pane__nav-toggle svg")
+                ? centerY(".chat-pane__nav-toggle svg")
+                : null,
               projectIcon: centerY(".workspace-icon"),
+              projectText: centerY(".chat-pane__workspace-chip > span"),
               projectTextVisible: root
                 .querySelector<HTMLElement>(".chat-pane__workspace-chip > span")
                 ?.checkVisibility(),
@@ -92,12 +97,15 @@ suite.define(() => {
             };
           });
 
-          expect(
-            Math.abs(geometry.menu - geometry.nav),
-            JSON.stringify(geometry),
-          ).toBeLessThanOrEqual(0.1);
+          expect(geometry.nav !== null).toBe(viewport.mergedChrome);
+          if (geometry.nav !== null) {
+            expect(
+              Math.abs(geometry.menu - geometry.nav),
+              JSON.stringify(geometry),
+            ).toBeLessThanOrEqual(0.1);
+          }
           expect(geometry.contentTop).toBeGreaterThanOrEqual(geometry.headerBottom - 0.1);
-          if (viewport.label === "desktop") {
+          if (!viewport.mobile) {
             for (const center of [
               geometry.projectIcon,
               geometry.parentText,
@@ -106,15 +114,19 @@ suite.define(() => {
               // Text and artwork carry more visible weight below their geometric
               // boxes than Lucide actions, so the identity trail needs a 1px
               // optical lift to share the topbar's perceived horizontal axis.
-              expect(geometry.nav - center, JSON.stringify(geometry)).toBeCloseTo(1, 1);
+              expect(
+                (geometry.nav ?? geometry.menu) - center,
+                JSON.stringify(geometry),
+              ).toBeCloseTo(1, 1);
             }
             expect(geometry.separatorDisplays).toEqual(["none", "block"]);
           } else {
-            expect(geometry.projectIcon).toBeCloseTo(geometry.parentText, 1);
+            expect(geometry.projectIcon).toBeCloseTo(geometry.projectText, 1);
+            expect(geometry.projectText).toBeLessThan(geometry.sessionText);
             expect(geometry.parentText).toBeCloseTo(geometry.sessionText, 1);
-            expect(geometry.separatorDisplays).toEqual(["none", "block"]);
+            expect(geometry.separatorDisplays).toEqual(["none", "none"]);
           }
-          expect(geometry.projectTextVisible).toBe(false);
+          expect(geometry.projectTextVisible).toBe(viewport.mobile);
           expect(await header.locator(".chat-pane__crumb-sep").count()).toBe(2);
           const parent = header.locator(".chat-pane__parent-session");
           const nestedTrail = await header.evaluate((root) => {
