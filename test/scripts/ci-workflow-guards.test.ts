@@ -3168,7 +3168,8 @@ NODE
   });
 
   it.each([
-    ["macos-swift", false, "workflow_dispatch", false, ["release", "tests"]],
+    ["macos-swift", false, "workflow_dispatch", false, ["release", "kit-tests", "app-tests"]],
+    ["macos-swift", true, "workflow_dispatch", false, ["tests"]],
     ["ios-build", false, "workflow_dispatch", false, ["release", "tests"]],
     ["ios-build", true, "workflow_dispatch", false, ["tests"]],
     ["ios-build", false, "pull_request", false, ["smoke"]],
@@ -3200,7 +3201,7 @@ NODE
           : evaluateWorkflowExpression(matrixPhases, context),
       ).toEqual(phases);
       expect(job.strategy["fail-fast"]).toBe(false);
-      expect(job.strategy["max-parallel"]).toBe(2);
+      expect(job.strategy["max-parallel"]).toBe(jobName === "macos-swift" ? 3 : 2);
       expect(job["continue-on-error"]).not.toBe(true);
       expect(job.needs).toEqual(["preflight"]);
       const workloads =
@@ -3212,10 +3213,15 @@ NODE
                 "Swift lint",
                 "Swift build (release)",
               ],
-              tests: [
+              "kit-tests": [
                 "OpenClawKit Talk-trait opt-out (no ElevenLabsKit when default traits disabled)",
                 "OpenClawKit tests",
                 "Swabble tests",
+              ],
+              "app-tests": ["Swift test"],
+              tests: [
+                "OpenClawKit Talk-trait opt-out (no ElevenLabsKit when default traits disabled)",
+                "OpenClawKit tests",
                 "Swift test",
               ],
             }
@@ -3239,7 +3245,7 @@ NODE
       for (const phase of phases) {
         const phaseContext = { ...context, matrix: { phase } };
         const expected =
-          historical && phase === "tests"
+          jobName === "ios-build" && historical && phase === "tests"
             ? ["Test Watch RTC engine", "Swift lint", "Build iOS app"]
             : workloads[phase];
         names.push(evaluateWorkflowExpression(job.name, phaseContext));
@@ -3322,7 +3328,13 @@ NODE
       const phases: string[] = Array.isArray(job.strategy.matrix.phase)
         ? job.strategy.matrix.phase
         : evaluateWorkflowExpression(job.strategy.matrix.phase, context);
-      expect(phases).toEqual(full ? ["release", "tests"] : ["tests"]);
+      expect(phases).toEqual(
+        historical
+          ? ["tests"]
+          : full
+            ? ["release", "kit-tests", "app-tests"]
+            : ["kit-tests", "app-tests"],
+      );
       const env = Object.fromEntries(
         Object.entries(job.env).map(([key, value]) => [
           key,
@@ -3344,7 +3356,9 @@ NODE
               matrix: { phase },
               steps: {
                 "swift-test": {
-                  outputs: { "debug-tests-built": phase === "tests" ? "true" : "" },
+                  outputs: {
+                    "debug-tests-built": phase === "app-tests" || phase === "tests" ? "true" : "",
+                  },
                 },
                 "swiftpm-cache": { outputs: { "cache-hit": "false" } },
                 "swift-cache-budget": { outputs: { allowed: "true" } },
@@ -3360,19 +3374,23 @@ NODE
         "Swift lint",
         "Save SwiftPM cache",
       ]) {
-        expect(selectedPhases(name), name).toEqual([full ? "release" : "tests"]);
+        expect(selectedPhases(name), name).toEqual([
+          historical ? "tests" : full ? "release" : "app-tests",
+        ]);
       }
       for (const name of [
         "OpenClawKit Talk-trait opt-out (no ElevenLabsKit when default traits disabled)",
         "OpenClawKit tests",
-        "Swift test",
       ]) {
-        expect(selectedPhases(name), name).toEqual(["tests"]);
+        expect(selectedPhases(name), name).toEqual([historical ? "tests" : "kit-tests"]);
       }
-      expect(selectedPhases("Swabble tests")).toEqual(historical ? [] : ["tests"]);
-      expect(selectedPhases("Swift build (release)")).toEqual(full ? ["release"] : []);
+      expect(selectedPhases("Swift test")).toEqual([historical ? "tests" : "app-tests"]);
+      expect(selectedPhases("Swabble tests")).toEqual(historical ? [] : ["kit-tests"]);
+      expect(selectedPhases("Swift build (release)")).toEqual(
+        full && !historical ? ["release"] : [],
+      );
       expect(selectedPhases("Render isolated macOS health fixtures")).toEqual(
-        full ? ["tests"] : [],
+        full && !historical ? ["app-tests"] : [],
       );
       expect(selectedPhases("Render isolated macOS health fixtures", { cancelled: true })).toEqual(
         [],
