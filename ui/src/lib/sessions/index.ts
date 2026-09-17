@@ -327,8 +327,8 @@ export function createSessionCapability(
   });
 
   const {
-    retireConnection,
     dispose: disposeOperations,
+    retireConnection: retireOperationConnection,
     ...operations
   } = createSessionScopedOperations({
     connection,
@@ -336,34 +336,6 @@ export function createSessionCapability(
     notifyCreated,
     reportError: (error) => publish({ ...state, error: formatUiError(error) }, "operation"),
   });
-
-  const pullRequestSummary = (key: string) => pullRequestSummaries.get(key.trim());
-
-  const capturePullRequestEpoch = (key: string): object => {
-    const epoch = {};
-    pullRequestEpochs.set(key.trim(), epoch);
-    return epoch;
-  };
-
-  const setPullRequestSummary = (
-    key: string,
-    summary: SessionCatalogPullRequestSummary | undefined,
-    epoch?: object,
-  ) => {
-    const normalizedKey = key.trim();
-    if (!normalizedKey || (epoch !== undefined && pullRequestEpochs.get(normalizedKey) !== epoch)) {
-      return;
-    }
-    if (pullRequestSummaries.get(normalizedKey) === summary) {
-      return;
-    }
-    if (summary) {
-      pullRequestSummaries.set(normalizedKey, summary);
-    } else {
-      pullRequestSummaries.delete(normalizedKey);
-    }
-    publish({ ...state });
-  };
 
   const { reconcile, captureReconcile, capturePatchFields, reconcileChangedEvent, observeRow } =
     createSessionReconciliation({
@@ -480,7 +452,7 @@ export function createSessionCapability(
       roster.reset();
       sessionEventSubscription.reset();
       sessionEventSubscriptionError = null;
-      retireConnection(previousClient);
+      retireOperationConnection(previousClient);
       groups.invalidate();
       swarmActivity.clear();
       mutations.retireConnection();
@@ -687,6 +659,8 @@ export function createSessionCapability(
     refresh: roster.refresh,
     invalidate: roster.scheduleEvent,
     refreshReplacement: roster.refreshReplacement,
+    reconcileMutation: roster.reconcileMutation,
+    capturePermissionObservation: permissions.capture,
     createResult: mutations.createResult,
     create: mutations.create,
     patch: mutations.patch,
@@ -698,9 +672,30 @@ export function createSessionCapability(
     think: thinkingClaims.get,
     patchRowLocal: mutations.patchRowLocal,
     isPreparedWorkSession: mutations.isPreparedWorkSession,
-    pullRequestSummary,
-    capturePullRequestEpoch,
-    setPullRequestSummary,
+    pullRequestSummary: (key) => pullRequestSummaries.get(key.trim()),
+    capturePullRequestEpoch: (key) => {
+      const epoch = {};
+      pullRequestEpochs.set(key.trim(), epoch);
+      return epoch;
+    },
+    setPullRequestSummary: (key, summary, epoch) => {
+      const normalizedKey = key.trim();
+      if (
+        !normalizedKey ||
+        (epoch !== undefined && pullRequestEpochs.get(normalizedKey) !== epoch)
+      ) {
+        return;
+      }
+      if (pullRequestSummaries.get(normalizedKey) === summary) {
+        return;
+      }
+      if (summary) {
+        pullRequestSummaries.set(normalizedKey, summary);
+      } else {
+        pullRequestSummaries.delete(normalizedKey);
+      }
+      publish({ ...state });
+    },
     delete: deletions.delete,
     deleteMany: deletions.deleteMany,
     deletionState: deletions.deletionState,
