@@ -97,6 +97,23 @@ describe("managed mount plan", () => {
     expect(plan.skippedBinds).toEqual(["/custom/override:/workspace/skills:rw"]);
   });
 
+  it("keeps core mounts authoritative over overlapping user binds", async () => {
+    vi.mocked(resolveDockerSourceNamespace).mockResolvedValue([]);
+    const plan = await prepareSandboxMountPlan({
+      ...params("rw"),
+      binds: ["/custom/repo:/repo:rw", "/custom/config:/repo/.git/config:rw", "/safe:/data:ro"],
+      internalMounts: [
+        { hostPath: path.join(root, "agent"), containerPath: "/repo/.git", readOnly: false },
+      ],
+    });
+    expect(plan.binds).toContain(`${path.join(root, "agent")}:/repo/.git:z`);
+    expect(plan.binds).toContain("/safe:/data:ro");
+    expect(plan.skippedBinds).toEqual([
+      "/custom/repo:/repo:rw",
+      "/custom/config:/repo/.git/config:rw",
+    ]);
+  });
+
   it("selects the last custom destination while preserving its raw daemon bind", async () => {
     const plan = await prepareSandboxMountPlan({
       ...params("rw"),

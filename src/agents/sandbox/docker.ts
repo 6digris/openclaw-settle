@@ -7,6 +7,7 @@ import { markOpenClawExecEnv } from "../../infra/openclaw-exec-env.js";
  */
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { KeyedAsyncQueue } from "../../plugin-sdk/keyed-async-queue.js";
+import type { SandboxBackendInternalMount } from "./backend.types.js";
 import { computeSandboxConfigHash } from "./config-hash.js";
 import { DEFAULT_SANDBOX_IMAGE, SANDBOX_DOCKER_CREATE_ARGS_EPOCH } from "./constants.js";
 import {
@@ -525,6 +526,7 @@ type EnsureSandboxContainerParams = {
   skillsWorkspaceDir?: string;
   cfg: SandboxConfig;
   requireCurrentConfig?: boolean;
+  internalMounts?: readonly SandboxBackendInternalMount[];
 };
 
 export async function ensureSandboxContainer(params: EnsureSandboxContainerParams) {
@@ -592,6 +594,7 @@ async function ensureSandboxContainerLifecycle(
     workspaceAccess: params.cfg.workspaceAccess,
     binds: params.cfg.docker.binds,
     tmpfs: params.cfg.docker.tmpfs,
+    internalMounts: params.internalMounts,
   });
   const genericConfigHash = computeSandboxConfigHash({
     docker: params.cfg.docker,
@@ -602,6 +605,9 @@ async function ensureSandboxContainerLifecycle(
     mountFormatVersion: SANDBOX_MOUNT_FORMAT_VERSION,
     createArgsEpoch: SANDBOX_DOCKER_CREATE_ARGS_EPOCH,
     managedMounts: mountPlan.binds,
+    internalMounts: params.internalMounts?.map(
+      (mount) => `${mount.hostPath}:${mount.containerPath}:${mount.readOnly ? "ro" : "rw"}`,
+    ),
   });
   const expectedHash =
     engine.id === "podman"

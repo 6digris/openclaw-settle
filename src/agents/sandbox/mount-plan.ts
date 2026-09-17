@@ -1,6 +1,7 @@
 import { decodeMountInfoPath } from "@openclaw/normalization-core/mountinfo-path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { isPathInside } from "../../infra/path-guards.js";
+import type { SandboxBackendInternalMount } from "./backend.types.js";
 import { splitSandboxBindSpec } from "./bind-spec.js";
 import { execContainer, type SandboxContainerEngine } from "./container-engine.js";
 import {
@@ -36,6 +37,7 @@ export async function prepareSandboxMountPlan(params: {
   workspaceAccess: SandboxWorkspaceAccess;
   binds?: readonly string[];
   tmpfs?: readonly string[];
+  internalMounts?: readonly SandboxBackendInternalMount[];
 }): Promise<SandboxMountPlan> {
   const selection = resolveSandboxMountSelection(params);
   const namespace = await resolveDockerSourceNamespace(params.engine);
@@ -44,8 +46,24 @@ export async function prepareSandboxMountPlan(params: {
     params.agentWorkspaceDir,
     params.skillsWorkspaceDir ??
       resolveMaterializedSandboxSkillsWorkspaceDir(params.agentWorkspaceDir),
+    ...(params.internalMounts ?? []).map((mount) => mount.hostPath),
   ];
-  const targets = selection.mounts.map((mount) => mount.containerPath);
+  const internalTargets = (params.internalMounts ?? []).map((mount) =>
+    normalizeMountContainerPath(mount.containerPath),
+  );
+  const conflictsWithInternalMount = (target: string) =>
+    internalTargets.some(
+      (internal) =>
+        target === internal || isPathInside(target, internal) || isPathInside(internal, target),
+    );
+  const custom = selection.custom.filter((bind) => {
+    const parsed = splitSandboxBindSpec(bind);
+    return !parsed || !conflictsWithInternalMount(normalizeMountContainerPath(parsed.container));
+  });
+  const targets = [
+    ...selection.mounts.map((mount) => normalizeMountContainerPath(mount.containerPath)),
+    ...internalTargets,
+  ];
   const binds = new Map<string, string>();
   for (const mount of selection.mounts) {
     const target = normalizeMountContainerPath(mount.containerPath);
@@ -71,15 +89,39 @@ export async function prepareSandboxMountPlan(params: {
       );
     }
   }
+  for (const mount of params.internalMounts ?? []) {
+    const target = normalizeMountContainerPath(mount.containerPath);
+    const translated = namespace
+      ? translateSandboxMountSources({
+          source: mount.hostPath,
+          containerPath: target,
+          allowedRoots,
+          mounts: namespace,
+          readOnly: mount.readOnly,
+          shadowedTargets: targets.filter(
+            (other) => other !== target && isPathInside(target, other),
+          ),
+        })
+      : [{ ...mount, containerPath: target }];
+    for (const projected of translated) {
+      binds.set(
+        projected.containerPath,
+        `${projected.hostPath}:${projected.containerPath}:${projected.readOnly ? "ro,z" : "z"}`,
+      );
+    }
+  }
   // Custom mounts retain their daemon-host contract. Protected instruction mounts
   // win exact collisions; other explicit overrides match filesystem bridge policy.
-  for (const bind of selection.custom) {
+  for (const bind of custom) {
     const parsed = splitSandboxBindSpec(bind);
     binds.set(parsed ? normalizeMountContainerPath(parsed.container) : bind, bind);
   }
   return {
     binds: [...binds.values()],
-    skippedBinds: selection.skippedBinds,
+    skippedBinds: [
+      ...selection.skippedBinds,
+      ...selection.custom.filter((bind) => !custom.includes(bind)),
+    ],
     readOnlyWorkspaceSkillMounts: selection.readOnlyWorkspaceSkillMounts,
     tmpfs: resolveSandboxTmpfsMounts(params.tmpfs),
   };

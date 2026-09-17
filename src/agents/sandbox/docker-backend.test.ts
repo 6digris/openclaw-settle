@@ -332,6 +332,25 @@ describe("docker sandbox backend manager", () => {
     await expect(createDockerExecBackend()).rejects.toThrow("inspect failed");
   });
 
+  it("forwards core-owned provisioning mounts to container creation", async () => {
+    dockerMocks.ensureSandboxContainer.mockResolvedValueOnce("sandbox-container");
+    const internalMounts = [
+      { hostPath: "/trusted/repo", containerPath: "/trusted/repo", readOnly: false },
+    ];
+
+    await createDockerSandboxBackend({
+      sessionKey: "agent:poly:msteams:channel-1",
+      scopeKey: "worktree-provisioning:test",
+      workspaceDir: "/tmp/customer/workspace",
+      agentWorkspaceDir: "/tmp/customer/workspace",
+      cfg: resolveSandboxConfigForAgent(createConfig(), "poly"),
+      internalMounts,
+    });
+
+    expect(dockerMocks.ensureSandboxContainer).toHaveBeenCalledWith(
+      expect.objectContaining({ internalMounts }),
+    );
+  });
   it("binds Podman provisioning and later execs to the resolved target", async () => {
     dockerMocks.ensureSandboxContainer.mockResolvedValueOnce("sandbox-podman");
     const podmanTarget = {

@@ -43,7 +43,8 @@ describe("ensureSandboxContainer config-hash recreation", () => {
     expect(second).toBe(first);
     expect(spawnState.calls.filter((call) => call.args[0] === "create")).toHaveLength(1);
     expect(spawnState.calls.filter((call) => call.args[0] === "start")).toHaveLength(1);
-    expect(registryMocks.updateRegistry).toHaveBeenCalledTimes(2);
+    // One provisional recovery reservation plus the running-state publications.
+    expect(registryMocks.updateRegistry).toHaveBeenCalledTimes(3);
   });
 
   it("uses the canonical non-shared scope for Docker names, labels, and registry identity", async () => {
