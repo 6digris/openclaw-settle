@@ -541,6 +541,49 @@ describe("buildEmbeddedRunPayloads tool-error warnings", () => {
     });
   });
 
+  it.each(["NO_REPLY", '{"action":"NO_REPLY"}'])(
+    "respects an intentional conversational silence after a non-mutating tool failure: %s",
+    (text) => {
+      expectNoPayloads({
+        assistantTexts: [text],
+        lastToolError: {
+          toolName: "codex_apps.slack.slack_read_thread",
+          error: "429 RATE_LIMITED",
+          mutatingAction: false,
+        },
+      });
+    },
+  );
+
+  it.each([
+    { name: "unknown mutation status", mutatingAction: undefined },
+    { name: "a failed mutation", mutatingAction: true },
+    { name: "a scheduled run", mutatingAction: false, isCronTrigger: true },
+    { name: "a heartbeat", mutatingAction: false, isHeartbeatTrigger: true },
+    { name: "an aborted run", mutatingAction: false, runAborted: true },
+  ])(
+    "keeps failure reporting for $name despite NO_REPLY",
+    ({ name: _name, mutatingAction, ...run }) => {
+      expectSingleToolErrorPayload(
+        buildPayloads({
+          ...run,
+          assistantTexts: ["NO_REPLY"],
+          lastToolError: { toolName: "read", error: "failed", mutatingAction },
+        }),
+        { title: "Read" },
+      );
+    },
+  );
+
+  it("still warns when a non-mutating tool failure leaves no answer", () => {
+    expectSingleToolErrorPayload(
+      buildPayloads({
+        lastToolError: { toolName: "read", error: "failed", mutatingAction: false },
+      }),
+      { title: "Read" },
+    );
+  });
+
   it("surfaces concise bash tool errors when verbose mode is off", () => {
     const payloads = buildPayloads({
       lastToolError: { toolName: "bash", error: "command failed" },

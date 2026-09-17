@@ -283,11 +283,12 @@ export function buildEmbeddedRunPayloads(params: {
       ? normalizeTextForComparison(nonEmptyAssistantTexts.join("\n\n"))
       : "";
   const shouldPreferRawAnswerText =
-    rawAnswerHasMedia &&
-    (!nonEmptyAssistantTexts.length ||
-      (normalizedAssistantTexts.length > 0 &&
-        normalizedAssistantTexts ===
-          normalizeTextForComparison(rawAnswerDirectiveState?.text ?? "")));
+    rawAnswerDirectiveState?.isSilent ||
+    (rawAnswerHasMedia &&
+      (!nonEmptyAssistantTexts.length ||
+        (normalizedAssistantTexts.length > 0 &&
+          normalizedAssistantTexts ===
+            normalizeTextForComparison(rawAnswerDirectiveState?.text ?? ""))));
   // When streamed text lost media directives but the canonical assistant answer
   // still contains them, keep the raw answer so attachments are not dropped.
   const fallbackAnswerSourceText =
@@ -326,6 +327,7 @@ export function buildEmbeddedRunPayloads(params: {
     Boolean(errorText) ||
     completedSourceReplyViaMessageTool ||
     params.heartbeatToolResponse?.notify === true;
+  let hasIntentionalSilentFinal = false;
   for (const text of answerTexts) {
     const {
       text: cleanedText,
@@ -334,7 +336,9 @@ export function buildEmbeddedRunPayloads(params: {
       replyToId,
       replyToTag,
       replyToCurrent,
+      isSilent,
     } = preparedAnswerDirectives ?? parseReplyDirectives(text);
+    hasIntentionalSilentFinal = isSilent;
     const ttsFacts = shouldUseCanonicalFinalAnswer ? storedDelivery?.tts : undefined;
     const delivery = shouldUseCanonicalFinalAnswer
       ? {
@@ -362,7 +366,17 @@ export function buildEmbeddedRunPayloads(params: {
     );
     hasUserFacingReply = true;
   }
-  if (params.lastToolError) {
+  // A conversational NO_REPLY is an authored outcome, not a missing answer.
+  // A failed context read must not turn a reaction to "thank you" into a
+  // synthetic tool warning. Missing answers, unknown/mutating failures, and
+  // scheduled work still retain their existing failure reporting.
+  const respectIntentionalSilence =
+    hasIntentionalSilentFinal &&
+    params.lastToolError?.mutatingAction === false &&
+    !params.isCronTrigger &&
+    !params.isHeartbeatTrigger &&
+    !runAborted;
+  if (params.lastToolError && !respectIntentionalSilence) {
     // A restart intentionally aborts the active tool while the Gateway takes over.
     // Report the lifecycle status instead of a tool failure.
     const isRestartStatus = params.runStopReason === "restart";
