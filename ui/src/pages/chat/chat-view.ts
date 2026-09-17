@@ -165,7 +165,7 @@ export function renderChat(props: ChatProps) {
     pendingInputs?.page.items ?? [],
   );
   const transcriptPendingInputs = inputDisplay.pendingInputs.filter(
-    (input) => input.state !== "queued",
+    (input) => input.state !== "queued" || !pendingInputs?.composerInputIds.has(input.id),
   );
   const workerSetupPending = ["requested", "provisioning", "syncing", "starting"].includes(
     props.selectedSession?.placement?.state ?? "",
@@ -214,6 +214,7 @@ export function renderChat(props: ChatProps) {
         // Keep the owner array stable for transcript-cache reuse. The builder
         // reconciles canonical messages and keeps queued custody rows out.
         pendingInputs: pendingInputs?.page.items,
+        composerPendingInputIds: pendingInputs?.composerInputIds,
         runActive: props.runActive === true,
         runWorking,
         startupLabel: chatStartupStatusLabel(props.startupStatus, placementStartup),
@@ -302,6 +303,7 @@ export function renderChat(props: ChatProps) {
         inputDisplay.pendingInputs,
         workspaceSyncPendingRunIds,
         workerSetupPending,
+        pendingInputs?.composerInputIds,
       ),
     ].toSorted(compareChatQueueOrder),
     anchoredNotices: renderChatComposerNotices(props),

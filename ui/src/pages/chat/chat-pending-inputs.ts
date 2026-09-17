@@ -38,6 +38,8 @@ type PendingInputView = {
   before?: number;
   readonly loading: boolean;
   error?: string;
+  /** Queued inputs first observed while this session was already presented. */
+  composerInputIds: ReadonlySet<string>;
   revision: number;
   request?: PendingInputRequest;
 };
@@ -67,9 +69,13 @@ export function buildPendingInputQueueItems(
   inputs: ChatPendingInputsPage["items"],
   workspaceSyncPendingRunIds: readonly string[] = [],
   workerSetupPending = false,
+  composerInputIds?: ReadonlySet<string>,
 ): ChatQueueItem[] {
   return inputs.flatMap((input) => {
-    if (input.state !== "queued") {
+    if (
+      input.state !== "queued" ||
+      (composerInputIds !== undefined && !composerInputIds.has(input.id))
+    ) {
       return [];
     }
     const media = readTranscriptMediaEntries(input.message);
@@ -104,6 +110,7 @@ export function buildPendingInputItems(
   searchQuery?: string,
   browserInputs: readonly ChatQueueItem[] = [],
   messageRecovery?: ChatMessageRecovery,
+  composerInputIds?: ReadonlySet<string>,
 ): ChatItem[] {
   // Custody records stay outside active-run ordering until the writer promotes them.
   const items: ChatItem[] = [];
@@ -111,8 +118,9 @@ export function buildPendingInputItems(
     return items;
   }
   for (const input of inputs) {
-    // Queued custody belongs to the composer tray. It is not model history yet.
-    if (input.state === "queued") {
+    // Only inputs accepted while this pane was already active use the transient
+    // composer tray. Inputs discovered on navigation should already read as chat.
+    if (input.state === "queued" && composerInputIds?.has(input.id) !== false) {
       continue;
     }
     if (
@@ -238,6 +246,7 @@ export function applyChatPendingInputs(
       sessionId: state.currentSessionId ?? null,
       agentId: resolveUiSelectedSessionAgentId(state),
       page: displayPage,
+      composerInputIds: new Set(),
       revision: 0,
       get loading() {
         return this.request?.kind === "navigation";
@@ -245,6 +254,16 @@ export function applyChatPendingInputs(
     };
     pendingInputViews.set(state, view);
   } else {
+    const previousIds = new Set(view.page.items.map((input) => input.id));
+    const currentQueuedIds = new Set(
+      displayPage.items.filter((input) => input.state === "queued").map((input) => input.id),
+    );
+    view.composerInputIds = new Set([
+      ...[...view.composerInputIds].filter((id) => currentQueuedIds.has(id)),
+      ...displayPage.items
+        .filter((input) => input.state === "queued" && !previousIds.has(input.id))
+        .map((input) => input.id),
+    ]);
     view.revision += 1;
     if (view.request && !ownsPendingInputRequest(state, view, view.request)) {
       view.request = undefined;

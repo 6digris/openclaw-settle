@@ -96,6 +96,7 @@ export type BuildChatItemsProps = {
   queue?: ChatQueueItem[];
   initialTurnId?: string;
   pendingInputs?: ChatPendingInputsPage["items"];
+  composerPendingInputIds?: ReadonlySet<string>;
   showToolCalls: boolean;
   persistCommentary?: boolean;
   /** True while the agent is visibly working (isChatRunWorking). */
@@ -328,6 +329,7 @@ export function buildChatItems(props: BuildChatItemsProps): Array<ChatItem | Mes
     props.searchOpen ? props.searchQuery : undefined,
     props.queue,
     props.messageRecovery,
+    props.composerPendingInputIds,
   ).map((item) => ({ item }));
   if (compaction && compactionKey && !hasPersistedCompaction) {
     const timestamp = compaction.startedAt ?? compaction.completedAt ?? Date.now();

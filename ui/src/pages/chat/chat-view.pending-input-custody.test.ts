@@ -43,6 +43,7 @@ it.each(["pending custody", "transcript"] as const)(
       idempotencyKey: "retained-run:user",
     };
     if (source === "pending custody") {
+      applyChatPendingInputs(historyState, { total: 0, items: [] });
       applyChatPendingInputs(historyState, {
         total: 1,
         items: [
@@ -93,6 +94,7 @@ it.each(["pending custody", "transcript"] as const)(
 it("keeps history cached while worker setup updates the composer custody notice", async () => {
   const sessionKey = "agent:main:worker-setup";
   const historyState = makeChatHost({ sessionKey, currentSessionId: "worker-setup-session" });
+  applyChatPendingInputs(historyState, { total: 0, items: [] });
   applyChatPendingInputs(historyState, {
     total: 1,
     items: [

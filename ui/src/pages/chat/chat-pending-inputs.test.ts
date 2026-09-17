@@ -81,6 +81,33 @@ afterEach(() => {
 });
 
 describe("server-owned pending input display", () => {
+  it("keeps background inputs in chat and queues only inputs observed while active", () => {
+    const host = makeChatHost({ currentSessionId: sessionId });
+    const background = { ...input, id: "background-input", state: "queued" as const };
+    const active = {
+      ...input,
+      id: "active-input",
+      runId: "active-run",
+      acceptedAt: 200,
+      state: "queued" as const,
+    };
+
+    applyChatPendingInputs(host, { items: [background], total: 1 });
+    expect(getChatPendingInputs(host)?.composerInputIds).toEqual(new Set());
+
+    applyChatPendingInputs(host, { items: [background, active], total: 2 });
+    const composerInputIds = getChatPendingInputs(host)?.composerInputIds;
+    expect(composerInputIds).toEqual(new Set([active.id]));
+    expect(buildPendingInputQueueItems([background, active], [], false, composerInputIds)).toEqual([
+      expect.objectContaining({ id: `pending-input:${active.id}` }),
+    ]);
+    expect(
+      buildPendingInputItems([background, active], undefined, [], undefined, composerInputIds)
+        .filter((item) => item.kind === "message")
+        .map((item) => item.key),
+    ).toEqual([expect.stringContaining(background.runId!)]);
+  });
+
   it("shows a durable receipt while an accepted input waits for workspace sync", () => {
     const queued = { ...input, state: "queued" as const };
 

@@ -55,9 +55,10 @@ waits in durable pending-input custody, including during workspace preparation.
 An optional `messageSeq` comes only from a committed transcript receipt. Clients
 must not predict it from history length or treat `status: "started"` as persistence.
 The Control UI replaces its provisional source with accepted custody, then with
-the canonical row. Accepted custody appears in the read-only tray above the
-composer and stays out of the transcript until canonical history promotes it.
-For image input, that custody row represents the pending attachment; the
+the canonical row. Custody discovered when opening a background session appears
+in the transcript immediately. Input accepted while the session is already
+presented briefly appears in the read-only tray above the composer until
+canonical history promotes it. For image input, that pending projection represents the attachment; the
 canonical transcript row loads authoritative media metadata and image bytes
 after promotion. Authoritative text, media replacements, and removals still win.
 Unavailable or access-denied media shows a visible reason.

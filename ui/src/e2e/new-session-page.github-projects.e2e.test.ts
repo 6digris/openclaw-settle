@@ -390,23 +390,23 @@ suite.define(() => {
       const queuedCustody = page.locator(
         '[data-chat-queue-item="pending-input:accepted-project-input"]',
       );
-      await queuedCustody.waitFor();
-      await pollLocatorText(queuedCustody).toContain(message);
-      expect(metadataRequested).toBe(false);
-      expect(await page.locator(".chat-notice").count()).toBe(0);
+      await expect.poll(() => queuedCustody.count()).toBe(0);
+      const pendingBubble = page.locator(".chat-group.user", { hasText: message });
+      await pendingBubble.waitFor();
+      expect(metadataRequested).toBe(true);
       if (artifactDir) {
         await writeFile(
           path.join(artifactDir, "preparing.png"),
           await takeControlUiViewportScreenshot(page, page.locator(".shell"), [
             working,
-            queuedCustody,
+            pendingBubble,
           ]),
         );
       }
-      await expect.poll(() => page.locator(".chat-group.user").count()).toBe(0);
+      await expect.poll(() => page.locator(".chat-group.user").count()).toBe(1);
       await expect
         .poll(() => page.locator(".chat-group.user img.chat-message-image").count())
-        .toBe(0);
+        .toBe(1);
       const observed = await transition.evaluate(async (sampler) => {
         await new Promise(requestAnimationFrame);
         return sampler.stop();
@@ -417,7 +417,7 @@ suite.define(() => {
       }
       expect(observed.length).toBeGreaterThan(1);
       expect(observed.every(({ users, queued }) => users + queued <= 1)).toBe(true);
-      expect(observed.at(-1)).toEqual({ users: 0, images: 0, queued: 1 });
+      expect(observed.at(-1)).toEqual({ users: 1, images: 1, queued: 0 });
       expect(await working.locator(".chat-reading-indicator").count()).toBe(1);
       expect(await gateway.getRequests("chat.send")).toHaveLength(0);
       await captureProjectUiProof(
@@ -441,8 +441,8 @@ suite.define(() => {
             phase,
           });
           await pollLocatorText(working).toContain(label);
-          expect(await page.locator(".chat-group.user").count()).toBe(0);
-          expect(await queuedCustody.count()).toBe(1);
+          expect(await page.locator(".chat-group.user").count()).toBe(1);
+          expect(await queuedCustody.count()).toBe(0);
         }
         await captureProjectUiProof(suite, page, "worktree-running-setup.png");
       }

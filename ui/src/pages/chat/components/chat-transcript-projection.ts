@@ -158,6 +158,7 @@ export function projectChatTranscript(
     queue: props.queue,
     initialTurnId: props.initialTurnId,
     pendingInputs: props.pendingInputs,
+    composerPendingInputIds: props.composerPendingInputIds,
     showToolCalls: props.showToolCalls,
     persistCommentary: props.persistCommentary,
     runWorking: Boolean(props.runWorking),
