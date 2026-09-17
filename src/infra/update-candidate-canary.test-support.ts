@@ -3,10 +3,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { onTestFinished, vi } from "vitest";
+import { expect, it, onTestFinished, vi } from "vitest";
 import { createUpdateProgress } from "../cli/update-cli/progress.js";
 import { defaultRuntime } from "../runtime.js";
 import * as diskSpace from "./disk-space.js";
+import { validateUpdateCandidateCanary } from "./update-candidate-canary.js";
 import type { UpdateStepResult } from "./update-runner-types.js";
 
 export function stubCanaryDiskSpace(availableBytes: number, totalBytes: number) {
@@ -113,5 +114,45 @@ export function stubHealthyGateway() {
   vi.stubGlobal(
     "fetch",
     vi.fn(async () => Response.json({ status: "started", ready: true })),
+  );
+}
+
+export function registerCanaryRuntimeCapabilityTests(params: {
+  options: () => Parameters<typeof validateUpdateCandidateCanary>[0];
+  setRuntimeContract: (contract: unknown) => void;
+}) {
+  it.each([undefined, "unknown-owned-v2"])(
+    "keeps unsupported checkpoint capability out of admission (%s)",
+    async (candidateMutation) => {
+      params.setRuntimeContract({
+        state: 2,
+        agent: 3,
+        executorDelegation: "pid-start-v1",
+        candidateMutation,
+      });
+      stubHealthyGateway();
+      const result = await validateUpdateCandidateCanary(params.options());
+      expect(result.status).toBe("ok");
+      expect(result.candidateSchemaVersions).toEqual({ state: 2, agent: 3 });
+      expect(result).not.toHaveProperty("checkpointContinuation");
+    },
+  );
+  it.each([undefined, false, "true", true])(
+    "reports observed shared-install finalization support (%s)",
+    async (profileContexts) => {
+      params.setRuntimeContract({
+        state: 2,
+        agent: 3,
+        profileContexts,
+        gatewayRestartCompletion: profileContexts,
+      });
+      stubHealthyGateway();
+      const result = await validateUpdateCandidateCanary(params.options());
+      expect(result).toMatchObject({
+        status: "ok",
+        profileContexts: profileContexts === true,
+        gatewayRestartCompletion: profileContexts === true,
+      });
+    },
   );
 }
