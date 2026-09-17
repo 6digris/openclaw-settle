@@ -210,6 +210,11 @@ function withOpenClawStateDatabaseReadOnlyIfOpen<T>(
       value: withOpenClawStateReadOnlyLocation(operation, pathname, snapshot.location),
     };
   }
+  // A cached writer can update SHM read marks when it observes another connection's
+  // commit. Artifact-preserving reads still need private bytes; disposable views do not.
+  if (requiresArtifactPreservingSnapshot(pathname)) {
+    return { reused: false };
+  }
   const opened = openClawStateDatabaseCache.getCachedOpenClawStateDatabase(pathname);
   if (!opened?.db.isOpen || opened.db.isTransaction) {
     return { reused: false };

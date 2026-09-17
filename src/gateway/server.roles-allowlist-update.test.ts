@@ -538,15 +538,12 @@ describe("gateway update history", () => {
               .filter((entry) => entry.pathname === databasePath);
             expect(
               prepared.every((entry) => entry.progressed),
-              "the Gateway isolate must progress during every cold-history snapshot",
+              "the Gateway isolate must progress during every history snapshot",
             ).toBe(true);
-            if (cache === "warm") {
-              expect(prepared).toEqual([]);
-            } else {
-              expect(prepared).toHaveLength(1);
-              expect(prepared[0]?.location).toBeDefined();
-              expect(existsSync(prepared[0]!.location!)).toBe(false);
-            }
+            // Cached writers also need private bytes to preserve serving SHM read marks.
+            expect(prepared).toHaveLength(1);
+            expect(prepared[0]?.location).toBeDefined();
+            expect(existsSync(prepared[0]!.location!)).toBe(false);
           }
         }
       } finally {

@@ -411,28 +411,66 @@ describe.each(["admission", "explicit", "async"] as const)("%s read-only state r
     },
   );
 
-  it("reuses an idle writable handle without preparing a snapshot", async () => {
+  it("preserves the source family after an external commit with an idle cached writer", async () => {
+    await withOpenClawTestState({ label: "state-readonly-cached-family" }, async (state) => {
+      const options = createOptions(state.stateDir);
+      const opened = openOpenClawStateDatabase(options);
+      opened.db.exec(
+        "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE held(value TEXT); INSERT INTO held VALUES ('original');",
+      );
+      const writer = new DatabaseSync(options.path);
+      const family = () =>
+        ["", "-wal", "-shm"].map((suffix) => {
+          const file = options.path + suffix;
+          const stat = fs.statSync(file, { bigint: true });
+          return { bytes: fs.readFileSync(file), inode: stat.ino, modified: stat.mtimeNs };
+        });
+      try {
+        for (const value of ["second", "third"]) {
+          writer.prepare("UPDATE held SET value = ?").run(value);
+          const before = family();
+          expect(
+            await readState(({ db }) => db.prepare("SELECT value FROM held").get(), options),
+          ).toEqual({ value });
+          for (const [index, current] of family().entries()) {
+            const original = expectDefined(before[index], "captured source artifact");
+            const label = ["database", "WAL", "SHM"][index];
+            expect(current.bytes.equals(original.bytes), `${label} bytes`).toBe(true);
+            expect(current.inode, `${label} inode`).toBe(original.inode);
+            expect(current.modified, `${label} mtime`).toBe(original.modified);
+          }
+        }
+        expect(opened.db.isOpen).toBe(true);
+      } finally {
+        writer.close();
+      }
+    });
+  });
+
+  it("reuses an idle writable handle in owned disposable state", async () => {
     await withTempDir("openclaw-state-readonly-reuse-", async (stateDir) => {
       const options = createOptions(stateDir);
       const opened = openOpenClawStateDatabase(options);
       opened.db.exec("CREATE TABLE held(value TEXT); INSERT INTO held VALUES ('original');");
 
-      let called = false;
-      const result = readState(({ db }) => {
-        called = true;
-        expect(isArtifactPreservingStateRead()).toBe(true);
-        expect(db).toBe(opened.db);
-        return db.prepare("SELECT value FROM held").all();
-      }, options);
-      expect(called).toBe(true);
-      expect(isArtifactPreservingStateRead()).toBe(false);
-      opened.db.exec("BEGIN; UPDATE held SET value = 'uncommitted';");
-      try {
-        expect(await result).toEqual([{ value: "original" }]);
-        expect(opened.db.isTransaction).toBe(true);
-      } finally {
-        opened.db.exec("ROLLBACK");
-      }
+      await withDisposableOpenClawStateReads(options.path, async () => {
+        let called = false;
+        const result = readState(({ db }) => {
+          called = true;
+          expect(isArtifactPreservingStateRead()).toBe(true);
+          expect(db).toBe(opened.db);
+          return db.prepare("SELECT value FROM held").all();
+        }, options);
+        expect(called).toBe(true);
+        expect(isArtifactPreservingStateRead()).toBe(false);
+        opened.db.exec("BEGIN; UPDATE held SET value = 'uncommitted';");
+        try {
+          expect(await result).toEqual([{ value: "original" }]);
+          expect(opened.db.isTransaction).toBe(true);
+        } finally {
+          opened.db.exec("ROLLBACK");
+        }
+      });
     });
   });
 });

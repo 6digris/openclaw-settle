@@ -169,7 +169,11 @@ describe("staged CLI repair isolation", () => {
                   // The first oracle follows worker startup and requester registry
                   // preparation. Neither may migrate or touch serving artifacts.
                   for (const { file, identity } of before) {
-                    expect(await fileIdentity(file)).toEqual(identity);
+                    const current = await fileIdentity(file);
+                    const label = path.basename(file);
+                    expect(current.bytes.equals(identity.bytes), `${label} bytes`).toBe(true);
+                    expect(current.inode, `${label} inode`).toBe(identity.inode);
+                    expect(current.modified, `${label} mtime`).toBe(identity.modified);
                   }
                   if (rehearsal) {
                     oracleTargets.push({

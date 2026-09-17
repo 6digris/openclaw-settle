@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { trackSqliteStatementExecutions } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { onSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
+import * as stateReadConnection from "../state/openclaw-state-db-read-connection.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -37,11 +38,22 @@ describe("publication SQLite materialization", () => {
     const before = readRows();
     const observer = vi.fn();
     const stop = onSessionLifecycleEvent(observer);
-    const counter = trackSqliteStatementExecutions(db, ["receipts"], (sql) =>
-      /^select\b/i.test(sql) && /\bfrom "github_publication_requests"/.test(sql)
-        ? "receipts"
-        : null,
-    );
+    const trackReceipts = (database: typeof db) =>
+      trackSqliteStatementExecutions(database, ["receipts"], (sql) =>
+        /^select\b/i.test(sql) && /\bfrom "github_publication_requests"/.test(sql)
+          ? "receipts"
+          : null,
+      );
+    const counters = [trackReceipts(db)];
+    const openReadConnection = stateReadConnection.openOpenClawStateReadConnection;
+    // Artifact-preserving reads materialize rows on a private reader, not the cached writer.
+    const readerSpy = vi
+      .spyOn(stateReadConnection, "openOpenClawStateReadConnection")
+      .mockImplementation((...args) => {
+        const connection = openReadConnection(...args);
+        counters.push(trackReceipts(connection.database.db));
+        return connection;
+      });
     try {
       expect(coordinator.latestShared(session)).toMatchObject({
         confirmation: null,
@@ -49,10 +61,17 @@ describe("publication SQLite materialization", () => {
       });
       expect(readRows()).toEqual(before);
       expect(observer).not.toHaveBeenCalled();
-      expect(counter.counts.receipts).toBeGreaterThan(0);
-      expect(counter.rowCounts.receipts).toBeLessThanOrEqual(1);
+      expect(
+        counters.reduce((count, counter) => count + counter.counts.receipts, 0),
+      ).toBeGreaterThan(0);
+      expect(
+        counters.reduce((count, counter) => count + counter.rowCounts.receipts, 0),
+      ).toBeLessThanOrEqual(1);
     } finally {
-      counter.restore();
+      readerSpy.mockRestore();
+      for (const counter of counters) {
+        counter.restore();
+      }
       stop();
     }
   });

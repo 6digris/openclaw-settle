@@ -1,6 +1,7 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as nodeSqlite from "../../infra/node-sqlite.js";
+import * as sqlitePrivateDirectory from "../../infra/sqlite-private-directory.js";
 import { pkgQueryResult } from "../../infra/update-freebsd-pkg-ownership.test-support.js";
 import { getUpdateRun } from "../../infra/update-run-ledger.js";
 import * as exec from "../../process/exec.js";
@@ -19,6 +20,7 @@ import {
 const sqliteHostPlatform = process.platform;
 const existingHostUri = nodeSqlite.resolveExistingSqliteFileUri;
 const immutableHostUri = nodeSqlite.resolveImmutableSqliteFileUri;
+const createHostSnapshotDirectory = sqlitePrivateDirectory.createPrivateSqliteTempDirectorySync;
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -72,12 +74,16 @@ describe("FreeBSD pkg RPC admission", () => {
   it.each(["linux", "darwin", "win32"] as const)(
     "preserves %s update admission without a pkg query",
     async (platform) => {
-      // Platform simulation does not change the real ledger's SQLite VFS.
+      // Platform simulation does not change the real ledger's filesystem or SQLite VFS.
       vi.spyOn(nodeSqlite, "resolveExistingSqliteFileUri").mockImplementation((file) =>
         existingHostUri(file, sqliteHostPlatform),
       );
       vi.spyOn(nodeSqlite, "resolveImmutableSqliteFileUri").mockImplementation((file) =>
         immutableHostUri(file, sqliteHostPlatform),
+      );
+      vi.spyOn(sqlitePrivateDirectory, "createPrivateSqliteTempDirectorySync").mockImplementation(
+        (...args) =>
+          withMockedPlatform(sqliteHostPlatform, () => createHostSnapshotDirectory(...args)),
       );
       const query = vi
         .spyOn(exec, "runCommandBuffered")
