@@ -56,6 +56,14 @@ vi.mock("../../runtime.js", () => ({
   defaultRuntime,
 }));
 
+const systemNodeInfo = vi.hoisted(() =>
+  vi.fn<typeof import("../../daemon/runtime-paths.js").resolveSystemNodeInfo>(),
+);
+vi.mock("../../daemon/runtime-paths.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../daemon/runtime-paths.js")>()),
+  resolveSystemNodeInfo: systemNodeInfo,
+}));
+
 const daemonExec = await import("../../daemon/exec-file.js");
 const { runDaemonInstall } = await import("./install.js");
 const { clearConfigCache, clearRuntimeConfigSnapshot, readConfigFileSnapshot } =
@@ -121,6 +129,15 @@ describe("runDaemonInstall integration", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    // Output contracts control host inventory, not the real warning or response owners.
+    systemNodeInfo.mockResolvedValue({
+      path: "/fixture/system/node",
+      status: "supported",
+      version: "26.8.2",
+      sqliteVersion: "3.53.4",
+      nodeSharedSqlite: false,
+      sqliteProbe: { available: true, version: "3.53.4", text: true, blob: true, json: true },
+    });
     mockSystemAccountHome();
     vi.spyOn(daemonExec, "execFileUtf8").mockImplementation(systemdManagerVersionProbe);
     resetRuntimeCapture();
