@@ -153,18 +153,20 @@ function reportFor(scenarios: ReturnType<typeof scenario>[]) {
   return {
     runtimePair: ["openclaw", "codex"],
     totalScenarios: scenarios.length,
-    passedScenarios: scenarios.length,
-    failedScenarios: 0,
+    passedScenarios: scenarios.filter((entry) => entry.status === "pass").length,
+    failedScenarios: scenarios.filter((entry) => entry.status === "skip").length,
     scenarios: scenarios.map((entry) => ({
       name: entry.name,
-      status: "pass",
+      status: entry.status === "skip" ? "fail" : "pass",
       drift: entry.runtimeParity.drift,
       driftDetails: undefined,
       openclawStatus: "pass",
       codexStatus: "pass",
     })),
-    failures: [],
-    pass: true,
+    failures: scenarios
+      .filter((entry) => entry.status === "skip")
+      .map((entry) => `${entry.name} drift=${entry.runtimeParity.drift} (undefined).`),
+    pass: scenarios.every((entry) => entry.status === "pass"),
   };
 }
 
@@ -172,12 +174,12 @@ function markdownFor(scenarios: ReturnType<typeof scenario>[]) {
   return [
     "# OpenClaw Runtime Parity Report — openclaw vs codex",
     "",
-    "- Verdict: pass",
+    `- Verdict: ${scenarios.every((entry) => entry.status === "pass") ? "pass" : "fail"}`,
     ...scenarios.flatMap((entry) => [
       "",
       `### ${entry.name}`,
       "",
-      "- status: pass",
+      `- status: ${entry.status === "skip" ? "fail" : "pass"}`,
       `- drift: ${entry.runtimeParity.drift}`,
       "- openclaw: pass (0 tool calls)",
       "- codex: pass (0 tool calls)",
@@ -572,13 +574,33 @@ describe("frozen QA runtime-pair summary validation", () => {
     "accepts the exact frozen core manifest for %s",
     (targetSha) => {
       const fixture = frozenCoreSummary();
-      expect(
-        validateQaRuntimePairSummary(fixture, {
-          requireExplicitGap: true,
-          targetSha,
-          lane: "core",
-        }),
-      ).toMatchObject({ skipped: 8 });
+      const options = { requireExplicitGap: true, targetSha, lane: "core" };
+      const report = reportFor(fixture.scenarios);
+      const markdown = markdownFor(fixture.scenarios);
+      expect(validateQaRuntimePairReport(fixture, report, markdown, options)).toEqual({
+        total: 27,
+        passed: 19,
+        failed: 0,
+        skipped: 8,
+      });
+      // A frozen producer's JSON and Markdown must both retain its pass projection.
+      expect(() =>
+        validateQaRuntimePairReport(
+          fixture,
+          report,
+          markdown.replaceAll("- codex: pass ", "- codex: skip "),
+          options,
+        ),
+      ).toThrow("runtime-pair Markdown report is incomplete");
+      for (const unpinnedOptions of [
+        {},
+        { targetSha, lane: "soak" },
+        { targetSha: "0".repeat(40), lane: "core" },
+      ]) {
+        expect(() =>
+          validateQaRuntimePairReport(fixture, report, markdown, unpinnedOptions),
+        ).toThrow("runtime-pair report scenarios do not match validated suite evidence");
+      }
     },
   );
 

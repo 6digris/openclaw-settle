@@ -112,7 +112,11 @@ function isExplicitCodexGap(cell: unknown) {
   return EXPLICIT_CODEX_GAP_PREFIXES.some((prefix) => details.startsWith(prefix));
 }
 
-function projectedReportCellStatus(cell: Record<string, unknown>) {
+function projectedReportCellStatus(cell: Record<string, unknown>, legacyProjection = false) {
+  // These frozen producers serialized runtime health rather than explicit status.
+  if (legacyProjection) {
+    return cell.runtimeErrorClass || cell.transportErrorClass ? "fail" : "pass";
+  }
   if (!isPassableCell(cell)) {
     return "fail";
   }
@@ -331,6 +335,9 @@ export function validateQaRuntimePairReport(
     throw new Error("runtime-pair summary is missing canonical scenario evidence");
   }
   const scenarios = summary.scenarios;
+  const legacyProjection = FROZEN_RUNTIME_PAIR_MANIFESTS.has(
+    `${options.targetSha}:${options.lane}`,
+  );
   if (
     !isRecord(reportSummary) ||
     !requireCanonicalRuntimePair(reportSummary.runtimePair) ||
@@ -361,8 +368,9 @@ export function validateQaRuntimePairReport(
         scenario.drift !== source.runtimeParity.drift ||
         scenario.driftDetails !== source.runtimeParity.driftDetails ||
         scenario.openclawStatus !==
-          projectedReportCellStatus(source.runtimeParity.cells.openclaw) ||
-        scenario.codexStatus !== projectedReportCellStatus(source.runtimeParity.cells.codex)
+          projectedReportCellStatus(source.runtimeParity.cells.openclaw, legacyProjection) ||
+        scenario.codexStatus !==
+          projectedReportCellStatus(source.runtimeParity.cells.codex, legacyProjection)
       );
     })
   ) {
@@ -403,12 +411,12 @@ export function validateQaRuntimePairReport(
         ) ||
         ![...sectionLines].some((line) =>
           line.startsWith(
-            `- openclaw: ${projectedReportCellStatus(scenario.runtimeParity.cells.openclaw)} `,
+            `- openclaw: ${projectedReportCellStatus(scenario.runtimeParity.cells.openclaw, legacyProjection)} `,
           ),
         ) ||
         ![...sectionLines].some((line) =>
           line.startsWith(
-            `- codex: ${projectedReportCellStatus(scenario.runtimeParity.cells.codex)} `,
+            `- codex: ${projectedReportCellStatus(scenario.runtimeParity.cells.codex, legacyProjection)} `,
           ),
         )
       );
