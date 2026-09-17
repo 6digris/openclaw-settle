@@ -3,19 +3,31 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import { err as resultError, ok, type Result } from "@openclaw/normalization-core/result";
+import { stableStringify } from "@openclaw/normalization-core/stable-stringify";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { minVersion, validRange, valid } from "semver";
+import { compare, minVersion, Range, satisfies as satisfiesRange, validRange, valid } from "semver";
 import { detectCurrentSqliteCapabilities, nodeRuntimeFailure } from "../../../node-sqlite.mjs";
+import { SUPPORTED_NODE_VERSION_RANGE } from "../../../node-version.mjs";
 import { createConfigIO } from "../../config/io.js";
 import { resolveGatewayPort } from "../../config/paths.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveNodeRuntimeInfo } from "../../daemon/runtime-paths.js";
-import type { ServiceInspectionReason } from "../../daemon/service-inspection-error.js";
+import {
+  formatServiceInspectionReason,
+  type ServiceInspectionReason,
+} from "../../daemon/service-inspection-error.js";
 import { summarizeGatewayServiceLayout } from "../../daemon/service-layout.js";
-import type { GatewayServiceCommandConfig } from "../../daemon/service-types.js";
-import { resolveGatewayService } from "../../daemon/service.js";
+import type {
+  GatewayServiceCommandConfig,
+  GatewayServiceState,
+} from "../../daemon/service-types.js";
+import { readGatewayServiceState, resolveGatewayService } from "../../daemon/service.js";
+import { isContainerEnvironment } from "../../infra/container-environment.js";
+import { sha256Hex } from "../../infra/crypto-digest.js";
+import { readActiveGatewayLockIdentity } from "../../infra/gateway-lock.js";
 import { assertGatewayServiceMutationAllowed } from "../../infra/gateway-supervision.js";
 import { tryReadJson } from "../../infra/json-files.js";
+import { probePortUsage } from "../../infra/ports-probe.js";
 import { nodeVersionSatisfiesEngine } from "../../infra/runtime-guard.js";
 import { parseTcpPortFromArgs } from "../../infra/tcp-port.js";
 import {
@@ -27,12 +39,21 @@ import {
   type FreeBsdPkgOwnershipInspection,
 } from "../../infra/update-freebsd-pkg-ownership.js";
 import { UPDATE_RUNNER_TIMEOUT_MS } from "../../infra/update-run-timeouts.js";
+import {
+  createRuntimeUpdateRecoverySteps,
+  formatUpdateRecoverySteps,
+  type UpdateRecoveryStep,
+} from "../../shared/update-outcome.js";
+import { resolveNodeVersionManager } from "../../shared/version-manager-path.js";
 import { CLI_NAME } from "../cli-name.js";
+import { formatCliCommand } from "../command-format.js";
+import { quoteCliArg, quotePowerShellArg } from "../quote-cli-arg.js";
 import { resolveNodeRunner } from "./shared.js";
 import type {
   ManagedGatewayUpdateVerdict,
   PreManagedServiceStop,
 } from "./update-command-service-context-types.js";
+import { resolveServiceRecoveryContext } from "./update-command-service-env.js";
 
 export type ManagedServiceRootRedirect = {
   root: string;
@@ -125,6 +146,144 @@ export function isGatewayServiceManagementAllowedForUpdate(
   return resolveGatewayServiceManagementBlockMessageForUpdate(env) === undefined;
 }
 
+export const GATEWAY_SERVICE_INSPECTION_WARNING =
+  "Gateway service inspection is unavailable; automatic service restart was skipped. Restart the Gateway you launched manually after the update. Any recorded service definition was left unchanged; inspect it with `openclaw gateway status --deep`.";
+
+function serviceInspectionWarningMessage(state: GatewayServiceState): string {
+  if (state.inspectionReason) {
+    return `${GATEWAY_SERVICE_INSPECTION_WARNING} ${formatServiceInspectionReason(state.inspectionReason)}`;
+  }
+  if (process.platform === "freebsd") {
+    return (
+      `${GATEWAY_SERVICE_INSPECTION_WARNING} ` +
+      "On FreeBSD, use the Gateway's rc.d or foreground process owner for service management."
+    );
+  }
+  const runtime = state.runtime;
+  const tasksCurrent = runtime?.systemd?.tasksCurrent;
+  if (
+    process.platform === "linux" &&
+    runtime?.status === "unknown" &&
+    (runtime.state === "inactive" || runtime.state === "failed") &&
+    !runtime.pid &&
+    tasksCurrent !== undefined &&
+    tasksCurrent > 0
+  ) {
+    return `${GATEWAY_SERVICE_INSPECTION_WARNING} Processes remain in the systemd service cgroup (${tasksCurrent} tasks). Have their owner stop them before state maintenance.`;
+  }
+  const detail = runtime?.inspectionFailure?.detail;
+  return detail
+    ? `${GATEWAY_SERVICE_INSPECTION_WARNING} ${detail}`
+    : GATEWAY_SERVICE_INSPECTION_WARNING;
+}
+
+export function observedSystemdManagerUid(state: GatewayServiceState): number | undefined {
+  const uid = state.runtime?.systemd?.managerUid;
+  return typeof uid === "number" && Number.isInteger(uid) && uid >= 0 && uid < 0xffffffff
+    ? uid
+    : undefined;
+}
+
+export async function inspectManagedGatewayServiceBeforeUpdate(params: {
+  root?: string;
+  state: GatewayServiceState;
+  retainedCommand?: boolean;
+}): Promise<ManagedGatewayUpdateVerdict> {
+  const { state } = params;
+  const { command } = state;
+  const unavailable = (): ManagedGatewayUpdateVerdict => ({
+    kind: "unavailable",
+    message: serviceInspectionWarningMessage(state),
+    ...(state.inspectionReason ? { inspectionReason: state.inspectionReason } : {}),
+  });
+  if (!command) {
+    return !state.installed &&
+      state.loadState.status === "not-loaded" &&
+      !state.running &&
+      state.runtime?.missingUnit &&
+      (await readActiveGatewayLockIdentity({ env: state.env, requireInspection: true }).then(
+        (identity) => !identity,
+        () => false,
+      )) &&
+      (await probePortUsage(await resolveUpdatedGatewayRestartPort({ serviceEnv: state.env }))) ===
+        "free"
+      ? { kind: "absent" }
+      : unavailable();
+  }
+  if (
+    state.loadState.status === "unknown" ||
+    (state.runtime?.status !== "running" && state.runtime?.status !== "stopped") ||
+    (process.platform === "linux" && observedSystemdManagerUid(state) === undefined)
+  ) {
+    return unavailable();
+  }
+  // Stable updaters through 2026.9.4 omit known-empty systemd override metadata.
+  // Keep their fingerprint while the full snapshot retains authored defaults for runtime pinning.
+  const { managedDefinition: _managedDefinition, managedOverrides, ...effectiveCommand } = command;
+  const serialized = stableStringify(
+    managedOverrides && Object.keys(managedOverrides).length === 0 ? effectiveCommand : command,
+  );
+  if (Buffer.byteLength(serialized) > 4 * 1024 * 1024) {
+    return unavailable();
+  }
+  // Early selection verifies the service's own package before it may redirect the invoker.
+  const root = params.root ?? (await summarizeGatewayServiceLayout(command))?.packageRootReal;
+  if (!root) {
+    return unavailable();
+  }
+  // Lifecycle authority follows the effective launcher, not the writable base
+  // that a drop-in may replace with a different installation.
+  const ownsRoot = await gatewayServiceCommandUsesRoot({ root, command });
+  if (ownsRoot === null && !params.retainedCommand) {
+    return unavailable();
+  }
+  if (ownsRoot === false) {
+    return { kind: "foreign" };
+  }
+  const fingerprint = sha256Hex(serialized);
+  return ownsRoot
+    ? {
+        kind: "owned",
+        root,
+        fingerprint,
+        refreshDefinition: (state.definitionMutationCapability?.kind ?? "writable") === "writable",
+      }
+    : { kind: "unresolved", root, fingerprint };
+}
+
+/** Recorded launchers cannot select an update's package, Node, or state without live inspection. */
+export async function readManagedGatewayServiceCommandForUpdate(
+  env: NodeJS.ProcessEnv,
+): Promise<GatewayServiceCommandConfig | null> {
+  let service: ReturnType<typeof resolveGatewayService> | undefined;
+  try {
+    service = resolveGatewayService();
+    const state = await readGatewayServiceState(service, {
+      env,
+      requireEffective: true,
+      requireLoadedCommand: true,
+      validateEnvBeforeStatusRead: assertGatewayServiceManagementAllowedForUpdate,
+    });
+    if (!state.command) {
+      return null;
+    }
+    const inspection = await inspectManagedGatewayServiceBeforeUpdate({ state });
+    return inspection.kind === "owned" ? state.command : null;
+  } catch (error) {
+    if (error instanceof GatewayServiceUpdateOwnershipError && service) {
+      // Probe only the invoker's manager; rejected record selectors must not route it.
+      const available = await service.isLoaded({ env }).then(
+        () => true,
+        () => false,
+      );
+      if (available) {
+        throw error;
+      }
+    }
+    return null;
+  }
+}
+
 type PackageRuntimePreflight = {
   nodeRunner?: string;
   replacedNodeRunner?: string;
@@ -140,7 +299,15 @@ export async function resolvePackageRuntimePreflight(params: {
   shouldRestart?: boolean;
   alreadyCurrent?: boolean;
   service?: PreManagedServiceStop;
-}): Promise<Result<PackageRuntimePreflight, string> & { failureFacts?: UpdateFailureFact[] }> {
+  invocationCwd?: string;
+  /** An already-current source checkout retains its launcher across a global-prefix switch. */
+  sourceRoot?: string;
+}): Promise<
+  Result<PackageRuntimePreflight, string> & {
+    failureFacts?: UpdateFailureFact[];
+    recoverySteps?: UpdateRecoveryStep[];
+  }
+> {
   const nodeRunner = normalizeOptionalString(
     params.alreadyCurrent
       ? (params.service?.serviceNodeRunner ?? params.nodeRunner)
@@ -214,17 +381,57 @@ export async function resolvePackageRuntimePreflight(params: {
     : `Node ${runtime.version ?? "unknown"}`;
   const engineRange = target.nodeEngine ? validRange(target.nodeEngine) : null;
   const minimum = engineRange ? (minVersion(engineRange)?.version ?? "unspecified") : "unspecified";
+  const recommendation = minimumSupportedNodeVersion(engineRange ?? "*");
+  const requirement = target.nodeEngine ? `Node ${target.nodeEngine}` : "a working Node runtime";
+  const verdict = params.service?.serviceUpdateVerdict;
+  const context =
+    verdict?.kind === "owned" && params.service?.serviceEnv
+      ? resolveServiceRecoveryContext({
+          serviceEnv: params.service.serviceEnv,
+          serviceDefinitionEnv: params.service.serviceDefinitionEnv,
+          invocationCwd: params.invocationCwd,
+        })
+      : undefined;
+  const env = context?.env ?? params.service?.serviceEnv ?? process.env;
+  const recoveryVersion = valid(targetVersion);
+  const retainedRoot = params.sourceRoot ?? params.root ?? params.installedRoot;
+  const retainedEntry = retainedRoot ? path.resolve(retainedRoot, "openclaw.mjs") : undefined;
+  const continuation = retainedEntry
+    ? formatCliCommand(
+        params.sourceRoot ? "openclaw update" : `openclaw update --tag ${recoveryVersion}`,
+        env,
+      ).replace(
+        /^openclaw\b/,
+        () =>
+          `node ${process.platform === "win32" ? quotePowerShellArg(retainedEntry) : quoteCliArg(retainedEntry)}`,
+      )
+    : undefined;
+  const recoverySteps =
+    recommendation && recoveryVersion
+      ? createRuntimeUpdateRecoverySteps({
+          nodeVersion: recommendation,
+          targetVersion: recoveryVersion,
+          manager: resolveNodeVersionManager(
+            await tryRealpathOrResolve(runtime.nodeRunner ?? resolveNodeRunner()),
+            env,
+          ),
+          container: isContainerEnvironment(),
+          contextCommand: context?.command,
+          continuation,
+        })
+      : undefined;
+  const upgrade = recoverySteps
+    ? `Recovery:\n${formatUpdateRecoverySteps(recoverySteps)}`
+    : recommendation
+      ? "Select a published OpenClaw version before installing it under a supported Node runtime."
+      : `No Node version satisfies both this range and this updater's supported range (${SUPPORTED_NODE_VERSION_RANGE}). This candidate version cannot be run by this updater with a supported Node release; install a supported Node and select a compatible OpenClaw target.`;
   return {
+    ...(recoverySteps ? { recoverySteps } : {}),
     ...resultError<PackageRuntimePreflight, string>(
       [
-        `${runtimeLabel} is incompatible with openclaw@${targetVersion}.`,
+        `openclaw@${targetVersion} requires ${requirement}; selected runtime is ${runtimeLabel}.`,
         ...(runtime.failure ? [runtime.failure] : []),
-        `The requested package requires ${target.nodeEngine}.`,
-        runtime.nodeRunner
-          ? "Use a compatible version of the Node runtime that owns the managed Gateway service, then rerun `openclaw update`."
-          : "Use a Node runtime that satisfies the engine range above, then rerun `openclaw update`.",
-        "Bare `npm i -g openclaw` can silently install an older compatible release.",
-        "After switching Node versions, use `npm i -g openclaw@latest`.",
+        upgrade,
       ].join("\n"),
     ),
     failureFacts: [
@@ -236,6 +443,24 @@ export async function resolvePackageRuntimePreflight(params: {
       }),
     ],
   };
+}
+
+function minimumSupportedNodeVersion(engineRange: string): string | undefined {
+  const candidate = new Range(engineRange);
+  return new Range(SUPPORTED_NODE_VERSION_RANGE).set
+    .flatMap((supported) =>
+      candidate.set.flatMap((required) => {
+        const intersection = [...supported, ...required].map((entry) => entry.value).join(" ");
+        const minimum = minVersion(intersection);
+        if (!minimum) {
+          return [];
+        }
+        // Node's release contract excludes prereleases, even when engines allow them.
+        const release = `${minimum.major}.${minimum.minor}.${minimum.patch}`;
+        return satisfiesRange(release, intersection) ? [release] : [];
+      }),
+    )
+    .toSorted(compare)[0];
 }
 
 async function resolvePackageRuntimeForPreflight(params: {
@@ -289,10 +514,11 @@ export async function resolveManagedServicePackageUpdatePlan(params: {
   }
   // Root and runtime planning share one effective command; mutation and restart
   // revalidate independently so this snapshot cannot grant later service authority.
-  const command = await resolveGatewayService()
-    .readCommand(process.env, { requireEffective: true, requireLoaded: true })
-    .catch(() => null);
+  const command = await readManagedGatewayServiceCommandForUpdate(process.env);
   const layout = await summarizeGatewayServiceLayout(command);
+  if (!layout?.packageRootReal) {
+    return { rootRedirect: null };
+  }
   const serviceRoot = layout?.packageRoot;
   await pkgOwnership.assertUnowned(serviceRoot);
   const serviceNode = resolveManagedServiceNodeRunner(command);
@@ -332,9 +558,7 @@ export async function gatewayServiceCommandUsesRoot(params: {
   const command =
     params.command === undefined
       ? isGatewayServiceManagementAllowedForUpdate(params.env ?? process.env)
-        ? await resolveGatewayService()
-            .readCommand(params.env ?? process.env, { requireEffective: true, requireLoaded: true })
-            .catch(() => null)
+        ? await readManagedGatewayServiceCommandForUpdate(params.env ?? process.env)
         : null
       : params.command;
   const layout = await summarizeGatewayServiceLayout(command);

@@ -5,6 +5,8 @@ import type { PreManagedServiceStop } from "../cli/update-cli/update-command-ser
 import { isDefaultInstallIdentity, resolveConfigPath, resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolvePathViaExistingAncestorSync } from "../infra/boundary-path.js";
+import { readActiveGatewayLockIdentity } from "../infra/gateway-lock.js";
+import { readGatewayOwnerLease } from "../infra/gateway-owner-lease.js";
 import {
   acquireGatewayMaintenanceCoordinator,
   acquireStateDatabaseCoordinator,
@@ -52,12 +54,13 @@ function assertDoctorMaintenanceInspection(
   env: NodeJS.ProcessEnv,
 ): void {
   const kind = inspection.serviceUpdateVerdict?.kind;
-  // Non-owned services grant no stop authority. The native lifecycle owner
-  // must prove them offline before Doctor can repair its own selected state.
+  // Unavailable inspection grants no service authority. The state coordinators
+  // and agent leases below still exclude live writers before repair.
   if (
     !inspection.blockMessage &&
-    inspection.inspected &&
-    (kind === "owned" || kind === "absent" || inspection.offline === true)
+    (kind === "unavailable" ||
+      (inspection.inspected &&
+        (kind === "owned" || kind === "absent" || inspection.offline === true)))
   ) {
     return;
   }
@@ -76,6 +79,7 @@ export async function beginDoctorMaintenance(params: {
       run<T>(operation: () => T): T;
       release(): Promise<void>;
       finish(cfg: OpenClawConfig): Promise<void>;
+      warnings?: string[];
     }
   | undefined
 > {
@@ -93,11 +97,22 @@ export async function beginDoctorMaintenance(params: {
     | typeof import("../cli/update-cli/update-command-service-maintenance.js")
     | undefined;
   const coordinators: Array<{ release(): void }> = [];
+  const warnings: string[] = [];
   let repairStoresMayBeOpen = false;
   let resources: OpenClawDatabaseMaintenanceScope | undefined;
   let inspectingActivation = false;
   let assertContinuationCurrent: (() => void) | undefined;
   let assertUpdateAdmissionCurrent: (() => void) | undefined;
+  const databasePath = path.resolve(resolveOpenClawStateSqlitePath(env));
+  const acquireMaintenanceResources = () => {
+    if (resources) {
+      return;
+    }
+    const owner = acquireGatewayMaintenanceCoordinator({ databasePath, busyTimeoutMs: 0 });
+    coordinators.push(owner);
+    resources = createOpenClawDatabaseMaintenanceScope(owner.createSchemaFenceDelegate);
+    coordinators.push(acquireStateDatabaseCoordinator({ databasePath, busyTimeoutMs: 250 }));
+  };
   const release = async () => {
     if (repairStoresMayBeOpen) {
       await resources?.close();
@@ -164,12 +179,39 @@ export async function beginDoctorMaintenance(params: {
       if (
         parentActivation !== undefined &&
         !assertContinuationCurrent &&
-        inspection.serviceUpdateVerdict?.kind !== "absent" &&
+        inspection.serviceUpdateVerdict?.kind === "owned" &&
         inspection.offline !== true
       ) {
         throw new Error(
           "The update parent owns Gateway activation. Stop the service through its owner before retrying the update; Doctor will not stop or restart it.",
         );
+      }
+      try {
+        acquireMaintenanceResources();
+      } catch (error) {
+        // A running managed Gateway legitimately owns this coordinator until its
+        // service is stopped. Any other holder is knowable before that mutation.
+        const gatewayOwner = readGatewayOwnerLease({
+          env,
+          current: true,
+          openStateSchemaReadAdmission: openDoctorStateSchemaReadAdmission,
+        });
+        const legacyGatewayLock = gatewayOwner
+          ? undefined
+          : await readActiveGatewayLockIdentity({
+              env: inspection.serviceEnv ?? env,
+              requireInspection: true,
+            });
+        if (
+          !inspection.running ||
+          !(
+            (gatewayOwner?.state === "live" && gatewayOwner.mode === "supervised") ||
+            (inspection.servicePid !== undefined &&
+              legacyGatewayLock?.pid === inspection.servicePid)
+          )
+        ) {
+          throw error;
+        }
       }
       if (inspection.serviceUpdateVerdict?.kind === "owned") {
         inspectingActivation = false;
@@ -193,6 +235,9 @@ export async function beginDoctorMaintenance(params: {
             params.runtime.log("Stopped the managed Gateway for Doctor repair.");
           }
         }
+      } else if (inspection.serviceUpdateVerdict?.kind === "unavailable") {
+        warnings.push(inspection.serviceUpdateVerdict.message);
+        params.runtime.log(inspection.serviceUpdateVerdict.message);
       } else if (inspection.serviceUpdateVerdict?.kind !== "absent") {
         params.runtime.log(
           "The stopped Gateway service was left unchanged; repairing Doctor's selected state only.",
@@ -200,14 +245,10 @@ export async function beginDoctorMaintenance(params: {
       }
     }
     inspectingActivation = false;
-    const databasePath = path.resolve(resolveOpenClawStateSqlitePath(env));
     // Hold the reentrant lifecycle coordinators, not an in-tree Gateway lock:
     // individual migrations acquire their own in-tree locks under this scope.
     // Gateway ownership lasts until that process stops, not for a short transaction.
-    const owner = acquireGatewayMaintenanceCoordinator({ databasePath, busyTimeoutMs: 0 });
-    coordinators.push(owner);
-    resources = createOpenClawDatabaseMaintenanceScope(owner.createSchemaFenceDelegate);
-    coordinators.push(acquireStateDatabaseCoordinator({ databasePath, busyTimeoutMs: 250 }));
+    acquireMaintenanceResources();
     const { assertNoOpenClawAgentDatabaseLeasesReadOnly, OpenClawAgentDatabaseLeaseActiveError } =
       await import("../state/openclaw-agent-db-lease.js");
     try {
@@ -250,6 +291,7 @@ export async function beginDoctorMaintenance(params: {
     throw refusal;
   }
   return {
+    warnings,
     run: (operation) => resources!.run(operation),
     release,
     async finish(cfg) {

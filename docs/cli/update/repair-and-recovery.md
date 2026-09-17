@@ -16,6 +16,11 @@ After a failed interactive update or repair, OpenClaw finishes cleanup and offer
 **Diagnose update failure**, **Report update failure**, or **Exit**. Reporting
 previews the sanitized issue body and requires separate confirmation.
 
+Unexpected exceptions retain the known update mode, resolved target, failed step,
+and any recorded recovery outcome. Reports include a bounded, redacted error code
+or name and first message line through the same diagnostics as failed commands;
+unrecognized private text and stack traces are excluded from the public preview.
+
 Choosing **Diagnose update failure** opens [Triage](/cli/triage), which starts the
 first directly launchable coding agent on `PATH`, in this order: Claude Code,
 Codex, OpenCode, then Pi. It passes the captured update failure directly and leaves
@@ -126,6 +131,20 @@ Identityless rows and runs with an unrecorded adopter still require more than
 abandonment recovery.
 JSON output identifies reconciled run IDs in
 `reconciledRuns`, with `status: "ok"`, `mode: "repair"`, and `restart: false`.
+
+Repair also acknowledges an untouched package installation whose update was
+refused because its package-manager owner was unknown, once the installed
+version meets or exceeds the resolved target. This includes older updaters that
+incorrectly recorded that refusal as a failed update. The original refusal
+detail stays in history; repair clears the failure prompt without Doctor
+maintenance or a service restart. Runs that reached installation or finalization
+still require normal repair.
+
+Fresh Doctor children run with the existing external service-repair policy
+because the updater owns service changes. They preserve an operator's
+`OPENCLAW_SERVICE_REPAIR_POLICY=external` selection and retain Gateway/state
+coordinators and agent-database lease checks. An external deployment owner still
+owns stopping and restarting its Gateway.
 
 Repair invoked within the owning update can continue when its inherited run ID
 and live process identity match that owner. Standalone repair records the same
@@ -282,9 +301,19 @@ it does not approve future capability additions.
 
 ### Skipped legacy audit recovery
 
-Doctor can leave a legacy audit source in place when its raw archive has no
-checkpoint and begins with ambiguous whitespace, changed other than by append,
-or cannot obtain another durable raw-archive checkpoint. These conditions produce
+When a legacy audit raw archive changed other than by append, Doctor preserves it
+beside itself with a `.quarantined-<date>-<id>` suffix. The warning names the
+quarantined path and explains the expected append-only growth and observed change.
+An empty raw archive without a checkpoint is also quarantined when its sanitized
+companion still contains history. Doctor keeps the sanitized records and existing
+SQLite rows, continues later repairs, and does not repeat the warning on subsequent
+runs. Quarantine does not import the changed bytes or delete the archive or backups.
+Quarantined raw archives remain local and are excluded from portable backups;
+sanitized companions and retained SQLite audit history are backed up normally.
+
+Doctor can leave other legacy audit sources in place when a raw archive has no
+checkpoint and begins with ambiguous whitespace, or cannot obtain another durable
+raw-archive checkpoint. These conditions produce
 a `skipped` migration receipt with a warning. Other repairs continue, and update
 finalization can complete with warnings. An unsafe recovery failure, such as an
 interrupted archive that cannot be restored, still stops Doctor.
@@ -296,8 +325,8 @@ before attempting recovery, and include the warning and archive filenames when
 requesting help. Do not delete or rewrite archives or checkpoints to suppress
 the warning.
 
-The warning repeats on later Doctor or `openclaw update repair` runs until the
-archive is resolved. Successful finalization does not mean this historical audit
+Warnings for sources left in place repeat on later Doctor or `openclaw update repair`
+runs until the archive is resolved. Successful finalization does not mean this historical audit
 data was imported. There is currently no supported sanitized-only import when
 the raw archive is unusable: accepting the companion as a recovery source needs
 an explicit reconciliation procedure that preserves duplicate events, retained

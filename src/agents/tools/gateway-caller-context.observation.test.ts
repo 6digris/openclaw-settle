@@ -32,6 +32,7 @@ import {
 import { runBeforeToolCallHook } from "../agent-tools.before-tool-call.policy.js";
 import {
   bindAdmittedGatewayOwnerObservation,
+  captureGatewayToolCallerAssertion,
   createAdmittedGatewayToolCallerIdentity,
   getGatewayToolCallerIdentity,
   observeGatewayToolCallerOwner,
@@ -70,6 +71,77 @@ async function fixture(runId = "native-observer-run") {
 }
 
 describe("native before-tool owner observation", () => {
+  it("preserves composed Cron fences without turning observation into authority", async () => {
+    const f = await fixture();
+    const sourceCheck = vi.fn(() => true);
+    const wrapperCheck = vi.fn(() => true);
+    const identity = createAdmittedGatewayToolCallerIdentity({
+      admittedRunContext: f.admitted,
+      ...f.context,
+      cronAuthorityCheck: sourceCheck,
+    });
+    await withGatewayToolCallerIdentity(identity, async () => {
+      await withGatewayToolCallerIdentity(
+        { agentId: "wrapper", sessionKey: "wrapper", cronAuthorityCheck: wrapperCheck },
+        async () => {
+          expect(observeGatewayToolCallerOwner(f.context)).toBe("match");
+          expect(sourceCheck).not.toHaveBeenCalled();
+          expect(wrapperCheck).not.toHaveBeenCalled();
+          const assertCaller = captureGatewayToolCallerAssertion();
+          if (!assertCaller) {
+            throw new Error("missing caller authority");
+          }
+          expect(() => assertCaller("cron.list")).not.toThrow();
+          expect(sourceCheck).toHaveBeenCalledOnce();
+          expect(wrapperCheck).toHaveBeenCalledOnce();
+          sourceCheck.mockReturnValue(false);
+          expect(() => assertCaller("cron.list")).toThrow("Automation caller authority");
+          expect(() => assertCaller("gateway.status")).not.toThrow();
+          expect(observeGatewayToolCallerOwner(f.context)).toBe("match");
+          sourceCheck.mockReturnValue(true);
+          wrapperCheck.mockReturnValue(false);
+          expect(() => assertCaller("cron.list")).toThrow("Automation caller authority");
+          f.admission.close();
+          expect(observeGatewayToolCallerOwner(f.context)).toBe("unobserved");
+          expect(() => assertCaller("gateway.status")).toThrow("caller authority");
+        },
+      );
+    });
+  });
+
+  it("retains the native Cron issuer only within its admitted owner", async () => {
+    const a = await fixture("native-issuer-a");
+    const b = await fixture("native-issuer-b");
+    const nativeIssuer = vi.fn(() => {
+      throw new Error("observation must not mint authority");
+    });
+    const wrapperIssuer = vi.fn(() => {
+      throw new Error("wrapper must not replace the native issuer");
+    });
+    const identity = createAdmittedGatewayToolCallerIdentity({
+      admittedRunContext: a.admitted,
+      ...a.context,
+      mintCronRequesterGrant: nativeIssuer,
+    });
+    await withGatewayToolCallerIdentity(identity, async () => {
+      expect(getGatewayToolCallerIdentity()?.mintCronRequesterGrant).toBe(nativeIssuer);
+      await withGatewayToolCallerIdentity(
+        { agentId: "wrapper", sessionKey: "wrapper", mintCronRequesterGrant: wrapperIssuer },
+        async () => {
+          expect(getGatewayToolCallerIdentity()?.mintCronRequesterGrant).toBe(nativeIssuer);
+          expect(observeGatewayToolCallerOwner(a.context)).toBe("match");
+          await withGatewayToolCallerIdentity(b.identity, async () => {
+            expect(getGatewayToolCallerIdentity()?.mintCronRequesterGrant).toBeUndefined();
+            expect(observeGatewayToolCallerOwner(a.context)).toBe("unobserved");
+            expect(observeGatewayToolCallerOwner(b.context)).toBe("match");
+          });
+          expect(getGatewayToolCallerIdentity()?.mintCronRequesterGrant).toBe(nativeIssuer);
+        },
+      );
+    });
+    expect(nativeIssuer).not.toHaveBeenCalled();
+    expect(wrapperIssuer).not.toHaveBeenCalled();
+  });
   it("refreshes owner state after an earlier hook awaits and closes the admission", async () => {
     const f = await fixture();
     let lastOwner: string | undefined;
