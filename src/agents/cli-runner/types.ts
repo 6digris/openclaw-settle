@@ -281,6 +281,8 @@ export type RunCliAgentParams = {
   approvalReviewerDeviceId?: string;
   /** Runtime tool allow-list. CLI harnesses need a backend-owned exact translation. */
   toolsAllow?: string[];
+  /** Treat toolsAllow as exact names rather than policy aliases. */
+  toolsAllowExact?: boolean;
   /** Exact Skill Workshop proposal revision bound by the Gateway for this turn. */
   skillWorkshopProposalRevision?: SkillWorkshopProposalRevisionConstraint;
   skillLibraryAuthoring?: import("../../skills/library/authoring.js").SkillLibraryAuthoringCapability;

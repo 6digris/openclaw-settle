@@ -120,6 +120,8 @@ export type AgentCommandOpts = {
   allowModelOverride?: boolean;
   /** Optional runtime tool allow-list; when set, only these tools are exposed for this run. */
   toolsAllow?: string[];
+  /** Host-owned exact execution ceiling applied after normal tool projection. */
+  toolExecutionAllow?: readonly string[];
   /** Trusted owner-scoped plugin tool grant; normal policy and deny rules still apply. */
   runtimePluginToolGrant?: RuntimePluginToolGrant;
   /** Consumed in-process subagent-completion capability; never accepted from public RPC params. */
@@ -252,6 +254,7 @@ export type AgentCommandIngressOpts = Omit<
   | "pinnedWidgetAuthoring"
   | "executionIdentityAdmission"
   | "operationalRunInstance"
+  | "toolExecutionAllow"
   | "assertSourceCurrent"
   | "skillLibraryAuthoring"
   | "cronCreatorAuthorityCapability"
@@ -275,6 +278,8 @@ export type AgentCommandGatewayIngressOpts = AgentCommandIngressOpts &
     | "pinnedWidgetAuthoring"
     | "executionIdentityAdmission"
     | "operationalRunInstance"
+    | "toolExecutionAllow"
+    | "assertSourceCurrent"
     | "skillLibraryAuthoring"
     | "cronCreatorAuthorityCapability"
     | "onAdmittedRunContext"

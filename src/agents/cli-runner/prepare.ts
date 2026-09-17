@@ -680,11 +680,12 @@ async function prepareCliRunContextWithinReadFence(
     } else {
       runtimeToolsAllowPolicy = [...params.toolsAllow];
       const fallbackOpenClawTools = uniqueStrings(
-        expandToolGroups(params.toolsAllow)
+        (params.toolsAllowExact ? params.toolsAllow : expandToolGroups(params.toolsAllow))
           .map((toolName) => normalizeToolPolicyName(toolName))
           .filter(Boolean),
       );
       if (
+        !params.toolsAllowExact &&
         fallbackOpenClawTools.includes("write") &&
         !fallbackOpenClawTools.includes("apply_patch")
       ) {

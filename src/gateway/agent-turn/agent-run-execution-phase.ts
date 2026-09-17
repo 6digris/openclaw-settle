@@ -311,6 +311,9 @@ export async function startAgentRunExecution(params: {
         if (sessionsSendToolCaller && !sessionsSendToolCaller.assertCurrent) {
           throw new Error("sessions_send source authority is unavailable");
         }
+        const sessionsSendToolsAllow = sessionsSendToolCaller
+          ? [...sessionsSendToolCaller.sessionsSendToolsAllow!]
+          : undefined;
         const executionIdentityAdmission = resolveAgentRestartRecoveryExecutionIdentityAdmission({
           collectionEnabled: isExecutionIdentityCollectionEnabled(params.cfg),
           isRestartRecoveryResumeRun: params.isRestartRecoveryResumeRun,
@@ -441,11 +444,11 @@ export async function startAgentRunExecution(params: {
                 bootstrapContextMode: params.request.bootstrapContextMode,
                 bootstrapContextRunKind: params.effectiveBootstrapContextRunKind,
                 toolsAllow:
-                  (sessionsSendToolCaller?.sessionsSendToolsAllow
-                    ? [...sessionsSendToolCaller.sessionsSendToolsAllow]
-                    : undefined) ??
+                  sessionsSendToolsAllow ??
                   pluginSubagentToolsAllow ??
                   params.restoredCronContinuation?.toolsAllow,
+                toolExecutionAllow: sessionsSendToolsAllow,
+                assertSourceCurrent: sessionsSendToolCaller?.assertCurrent,
                 runtimePluginToolGrant,
                 trustedInternalHandoff: prepared.trustedInternalHandoff,
                 pinnedWidgetAuthoring: restartRecoveryContext?.pinnedWidgetAuthoring,

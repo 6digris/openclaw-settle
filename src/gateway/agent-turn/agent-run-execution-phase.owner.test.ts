@@ -284,7 +284,12 @@ describe("startAgentRunExecution Gateway ownership", () => {
       "sessions_send",
       "read",
     ]);
-    expect(assertCurrent).toHaveBeenCalledTimes(2);
+    expect(dispatchAgentRunFromGateway.mock.calls[0]?.[0]?.ingressOpts.toolExecutionAllow).toEqual([
+      "sessions_send",
+      "read",
+    ]);
+    dispatchAgentRunFromGateway.mock.calls[0]?.[0]?.ingressOpts.assertSourceCurrent?.();
+    expect(assertCurrent).toHaveBeenCalledTimes(3);
   });
 
   it("releases the admitted runtime once when aborted before dispatch", async () => {

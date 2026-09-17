@@ -225,6 +225,7 @@ function resolveMcpLoopbackTools(
       : applyPolicyToolsAllow(scoped.tools, toolsAllow);
   const toolSchema = buildMcpToolSchema(tools);
   scoped.captureFinalCronCreatorTools?.(new Set(toolSchema.map((tool) => tool.name)));
+  scoped.captureFinalSessionSendTools(new Set(toolSchema.map((tool) => tool.name)));
   return {
     agentId: scoped.agentId,
     workspaceDir: scoped.workspaceDir,

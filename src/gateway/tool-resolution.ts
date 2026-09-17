@@ -689,5 +689,10 @@ export function resolveGatewayScopedTools(
             },
           )
       : undefined,
+    captureFinalSessionSendTools: (callableToolNames: ReadonlySet<string>) =>
+      replaceWithEffectiveToolAllowlist(
+        sessionSendToolAllowlist,
+        inheritableTools.filter((tool) => callableToolNames.has(tool.name.trim())),
+      ),
   };
 }

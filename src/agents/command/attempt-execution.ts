@@ -1179,6 +1179,7 @@ export function runAgentAttempt(params: {
               cliRuntimeToolsAllow,
               params.opts.toolsAllowIsDefault,
             ),
+            toolsAllowExact: params.opts.toolExecutionAllow !== undefined,
             // This loop is the command-origin sibling of the auto-reply fallback
             // candidate, so its CLI grant needs the same delegation gate; the
             // inputs match the tool state this invocation actually runs with.
@@ -1400,6 +1401,7 @@ export function runAgentAttempt(params: {
     bootstrapContextMode: params.opts.bootstrapContextMode,
     bootstrapContextRunKind: params.opts.bootstrapContextRunKind,
     toolsAllow: runtimeToolsAllow,
+    toolExecutionAllow: params.opts.toolExecutionAllow,
     runtimePluginToolGrant: params.opts.runtimePluginToolGrant,
     trustedInternalHandoff: trustedSubagentAnnounceHandoff
       ? params.opts.trustedInternalHandoff
