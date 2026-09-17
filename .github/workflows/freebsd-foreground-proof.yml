@@ -1,5 +1,5 @@
 # Temporary diagnostic only; preserve the original admission deadline and restore the bundle.
-name: Temporary FreeBSD admission phase diagnostic
+name: Temporary FreeBSD admission bundle readback
 
 on:
   push:
@@ -49,7 +49,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 14
+          fetch-depth: 15
           persist-credentials: false
           sparse-checkout-cone-mode: false
           sparse-checkout: |
@@ -60,8 +60,9 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$HARNESS_SHA"
-          test "$(git rev-parse HEAD^)" = f601a508ea69565135a364896ed67f2c9a7f0cc5
-          test "$(git rev-parse HEAD^^)" = "$SOURCE_SHA"
+          test "$(git rev-parse HEAD^)" = 3154de4e4620593ac739ba05dfbd48fb3e7d3c86
+          test "$(git rev-parse HEAD^^)" = f601a508ea69565135a364896ed67f2c9a7f0cc5
+          test "$(git rev-parse HEAD^^^)" = "$SOURCE_SHA"
           test "$(git rev-parse "$SOURCE_SHA^")" = "$PASSED_SOURCE_SHA"
           test "$(git rev-parse "$PASSED_SOURCE_SHA^")" = "$PRODUCT_SHA"
           test "$(git diff --name-only HEAD^ HEAD)" = .github/workflows/freebsd-foreground-proof.yml
@@ -77,7 +78,7 @@ jobs:
           run-id: ${{ env.PROOF_RUN_ID }}
           path: proof-input
           merge-multiple: true
-      - name: Authenticate the sealed bundle and check the exact phase-probe shape
+      - name: Read authenticated admission source without execution
         shell: bash
         run: |
           set -euo pipefail
@@ -390,8 +391,46 @@ jobs:
           mkdir "$RUNNER_TEMP/phase-package"
           tar -xzf proof-input/payload/candidate.tgz -C "$RUNNER_TEMP/phase-package"
           node --check proof-input/phase-probe.mjs
-          node proof-input/phase-probe.mjs check-package "$RUNNER_TEMP/phase-package/package" proof-input/phase-shape.json
+          # Readback only: no imported package module, instrumentation or VM.
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { createHash } from 'node:crypto';
+          const root=path.join(process.env.RUNNER_TEMP,'phase-package/package');
+          const needle=Buffer.from('admission deadline expired');
+          const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
+          const records=[]; let totalBytes=0;
+          function visit(relative='dist') {
+            for(const name of fs.readdirSync(path.join(root,relative)).sort()) {
+              const file=path.join(relative,name), full=path.join(root,file), stat=fs.lstatSync(full);
+              if(stat.isDirectory()) { visit(file); continue; }
+              if(!stat.isFile()||!/[.](?:js|mjs|cjs)$/.test(file)) continue;
+              const bytes=fs.readFileSync(full), offsets=[];
+              for(let offset=bytes.indexOf(needle);offset!==-1;offset=bytes.indexOf(needle,offset+needle.length)) offsets.push(offset);
+              if(offsets.length===0) continue;
+              assert(offsets.length<=16,'unexpected admission literal count');
+              const ranges=[];
+              for(const offset of offsets) {
+                const start=Math.max(0,offset-4096), end=Math.min(bytes.length,offset+needle.length+4096);
+                const previous=ranges.at(-1);
+                if(previous&&start<=previous.end) previous.end=Math.max(previous.end,end);
+                else ranges.push({start,end});
+              }
+              const windows=ranges.map(({start,end})=>{
+                const selected=bytes.subarray(start,end); totalBytes+=selected.length;
+                return {offset:start,length:selected.length,sha256:hash(selected),base64:selected.toString('base64')};
+              });
+              records.push({file,bytes:bytes.length,sha256:hash(bytes),literalOffsets:offsets,windows});
+            }
+          }
+          visit();
+          assert(records.length>0&&records.length<=8,'unexpected admission source file count');
+          assert(totalBytes<=65536,'admission source windows exceed readback bound');
+          console.log(JSON.stringify({kind:'authenticated-admission-source-readback',source:process.env.SOURCE_SHA,candidateSha256:'7b429bbea2f472c11c0af055eae87eafa4ded66e47f81dade42ec38cd665a86d',records,totalBytes,qualification:false,vmExecuted:false}));
+          NODE
       - name: Diagnose ARM installed admission without qualification
+        if: ${{ false }}
         uses: vmactions/freebsd-vm@8b0f1a8fc0ea0def307835c258940ca358fe6480 # v1.5.6
         with:
           release: "15.1"
