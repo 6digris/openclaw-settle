@@ -187,6 +187,10 @@ async function writeScenario(
     lane,
     installRoot: await fs.realpath(state.root),
   });
+  if (lane === "resume") {
+    vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_RESULT_PATH", state.path("post-core-result.json"));
+    await fs.writeFile(state.path("handoff.json"), JSON.stringify({ completionOwner: "parent" }));
+  }
 }
 
 async function invoke(lane: Lane, recoveryRunIds: readonly string[] = []): Promise<void> {
@@ -296,17 +300,23 @@ function expectDoctorDiagnostics(): void {
 
 function expectSuccess(lane: Lane, doctorExpected = true): void {
   expect(defaultRuntime.exit).not.toHaveBeenCalledWith(1);
-  expect(reportedResult(lane)).toMatchObject({
-    status: "ok",
-    postUpdate: { plugins: { status: "ok" } },
-  });
+  expect(reportedResult(lane)).toMatchObject(
+    lane === "resume"
+      ? { status: "ok" }
+      : { status: "ok", postUpdate: { plugins: { status: "ok" } } },
+  );
   if (doctorExpected) {
     expectDoctorDiagnostics();
   }
 }
 
 function reportedResult(lane: Lane): unknown {
-  return lane === "resume" || lane === "repair"
+  if (lane === "resume") {
+    return JSON.parse(
+      fsSync.readFileSync(process.env.OPENCLAW_UPDATE_POST_CORE_RESULT_PATH!, "utf8"),
+    );
+  }
+  return lane === "repair"
     ? vi.mocked(defaultRuntime.writeJson).mock.lastCall?.[0]
     : mocks.print.mock.lastCall?.[0];
 }
@@ -667,6 +677,36 @@ describe("update orchestration lifecycle ownership", () => {
         }
         await completed.promise.catch(() => {});
       }
+    },
+  );
+
+  it.each([false, true])(
+    "legacy resume settles Doctor before its result (changed=%s)",
+    async (changed) => {
+      await writeScenario("resume");
+      await fs.rm(state.path("handoff.json"));
+      const resultPath = state.path("legacy-result.json");
+      vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_RESULT_PATH", resultPath);
+      mocks.plugins.mockImplementationOnce(async () => {
+        expect(await events()).toEqual(["post-attempt", "post-acquired"]);
+        expect(await fs.stat(resultPath).catch(() => null)).toBeNull();
+        return { ...pluginResult, changed };
+      });
+
+      await invoke("resume");
+
+      expect(JSON.parse(await fs.readFile(resultPath, "utf8"))).toMatchObject({
+        status: "ok",
+        changed,
+      });
+      expect(await events()).toEqual([
+        "post-attempt",
+        "post-acquired",
+        ...(changed ? ["post-attempt", "post-acquired"] : []),
+        "validate",
+        "readiness",
+      ]);
+      expectDoctorDiagnostics();
     },
   );
 
