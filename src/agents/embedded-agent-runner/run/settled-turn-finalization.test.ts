@@ -801,7 +801,7 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
     expect(result.prepared.agentMeta).toMatchObject({ assistantTurns: 3 });
   });
 
-  it("preserves exhausted silent helper failure without synthesizing a fallback", async () => {
+  it("preserves silent helper failure after one empty explanation attempt", async () => {
     const attempt = settledFailedAttempt();
     const emptyAssistant = buildEmbeddedRunnerAssistant({
       content: [{ type: "text", text: "" }],
@@ -815,7 +815,7 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
 
     const result = await prepareTerminalWithSettledTurnFinalization(input);
 
-    expect(backendMocks.runSettledFinalization).toHaveBeenCalledTimes(2);
+    expect(backendMocks.runSettledFinalization).toHaveBeenCalledOnce();
     expect(transcriptMocks.appendAssistantMirrorMessageByIdentity).not.toHaveBeenCalled();
     expect(result.finalizationOutcome).toBe("failed");
     expect(result.attempt).toBe(attempt);
