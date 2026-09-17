@@ -130,6 +130,11 @@ export function createGatewayConfigModuleMock(actual: GatewayConfigModule): Gate
     }
     const cron = Object.keys(fileCron).length > 0 ? fileCron : undefined;
 
+    // Most gateway integration tests exercise request and lifecycle behavior,
+    // not the audit ledger. Avoid starting a worker thread for every test
+    // server unless the fixture explicitly enables or configures auditing.
+    const audit = baseConfig.audit ?? { enabled: false };
+
     return {
       ...baseConfig,
       agents,
@@ -139,6 +144,7 @@ export function createGatewayConfigModuleMock(actual: GatewayConfigModule): Gate
       gateway,
       hooks,
       cron,
+      audit,
     } as OpenClawConfig;
   };
 
