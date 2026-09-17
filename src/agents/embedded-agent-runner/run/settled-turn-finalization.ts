@@ -186,19 +186,13 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
       mergeUsageIntoAccumulator(input.terminalBase.usageAccumulator, attempt.attemptUsage);
       mergeAttemptRunStatsIntoAccumulator(input.terminalBase.usageAccumulator, attempt);
       lastRunPromptUsage = attempt.attemptUsage ?? lastRunPromptUsage;
-      if (
-        finalization.outcome === "empty" &&
-        finalizationAttempt < maxFinalizationAttempts
-      ) {
+      if (finalization.outcome === "empty" && finalizationAttempt < maxFinalizationAttempts) {
         log.warn(
           `settled-turn finalization completed without a visible answer: runId=${runParams.runId} sessionId=${runParams.sessionId} ` +
             `provider=${errorContext.provider}/${errorContext.model} — retrying ${finalizationAttempt}/${maxFinalizationAttempts - 1} with tools disabled`,
         );
       }
-    } while (
-      finalization.outcome === "empty" &&
-      finalizationAttempt < maxFinalizationAttempts
-    );
+    } while (finalization.outcome === "empty" && finalizationAttempt < maxFinalizationAttempts);
     finalizationOutcome = finalization.outcome;
     if (finalization.outcome === "empty") {
       log.warn(

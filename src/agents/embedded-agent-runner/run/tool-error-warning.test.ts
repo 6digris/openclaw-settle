@@ -233,7 +233,11 @@ describe("buildEmbeddedRunPayloads tool warnings", () => {
 
   it.each([
     [false, "off", "The Exec step was blocked before it could run (exit 7)"],
-    [false, "full", "The Exec step was blocked before it could run: `make build`: Command exited with code 7"],
+    [
+      false,
+      "full",
+      "The Exec step was blocked before it could run: `make build`: Command exited with code 7",
+    ],
     [true, "off", "The Exec step failed (exit 7)"],
     [true, "full", "The Exec step failed: `make build`: Command exited with code 7"],
     [undefined, "off", "The Exec step failed (exit 7)"],
@@ -268,7 +272,8 @@ describe("buildEmbeddedRunPayloads tool warnings", () => {
       title: "prefers raw exec metadata when the literal command contains backticks",
       meta: "run node inline script, `node -e 'console.log(1, `x`)'`",
       toolResultFormat: "markdown",
-      expected: "The Exec step failed: ``node -e 'console.log(1, `x`)'``: Command exited with code 1",
+      expected:
+        "The Exec step failed: ``node -e 'console.log(1, `x`)'``: Command exited with code 1",
     },
     {
       title: "leaves exec metadata unwrapped for plain tool results",
@@ -280,7 +285,8 @@ describe("buildEmbeddedRunPayloads tool warnings", () => {
       title: "preserves raw exec context before trailing raw command metadata",
       meta: "run python3 /tmp/audit.py, node: mac-1, `python3 /tmp/audit.py`",
       toolResultFormat: "markdown",
-      expected: "The Exec step failed: `node: mac-1 · python3 /tmp/audit.py`: Command exited with code 1",
+      expected:
+        "The Exec step failed: `node: mac-1 · python3 /tmp/audit.py`: Command exited with code 1",
     },
     {
       title: "does not promote display-summary commas into raw exec context",

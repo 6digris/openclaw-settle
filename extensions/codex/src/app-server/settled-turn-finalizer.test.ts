@@ -292,9 +292,8 @@ describe("runCodexSettledTurnFinalization", () => {
   );
 
   it("uses a restricted remote thread with settled history and the selected model", async () => {
-    const { runBoundedCodexAppServerTurn } = await vi.importActual<
-      typeof import("./bounded-turn.js")
-    >("./bounded-turn.js");
+    const { runBoundedCodexAppServerTurn } =
+      await vi.importActual<typeof import("./bounded-turn.js")>("./bounded-turn.js");
     mocks.runBounded.mockImplementation(runBoundedCodexAppServerTurn);
     const attempt = createAttempt();
     const settledAttempt = createSettledAttempt({
@@ -307,25 +306,27 @@ describe("runCodexSettledTurnFinalization", () => {
       switch (method) {
         case "model/list":
           return {
-            data: [{
-              id: "synthetic-model",
-              model: "synthetic-model",
-              displayName: "Synthetic model",
-              description: "Test model",
-              hidden: false,
-              isDefault: true,
-              inputModalities: ["text"],
-              supportedReasoningEfforts: [{ reasoningEffort: "low", description: "Low" }],
-              defaultReasoningEffort: "low",
-              upgrade: null,
-              upgradeInfo: null,
-              availabilityNux: null,
-              supportsPersonality: false,
-              multiAgentVersion: null,
-              additionalSpeedTiers: [],
-              serviceTiers: [],
-              defaultServiceTier: null,
-            }],
+            data: [
+              {
+                id: "synthetic-model",
+                model: "synthetic-model",
+                displayName: "Synthetic model",
+                description: "Test model",
+                hidden: false,
+                isDefault: true,
+                inputModalities: ["text"],
+                supportedReasoningEfforts: [{ reasoningEffort: "low", description: "Low" }],
+                defaultReasoningEffort: "low",
+                upgrade: null,
+                upgradeInfo: null,
+                availabilityNux: null,
+                supportsPersonality: false,
+                multiAgentVersion: null,
+                additionalSpeedTiers: [],
+                serviceTiers: [],
+                defaultServiceTier: null,
+              },
+            ],
             nextCursor: null,
           };
         case "config/read":
@@ -376,39 +377,57 @@ describe("runCodexSettledTurnFinalization", () => {
 
     const result = await runCodexSettledTurnFinalization({ attempt, settledAttempt }, options);
 
-    expect(result.assistant).toMatchObject({ content: [{ type: "text", text: "The message was sent." }] });
-    expect(clientFactory).toHaveBeenCalledWith(expect.objectContaining({
-      authProfileId: "openai:captured",
-      startOptions: expect.objectContaining({
-        transport: "websocket",
-        url: "wss://app-server.example.test/ws",
-        authToken: "synthetic-connection-token",
+    expect(result.assistant).toMatchObject({
+      content: [{ type: "text", text: "The message was sent." }],
+    });
+    expect(clientFactory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        authProfileId: "openai:captured",
+        startOptions: expect.objectContaining({
+          transport: "websocket",
+          url: "wss://app-server.example.test/ws",
+          authToken: "synthetic-connection-token",
+        }),
       }),
-    }));
+    );
     expect(fake.request.mock.calls.map(([method]) => method)).toEqual([
-      "model/list", "config/read", "configRequirements/read", "thread/start",
-      "mcpServerStatus/list", "thread/inject_items", "turn/start",
+      "model/list",
+      "config/read",
+      "configRequirements/read",
+      "thread/start",
+      "mcpServerStatus/list",
+      "thread/inject_items",
+      "turn/start",
     ]);
-    expect(fake.request).toHaveBeenCalledWith("thread/start", expect.objectContaining({
-      model: "synthetic-model",
-      modelProvider: "openai",
-      environments: [],
-      dynamicTools: [],
-      ephemeral: true,
-      config: expect.objectContaining({
-        "features.shell_tool": false,
-        "features.unified_exec": false,
-        "features.hooks": false,
-        "features.code_mode": false,
-        "features.apps": false,
-        "features.plugins": false,
-        web_search: "disabled",
-        mcp_servers: { inherited: { enabled: false } },
+    expect(fake.request).toHaveBeenCalledWith(
+      "thread/start",
+      expect.objectContaining({
+        model: "synthetic-model",
+        modelProvider: "openai",
+        environments: [],
+        dynamicTools: [],
+        ephemeral: true,
+        config: expect.objectContaining({
+          "features.shell_tool": false,
+          "features.unified_exec": false,
+          "features.hooks": false,
+          "features.code_mode": false,
+          "features.apps": false,
+          "features.plugins": false,
+          web_search: "disabled",
+          mcp_servers: { inherited: { enabled: false } },
+        }),
       }),
-    }), expect.anything());
-    expect(fake.request).toHaveBeenCalledWith("thread/inject_items", {
-      threadId: "thread-1", items: history instanceof CodexSettledTurnContext ? history.data : [],
-    }, expect.anything());
+      expect.anything(),
+    );
+    expect(fake.request).toHaveBeenCalledWith(
+      "thread/inject_items",
+      {
+        threadId: "thread-1",
+        items: history instanceof CodexSettledTurnContext ? history.data : [],
+      },
+      expect.anything(),
+    );
     expect(mocks.mirror).toHaveBeenCalledOnce();
   });
 

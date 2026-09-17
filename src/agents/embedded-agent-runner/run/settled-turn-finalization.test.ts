@@ -381,7 +381,8 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
     attempt.currentAttemptAssistant = assistant;
     attempt.currentAttemptCompletedAssistant = assistant;
     attempt.lastToolError = { toolName: "exec", error: "Command exited with code 127" };
-    const explanation = "I could not finish the update because the required command is unavailable.";
+    const explanation =
+      "I could not finish the update because the required command is unavailable.";
     backendMocks.runSettledFinalization.mockResolvedValueOnce({
       outcome: "answered",
       result: {
@@ -403,11 +404,13 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
       expect.objectContaining({ text: explanation, isError: true }),
     ]);
     expect(result.attempt.lastToolError).toEqual(attempt.lastToolError);
-    expect(resolveCronPayloadOutcome({
-      payloads: result.prepared.payloadsWithToolMedia ?? [],
-      failureSignal: result.prepared.failureSignal,
-      finalAssistantVisibleText: result.prepared.finalAssistantVisibleText,
-    })).toMatchObject({
+    expect(
+      resolveCronPayloadOutcome({
+        payloads: result.prepared.payloadsWithToolMedia ?? [],
+        failureSignal: result.prepared.failureSignal,
+        finalAssistantVisibleText: result.prepared.finalAssistantVisibleText,
+      }),
+    ).toMatchObject({
       hasFatalErrorPayload: true,
       embeddedRunError: explanation,
       deliveryPayloads: [{ text: explanation, isError: true }],
@@ -431,7 +434,8 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
       notify: false,
       summary: "Private monitor diagnostic",
     };
-    const explanation = "I could not update the heartbeat because the required command is unavailable.";
+    const explanation =
+      "I could not update the heartbeat because the required command is unavailable.";
     backendMocks.runSettledFinalization.mockResolvedValueOnce({
       outcome: "answered",
       result: {
@@ -457,7 +461,9 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
       stopReason: "toolUse",
       content: [{ type: "toolCall", id: "cleanup", name: "gateway_exec", arguments: {} }],
     });
-    const silent = buildEmbeddedRunnerAssistant({ content: [{ type: "text", text: SILENT_REPLY_TOKEN }] });
+    const silent = buildEmbeddedRunnerAssistant({
+      content: [{ type: "text", text: SILENT_REPLY_TOKEN }],
+    });
     attempt.terminal = { kind: "ok" };
     attempt.assistantTexts = [SILENT_REPLY_TOKEN];
     attempt.lastToolError = {
@@ -467,7 +473,14 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
     };
     attempt.messagesSnapshot.push(
       recovery,
-      { role: "toolResult", toolCallId: "cleanup", toolName: "gateway_exec", content: [{ type: "text", text: "Temporary instruction removed" }], isError: false, timestamp: 1 },
+      {
+        role: "toolResult",
+        toolCallId: "cleanup",
+        toolName: "gateway_exec",
+        content: [{ type: "text", text: "Temporary instruction removed" }],
+        isError: false,
+        timestamp: 1,
+      },
       silent,
     );
     attempt.toolMetas.push({ toolName: "gateway_exec", isError: false, replaySafe: false });
@@ -482,7 +495,8 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
     };
     attempt.didSendViaMessagingTool = true;
     attempt.messagingToolSentTexts = ["TEST_DELIVERED"];
-    const explanation = "I sent the test message and removed the temporary instruction. The first cleanup command was unavailable, but the later cleanup succeeded.";
+    const explanation =
+      "I sent the test message and removed the temporary instruction. The first cleanup command was unavailable, but the later cleanup succeeded.";
     backendMocks.runSettledFinalization.mockResolvedValueOnce({
       outcome: "answered",
       result: {
@@ -526,7 +540,8 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
 
   it("preserves an existing authored failure explanation in a conversation", async () => {
     const attempt = settledFailedAttempt();
-    const explanation = "I could not finish the update because the required command is unavailable.";
+    const explanation =
+      "I could not finish the update because the required command is unavailable.";
     const assistant = buildEmbeddedRunnerAssistant({
       content: [{ type: "text", text: explanation }],
     });
