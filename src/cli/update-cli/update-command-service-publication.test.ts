@@ -21,11 +21,15 @@ import { withGatewayRuntimeArtifactPublication } from "./update-command-service-
 
 const mocks = vi.hoisted(() => ({
   service: vi.fn<() => GatewayService>(),
-  candidates: vi.fn<typeof import("../../daemon/service.js").readGatewayServiceCandidates>(),
+  candidates:
+    vi.fn<typeof import("../../daemon/service-candidates.js").readGatewayServiceCandidates>(),
 }));
 vi.mock("../../daemon/service.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../daemon/service.js")>()),
   resolveGatewayService: mocks.service,
+}));
+vi.mock("../../daemon/service-candidates.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../daemon/service-candidates.js")>()),
   readGatewayServiceCandidates: mocks.candidates,
 }));
 
@@ -580,8 +584,9 @@ it.each(["shared-running", "foreign-running", "foreign-to-shared"] as const)(
         ],
         errors: [],
       });
-      const actual =
-        await vi.importActual<typeof import("../../daemon/service.js")>("../../daemon/service.js");
+      const actual = await vi.importActual<typeof import("../../daemon/service-candidates.js")>(
+        "../../daemon/service-candidates.js",
+      );
       mocks.candidates.mockImplementation(actual.readGatewayServiceCandidates);
       let enteredPublication = false;
       const publication = withGatewayRuntimeArtifactPublication(

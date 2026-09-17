@@ -593,9 +593,13 @@ vi.mock("../config/backup-rotation.js", async (importOriginal) => ({
   createPreUpdateConfigSnapshot: (...args: unknown[]) => createPreUpdateConfigSnapshotMock(...args),
 }));
 
+vi.mock("../daemon/service-candidates.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../daemon/service-candidates.js")>()),
+  readGatewayServiceCandidates: vi.fn(async () => []),
+}));
+
 vi.mock("../daemon/service.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../daemon/service.js")>()),
-  readGatewayServiceCandidates: vi.fn(async () => []),
   readGatewayServiceState: async (
     _service: unknown,
     args?: {

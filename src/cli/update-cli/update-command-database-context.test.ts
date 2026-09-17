@@ -8,11 +8,8 @@ import {
 } from "../../daemon/constants.js";
 import * as serviceInventory from "../../daemon/inspect.js";
 import * as taskProbe from "../../daemon/schtasks-state-probe.js";
-import {
-  readGatewayServiceState,
-  resolveManagedGatewayServiceIdentity,
-  type GatewayService,
-} from "../../daemon/service.js";
+import { resolveManagedGatewayServiceIdentity } from "../../daemon/service-candidates.js";
+import { readGatewayServiceState, type GatewayService } from "../../daemon/service.js";
 import {
   createMockGatewayService,
   mockSystemAccountHome,

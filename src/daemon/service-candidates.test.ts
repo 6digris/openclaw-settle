@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mockProcessPlatform } from "../test-utils/vitest-spies.js";
 import * as serviceInventory from "./inspect.js";
-import { readGatewayServiceCandidates } from "./service.js";
+import { readGatewayServiceCandidates } from "./service-candidates.js";
 import {
   createMockGatewayService as createService,
   mockSystemAccountHome,

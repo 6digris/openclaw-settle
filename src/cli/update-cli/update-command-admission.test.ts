@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import * as configFile from "../../config/config.js";
-import * as gatewayService from "../../daemon/service.js";
+import * as serviceCandidates from "../../daemon/service-candidates.js";
 import * as tempRoot from "../../infra/tmp-openclaw-dir.js";
 import { isPackageTargetAlreadyCurrent } from "../../infra/update-global.js";
 import { createUpdateRun, getUpdateRun } from "../../infra/update-run-ledger.js";
@@ -143,7 +143,7 @@ describe("update target admission", () => {
         OPENCLAW_CONFIG_PATH: "/fixture/system/openclaw.json",
         OPENCLAW_SYSTEMD_UNIT: "openclaw-gateway-system.service",
       };
-      vi.spyOn(gatewayService, "readGatewayServiceCandidates").mockResolvedValue([
+      vi.spyOn(serviceCandidates, "readGatewayServiceCandidates").mockResolvedValue([
         {
           installed: true,
           running: true,

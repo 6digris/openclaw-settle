@@ -2,10 +2,9 @@ import type { LegacyConfigUpdatePlan } from "../../commands/doctor/legacy-config
 import { resolveConfigPath } from "../../config/paths.js";
 import {
   readGatewayServiceCandidates,
-  resolveGatewayService,
   resolveManagedGatewayServiceIdentity,
-  type GatewayServiceState,
-} from "../../daemon/service.js";
+} from "../../daemon/service-candidates.js";
+import { resolveGatewayService, type GatewayServiceState } from "../../daemon/service.js";
 import { resolvePathViaExistingAncestorSync } from "../../infra/boundary-path.js";
 import { UPDATE_RUN_ID_ENV } from "../../infra/update-control-plane-sentinel.js";
 import { isCurrentForegroundUpdateHandoffProcess } from "../../infra/update-managed-service-handoff.js";
