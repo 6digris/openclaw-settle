@@ -1438,7 +1438,11 @@ jobs:
             ].every(([file, capability]) => existsSync(file) && readFileSync(file, "utf8").includes(capability))) {
             const lanes = await import("./scripts/changed-lanes.mts");
             if (typeof lanes.getChangedCoreTestPaths === "function") {
-              changedCoreTestPaths = lanes.getChangedCoreTestPaths(lanes.detectChangedLanes(changedPaths));
+              const coreTestPaths = lanes.getChangedCoreTestPaths(lanes.detectChangedLanes(changedPaths));
+              // Deleted leaves need the full plan before hosted stripes are scheduled.
+              if (coreTestPaths?.length && coreTestPaths.every((path) => existsSync(path))) {
+                changedCoreTestPaths = coreTestPaths;
+              }
             }
           }
 
@@ -4854,6 +4858,19 @@ jobs:
       MACOS_PRIMARY_PHASE: ${{ github.event_name == 'workflow_dispatch' && !inputs.release_gate && needs.preflight.outputs.release_scope == 'full' && 'release' || 'tests' }}
       OPENCLAWKIT_TEST_EXECUTION: ${{ (github.event_name == 'workflow_dispatch' || github.run_attempt > 1) && 'serial' || 'parallel' }}
     steps:
+      # Start before checkout/setup so their time counts against optional cache work.
+      - name: Start Swift cache clock
+        id: swift-cache-clock
+        continue-on-error: true
+        timeout-minutes: 1
+        run: |
+          python3 -I -S - <<'PYTHON'
+          import os
+          import time
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              print(f"started={time.monotonic()}", file=output)
+          PYTHON
+
       - *platform_checkout_step
 
       - name: Setup Node environment for Apple assets
@@ -5156,8 +5173,35 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      # Cache writes are optional and must not inherit the remaining job lifetime.
+      # Admit the whole tail before minute 20: its gate/save/metadata/save bounds
+      # total five minutes, leaving five for runner startup, cancellation and cleanup.
+      - name: Check Swift cache save budget
+        id: swift-cache-budget
+        if: needs.preflight.outputs.cache_write_allowed == 'true'
+        continue-on-error: true
+        timeout-minutes: 1
+        env:
+          CACHE_STARTED: ${{ steps.swift-cache-clock.outputs.started }}
+        run: |
+          python3 -I -S - <<'PYTHON'
+          import os
+          import time
+          try:
+              elapsed = time.monotonic() - float(os.environ.get("CACHE_STARTED", ""))
+              allowed = 0 <= elapsed < 20 * 60
+          except ValueError:
+              allowed = False
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              print(f"allowed={str(allowed).lower()}", file=output)
+          if not allowed:
+              print("::notice::Skipping optional Swift cache saves: insufficient or unknown job budget.")
+          PYTHON
+
       - name: Save SwiftPM cache
-        if: matrix.phase == env.MACOS_PRIMARY_PHASE && needs.preflight.outputs.cache_write_allowed == 'true' && steps.swiftpm-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        timeout-minutes: 1
+        if: matrix.phase == env.MACOS_PRIMARY_PHASE && needs.preflight.outputs.cache_write_allowed == 'true' && steps.swiftpm-cache.outputs.cache-hit != 'true' && steps.swift-cache-budget.outputs.allowed == 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/Library/Caches/org.swift.swiftpm
@@ -5166,11 +5210,16 @@ jobs:
       # Each phase leaves its source inputs unchanged. Record
       # their actual metadata with the successful products immediately before save.
       - name: Record Swift build input timestamps
-        if: needs.preflight.outputs.cache_write_allowed == 'true' && steps.swift-build-cache.outputs.cache-hit != 'true' && env.HISTORICAL_TARGET != 'true'
+        id: record-swift-build-cache-metadata
+        continue-on-error: true
+        timeout-minutes: 1
+        if: needs.preflight.outputs.cache_write_allowed == 'true' && steps.swift-build-cache.outputs.cache-hit != 'true' && steps.swift-cache-budget.outputs.allowed == 'true' && env.HISTORICAL_TARGET != 'true'
         run: python3 -I -S scripts/swift-build-cache-metadata.py record
 
       - name: Save Swift build directory cache
-        if: needs.preflight.outputs.cache_write_allowed == 'true' && steps.swift-build-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        timeout-minutes: 2
+        if: needs.preflight.outputs.cache_write_allowed == 'true' && steps.swift-build-cache.outputs.cache-hit != 'true' && steps.swift-cache-budget.outputs.allowed == 'true' && (env.HISTORICAL_TARGET == 'true' || steps.record-swift-build-cache-metadata.outcome == 'success')
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: apps/macos/.build
@@ -5509,7 +5558,7 @@ jobs:
       - *platform_checkout_step
 
       - name: Setup Ruby
-        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
         with:
           ruby-version: "3.4.10"
           bundler: "2.6.9"

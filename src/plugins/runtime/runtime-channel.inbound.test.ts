@@ -79,21 +79,25 @@ describe("runtime raw inbound ownership", () => {
     >();
   });
 
-  it("delivers through the owning dispatcher without a plan override", async () => {
-    const dispatch = createBoundDispatch();
-    const channel = createRuntimeChannel({ dispatchReplyFromConfig: dispatch });
-    const { plan, deliver } = createPlan();
-    const result = await channel.inbound.run(createRawParams(plan));
+  it.each(["inbound", "turn"] as const)(
+    "%s delivers through the owning dispatcher without a plan override",
+    async (surface) => {
+      const dispatch = createBoundDispatch();
+      const channel = createRuntimeChannel({ dispatchReplyFromConfig: dispatch });
+      const { plan, deliver } = createPlan();
+      expect(channel.turn).toBe(channel.inbound);
+      const result = await channel[surface].run(createRawParams(plan));
 
-    expect(result.dispatched).toBe(true);
-    expect(dispatch).toHaveBeenCalledOnce();
-    expect(unownedDispatch).not.toHaveBeenCalled();
-    expect(deliver).toHaveBeenCalledWith(
-      expect.objectContaining({ text: "owned reply" }),
-      expect.objectContaining({ kind: "final" }),
-    );
-    expect(plan).not.toHaveProperty("dispatchReplyFromConfig");
-  });
+      expect(result.dispatched).toBe(true);
+      expect(dispatch).toHaveBeenCalledOnce();
+      expect(unownedDispatch).not.toHaveBeenCalled();
+      expect(deliver).toHaveBeenCalledWith(
+        expect.objectContaining({ text: "owned reply" }),
+        expect.objectContaining({ kind: "final" }),
+      );
+      expect(plan).not.toHaveProperty("dispatchReplyFromConfig");
+    },
+  );
 
   it("retains adapter receivers across asynchronous resolution and finalization", async () => {
     const dispatch = createBoundDispatch();

@@ -134,6 +134,13 @@ export function createRuntimeChannel(options?: {
         },
       },
     });
+  const inboundRuntime = {
+    buildContext: buildChannelInboundEventContext,
+    run: runInbound,
+    runPreparedReply: runPreparedChannelTurn,
+    dispatch: dispatchInbound,
+    dispatchReply: dispatchAssembledChannelTurn,
+  } satisfies PluginRuntime["channel"]["inbound"];
   const sessionRuntime = {
     resolveStorePath: resolveSessionStorePathCore,
     readSessionUpdatedAt: readSessionUpdatedAtCore,
@@ -238,13 +245,8 @@ export function createRuntimeChannel(options?: {
     outbound: {
       loadAdapter: loadChannelOutboundAdapter,
     },
-    inbound: {
-      buildContext: buildChannelInboundEventContext,
-      run: runInbound,
-      runPreparedReply: runPreparedChannelTurn,
-      dispatch: dispatchInbound,
-      dispatchReply: dispatchAssembledChannelTurn,
-    },
+    inbound: inboundRuntime,
+    turn: inboundRuntime,
     threadBindings: {
       setIdleTimeoutBySessionKey: ({ channelId, targetSessionKey, accountId, idleTimeoutMs }) =>
         setChannelConversationBindingIdleTimeoutBySessionKey({

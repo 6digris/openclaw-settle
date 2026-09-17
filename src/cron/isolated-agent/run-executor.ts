@@ -70,7 +70,6 @@ import {
   normalizeVerboseLevel,
   registerAgentRunContext,
   resolveBootstrapWarningSignaturesSeen,
-  resolveCandidateThinkingLevel,
   resolveCronAgentLane,
   resolveFastModeState,
   runCliAgent,
@@ -85,7 +84,7 @@ import {
   setCronSessionRuntimeModel,
   syncCronSessionLiveSelection,
 } from "./run-session-state.js";
-import { resolveEffectiveAgentRuntime, resolveThinkingDefault } from "./run.runtime.js";
+import { resolveEffectiveAgentRuntime, resolveThinkingSelection } from "./run.runtime.js";
 import { isLikelyInterimCronMessage } from "./subagent-followup-hints.js";
 
 type AgentTurnPayload = Extract<CronJob["payload"], { kind: "agentTurn" }> | null;
@@ -580,25 +579,13 @@ function createCronPromptExecutor(
             thinkingCatalog = runtimeCatalog;
           }
         }
-        const candidateRequestedThinkLevel =
-          candidateConfiguredThinkLevel ??
-          resolveThinkingDefault({
-            cfg: params.cfgWithAgentDefaults,
-            agentId: params.agentId,
-            provider: providerOverride,
-            model: modelOverride,
-            catalog: thinkingCatalog,
-            agentRuntime: candidateRuntime,
-          });
-        const candidateThinkLevel = resolveCandidateThinkingLevel({
+        const { level: candidateThinkLevel } = resolveThinkingSelection({
           cfg: params.cfgWithAgentDefaults,
-          provider: providerOverride,
-          modelId: modelOverride,
-          level: candidateRequestedThinkLevel,
-          catalog: thinkingCatalog,
           agentId: params.agentId,
-          sessionKey: params.runSessionKey,
-          sessionEntry: params.cronSession.sessionEntry,
+          provider: providerOverride,
+          model: modelOverride,
+          level: candidateConfiguredThinkLevel,
+          catalog: thinkingCatalog,
           agentRuntime: candidateRuntime,
         });
         const rootedExecution = params.executionRoot ? { root: params.executionRoot } : undefined;
