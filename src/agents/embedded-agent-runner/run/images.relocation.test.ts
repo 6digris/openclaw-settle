@@ -102,9 +102,15 @@ describe("relocated staged media at provider context materialization", () => {
       const marker = path.join(path.dirname(input.currentPath), ".gitignore");
       const preserved = path.join(input.root, "marker");
       await fs.rename(marker, preserved);
-      if (kind === "altered") await fs.writeFile(marker, "*\n");
-      if (kind === "symlink") await fs.symlink(preserved, marker);
-      if (kind === "hardlink") await fs.link(preserved, marker);
+      if (kind === "altered") {
+        await fs.writeFile(marker, "*\n");
+      }
+      if (kind === "symlink") {
+        await fs.symlink(preserved, marker);
+      }
+      if (kind === "hardlink") {
+        await fs.link(preserved, marker);
+      }
       expect(await input.render()).toEqual([]);
     },
   );
@@ -123,12 +129,18 @@ describe("relocated staged media at provider context materialization", () => {
     "does not rebase %s facts",
     async (kind) => {
       const input = await fixture();
-      if (kind === "missing-workspace") delete input.fact.workspaceDir;
-      if (kind === "plain-path")
+      if (kind === "missing-workspace") {
+        delete input.fact.workspaceDir;
+      }
+      if (kind === "plain-path") {
         input.fact.path = path.join(input.oldWorkspace, "input-attachment.png");
-      if (kind === "traversal")
+      }
+      if (kind === "traversal") {
         input.fact.path = `${path.dirname(input.sourcePath)}/../${path.basename(path.dirname(input.sourcePath))}/input-attachment.png`;
-      if (kind === "suppressed") input.fact.hydrationSuppressed = true;
+      }
+      if (kind === "suppressed") {
+        input.fact.hydrationSuppressed = true;
+      }
       input.fact.url = kind === "media-uri" ? "media://inbound/unavailable.png" : input.fact.path;
       expect(await input.render()).toEqual([]);
     },

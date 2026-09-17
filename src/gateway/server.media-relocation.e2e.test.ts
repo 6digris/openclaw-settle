@@ -53,16 +53,11 @@ it(
     setTestEnvValue("OPENCLAW_BUNDLED_PLUGINS_DIR", path.join(process.cwd(), "extensions"));
     const requests: Array<{ body: string; parsed: z.infer<typeof providerRequest> }> = [];
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-      const url = input instanceof Request ? input.url : String(input);
-      if (!url.startsWith("https://media-fixture.invalid/")) {
+      const request = new Request(input, init);
+      if (!request.url.startsWith("https://media-fixture.invalid/")) {
         throw new Error("Unexpected fetch destination in the media replay test");
       }
-      const body =
-        init?.body !== undefined
-          ? String(init.body)
-          : input instanceof Request
-            ? await input.clone().text()
-            : "";
+      const body = await request.text();
       requests.push({ body, parsed: providerRequest.parse(JSON.parse(body)) });
       const events = [
         {
@@ -146,6 +141,9 @@ it(
       ]);
       await fs.writeFile(currentPath, currentImage);
       const oldWorkspace = path.join(tempHome, "former-host", "workspace");
+      let scope:
+        | { agentId: string; sessionId: string; sessionKey: string; storePath: string }
+        | undefined;
       const created = await createGatewaySession({
         cfg,
         key: "agent:main:relocated-media",
@@ -153,73 +151,85 @@ it(
         operatorRoleActor: { kind: "system" },
         atomicInitialization: true,
         afterCreate: async (entry) => {
-          await withSessionTranscriptWriteLock(
-            {
-              agentId: entry.agentId,
-              sessionId: entry.entry.sessionId,
-              sessionKey: entry.key,
-              storePath: entry.storePath,
-            },
-            async (transcript) => {
-              const turns = [
-                {
-                  text: "Historical synthetic image",
-                  path: path.join(oldWorkspace, relative),
-                  workspaceDir: oldWorkspace,
-                  contentType: "image/png",
-                },
-                {
-                  text: "Current synthetic image",
-                  path: currentPath,
-                  workspaceDir,
-                  contentType: "image/gif",
-                },
-              ];
-              for (const [index, turn] of turns.entries()) {
-                await transcript.appendMessage({
-                  message: {
-                    role: "user",
-                    content: turn.text,
-                    timestamp: index * 2 + 1,
-                    __openclaw: {
-                      media: [
-                        {
-                          path: turn.path,
-                          url: turn.path,
-                          workspaceDir: turn.workspaceDir,
-                          contentType: turn.contentType,
-                          kind: "image",
-                        },
-                      ],
-                    },
+          const initializedScope = {
+            agentId: entry.agentId,
+            sessionId: entry.entry.sessionId,
+            sessionKey: entry.key,
+            storePath: entry.storePath,
+          };
+          scope = initializedScope;
+          await withSessionTranscriptWriteLock(initializedScope, async (transcript) => {
+            const turns = [
+              {
+                text: "Historical synthetic image",
+                path: path.join(oldWorkspace, relative),
+                workspaceDir: oldWorkspace,
+                contentType: "image/png",
+              },
+              {
+                text: "Current synthetic image",
+                path: currentPath,
+                workspaceDir,
+                contentType: "image/gif",
+              },
+            ];
+            for (const [index, turn] of turns.entries()) {
+              await transcript.appendMessage({
+                message: {
+                  role: "user",
+                  content: turn.text,
+                  timestamp: index * 2 + 1,
+                  __openclaw: {
+                    media: [
+                      {
+                        path: turn.path,
+                        url: turn.path,
+                        workspaceDir: turn.workspaceDir,
+                        contentType: turn.contentType,
+                        kind: "image",
+                      },
+                    ],
                   },
-                });
-                // Completed turns exercise history replay rather than orphaned-input repair.
-                await transcript.appendMessage({
-                  message: makeAssistantMessageFixture({
-                    content: [{ type: "text", text: "Image received." }],
-                    stopReason: "stop",
-                    errorMessage: undefined,
-                    provider: provider.providerId,
-                    model: provider.modelId,
-                    timestamp: index * 2 + 2,
-                  }),
-                });
-              }
-            },
-          );
+                },
+              });
+              // Completed turns exercise history replay rather than orphaned-input repair.
+              await transcript.appendMessage({
+                message: makeAssistantMessageFixture({
+                  content: [{ type: "text", text: "Image received." }],
+                  stopReason: "stop",
+                  errorMessage: undefined,
+                  provider: provider.providerId,
+                  model: provider.modelId,
+                  timestamp: index * 2 + 2,
+                }),
+              });
+            }
+          });
         },
       });
       if (!created.ok) {
         throw new Error(created.error.message);
       }
-      const scope = {
-        agentId: created.agentId,
-        sessionId: created.entry.sessionId,
-        sessionKey: created.key,
-        storePath: created.storePath,
-      };
+      if (!scope) {
+        throw new Error("Session transcript scope was not initialized");
+      }
       const before = await loadTranscriptEvents(scope);
+      for (const fact of [
+        { path: path.join(oldWorkspace, relative), workspaceDir: oldWorkspace },
+        { path: currentPath, workspaceDir },
+      ]) {
+        expect(before).toContainEqual(
+          expect.objectContaining({
+            type: "message",
+            message: expect.objectContaining({
+              role: "user",
+              __openclaw: expect.objectContaining({
+                media: expect.arrayContaining([expect.objectContaining(fact)]),
+              }),
+            }),
+          }),
+        );
+      }
       const accepted = await running.client.request<{ status: string }>(
         "agent",
         {
