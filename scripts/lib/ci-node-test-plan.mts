@@ -3239,10 +3239,10 @@ function createCompactNodeTestShardBundles(
       group: NodeTestShardGroup,
     ) => {
       // These measured long-running files only shorten the Blacksmith critical
-      // path on separate runners. GitHub retains ordinary packing for its hard
-      // 80-job fallback cap.
+      // path on separate runners. Hybrid normally runs on that capacity too;
+      // GitHub retains ordinary packing for its hard 80-job fallback cap.
       if (
-        isBlacksmithProfile &&
+        usesBlacksmithRunner &&
         (DEDICATED_BLACKSMITH_COMPACT_GROUPS.has(group.shard_name) ||
           candidate.some((entry) => DEDICATED_BLACKSMITH_COMPACT_GROUPS.has(entry.shard_name)))
       ) {

@@ -3204,24 +3204,30 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     }
 
     for (const compactMode of ["push", "pull-request"] as const) {
-      const plan = createNodeTestShardBundles({ compactMode });
-      const heavyJobs = plan.filter((job) =>
-        job.groups.some((group) =>
-          gatewayServerHeavyIsolatedTestFiles.some((file) => group.includePatterns?.includes(file)),
-        ),
-      );
-      expect(heavyJobs, compactMode).toHaveLength(gatewayServerHeavyIsolatedTestFiles.length);
-      expect(
-        heavyJobs.every(
-          (job) =>
-            job.groups.filter((group) =>
-              gatewayServerHeavyIsolatedTestFiles.some((file) =>
-                group.includePatterns?.includes(file),
-              ),
-            ).length === 1,
-        ),
-        compactMode,
-      ).toBe(true);
+      for (const runnerBackend of ["blacksmith", "hybrid"] as const) {
+        const plan = createNodeTestShardBundles({ compactMode, runnerBackend });
+        const heavyJobs = plan.filter((job) =>
+          job.groups.some((group) =>
+            gatewayServerHeavyIsolatedTestFiles.some((file) =>
+              group.includePatterns?.includes(file),
+            ),
+          ),
+        );
+        expect(heavyJobs, `${compactMode}:${runnerBackend}`).toHaveLength(
+          gatewayServerHeavyIsolatedTestFiles.length,
+        );
+        expect(
+          heavyJobs.every(
+            (job) =>
+              job.groups.filter((group) =>
+                gatewayServerHeavyIsolatedTestFiles.some((file) =>
+                  group.includePatterns?.includes(file),
+                ),
+              ).length === 1,
+          ),
+          `${compactMode}:${runnerBackend}`,
+        ).toBe(true);
+      }
     }
   });
 
