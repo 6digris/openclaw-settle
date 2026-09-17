@@ -11,7 +11,7 @@ import {
 import type {
   CapturedConfigSnapshotPreparation,
   ConfigSnapshotPreparation,
-} from "./io.snapshot-preparation.js";
+} from "./io.snapshot-preparation.types.js";
 import {
   copyConfigResolutionFacts,
   getConfigResolutionFacts,

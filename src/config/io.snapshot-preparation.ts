@@ -1,43 +1,22 @@
 import { hasAnthropicDefaultSignal } from "./defaults.js";
-import type { ConfigIoContext } from "./io.context.js";
+import type {
+  ConfigSnapshotMetadataLoader,
+  ConfigSnapshotPreparationContext,
+  MaterializationRequest,
+  MetadataRequest,
+  PreparedValidation,
+  ValidationRequest,
+} from "./io.snapshot-preparation.types.js";
 import { materializeRuntimeConfig } from "./materialize.js";
 import type { OpenClawConfig, RuntimeConfig } from "./types.js";
-import {
-  validateConfigObjectWithPluginsAsync,
-  type PreparedConfigValidationPluginMetadata,
-} from "./validation.js";
-
-type MetadataLoader = ReturnType<ConfigIoContext["createValidationPluginMetadataSnapshotLoader"]>;
-type ValidationRequest = {
-  kind: "validate";
-  context: ConfigIoContext;
-  metadata: MetadataLoader;
-  raw: unknown;
-  sourceRaw: unknown;
-};
-type MaterializationRequest = {
-  kind: "materialize";
-  context: ConfigIoContext;
-  metadata: MetadataLoader;
-  config: OpenClawConfig;
-};
-type MetadataRequest = {
-  kind: "metadata";
-  metadata: MetadataLoader;
-  config: OpenClawConfig;
-};
-type PreparedValidation = {
-  deferredPluginMigrations: Awaited<
-    ReturnType<ConfigIoContext["resolveDeferredPluginMigrationsAsync"]>
-  >;
-  validated: Awaited<ReturnType<typeof validateConfigObjectWithPluginsAsync>>;
-};
+import { validateConfigObjectWithPluginsAsync } from "./validation.js";
+import type { PreparedConfigValidationPluginMetadata } from "./validation.types.js";
 
 /** Preserve the ordinary reader's lazy defaults, including an unused manifest loader. */
 export function materializeConfigSnapshotDefaults(
-  context: ConfigIoContext,
+  context: ConfigSnapshotPreparationContext,
   config: OpenClawConfig,
-  metadata: MetadataLoader,
+  metadata: ConfigSnapshotMetadataLoader,
 ): RuntimeConfig {
   return materializeRuntimeConfig(config, {
     ...context.pathResolution,
@@ -83,9 +62,3 @@ export async function prepareHostConfigSnapshot(
     }),
   };
 }
-
-export type ConfigSnapshotPreparation = typeof prepareHostConfigSnapshot;
-export type CapturedConfigSnapshotPreparation = {
-  <T>(operation: (prepare: ConfigSnapshotPreparation) => Promise<T>): Promise<T>;
-  assertCurrent: () => void;
-};

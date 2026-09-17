@@ -30,10 +30,8 @@ import {
   restoreEnvChangesIfUnchanged,
   snapshotEnv,
 } from "./io.read-helpers.js";
-import {
-  materializeConfigSnapshotDefaults,
-  type CapturedConfigSnapshotPreparation,
-} from "./io.snapshot-preparation.js";
+import { materializeConfigSnapshotDefaults } from "./io.snapshot-preparation.js";
+import type { CapturedConfigSnapshotPreparation } from "./io.snapshot-preparation.types.js";
 import {
   collectInvalidConfigLegacyIssues,
   createConfigFileSnapshot,

@@ -1,6 +1,6 @@
 import type { Result } from "@openclaw/normalization-core/result";
 import type { AmbientEnvTriggerPolicy } from "../channels/config-presence.js";
-import type { ConfigSnapshotPreparation } from "../config/io.snapshot-preparation.js";
+import type { ConfigSnapshotPreparation } from "../config/io.snapshot-preparation.types.js";
 import type { GatewaySuspendHandoffOwner } from "../infra/gateway-suspend-coordinator.js";
 import type { GatewayRestartEmitter } from "../infra/restart.js";
 import type { GatewayTailscaleIngressEndpoint } from "./ingress-attribution.js";
