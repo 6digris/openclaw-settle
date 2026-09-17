@@ -141,7 +141,7 @@ export async function continueMigratedUpdateInFreshProcess(
   try {
     const root = result.root;
     if (!root) {
-      throw new Error("The active installation root is unknown; candidate finalization is unsafe.");
+      throw new Error("The active installation root is unknown; update finalization is unsafe.");
     }
     const workerCommand = [
       params.packageUpdateNodeRunner ?? resolveNodeRunner(),
@@ -186,7 +186,7 @@ export async function continueMigratedUpdateInFreshProcess(
         contract = JSON.parse(check.stdout);
       } catch (cause) {
         throw new UpdateCommandRecoveryPendingError(
-          "Candidate live executor delegation capability could not be inspected.",
+          "Update live executor delegation capability could not be inspected.",
           { cause },
         );
       }
@@ -198,7 +198,7 @@ export async function continueMigratedUpdateInFreshProcess(
         (run.executorFence && contract.executorDelegation !== "pid-start-v1")
       ) {
         throw new UpdateCommandRecoveryPendingError(
-          "Candidate runtime does not support live executor delegation; recovery remains pending.",
+          "Update runtime does not support live executor delegation; recovery remains pending.",
         );
       }
       profileContexts = contract.profileContexts === true;
@@ -335,9 +335,7 @@ export async function continueMigratedUpdateInFreshProcess(
       response.result.runId !== run.runId ||
       !Number.isInteger(response.exitCode)
     ) {
-      throw new Error(
-        "Candidate finalization did not confirm the admitted run's terminal outcome.",
-      );
+      throw new Error("Update finalization did not confirm the admitted run's terminal outcome.");
     }
     try {
       await completeWindowsTaskAutoStartRecoveries(
@@ -382,7 +380,7 @@ export async function continueMigratedUpdateInFreshProcess(
     } catch (cause) {
       throw new AggregateError(
         [error, cause],
-        `Candidate finalization failed (${formatErrorMessage(error)}) and Windows task autostart compensation failed (${formatErrorMessage(cause)})`,
+        `Update finalization failed (${formatErrorMessage(error)}) and Windows task autostart compensation failed (${formatErrorMessage(cause)})`,
         { cause },
       );
     }

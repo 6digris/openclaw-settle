@@ -122,7 +122,7 @@ export class UpdateCandidateValidation {
         if (!executor) {
           throw new UpdatePreMutationError(
             "target-native-unsupported",
-            "Native candidate admission requires its original update executor.",
+            "Starting the update requires its original update process.",
           );
         }
         const supported = await isUpdatedInstallGatewayExecutorSupported({
@@ -174,7 +174,7 @@ export class UpdateCandidateValidation {
         state.generation = this.generation;
         state.doctorConfigWrites = validation.doctorConfigWrites === true;
         state.observedGatewayStartupMs = validation.steps.find(
-          (step) => step.name === "candidate gateway canary" && step.exitCode === 0,
+          (step) => step.name === "Checking Gateway startup" && step.exitCode === 0,
         )?.durationMs;
       }
       return validation;
@@ -210,7 +210,7 @@ export class UpdateCandidateValidation {
             score: repairValidation.steps.filter((step) => step.exitCode === 0).length,
             summary:
               repairValidation.status === "ok"
-                ? "Candidate validation passed."
+                ? "Update checks passed."
                 : repairValidation.logTail.join("\n"),
           };
         },
@@ -294,7 +294,7 @@ export class UpdateCandidateValidation {
       ) {
         throw new UpdatePreMutationError(
           "invalid-config",
-          "Config changed during candidate validation; rerun the update before activating.",
+          "Config changed during update checks; rerun the update before activating.",
         );
       }
       await this.captureProfileSchemas(profile);

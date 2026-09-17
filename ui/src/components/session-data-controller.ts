@@ -26,7 +26,7 @@ import {
   applySessionCatalogContinuation,
   archiveSessionCatalog as archiveSessionCatalogData,
   applySessionCatalogHostEvent as applySessionCatalogHostEventToData,
-  applySessionCatalogPresence as applySessionCatalogPresenceToData,
+  applySessionCatalogChanged as applySessionCatalogChangedToData,
   invalidateSessionCatalogs as invalidateSessionCatalogData,
   loadMoreSessionCatalog as loadMoreSessionCatalogData,
   refreshSessionCatalogs as refreshSessionCatalogData,
@@ -200,7 +200,7 @@ export class SessionDataController implements ReactiveController, SessionCatalog
       this.synchronizeSessionScope();
       this.lineage.synchronize();
       this.scroll.synchronize(this.host);
-      updateSessionCatalogData(this, true);
+      updateSessionCatalogData(this);
     }
   }
 
@@ -301,8 +301,8 @@ export class SessionDataController implements ReactiveController, SessionCatalog
     applySessionCatalogHostEventToData(this, payload);
   }
 
-  handleSessionCatalogPresence(payload: unknown): void {
-    applySessionCatalogPresenceToData(this, payload);
+  handleSessionCatalogChanged(payload: unknown): void {
+    applySessionCatalogChangedToData(this, payload);
   }
 
   private readonly handleCatalogSessionContinued = (
@@ -311,8 +311,8 @@ export class SessionDataController implements ReactiveController, SessionCatalog
     applySessionCatalogContinuation(this, event.detail);
   };
 
-  private readonly handleSessionCatalogPageActivation = (event: Event) => {
-    scheduleSessionCatalogRefresh(this, event.type === "visibilitychange");
+  private readonly handleSessionCatalogPageActivation = () => {
+    scheduleSessionCatalogRefresh(this);
   };
 
   invalidateSessionCatalogs = () => invalidateSessionCatalogData(this);
@@ -420,7 +420,7 @@ export class SessionDataController implements ReactiveController, SessionCatalog
       const { awaitingGateway, error } = this.sessionCatalogRefreshStatus;
       const requesting = this.sessionCatalogLive.requestGeneration !== null;
       if (becameAvailable && (awaitingGateway || error !== null || requesting)) {
-        scheduleSessionCatalogRefresh(this, true);
+        scheduleSessionCatalogRefresh(this);
       }
       return;
     }

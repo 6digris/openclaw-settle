@@ -616,7 +616,7 @@ export async function executeMutableUpdate(
           if (failed) {
             throw new UpdatePreMutationError(
               failed.name,
-              failed.stderrTail ?? "Candidate validation failed.",
+              failed.stderrTail ?? "Update checks failed.",
               { failureFacts: failed.failureFacts },
             );
           }

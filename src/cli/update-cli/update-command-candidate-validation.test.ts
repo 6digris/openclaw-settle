@@ -80,8 +80,9 @@ describe("mutable update execution", () => {
       });
       const verification = await import("./update-command-verification.js");
       vi.spyOn(verification, "verifyPreviousGatewayForUpdate").mockImplementation(
-        async ({ env }) => {
+        async ({ env, observedStartupMs }) => {
           events.push(`previous:${env.OPENCLAW_PROFILE}`);
+          expect(observedStartupMs).toBe(1);
           expect(events.some((event) => event.startsWith("stop:"))).toBe(false);
           return outcome !== "origin-previous-unverified" || env.OPENCLAW_PROFILE !== "primary";
         },
@@ -128,7 +129,7 @@ describe("mutable update execution", () => {
           profileContexts: !outcome.startsWith("legacy-"),
           steps: [
             {
-              name: "candidate gateway canary",
+              name: "Checking Gateway startup",
               command: "gateway run",
               cwd: root,
               durationMs: 1,
@@ -320,7 +321,7 @@ describe("mutable update execution", () => {
       const message =
         "Readiness probe http://127.0.0.1:18789/readyz failed: HTTP 502. Check the configured proxy.";
       const step: UpdateStepResult = {
-        name: "candidate gateway canary",
+        name: "Checking Gateway startup",
         command: "gateway run",
         cwd: "/candidate",
         durationMs: 1,
