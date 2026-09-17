@@ -4862,13 +4862,12 @@ describe("main-session-restart-recovery", () => {
     const { sessionsDir, storePath } = await makeMainSessionFixture({
       channel: "discord",
       lastTo: "discord:dm:fallback",
+      restartRecoverySourceReplyDeliveryMode: "message_tool_only",
     });
     await writeTranscript(sessionsDir, "main-session", [
-      {
-        role: "user",
-        content: "do not inherit a fallback route",
+      makeUserMessage("do not inherit a fallback route", {
         provenance: { kind: "inter_session", sourceTool: "sessions_send" },
-      },
+      }),
       ...Array(80).fill({ role: "assistant", content: "delegated detail" }),
     ]);
 
