@@ -102,6 +102,10 @@ type NodeTestPlanOptions = {
 };
 
 const STATE_STARTUP_CORPUS_PARTITION_COUNT = 3;
+const STATE_STARTUP_CORPUS_PARTITIONS = Array.from(
+  { length: STATE_STARTUP_CORPUS_PARTITION_COUNT },
+  (_, index) => `${index + 1}/${STATE_STARTUP_CORPUS_PARTITION_COUNT}`,
+);
 
 export function hasCompleteStartupCorpusCoverage(
   shards: readonly {
@@ -133,10 +137,6 @@ export function hasCompleteStartupCorpusCoverage(
       group.env?.OPENCLAW_TEST_STARTUP_CORPUS_SHARD === undefined &&
       Object.keys(group.env ?? {}).every((key) => key === "OPENCLAW_VITEST_MAX_WORKERS"),
   );
-  const expectedStateShards = Array.from(
-    { length: STATE_STARTUP_CORPUS_PARTITION_COUNT },
-    (_, index) => `${index + 1}/${STATE_STARTUP_CORPUS_PARTITION_COUNT}`,
-  );
   const stateShardOwners = stateOwners.filter(
     (group) =>
       group.env?.OPENCLAW_TEST_STARTUP_CORPUS_SHARD !== undefined &&
@@ -151,9 +151,9 @@ export function hasCompleteStartupCorpusCoverage(
   return (
     configOwners.length === 1 &&
     ((unshardedStateOwners.length === 1 && stateOwners.length === 1) ||
-      (stateOwners.length === expectedStateShards.length &&
-        stateShards.length === expectedStateShards.length &&
-        stateShards.every((shard, index) => shard === expectedStateShards[index])))
+      (stateOwners.length === STATE_STARTUP_CORPUS_PARTITIONS.length &&
+        stateShards.length === STATE_STARTUP_CORPUS_PARTITIONS.length &&
+        stateShards.every((shard, index) => shard === STATE_STARTUP_CORPUS_PARTITIONS[index])))
   );
 }
 
@@ -1921,19 +1921,16 @@ function createRuntimeConfigSplitShards(): NodeTestSplitShard[] {
       requiresDist: false,
       runner: "blacksmith-4vcpu-ubuntu-2404",
     },
-    ...Array.from(
-      { length: STATE_STARTUP_CORPUS_PARTITION_COUNT },
-      (_, index): NodeTestSplitShard => ({
-        shardName: `core-runtime-config-startup-state-${index + 1}`,
-        configs,
-        env: {
-          OPENCLAW_TEST_STARTUP_CORPUS_SHARD: `${index + 1}/${STATE_STARTUP_CORPUS_PARTITION_COUNT}`,
-        },
-        includePatterns: [STATE_STARTUP_CORPUS_TEST],
-        requiresDist: false,
-        runner: "blacksmith-4vcpu-ubuntu-2404",
-      }),
-    ),
+    ...STATE_STARTUP_CORPUS_PARTITIONS.map((partition, index): NodeTestSplitShard => ({
+      shardName: `core-runtime-config-startup-state-${index + 1}`,
+      configs,
+      env: {
+        OPENCLAW_TEST_STARTUP_CORPUS_SHARD: partition,
+      },
+      includePatterns: [STATE_STARTUP_CORPUS_TEST],
+      requiresDist: false,
+      runner: "blacksmith-4vcpu-ubuntu-2404",
+    })),
   ];
 }
 
@@ -3022,9 +3019,14 @@ export function createSelectedNodeTestShardBundles(
     );
     const isStartupCorpusFanout =
       target === STATE_STARTUP_CORPUS_TEST &&
-      matches.length === 4 &&
-      new Set(matches.map((group) => group.env?.OPENCLAW_TEST_STARTUP_CORPUS_SHARD)).size === 4 &&
-      matches.every((group) => group.env?.OPENCLAW_TEST_STARTUP_CORPUS_SHARD !== undefined);
+      matches.length === STATE_STARTUP_CORPUS_PARTITIONS.length &&
+      new Set(matches.map((group) => group.env?.OPENCLAW_TEST_STARTUP_CORPUS_SHARD)).size ===
+        STATE_STARTUP_CORPUS_PARTITIONS.length &&
+      matches.every((group) =>
+        STATE_STARTUP_CORPUS_PARTITIONS.includes(
+          group.env?.OPENCLAW_TEST_STARTUP_CORPUS_SHARD ?? "",
+        ),
+      );
     if (matches.length !== 1 && !isStartupCorpusFanout) {
       return null;
     }

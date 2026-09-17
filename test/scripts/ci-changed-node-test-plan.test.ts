@@ -1132,11 +1132,11 @@ describe("CI changed Node test plan", () => {
       expect(before?.flatMap((shard) => shard.groups ?? [])).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            env: expect.objectContaining({ OPENCLAW_TEST_STARTUP_CORPUS_SHARD: "1/4" }),
+            env: expect.objectContaining({ OPENCLAW_TEST_STARTUP_CORPUS_SHARD: "1/3" }),
             includePatterns: ["src/config/state-startup-corpus.test.ts"],
           }),
           expect.objectContaining({
-            env: expect.objectContaining({ OPENCLAW_TEST_STARTUP_CORPUS_SHARD: "4/4" }),
+            env: expect.objectContaining({ OPENCLAW_TEST_STARTUP_CORPUS_SHARD: "3/3" }),
             includePatterns: ["src/config/state-startup-corpus.test.ts"],
           }),
         ]),
@@ -1147,7 +1147,7 @@ describe("CI changed Node test plan", () => {
           .filter((group) =>
             group.includePatterns?.includes("src/config/state-startup-corpus.test.ts"),
           ),
-      ).toHaveLength(4);
+      ).toHaveLength(3);
       expect(before?.some((shard) => shard.pretestBuildMode === "runtime")).toBe(true);
       expect(createChangedNodeTestShards([...targets, "docs/ci/pipeline.md"])).toEqual(before);
     });

@@ -13325,7 +13325,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
         ...commonArgs,
         "src/config/config-startup-corpus.test.ts",
       ]);
-      for (const shard of ["1/3", "2/3", "3/3"]) {
+      for (const shard of ["1/4", "2/4", "3/4", "4/4"]) {
         expect(readArgs(shard), shard).toEqual([
           ...commonArgs,
           "src/config/state-startup-corpus.test.ts",
