@@ -945,6 +945,14 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     expect(
       fallback
         .filter((shard) => !shard.requiresDist)
+        // Dedicated startup corpus jobs retain their measured fixture floor;
+        // their three-way fanout is bounded by the partition contract below.
+        .filter(
+          (shard) =>
+            !shard.groups.some((group) =>
+              group.shard_name.startsWith("core-runtime-config-startup-"),
+            ),
+        )
         .every(
           (shard) =>
             (shard.predictedSeconds ?? Infinity) <=
@@ -1744,17 +1752,27 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           shard.groups.map((group) => group.shard_name.replace(/-hosted-\d+$/u, "")),
         ),
       );
+    const startupSplitOwnerNames = new Set([
+      "core-runtime-config-startup-config",
+      "core-runtime-config-startup-state-1",
+      "core-runtime-config-startup-state-2",
+      "core-runtime-config-startup-state-3",
+    ]);
+    const withoutStartupSplitOwners = (owners: Set<string>) =>
+      new Set([...owners].filter((name) => !startupSplitOwnerNames.has(name)));
     expect(compactOwnerNames(compact)).toEqual(
       new Set(expectedGroupNames.filter((name) => !pushExcludedShardNames.has(name))),
     );
     expect(compactOwnerNames(pullRequestCompact)).toEqual(new Set(expectedGroupNames));
-    expect(compactOwnerNames(githubCompact)).toEqual(compactOwnerNames(compact));
-    expect(compactOwnerNames(githubPullRequestCompact)).toEqual(
-      compactOwnerNames(pullRequestCompact),
+    expect(compactOwnerNames(githubCompact)).toEqual(
+      withoutStartupSplitOwners(compactOwnerNames(compact)),
     );
-    expect(compactOwnerNames(hybridCompact)).toEqual(compactOwnerNames(githubCompact));
+    expect(compactOwnerNames(githubPullRequestCompact)).toEqual(
+      withoutStartupSplitOwners(compactOwnerNames(pullRequestCompact)),
+    );
+    expect(compactOwnerNames(hybridCompact)).toEqual(compactOwnerNames(compact));
     expect(compactOwnerNames(hybridPullRequestCompact)).toEqual(
-      compactOwnerNames(githubPullRequestCompact),
+      compactOwnerNames(pullRequestCompact),
     );
     for (const plan of [
       compact,
@@ -1798,7 +1816,14 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         }
         const actual = groups.flatMap((group) => group.includePatterns ?? []);
         expect(new Set(actual).size, owner.shardName).toBe(actual.length);
-        if (owner.includePatterns) {
+        if (
+          owner.shardName === "core-runtime-config" &&
+          (plan === githubCompact || plan === githubPullRequestCompact)
+        ) {
+          expect(actual.toSorted()).toEqual(
+            listMatchedTestFiles(createRuntimeConfigVitestConfig({})).toSorted(),
+          );
+        } else if (owner.includePatterns) {
           expect(actual.toSorted(), owner.shardName).toEqual(owner.includePatterns.toSorted());
         } else if (owner.shardName === "agentic-agents-support") {
           const expected = ownerScopedTestFiles(agentVitestProjectOwners.support);
@@ -1806,10 +1831,6 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         } else if (owner.shardName === "agentic-cli-process") {
           expect(actual.toSorted()).toEqual(
             listMatchedTestFiles(createCliProcessVitestConfig({})).toSorted(),
-          );
-        } else if (owner.shardName === "core-runtime-config") {
-          expect(actual.toSorted()).toEqual(
-            listMatchedTestFiles(createRuntimeConfigVitestConfig({})).toSorted(),
           );
         } else if (owner.shardName === "agentic-gateway-methods") {
           expect(actual.toSorted()).toEqual(gatewayMethodsOwnerFiles.toSorted());
@@ -3128,6 +3149,30 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         requiresDist: false,
         runner: "blacksmith-4vcpu-ubuntu-2404",
         shardName: "core-runtime-config",
+      },
+      {
+        configs: ["test/vitest/vitest.runtime-config.config.ts"],
+        requiresDist: false,
+        runner: "blacksmith-4vcpu-ubuntu-2404",
+        shardName: "core-runtime-config-startup-config",
+      },
+      {
+        configs: ["test/vitest/vitest.runtime-config.config.ts"],
+        requiresDist: false,
+        runner: "blacksmith-4vcpu-ubuntu-2404",
+        shardName: "core-runtime-config-startup-state-1",
+      },
+      {
+        configs: ["test/vitest/vitest.runtime-config.config.ts"],
+        requiresDist: false,
+        runner: "blacksmith-4vcpu-ubuntu-2404",
+        shardName: "core-runtime-config-startup-state-2",
+      },
+      {
+        configs: ["test/vitest/vitest.runtime-config.config.ts"],
+        requiresDist: false,
+        runner: "blacksmith-4vcpu-ubuntu-2404",
+        shardName: "core-runtime-config-startup-state-3",
       },
       {
         configs: ["test/vitest/vitest.tui-pty.config.ts"],
