@@ -25,6 +25,7 @@ import * as repairService from "./update-command-repair-service.js";
 import * as rollbackModule from "./update-command-rollback.js";
 import * as sourceRuntime from "./update-command-runtime.js";
 import * as servicePlan from "./update-command-service-plan.js";
+import { recordFailedUpdateGatewayState } from "./update-command-service.js";
 import { recordUpdateGatewayHealth } from "./update-command-verification.js";
 
 const { mocks, tempDirs } = await import("./update-command-post-update-mocks.test-support.js");
@@ -355,7 +356,7 @@ describe("successful update finalization ordering", () => {
           }
           events.push(`restart:${name}`);
           if (commandFailed) {
-            await service.recordFailedUpdateGatewayState(
+            await recordFailedUpdateGatewayState(
               verificationRun,
               restart.serviceEnv ?? process.env,
             );
