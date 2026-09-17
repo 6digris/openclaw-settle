@@ -47,6 +47,7 @@ export const en: TranslationMap & {
   devices: TranslationMap;
   desktop: TranslationMap &
     Record<"title" | "openWindow" | "unavailable" | "toggle" | "reconnect" | "connecting", string>;
+  filePreview: TranslationMap & { bundle: TranslationMap };
   updates: TranslationMap;
   login: TranslationMap;
   newSession: TranslationMap;
@@ -250,14 +251,7 @@ export const en: TranslationMap & {
     openInControlUi: "Open links in Control UI browser",
   },
   filePreview: {
-    bundle: {
-      binary: "This binary file is included in the bundle but cannot be displayed as text.",
-      "too-large":
-        "This file exceeds the preview limit. Its contents have not been truncated or loaded.",
-      unavailable:
-        "This file could not be read safely or is unavailable. Close and reopen the skill to try again.",
-      incomplete: "Some bundle content is unavailable. Select a file to see its status.",
-    },
+    bundle: {},
     label: "Support files",
     listLabel: "Files",
     searchPlaceholder: "Search files…",
