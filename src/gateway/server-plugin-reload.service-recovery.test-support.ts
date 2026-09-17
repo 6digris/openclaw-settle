@@ -163,6 +163,82 @@ export function registerPluginServiceRecoveryTests(createRecoveryFixture: Recove
       },
     );
 
+    it.each(["service", "channel"] as const)(
+      "does not recover a pending service stop mixed with permanent %s failure",
+      async (failureOwner) => {
+        const entered = createDeferredCore();
+        const release = createDeferredCore();
+        const permanent = new Error("mixed cleanup permanently refused");
+        let registrations = 0;
+        const pendingStop = vi.fn(async () => {
+          entered.resolve();
+          await release.promise;
+        });
+        const fixture = await createRecoveryFixture({
+          abortOnCandidateStart: false,
+          initialStop:
+            failureOwner === "service"
+              ? async () => {
+                  throw permanent;
+                }
+              : pendingStop,
+          register(api, owner) {
+            if (owner !== "first") {
+              return;
+            }
+            registrations += 1;
+            if (failureOwner === "service") {
+              api.registerService({ id: "pending-cleanup", start() {}, stop: pendingStop });
+            } else {
+              api.registerChannel({ plugin: createChannelTestPluginBase({ id: "first" }) });
+            }
+          },
+        });
+        const manager = createRecoveryChannelManager(fixture);
+        fixture.runtime.channelManager = manager;
+        if (failureOwner === "channel") {
+          vi.spyOn(manager, "stopChannel").mockRejectedValueOnce(permanent);
+        }
+        const original = getPluginInstance(fixture.previousRegistry.plugins[0]!);
+        const generation = fixture.owner.currentClaim();
+        vi.useFakeTimers();
+        let settled = false;
+        const pending = fixture
+          .reload()
+          .catch((error: unknown) => error)
+          .then((result) => {
+            settled = true;
+            return result;
+          });
+        try {
+          await entered.promise;
+          // Observe the existing service-stop and admitted-work drain deadlines.
+          await vi.advanceTimersByTimeAsync(15_000);
+          expect(settled).toBe(true);
+          expect(await pending).toMatchObject({ details: { committed: false, phase: "drain" } });
+          expect(fixture.owner.getReloadStatus()?.phase).toBe("failed");
+          expect(original?.acceptingCalls).toBe(false);
+          release.resolve();
+          await vi.advanceTimersByTimeAsync(70_000);
+          expect(fixture.owner.getReloadStatus()?.phase).toBe("failed");
+          expect(fixture.registryOwner.registry).toBe(fixture.previousRegistry);
+          expect(fixture.owner.currentClaim()).toEqual(generation);
+          expect(fixture.candidates).toHaveLength(0);
+          expect(registrations).toBe(1);
+          expect(fixture.firstStart).toHaveBeenCalledOnce();
+          expect(fixture.firstStop).toHaveBeenCalledOnce();
+          expect(pendingStop).toHaveBeenCalledOnce();
+          expect(fixture.siblingStop).not.toHaveBeenCalled();
+        } finally {
+          release.resolve();
+          await vi.advanceTimersByTimeAsync(70_000);
+          await pending;
+          vi.useRealTimers();
+          await manager.stopChannel("first");
+        }
+      },
+    );
+
     it("restores an unchanged channel after command-owner cleanup fails", async () => {
       const starts = { first: vi.fn(), sibling: vi.fn() };
       const fixture = await createRecoveryFixture({
