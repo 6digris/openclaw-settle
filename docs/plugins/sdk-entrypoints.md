@@ -91,6 +91,10 @@ configured remote workspace during registration so callers cannot fall back to
 local files before its service starts. Register its bridge when ready and release
 it when the service stops. Callers keep their existing document authorization.
 
+For generated files, register optional `outboundMedia` separately from the
+owner-document bridge. See [outbound workspace files](/plugins/sdk-agent-harness/core-ownership#outbound-workspace-files)
+for its byte limits, path mapping, and service lifetime contract.
+
 The same entrypoint exposes `prepareAgentWorkspaceAttachments` for harness
 callers. It invokes the registered host's optional `prepareTurnAttachments`
 callback with the current run and service lifetime checks. Keep its returned

@@ -114,6 +114,34 @@ Unary `file.write` remains capped at 16 MiB and keeps its existing behavior.
 Remote worker transfer already has its own environment/session authorization;
 a Codex adapter cannot borrow that authority.
 
+#### Outbound workspace files
+
+For outbound files, hosts can register `outboundMedia: { localRoots, readFile }`.
+The callback receives an absolute file path and a byte limit; validate the path
+against the host's output roots and enforce the limit before buffering. Roots
+must describe the logical paths accepted by Gateway media callers. Advertise any
+remote absolute aliases explicitly and map them in the host reader. Core does not
+infer remote root mappings. Relative replies resolve against the agent workspace.
+Existing sender policy still applies, and unavailable workspace access never
+falls back to a stale Gateway file. Managed Gateway attachments and HTTP media
+remain independent of host availability.
+
+Declare the workspace before requests arrive. Media capabilities capture one
+service registration; a capability acquired before service start or retained
+after replacement must be reacquired. The binding persists across turns. An explicit call-scoped
+`workspaceMediaAccess` (for example, the current sandbox bridge) takes precedence
+within its declared roots, including roots shared with the agent workspace.
+Outside those roots, registered workspace access precedes generic host readers.
+Per-turn placement must use that call-scoped capability with the turn's authority.
+
+File Transfer supplies this reader through its existing node policy and
+`file.fetch` transport. Reads first use the existing unary path (up to 16 MiB).
+Larger files retry over binary transport when service-owned duplex access is
+available, bounded by the caller's limit and node policy. Small files remain
+readable from older nodes. Registered output roots, including explicitly
+advertised remote aliases, work with ordinary reply media normalization. Artifacts outside those roots still need a harness adapter
+to stage them; this reader does not replace remote worker workspace reconciliation.
+
 ### Native tool-policy enforcement
 
 Set `conversationToolPolicySupport: "exact"` only when `runAttempt` enforces every

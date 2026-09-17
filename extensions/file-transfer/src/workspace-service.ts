@@ -82,6 +82,12 @@ export function registerNodeWorkspaces(api: OpenClawPluginApi): void {
         const { createNodeWorkspaceBridge } = await import("./workspace-bridge.js");
         controller.signal.throwIfAborted();
         for (const entry of bindings.values()) {
+          const bridge = createNodeWorkspaceBridge({
+            ...entry,
+            invoke,
+            signal: controller.signal,
+            openDuplex: ctx.openNodeDuplex,
+          });
           releases.push(
             registerAgentWorkspaceAccess(entry.workspaceDir, {
               ...(ctx.openNodeDuplex
@@ -99,11 +105,12 @@ export function registerNodeWorkspaces(api: OpenClawPluginApi): void {
                     }),
                   }
                 : {}),
-              bridge: createNodeWorkspaceBridge({
-                ...entry,
-                invoke,
-                signal: controller.signal,
-              }),
+              bridge,
+              outboundMedia: {
+                localRoots: [entry.workspaceDir],
+                readFile: (filePath, maxBytes) =>
+                  bridge.readFile({ filePath, cwd: entry.workspaceDir, maxBytes }),
+              },
             }),
           );
         }
