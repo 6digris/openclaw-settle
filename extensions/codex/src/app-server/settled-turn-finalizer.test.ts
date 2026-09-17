@@ -4,6 +4,11 @@ import type { Model } from "openclaw/plugin-sdk/llm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EmbeddedRunAttemptResult } from "./attempt-terminal.js";
 import * as authBridge from "./auth-bridge.js";
+import {
+  createFakeCodexAppServerClient,
+  threadStartResult,
+  turnStartResult,
+} from "./codex-app-server.test-fixtures.js";
 import { CodexSettledTurnContext } from "./settled-turn-context.js";
 import { projectSettledCodexMessages } from "./settled-turn-projection.js";
 import {
@@ -285,6 +290,127 @@ describe("runCodexSettledTurnFinalization", () => {
       });
     },
   );
+
+  it("uses a restricted remote thread with settled history and the selected model", async () => {
+    const { runBoundedCodexAppServerTurn } = await vi.importActual<
+      typeof import("./bounded-turn.js")
+    >("./bounded-turn.js");
+    mocks.runBounded.mockImplementation(runBoundedCodexAppServerTurn);
+    const attempt = createAttempt();
+    const settledAttempt = createSettledAttempt({
+      model: "synthetic-model",
+      modelProvider: "openai",
+      authProfileId: "openai:captured",
+    });
+    const history = settledAttempt.settledTurnFinalizationContext;
+    const fake = createFakeCodexAppServerClient(async (method) => {
+      switch (method) {
+        case "model/list":
+          return {
+            data: [{
+              id: "synthetic-model",
+              model: "synthetic-model",
+              displayName: "Synthetic model",
+              description: "Test model",
+              hidden: false,
+              isDefault: true,
+              inputModalities: ["text"],
+              supportedReasoningEfforts: [{ reasoningEffort: "low", description: "Low" }],
+              defaultReasoningEffort: "low",
+              upgrade: null,
+              upgradeInfo: null,
+              availabilityNux: null,
+              supportsPersonality: false,
+              multiAgentVersion: null,
+              additionalSpeedTiers: [],
+              serviceTiers: [],
+              defaultServiceTier: null,
+            }],
+            nextCursor: null,
+          };
+        case "config/read":
+          return {
+            config: { mcp_servers: { inherited: { command: "external-tool" } } },
+            layers: [{ name: { type: "user" } }],
+          };
+        case "configRequirements/read":
+          return { requirements: null };
+        case "thread/start":
+          return {
+            ...threadStartResult(),
+            thread: { ...threadStartResult().thread, ephemeral: true },
+            model: "synthetic-model",
+            modelProvider: "openai",
+            approvalPolicy: "on-request",
+            sandbox: { type: "readOnly", networkAccess: false },
+          };
+        case "mcpServerStatus/list":
+          return {
+            data: [{ name: "inherited", serverInfo: null, tools: {} }],
+            nextCursor: null,
+          };
+        case "thread/inject_items":
+          return {};
+        case "turn/start":
+          return {
+            turn: {
+              ...turnStartResult("turn-summary", "completed").turn,
+              items: [{ id: "answer", type: "agentMessage", text: "The message was sent." }],
+            },
+          };
+        default:
+          throw new Error(`Unexpected finalizer request: ${method}`);
+      }
+    });
+    const clientFactory = vi.fn(async () => fake.client);
+    const options = {
+      clientFactory,
+      pluginConfig: {
+        appServer: {
+          transport: "websocket",
+          url: "wss://app-server.example.test/ws",
+          authToken: "synthetic-connection-token",
+        },
+      },
+    };
+
+    const result = await runCodexSettledTurnFinalization({ attempt, settledAttempt }, options);
+
+    expect(result.assistant).toMatchObject({ content: [{ type: "text", text: "The message was sent." }] });
+    expect(clientFactory).toHaveBeenCalledWith(expect.objectContaining({
+      authProfileId: "openai:captured",
+      startOptions: expect.objectContaining({
+        transport: "websocket",
+        url: "wss://app-server.example.test/ws",
+        authToken: "synthetic-connection-token",
+      }),
+    }));
+    expect(fake.request.mock.calls.map(([method]) => method)).toEqual([
+      "model/list", "config/read", "configRequirements/read", "thread/start",
+      "mcpServerStatus/list", "thread/inject_items", "turn/start",
+    ]);
+    expect(fake.request).toHaveBeenCalledWith("thread/start", expect.objectContaining({
+      model: "synthetic-model",
+      modelProvider: "openai",
+      environments: [],
+      dynamicTools: [],
+      ephemeral: true,
+      config: expect.objectContaining({
+        "features.shell_tool": false,
+        "features.unified_exec": false,
+        "features.hooks": false,
+        "features.code_mode": false,
+        "features.apps": false,
+        "features.plugins": false,
+        web_search: "disabled",
+        mcp_servers: { inherited: { enabled: false } },
+      }),
+    }), expect.anything());
+    expect(fake.request).toHaveBeenCalledWith("thread/inject_items", {
+      threadId: "thread-1", items: history instanceof CodexSettledTurnContext ? history.data : [],
+    }, expect.anything());
+    expect(mocks.mirror).toHaveBeenCalledOnce();
+  });
 
   it.each(["agent", "user"])(
     "uses the selected scoped subscription for a private side turn (ordinary home: %s)",

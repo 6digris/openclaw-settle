@@ -50,6 +50,7 @@ export function prepareEmbeddedRunTerminal(input: {
   contextRecoveryState: EmbeddedRunContextRecoveryState;
   resolvedToolResultFormat: NonNullable<RunEmbeddedAgentParams["toolResultFormat"]>;
   terminalState: EmbeddedRunTerminalState;
+  toolFailureExplanation?: boolean;
 }): {
   agentMeta: EmbeddedAgentMeta;
   reportedModelRef: { provider: string; model: string };
@@ -231,6 +232,7 @@ export function prepareEmbeddedRunTerminal(input: {
       timedOutDuringPrompt && (!hasMessagingToolDeliveryEvidence(attempt) || timeoutFinal),
     didSendDeterministicApprovalPrompt: attempt.didSendDeterministicApprovalPrompt,
     heartbeatToolResponse: attempt.heartbeatToolResponse,
+    toolFailureExplanation: input.toolFailureExplanation,
   });
   const payloadsWithToolMedia = mergeAttemptToolMediaPayloads({
     payloads,

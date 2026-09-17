@@ -5,6 +5,7 @@ import type {
 import { isSilentReplyText } from "openclaw/plugin-sdk/reply-runtime";
 import { resolveCodexAppServerPreparedAuthHandoff } from "./auth-bridge.js";
 import { runBoundedCodexAppServerTurn, type CodexBoundedTurnOptions } from "./bounded-turn.js";
+import { readCodexPluginConfig } from "./config.js";
 import { createAttributedCodexAssistantMessage } from "./event-projector-assistant-message.js";
 import { resolveCodexLocalRuntimeAttribution } from "./local-runtime-attribution.js";
 import { assertCodexPassiveTurnItems } from "./protocol-validators.js";
@@ -40,10 +41,12 @@ export async function runCodexSettledTurnFinalization(
     throw new Error("Codex settled-turn finalization context is unavailable");
   }
   const { selection, data: historyItems } = finalizationContext;
+  const pluginConfig = readCodexPluginConfig(options.pluginConfig);
+  const usesRemoteTransport = pluginConfig.appServer?.transport === "websocket";
   const hostAuthPlan = attempt.runtimePlan?.auth;
   const authRequirement = hostAuthPlan?.modelRoute?.authRequirement;
-  // Capture fixes binding/ordered-profile selection. Ordinary user-home sessions
-  // intentionally authorize private side turns through the host plan instead.
+  // Capture fixes binding/ordered-profile selection. Local side turns own a
+  // private home; WebSocket connections also require agent-scoped auth.
   const authProfileId =
     selection.authProfileId ?? hostAuthPlan?.forwardedAuthProfileId ?? attempt.authProfileId;
   const authHandoff = await resolveCodexAppServerPreparedAuthHandoff({
@@ -78,7 +81,7 @@ export async function runCodexSettledTurnFinalization(
     developerInstructions: FINALIZER_DEVELOPER_INSTRUCTIONS,
     input: [{ type: "text", text: attempt.prompt, text_elements: [] }],
     requiredModalities: ["text"],
-    isolation: "private-stdio",
+    isolation: usesRemoteTransport ? "configured-transport" : "private-stdio",
     historyItems,
     requireNoExternalCapabilities: true,
     allowEmptyText: true,

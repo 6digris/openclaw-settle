@@ -5,7 +5,9 @@ import {
   formatErrorMessage,
   runAgentHarnessLlmOutputHook,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { extractAssistantText } from "openclaw/plugin-sdk/agent-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { isSilentReplyText } from "openclaw/plugin-sdk/reply-runtime";
 import { appendSessionYieldContext } from "openclaw/plugin-sdk/session-transcript-runtime";
 import { classifyCodexModelCallFailureKind } from "./attempt-diagnostics.js";
 import {
@@ -492,8 +494,16 @@ export async function finalizeCodexAttempt(
     }
     const { assistantTranscriptOwned, assistantTranscriptIdempotencyKey, terminalAnchor } =
       mirrorOutcome;
+    const finalizationAssistantText = result.currentAttemptAssistant
+      ? extractAssistantText(result.currentAttemptAssistant)
+      : "";
+    const toolFailureWithoutFinalAnswer =
+      result.lastToolError &&
+      (result.currentAttemptAssistant?.stopReason === "toolUse" ||
+        !finalizationAssistantText ||
+        isSilentReplyText(finalizationAssistantText));
     const shouldCaptureSettledTurnFinalizationContext =
-      result.assistantTexts.every((text) => !text.trim()) &&
+      (result.assistantTexts.every((text) => !text.trim()) || toolFailureWithoutFinalAnswer) &&
       result.messagesSnapshot.some((message) => message.role === "toolResult") &&
       (!finalPromptError || activeProjector.settledTurnFailureFinalizationAllowed);
     // Supervised auth belongs to its native connection, which has no generic stock

@@ -155,6 +155,8 @@ export function buildEmbeddedRunPayloads(params: {
   deferAssistantTimeoutError?: boolean;
   didSendDeterministicApprovalPrompt?: boolean;
   heartbeatToolResponse?: HeartbeatToolResponse;
+  /** A tools-disabled finalizer explains a failure that already required delivery. */
+  toolFailureExplanation?: boolean;
 }): ReplyPayload[] {
   const heartbeatTerminalToolFailure =
     params.isHeartbeatTrigger === true &&
@@ -162,7 +164,11 @@ export function buildEmbeddedRunPayloads(params: {
     params.lastToolError.mutatingAction === true
       ? { toolName: params.lastToolError.toolName }
       : undefined;
-  if (params.heartbeatToolResponse && !heartbeatTerminalToolFailure) {
+  if (
+    params.heartbeatToolResponse &&
+    !heartbeatTerminalToolFailure &&
+    !params.toolFailureExplanation
+  ) {
     return [createHeartbeatToolResponsePayload(params.heartbeatToolResponse)];
   }
   // Internal source replies always need transcript/UI mirrors. Only a
@@ -188,10 +194,11 @@ export function buildEmbeddedRunPayloads(params: {
   }
   const useMarkdown = params.toolResultFormat === "markdown";
   const suppressAssistantArtifacts =
-    params.heartbeatToolResponse !== undefined ||
-    params.didSendDeterministicApprovalPrompt === true ||
-    (params.sourceReplyDeliveryMode === "message_tool_only" && hasSourceReplyPayload) ||
-    deliveredSourceReplyViaMessageTool;
+    !params.toolFailureExplanation &&
+    (params.heartbeatToolResponse !== undefined ||
+      params.didSendDeterministicApprovalPrompt === true ||
+      (params.sourceReplyDeliveryMode === "message_tool_only" && hasSourceReplyPayload) ||
+      deliveredSourceReplyViaMessageTool);
   const suppressFailureArtifacts =
     params.didSendDeterministicApprovalPrompt === true ||
     (params.sourceReplyDeliveryMode === "message_tool_only" && completedSourceReplyViaMessageTool);
@@ -360,6 +367,7 @@ export function buildEmbeddedRunPayloads(params: {
       text: cleanedText,
       media: mediaUrls,
       ...delivery,
+      ...(params.toolFailureExplanation ? { isError: true } : {}),
     };
     replyItems.push(
       ttsFacts ? setReplyPayloadMetadata(replyPayload, { tts: ttsFacts }) : replyPayload,
@@ -454,7 +462,7 @@ export function buildEmbeddedRunPayloads(params: {
         });
       }
       if (
-        !item.isError &&
+        (!item.isError || params.toolFailureExplanation) &&
         !item.isReasoning &&
         (params.assistantMessageIndex !== undefined || params.assistantTranscriptOwned === true)
       ) {

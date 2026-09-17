@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { isCompactionReplayCheckpoint } from "@openclaw/ai/transports";
+import { getReplyPayloadMetadata } from "../../../auto-reply/reply-payload.js";
 import { SILENT_REPLY_TOKEN } from "../../../auto-reply/tokens.js";
 import { freezeDiagnosticTraceContext } from "../../../infra/diagnostic-trace-context.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
@@ -39,6 +40,7 @@ import {
   resolveReasoningOnlyRetryInstruction,
   resolveSettledToolBatchEvidence,
   resolveSettledToolTerminalContinuationInstruction,
+  resolveToolFailureExplanationInstruction,
   shouldTreatEmptyAssistantReplyAsSilent,
 } from "./incomplete-turn-recovery.js";
 import {
@@ -125,6 +127,22 @@ export function resolveSettledTurnFinalizationRequest(input: {
   }
   const terminalAborted = isEmbeddedRunTerminalAbort(input.terminalState.outcome);
   const terminalTimedOut = isEmbeddedRunTerminalTimeout(input.terminalState.outcome);
+  // The payload owner has already decided a failure must be shown. Explain that
+  // warning without changing intentional silence or delivery policy elsewhere.
+  if (
+    input.payloadsWithToolMedia?.some(
+      (payload) => getReplyPayloadMetadata(payload)?.toolErrorWarning,
+    )
+  ) {
+    if (input.hasTerminalToolPresentation) {
+      return null;
+    }
+    return resolveToolFailureExplanationInstruction({
+      aborted: terminalAborted,
+      timedOut: terminalTimedOut,
+      attempt: input.attempt,
+    });
+  }
   // Generated errors and pre-tool commentary are fallback surfaces, not authored answers.
   const preparedPayloadCount = countSettledTurnDeliveryPayloads({
     payloads: input.payloadsWithToolMedia,
