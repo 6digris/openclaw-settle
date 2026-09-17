@@ -6,7 +6,7 @@ on run argv
 	set installMode to item 4 of argv
 	if installMode is not "--install" and installMode is not "--uninstall" then error "Expected --install or --uninstall"
 	set expectedInstallerDigest to "259c9247bf6d30ee6527b68c4526f08d49aecbf795d7d69d9ab8bbff4e9c5ff6"
-	set expectedVerifierDigest to "bafc2f543aa91fee6055c725aec6189d749c7c05a0e43cc42c2bb9ffd48ddad5"
+	set expectedVerifierDigest to "4f402898b1b9c8b230bef1c6c26675a26981d2bbccb8ebe25cf2bb3095470eb3"
 	set expectedTransactionDigest to "bc15c426d8e11c454f14746392e6bccd711f9421c3be66a2e032db20937e8f82"
 	set protectedCommand to "set -eu; umask 077; " & ¬
 		"work=$(/usr/bin/mktemp -d /private/tmp/openclaw-driver-install.XXXXXX); " & ¬

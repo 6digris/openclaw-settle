@@ -15,8 +15,24 @@ reject() {
   failed=true
 }
 
+remove_file() {
+  target=$1
+  if ! /usr/bin/trash "$target" >/dev/null 2>&1; then
+    /usr/bin/python3 -I -c 'import os, sys; p=sys.argv[1]; os.unlink(p) if os.path.lexists(p) else None' "$target"
+  fi
+}
+
 canonical_path() {
   /usr/bin/python3 -I -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"
+}
+
+has_standard_applications_acl() {
+  component=$1
+  test "$component" = "/Applications" || return 1
+  acl_lines=$(/bin/ls -lde "$component" | /usr/bin/sed -n '/^[[:space:]]*[0-9][0-9]*:/p')
+  test "$(printf '%s\n' "$acl_lines" | /usr/bin/grep -c .)" = "1" &&
+    printf '%s\n' "$acl_lines" |
+      /usr/bin/grep -Eq '^[[:space:]]*0:[[:space:]]+group:everyone[[:space:]]+deny[[:space:]]+delete$'
 }
 
 check_path_component_trust() {
@@ -25,10 +41,21 @@ check_path_component_trust() {
     if test "$(/usr/bin/stat -f '%u' "$component" 2>/dev/null || echo missing)" != "0"; then
       reject "Xcode path component is not root-owned: $component"
     fi
-    if /usr/bin/find "$component" -prune \( -perm -020 -o -perm -002 \) -print -quit | /usr/bin/grep -q .; then
+    if /usr/bin/find "$component" -prune -perm -002 -print -quit | /usr/bin/grep -q .; then
       reject "Xcode path component is group/world writable: $component"
     fi
-    if /usr/bin/find "$component" -prune -acl -print | /usr/bin/grep -q .; then
+    if /usr/bin/find "$component" -prune -perm -020 -print -quit | /usr/bin/grep -q .; then
+      # macOS ships /Applications as root:admin 0775. The approved admin user
+      # already authorizes this root operation, while the Xcode bundle and all
+      # tools below it remain root-owned, sealed, and non-writable.
+      if test "$component" != "/Applications" ||
+         test "$(/usr/bin/stat -f '%Sg' "$component" 2>/dev/null || echo missing)" != "admin" ||
+         test "$(/usr/bin/stat -f '%OLp' "$component" 2>/dev/null || echo missing)" != "775"; then
+        reject "Xcode path component is group/world writable: $component"
+      fi
+    fi
+    if /usr/bin/find "$component" -prune -acl -print | /usr/bin/grep -q . &&
+       ! has_standard_applications_acl "$component"; then
       reject "Xcode path component has an access-control list that cannot be trusted for root compilation: $component"
     fi
     test "$component" = "/" && break
@@ -44,17 +71,24 @@ check_apple_signature() {
   if ! /usr/bin/codesign --verify --strict "$target" >/dev/null 2>&1 ||
      ! /usr/bin/codesign -dv --verbose=4 "$target" >"$details" 2>&1; then
     reject "$label is not signed by Apple: $target"
-    /bin/rm -f "$details"
+    remove_file "$details"
     return
+  fi
+  if /usr/bin/grep -qx 'Authority=Software Signing' "$details"; then
+    expected_intermediate='Authority=Apple Code Signing Certification Authority'
+  elif /usr/bin/grep -qx 'Authority=Apple Mac OS Application Signing' "$details"; then
+    expected_intermediate='Authority=Apple Worldwide Developer Relations Certification Authority'
+  else
+    expected_intermediate=''
   fi
   if ! /usr/bin/grep -qx "Identifier=$expected_identifier" "$details" ||
      ! /usr/bin/grep -qx "TeamIdentifier=$apple_team_id" "$details" ||
-     ! /usr/bin/grep -Eq '^Authority=(Software Signing|Apple Mac OS Application Signing)$' "$details" ||
-     ! /usr/bin/grep -qx 'Authority=Apple Code Signing Certification Authority' "$details" ||
+     test -z "$expected_intermediate" ||
+     ! /usr/bin/grep -qx "$expected_intermediate" "$details" ||
      ! /usr/bin/grep -qx 'Authority=Apple Root CA' "$details"; then
     reject "$label does not have the required Apple signing identity: $target"
   fi
-  /bin/rm -f "$details"
+  remove_file "$details"
 }
 
 if ! test -d "$xcode_app" || test -L "$xcode_app"; then
@@ -71,7 +105,8 @@ check_path_component_trust "$canonical_xcode"
 if /usr/bin/find "$canonical_xcode" ! -user root -print -quit | /usr/bin/grep -q .; then
   reject "Xcode and every bundled tool must be root-owned. Reinstall Xcode from Apple into /Applications using an administrator-managed install."
 fi
-if /usr/bin/find "$canonical_xcode" \( -perm -020 -o -perm -002 \) -print -quit | /usr/bin/grep -q .; then
+if /usr/bin/find "$canonical_xcode" -perm -002 -print -quit | /usr/bin/grep -q . ||
+   /usr/bin/find "$canonical_xcode" -perm -020 ! -group wheel -print -quit | /usr/bin/grep -q .; then
   reject "Xcode contains group/world-writable content. Reinstall Xcode from Apple; OpenClaw will not repair unsafe ownership or modes."
 fi
 if /usr/bin/find "$canonical_xcode" -acl -print -quit | /usr/bin/grep -q .; then
