@@ -433,14 +433,14 @@ describe("frozen QA runtime-pair summary validation", () => {
           drift: "structural",
           driftDetails: undefined,
           openclawStatus: "pass",
-          codexStatus: "pass",
+          codexStatus: "skip",
         },
       ],
       failures: [],
       pass: true,
     };
     const markdown =
-      "# OpenClaw Runtime Parity Report — openclaw vs codex\n\n- Verdict: pass\n\n### tracked advisory gap\n\n- status: pass\n- drift: structural\n- openclaw: pass (0 tool calls)\n- codex: pass (0 tool calls)\n";
+      "# OpenClaw Runtime Parity Report — openclaw vs codex\n\n- Verdict: pass\n\n### tracked advisory gap\n\n- status: pass\n- drift: structural\n- openclaw: pass (0 tool calls)\n- codex: skip (0 tool calls)\n";
     expect(validateQaRuntimePairReport(fixture, reportSummary, markdown)).toMatchObject({
       total: 1,
       passed: 1,

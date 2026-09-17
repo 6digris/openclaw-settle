@@ -113,9 +113,14 @@ function isExplicitCodexGap(cell: unknown) {
 }
 
 function projectedReportCellStatus(cell: Record<string, unknown>) {
-  // Frozen parity reports project runtime/transport health, while the raw
-  // result cell separately preserves an approved scenario-level skip.
-  return cell.runtimeErrorClass || cell.transportErrorClass ? "fail" : "pass";
+  if (!isPassableCell(cell)) {
+    return "fail";
+  }
+  // Current reports preserve explicit cell status, including an approved
+  // harness-gap skip. Legacy statusless cells projected to pass.
+  return cell.status === "pass" || cell.status === "fail" || cell.status === "skip"
+    ? cell.status
+    : "pass";
 }
 
 function formatRuntimePairReportValue(value: unknown) {
