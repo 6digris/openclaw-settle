@@ -245,7 +245,7 @@ export async function triageCommand(
     redaction,
     updateFailure,
     failure: automatic?.failure,
-    maintenanceBlock: inspectTriageMaintenanceBlock(updateFailure, targetEnv),
+    maintenanceBlock: await inspectTriageMaintenanceBlock(updateFailure, targetEnv),
   });
   // Packaged OpenClaw/Bun hosts cannot interpret npm shim entrypoints. Reuse the
   // active Node runtime or require an installed node.exe before choosing a shim.

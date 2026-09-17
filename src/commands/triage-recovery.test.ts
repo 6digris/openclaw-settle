@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   resolveExecutablePath: vi.fn(),
   runUtf8CommandWithTimeout: vi.fn(),
   spawn: vi.fn(),
+  readActiveGatewayLockIdentity: vi.fn(),
 }));
 
 vi.mock("@clack/prompts", async (importOriginal) => ({
@@ -40,6 +41,10 @@ vi.mock("../logging/diagnostic-support-export.js", () => ({
 vi.mock("../infra/executable-path.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../infra/executable-path.js")>()),
   resolveExecutablePath: mocks.resolveExecutablePath,
+}));
+vi.mock("../infra/gateway-lock.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../infra/gateway-lock.js")>()),
+  readActiveGatewayLockIdentity: mocks.readActiveGatewayLockIdentity,
 }));
 vi.mock("../process/exec.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../process/exec.js")>()),
@@ -92,6 +97,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.collectDoctorFindings.mockResolvedValue([]);
   mocks.resolveExecutablePath.mockImplementation((agent: string) => `/usr/local/bin/${agent}`);
+  mocks.readActiveGatewayLockIdentity.mockResolvedValue(undefined);
   mocks.runUtf8CommandWithTimeout.mockImplementation(async (argv, options) => {
     if (argv.at(-1) === "--help") {
       return { stdout: "--safe-mode", stderr: "", code: 0, termination: "exit" };
@@ -676,6 +682,38 @@ describe("standalone triage update evidence", () => {
         expect(prompt).not.toContain("including `openclaw doctor --fix`");
       } finally {
         holder.release();
+      }
+    });
+  });
+
+  it("retains Doctor repair guidance when the running Gateway owns lifecycle contention", async () => {
+    await withOpenClawTestState({ layout: "split" }, async (state) => {
+      const run = createUpdateRun({ trigger: "cli", origin: { driver: readUpdateRunDriver() } });
+      const updateFailure = failedUpdate(state.statePath("install"));
+      updateFailure.runId = run.runId;
+      mocks.readActiveGatewayLockIdentity.mockResolvedValue({
+        pid: process.pid + 1,
+        port: 18789,
+        createdAt: new Date().toISOString(),
+      });
+      const coordinator = acquireGatewayLifecycleCoordinator({
+        databasePath: resolveOpenClawStateSqlitePath(process.env),
+      });
+      try {
+        const runtime = createTriageRuntime();
+        await triageCommand(runtime, {
+          json: true,
+          noExport: true,
+          recovery: {
+            target: resolveInstallationTarget(),
+            updateFailure: { result: updateFailure },
+          },
+        });
+        const prompt = await fs.readFile(runtime.writeJson.mock.calls[0]?.[0]?.promptPath, "utf8");
+        expect(prompt).not.toContain(`Active update driver PID ${process.pid}`);
+        expect(prompt).toContain("including `openclaw doctor --fix`");
+      } finally {
+        coordinator.release();
       }
     });
   });
