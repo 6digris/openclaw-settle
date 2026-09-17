@@ -1047,7 +1047,9 @@ export async function registerSlackMonitorSlashCommands(params: {
       providerSetting: account.config.commands?.nativeSkills,
       globalSetting: startupCfg.commands?.nativeSkills,
     })
-      ? (await loadSlashSkillCommandsRuntime()).listSkillCommandsForAgents({ cfg: startupCfg })
+      ? await (
+          await loadSlashSkillCommandsRuntime()
+        ).prepareSkillCommandsForAgents({ cfg: startupCfg })
       : [];
     nativeCommands = slashCommandsRuntime.listNativeCommandSpecsForConfig(startupCfg, {
       skillCommands,

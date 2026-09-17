@@ -82,6 +82,30 @@ describe("registerTelegramNativeCommands", () => {
     pluginCommandHandler.mockClear();
   });
 
+  it.each([
+    {
+      commands: [
+        { name: "remote_skill", skillName: "remote-skill", description: "Remote workspace Skill" },
+      ],
+    },
+    { commands: [] },
+  ])(
+    "uses the prepared workspace Skill catalog, including an empty result (%j)",
+    async ({ commands }) => {
+      const { bot, setMyCommands } = createCommandBot();
+      const params = createNativeCommandTestParams(
+        { commands: { native: true, nativeSkills: true } },
+        { bot },
+      );
+      registerTelegramNativeCommands({ ...params, preparedSkillCommands: commands });
+      const registered = await waitForRegisteredCommands(setMyCommands);
+      expect(listSkillCommandsForAgents).not.toHaveBeenCalled();
+      expect(registered.some((entry) => entry.command === "remote_skill")).toBe(
+        commands.length > 0,
+      );
+    },
+  );
+
   it("scopes skill commands when account binding exists", () => {
     const cfg: OpenClawConfig = {
       agents: {

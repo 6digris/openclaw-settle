@@ -12,7 +12,10 @@ import {
   logWebhookReceived,
 } from "openclaw/plugin-sdk/logging-core";
 import { parseStrictNonNegativeInteger } from "openclaw/plugin-sdk/number-runtime";
-import { createRuntimeConfigReader } from "openclaw/plugin-sdk/runtime-config-snapshot";
+import {
+  createRuntimeConfigReader,
+  getRuntimeConfig,
+} from "openclaw/plugin-sdk/runtime-config-snapshot";
 import type { BackoffPolicy, RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import {
   computeBackoff,
@@ -35,7 +38,7 @@ import {
 import { mergeTelegramAccountConfig } from "./account-config.js";
 import { resolveTelegramAllowedUpdates } from "./allowed-updates.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
-import { createTelegramBot } from "./bot.js";
+import { createTelegramBot, prepareTelegramNativeSkillCommands } from "./bot.js";
 import { resolveTelegramTransport } from "./fetch.js";
 import { isRetryableTelegramApiError, isTelegramAuthenticationError } from "./network-errors.js";
 import { createTelegramTransportIngressMonitor } from "./telegram-ingress-drain-factory.js";
@@ -338,6 +341,22 @@ export async function startTelegramWebhook(opts: {
         "Set channels.telegram.webhookSecret in your config.",
     );
   }
+  const botConfig = opts.config ?? getRuntimeConfig();
+  let preparedSkillCommands: Awaited<ReturnType<typeof prepareTelegramNativeSkillCommands>> = [];
+  if (!opts.abortSignal?.aborted) {
+    try {
+      preparedSkillCommands = await prepareTelegramNativeSkillCommands({
+        cfg: botConfig,
+        accountId: opts.accountId,
+        signal: opts.abortSignal,
+      });
+    } catch (err) {
+      if (!opts.abortSignal?.aborted) {
+        throw err;
+      }
+      // Caller cancellation follows the existing shutdown path without local discovery.
+    }
+  }
   const runtime = opts.runtime ?? defaultRuntime;
   const status = createTelegramWebhookStatusPublisher(opts.setStatus);
   status.noteWebhookStart();
@@ -375,7 +394,8 @@ export async function startTelegramWebhook(opts: {
     proxyFetch: opts.fetch,
     fetchAbortSignal: botFetchAbortSignal,
     accountAbortSignal,
-    config: opts.config,
+    config: botConfig,
+    preparedSkillCommands,
     accountId: opts.accountId,
     ownerAgentId: opts.ownerAgentId,
     telegramTransport,

@@ -3,9 +3,10 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type {
-  MemorySearchConfig,
-  OpenClawConfig,
+import {
+  resolveMemorySearchConfig,
+  type MemorySearchConfig,
+  type OpenClawConfig,
 } from "openclaw/plugin-sdk/memory-core-host-engine-foundation";
 import { resetPluginStateStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import {
@@ -168,6 +169,7 @@ vi.mock("./embeddings.js", () => ({
 }));
 
 import { clearEmbeddingProviders as clearRegistry } from "openclaw/plugin-sdk/plugin-test-runtime";
+import { MemoryFileWatcher } from "./file-watcher.js";
 import { closeAllMemorySearchManagers, getMemorySearchManager } from "./index.js";
 import type { MemoryIndexManager } from "./manager.js";
 import { isolateMemoryManagerTestConfig } from "./test-config-helpers.js";
@@ -799,9 +801,16 @@ describe("memory watcher config", () => {
     const memoryWatcher = createdNativeWatchers.find((w) => w.dir === memoryDir);
     expect(memoryWatcher).toBeDefined();
 
-    // Pretend chokidar was never set up by clearing the manager.watcher slot,
-    // then trigger the native error; the fallback must spin up a new chokidar.
-    (manager as unknown as { watcher: unknown }).watcher = null;
+    // Clear the filesystem owner's slot to exercise native fallback without
+    // an existing Chokidar watcher.
+    if (!manager) {
+      throw new Error("manager missing");
+    }
+    const fileWatcher: unknown = Reflect.get(manager, "fileWatcher");
+    if (!(fileWatcher instanceof MemoryFileWatcher)) {
+      throw new Error("filesystem watcher missing");
+    }
+    Reflect.set(fileWatcher, "watcher", null);
     const chokidarCallsBefore = watchMock.mock.calls.length;
 
     memoryWatcher?.emitError(new Error("watcher error: ENOSPC"));
@@ -850,6 +859,47 @@ describe("memory watcher config", () => {
     expect(main.close).not.toHaveBeenCalled();
     expect(nativeWatchMock.mock.calls.length).toBe(nativeCallsBefore);
     expect(sync).not.toHaveBeenCalled();
+  });
+
+  it("uses native Memory coverage and settling without creating an index manager", async () => {
+    await setupWatcherWorkspace({ name: "notes.md", contents: "hello" });
+    const settings = resolveMemorySearchConfig(createWatcherConfig(), "main");
+    if (!settings) {
+      throw new Error("memory settings missing");
+    }
+    const onChange = vi.fn();
+    const onDirty = vi.fn();
+    const onUnavailable = vi.fn();
+    const fileWatcher = new MemoryFileWatcher({
+      workspaceDir,
+      agentId: "main",
+      settings,
+      onChange,
+      onDirty,
+      onUnavailable,
+    });
+    vi.useFakeTimers();
+    try {
+      fileWatcher.start();
+      const extraWatcher = createdNativeWatchers.find((entry) => entry.dir === extraDir);
+      if (!extraWatcher) {
+        throw new Error("extra-path watcher missing");
+      }
+      extraWatcher.emit("change", "notes.md");
+      expect(onDirty).toHaveBeenCalledTimes(1);
+      expect(onChange).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(settings.sync.watchDebounceMs);
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onUnavailable).not.toHaveBeenCalled();
+      expect(manager).toBeNull();
+      await fileWatcher.close();
+      expect(createdNativeWatchers.every((entry) => entry.close.mock.calls.length > 0)).toBe(true);
+      extraWatcher.emit("change", "notes.md");
+      await vi.advanceTimersByTimeAsync(settings.sync.watchDebounceMs);
+      expect(onChange).toHaveBeenCalledTimes(1);
+    } finally {
+      await fileWatcher.close();
+    }
   });
 
   it("ignores re-entrant ensureWatcher calls", async () => {

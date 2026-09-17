@@ -1,7 +1,11 @@
 // Memory Core plugin module implements rem evidence behavior.
-import fs from "node:fs/promises";
 import path from "node:path";
 import { uniqueStrings } from "openclaw/plugin-sdk/string-coerce-runtime";
+import {
+  inspectWorkspaceFile,
+  listWorkspaceDirectory,
+  readWorkspaceText,
+} from "./memory-workspace-files.js";
 
 const REM_BLOCKED_SECTION_RE =
   /\b(morning reminders|tasks? for today|to-?do|pickups?|action items?|next steps?|open questions?|stats|setup tasks?|priority contacts|visitors?|top priority candidates|timeline coverage|action items for morning review|test .* skill|heartbeat checks?|date semantics guardrail|still broken|last message (?:&|and) status|plugin \/ service warning|email triage cron)\b/i;
@@ -1037,19 +1041,19 @@ export function previewGroundedRemForFile(params: {
   };
 }
 
-async function collectMarkdownFiles(inputPaths: string[]): Promise<string[]> {
+async function collectMarkdownFiles(workspaceDir: string, inputPaths: string[]): Promise<string[]> {
   const found = new Set<string>();
   async function walk(targetPath: string): Promise<void> {
     if (found.size >= MAX_GROUNDED_REM_FILES) {
       return;
     }
     const resolved = path.resolve(targetPath);
-    const stat = await fs.lstat(resolved);
+    const stat = await inspectWorkspaceFile(workspaceDir, resolved, false);
     if (stat.isSymbolicLink()) {
       return;
     }
     if (stat.isDirectory()) {
-      const entries = await fs.readdir(resolved, { withFileTypes: true });
+      const entries = await listWorkspaceDirectory(workspaceDir, resolved);
       for (const entry of entries) {
         if (entry.isDirectory() && GROUNDED_REM_SKIPPED_DIRS.has(entry.name)) {
           continue;
@@ -1081,10 +1085,10 @@ export async function previewGroundedRemMarkdown(params: {
   inputPaths: string[];
 }): Promise<GroundedRemPreviewResult> {
   const workspaceDir = params.workspaceDir.trim();
-  const files = await collectMarkdownFiles(params.inputPaths);
+  const files = await collectMarkdownFiles(workspaceDir, params.inputPaths);
   const previews: GroundedRemFilePreview[] = [];
   for (const filePath of files) {
-    const content = await fs.readFile(filePath, "utf-8");
+    const content = await readWorkspaceText(workspaceDir, filePath);
     const relPath = normalizePath(path.relative(workspaceDir, filePath));
     previews.push(previewGroundedRemForFile({ relPath, content }));
   }

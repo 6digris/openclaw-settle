@@ -739,7 +739,7 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
         let valid = entryValidity.get(candidate.entry);
         if (valid === undefined) {
           if (candidate.source === "memory") {
-            const current = await buildFileEntry(
+            const current = await (this.memoryFiles?.inspectFile ?? buildFileEntry)(
               candidate.entry.absPath,
               this.workspaceDir,
               this.settings.multimodal,
@@ -939,6 +939,7 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
     await withMemoryWorkspaceLock(this.workspaceDir, async () => {
       const database = this.database;
       const assertCurrent = () => {
+        this.memoryFiles?.assertCurrent();
         if (
           this.closed ||
           database.closed ||
@@ -985,7 +986,7 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
       });
       const prepare = async (): Promise<boolean> => {
         if (source === "memory") {
-          const current = await buildFileEntry(
+          const current = await (this.memoryFiles?.inspectFile ?? buildFileEntry)(
             entry.absPath,
             this.workspaceDir,
             this.settings.multimodal,
@@ -1033,18 +1034,23 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
     const kind = entry.kind;
     const suppliedContent = options.content ?? entry.content;
     const prepare = async (): Promise<PreparedMemoryIndexEntry | null> => {
-      const pathClassification = await resolveMemoryPathClassification({
-        absolutePath: entry.absPath,
-        source,
-        workspaceDir: this.workspaceDir,
-      });
       if (kind === "multimodal") {
-        const multimodalChunk = await buildMultimodalChunkForIndexing(entry);
+        const multimodalChunk: Awaited<
+          ReturnType<NonNullable<typeof this.memoryFiles>["buildMultimodalChunk"]>
+        > = await (this.memoryFiles?.buildMultimodalChunk ?? buildMultimodalChunkForIndexing)(
+          entry,
+        );
         if (!multimodalChunk) {
           this.dirty = true;
           await this.deleteIndexedFile(entry.path, source);
           return null;
         }
+        const pathClassification = await resolveMemoryPathClassification({
+          absolutePath: entry.absPath,
+          source,
+          workspaceDir: this.workspaceDir,
+          readSource: this.memoryFiles ? multimodalChunk : undefined,
+        });
         const chunk: IndexedMemoryChunk = {
           ...multimodalChunk.chunk,
           importance: null,
@@ -1065,7 +1071,31 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
         };
       }
 
+      const memoryFiles = this.memoryFiles;
+      const remoteRead =
+        source === "memory" && memoryFiles
+          ? await retryTransientMemoryRead(
+              () => memoryFiles.readForIndexing(entry.absPath),
+              `read workspace memory for indexing ${entry.absPath}`,
+            ).catch((error: unknown) => {
+              if (!isFileMissingError(error)) {
+                throw error;
+              }
+              return null;
+            })
+          : undefined;
+      if (remoteRead === null) {
+        this.dirty = true;
+        return null;
+      }
+      const pathClassification = await resolveMemoryPathClassification({
+        absolutePath: entry.absPath,
+        source,
+        workspaceDir: this.workspaceDir,
+        readSource: remoteRead,
+      });
       const content =
+        remoteRead?.content ??
         suppliedContent ??
         (await retryTransientMemoryRead(
           () => fs.readFile(entry.absPath, "utf-8"),

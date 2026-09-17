@@ -55,6 +55,7 @@ type RegisterTelegramNativeCommandsParams = {
   mediaMaxBytes?: number;
   nativeEnabled: boolean;
   nativeSkillsEnabled: boolean;
+  preparedSkillCommands?: TelegramBotOptions["preparedSkillCommands"];
   resolveGroupPolicy: (chatId: string | number, cfg: OpenClawConfig) => ChannelGroupPolicy;
   resolveTelegramGroupConfig: (
     chatId: string | number,
@@ -84,6 +85,7 @@ export const registerTelegramNativeCommands = ({
   mediaMaxBytes,
   nativeEnabled,
   nativeSkillsEnabled,
+  preparedSkillCommands,
   resolveGroupPolicy,
   resolveTelegramGroupConfig,
   shouldSkipUpdate,
@@ -104,7 +106,8 @@ export const registerTelegramNativeCommands = ({
   }
   const skillCommands =
     nativeEnabled && nativeSkillsEnabled && boundRoute
-      ? telegramDeps.listSkillCommandsForAgents({ cfg, agentIds: [boundRoute.agentId] })
+      ? (preparedSkillCommands ??
+        telegramDeps.listSkillCommandsForAgents({ cfg, agentIds: [boundRoute.agentId] }))
       : [];
   const pluginCommandRuntime = createPluginCommandRuntime();
   const pluginCommandSpecs = pluginCommandRuntime.listNativeCandidates("telegram");

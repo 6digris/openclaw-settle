@@ -27,7 +27,6 @@ import { writePluginWithSkill } from "../test-support/skill-plugin-fixtures.test
 import type { OpenClawSkillMetadata, SkillEligibilityContext } from "../types.js";
 import { resolveWorkshopSkillsDir } from "../workshop/skills-root.js";
 import {
-  loadBundledSkillEntryByName,
   loadVisibleSkills,
   loadWorkspaceSkills,
   prepareWorkspaceSkills,
@@ -457,7 +456,9 @@ describe("loadWorkspaceSkills", () => {
       managedSkillsDir: path.join(workspaceDir, ".managed"),
     });
     const mergedControlUi = visible.find((entry) => entry.skill.name === "control-ui");
-    const bundledControlUi = loadBundledSkillEntryByName("control-ui", {
+    const [bundledControlUi] = await prepareWorkspaceSkills(workspaceDir, {
+      bundledSkillName: "control-ui",
+      eligibility: {},
       config: {},
       bundledSkillsDir,
     });

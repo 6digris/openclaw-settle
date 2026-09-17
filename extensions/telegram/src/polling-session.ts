@@ -4,7 +4,7 @@ import { drainPendingDeliveries } from "openclaw/plugin-sdk/delivery-queue-runti
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { formatDurationPrecise, sleepWithAbort } from "openclaw/plugin-sdk/runtime-env";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
-import { createTelegramBot } from "./bot.js";
+import { createTelegramBot, prepareTelegramNativeSkillCommands } from "./bot.js";
 import type { TelegramTransport } from "./fetch.js";
 import { isRecoverableTelegramNetworkError } from "./network-errors.js";
 import { TelegramPollingLivenessTracker } from "./polling-liveness.js";
@@ -267,7 +267,15 @@ export class TelegramPollingSession {
       persistenceFloorUpdateId: committedUpdateId,
     };
     try {
+      cycleAbortSignal.throwIfAborted();
+      const preparedSkillCommands = await prepareTelegramNativeSkillCommands({
+        cfg: this.opts.config,
+        accountId: this.opts.accountId,
+        signal: cycleAbortSignal,
+      });
+      cycleAbortSignal.throwIfAborted();
       return createTelegramBot({
+        preparedSkillCommands,
         token: this.opts.token,
         runtime: this.opts.runtime,
         buildContext: this.opts.buildContext,

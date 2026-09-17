@@ -1,7 +1,5 @@
 // Memory Core plugin module implements dreaming phases behavior.
 import { createHash } from "node:crypto";
-import type { Dirent } from "node:fs";
-import fs from "node:fs/promises";
 import path from "node:path";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { extractErrorCode } from "openclaw/plugin-sdk/error-runtime";
@@ -42,6 +40,11 @@ import {
   writeMemoryCoreWorkspaceEntries,
 } from "./dreaming-state.js";
 import { listMemorySessionTombstones } from "./memory-entry-origins.js";
+import {
+  inspectWorkspaceFile,
+  listWorkspaceDirectory,
+  readWorkspaceText,
+} from "./memory-workspace-files.js";
 import { withMemoryWorkspaceLock } from "./memory-workspace-lock.js";
 import { textSimilarity as snippetSimilarity } from "./memory/tokenize.js";
 import {
@@ -824,12 +827,14 @@ async function collectDailyIngestionBatches(params: {
   );
   const memoryDir = path.join(params.workspaceDir, "memory");
   const cutoffMs = calculateLookbackCutoffMs(params.nowMs, params.lookbackDays);
-  const entries = await fs.readdir(memoryDir, { withFileTypes: true }).catch((err: unknown) => {
-    if (extractErrorCode(err) === "ENOENT") {
-      return [] as Dirent[];
-    }
-    throw err;
-  });
+  const entries = await listWorkspaceDirectory(params.workspaceDir, memoryDir).catch(
+    (err: unknown) => {
+      if (extractErrorCode(err) === "ENOENT") {
+        return [];
+      }
+      throw err;
+    },
+  );
   const files = entries
     .filter((entry) => entry.isFile())
     .map((entry) => {
@@ -859,7 +864,7 @@ async function collectDailyIngestionBatches(params: {
   for (const file of files) {
     const relativePath = `memory/${file.fileName}`;
     const filePath = path.join(memoryDir, file.fileName);
-    const stat = await fs.stat(filePath).catch((err: unknown) => {
+    const stat = await inspectWorkspaceFile(params.workspaceDir, filePath).catch((err: unknown) => {
       if (extractErrorCode(err) === "ENOENT") {
         return null;
       }
@@ -889,7 +894,7 @@ async function collectDailyIngestionBatches(params: {
     }
     changed = true;
 
-    const raw = await fs.readFile(filePath, "utf-8").catch((err: unknown) => {
+    const raw = await readWorkspaceText(params.workspaceDir, filePath).catch((err: unknown) => {
       if (extractErrorCode(err) === "ENOENT") {
         return "";
       }
@@ -1057,13 +1062,15 @@ export async function seedHistoricalDailyMemorySignals(params: {
       if (importedSignalCount >= totalCap) {
         break;
       }
-      const raw = await fs.readFile(entry.filePath, "utf-8").catch((err: unknown) => {
-        if (extractErrorCode(err) === "ENOENT") {
-          skippedPaths.push(entry.filePath);
-          return "";
-        }
-        throw err;
-      });
+      const raw = await readWorkspaceText(params.workspaceDir, entry.filePath).catch(
+        (err: unknown) => {
+          if (extractErrorCode(err) === "ENOENT") {
+            skippedPaths.push(entry.filePath);
+            return "";
+          }
+          throw err;
+        },
+      );
       if (!raw) {
         continue;
       }

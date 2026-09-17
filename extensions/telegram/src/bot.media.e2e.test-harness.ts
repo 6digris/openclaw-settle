@@ -263,6 +263,7 @@ export const telegramBotDepsForTest: TelegramBotDeps = {
     modelNames: new Map<string, string>(),
     modelCatalog: [],
   })) as TelegramBotDeps["buildModelsProviderData"],
+  prepareSkillCommandsForAgents: async () => [],
   listSkillCommandsForAgents: vi.fn(() => []) as TelegramBotDeps["listSkillCommandsForAgents"],
   wasSentByBot: vi.fn(() => false) as TelegramBotDeps["wasSentByBot"],
 };

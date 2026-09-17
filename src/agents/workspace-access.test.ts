@@ -5,6 +5,7 @@ import { createDeferredCore } from "../shared/deferred.js";
 import {
   declareAgentWorkspaceAccess,
   getAgentWorkspaceAccess,
+  isWorkspaceAccessUnavailableError,
   prepareAgentWorkspaceAttachments,
   registerAgentWorkspaceAccess,
   type AgentWorkspaceAccess,
@@ -25,6 +26,109 @@ function provider(): AgentWorkspaceAccess {
 }
 
 describe("host-owned workspace access", () => {
+  it.each(["before", "after"])(
+    "preserves Memory publication outcome when revoked %s commit",
+    async (when) => {
+      const root = workspace();
+      const unexpected = async () => {
+        throw new Error("Unexpected Memory operation");
+      };
+      const commitContent = vi.fn(async () => {
+        release();
+      });
+      const release = registerAgentWorkspaceAccess(root, {
+        ...provider(),
+        memoryFiles: {
+          assertCurrent() {},
+          listFiles: unexpected,
+          inspectFile: unexpected,
+          readFile: unexpected,
+          readForIndexing: unexpected,
+          buildMultimodalChunk: unexpected,
+          watch: unexpected,
+          maintenance: {
+            readFile: unexpected,
+            stat: unexpected,
+            listDirectory: unexpected,
+            mkdir: unexpected,
+            rename: unexpected,
+            resolveWritePath: unexpected,
+            commitContent,
+            resolveDreamsPath: unexpected,
+            readDreams: unexpected,
+            writeDreams: unexpected,
+            replaceReport: unexpected,
+            appendCorpus: unexpected,
+          },
+        },
+      });
+      const retained = getAgentWorkspaceAccess(root)!.memoryFiles!.maintenance!;
+      if (when === "before") {
+        release();
+      }
+      try {
+        await expect(
+          retained.commitContent({
+            filePath: path.join(root, "MEMORY.md"),
+            tempPrefix: "memory",
+            content: "new",
+          }),
+        ).rejects.toMatchObject({
+          code: "WORKSPACE_ACCESS_UNAVAILABLE",
+          ...(when === "after" ? { publication: "committed" } : {}),
+        });
+        expect(commitContent).toHaveBeenCalledTimes(when === "after" ? 1 : 0);
+      } finally {
+        release();
+      }
+    },
+  );
+
+  it("preserves remote discovery failure causes across the SDK boundary", async () => {
+    const root = workspace();
+    const cause = new Error("transport disconnected");
+    const release = registerAgentWorkspaceAccess(root, {
+      ...provider(),
+      loadSkills: async () => {
+        throw cause;
+      },
+    });
+    try {
+      // The provider fails before using its request; the binding still owns classification.
+      const loadSkills = getAgentWorkspaceAccess(root)!.loadSkills!;
+      await loadSkills({
+        sourcePlan: {
+          workspaceDir: root,
+          roots: [],
+          pluginSkillsDir: root,
+          pluginSkillRoots: [],
+          managedSkillsDir: root,
+          stateDir: root,
+        },
+        limits: { maxCandidatesPerRoot: 1, maxSkillsLoadedPerSource: 1, maxSkillFileBytes: 1 },
+        additionalBins: [],
+      }).then(
+        () => {
+          throw new Error("expected discovery to fail");
+        },
+        (error: unknown) => {
+          expect(error).toMatchObject({ cause });
+          expect(isWorkspaceAccessUnavailableError(error)).toBe(true);
+          expect(isWorkspaceAccessUnavailableError(new Error("wrapped", { cause: error }))).toBe(
+            true,
+          );
+          // Plugins may load a separate copy of the SDK; identity cannot depend on prototypes.
+          expect(isWorkspaceAccessUnavailableError({ code: "WORKSPACE_ACCESS_UNAVAILABLE" })).toBe(
+            true,
+          );
+        },
+      );
+      expect(isWorkspaceAccessUnavailableError(cause)).toBe(false);
+    } finally {
+      release();
+    }
+  });
+
   it("leaves unconfigured workspaces local and declared workspaces unavailable until start", () => {
     const root = workspace();
     expect(getAgentWorkspaceAccess(root)).toBeUndefined();
@@ -59,6 +163,41 @@ describe("host-owned workspace access", () => {
     } finally {
       releaseReplacement();
     }
+  });
+
+  it("revokes skill installation while Gateway policy is pending", async () => {
+    const root = workspace();
+    const policy = createDeferredCore<undefined>();
+    const policyStarted = createDeferredCore();
+    const mutate = vi.fn();
+    const release = registerAgentWorkspaceAccess(root, {
+      ...provider(),
+      applySkillRoot: async (params) => {
+        await params.beforeInstall?.("install");
+        mutate();
+        return { ok: true, targetDir: "/host/skills/test", mode: "install" };
+      },
+    });
+    const retained = getAgentWorkspaceAccess(root)!.applySkillRoot!;
+    const install = retained({
+      workspaceDir: root,
+      extractedRoot: "/source",
+      slug: "test",
+      mode: "install",
+      beforeInstall: async () => {
+        policyStarted.resolve();
+        return policy.promise;
+      },
+    });
+    const rejected = expect(install).rejects.toThrow("stopped or not ready");
+    await policyStarted.promise;
+    release();
+    policy.resolve(undefined);
+    await rejected;
+    expect(mutate).not.toHaveBeenCalled();
+    await expect(
+      retained({ workspaceDir: root, extractedRoot: "/source", slug: "test", mode: "install" }),
+    ).rejects.toThrow("stopped or not ready");
   });
 
   it("rejects a result returned after ownership is revoked", async () => {

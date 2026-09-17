@@ -15,6 +15,10 @@ import {
   resolveAgentWorkspaceDir,
   resolveDefaultAgentId,
 } from "../../agents/agent-scope.js";
+import {
+  getAgentWorkspaceAccess,
+  WorkspaceAccessUnavailableError,
+} from "../../agents/workspace-access.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   resolveMemoryDeepDreamingConfig,
@@ -174,10 +178,26 @@ function groundedMarkdownToDiaryLines(markdown: string): string[] {
     );
 }
 
-async function listWorkspaceDailyFiles(memoryDir: string): Promise<string[]> {
+function getWorkspaceMemoryMaintenance(workspaceDir: string) {
+  const access = getAgentWorkspaceAccess(workspaceDir);
+  if (!access) {
+    return undefined;
+  }
+  const files = access.memoryFiles?.maintenance;
+  if (!files) {
+    throw new WorkspaceAccessUnavailableError("Remote Memory maintenance is unavailable");
+  }
+  return files;
+}
+
+async function listWorkspaceDailyFiles(workspaceDir: string): Promise<string[]> {
+  const memoryDir = path.join(workspaceDir, "memory");
+  const files = getWorkspaceMemoryMaintenance(workspaceDir);
   let entries: string[];
   try {
-    entries = await fs.readdir(memoryDir);
+    entries = files
+      ? (await files.listDirectory(memoryDir)).map((entry) => entry.name)
+      : await fs.readdir(memoryDir);
   } catch (err) {
     if ((err as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
       return [];
@@ -524,11 +544,21 @@ async function resolveAllManagedDreamingCronStatuses(context: {
 async function readDreamDiary(
   workspaceDir: string,
 ): Promise<Omit<DoctorMemoryDreamDiaryPayload, "agentId">> {
+  const files = getWorkspaceMemoryMaintenance(workspaceDir);
   for (const name of DREAM_DIARY_FILE_NAMES) {
     const filePath = path.join(workspaceDir, name);
     let stat;
     try {
-      stat = await fs.lstat(filePath);
+      if (files) {
+        stat = await files.stat(filePath, false);
+      } else {
+        const localStat = await fs.lstat(filePath);
+        stat = {
+          isSymbolicLink: localStat.isSymbolicLink(),
+          isFile: localStat.isFile(),
+          mtimeMs: localStat.mtimeMs,
+        };
+      }
     } catch (err) {
       const code = (err as NodeJS.ErrnoException | undefined)?.code;
       if (code === "ENOENT") {
@@ -539,12 +569,14 @@ async function readDreamDiary(
         path: name,
       };
     }
-    if (stat.isSymbolicLink() || !stat.isFile()) {
+    if (stat.isSymbolicLink || !stat.isFile) {
       // Ignore redirected diaries; doctor actions only operate on real workspace files.
       continue;
     }
     try {
-      const content = await fs.readFile(filePath, "utf-8");
+      const content = files
+        ? (await files.readFile(filePath)).toString("utf-8")
+        : await fs.readFile(filePath, "utf-8");
       return {
         found: true,
         path: name,
@@ -787,8 +819,7 @@ export const createDoctorHandlers = (
       return;
     }
     const { cfg, agentId, workspaceDir } = target;
-    const memoryDir = path.join(workspaceDir, "memory");
-    const sourceFiles = await listWorkspaceDailyFiles(memoryDir);
+    const sourceFiles = await listWorkspaceDailyFiles(workspaceDir);
     if (sourceFiles.length === 0) {
       const dreamDiary = await readDreamDiary(workspaceDir);
       const payload: DoctorMemoryDreamActionPayload = {

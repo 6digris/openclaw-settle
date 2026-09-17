@@ -1,1 +1,1 @@
-export { listSkillCommandsForAgents } from "openclaw/plugin-sdk/command-auth-native";
+export { prepareSkillCommandsForAgents } from "openclaw/plugin-sdk/skill-commands-runtime";

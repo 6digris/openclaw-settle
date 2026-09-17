@@ -65,3 +65,42 @@ read-only database access and vector primitives, and
 embedding input limits. These facades avoid loading provider registries or
 writable-store initialization into worker threads. They are bundled runtime
 contracts, not third-party typed SDK entrypoints.
+
+## Memory files on another host
+
+Register `AgentWorkspaceAccess.memoryFiles` when workspace files live on another
+host. Memory Core keeps its existing index, embedding providers, original sessions
+and maintenance state on Gateway.
+
+```text
+Gateway                         Harness
+Memory index + sessions         Memory files
+      ─── file operations ────→     │
+      ←── bytes + metadata ─────────┘
+```
+
+- The native manager uses remote file discovery and reads for indexing and
+  `memory_get`. Publication rechecks the Harness source; local stale copies are
+  never a fallback for a registered remote workspace.
+- `memoryFiles.maintenance` executes existing file mutations beside the files.
+  Gateway keeps maintenance decisions and locks; the native file writer preserves
+  conflict and publication-outcome handling.
+- Memory Core's public `worker-api.js` supplies `serveMemoryFiles`. The packaged
+  `dist/worker/memory-worker-entry.js --files <workspace>` consumes one JSON request
+  on stdin and returns a JSON result on stdout. Existing buffered command transports
+  can invoke it; the worker needs neither an index directory nor embedding credentials.
+- The workspace provider owns transport, admitted roots and cancellation. Registering
+  this interface does not automatically provision a remote host or wire a paired node.
+- `createWorkspaceMemoryFileClient` from `agent-workspace-runtime` adapts that worker
+  to `memoryFiles`. Supply the Gateway and remote workspace paths, a lifetime signal,
+  a request function (JSON stdin to stdout), and a subscription function (JSON lines).
+  The shared client maps paths and preserves native errors, including uncertain write
+  outcomes. Providers supply transport and authorization; no Codex process is required.
+  This supplies Gateway Memory callers; each harness's tool protocol still determines
+  whether its model can call `memory_search` or `memory_get`.
+- `--watch-files <workspace>` reuses the native Memory file watcher without creating
+  an index. Send one JSON line containing the agent ID and file-watch settings;
+  stdout streams `"change"` or `"unavailable"` lines until stdin closes. Only file
+  paths, multimodal settings and debounce time cross this interface, not embedding
+  provider configuration. Providers need a subscription transport for this mode;
+  lost subscriptions must report unavailability so the manager refreshes on search.

@@ -323,6 +323,10 @@ vi.mock("../skills/discovery/status.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../skills/discovery/status.js")>()),
   buildWorkspaceSkillStatus: (workspaceDir: string, options?: unknown) =>
     mocks.buildWorkspaceSkillStatusMock(workspaceDir, options),
+  prepareWorkspaceSkillStatus: async (workspaceDir: string, options?: unknown) => ({
+    report: mocks.buildWorkspaceSkillStatusMock(workspaceDir, options),
+    files: [],
+  }),
 }));
 
 describe("skills cli commands", () => {

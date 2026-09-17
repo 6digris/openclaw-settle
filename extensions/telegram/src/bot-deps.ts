@@ -29,7 +29,10 @@ import {
   resolveAmbientTranscriptWatermarkKey,
   resolveStorePath,
 } from "openclaw/plugin-sdk/session-store-runtime";
-import { listSkillCommandsForAgents } from "openclaw/plugin-sdk/skill-commands-runtime";
+import {
+  listSkillCommandsForAgents,
+  prepareSkillCommandsForAgents,
+} from "openclaw/plugin-sdk/skill-commands-runtime";
 import { enqueueSystemEvent } from "openclaw/plugin-sdk/system-event-runtime";
 import { loadWebMedia } from "openclaw/plugin-sdk/web-media";
 import { syncTelegramMenuCommands } from "./bot-native-command-menu.js";
@@ -74,6 +77,7 @@ export type TelegramBotDeps = {
   loadWebMedia?: typeof loadWebMedia;
   buildModelsProviderData: typeof buildPreparedModelsProviderData;
   listSkillCommandsForAgents: typeof listSkillCommandsForAgents;
+  prepareSkillCommandsForAgents: typeof prepareSkillCommandsForAgents;
   syncTelegramMenuCommands?: typeof syncTelegramMenuCommands;
   wasSentByBot: (...args: Parameters<typeof wasSentByBot>) => boolean | Promise<boolean>;
   resolveApproval?: ResolveTelegramApproval;
@@ -137,6 +141,9 @@ export const defaultTelegramBotDeps: TelegramBotDeps = {
   },
   get buildModelsProviderData() {
     return buildPreparedModelsProviderData;
+  },
+  get prepareSkillCommandsForAgents() {
+    return prepareSkillCommandsForAgents;
   },
   get listSkillCommandsForAgents() {
     return listSkillCommandsForAgents;

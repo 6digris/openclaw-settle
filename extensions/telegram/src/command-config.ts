@@ -1,4 +1,9 @@
 // Telegram helper module supports command config behavior.
+import type { OpenClawConfig, TelegramAccountConfig } from "openclaw/plugin-sdk/config-contracts";
+import {
+  resolveNativeCommandsEnabled,
+  resolveNativeSkillsEnabled,
+} from "openclaw/plugin-sdk/native-command-config-runtime";
 import { normalizeOptionalLowercaseString } from "openclaw/plugin-sdk/string-coerce-runtime";
 
 export const TELEGRAM_COMMAND_NAME_PATTERN = /^[a-z0-9_]{1,32}$/;
@@ -95,4 +100,22 @@ export function resolveTelegramCustomCommands(params: {
   }
 
   return { commands: resolved, issues };
+}
+
+export function resolveTelegramNativeCommandSettings(
+  cfg: OpenClawConfig,
+  telegramCfg: TelegramAccountConfig,
+) {
+  return {
+    nativeEnabled: resolveNativeCommandsEnabled({
+      providerId: "telegram",
+      providerSetting: telegramCfg.commands?.native,
+      globalSetting: cfg.commands?.native,
+    }),
+    nativeSkillsEnabled: resolveNativeSkillsEnabled({
+      providerId: "telegram",
+      providerSetting: telegramCfg.commands?.nativeSkills,
+      globalSetting: cfg.commands?.nativeSkills,
+    }),
+  };
 }

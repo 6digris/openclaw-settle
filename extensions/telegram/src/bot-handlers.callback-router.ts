@@ -481,7 +481,7 @@ async function handleTelegramModelCallback(params: {
         runtimeCfg,
       }).agentId;
     const result = await retryModelAction(async () => {
-      const skillCommands = telegramDeps.listSkillCommandsForAgents({
+      const skillCommands = await telegramDeps.prepareSkillCommandsForAgents({
         cfg: runtimeCfg,
         agentIds: [agentId],
       });

@@ -277,7 +277,7 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
     nativeEnabled,
     nativeSkillsEnabled,
     voiceEnabled,
-    listSkillCommandsForAgents: discordProviderRuntime.listSkillCommandsForAgents,
+    prepareSkillCommandsForAgents: discordProviderRuntime.prepareSkillCommandsForAgents,
     listNativeCommandSpecsForConfig: discordProviderRuntime.listNativeCommandSpecsForConfig,
   });
   const voiceManagerRef: { current: DiscordVoiceManager | null } = { current: null };

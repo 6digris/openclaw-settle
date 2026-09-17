@@ -1,7 +1,9 @@
 // Mattermost tests cover monitor slash plugin behavior.
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { resolveMattermostAccount } from "./accounts.js";
+import { createMattermostClient } from "./client.js";
 
-const listSkillCommandsForAgents = vi.hoisted(() => vi.fn());
+const prepareSkillCommandsForAgents = vi.hoisted(() => vi.fn());
 const fetchMattermostUserTeams = vi.hoisted(() => vi.fn());
 const normalizeMattermostBaseUrl = vi.hoisted(() => vi.fn((value: string | undefined) => value));
 const isSlashCommandsEnabled = vi.hoisted(() => vi.fn());
@@ -10,8 +12,8 @@ const resolveCallbackUrl = vi.hoisted(() => vi.fn());
 const resolveSlashCommandConfig = vi.hoisted(() => vi.fn());
 const activateSlashCommands = vi.hoisted(() => vi.fn());
 
-vi.mock("./runtime-api.js", () => ({
-  listSkillCommandsForAgents,
+vi.mock("openclaw/plugin-sdk/skill-commands-runtime", () => ({
+  prepareSkillCommandsForAgents,
 }));
 
 vi.mock("./client.js", async () => {
@@ -57,7 +59,7 @@ describe("mattermost monitor slash", () => {
   });
 
   beforeEach(() => {
-    listSkillCommandsForAgents.mockReset();
+    prepareSkillCommandsForAgents.mockReset();
     fetchMattermostUserTeams.mockReset();
     normalizeMattermostBaseUrl.mockClear();
     isSlashCommandsEnabled.mockReset();
@@ -94,7 +96,7 @@ describe("mattermost monitor slash", () => {
     isSlashCommandsEnabled.mockReturnValue(true);
     fetchMattermostUserTeams.mockResolvedValue([{ id: "team-1" }, { id: "team-2" }]);
     resolveCallbackUrl.mockReturnValue("https://openclaw.test/slash");
-    listSkillCommandsForAgents.mockReturnValue([
+    prepareSkillCommandsForAgents.mockResolvedValue([
       { name: "skill", description: "Skill run" },
       { name: "oc_ping", description: "Already prefixed" },
       { name: "   ", description: "ignored" },
@@ -182,6 +184,36 @@ describe("mattermost monitor slash", () => {
 
     expect(resolveCallbackUrl).toHaveBeenCalledWith(
       expect.objectContaining({ gatewayPort: 18789 }),
+    );
+  });
+
+  it("preserves the base-command fallback for unrelated local discovery errors", async () => {
+    resolveSlashCommandConfig.mockReturnValue({ enabled: true, nativeSkills: true });
+    isSlashCommandsEnabled.mockReturnValue(true);
+    fetchMattermostUserTeams.mockResolvedValue([{ id: "team-1" }]);
+    resolveCallbackUrl.mockReturnValue("https://openclaw.test/slash");
+    prepareSkillCommandsForAgents.mockRejectedValue(new Error("invalid local Skill catalog"));
+    registerSlashCommands.mockResolvedValue([{ token: "test-token", trigger: "ping" }]);
+    const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
+    await registerMattermostMonitorSlashCommands({
+      client: createMattermostClient({
+        baseUrl: "https://chat.example.com",
+        botToken: "test-token",
+      }),
+      cfg: {},
+      runtime,
+      account: resolveMattermostAccount({ cfg: {} }),
+      baseUrl: "https://chat.example.com",
+      botUserId: "bot-user",
+    });
+    expect(registerSlashCommands).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        commands: [{ trigger: "ping", description: "ping" }],
+      }),
+    );
+    expect(activateSlashCommands).toHaveBeenCalledOnce();
+    expect(runtime.error).toHaveBeenCalledWith(
+      "mattermost: failed to list skill commands: Error: invalid local Skill catalog",
     );
   });
 

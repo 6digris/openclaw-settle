@@ -1,6 +1,11 @@
 import fsSync from "node:fs";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { normalizeOptionalString as normalizeOptionalStringValue } from "@openclaw/normalization-core/string-coerce";
+import {
+  getAgentWorkspaceAccess,
+  WorkspaceAccessUnavailableError,
+} from "../../agents/workspace-access.js";
 import type { ClawHubDownloadResult } from "../../infra/clawhub-artifacts.js";
 import {
   CLAWHUB_SKILLS_SH_REF_PREFIX,
@@ -8,8 +13,9 @@ import {
   type ClawHubSkillVerificationResponse,
   type ClawHubSkillsShTrustState,
 } from "../../infra/clawhub-skills.js";
+import { sha256Hex } from "../../infra/crypto-digest.js";
 import { formatErrorMessage, hasErrnoCode } from "../../infra/errors.js";
-import { statRegularFile } from "../../infra/fs-safe.js";
+import { pathExists, statRegularFile } from "../../infra/fs-safe.js";
 import {
   JsonFileReadError,
   readJson,
@@ -18,7 +24,13 @@ import {
   writeJson,
 } from "../../infra/json-files.js";
 import { replaceFileAtomicSync } from "../../infra/replace-file.js";
-import { normalizeTrackedSkillSlug, validateRequestedSkillSlug } from "./archive-install.js";
+import {
+  CLAWHUB_SKILL_ARCHIVE_ROOT_MARKERS,
+  normalizeTrackedSkillSlug,
+  resolveWorkspaceSkillInstallDir,
+  validateRequestedSkillSlug,
+} from "./archive-install.js";
+import { digestClawHubSkillTree } from "./skill-tree-digest.js";
 
 export { normalizeOptionalStringValue };
 
@@ -417,8 +429,54 @@ export async function writeClawHubSkillOrigin(
   await writeJson(path.join(skillDir, DOT_DIR, "origin.json"), origin, { trailingNewline: true });
 }
 
+export async function readInstalledSkillFileLock(
+  skillDir: string,
+): Promise<ClawHubSkillFileLock | undefined> {
+  for (const marker of CLAWHUB_SKILL_ARCHIVE_ROOT_MARKERS) {
+    try {
+      return { path: marker, sha256: sha256Hex(await fs.readFile(path.join(skillDir, marker))) };
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
+
+/** Finalize native tracking beside the installed files, preserving other tracked skills. */
+export async function recordClawHubSkillInstall(params: {
+  workspaceDir: string;
+  skillDir: string;
+  origin: ClawHubSkillOrigin;
+  verification?: ClawHubSkillVerificationLock;
+}): Promise<void> {
+  const { origin, verification } = params;
+  await writeClawHubSkillOrigin(params.skillDir, origin);
+  const lock = await readClawHubSkillsLockfile(params.workspaceDir);
+  lock.skills[origin.slug] = {
+    version: origin.installedVersion,
+    registry: origin.registry,
+    installedAt: origin.installedAt,
+    ...(origin.ownerHandle ? { ownerHandle: origin.ownerHandle } : {}),
+    ...(origin.requestedReference ? { requestedReference: origin.requestedReference } : {}),
+    ...(origin.trustState ? { trustState: origin.trustState } : {}),
+    ...(origin.sourceUrl ? { sourceUrl: origin.sourceUrl } : {}),
+    ...(origin.artifact ? { artifact: origin.artifact } : {}),
+    ...(origin.skillFile ? { skillFile: origin.skillFile } : {}),
+    ...(origin.fileTreeSha256 ? { fileTreeSha256: origin.fileTreeSha256 } : {}),
+    ...(verification ? { verification } : {}),
+  };
+  await writeClawHubSkillsLockfile(params.workspaceDir, lock);
+}
+
 export async function readTrackedClawHubSkillSlugs(workspaceDir: string): Promise<string[]> {
-  return Object.keys((await readClawHubSkillsLockfile(workspaceDir)).skills).toSorted();
+  const access = getAgentWorkspaceAccess(workspaceDir);
+  if (access && !access.clawHubSkills) {
+    throw new WorkspaceAccessUnavailableError("Remote workspace ClawHub tracking is unavailable");
+  }
+  const lock = await (
+    access?.clawHubSkills?.readClawHubSkillsLockfile ?? readClawHubSkillsLockfile
+  )(workspaceDir);
+  return Object.keys(lock.skills).toSorted();
 }
 
 export async function untrackClawHubSkill(
@@ -426,8 +484,13 @@ export async function untrackClawHubSkill(
   slug: string,
   beforePersistentApply?: () => void,
   beforeRollback = beforePersistentApply,
+  authorizeMutation?: (phase: "apply" | "rollback") => Promise<void>,
 ): Promise<() => Promise<void>> {
   const trackedSlug = normalizeTrackedSkillSlug(slug);
+  // Remote authorization can wait; read current tracking only after it returns.
+  if (authorizeMutation) {
+    await authorizeMutation("apply");
+  }
   const lock = await readClawHubSkillsLockfile(workspaceDir);
   const previous = lock.skills[trackedSlug];
   if (!previous) {
@@ -451,6 +514,9 @@ export async function untrackClawHubSkill(
   delete lock.skills[trackedSlug];
   writeLock(lock);
   return async () => {
+    if (authorizeMutation) {
+      await authorizeMutation("rollback");
+    }
     const current = await readClawHubSkillsLockfile(workspaceDir);
     if (current.skills[trackedSlug]) {
       throw new Error(`Skill ${JSON.stringify(trackedSlug)} was retracked during rollback.`);
@@ -458,4 +524,26 @@ export async function untrackClawHubSkill(
     current.skills[trackedSlug] = previous;
     writeLock(current, beforeRollback);
   };
+}
+
+/** Check the native target and tracking before acquiring an archive. */
+export async function assertClawHubSkillInstallState(params: {
+  workspaceDir: string;
+  slug: string;
+  force?: boolean;
+}): Promise<void> {
+  const targetDir = resolveWorkspaceSkillInstallDir(params.workspaceDir, params.slug);
+  if (!params.force && (await pathExists(targetDir))) {
+    throw new Error(`Skill already exists at ${targetDir}. Re-run with force/update.`);
+  }
+  // Reread at publication too, retaining skills tracked during download.
+  await readClawHubSkillsLockfile(params.workspaceDir);
+}
+
+export async function readInstalledClawHubSkillFiles(params: {
+  skillDir: string;
+}): Promise<{ fileTreeSha256: string; skillFile?: ClawHubSkillFileLock }> {
+  const fileTreeSha256 = await digestClawHubSkillTree(params.skillDir);
+  const skillFile = await readInstalledSkillFileLock(params.skillDir);
+  return { fileTreeSha256, ...(skillFile ? { skillFile } : {}) };
 }

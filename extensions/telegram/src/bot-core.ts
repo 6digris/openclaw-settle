@@ -12,10 +12,6 @@ import {
 } from "openclaw/plugin-sdk/conversation-runtime";
 import { formatErrorMessage, formatUncaughtError } from "openclaw/plugin-sdk/error-runtime";
 import { normalizeGroupActivation } from "openclaw/plugin-sdk/group-activation";
-import {
-  resolveNativeCommandsEnabled,
-  resolveNativeSkillsEnabled,
-} from "openclaw/plugin-sdk/native-command-config-runtime";
 import type { HistoryEntry } from "openclaw/plugin-sdk/reply-history";
 import {
   danger,
@@ -64,6 +60,7 @@ import {
   resolveTelegramClientTimeoutSeconds,
   resolveTelegramOutboundClientTimeoutFloorSeconds,
 } from "./client-fetch.js";
+import { resolveTelegramNativeCommandSettings } from "./command-config.js";
 import { resolveTelegramTransport } from "./fetch.js";
 import { resolveTelegramScopedGroupConfig } from "./group-config-helpers.js";
 import {
@@ -327,16 +324,10 @@ export function createTelegramBotCore(
       });
     },
   });
-  const nativeEnabled = resolveNativeCommandsEnabled({
-    providerId: "telegram",
-    providerSetting: telegramCfg.commands?.native,
-    globalSetting: cfg.commands?.native,
-  });
-  const nativeSkillsEnabled = resolveNativeSkillsEnabled({
-    providerId: "telegram",
-    providerSetting: telegramCfg.commands?.nativeSkills,
-    globalSetting: cfg.commands?.nativeSkills,
-  });
+  const { nativeEnabled, nativeSkillsEnabled } = resolveTelegramNativeCommandSettings(
+    cfg,
+    telegramCfg,
+  );
   const mediaMaxBytes = (opts.mediaMaxMb ?? telegramCfg.mediaMaxMb ?? 100) * 1024 * 1024;
   const logger = getChildLogger({ module: "telegram-auto-reply" });
   const resolveGroupPolicy = (chatId: string | number, turnCfg: OpenClawConfig) =>
@@ -405,6 +396,7 @@ export function createTelegramBotCore(
     mediaMaxBytes,
     nativeEnabled,
     nativeSkillsEnabled,
+    preparedSkillCommands: opts.preparedSkillCommands,
     resolveGroupPolicy,
     resolveTelegramGroupConfig,
     shouldSkipUpdate,

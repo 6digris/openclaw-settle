@@ -3,5 +3,6 @@ export {
   consumeRootOptionToken,
   FLAG_TERMINATOR,
   getRootOptionAwareCommandPath,
+  getCommandPositionalsWithRootOptions,
   isValueToken,
 } from "../infra/cli-root-options.js";

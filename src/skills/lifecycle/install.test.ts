@@ -2,6 +2,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { registerAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { callGatewayHandler } from "../../gateway/server-methods/skills.test-helpers.js";
 import {
@@ -13,11 +14,16 @@ import { captureEnv } from "../../test-utils/env.js";
 import { createFixtureSuite } from "../../test-utils/fixture-suite.js";
 import { withMockedPlatform } from "../../test-utils/vitest-spies.js";
 import { buildWorkspaceSkillStatus } from "../discovery/status.js";
-import { loadWorkspaceSkills } from "../loading/workspace-skill-loader.js";
+import {
+  loadWorkspaceSkills,
+  readWorkspaceSkillSources,
+} from "../loading/workspace-skill-loader.js";
+import { resolveWorkspaceSkillSourcePlan } from "../loading/workspace-skill-sources.js";
+import { readSkillResourceFiles } from "../runtime/resources.js";
 import { runCommandWithTimeoutMock } from "../test-support/install-test-mocks.js";
 import type { SkillEntry, SkillInstallSpec } from "../types.js";
 import { resolveWorkshopSkillsDir } from "../workshop/skills-root.js";
-import { installSkill } from "./install.js";
+import { installSkill, installSkillDependencies } from "./install.js";
 import { skillsInstallTesting } from "./install.test-support.js";
 
 vi.mock("../../process/exec.js", () => ({
@@ -143,6 +149,196 @@ describe("installSkill before_install hooks", () => {
       expect(options.env).not.toHaveProperty("PATH");
       const stat = await fs.stat(npmPrefix);
       expect(stat.isDirectory()).toBe(true);
+    });
+  });
+
+  it("installs the current host recipe for a hidden skill through the Gateway", async () => {
+    const { skillsHandlers } = await import("../../gateway/server-methods/skills.js");
+    await withWorkspaceCase(async ({ workspaceDir, stateDir }) => {
+      const hostDir = await workspaceSuite.createCaseDir("host");
+      const skillName = "host-dependency";
+      for (const [dir, packageName] of [
+        [workspaceDir, "stale-gateway-package"],
+        [hostDir, "current-host-package"],
+      ] as const) {
+        await writeInstallableSkill(dir, skillName, {
+          id: "deps",
+          kind: "node",
+          package: packageName,
+        });
+      }
+      skillsInstallTesting.setDepsForTest({ resolveNodeInstallStateDir: () => stateDir });
+      const hostInstall = vi.fn(async (request: Parameters<typeof installSkillDependencies>[0]) => {
+        skillsInstallTesting.setDepsForTest({
+          resolveNodeInstallStateDir: () => path.join(hostDir, "state"),
+        });
+        return await installSkillDependencies(request);
+      });
+      const release = registerAgentWorkspaceAccess(workspaceDir, {
+        bridge: { readFile: vi.fn(), writeFile: vi.fn(), stat: vi.fn() },
+        installSkillDependencies: hostInstall,
+        skillResources: {
+          readSkillFiles: readSkillResourceFiles,
+          readInstructions: vi.fn(),
+          resolveExplicitSkill: vi.fn(),
+        },
+        loadSkills: async (request) =>
+          readWorkspaceSkillSources({
+            ...request,
+            sourcePlan: resolveWorkspaceSkillSourcePlan(hostDir, { workspaceOnly: true }),
+          }),
+      });
+      const config: OpenClawConfig = {
+        plugins: { enabled: false },
+        agents: {
+          ownership: "explicit",
+          list: [{ id: "ops", workspace: workspaceDir, skills: [] }],
+        },
+      };
+      try {
+        const result = await callGatewayHandler(
+          skillsHandlers,
+          "skills.install",
+          { agentId: "ops", name: skillName, installId: "deps" },
+          { context: { getRuntimeConfig: () => config } },
+        );
+        expect(result.ok).toBe(true);
+        expect(hostInstall).toHaveBeenCalledWith(
+          expect.objectContaining({
+            spec: expect.objectContaining({ package: "current-host-package" }),
+          }),
+        );
+        await expect(fs.stat(path.join(stateDir, "tools"))).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+        expect(lastRunCommandCall()?.[0]).toEqual([
+          "npm",
+          "install",
+          "-g",
+          "--ignore-scripts",
+          "current-host-package",
+        ]);
+        expect(lastRunCommandCall()?.[1]).toMatchObject({
+          env: { NPM_CONFIG_PREFIX: path.join(hostDir, "state", "tools", "node", "npm") },
+        });
+      } finally {
+        release();
+      }
+    });
+  });
+
+  it.each(["deny", "host-failure", "missing-installer"] as const)(
+    "keeps remote dependency installs behind Gateway policy without local fallback (%s)",
+    async (outcome) => {
+      await withWorkspaceCase(async ({ workspaceDir }) => {
+        const hostDir = await workspaceSuite.createCaseDir("policy-host");
+        await writeInstallableSkill(hostDir, "policy-host");
+        skillsInstallTesting.setDepsForTest({});
+        let inspectedPath: string | undefined;
+        const policy = vi.fn(async (event: { sourcePath: string }) => {
+          inspectedPath = event.sourcePath;
+          expect(inspectedPath).not.toContain(hostDir);
+          expect(await fs.readFile(path.join(inspectedPath, "runner.js"), "utf8")).toBe(
+            "export {};\n",
+          );
+          return outcome === "deny"
+            ? { block: true, blockReason: "Organization denied" }
+            : undefined;
+        });
+        initializeGlobalHookRunner(
+          createMockPluginRegistry([{ hookName: "before_install", handler: policy }]),
+        );
+        const hostInstall = vi.fn(async () => {
+          throw new Error("Harness connection lost");
+        });
+        const release = registerAgentWorkspaceAccess(workspaceDir, {
+          bridge: { readFile: vi.fn(), writeFile: vi.fn(), stat: vi.fn() },
+          ...(outcome === "missing-installer" ? {} : { installSkillDependencies: hostInstall }),
+          skillResources: {
+            readSkillFiles: readSkillResourceFiles,
+            readInstructions: vi.fn(),
+            resolveExplicitSkill: vi.fn(),
+          },
+          loadSkills: async (request) =>
+            readWorkspaceSkillSources({
+              ...request,
+              sourcePlan: resolveWorkspaceSkillSourcePlan(hostDir, { workspaceOnly: true }),
+            }),
+        });
+        try {
+          const install = installSkill({
+            workspaceDir,
+            skillName: "policy-host",
+            installId: "deps",
+          });
+          if (outcome === "deny") {
+            expect(await install).toMatchObject({
+              ok: false,
+              message: expect.stringContaining("Organization denied"),
+            });
+            expect(hostInstall).not.toHaveBeenCalled();
+          } else {
+            await expect(install).rejects.toThrow(
+              outcome === "host-failure"
+                ? "Harness connection lost"
+                : "Remote skill dependency installation is unavailable",
+            );
+          }
+          expect(runCommandWithTimeoutMock).not.toHaveBeenCalled();
+          if (outcome !== "missing-installer") {
+            expect(policy).toHaveBeenCalledOnce();
+            await expect(fs.stat(inspectedPath!)).rejects.toMatchObject({ code: "ENOENT" });
+          }
+        } finally {
+          release();
+        }
+      });
+    },
+  );
+
+  it("checks Gateway-owned skill files locally but installs their dependencies on the Harness", async () => {
+    await withWorkspaceCase(async ({ workspaceDir }) => {
+      await writeInstallableSkill(workspaceDir, "gateway-owned");
+      const entries = loadTestWorkspaceSkillEntries(workspaceDir);
+      entries[0]!.skill.fileHost = "gateway";
+      skillsInstallTesting.setDepsForTest({ loadWorkspaceSkills: () => entries });
+      const hostInstall = vi.fn(async () => ({
+        ok: true,
+        message: "Installed",
+        stdout: "",
+        stderr: "",
+        code: 0,
+      }));
+      const readRemote = vi.fn();
+      const policy = vi.fn(async (event: { sourcePath: string }) => {
+        expect(event.sourcePath).toBe(entries[0]!.skill.baseDir);
+        expect(await fs.readFile(path.join(event.sourcePath, "runner.js"), "utf8")).toBe(
+          "export {};\n",
+        );
+      });
+      initializeGlobalHookRunner(
+        createMockPluginRegistry([{ hookName: "before_install", handler: policy }]),
+      );
+      const release = registerAgentWorkspaceAccess(workspaceDir, {
+        bridge: { readFile: vi.fn(), writeFile: vi.fn(), stat: vi.fn() },
+        installSkillDependencies: hostInstall,
+        skillResources: {
+          readSkillFiles: readRemote,
+          readInstructions: vi.fn(),
+          resolveExplicitSkill: vi.fn(),
+        },
+      });
+      try {
+        expect(
+          await installSkill({ workspaceDir, skillName: "gateway-owned", installId: "deps" }),
+        ).toMatchObject({ ok: true });
+        expect(policy).toHaveBeenCalledOnce();
+        expect(hostInstall).toHaveBeenCalledOnce();
+        expect(readRemote).not.toHaveBeenCalled();
+        expect(runCommandWithTimeoutMock).not.toHaveBeenCalled();
+      } finally {
+        release();
+      }
     });
   });
 

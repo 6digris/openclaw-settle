@@ -100,12 +100,26 @@ export class MemoryManagerRegistry<T extends ClosableMemoryManager> {
   private closePromise: Promise<void> | null = null;
   private closeFailed = false;
   private readonly managers = new Map<T, ManagerOwnership>();
-  constructor(private readonly lifecycle: MemoryManagerLifecycle = {}) {
-    lifecycle.prepare = (reload) => this.prepareManagersForReload(reload);
+  private retirementGeneration = 0;
+  constructor(
+    private readonly lifecycle: MemoryManagerLifecycle = {},
+    private readonly options: {
+      /** Opaque factories can retain embedding providers without reporting exact adapter ownership. */
+      retireOnProviderReload?: boolean;
+    } = {},
+  ) {
+    (lifecycle.preparers ??= new Set()).add((reload) => this.prepareManagersForReload(reload));
   }
 
   private get reload() {
     return this.lifecycle.reload;
+  }
+
+  private retiresAllManagers(reload = this.reload): boolean {
+    return Boolean(
+      reload &&
+      (reload.retireRuntime || (this.options.retireOnProviderReload && reload.adapters.size > 0)),
+    );
   }
 
   track(manager: T, key: string): ManagerOwnership {
@@ -185,9 +199,17 @@ export class MemoryManagerRegistry<T extends ClosableMemoryManager> {
   }
 
   private prepareManagersForReload(reload: MemoryReloadState) {
+    if (this.options.retireOnProviderReload && this.retiresAllManagers(reload)) {
+      // A timed-out drain may resume admission before an opaque factory returns.
+      // Its old dependencies remain retired, so that late result cannot be published.
+      this.retirementGeneration++;
+    }
     // A probe can outlive its transient manager, but never the adapter that produced it.
     for (const [key, entry] of this.embeddingProbeCache) {
-      if (reload.retireRuntime || entry.adapters.some((adapter) => reload.adapters.has(adapter))) {
+      if (
+        this.retiresAllManagers(reload) ||
+        entry.adapters.some((adapter) => reload.adapters.has(adapter))
+      ) {
         this.embeddingProbeCache.delete(key);
       }
     }
@@ -197,7 +219,7 @@ export class MemoryManagerRegistry<T extends ClosableMemoryManager> {
       const selected = [...this.managers].filter(
         ([, owner]) =>
           owner.retiring ||
-          reload.retireRuntime ||
+          this.retiresAllManagers(reload) ||
           [...owner.pending.values(), ...owner.providers.values(), ...owner.failedAdapters].some(
             (adapter) => reload.adapters.has(adapter),
           ),
@@ -214,7 +236,7 @@ export class MemoryManagerRegistry<T extends ClosableMemoryManager> {
       // Capture construction tails with this retirement; a timeout followed by
       // resume must not make this old drain select newly acquired managers.
       const results = await Promise.allSettled([
-        ...(reload.retireRuntime ? this.scopeOperations.values() : []),
+        ...(this.retiresAllManagers(reload) ? this.scopeOperations.values() : []),
         ...selected.map(([manager, owner]) => this.closeEntry(owner.key, manager)),
       ]);
       return {
@@ -231,35 +253,36 @@ export class MemoryManagerRegistry<T extends ClosableMemoryManager> {
     // maintenance acquisition so closing the default manager cannot wait on itself.
     if (
       params.purpose === "maintenance" &&
-      (this.reload?.retireRuntime || this.closePromise || this.closeFailed)
+      (this.retiresAllManagers() || this.closePromise || this.closeFailed)
     ) {
       return null;
     }
-    if (this.reload?.retireRuntime) {
+    if (this.retiresAllManagers()) {
       throw new MemoryManagerReloadError();
     }
     return await this.runScopeOperation(params, async () => {
-      if (this.reload?.retireRuntime) {
+      if (this.retiresAllManagers()) {
         throw new MemoryManagerReloadError();
       }
       if (this.closeFailed) {
         await this.retryFailedGlobalClose();
       }
+      const retirementGeneration = this.retirementGeneration;
       const prepared = await callbacks.prepare();
       if (!prepared) {
         return null;
       }
-      if (this.reload?.retireRuntime) {
+      if (this.retiresAllManagers() || retirementGeneration !== this.retirementGeneration) {
         throw new MemoryManagerReloadError();
       }
       const transient = isTransientMemoryIndexManagerPurpose(params.purpose);
       const create = async () => {
-        if (this.reload?.retireRuntime) {
+        if (this.retiresAllManagers() || retirementGeneration !== this.retirementGeneration) {
           throw new MemoryManagerReloadError();
         }
         const manager = await prepared.create();
         const owner = this.track(manager, prepared.key);
-        if (this.reload?.retireRuntime) {
+        if (this.retiresAllManagers() || retirementGeneration !== this.retirementGeneration) {
           owner.retiring = true;
           await this.closeEntries([[prepared.key, manager]]);
           throw new MemoryManagerReloadError();
@@ -282,9 +305,10 @@ export class MemoryManagerRegistry<T extends ClosableMemoryManager> {
         // Recheck after the scope await without discarding the manager needed for rollback.
         const reload = this.reload;
         if (
-          reload &&
-          (reload.retireRuntime ||
-            this.getProbeOwners(existing).some((adapter) => reload.adapters.has(adapter)))
+          retirementGeneration !== this.retirementGeneration ||
+          (reload &&
+            (this.retiresAllManagers(reload) ||
+              this.getProbeOwners(existing).some((adapter) => reload.adapters.has(adapter))))
         ) {
           throw new MemoryManagerReloadError();
         }

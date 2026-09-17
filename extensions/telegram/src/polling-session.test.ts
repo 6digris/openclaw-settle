@@ -68,7 +68,12 @@ const computeBackoffMock = vi.hoisted(() =>
 const sleepWithAbortMock = vi.hoisted(() => vi.fn(async () => undefined));
 const drainPendingDeliveriesMock = vi.hoisted(() => vi.fn(async (_opts: unknown) => undefined));
 
+const prepareTelegramNativeSkillCommandsMock = vi.hoisted(() =>
+  vi.fn<typeof import("./bot.js").prepareTelegramNativeSkillCommands>(async () => []),
+);
+
 vi.mock("./bot.js", () => ({
+  prepareTelegramNativeSkillCommands: prepareTelegramNativeSkillCommandsMock,
   createTelegramBot: createTelegramBotMock,
 }));
 
@@ -651,6 +656,7 @@ describe("TelegramPollingSession", () => {
   });
 
   beforeEach(() => {
+    prepareTelegramNativeSkillCommandsMock.mockReset().mockResolvedValue([]);
     createTelegramBotMock.mockReset();
     isRecoverableTelegramNetworkErrorMock.mockReset().mockReturnValue(true);
     computeBackoffMock.mockReset().mockReturnValue(0);
@@ -665,6 +671,78 @@ describe("TelegramPollingSession", () => {
   afterEach(() => {
     clearTelegramRuntime();
     closeOpenClawStateDatabaseForTest();
+  });
+
+  it.each([false, true])(
+    "waits for workspace commands before polling (cancelled=%s)",
+    async (cancelled) => {
+      await withTempSpool(async (spoolDir) => {
+        const abort = new AbortController();
+        const prepared =
+          createDeferred<
+            Awaited<ReturnType<typeof import("./bot.js").prepareTelegramNativeSkillCommands>>
+          >();
+        const commands = [
+          { name: "remote_skill", skillName: "remote-skill", description: "Remote Skill" },
+        ];
+        prepareTelegramNativeSkillCommandsMock.mockReturnValueOnce(prepared.promise);
+        const transport = makeTelegramTransport();
+        const worker = createIdleIngressWorker();
+        createTelegramBotMock.mockReturnValueOnce(makeIsolatedBot());
+        const session = createPollingSession({
+          abortSignal: abort.signal,
+          telegramTransport: transport,
+          ingress: { spoolDir, createWorker: worker.createWorker },
+        });
+        const running = session.runUntilAbort();
+        try {
+          await waitForTelegramTestState(() =>
+            expect(prepareTelegramNativeSkillCommandsMock).toHaveBeenCalledOnce(),
+          );
+          expect(createTelegramBotMock).not.toHaveBeenCalled();
+          expect(worker.createWorker).not.toHaveBeenCalled();
+          if (cancelled) {
+            abort.abort();
+          }
+          prepared.resolve(commands);
+          if (cancelled) {
+            await running;
+            expect(createTelegramBotMock).not.toHaveBeenCalled();
+            expect(worker.createWorker).not.toHaveBeenCalled();
+          } else {
+            await waitForTelegramTestState(() =>
+              expect(worker.createWorker).toHaveBeenCalledOnce(),
+            );
+            expect(createTelegramBotMock).toHaveBeenCalledWith(
+              expect.objectContaining({ preparedSkillCommands: commands }),
+            );
+          }
+        } finally {
+          abort.abort();
+          prepared.resolve(commands);
+          worker.stop();
+          await running;
+        }
+        expect(transport.close).toHaveBeenCalledOnce();
+      });
+    },
+  );
+
+  it("closes polling transport without starting a bot when workspace preparation fails", async () => {
+    const failure = new Error("workspace unavailable");
+    prepareTelegramNativeSkillCommandsMock.mockRejectedValueOnce(failure);
+    isRecoverableTelegramNetworkErrorMock.mockReturnValue(false);
+    const transport = makeTelegramTransport();
+    const worker = createIdleIngressWorker();
+    const session = createPollingSession({
+      abortSignal: new AbortController().signal,
+      telegramTransport: transport,
+      ingress: { createWorker: worker.createWorker },
+    });
+    await expect(session.runUntilAbort()).rejects.toBe(failure);
+    expect(createTelegramBotMock).not.toHaveBeenCalled();
+    expect(worker.createWorker).not.toHaveBeenCalled();
+    expect(transport.close).toHaveBeenCalledOnce();
   });
 
   it("resets restart backoff after a healthy polling cycle", () => {

@@ -39,3 +39,75 @@ export function resolveSkillsWatchPath(raw: string): string {
     return raw;
   }
 }
+
+export const DEFAULT_SKILLS_WATCH_IGNORED: RegExp[] = [
+  /(^|[\\/])\.git([\\/]|$)/,
+  /(^|[\\/])node_modules([\\/]|$)/,
+  /(^|[\\/])dist([\\/]|$)/,
+  // Python virtual environments and caches
+  /(^|[\\/])\.venv([\\/]|$)/,
+  /(^|[\\/])venv([\\/]|$)/,
+  /(^|[\\/])__pycache__([\\/]|$)/,
+  /(^|[\\/])\.mypy_cache([\\/]|$)/,
+  /(^|[\\/])\.pytest_cache([\\/]|$)/,
+  // Build artifacts and caches
+  /(^|[\\/])build([\\/]|$)/,
+  /(^|[\\/])\.cache([\\/]|$)/,
+];
+
+export function shouldIgnoreSkillsWatchPath(
+  watchPath: string,
+  stats?: { isDirectory?: () => boolean; isSymbolicLink?: () => boolean },
+  usePolling = false,
+): boolean {
+  if (DEFAULT_SKILLS_WATCH_IGNORED.some((re) => re.test(watchPath))) {
+    return true;
+  }
+  if (stats?.isDirectory?.() || stats?.isSymbolicLink?.()) {
+    return false;
+  }
+  if (!stats) {
+    return false;
+  }
+  if (usePolling && isSkillFileWatchPath(watchPath)) {
+    return false;
+  }
+  // Regular files are surfaced through raw directory events below. Letting
+  // chokidar include SKILL.md here registers per-file watchers and leaks FDs.
+  return true;
+}
+
+export function isSkillFileWatchPath(watchPath: string): boolean {
+  const normalized = watchPath.replaceAll("\\", "/");
+  return (
+    path.posix.basename(normalized) === "SKILL.md" &&
+    !DEFAULT_SKILLS_WATCH_IGNORED.some((re) => re.test(watchPath))
+  );
+}
+
+export function getRawWatchedPath(details: unknown): string | undefined {
+  return typeof details === "object" &&
+    details !== null &&
+    typeof (details as { watchedPath?: unknown }).watchedPath === "string"
+    ? (details as { watchedPath: string }).watchedPath
+    : undefined;
+}
+
+export function rawPathToString(rawPath: unknown): string | undefined {
+  if (typeof rawPath === "string") {
+    return rawPath || undefined;
+  }
+  if (Buffer.isBuffer(rawPath)) {
+    const decoded = rawPath.toString();
+    return decoded || undefined;
+  }
+  return undefined;
+}
+
+export function resolveRawSkillsWatchPath(rawPath: string, details: unknown): string | undefined {
+  if (path.isAbsolute(rawPath)) {
+    return rawPath;
+  }
+  const watchedPath = getRawWatchedPath(details);
+  return watchedPath ? path.join(watchedPath, rawPath) : undefined;
+}

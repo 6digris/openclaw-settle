@@ -250,7 +250,9 @@ export async function resolveReplyDirectives(params: {
   const skillCommands =
     canInterpretTextDirectives &&
     ((rawAliases.length > 0 && /(?:^|\s)\//u.test(commandText)) || hasSkillReferences)
-      ? (await skillCommandsLoader.load()).listSkillCommandsForWorkspace({
+      ? await (
+          await skillCommandsLoader.load()
+        ).prepareSkillCommandsForWorkspace({
           ...skillCommandContext,
           skillFilter,
         })
@@ -259,7 +261,9 @@ export async function resolveReplyDirectives(params: {
 
   const allSkillCommands =
     hasSkillReferences && skillFilter !== undefined
-      ? (await skillCommandsLoader.load()).listSkillCommandsForWorkspace({
+      ? await (
+          await skillCommandsLoader.load()
+        ).prepareSkillCommandsForWorkspace({
           ...skillCommandContext,
           includeAllowlistHidden: true,
         })

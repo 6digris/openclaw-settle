@@ -148,7 +148,12 @@ vi.mock("grammy", async () => {
   };
 });
 
+const prepareTelegramNativeSkillCommandsMock = vi.hoisted(() =>
+  vi.fn<typeof import("./bot.js").prepareTelegramNativeSkillCommands>(async () => []),
+);
+
 vi.mock("./bot.js", () => ({
+  prepareTelegramNativeSkillCommands: prepareTelegramNativeSkillCommandsMock,
   createTelegramBot: createTelegramBotSpy,
 }));
 
@@ -203,6 +208,7 @@ function createTelegramPrivateTopicCallback(updateId: number) {
 }
 
 function resetTelegramWebhookMocks(): void {
+  prepareTelegramNativeSkillCommandsMock.mockReset().mockResolvedValue([]);
   handleUpdateSpy.mockReset();
   handleUpdateSpy.mockImplementation((..._args: unknown[]): unknown => undefined);
   answerCallbackQuerySpy.mockReset();
@@ -407,6 +413,87 @@ async function runNearLimitPayloadTestAndExpectUpdate(
 }
 
 describe("startTelegramWebhook", () => {
+  it("prepares workspace commands before allocating webhook resources", async () => {
+    const prepared =
+      createDeferred<
+        Awaited<ReturnType<typeof import("./bot.js").prepareTelegramNativeSkillCommands>>
+      >();
+    const commands = [
+      { name: "remote_skill", skillName: "remote-skill", description: "Remote Skill" },
+    ];
+    const config = { plugins: { enabled: false } };
+    const abort = new AbortController();
+    prepareTelegramNativeSkillCommandsMock.mockReturnValueOnce(prepared.promise);
+    const starting = startTelegramWebhook({
+      token: TELEGRAM_TOKEN,
+      secret: TELEGRAM_SECRET,
+      port: 0,
+      config,
+      accountId: "test",
+      abortSignal: abort.signal,
+      spoolDir: requireWebhookSpoolDir(),
+    });
+    try {
+      expect(prepareTelegramNativeSkillCommandsMock).toHaveBeenCalledWith({
+        cfg: config,
+        accountId: "test",
+        signal: abort.signal,
+      });
+      expect(resolveTelegramTransportSpy).not.toHaveBeenCalled();
+      expect(createTelegramBotSpy).not.toHaveBeenCalled();
+      prepared.resolve(commands);
+      await starting;
+      expect(createTelegramBotSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ config, accountId: "test", preparedSkillCommands: commands }),
+      );
+      expect(setWebhookSpy).toHaveBeenCalledOnce();
+    } finally {
+      prepared.resolve(commands);
+      await (await starting).stop();
+      abort.abort();
+    }
+  });
+
+  it("propagates workspace failures before allocating webhook resources", async () => {
+    const failure = new Error("workspace unavailable");
+    prepareTelegramNativeSkillCommandsMock.mockRejectedValueOnce(failure);
+    await expect(
+      startTelegramWebhook({ token: TELEGRAM_TOKEN, secret: TELEGRAM_SECRET, config: {}, port: 0 }),
+    ).rejects.toBe(failure);
+    expect(resolveTelegramTransportSpy).not.toHaveBeenCalled();
+    expect(createTelegramBotSpy).not.toHaveBeenCalled();
+    expect(setWebhookSpy).not.toHaveBeenCalled();
+  });
+
+  it("preserves webhook shutdown when cancelled during workspace preparation", async () => {
+    const prepared =
+      createDeferred<
+        Awaited<ReturnType<typeof import("./bot.js").prepareTelegramNativeSkillCommands>>
+      >();
+    prepareTelegramNativeSkillCommandsMock.mockReturnValueOnce(prepared.promise);
+    const abort = new AbortController();
+    const starting = startTelegramWebhook({
+      token: TELEGRAM_TOKEN,
+      secret: TELEGRAM_SECRET,
+      config: {},
+      port: 0,
+      abortSignal: abort.signal,
+      spoolDir: requireWebhookSpoolDir(),
+    });
+    abort.abort(new Error("account stopped"));
+    prepared.reject(abort.signal.reason);
+    const started = await starting;
+    await started.stop();
+    expect(createTelegramBotSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ preparedSkillCommands: [] }),
+    );
+    expectWebhookBotScopesAborted();
+    expect(handleUpdateSpy).not.toHaveBeenCalled();
+    expect(setWebhookSpy).not.toHaveBeenCalled();
+    expect(stopSpy).toHaveBeenCalledOnce();
+    expect(transportCloseSpies[0]).toHaveBeenCalledOnce();
+  });
+
   it.each([
     { binding: "standalone", enabled: false },
     { binding: "standalone", enabled: true },

@@ -1,4 +1,11 @@
 // Real workspace contract for memory engine storage/index helpers.
+export type {
+  MemoryWorkspaceFiles,
+  MemoryWorkspaceWatchRequest,
+  MemoryWorkspaceMaintenance,
+  MemoryFileMetadata,
+  MemoryFileCommit,
+} from "./host/workspace-files.js";
 
 export {
   buildFileEntry,

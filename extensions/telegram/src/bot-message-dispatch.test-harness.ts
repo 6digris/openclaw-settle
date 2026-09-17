@@ -69,7 +69,9 @@ const buildModelsProviderDataHoisted = vi.hoisted(() =>
     modelCatalog: [],
   })),
 );
-const listSkillCommandsForAgentsHoisted = vi.hoisted(() => vi.fn(() => []));
+const listSkillCommandsForAgentsHoisted = vi.hoisted(() =>
+  vi.fn<TelegramBotDeps["listSkillCommandsForAgents"]>(() => []),
+);
 const createChannelMessageReplyPipelineHoisted = vi.hoisted(() =>
   vi.fn(() => ({
     responsePrefix: undefined,
@@ -335,8 +337,8 @@ export const telegramDepsForTest: TelegramBotDeps = {
   dispatchReplyWithBufferedBlockDispatcher:
     dispatchReplyWithBufferedBlockDispatcher as TelegramBotDeps["dispatchReplyWithBufferedBlockDispatcher"],
   buildModelsProviderData: buildModelsProviderData as TelegramBotDeps["buildModelsProviderData"],
-  listSkillCommandsForAgents:
-    listSkillCommandsForAgents as TelegramBotDeps["listSkillCommandsForAgents"],
+  listSkillCommandsForAgents,
+  prepareSkillCommandsForAgents: async (params) => listSkillCommandsForAgents(params),
   createChannelMessageReplyPipeline:
     createChannelMessageReplyPipeline as TelegramBotDeps["createChannelMessageReplyPipeline"],
   wasSentByBot: wasSentByBot as TelegramBotDeps["wasSentByBot"],

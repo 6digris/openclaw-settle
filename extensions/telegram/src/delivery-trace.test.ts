@@ -188,6 +188,7 @@ function createTraceTelegramDeps(captured: CapturedDispatch): TelegramBotDeps {
       modelNames: new Map<string, string>(),
       modelCatalog: [],
     })) as unknown as TelegramBotDeps["buildModelsProviderData"],
+    prepareSkillCommandsForAgents: async () => [],
     listSkillCommandsForAgents:
       (() => []) as unknown as TelegramBotDeps["listSkillCommandsForAgents"],
     wasSentByBot: (() => false) as TelegramBotDeps["wasSentByBot"],

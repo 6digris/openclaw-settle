@@ -11,7 +11,7 @@ export type MemoryReloadState = {
 };
 export type MemoryManagerLifecycle = {
   reload?: MemoryReloadState;
-  prepare?: (reload: MemoryReloadState) => ReloadHandle["drain"];
+  preparers?: Set<(reload: MemoryReloadState) => ReloadHandle["drain"]>;
 };
 
 const lifecycleStore = createPluginRuntimeStore<MemoryManagerLifecycle>({
@@ -50,9 +50,16 @@ export function prepareMemoryManagerReload(
   }
   const generation = ++reload.generation;
   lifecycle.reload = reload;
-  const drain = lifecycle.prepare?.(reload) ?? (async () => ({ errors: [] }));
+  const drains = [...(lifecycle.preparers ?? [])].map((prepare) => prepare(reload));
   return {
-    drain,
+    async drain() {
+      const results = await Promise.allSettled(drains.map((drain) => drain()));
+      return {
+        errors: results.flatMap((result) =>
+          result.status === "rejected" ? [result.reason] : (result.value?.errors ?? []),
+        ),
+      };
+    },
     resume() {
       if (lifecycle.reload === reload && generation === reload.generation) {
         lifecycle.reload = undefined;

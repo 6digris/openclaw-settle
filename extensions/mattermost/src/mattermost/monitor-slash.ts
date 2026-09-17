@@ -1,13 +1,15 @@
+import { isWorkspaceAccessUnavailableError } from "openclaw/plugin-sdk/agent-workspace-runtime";
 import { resolveGatewayPort } from "openclaw/plugin-sdk/gateway-config-runtime";
 // Mattermost plugin module implements monitor slash behavior.
 import { isLoopbackHost } from "openclaw/plugin-sdk/gateway-runtime";
+import { prepareSkillCommandsForAgents } from "openclaw/plugin-sdk/skill-commands-runtime";
 import type { ResolvedMattermostAccount } from "./accounts.js";
 import {
   fetchMattermostUserTeams,
   normalizeMattermostBaseUrl,
   type MattermostClient,
 } from "./client.js";
-import { listSkillCommandsForAgents, type OpenClawConfig, type RuntimeEnv } from "./runtime-api.js";
+import type { OpenClawConfig, RuntimeEnv } from "./runtime-api.js";
 import {
   DEFAULT_COMMAND_SPECS,
   isSlashCommandsEnabled,
@@ -20,17 +22,17 @@ import {
 } from "./slash-commands.js";
 import { activateSlashCommands } from "./slash-state.js";
 
-function buildSlashCommands(params: {
+async function buildSlashCommands(params: {
   cfg: OpenClawConfig;
   runtime: RuntimeEnv;
   nativeSkills: boolean;
-}): MattermostCommandSpec[] {
+}): Promise<MattermostCommandSpec[]> {
   const commandsToRegister: MattermostCommandSpec[] = [...DEFAULT_COMMAND_SPECS];
   if (!params.nativeSkills) {
     return commandsToRegister;
   }
   try {
-    const skillCommands = listSkillCommandsForAgents({ cfg: params.cfg });
+    const skillCommands = await prepareSkillCommandsForAgents({ cfg: params.cfg });
     for (const spec of skillCommands) {
       const name = typeof spec.name === "string" ? spec.name.trim() : "";
       if (!name) {
@@ -46,6 +48,10 @@ function buildSlashCommands(params: {
       });
     }
   } catch (err) {
+    // Let the existing channel supervisor retry instead of retaining an incomplete catalog.
+    if (isWorkspaceAccessUnavailableError(err)) {
+      throw err;
+    }
     params.runtime.error?.(`mattermost: failed to list skill commands: ${String(err)}`);
   }
   return commandsToRegister;
@@ -159,7 +165,7 @@ export async function registerMattermostMonitorSlashCommands(params: {
     });
 
     const dedupedCommands = dedupeSlashCommands(
-      buildSlashCommands({
+      await buildSlashCommands({
         cfg: params.cfg,
         runtime: params.runtime,
         nativeSkills: slashConfig.nativeSkills === true,
@@ -200,6 +206,10 @@ export async function registerMattermostMonitorSlashCommands(params: {
       `mattermost: slash commands registered (${registered.length} commands across ${teams.length} teams, callback=${slashCallbackUrl})`,
     );
   } catch (err) {
+    // Let the existing channel supervisor retry instead of retaining an incomplete catalog.
+    if (isWorkspaceAccessUnavailableError(err)) {
+      throw err;
+    }
     params.runtime.error?.(`mattermost: failed to register slash commands: ${String(err)}`);
   }
 }

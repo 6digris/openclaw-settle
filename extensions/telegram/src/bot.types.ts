@@ -1,5 +1,6 @@
-// Telegram type declarations define plugin contracts.
 import type { ChannelInboundTurnPlan } from "openclaw/plugin-sdk/channel-inbound";
+// Telegram type declarations define plugin contracts.
+import type { SkillCommandSpec } from "openclaw/plugin-sdk/command-auth";
 import type { OpenClawConfig, ReplyToMode } from "openclaw/plugin-sdk/config-contracts";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import type { TelegramBotDeps } from "./bot-deps.js";
@@ -24,6 +25,8 @@ export type TelegramBotOptions = {
   replyToMode?: ReplyToMode;
   proxyFetch?: typeof fetch;
   config?: OpenClawConfig;
+  /** Async startup supplies the host catalog; undefined preserves synchronous local construction. */
+  preparedSkillCommands?: SkillCommandSpec[];
   /** Bot identity returned by the startup getMe probe. Avoids a duplicate grammY init getMe before polling. */
   botInfo?: TelegramBotInfo;
   /** Signal to abort in-flight Telegram API fetch requests (e.g. getUpdates) on shutdown. */

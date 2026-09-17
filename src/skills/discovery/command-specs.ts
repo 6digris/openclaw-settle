@@ -70,6 +70,7 @@ function resolveUniqueSkillCommandName(base: string, used: Set<string>): string 
 }
 
 type WorkspaceSkillCommandOptions = {
+  bundledSkillName?: string;
   config?: OpenClawConfig;
   managedSkillsDir?: string;
   bundledSkillsDir?: string;
@@ -85,6 +86,7 @@ type WorkspaceSkillCommandOptions = {
 
 function resolveCommandSkillLoadOptions(opts?: WorkspaceSkillCommandOptions) {
   return {
+    bundledSkillName: opts?.bundledSkillName,
     config: opts?.config,
     managedSkillsDir: opts?.managedSkillsDir,
     bundledSkillsDir: opts?.bundledSkillsDir,

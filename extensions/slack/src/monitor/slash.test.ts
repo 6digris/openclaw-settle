@@ -179,7 +179,7 @@ vi.mock("./slash-skill-commands.runtime.js", async () => {
   );
   return {
     ...actual,
-    listSkillCommandsForAgents: () => skillCommandFixtures.commands,
+    prepareSkillCommandsForAgents: async () => skillCommandFixtures.commands,
   };
 });
 

@@ -191,6 +191,7 @@ function createTelegramDeps(stateDir: string): TelegramBotDeps {
       modelCatalog: [],
     }),
     listSkillCommandsForAgents: () => [],
+    prepareSkillCommandsForAgents: async () => [],
     wasSentByBot: () => false,
   } as TelegramBotDeps;
 }
