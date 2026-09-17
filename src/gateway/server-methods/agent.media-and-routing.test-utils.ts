@@ -16,7 +16,7 @@ import { isSessionWorkAdmissionActive } from "../../sessions/session-lifecycle-a
 import { withTestDir } from "../../test-helpers/temp-dir.js";
 import { createSyntheticPluginRuntimeClient } from "../server-plugin-runtime-client.js";
 import { registerSubagentCompletionToolHandoff } from "../subagent-completion-tool-handoff.js";
-import { registerCronContinuationRecoveryCase } from "./agent.task-settlement.test-support.js";
+import { registerCronContinuationRecoveryCase } from "./agent.task-settlement.test-utils.js";
 import {
   getAgentTestMocks,
   operatorWriteCliClient,

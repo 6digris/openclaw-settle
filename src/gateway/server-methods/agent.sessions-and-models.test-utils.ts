@@ -44,7 +44,7 @@ import { removeChatAbortControllerEntry } from "../chat-abort.js";
 import { bindInProcessSubagentResume } from "../in-process-subagent-resume.js";
 import { bindParentSubagentResume } from "../session-subagent-resume.js";
 import { registerPluginSubagentRunFromGateway } from "./agent-task-tracking.js";
-import { registerSuccessfulAgentTaskSettlementCase } from "./agent.task-settlement.test-support.js";
+import { registerSuccessfulAgentTaskSettlementCase } from "./agent.task-settlement.test-utils.js";
 import {
   applyGatewaySubagentRegistryTestDeps,
   getAgentTestMocks,
