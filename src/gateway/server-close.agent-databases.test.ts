@@ -14,7 +14,6 @@ import {
   resolveIncognitoOpenClawAgentSqlitePath,
 } from "../state/openclaw-agent-db.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
-import { getFreePort } from "../test-utils/ports.js";
 import { createGatewayMetadataCloseFixture } from "./server-close.metadata.test-support.js";
 
 it.each(["stop", "restart"] as const)(
@@ -23,8 +22,8 @@ it.each(["stop", "restart"] as const)(
     const fixture = await createGatewayMetadataCloseFixture(`gateway-agent-leases-${mode}`);
     const ownerPid = process.pid;
     try {
-      const first = await fixture.start(await getFreePort());
-      const siblingPort = await getFreePort();
+      const first = await fixture.start(await fixture.reservePort());
+      const siblingPort = await fixture.reservePort();
       const sibling = await fixture.start(siblingPort);
       const options = { agentId: "main", env: fixture.state.env };
       const agent = openOpenClawAgentDatabase(options);
@@ -73,7 +72,7 @@ it("joins admitted agent database resources before releasing their lease and sha
   let closing: Promise<void> | undefined;
   let unregister: (() => void) | undefined;
   try {
-    const server = await fixture.start(await getFreePort());
+    const server = await fixture.start(await fixture.reservePort());
     const agent = openOpenClawAgentDatabase({ agentId: "main", env: fixture.state.env });
     const shared = openOpenClawStateDatabase({ env: fixture.state.env }).db;
     unregister = registerOpenClawAgentDatabaseAsyncResource({
@@ -116,7 +115,7 @@ it("rejects Gateway closure when an agent handle cannot close and retains its le
   const fixture = await createGatewayMetadataCloseFixture("gateway-agent-close-failure");
   let restoreClose: (() => void) | undefined;
   try {
-    const server = await fixture.start(await getFreePort());
+    const server = await fixture.start(await fixture.reservePort());
     const agent = openOpenClawAgentDatabase({ agentId: "main", env: fixture.state.env });
     const shared = openOpenClawStateDatabase({ env: fixture.state.env }).db;
     const failure = new Error("native agent database close failed");

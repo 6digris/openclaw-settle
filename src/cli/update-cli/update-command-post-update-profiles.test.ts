@@ -94,9 +94,9 @@ describe("successful update finalization ordering", () => {
         }
         expect(mocks.writeSentinel.mock.calls.at(-1)?.[0].result.steps).toEqual(result.steps);
         expect(mocks.stopService).not.toHaveBeenCalled();
-        expect(
-          mocks.restartService.mock.calls.every(([params]) => params.shouldRestart === false),
-        ).toBe(true);
+        for (const [params] of mocks.restartService.mock.calls) {
+          expect(params.shouldRestart).toBe(false);
+        }
       },
     );
 
