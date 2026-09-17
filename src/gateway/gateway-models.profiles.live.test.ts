@@ -71,6 +71,7 @@ import { getFreePort, isPortFree } from "../test-utils/ports.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import { GatewayClient } from "./client.js";
 import {
+  createToolProbeNonce,
   hasExpectedSingleNonce,
   hasExpectedToolNonce,
   isLikelyToolNonceRefusal,
@@ -4486,8 +4487,8 @@ async function runGatewayModelSuite(params: GatewayModelSuiteParams) {
     await fs.rm(path.join(workspaceDir, "BOOTSTRAP.md"), { force: true });
     // Prefix the random values so provider safety heuristics do not mistake the
     // harmless readback proof for secret material.
-    const nonceA = `tool-read-alpha-${randomUUID()}`;
-    const nonceB = `tool-read-beta-${randomUUID()}`;
+    const nonceA = `tool-read-alpha-${createToolProbeNonce()}`;
+    const nonceB = `tool-read-beta-${createToolProbeNonce()}`;
     // Keep probe values out of the path: weak tool callers may echo the filename
     // instead of reading the file, turning nonceA into a false duplicate answer.
     const toolProbePath = path.join(workspaceDir, ".openclaw-live-tool-probe.txt");
@@ -4856,7 +4857,7 @@ async function runGatewayModelSuite(params: GatewayModelSuiteParams) {
 
               if (params.extraToolProbes) {
                 logProgress(`${progressLabel}: tool-exec`);
-                const nonceC = randomUUID();
+                const nonceC = createToolProbeNonce();
                 // Timeout wrappers do not cancel late tool runs, so keep provider-key attempts
                 // isolated without putting a nonce-shaped UUID in the model-visible path.
                 const toolWritePath = path.join(
@@ -5662,8 +5663,8 @@ describeLive("gateway live (dev agent, profile keys)", () => {
           2,
         )}\n`,
       );
-      const nonceA = randomUUID();
-      const nonceB = randomUUID();
+      const nonceA = createToolProbeNonce();
+      const nonceB = createToolProbeNonce();
       toolProbePath = path.join(workspaceDir, `.openclaw-live-zai-fallback.${nonceA}.txt`);
       await fs.writeFile(toolProbePath, `nonceA=${nonceA}\nnonceB=${nonceB}\n`);
 
