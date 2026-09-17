@@ -99,9 +99,9 @@ NODE
     fi
   fi
   rm -f "$port_file"
+  export OPENCLAW_NPM_REGISTRY_UPSTREAM="${OPENCLAW_NPM_REGISTRY_UPSTREAM:-https://registry.npmjs.org}"
   OPENCLAW_NPM_REGISTRY_DIST_TAGS="$dist_tags" \
     OPENCLAW_NPM_REGISTRY_MERGE_UPSTREAM="${artifact_dir:+$merge_upstream}" \
-    OPENCLAW_NPM_REGISTRY_UPSTREAM="${OPENCLAW_NPM_REGISTRY_UPSTREAM:-https://registry.npmjs.org}" \
     node "$server_script" "$port_file" "${registry_args[@]}" >"$log_file" 2>&1 &
   local server_pid="$!"
 
