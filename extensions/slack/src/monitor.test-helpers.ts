@@ -516,6 +516,8 @@ vi.mock("@slack/bolt", () => {
   class SocketModeReceiver {
     client = {
       ...slackClient,
+      send: vi.fn().mockResolvedValue(undefined),
+      listeners: vi.fn().mockReturnValue([]),
       on: vi.fn(),
       off: vi.fn(),
     };
