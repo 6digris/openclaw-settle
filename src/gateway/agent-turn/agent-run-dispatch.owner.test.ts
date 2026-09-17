@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import type { CreatedDetachedTaskRun } from "../../tasks/detached-task-runtime.js";
+import type { CreatedDetachedTaskRun } from "../../tasks/detached-task-runtime-contract.js";
 import type { TaskRunOwner } from "../../tasks/task-registry.process-state.js";
 import type { TaskRecord } from "../../tasks/task-registry.types.js";
 import type { ChatAbortControllerEntry } from "../chat-abort.js";

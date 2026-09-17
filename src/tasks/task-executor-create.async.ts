@@ -3,8 +3,10 @@ import { isSqliteWorkerError } from "../infra/sqlite-worker-contract.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
-import type { DetachedRunningTaskCreateParams } from "./detached-task-runtime-contract.js";
-import type { CreatedDetachedTaskRun } from "./detached-task-runtime.js";
+import type {
+  DetachedRunningTaskCreateParams,
+  CreatedDetachedTaskRun,
+} from "./detached-task-runtime-contract.js";
 import { getTaskFlowRegistryStore } from "./task-flow-registry.store.js";
 import type { TaskFlowRecord } from "./task-flow-registry.types.js";
 import {

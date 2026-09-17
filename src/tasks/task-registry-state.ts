@@ -54,12 +54,12 @@ import {
 import {
   deliverTaskRegistryObserverEvent,
   getTaskRegistryStore,
-  type TaskRegistryObserverEvent,
   type TaskRegistryStore,
 } from "./task-registry.store.js";
 import type {
   TaskRegistryMutationScope,
   TaskRegistryStoreSnapshot,
+  TaskRegistryObserverEvent,
 } from "./task-registry.store.types.js";
 import type { TaskRecord, TaskRuntime } from "./task-registry.types.js";
 

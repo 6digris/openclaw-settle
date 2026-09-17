@@ -38,10 +38,10 @@ import {
 import { formatErrorMessage, readErrorName, toErrorObject } from "../../infra/errors.js";
 import { withTimeout } from "../../infra/fs-safe.js";
 import { defaultRuntime } from "../../runtime.js";
+import type { CreatedDetachedTaskRun } from "../../tasks/detached-task-runtime-contract.js";
 import {
   prepareRunningTaskRun,
   type PreparedDetachedTaskRun,
-  type CreatedDetachedTaskRun,
 } from "../../tasks/detached-task-runtime.js";
 import { getTaskById } from "../../tasks/runtime-internal.js";
 import { bindTaskFlowExecution } from "../../tasks/task-flow-registry.store.sqlite.js";

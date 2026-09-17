@@ -12,10 +12,10 @@ import {
   taskIdsInScope,
   type PendingTaskRegistryMutation,
 } from "./task-registry.process-state.js";
-import type { TaskRegistryObserverEvent } from "./task-registry.store.js";
 import type {
   TaskRegistryMutationScope,
   TaskRegistryStoreSnapshot,
+  TaskRegistryObserverEvent,
 } from "./task-registry.store.types.js";
 import type { TaskRecord } from "./task-registry.types.js";
 

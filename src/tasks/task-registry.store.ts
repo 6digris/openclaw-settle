@@ -22,6 +22,7 @@ import type {
   TaskRegistryStoreSnapshot,
   TaskLiveFlowAuthority,
   TaskLiveFlowSyncOutcome,
+  TaskRegistryObserverEvent,
 } from "./task-registry.store.types.js";
 import type { TaskDeliveryState, TaskRecord } from "./task-registry.types.js";
 
@@ -59,23 +60,6 @@ export type TaskRegistryStore = TaskExecutionRestoreStore & {
   upsertDeliveryState: (state: TaskDeliveryState) => void;
   close?: () => void;
 };
-
-type TaskRegistryObserverRecord = Omit<TaskRecord, "detail">;
-
-export type TaskRegistryObserverEvent =
-  | {
-      kind: "restored";
-    }
-  | {
-      kind: "upserted";
-      task: TaskRegistryObserverRecord;
-      previous?: TaskRegistryObserverRecord;
-    }
-  | {
-      kind: "deleted";
-      taskId: string;
-      previous: TaskRegistryObserverRecord;
-    };
 
 type TaskRegistryObservers = {
   // Observers are incremental/best-effort only. Persistence belongs to TaskRegistryStore.

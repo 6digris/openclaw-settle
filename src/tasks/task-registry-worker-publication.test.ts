@@ -23,10 +23,8 @@ import {
   tasks as authoritativeTasks,
   withTaskRegistryMutation,
 } from "./task-registry-state.js";
-import {
-  configureTaskRegistryRuntime,
-  type TaskRegistryObserverEvent,
-} from "./task-registry.store.js";
+import { configureTaskRegistryRuntime } from "./task-registry.store.js";
+import type { TaskRegistryObserverEvent } from "./task-registry.store.types.js";
 import type { TaskRecord } from "./task-registry.types.js";
 
 afterEach(() => {

@@ -8,7 +8,7 @@ import type {
   DetachedTaskFindResult,
   DetachedTaskFinalizeParams,
   DetachedTaskLifecycleRuntime,
-  DetachedTaskTerminalState,
+  CreatedDetachedTaskRun,
 } from "./detached-task-runtime-contract.js";
 import {
   captureDetachedTaskRuntimeOwner,
@@ -119,14 +119,6 @@ function captureTaskCreationAdmission(
     },
   };
 }
-
-export type CreatedDetachedTaskRun = {
-  task: TaskRecord;
-  settleUnstarted: (
-    terminal: Pick<DetachedTaskTerminalState, "status" | "endedAt" | "error" | "terminalSummary">,
-    canSettle: (task: TaskRecord) => boolean,
-  ) => Promise<boolean>;
-};
 
 export type PreparedDetachedTaskRun =
   | {

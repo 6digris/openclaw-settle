@@ -8,8 +8,10 @@ import {
   isEquivalentTaskRecord,
   listTasksFromIndex,
 } from "./task-registry-records.js";
-import type { TaskRegistryObserverEvent } from "./task-registry.store.js";
-import type { TaskRegistryMutationScope } from "./task-registry.store.types.js";
+import type {
+  TaskRegistryMutationScope,
+  TaskRegistryObserverEvent,
+} from "./task-registry.store.types.js";
 import type { TaskDeliveryState, TaskRecord } from "./task-registry.types.js";
 
 export type PendingTaskRegistryMutation = {

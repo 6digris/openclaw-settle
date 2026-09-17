@@ -1,5 +1,9 @@
 import { serializeAgentSchemaInspectionError } from "../state/openclaw-agent-schema-inspection-response.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
+import {
+  hasAuthoritativeTaskBackingFromRecords,
+  selectCurrentCanonicalTaskBacking,
+} from "../tasks/task-backing-records.js";
 import { restoreTaskExecutionSnapshot } from "../tasks/task-execution-owner.js";
 import {
   applyFlowPatch,
@@ -17,11 +21,15 @@ import type { TaskInitialWorkerOperations } from "../tasks/task-initial-worker.t
 import { selectExistingTaskForCreate } from "../tasks/task-registry-create-rules.js";
 import { runTaskCreateOperation } from "../tasks/task-registry-create.operation.js";
 import { assertParentFlowRecordLinkAllowed } from "../tasks/task-registry-parent-flow-rules.js";
-import { findLatestTaskForFlowInSnapshot } from "../tasks/task-registry-records.js";
+import {
+  filterTasksByRunScope,
+  findLatestTaskForFlowInSnapshot,
+} from "../tasks/task-registry-records.js";
 import type {
   TaskMirroredFlowSyncOutcome,
   TaskRegistryRestoreResult,
 } from "../tasks/task-registry-restore.worker.js";
+import { runTaskRecordTransitionOperation } from "../tasks/task-registry-transition.operation.js";
 import type { TaskRegistryStore, TaskRegistryStoreSnapshot } from "../tasks/task-registry.store.js";
 import type { TaskRegistryMutationScope } from "../tasks/task-registry.store.types.js";
 
@@ -131,7 +139,68 @@ export function createInMemoryTaskRegistryStore(
             onCommitted() {},
           }),
         "flows.createForTask": unsupported,
-        "tasks.settleUnstarted": unsupported,
+        "tasks.settleUnstarted": (input) => {
+          const current = this.loadSnapshot().tasks.get(input.taskId);
+          if (
+            !current ||
+            (current.status !== "queued" && current.status !== "running") ||
+            current.endedAt !== undefined
+          ) {
+            return null;
+          }
+          const params = {
+            ...input.terminal,
+            runId: input.expectedTask.runId,
+            runtime: input.expectedTask.runtime,
+            sessionKey: input.expectedTask.childSessionKey ?? input.expectedTask.ownerKey,
+          };
+          return runTaskRecordTransitionOperation(
+            {
+              kind: "state",
+              taskId: input.taskId,
+              now: input.now,
+              expectedTask: input.expectedTask,
+              params,
+            },
+            {
+              readCurrent: () => {
+                const runId = params.runId.trim();
+                if (!runId) {
+                  return undefined;
+                }
+                const records = [...this.loadSnapshot().tasks.values()].filter(
+                  (task) => task.runId?.trim() === runId,
+                );
+                return filterTasksByRunScope(records, params).find(
+                  (task) => task.taskId === input.taskId,
+                );
+              },
+              hasAuthoritativeBacking: (task) =>
+                hasAuthoritativeTaskBackingFromRecords(task, {
+                  isManagedFlow: (flowId) =>
+                    flowStore?.loadSnapshot().flows.get(flowId)?.syncMode === "managed",
+                  resolveCurrentCanonicalBacking: (scope) =>
+                    selectCurrentCanonicalTaskBacking({
+                      ...scope,
+                      candidates: [...this.loadSnapshot().tasks.values()],
+                      isTaskMirroredFlow: (flowId) =>
+                        flowStore?.loadSnapshot().flows.get(flowId)?.syncMode === "task_mirrored",
+                    }),
+                }),
+              write: (operation) => operation(),
+              upsertTask: (task) => {
+                this.upsertTaskWithDeliveryState({
+                  task,
+                  deliveryState: this.loadSnapshot().deliveryStates.get(task.taskId),
+                });
+                return true;
+              },
+              assertCurrent,
+              deferCommit: (publish) => publish(),
+              onCommitted() {},
+            },
+          );
+        },
         "tasks.linkInitialFlow": unsupported,
         "flows.deleteUnlinkedForTask": unsupported,
         "flows.finalizeTaskCancellation": unsupported,

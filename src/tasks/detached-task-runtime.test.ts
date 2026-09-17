@@ -8,6 +8,7 @@ import {
   markPluginRegistryRetired,
 } from "../plugins/registry-lifecycle.js";
 import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-request-scope.js";
+import type { CreatedDetachedTaskRun } from "./detached-task-runtime-contract.js";
 import {
   completeTaskRunByRunId,
   createQueuedTaskRun,
@@ -21,7 +22,6 @@ import {
   setDetachedTaskDeliveryStatusByRunId,
   startTaskRunByRunId,
   tryRecoverTaskBeforeMarkLost,
-  type CreatedDetachedTaskRun,
 } from "./detached-task-runtime.js";
 import type { TaskRecord } from "./task-registry.types.js";
 import {
