@@ -4,7 +4,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { assert, beforeAll, describe, expect, it, vi } from "vitest";
-import { listExtensionTestFilesForRoots } from "../../scripts/lib/extension-test-plan.mts";
+import {
+  GIT_LS_FILES_MAX_BUFFER_BYTES,
+  listExtensionTestFilesForRoots,
+  listTrackedTestPlanFiles,
+} from "../../scripts/lib/extension-test-plan.mts";
 import { readTestSelectorSourceFacts } from "../../scripts/lib/test-selector-source-facts.mts";
 import { resolveVitestPretestBuildMode } from "../../scripts/lib/vitest-build-prerequisites.mts";
 import { resolveVitestRuntimeCliSelections } from "../../scripts/lib/vitest-runtime-selection.mts";
@@ -23,6 +27,7 @@ import {
   findUnmatchedExplicitTestTargets,
   formatFailedShardDigest,
   formatNoChangedTestTargetLines,
+  isTestFileTarget,
   listFullExtensionVitestProjectConfigs,
   orderFullSuiteSpecsForParallelRun,
   parseTestProjectsArgs,
@@ -1448,21 +1453,47 @@ describe("scripts/test-projects changed-target routing", () => {
   });
 
   it("keeps PR automation workflow edits on workflow guard tests", () => {
-    for (const workflowPath of [
+    const workflowPaths = [
       ".github/workflows/auto-response.yml",
       ".github/workflows/labeler.yml",
       ".github/workflows/real-behavior-proof.yml",
       ".github/workflows/stale.yml",
-    ]) {
+    ];
+    const files = listTrackedTestPlanFiles(process.cwd(), [
+      "src",
+      "extensions",
+      "packages",
+      "ui",
+      "test",
+      "scripts",
+    ]);
+    assert(files, "workflow routing requires the tracked test inventory");
+    // Literal workflow references own coverage; adding a guard must not stale a copied file list.
+    const references = readTestSelectorSourceFacts(
+      process.cwd(),
+      files
+        .filter(
+          (file) =>
+            isTestFileTarget(file) &&
+            !file.endsWith(".live.test.ts") &&
+            file !== "test/scripts/test-projects.test.ts",
+        )
+        .map((file) => ({ file, parseImports: false })),
+      workflowPaths,
+      GIT_LS_FILES_MAX_BUFFER_BYTES,
+    );
+    for (const workflowPath of workflowPaths) {
       expectChangedTargets(
         [workflowPath],
-        workflowPath === ".github/workflows/labeler.yml"
-          ? [
-              "test/scripts/ci-workflow-guards.test.ts",
-              "test/scripts/ci-changed-node-test-plan.test.ts",
-              "test/scripts/labeler-label-cap.test.ts",
-            ]
-          : ["test/scripts/ci-workflow-guards.test.ts"],
+        [
+          ...new Set([
+            "test/scripts/ci-workflow-guards.test.ts",
+            ...references
+              .filter(({ references: referencedPaths }) => referencedPaths.includes(workflowPath))
+              .map(({ file }) => file)
+              .toSorted((left, right) => left.localeCompare(right)),
+          ]),
+        ],
       );
     }
     expectChangedTargets(

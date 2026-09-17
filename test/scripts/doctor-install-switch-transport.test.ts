@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { execFileUtf8 } from "../../src/daemon/exec-file.js";
 import { resolveSystemdUserTransport } from "../../src/daemon/systemd-user-transport.js";
+import { mockProcessPlatform } from "../../src/test-utils/vitest-spies.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 vi.mock("../../src/daemon/exec-file.js", () => ({ execFileUtf8: vi.fn() }));
@@ -13,6 +14,7 @@ vi.mock("../../src/daemon/systemd-peer-native.js", () => ({
   },
 }));
 const dirs = useAutoCleanupTempDirTracker(afterEach);
+const bash = process.platform === "darwin" ? "/bin/bash" : "bash";
 const shim = path.resolve("scripts/e2e/lib/doctor-install-switch/shims/busctl");
 const versionArgs = [
   "--user",
@@ -26,10 +28,14 @@ const versionArgs = [
 
 beforeEach(() => {
   vi.resetAllMocks();
+  mockProcessPlatform("linux");
   vi.stubEnv("DBUS_SESSION_BUS_ADDRESS", undefined);
   vi.stubEnv("SUDO_USER", undefined);
 });
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
 
 function scenarioEnvironment() {
   const home = dirs.make("doctor-switch-transport-");
@@ -39,7 +45,7 @@ function scenarioEnvironment() {
   // Only replace the OS-account-home lookup. Cleanup and environment setup execute unchanged,
   // exclusively inside this test's temporary home; the full install scenario never runs.
   const result = spawnSync(
-    process.platform === "darwin" ? "/bin/bash" : "bash",
+    bash,
     [
       "-c",
       `
@@ -68,7 +74,7 @@ env -0
   );
 }
 
-it.runIf(process.platform === "linux")(
+it.runIf(process.platform !== "win32")(
   "routes the Doctor scenario through its explicit synthetic user bus",
   async () => {
     const env = scenarioEnvironment();
@@ -100,15 +106,18 @@ it.runIf(process.platform === "linux")(
   },
 );
 
-it.runIf(process.platform === "linux")(
-  "reproduces the original missing-address machine-scope rejection",
+it.runIf(process.platform !== "win32")(
+  "classifies the missing-address machine-scope rejection after checking the system manager",
   async () => {
     const env = scenarioEnvironment();
     delete env.DBUS_SESSION_BUS_ADDRESS;
     const invocations: string[][] = [];
     vi.mocked(execFileUtf8).mockImplementation(async (command, args) => {
+      invocations.push([command, ...args]);
+      if (command === "systemctl") {
+        return { code: 0, termination: "exit", stdout: "running\n", stderr: "" };
+      }
       expect(command).toBe("busctl");
-      invocations.push([...args]);
       const result = spawnSync(process.execPath, [shim, ...args], { encoding: "utf8", env });
       return {
         code: result.status ?? 1,
@@ -120,23 +129,55 @@ it.runIf(process.platform === "linux")(
     await expect(resolveSystemdUserTransport(env)).rejects.toMatchObject({
       reason: "systemd-user-bus-unavailable",
     });
-    expect(invocations).toEqual([["--machine", "testuser@", ...versionArgs]]);
-    console.info("original Doctor argv:", JSON.stringify(invocations[0]));
+    expect(invocations).toEqual([
+      ["busctl", "--machine", "testuser@", ...versionArgs],
+      ["systemctl", "--system", "is-system-running"],
+    ]);
   },
 );
 
-it.runIf(process.platform === "linux")("still rejects an unavailable synthetic bus", async () => {
-  const env = scenarioEnvironment();
-  vi.mocked(execFileUtf8).mockResolvedValue({
-    code: 1,
-    termination: "exit",
-    stdout: "",
-    stderr: "Failed to connect to bus: No such file or directory",
-  });
-  await expect(resolveSystemdUserTransport(env)).rejects.toMatchObject({
-    reason: "systemd-user-bus-unavailable",
-  });
-});
+it.runIf(process.platform !== "win32").each([
+  { busctl: "ENOENT", systemctl: "ENOENT", reason: "service-manager-unavailable" },
+  { busctl: "ENOENT", systemctl: "running", reason: "systemd-busctl-unavailable" },
+  { busctl: "EACCES", systemctl: "running", reason: "service-manager-access-denied" },
+  { busctl: undefined, systemctl: "running", reason: "systemd-user-bus-unavailable" },
+  { busctl: undefined, systemctl: "offline", reason: "service-manager-unavailable" },
+  { busctl: undefined, systemctl: "not-booted", reason: "service-manager-unavailable" },
+] as const)(
+  "records $reason for the unavailable Doctor bus ($busctl, $systemctl)",
+  async ({ busctl, systemctl, reason }) => {
+    const env = scenarioEnvironment();
+    vi.mocked(execFileUtf8).mockImplementation(async (command) => {
+      const errorCode =
+        command === "busctl" ? busctl : systemctl === "ENOENT" ? systemctl : undefined;
+      if (errorCode) {
+        return { code: 1, termination: "error", errorCode, stdout: "", stderr: errorCode };
+      }
+      if (command === "busctl") {
+        return {
+          code: 1,
+          termination: "exit",
+          stdout: "",
+          stderr: "Failed to connect to bus: No such file or directory",
+        };
+      }
+      return {
+        code: systemctl === "running" ? 0 : 1,
+        termination: "exit",
+        stdout: systemctl === "not-booted" ? "" : `${systemctl}\n`,
+        stderr: systemctl === "not-booted" ? "System has not been booted with systemd" : "",
+      };
+    });
+    await expect(resolveSystemdUserTransport(env)).rejects.toMatchObject({ reason });
+    expect(
+      vi.mocked(execFileUtf8).mock.calls.map(([command, args]) => [command].concat(args)),
+    ).toEqual([
+      ["busctl", ...versionArgs],
+      ["busctl", "--machine", "testuser@", ...versionArgs],
+      ...(busctl === "EACCES" ? [] : [["systemctl", "--system", "is-system-running"]]),
+    ]);
+  },
+);
 
 it("keeps machine scope, auto-start, and foreign-manager probes outside the shim contract", () => {
   const env = scenarioEnvironment();
