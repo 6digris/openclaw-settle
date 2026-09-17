@@ -6,7 +6,7 @@ import {
   createEmptyCostUsageTotals,
 } from "../../../../src/infra/session-cost-usage-totals.js";
 import { createUsageAggregateAccumulator } from "../../../../src/shared/usage-aggregates.js";
-import { renderSettingsSection } from "../../components/settings-section.ts";
+import { renderSettingsSection } from "../../components/settings-ui.ts";
 import { t } from "../../i18n/index.ts";
 import { formatCompactTokenCount } from "../../lib/format.ts";
 import type { UsageSessionEntry, UsageTotals, UsageAggregates } from "./types.ts";

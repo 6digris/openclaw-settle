@@ -135,7 +135,7 @@ openclaw-report-widget {
     overflow-wrap: anywhere;
   }
 
-  > li > span {
+  span {
     display: block;
     color: var(--muted);
   }

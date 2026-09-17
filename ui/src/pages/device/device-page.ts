@@ -10,7 +10,6 @@ import type {
   NativeDeviceSettingsSnapshot,
   SettingKey,
 } from "../../app/native-device-settings.ts";
-import { renderExternalLinkLabel } from "../../components/external-link.ts";
 import {
   renderLearnMoreLink,
   renderSettingsEmpty,
@@ -203,7 +202,7 @@ class DevicePage extends OpenClawLightDomElement {
                   href="https://chromewebstore.google.com/detail/openclaw/kcdjddhmeafeomebliikmbpblkmkfoig"
                   target="_blank"
                   rel="noopener noreferrer"
-                  >${renderExternalLinkLabel(t("appsPage.ctaChromeWebStore"))}</a
+                  >${t("appsPage.ctaChromeWebStore")}</a
                 >
                 ${renderLearnMoreLink("https://docs.openclaw.ai/tools/chrome-extension")}
               </div>

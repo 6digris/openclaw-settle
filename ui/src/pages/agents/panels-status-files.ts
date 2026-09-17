@@ -1,5 +1,4 @@
 // Control UI view renders agents panels status files screen content.
-
 import { html, nothing } from "lit";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import type {
@@ -12,7 +11,6 @@ import type {
 } from "../../api/types.ts";
 import { pathForRoute } from "../../app-route-paths.ts";
 import { renderCronJobsPagination } from "../../components/cron-jobs-pagination.ts";
-import { renderExternalLinkLabel } from "../../components/external-link.ts";
 import { renderHubTabs } from "../../components/hub-tabs.ts";
 import { icons } from "../../components/icons.ts";
 import { toSanitizedMarkdownHtml } from "../../components/markdown.ts";
@@ -242,7 +240,7 @@ export function renderAgentChannels(params: {
                           href="https://docs.openclaw.ai/channels"
                           target="_blank"
                           rel="noopener"
-                          >${renderExternalLinkLabel(t("agents.channels.setupGuide"))}</a
+                          >${t("agents.channels.setupGuide")}</a
                         >
                       `
                     : nothing

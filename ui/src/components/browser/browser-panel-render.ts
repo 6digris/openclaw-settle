@@ -2,7 +2,6 @@ import { html, nothing, svg, type TemplateResult } from "lit";
 import { t } from "../../i18n/index.ts";
 import { registerBrowserEnglish } from "../../i18n/locales/en-browser.ts";
 import { renderDockDestinations } from "../dock-destination-controls.ts";
-import { renderExternalLinkAccessibleName } from "../external-link.ts";
 import { strokeIcon } from "../icons-tools.ts";
 import { icons } from "../icons.ts";
 import { renderPanelEmptyState } from "../panel-empty-state.ts";
@@ -65,8 +64,8 @@ function renderHeaderActions(
         class="rail-header__action bp-icon"
         type="button"
         data-new-tab-action
-        title=${renderExternalLinkAccessibleName(t("browser.openExternal"))}
-        aria-label=${renderExternalLinkAccessibleName(t("browser.openExternal"))}
+        title=${t("browser.openExternal")}
+        aria-label=${t("browser.openExternal")}
         ?disabled=${!activeUrl}
         @click=${() => controller.openExternal()}
       >
@@ -176,8 +175,8 @@ function renderToolbar(controller: BrowserPanelController, embedded: boolean) {
               class="bp-icon"
               type="button"
               data-new-tab-action
-              title=${renderExternalLinkAccessibleName(t("browser.openExternal"))}
-              aria-label=${renderExternalLinkAccessibleName(t("browser.openExternal"))}
+              title=${t("browser.openExternal")}
+              aria-label=${t("browser.openExternal")}
               ?disabled=${!hasView}
               @click=${() => controller.openExternal()}
             >

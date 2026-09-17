@@ -1,6 +1,5 @@
 import { html, nothing } from "lit";
 import type { DoctorMemoryStatusPayload } from "../../../../src/gateway/server-methods/doctor.ts";
-import { renderExternalLinkLabel } from "../../components/external-link.ts";
 import { lobsterPetSeed } from "../../components/lobster-pet-contract.ts";
 import {
   createLobsterPetLook,
@@ -184,7 +183,7 @@ function renderSchedule(dreaming: DreamingStatus) {
           href="https://docs.openclaw.ai/concepts/dreaming"
           target="_blank"
           rel="noreferrer noopener"
-          >${renderExternalLinkLabel(t("memoryPage.overview.schedule.openDocs"))}</a
+          >${t("memoryPage.overview.schedule.openDocs")}</a
         >`,
       })}
     `,

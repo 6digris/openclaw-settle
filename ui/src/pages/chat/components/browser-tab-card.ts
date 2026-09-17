@@ -6,7 +6,6 @@ import { applicationContext, type ApplicationContext } from "../../../app/contex
 import { resolveControlUiAuthToken } from "../../../app/control-ui-auth.ts";
 import { isBrowserPanelAvailable } from "../../../app/panel-availability.ts";
 import { browserTabKey, readBrowserTabTarget } from "../../../components/browser/browser-target.ts";
-import { renderExternalLinkLabel } from "../../../components/external-link.ts";
 import { icons } from "../../../components/icons.ts";
 import "../../../components/web-awesome.ts";
 import { BROWSER_PANEL_TOGGLE_EVENT } from "../../../components/panel-toggle-contract.ts";
@@ -278,7 +277,7 @@ class OpenClawBrowserTabCard extends OpenClawLitElement {
               </button>
               <wa-dropdown-item value="copy-url">${t("browser.copyUrl")}</wa-dropdown-item>
               <wa-dropdown-item value="open-new-tab" data-new-tab-action>
-                ${renderExternalLinkLabel(t("browser.openNewTab"), undefined, false)}
+                ${t("browser.openNewTab")}
               </wa-dropdown-item>
             </wa-dropdown>
           </span>

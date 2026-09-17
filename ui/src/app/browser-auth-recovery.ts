@@ -1,7 +1,6 @@
 import { html, nothing } from "lit";
 import { CONTROL_UI_BOOTSTRAP_CONFIG_PATH } from "../../../src/gateway/control-ui-bootstrap-contract.js";
 import { normalizeBasePath } from "../app-route-paths.ts";
-import { renderExternalLinkIndicator } from "../components/external-link-indicator.ts";
 import { withPromiseModalHost } from "../components/promise-modal-host.ts";
 import { t } from "../i18n/index.ts";
 import { openExternalUrlSafe } from "../lib/open-external-url.ts";
@@ -100,7 +99,7 @@ export function startBrowserAuthRecovery(
                   modal.render(content);
                 }}
               >
-                <span>${t("connection.browserSignIn.action")}${renderExternalLinkIndicator()}</span>
+                ${t("connection.browserSignIn.action")}
               </button>
               ${openedSignIn ? html`<button class="btn" ?disabled=${Boolean(pending)} @click=${() => void check(true)}>${t("connection.browserSignIn.checkAgain")}</button>` : nothing}
               <button class="btn" @click=${dismiss}>

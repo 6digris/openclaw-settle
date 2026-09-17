@@ -12,7 +12,6 @@ import { renderModelSetupFailure, renderConfiguredModel } from "./configured-mod
 import { renderProviderIcon } from "./model-setup-icon-loader.ts";
 import { listModelSetupPrepareOptions, type ModelSetupPrepareOption } from "./prepare-options.ts";
 import { manualProviderName, renderManualProviderPicker } from "./provider-picker.ts";
-import { renderRecommendedInstalls } from "./recommended-installs.ts";
 import type {
   ModelSetupActivationState,
   ModelSetupPageState,
@@ -148,6 +147,39 @@ function renderCandidateRows(props: ModelSetupViewProps, result: SystemAgentSetu
               </div>
             `;
           })}
+      </div>
+    </section>
+  `;
+}
+
+function renderEmptyState(props: ModelSetupViewProps, result: SystemAgentSetupDetectResult) {
+  const installs = result.recommendedInstalls ?? [];
+  if (
+    result.candidates.length > 0 ||
+    (result.authOptions?.length ?? 0) > 0 ||
+    installs.length === 0
+  ) {
+    return nothing;
+  }
+  return html`
+    <section class="settings-section model-setup__empty">
+      <div class="settings-section__header">
+        <h2>${t("modelSetup.empty.title")}</h2>
+      </div>
+      <p class="muted">${t("modelSetup.empty.intro")}</p>
+      <div class="model-setup__recommendations">
+        ${installs.map(
+          (install) => html`
+            <div class="model-setup__recommendation" data-recommended-install=${install.id}>
+              ${renderProviderIcon(props, install, "model-setup__icon--recommendation")}
+              <div class="model-setup__row-main">
+                <strong>${install.label}</strong>
+                <div class="muted">${install.hint}</div>
+                <a href=${install.website} target="_blank" rel="noopener">${install.website}</a>
+              </div>
+            </div>
+          `,
+        )}
       </div>
     </section>
   `;
@@ -468,10 +500,9 @@ function renderReady(props: ModelSetupViewProps, result: SystemAgentSetupDetectR
       <div class="callout warning" role="note">${t("modelSetup.access.gatewayTooOld")}</div>`;
   }
   return html`
-    ${current} ${renderNativeSessionDiscovery(props, result)}
-    ${renderRecommendedInstalls(props, result)} ${renderCandidateRows(props, result)}
-    ${renderUnavailable(props, result)} ${renderPrepare(props, result)}
-    ${renderSignIn(props, result)} ${renderManual(props, result)}
+    ${current} ${renderNativeSessionDiscovery(props, result)} ${renderEmptyState(props, result)}
+    ${renderCandidateRows(props, result)} ${renderUnavailable(props, result)}
+    ${renderPrepare(props, result)} ${renderSignIn(props, result)} ${renderManual(props, result)}
   `;
 }
 

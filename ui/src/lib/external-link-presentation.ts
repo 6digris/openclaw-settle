@@ -1,11 +1,9 @@
-import { externalHttpLinkFromAnchor } from "./navigation-click.ts";
-
 let readPanelTarget: (() => boolean) | undefined;
 let opensInPanel = false;
 const listeners = new Set<() => void>();
 
-export function externalLinkOpensInPanel(anchor: HTMLAnchorElement): boolean {
-  return opensInPanel && externalHttpLinkFromAnchor(anchor) !== null;
+export function externalLinkOpensInPanel(): boolean {
+  return opensInPanel;
 }
 
 export function subscribeExternalLinkPresentation(listener: () => void): () => void {

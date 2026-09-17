@@ -8,7 +8,6 @@ import { html, nothing } from "lit";
 import { repeat } from "lit/directives/repeat.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import type { SkillStatusEntry } from "../../api/types.ts";
-import { renderExternalLinkLabel } from "../../components/external-link.ts";
 import { renderHubTabs } from "../../components/hub-tabs.ts";
 import { icons } from "../../components/icons.ts";
 import "../../components/modal-dialog.ts";
@@ -583,7 +582,7 @@ function renderSkillDetail(skill: SkillStatusEntry, props: SkillsProps) {
                         ? html`<div class="muted" style="font-size: 13px;">
                             ${t("skillsPage.getKey")}
                             <a href="${href}" target="_blank" rel="noopener noreferrer"
-                              >${renderExternalLinkLabel(skill.homepage, href)}</a
+                              >${skill.homepage}</a
                             >
                           </div>`
                         : nothing;
@@ -612,7 +611,7 @@ function renderSkillDetail(skill: SkillStatusEntry, props: SkillsProps) {
               return safeHref
                 ? html`<div>
                     <a href="${safeHref}" target="_blank" rel="noopener noreferrer"
-                      >${renderExternalLinkLabel(skill.homepage, safeHref)}</a
+                      >${skill.homepage}</a
                     >
                   </div>`
                 : nothing;
@@ -670,7 +669,7 @@ function renderInstalledClawHubOverview(
         auditHref
           ? html`<div style="font-size: 13px;">
               <a href="${auditHref}" target="_blank" rel="noopener noreferrer"
-                >${renderExternalLinkLabel(t("skillsPage.fullSecurityReport"), auditHref)}</a
+                >${t("skillsPage.fullSecurityReport")}</a
               >
             </div>`
           : nothing

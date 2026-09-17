@@ -1,14 +1,30 @@
-.external-link-indicator {
+.external-link-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
   white-space: nowrap;
 }
 
-.external-link-indicator::before {
-  content: " ";
-}
-
-.external-link-indicator > span > svg {
+.external-link-indicator {
+  display: inline-flex;
+  flex: none;
   width: 1em;
   height: 1em;
-  margin-inline-start: 0.1em;
-  vertical-align: -0.125em;
+  margin-inline-start: auto;
+  color: var(--muted);
+  font-size: 0.8em;
+}
+
+.external-link-label > .external-link-indicator > svg {
+  flex: none;
+  width: 1em;
+  height: 1em;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.sidebar-customize-menu__text > .external-link-label,
+.plugin-metadata__section > a > .external-link-label {
+  display: flex;
+  gap: var(--space-4);
 }

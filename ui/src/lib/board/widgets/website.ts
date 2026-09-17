@@ -4,7 +4,7 @@ import { property } from "lit/decorators.js";
 import { parseBoardWebsite } from "../../../../../src/boards/board-website.ts";
 import { applicationContext, type ApplicationContext } from "../../../app/context.ts";
 import { renderBoardWidgetError } from "../../../components/board/board-widget-cell-render.ts";
-import { renderExternalLinkLabel } from "../../../components/external-link.ts";
+import { icons } from "../../../components/icons.ts";
 import { resolveGatewayHttpOrigin } from "../../../components/sandbox-host.ts";
 import { t } from "../../../i18n/index.ts";
 import { registerBoardWebsiteEnglish } from "../../../i18n/locales/en-board-website.ts";
@@ -65,7 +65,7 @@ class OpenClawWebsiteWidget extends OpenClawLightDomElement {
           rel="noopener noreferrer"
           title=${t("board.widget.websiteEmbedHint")}
         >
-          ${renderExternalLinkLabel(t("board.widget.websiteOpen"), url.href)}
+          ${t("board.widget.websiteOpen")}${icons.externalLink}
         </a>
       </div>
     </div>`;

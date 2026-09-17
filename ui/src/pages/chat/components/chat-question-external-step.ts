@@ -1,5 +1,5 @@
 import { html, nothing } from "lit";
-import { renderExternalLinkLabel } from "../../../components/external-link.ts";
+import { icons } from "../../../components/icons.ts";
 import { t } from "../../../i18n/index.ts";
 import { EXTERNAL_LINK_TARGET, buildExternalLinkRel } from "../../../lib/external-link.ts";
 
@@ -12,7 +12,7 @@ export function renderQuestionExternalStep(url: string | undefined) {
           target=${EXTERNAL_LINK_TARGET}
           rel=${buildExternalLinkRel()}
         >
-          ${renderExternalLinkLabel(t("chat.questions.openLink"), url)}
+          ${icons.externalLink} ${t("chat.questions.openLink")}
         </a>
         <span class="muted">${t("chat.questions.externalStepHint")}</span>
       </div>`

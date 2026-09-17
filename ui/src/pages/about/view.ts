@@ -1,7 +1,6 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { html, nothing, type TemplateResult } from "lit";
 import type { ControlUiBuildInfo } from "../../build-info.ts";
-import { renderExternalLinkLabel } from "../../components/external-link.ts";
 import { icons } from "../../components/icons.ts";
 import {
   canonicalLobsterLook,
@@ -188,7 +187,7 @@ function renderHero(props: AboutProps) {
               rel=${buildExternalLinkRel()}
             >
               <span class="about-hero__link-icon" aria-hidden="true">${link.icon}</span>
-              <span>${renderExternalLinkLabel(link.label(), link.href)}</span>
+              <span>${link.label()}</span>
             </a>
           `,
         )}

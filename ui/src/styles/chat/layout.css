@@ -2502,7 +2502,8 @@ openclaw-chat-ci-details {
   height: 15px;
 }
 
-.chat-ci__chevron svg {
+.chat-ci__chevron svg,
+.chat-ci__job-link svg {
   width: 12px;
   height: 12px;
 }

@@ -5,7 +5,6 @@ import type {
   SessionDiscussionInfo,
   SessionDiscussionState,
 } from "../../../../../packages/gateway-protocol/src/index.js";
-import { renderExternalLinkLabel } from "../../../components/external-link.ts";
 import { icons } from "../../../components/icons.ts";
 import { renderPanelEmptyState } from "../../../components/panel-empty-state.ts";
 import { renderPanelLoadingSkeleton } from "../../../components/panel-loading-skeleton.ts";
@@ -232,7 +231,7 @@ class SessionDiscussionPanel extends OpenClawLightDomElement {
                 description: t("chat.sessionDiscussion.unavailable"),
                 action: openUrl
                   ? html`<a class="session-link" href=${openUrl} target="_blank" rel="noopener">
-                      ${renderExternalLinkLabel(t("chat.sessionDiscussion.openExternal"), undefined, false)}
+                      ${t("chat.sessionDiscussion.openExternal")}
                     </a>`
                   : nothing,
               })

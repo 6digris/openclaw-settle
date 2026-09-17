@@ -10,7 +10,6 @@ import { live } from "lit/directives/live.js";
 import { repeat } from "lit/directives/repeat.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import { pathForRoute } from "../../app-route-paths.ts";
-import { renderExternalLinkLabel } from "../../components/external-link.ts";
 import { renderHubTabs } from "../../components/hub-tabs.ts";
 import { icons } from "../../components/icons.ts";
 import { toSanitizedMarkdownHtml } from "../../components/markdown.ts";
@@ -255,7 +254,7 @@ function renderLibrary(props: TranscriptsViewProps) {
               href="https://docs.openclaw.ai/cli/transcripts"
               target="_blank"
               rel="noopener noreferrer"
-              >${renderExternalLinkLabel(t("meetings.docs"))}</a
+              >${t("meetings.docs")}</a
             >
           </div>`
     }

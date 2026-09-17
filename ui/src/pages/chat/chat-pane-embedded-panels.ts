@@ -5,7 +5,6 @@ import type { ControlUiSessionPullRequest } from "../../../../src/gateway/contro
 import type { ControlUiPanel } from "../../../../src/plugin-sdk/control-ui.js";
 import { isBrowserPanelAvailable } from "../../app/panel-availability.ts";
 import type { BrowserTabSelection } from "../../components/browser/browser-target.ts";
-import { externalLinkAriaLabel } from "../../components/external-link.ts";
 import { icons } from "../../components/icons.ts";
 import { renderPanelLoadingSkeleton } from "../../components/panel-loading-skeleton.ts";
 import { t } from "../../i18n/index.ts";
@@ -96,8 +95,8 @@ function panelExternalLink(href: string | null | undefined, label: string) {
         href=${href}
         target="_blank"
         rel="noopener"
-        aria-label=${externalLinkAriaLabel(label)}
-        title=${externalLinkAriaLabel(label)}
+        aria-label=${label}
+        title=${label}
         >${icons.externalLink}</a
       >`
     : undefined;

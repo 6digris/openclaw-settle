@@ -2,7 +2,6 @@ import WaPopover from "@awesome.me/webawesome/dist/components/popover/popover.js
 import { html, nothing } from "lit";
 import { ref } from "lit/directives/ref.js";
 import { repeat } from "lit/directives/repeat.js";
-import { renderExternalLinkLabel } from "../../../components/external-link.ts";
 import { icons } from "../../../components/icons.ts";
 import { t } from "../../../i18n/index.ts";
 import { registerChatMessageMetadataEnglish } from "../../../i18n/locales/en-chat-message-metadata.ts";
@@ -153,7 +152,9 @@ class ChatSourcePreviews extends OpenClawLightDomElement {
                     href=${source.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    >${renderExternalLinkLabel(t("chat.messages.sourcePreviews.open"))}</a
+                    >${t("chat.messages.sourcePreviews.open")}<span aria-hidden="true"
+                      >${icons.externalLink}</span
+                    ></a
                   >
                 </section>
               </wa-popover>

@@ -772,7 +772,6 @@ export const en: TranslationMap & {
       generateNewCode: "Generate new code",
       nodeWaiting: "Run the command on the device, then review its pairing request here.",
       help: "Pairing help",
-      helpNewTab: "Pairing help (opens in a new tab)",
       manageDevices: "Manage devices",
     },
     binding: {

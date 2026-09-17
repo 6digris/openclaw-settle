@@ -191,7 +191,7 @@ describe("native link routing", () => {
     });
     const anchor = appendLink("https://example.com/report");
 
-    expect(externalLinkOpensInPanel(anchor)).toBe(false);
+    expect(externalLinkOpensInPanel()).toBe(false);
     expect(click(anchor).defaultPrevented).toBe(true);
     expect(bridge.messages).toEqual([
       { type: "open-link", url: "https://example.com/report", target: "external" },
@@ -200,7 +200,7 @@ describe("native link routing", () => {
 
     canPresentBrowserPanel = true;
     refreshExternalLinkPresentation();
-    expect(externalLinkOpensInPanel(anchor)).toBe(true);
+    expect(externalLinkOpensInPanel()).toBe(true);
     expect(click(anchor).defaultPrevented).toBe(true);
     expect(bridge.messages).toHaveLength(1);
     expect(bridge.browserRequests).toEqual([
@@ -312,7 +312,6 @@ describe("native link routing", () => {
       appendLink("openclaw://dashboard"),
     ];
     for (const anchor of links) {
-      expect(externalLinkOpensInPanel(anchor)).toBe(false);
       expect(clickWithoutNavigation(anchor)).toBe(false);
     }
     const modified = appendLink("https://example.com/modified");

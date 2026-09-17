@@ -1,7 +1,6 @@
 import WaPopover from "@awesome.me/webawesome/dist/components/popover/popover.js";
 import { html, nothing } from "lit";
 import { ref } from "lit/directives/ref.js";
-import { renderExternalLinkLabel } from "../../../components/external-link.ts";
 import { icons } from "../../../components/icons.ts";
 import { t } from "../../../i18n/index.ts";
 import {
@@ -28,7 +27,7 @@ export function renderGitHubPublicationAction(publication: GitHubPublicationView
         target="_blank"
         rel="noopener noreferrer"
       >
-        ${renderExternalLinkLabel(t("chat.pullRequests.openPublishedPr"))}
+        ${t("chat.pullRequests.openPublishedPr")}
       </a>
       ${
         publication.onNewAction
@@ -297,7 +296,7 @@ export function renderGitHubPublicationDetails(publication: GitHubPublicationVie
             ${
               result.effect.url
                 ? html`<a href=${result.effect.url} target="_blank" rel="noopener noreferrer"
-                    >${renderExternalLinkLabel(t("githubPublication.effectLink"))}</a
+                    >${t("githubPublication.effectLink")}</a
                   >`
                 : nothing
             }

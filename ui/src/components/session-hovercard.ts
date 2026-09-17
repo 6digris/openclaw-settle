@@ -9,7 +9,6 @@ import type {
 import { i18n, t } from "../i18n/index.ts";
 import { shouldHandleNavigationClick } from "../lib/navigation-click.ts";
 import type { SidebarSessionHovercardRow } from "./app-sidebar-session-types.ts";
-import { externalLinkAriaLabel, renderExternalLinkLabel } from "./external-link.ts";
 import { icons } from "./icons.ts";
 import {
   personActivityLink,
@@ -590,12 +589,10 @@ function renderPullRequestRow(pullRequest: ControlUiSessionPullRequest) {
     href=${pullRequest.url}
     target="_blank"
     rel="noopener noreferrer"
-    aria-label=${externalLinkAriaLabel(
-      `${t("sessionHovercard.pullRequestLabel", {
-        number: String(pullRequest.number),
-        state,
-      })}${details.length > 0 ? `, ${details.join(", ")}` : ""}`,
-    )}
+    aria-label=${`${t("sessionHovercard.pullRequestLabel", {
+      number: String(pullRequest.number),
+      state,
+    })}${details.length > 0 ? `, ${details.join(", ")}` : ""}`}
   >
     <span
       class="session-hovercard__pr-state-icon"
@@ -605,9 +602,7 @@ function renderPullRequestRow(pullRequest: ControlUiSessionPullRequest) {
       title=${checks ? `${state} · ${checks}` : state}
       >${pullRequestStateIcon(pullRequest.state)}</span
     >
-    <span class="session-hovercard__pr-title"
-      >${renderExternalLinkLabel(pullRequest.title, pullRequest.url, false)}</span
-    >
+    <span class="session-hovercard__pr-title">${pullRequest.title}</span>
     ${renderDiffStats(pullRequest)}
   </a>`;
 }
@@ -647,9 +642,9 @@ function renderPullRequestDetails(snapshot: ControlUiSessionPullRequestSnapshot 
             href=${branch.createUrl}
             target="_blank"
             rel="noopener noreferrer"
-            aria-label=${externalLinkAriaLabel(createPullRequestLabel)}
+            aria-label=${createPullRequestLabel}
             title=${createPullRequestLabel}
-            >${renderExternalLinkLabel(createPullRequest, branch.createUrl, false)}</a
+            >${createPullRequest}</a
           >`
         : html`<span class="session-hovercard__branch-label">${t("chat.sessionDiff.title")}</span>`
     }

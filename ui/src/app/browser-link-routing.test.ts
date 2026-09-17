@@ -106,20 +106,18 @@ describe("Control UI browser link routing", () => {
     });
     const anchor = appendLink("https://example.com/report");
     const observed: boolean[] = [];
-    const stop = subscribeExternalLinkPresentation(() =>
-      observed.push(externalLinkOpensInPanel(anchor)),
-    );
+    const stop = subscribeExternalLinkPresentation(() => observed.push(externalLinkOpensInPanel()));
     try {
-      expect(externalLinkOpensInPanel(anchor)).toBe(false);
+      expect(externalLinkOpensInPanel()).toBe(false);
       available = true;
       refreshExternalLinkPresentation();
-      expect(externalLinkOpensInPanel(anchor)).toBe(true);
+      expect(externalLinkOpensInPanel()).toBe(true);
       const requests: string[] = [];
       collectBrowserRequests(requests);
       anchor.dispatchEvent(mouseEvent("click"));
       expect(requests).toEqual([anchor.href]);
       nativeRouting.dispose();
-      expect(externalLinkOpensInPanel(anchor)).toBe(false);
+      expect(externalLinkOpensInPanel()).toBe(false);
       expect(observed).toEqual([true, false]);
     } finally {
       stop();

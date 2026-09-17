@@ -125,8 +125,8 @@ export function renderPluginMetadata(
               href=${repository.href}
               target="_blank"
               rel="noopener noreferrer"
-              >${repository.github ? icons.github : nothing}<span
-                >${renderExternalLinkLabel(repository.name, repository.href)}</span
+              >${repository.github ? icons.github : icons.externalLink}<span
+                >${repository.name}</span
               ></a
             >
           </section>`

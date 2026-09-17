@@ -12,7 +12,6 @@ import {
   type SecretRef,
 } from "../../../../src/secrets/ref-contract.ts";
 import type { ConfigNodeRenderParams } from "../../components/config-form.node.shared.ts";
-import { renderExternalLinkLabel } from "../../components/external-link.ts";
 import { icons } from "../../components/icons.ts";
 import "../../components/modal-dialog.ts";
 import { t } from "../../i18n/index.ts";
@@ -416,7 +415,7 @@ export class PluginCredentialEditor extends OpenClawLightDomElement {
                 </button>
               </div>
               <div class="plugin-credential__links">
-                ${this.descriptor.signupUrl ? html`<a href=${this.descriptor.signupUrl} target="_blank" rel="noopener noreferrer">${renderExternalLinkLabel(t("pluginsPage.credentials.signup"), this.descriptor.signupUrl)}</a>` : nothing}<button
+                ${this.descriptor.signupUrl ? html`<a href=${this.descriptor.signupUrl} target="_blank" rel="noopener noreferrer">${t("pluginsPage.credentials.signup")}${icons.externalLink}</a>` : nothing}<button
                   class="btn btn--ghost btn--sm"
                   aria-describedby=${ifDefined(this.field.descriptionId)}
                   ?disabled=${disabled || this.loading || !credential || !this.context.canInspect}

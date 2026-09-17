@@ -3,7 +3,6 @@ import { css, html, nothing, type PropertyValues } from "lit";
 import { property, query, queryAll, state } from "lit/decorators.js";
 import { t } from "../i18n/index.ts";
 import { OpenClawLitElement } from "../lit/openclaw-element.ts";
-import { renderExternalLinkLabel } from "./external-link.ts";
 import { icons } from "./icons.ts";
 import "./modal-dialog.ts";
 
@@ -360,7 +359,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
                         aria-label=${t("chat.imageLightbox.openOriginal")}
                       >
                         <span class="open-original-label">
-                          ${renderExternalLinkLabel(t("chat.imageLightbox.openOriginal"), this.openOriginalUrl, false)}
+                          ${t("chat.imageLightbox.openOriginal")}
                         </span>
                         <span class="open-original-icon" aria-hidden="true">
                           ${icons.externalLink}

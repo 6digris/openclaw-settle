@@ -1,5 +1,4 @@
 import { html, nothing, type TemplateResult } from "lit";
-import { renderExternalLinkLabel } from "../../components/external-link.ts";
 import { icons } from "../../components/icons.ts";
 import { t } from "../../i18n/index.ts";
 import { registerPluginManagementEnglish } from "../../i18n/locales/en-plugin-management.ts";
@@ -42,7 +41,7 @@ export function renderPluginSecurityAudit(
     rel="noopener noreferrer"
   >
     <h2>
-      ${auditUrl ? renderExternalLinkLabel(t("pluginsPage.detailSecurity"), auditUrl) : t("pluginsPage.detailSecurity")}
+      ${t("pluginsPage.detailSecurity")}
       <span title=${t("pluginsPage.detailSecurityAudit")}>${icons.info}</span>
     </h2>
     <div class="plugin-catalog-detail__security-score">
