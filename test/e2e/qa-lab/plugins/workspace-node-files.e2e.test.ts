@@ -145,7 +145,7 @@ describe("node workspace document access", () => {
               path.resolve("openclaw.mjs"),
               "node",
               "run",
-              ...(setupCode ? ["--pair", setupCode] : []),
+              ...(setupCode ? ["--pair-if-needed", setupCode] : []),
               "--commands",
               COMMANDS.join(","),
             ],
@@ -264,6 +264,36 @@ describe("node workspace document access", () => {
           content: "Owner edit after node restart",
         });
         expect(await fs.readFile(document, "utf8")).toBe("Owner edit after node restart");
+
+        // A supervisor may restart the same command, still carrying the consumed
+        // setup code. The native client must prefer its persisted device token.
+        await stopChildProcess(node!, 5_000);
+        node = undefined;
+        await vi.waitFor(
+          async () => {
+            const result = await owner!.request<{
+              nodes?: Array<{ nodeId: string; connected?: boolean }>;
+            }>("node.list", {});
+            expect(result.nodes?.some((entry) => entry.nodeId === nodeId && entry.connected)).toBe(
+              false,
+            );
+          },
+          { timeout: 15_000 },
+        );
+        startNode(setup.setupCode);
+        await vi.waitFor(
+          async () => {
+            expect(node!.exitCode, nodeOutput).toBeNull();
+            const result = await owner!.request<{
+              nodes?: Array<{ nodeId: string; connected?: boolean }>;
+            }>("node.list", {});
+            expect(result.nodes?.some((entry) => entry.nodeId === nodeId && entry.connected)).toBe(
+              true,
+            );
+          },
+          { timeout: 15_000 },
+        );
+        expect((await get()).file.content).toBe("Owner edit after node restart");
         expect(await fs.readFile(localDocument, "utf8")).toBe("Stale Gateway copy");
       } finally {
         if (node) {
