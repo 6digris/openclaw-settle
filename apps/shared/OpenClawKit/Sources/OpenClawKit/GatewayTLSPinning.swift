@@ -85,10 +85,12 @@ public enum GatewayBoundedDataError: Error, Equatable, Sendable {
     case responseTooLarge(maximumBytes: Int)
 }
 
+// periphery:ignore - Native session adapters expose typed TLS repair evidence to GatewayChannel.
 public protocol GatewayTLSFailureProviding: AnyObject {
     func consumeLastTLSFailure() -> GatewayTLSValidationFailure?
 }
 
+// periphery:ignore - Native session adapters declare whether their TLS path permits token retry.
 public protocol GatewayDeviceTokenRetryTrustProviding: AnyObject {
     var allowsDeviceTokenRetryAuth: Bool { get }
 }
@@ -810,6 +812,7 @@ public final class GatewayTLSPinningSession: NSObject, WebSocketSessioning, URLS
 
     /// Approve the certificate from an externally hosted TLS stream before it sends HTTP headers.
     /// The existing pin owner also supplies typed repair evidence and first-use persistence.
+    // periphery:ignore - External TLS transports delegate trust ownership to this session.
     public func validateServerTrust(_ trust: SecTrust, for url: URL) -> Bool {
         guard let authority = GatewayTLSAuthority(url: url), authority.scheme == "wss" else { return false }
         switch GatewayTLSServerTrust.evaluate(

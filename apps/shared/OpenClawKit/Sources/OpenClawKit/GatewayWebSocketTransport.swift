@@ -22,6 +22,7 @@ public final class WebSocketRequestLifetime: @unchecked Sendable {
 
     /// Enqueue the request while holding the same lock that orders its retirement.
     /// The actions must only enqueue work; running I/O here would block cancellation.
+    // periphery:ignore - External transports use this to order send admission with cancellation.
     public func performIfActive(
         _ action: () -> Void,
         onFinish: @escaping @Sendable () -> Void) -> Bool
@@ -47,6 +48,7 @@ public final class WebSocketRequestLifetime: @unchecked Sendable {
     }
 }
 
+// periphery:ignore - Native transports implement caller-owned request lifetime handling.
 public protocol WebSocketRequestSending: WebSocketTasking {
     func sendRequest(_ message: URLSessionWebSocketTask.Message, lifetime: WebSocketRequestLifetime) async throws
 }
