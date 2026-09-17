@@ -9,7 +9,10 @@
     "../../src/cli/**/*.test.ts",
     "../../src/cli/**/*.test.tsx",
     "../../src/hooks/**/*.test.ts",
-    "../../src/hooks/**/*.test.tsx"
+    "../../src/hooks/**/*.test.tsx",
+    "../../src/commands/doctor-lint.missing-load-path.test.ts",
+    "../../src/commands/doctor-lint.plugin-path-inspection.test.ts",
+    "../../src/commands/doctor/shared/bundled-plugin-load-paths.availability.test.ts"
   ],
   "exclude": [
     "../../node_modules",
