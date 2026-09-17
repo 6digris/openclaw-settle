@@ -72,6 +72,42 @@ a remote OpenClaw worker or move its agent loop. Memory search and maintenance,
 skills, attachments, and host provisioning require separate integration and
 verification before removing workspace synchronization.
 
+### Attachments for a remote workspace
+
+A trusted Gateway plugin can supply `prepareTurnAttachments` on its existing
+`AgentWorkspaceAccess` binding. Core resolves deferred media once for transfer;
+the callback receives those file facts, without the transcript recorder. It transfers admitted input files and
+returns a short note listing their Harness paths. Core appends that note only to
+the execution prompt; original media references and transcript text stay on the
+Gateway for image hydration and replay. The callback runs on Gateway; it sends
+input files, not Gateway configuration or credentials.
+
+`createWorkspaceAttachmentPreparer` reuses an existing bridge for this callback.
+It reads only the Gateway media store, creates private input files on the remote
+workspace, and preserves subsequent Harness edits when an input is replayed.
+It supports the existing 50 MiB staging allowance and higher configured attachment
+limits. The host supplies `createBridge(assertCurrent, signal)` over its existing
+backend, binding those checks before every physical command. For SSH, this uses
+the existing session's `assertCurrent`; no separate file service is required.
+
+| Caller                    | When preparation runs                                 |
+| ------------------------- | ----------------------------------------------------- |
+| Embedded attempt dispatch | Before invoking the selected harness, including Codex |
+| Codex active turn         | Before sending `turn/steer`                           |
+
+The callback must honor the supplied assertion (run and, for steering, message
+source) and abort signal, preserve the
+existing source-file permissions and supported sizes, and return only after files
+are readable by the Harness. A failed transfer prevents dispatch. Plain text
+needs no attachment callback, and unconfigured local workspaces keep their
+existing path.
+
+This is caller integration, not a transport. The `file-transfer` workspace bridge
+alone does not supply it: inline `file.write` is capped at 16 MiB. A deployment
+must provide and verify an attachment adapter before removing synchronization.
+Remote worker transfer already has its own environment/session authorization;
+a Codex adapter cannot borrow that authority.
+
 ### Native tool-policy enforcement
 
 Set `conversationToolPolicySupport: "exact"` only when `runAttempt` enforces every
