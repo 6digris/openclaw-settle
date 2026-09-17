@@ -111,7 +111,7 @@ describe("startup corpus coverage", () => {
       hasCompleteStartupCorpusCoverage([
         {
           requiresDist: false,
-          groups: groups.filter((entry) => entry.env.OPENCLAW_TEST_STARTUP_CORPUS_SHARD !== "3/3"),
+          groups: groups.filter((entry) => entry.env?.OPENCLAW_TEST_STARTUP_CORPUS_SHARD !== "3/3"),
         },
       ]),
     ).toBe(false);
