@@ -88,6 +88,9 @@ export function createDiagnosticsEventHandler(params: {
         case "diagnostic.child_process.spawn":
           // Child-launch counts currently export through Prometheus.
           return;
+        case "model.runtime_choice":
+          // Native runtime-choice facts are not exported to OpenTelemetry.
+          break;
         case "diagnostic.gc":
           recordGcDuration(evt, metadata);
           return;
