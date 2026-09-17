@@ -5,9 +5,12 @@ import type { PreManagedServiceStop } from "../cli/update-cli/update-command-ser
 import { isDefaultInstallIdentity, resolveConfigPath, resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolvePathViaExistingAncestorSync } from "../infra/boundary-path.js";
+import { readActiveGatewayLockIdentity } from "../infra/gateway-lock.js";
+import { readGatewayOwnerLease } from "../infra/gateway-owner-lease.js";
 import {
   acquireGatewayMaintenanceCoordinator,
   acquireStateDatabaseCoordinator,
+  StateDatabaseCoordinatorContentionError,
 } from "../infra/state-database-coordinator.js";
 import { DoctorUnreadableStateDatabaseError } from "../infra/state-repair-message.js";
 import { UPDATE_RUN_ID_ENV } from "../infra/update-control-plane-sentinel.js";
@@ -101,6 +104,16 @@ export async function beginDoctorMaintenance(params: {
   let inspectingActivation = false;
   let assertContinuationCurrent: (() => void) | undefined;
   let assertUpdateAdmissionCurrent: (() => void) | undefined;
+  const databasePath = path.resolve(resolveOpenClawStateSqlitePath(env));
+  const acquireMaintenanceResources = () => {
+    if (resources) {
+      return;
+    }
+    const owner = acquireGatewayMaintenanceCoordinator({ databasePath, busyTimeoutMs: 0 });
+    coordinators.push(owner);
+    resources = createOpenClawDatabaseMaintenanceScope(owner.createSchemaFenceDelegate);
+    coordinators.push(acquireStateDatabaseCoordinator({ databasePath, busyTimeoutMs: 250 }));
+  };
   const release = async () => {
     if (repairStoresMayBeOpen) {
       await resources?.close();
@@ -174,6 +187,39 @@ export async function beginDoctorMaintenance(params: {
           "The update parent owns Gateway activation. Stop the service through its owner before retrying the update; Doctor will not stop or restart it.",
         );
       }
+      try {
+        acquireMaintenanceResources();
+      } catch (error) {
+        if (
+          !(error instanceof StateDatabaseCoordinatorContentionError) ||
+          error.family !== "gateway-lifecycle"
+        ) {
+          throw error;
+        }
+        // A running managed Gateway legitimately owns this coordinator until its
+        // service is stopped. Any other holder is knowable before that mutation.
+        const gatewayOwner = readGatewayOwnerLease({
+          env,
+          current: true,
+          openStateSchemaReadAdmission: openDoctorStateSchemaReadAdmission,
+        });
+        const legacyGatewayLock = gatewayOwner
+          ? undefined
+          : await readActiveGatewayLockIdentity({
+              env: inspection.serviceEnv ?? env,
+              requireInspection: true,
+            });
+        if (
+          !inspection.running ||
+          !(
+            (gatewayOwner?.state === "live" && gatewayOwner.mode === "supervised") ||
+            (inspection.servicePid !== undefined &&
+              legacyGatewayLock?.pid === inspection.servicePid)
+          )
+        ) {
+          throw error;
+        }
+      }
       if (inspection.serviceUpdateVerdict?.kind === "owned") {
         inspectingActivation = false;
         if (inspection.serviceEnv) {
@@ -206,14 +252,10 @@ export async function beginDoctorMaintenance(params: {
       }
     }
     inspectingActivation = false;
-    const databasePath = path.resolve(resolveOpenClawStateSqlitePath(env));
     // Hold the reentrant lifecycle coordinators, not an in-tree Gateway lock:
     // individual migrations acquire their own in-tree locks under this scope.
     // Gateway ownership lasts until that process stops, not for a short transaction.
-    const owner = acquireGatewayMaintenanceCoordinator({ databasePath, busyTimeoutMs: 0 });
-    coordinators.push(owner);
-    resources = createOpenClawDatabaseMaintenanceScope(owner.createSchemaFenceDelegate);
-    coordinators.push(acquireStateDatabaseCoordinator({ databasePath, busyTimeoutMs: 250 }));
+    acquireMaintenanceResources();
     const { assertNoOpenClawAgentDatabaseLeasesReadOnly, OpenClawAgentDatabaseLeaseActiveError } =
       await import("../state/openclaw-agent-db-lease.js");
     try {

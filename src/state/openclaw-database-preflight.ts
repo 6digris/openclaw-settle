@@ -6,11 +6,7 @@ import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "../config/ses
 import { resolveConfiguredAgentDatabaseCandidatePaths } from "../config/sessions/targets.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
-import {
-  clearNodeSqliteKyselyCacheForDatabase,
-  executeSqliteQuerySync,
-  getNodeSqliteKysely,
-} from "../infra/kysely-sync.js";
+import { clearNodeSqliteKyselyCacheForDatabase } from "../infra/kysely-sync.js";
 import { openNodeSqliteDatabase, resolveImmutableSqliteFileUri } from "../infra/node-sqlite.js";
 import { hasNodeErrorCode } from "../infra/path-guards.js";
 import { assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
@@ -36,9 +32,11 @@ import {
   inspectAgentDatabaseAdmission,
   recordAgentDatabaseAdmissions,
 } from "./agent-database-admission.js";
+import { getAgentDatabaseStartupAdmission } from "./agent-database-startup.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "./openclaw-agent-db-contract.js";
 import { assertOpenClawAgentDatabaseForMaintenance } from "./openclaw-agent-db-maintenance.js";
 import type { ExistingAgentSchemaMeta } from "./openclaw-agent-db-metadata.js";
+import { readAgentDatabasePreflightTargets } from "./openclaw-agent-db-registry-listing.js";
 import { isPersistentOpenClawAgentDatabasePath } from "./openclaw-agent-db-registry.js";
 import { readExistingAgentSchemaMeta } from "./openclaw-agent-db-schema-helpers.js";
 import type { AgentSchemaInspection } from "./openclaw-agent-schema-inspection.js";
@@ -73,11 +71,7 @@ import {
   readStateSchemaContentVersion,
   readStateSchemaMigrationVersion,
 } from "./openclaw-state-db-schema-version.js";
-import type { DB as OpenClawStateKyselyDatabase } from "./openclaw-state-db.generated.js";
-import {
-  resolveOpenClawRegisteredAgentDatabasePath,
-  resolveOpenClawStateSqlitePath,
-} from "./openclaw-state-db.paths.js";
+import { resolveOpenClawStateSqlitePath } from "./openclaw-state-db.paths.js";
 import {
   inspectOpenClawStateOwnershipFromDatabase,
   type OpenClawExternalStateOwnership,
@@ -101,8 +95,6 @@ export type {
 
 export { OPENCLAW_DATABASE_SCHEMA_DOCS_URL } from "./openclaw-state-db.js";
 export { OpenClawDatabaseSchemaPreflightError } from "./openclaw-database-preflight.messages.js";
-
-type AgentRegistryDatabase = Pick<OpenClawStateKyselyDatabase, "agent_databases">;
 
 /** Verify persisted runtime schemas before certifying repair or accepting restart. */
 export async function assertOpenClawDatabasesReady(
@@ -142,7 +134,11 @@ export async function assertOpenClawDatabasesReady(
       : {}),
   });
   for (const refusal of schemas.agentRefusals ?? []) {
-    if (!options.config || !canIsolateAgentDatabase(options.config, refusal.agentId)) {
+    if (
+      !options.config ||
+      (refusal.code === "agent-database-ownership-mismatch" &&
+        !canIsolateAgentDatabase(options.config, refusal.agentId))
+    ) {
       throw new AgentDatabaseAdmissionError(refusal);
     }
   }
@@ -166,35 +162,6 @@ export async function assertOpenClawDatabasesReady(
     return;
   }
   throw new Error(formatIndeterminateDatabaseReadiness(schemas.indeterminate, options.operation));
-}
-
-function readRegisteredAgentDatabases(
-  database: DatabaseSync,
-  registryPath: string,
-): Array<{
-  agentId: string;
-  path: string;
-}> {
-  const table = database
-    .prepare("SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = 'agent_databases'")
-    .get();
-  if (!table) {
-    return [];
-  }
-  const db = getNodeSqliteKysely<AgentRegistryDatabase>(database);
-  return executeSqliteQuerySync(
-    database,
-    db.selectFrom("agent_databases").select(["agent_id", "path"]),
-  ).rows.flatMap((row) =>
-    typeof row.agent_id === "string" && typeof row.path === "string"
-      ? [
-          {
-            agentId: row.agent_id,
-            path: resolveOpenClawRegisteredAgentDatabasePath(registryPath, row.path),
-          },
-        ]
-      : [],
-  );
 }
 
 function deduplicateSchemaIssues(issues: readonly SqliteSchemaIssue[]): SqliteSchemaIssue[] {
@@ -367,8 +334,12 @@ export async function preflightOpenClawDatabaseSchemas(options: {
     },
   } = options;
   const result: OpenClawDatabaseSchemaPreflight = { incompatible: [], indeterminate: [] };
+  const startup = options.requireStartupMigrationReadiness
+    ? getAgentDatabaseStartupAdmission()
+    : undefined;
+  const priorRefusals = startup?.captureRefusals(options.env);
   const statePath = path.resolve(resolveOpenClawStateSqlitePath(options.env));
-  let registeredDatabases: ReturnType<typeof readRegisteredAgentDatabases> = [];
+  let registeredDatabases: ReturnType<typeof readAgentDatabasePreflightTargets> = [];
   let stateDatabase: DatabaseSync | undefined;
   let closeStateSchemaReadAdmission: (() => void) | undefined;
   let stateSnapshot: Awaited<ReturnType<typeof prepareSqliteReadOnlyLocation>> | undefined;
@@ -481,7 +452,7 @@ export async function preflightOpenClawDatabaseSchemas(options: {
         return result;
       }
       try {
-        registeredDatabases = readRegisteredAgentDatabases(stateDatabase, statePath);
+        registeredDatabases = readAgentDatabasePreflightTargets(stateDatabase, statePath);
       } catch (error) {
         result.indeterminate.push({
           kind: "state",
@@ -541,7 +512,7 @@ export async function preflightOpenClawDatabaseSchemas(options: {
   }
   // An occupied custom-store candidate can have a newer, unreadable owner.
   // Check its version without promoting it into an owned migration target.
-  const inspectionTargets: Array<{ agentId?: string; path: string }> = [
+  const candidates: Array<{ agentId?: string; path: string }> = [
     ...agentTargets,
     // Migration discovery intentionally declines ownership of foreign registry
     // paths. Preflight remains read-only, so preserve their downgrade guard.
@@ -558,6 +529,13 @@ export async function preflightOpenClawDatabaseSchemas(options: {
       path: candidatePath,
     })),
   ];
+  const inspectionTargets = candidates
+    .map((row) => ({
+      agentId: row.agentId,
+      path: row.path,
+      presence: inspectCandidatePresence(row.path),
+    }))
+    .filter((row) => row.presence.status !== "absent");
   const admittedAgentIds = options.agentAdmissionConfig
     ? new Set(listAgentIds(options.agentAdmissionConfig))
     : undefined;
@@ -565,12 +543,18 @@ export async function preflightOpenClawDatabaseSchemas(options: {
     inspectionTargets,
     async (row, inspection, claimAgentTarget, inspectSchema) => {
       const agentPath = row.path;
-      const presence = inspectCandidatePresence(agentPath);
-      if (presence.status === "absent") {
+      if (startup?.reuseRefusal(row, inspection, priorRefusals)) {
         return;
       }
+      const { presence } = row;
       if (presence.status === "indeterminate") {
-        inspection.indeterminate.push({ kind: "agent", path: agentPath, reason: presence.reason });
+        if (!startup?.recordInspectionFailure(row, inspection, new Error(presence.reason))) {
+          inspection.indeterminate.push({
+            kind: "agent",
+            path: agentPath,
+            reason: presence.reason,
+          });
+        }
         return;
       }
       let agentDatabase: DatabaseSync | undefined;
@@ -669,7 +653,16 @@ export async function preflightOpenClawDatabaseSchemas(options: {
           throw schemaInspection.failure;
         }
         if (schemaInspection?.reason) {
-          throw new Error(schemaInspection.reason);
+          if (startup) {
+            throw new Error(schemaInspection.reason);
+          }
+          inspection.indeterminate.push({
+            kind: "agent",
+            path: agentPath,
+            reason: schemaInspection.reason,
+            ...(options.requireStartupMigrationReadiness ? { agentId: row.agentId } : {}),
+          });
+          return;
         }
         if (agentVersion > supportedVersions.agent) {
           inspection.incompatible.push({
@@ -690,7 +683,13 @@ export async function preflightOpenClawDatabaseSchemas(options: {
           }
         }
       } catch (error) {
-        if (options.signal?.aborted || options.requireStartupMigrationReadiness) {
+        if (options.signal?.aborted) {
+          throw error;
+        }
+        if (startup?.recordInspectionFailure(row, inspection, error)) {
+          return;
+        }
+        if (options.requireStartupMigrationReadiness) {
           throw error;
         }
         inspection.indeterminate.push({
@@ -708,6 +707,7 @@ export async function preflightOpenClawDatabaseSchemas(options: {
     },
     result,
     options.signal,
+    startup?.scheduling(options.env),
   );
   options.onAgentInspection?.(stats);
   return result;

@@ -37,7 +37,10 @@ import { UpdateCandidateValidation } from "./update-command-candidate-validation
 import { maybeRepairLegacyConfigForUpdateChannel } from "./update-command-config.js";
 import { inspectUpdateDatabaseContexts } from "./update-command-database-context.js";
 import type { MutableUpdateExecutionParams } from "./update-command-execution.types.js";
-import type { UpdateProfileContext } from "./update-command-finish-types.js";
+import type {
+  ProfileFinishUpdateParams,
+  UpdateProfileContext,
+} from "./update-command-finish-types.js";
 import { updateGitInstall } from "./update-command-git.js";
 import {
   formatUpdateAncestryBlockMessage,
@@ -54,10 +57,7 @@ import {
   type PackageInstallUpdateParams,
 } from "./update-command-package.js";
 import { assertUpdateCommandRecovery } from "./update-command-recovery.js";
-import {
-  createUpdateCommandFailureResult,
-  type MutableUpdateExecutionResult,
-} from "./update-command-result.js";
+import { createUpdateCommandFailureResult } from "./update-command-result.js";
 import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
 import {
   maybeStopManagedServiceBeforeMutableUpdate,
@@ -71,9 +71,7 @@ import {
   resolvePackageRuntimePreflight,
 } from "./update-command-service-plan.js";
 
-export async function executeMutableUpdate(
-  params: MutableUpdateExecutionParams,
-): Promise<MutableUpdateExecutionResult | null> {
+export async function executeMutableUpdate(params: MutableUpdateExecutionParams) {
   const { opts, updateStepTimeoutMs } = params;
   const originalRun = opts.run;
   const requesterAuthority = originalRun?.requesterAuthority;
@@ -160,13 +158,17 @@ export async function executeMutableUpdate(
     }
     await recheckSchemas(candidate.admittedSchemaVersions);
   };
-  const runDoctor = async (root: string): Promise<UpdateStepResult | null> => {
+  const runDoctor = async (
+    root: string,
+    results?: UpdateStepResult[],
+  ): Promise<UpdateStepResult | null> => {
     const steps: UpdateStepResult[] = [];
     for (const profile of profiles) {
       const validation = candidate.profileValidation.get(profile)!;
       assertExecutionCurrent();
       const step = await runPackageUpdateDoctor({
         root,
+        results,
         managedServiceEnv: candidate.envFor(profile),
         timeoutMs: updateStepTimeoutMs,
         invocationCwd: params.invocationCwd,
@@ -335,7 +337,7 @@ export async function executeMutableUpdate(
   };
 
   let result: UpdateRunResult;
-  let failure: MutableUpdateExecutionResult["failure"];
+  let failure: ProfileFinishUpdateParams["failure"];
   const prepareProfileRuntime = async (
     profile: UpdateProfileContext,
     root: string,
@@ -344,9 +346,13 @@ export async function executeMutableUpdate(
     const before = profile.preManagedServiceStop;
     const runtime = await withOwnedManagedUpdateEnv(candidate.envFor(profile), () =>
       resolvePackageRuntimePreflight({
+        root: params.root,
         target: currentCoreResult ? params.packageRuntimeTarget : undefined,
         installedRoot: root,
         nodeRunner: before?.serviceNodeRunner ?? params.packageUpdateNodeRunner,
+        alreadyCurrent: currentCoreResult !== undefined,
+        sourceRoot: currentCoreResult?.mode === "git" ? params.root : undefined,
+        invocationCwd: params.invocationCwd,
         shouldRestart: params.shouldRestart && before !== undefined,
         service: before,
         timeoutMs: updateStepTimeoutMs,
@@ -357,6 +363,7 @@ export async function executeMutableUpdate(
     if (!runtime.ok) {
       throw new UpdatePreMutationError("node-runtime-preflight", runtime.error, {
         failureFacts: runtime.failureFacts,
+        recoverySteps: runtime.recoverySteps,
       });
     }
     profile.packageUpdateNodeRunner = runtime.value.nodeRunner;
@@ -661,7 +668,7 @@ export async function executeMutableUpdate(
     result.reason = candidate.failureReason;
   }
   return {
-    ...(currentCoreResult ? { coreAlreadyCurrent: true } : {}),
+    ...(currentCoreResult ? { coreAlreadyCurrent: true as const } : {}),
     result,
     failure,
     mutationStarted: candidate.mutationStarted,

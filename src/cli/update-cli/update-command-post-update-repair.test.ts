@@ -18,12 +18,14 @@ import {
 import { finishUpdate, type FinishUpdateParams } from "./update-command-post-update.js";
 import { successfulPluginUpdate, taskRecovery } from "./update-command-post-update.test-support.js";
 import { repairUpdateService } from "./update-command-repair-service.js";
-import { revalidateManagedGatewayServiceAfterUpdate } from "./update-command-service-maintenance.js";
 import { verifyUpdatedGateway } from "./update-command-verification.js";
 import { createWindowsTaskAutoStartRecovery } from "./update-command-windows-task.js";
 
 const { dirs, fixture, mocks, setupPostUpdateRepairTests } =
   await import("./update-command-post-update-repair.test-support.js");
+const { revalidateManagedGatewayServiceAfterUpdate } = await vi.importActual<
+  typeof import("./update-command-service-maintenance.js")
+>("./update-command-service-maintenance.js");
 
 describe("post-activation repair after rollback refusal or failure", () => {
   setupPostUpdateRepairTests();

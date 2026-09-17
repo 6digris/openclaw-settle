@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
@@ -548,7 +549,7 @@ it.each(["stopped", "running", "new-consumer", "shared-state"] as const)(
     }),
 );
 
-it.each(["shared-running", "foreign-running", "foreign-to-shared"] as const)(
+it.each(["shared-running", "foreign-running", "foreign-to-shared", "template-stopped"] as const)(
   "preserves a same-name system service's actual read scope before publication (%s)",
   (scenario) =>
     withRuntimePublicationFixture(async ({ root, home, env, service }) => {
@@ -558,8 +559,11 @@ it.each(["shared-running", "foreign-running", "foreign-to-shared"] as const)(
       await fs.writeFile(path.join(foreignRoot, "dist", "entry.js"), "export {};\n");
       const artifact = path.join(root, "dist-runtime", "publication-proof.txt");
       await fs.writeFile(artifact, "original");
-      const unitName = "openclaw-gateway.service";
-      const unitPath = `/etc/systemd/system/${unitName}`;
+      const unitName =
+        scenario === "template-stopped"
+          ? `openclaw@${os.userInfo().username}.service`
+          : "openclaw-gateway.service";
+      const unitPath = `/etc/systemd/system/${scenario === "template-stopped" ? "openclaw@.service" : unitName}`;
       env.OPENCLAW_SYSTEMD_UNIT = unitName;
       let systemRoot = scenario === "shared-running" ? root : foreignRoot;
       vi.mocked(service.readCommand).mockImplementation(async (_env, options) => ({
@@ -574,7 +578,10 @@ it.each(["shared-running", "foreign-running", "foreign-to-shared"] as const)(
         ],
       }));
       vi.mocked(service.readRuntime).mockImplementation(async (_env, options) => ({
-        status: options?.systemdReadTarget?.scope === "system" ? "running" : "stopped",
+        status:
+          options?.systemdReadTarget?.scope === "system" && scenario !== "template-stopped"
+            ? "running"
+            : "stopped",
         systemd: { managerUid: options?.systemdReadTarget?.scope === "system" ? 0 : 2001 },
       }));
       vi.spyOn(serviceInventory, "findGatewayServices").mockResolvedValue({
@@ -582,7 +589,7 @@ it.each(["shared-running", "foreign-running", "foreign-to-shared"] as const)(
           {
             platform: "linux",
             scope: "system",
-            label: unitName,
+            label: path.basename(unitPath),
             detail: `unit: ${unitPath}`,
             marker: "openclaw",
           },
@@ -612,7 +619,9 @@ it.each(["shared-running", "foreign-running", "foreign-to-shared"] as const)(
         await expect(publication).rejects.toThrow(/affected Gateway/);
         expect(await fs.readFile(artifact, "utf8")).toBe("original");
       }
-      expect(enteredPublication).toBe(scenario !== "shared-running");
+      expect(enteredPublication).toBe(
+        scenario === "foreign-running" || scenario === "foreign-to-shared",
+      );
       expect(service.readCommand).toHaveBeenCalledWith(
         expect.any(Object),
         expect.objectContaining({

@@ -14,10 +14,6 @@ import type { UpdateChannel } from "./update-channels.js";
 import type { DevUpdateTarget } from "./update-dev-target.js";
 import { renderUpdateRunReport, updateRunReportInputFromResult } from "./update-run-report.js";
 import { buildUpdateCommandRunner } from "./update-runner-command.js";
-import {
-  buildUpdateDoctorEnv,
-  resolveUpdateDoctorExecutionPolicy,
-} from "./update-runner-doctor.js";
 import { writePreflightPackageManagerFixture } from "./update-runner-git-candidate.test-support.js";
 import { updateGitCheckout } from "./update-runner-git.js";
 import { resolveUpdateInstallSurface } from "./update-runner-install-surface.js";
@@ -25,6 +21,7 @@ import type {
   CommandRunner,
   UpdateRunnerOptions,
   UpdateStepProgress,
+  UpdateStepResult,
 } from "./update-runner-types.js";
 
 const { runCommandWithTimeout } = processExec;
@@ -61,86 +58,6 @@ function createRunner(responses: Record<string, CommandResponse>) {
   };
   return { runner, calls };
 }
-
-describe("resolveUpdateDoctorExecutionPolicy", () => {
-  it("keeps fix mode when service repair is authorized", () => {
-    expect(
-      resolveUpdateDoctorExecutionPolicy({
-        targetVersion: "2026.4.1",
-        allowGatewayServiceRepair: true,
-      }),
-    ).toEqual({ fix: true });
-  });
-
-  it("uses the external policy for targets that support it", () => {
-    for (const targetVersion of ["2026.4.25-beta.1", "2026.4.25-beta.11", "2026.4.25"]) {
-      expect(
-        resolveUpdateDoctorExecutionPolicy({
-          targetVersion,
-          allowGatewayServiceRepair: false,
-        }),
-      ).toEqual({ fix: true, serviceRepairPolicy: "external" });
-    }
-  });
-
-  it("does not run fix mode on older targets that cannot honor ownership", () => {
-    expect(
-      resolveUpdateDoctorExecutionPolicy({
-        targetVersion: "2026.4.24",
-        allowGatewayServiceRepair: false,
-      }),
-    ).toEqual({ fix: false });
-  });
-
-  it.each([
-    {
-      name: "authorized service repair",
-      targetVersion: "2026.4.1",
-      allowGatewayServiceRepair: true,
-      expectedPolicy: null,
-    },
-    {
-      name: "an older target without service repair",
-      targetVersion: "2026.4.24",
-      allowGatewayServiceRepair: false,
-      expectedPolicy: null,
-    },
-    {
-      name: "a supported target without service repair",
-      targetVersion: "2026.4.25",
-      allowGatewayServiceRepair: false,
-      expectedPolicy: "external",
-    },
-  ])(
-    "passes the selected Doctor policy to a real child for $name",
-    async ({ targetVersion, allowGatewayServiceRepair, expectedPolicy }) => {
-      const policy = resolveUpdateDoctorExecutionPolicy({
-        targetVersion,
-        allowGatewayServiceRepair,
-      });
-      const result = await withEnvAsync({ OPENCLAW_SERVICE_REPAIR_POLICY: "external" }, () =>
-        runCommandWithTimeout(
-          [
-            process.execPath,
-            "-e",
-            "process.stdout.write(JSON.stringify(process.env.OPENCLAW_SERVICE_REPAIR_POLICY ?? null))",
-          ],
-          {
-            timeoutMs: 5000,
-            env: buildUpdateDoctorEnv({
-              allowGatewayServiceRepair,
-              allowGatewayActivation: false,
-              serviceRepairPolicy: policy.serviceRepairPolicy,
-            }),
-          },
-        ),
-      );
-
-      expect(result.code).toBe(0);
-      expect(result.stdout).toBe(JSON.stringify(expectedPolicy));
-    },
-  );
-});
 
 describe("updateGitCheckout", () => {
   const preflightPrefixPattern = /(?:openclaw-update-preflight-|ocu-pf-)/;
@@ -847,7 +764,7 @@ describe("updateGitCheckout", () => {
         await overrides.beforeGitMutation?.(target);
         activated = true;
       },
-      runGitDoctor: async (doctorRoot: string) => {
+      runGitDoctor: async (doctorRoot: string, results?: UpdateStepResult[]) => {
         expect(activated).toBe(true);
         expect(doctorRoot).toBe(root);
         const stateDir = await fixtureRootTracker.make("doctor-state");
@@ -870,6 +787,7 @@ describe("updateGitCheckout", () => {
             root,
             timeoutMs: 5000,
             progress,
+            results,
             nodeRunner,
             managedServiceEnv: {
               OPENCLAW_STATE_DIR: stateDir,
@@ -3152,7 +3070,12 @@ describe("updateGitCheckout", () => {
             doctorRan = true;
             await fs.writeFile(stateFile, "candidate-migrated-state");
             if (failure === "doctor-throw") {
-              throw new Error("doctor crashed after migration");
+              throw Object.assign(
+                new Error(
+                  "EACCES: permission denied, open '/home/update-user/private/config.json' token=synthetic-update-secret\nsecond-line-private-detail",
+                ),
+                { code: "EACCES" },
+              );
             }
             if (failure === "doctor-error") {
               return { code: 1, stderr: "doctor failed after migration" };
@@ -3172,6 +3095,22 @@ describe("updateGitCheckout", () => {
               : "head-verification-failed",
         recovery: { serviceRestartSafe: false, reason: "state-migration-started" },
       });
+      if (failure === "doctor-throw") {
+        const doctor = result.steps.find((step) => step.name === "openclaw doctor");
+        expect(doctor).toMatchObject({
+          exitCode: 1,
+          failureFacts: [
+            {
+              check: "openclaw doctor",
+              code: "EACCES",
+              message: expect.stringContaining("permission denied, open [redacted-path]"),
+            },
+          ],
+        });
+        expect(JSON.stringify(doctor?.failureFacts)).not.toMatch(
+          /update-user|private\/config|synthetic-update-secret|second-line-private-detail/,
+        );
+      }
       expect(await fs.readFile(stateFile, "utf8")).toBe("candidate-migrated-state");
       expect(
         JSON.parse(await fs.readFile(path.join(tempDir, "dist", "build-info.json"), "utf8")),

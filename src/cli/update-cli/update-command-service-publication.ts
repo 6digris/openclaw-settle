@@ -137,6 +137,17 @@ export async function inspectGatewayRuntimePublicationSurface(params: {
   const state = await params.readState();
   assertCurrent();
   if (
+    state.systemdInstallation?.kind === "system" &&
+    state.systemdInstallation.system.unitPath.endsWith("@.service")
+  ) {
+    // A derived account instance cannot attest other instances or their drop-ins.
+    refuseRuntimePublication(
+      new Error(
+        `Systemd template consumers remain unverified: ${state.systemdInstallation.system.unitPath}`,
+      ),
+    );
+  }
+  if (
     state.externalLaunchdPlist &&
     (state.loadState.status !== "not-loaded" || state.runtime?.status !== "stopped")
   ) {

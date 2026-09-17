@@ -19,12 +19,12 @@ import {
   type DevUpdateTarget,
 } from "../../infra/update-dev-target.js";
 import { createFreeBsdPkgOwnershipInspection } from "../../infra/update-freebsd-pkg-ownership.js";
+import type { CommandRunner as GlobalCommandRunner } from "../../infra/update-global-command-runner.js";
 import {
   createGlobalInstallEnv,
   verifyPackageUpdateRecovery,
   resolveGlobalInstallTarget,
   resolveNpmLifecyclePolicyGate,
-  type CommandRunner as GlobalCommandRunner,
 } from "../../infra/update-global.js";
 import { resolveUpdateInstallRoot } from "../../infra/update-install-root.js";
 import { UPDATE_RUNNER_TIMEOUT_MS } from "../../infra/update-run-timeouts.js";
@@ -43,7 +43,6 @@ import type {
   CommandRunner as UpdateRunnerCommandRunner,
   UpdateRunnerOptions,
   UpdateRunResult,
-  UpdateStepResult,
 } from "../../infra/update-runner-types.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import { defaultRuntime } from "../../runtime.js";
@@ -419,7 +418,7 @@ export async function updateGitInstall(params: {
   validateCandidate?: (root: string) => Promise<void>;
   assertCurrent?: () => void;
   onTransaction?: (transaction: PackageUpdateTransaction) => void;
-  runDoctor: (root: string) => Promise<UpdateStepResult | null>;
+  runDoctor: NonNullable<UpdateRunnerOptions["runGitDoctor"]>;
   getManagedServiceEnvs: () => NodeJS.ProcessEnv[];
   getSnapshotSource: () => Promise<{ config: OpenClawConfig; env: NodeJS.ProcessEnv }>;
   jsonMode?: boolean;
@@ -637,6 +636,7 @@ export async function updateGitInstall(params: {
               ? normalizeFallbackFailureReason(packageUpdate.failedStep.name)
               : undefined),
         recovery: packageUpdate.recovery,
+        failedStep: packageUpdate.failedStep ?? undefined,
         steps: [...steps, ...packageUpdate.steps],
         durationMs: Date.now() - params.startedAt,
       };

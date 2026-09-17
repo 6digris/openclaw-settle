@@ -7,6 +7,7 @@ import {
   isUiBrowserTestFile,
   isUiTestTarget,
 } from "../../test/vitest/vitest.ui-paths.mjs";
+import { isBoundaryTestFile } from "../../test/vitest/vitest.unit-paths.mjs";
 import { detectChangedLanes } from "../changed-lanes.mts";
 import {
   buildVitestRunPlans,
@@ -37,6 +38,7 @@ import {
   shouldSplitExtensionTestProcesses,
   splitExtensionTestJobTargets,
 } from "./extension-test-plan.mts";
+import { isExclusiveCiTestConfig } from "./local-check-runtime.mts";
 import { buildPluginSdkEntrySources, publicPluginSdkEntrypoints } from "./plugin-sdk-entries.mts";
 import {
   resolveVitestPretestBuildMode,
@@ -110,7 +112,12 @@ const fullNodeTestShards = createNodeTestShards({
 });
 const configsRequiringCanonicalMetadata = new Set(
   fullNodeTestShards
-    .filter((shard) => shard.env || shard.shardName.startsWith("core-tooling"))
+    .filter(
+      (shard) =>
+        shard.env ||
+        shard.shardName.startsWith("core-tooling") ||
+        shard.configs.some(isExclusiveCiTestConfig),
+    )
     .flatMap((shard) => shard.configs),
 );
 const splitNodeTestConfigs = new Set(
@@ -724,6 +731,11 @@ export function createChangedNodeTestShards(
   if (canonicalShards === null) {
     return null;
   }
+  const boundaryShards =
+    hasBuildArtifactAffectingChange(changedPaths) ||
+    canonicalShards.some((shard) => shard.requiresDist)
+      ? []
+      : [createBoundaryShard()];
   // CI supplies the suite owners it emits. Validate every changed path first,
   // then subtract covered plans; local runs and unselected owners keep their targets.
   const targets = targetPlans
@@ -743,21 +755,25 @@ export function createChangedNodeTestShards(
             !plan.watchMode &&
             plan.forwardedArgs.length === 0 &&
             plan.includePatterns?.every((pattern) => pattern === target) &&
-            patterns?.some((pattern) => path.matchesGlob(target, pattern)) &&
-            options.dedicatedContractShards?.some(
-              (shard) =>
-                shard.task === (plugin ? "contracts-plugins" : "contracts-channels") &&
-                shard.includePatterns.includes(target),
-            )
+            // Only this plan's full boundary suite owns these targets; a build
+            // elsewhere must not suppress their explicit execution here.
+            ((boundaryShards.length > 0 &&
+              plan.config === BOUNDARY_NODE_TEST_CONFIG &&
+              plan.includePatterns.length > 0 &&
+              isBoundaryTestFile(target)) ||
+              (patterns?.some((pattern) => path.matchesGlob(target, pattern)) &&
+                options.dedicatedContractShards?.some(
+                  (shard) =>
+                    shard.task === (plugin ? "contracts-plugins" : "contracts-channels") &&
+                    shard.includePatterns.includes(target),
+                )))
           );
         }),
     )
     .map(({ target }) => target);
 
-  // Boundary-config targets run as regular nondist targets: the boundary
-  // suite scans the checked-out tree and never consumes the built dist.
   const shards = [
-    ...canonicalShards.map((shard) => ({ ...shard, configs: [] })),
+    ...canonicalShards.map((shard) => Object.assign({}, shard, { configs: [] })),
     ...packChangedExtensionConfigShards(createChangedExtensionConfigShardsForPaths(livePaths, cwd)),
     // Native browser files run in checks-ui, including precise changed-file plans.
     ...createChangedTargetShards(
@@ -767,10 +783,7 @@ export function createChangedNodeTestShards(
         shardName: "changed",
       },
     ),
-    ...(hasBuildArtifactAffectingChange(changedPaths) ||
-    canonicalShards.some((shard) => shard.requiresDist)
-      ? []
-      : [createBoundaryShard()]),
+    ...boundaryShards,
   ];
   // Covered source targets keep build-artifacts ownership even with no Node rows.
   return shards.length > 0 || targets.length < targetPlans.length ? shards : null;

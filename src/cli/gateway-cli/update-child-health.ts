@@ -1,3 +1,4 @@
+import type { ChildProcess } from "node:child_process";
 import net from "node:net";
 
 const UPDATE_RESPAWN_HEALTH_TIMEOUT_MS = 10_000;
@@ -32,4 +33,10 @@ export async function waitForHealthyGatewayChild(
     });
   }
   return false;
+}
+
+export function isRunningGatewayChild(child: ChildProcess | true | null | undefined): boolean {
+  return Boolean(
+    child && child !== true && child.pid && child.exitCode === null && child.signalCode === null,
+  );
 }

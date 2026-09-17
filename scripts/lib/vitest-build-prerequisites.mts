@@ -206,6 +206,7 @@ const runtimeConsumers = [
     dir: "src",
   })),
   ...[
+    "src/commands/doctor-config-flow.legacy-composition.test.ts",
     "src/commands/doctor-config-preflight.process.test.ts",
     "src/commands/doctor-config-preflight.refusal.process.test.ts",
     "src/commands/doctor-config-preflight.v17-atomicity.process.test.ts",
@@ -238,6 +239,7 @@ const runtimeConsumers = [
     "src/gateway/server.chat-cli-auth.test.ts",
     "src/gateway/server.cli-watchdog.test.ts",
     "src/gateway/server.codex-failure-recovery.test.ts",
+    "src/gateway/server.xai-fallback.test.ts",
   ].map((file) => ({
     file,
     configs: [

@@ -18,6 +18,7 @@ import type {
   GatewayServiceState,
 } from "./service-types.js";
 import { readGatewayServiceState, type GatewayService } from "./service.js";
+import { resolveSystemdGatewayInstanceName } from "./systemd-scope.js";
 import { resolveSystemdServiceName } from "./systemd-service-files.js";
 
 export function resolveManagedGatewayServiceIdentity(env: GatewayServiceEnv): string {
@@ -80,7 +81,11 @@ export async function readGatewayServiceCandidates(
         : candidate.platform === "linux"
           ? "OPENCLAW_SYSTEMD_UNIT"
           : "OPENCLAW_WINDOWS_TASK_NAME";
-    env[selector] = candidate.label;
+    const label =
+      candidate.platform === "linux" && candidate.scope === "system"
+        ? resolveSystemdGatewayInstanceName(candidate.label)
+        : candidate.label;
+    env[selector] = label;
     const identity = `${candidate.scope}:${resolveManagedGatewayServiceIdentity(env)}${externalLaunchdPlist ? `\0${externalLaunchdPlist}` : ""}`;
     if (known.has(identity)) {
       continue;
@@ -91,7 +96,7 @@ export async function readGatewayServiceCandidates(
         candidate.platform === "linux" && candidate.scope === "system"
           ? {
               scope: "system" as const,
-              unitName: candidate.label,
+              unitName: label,
               unitPath: candidate.detail.slice("unit: ".length),
             }
           : undefined;

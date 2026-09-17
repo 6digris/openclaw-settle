@@ -9,7 +9,6 @@ import {
 } from "../../infra/error-diagnostics.js";
 import { collectNestedErrorCandidates } from "../../infra/error-graph-internal.js";
 import { formatErrorMessage, formatUncaughtError } from "../../infra/errors.js";
-import type { PackageUpdateTransaction } from "../../infra/package-update-steps.js";
 import { isSqliteLockError } from "../../infra/sqlite-error-diagnostics.js";
 import {
   markControlPlaneUpdateRestartSentinelFailure,
@@ -21,16 +20,13 @@ import { FreeBsdPkgOwnershipError } from "../../infra/update-freebsd-pkg-ownersh
 import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
 import { UpdateRunAdmissionBusyError } from "../../infra/update-run-admission.js";
 import { getUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
-import type { UpdateRunResult } from "../../infra/update-runner-types.js";
+import type { UpdateRunResult, UpdateStepResult } from "../../infra/update-runner-types.js";
 import { defaultRuntime } from "../../runtime.js";
-import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
+import type { UpdateRecoveryStep } from "../../shared/update-outcome.js";
 import { exitCliAfterOutput } from "../one-shot-exit.js";
 import { printResult } from "./progress.js";
 import { UpdatePreMutationError, type UpdateCommandOptions } from "./shared.js";
-import type {
-  ProfileFinishUpdateParams,
-  UpdateProfileContext,
-} from "./update-command-finish-types.js";
+import type { ProfileFinishUpdateParams } from "./update-command-finish-types.js";
 import type { PreManagedServiceStop } from "./update-command-service-context-types.js";
 import { GatewayServiceUpdateOwnershipError } from "./update-command-service-plan.js";
 import { resolveUpdateResultNextAction } from "./update-recovery-guidance.js";
@@ -48,18 +44,6 @@ export function formatUpdateFinalizationError(error: unknown): string {
   }
   return formatErrorMessageForDisplay(error);
 }
-
-export type MutableUpdateExecutionResult = {
-  coreAlreadyCurrent?: true;
-  mutationStarted: boolean;
-  result: UpdateRunResult;
-  failure?: { cause: unknown; detail: string };
-  profiles: UpdateProfileContext[];
-  recoveryEnv: NodeJS.ProcessEnv | undefined;
-  packageTransaction?: PackageUpdateTransaction;
-  candidateSchemaVersions?: OpenClawSchemaVersions;
-  previousSchemaVersions?: OpenClawSchemaVersions;
-};
 
 export function createUpdateCommandFailureResult(
   params: Pick<UpdateRunResult, "mode" | "root" | "recovery" | "durationMs"> & {
@@ -81,26 +65,21 @@ export function createUpdateCommandFailureResult(
         : admissionFailure
           ? "managed-service-preflight"
           : "update-failed";
-  return {
-    ...result,
-    status: "error",
-    reason,
-    steps: [
-      {
-        name: preMutationFailure || pkgOwnershipFailure || admissionFailure ? reason : "update",
-        command: "openclaw update",
-        cwd: result.root ?? process.cwd(),
-        durationMs: result.durationMs,
-        exitCode: 1,
-        ...(isAbortError(cause) ? { termination: "signal" as const } : {}),
-        ...(detail !== undefined ? { stderrTail: detail } : {}),
-        // Recorded diagnostics do not change post-mutation recovery eligibility.
-        ...(preMutationFailure || cause instanceof GatewayServiceUpdateOwnershipError
-          ? { failureFacts: cause.failureFacts }
-          : {}),
-      },
-    ],
+  const failedStep: UpdateStepResult = {
+    name: preMutationFailure || pkgOwnershipFailure || admissionFailure ? reason : "update",
+    command: "openclaw update",
+    cwd: result.root ?? process.cwd(),
+    durationMs: result.durationMs,
+    exitCode: 1,
+    ...(isAbortError(cause) ? { termination: "signal" as const } : {}),
+    ...(detail !== undefined ? { stderrTail: detail } : {}),
+    ...(preMutationFailure && cause.recoverySteps ? { recoverySteps: cause.recoverySteps } : {}),
+    // Recorded diagnostics do not change post-mutation recovery eligibility.
+    ...(preMutationFailure || cause instanceof GatewayServiceUpdateOwnershipError
+      ? { failureFacts: cause.failureFacts }
+      : {}),
   };
+  return { ...result, status: "error", reason, failedStep, steps: [failedStep] };
 }
 
 /** Report rejected read-only admission without creating a run or recovery diagnostics. */
@@ -297,6 +276,7 @@ export function resolveAutomaticUpdateTriage(
 }
 
 export type UpdateAdmissionReportParams = {
+  recoverySteps?: readonly UpdateRecoveryStep[];
   failureFacts?: readonly UpdateFailureFact[];
   root: string;
   installKind: "git" | "package" | "unknown";
@@ -310,6 +290,7 @@ export type RefuseUpdate = (
   reason: string,
   message?: string,
   failureFacts?: readonly UpdateFailureFact[],
+  recoverySteps?: readonly UpdateRecoveryStep[],
 ) => Promise<void>;
 
 /** A fresh admission decision is data until its staging and executor owners settle. */

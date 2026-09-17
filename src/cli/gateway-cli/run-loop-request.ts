@@ -1,5 +1,4 @@
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
-import type { GatewayActiveWorkSnapshot } from "../../infra/gateway-active-work.js";
 import type { GatewayRestartIntent } from "../../infra/restart-intent.js";
 import type {
   GatewayDrainReason,
@@ -24,14 +23,6 @@ export function formatShutdownReason(request: GatewayRunSignalRequest): GatewayD
       ? (`${signal}: ${truncateUtf16Safe(restartReason.replaceAll(/\s+/g, " "), 200)}` as const)
       : signal;
   return `${action === "stop" ? "stop" : "restart"} (${trigger})`;
-}
-
-// Blocker descriptions can contain task identities and request origins.
-export function formatDrainCounts(snapshot: GatewayActiveWorkSnapshot): string {
-  return Object.entries(snapshot.counts)
-    .filter(([name, count]) => name !== "totalActive" && count > 0)
-    .map(([name, count]) => `${name}=${count}`)
-    .join(" ");
 }
 
 export function isUpdateProcessRestartReason(reason: string | undefined): boolean {

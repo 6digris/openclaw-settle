@@ -70,20 +70,12 @@ export type PackageDoctorOptions = {
   root: string;
   timeoutMs: number;
   progress: ReturnType<typeof createUpdateProgress>["progress"];
+  results?: UpdateStepResult[];
   managedServiceEnv?: NodeJS.ProcessEnv;
   invocationCwd?: string;
   nodeRunner?: string;
   onConfigSnapshot?: (snapshot: UpdateConfigSnapshot) => void;
-  getDoctorContext?: () =>
-    | {
-        runId: string;
-        executorFence: UpdateRecoveryFence;
-        requester?: Readonly<UpdateRequester>;
-        inputHash: string;
-        changes: UpdateDoctorConfigChange[];
-        assertRequesterCurrent: () => void;
-      }
-    | undefined;
+  getDoctorContext?: () => ReturnType<typeof preparePackageDoctorContext>;
 };
 
 export function preparePackageDoctorContext(params: {
@@ -159,6 +151,7 @@ export async function runPackageUpdateDoctor(params: PackageDoctorOptions) {
   const configSnapshot = params.onConfigSnapshot
     ? await readUpdateConfigSnapshot(resolveConfigPath(doctorEnv))
     : undefined;
+  const resultIndex = params.results?.length;
   const runDoctor = (
     executor?: UpdateCommandChildGrant,
     beforeInput?: (pid: number, argv?: readonly string[]) => void,
@@ -177,6 +170,7 @@ export async function runPackageUpdateDoctor(params: PackageDoctorOptions) {
         : undefined;
     return runUpdateStep({
       name: `${CLI_NAME} doctor`,
+      results: params.results,
       argv: doctorArgv,
       cwd: params.root,
       env: {
@@ -261,6 +255,9 @@ export async function runPackageUpdateDoctor(params: PackageDoctorOptions) {
     },
     doctorResult,
   );
+  if (params.results && resultIndex !== undefined) {
+    params.results[resultIndex] = completedDoctorStep;
+  }
   params.progress?.onStepComplete?.({
     ...doctorProgressInfo,
     durationMs: completedDoctorStep.durationMs,
@@ -401,8 +398,8 @@ export async function stagePackageInstallUpdate(
   if ("result" in ready) {
     throw new UpdatePreMutationError(
       ready.result.reason ?? "package-staging-failed",
-      ready.result.steps.find((step) => step.exitCode !== 0)?.stderrTail ??
-        "Package staging did not produce a target runtime.",
+      ready.result.failedStep?.stderrTail ?? "Package staging did not produce a target runtime.",
+      { failureFacts: ready.result.failedStep?.failureFacts },
     );
   }
   return {
@@ -515,6 +512,7 @@ export async function runPackageInstallUpdate(
       ...(afterBuildId ? { buildId: afterBuildId } : {}),
     },
     steps: packageUpdate.steps,
+    failedStep: packageUpdate.failedStep ?? undefined,
     recovery: packageUpdate.recovery,
     localOverrides: packageUpdate.localOverrides,
     durationMs: Date.now() - params.startedAt,

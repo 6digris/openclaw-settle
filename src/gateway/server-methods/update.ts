@@ -74,7 +74,11 @@ import { resolveUpdateRunNoticeTarget } from "../update-run-notice-target.js";
 import { wakeUpdateRunWatcher } from "../update-run-watcher.js";
 import { parseRestartRequestParams } from "./restart-request.js";
 import type { GatewayRequestHandlers } from "./types.js";
-import { recordHandoffFailure, resolveGatewayUpdateAdmission } from "./update-admission.js";
+import {
+  createUnexpectedUpdateFailureResult,
+  recordHandoffFailure,
+  resolveGatewayUpdateAdmission,
+} from "./update-admission.js";
 import { updateReportHandler } from "./update-report.js";
 import { updateStatusHandlers } from "./update-status.js";
 import { assertValidParams } from "./validation.js";
@@ -155,7 +159,12 @@ export const updateHandlers: GatewayRequestHandlers = {
     });
     wakeUpdateRunWatcher();
 
-    let result: UpdateRunResult;
+    let result: UpdateRunResult = {
+      status: "error",
+      mode: "unknown",
+      steps: [],
+      durationMs: 0,
+    };
     let handoff:
       | { status: "started"; pid?: number; command: string }
       | { status: "already-running" | "unavailable"; command: string; message: string }
@@ -224,6 +233,8 @@ export const updateHandlers: GatewayRequestHandlers = {
       const configChannel = normalizeUpdateChannel(config.update?.channel);
       const { status, installSurface } = await resolveGatewayUpdateAdmission(timeoutMs);
       const installRoot = installSurface.root;
+      result.mode = installSurface.mode;
+      result.root = installRoot;
       const refusedUpdate = (
         outcome: "error" | "skipped",
         reason: string,
@@ -532,13 +543,7 @@ export const updateHandlers: GatewayRequestHandlers = {
         outcomeMessage = error.message;
       }
       context?.logGateway?.warn(`update.run failed error=${formatErrorMessage(error)}`);
-      result = {
-        status: "error",
-        mode: "unknown",
-        reason: error instanceof FreeBsdPkgOwnershipError ? error.reason : "unexpected-error",
-        steps: [],
-        durationMs: 0,
-      };
+      result = createUnexpectedUpdateFailureResult(run, result, error);
     }
 
     let outcomeRun = recordUpdateRunPhase(runId, "requested", {
@@ -570,13 +575,14 @@ export const updateHandlers: GatewayRequestHandlers = {
     });
 
     let sentinelPersisted = false;
+    let sentinelFailure: { error: unknown } | undefined;
     if (ownsUpdateOutcome) {
       try {
         await writeRestartSentinel(payload);
         sentinelPersisted = true;
         recordLatestUpdateRestartSentinel(payload);
-      } catch {
-        // Transfer below cancels an updater whose accepted notice could not be saved.
+      } catch (error) {
+        sentinelFailure = { error };
       }
     }
 
@@ -586,7 +592,9 @@ export const updateHandlers: GatewayRequestHandlers = {
           !sentinelPersisted ||
           !(await transferManagedServiceUpdateHandoff(managedHandoffOwner))
         ) {
-          throw new Error("managed update ownership transfer failed");
+          throw sentinelFailure
+            ? sentinelFailure.error
+            : new Error("managed update ownership transfer failed");
         }
       } catch (error) {
         try {

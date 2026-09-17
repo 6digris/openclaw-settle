@@ -236,7 +236,7 @@ describe("Git candidate activation", () => {
 
       const result = await update({ runGitDoctor });
 
-      expect(runGitDoctor).toHaveBeenCalledExactlyOnceWith(root);
+      expect(runGitDoctor).toHaveBeenCalledExactlyOnceWith(root, []);
       expect(events).toEqual(["build", "validate", "stop", "owned-doctor"]);
       expect(result.status).toBe(outcome === "success" ? "ok" : "error");
       expect(result.reason).toBe(reason);

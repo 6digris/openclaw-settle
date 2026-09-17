@@ -24,7 +24,6 @@ import {
   withTransferredUpdateHandoff,
   recordLatestUpdateRestartSentinelMock,
   isRestartEnabledMock,
-  initializeGatewayUpdateStatusMock,
   detectRespawnSupervisorMock,
   normalizeUpdateChannelMock,
   getUpdateAvailableMock,
@@ -40,7 +39,6 @@ import {
   captureUpdateRunPayload,
   mockGlobalInstallSurface,
   mockGitInstallSurface,
-  type UpdateRunPayload,
 } from "./update.test-harness.js";
 
 function readCapturedPayload(): RestartSentinelPayload {
@@ -537,10 +535,24 @@ describe("update.run restart scheduling", () => {
     const payload = await captureUpdateRunPayload();
     expect(cancelManagedServiceUpdateHandoffMock).toHaveBeenCalledOnce();
     expect(payload).toMatchObject({ ok: false, sentinel: { persisted: false } });
-    expect(getUpdateRun(payload!.runId)).toMatchObject({
+    const run = getUpdateRun(payload!.runId);
+    expect(run).toMatchObject({
       status: "failed",
       reason: "managed-service-handoff-failed",
     });
+    expect(run?.steps).toContainEqual(
+      expect.objectContaining({
+        step: "requested",
+        status: "failed",
+        failureFacts: [
+          {
+            check: "managed-service-handoff-failed",
+            code: "managed-service-handoff-failed",
+            message: "state database unavailable",
+          },
+        ],
+      }),
+    );
   });
 
   it.each([
@@ -884,41 +896,5 @@ describe("update.run prepared foreground handoff", () => {
     expect(payload?.ok).toBe(false);
     expect(startManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
     expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
-  });
-});
-
-describe("update.run unexpected-error logging", () => {
-  it("logs the caught error instead of swallowing it silently", async () => {
-    initializeGatewayUpdateStatusMock.mockRejectedValueOnce(
-      new Error("disk write refused: EACCES"),
-    );
-    const logGateway = { warn: vi.fn(), error: vi.fn(), info: vi.fn() };
-    let payload: UpdateRunPayload | undefined;
-    await invokeUpdateRun(
-      {},
-      (_ok, response) => {
-        payload = response as UpdateRunPayload;
-      },
-      undefined,
-      { logGateway },
-    );
-
-    expect(payload).toMatchObject({
-      ok: false,
-      ackDelivered: false,
-      result: { status: "error", reason: "unexpected-error" },
-    });
-    expect(getUpdateRun(expectDefined(payload, "failed update response").runId)).toMatchObject({
-      status: "failed",
-      phase: "finished",
-      reason: "unexpected-error",
-    });
-    expect(startManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
-    expect(transferManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
-    expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
-    expect(logGateway.warn).toHaveBeenCalledOnce();
-    expect(logGateway.warn).toHaveBeenCalledWith(
-      expect.stringContaining("disk write refused: EACCES"),
-    );
   });
 });

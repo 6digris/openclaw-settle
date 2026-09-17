@@ -32,12 +32,14 @@ import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
 import { runStep } from "../../infra/update-runner-command.js";
 import { resolveUnmanagedUpdateInstallReason } from "../../infra/update-runner-install-surface.js";
 import type {
+  RunStepOptions,
   UpdateRunResult,
   UpdateStepProgress,
   UpdateStepResult,
 } from "../../infra/update-runner-types.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import { defaultRuntime } from "../../runtime.js";
+import type { UpdateRecoveryStep } from "../../shared/update-outcome.js";
 import { UPDATE_INSTALL_SKIP_GUIDANCE } from "../../shared/update-outcome.js";
 import { pathExists } from "../../utils.js";
 import { COMPLETION_SKIP_PLUGIN_COMMANDS_ENV } from "../completion-runtime.js";
@@ -98,15 +100,20 @@ export type UpdateWizardOptions = {
 };
 
 export class UpdatePreMutationError extends Error {
+  readonly recoverySteps?: readonly UpdateRecoveryStep[];
   readonly failureFacts: UpdateFailureFact[];
 
   constructor(
     readonly reason: string,
     message: string,
-    options?: ErrorOptions & { failureFacts?: readonly UpdateFailureFact[] },
+    options?: ErrorOptions & {
+      failureFacts?: readonly UpdateFailureFact[];
+      recoverySteps?: readonly UpdateRecoveryStep[];
+    },
   ) {
     super(message, options);
     this.name = "UpdatePreMutationError";
+    this.recoverySteps = options?.recoverySteps;
     this.failureFacts = normalizeUpdateFailureFacts(
       options?.failureFacts ?? [{ check: reason, code: reason, message }],
     );
@@ -265,15 +272,10 @@ export async function resolveUpdateRoot(): Promise<string> {
 }
 
 /** Run one update subprocess and report bounded stdout/stderr tails to progress listeners. */
-export async function runUpdateStep(params: {
-  name: string;
-  argv: string[];
-  cwd?: string;
-  timeoutMs: number;
-  progress?: UpdateStepProgress;
-  env?: NodeJS.ProcessEnv;
-  runCommand?: Parameters<typeof runStep>[0]["runCommand"];
-}): Promise<UpdateStepResult> {
+export async function runUpdateStep(
+  params: Omit<RunStepOptions, "cwd" | "runCommand" | "stepIndex" | "totalSteps"> &
+    Partial<Pick<RunStepOptions, "cwd" | "runCommand">>,
+): Promise<UpdateStepResult> {
   return await runStep({
     ...params,
     cwd: params.cwd ?? process.cwd(),

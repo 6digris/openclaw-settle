@@ -15,9 +15,7 @@ import {
 import type { GatewayHostLifecycle, GatewayStartupOperation } from "../../gateway/server-public.js";
 import { GatewayStartupCleanupError } from "../../gateway/server-shutdown.js";
 import type { startGatewayServer } from "../../gateway/server.js";
-import { flushDiagnosticsTimeline } from "../../infra/diagnostics-timeline.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import type { GatewayActiveWorkSnapshot } from "../../infra/gateway-active-work.js";
 import {
   GATEWAY_BOOT_REASON_MAX_UTF16_CODE_UNITS,
   GATEWAY_SIGNAL_REPEAT_WINDOW_MS,
@@ -25,11 +23,12 @@ import {
   type GatewayBootLifecycleCompletion,
 } from "../../infra/gateway-boot-lifecycle.js";
 import { acquireGatewayLock } from "../../infra/gateway-lock.js";
+import { GATEWAY_SHUTDOWN_TIMEOUT_MS as SHUTDOWN_TIMEOUT_MS } from "../../infra/gateway-shutdown-budget.js";
 import { consumeGatewaySuspendHandoff } from "../../infra/gateway-suspend-coordinator.js";
 import type { GatewayRestartIntent } from "../../infra/restart-intent.js";
 import type { GatewayRestartEmitter } from "../../infra/restart.js";
+import { cleanupSnapshotOperations } from "../../infra/sqlite-readonly-location-cleanup.js";
 import { findStartupMaintenanceRequiredError } from "../../infra/startup-maintenance-required.js";
-import { flushLogger } from "../../logging/logger.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
   type GatewayDrainReason,
@@ -38,42 +37,32 @@ import {
 import type { RuntimeEnv } from "../../runtime.js";
 import { drainGlobalSingletonLifecycleState } from "../../shared/global-singleton.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
-import { createGatewayHostLifecycle, createGatewayStartupOperations } from "./host-lifecycle.js";
+import { createGatewayHostLifecycle } from "./host-lifecycle.js";
+import * as loopLogs from "./run-loop-log-flush.js";
 import {
-  formatDrainCounts,
   formatShutdownReason,
   isUpdateProcessRestartReason,
   sameManagedUpdateOwner,
   type GatewayRunSignalAction,
   type GatewayRunSignalRequest,
 } from "./run-loop-request.js";
+import { resolveGatewayShutdownBudget } from "./run-loop-shutdown-budget.js";
+import { createGatewayStartupOperations } from "./run-loop-startup.js";
 import {
   armShutdownHardExitWatchdog,
   type ShutdownHardExitWatchdog,
 } from "./shutdown-hard-exit.js";
-import { waitForHealthyGatewayChild } from "./update-child-health.js";
+import { isRunningGatewayChild, waitForHealthyGatewayChild } from "./update-child-health.js";
 const gatewayLog = createSubsystemLogger("gateway");
 const LAUNCHD_SUPERVISED_RESTART_EXIT_DELAY_MS = 1500;
 const DEFAULT_RESTART_DRAIN_TIMEOUT_MS = 300_000;
-const RESTART_DRAIN_STILL_PENDING_WARN_MS = 30_000;
-const RESTART_CLOSE_REPLY_DRAIN_SHUTDOWN_RESERVE_MS = 10_000;
-const LOG_FLUSH_EXIT_TIMEOUT_MS = 4_000;
 const HARD_EXIT_WATCHDOG_GRACE_MS = 2_000;
 
-type GatewayLifecycleRuntimeModule = typeof import("./lifecycle.runtime.js");
 type ShutdownFailure = { step: string; error: unknown };
 
-function isRunningGatewayChild(child: ChildProcess | true | null | undefined): boolean {
-  return Boolean(
-    child && child !== true && child.pid && child.exitCode === null && child.signalCode === null,
-  );
-}
-
-const gatewayLifecycleRuntimeLoader = createLazyImportLoader<GatewayLifecycleRuntimeModule>(
+const gatewayLifecycleRuntimeLoader = createLazyImportLoader(
   () => import("./lifecycle.runtime.js"),
 );
-
-const loadGatewayLifecycleRuntimeModule = () => gatewayLifecycleRuntimeLoader.load();
 
 export async function runGatewayLoop(params: {
   start: (params?: {
@@ -100,21 +89,10 @@ export async function runGatewayLoop(params: {
     process.title = "openclaw-gateway";
   }
   let startupStartedAt: number;
-  const processStartedAt = performance.timeOrigin;
-  // Eagerly resolve the lifecycle runtime module before installing signal
-  // listeners. Without this, every subsequent lifecycle path (SIGUSR1,
-  // SIGTERM-with-intent, restart iteration hook, stability bundle writer)
-  // depends on a dynamic import() call. After an in-place package upgrade
-  // (e.g. `npm install -g openclaw@latest` triggered via update.run),
-  // dist/ chunk hashes rotate while the process is still running. The next
-  // SIGUSR1 — including the one update.run schedules for itself — would
-  // hit ERR_MODULE_NOT_FOUND from inside its async IIFE, reject silently,
-  // and leave restart.ts's emittedRestartToken permanently unconsumed.
-  // From that point every scheduleGatewaySigusr1Restart() returns
-  // { coalesced: true } and the gateway never restarts. Priming the loader
-  // here pulls the lifecycle re-export graph into memory, immune to later disk
-  // rotation.
-  const eagerLifecycleRuntime = await loadGatewayLifecycleRuntimeModule();
+  // Prime the lifecycle graph before signals can run. An in-place update rotates
+  // dist chunks; a late import can fail and leave the restart token unconsumed,
+  // coalescing every subsequent restart.
+  const eagerLifecycleRuntime = await gatewayLifecycleRuntimeLoader.load();
   const supervisor = eagerLifecycleRuntime.detectGatewayRespawnSupervisorIdentity(
     process.env,
     process.platform,
@@ -180,20 +158,6 @@ export async function runGatewayLoop(params: {
     cleanupSignals();
     params.runtime.exit(code);
   };
-  const flushLogsBeforeExit = async (timeoutMs = LOG_FLUSH_EXIT_TIMEOUT_MS) => {
-    flushDiagnosticsTimeline();
-    let flushTimer: ReturnType<typeof setTimeout> | undefined;
-    const flushed = await Promise.race([
-      flushLogger().then(() => true),
-      new Promise<false>((resolve) => {
-        flushTimer = setTimeout(() => resolve(false), timeoutMs);
-      }),
-    ]);
-    clearTimeout(flushTimer);
-    if (!flushed) {
-      gatewayLog.warn(`log flush did not settle within ${timeoutMs}ms; continuing shutdown`);
-    }
-  };
   const exitProcessAfterLogFlush = async (
     code: number,
     initialOwner?: GatewayRestartIntent["successorOwner"],
@@ -201,7 +165,8 @@ export async function runGatewayLoop(params: {
     hostStopOwner?: ReturnType<typeof createGatewayHostLifecycle>,
   ): Promise<void> => {
     if (foregroundUpdateClosed) {
-      await flushLogsBeforeExit();
+      await cleanupSnapshotOperations();
+      await loopLogs.flushGatewayLogsBeforeExit(gatewayLog);
       const exitCode = code === 0 && !isRunningGatewayChild(committedGenericSuccessor) ? 1 : code;
       if (exitCode !== code) {
         gatewayLog.error("fresh Gateway stopped before handoff completed; check its startup logs");
@@ -220,10 +185,11 @@ export async function runGatewayLoop(params: {
       .catch((error: unknown) => {
         gatewayLog.warn(`managed local service shutdown failed: ${formatErrorMessage(error)}`);
       });
+    await cleanupSnapshotOperations();
     if (hostStopOwner && hostLifecycle !== hostStopOwner) {
       return;
     }
-    await flushLogsBeforeExit();
+    await loopLogs.flushGatewayLogsBeforeExit(gatewayLog);
     for (;;) {
       if (hostStopOwner && hostLifecycle !== hostStopOwner) {
         return;
@@ -346,7 +312,7 @@ export async function runGatewayLoop(params: {
     }
     // Exit rescue cannot replay an issued file append; join it before final authority checks.
     // Reserve half the hard-exit grace for final shutdown bookkeeping.
-    await flushLogsBeforeExit(HARD_EXIT_WATCHDOG_GRACE_MS / 2);
+    await loopLogs.flushGatewayLogsBeforeExit(gatewayLog, HARD_EXIT_WATCHDOG_GRACE_MS / 2);
     if (foregroundUpdateClosed) {
       return;
     }
@@ -607,17 +573,13 @@ export async function runGatewayLoop(params: {
     }
     return reacquireAndResumeInProcessRestart();
   };
-  // The managed unit grants this same budget to a graceful SIGTERM.  A plain
-  // supervisor restart does not carry a gateway restart intent, but it can
-  // still interrupt an embedded model/tool turn; leave enough time for that
-  // turn to settle before systemd resorts to SIGKILL.
-  const SUPERVISOR_STOP_TIMEOUT_MS = 330_000;
-  const SHUTDOWN_TIMEOUT_MS = SUPERVISOR_STOP_TIMEOUT_MS - 5_000;
   const nativeStopBudget = supervisorMode === "systemd" || supervisorMode === "launchd";
-  const acceptedShutdownTimeoutMs =
-    supervisorMode === "launchd"
-      ? eagerLifecycleRuntime.LAUNCH_AGENT_EXIT_TIMEOUT_SECONDS * 1_000 - 5_000
-      : SHUTDOWN_TIMEOUT_MS;
+  const {
+    timeoutMs: acceptedShutdownTimeoutMs,
+    reserveMs: RESTART_CLOSE_REPLY_DRAIN_SHUTDOWN_RESERVE_MS,
+    log: logShutdownBudget,
+  } = await resolveGatewayShutdownBudget(supervisorMode, (message) => gatewayLog.info(message));
+  logShutdownBudget("startup");
   const clearPendingStartupForceExitTimer = () => {
     clearTimeout(pendingStartupForceExitTimer ?? undefined);
     pendingStartupForceExitTimer = null;
@@ -632,7 +594,7 @@ export async function runGatewayLoop(params: {
         "startup restart request timed out before gateway returned a close handle; exiting for supervisor recovery",
       );
       void forceExitAfterStabilityBundle("gateway.restart_startup_request_timeout");
-    }, SHUTDOWN_TIMEOUT_MS);
+    }, acceptedShutdownTimeoutMs);
     pendingStartupForceExitTimer.unref?.();
   };
   const resolveRestartDrainTimeoutMs = (
@@ -718,6 +680,7 @@ export async function runGatewayLoop(params: {
 
   const runAcceptedRequest = (acceptedRequest: GatewayRunSignalRequest) => {
     const { action, restartIntent } = acceptedRequest;
+    logShutdownBudget("shutdown");
     const isRestart = action !== "stop";
     const acceptedStartupOperations = startupOperations;
     if (acceptedRequest.action === "stop") {
@@ -788,7 +751,7 @@ export async function runGatewayLoop(params: {
       const restartDrainTimeoutMs = nativeStopBudget
         ? Math.min(
             requestedRestartDrainTimeoutMs ?? Infinity,
-            acceptedShutdownTimeoutMs - RESTART_CLOSE_REPLY_DRAIN_SHUTDOWN_RESERVE_MS,
+            Math.max(0, acceptedShutdownTimeoutMs - RESTART_CLOSE_REPLY_DRAIN_SHUTDOWN_RESERVE_MS),
           )
         : requestedRestartDrainTimeoutMs;
       const restartDrainDeadlineAt =
@@ -810,44 +773,15 @@ export async function runGatewayLoop(params: {
       const drainTimeoutMs = isRestart
         ? restartDrainTimeoutMs
         : Math.max(0, acceptedShutdownTimeoutMs - RESTART_CLOSE_REPLY_DRAIN_SHUTDOWN_RESERVE_MS);
-      const drainBudget =
-        drainTimeoutMs === undefined ? "without a timeout" : `with timeout ${drainTimeoutMs}ms`;
-      let lastPendingWarningAt: number | undefined;
-      const reportDrainSnapshot = (snapshot: GatewayActiveWorkSnapshot) => {
-        lastDrainCounts = formatDrainCounts(snapshot) || "no active work";
-        const now = Date.now();
-        if (lastPendingWarningAt === undefined) {
-          lastPendingWarningAt = now;
-          if (!snapshot.idle) {
-            gatewayLog.info(
-              `draining active work before ${action} ${drainBudget}: ${formatDrainCounts(snapshot)}`,
-            );
-            const requestTimeoutMs = Math.max(
-              0,
-              ...eagerLifecycleRuntime
-                .listActiveEmbeddedRunSessionIds()
-                .map(
-                  (sessionId) =>
-                    eagerLifecycleRuntime.getDiagnosticSessionActivitySnapshot({ sessionId })
-                      ?.activeModelCallRequestTimeoutMs ?? 0,
-                ),
-            );
-            if (requestTimeoutMs > 0) {
-              gatewayLog.info(
-                `largest observed model request timeout is ${requestTimeoutMs}ms; shutdown drain budget remains ${drainBudget}`,
-              );
-            }
-          }
-        } else if (
-          !snapshot.idle &&
-          now - lastPendingWarningAt >= RESTART_DRAIN_STILL_PENDING_WARN_MS
-        ) {
-          lastPendingWarningAt = now;
-          gatewayLog.warn(
-            `still draining active work before ${action}: ${formatDrainCounts(snapshot)}`,
-          );
-        }
-      };
+      const reportDrainSnapshot = loopLogs.createGatewayDrainReporter(
+        action,
+        drainTimeoutMs,
+        eagerLifecycleRuntime,
+        gatewayLog,
+        (counts) => {
+          lastDrainCounts = counts;
+        },
+      );
       let shutdownStep = "restart-failure-recovery";
       try {
         // A stop/restart cancels triage at admission and joins its existing cleanup
@@ -869,7 +803,7 @@ export async function runGatewayLoop(params: {
                 abortEmbeddedAgentRun,
                 createGatewayActiveWorkSnapshot,
                 waitForGatewayActiveWork,
-              } = await loadGatewayLifecycleRuntimeModule();
+              } = await gatewayLifecycleRuntimeLoader.load();
               // Reject new enqueues immediately during the drain window so
               // sessions get an explicit restart error instead of silent task loss.
               markRestartDraining(formatShutdownReason(acceptedRequest));
@@ -902,7 +836,7 @@ export async function runGatewayLoop(params: {
               drainTimedOut = true;
               eagerLifecycleRuntime.abortActiveCronTaskRuns("Gateway restarting.");
               gatewayLog.warn(
-                `active-work drain timeout reached; proceeding with restart: ${formatDrainCounts(drain.snapshot)}`,
+                `active-work drain timeout reached; proceeding with restart: ${loopLogs.formatDrainCounts(drain.snapshot)}`,
               );
             },
             () => [
@@ -924,7 +858,7 @@ export async function runGatewayLoop(params: {
             );
             if (!activeWorkDrain.drained) {
               gatewayLog.warn(
-                `gateway active-work drain timeout reached; proceeding with shutdown: ${formatDrainCounts(activeWorkDrain.snapshot)}`,
+                `gateway active-work drain timeout reached; proceeding with shutdown: ${loopLogs.formatDrainCounts(activeWorkDrain.snapshot)}`,
               );
               eagerLifecycleRuntime.abortEmbeddedAgentRun(undefined, { mode: "all" });
               eagerLifecycleRuntime.abortActiveCronTaskRuns("Gateway stopping.");
@@ -1202,7 +1136,7 @@ export async function runGatewayLoop(params: {
       return;
     }
     void (async () => {
-      const { consumeGatewayRestartIntentPayloadSync } = await loadGatewayLifecycleRuntimeModule();
+      const { consumeGatewayRestartIntentPayloadSync } = await gatewayLifecycleRuntimeLoader.load();
       if (foregroundUpdateClosed) {
         return;
       }
@@ -1241,7 +1175,7 @@ export async function runGatewayLoop(params: {
         markGatewaySigusr1RestartHandled,
         peekGatewaySigusr1RestartReason,
         scheduleGatewaySigusr1Restart,
-      } = await loadGatewayLifecycleRuntimeModule();
+      } = await gatewayLifecycleRuntimeLoader.load();
       if (foregroundUpdateClosed) {
         return;
       }
@@ -1353,7 +1287,7 @@ export async function runGatewayLoop(params: {
         rotateAgentEventLifecycleGeneration,
         waitForActiveCronJobs,
         waitForActiveCronTaskRuns,
-      } = await loadGatewayLifecycleRuntimeModule();
+      } = await gatewayLifecycleRuntimeLoader.load();
       // Rotation aborts rootless stale owners before reset pumps preserved queues.
       rotateAgentEventLifecycleGeneration();
       advanceCronActiveJobGeneration();
@@ -1419,7 +1353,7 @@ export async function runGatewayLoop(params: {
         startupStartedAt = Date.now();
         await params.beginBoot?.(startupStartedAt);
         const startedServer = await params.start({
-          ...(isRestartIteration ? {} : { processStartedAt }),
+          ...(isRestartIteration ? {} : { processStartedAt: performance.timeOrigin }),
           startupStartedAt,
           requestHotReloadRecovery: eagerLifecycleRuntime.requestGatewayRestartWithSignalAdmission,
           hostLifecycle: iterationHost.capability,
