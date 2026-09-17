@@ -16,6 +16,11 @@ import {
   formatGatewayTransportErrorJson,
   isGatewayCredentialsRequiredError,
 } from "../gateway/call.js";
+import {
+  DEFAULT_CHANNEL_CONNECT_GRACE_MS,
+  DEFAULT_CHANNEL_STALE_EVENT_THRESHOLD_MS,
+  evaluateChannelHealth,
+} from "../gateway/channel-health-policy.js";
 import { isGatewaySecretRefUnavailableError } from "../gateway/credentials.js";
 import { resolveHealthAccountContext } from "../gateway/health/account-context.js";
 import {
@@ -141,6 +146,24 @@ function formatEventLoopHealthLine(summary: HealthSummary): string | null {
   }`;
 }
 
+function resolveHealthCommandOk(summary: HealthSummary): boolean {
+  const now = summary.ts;
+  return Object.entries(summary.channels).every(([channelId, channel]) => {
+    const accountValues = Object.values(channel.accounts ?? {});
+    const accounts = accountValues.length > 0 ? accountValues : [channel];
+    return accounts.every(
+      (account) =>
+        account.configured !== true ||
+        evaluateChannelHealth(account, {
+          channelId,
+          now,
+          staleEventThresholdMs: DEFAULT_CHANNEL_STALE_EVENT_THRESHOLD_MS,
+          channelConnectGraceMs: DEFAULT_CHANNEL_CONNECT_GRACE_MS,
+        }).healthy,
+    );
+  });
+}
+
 /** Formats context engine quarantine state for text health output. */
 export function formatContextEngineHealthLine(summary: HealthSummary): string | null {
   const quarantined = summary.contextEngines?.quarantined ?? [];
@@ -226,7 +249,9 @@ export async function healthCommand(
     throw error;
   }
   if (opts.json) {
-    writeRuntimeJson(runtime, summary);
+    // Gateway snapshot `ok` is a transport-connectivity contract consumed by native chat.
+    // Project the operator-facing overall verdict without mutating that RPC/event payload.
+    writeRuntimeJson(runtime, { ...summary, ok: resolveHealthCommandOk(summary) });
   } else {
     const debugEnabled = isDiagnosticFlagEnabled("health", cfg);
     const rich = isRich();

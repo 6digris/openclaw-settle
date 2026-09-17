@@ -237,6 +237,29 @@ describe("healthCommand", () => {
     expect(output).not.toContain("inactive plugin load failed");
   });
 
+  it("reports disconnected configured channels without changing the Gateway connectivity snapshot", async () => {
+    const snapshot = createHealthSummary({
+      channels: {
+        telegram: {
+          accountId: "default",
+          configured: true,
+          running: true,
+          connected: false,
+          healthState: "disconnected",
+        },
+      },
+      channelOrder: ["telegram"],
+      channelLabels: { telegram: "Telegram" },
+    });
+    callGatewayMock.mockResolvedValueOnce(snapshot);
+
+    await healthCommand({ json: true, timeoutMs: 5000, config: {} }, runtime);
+
+    const parsed = JSON.parse(requireFirstRuntimeLog()) as { ok: boolean };
+    expect(parsed.ok).toBe(false);
+    expect(snapshot.ok).toBe(true);
+  });
+
   it.each([
     { everyMs: 65_001, expected: "1m 5s 1ms" },
     { everyMs: 604_800_001, expected: "1w 1ms" },

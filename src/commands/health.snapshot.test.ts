@@ -646,31 +646,6 @@ describe("collectGatewayHealthSnapshot", () => {
     expect(telegram.accounts?.default?.connected).toBe(true);
     expect(telegram.accounts?.default?.healthState).toBe("reconnecting");
     expect(telegram.accounts?.default?.probe?.ok).toBe(true);
-    expect(snap.ok).toBe(true);
-  });
-
-  it("marks the top-level snapshot unhealthy when a configured channel is disconnected", async () => {
-    testConfig = { channels: { telegram: { botToken: "t-1" } } };
-    testStore = {};
-    vi.stubEnv("DISCORD_BOT_TOKEN", "");
-
-    const snap = await getHealthSnapshot({
-      probe: false,
-      runtimeSnapshot: {
-        channels: {
-          telegram: {
-            accountId: "default",
-            running: true,
-            connected: false,
-            healthState: "disconnected",
-          },
-        },
-        channelAccounts: {},
-      },
-    });
-
-    expect(snap.channels.telegram?.healthState).toBe("disconnected");
-    expect(snap.ok).toBe(false);
   });
 
   it("merges inspected account metadata with runtime state before building health summaries", async () => {

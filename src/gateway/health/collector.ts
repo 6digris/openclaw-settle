@@ -39,7 +39,6 @@ import { runTasksWithConcurrency } from "../../utils/run-with-concurrency.js";
 import {
   DEFAULT_CHANNEL_CONNECT_GRACE_MS,
   DEFAULT_CHANNEL_STALE_EVENT_THRESHOLD_MS,
-  evaluateChannelHealth,
   resolveChannelHealthState,
 } from "../channel-health-policy.js";
 import type { GatewayHotReloadStatus } from "../config-reload-status.types.js";
@@ -252,23 +251,6 @@ type HealthChannelPlan = {
   configuredAccountIds: ReadonlySet<string>;
   accountSummaries: Record<string, ChannelAccountHealthSummary>;
 };
-
-function areConfiguredChannelsHealthy(plans: readonly HealthChannelPlan[], now: number): boolean {
-  return plans.every((plan) =>
-    Array.from(plan.configuredAccountIds).every((accountId) => {
-      const snapshot = plan.accountSummaries[accountId];
-      return (
-        snapshot !== undefined &&
-        evaluateChannelHealth(snapshot, {
-          channelId: plan.plugin.id,
-          now,
-          staleEventThresholdMs: DEFAULT_CHANNEL_STALE_EVENT_THRESHOLD_MS,
-          channelConnectGraceMs: DEFAULT_CHANNEL_CONNECT_GRACE_MS,
-        }).healthy
-      );
-    }),
-  );
-}
 
 // Permits outlive response deadlines so an unfinished plugin hook cannot be
 // replaced by later health refreshes and amplify process-wide probe work.
@@ -648,11 +630,10 @@ export async function collectGatewayHealthSnapshot(params: {
   const pluginHealth = buildPluginHealthSummary(cfg);
   const contextEngineHealth = buildContextEngineHealthSummary();
   const deliveryQueueHealth = await buildDeliveryQueueHealthSummary(undefined, stateContext);
-  const completedAt = Date.now();
   return {
-    ok: areConfiguredChannelsHealthy(channelPlans, completedAt),
-    ts: completedAt,
-    durationMs: completedAt - start,
+    ok: true,
+    ts: Date.now(),
+    durationMs: Date.now() - start,
     ...(params.eventLoop ? { eventLoop: params.eventLoop } : {}),
     ...(pluginHealth ? { plugins: pluginHealth } : {}),
     ...(contextEngineHealth ? { contextEngines: contextEngineHealth } : {}),
