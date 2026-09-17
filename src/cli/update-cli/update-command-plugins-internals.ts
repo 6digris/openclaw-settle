@@ -4,6 +4,7 @@ import {
   type UpdateFailureFact,
 } from "../../infra/update-failure-facts.js";
 import type { UpdateRunResult } from "../../infra/update-runner-types.js";
+import { isConfiguredPluginPathDiagnosticCode } from "../../plugins/discovery-availability.js";
 import type { PluginPayloadSmokeFailure } from "../../plugins/payload-verification.js";
 import type { PluginUpdateOutcome } from "../../plugins/update.js";
 import { formatCliCommand } from "../command-format.js";
@@ -121,6 +122,10 @@ export function assessPluginUpdate(params: {
 }
 
 export type PluginUpdateWarning = NonNullable<PostCorePluginUpdateResult["warnings"]>[number];
+
+export const isPostCorePluginAdvisory = ({ reason }: PluginUpdateWarning) =>
+  ["plugin-target-unavailable", "doctor-advisory"].includes(reason) ||
+  isConfiguredPluginPathDiagnosticCode(reason);
 
 export function createPluginUpdateWarning(params: {
   pluginId?: string;

@@ -16,7 +16,10 @@ import { VERSION } from "../../version.js";
 import { readPackageVersion, type UpdateCommandOptions } from "./shared.js";
 import { preparePostCorePluginConfig } from "./update-command-config.js";
 import { completePostCorePluginUpdate } from "./update-command-fresh-doctor.js";
-import { collectPostCorePluginFailureFacts } from "./update-command-plugins-internals.js";
+import {
+  collectPostCorePluginFailureFacts,
+  isPostCorePluginAdvisory,
+} from "./update-command-plugins-internals.js";
 import { updatePluginsAfterCoreUpdate } from "./update-command-plugins.js";
 import {
   continuePostCoreUpdateInFreshProcess,
@@ -282,10 +285,7 @@ export async function convergeUpdatePlugins(params: {
         })),
       );
       const pluginAdvisories = [
-        ...(postCorePluginUpdate?.warnings ?? []).filter(
-          (warning) =>
-            warning.reason === "plugin-target-unavailable" || warning.reason === "doctor-advisory",
-        ),
+        ...(postCorePluginUpdate?.warnings ?? []).filter(isPostCorePluginAdvisory),
         // Committed handoff files can acknowledge success without npm details.
         ...(postCorePluginUpdate?.npm?.outcomes ?? []).filter(
           (outcome) => outcome.code === "source-bundled-plugin",
