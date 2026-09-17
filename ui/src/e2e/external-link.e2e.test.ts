@@ -75,7 +75,9 @@ async function expectLabelPositionPreserved(link: Locator) {
     const withoutIndicator = measure();
     try {
       label.insertBefore(indicator, nextSibling);
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve());
+      });
       return { withoutIndicator, withIndicator: measure() };
     } finally {
       if (!indicator.isConnected) {
