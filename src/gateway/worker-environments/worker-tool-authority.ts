@@ -4,6 +4,7 @@ import { applyEmbeddedAttemptToolsAllow } from "../../agents/embedded-agent-runn
 import { resolveSandboxRuntimeStatus } from "../../agents/sandbox/runtime-status.js";
 import { resolveSandboxToolPolicyForAgent } from "../../agents/sandbox/tool-policy.js";
 import type { SessionPlacementTurnParams } from "../../agents/session-placement-admission.js";
+import { createToolExecutionMatcher } from "../../agents/tool-policy-shared.js";
 import { logWarn } from "../../logger.js";
 import {
   WORKER_REQUIRED_LOCAL_TOOL_NAMES,
@@ -109,5 +110,10 @@ export function resolveWorkerToolAuthority(params: {
     toolNames: runtimeCappedTools.map((tool) => tool.name),
     warn: logWarn,
   });
-  return { allowedToolNames: projected };
+  const executionAllowed = turn.toolExecutionAllow
+    ? createToolExecutionMatcher(turn.toolExecutionAllow)
+    : undefined;
+  return {
+    allowedToolNames: executionAllowed ? projected.filter(executionAllowed) : projected,
+  };
 }

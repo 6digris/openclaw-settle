@@ -127,6 +127,10 @@ describe("resolveWorkerToolAuthority", () => {
     expect(authority({ toolsAllow: ["portal"] }, true)).toEqual(["portal"]);
   });
 
+  it("intersects policy aliases with the exact delegated ceiling", () => {
+    expect(authority({ toolsAllow: ["write"], toolExecutionAllow: ["write"] })).toEqual(["write"]);
+  });
+
   it("exposes portals only for SSH-backed placements and allowed capability policy", () => {
     expect(authority()).not.toContain("portal");
     expect(authority({}, true)).toContain("portal");
