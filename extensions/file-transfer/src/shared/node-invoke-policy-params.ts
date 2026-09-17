@@ -1,5 +1,6 @@
 import { readPositiveIntegerParam } from "openclaw/plugin-sdk/param-readers";
 import { DIR_FETCH_DEFAULT_MAX_BYTES, DIR_FETCH_HARD_MAX_BYTES } from "./dir-fetch-limits.js";
+import { readFileCreateMetadata } from "./file-create-protocol.js";
 import type { FileTransferNodeInvokeCommand } from "./node-invoke-policy-commands.js";
 
 const FILE_FETCH_DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
@@ -46,7 +47,9 @@ export function prepareParams(input: {
   delete next.preflightOnly;
   delete next.expectedCanonicalPath;
   delete next.expectedBinding;
-  if (input.command === "file.fetch") {
+  if (input.command === "file.create") {
+    Object.assign(next, readFileCreateMetadata(input.params, input.maxBytes));
+  } else if (input.command === "file.fetch") {
     next.maxBytes = readMaxBytes({
       value: input.params.maxBytes,
       defaultValue: FILE_FETCH_DEFAULT_MAX_BYTES,

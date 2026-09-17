@@ -1,5 +1,6 @@
 // Exercise document RPCs through the registered workspace service and node wire.
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createOpenClawTestState } from "openclaw/plugin-sdk/test-state";
@@ -15,7 +16,66 @@ import { loadOrCreateDeviceIdentity } from "../../../../src/infra/device-identit
 import { stopQaGatewayFixture } from "../../../helpers/qa-gateway-cleanup.js";
 import { stopChildProcess } from "../../../helpers/stop-child-process.js";
 
-const COMMANDS = ["file.fetch", "file.stat", "file.write"];
+const COMMANDS = ["file.fetch", "file.stat", "file.write", "file.create"];
+const ATTACHMENT_FIXTURE = "workspace-attachment-fixture";
+
+// Invoke the public preparation caller inside the built Gateway. Only the turn
+// trigger is synthetic; workspace service, policy, pairing and binary wire are real.
+async function writeAttachmentFixture(root: string): Promise<string> {
+  const directory = path.join(root, ATTACHMENT_FIXTURE);
+  await fs.mkdir(directory);
+  await fs.writeFile(
+    path.join(directory, "package.json"),
+    JSON.stringify({
+      name: ATTACHMENT_FIXTURE,
+      version: "0.0.0",
+      type: "module",
+      openclaw: { extensions: ["./index.js"] },
+    }),
+  );
+  await fs.writeFile(
+    path.join(directory, "openclaw.plugin.json"),
+    JSON.stringify({
+      id: ATTACHMENT_FIXTURE,
+      activation: { onStartup: true },
+      configSchema: { type: "object", additionalProperties: false, properties: {} },
+    }),
+  );
+  await fs.writeFile(
+    path.join(directory, "index.js"),
+    `
+    import { prepareAgentWorkspaceAttachments } from "openclaw/plugin-sdk/agent-workspace-runtime";
+    import { saveMediaBuffer } from "openclaw/plugin-sdk/media-store";
+    const saved = new Map();
+    export default {
+      id: "${ATTACHMENT_FIXTURE}",
+      register(api) {
+        api.registerGatewayMethod("workspace-attachment-fixture.prepare", async ({ params, respond }) => {
+          try {
+            const size = params.size;
+            if (size !== 17 && size !== 50) throw new Error("Unknown fixture size");
+            if (!saved.has(size)) {
+              const bytes = Buffer.alloc(size * 1024 * 1024, 0x6d);
+              saved.set(size, await saveMediaBuffer(bytes, "application/octet-stream", "inbound", bytes.length, "report.bin"));
+            }
+            const source = saved.get(size).path;
+            const turn = { media: [{ path: source }], timeoutMs: 60000 };
+            const original = JSON.stringify(turn);
+            const note = await prepareAgentWorkspaceAttachments({
+              workspaceDir: api.runtime.agent.resolveAgentWorkspaceDir(api.config, "qa"),
+              turn, assertCurrent: () => {},
+            });
+            respond(true, { note, source, unchanged: JSON.stringify(turn) === original });
+          } catch (error) {
+            respond(false, undefined, { code: "UNAVAILABLE", message: String(error) });
+          }
+        }, { scope: "operator.admin" });
+      },
+    };
+  `,
+  );
+  return directory;
+}
 
 describe("node workspace document access", () => {
   it(
@@ -54,6 +114,7 @@ describe("node workspace document access", () => {
         },
       });
       const nodeId = nodeIdentity.deviceId;
+      const attachmentFixture = await writeAttachmentFixture(state.root);
       const config: OpenClawConfig = {
         gateway: {
           mode: "local",
@@ -73,9 +134,11 @@ describe("node workspace document access", () => {
           },
         },
         plugins: {
-          allow: ["file-transfer"],
+          allow: ["file-transfer", ATTACHMENT_FIXTURE],
+          load: { paths: [attachmentFixture] },
           slots: { memory: "none" },
           entries: {
+            [ATTACHMENT_FIXTURE]: { enabled: true },
             "file-transfer": {
               enabled: true,
               config: {
@@ -84,8 +147,12 @@ describe("node workspace document access", () => {
                 nodes: {
                   [nodeId]: {
                     ask: "off",
-                    allowReadPaths: [document],
-                    allowWritePaths: [document],
+                    allowReadPaths: [
+                      document,
+                      `${remote}/media/inbound/openclaw-staged-*`,
+                      `${remote}/media/inbound/openclaw-staged-*/**`,
+                    ],
+                    allowWritePaths: [document, `${remote}/media/inbound/openclaw-staged-*/**`],
                     followSymlinks: false,
                   },
                 },
@@ -111,7 +178,7 @@ describe("node workspace document access", () => {
             usePackagedPlugins: true,
           },
           transportBaseUrl: "http://127.0.0.1:1",
-          enabledPluginIds: ["file-transfer"],
+          enabledPluginIds: ["file-transfer", ATTACHMENT_FIXTURE],
           controlUiEnabled: false,
           mutateConfig: (cfg) => ({
             ...cfg,
@@ -208,6 +275,48 @@ describe("node workspace document access", () => {
         await fs.writeFile(document, "Harness edit");
         expect((await get()).file.content).toBe("Harness edit");
         expect(await fs.readFile(localDocument, "utf8")).toBe("Stale Gateway copy");
+
+        for (const size of [17, 50]) {
+          const prepare = () =>
+            owner!.request<{ note: string; source: string; unchanged: boolean }>(
+              "workspace-attachment-fixture.prepare",
+              { size },
+            );
+          const prepared = await prepare();
+          // Inbound media resolution canonicalizes the store path (e.g. /tmp on macOS).
+          const source = await fs.realpath(prepared.source);
+          const directory = `media/inbound/openclaw-staged-${createHash("sha256").update(source).digest("hex")}`;
+          const target = path.join(remote, directory, `input-${path.basename(prepared.source)}`);
+          expect(prepared.note).toBe(`[media attached: ${target}]`);
+          expect(prepared.unchanged).toBe(true);
+          const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+          expect(digest(await fs.readFile(target))).toBe(
+            digest(Buffer.alloc(size * 1024 * 1024, 0x6d)),
+          );
+          await expect(fs.stat(path.join(state.workspaceDir, "media"))).rejects.toMatchObject({
+            code: "ENOENT",
+          });
+          await fs.writeFile(target, "Harness edited the attachment");
+          expect((await prepare()).note).toBe(prepared.note);
+          expect(await fs.readFile(target, "utf8")).toBe("Harness edited the attachment");
+        }
+        // An attachment grant must not make unrelated owner documents writable.
+        await expect(
+          owner.request("node.invoke", {
+            nodeId,
+            command: "file.write",
+            params: {
+              path: path.join(remote, "private.txt"),
+              contentBase64: Buffer.from("denied").toString("base64"),
+              overwrite: true,
+              createParents: false,
+            },
+            idempotencyKey: "ungranted-workspace-write",
+          }),
+        ).rejects.toThrow(/allow|denied|permission/i);
+        await expect(fs.stat(path.join(remote, "private.txt"))).rejects.toMatchObject({
+          code: "ENOENT",
+        });
 
         // Saving a document also creates a missing workspace in the local path.
         // Remote ownership must preserve that behavior without using the decoy.

@@ -195,6 +195,12 @@ command grants, and plugin path policies still apply. The capability accepts no
 caller-selected scopes and stops accepting work when the service stops or its
 Gateway closes. Ordinary `api.runtime.nodes.invoke` keeps its caller's authority.
 
+`ctx.openNodeDuplex?.()` opens the same framed binary transport for the service's
+own commands registered with `duplex: true`. It uses the same node policy and
+service lifetime as `invokeNode`; callers cannot select an identity or scopes.
+An optional `assertCurrent` callback adds the current operation's liveness check
+before dispatch and each frame. Closing the service cancels open channels.
+
 Gateway-hosted services also receive `ctx.getCron?.()` for the scheduler operations
 already available to Gateway hooks: `list`, `add`, `update`, `remove`, and
 `removeStaleJobFamily`. Non-Gateway service hosts omit this getter.

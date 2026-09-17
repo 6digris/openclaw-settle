@@ -1,7 +1,11 @@
 import crypto from "node:crypto";
 import path from "node:path";
 import type { AgentWorkspaceAccess } from "openclaw/plugin-sdk/agent-workspace-runtime";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import type {
+  OpenClawPluginServiceContext,
+  OpenClawPluginApi,
+} from "openclaw/plugin-sdk/plugin-entry";
+import type { SandboxFsBridge } from "openclaw/plugin-sdk/sandbox";
 import {
   asOptionalRecord,
   parseStrictNonNegativeInteger,
@@ -9,6 +13,7 @@ import {
 import { inspectStrictBase64 } from "./shared/base64.js";
 import { throwFromNodePayload } from "./shared/errors.js";
 import type { FileTransferNodeInvokeCommand } from "./shared/node-invoke-policy-commands.js";
+import { createWorkspaceFile } from "./workspace-file-create.js";
 
 const MAX_BYTES = 16 * 1024 * 1024;
 const DIRECTORY_PAGE_SIZE = 4096;
@@ -28,7 +33,9 @@ export function createNodeWorkspaceBridge(options: {
   remoteRoot: string;
   invoke: OpenClawPluginApi["runtime"]["nodes"]["invoke"];
   signal: AbortSignal;
-}): AgentWorkspaceAccess["bridge"] {
+  openDuplex?: OpenClawPluginServiceContext["openNodeDuplex"];
+  assertCurrent?: () => void;
+}): AgentWorkspaceAccess["bridge"] & Required<Pick<SandboxFsBridge, "createFileExclusive">> {
   const workspaceDir = path.resolve(options.workspaceDir);
   const remoteRoot = path.posix.resolve(options.remoteRoot);
   const remotePath = (params: { filePath: string; cwd?: string }) => {
@@ -45,6 +52,7 @@ export function createNodeWorkspaceBridge(options: {
   ) => {
     const signal = callerSignal ? AbortSignal.any([options.signal, callerSignal]) : options.signal;
     signal.throwIfAborted();
+    options.assertCurrent?.();
     const result = asOptionalRecord(
       await options.invoke({
         nodeId: options.nodeId,
@@ -55,6 +63,7 @@ export function createNodeWorkspaceBridge(options: {
       }),
     );
     signal.throwIfAborted();
+    options.assertCurrent?.();
     const payload = asOptionalRecord(result?.payload);
     if (!payload) {
       throw new Error(`Invalid ${command} response`);
@@ -117,6 +126,49 @@ export function createNodeWorkspaceBridge(options: {
   };
 
   return {
+    async createFileExclusive(params) {
+      if (!options.openDuplex) {
+        throw new Error("Node workspace attachments require service-owned duplex access");
+      }
+      const signal = params.signal
+        ? AbortSignal.any([options.signal, params.signal])
+        : options.signal;
+      const assertCurrent = () => {
+        signal.throwIfAborted();
+        options.assertCurrent?.();
+      };
+      const data = Buffer.isBuffer(params.data)
+        ? params.data
+        : Buffer.from(params.data, params.encoding ?? "utf8");
+      const { result, sha256 } = await createWorkspaceFile({
+        openDuplex: options.openDuplex,
+        nodeId: options.nodeId,
+        path: remotePath(params),
+        data,
+        mkdir: params.mkdir !== false,
+        signal,
+        assertCurrent,
+      });
+      const payload = asOptionalRecord(asOptionalRecord(result)?.payload);
+      if (!payload || payload.ok !== true) {
+        throwFromNodePayload("file.create", payload ?? {});
+      }
+      if (typeof payload?.path !== "string" || !path.posix.isAbsolute(payload.path)) {
+        throw new Error("Missing canonical path in file.create response");
+      }
+      relativeWithin(remoteRoot, payload.path, path.posix);
+      if (payload.status === "exists") {
+        return "exists";
+      }
+      if (
+        payload.status !== "created" ||
+        payload.size !== data.byteLength ||
+        payload.sha256 !== sha256
+      ) {
+        throw new Error("file.create receipt does not match the submitted bytes");
+      }
+      return "created";
+    },
     // Bootstrap permits parent aliases inside the workspace; document RPCs
     // use readFile and keep their existing no-alias semantics.
     readFileWithSource: (params) => readFileWithSource(params, true),

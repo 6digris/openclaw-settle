@@ -89,6 +89,17 @@ const fileTransferNodeHostCommands: OpenClawPluginNodeHostCommand[] = [
     },
   },
   {
+    command: "file.create",
+    cap: "file",
+    dangerous: true,
+    duplex: true,
+    handle: async (paramsJSON, io) => {
+      const { handleFileCreate } = await import("./src/node-host/file-create.js");
+      const params = asOptionalRecord(readNodeCommandParams(paramsJSON)) ?? {};
+      return JSON.stringify(await handleFileCreate(params, io));
+    },
+  },
+  {
     command: "file.write",
     hasActiveWork: () => false,
     cap: "file",
