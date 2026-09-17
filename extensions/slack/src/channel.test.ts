@@ -5,6 +5,10 @@ import { createRuntimeEnv } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  resolveAndApplyOutboundReplyToId,
+  resolveAndApplyOutboundThreadId,
+} from "../../../src/infra/outbound/message-action-threading.js";
 import { slackPlugin } from "./channel.js";
 import { registerSlackInstallationState } from "./installation-identity-state.js";
 import { slackOutbound } from "./outbound-adapter.js";
@@ -1400,6 +1404,46 @@ describe("slackPlugin outbound", () => {
       thread_ts: "1712345678.123456",
       status: "processing",
     });
+  });
+
+  it("keeps an ordinary message-tool update in the incoming Slack thread", async () => {
+    const toolContext = {
+      currentChannelProvider: "slack",
+      currentChannelId: "C123",
+      currentThreadTs: "1712345678.123456",
+      currentMessageId: "1712345688.654321",
+      replyToMode: "all" as const,
+    };
+    const params: Record<string, unknown> = { message: "Still checking." };
+    const reply = resolveAndApplyOutboundReplyToId(params, {
+      channel: "slack",
+      toolContext,
+      matchesToolContextTarget: slackPlugin.threading?.matchesToolContextTarget,
+    });
+    const threadId = resolveAndApplyOutboundThreadId(params, {
+      cfg,
+      to: "channel:C123",
+      toolContext,
+      resolveAutoThreadId: slackPlugin.threading?.resolveAutoThreadId,
+      resolveReplyTransport: slackPlugin.threading?.resolveReplyTransport,
+      replyToIsExplicit: reply?.source === "explicit",
+    });
+
+    await requireSlackSendText()({
+      cfg,
+      to: "channel:C123",
+      text: "Still checking.",
+      replyToId: String(params.replyTo),
+      threadId,
+    });
+
+    expect(params.replyTo).toBe("1712345678.123456");
+    expect(threadId).toBe("1712345678.123456");
+    expect(sendMessageSlackMock).toHaveBeenCalledWith(
+      "channel:C123",
+      "Still checking.",
+      expect.objectContaining({ threadTs: "1712345678.123456" }),
+    );
   });
 
   it("falls back to auto-thread lookup when replyToId is not a Slack thread timestamp", () => {
