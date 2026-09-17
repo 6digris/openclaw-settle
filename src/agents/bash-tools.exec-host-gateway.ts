@@ -8,6 +8,7 @@ import { normalizeStringEntries } from "@openclaw/normalization-core/string-norm
 import { describeInterpreterInlineEval } from "../infra/command-analysis/inline-eval.js";
 import { detectPolicyInlineEval } from "../infra/command-analysis/policy.js";
 import { emitTrustedSecurityEvent } from "../infra/diagnostic-events.js";
+import { countObsoleteGeneratedExecApprovals } from "../infra/exec-approvals-generated-migration.js";
 import {
   type AllowAlwaysPersistenceDecision,
   commandRequiresSecurityAuditSuppressionApproval,
@@ -35,6 +36,12 @@ import {
   type ExecAutoReviewInput,
 } from "../infra/exec-auto-review.js";
 import type { SafeBinProfile } from "../infra/exec-safe-bin-policy.js";
+import {
+  captureApprovedCwdSnapshotSync,
+  revalidateApprovedCwdSnapshot,
+  APPROVAL_CWD_DRIFT_DENIED_MESSAGE,
+  type ApprovedCwdSnapshot,
+} from "../infra/system-run-cwd-binding.js";
 import { isNativeApprovalChannel, normalizeMessageChannel } from "../utils/message-channel.js";
 import { markBackgrounded, tail } from "./bash-process-registry.js";
 import {
@@ -114,6 +121,7 @@ type ProcessGatewayAllowlistParams = {
 
 /** Gateway allowlist outcome before command execution continues. */
 type ProcessGatewayAllowlistResult = {
+  revalidateBeforeExecution?: () => Promise<AgentToolResult<ExecToolDetails> | undefined>;
   execCommandOverride?: string;
   allowWithoutEnforcedCommand?: boolean;
   pendingResult?: AgentToolResult<ExecToolDetails>;
@@ -411,7 +419,7 @@ function shouldAwaitGatewayApprovalInline(params: {
 }
 
 function buildGatewayExecApprovalDeniedToolResult(params: {
-  approvalId: string;
+  approvalId?: string;
   deniedReason: string;
   command: string;
   cwd: string;
@@ -428,6 +436,19 @@ function buildGatewayExecApprovalDeniedToolResult(params: {
       cwd: params.cwd,
     },
   };
+}
+
+async function revalidateGatewayExecApprovalBinding(params: {
+  cwdSnapshot: ApprovedCwdSnapshot;
+  command: string;
+  cwd: string;
+}): Promise<AgentToolResult<ExecToolDetails> | undefined> {
+  return revalidateApprovedCwdSnapshot(params.cwdSnapshot)
+    ? undefined
+    : buildGatewayExecApprovalDeniedToolResult({
+        ...params,
+        deniedReason: APPROVAL_CWD_DRIFT_DENIED_MESSAGE,
+      });
 }
 
 async function resolveGatewayExecApprovalFollowupText(params: {
@@ -463,6 +484,28 @@ export async function processGatewayAllowlist(
     ask: params.ask,
     host: "gateway",
   });
+  const capturedCwd =
+    hostSecurity === "allowlist" || hostAsk !== "off"
+      ? captureApprovedCwdSnapshotSync(params.workdir)
+      : undefined;
+  if (capturedCwd && !capturedCwd.ok) {
+    return {
+      deniedResult: buildGatewayExecApprovalDeniedToolResult({
+        command: params.command,
+        cwd: params.workdir,
+        deniedReason: capturedCwd.message,
+      }),
+    };
+  }
+  const approvedCwdSnapshot = capturedCwd?.snapshot;
+  const revalidateBeforeExecution = approvedCwdSnapshot
+    ? () =>
+        revalidateGatewayExecApprovalBinding({
+          cwdSnapshot: approvedCwdSnapshot,
+          command: params.command,
+          cwd: params.workdir,
+        })
+    : undefined;
   const allowlistEval = await evaluateShellAllowlistWithAuthorization({
     command: params.command,
     allowlist: approvals.allowlist,
@@ -477,6 +520,12 @@ export async function processGatewayAllowlist(
   const analysisOk = allowlistEval.analysisOk;
   const allowlistSatisfied =
     hostSecurity === "allowlist" && analysisOk ? allowlistEval.allowlistSatisfied : false;
+  const obsoleteGeneratedApprovalCount = countObsoleteGeneratedExecApprovals(approvals.file);
+  if (hostSecurity === "allowlist" && !allowlistSatisfied && obsoleteGeneratedApprovalCount > 0) {
+    params.warnings.push(
+      `${obsoleteGeneratedApprovalCount} older generated exec ${obsoleteGeneratedApprovalCount === 1 ? "approval is" : "approvals are"} inactive because they are not tied to a working directory. Run "openclaw doctor --fix", then rerun the workflow and choose "Always allow here".`,
+    );
+  }
   const durableApprovalSatisfied = hasDurableExecApproval({
     analysisOk,
     segmentAllowlistEntries: allowlistEval.segmentAllowlistEntries,
@@ -665,6 +714,7 @@ export async function processGatewayAllowlist(
         return {
           execCommandOverride: enforcedCommand,
           allowWithoutEnforcedCommand: enforcedCommand === undefined,
+          revalidateBeforeExecution,
         };
       }
       params.warnings.push(
@@ -795,6 +845,7 @@ export async function processGatewayAllowlist(
       return {
         execCommandOverride: enforcedCommand,
         allowWithoutEnforcedCommand: enforcedCommand === undefined,
+        revalidateBeforeExecution,
       };
     }
     const resolvedPath = resolveApprovalAuditTrustPath(
@@ -910,6 +961,7 @@ export async function processGatewayAllowlist(
       return {
         execCommandOverride: enforcedCommand,
         allowWithoutEnforcedCommand: enforcedCommand === undefined,
+        revalidateBeforeExecution,
       };
     }
 
@@ -969,6 +1021,7 @@ export async function processGatewayAllowlist(
           scopeKey: params.scopeKey,
           sessionKey: params.notifySessionKey ?? params.sessionKey,
           timeoutSec: effectiveTimeout,
+          beforeSpawn: revalidateBeforeExecution,
         });
       } catch {
         await sendExecApprovalFollowupResult(
@@ -1034,5 +1087,17 @@ export async function processGatewayAllowlist(
     resolveApprovalAuditTrustPath(allowlistEval.segments[0]?.resolution ?? null, params.workdir),
   );
 
-  return { execCommandOverride: enforcedCommand };
+  return {
+    execCommandOverride: enforcedCommand,
+    ...(approvedCwdSnapshot
+      ? {
+          revalidateBeforeExecution: () =>
+            revalidateGatewayExecApprovalBinding({
+              cwdSnapshot: approvedCwdSnapshot,
+              command: params.command,
+              cwd: params.workdir,
+            }),
+        }
+      : {}),
+  };
 }

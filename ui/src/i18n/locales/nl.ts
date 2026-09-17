@@ -448,6 +448,7 @@ export const nl: TranslationMap = {
     pending: "{count} in behandeling",
     allowOnce: "Eenmalig toestaan",
     alwaysAllow: "Altijd toestaan",
+    alwaysAllowHere: "Hier altijd toestaan",
     allowAlwaysUnavailable:
       "Het effectieve goedkeuringsbeleid vereist elke keer goedkeuring, dus Altijd toestaan is niet beschikbaar.",
     deny: "Weigeren",

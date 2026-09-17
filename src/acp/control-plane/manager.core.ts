@@ -87,7 +87,7 @@ export class AcpSessionManager {
         sessionKey,
       };
     }
-    const acp = this.deps.readSessionEntry({
+    const acp = this.deps.readAcpSessionEntry({
       cfg: params.cfg,
       sessionKey,
       clone: false,
@@ -320,6 +320,9 @@ export class AcpSessionManager {
     cfg: OpenClawConfig;
     sessionKey: string;
     reason?: string;
+    expectedRunId?: string;
+    expectedInstanceId?: string;
+    expectedOwnerKey?: string;
   }): Promise<void> {
     const sessionKey = canonicalizeAcpSessionKey(params);
     if (!sessionKey) {
@@ -330,6 +333,10 @@ export class AcpSessionManager {
       cfg: params.cfg,
       sessionKey,
       reason: params.reason,
+      expectedRunId: params.expectedRunId,
+      expectedInstanceId: params.expectedInstanceId,
+      expectedOwnerKey: params.expectedOwnerKey,
+      readAcpSessionEntry: this.deps.readAcpSessionEntry,
       activeTurnBySession: this.activeTurnBySession,
       withSessionActor: this.withSessionActor.bind(this),
       resolveSession: this.resolveSession.bind(this),

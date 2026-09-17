@@ -72,7 +72,7 @@ const saveMediaBufferMock = vi.hoisted(() =>
       _subdir?: string,
       _maxBytes?: number,
       _originalFilename?: string,
-    ) => ({
+    ): Promise<SavedMedia> => ({
       id: "saved-media-id",
       path: "/tmp/test.bin",
       size: _buffer.byteLength,
@@ -134,7 +134,7 @@ beforeEach(() => {
       _subdir?: string,
       _maxBytes?: number,
       _originalFilename?: string,
-    ) => ({
+    ): Promise<SavedMedia> => ({
       id: "saved-media-id",
       path: "/tmp/test.bin",
       size: _buffer.byteLength,
@@ -504,6 +504,45 @@ describe("resolveSlackMedia", () => {
     expect(mockFetch.mock.calls.map((call) => call[0])).toEqual([
       "https://files.slack.com/stale.jpg",
       "https://files.slack.com/fresh.jpg",
+    ]);
+  });
+
+  it("rejects a refreshed URL when its file metadata fails caller admission", async () => {
+    saveMediaBufferMock.mockResolvedValue(createSavedMedia("/tmp/test.jpg", "image/jpeg"));
+    const mockClient = {
+      files: {
+        info: vi.fn().mockResolvedValue({
+          file: {
+            url_private_download: "https://files.slack.com/fresh.jpg",
+          },
+        }),
+      },
+    } as unknown as WebClient & { files: { info: ReturnType<typeof vi.fn> } };
+    mockFetch.mockResolvedValueOnce(new Response("expired", { status: 404 })).mockResolvedValueOnce(
+      new Response(Buffer.from("image data"), {
+        status: 200,
+        headers: { "content-type": "image/jpeg" },
+      }),
+    );
+
+    const result = await resolveSlackMedia({
+      files: [
+        {
+          id: "F123",
+          name: "test.jpg",
+          url_private_download: "https://files.slack.com/stale.jpg",
+        },
+      ],
+      client: mockClient,
+      token: "xoxb-test-token",
+      maxBytes: 1024 * 1024,
+      isRefreshedFileAllowed: () => false,
+    });
+
+    expect(result).toBeNull();
+    expect(mockClient.files.info).toHaveBeenCalledWith({ file: "F123" });
+    expect(mockFetch.mock.calls.map((call) => call[0])).toEqual([
+      "https://files.slack.com/stale.jpg",
     ]);
   });
 

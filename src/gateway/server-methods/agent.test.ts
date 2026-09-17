@@ -4240,6 +4240,7 @@ describe("gateway agent handler", () => {
           ...baseClient.internal,
           agentRunTracking: "plugin_subagent",
           pluginRuntimeOwnerId: "memory-core",
+          pluginSubagentToolsAllow: [],
         },
       };
 
@@ -4257,6 +4258,11 @@ describe("gateway agent handler", () => {
       );
 
       await waitForAssertion(() => {
+        expect(
+          mocks.agentCommand.mock.calls.find(
+            ([args]) => args.message === "background plugin subagent task",
+          )?.[0],
+        ).toMatchObject({ toolsAllow: [] });
         const tasks = listTaskRecords().filter((task) => task.runId === runId);
         expect(tasks).toHaveLength(1);
         const task = requireValue(tasks[0], "expected one plugin subagent task");
