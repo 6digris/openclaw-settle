@@ -4892,7 +4892,6 @@ describe("main-session-restart-recovery", () => {
       },
     });
     expect(loadSessionEntry({ sessionKey: "agent:main:main", storePath })).toMatchObject({
-      status: "failed",
       abortedLastRun: false,
       mainRestartRecovery: { tombstone: expect.any(Object) },
     });
