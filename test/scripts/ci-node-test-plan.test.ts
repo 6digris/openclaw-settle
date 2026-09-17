@@ -9,6 +9,7 @@ import {
 } from "../../scripts/lib/ci-changed-node-test-plan.mts";
 import {
   type CompactNodeTestShard,
+  type NodeTestShardGroup,
   createNodeTestShardBundles,
   createNodeTestShards,
   createSelectedNodeTestShardBundles,
@@ -94,7 +95,7 @@ describe("startup corpus coverage", () => {
     );
   });
   it("retains complete ownership across all three state corpus partitions", () => {
-    const groups = [
+    const groups: NodeTestShardGroup[] = [
       { ...group, includePatterns: [files[0]!] },
       ...["1/3", "2/3", "3/3"].map((shard) => ({
         ...group,
