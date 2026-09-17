@@ -52,10 +52,6 @@ export function classifyMainSessionRestartRecoverySource(
       : "inter_session";
 }
 
-export function hasCompletionReportUserTail(messages: readonly unknown[]): boolean {
-  return messages.findLast(classifyMainSessionRestartRecoverySource) === "completion";
-}
-
 export async function reconcileInterruptedCompletionReport(
   params: MainSessionRecoveryStoreTarget & {
     entry: SessionEntry;
