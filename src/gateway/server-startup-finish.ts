@@ -455,6 +455,7 @@ export async function finishGatewayStartup(params: {
     subscribeToWrites: (listener) =>
       registerConfigWriteListener(listener, {
         ownsRuntimeActivationFor: configSnapshot.path,
+        prepareSnapshot: opts.prepareConfigSnapshot,
         preCommitRuntimePreflight: async (sourceConfig, runtimeRefresh) => {
           const candidate = await prepareReloadCandidate({
             runtimeConfig: sourceConfig,
