@@ -348,7 +348,9 @@ export function createSlackProgressRuntime(runtimeParams: {
     formatLine: formatSlackProgressDraftLine,
     reasoningLinePrefix: "🧠 ",
     reasoningGate: !preambleOnlyProgress,
-    updateOnLineChange: useNativeProgressStreaming || useDraftProgressCard,
+    // A completed preamble may have the same text as its final delta. Its
+    // completion still has to reach the transport after a human boundary.
+    updateOnLineChange: useNativeProgressStreaming || useDraftProgressCard || preambleOnlyProgress,
     update: async (previewText, options) => {
       if (useNativeProgressStreaming) {
         const priorSnapshot = nativeStreamSnapshot;
@@ -367,14 +369,20 @@ export function createSlackProgressRuntime(runtimeParams: {
         return false;
       }
       const snapshot = options.snapshot;
+      const latestLine = snapshot.lines.at(-1);
       progressCard.setFallbackText(previewText);
       draftStream.update(
-        useDraftProgressCard
+        preambleOnlyProgress
           ? {
               text: previewText,
-              blocks: progressCard.resolvePresentation(snapshot, "working"),
+              allowNewMessage: typeof latestLine !== "object" || latestLine.complete !== false,
             }
-          : previewText,
+          : useDraftProgressCard
+            ? {
+                text: previewText,
+                blocks: progressCard.resolvePresentation(snapshot, "working"),
+              }
+            : previewText,
       );
       if (options?.flush) {
         await draftStream.flush();

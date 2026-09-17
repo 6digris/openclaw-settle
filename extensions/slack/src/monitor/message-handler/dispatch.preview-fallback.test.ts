@@ -4261,6 +4261,9 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
           run: async () => {
             checkpoint();
             expectLastDraftUpdateText(draftStream, "_The result_");
+            expect(draftStream.update.mock.calls.at(-1)?.[0]).toMatchObject({
+              allowNewMessage: false,
+            });
           },
         },
         {
@@ -4293,6 +4296,9 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
       // prove that Slack never received a first-token notification.
       expect(checkpoint).toHaveBeenCalledTimes(4);
       expectLastDraftUpdateText(draftStream, "_The result is ready._");
+      expect(draftStream.update.mock.calls.at(-1)?.[0]).toMatchObject({
+        allowNewMessage: true,
+      });
       expect(finalizeSlackPreviewEditMock).not.toHaveBeenCalled();
       expectDeliverReplyCall(0, FINAL_REPLY_TEXT);
       expect(draftStream.clear).toHaveBeenCalledOnce();
@@ -4543,9 +4549,11 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
       expect(startSlackStreamMock).not.toHaveBeenCalled();
       expect(appendSlackStreamMock).not.toHaveBeenCalled();
       expect(stopSlackStreamMock).not.toHaveBeenCalled();
-      expect(draftStream.update.mock.calls.every(([update]) => typeof update === "string")).toBe(
-        true,
-      );
+      expect(
+        draftStream.update.mock.calls.every(
+          ([update]) => typeof update === "string" || !("blocks" in update),
+        ),
+      ).toBe(true);
       expect(draftUpdateTexts(draftStream)).toEqual(
         ["Checking the current Slack behavior.", "The fix is ready; I’m checking the result."].map(
           (text) => (commentary ? `_${text}_` : text),

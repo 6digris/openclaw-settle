@@ -586,6 +586,9 @@ async function dispatchSlackMessageWithSetup(
                 payload.progressText,
                 {
                   itemId: payload.itemId,
+                  ...(progress.preambleOnlyProgress
+                    ? { complete: payload.phase !== "start" && payload.phase !== "update" }
+                    : {}),
                 },
               );
               return accepted || headlineVisible;

@@ -722,7 +722,7 @@ export function createChannelProgressDraftCompositor(params: {
       }
       return false;
     },
-    async pushCommentaryProgress(text?: string, options?: { itemId?: string }) {
+    async pushCommentaryProgress(text?: string, options?: { itemId?: string; complete?: boolean }) {
       if (!params.active || params.mode !== "progress" || !commentaryProgressEnabled) {
         return false;
       }
@@ -754,6 +754,7 @@ export function createChannelProgressDraftCompositor(params: {
         kind: "item",
         label: "Commentary",
         prefix: false,
+        ...(options?.complete !== undefined ? { complete: options.complete } : {}),
       };
       lines = mergeChannelProgressDraftLineForStreaming(lines, line, {
         toolProgress: !quietProgress,
