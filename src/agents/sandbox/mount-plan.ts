@@ -39,15 +39,6 @@ export async function prepareSandboxMountPlan(params: {
   tmpfs?: readonly string[];
   internalMounts?: readonly SandboxBackendInternalMount[];
 }): Promise<SandboxMountPlan> {
-  const selection = resolveSandboxMountSelection(params);
-  const namespace = await resolveDockerSourceNamespace(params.engine);
-  const allowedRoots = [
-    params.workspaceDir,
-    params.agentWorkspaceDir,
-    params.skillsWorkspaceDir ??
-      resolveMaterializedSandboxSkillsWorkspaceDir(params.agentWorkspaceDir),
-    ...(params.internalMounts ?? []).map((mount) => mount.hostPath),
-  ];
   const internalTargets = (params.internalMounts ?? []).map((mount) =>
     normalizeMountContainerPath(mount.containerPath),
   );
@@ -56,10 +47,23 @@ export async function prepareSandboxMountPlan(params: {
       (internal) =>
         target === internal || isPathInside(target, internal) || isPathInside(internal, target),
     );
-  const custom = selection.custom.filter((bind) => {
+  const custom = (params.binds ?? []).filter((bind) => {
     const parsed = splitSandboxBindSpec(bind);
     return !parsed || !conflictsWithInternalMount(normalizeMountContainerPath(parsed.container));
   });
+  const selection = resolveSandboxMountSelection({ ...params, binds: custom });
+  const namespace = await resolveDockerSourceNamespace(params.engine);
+  const allowedRoots = [
+    params.workspaceDir,
+    params.agentWorkspaceDir,
+    params.skillsWorkspaceDir ??
+      resolveMaterializedSandboxSkillsWorkspaceDir(params.agentWorkspaceDir),
+    ...(params.internalMounts ?? []).map((mount) => mount.hostPath),
+  ];
+  const tmpfs = resolveSandboxTmpfsMounts(params.tmpfs);
+  if (tmpfs.some((mount) => conflictsWithInternalMount(mount.containerPath))) {
+    throw new Error("Sandbox tmpfs conflicts with a required internal mount.");
+  }
   const targets = [
     ...selection.mounts.map((mount) => normalizeMountContainerPath(mount.containerPath)),
     ...internalTargets,
@@ -112,7 +116,7 @@ export async function prepareSandboxMountPlan(params: {
   }
   // Custom mounts retain their daemon-host contract. Protected instruction mounts
   // win exact collisions; other explicit overrides match filesystem bridge policy.
-  for (const bind of custom) {
+  for (const bind of selection.custom) {
     const parsed = splitSandboxBindSpec(bind);
     binds.set(parsed ? normalizeMountContainerPath(parsed.container) : bind, bind);
   }
@@ -120,10 +124,10 @@ export async function prepareSandboxMountPlan(params: {
     binds: [...binds.values()],
     skippedBinds: [
       ...selection.skippedBinds,
-      ...selection.custom.filter((bind) => !custom.includes(bind)),
+      ...(params.binds ?? []).filter((bind) => !custom.includes(bind)),
     ],
     readOnlyWorkspaceSkillMounts: selection.readOnlyWorkspaceSkillMounts,
-    tmpfs: resolveSandboxTmpfsMounts(params.tmpfs),
+    tmpfs,
   };
 }
 

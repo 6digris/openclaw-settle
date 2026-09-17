@@ -98,7 +98,7 @@ describe("managed mount plan", () => {
   });
 
   it("keeps core mounts authoritative over overlapping user binds", async () => {
-    vi.mocked(resolveDockerSourceNamespace).mockResolvedValue([]);
+    vi.mocked(resolveDockerSourceNamespace).mockResolvedValue(undefined);
     const plan = await prepareSandboxMountPlan({
       ...params("rw"),
       binds: ["/custom/repo:/repo:rw", "/custom/config:/repo/.git/config:rw", "/safe:/data:ro"],
@@ -112,6 +112,18 @@ describe("managed mount plan", () => {
       "/custom/repo:/repo:rw",
       "/custom/config:/repo/.git/config:rw",
     ]);
+  });
+
+  it("rejects tmpfs that obscures a required internal mount", async () => {
+    await expect(
+      prepareSandboxMountPlan({
+        ...params("rw"),
+        tmpfs: ["/repo/.git/hooks:rw"],
+        internalMounts: [
+          { hostPath: path.join(root, "agent"), containerPath: "/repo/.git", readOnly: true },
+        ],
+      }),
+    ).rejects.toThrow("tmpfs conflicts");
   });
 
   it("selects the last custom destination while preserving its raw daemon bind", async () => {
