@@ -13,6 +13,7 @@ import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { slackSetupPlugin } from "../../channel.setup.js";
 import { getSlackSessionRuns } from "../session-run-targets.js";
+import { emitCompactProgressScenario } from "./dispatch.compact-progress.test-support.js";
 
 const FINAL_REPLY_TEXT = "final answer";
 const THREAD_TS = "thread-1";
@@ -2945,29 +2946,53 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
     expectNativeStreamText(`\n${FINAL_REPLY_TEXT}`);
   });
 
-  it("settles failed command attention as recovered after a successful final reply", async () => {
-    await dispatchNativeProgressScenario({
-      finalPayload: { text: FINAL_REPLY_TEXT },
-      progress: { style: "card", toolProgress: false, nativeTaskCards: true },
-      events: [
-        { kind: "command_output", phase: "end", name: "Bash", title: "run checks", exitCode: 1 },
-      ],
-    });
+  it.each([
+    { toolProgress: undefined, isError: false },
+    { toolProgress: false, isError: false },
+    { toolProgress: false, isError: true },
+  ])(
+    "keeps intermediate command failures out of quiet native streams (tools=$toolProgress, error=$isError)",
+    async ({ toolProgress, isError }) => {
+      await dispatchNativeProgressScenario({
+        finalPayload: { text: FINAL_REPLY_TEXT, ...(isError ? { isError: true } : {}) },
+        progress: { style: "card", toolProgress, nativeTaskCards: true },
+        events: [
+          {
+            kind: "plan",
+            phase: "update",
+            explanation: "Checking the workspace",
+            steps: [{ step: "Run checks", status: "in_progress" }],
+          },
+          { kind: "command_output", phase: "end", name: "Bash", title: "run checks", exitCode: 1 },
+          {
+            kind: "command_output",
+            phase: "end",
+            name: "Bash",
+            title: "retry checks",
+            exitCode: 8,
+          },
+        ],
+      });
 
-    expect(
-      collectNativeTaskUpdates().filter(
-        (task) => typeof task.id === "string" && task.id.startsWith("openclaw-attention-"),
-      ),
-    ).toEqual([
-      taskUpdate(expect.stringMatching(/^openclaw-attention-/u), "Bash — exit 1", "error"),
-      taskUpdate(
-        expect.stringMatching(/^openclaw-attention-/u),
-        "Recovered: Bash — exit 1",
-        "complete",
-      ),
-    ]);
-    expectNativeStreamText(`\n${FINAL_REPLY_TEXT}`);
-  });
+      const outgoing = JSON.stringify([
+        ...startSlackStreamMock.mock.calls,
+        ...appendSlackStreamMock.mock.calls,
+        ...stopSlackStreamMock.mock.calls,
+      ]);
+      expect(outgoing).not.toMatch(/Bash|exit [18]|Recovered:/u);
+      expect(collectNativeTaskUpdates()).toEqual([
+        taskUpdate("plan_step_1", "Run checks", "in_progress"),
+        taskUpdate("plan_step_1", "Run checks", isError ? "error" : "complete"),
+      ]);
+      if (isError) {
+        expect(deliverRepliesMock).toHaveBeenCalledWith(
+          expect.objectContaining({ replies: [{ text: FINAL_REPLY_TEXT, isError: true }] }),
+        );
+      } else {
+        expectNativeStreamText(`\n${FINAL_REPLY_TEXT}`);
+      }
+    },
+  );
 
   it("mandatory E2E: streams native Slack progress with the newest meaningful plan title when no explicit label exists", async () => {
     await dispatchNativeProgressScenario({
@@ -4469,14 +4494,15 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
     expect(draftUpdateTexts(draftStream).join("\n")).not.toMatch(/Working|💬|•|⏱️/u);
   });
 
-  it.each([
-    ["compact", false],
-    ["compact", true],
-    [undefined, false],
-    [undefined, true],
-  ] as const)(
-    "keeps compact progress authored text and attention (style=%s, native=%s)",
-    async (style, native) => {
+  it.each(
+    [true, false, undefined].flatMap((commentary) =>
+      (["compact", undefined] as const).flatMap((style) =>
+        [false, true].map((native) => ({ commentary, style, native })),
+      ),
+    ),
+  )(
+    "keeps only preambles through reasoning and failed tools (style=$style, native=$native, commentary=$commentary)",
+    async ({ style, native, commentary }) => {
       const draftStream = createDraftStreamStub();
       createSlackDraftStreamMock.mockReturnValueOnce(draftStream);
       finalizeSlackPreviewEditMock.mockResolvedValueOnce(undefined);
@@ -4485,61 +4511,13 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
       mockedDispatchSequence = [{ kind: "final", payload: { text: FINAL_REPLY_TEXT } }];
       mockedReplyOptionEvents = [
         {
-          kind: "plan",
-          phase: "update",
-          steps: [
-            { step: "Inspect", status: "in_progress" },
-            { step: "Patch", status: "pending" },
-            { step: "Verify", status: "pending" },
-          ],
-        },
-        {
-          kind: "item",
-          itemKind: "preamble",
-          itemId: "preamble-1",
-          progressText: "Checking the current Slack behavior.",
-        },
-        {
-          kind: "tool_start",
-          itemId: "tool-1",
-          name: "bash",
-          phase: "start",
-          args: { command: "pnpm test" },
-        },
-        {
-          kind: "command_output",
-          itemId: "tool-1",
-          name: "bash",
-          phase: "end",
-          title: "pnpm test",
-          exitCode: 0,
-        },
-        { kind: "reasoning", text: "Considering the transport choice." },
-        {
-          kind: "plan",
-          phase: "update",
-          explanation: "Running the checklist.",
-          steps: [{ step: "Patch", status: "in_progress" }],
-        },
-        {
-          kind: "item",
-          itemKind: "preamble",
-          itemId: "preamble-2",
-          progressText: "The fix is ready; I’m checking the result.",
-        },
-        {
-          kind: "command_output",
-          itemId: "tool-2",
-          name: "bash",
-          phase: "end",
-          title: "pnpm test",
-          exitCode: 1,
-        },
-        {
-          kind: "plan",
-          phase: "update",
-          explanation: "Finishing the checklist.",
-          steps: [{ step: "Verify", status: "completed" }],
+          kind: "checkpoint",
+          run: async () => {
+            if (!capturedReplyOptions) {
+              throw new Error("expected Slack reply options");
+            }
+            await emitCompactProgressScenario(capturedReplyOptions);
+          },
         },
       ];
 
@@ -4552,7 +4530,7 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
                 style,
                 nativeTaskCards: true,
                 label: false,
-                commentary: true,
+                commentary,
                 toolProgress: false,
                 maxLines: 1,
               },
@@ -4568,12 +4546,11 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
       expect(draftStream.update.mock.calls.every(([update]) => typeof update === "string")).toBe(
         true,
       );
-      expect(draftUpdateTexts(draftStream)).toEqual([
-        "_Checking the current Slack behavior._",
-        "🧠 _Considering the transport choice._",
-        "_The fix is ready; I’m checking the result._",
-        "🛠️ exit 1",
-      ]);
+      expect(draftUpdateTexts(draftStream)).toEqual(
+        ["Checking the current Slack behavior.", "The fix is ready; I’m checking the result."].map(
+          (text) => (commentary ? `_${text}_` : text),
+        ),
+      );
       expect(finalizeSlackPreviewEditMock).not.toHaveBeenCalled();
       expect(deliverRepliesMock).toHaveBeenCalledOnce();
       expectDeliverReplyCall(0, FINAL_REPLY_TEXT);

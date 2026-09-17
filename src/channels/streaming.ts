@@ -302,7 +302,7 @@ export type ChannelProgressDraftLine = {
   prefix?: boolean;
 };
 
-/** Lines that need the operator's attention even when routine tool rows are hidden. */
+/** Approvals and failures that can start a draft when their rows are visible. */
 export function isChannelProgressAttentionLine(line: string | ChannelProgressDraftLine): boolean {
   if (typeof line === "string") {
     return false;
