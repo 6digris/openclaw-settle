@@ -656,8 +656,7 @@ export function createOpenClawCodingToolsInternal(
       sessionKey: options?.sessionKey,
       runId: options?.runId,
       operationalRunInstance: options?.operationalRunInstance,
-      // Detached completions return to the live session, not the sandbox policy scope.
-      notifySessionKey: options?.runSessionKey ?? options?.sessionKey,
+      runSessionKey: executionSessionKey,
       sessionId: options?.sessionId,
       sessionStore: options?.config?.session?.store,
       eventRouting: resolveEventSessionRoutingPolicy({

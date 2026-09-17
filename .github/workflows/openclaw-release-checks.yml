@@ -72,7 +72,7 @@ on:
         default: false
         type: boolean
       telegram_waiver:
-        description: Reviewed Telegram waiver (2026.8.1 or 2026.9.1) for stable/full validation
+        description: Reviewed stable/full waiver; 2026.8.1/9.1 cover Telegram, 2026.9.5 covers Telegram and Matrix QA-live
         required: false
         default: ""
         type: string
@@ -176,6 +176,7 @@ jobs:
       allow_unreleased_changelog: ${{ steps.inputs.outputs.allow_unreleased_changelog }}
       skip_package_telegram_e2e: ${{ steps.inputs.outputs.skip_package_telegram_e2e }}
       telegram_waiver: ${{ steps.inputs.outputs.telegram_waiver }}
+      waived_integration_channels: ${{ steps.inputs.outputs.waived_integration_channels }}
       trusted_qa_tooling_eligible: ${{ steps.trusted_qa_tooling.outputs.eligible }}
       rerun_group: ${{ steps.inputs.outputs.rerun_group }}
       live_suite_filter: ${{ steps.inputs.outputs.live_suite_filter }}
@@ -592,11 +593,13 @@ jobs:
                 "$RELEASE_RERUN_GROUP_INPUT" == "all" ]]; then
             skip_package_telegram_e2e=true
           fi
+          waived_channels='[]'
           if [[ -n "$TELEGRAM_WAIVER" ]]; then
+            waived_channels="$(
             TARGET_VERSION="$(jq -er '.version | select(type == "string")' waiver-target/package.json)" \
               RELEASE_PROFILE="$release_profile" node --input-type=module <<'NODE'
-          import { normalizeReleaseTelegramWaiver } from './workflow/scripts/full-release-validation-policy.mjs';
-          normalizeReleaseTelegramWaiver({
+          import { releaseWaivedIntegrationChannels } from './workflow/scripts/full-release-validation-policy.mjs';
+          console.log(JSON.stringify(releaseWaivedIntegrationChannels({
             telegramWaiver: process.env.TELEGRAM_WAIVER,
             targetVersion: process.env.TARGET_VERSION,
             releaseProfile: process.env.RELEASE_PROFILE,
@@ -606,8 +609,9 @@ jobs:
             packageAcceptancePackageSpec: process.env.RELEASE_PACKAGE_ACCEPTANCE_PACKAGE_SPEC_INPUT,
             candidateVersion: process.env.CANDIDATE_ARTIFACT_JSON_INPUT?.trim()
               ? JSON.parse(process.env.CANDIDATE_ARTIFACT_JSON_INPUT).packageVersion : undefined,
-          });
+          })));
           NODE
+            )"
           fi
           codex_plugin_spec="$RELEASE_CODEX_PLUGIN_SPEC_INPUT"
           if [[ -z "${codex_plugin_spec// }" && "$release_package_spec" =~ ^openclaw@(.+)$ ]]; then
@@ -705,9 +709,9 @@ jobs:
             fi
           fi
 
-          if [[ -n "$TELEGRAM_WAIVER" ]]; then
-            qa_live_telegram_enabled=false
-          fi
+          while IFS= read -r waived_channel; do
+            printf -v "qa_live_${waived_channel}_enabled" '%s' false
+          done < <(jq -r '.[]' <<< "$waived_channels")
 
           selection="$(RUN_RELEASE_SOAK="$run_release_soak" QA_FILTER_SEEN="$qa_filter_seen" \
             REPO_LIVE_SUITE_FILTER="$repo_live_suite_filter" node --input-type=module <<'NODE'
@@ -762,6 +766,7 @@ jobs:
             printf 'allow_unreleased_changelog=%s\n' "$allow_unreleased_changelog"
             printf 'skip_package_telegram_e2e=%s\n' "$skip_package_telegram_e2e"
             printf 'telegram_waiver=%s\n' "$TELEGRAM_WAIVER"
+            printf 'waived_integration_channels=%s\n' "$waived_channels"
             printf 'rerun_group=%s\n' "$RELEASE_RERUN_GROUP_INPUT"
             printf 'live_suite_filter=%s\n' "$live_suite_filter"
             printf 'repo_live_suite_filter=%s\n' "$repo_live_suite_filter"
@@ -915,6 +920,7 @@ jobs:
           RUN_MATURITY_SCORECARD: ${{ steps.inputs.outputs.run_maturity_scorecard }}
           SKIP_PACKAGE_TELEGRAM_E2E: ${{ steps.inputs.outputs.skip_package_telegram_e2e }}
           TELEGRAM_WAIVER: ${{ steps.inputs.outputs.telegram_waiver }}
+          WAIVED_INTEGRATION_CHANNELS: ${{ steps.inputs.outputs.waived_integration_channels }}
           ALLOW_UNRELEASED_CHANGELOG: ${{ steps.inputs.outputs.allow_unreleased_changelog }}
           RELEASE_RERUN_GROUP: ${{ inputs.rerun_group }}
           RELEASE_LIVE_SUITE_FILTER: ${{ inputs.live_suite_filter }}
@@ -946,6 +952,7 @@ jobs:
             fi
             if [[ -n "$TELEGRAM_WAIVER" ]]; then
               echo "- Source and Package Acceptance Telegram E2E: waived/not run (\`${TELEGRAM_WAIVER}\`); not a pass"
+              echo "- Owner-waived QA-live channels: $(jq -r 'join(", ")' <<< "$WAIVED_INTEGRATION_CHANNELS"); waived/not run, not a pass"
             fi
             echo "- Allow Unreleased changelog packaging: \`${ALLOW_UNRELEASED_CHANGELOG}\`"
             echo "- Rerun group: \`${RELEASE_RERUN_GROUP}\`"
