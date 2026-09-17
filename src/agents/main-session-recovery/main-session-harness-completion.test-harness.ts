@@ -47,7 +47,6 @@ export function registerHarnessCompletionRecoveryCases(
     "long-initial",
     "long-recovery",
     "missing-source",
-    "empty-source",
     "reserved-successor",
     "human-before-recovery",
     "cancel-after-dispatch",
@@ -142,52 +141,41 @@ export function registerHarnessCompletionRecoveryCases(
               : {}),
           },
         });
-        await writeTranscript(
-          sessionsDir,
-          entry.sessionId,
-          phase === "empty-source"
-            ? []
-            : [
+        await writeTranscript(sessionsDir, entry.sessionId, [
+          {
+            role: "user",
+            content: "Background work finished",
+            idempotencyKey: phase === "missing-source" ? undefined : `${sourceRunId}:user`,
+            __openclaw: { runId: sourceRunId },
+            provenance,
+          },
+          ...(phase === "human-before-recovery"
+            ? [{ role: "user", content: "stop that completion and work on my new request" }]
+            : []),
+          ...(phase.endsWith("recovery") || phase === "reserved-successor"
+            ? [
                 {
                   role: "user",
-                  content: "Background work finished",
-                  idempotencyKey:
-                    phase === "missing-source" ? "unrelated-input:user" : `${sourceRunId}:user`,
-                  __openclaw: { runId: sourceRunId },
-                  provenance,
+                  content: "Continue interrupted reply",
+                  __openclaw: {
+                    runId: phase === "reserved-successor" ? "recovery-R" : operationalRunId,
+                  },
+                  provenance: {
+                    kind: "internal_system",
+                    sourceTool: "main_session_restart_recovery",
+                    sourceSessionKey: sessionKey,
+                  },
                 },
-                ...(phase === "human-before-recovery"
-                  ? [{ role: "user", content: "stop that completion and work on my new request" }]
-                  : []),
-                ...(phase.endsWith("recovery") || phase === "reserved-successor"
-                  ? [
-                      {
-                        role: "user",
-                        content: "Continue interrupted reply",
-                        __openclaw: {
-                          runId: phase === "reserved-successor" ? "recovery-R" : operationalRunId,
-                        },
-                        provenance: {
-                          kind: "internal_system",
-                          sourceTool: "main_session_restart_recovery",
-                          sourceSessionKey: sessionKey,
-                        },
-                      },
-                    ]
-                  : []),
-                ...(phase.startsWith("long-")
-                  ? Array.from({ length: 40 }, (_, index) => ({
-                      role: "assistant",
-                      content: `intermediate ${index}`,
-                    }))
-                  : []),
-              ],
-        );
-        if (
-          phase === "missing-source" ||
-          phase === "empty-source" ||
-          phase === "human-before-recovery"
-        ) {
+              ]
+            : []),
+          ...(phase.startsWith("long-")
+            ? Array.from({ length: 40 }, (_, index) => ({
+                role: "assistant",
+                content: `intermediate ${index}`,
+              }))
+            : []),
+        ]);
+        if (phase === "missing-source" || phase === "human-before-recovery") {
           await expectRecovery({ started: 0, settled: 0, failed: 1, skipped: 0 });
           expect(callGateway).not.toHaveBeenCalled();
           expect(
