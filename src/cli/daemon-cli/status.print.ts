@@ -41,6 +41,7 @@ import {
   resolveRuntimeStatusColor,
   safeDaemonEnv,
 } from "./shared.js";
+import { resolveForeignChannelConflictCorrelations } from "./status.foreign-channel-correlation.js";
 import {
   type DaemonStatus,
   renderPortDiagnosticsForCli,
@@ -79,6 +80,8 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean; d
     });
     return;
   }
+
+  const foreignChannelConflictCorrelations = resolveForeignChannelConflictCorrelations(status);
 
   const { rich, label, accent, infoText, okText, warnText, errorText } =
     createCliStatusTextStyles();
@@ -523,6 +526,16 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean; d
           `Remove confirmed stray Gateway lifecycle jobs with ${formatCliCommand("openclaw doctor --fix")}.`,
         ),
       );
+    }
+    for (const correlation of foreignChannelConflictCorrelations) {
+      const channelAccount = `${sanitizeTerminalText(correlation.channel)}/${sanitizeTerminalText(correlation.accountId)}`;
+      for (const job of correlation.foreignJobs) {
+        defaultRuntime.error(
+          warnText(
+            `Channel conflict correlation: ${channelAccount} reports a duplicate-poller conflict; foreign OpenClaw job ${sanitizeTerminalText(job.label)} (program=${sanitizeTerminalText(job.program)}) may be the other install using this channel credential.`,
+          ),
+        );
+      }
     }
     spacer();
   }
