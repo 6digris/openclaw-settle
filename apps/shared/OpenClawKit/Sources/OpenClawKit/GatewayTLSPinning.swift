@@ -810,9 +810,9 @@ public final class GatewayTLSPinningSession: NSObject, WebSocketSessioning, URLS
         return failure
     }
 
+    // periphery:ignore - External TLS transports delegate trust ownership to this session.
     /// Approve the certificate from an externally hosted TLS stream before it sends HTTP headers.
     /// The existing pin owner also supplies typed repair evidence and first-use persistence.
-    // periphery:ignore - External TLS transports delegate trust ownership to this session.
     public func validateServerTrust(_ trust: SecTrust, for url: URL) -> Bool {
         guard let authority = GatewayTLSAuthority(url: url), authority.scheme == "wss" else { return false }
         switch GatewayTLSServerTrust.evaluate(
