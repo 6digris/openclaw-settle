@@ -2,22 +2,22 @@
 name: Temporary FreeBSD admission phase diagnostic
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
+  push:
+    branches: [feat/freebsd-foreground-update]
 
 permissions:
   contents: read
   actions: read
 
 concurrency:
-  group: freebsd-foreground-phase-diagnostic-${{ github.event.pull_request.number }}
+  group: freebsd-foreground-phase-diagnostic-149882
   cancel-in-progress: false
 
 env:
   SOURCE_SHA: 77e64b9a07f872d8d6c0ea08d2c207a85f201104
   PRODUCT_SHA: ea5752edb221293fbc6db8512710321cb2cd1b5b
   PASSED_SOURCE_SHA: 843ecedfa02115ce0cbc61110cf00c8e6754e98c
-  HARNESS_SHA: ${{ github.event.pull_request.head.sha }}
+  HARNESS_SHA: ${{ github.sha }}
   BASELINE_SRI: sha512-lTQpEEe1Xm3u2PCHaPEr+vP8paGk1vLdHuzdItsNToaLI6hAqRVvgJYg+GxukJhETJp4tPy/S1Gftl4KuB8n7A==
   COMPARISON_BASE: 351ff29013b53ca90977058fdeb1af0a1dc33bec
   EXPECTED_PRODUCT_TREE: 5f72a8e9786bbe96b144a923689b55e591f96f0a
@@ -25,7 +25,7 @@ env:
 
 jobs:
   native:
-    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'feat/freebsd-foreground-update'
+    if: github.repository == 'openclaw/openclaw' && github.ref == 'refs/heads/feat/freebsd-foreground-update'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
@@ -48,8 +48,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 13
+          ref: ${{ github.sha }}
+          fetch-depth: 14
           persist-credentials: false
           sparse-checkout-cone-mode: false
           sparse-checkout: |
@@ -60,7 +60,8 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$HARNESS_SHA"
-          test "$(git rev-parse HEAD^)" = "$SOURCE_SHA"
+          test "$(git rev-parse HEAD^)" = f601a508ea69565135a364896ed67f2c9a7f0cc5
+          test "$(git rev-parse HEAD^^)" = "$SOURCE_SHA"
           test "$(git rev-parse "$SOURCE_SHA^")" = "$PASSED_SOURCE_SHA"
           test "$(git rev-parse "$PASSED_SOURCE_SHA^")" = "$PRODUCT_SHA"
           test "$(git diff --name-only HEAD^ HEAD)" = .github/workflows/freebsd-foreground-proof.yml
