@@ -43,6 +43,9 @@ function createSynologySetupPrompter(params: { allowedUserIds?: string } = {}) {
       if (message === "Incoming webhook URL") {
         return "https://nas.example.com/webapi/entry.cgi?token=incoming";
       }
+      if (message === "Public attachment webhook URL (optional)") {
+        return "";
+      }
       if (message === "Outgoing webhook path (optional)") {
         return "";
       }
@@ -138,6 +141,7 @@ describe("synology-chat core", () => {
       options: {},
     });
 
+    expect(result.cfg.channels?.["synology-chat"]?.webhookUrl).toBeUndefined();
     expect(result.accountId).toBe("default");
     expect(result.cfg.channels?.["synology-chat"]?.enabled).toBe(true);
     expect(result.cfg.channels?.["synology-chat"]?.token).toBe("synology-token");

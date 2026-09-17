@@ -233,7 +233,7 @@ describe("createTaskFlowWebhookRequestHandler", () => {
     expect(target.taskFlow.get(parsed.result.flow.flowId)?.flowId).toBe(parsed.result.flow.flowId);
   });
 
-  it("runs child tasks and scrubs task ownership fields from responses", async () => {
+  it("runs unbound managed tasks and scrubs task ownership fields from responses", async () => {
     const { handler, target, secret } = createHandler();
     const flow = createManagedFlow(target, {
       controllerId: "webhooks/zapier",
@@ -247,7 +247,6 @@ describe("createTaskFlowWebhookRequestHandler", () => {
         action: "run_task",
         flowId: flow.flowId,
         runtime: "acp",
-        childSessionKey: "agent:main:subagent:child",
         task: "Inspect the next message batch",
         status: "running",
         startedAt: 10,
@@ -260,11 +259,45 @@ describe("createTaskFlowWebhookRequestHandler", () => {
     expect(parsed.ok).toBe(true);
     expect(parsed.result.created).toBe(true);
     expect(parsed.result.task.parentFlowId).toBe(flow.flowId);
-    expect(parsed.result.task.childSessionKey).toBe("agent:main:subagent:child");
+    expect(parsed.result.task.childSessionKey).toBeUndefined();
     expect(parsed.result.task.runtime).toBe("acp");
     expect(parsed.result.task.ownerKey).toBeUndefined();
     expect(parsed.result.task.requesterSessionKey).toBeUndefined();
   });
+
+  it.each(["acp", "subagent"] as const)(
+    "rejects unbacked %s child adoption without mutating the managed flow",
+    async (runtime) => {
+      const { handler, target, secret } = createHandler();
+      const flow = createManagedFlow(target, {
+        controllerId: "webhooks/zapier",
+        goal: "Reject forged child references",
+      });
+      const res = await dispatchJsonRequest({
+        handler,
+        path: target.path,
+        secret,
+        body: {
+          action: "run_task",
+          flowId: flow.flowId,
+          runtime,
+          childSessionKey: "agent:main:subagent:unbacked",
+          runId: "unbacked-run",
+          task: "Adopt a child without canonical runtime authority",
+        },
+      });
+
+      expect(res.statusCode).toBe(409);
+      expect(parseJsonBody(res)).toMatchObject({
+        ok: false,
+        code: "task_not_created",
+        error: "Task backing ownership could not be verified.",
+        result: { found: true, created: false },
+      });
+      expect(target.taskFlow.get(flow.flowId)).toStrictEqual(flow);
+      expect(target.taskFlow.getTaskSummary(flow.flowId)?.total).toBe(0);
+    },
+  );
 
   it("returns 404 for missing flow mutations", async () => {
     const { handler, target, secret } = createHandler();
@@ -374,7 +407,6 @@ describe("createTaskFlowWebhookRequestHandler", () => {
         action: "run_task",
         flowId: flow.flowId,
         runtime: "acp",
-        childSessionKey: "agent:main:subagent:child",
         runId: "retry-me",
         task: "Inspect the next message batch",
       },
@@ -387,7 +419,6 @@ describe("createTaskFlowWebhookRequestHandler", () => {
         action: "run_task",
         flowId: flow.flowId,
         runtime: "acp",
-        childSessionKey: "agent:main:subagent:child",
         runId: "retry-me",
         task: "Inspect the next message batch",
       },
