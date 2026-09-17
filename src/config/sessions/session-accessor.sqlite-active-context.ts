@@ -3,6 +3,7 @@ import { sql } from "kysely";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
+  iterateSqliteQuerySync,
 } from "../../infra/kysely-sync.js";
 import { withCurrentProjectionSnapshot } from "./session-accessor.sqlite-active-projection.js";
 import type {
@@ -246,7 +247,7 @@ export function readSessionTranscriptBoundedActiveContextCore(
         "context",
         fence?.beforeRawSeq,
       )?.keptMessagePositions.slice(-(maxEvents + 1)) ?? [];
-    const metadata = executeSqliteQuerySync(
+    const metadata = iterateSqliteQuerySync(
       projection.database.db,
       db
         .selectFrom("session_transcript_active_events as active")
@@ -274,14 +275,16 @@ export function readSessionTranscriptBoundedActiveContextCore(
         )
         .orderBy("active.active_position", "desc")
         .limit(maxEvents + 1),
-    ).rows;
+    );
     const selectedSequences: number[] = [];
     let serializedBytes = headerBytes;
+    let tailTruncated = false;
     for (const row of metadata) {
       if (
         selectedSequences.length >= maxEvents ||
         serializedBytes + row.serialized_bytes > maxBytes
       ) {
+        tailTruncated = true;
         break;
       }
       selectedSequences.push(row.event_seq);
@@ -448,7 +451,7 @@ export function readSessionTranscriptBoundedActiveContextCore(
       serializedBytes,
       totalEvents: projection.state.activeEventCount,
       transcriptMutationAt: version.updatedAt,
-      truncated: boundaryOmitted || metadata.length > selectedSequences.length,
+      truncated: boundaryOmitted || tailTruncated,
     };
   });
 }

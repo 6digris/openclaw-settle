@@ -84,6 +84,88 @@ function countAcquiredTranscriptPayloadBytes(
   return acquiredBytes;
 }
 
+function countAcquiredTranscriptMetadataRows(
+  db: ReturnType<typeof openOpenClawAgentDatabase>["db"],
+  read: () => void,
+): number {
+  clearNodeSqliteKyselyCacheForDatabase(db);
+  const prepare = db.prepare.bind(db);
+  const restoreStatements: Array<() => void> = [];
+  let acquiredRows = 0;
+  let activeIterators = 0;
+  const prepareSpy = vi.spyOn(db, "prepare").mockImplementation((query) => {
+    const statement = prepare(query);
+    const columns = new Set(statement.columns().map(({ name }) => name));
+    if (!columns.has("event_seq") || !columns.has("serialized_bytes")) {
+      return statement;
+    }
+    const all = statement.all.bind(statement);
+    const allSpy = vi.spyOn(statement, "all").mockImplementation((...params) => {
+      const rows = all(...params);
+      acquiredRows += rows.length;
+      return rows;
+    });
+    const iterate = statement.iterate.bind(statement);
+    const iterateSpy = vi.spyOn(statement, "iterate").mockImplementation(function* (...params) {
+      activeIterators += 1;
+      try {
+        for (const row of iterate(...params)) {
+          acquiredRows += 1;
+          yield row;
+        }
+      } finally {
+        activeIterators -= 1;
+      }
+      return undefined;
+    });
+    restoreStatements.push(() => {
+      allSpy.mockRestore();
+      iterateSpy.mockRestore();
+    });
+    return statement;
+  });
+  try {
+    read();
+    expect(activeIterators).toBe(0);
+  } finally {
+    prepareSpy.mockRestore();
+    for (const restore of restoreStatements) {
+      restore();
+    }
+  }
+  return acquiredRows;
+}
+
+it.each([false, true])(
+  "stops bounded manager metadata reads at the byte cutoff (newest fits: %s)",
+  async (newestFits) => {
+    await withBoundedContextScope(async (scope) => {
+      const messages = Array.from({ length: 128 }, (_, index) =>
+        transcriptMessage(`entry-${index}`, index === 0 ? null : `entry-${index - 1}`, {
+          role: "user",
+          content: newestFits && index === 127 ? "tail" : "x".repeat(4096),
+          timestamp: index,
+        }),
+      );
+      await persistSessionTranscriptTurn(scope, { messages, touchSessionEntry: false });
+      const { db } = openOpenClawAgentDatabase({ agentId: scope.agentId });
+      const onTruncated = vi.fn();
+      const acquiredRows = countAcquiredTranscriptMetadataRows(db, () => {
+        const manager = SessionManager.openBounded(scope, {
+          maxBytes: 2048,
+          maxEvents: 10_000,
+          onTruncated,
+        });
+        expect(manager.getHeader()?.id).toBe(scope.sessionId);
+        expect(manager.getLeafId()).toBe(newestFits ? "entry-127" : null);
+        expect(manager.getEntries().map(({ id }) => id)).toEqual(newestFits ? ["entry-127"] : []);
+      });
+      expect(onTruncated).toHaveBeenCalledOnce();
+      expect(acquiredRows).toBe(newestFits ? 2 : 1);
+    });
+  },
+);
+
 it("reads only the newest bounded active context and accounts for its header", async () => {
   await withBoundedContextScope(async (scope) => {
     await persistSessionTranscriptTurn(scope, {
