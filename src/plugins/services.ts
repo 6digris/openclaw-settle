@@ -33,6 +33,7 @@ import type { PluginServiceRegistration } from "./registry-types.js";
 import type { PluginRegistry } from "./registry.js";
 import { createPluginServiceCronGetter, type PluginServiceCronHost } from "./service-cron.js";
 import { createPluginServiceHealthReporter } from "./service-health.js";
+import { createPluginServiceNodeInvoker } from "./service-nodes.js";
 import { encodeStartupTraceSegment } from "./startup-trace-segment.js";
 import type { OpenClawPluginServiceContext } from "./types.js";
 
@@ -104,6 +105,7 @@ type OwnedPluginService = {
   cleanupErrors: unknown[];
   cleanupReporting?: Promise<unknown>;
   stopRequested: boolean;
+  stopNodeInvocations?: () => void;
   health: NonNullable<OpenClawPluginServiceContext["serviceHealth"]>;
   lease: PluginRuntimeCapabilityLease;
 };
@@ -255,6 +257,7 @@ async function startPreparedPluginServices({
     beforeStop?: Promise<unknown>,
   ) => {
     entry.stopRequested = true;
+    entry.stopNodeInvocations?.();
     const recordFailure = (error: unknown) => {
       if (!failures) {
         return;
@@ -416,6 +419,7 @@ async function startPreparedPluginServices({
         for (const entry of selected) {
           entry.reloading = reloading;
           entry.stopRequested = true;
+          entry.stopNodeInvocations?.();
         }
         const failures: unknown[] = [];
         try {
@@ -460,6 +464,7 @@ async function startPreparedPluginServices({
       );
       for (const entry of selected) {
         entry.stopRequested = true;
+        entry.stopNodeInvocations?.();
       }
       const strict = options?.strict === true;
       const deadline = strict ? options.deadlineAtMs : undefined;
@@ -530,6 +535,14 @@ async function startPreparedPluginServices({
           isStopping: () => ownedService.owner.closed || ownedService.stopRequested,
         })
       : undefined;
+    const nodeInvoker = record
+      ? createPluginServiceNodeInvoker({
+          registry,
+          record,
+          lease,
+          isStopping: () => ownedService.owner.closed || ownedService.stopRequested,
+        })
+      : undefined;
     const isDiagnosticsExporter =
       entry?.pluginId === entry?.id &&
       (entry?.id === "diagnostics-otel" || entry?.id === "diagnostics-prometheus");
@@ -587,6 +600,7 @@ async function startPreparedPluginServices({
       },
       serviceHealth: health,
       ...(getCron ? { getCron } : {}),
+      ...(nodeInvoker ? { invokeNode: nodeInvoker.invoke } : {}),
       ...(gatewayEvents ? { gatewayEvents } : {}),
       ...(startupTrace
         ? {
@@ -616,6 +630,7 @@ async function startPreparedPluginServices({
       registration: entry,
       registry,
       stopRequested: false,
+      stopNodeInvocations: nodeInvoker?.stop,
       diagnosticsExporter: serviceContext.internalDiagnostics !== undefined,
       stop: service.stop
         ? () =>
