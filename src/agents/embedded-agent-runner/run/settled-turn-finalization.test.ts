@@ -22,13 +22,14 @@ import {
   buildEmbeddedRunnerAssistant,
   makeEmbeddedRunnerAttempt,
 } from "../../test-helpers/embedded-agent-runner-e2e-fixtures.js";
-import type { EmbeddedRunAttemptWithReceiptEvidence } from "./attempt-result.js";
 import { EMBEDDED_RUN_LANE_TIMEOUT_GRACE_MS } from "./lane-runtime.js";
 import { prepareTerminalWithSettledTurnFinalization } from "./settled-turn-finalization.js";
 import {
   createSettledFinalizationTestInput,
   createSettledProviderFailureAttempt,
   projectSettledProviderFailureAttempt,
+  settledFailedAttempt,
+  settledSuccessfulAttempt,
 } from "./settled-turn-finalization.test-support.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
 
@@ -81,68 +82,6 @@ vi.mock("../../run-session-target.js", () => ({
     }),
   ),
 }));
-
-function settledFailedAttempt(): EmbeddedRunAttemptWithReceiptEvidence {
-  const assistant = buildEmbeddedRunnerAssistant({
-    stopReason: "toolUse",
-    content: [
-      { type: "toolCall", id: "tool-read", name: "read", arguments: {} },
-      { type: "toolCall", id: "tool-exec", name: "exec", arguments: {} },
-    ],
-  });
-  const messagesSnapshot = [
-    assistant,
-    { role: "toolResult", toolCallId: "tool-read", toolName: "read", isError: false },
-    { role: "toolResult", toolCallId: "tool-exec", toolName: "exec", isError: true },
-  ] as never;
-  const attempt = makeEmbeddedRunnerAttempt({
-    terminal: {
-      kind: "failed",
-      source: "compaction",
-      error: new Error("native context compaction failed"),
-    },
-    sessionIdUsed: "session-settled",
-    sessionFileUsed: "/tmp/session-settled.jsonl",
-    assistantTexts: [],
-    toolMetas: [
-      { toolName: "read", isError: false, replaySafe: true },
-      { toolName: "exec", isError: true, replaySafe: false },
-    ],
-    successfulCronAdds: 1,
-    latestMcpAppChannelView: { viewId: "view-after-tools" },
-    itemLifecycle: { startedCount: 2, completedCount: 2, activeCount: 0 },
-    messagesSnapshot,
-    lastAssistant: assistant,
-    currentAttemptAssistant: assistant,
-    currentAttemptReplayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
-    replayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
-    settledTurnFinalizationContext: { source: "openclaw-transcript", messages: messagesSnapshot },
-    lastToolError: {
-      toolName: "exec",
-      error: "post-processing error",
-      errorCode: "SYSTEM_RUN_DENIED",
-    },
-    codeModeEngaged: true,
-    assistantTurns: 1,
-    bridgeCalls: { search: 1, describe: 2, call: 3 },
-  });
-  return { ...attempt, successfulNestedToolNames: ["memory_search"] };
-}
-
-function settledSuccessfulAttempt(): EmbeddedRunAttemptWithReceiptEvidence {
-  const attempt = settledFailedAttempt();
-  attempt.terminal = { kind: "ok" };
-  attempt.lastToolError = undefined;
-  for (const tool of attempt.toolMetas) {
-    tool.isError = false;
-  }
-  for (const message of attempt.messagesSnapshot) {
-    if (message.role === "toolResult") {
-      message.isError = false;
-    }
-  }
-  return attempt;
-}
 
 let admittedRunContext: AdmittedRunContext;
 

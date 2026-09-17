@@ -127,21 +127,19 @@ export function resolveSettledTurnFinalizationRequest(input: {
   }
   const terminalAborted = isEmbeddedRunTerminalAbort(input.terminalState.outcome);
   const terminalTimedOut = isEmbeddedRunTerminalTimeout(input.terminalState.outcome);
-  // The payload owner has already decided a failure must be shown. Explain that
-  // warning without changing intentional silence or delivery policy elsewhere.
+  // Explain only the warning the payload owner already decided must be shown.
   if (
     input.payloadsWithToolMedia?.some(
       (payload) => getReplyPayloadMetadata(payload)?.toolErrorWarning,
     )
   ) {
-    if (input.hasTerminalToolPresentation) {
-      return null;
-    }
-    return resolveToolFailureExplanationInstruction({
-      aborted: terminalAborted,
-      timedOut: terminalTimedOut,
-      attempt: input.attempt,
-    });
+    return input.hasTerminalToolPresentation
+      ? null
+      : resolveToolFailureExplanationInstruction({
+          aborted: terminalAborted,
+          timedOut: terminalTimedOut,
+          attempt: input.attempt,
+        });
   }
   // Generated errors and pre-tool commentary are fallback surfaces, not authored answers.
   const preparedPayloadCount = countSettledTurnDeliveryPayloads({
