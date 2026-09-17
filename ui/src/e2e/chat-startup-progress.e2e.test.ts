@@ -9,7 +9,7 @@ const suite = createChatFlowE2eSuite();
 let proofDir: string;
 beforeEach(() => {
   if (capture) {
-    proofDir = createControlUiE2eArtifactDir("duplicate-session-naming");
+    proofDir = createControlUiE2eArtifactDir("chat-startup-progress");
   }
 });
 const capture = process.env.OPENCLAW_CAPTURE_UI_PROOF === "1";
@@ -23,10 +23,14 @@ suite.define(() => {
       ...(capture ? { recordVideo: { dir: proofDir, size: { width: 1280, height: 900 } } } : {}),
     });
     const page = await context.newPage();
-    const gateway = await installMockGateway(page, { historyMessages: [] });
+    const gateway = await installMockGateway(page, {
+      deferredMethods: ["exec.approval.list"],
+      historyMessages: [],
+    });
     try {
       await page.goto(`${suite.server.baseUrl}chat`);
       await gateway.waitForRequest("chat.startup");
+      await gateway.waitForRequest("exec.approval.list");
       await gateway.deferNext("chat.send");
       const composer = page.locator(".agent-chat__composer-combobox textarea");
       await composer.fill("Inspect this synthetic workspace");
@@ -64,6 +68,8 @@ suite.define(() => {
       const tool = page.locator(".chat-tool-msg-summary", { hasText: "pwd" });
       const working = page.locator('.chat-working-indicator[role="status"]');
       await expect.poll(() => tool.count()).toBe(1);
+      await expect.poll(() => working.textContent()).toContain("Waiting for approval");
+      await gateway.resolveDeferred("exec.approval.list");
       await expect.poll(() => working.textContent()).toContain("Waiting for approval");
       if (capture) {
         await writeFile(
