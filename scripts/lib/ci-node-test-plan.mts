@@ -3108,7 +3108,7 @@ function createCompactNodeTestShardBundles(
           }
         }
       : undefined;
-  const shards = sourceShards
+  const shards: NodeTestShard[] = sourceShards
     .filter((shard) => compactMode !== "push" || !COMPACT_PUSH_EXCLUDED_SHARDS.has(shard.shardName))
     .flatMap((shard) => {
       if (options.runnerBackend !== "github") {
@@ -3118,8 +3118,11 @@ function createCompactNodeTestShardBundles(
       // execute sibling groups concurrently. Preserve its existing whole-config
       // owner there; Blacksmith-backed plans retain the three-way fanout.
       if (shard.shardName === "core-runtime-config") {
-        const { includePatterns: _files, ...wholeConfig } = shard;
-        return [wholeConfig];
+        if ("includePatterns" in shard) {
+          const { includePatterns: _files, ...wholeConfig } = shard;
+          return [wholeConfig];
+        }
+        return [shard];
       }
       return shard.shardName === "core-runtime-config-startup-config" ||
         /^core-runtime-config-startup-state-[1-3]$/u.test(shard.shardName)
