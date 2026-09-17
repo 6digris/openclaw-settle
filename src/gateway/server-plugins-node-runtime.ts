@@ -42,10 +42,10 @@ export async function openGatewayNodeDuplex(options: {
     !record ||
     registrations?.length !== 1 ||
     registrations[0]?.pluginId !== scope.pluginId ||
-    registrations[0]?.command.duplex !== true
+    (registrations[0]?.command.duplex !== true && registrations[0]?.command.duplex !== "optional")
   ) {
     throw new Error(
-      `Node command "${params.command}" must be registered exactly once by plugin "${scope.pluginId}" and declare duplex: true.`,
+      `Node command "${params.command}" must be registered exactly once by plugin "${scope.pluginId}" and declare duplex: true or "optional".`,
     );
   }
   const isPluginCurrent = capturePluginLifecycleAuthority(registry, record, {

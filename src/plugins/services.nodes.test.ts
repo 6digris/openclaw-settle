@@ -258,12 +258,14 @@ describe("service-owned node invocation", () => {
   });
 });
 
-async function openServiceDuplex(options: { assertCurrent?: () => void } = {}) {
+async function openServiceDuplex(
+  options: { assertCurrent?: () => void; duplex?: true | "optional" } = {},
+) {
   const fixture = await startFixture();
   fixture.registry.nodeHostCommands.push({
     pluginId: fixture.record.id,
     source: fixture.record.source,
-    command: { command: "file.create", duplex: true, handle: async () => "{}" },
+    command: { command: "file.create", duplex: options.duplex ?? true, handle: async () => "{}" },
   });
   const dispatched = createDeferredCore<GatewayRequestHandlerOptions>();
   const finish = createDeferredCore();
@@ -311,24 +313,27 @@ async function openServiceDuplex(options: { assertCurrent?: () => void } = {}) {
 }
 
 describe("service-owned node duplex", () => {
-  it("uses the existing framed transport after canonical preflight", async () => {
-    const fixture = await openServiceDuplex();
-    const received: Uint8Array[] = [];
-    fixture.endpoint.onMessage((message) => {
-      received.push(message);
-    });
-    const source = Buffer.alloc(128 * 1024, 7);
-    await fixture.channel.send(source);
-    expect(received.map((message) => Buffer.from(message))).toEqual([source]);
-    expect(fixture.sendInvokeInput).toHaveBeenCalledTimes(16);
-    expect(fixture.ctx.client?.internal).toMatchObject({
-      pluginRuntimeOwnerId: "files",
-      operatorRoleActor: { kind: "system" },
-    });
-    fixture.finish.resolve();
-    await expect(fixture.channel.closed).resolves.toEqual({ ok: true });
-    await expect(fixture.channel.send(source)).rejects.toThrow(/closed/);
-  });
+  it.each([true, "optional"] as const)(
+    "uses %s duplex after canonical preflight",
+    async (duplex) => {
+      const fixture = await openServiceDuplex({ duplex });
+      const received: Uint8Array[] = [];
+      fixture.endpoint.onMessage((message) => {
+        received.push(message);
+      });
+      const source = Buffer.alloc(128 * 1024, 7);
+      await fixture.channel.send(source);
+      expect(received.map((message) => Buffer.from(message))).toEqual([source]);
+      expect(fixture.sendInvokeInput).toHaveBeenCalledTimes(16);
+      expect(fixture.ctx.client?.internal).toMatchObject({
+        pluginRuntimeOwnerId: "files",
+        operatorRoleActor: { kind: "system" },
+      });
+      fixture.finish.resolve();
+      await expect(fixture.channel.closed).resolves.toEqual({ ok: true });
+      await expect(fixture.channel.send(source)).rejects.toThrow(/closed/);
+    },
+  );
 
   it.each(["stop", "gateway", "replace", "caller"])(
     "stops retained sends and pending dispatch on %s revocation",

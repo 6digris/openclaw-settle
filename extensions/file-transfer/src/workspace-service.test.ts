@@ -37,6 +37,7 @@ let nodePolicy: {
   allowWritePaths: string[];
   followSymlinks: boolean;
   ask: "off";
+  maxBytes?: number;
 };
 let invoke: ReturnType<typeof vi.fn<OpenClawPluginApi["runtime"]["nodes"]["invoke"]>>;
 
@@ -133,6 +134,90 @@ afterEach(async () => {
 });
 
 describe("registered node workspace service", () => {
+  it("retries a structured unary size refusal through bounded binary file.fetch", async () => {
+    const bytes = Buffer.alloc(32 * 1024 * 1024, 0x6d);
+    await fs.writeFile(path.join(remote, "output.bin"), bytes);
+    await fs.writeFile(path.join(local, "output.bin"), "Gateway decoy");
+    enableAttachmentTransport();
+    const duplex = vi.fn(openDuplex!);
+    openDuplex = duplex;
+    await service.start(context());
+    const media = getAgentWorkspaceAccess(local)!.outboundMedia!;
+    const data = await media.readFile(path.join(local, "output.bin"), bytes.length);
+    expect(createHash("sha256").update(data).digest("hex")).toBe(
+      createHash("sha256").update(bytes).digest("hex"),
+    );
+    expect(invoke.mock.calls[0]?.[0]).toMatchObject({
+      command: "file.fetch",
+      params: { maxBytes: 16 * 1024 * 1024 },
+    });
+    expect(duplex).toHaveBeenCalledOnce();
+    expect(duplex.mock.calls[0]?.[0]).toMatchObject({
+      command: "file.fetch",
+      params: { transport: "binary", maxBytes: bytes.length },
+    });
+    nodePolicy.maxBytes = 20 * 1024 * 1024;
+    await expect(media.readFile(path.join(local, "output.bin"), bytes.length)).rejects.toThrow();
+    expect(await fs.readFile(path.join(local, "output.bin"), "utf8")).toBe("Gateway decoy");
+  });
+
+  it("keeps unary small reads with a larger budget and never retries policy denial", async () => {
+    openDuplex = vi.fn();
+    await service.start(context());
+    const media = getAgentWorkspaceAccess(local)!.outboundMedia!;
+    expect(await media.readFile(path.join(local, "AGENTS.md"), 32 * 1024 * 1024)).toEqual(
+      Buffer.from("Harness instructions"),
+    );
+    nodePolicy.allowReadPaths = [];
+    await expect(media.readFile(path.join(local, "AGENTS.md"), 32 * 1024 * 1024)).rejects.toThrow();
+    expect(openDuplex).not.toHaveBeenCalled();
+  });
+
+  it("fails large reads explicitly when duplex is unavailable", async () => {
+    await fs.writeFile(path.join(remote, "output.bin"), "");
+    await fs.truncate(path.join(remote, "output.bin"), 17 * 1024 * 1024);
+    await service.start(context());
+    await expect(
+      getAgentWorkspaceAccess(local)!.outboundMedia!.readFile(
+        path.join(local, "output.bin"),
+        32 * 1024 * 1024,
+      ),
+    ).rejects.toThrow("FILE_TOO_LARGE");
+  });
+
+  it("aborts a binary outbound read when its service stops", async () => {
+    await fs.writeFile(path.join(remote, "output.bin"), Buffer.alloc(17 * 1024 * 1024));
+    enableAttachmentTransport(() => {
+      void service.stop?.(context());
+    });
+    await service.start(context());
+    await expect(
+      getAgentWorkspaceAccess(local)!.outboundMedia!.readFile(
+        path.join(local, "output.bin"),
+        32 * 1024 * 1024,
+      ),
+    ).rejects.toThrow();
+  });
+
+  it("binds bounded outbound reads to the node policy and service lifetime", async () => {
+    await fs.writeFile(path.join(local, "report.txt"), "Gateway decoy");
+    await fs.writeFile(path.join(remote, "report.txt"), "Harness output");
+    await service.start(context());
+    const media = getAgentWorkspaceAccess(local)!.outboundMedia!;
+    expect(media.localRoots).toEqual([local]);
+    const filePath = path.join(local, "report.txt");
+    expect(await media.readFile(filePath, 100)).toEqual(Buffer.from("Harness output"));
+    await expect(media.readFile(filePath, 4)).rejects.toThrow();
+    nodePolicy.allowReadPaths = [`${remote}/AGENTS.md`];
+    await expect(media.readFile(filePath, 100)).rejects.toThrow();
+    nodePolicy.allowReadPaths = [remote, `${remote}/**`];
+    await service.stop?.(context());
+    invoke.mockClear();
+    await expect(media.readFile(filePath, 100)).rejects.toThrow("stopped or not ready");
+    expect(invoke).not.toHaveBeenCalled();
+    expect(await fs.readFile(filePath, "utf8")).toBe("Gateway decoy");
+  });
+
   it("allows agents to share the same node workspace", async () => {
     api.config.plugins!.entries!["file-transfer"]!.config = {
       workspaces: {
@@ -382,16 +467,22 @@ function enableAttachmentTransport(afterChunk?: () => void) {
     invokeNode.mockImplementation(async ({ params } = {}) => {
       request.assertCurrent?.();
       signal.throwIfAborted();
-      return { ok: true, payload: await handleFileCreate(params as Record<string, unknown>, io) };
+      return {
+        ok: true,
+        payload:
+          request.command === "file.fetch"
+            ? await handleFileFetch(params as Record<string, unknown>, io)
+            : await handleFileCreate(params as Record<string, unknown>, io),
+      };
     });
-    const closed = createFileTransferNodeInvokePolicy()
-      .handle(ctx)
-      .then((result) => {
+    const closed = Promise.resolve(createFileTransferNodeInvokePolicy().handle(ctx)).then(
+      (result) => {
         if (!result.ok) {
           throw new Error(`${result.code}: ${result.message}`);
         }
         return result;
-      });
+      },
+    );
     await Promise.race([
       ready.promise,
       closed.then(() => {

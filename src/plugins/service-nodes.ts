@@ -55,9 +55,13 @@ export function createPluginServiceNodeInvoker(options: {
       if (commands.length !== 1 || commands[0]?.pluginId !== record.id) {
         throw new Error(`Plugin service cannot invoke unowned node command: ${request.command}`);
       }
-      if (duplex && commands[0].command.duplex !== true) {
+      if (
+        duplex &&
+        commands[0].command.duplex !== true &&
+        commands[0].command.duplex !== "optional"
+      ) {
         throw new Error(
-          `Plugin service node command must declare duplex: true: ${request.command}`,
+          `Plugin service node command must declare duplex: true or "optional": ${request.command}`,
         );
       }
     };

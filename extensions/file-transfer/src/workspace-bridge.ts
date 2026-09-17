@@ -14,9 +14,12 @@ import { inspectStrictBase64 } from "./shared/base64.js";
 import { throwFromNodePayload } from "./shared/errors.js";
 import type { FileTransferNodeInvokeCommand } from "./shared/node-invoke-policy-commands.js";
 import { createWorkspaceFile } from "./workspace-file-create.js";
+import { fetchWorkspaceFile } from "./workspace-file-fetch.js";
 
 const MAX_BYTES = 16 * 1024 * 1024;
 const DIRECTORY_PAGE_SIZE = 4096;
+
+class FileFetchTooLargeError extends Error {}
 
 function relativeWithin(root: string, target: string, paths = path): string {
   const relative = paths.relative(root, target);
@@ -69,6 +72,11 @@ export function createNodeWorkspaceBridge(options: {
       throw new Error(`Invalid ${command} response`);
     }
     if (payload.ok !== true) {
+      if (command === "file.fetch" && payload.code === "FILE_TOO_LARGE") {
+        const message =
+          typeof payload.message === "string" ? payload.message : "file exceeds limit";
+        throw new FileFetchTooLargeError(`file.fetch FILE_TOO_LARGE: ${message}`);
+      }
       if (payload.code === "NOT_FOUND") {
         if (command === "file.stat") {
           return null;
@@ -88,19 +96,51 @@ export function createNodeWorkspaceBridge(options: {
     params: Parameters<NonNullable<AgentWorkspaceAccess["bridge"]["readFileWithSource"]>>[0],
     followParentSymlinks = false,
   ) => {
-    const maxBytes = Math.min(params.maxBytes ?? MAX_BYTES, MAX_BYTES);
+    const maxBytes = params.maxBytes ?? MAX_BYTES;
     if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
       throw new Error("maxBytes must be a non-negative safe integer");
     }
-    const payload = await invoke(
-      "file.fetch",
-      {
-        path: remotePath(params),
-        maxBytes: Math.max(1, maxBytes),
-        ...(followParentSymlinks ? { rootPath: remoteRoot, followSymlinks: true } : {}),
-      },
-      params.signal,
-    );
+    const fetchParams = {
+      path: remotePath(params),
+      maxBytes: Math.max(1, Math.min(maxBytes, MAX_BYTES)),
+      followSymlinks: false,
+      ...(followParentSymlinks ? { rootPath: remoteRoot, followSymlinks: true } : {}),
+    };
+    let payload: Awaited<ReturnType<typeof invoke>>;
+    try {
+      payload = await invoke("file.fetch", fetchParams, params.signal);
+    } catch (error) {
+      // Old nodes retain small-file support even when the caller grants a larger budget.
+      // Only the structured unary size refusal admits a fresh policy-checked binary read.
+      if (
+        !(error instanceof FileFetchTooLargeError) ||
+        maxBytes <= MAX_BYTES ||
+        !options.openDuplex
+      ) {
+        throw error;
+      }
+      const signal = params.signal
+        ? AbortSignal.any([options.signal, params.signal])
+        : options.signal;
+      const result = await fetchWorkspaceFile({
+        openDuplex: options.openDuplex,
+        nodeId: options.nodeId,
+        params: fetchParams,
+        maxBytes,
+        signal,
+        assertCurrent: () => {
+          signal.throwIfAborted();
+          options.assertCurrent?.();
+        },
+      });
+      if (!path.posix.isAbsolute(result.canonicalPath)) {
+        throw new Error("Missing canonical path in file.fetch response", { cause: error });
+      }
+      return {
+        ...result,
+        workspaceRelativePath: relativeWithin(remoteRoot, result.canonicalPath, path.posix),
+      };
+    }
     const base64 = typeof payload?.base64 === "string" ? payload.base64 : "";
     const size = inspectStrictBase64(base64);
     if (

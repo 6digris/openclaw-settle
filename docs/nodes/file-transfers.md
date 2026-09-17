@@ -65,13 +65,17 @@ identical mappings share one binding, while conflicting mappings fail startup.
 fetching contents or listing the parent, under the existing read-path policy.
 For bootstrap reads, `file.fetch.rootPath` confines parent-alias resolution to
 the canonical workspace root; it does not grant access beyond the node policy.
-Reads and writes retain the 16 MiB transfer limit; directory reads consume
-the existing `dir.list` pages. `file.write.expectedSha256` verifies the submitted bytes, not
+Unary reads and writes retain the 16 MiB transfer limit. Workspace reads above
+that limit can retry over the same `file.fetch` command's binary transport,
+bounded by the caller's byte limit and node policy; both hosts must support it.
+Directory reads consume the existing `dir.list` pages. `file.write.expectedSha256` verifies the submitted bytes, not
 the previous file version. Owner-document conflict checks remain in the Gateway.
 
-This mapping covers workspace files only. Memory search, skill management, and
-attachment staging require their respective workspace capabilities; this mapping
-alone does not enable a complete storage split or launch an agent harness.
+The service also supplies input attachment staging and output reads. Grant the
+corresponding paths separately, such as `media/inbound/**` for staged inputs and
+`media/outbound/**` for generated outputs. The document-only example above does
+not grant those paths. Memory search and skill management remain separate
+capabilities; this mapping alone does not launch an agent harness.
 
 ### Transferred files
 
