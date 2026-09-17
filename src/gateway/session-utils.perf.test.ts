@@ -147,16 +147,14 @@ describe("session list resolver cache", () => {
         yieldCount: 0,
       };
       const clock = vi.spyOn(performance, "now").mockImplementation(() => workMs);
-      const buildRow = rowProjection.buildGatewaySessionRow;
+      const buildRow = rowProjection.readSessionRowInputs;
       let preparationReads: number | undefined;
       let preparationYields: number | undefined;
-      const rows = vi
-        .spyOn(rowProjection, "buildGatewaySessionRow")
-        .mockImplementation((params) => {
-          preparationReads ??= rosterReads;
-          preparationYields ??= projectionTiming.yieldCount;
-          return buildRow(params);
-        });
+      const rows = vi.spyOn(rowProjection, "readSessionRowInputs").mockImplementation((params) => {
+        preparationReads ??= rosterReads;
+        preparationYields ??= projectionTiming.yieldCount;
+        return buildRow(params);
+      });
       let identityDuringPause: string | undefined;
       let pauseProbeReads = 0;
       const control = new Promise<void>((resolve) => {
@@ -254,34 +252,32 @@ describe("session list resolver cache", () => {
       let control: Promise<void> | undefined;
       const rowChunks = new Set<number>();
       const clock = vi.spyOn(performance, "now").mockImplementation(() => workMs);
-      const buildRow = rowProjection.buildGatewaySessionRow;
-      const rows = vi
-        .spyOn(rowProjection, "buildGatewaySessionRow")
-        .mockImplementation((params) => {
-          rowChunks.add(projectionTiming.yieldCount);
-          insideRow = true;
-          try {
-            return buildRow(params);
-          } finally {
-            insideRow = false;
-            projectedRows++;
-            workMs++;
-            if (projectedRows === 1) {
-              control = new Promise<void>((resolve) => {
-                setImmediate(() => {
-                  rowsBeforePause = projectedRows;
-                  // Whole-entry replacement exposes facts incorrectly retained across await.
-                  entries[ownerId] = {
-                    identity: { name: "Refreshed owner" },
-                    fastModeDefault: true,
-                  };
-                  identityDuringPause = resolveAgentIdentity(cfg, ownerId)?.name;
-                  resolve();
-                });
+      const buildRow = rowProjection.readSessionRowInputs;
+      const rows = vi.spyOn(rowProjection, "readSessionRowInputs").mockImplementation((params) => {
+        rowChunks.add(projectionTiming.yieldCount);
+        insideRow = true;
+        try {
+          return buildRow(params);
+        } finally {
+          insideRow = false;
+          projectedRows++;
+          workMs++;
+          if (projectedRows === 1) {
+            control = new Promise<void>((resolve) => {
+              setImmediate(() => {
+                rowsBeforePause = projectedRows;
+                // Whole-entry replacement exposes facts incorrectly retained across await.
+                entries[ownerId] = {
+                  identity: { name: "Refreshed owner" },
+                  fastModeDefault: true,
+                };
+                identityDuringPause = resolveAgentIdentity(cfg, ownerId)?.name;
+                resolve();
               });
-            }
+            });
           }
-        });
+        }
+      });
       try {
         const result = await listSessionsFromStoreAsync({
           cfg,
@@ -396,7 +392,7 @@ describe("session list resolver cache", () => {
             ];
           }),
         );
-        const resolver = vi.spyOn(sessionModelRef, "resolveSessionModelRef");
+        const resolver = vi.spyOn(sessionModelRef, "resolveSessionModelRefCore");
         try {
           const result = await listSessionFixture({
             cfg,
@@ -573,6 +569,8 @@ describe("session list resolver cache", () => {
       orderingWorkMs: 1,
       limit: 300,
     },
+    { name: "wide ACP metadata preparation", metadataWorkMs: 1, limit: 600 },
+    { name: "runtime-search ACP metadata", metadataWorkMs: 1, search: "unmatched", limit: 1 },
   ])(
     "shares the event loop for $name",
     async ({
@@ -580,6 +578,8 @@ describe("session list resolver cache", () => {
       storeWorkMs = 0,
       preparationWorkMs = 0,
       orderingWorkMs = 0,
+      metadataWorkMs = 0,
+      search,
       keepRows = true,
       limit = 100,
       shouldYield = true,
@@ -594,12 +594,20 @@ describe("session list resolver cache", () => {
         let orderingCalls = 0;
         let orderingCallsAtControl = 0;
         let orderingCallsBeforeRows: number | undefined;
+        const metadataEntriesRead = new Set<number>();
+        let metadataCallsAtControl = 0;
+        const entryCount = orderingWorkMs > 0 ? 2051 : metadataWorkMs > 0 ? 600 : 32;
         const store = Object.fromEntries(
-          Array.from({ length: orderingWorkMs > 0 ? 2051 : 32 }, (_, index) => [
+          Array.from({ length: entryCount }, (_, index) => [
             `agent:main:budget-${index}`,
             {
               sessionId: `budget-${index}`,
               updatedAt: index + 1,
+              get acp() {
+                metadataEntriesRead.add(index);
+                workMs += metadataWorkMs;
+                return undefined;
+              },
               // Pin reads charge ordering work before any row is projected.
               get pinnedAt() {
                 orderingCalls++;
@@ -612,10 +620,10 @@ describe("session list resolver cache", () => {
         let controlBeforePreparation: boolean | undefined;
         let preparationCalls = 0;
         let preparationCallsAtControl = 0;
-        const buildRow = rowProjection.buildGatewaySessionRow;
+        const buildRow = rowProjection.readSessionRowInputs;
         const clock = vi.spyOn(performance, "now").mockImplementation(() => workMs);
         const rows = vi
-          .spyOn(rowProjection, "buildGatewaySessionRow")
+          .spyOn(rowProjection, "readSessionRowInputs")
           .mockImplementation((params) => {
             orderingCallsBeforeRows ??= orderingCalls;
             const row = buildRow(params);
@@ -628,6 +636,7 @@ describe("session list resolver cache", () => {
             controlRan = true;
             preparationCallsAtControl = preparationCalls;
             orderingCallsAtControl = orderingCalls;
+            metadataCallsAtControl = metadataEntriesRead.size;
             resolve();
           });
         });
@@ -643,10 +652,10 @@ describe("session list resolver cache", () => {
               workMs += preparationWorkMs;
               return keepRows;
             },
-            opts: { limit },
+            opts: { limit, search },
           });
           expect(result.sessions.map((row) => row.key)).toEqual(
-            keepRows ? Object.keys(store).toReversed().slice(0, limit) : [],
+            keepRows && !search ? Object.keys(store).toReversed().slice(0, limit) : [],
           );
           expect(controlRan).toBe(shouldYield);
           expect(controlBeforePreparation).toBe(false);
@@ -657,6 +666,10 @@ describe("session list resolver cache", () => {
             expect(orderingCallsAtControl).toBeLessThan(
               expectDefined(orderingCallsBeforeRows, "row projection started"),
             );
+          }
+          if (metadataWorkMs > 0) {
+            expect(metadataCallsAtControl).toBeGreaterThan(0);
+            expect(metadataCallsAtControl).toBeLessThan(entryCount);
           }
         } finally {
           rows.mockRestore();
@@ -910,7 +923,7 @@ describe("session list resolver cache", () => {
         expect(acpSelects).toBe(1);
         for (const search of ["openclaw", "unmatched-runtime"]) {
           acpSelects = 0;
-          const rows = vi.spyOn(rowProjection, "buildGatewaySessionRow");
+          const rows = vi.spyOn(rowProjection, "readSessionRowInputs");
           try {
             const searched = await listSessionFixture({
               cfg,
@@ -1005,15 +1018,19 @@ describe("session list resolver cache", () => {
         });
 
         titleBatchSpy.mockClear();
-        await listSessionFixture({
+        const withoutTranscriptFields = await listSessionFixture({
           cfg,
           storePath,
           store,
           ownerFirstActorId: ownerId,
           opts: { includeDerivedTitles: false, includeLastMessage: false, limit: scenario.limit },
         });
-        expect(titleBatchSpy).toHaveBeenCalledOnce();
-        expect(titleBatchSpy).toHaveBeenCalledWith([]);
+        expect(titleBatchSpy).not.toHaveBeenCalled();
+        expect(withoutTranscriptFields.sessions).toHaveLength(scenario.rows);
+        for (const row of withoutTranscriptFields.sessions) {
+          expect(row.derivedTitle).toBeUndefined();
+          expect(row.lastMessagePreview).toBeUndefined();
+        }
       } finally {
         titleBatchSpy.mockRestore();
       }

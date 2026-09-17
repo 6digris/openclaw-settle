@@ -157,7 +157,7 @@ export class NewSessionPage extends OpenClawLightDomElement {
         requestUpdate: () => this.requestUpdate(),
         onError: (error) =>
           error === null ? this.submission.clearError() : this.submission.setError(error),
-        onClearError: (error) => this.submission.clearErrorIf(error),
+        onClearError: (error) => this.submission.clearError(error),
       },
     );
     this.submission = new DraftSubmissionFlow(
@@ -253,6 +253,7 @@ export class NewSessionPage extends OpenClawLightDomElement {
 
   override connectedCallback() {
     super.connectedCallback();
+    this.submission.draftPersistence.connect();
     this.critterImport.schedule();
     document.addEventListener("keydown", this, true);
     window.addEventListener("beforeunload", this.flushDraft);
@@ -301,6 +302,10 @@ export class NewSessionPage extends OpenClawLightDomElement {
     const resolvedAgentId = this.data?.agentId ?? "";
     const groupDefaults = catalog.groupDefaultsKey(this.data);
     if (this.openedFor !== openKey) {
+      // Ordinary drafts release previews on reset and restore through durable storage.
+      if (this.openedFor !== null && this.submission.visibility === "incognito") {
+        retainDraft(this.context, this.submission, this.openedFor, this.messageOwnerKey);
+      }
       const ownedMessage = this.messageOwnerKey === openKey ? this.submission.message : "";
       const ownedMentions = this.messageOwnerKey === openKey ? this.submission.mentions : undefined;
       this.openedFor = openKey;

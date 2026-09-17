@@ -1,25 +1,33 @@
 import { DatabaseSync } from "node:sqlite";
+import { expectDefined } from "@openclaw/normalization-core";
 import { expect, it, vi } from "vitest";
 import { setRuntimeConfigSnapshot } from "../../config/config.js";
 import {
+  appendTranscriptEventSync,
   assignSessionOwner,
   listSessionEntriesCore,
+  listSessionParticipantsReadOnly,
   loadSessionEntry,
   recordSessionParticipant,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
 import { writeSessionEntry } from "../../config/sessions/session-accessor.sqlite-entry-store.js";
+import { hasOpenClawAgentDatabaseAsyncResources } from "../../state/openclaw-agent-db-resources.js";
 import {
   openOpenClawAgentDatabase,
   runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { bumpGatewayAccessRevision } from "../gateway-access-revision.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { chatHistoryHandlers } from "./chat-history-handler.js";
 import type { GatewayRequestContext, RespondFn } from "./types.js";
 
 const cases = [
   { write: "tracked sibling update", allowed: true },
+  { write: "raw sibling update", allowed: true },
+  { write: "sibling transcript append", allowed: true },
+  { write: "sibling cache replacement", allowed: true },
   { write: "canonical sibling owner", allowed: true },
   { write: "canonical sibling participant", allowed: true },
   { write: "legacy sibling owner", allowed: true },
@@ -30,6 +38,13 @@ const cases = [
   { write: "compound new sibling participant", allowed: true },
   { write: "selected owner", allowed: false },
   { write: "selected participant", allowed: false },
+  { write: "selected participant repeat", allowed: true },
+  { write: "nested selected participant repeats", allowed: true },
+  { write: "earlier selected participant first prompt", allowed: false },
+  { write: "selected participant insert then repeat", allowed: false },
+  { write: "selected participant repeat then insert", allowed: false },
+  { write: "selected entry write then participant repeat", allowed: false },
+  { write: "selected participant repeat then entry write", allowed: false },
   { write: "rolled-back selected owner", allowed: true },
   { write: "rolled-back selected participant", allowed: true },
   { write: "raw before sibling owner", allowed: false },
@@ -38,8 +53,15 @@ const cases = [
   { write: "raw after sibling participant", allowed: false },
   { write: "tracked selected update", allowed: false },
   { write: "selected lifecycle change", allowed: false },
-  { write: "external sibling update", allowed: false },
-  { write: "external selected identical recreation", allowed: false },
+  { write: "external sibling update", allowed: true },
+  // Identical target facts remain publishable even if the row was recreated.
+  { write: "external selected identical recreation", allowed: true },
+  { write: "external selected fully restored recreation", allowed: true },
+  { write: "external selected recreated sessionId", allowed: false },
+  { write: "external selected recreated payload", allowed: false },
+  { write: "external selected recreated lifecycle", allowed: false },
+  { write: "runtime config replacement", allowed: false },
+  { write: "access revision change", allowed: false },
 ] as const;
 
 it.each(
@@ -49,6 +71,7 @@ it.each(
 )("metadata read across $write with $cache cache", async ({ write, allowed, cache }) => {
   await withOpenClawTestState({ label: "metadata-cache-boundary" }, async (state) => {
     const config = {};
+    let runtimeConfig = config;
     await state.writeConfig(config);
     setRuntimeConfigSnapshot(config);
     const selected = { agentId: "main", sessionKey: "agent:main:metadata-selected" };
@@ -78,6 +101,14 @@ it.each(
       identity: { type: "agent", id: "seed-participant" },
       promptedAt: 1,
     });
+    const selectedParticipantChange =
+      write.includes("repeat") || write === "earlier selected participant first prompt";
+    const recordSelected = (id: string, promptedAt: number) =>
+      recordSessionParticipant(selected, { identity: { type: "agent", id }, promptedAt });
+    if (selectedParticipantChange) {
+      recordSelected("a", 10);
+      recordSelected("b", 20);
+    }
     const database = openOpenClawAgentDatabase(selected);
     if (write.startsWith("legacy sibling")) {
       database.db
@@ -103,7 +134,7 @@ it.each(
         expect(loadSessionEntry(sibling)).not.toHaveProperty("owner");
       }
     }
-    const before = loadSessionEntry(selected);
+    const before = expectDefined(loadSessionEntry(selected), "selected session entry");
     if (cache === "full") {
       listSessionEntriesCore({ ...selected, projection: "list" });
     }
@@ -136,6 +167,24 @@ it.each(
       expect(scope.isCurrent?.()).toBe(true);
       if (write === "tracked sibling update") {
         await upsertSessionEntryCore(sibling, { label: "changed sibling" });
+      } else if (write === "raw sibling update" || write === "sibling cache replacement") {
+        database.db
+          .prepare("UPDATE session_nodes SET updated_at = updated_at + 1 WHERE session_key = ?")
+          .run(sibling.sessionKey);
+        if (write === "sibling cache replacement") {
+          listSessionEntriesCore({ ...sibling, projection: "list" });
+        }
+      } else if (write === "sibling transcript append") {
+        expect(
+          appendTranscriptEventSync(
+            { ...sibling, sessionId: "sibling" },
+            { type: "session", id: "sibling" },
+          ),
+        ).toEqual({ ok: true, value: true });
+      } else if (write === "runtime config replacement") {
+        runtimeConfig = {};
+      } else if (write === "access revision change") {
+        bumpGatewayAccessRevision();
       } else if (write.startsWith("compound")) {
         runOpenClawAgentWriteTransaction((current) => {
           writeSessionEntry(current, writeTarget.sessionKey, {
@@ -149,6 +198,58 @@ it.each(
         sideWrite(sibling);
       } else if (write === "selected owner" || write === "selected participant") {
         sideWrite(selected);
+      } else if (selectedParticipantChange) {
+        switch (write) {
+          case "selected participant repeat":
+            expect(recordSelected("a", 30)).toBe("updated");
+            break;
+          case "nested selected participant repeats":
+            runOpenClawAgentWriteTransaction(() => {
+              recordSelected("a", 30);
+              runOpenClawAgentWriteTransaction(() => {
+                recordSelected("a", 40);
+                recordSelected("a", 50);
+              }, selected);
+            }, selected);
+            break;
+          case "earlier selected participant first prompt":
+            recordSelected("b", 5);
+            break;
+          case "selected participant insert then repeat":
+            runOpenClawAgentWriteTransaction(() => {
+              recordSelected("c", 15);
+              recordSelected("a", 30);
+            }, selected);
+            break;
+          case "selected participant repeat then insert":
+            runOpenClawAgentWriteTransaction(() => {
+              recordSelected("a", 30);
+              recordSelected("c", 15);
+            }, selected);
+            break;
+          case "selected entry write then participant repeat":
+            runOpenClawAgentWriteTransaction((current) => {
+              writeSessionEntry(current, selected.sessionKey, {
+                ...before,
+                label: "changed selected",
+                updatedAt: 2,
+              });
+              recordSelected("a", 30);
+            }, selected);
+            break;
+          case "selected participant repeat then entry write":
+            runOpenClawAgentWriteTransaction((current) => {
+              recordSelected("a", 30);
+              writeSessionEntry(current, selected.sessionKey, {
+                ...before,
+                label: "changed selected",
+                updatedAt: 2,
+              });
+            }, selected);
+            break;
+          default:
+            throw new Error(`Unhandled selected participant change: ${write}`);
+        }
       } else if (write.startsWith("rolled-back")) {
         const rollback = new Error("roll back side metadata");
         expect(() =>
@@ -180,6 +281,9 @@ it.each(
               .prepare("UPDATE session_nodes SET updated_at = updated_at + 1 WHERE session_key = ?")
               .run(sibling.sessionKey);
           } else {
+            const beforeRow = external
+              .prepare("SELECT rowid, * FROM session_nodes WHERE session_key = ?")
+              .get(selected.sessionKey);
             external.exec("CREATE TEMP TABLE saved_node AS SELECT * FROM session_nodes;");
             external
               .prepare("DELETE FROM session_nodes WHERE session_key = ?")
@@ -187,10 +291,40 @@ it.each(
             external
               .prepare("INSERT INTO session_nodes SELECT * FROM saved_node WHERE session_key = ?")
               .run(selected.sessionKey);
+            if (write === "external selected fully restored recreation") {
+              external
+                .prepare(
+                  "UPDATE session_nodes SET entry_valid = 1, rowid = ? WHERE session_key = ?",
+                )
+                .run(expectDefined(beforeRow?.rowid, "selected rowid"), selected.sessionKey);
+              expect(
+                external
+                  .prepare("SELECT rowid, * FROM session_nodes WHERE session_key = ?")
+                  .get(selected.sessionKey),
+              ).toEqual(beforeRow);
+            } else if (write === "external selected recreated sessionId") {
+              external
+                .prepare(
+                  "UPDATE session_nodes SET current_session_id = 'replacement', entry_json = json_set(entry_json, '$.sessionId', 'replacement') WHERE session_key = ?",
+                )
+                .run(selected.sessionKey);
+            } else if (write === "external selected recreated payload") {
+              rawSelectedWrite();
+            } else if (write === "external selected recreated lifecycle") {
+              external
+                .prepare(
+                  "UPDATE session_nodes SET entry_json = json_set(entry_json, '$.lifecycleRevision', 'replacement') WHERE session_key = ?",
+                )
+                .run(selected.sessionKey);
+            }
           }
         } finally {
           external.close();
         }
+      }
+      if (allowed) {
+        expect(scope.assertCurrent).toBeDefined();
+        scope.assertCurrent!();
       }
       return metadata;
     });
@@ -200,7 +334,10 @@ it.each(
       .then(() =>
         handler({
           params: { sessionKey: selected.sessionKey },
-          context: createDirectChatContext({ getRuntimeConfig: () => config, readChatMetadata }),
+          context: createDirectChatContext({
+            getRuntimeConfig: () => runtimeConfig,
+            readChatMetadata,
+          }),
           respond,
           client: null,
           req: { type: "req", id: "metadata-cache-boundary", method: "chat.metadata" },
@@ -260,5 +397,33 @@ it.each(
       });
       expect(respond).not.toHaveBeenCalled();
     }
+    if (selectedParticipantChange) {
+      const participantIds =
+        write === "earlier selected participant first prompt"
+          ? ["b", "a"]
+          : write.includes("insert")
+            ? ["a", "c", "b"]
+            : ["a", "b"];
+      const expected = {
+        label: write.includes("entry write") ? "changed selected" : "selected",
+        updatedAt: write.includes("entry write") ? 2 : before.updatedAt,
+        participants: participantIds.map((id) => ({ identity: { type: "agent", id } })),
+        participantCount: participantIds.length,
+      };
+      expect(after).toMatchObject(expected);
+      const published = listSessionEntriesCore({ ...selected, projection: "list" }).find(
+        (row) => row.sessionKey === selected.sessionKey,
+      )?.entry;
+      expect(published).toMatchObject(expected);
+      if (write !== "earlier selected participant first prompt") {
+        expect(listSessionParticipantsReadOnly(selected).get(selected.sessionKey)).toContainEqual({
+          identity: { type: "agent", id: "a" },
+          contributionCount: write === "nested selected participant repeats" ? 4 : 2,
+          firstPromptedAt: 10,
+          lastPromptedAt: write === "nested selected participant repeats" ? 50 : 30,
+        });
+      }
+    }
+    expect(hasOpenClawAgentDatabaseAsyncResources()).toBe(false);
   });
 });

@@ -8,10 +8,7 @@ import { listOfficialExternalPluginCatalogEntries } from "../plugins/official-ex
 import { createPluginCache, withPluginCache } from "../plugins/plugin-cache.js";
 import { createColdPluginFixture } from "../plugins/test-helpers/cold-plugin-fixtures.js";
 import { seedInstalledPluginIndex } from "../plugins/test-helpers/installed-plugin-index.js";
-import {
-  formatStartupPluginVerificationFailure,
-  runStartupUpgradeConvergence,
-} from "./doctor-config-preflight-plugin-verification.js";
+import { runDoctorPluginConvergence } from "./doctor-config-preflight-plugin-verification.js";
 import { runPostCorePluginConvergence } from "./doctor/shared/post-core-plugin-convergence.js";
 
 const npmInstall = vi.hoisted(() =>
@@ -30,27 +27,11 @@ vi.mock("../plugins/clawhub.js", async (importOriginal) => ({
   },
 }));
 
-describe("formatStartupPluginVerificationFailure", () => {
-  it("uses install-neutral gateway restart guidance", () => {
-    expect(
-      formatStartupPluginVerificationFailure({
-        kind: "plugin-verification",
-        messages: ['Plugin "discord" has no install path.'],
-      }),
-    ).toBe(
-      [
-        "OpenClaw plugin verification failed; refusing to report the gateway ready.",
-        '- Plugin "discord" has no install path.',
-        "Resolve the plugin verification errors above, then restart the Gateway.",
-      ].join("\n"),
-    );
-  });
-});
-
 describe("update canary plugin verification", () => {
   const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
   it("keeps an unavailable copied plugin nonblocking without fetching a replacement", async () => {
+    npmInstall.mockClear();
     const root = tempDirs.make("openclaw-canary-plugin-");
     const env = {
       ...buildUpdateRehearsalPathEnv(root),
@@ -65,9 +46,34 @@ describe("update canary plugin verification", () => {
       { config: cfg, env },
     );
     await withPluginCache(createPluginCache(), async () => {
-      expect(await runStartupUpgradeConvergence({ cfg, env })).toEqual({
-        blockingDiagnostic: null,
-        quarantinedPlugins: [],
+      const result = await runDoctorPluginConvergence({ cfg, env });
+      expect(npmInstall).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        quarantinedPlugins: [
+          {
+            pluginId: "canary-fixture",
+            state: "configured-unavailable",
+            diagnostic: {
+              kind: "plugin-verification",
+              reason: "missing-install-path",
+              detail: "Install path is missing from the plugin install record.",
+            },
+          },
+        ],
+        migrationInspection: {
+          requiredPluginIds: [],
+          inspectionRequiredPluginIds: [],
+          statelessPluginIds: [],
+          runtimePluginAliases: [],
+        },
+        deferredPlugins: [
+          {
+            pluginId: "canary-fixture",
+            reason:
+              "Package convergence must wait until the updating parent releases its install records.",
+            command: "openclaw update repair",
+          },
+        ],
       });
     });
   });
@@ -78,12 +84,11 @@ describe.each(["startup", "repair"] as const)("%s consent inventory", (first) =>
   afterEach(() => npmInstall.mockReset());
 
   async function converge(
-    cfg: Parameters<typeof runStartupUpgradeConvergence>[0]["cfg"],
+    cfg: Parameters<typeof runDoctorPluginConvergence>[0]["cfg"],
     env: NodeJS.ProcessEnv,
   ) {
     if (first === "startup") {
-      expect(await runStartupUpgradeConvergence({ cfg, env })).toEqual({
-        blockingDiagnostic: null,
+      expect(await runDoctorPluginConvergence({ cfg, env })).toEqual({
         quarantinedPlugins: [],
       });
     } else {

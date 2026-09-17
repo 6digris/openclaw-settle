@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -11,7 +11,6 @@ import {
   redactSupportDiagnosticLine,
   redactSupportString,
 } from "../logging/diagnostic-support-redaction.js";
-import { signalProcessTree } from "../process/kill-tree.js";
 import {
   parseOpenClawSchemaVersions,
   type OpenClawSchemaVersions,
@@ -20,6 +19,7 @@ import { hasErrnoCode } from "./errors.js";
 import { readPackageVersion } from "./package-json.js";
 import { runtimeProcessEntrypoints } from "./runtime-process-entrypoints.js";
 import { resolveSqliteInspectionBudget } from "./sqlite-readonly-worker.js";
+import { terminateCanary, waitBounded } from "./update-candidate-canary-process.js";
 import { waitForUpdateCandidateReadiness } from "./update-candidate-canary-readiness.js";
 import {
   prepareUpdateCandidateRehearsal,
@@ -71,57 +71,6 @@ type CanaryResult = {
     }
 );
 
-async function waitBounded<T>(
-  promise: Promise<T>,
-  milliseconds: number,
-  signal?: AbortSignal,
-): Promise<{ status: "completed"; value: T } | { status: "deadline" | "aborted" }> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let abort: (() => void) | undefined;
-  try {
-    return await Promise.race([
-      promise.then((value) => ({ status: "completed" as const, value })),
-      new Promise<{ status: "deadline" | "aborted" }>((resolve) => {
-        timer = setTimeout(() => resolve({ status: "deadline" }), Math.max(0, milliseconds));
-        abort = () => resolve({ status: "aborted" });
-        signal?.addEventListener("abort", abort, { once: true });
-        if (signal?.aborted) {
-          abort();
-        }
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-    if (abort) {
-      signal?.removeEventListener("abort", abort);
-    }
-  }
-}
-
-async function terminateCanary(
-  child: ChildProcess,
-  closed: Promise<unknown>,
-  deadline: number,
-): Promise<void> {
-  if (!child.pid) {
-    return;
-  }
-  const options = { detached: process.platform !== "win32" };
-  const signal = (kind: "SIGTERM" | "SIGKILL") =>
-    new Promise<void>((resolve) => {
-      signalProcessTree(child.pid!, kind, { ...options, onComplete: resolve });
-    });
-  await waitBounded(
-    Promise.all([signal("SIGTERM"), closed]),
-    Math.min(1_000, Math.max(0, deadline - Date.now())),
-  );
-  // A reaped group leader does not prove its descendants have exited.
-  await waitBounded(
-    Promise.all([signal("SIGKILL"), closed]),
-    Math.min(1_000, Math.max(0, deadline - Date.now())),
-  );
-}
-
 /** Rehearse the exact candidate against private SQLite snapshots while the serving generation stays up. */
 export async function validateUpdateCandidateCanary(params: {
   root: string;
@@ -160,6 +109,7 @@ export async function validateUpdateCandidateCanary(params: {
         .map((line) => line.slice(-512)),
     );
     logTail.splice(0, Math.max(0, logTail.length - 40));
+    return safe;
   };
   const launch = (entry: string, args: string[]) => {
     params.assertCurrent?.();
@@ -172,6 +122,18 @@ export async function validateUpdateCandidateCanary(params: {
     });
     let stdout = "";
     let firstStderrLine: string | undefined;
+    let cliReason: string | undefined;
+    const captureStderr = (line: string) => {
+      if (!line.trim()) {
+        return;
+      }
+      const safe = redactSupportDiagnosticLine(line, { env, stateDir: params.stateDir });
+      firstStderrLine ??= safe;
+      // The CLI prints a generic heading before its actual failure reason.
+      if (line.startsWith("[openclaw] Reason: ")) {
+        cliReason ??= safe.replace(/^\[openclaw\] Reason: /u, "");
+      }
+    };
     let stdoutBytes = 0;
     let outputExceeded = false;
     const flushers = [child.stdout, child.stderr].map((stream) => {
@@ -193,11 +155,8 @@ export async function validateUpdateCandidateCanary(params: {
         const lines = pending.split(/\r?\n/u);
         pending = lines.pop() ?? "";
         for (const line of lines) {
-          if (stream === child.stderr && line.trim()) {
-            firstStderrLine ??= redactSupportDiagnosticLine(line, {
-              env,
-              stateDir: params.stateDir,
-            });
+          if (stream === child.stderr) {
+            captureStderr(line);
           }
           capture(line);
         }
@@ -213,11 +172,8 @@ export async function validateUpdateCandidateCanary(params: {
       });
       return () => {
         if (pending) {
-          if (stream === child.stderr && pending.trim()) {
-            firstStderrLine ??= redactSupportDiagnosticLine(pending, {
-              env,
-              stateDir: params.stateDir,
-            });
+          if (stream === child.stderr) {
+            captureStderr(pending);
           }
           capture(pending);
           pending = "";
@@ -233,7 +189,7 @@ export async function validateUpdateCandidateCanary(params: {
       }
     });
     let exited = false;
-    const closed = new Promise<number | null>((resolve) => {
+    const result = new Promise<number | null>((resolve) => {
       child.once("error", (error) => {
         firstStderrLine ??= redactSupportDiagnosticLine(error.message, {
           env,
@@ -251,14 +207,39 @@ export async function validateUpdateCandidateCanary(params: {
         resolve(code);
       });
     });
+    // An error can settle validation without proving that the child and its pipes closed.
+    const closed = new Promise<void>((resolve) => {
+      child.once("close", () => resolve());
+    });
     return {
       child,
+      result,
       closed,
       hasExited: () => exited,
       stdout: () => stdout,
-      firstStderrLine: () => firstStderrLine,
+      firstStderrLine: () => cliReason ?? firstStderrLine,
       outputExceeded: () => outputExceeded,
     };
+  };
+  const stopCanary = async (running: ReturnType<typeof launch>, name: string, deadline: number) => {
+    const cleanupStarted = Date.now();
+    if (await terminateCanary(running.child, running.closed, deadline)) {
+      return;
+    }
+    const step: UpdateStepResult = {
+      name: `${name} cleanup`,
+      command: "SIGTERM, SIGKILL",
+      cwd: params.root,
+      durationMs: Date.now() - cleanupStarted,
+      exitCode: null,
+      advisory: {
+        kind: "recoverable-maintenance",
+        message:
+          "Candidate cleanup deadline elapsed before process close and termination requests both completed. Update validation results are unchanged.",
+      },
+    };
+    steps.push(step);
+    params.onStep?.(step);
   };
   try {
     const entry = await resolveGatewayInstallEntrypoint(params.root);
@@ -403,13 +384,13 @@ export async function validateUpdateCandidateCanary(params: {
       const pluginObservations: string[] = [];
       let timedOut = false;
       try {
-        const outcome = await waitBounded(running.closed, remaining(), params.signal);
+        const outcome = await waitBounded(running.result, remaining(), params.signal);
         // Freeze the winning outcome before teardown can make a killed child
         // emit a successful close event.
         code = outcome.status === "completed" ? outcome.value : 1;
         timedOut = outcome.status === "deadline";
       } finally {
-        await terminateCanary(running.child, running.closed, deadline);
+        await stopCanary(running, command.name, deadline);
         if (doctorResultPath) {
           doctorReceipt = await consumeUpdatePostInstallDoctorResult(
             doctorResultPath,
@@ -579,6 +560,7 @@ export async function validateUpdateCandidateCanary(params: {
         signal: params.signal,
         assertCurrent: params.assertCurrent,
         hasExited: running.hasExited,
+        getExitReason: running.firstStderrLine,
         env,
         stateDir: params.stateDir,
         onEndpoint: (endpoint) => {
@@ -605,7 +587,7 @@ export async function validateUpdateCandidateCanary(params: {
       steps.push(step);
       params.onStep?.(step);
     } finally {
-      await terminateCanary(running.child, running.closed, deadline);
+      await stopCanary(running, "candidate gateway canary", deadline);
     }
     return {
       status: "ok",
@@ -619,8 +601,9 @@ export async function validateUpdateCandidateCanary(params: {
       steps,
     };
   } catch (error) {
-    capture(
-      `${phase}: ${error instanceof Error ? error.message : String(error)} (${Date.now() - started}ms)`,
+    const durationMs = Date.now() - started;
+    const failureLine = capture(
+      `${phase}: ${error instanceof Error ? error.message : String(error)} (${durationMs}ms)`,
     );
     let failed = steps.at(-1);
     if (!failed || failed.exitCode === 0 || failed.advisory) {
@@ -636,7 +619,6 @@ export async function validateUpdateCandidateCanary(params: {
       };
       steps.push(failed);
     }
-    failed.stderrTail = logTail.join("\n");
     if (error instanceof UpdateSnapshotCapacityError) {
       failed.snapshotCapacity = error.capacity;
     }
@@ -651,6 +633,11 @@ export async function validateUpdateCandidateCanary(params: {
         env,
       ),
     ];
+    // Keep the aggregate log, but do not replay a complete fact as generated timing metadata.
+    const repeatsFact = failed.failureFacts.some(
+      (fact) => failureLine === `${phase}: ${fact.message} (${durationMs}ms)`,
+    );
+    failed.stderrTail = logTail.slice(0, repeatsFact ? -1 : undefined).join("\n");
     params.onStep?.(failed);
     return {
       status: "error",

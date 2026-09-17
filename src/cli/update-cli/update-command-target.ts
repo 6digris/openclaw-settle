@@ -17,6 +17,7 @@ import {
   resolveExtendedStablePackage,
   resolveNpmChannelTag,
 } from "../../infra/update-check.js";
+import { createFreeBsdPkgOwnershipInspection } from "../../infra/update-freebsd-pkg-ownership.js";
 import {
   canResolveRegistryVersionForPackageTarget,
   createGlobalInstallEnv,
@@ -78,6 +79,9 @@ export async function resolveUpdateCommandTarget(
     controlPlaneUpdateSentinelMeta,
     timeoutMs,
   } = prepared;
+  // Initialization and confirmations can outlive the earlier admission snapshot.
+  const pkgOwnership = createFreeBsdPkgOwnershipInspection(updateStepTimeoutMs);
+  await pkgOwnership.assertUnowned(discoveredRoot);
   let { devTarget } = prepared;
   let root = discoveredRoot;
   let updateInstallKind = installKind;
@@ -166,7 +170,6 @@ export async function resolveUpdateCommandTarget(
     return undefined;
   }
   let tag = explicitTag ?? channelToNpmTag(channel);
-  let currentVersion: string | null = null;
   let targetVersion: string | null = null;
   let downgradeRisk = false;
   let fallbackToLatest = false;
@@ -184,7 +187,9 @@ export async function resolveUpdateCommandTarget(
 
   if (updateInstallKind === "package") {
     const servicePlan =
-      prepared.servicePlan ?? (await resolveManagedServicePackageUpdatePlan({ root }));
+      prepared.servicePlan ??
+      (await resolveManagedServicePackageUpdatePlan({ root, pkgOwnership }));
+    await pkgOwnership.assertUnowned(servicePlan.rootRedirect?.root ?? root);
     managedServiceRootRedirect = servicePlan.rootRedirect;
     managedServiceNodeRunner = servicePlan.nodeRunner;
     if (managedServiceRootRedirect) {
@@ -210,6 +215,7 @@ export async function resolveUpdateCommandTarget(
     assertUpdatePackageActivationAdmission(captureUpdateCommandExecutorAuthority(fence).installKey);
   }
 
+  const currentVersion = await readPackageVersion(root);
   if (updateInstallKind !== "git") {
     recoveryState.triageTarget.root = root;
     recoveryState.triageTarget.nodeRunner = packageUpdateNodeRunner;
@@ -220,6 +226,7 @@ export async function resolveUpdateCommandTarget(
         root,
         installKind,
         timeoutMs: updateStepTimeoutMs,
+        pkgOwnership,
       }).catch(async (error: unknown) => {
         if (!(error instanceof UpdatePreMutationError)) {
           throw error;
@@ -245,6 +252,7 @@ export async function resolveUpdateCommandTarget(
         honorPackageRoot:
           managedServiceRootRedirect !== null || managedServiceNodeRunner !== undefined,
         packageName: installedPackageName,
+        pkgOwnership,
       });
       const diskWarning = createLowDiskSpaceWarning({
         targetPath: packageInstallTarget.packageRoot
@@ -277,7 +285,6 @@ export async function resolveUpdateCommandTarget(
     }
     const npmMetadataCommand =
       packageInstallTarget?.manager === "npm" ? packageInstallTarget.command : undefined;
-    currentVersion = await readPackageVersion(root);
     if (channel === "extended-stable") {
       const extendedStable = await resolveExtendedStablePackage({
         installKind: updateInstallKind,

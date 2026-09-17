@@ -1,3 +1,4 @@
+import { cloneEnvWithPlatformSemantics } from "../config/config-env-vars.js";
 import { recordSessionParticipant } from "../config/sessions/session-accessor.js";
 import {
   resolveSqliteScope,
@@ -22,7 +23,7 @@ export function recordSessionParticipantBestEffort(params: {
         agentId: params.agentId,
         sessionKey: params.sessionKey,
         storePath: params.storePath,
-        env: { ...process.env },
+        env: cloneEnvWithPlatformSemantics(process.env),
       };
       return withOpenClawAgentDatabaseWrite(
         toDatabaseOptions(resolveSqliteScope(scope)),

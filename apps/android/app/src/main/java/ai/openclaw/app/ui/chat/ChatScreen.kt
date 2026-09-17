@@ -49,6 +49,7 @@ import ai.openclaw.app.currentAppLanguage
 import ai.openclaw.app.gateway.GatewayLoadedImage
 import ai.openclaw.app.gateway.GatewayLoadedMedia
 import ai.openclaw.app.gateway.GatewayMediaKind
+import ai.openclaw.app.gateway.GatewaySourcePreviewConfig
 import ai.openclaw.app.i18n.NativeText
 import ai.openclaw.app.i18n.joinedNativeText
 import ai.openclaw.app.i18n.nativeString
@@ -347,6 +348,7 @@ internal fun ChatScreen(
   features: List<DisplayFeature> = emptyList(),
 ) {
   val messages by viewModel.chatMessages.collectAsState()
+  val sourcePreviewConfig by viewModel.gatewaySourcePreviewConfig.collectAsState()
   val transcriptAnchor by viewModel.chatTranscriptAnchor.collectAsState()
   val historyLoading by viewModel.chatHistoryLoading.collectAsState()
   val sessionCreating by viewModel.chatSessionCreating.collectAsState()
@@ -484,6 +486,9 @@ internal fun ChatScreen(
   val lifecycleState by lifecycleOwner.lifecycle.currentStateFlow.collectAsState()
   val resolver = context.applicationContext.contentResolver
   val scope = rememberCoroutineScope()
+  val gatewayHandoff by viewModel.gatewayConnectionHandoff.collectAsState()
+  // Keep stale rendered owners disabled until all presentation flows catch up to the runtime.
+  val composerOwnerReady = !gatewayHandoff.pending && viewModel.isCurrentChatComposerOwner(composerOwner)
   val composerState = remember(viewModel) { viewModel.chatComposerState }
   val inputDrafts = composerState.textDrafts
   val imagePickerOwnerCheckpoint =
@@ -987,7 +992,7 @@ internal fun ChatScreen(
     onResolveQuestion = viewModel::resolveChatQuestion,
     onQuestionDraftChanged = viewModel::updateChatQuestionDraft,
     onSkipQuestion = viewModel::skipChatQuestion,
-    onStarterPrompt = { prompt -> inputDrafts[composerOwner] = prompt },
+    onStarterPrompt = { prompt -> if (viewModel.isCurrentChatComposerOwner(composerOwner)) inputDrafts[composerOwner] = prompt },
     onReplyMessage = { value -> viewModel.setChatReplyDraft(value, composerOwner) },
     sessionActionsEnabled =
       pendingRunCount == 0 &&
@@ -1032,6 +1037,8 @@ internal fun ChatScreen(
     onToggleListen = viewModel::toggleChatMessageSpeech,
     inlineMediaPlaybackBlocked = inlineMediaPlaybackBlocked,
     resolveInlineWidgetResource = viewModel::resolveInlineWidgetResource,
+    sourcePreviewConfig = sourcePreviewConfig,
+    loadSourceFavicon = viewModel::loadChatSourceFavicon,
     loadImageArtifact = viewModel::loadChatImageArtifact,
     loadMediaArtifact = viewModel::loadChatMediaArtifact,
     modifier = Modifier.fillMaxSize().imePadding(),
@@ -1043,6 +1050,7 @@ internal fun ChatScreen(
     },
   ) { onJumpToLatest, compactHeight, tabletop ->
     ChatComposer(
+      ownerReady = composerOwnerReady,
       compactHeight = compactHeight,
       detailsExpanded = detailsExpanded,
       onDetailsExpandedChange = { detailsExpanded = it },
@@ -1053,6 +1061,7 @@ internal fun ChatScreen(
       progressCard = progressCard,
       value = input,
       onValueChange = {
+        if (!viewModel.isCurrentChatComposerOwner(composerOwner)) return@ChatComposer
         sendMessageTooLong = false
         sendCheckpointFull = false
         inputDrafts[composerOwner] = it
@@ -1643,6 +1652,8 @@ private fun ChatMessageList(
   onToggleListen: (String, String) -> Unit,
   inlineMediaPlaybackBlocked: Boolean,
   resolveInlineWidgetResource: suspend (String, ChatWidgetResource?) -> ChatWidgetResource?,
+  sourcePreviewConfig: GatewaySourcePreviewConfig?,
+  loadSourceFavicon: suspend (GatewaySourcePreviewConfig, String) -> GatewayLoadedImage?,
   loadImageArtifact: suspend (String) -> GatewayLoadedImage?,
   loadMediaArtifact: suspend (String, GatewayMediaKind, Boolean) -> GatewayLoadedMedia?,
   modifier: Modifier = Modifier,
@@ -1765,6 +1776,20 @@ private fun ChatMessageList(
                         resolveInlineWidgetResource = resolveInlineWidgetResource,
                         loadImageArtifact = loadImageArtifact,
                         loadMediaArtifact = loadMediaArtifact,
+                        sourcePreviews =
+                          remember(messages, item.message, sourcePreviewConfig, activeRunId) {
+                            if (item.message.runId == activeRunId || item.hasUnresolvedTools) {
+                              emptyList()
+                            } else {
+                              extractChatSourcePreviews(
+                                messages,
+                                item.message,
+                                ChatSourceLinkContext(sourcePreviewConfig?.gatewayUrl, sourcePreviewConfig?.basePath.orEmpty(), sourcePreviewConfig?.publicOrigin),
+                              )
+                            }
+                          },
+                        sourcePreviewConfig = sourcePreviewConfig,
+                        loadSourceFavicon = loadSourceFavicon,
                         senderLabel = item.message.senderLabel,
                         disclosure = { disclosure(item.message) },
                       )
@@ -2093,6 +2118,9 @@ internal fun ChatBubble(
   resolveInlineWidgetResource: suspend (String, ChatWidgetResource?) -> ChatWidgetResource?,
   loadImageArtifact: suspend (String) -> GatewayLoadedImage?,
   loadMediaArtifact: suspend (String, GatewayMediaKind, Boolean) -> GatewayLoadedMedia?,
+  sourcePreviews: List<ChatSourcePreview> = emptyList(),
+  sourcePreviewConfig: GatewaySourcePreviewConfig? = null,
+  loadSourceFavicon: suspend (GatewaySourcePreviewConfig, String) -> GatewayLoadedImage? = { _, _ -> null },
   senderLabel: String? = null,
   disclosure: @Composable () -> Unit = {},
 ) {
@@ -2263,7 +2291,8 @@ internal fun ChatBubble(
             )
           }
           if (messageId != null) {
-            ChatMessageLinkPreview(messageId = messageId, role = normalizedRole, content = displayableContent)
+            ChatSourcePreviews(sourcePreviews, sourcePreviewConfig, loadSourceFavicon)
+            ChatMessageLinkPreview(messageId = messageId, role = normalizedRole, content = displayableContent, excludedUrls = sourcePreviews.flatMap { it.aliases }.toSet())
           }
           disclosure()
           messageSpeech?.let { speech ->
@@ -3144,6 +3173,7 @@ private fun minimumChatInputHeight(): Dp {
 
 @Composable
 private fun ChatComposer(
+  ownerReady: Boolean,
   compactHeight: Boolean,
   detailsExpanded: Boolean,
   onDetailsExpandedChange: (Boolean) -> Unit,
@@ -3319,7 +3349,7 @@ private fun ChatComposer(
           VoiceNotePreparing(modifier = Modifier.weight(1f))
         } else {
           ChatInputPill(
-            inputEnabled = !detailsExpanded,
+            inputEnabled = ownerReady && !detailsExpanded,
             onOpenDetails = if (compactHeight) ({ onDetailsExpandedChange(true) }) else null,
             value = value,
             onValueChange = onValueChange,
@@ -3327,19 +3357,19 @@ private fun ChatComposer(
             onPickAudioOrDocument = onPickAudioOrDocument,
             onPickVideo = onPickVideo,
             onStartVoiceNote = onStartVoiceNote,
-            recordVoiceNoteEnabled = recordVoiceNoteEnabled,
+            recordVoiceNoteEnabled = ownerReady && recordVoiceNoteEnabled,
             dictationActive = dictationActive,
-            dictationEnabled = dictationEnabled,
+            dictationEnabled = ownerReady && dictationEnabled,
             onToggleDictation = onToggleDictation,
             talkActive = talkActive,
-            onToggleTalk = onToggleTalk,
+            onToggleTalk = { if (ownerReady) onToggleTalk() },
             runActive = pendingRunCount > 0,
             onAbort = onAbort,
             hasContent = hasContent,
             sendEnabled = sendEnabled,
             onSend = onSend,
             selectedModelLabel = selectedModelLabel,
-            modelPickerEnabled = modelPickerEnabled,
+            modelPickerEnabled = ownerReady && modelPickerEnabled,
             onOpenModelPicker = onOpenModelPicker,
             thinkingLevel = thinkingLevel,
             thinkingOptions = thinkingOptions,
@@ -4313,13 +4343,13 @@ private fun ChatInputPill(
           }
         }
         Box {
-          Surface(onClick = { attachmentMenuExpanded = true }, modifier = Modifier.size(ClawTheme.spacing.touchTarget), shape = CircleShape, color = Color.Transparent, contentColor = ClawTheme.colors.textMuted) {
+          Surface(onClick = { attachmentMenuExpanded = true }, enabled = inputEnabled, modifier = Modifier.size(ClawTheme.spacing.touchTarget), shape = CircleShape, color = Color.Transparent, contentColor = ClawTheme.colors.textMuted) {
             Box(contentAlignment = Alignment.Center) {
               Icon(imageVector = Icons.Default.Add, contentDescription = nativeString("Add attachment"), modifier = Modifier.size(20.dp))
             }
           }
           FoldAwareDropdownMenu(
-            expanded = attachmentMenuExpanded,
+            expanded = attachmentMenuExpanded && inputEnabled,
             onDismissRequest = { attachmentMenuExpanded = false },
             items =
               listOf(

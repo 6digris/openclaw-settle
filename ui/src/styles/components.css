@@ -150,14 +150,26 @@ openclaw-session-owner-chip {
   font-size: 10px;
   font-weight: 700;
   line-height: 1;
+}
+
+.session-owner-chip,
+.session-owner-stack__overflow {
   transition:
     filter var(--duration-fast) ease,
     opacity var(--duration-fast) ease;
 }
 
-.session-owner-chip--away {
+.session-owner-chip--away,
+.session-owner-stack:has(.session-owner-chip--away) .session-owner-stack__overflow {
   filter: grayscale(0.8);
   opacity: 0.45;
+}
+
+/* Center capitals and counts by the font's cap box, excluding its descender space. */
+.session-owner-chip__initials,
+.session-owner-stack__count,
+openclaw-session-owner-chip .viewer-avatar__initials {
+  text-box: trim-both cap alphabetic;
 }
 
 .session-owner-chip .viewer-avatar {
@@ -174,6 +186,7 @@ openclaw-session-owner-chip {
 
 .session-owner-stack {
   position: relative;
+  isolation: isolate;
   display: inline-flex;
   width: 28px;
   height: 20px;
@@ -193,15 +206,17 @@ openclaw-session-owner-chip {
   height: 18px;
   border: 1px solid var(--sidebar-bg, var(--bg));
   border-radius: var(--radius-full);
-  font-size: 8px;
+  font-size: 9px;
 }
 
 .session-owner-stack__overflow {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--bg-elevated);
-  color: var(--muted);
+  display: grid;
+  place-items: center;
+  /* Follow the row fill while keeping the overlapping primary behind an opaque face. */
+  background:
+    linear-gradient(color-mix(in srgb, var(--text-strong) 16%, transparent) 0 0),
+    linear-gradient(var(--session-row-bg, transparent) 0 0), var(--sidebar-bg, var(--bg));
+  color: var(--text-strong);
   font-weight: 700;
   line-height: 1;
 }
@@ -211,6 +226,7 @@ openclaw-session-owner-chip {
   z-index: 1;
   width: 18px;
   height: 18px;
+  font-size: 9px;
 }
 
 .sidebar-recent-session .session-owner-stack__front,
@@ -247,6 +263,21 @@ openclaw-session-owner-chip {
 
 .sidebar-recent-session .session-owner-stack::after {
   right: 0;
+}
+
+.session-owner-stack--overflow {
+  justify-content: flex-start;
+}
+
+.session-owner-stack--overflow .session-owner-stack__back {
+  right: 0;
+  left: auto;
+  z-index: 2;
+}
+
+.sidebar-recent-session .session-owner-stack__overflow {
+  border-color: color-mix(in srgb, var(--text-strong) 8%, transparent);
+  background-clip: border-box;
 }
 
 /* Leading slot shared by every sidebar row: the row's own artwork plus a run
@@ -3420,12 +3451,6 @@ td.data-table-key-col {
   min-width: 0;
 }
 
-.agents-control-select {
-  flex: 1;
-  min-width: 0;
-  max-width: 280px;
-}
-
 .agent-scope-control {
   display: inline-flex;
   align-items: center;
@@ -3433,18 +3458,13 @@ td.data-table-key-col {
   min-width: 0;
 }
 
-.agent-scope-control__label,
-.agent-scope-control .agent-select__menu-title {
+.agent-scope-control__label {
   color: var(--muted);
   font-size: 11px;
   font-weight: 650;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   white-space: nowrap;
-}
-
-.agent-scope-control .agent-select__menu-title {
-  padding: 4px 8px 2px;
 }
 
 .agent-scope-control openclaw-agent-select {
@@ -3475,6 +3495,15 @@ td.data-table-key-col {
 .agent-select {
   display: block;
   width: 100%;
+}
+
+.agent-select__menu-title {
+  padding: 4px 8px 2px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 .agent-select::part(menu) {
@@ -4913,10 +4942,6 @@ td.data-table-key-col {
     flex-direction: column;
     align-items: stretch;
     gap: 6px;
-  }
-
-  .agents-control-select {
-    max-width: none;
   }
 
   .agents-toolbar-actions {

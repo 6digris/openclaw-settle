@@ -22,26 +22,22 @@ import {
   createUpdateFailureFact,
   type UpdateFailureFact,
 } from "../../infra/update-failure-facts.js";
+import {
+  createFreeBsdPkgOwnershipInspection,
+  type FreeBsdPkgOwnershipInspection,
+} from "../../infra/update-freebsd-pkg-ownership.js";
 import { UPDATE_RUNNER_TIMEOUT_MS } from "../../infra/update-run-timeouts.js";
 import { CLI_NAME } from "../cli-name.js";
 import { resolveNodeRunner } from "./shared.js";
+import type {
+  ManagedGatewayUpdateVerdict,
+  PreManagedServiceStop,
+} from "./update-command-service-context-types.js";
 
 export type ManagedServiceRootRedirect = {
   root: string;
   previousRoot: string;
 };
-
-export type ManagedGatewayUpdateVerdict =
-  | { kind: "absent" | "foreign" }
-  | {
-      kind: "owned";
-      root: string;
-      fingerprint: string;
-      refreshDefinition: boolean;
-      requiresInstallRootRefresh?: boolean;
-    }
-  | { kind: "unresolved"; root: string; fingerprint: string }
-  | { kind: "unavailable"; message: string; inspectionReason?: ServiceInspectionReason };
 
 export function collectServiceInspectionFailureFacts(
   verdict: ManagedGatewayUpdateVerdict | undefined,
@@ -140,9 +136,16 @@ export async function resolvePackageRuntimePreflight(params: {
   installedRoot?: string;
   timeoutMs?: number;
   nodeRunner?: string;
-  fallbackNodeRunner?: string;
+  root?: string;
+  shouldRestart?: boolean;
+  alreadyCurrent?: boolean;
+  service?: PreManagedServiceStop;
 }): Promise<Result<PackageRuntimePreflight, string> & { failureFacts?: UpdateFailureFact[] }> {
-  const nodeRunner = normalizeOptionalString(params.nodeRunner);
+  const nodeRunner = normalizeOptionalString(
+    params.alreadyCurrent
+      ? (params.service?.serviceNodeRunner ?? params.nodeRunner)
+      : params.nodeRunner,
+  );
   const unchanged = (): PackageRuntimePreflight => (nodeRunner ? { nodeRunner } : {});
   let target = params.target;
   if (!target && params.installedRoot) {
@@ -177,7 +180,16 @@ export async function resolvePackageRuntimePreflight(params: {
   if (satisfies === true) {
     return ok(unchangedRuntime);
   }
-  const fallbackNodeRunner = normalizeOptionalString(params.fallbackNodeRunner);
+  const fallbackNodeRunner =
+    params.shouldRestart &&
+    nodeRunner &&
+    (params.alreadyCurrent
+      ? params.service?.running &&
+        params.service.serviceUpdateVerdict?.kind === "owned" &&
+        params.service.serviceUpdateVerdict.refreshDefinition
+      : await gatewayServiceCommandUsesRoot({ root: params.root }))
+      ? resolveNodeRunner()
+      : undefined;
   if (nodeRunner && fallbackNodeRunner && fallbackNodeRunner !== nodeRunner) {
     const fallbackRuntime = await resolvePackageRuntimeForPreflight({
       nodeRunner: fallbackNodeRunner,
@@ -267,7 +279,11 @@ export function resolveManagedServiceNodeRunner(
 
 export async function resolveManagedServicePackageUpdatePlan(params: {
   root: string;
+  pkgOwnership?: FreeBsdPkgOwnershipInspection;
 }): Promise<{ rootRedirect: ManagedServiceRootRedirect | null; nodeRunner?: string }> {
+  const pkgOwnership =
+    params.pkgOwnership ?? createFreeBsdPkgOwnershipInspection(UPDATE_RUNNER_TIMEOUT_MS);
+  await pkgOwnership.assertUnowned(params.root);
   if (!isGatewayServiceManagementAllowedForUpdate(process.env)) {
     return { rootRedirect: null };
   }
@@ -278,6 +294,7 @@ export async function resolveManagedServicePackageUpdatePlan(params: {
     .catch(() => null);
   const layout = await summarizeGatewayServiceLayout(command);
   const serviceRoot = layout?.packageRoot;
+  await pkgOwnership.assertUnowned(serviceRoot);
   const serviceNode = resolveManagedServiceNodeRunner(command);
   if (
     serviceRoot &&

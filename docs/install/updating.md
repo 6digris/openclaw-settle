@@ -26,6 +26,23 @@ the old Gateway serves, then activates and verifies the update.
 openclaw update
 ```
 
+<Note>
+On FreeBSD, OpenClaw 2026.9.4 can stop before staging an update with
+`managed handoff process start identity is unavailable`. Changing the target or
+adding `--no-restart` cannot repair the installed updater.
+
+For a pkg or Ports installation, update through pkg or Ports; do not overwrite
+its files with npm. For an npm-owned installation, use the
+[manual package-manager procedure](/install/updating/update-methods#alternative-manual-npm-pnpm-or-bun)
+from a separate shell, with the same owning npm, installation prefix, and
+Gateway state/configuration. Select a published version whose release notes
+include the FreeBSD fixes; changes on `main` are not a published release.
+
+Stop and start the Gateway through its actual supervisor or foreground process
+owner around the manual replacement. This recovery does not add CLI-managed
+FreeBSD rc.d service updates.
+</Note>
+
 An already-installed registry package version or Git target SHA still runs plugin maintenance, repairs eligible old OpenClaw release pins, and restarts a running managed Gateway only when plugins change and `--no-restart` is not set; unchanged runs finish as `skipped` / `already-current`.
 
 Plugin maintenance does not fail an otherwise successful core update. If a plugin
@@ -281,6 +298,42 @@ configured update channel and install method.
 Agents must never run `npm install -g openclaw` or stop the Gateway service
 from a chat shell; use `/update` or the update action so restart and notification
 stay coordinated.
+
+## Inspect FreeBSD service discovery
+
+The standalone `scripts/freebsd-service-inspect.mjs` diagnostic reports which
+`openclaw` rc.d definitions the native configuration selects. It requires a
+root-owned Node installation, script, and shared discovery helper. It does not
+require the OpenClaw Ports service package.
+
+From an existing root shell, install the script from a trusted OpenClaw package:
+
+```sh
+install -d -o root -g wheel -m 0755 /usr/local/libexec/lib
+install -o root -g wheel -m 0644 /path/to/openclaw/scripts/freebsd-service-inspect.mjs /usr/local/libexec/openclaw-service-inspect.mjs
+install -o root -g wheel -m 0644 /path/to/openclaw/scripts/lib/freebsd-service-discovery.mjs /usr/local/libexec/lib/freebsd-service-discovery.mjs
+(cd / && /usr/bin/env -i HOME=/ PATH=/sbin:/bin:/usr/sbin:/usr/bin LC_ALL=C /usr/local/bin/node /usr/local/libexec/openclaw-service-inspect.mjs)
+```
+
+Use your root-owned Node path if it differs. Clear the environment before Node
+starts, as shown, to exclude Node preload options. The command accepts no arguments.
+It reads native administrator shell configuration as root and requests no
+service lifecycle operation. Administrator configuration is trusted shell code,
+not a sandboxed data format.
+
+The result includes the exact clean environment and working directory used for
+discovery. It corresponds to `service` invoked with that same context. Configuration
+that depends on another environment or directory can select different services.
+
+The single JSON result reports `absent`, `present`, or `unknown`. Present results
+include executable and non-executable definitions, their native search order,
+and the first executable definition. Symlinks, unsafe ownership, incomplete
+inspection, or unexpected configuration output produce `unknown` and exit 1.
+Configuration contents and subprocess errors are not included in the result.
+
+This is a diagnostic observation. It does not establish process or package
+ownership, authorize an update, or enable CLI-managed rc.d service updates.
+Continue to use the installation owner's update procedure above.
 
 ## Stale update history
 

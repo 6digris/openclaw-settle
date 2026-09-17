@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { extractErrorCode } from "@openclaw/normalization-core/error-coercion";
 import { createDeferredCore } from "../shared/deferred.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import type { PluginHostCleanupResult } from "./host-hook-cleanup.types.js";
@@ -43,6 +44,36 @@ export interface PluginCache
   instances: Set<PluginInstanceResource>;
   retirement?: Promise<PluginHostCleanupResult>;
   [Symbol.asyncDispose](): Promise<void>;
+}
+
+const PLUGIN_CACHE_FACT_INVALIDATED = "PLUGIN_CACHE_FACT_INVALIDATED";
+
+/** Cached diagnostics must not retain the caller through V8's lazy stack frames. */
+export function materializePluginCacheError(failure: unknown): void {
+  let error = failure;
+  const seen = new Set<Error>();
+  while (error instanceof Error && !seen.has(error)) {
+    seen.add(error);
+    try {
+      error.stack = String(error.stack);
+    } catch {
+      // V8's setter releases private frames even when formatting throws;
+      // coercion also detaches CallSites returned by a custom formatter.
+      error.stack = "Stack trace unavailable: custom formatter failed";
+    }
+    // Bounded file readers wrap their original failure without replacing its stack.
+    error = error.cause;
+  }
+}
+
+/** Explicit fact invalidation cancels its preparation. */
+export class PluginCacheFactInvalidatedError extends Error {
+  readonly code = PLUGIN_CACHE_FACT_INVALIDATED;
+}
+
+export function isPluginCacheFactInvalidatedError(error: unknown): boolean {
+  // Shared fact promises can originate in another source/require module graph.
+  return extractErrorCode(error) === PLUGIN_CACHE_FACT_INVALIDATED;
 }
 
 type PluginCacheScope = { cache: PluginCache; parent?: PluginCacheScope };
@@ -136,8 +167,10 @@ function createPluginMetadataCache(): PluginCache["metadata"] {
     projectionSources: new WeakMap(),
     completions: new WeakMap(),
     indexFacts: new WeakMap(),
+    providerPolicyOwners: new WeakMap(),
     channelAdapters: new WeakMap(),
     bundledChannelCatalogs: new Map(),
+    bundledProviderPolicySurfaces: new Map(),
     staticCatalogStates: new WeakMap(),
     modelSuppressionResolvers: new WeakMap(),
   };
@@ -243,27 +276,40 @@ export async function preparePluginCacheFact<T>(
             if (published && "value" in published) {
               return published;
             }
-            throw new Error("Plugin state changed during preparation; retry the operation.");
+            throw new PluginCacheFactInvalidatedError(
+              "Plugin state changed during preparation; retry the operation.",
+            );
           }
           const ready = { value };
           facts.set(key, ready);
           return ready;
         })
+        .catch((error: unknown) => {
+          const published = facts.get(key);
+          if (published === pending) {
+            facts.delete(key);
+          }
+          signal.throwIfAborted();
+          if (published !== pending && !isPluginCacheFactInvalidatedError(error)) {
+            throw new PluginCacheFactInvalidatedError(
+              "Plugin state changed during preparation; retry the operation.",
+              { cause: error },
+            );
+          }
+          throw error;
+        })
         .finally(release),
     };
     facts.set(key, pending);
-    void pending.pending.catch(() => {
-      if (facts.get(key) === pending) {
-        facts.delete(key);
-      }
-    });
     current = pending;
   }
   const ready = "pending" in current ? await current.pending : current;
   const assertCurrent = () => {
     signal.throwIfAborted();
     if (facts.get(key) !== ready) {
-      throw new Error("Plugin state changed during preparation; retry the operation.");
+      throw new PluginCacheFactInvalidatedError(
+        "Plugin state changed during preparation; retry the operation.",
+      );
     }
   };
   assertCurrent();
@@ -334,12 +380,7 @@ export function retirePluginCache(
   retained.retirement = completion.promise;
   // Abort listeners may reenter retirement or release the final generation immediately.
   retained.controller.abort();
-  // Lazy error frames otherwise retain the retiring callback's scope after cleanup.
-  try {
-    void retained.controller.signal.reason.stack;
-  } catch {
-    // A custom stack formatter must not interrupt retirement.
-  }
+  materializePluginCacheError(retained.controller.signal.reason);
   const begin = () => beginPluginCacheRetirement(cache, beforeRetire);
   void (retained.references.size ? retained.settled.promise.then(begin) : begin()).then(
     completion.resolve,

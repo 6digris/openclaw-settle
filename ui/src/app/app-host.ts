@@ -4,7 +4,6 @@ import type { GatewayBrowserClient, GatewayEventFrame } from "../api/gateway.ts"
 import "../components/app-topbar.ts";
 import "../components/assistant-panel.ts";
 import "../components/modal-dialog.ts";
-import "../pages/debug/debug-overlay.ts";
 import {
   formatDocumentTitle,
   isSettingsNavigationRoute,
@@ -285,7 +284,9 @@ class OpenClawShell
       ? normalizeAgentLabel(agent)
       : resolveSessionDisplayName(
           sessionKey,
-          context.sessions.state.result?.sessions.find((session) => session.key === sessionKey),
+          context.sessions.presentation.result?.sessions.find(
+            (session) => session.key === sessionKey,
+          ),
         );
   }
 
@@ -343,6 +344,14 @@ class OpenClawShell
       .watch(
         () => this.context?.agentSelection,
         (selection, notify) => selection.subscribe(notify),
+      )
+      .watch(
+        () => this.context?.settingsAgentSelection,
+        (selection, notify) => selection.subscribe(notify),
+      )
+      .watch(
+        () => this.context?.agentIdentity,
+        (identity, notify) => identity.subscribe(notify),
       )
       .watch(
         () => this.context?.gateway,
@@ -604,6 +613,10 @@ class OpenClawShell
   readonly handleNativeHistoryState = this.shellChrome.handleNativeHistoryState;
   readonly handleWindowResize = this.shellChrome.handleWindowResize;
   readonly handleDocumentKeydown = this.shellChrome.handleDocumentKeydown;
+  get pendingDebugOverlayMode() {
+    return this.shellChrome.pendingDebugOverlayMode;
+  }
+  readonly togglePendingDebugOverlayMode = () => this.shellChrome.togglePendingDebugOverlayMode();
   readonly openPalette = this.shellChrome.openPalette;
   readonly refreshControlUi = (): Promise<boolean> => {
     const context = this.context;
@@ -678,6 +691,9 @@ class OpenClawShell
     const context = this.context;
     if (!context) {
       return;
+    }
+    if (this.querySelector(".settings-sidebar__agent")) {
+      void context.agentIdentity.ensure([context.settingsAgentSelection.state.selectedId]);
     }
     if (this.workspaceChromeVisible) {
       this.shellChrome.panels.restore();

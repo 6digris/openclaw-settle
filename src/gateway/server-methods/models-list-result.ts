@@ -40,6 +40,7 @@ import {
   type ModelVisibilityPolicy,
 } from "../../agents/model-visibility-policy.js";
 import {
+  createModelCatalogIdentityKeyResolver,
   createOpenAIModelRoutesResolver,
   openAIModelCatalogRoutePolicy,
   resolveModelCatalogIdentityKey,
@@ -70,12 +71,12 @@ import { resolveChatAccountSelection } from "./chat-account-selection.js";
 import type { ChatMetadataReadParams, ChatMetadataSessionEntry } from "./chat-metadata-contract.js";
 import { resolveSessionCatalogProfiles } from "./chat-metadata-session-projection.js";
 import { resolveModelProviderCapabilities } from "./model-provider-capabilities.js";
+import type { GatewayModelCatalogContext } from "./models-list-context.js";
 import {
   buildPublicModelProjection,
   projectProviderCatalogOutcomes,
 } from "./models-list-public-projection.js";
 import { prepareModelPickerRuntimeChoices } from "./models-list-runtime-choices.js";
-import type { GatewayRequestContext } from "./types.js";
 
 type ModelsListEntryWithCapabilities = ModelChoice;
 type ApiKeyProviderCapabilities = {
@@ -122,11 +123,7 @@ export function createGatewayAgentModelCatalogProjector(params: ModelCatalogDeci
               pluginRegistry: params.pluginRegistry,
             })?.id ?? "openclaw";
           const selected = selectModelCatalogRuntimeEntry({ entry, routeVariants, runtimeId });
-          return createModelCatalogView({
-            cfg: params.cfg,
-            catalog: [selected.entry],
-            routeVariants: selected.variants,
-          }).project(selected.entry, evaluation).runtimeEntry;
+          return view.project(selected.entry, evaluation, selected.variants).runtimeEntry;
         }),
       ));
     },
@@ -271,12 +268,7 @@ function apiKeyProviderCapabilities(params: {
 type ModelsListCatalogSource =
   | {
       kind: "gateway";
-      context: Pick<
-        GatewayRequestContext,
-        "getRuntimeConfig" | "loadGatewayModelCatalogSnapshot"
-      > & {
-        logGateway: Pick<GatewayRequestContext["logGateway"], "debug">;
-      };
+      context: GatewayModelCatalogContext;
     }
   | {
       kind: "published";
@@ -698,24 +690,25 @@ export async function prepareModelsListResult(
 
   return {
     isCurrent: () => isCurrent() && projector.isCurrent(),
-    read: () => ({
-      models: readCatalog()
-        .filter(matchesProvider)
-        .map((entry) => {
-          const evaluation = evaluations.get(resolveModelCatalogIdentityKey(entry));
+    read: () => {
+      const currentCatalog = readCatalog();
+      const keyOf = createModelCatalogIdentityKeyResolver();
+      return {
+        models: currentCatalog.filter(matchesProvider).map((entry) => {
+          const key = keyOf(entry);
+          const evaluation = evaluations.get(key);
           if (!evaluation) {
             throw new Error("Model catalog publication omitted prepared auth evaluation");
           }
-          const runtimeChoices = runtimeChoiceReaders.get(
-            resolveModelCatalogIdentityKey(entry),
-          )?.();
+          const runtimeChoices = runtimeChoiceReaders.get(key)?.();
           const projected = projectPublic(entry, evaluation);
           if (runtimeChoices?.length) {
             projected.runtimeChoices = runtimeChoices;
           }
           return projected;
         }),
-      ...outcomeProjection,
-    }),
+        ...outcomeProjection,
+      };
+    },
   };
 }

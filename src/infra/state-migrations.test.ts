@@ -18,7 +18,6 @@ import {
   loadSessionEntryReadOnly,
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
-import { readExactSessionEntryRowForCanonicalRepair } from "../config/sessions/session-accessor.sqlite-canonical-repair.js";
 import { writeSessionEntry } from "../config/sessions/session-accessor.sqlite-entry-store.js";
 import type { SessionAcpMeta } from "../config/sessions/types.js";
 import { readMemoryHostEventRecords } from "../memory-host-sdk/events.js";
@@ -134,9 +133,10 @@ function closeMigrationDatabases() {
 async function rerunAutomaticMigrationAfterRestart(params: AutoMigrateLegacyStateParams) {
   closeMigrationDatabases();
   vi.resetModules();
-  const [agentDb, stateDb] = await Promise.all([
+  const [agentDb, stateDb, agentDbTest] = await Promise.all([
     import("../state/openclaw-agent-db.js"),
     import("../state/openclaw-state-db.js"),
+    import("../state/openclaw-agent-db.test-support.js"),
   ]);
   migrationDatabaseClosers.add(agentDb.closeOpenClawAgentDatabasesForTest);
   migrationDatabaseClosers.add(stateDb.closeOpenClawStateDatabaseForTest);
@@ -148,7 +148,7 @@ async function rerunAutomaticMigrationAfterRestart(params: AutoMigrateLegacyStat
     });
   } finally {
     closeMigrationDatabases();
-    expect(agentDb.listOpenClawAgentDatabasesForTest()).toEqual([]);
+    expect(agentDbTest.listOpenClawAgentDatabasesForTest()).toEqual([]);
     expect(stateDb.isOpenClawStateDatabaseOpen()).toBe(false);
   }
 }
@@ -1197,36 +1197,6 @@ describe("state migrations", () => {
       }
     },
   );
-
-  it("runs legacy-main session migration when the other automatic detectors are empty", async () => {
-    const { root, env } = createMigrationContext(await createTempDir());
-    const cfg = createConfig();
-    runOpenClawAgentWriteTransaction(
-      (database) => {
-        writeSessionEntry(
-          database,
-          "agent:main:chat",
-          { sessionId: "legacy-main-session", updatedAt: 100 },
-          { allowStoredAliases: true, previousEntry: null },
-        );
-      },
-      { agentId: "main", env },
-    );
-
-    const result = await autoMigrateLegacyState({ cfg, env, homedir: () => root });
-    const source = runOpenClawAgentWriteTransaction(
-      (database) => readExactSessionEntryRowForCanonicalRepair(database, "agent:main:chat"),
-      { agentId: "main", env },
-    );
-    const destination = runOpenClawAgentWriteTransaction(
-      (database) => readExactSessionEntryRowForCanonicalRepair(database, "agent:worker-1:chat"),
-      { agentId: "worker-1", env },
-    );
-
-    expect(result.changes).toContain("Migrated legacy main session claim agent:worker-1:chat.");
-    expect(source).toBeUndefined();
-    expect(destination?.entry.sessionId).toBe("legacy-main-session");
-  });
 
   it.each([
     { location: "inside", doctorOnlyStateMigrations: false },

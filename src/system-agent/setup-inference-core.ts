@@ -244,6 +244,9 @@ export async function waitForProviderAuth<T>(
     return await promise;
   }
   if (signal.aborted) {
+    // The provider can cancel synchronously while constructing this already-started promise.
+    // Retain its rejection handler even though cancellation wins immediately.
+    void promise.catch(() => {});
     throw new SetupInferenceCancelledError();
   }
   let rejectAborted: ((reason: unknown) => void) | undefined;
@@ -278,7 +281,6 @@ export type ActivateSetupInferenceDeps = {
   resolveManifestProviderAuthChoices?: typeof resolveManifestProviderAuthChoices;
   enablePluginInConfig?: typeof enablePluginInConfig;
   loadAuthProfileStoreForRuntime?: typeof loadAuthProfileStoreForRuntime;
-  ensureAuthProfileStore?: typeof import("../agents/auth-profiles/store-runtime.js").ensureAuthProfileStore;
   resolveCliAuthBindingFingerprint?: typeof import("../agents/cli-auth-epoch.js").resolveCliAuthBindingFingerprint;
   resolveCliRuntimeArtifactFingerprint?: typeof import("../agents/cli-auth-epoch.js").resolveCliRuntimeArtifactFingerprint;
   resolveCliRuntimeOwnerFingerprint?: typeof import("../agents/cli-auth-epoch.js").resolveCliRuntimeOwnerFingerprint;

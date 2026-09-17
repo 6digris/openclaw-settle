@@ -45,6 +45,16 @@ Finish recording or delivering attachments and send or clear the current draft
 before using the quick picker. It does not move drafts to another Gateway.
 **Approvals** opens the native approval inbox and shows the pending count.
 
+An icon beside a native sidebar session shows whether its oldest pending request
+is a question or an approval. It opens a compact preview and the number of
+additional requests of that kind. The agent and section headings summarize their sessions, including
+requests outside the visible recent-session list. Tap an icon, activate it with
+a keyboard, or use VoiceOver to read the details without switching chats.
+Questions stay available when navigating away from Chat. Completed, cancelled,
+and expired requests disappear from these previews; answer and credential drafts
+never appear. Gateway administration approvals open their existing Dashboard
+review page, while native exec and plugin approvals keep their existing actions.
+
 The Gateway must serve Dashboard pages that support the companion iOS app.
 If a loaded Settings page does not report that support, a native banner asks you
 to update the Gateway. **Open Gateway** opens the native connection screen;
@@ -103,6 +113,19 @@ Long-press a session in the sidebar or Sessions screen to open its session actio
 
 A colored session has a narrow leading stripe in session lists and a small dot beside its title in Chat. Unset colors show neither marker. The Gateway stores color names, not hex values; the app adjusts their hues for light and dark appearances.
 
+## Sources in chat
+
+Completed answers show up to eight compact **Sources** cards for cited pages
+returned by web search or web fetch during that answer's run. Tap a card to read
+the recorded **Search snippet** or **Page excerpt**, then choose **Open source**
+to visit the page. A card says when no recorded excerpt is available. Opening
+the preview does not retrieve the page again.
+
+Source icons follow the Gateway's automatic favicon preference and use the
+Gateway's authenticated favicon service. A globe appears when icons are disabled
+or unavailable. Session links and GitHub issue or pull request links keep their
+existing link cards.
+
 ## Diagrams in chat
 
 Use a fenced `mermaid` block to display a diagram. A diagram renders when its
@@ -153,7 +176,9 @@ creation has a token or password auth path.
    administrative Gateway controls, then click **Create setup code**.
 
 3. In the iOS app, open **Settings** -> **Gateway**, scan the QR code (or paste
-   the setup code), and connect.
+   the setup code), and connect. Use a mobile setup code from Control UI or
+   [`openclaw qr`](/cli/qr) — not a gateway join URL from
+   [`openclaw devices join-code`](/cli/devices#openclaw-devices-join-code).
 
    Paired Gateways remain in the **Gateways** list. The checkmark identifies
    the focused Gateway; use the bolt control on another row to keep its

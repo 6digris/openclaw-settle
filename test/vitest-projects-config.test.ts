@@ -56,6 +56,7 @@ import {
   createGatewayProjectShardVitestConfig,
   createGatewayVitestConfig,
 } from "./vitest/vitest.gateway.config.ts";
+import { createInfraVitestConfig } from "./vitest/vitest.infra.config.ts";
 import { createPluginSdkLightVitestConfig } from "./vitest/vitest.plugin-sdk-light.config.ts";
 import { createProjectShardVitestConfig } from "./vitest/vitest.project-shard-config.ts";
 import {
@@ -77,7 +78,9 @@ const scopedGatewayMethodsIsolatedTestFiles = [
   "server-methods/agent.test.ts",
   "server-methods/board.runtime-boundaries.test.ts",
   "server-methods/chat.reset-visible-yield.test.ts",
+  "server-methods/environments.pairing-snapshot.test.ts",
   "server-methods/health.owner-routing.test.ts",
+  "server-methods/sessions.send-yield-resume.test.ts",
   "server-methods/system-agent-nested-inference.integration.test.ts",
   "server-methods/system-agent-setup-control-ui.test.ts",
   "server-methods/users-preferences.test.ts",
@@ -681,6 +684,19 @@ describe("projects vitest config", () => {
     expect(testConfig.sequence).toMatchObject({ groupOrder: 1 });
   });
 
+  it.each([
+    "src/wizard/setup.inference-recovery.integration.test.ts",
+    "src/plugins/loader.trust-diagnostics.test.ts",
+  ])("routes host-owned SQLite caller %s through the infra process", (file) => {
+    const project = "test/vitest/vitest.infra.config.ts";
+    const testConfig = requireTestConfig(createInfraVitestConfig({}));
+    expect(buildVitestRunPlans([file]).map((plan) => plan.config)).toEqual([project]);
+    expect(testConfig.include).toContain(file);
+    expect(testConfig.pool).toBe("forks");
+    expect(rootVitestProjects).toContain(project);
+    expect(fullSuiteVitestShards.flatMap((shard) => shard.projects ?? [])).toContain(project);
+  });
+
   it("keeps Slack's real cooldown store in its forked project", () => {
     const project = "test/vitest/vitest.extension-slack.config.ts";
     expect(requireTestConfig(createExtensionSlackVitestConfig({})).pool).toBe("forks");
@@ -740,7 +756,12 @@ describe("projects vitest config", () => {
       source: "approval-reactions.ts",
       siblings: ["approval-reactions.test.ts", "approval-reaction-poller.test.ts"],
     },
-    { file: "send.sqlite.test.ts", source: "send.ts", siblings: ["send.test.ts"] },
+    {
+      file: "send.sqlite.test.ts",
+      source: "send.ts",
+      siblings: ["outbound-tool-trace-sanitize.test.ts"],
+    },
+    { file: "send.test.ts", source: "send.ts", siblings: ["outbound-tool-trace-sanitize.test.ts"] },
   ])(
     "routes iMessage $file through its worker owner without moving sibling tests",
     ({ file: basename, source, siblings }) => {

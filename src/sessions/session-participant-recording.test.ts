@@ -1,15 +1,23 @@
 import { setImmediate } from "node:timers/promises";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
+import * as configEnv from "../config/config-env-vars.js";
 import {
   listSessionEntriesCore,
   listSessionParticipantsReadOnly,
+  recordSessionParticipant,
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { withOpenClawAgentDatabaseWrite } from "../state/openclaw-agent-db-write.js";
 import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import { runOpenClawAgentWorkerWrite } from "../state/openclaw-agent-write-admission.js";
+import {
+  ensureProfileForEmail,
+  linkEmail,
+  readUserProfileAliases,
+} from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import { withMockedPlatform } from "../test-utils/vitest-spies.js";
 import { onSessionLifecycleEvent } from "./session-lifecycle-events.js";
 import { recordSessionParticipantBestEffort } from "./session-participant-recording.js";
 
@@ -138,6 +146,74 @@ it("reports a failed deferred write once and still commits following participant
       await reservation;
       await withOpenClawAgentDatabaseWrite(options, () => undefined);
       unsubscribe();
+    }
+  });
+});
+
+it("keeps merged-profile participant history in a mixed-case Windows state root", async () => {
+  await withOpenClawTestState({ scenario: "minimal", layout: "split" }, async (state) => {
+    const scope = { agentId: "main", env: state.env, sessionKey: "agent:main:participant-alias" };
+    const previous = ensureProfileForEmail("previous@example.test", { env: state.env });
+    const current = ensureProfileForEmail("current@example.test", { env: state.env });
+    await upsertSessionEntryCore(scope, { sessionId: "participant-alias", updatedAt: 1 });
+    recordSessionParticipant(scope, {
+      identity: { type: "profile", id: previous.id },
+      promptedAt: 10,
+    });
+    linkEmail("previous@example.test", current.id, { env: state.env });
+    expect(readUserProfileAliases(current.id, { env: state.env })).toEqual(
+      new Set([current.id, previous.id]),
+    );
+    const database = openOpenClawAgentDatabase(scope);
+    const options = { ...scope, path: database.path };
+    const originalEnv = process.env;
+    const hostPlatform = process.platform;
+    const mixedCaseEnv = { ...originalEnv };
+    for (const key of Object.keys(mixedCaseEnv)) {
+      if (key.toUpperCase() === "OPENCLAW_STATE_DIR") {
+        delete mixedCaseEnv[key];
+      }
+    }
+    mixedCaseEnv.OpenClaw_State_Dir = state.stateDir;
+    const cloneEnv = configEnv.cloneEnvWithPlatformSemantics;
+    const clone = vi.spyOn(configEnv, "cloneEnvWithPlatformSemantics").mockImplementation((input) =>
+      // Only the pure clone sees Windows; target resolution and SQLite use the real host.
+      withMockedPlatform("win32", () => cloneEnv(input)),
+    );
+    const errors: unknown[] = [];
+    try {
+      process.env = mixedCaseEnv;
+      expect(
+        recordSessionParticipantBestEffort({
+          agentId: scope.agentId,
+          sessionKey: scope.sessionKey,
+          storePath: database.path,
+          identity: { type: "profile", id: current.id },
+          promptedAt: 20,
+          onError: (error) => errors.push(error),
+        }),
+      ).toBeUndefined();
+      // Preserve the producer's deferred capture, then retire the ambient fixture input.
+      await Promise.resolve();
+      process.env = originalEnv;
+      expect(process.platform).toBe(hostPlatform);
+      await withOpenClawAgentDatabaseWrite(options, () => undefined);
+      expect(errors).toEqual([]);
+      expect(listSessionParticipantsReadOnly(scope).get(scope.sessionKey)).toEqual([
+        {
+          identity: { type: "profile", id: previous.id },
+          contributionCount: 2,
+          firstPromptedAt: 10,
+          lastPromptedAt: 20,
+        },
+      ]);
+    } finally {
+      process.env = originalEnv;
+      try {
+        await withOpenClawAgentDatabaseWrite(options, () => undefined);
+      } finally {
+        clone.mockRestore();
+      }
     }
   });
 });
