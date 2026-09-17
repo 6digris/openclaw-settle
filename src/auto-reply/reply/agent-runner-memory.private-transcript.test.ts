@@ -3,6 +3,7 @@ import path from "node:path";
 import { expect, it } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { makeUserMessage } from "../../../test/helpers/user-message.js";
+import { retireSessionMcpRuntime } from "../../agents/agent-bundle-mcp-manager-api.js";
 import { waitForSessionMaintenance } from "../../agents/session-maintenance/coordinator.js";
 import { createSessionMaintenanceFollowup } from "../../agents/session-maintenance/run.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
@@ -46,6 +47,10 @@ it.each(["completed", "interrupted"] as const)(
       const human = "Reply only FOREGROUND_READY. Preserve ünicode 🦞.\nThis is the human request.";
       const requests: ModelRequest[] = [];
       const runtimeBudgets: number[] = [];
+      const mcpSessions = new Set<string>();
+      let mcpSessionsCreated = 0;
+      let mcpSessionsBeforeForegroundCleanup: number | undefined;
+      let mcpSessionsAfterForegroundCleanup: number | undefined;
       const stopDiagnostics = onInternalDiagnosticEvent((event) => {
         if (
           event.type === "model.call.started" &&
@@ -56,12 +61,48 @@ it.each(["completed", "interrupted"] as const)(
         }
       });
       const server = createServer((request, response) => {
+        if (request.url === "/mcp" && request.method === "DELETE") {
+          mcpSessions.delete(String(request.headers["mcp-session-id"]));
+          response.writeHead(200).end();
+          return;
+        }
+        if (request.url === "/mcp" && request.method !== "POST") {
+          response.writeHead(405).end();
+          return;
+        }
         let body = "";
         request.setEncoding("utf8");
         request.on("data", (chunk: string) => {
           body += chunk;
         });
         request.on("end", () => {
+          if (request.url === "/mcp") {
+            const message = JSON.parse(body) as {
+              id?: number;
+              method: string;
+              params?: { protocolVersion?: string };
+            };
+            let result;
+            if (message.method === "initialize") {
+              const id = `memory-mcp-${++mcpSessionsCreated}`;
+              mcpSessions.add(id);
+              response.setHeader("mcp-session-id", id);
+              result = {
+                protocolVersion: message.params?.protocolVersion,
+                capabilities: { tools: {} },
+                serverInfo: { name: "memory-lifecycle", version: "1" },
+              };
+            } else if (message.method === "tools/list") {
+              result = { tools: [{ name: "read_note", inputSchema: { type: "object" } }] };
+            }
+            if (!result) {
+              response.writeHead(202).end();
+              return;
+            }
+            response.setHeader("content-type", "application/json");
+            response.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+            return;
+          }
           const modelRequest = JSON.parse(body) as ModelRequest;
           requests.push(modelRequest);
           const isHuman = text(
@@ -128,6 +169,11 @@ it.each(["completed", "interrupted"] as const)(
         },
         session: { store: scope.storePath },
         tools: { profile: "coding" },
+        mcp: {
+          servers: {
+            fixture: { transport: "streamable-http", url: `http://127.0.0.1:${address.port}/mcp` },
+          },
+        },
         models: {
           providers: {
             "test-provider": {
@@ -261,6 +307,8 @@ it.each(["completed", "interrupted"] as const)(
           interrupted.abort(new Error("next human turn"));
         }
         expect((await flush).outcome).toBe(outcome === "interrupted" ? "failed" : "completed");
+        expect(mcpSessionsCreated).toBeGreaterThan(0);
+        expect(mcpSessions.size).toBe(0);
         admission.release();
         admission = undefined;
         expect(requests).toHaveLength(1);
@@ -334,6 +382,12 @@ it.each(["completed", "interrupted"] as const)(
         await flush?.catch(() => undefined);
         admission?.release();
         await waitForSessionMaintenance(scope.sessionKey);
+        mcpSessionsBeforeForegroundCleanup = mcpSessions.size;
+        await retireSessionMcpRuntime({
+          sessionId: scope.sessionId,
+          reason: "private-memory-fixture-cleanup",
+        });
+        mcpSessionsAfterForegroundCleanup = mcpSessions.size;
         clearMemoryPluginState();
         clearRuntimeConfigSnapshot();
         stopDiagnostics();
@@ -342,6 +396,8 @@ it.each(["completed", "interrupted"] as const)(
           server.close((error) => (error ? reject(error) : resolve()));
         });
       }
+      expect(mcpSessionsBeforeForegroundCleanup).toBe(1);
+      expect(mcpSessionsAfterForegroundCleanup).toBe(0);
     });
   },
   60_000,
