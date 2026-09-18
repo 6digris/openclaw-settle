@@ -148,9 +148,20 @@ suite.define(() => {
         expect(await sidebar.locator('[data-session-key="agent:forge:notes"]').count()).toBe(0);
         await captureSidebarUiProof(suite, page, "sidebar-roster-before.png");
         await chip.click();
-        const modeToggle = sidebar.locator('wa-dropdown-item[value="command:sidebar-agents"]');
-        await expect.poll(() => modeToggle.textContent()).toContain("Show all agents");
-        await modeToggle.click();
+        const allAgentsTile = sidebar.locator('.sidebar-agent-menu [value="scope:all"]');
+        await expect.poll(() => allAgentsTile.isVisible()).toBe(true);
+        expect(await allAgentsTile.getAttribute("aria-current")).toBeNull();
+        const activeAgentTile = sidebar.locator(".sidebar-agent-menu__agent-switch--active");
+        const expectAgentMenuFocus = () =>
+          expect
+            .poll(() => activeAgentTile.evaluate((el) => el === document.activeElement))
+            .toBe(true);
+        await expectAgentMenuFocus();
+        await page.keyboard.press("Home");
+        await expect
+          .poll(() => allAgentsTile.evaluate((el) => el === document.activeElement))
+          .toBe(true);
+        await page.keyboard.press("Enter");
 
         const headers = sidebar.locator(".sidebar-agent-roster__row");
         await expect.poll(() => headers.count()).toBe(4);
@@ -159,7 +170,7 @@ suite.define(() => {
             headers.evaluateAll((rows) => rows.map((row) => row.getAttribute("data-agent-id"))),
           )
           .toEqual(["main", "forge", "scout", "bloom"]);
-        await expect.poll(() => sessionRows.count()).toBe(12);
+        await expect.poll(() => sessionRows.count()).toBe(8);
         expect(await sidebar.getByRole("link", { name: "Home", exact: true }).count()).toBe(0);
         await expectWorkspace();
         expect(await sidebar.locator(".sidebar-session-toolbar").count()).toBe(0);
@@ -170,7 +181,6 @@ suite.define(() => {
           const group = sidebar.locator(`[data-agent-group="${agent.id}"]`);
           expect(await group.locator(".sidebar-recent-session").allTextContents()).toEqual([
             expect.stringContaining(`${agent.name} project`),
-            expect.stringContaining(agent.name!),
             expect.stringContaining(`${agent.name} notes`),
           ]);
           expect(
@@ -217,40 +227,56 @@ suite.define(() => {
         }
         await gateway.resolveDeferred("sessions.list");
         await expect.poll(async () => (await activityReads()).length).toBe(initialReads + 2);
-        await expect.poll(() => sessionRows.count()).toBe(12);
+        await expect.poll(() => sessionRows.count()).toBe(8);
 
-        await workspace.focus();
-        await page.keyboard.press("Enter");
         const workspaceMenu = sidebar.locator(".sidebar-agent-menu");
+        await page.mouse.move(1100, 700);
+        await expect.poll(() => workspaceMenu.count()).toBe(0);
+        await workspace.focus();
+        await Promise.all([
+          sidebar.evaluate(
+            (element) =>
+              new Promise<void>((resolve) => {
+                element.addEventListener("wa-after-show", () => resolve(), { once: true });
+              }),
+          ),
+          workspace.hover(),
+        ]);
+        expect(await workspace.evaluate((element) => element === document.activeElement)).toBe(
+          true,
+        );
+        await page.keyboard.press("Enter");
         const workspaceMenuItems = workspaceMenu.locator(":scope > wa-dropdown-item");
-        await expect.poll(() => workspaceMenuItems.count()).toBe(3);
+        await expect.poll(() => workspaceMenuItems.count()).toBe(4);
         expect(
           await workspaceMenuItems.evaluateAll((items) =>
             items.map((item) => item.getAttribute("value")),
           ),
-        ).toEqual(["command:sidebar-agents", "command:agent-settings", "command:help"]);
-        expect(
-          await workspaceMenu
-            .getByRole("menuitem", { name: "Show one agent", exact: true })
-            .count(),
-        ).toBe(1);
-        expect(await workspaceMenuItems.nth(1).textContent()).toContain("Agent settings");
-        expect(
-          await workspaceMenu.locator('wa-dropdown-item[slot="submenu"]').allTextContents(),
         ).toEqual([
-          expect.stringContaining("Docs"),
-          expect.stringContaining("Get help"),
-          expect.stringContaining("Discord community"),
-          expect.stringContaining("View changelog"),
+          "command:new-agent",
+          "command:agents-directory",
+          "command:capabilities",
+          "command:agent-settings",
         ]);
+        expect(
+          await workspaceMenu.locator(".sidebar-agent-menu__agent-grid wa-dropdown-item").count(),
+        ).toBe(5);
+        expect(await workspaceMenu.locator('[value="command:help"]').count()).toBe(0);
+        expect(await workspaceMenu.locator("wa-dropdown-item[aria-checked]").count()).toBe(0);
+        expect(await allAgentsTile.getAttribute("aria-current")).toBe("true");
+        const agentTiles = workspaceMenu.locator(
+          ".sidebar-agent-menu__agent-grid wa-dropdown-item",
+        );
         await expect
-          .poll(() => modeToggle.evaluate((element) => element === document.activeElement))
+          .poll(() => agentTiles.first().evaluate((element) => element === document.activeElement))
           .toBe(true);
         await page.keyboard.press("ArrowDown");
         await expect
-          .poll(() =>
-            workspaceMenuItems.nth(1).evaluate((element) => element === document.activeElement),
-          )
+          .poll(() => agentTiles.nth(1).evaluate((element) => element === document.activeElement))
+          .toBe(true);
+        await page.keyboard.press("End");
+        await expect
+          .poll(() => workspaceMenuItems.last().evaluate((el) => el === document.activeElement))
           .toBe(true);
         await captureSidebarUiProof(suite, page, "sidebar-team-workspace-menu.png");
         await page.keyboard.press("Escape");
@@ -288,7 +314,7 @@ suite.define(() => {
           .click();
         await waitForControlUiRoute(page, { routeId: "chat", pathname: "/chat/forge/notes" });
         await expectWorkspace();
-        await expect.poll(() => sessionRows.count()).toBe(12);
+        await expect.poll(() => sessionRows.count()).toBe(8);
         await sidebar.locator(".sidebar-session-sort").click();
         expect(
           await sidebar.locator('.sidebar-session-sort-menu [value^="grouping:"]').count(),
@@ -307,10 +333,10 @@ suite.define(() => {
         ]);
         await sidebar.locator(".sidebar-session-sort").click();
         await sidebar.locator('.sidebar-session-sort-menu [value="owner:"]').click();
-        await expect.poll(() => sessionRows.count()).toBe(12);
+        await expect.poll(() => sessionRows.count()).toBe(8);
 
         await sidebar.locator('[data-agent-collapse="bloom"]').click();
-        await expect.poll(() => sessionRows.count()).toBe(9);
+        await expect.poll(() => sessionRows.count()).toBe(6);
         expect(new URL(page.url()).pathname).toBe("/chat/forge/notes");
         await page.reload();
         await expect.poll(() => headers.count()).toBe(4);
@@ -319,7 +345,7 @@ suite.define(() => {
             sidebar.locator('[data-agent-collapse="bloom"]').getAttribute("aria-expanded"),
           )
           .toBe("false");
-        await expect.poll(() => sessionRows.count()).toBe(9);
+        await expect.poll(() => sessionRows.count()).toBe(6);
         await expectWorkspace();
         const forgeGroup = sidebar.locator('[data-agent-group="forge"]');
         const actions = forgeGroup.locator(".sidebar-agent-roster__actions");
@@ -338,6 +364,24 @@ suite.define(() => {
           expect.stringContaining("All sessions"),
           expect.stringContaining("Collapse others"),
         ]);
+        const overflowItems = actions.locator("wa-dropdown-item");
+        expect(await overflowItems.locator('[slot="icon"] svg').count()).toBe(3);
+        await expect
+          .poll(() =>
+            overflowItems.first().evaluate((element) => element === document.activeElement),
+          )
+          .toBe(true);
+        await page.keyboard.press("ArrowDown");
+        await expect
+          .poll(() =>
+            overflowItems.nth(1).evaluate((element) => element === document.activeElement),
+          )
+          .toBe(true);
+        await page.keyboard.press("Escape");
+        await expect
+          .poll(() => options.evaluate((element) => element === document.activeElement))
+          .toBe(true);
+        await options.press("Enter");
         await actions.getByRole("menuitem", { name: "All sessions", exact: true }).click();
         await waitForControlUiRoute(page, { routeId: "sessions", pathname: "/sessions" });
         await expect
@@ -371,20 +415,41 @@ suite.define(() => {
         await waitForControlUiRoute(page, { routeId: "new-session", pathname: "/new" });
         expect(new URL(page.url()).searchParams.get("agent")).toBe("forge");
         await workspace.click();
-        await modeToggle.press("Enter");
+        await workspaceMenu.locator('[value="agent:forge"]').press("Enter");
         await expect.poll(() => headers.count()).toBe(0);
         expect(await sidebar.getByRole("link", { name: "Home", exact: true }).count()).toBe(1);
         expect(await chip.isVisible()).toBe(true);
         expect(await workspace.count()).toBe(0);
-        await expect
-          .poll(() => chip.evaluate((element) => element === document.activeElement))
-          .toBe(true);
         await chip.click();
-        await expect.poll(() => modeToggle.textContent()).toContain("Show all agents");
+        await expect.poll(() => allAgentsTile.isVisible()).toBe(true);
+        expect(await allAgentsTile.getAttribute("aria-current")).toBeNull();
         expect(
           await sidebar.locator(".sidebar-agent-menu__agent-grid wa-dropdown-item").count(),
-        ).toBe(4);
+        ).toBe(5);
+        await expectAgentMenuFocus();
         await page.keyboard.press("Escape");
+        await expect.poll(() => workspaceMenu.count()).toBe(0);
+        await page.setViewportSize({ width: 390, height: 844 });
+        const drawerToggle = page
+          .locator(".topbar-nav-toggle:visible, .chat-pane__nav-toggle:visible")
+          .first();
+        await drawerToggle.click();
+        for (const trigger of [chip, workspace]) {
+          if (trigger === workspace) {
+            await chip.press("Enter");
+            await expect.poll(() => allAgentsTile.isVisible()).toBe(true);
+            await allAgentsTile.press("Enter");
+          }
+          await trigger.press("Enter");
+          await expect.poll(() => allAgentsTile.isVisible()).toBe(true);
+          await expectAgentMenuFocus();
+          await page.keyboard.press("Escape");
+          await expect.poll(() => workspaceMenu.count()).toBe(0);
+          expect(await sidebar.isVisible()).toBe(true);
+          await expect
+            .poll(() => trigger.evaluate((el) => el === document.activeElement))
+            .toBe(true);
+        }
       },
     );
   });

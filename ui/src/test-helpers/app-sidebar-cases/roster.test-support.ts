@@ -148,14 +148,13 @@ export async function toggleRoster(sidebar: HTMLElement) {
   if (!trigger) {
     throw new Error("Missing agent switch control");
   }
+  const value = sidebar.querySelector(".sidebar-workspace-header__main")
+    ? "agent:main"
+    : "scope:all";
   trigger.click();
-  await vi.waitFor(() => {
-    expect(sidebar.querySelector('[value="command:sidebar-agents"]')).not.toBeNull();
-  });
-  const item = sidebar.querySelector('[value="command:sidebar-agents"]');
-  sidebar
-    .querySelector(".sidebar-agent-menu")
-    ?.dispatchEvent(new CustomEvent("wa-select", { detail: { item }, bubbles: true }));
+  const selector = `.sidebar-agent-menu [value="${value}"]`;
+  await vi.waitFor(() => expect(sidebar.querySelector(selector)).not.toBeNull());
+  sidebar.querySelector<HTMLElement>(selector)?.click();
 }
 
 export async function selectFilter(sidebar: SidebarLifecycleState, value: string) {

@@ -2783,9 +2783,7 @@ wa-dropdown-item.sidebar-customize-menu__item {
   text-decoration: none;
 }
 
-/* The agent switcher marks its selection in the trailing details rail
-   (.session-menu__check), so the native leading checkmark is layout-only: it
-   reserved a column that pushed avatar rows out of the command rows' gutter. */
+/* Agent tiles use an avatar ring; command rows have no checked state. */
 .sidebar-agent-menu .sidebar-customize-menu__item::part(checkmark) {
   display: none;
 }
@@ -3438,9 +3436,16 @@ a:is(
 }
 
 .sidebar-workspace-header__mark {
+  display: grid;
+  place-items: center;
   width: var(--sidebar-agent-avatar-size);
   height: var(--sidebar-agent-avatar-size);
   flex: none;
+}
+
+.sidebar-workspace-header__mark > svg {
+  width: 24px;
+  height: 24px;
 }
 
 .sidebar-agent-card__avatar {
@@ -4017,7 +4022,6 @@ openclaw-tooltip.sidebar-hover-tooltip {
   min-width: 0;
   width: auto;
   justify-content: center;
-  /* Web Awesome's checkbox-adjacent host padding survives the hidden checkmark. */
   padding: 0 !important;
   color: var(--muted) !important;
   text-align: center;
@@ -4071,6 +4075,11 @@ wa-dropdown-item.sidebar-agent-menu__agent-switch:focus-visible {
     box-shadow 120ms ease,
     opacity 120ms ease,
     filter 120ms ease;
+}
+
+.sidebar-agent-menu__workspace-mark svg {
+  width: 32px;
+  height: 32px;
 }
 
 .sidebar-agent-menu__agent-tile .sidebar-agent-menu__agent-avatar .agent-select__avatar {
@@ -4147,9 +4156,7 @@ wa-dropdown-item.sidebar-agent-menu__agent-switch:focus-visible {
   gap: 3px;
 }
 
-/* The help flyout must escape the menu box, so the root stays
-   overflow-visible; the viewport bound moves to a flex column where only
-   the switcher list shrinks and scrolls (the action rows always fit). */
+/* Only the switcher list shrinks and scrolls; the action rows stay visible. */
 .sidebar-agent-menu {
   --agent-avatar-size: 48px;
   --agent-avatar-glyph-size: 25px;
