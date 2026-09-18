@@ -142,6 +142,10 @@ type PolicyTestWatch = {
 // discover from imports alone.
 const policyTestWatches = [
   {
+    testFile: "test/scripts/test-projects.test.ts",
+    watchGlobs: ["test/scripts/**/*.test.ts"],
+  },
+  {
     testFile: "test/scripts/pr-worktree-provision.test.ts",
     ownerGlobs: ["scripts/pr-lib/wrapper-components.txt"],
     watchGlobs: [
