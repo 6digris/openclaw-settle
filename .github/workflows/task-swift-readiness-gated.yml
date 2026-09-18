@@ -1,0 +1,184 @@
+name: Task Swift readiness gated proof
+
+on:
+  push:
+    branches: [codex/node-readiness-gated-proof-20260918]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: task-swift-readiness-gated-20260918
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  readiness:
+    if: github.repository == 'openclaw/openclaw' && github.run_attempt == 1
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - name: Checkout diagnostic candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Bind frozen inputs and failed job toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          proof_dir="$RUNNER_TEMP/swift-readiness-gated"
+          mkdir -p "$proof_dir"
+          private_tmp="$(getconf DARWIN_USER_TEMP_DIR)"
+          test -d "$private_tmp"
+          echo "TMPDIR=$private_tmp" >> "$GITHUB_ENV"
+          for xcode_app in /Applications/Xcode_26.6.app /Applications/Xcode-26.6.0.app; do
+            if [[ -d "$xcode_app/Contents/Developer" ]]; then
+              sudo xcode-select -s "$xcode_app/Contents/Developer"
+              break
+            fi
+          done
+          python3 - <<'PY' | tee "$proof_dir/input-equality.json"
+          import hashlib, json, subprocess
+          test_path = "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift"
+          workflow_path = ".github/workflows/task-swift-readiness-gated.yml"
+          records = subprocess.check_output(["git", "ls-tree", "-r", "-z", "HEAD"]).split(b"\0")
+          retained = [entry for entry in records if entry and entry.split(b"\t", 1)[1].decode() not in {test_path, workflow_path}]
+          digest = hashlib.sha256(b"\0".join(retained) + b"\0").hexdigest()
+          test_blob = subprocess.check_output(["git", "rev-parse", "HEAD:" + test_path], text=True).strip()
+          assert len(retained) == 45114, len(retained)
+          assert digest == "bcf4bf0068a73b98c47aa9e9b70584f9c51d308728c09e1b54c2eb9c18c38d22", digest
+          assert test_blob == "4f43aa152b22967c74af0f4391f22de586ad853f", test_blob
+          print(json.dumps({"base": "2e1eb1fc01679a7eccdef959e4baa5721bdb56c0", "retainedEntries": len(retained), "retainedTreeRecordSha256": digest, "testBlob": test_blob, "allowedProofAddition": workflow_path}, indent=2))
+          PY
+          {
+            git rev-parse HEAD 'HEAD^{tree}'
+            git status --short
+            sw_vers
+            xcodebuild -version
+            swift --version
+            sysctl hw.logicalcpu hw.memsize
+            shasum -a 256 \
+              .github/workflows/task-swift-readiness-gated.yml \
+              apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift \
+              apps/macos/Sources/OpenClaw/GatewayProcessManager.swift \
+              scripts/test-macos-native.mts
+          } | tee "$proof_dir/source-and-toolchain.txt"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(xcodebuild -version | tr '\n' ' ' | sed 's/ $//')" = "Xcode 26.6 Build version 17F113"
+          swift --version | head -n 1 | grep -F 'Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)'
+          git diff --exit-code
+
+      - name: Setup native test tooling dependencies
+        uses: ./.github/actions/setup-node-env
+        with:
+          node-version: "24.x"
+          cache-mode: restore
+          install-bun: "false"
+          install-deps: "true"
+
+      - name: Prepare Apple Mermaid assets
+        run: node scripts/prepare-apple-mermaid.mjs
+
+      - name: Build unchanged production with repaired test
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift build --package-path apps/macos --build-system native \
+            --enable-code-coverage --build-tests \
+            2>&1 | tee "$RUNNER_TEMP/swift-readiness-gated/green-build.log"
+          git diff --exit-code
+
+      - name: Run readiness owner and deadline siblings once
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/test-macos-native.mts default \
+            --package-path apps/macos --build-system native --enable-code-coverage \
+            --skip-build --experimental-maximum-parallelization-width 3 \
+            --filter 'GatewayProcessManagerTests|GatewayReadinessDeadlinePolicyTests' \
+            2>&1 | tee "$RUNNER_TEMP/swift-readiness-gated/green-tests.log"
+          git diff --exit-code
+
+      - name: Copy native sources and build into a private historical-regression fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          red_repo="$(mktemp -d "$RUNNER_TEMP/readiness-red.XXXXXX")"
+          echo "READINESS_RED_REPO=$red_repo" >> "$GITHUB_ENV"
+          # APFS clones have independent inodes; the finished green build stays unchanged.
+          cp -cR apps "$red_repo/apps"
+          python3 - "$red_repo" <<'PY'
+          import difflib, hashlib, json, os, pathlib, sys
+          relative = pathlib.Path("apps/macos/Sources/OpenClaw/GatewayProcessManager.swift")
+          green = pathlib.Path.cwd() / relative
+          red = pathlib.Path(sys.argv[1]) / relative
+          assert not os.path.samefile(green, red)
+          assert green.read_bytes() == red.read_bytes()
+          before = red.read_text()
+          current = "if await self.observeCurrentGatewayStart(generation: startGeneration) == true { return true }"
+          historical = "if let result = await self.observeCurrentGatewayStart(generation: startGeneration) { return result }"
+          assert before.count(current) == 1
+          after = before.replace(current, historical, 1)
+          red.write_text(after)
+          proof = pathlib.Path(os.environ["RUNNER_TEMP"]) / "swift-readiness-gated"
+          (proof / "historical-short-circuit.patch").write_text("".join(difflib.unified_diff(before.splitlines(keepends=True), after.splitlines(keepends=True), fromfile="a/" + str(relative), tofile="b/" + str(relative))))
+          (proof / "red-inputs.json").write_text(json.dumps({"redRepo": sys.argv[1], "productionOverlay": str(relative), "greenOwnerSha256": hashlib.sha256(green.read_bytes()).hexdigest(), "redOwnerSha256": hashlib.sha256(red.read_bytes()).hexdigest(), "historicalCommit": "ab5e10fd177071ea327de7573a094dff85f7caa6^", "overlay": "Restore only the old failed-owner result short circuit"}, indent=2) + "\n")
+          PY
+          git diff --exit-code
+
+      - name: Build only the private historical-regression fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift build --package-path "$READINESS_RED_REPO/apps/macos" --build-system native \
+            --enable-code-coverage --build-tests \
+            2>&1 | tee "$RUNNER_TEMP/swift-readiness-gated/red-build.log"
+          git diff --exit-code
+
+      - name: Require the repaired test to reject the historical short circuit
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          # The Swift Testing test ID contains literal backticks.
+          # shellcheck disable=SC2016
+          node scripts/test-macos-native.mts default \
+            --package-path "$READINESS_RED_REPO/apps/macos" --build-system native --enable-code-coverage \
+            --skip-build --experimental-maximum-parallelization-width 3 \
+            --filter 'GatewayProcessManagerTests/`readiness waiter rechecks after current owner fails past its timeout`' \
+            2>&1 | tee "$RUNNER_TEMP/swift-readiness-gated/red-tests.log"
+          proof_codes=("${PIPESTATUS[@]}")
+          set -e
+          test "${proof_codes[1]}" -eq 0
+          test "${proof_codes[0]}" -eq 1
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, re
+          proof = pathlib.Path(os.environ["RUNNER_TEMP"]) / "swift-readiness-gated"
+          log = (proof / "red-tests.log").read_text()
+          name = "readiness waiter rechecks after current owner fails past its timeout"
+          issues = [line for line in log.splitlines() if "recorded an issue at" in line]
+          assert len(issues) == 5, issues
+          assert all(name in line and "Expectation failed" in line for line in issues), issues
+          assert any("await readiness.value" in line for line in issues), issues
+          assert any("recoveryHealthRequests" in line for line in issues), issues
+          assert re.search(r'Test run with 1 test in 1 suite failed after .+ with 5 issues', log), log[-4000:]
+          assert "retained resources after incomplete launch/cleanup" not in log
+          assert "security delete-keychain failed" not in log
+          inputs = json.loads((proof / "red-inputs.json").read_text())
+          green_owner = pathlib.Path("apps/macos/Sources/OpenClaw/GatewayProcessManager.swift")
+          assert hashlib.sha256(green_owner.read_bytes()).hexdigest() == inputs["greenOwnerSha256"]
+          (proof / "result.json").write_text(json.dumps({"green": "readiness owner and deadline siblings passed", "red": "historical failed-owner short circuit rejected", "redIssues": len(issues), "sourceUnchanged": True, "nativeLauncherCleanup": "no incomplete-cleanup marker"}, indent=2) + "\n")
+          PY
+          git diff --exit-code
+
+      - name: Preserve diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: swift-readiness-gated-${{ github.sha }}
+          path: ${{ runner.temp }}/swift-readiness-gated
+          if-no-files-found: error
+          retention-days: 7
