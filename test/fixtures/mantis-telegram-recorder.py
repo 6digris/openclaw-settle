@@ -38,8 +38,8 @@ class Driver:
     client = Client()
     def resolve_chat(self, value):
         return 42
-    def send_text(self, chat, text):
-        if text != prompt:
+    def send_text(self, chat, text, reply_to=None, forum_topic_id=None):
+        if text != prompt or reply_to is not None or forum_topic_id is not None:
             raise RuntimeError("Unexpected sent action")
         self.client.pending.append({"@type": "updateNewMessage", "message": {"id": 2 << 20, "chat_id": 42, "sender_id": {"@type": "messageSenderUser", "user_id": 42}, "is_outgoing": False, "content": {"@type": "messageText", "text": {"text": reply, "entities": []}}}})
         return {"id": 1 << 20}
