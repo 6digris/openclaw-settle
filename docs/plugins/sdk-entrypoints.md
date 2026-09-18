@@ -101,6 +101,15 @@ restrict this bridge to native bootstrap documents and the configured
 Directory access does not grant reads of other files. The underlying bridge
 still enforces filesystem containment and returns the read's canonical source.
 
+The optional `skillResources` provider handles Skill reads separately from Agent
+document access. Its `readInstructions` reads the selected instruction file for
+Code Mode; `readSkillFiles` supplies a bundle for worker delivery. Gateway-owned
+bundled, plugin, Library, Workshop and user-level sources keep their Gateway paths.
+Workspace-owned sources use the remote provider. Gateway preserves source precedence
+and uses existing resource delivery for workers. Discovery assigns file ownership; a provider cannot
+request Gateway-local reads by returning a source label or `fileHost` value.
+Stopping the binding revokes retained host readers.
+
 OpenClaw packages `dist/worker/skills-worker-entry.js` for workspace adapters.
 Use `resolveWorkspaceWorkerArgv("memory" | "skills")` from
 `agent-workspace-runtime` to resolve worker arguments for source and installed
@@ -108,6 +117,10 @@ OpenClaw builds, then append the workspace path, home path and operation.
 The Skills worker runs native discovery in a dedicated process. Send one JSON
 request on stdin and read its JSON result on stdout. Use the same OpenClaw
 version on both sides; the authenticated adapter owns transport and source-root admission.
+
+`readWorkspaceSkillResources` lazily reuses the bounded native bundle reader.
+File-transfer adapters can check each file's requested and verified canonical paths
+before returning a bundle; admitting the Skill directory alone does not admit every child.
 
 The optional `memoryFiles` provider keeps workspace Memory files on the host while
 the native index, embedding providers and original sessions stay on Gateway. It
@@ -129,6 +142,14 @@ conflict handling; maintenance decisions, locks and SQLite state stay on Gateway
 A remote binding without maintenance support fails instead of using Gateway files.
 The file worker implements these operations and native change notifications.
 Paired-node adapter wiring is still required before a complete storage cutover.
+
+Hosts can provide `watchSkills(request, onChange, signal)` to notify the existing
+snapshot cache when admitted Skill sources change. Keep the subscription alive
+until aborted, and send `change` after the initial scan and later edits. Send
+`unavailable` if file watching stops: preparation then refreshes on each call,
+without reopening the subscription. Hosts without `watchSkills` use that same
+fallback. `skills.load.watch: false` disables the subscription and this fallback.
+Gateway watches Workshop locally under the same snapshot invalidation lifecycle.
 
 For generated files, register optional `outboundMedia` separately from the
 owner-document bridge. See [outbound workspace files](/plugins/sdk-agent-harness/core-ownership#outbound-workspace-files)

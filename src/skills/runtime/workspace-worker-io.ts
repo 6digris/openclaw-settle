@@ -1,4 +1,7 @@
-import type { Writable } from "node:stream";
+import { createInterface } from "node:readline";
+import type { Readable, Writable } from "node:stream";
+
+const MAX_REQUEST_BYTES = 12 * 1024 * 1024;
 
 // This is same-version subprocess IPC from the provisioned workspace adapter,
 // not a network endpoint. Native Skills owners validate operation semantics;
@@ -10,6 +13,43 @@ export function decodeSkillWorkerRequest(text: string): Record<string, unknown> 
   }
   // SAFETY: JSON.parse returned a non-null, non-array object; every property stays unknown.
   return value as Record<string, unknown>;
+}
+
+export function skillWorkerLines(input: Readable) {
+  let bytes = 0;
+  let parsedBytes = 0;
+  let overflow: Error | undefined;
+  const count = (chunk: Buffer | string) => {
+    bytes += Buffer.byteLength(chunk);
+    if (bytes > MAX_REQUEST_BYTES) {
+      overflow = new Error("Skill publication exceeds its byte limit");
+      input.destroy();
+      lines.close();
+    }
+  };
+  input.on("data", count);
+  const lines = createInterface({ input, crlfDelay: Infinity });
+  const iterator = lines[Symbol.asyncIterator]();
+  return {
+    async read(): Promise<Record<string, unknown>> {
+      const line = await iterator.next();
+      if (overflow) {
+        throw overflow;
+      }
+      if (line.done) {
+        throw new Error("Skill publication transport closed");
+      }
+      parsedBytes += Buffer.byteLength(line.value) + 1;
+      if (parsedBytes > MAX_REQUEST_BYTES) {
+        throw new Error("Skill publication exceeds its byte limit");
+      }
+      return decodeSkillWorkerRequest(line.value);
+    },
+    close() {
+      input.off("data", count);
+      lines.close();
+    },
+  };
 }
 
 export async function writeSkillWorkerResult(output: Writable, value: unknown): Promise<void> {

@@ -8,6 +8,7 @@ import { resolveSkillResourceCandidates } from "../../skills/runtime/resource-ca
 import { resolveCodeModeSkills, type CodeModeSkillReader } from "../code-mode-skills.js";
 import type { SandboxContext } from "../sandbox/types.js";
 import { isToolExecutionAllowed } from "../tool-policy-shared.js";
+import { getAgentWorkspaceAccess, WorkspaceAccessUnavailableError } from "../workspace-access.js";
 import type { EmbeddedRunAttemptParams } from "./run/types.js";
 import {
   createSandboxPromptEntryLoader,
@@ -131,10 +132,25 @@ export async function prepareEmbeddedSkills(params: {
           ).toString("utf8");
         }
       : undefined;
+    const workspaceAccess =
+      params.includeCodeModeSkills && !sandbox?.enabled
+        ? getAgentWorkspaceAccess(skillsWorkspaceDir)
+        : undefined;
+    const workspaceSkillReader: CodeModeSkillReader | undefined = workspaceAccess
+      ? async ({ location, signal }) => {
+          if (!workspaceAccess.skillResources) {
+            throw new WorkspaceAccessUnavailableError(
+              "Remote workspace skill reads are unavailable",
+            );
+          }
+          return await workspaceAccess.skillResources.readInstructions(location, { signal });
+        }
+      : undefined;
+    const candidates = skillsSnapshot?.resolvedSkills ?? skillEntries.map((entry) => entry.skill);
     const codeModeSkills = params.includeCodeModeSkills
       ? resolveCodeModeSkills({
           skillsPrompt,
-          candidates: skillsSnapshot?.resolvedSkills ?? skillEntries.map((entry) => entry.skill),
+          candidates,
           reader: sandboxSkillReader,
         })
       : [];
@@ -143,6 +159,21 @@ export async function prepareEmbeddedSkills(params: {
     const skillReadResources = params.sandbox?.enabled
       ? undefined
       : resolveSkillResourceCandidates(skillsSnapshot);
+    if (workspaceSkillReader) {
+      for (const skill of codeModeSkills) {
+        // Library and Workshop files retain Gateway ownership in a remote workspace.
+        if (
+          !skillsSnapshot?.librarySelections?.some((selection) => selection.name === skill.name) &&
+          !candidates.some(
+            (candidate) =>
+              candidate.filePath === skill.source.filePath && candidate.fileHost === "gateway",
+          )
+        ) {
+          skill.reader = ({ signal }) =>
+            workspaceSkillReader({ location: skill.source.filePath, signal });
+        }
+      }
+    }
     return {
       restoreSkillEnv,
       skillReadResources,

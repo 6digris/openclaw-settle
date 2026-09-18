@@ -9,3 +9,11 @@ export function resolveWorkspaceWorkerArgv(kind: "memory" | "skills"): string[] 
       : runtimeProcessEntrypoints.workspaceSkills;
   return resolveRuntimeWorkerArgv(resolveRuntimeWorkerUrl(entry));
 }
+
+/** Reuse the native bounded Skill reader with host-owned per-file authorization. */
+export async function readWorkspaceSkillResources(
+  ...args: Parameters<typeof import("../skills/runtime/resources.js").readSkillResourceFiles>
+) {
+  const { readSkillResourceFiles } = await import("../skills/runtime/resources.js");
+  return readSkillResourceFiles(...args);
+}

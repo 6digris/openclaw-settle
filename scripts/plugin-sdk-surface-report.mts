@@ -383,7 +383,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +2: approved reply attachment preparation exports.
       // +4: workspace Memory file access and worker exports.
       // +1: shared workspace bootstrap file policy.
-      4496,
+      // +1: host workspace Skill resource reader.
+      4497,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -529,7 +530,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +2: approved reply attachment preparation callables.
       // +3: workspace Memory file access and worker callables.
       // +1: shared workspace bootstrap file policy.
-      2658,
+      // +1: host workspace Skill resource reader.
+      2659,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
