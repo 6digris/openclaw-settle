@@ -1586,8 +1586,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           );
           if (usesTwoWorkerPacking(originalHybridJob)) {
             expect(
-              usesTwoWorkerPacking(shard) ||
-                retained.env?.OPENCLAW_VITEST_MAX_WORKERS === "2",
+              usesTwoWorkerPacking(shard) || retained.env?.OPENCLAW_VITEST_MAX_WORKERS === "2",
             ).toBe(true);
             const { env: originalEnv, ...originalPolicy } = original;
             const { env: retainedEnv, ...retainedPolicy } = retained;
