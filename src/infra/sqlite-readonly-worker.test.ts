@@ -48,7 +48,6 @@ vi.mock("../logging/subsystem.js", async (importOriginal) => {
 vi.mock("node:child_process", async (importOriginal) => {
   const { promisify } = await import("node:util");
   const actual = await importOriginal<typeof import("node:child_process")>();
-  const { promisify } = await import("node:util");
   const execFileSpy = vi.fn(actual.execFile);
   Object.defineProperty(
     execFileSpy,

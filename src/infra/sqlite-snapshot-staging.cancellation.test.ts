@@ -22,7 +22,6 @@ const processMocks = vi.hoisted(() => ({
 vi.mock("node:child_process", async (importOriginal) => {
   const { promisify } = await import("node:util");
   const actual = await importOriginal<typeof import("node:child_process")>();
-  const { promisify } = await import("node:util");
   processMocks.execFile.mockImplementation(actual.execFile);
   Object.defineProperty(
     processMocks.execFile,
