@@ -22,6 +22,33 @@ if (
         () => {
           process.channel?.unref();
           if (accepted) {
+            if (owner.searchParams.get("signalListeners") === "1") {
+              try {
+                const { createHash } = process.getBuiltinModule("node:crypto");
+                const listeners = process.listeners("SIGINT");
+                const rawListeners = process.rawListeners("SIGINT");
+                process.send(
+                  {
+                    type: "openclaw-startup-benchmark:signal-listeners",
+                    signal: "SIGINT",
+                    pid: process.pid,
+                    listenerCount: listeners.length,
+                    truncated: listeners.length > 64,
+                    listeners: listeners.slice(0, 64).map((listener, index) => ({
+                      index,
+                      name: listener.name.slice(0, 128),
+                      once: rawListeners[index] !== listener,
+                      sha256: createHash("sha256")
+                        .update(Function.prototype.toString.call(listener))
+                        .digest("hex"),
+                    })),
+                  },
+                  () => {},
+                );
+              } catch {
+                // Missing diagnostic delivery stays unknown; it must not prevent normal dispatch.
+              }
+            }
             process.emit("SIGINT");
           }
         },

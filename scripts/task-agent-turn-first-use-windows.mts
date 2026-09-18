@@ -58,6 +58,24 @@ const checkpointSchema = z
   .passthrough();
 type Sample = z.infer<typeof sampleSchema>;
 
+const stopListenersSchema = z.object({
+  type: z.literal("openclaw-startup-benchmark:signal-listeners"),
+  signal: z.literal("SIGINT"),
+  pid: z.number().int().positive(),
+  listenerCount: z.number().int().nonnegative(),
+  truncated: z.boolean(),
+  listeners: z
+    .array(
+      z.object({
+        index: z.number().int().nonnegative().max(63),
+        name: z.string().max(128),
+        once: z.boolean(),
+        sha256: z.string().regex(/^[a-f0-9]{64}$/),
+      }),
+    )
+    .max(64),
+});
+
 const FRESH_TIMEOUT_MS = 180_000;
 const RESTART_TIMEOUT_MS = 60_000;
 const STOP_TIMEOUT_MS = 60_000;
@@ -327,6 +345,7 @@ async function runSample(params: {
   const stopPreload = new URL("./lib/gateway-bench-stop-preload.mjs", import.meta.url);
   stopPreload.searchParams.set("parentPid", String(process.pid));
   stopPreload.searchParams.set("entry", params.entry);
+  stopPreload.searchParams.set("signalListeners", "1");
   const startedAt = performance.now();
   const child = spawn(
     process.execPath,
@@ -362,6 +381,35 @@ async function runSample(params: {
   const closed = new Promise<void>((resolve) => {
     child.once("close", () => resolve());
   });
+  const onStopListeners = (message: unknown) => {
+    if (
+      typeof message !== "object" ||
+      message === null ||
+      !("type" in message) ||
+      message.type !== "openclaw-startup-benchmark:signal-listeners"
+    ) {
+      return;
+    }
+    const parsed = stopListenersSchema.safeParse(message);
+    if (!parsed.success) {
+      sample.errors.push("Invalid stop listener diagnostic");
+      return;
+    }
+    const value = parsed.data;
+    if (
+      value.pid !== child.pid ||
+      value.listeners.length !== Math.min(value.listenerCount, 64) ||
+      value.truncated !== value.listenerCount > 64 ||
+      value.listeners.some((listener, index) => listener.index !== index) ||
+      sample.observations.stopSignalListeners !== undefined
+    ) {
+      sample.errors.push("Inconsistent or duplicate stop listener diagnostic");
+      return;
+    }
+    observe(sample, "stopSignalListeners", value);
+  };
+  child.on("message", onStopListeners);
+  child.once("close", () => child.off("message", onStopListeners));
   const buffers = { stdout: "", stderr: "" };
   for (const stream of ["stdout", "stderr"] as const) {
     const pipe = child[stream];
@@ -428,6 +476,11 @@ async function runSample(params: {
       } finally {
         clearTimeout(timer);
       }
+    }
+    if (sample.observations.stopSignalListeners === undefined) {
+      sample.errors.push(
+        "Stop listener diagnostic not received; listener ownership remains unknown",
+      );
     }
     sample.outcome = sample.errors.length ? "failed" : "passed";
   }
@@ -579,6 +632,7 @@ async function runTaskFirstUse(options: InstalledOptions): Promise<number> {
   const samples = plan;
   const report = {
     artifactKind: "task-installed-internal-first-use",
+    diagnostic: "sigint-listeners-before-stop",
     mock: mockEvidence,
     outcome: "running",
     input,
@@ -603,6 +657,8 @@ async function runTaskFirstUse(options: InstalledOptions): Promise<number> {
       totalMemory: os.totalmem(),
     },
     limitations: [
+      "Stop listener diagnostic only; timings do not qualify a performance comparison",
+      "Listener hashes identify callback source, not which callback caused process exit",
       "Fresh is the first Gateway launch after fixture plugin installation, not empty state or cold filesystem",
       "Public runtime.subagent facade only; ordinary chat is not represented",
       "One synthetic local model, tools disabled; cold and warm are separate new sessions per process",
