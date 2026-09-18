@@ -44,9 +44,7 @@ afterEach(() => resetPluginStateStoreForTests());
 describe("registered Codex harness model attribution", () => {
   it.each(["completed", "timed out"] as const)("attributes models (%s)", async (outcome) => {
     // Protocol events own completion; host load must not spend the attempt watchdog.
-    if (outcome === "timed out") {
-      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
-    }
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const params = createTestParams();
     // Supervision replaces the helper model; this fixture supplies no host tools.
     params.hostCapabilities = Object.freeze({
@@ -332,12 +330,18 @@ describe("registered Codex harness model attribution", () => {
         expect(requests.filter(({ method }) => method === "thread/inject_items")).toHaveLength(1);
       }
     } finally {
-      vi.useRealTimers();
-      abort.abort("test cleanup");
-      await transport.client.closeAndWait();
-      await Promise.allSettled([run]);
-      await registered.dispose?.();
-      vi.useRealTimers();
+      try {
+        abort.abort("test cleanup");
+        await transport.client.closeAndWait();
+        await Promise.allSettled([run]);
+        const disposing = registered.dispose?.();
+        const disposed = vi.fn();
+        void Promise.resolve(disposing).then(disposed, disposed);
+        await vi.waitFor(() => expect(disposed).toHaveBeenCalledOnce(), fastWait);
+        await disposing;
+      } finally {
+        vi.useRealTimers();
+      }
     }
   });
 });
