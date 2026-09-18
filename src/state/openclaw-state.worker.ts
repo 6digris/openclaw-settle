@@ -30,7 +30,7 @@ import {
 } from "../gateway/managed-image-record-store.kernel.js";
 import { readDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
 import { countFailedDeliveryQueueEntriesInDatabase } from "../infra/delivery-queue-sqlite.kernel.js";
-import { readDeviceAuthTokensFromDatabase } from "../infra/device-auth-store.kernel.js";
+import * as deviceAuth from "../infra/device-auth-store.kernel.js";
 import { executePromotionCommand } from "../infra/promotions-feed.worker.js";
 import {
   readApnsRegistrationFromDatabase,
@@ -46,6 +46,7 @@ import {
 } from "../infra/sqlite-file-generation.js";
 import { assertTransactionUsable } from "../infra/sqlite-transaction.js";
 import type { SqliteWorkerBackend } from "../infra/sqlite-worker-contract.js";
+import { requestSqliteWorkerOperationAdmission } from "../infra/sqlite-worker-operation-admission.js";
 import { getSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import {
   countRecentTelemetrySessionsInDatabase,
@@ -344,9 +345,21 @@ function createSharedStateWorkerBackend(
           }) ?? { state: {}, basis: {} }
         );
       }
+      if (command.type === "deviceAuth.read" || command.type === "deviceAuth.readOrigin") {
+        const read = (db: OpenClawStateDatabase["db"]) =>
+          command.type === "deviceAuth.read"
+            ? deviceAuth.readDeviceAuthTokenObservationFromDatabase(db, command.input)
+            : deviceAuth.readOriginDeviceTokenObservationFromDatabase(db, command.input);
+        return command.input.readOnly
+          ? (withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(({ db }) => read(db), {
+              path: context.databasePath,
+              env: getSqliteWorkerStateContext().environment,
+            }) ?? { entry: null, expectedToken: null })
+          : read(open().db);
+      }
       const database = open();
       if (command.type === "deviceAuth.list") {
-        return readDeviceAuthTokensFromDatabase(database.db, command.input);
+        return deviceAuth.readDeviceAuthTokensFromDatabase(database.db, command.input);
       }
       switch (command.type) {
         case "transcripts.sessionEntries":
@@ -438,6 +451,26 @@ function createSharedStateWorkerBackend(
         path: context.databasePath,
         env: getSqliteWorkerStateContext().environment,
       };
+      if (
+        command.type === "deviceAuth.store" ||
+        command.type === "deviceAuth.storeOrigin" ||
+        command.type === "deviceAuth.clear" ||
+        command.type === "deviceAuth.clearOrigin"
+      ) {
+        return runOpenClawStateWriteTransaction(({ db }) => {
+          requestSqliteWorkerOperationAdmission({ stage: "transaction", facts: undefined });
+          const result =
+            command.type === "deviceAuth.store"
+              ? deviceAuth.storeDeviceAuthTokenInDatabase(db, command.input)
+              : command.type === "deviceAuth.storeOrigin"
+                ? deviceAuth.storeOriginDeviceTokenInDatabase(db, command.input)
+                : command.type === "deviceAuth.clear"
+                  ? deviceAuth.clearDeviceAuthTokenFromDatabase(db, command.input)
+                  : deviceAuth.clearOriginDeviceTokenInDatabase(db, command.input);
+          requestSqliteWorkerOperationAdmission({ stage: "commit", facts: undefined });
+          return result;
+        }, writeOptions);
+      }
       if (
         command.type === "fleet.cell.reserve" ||
         command.type === "fleet.cell.updateImage" ||

@@ -169,6 +169,7 @@ export function renderNewSessionDraftComposer(options: {
         }),
     permissionControl: options.permissionControl,
     pendingAttachmentReads: options.attachmentDraft.pendingReads,
+    attachmentReads: options.attachmentDraft.reads,
     readSignal,
     requiresModifier: options.requiresModifier,
     requestUpdate: options.requestUpdate,

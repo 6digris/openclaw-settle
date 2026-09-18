@@ -2,6 +2,7 @@ import type { nothing, TemplateResult } from "lit";
 import type { ImageLightboxItem } from "../../components/image-lightbox.types.ts";
 import type { ChatAttachment, HumanMention } from "../../lib/chat/chat-types.ts";
 import type { SessionToolOverrides } from "../../lib/sessions/patch.ts";
+import type { ChatAttachmentReadLifecycle } from "../chat/components/chat-attachment-reads.ts";
 import type { HumanMentionDirectory } from "../chat/components/chat-composer-mention-menu.ts";
 import type { CapabilityMenuProps } from "../chat/components/chat-composer-types.ts";
 import type { NewSessionComposerTextareaController } from "./composer-controller.ts";
@@ -10,6 +11,7 @@ import type { NewSessionVisibility } from "./create-params.ts";
 export type NewSessionComposerOptions = {
   renderCritters: (floorEnabled: boolean) => TemplateResult | typeof nothing;
   attachmentLimits?: { maxBytes: number; maxImageBytes: number };
+  attachmentReads?: ChatAttachmentReadLifecycle;
   attachments: ChatAttachment[];
   canSubmit: boolean;
   getAttachments: () => ChatAttachment[];

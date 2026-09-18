@@ -718,7 +718,9 @@ suite.define(() => {
         { name: "first.txt", mimeType: "text/plain", buffer: Buffer.alloc(200, 0x61) },
         { name: "second.txt", mimeType: "text/plain", buffer: Buffer.alloc(200, 0x62) },
       ]);
-      await expect.poll(() => page.locator(".chat-attachment-thumb").count()).toBe(2);
+      await expect
+        .poll(() => page.locator('.chat-attachment-thumb[aria-busy="false"]').count())
+        .toBe(2);
 
       await composer.press("Enter");
 

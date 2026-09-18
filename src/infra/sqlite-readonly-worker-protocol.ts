@@ -19,6 +19,7 @@ export type SqliteReadOnlyWorkerResult =
 export type SqliteAuthProfileRows = { store: unknown; state: unknown };
 export type SqliteAuthProfileReadOptions = {
   mode: "auth-profile-rows";
+  source: "canonical" | "snapshot";
   expectedIdentity: string;
   env: NodeJS.ProcessEnv;
   coordinatorRuntime: StateDatabaseCoordinatorRuntime;

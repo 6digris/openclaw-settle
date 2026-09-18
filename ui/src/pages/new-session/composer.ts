@@ -255,6 +255,7 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
     emojiMenu.close();
   }
   const attachmentProps = {
+    attachmentReads: options.attachmentReads,
     attachmentLimits: options.attachmentLimits,
     attachments: options.attachments,
     disabled: composerLocked,
