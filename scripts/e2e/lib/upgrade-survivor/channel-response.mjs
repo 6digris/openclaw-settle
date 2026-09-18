@@ -77,7 +77,7 @@ function projection() {
     channel: config.channels?.clickclack,
     plugin: config.plugins?.entries?.clickclack,
     allow: config.plugins?.allow,
-    deny: config.plugins?.deny,
+    ...(Object.hasOwn(config.plugins ?? {}, "deny") ? { deny: config.plugins.deny } : {}),
     provider: config.plugins?.entries?.openai,
     update: config.update,
     load: config.plugins?.load,
