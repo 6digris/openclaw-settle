@@ -2,10 +2,9 @@
 import { Writable } from "node:stream";
 import { theme } from "../../../packages/terminal-core/src/theme.js";
 import { isGatewayServiceEnv, resolveGatewayProfileSuffix } from "../../daemon/constants.js";
-import { resolveLaunchAgentLabel } from "../../daemon/launchd-label.js";
-import { resolveTaskName } from "../../daemon/schtasks-layout.js";
 import { ScheduledTaskInspectionError } from "../../daemon/schtasks-state-probe.js";
 import { ScheduledTaskAutoStartRecoveryError } from "../../daemon/schtasks-update-recovery.js";
+import { resolveManagedGatewayServiceIdentity } from "../../daemon/service-candidates.js";
 import { ServiceInspectionError } from "../../daemon/service-inspection-error.js";
 import { withGatewayServiceOperationLock } from "../../daemon/service-operation-lock.js";
 import {
@@ -13,7 +12,6 @@ import {
   type GatewayServiceState,
 } from "../../daemon/service-types.js";
 import { readGatewayServiceState, resolveGatewayService } from "../../daemon/service.js";
-import { resolveSystemdServiceName } from "../../daemon/systemd-service-files.js";
 import { isCurrentManagedServiceUpdateHandoffProcess } from "../../infra/update-managed-service-handoff.js";
 import { getUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
@@ -73,12 +71,6 @@ function matchesStoppedService(
 ): boolean {
   const verdict = before.serviceUpdateVerdict;
   const refreshDefinition = verdict?.kind === "owned" && verdict.refreshDefinition;
-  const resolveName =
-    process.platform === "darwin"
-      ? resolveLaunchAgentLabel
-      : process.platform === "win32"
-        ? resolveTaskName
-        : resolveSystemdServiceName;
   // Explicit default metadata selects the same manager; protected command hashes
   // still pin the effective launcher and its environment through normalization.
   // Stable 2026.9.2/2026.9.3 handoffs omit the UID; compare it when recorded.
@@ -89,7 +81,8 @@ function matchesStoppedService(
     "fingerprint" in verdict &&
     resolveGatewayProfileSuffix(before.serviceEnv.OPENCLAW_PROFILE) ===
       resolveGatewayProfileSuffix(state.env.OPENCLAW_PROFILE) &&
-    resolveName(before.serviceEnv) === resolveName(state.env) &&
+    resolveManagedGatewayServiceIdentity(before.serviceEnv) ===
+      resolveManagedGatewayServiceIdentity(state.env) &&
     (process.platform !== "linux" ||
       before.serviceManagerUid === undefined ||
       before.serviceManagerUid === observedSystemdManagerUid(state)) &&

@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { getWindowsPowerShellExePath } from "../infra/windows-install-roots.js";
+import { findGatewayServices } from "./inspect.js";
 import { execSchtasks } from "./schtasks-exec.js";
 import {
   buildHiddenLauncherScript,
@@ -14,6 +15,7 @@ import {
   writeTaskXmlTempFile,
 } from "./schtasks-layout.js";
 import {
+  listScheduledTasks,
   probeScheduledTaskState,
   readScheduledTaskBatterySettingsUpgrade,
 } from "./schtasks-state-probe.js";
@@ -131,6 +133,9 @@ it.skipIf(process.platform !== "win32").each(["current", "published"])(
         enabled: false,
         actions: [action],
       });
+      expect(listScheduledTasks().find((task) => task.taskPath === taskName)).toMatchObject({
+        actions: [action],
+      });
       await expect(
         readScheduledTaskCommand(
           { ...process.env, ...environment },
@@ -156,6 +161,11 @@ it.skipIf(process.platform !== "win32").each(["current", "published"])(
         sourcePath: scriptPath,
         environment,
       });
+      const inventory = await findGatewayServices({ ...process.env, ...environment });
+      expect(inventory.errors).toEqual([]);
+      expect(inventory.services).toContainEqual(
+        expect.objectContaining({ label: taskName, marker: "openclaw" }),
+      );
       const nativeBefore = readNativePolicy();
       const upgrade = readScheduledTaskBatterySettingsUpgrade(taskName);
       expect(upgrade).toBeDefined();

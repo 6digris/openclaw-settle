@@ -330,6 +330,7 @@ function assertStaticTaskPath(value: string): void {
 
 async function readTaskLauncher(
   launcherPath: string,
+  onLauncherContent?: (content: string) => void,
   startup = false,
 ): Promise<{ scriptPath: string; content?: string }> {
   assertStaticTaskPath(launcherPath);
@@ -340,6 +341,7 @@ async function readTaskLauncher(
     throw new Error("Unsupported Scheduled Task action");
   }
   const content = decodeWindowsLauncherScript({ buffer: await fs.readFile(launcherPath) });
+  onLauncherContent?.(content);
   const cmd = /\.cmd$/i.test(launcherPath);
   const lines = content
     .split(/\r?\n/)
@@ -385,13 +387,17 @@ async function readTaskLauncher(
   return { scriptPath, content };
 }
 
-async function readTaskLaunchers(env: GatewayServiceEnv, actionPath?: string) {
+async function readTaskLaunchers(
+  env: GatewayServiceEnv,
+  actionPath?: string,
+  onLauncherContent?: (content: string) => void,
+) {
   const launchers: Array<{ pathname: string; scriptPath: string; content?: string }> = [];
   for (const pathname of actionPath === undefined ? resolveStartupEntryPaths(env) : [actionPath]) {
     try {
       launchers.push({
         pathname,
-        ...(await readTaskLauncher(pathname, actionPath === undefined)),
+        ...(await readTaskLauncher(pathname, onLauncherContent, actionPath === undefined)),
       });
     } catch (error) {
       if (actionPath !== undefined || !hasErrnoCode(error, "ENOENT")) {
@@ -410,7 +416,7 @@ async function readTaskLaunchers(env: GatewayServiceEnv, actionPath?: string) {
 
 export async function readScheduledTaskCommand(
   env: GatewayServiceEnv,
-  options?: GatewayServiceReadOptions,
+  options?: GatewayServiceReadOptions & { onLauncherContent?: (content: string) => void },
 ): Promise<GatewayServiceCommandConfig | null> {
   const requireEffective = options?.requireEffective || options?.requireLoaded;
   try {
@@ -436,7 +442,9 @@ export async function readScheduledTaskCommand(
     if (action?.workingDirectory) {
       assertStaticTaskPath(action.workingDirectory);
     }
-    const launchers = registered ? await readTaskLaunchers(env, action?.path) : undefined;
+    const launchers = registered
+      ? await readTaskLaunchers(env, action?.path, options?.onLauncherContent)
+      : undefined;
     const assertRegistrationCurrent = async (source?: { path: string; content: string }) => {
       if (!registered) {
         return;
@@ -470,6 +478,7 @@ export async function readScheduledTaskCommand(
     }
     const scriptPath = launchers?.[0]?.scriptPath ?? resolveTaskScriptPath(env);
     const content = decodeWindowsLauncherScript({ buffer: await fs.readFile(scriptPath) });
+    options?.onLauncherContent?.(content);
     let workingDirectory = action?.workingDirectory ?? "";
     let commandLine = "";
     const environment: Record<string, string> = {};
