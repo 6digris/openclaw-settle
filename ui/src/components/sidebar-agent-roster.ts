@@ -13,7 +13,10 @@ import { newSessionSearch } from "../pages/new-session/location.ts";
 import type { AppSidebarRenderHost } from "./app-sidebar-render.ts";
 import { renderSessionListFrame, renderSessionSection } from "./app-sidebar-session-list-render.ts";
 import type { SidebarVisibleSections } from "./app-sidebar-session-projection.ts";
-import type { SessionListHost } from "./app-sidebar-session-row-render.ts";
+import {
+  renderSidebarSessionIndicators,
+  type SessionListHost,
+} from "./app-sidebar-session-row-render.ts";
 import { icons } from "./icons.ts";
 import { renderAgentIdentityAvatar } from "./identity-avatar-view.ts";
 import { renderNewSessionLink } from "./new-session-link.ts";
@@ -99,22 +102,21 @@ class SidebarAgentRoster extends AgentRosterElement {
                 section.id.startsWith(`agent:${card.id}:`),
               );
               const hasSessions = sections.some((section) => section.rows.length > 0);
-              const navigation = this.host.getSessionNavigationState();
               const mainKey = this.host.selectedAgentMainSessionKey(card.id);
               const active =
                 isSessionRouteId(this.host.activeRouteId) &&
                 areUiSessionKeysEquivalent(this.host.getRouteSessionKey(), mainKey);
-              const mainRow =
-                this.host.mainSessionRow(card.id) ??
-                navigation.visibleSessionRows.find((row) =>
-                  areUiSessionKeysEquivalent(row.key, mainKey),
-                );
-              const main =
-                [...this.host.rosterMainSessions.values()].find((row) =>
-                  areUiSessionKeysEquivalent(row.key, mainKey),
-                ) ?? navigation.toSidebarSession(mainRow ?? { key: mainKey, kind: "direct" });
+              const main = [...this.host.rosterMainSessions.values()].find((row) =>
+                areUiSessionKeysEquivalent(row.key, mainKey),
+              );
               const summaryRows = collapsed ? sections.flatMap((section) => section.rows) : [];
-              const signalRows = [main, ...summaryRows];
+              const signalRows = main ? [main, ...summaryRows] : summaryRows;
+              const teamSummary: Parameters<typeof renderTeamSessionSlots> = [
+                signalRows,
+                true,
+                summaryRows.length,
+                signalRows.reduce((count, row) => count + (row.workspaceConflictCount ?? 0), 0),
+              ];
               return html`<section
                 class="sidebar-agent-roster__group"
                 data-agent-group=${card.id}
@@ -156,15 +158,12 @@ class SidebarAgentRoster extends AgentRosterElement {
                     <span class="sidebar-agent-roster__copy"><span>${card.name}</span></span>
                   </a>
                   <span class="sidebar-agent-roster__signals">
-                    ${renderTeamSessionSlots(
-                      signalRows,
-                      true,
-                      summaryRows.length,
-                      signalRows.reduce(
-                        (count, row) => count + (row.workspaceConflictCount ?? 0),
-                        0,
-                      ),
-                    )}
+                    ${
+                      main
+                        ? renderSidebarSessionIndicators(this.host, main, undefined, teamSummary)
+                            .content
+                        : renderTeamSessionSlots(...teamSummary)
+                    }
                   </span>
                   <span
                     class="sidebar-agent-roster__actions"

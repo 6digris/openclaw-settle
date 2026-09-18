@@ -1,5 +1,7 @@
+import type { LitElement } from "lit";
 import { expect, it } from "vitest";
 import type { AgentsListResult, GatewaySessionRow, SessionsListResult } from "../api/types.ts";
+import type { AppSidebarSessionNavigationElement } from "../components/app-sidebar-session-navigation.ts";
 import { installMockGateway, waitForControlUiRoute } from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 import { captureSidebarUiProof } from "./sidebar-customization.test-support.ts";
@@ -453,4 +455,142 @@ suite.define(() => {
       },
     );
   });
+
+  it.each([false, true])(
+    "keeps main-chat identity, activity, metadata and actions visible (touch=%s)",
+    async (touch) => {
+      await suite.withPage(
+        { viewport: { width: 390, height: 900 }, hasTouch: touch, isMobile: touch },
+        async ({ page }) => {
+          const mainKey = "agent:forge:main";
+          const agentsList: AgentsListResult = {
+            defaultId: "main",
+            mainKey: "main",
+            scope: "per-sender",
+            agents: [
+              { id: "main", name: "Harbor" },
+              { id: "forge", name: "Forge" },
+            ],
+          };
+          await installMockGateway(page, {
+            sessions: [
+              { key: "agent:main:main", kind: "direct", agentId: "main", isMain: true },
+              {
+                key: mainKey,
+                kind: "direct",
+                agentId: "forge",
+                isMain: true,
+                hasActiveRun: true,
+                status: "running",
+                unread: true,
+                incognito: true,
+                owner: { actor: { type: "human", id: "profile-riley", label: "Riley" } },
+              },
+            ],
+            methodResponses: { "agents.list": agentsList },
+          });
+          await page.goto(`${suite.server.baseUrl}chat`);
+          await waitForControlUiRoute(page, { routeId: "chat" });
+          const drawer = page
+            .locator(".topbar-nav-toggle:visible,.chat-pane__nav-toggle:visible")
+            .first();
+          if ((await drawer.getAttribute("aria-expanded")) === "false") {
+            await drawer.click();
+          }
+          const sidebar = page.locator("openclaw-app-sidebar");
+          await sidebar.locator(".sidebar-agent-card__main").click();
+          await sidebar.locator('.sidebar-agent-menu [value="scope:all"]').click();
+          const header = sidebar.locator(
+            '[data-agent-group="forge"] .sidebar-agent-roster__header',
+          );
+          await header.waitFor({ state: "visible" });
+          const selectors = [".session-glyph--running", ".session-unread-dot"];
+          const expectSignals = async () => {
+            for (const selector of selectors) {
+              await expect.poll(() => header.locator(selector).isVisible()).toBe(true);
+            }
+          };
+          await page.mouse.move(389, 899);
+          await expectSignals();
+          const action = header.locator('button[slot="trigger"]');
+          await action.focus();
+          await expectSignals();
+          const boxes = await sidebar.evaluate(async (element, key) => {
+            const host = element as AppSidebarSessionNavigationElement;
+            const main = host.rosterMainSessions.get(key);
+            if (!main) {
+              throw new Error("Missing projected Forge main session");
+            }
+            // The shell owns draft/outbox callbacks. Supply their projected facts
+            // at the renderer boundary to exercise dense metadata geometry.
+            host.sessionOwnershipVisible = true;
+            host.rosterMainSessions = new Map(host.rosterMainSessions).set(key, {
+              ...main,
+              hasComposerDraft: true,
+              outboxAttentionCount: 2,
+              pullRequest: { numbers: [103], state: "open" },
+            });
+            const roster = host.querySelector<LitElement>("openclaw-sidebar-agent-roster")!;
+            roster.requestUpdate();
+            await roster.updateComplete;
+            const header = roster.querySelector(
+              '[data-agent-group="forge"] .sidebar-agent-roster__header',
+            )!;
+            const box = (element: Element) => {
+              const rect = element.getBoundingClientRect();
+              return {
+                left: rect.left,
+                right: rect.right,
+                top: rect.top,
+                bottom: rect.bottom,
+              };
+            };
+            const name = header.querySelector<HTMLElement>(".sidebar-agent-roster__copy > span")!;
+            return {
+              header: box(header),
+              signals: box(header.querySelector(".sidebar-agent-roster__signals")!),
+              actions: box(header.querySelector(".sidebar-agent-roster__actions")!),
+              nameFits: name.clientWidth > 0 && name.scrollWidth <= name.clientWidth,
+              badges: [...header.querySelectorAll(".session-row-badge, .session-owner-chip")].map(
+                (badge) => ({
+                  label: badge.getAttribute("aria-label"),
+                  visible: badge.checkVisibility({ checkVisibilityCSS: true, checkOpacity: true }),
+                  box: box(badge),
+                }),
+              ),
+            };
+          }, mainKey);
+          expect(boxes.nameFits).toBe(true);
+          expect(
+            boxes.signals.right <= boxes.actions.left ||
+              boxes.actions.right <= boxes.signals.left ||
+              boxes.signals.bottom <= boxes.actions.top ||
+              boxes.actions.bottom <= boxes.signals.top,
+          ).toBe(true);
+          expect(boxes.badges.map((badge) => badge.label)).toEqual(
+            expect.arrayContaining([
+              "Created by Riley",
+              "Incognito session",
+              "#103 · Open",
+              "2 messages need attention",
+              "Unsent draft",
+            ]),
+          );
+          for (const badge of boxes.badges) {
+            expect(badge.visible).toBe(true);
+          }
+          for (const box of [
+            boxes.actions,
+            boxes.signals,
+            ...boxes.badges.map((badge) => badge.box),
+          ]) {
+            expect(box.left).toBeGreaterThanOrEqual(boxes.header.left);
+            expect(box.right).toBeLessThanOrEqual(boxes.header.right);
+            expect(box.top).toBeGreaterThanOrEqual(boxes.header.top);
+            expect(box.bottom).toBeLessThanOrEqual(boxes.header.bottom);
+          }
+        },
+      );
+    },
+  );
 });

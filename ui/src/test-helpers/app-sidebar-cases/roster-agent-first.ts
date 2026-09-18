@@ -106,10 +106,20 @@ describe("AppSidebar agent roster", () => {
   );
 
   it("keeps main-session activity on the agent row without an empty collapse control", async () => {
-    const { sidebar } = await mountRoster(roster, [
-      session("working", 10, { hasActiveRun: true, status: "queued", unread: true }),
+    const mainKey = "agent:working:main";
+    const { sidebar, sessions } = await mountRoster(roster, [
+      session("working", 10, {
+        hasActiveRun: true,
+        status: "queued",
+        unread: true,
+        owner: { actor: owners[0] },
+        incognito: true,
+      }),
     ]);
     sidebar.sidebarAgentsMode = "roster";
+    sidebar.hasSessionDraft = (key) => key === mainKey;
+    sidebar.outboxAttentionCountForSession = (key) => (key === mainKey ? 2 : 0);
+    sessions.sessions.setPullRequestSummary(mainKey, { numbers: [103], state: "open" });
     await vi.waitFor(() => expect(agentIds(sidebar)).toHaveLength(3));
     const group = sidebar.querySelector('[data-agent-group="working"]')!;
     await vi.waitFor(() =>
@@ -118,8 +128,24 @@ describe("AppSidebar agent roster", () => {
       ).not.toBeNull(),
     );
     expect(group.querySelector('[aria-label="Unread"]')).not.toBeNull();
+    expect(group.querySelector(".session-owner-chip")).not.toBeNull();
+    expect(group.querySelector('[data-pull-request-state="open"]')).not.toBeNull();
+    expect(group.querySelector(".session-row-badge--incognito")).not.toBeNull();
+    expect(group.querySelector(".session-row-badge--draft")).not.toBeNull();
+    expect(group.querySelector(".session-row-badge--attention")?.getAttribute("aria-label")).toBe(
+      "2 messages need attention",
+    );
     expect(group.querySelector('[data-session-key="agent:working:main"]')).toBeNull();
     expect(group.querySelector("[data-agent-collapse]")).toBeNull();
+    sidebar.hasSessionDraft = () => false;
+    sidebar.outboxAttentionCountForSession = () => 0;
+    await vi.waitFor(() => {
+      expect(group.querySelector(".session-row-badge--draft")).toBeNull();
+      expect(group.querySelector(".session-row-badge--attention")).toBeNull();
+    });
+    expect(group.querySelector(".session-owner-chip")).not.toBeNull();
+    expect(group.querySelector('[data-pull-request-state="open"]')).not.toBeNull();
+    expect(group.querySelector(".session-row-badge--incognito")).not.toBeNull();
   });
 
   it.each(["approval", "question", "running"] as const)(
@@ -347,12 +373,53 @@ describe("AppSidebar agent roster", () => {
     expect(sidebar.querySelector(`[data-session-key="${mainKey}"]`)).toBeNull();
   });
 
-  it("does not reinsert a main row rejected by the normal session visibility filter", async () => {
-    const { sidebar } = await mountRoster(roster, [session("working", 10, { kind: "unknown" })]);
+  it("filters main-session signals with their owner while retaining agent navigation", async () => {
+    const { sidebar } = await mountRoster(roster, [
+      session("working", 10, {
+        owner: { actor: owners[0] },
+        hasActiveRun: true,
+        status: "running",
+        unread: true,
+      }),
+    ]);
     sidebar.sidebarAgentsMode = "roster";
     await vi.waitFor(() => expect(agentIds(sidebar)).toHaveLength(3));
-    expect(sessionKeys(sidebar)).toEqual([]);
+    const signals = () =>
+      sidebar.querySelector('[data-agent-group="working"] .sidebar-agent-roster__signals')!;
+    await vi.waitFor(() => expect(signals().querySelector(".session-glyph__ring")).not.toBeNull());
+    for (const [owner, visible] of [
+      ["profile-sam", false],
+      ["profile-ada", true],
+      ["profile-sam", false],
+      ["", true],
+    ] as const) {
+      await selectFilter(sidebar, `owner:${owner}`);
+      await vi.waitFor(() => {
+        expect(signals().querySelector(".session-glyph__ring") !== null).toBe(visible);
+        expect(signals().querySelector('[aria-label="Unread"]') !== null).toBe(visible);
+      });
+      expect(agentIds(sidebar)).toEqual(["main", "recent", "working"]);
+      expect(sessionKeys(sidebar)).toEqual([]);
+    }
   });
+
+  it.each([
+    { kind: "unknown", archived: false },
+    { kind: "direct", archived: true },
+  ])(
+    "does not restore filtered main-session signals ($kind, archived=$archived)",
+    async ({ kind, archived }) => {
+      const { sidebar } = await mountRoster(roster, [
+        session("working", 10, { kind, archived, hasActiveRun: true, unread: true }),
+      ]);
+      sidebar.sidebarAgentsMode = "roster";
+      await vi.waitFor(() => expect(agentIds(sidebar)).toHaveLength(3));
+      expect(sessionKeys(sidebar)).toEqual([]);
+      expect(
+        sidebar.querySelector('[data-agent-group="working"] .sidebar-session-team-state'),
+      ).toBeNull();
+    },
+  );
 
   it("keeps the global main stream visible in its configured agent group", async () => {
     const { sidebar } = await mountRoster(

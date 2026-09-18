@@ -677,8 +677,14 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
       compareSessions: createSidebarSessionRowsComparator(this.readSidebarSessionSortOptions),
       knownSessionAttention: this.attention.knownSessionAttention(),
     });
-    this.rosterMainSessions = projected.mainSessions;
-    return this.applySessionOwnerFilter(projected.rows, this.selectedAgentSessionResult()?.owners);
+    const filtered = this.applySessionOwnerFilter(
+      [...projected.mainSessions.values(), ...projected.rows],
+      this.selectedAgentSessionResult()?.owners,
+    );
+    this.rosterMainSessions = new Map(
+      filtered.filter((row) => projected.mainSessions.has(row.key)).map((row) => [row.key, row]),
+    );
+    return filtered.filter((row) => !projected.mainSessions.has(row.key));
   }
 
   private selectedAgentSessionResult(): SessionsListResult | null {

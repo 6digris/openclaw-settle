@@ -166,10 +166,11 @@ export function visibleSessionChildren(params: {
 }
 
 /** Compose independently owned session state and context indicators. */
-function renderSidebarSessionIndicators(
+export function renderSidebarSessionIndicators(
   host: SessionListHost,
   session: SidebarRecentSession,
   display?: CatalogBackingSessionDisplay,
+  teamSummary?: Parameters<typeof renderTeamSessionSlots>,
 ) {
   const team = host.sidebarAgentsMode === "roster";
   const ownAttention = session.ownAttention ?? session.attention;
@@ -315,7 +316,9 @@ function renderSidebarSessionIndicators(
       ${team ? trail : nothing}
       ${
         team
-          ? renderTeamSessionSlots([session], !childrenExpanded, session.childSessionKeys.length)
+          ? renderTeamSessionSlots(
+              ...(teamSummary ?? [[session], !childrenExpanded, session.childSessionKeys.length]),
+            )
           : nothing
       }
       ${!team && stateDescription ? html`<span class="sr-only" id=${stateId} aria-hidden="true">${stateDescription}</span>` : nothing}
