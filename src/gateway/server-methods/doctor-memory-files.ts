@@ -4,6 +4,7 @@ import {
   getAgentWorkspaceAccess,
   WorkspaceAccessUnavailableError,
 } from "../../agents/workspace-access.js";
+import { extractErrorCode } from "../../infra/errors.js";
 const DREAM_DIARY_FILE_NAMES = ["DREAMS.md", "dreams.md"] as const;
 
 export type DoctorMemoryDreamDiaryPayload = {
@@ -35,7 +36,7 @@ export async function listWorkspaceDailyFiles(workspaceDir: string): Promise<str
       ? (await files.listDirectory(memoryDir)).map((entry) => entry.name)
       : await fs.readdir(memoryDir);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+    if (extractErrorCode(err) === "ENOENT") {
       return [];
     }
     throw err;
@@ -65,7 +66,7 @@ export async function readDreamDiary(
         };
       }
     } catch (err) {
-      const code = (err as NodeJS.ErrnoException | undefined)?.code;
+      const code = extractErrorCode(err);
       if (code === "ENOENT") {
         continue;
       }
