@@ -20,6 +20,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/managed-image-attachments.test.ts",
   "src/gateway/managed-image-record-store.test.ts",
   "src/gateway/managed-outgoing-gc-availability.test.ts",
+  "src/gateway/node-reapproval-coordinator.test.ts",
   "src/gateway/server-methods/agent.create-event.test.ts",
   "src/gateway/server-methods/chat-send-commentary-media.test.ts",
   "src/gateway/server-methods/chat-send-synthetic-repair.integration.test.ts",
@@ -78,6 +79,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/session-utils.test.ts",
   "src/gateway/setup-inference.first-signin.integration.test.ts",
   "src/gateway/tool-resolution.cron-capture.test.ts",
+  "src/gateway/watch-node-http.test.ts",
   "src/gateway/worker-environments/provider-crabbox-runtime-preflight.test.ts",
 ];
 
