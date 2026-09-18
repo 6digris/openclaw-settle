@@ -49,6 +49,12 @@ suite.define(() => {
           args: { command: "pwd" },
         },
       });
+      await gateway.emitGatewayEvent("exec.approval.requested", {
+        id: "synthetic-approval",
+        request: { command: "pwd", agentId: "main", sessionKey, runId },
+        createdAtMs: Date.now(),
+        expiresAtMs: Date.now() + 60_000,
+      });
       await gateway.emitGatewayEvent("agent", {
         runId,
         sessionKey,
