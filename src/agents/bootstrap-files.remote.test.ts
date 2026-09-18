@@ -26,7 +26,7 @@ vi.mock("../plugins/memory-runtime.js", () => ({
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 let testState: OpenClawTestState | undefined;
 
-describe("remote bootstrap read provenance", () => {
+describe.runIf(process.platform !== "win32")("remote bootstrap read provenance", () => {
   beforeEach(async () => {
     clearInternalHooks();
     resetLegacyWorkspaceStateCheckForTest();

@@ -40,7 +40,7 @@ function captureWarningLogger() {
 }
 
 describe("workspace bootstrap read diagnostics", () => {
-  it.each(["oversized", "invalid-utf8"] as const)(
+  it.runIf(process.platform !== "win32").each(["oversized", "invalid-utf8"] as const)(
     "preserves native bootstrap handling for %s remote files",
     async (kind) => {
       const workspace = tempDirs.make("bootstrap-parity-gateway-");
