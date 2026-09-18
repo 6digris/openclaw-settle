@@ -136,9 +136,13 @@ describeTelegramDispatch("dispatchTelegramMessage directive delivery", () => {
     },
   );
 
-  it.each(["initial", "late"] as const)(
-    "resolves %s transcript reply-to-current intent before reusing an unthreaded preview",
-    async (lookup) => {
+  it.each([
+    { lookup: "initial", media: false },
+    { lookup: "late", media: false },
+    { lookup: "initial", media: true },
+  ] as const)(
+    "resolves $lookup transcript reply-to-current intent before reusing an unthreaded preview (media: $media)",
+    async ({ lookup, media }) => {
       const { answerDraftStream } = setupDraftStreams({ answerMessageId: 2001 });
       const context = createContext();
       context.ctxPayload.SessionKey = "agent:default:telegram:direct:123";
@@ -146,6 +150,12 @@ describeTelegramDispatch("dispatchTelegramMessage directive delivery", () => {
       mockDefaultSessionEntry();
       const prefix = "The recovered answer includes the remaining explanation after this opening";
       const fullText = `${prefix} paragraph and replies directly to the triggering message.`;
+      const aliasRecord = {
+        filePath: "/tmp/source-note.txt",
+        name: "PR146361-displayed-alias.txt",
+        mimeType: "text/plain",
+      };
+      const mediaUrls = ["/tmp/lead.txt", aliasRecord.filePath];
       if (lookup === "late") {
         readLatestAssistantTextByIdentity.mockResolvedValueOnce(undefined);
       }
@@ -160,7 +170,14 @@ describeTelegramDispatch("dispatchTelegramMessage directive delivery", () => {
       dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
         async ({ dispatcherOptions, replyOptions }) => {
           await replyOptions?.onPartialReply?.({ text: prefix });
-          const [plan] = createStructuredOutboundPayloadPlan([{ text: `${prefix}...` }]);
+          const [plan] = createStructuredOutboundPayloadPlan([
+            {
+              text: `${prefix}...`,
+              ...(media
+                ? { mediaUrls, mediaUrl: aliasRecord.filePath, attachments: [aliasRecord] }
+                : {}),
+            },
+          ]);
           if (!plan || !dispatcherOptions.deliverPrepared) {
             throw new Error("Prepared Telegram delivery operation missing");
           }
@@ -185,6 +202,12 @@ describeTelegramDispatch("dispatchTelegramMessage directive delivery", () => {
         }),
       );
       expect(answerDraftStream.update).not.toHaveBeenCalledWith(fullText);
+      if (media) {
+        const payload = deliverInboundReplyWithMessageSendContext.mock.calls[0]?.[0]?.payload;
+        expect(payload?.mediaUrls).toEqual(mediaUrls);
+        expect(payload?.attachments).toEqual([{}, aliasRecord]);
+        expect(payload?.mediaUrl).toBeUndefined();
+      }
     },
   );
 });
