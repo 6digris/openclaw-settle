@@ -343,6 +343,57 @@ describe("EmbeddedBlockChunker", () => {
     expectChunksWithinLength(chunks, 50);
   });
 
+  it("clamps preferred chunk sizes to a smaller explicit transport limit", () => {
+    const text = "a".repeat(1100);
+    const chunker = new EmbeddedBlockChunker({
+      minChars: 1,
+      maxChars: 1200,
+      hardMaxChars: 1000,
+      breakPreference: "paragraph",
+    });
+
+    chunker.append(text);
+    const chunks = drainChunks(chunker, true);
+
+    expect(chunks.join("")).toBe(text);
+    expectChunksWithinLength(chunks, 1000);
+  });
+
+  it("clamps the minimum size to a smaller explicit transport limit", () => {
+    const text = "a".repeat(1100);
+    const chunker = new EmbeddedBlockChunker({
+      minChars: 1200,
+      maxChars: 1200,
+      hardMaxChars: 1000,
+      breakPreference: "paragraph",
+    });
+
+    chunker.append(text);
+    const chunks = drainChunks(chunker);
+    expect(chunks).toEqual(["a".repeat(1000)]);
+
+    chunks.push(...drainChunks(chunker, true));
+    expect(chunks.join("")).toBe(text);
+    expectChunksWithinLength(chunks, 1000);
+  });
+
+  it("preserves surrogate pairs when an explicit transport limit clamps maxChars", () => {
+    const text = `${"a".repeat(999)}😀b`;
+    const chunker = new EmbeddedBlockChunker({
+      minChars: 1,
+      maxChars: 1200,
+      hardMaxChars: 1000,
+      breakPreference: "paragraph",
+    });
+
+    chunker.append(text);
+    const chunks = drainChunks(chunker, true);
+
+    expect(chunks.join("")).toBe(text);
+    expect(chunks[0]).toBe("a".repeat(999));
+    expectChunksWithinLength(chunks, 1000);
+  });
+
   it("keeps links intact after degrading an oversized fence language hint", () => {
     const link = `[invite](https://example.com/${"a".repeat(80)})`;
     const text = `\`\`\`${"language".repeat(8)}\ncode\n\`\`\`\nSee ${link} now.`;
