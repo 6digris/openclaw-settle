@@ -72,7 +72,9 @@ export async function runAgentsApiAttempt(
     .digest("hex");
   let binding = store.lookup(params.sessionId);
   if (binding && binding.authFingerprint !== fingerprint) {
-    throw new Error("Agents API model or credential changed; reset the OpenClaw session before continuing");
+    throw new Error(
+      "Agents API model or credential changed; reset the OpenClaw session before continuing",
+    );
   }
   let remoteSessionId = binding?.sessionId;
   let submitted = false;

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { z } from "zod";
 import { responseWithRelease } from "openclaw/plugin-sdk/fetch-runtime";
 import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
+import { z } from "zod";
 
 const usageSchema = z.object({
   input_tokens: z.number(),
@@ -187,9 +187,14 @@ export class AgentsApiClient {
   }
 
   private async input(sessionId: string, signal: AbortSignal, event: unknown): Promise<void> {
-    const response = await this.request(`/${encodeURIComponent(sessionId)}/events`, "POST", signal, {
-      events: [event],
-    });
+    const response = await this.request(
+      `/${encodeURIComponent(sessionId)}/events`,
+      "POST",
+      signal,
+      {
+        events: [event],
+      },
+    );
     await response.body?.cancel();
   }
 
