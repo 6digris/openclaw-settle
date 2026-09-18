@@ -406,7 +406,7 @@ describe("AppSidebar agent roster", () => {
   it.each([
     { kind: "unknown", archived: false },
     { kind: "direct", archived: true },
-  ])(
+  ] as const)(
     "does not restore filtered main-session signals ($kind, archived=$archived)",
     async ({ kind, archived }) => {
       const { sidebar } = await mountRoster(roster, [
