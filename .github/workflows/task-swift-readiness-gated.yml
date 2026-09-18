@@ -133,7 +133,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          swift build --package-path "$READINESS_RED_REPO/apps/macos" --build-system native \
+          # Compiled modules embed absolute cache paths; do not reuse the relocated build.
+          swift build --package-path "$READINESS_RED_REPO/apps/macos" \
+            --scratch-path "$READINESS_RED_REPO/swift-scratch" --build-system native \
             --enable-code-coverage --build-tests \
             2>&1 | tee "$RUNNER_TEMP/swift-readiness-gated/red-build.log"
           git diff --exit-code
@@ -146,7 +148,8 @@ jobs:
           # The Swift Testing test ID contains literal backticks.
           # shellcheck disable=SC2016
           node scripts/test-macos-native.mts default \
-            --package-path "$READINESS_RED_REPO/apps/macos" --build-system native --enable-code-coverage \
+            --package-path "$READINESS_RED_REPO/apps/macos" --scratch-path "$READINESS_RED_REPO/swift-scratch" \
+            --build-system native --enable-code-coverage \
             --skip-build --experimental-maximum-parallelization-width 3 \
             --filter 'GatewayProcessManagerTests/`readiness waiter rechecks after current owner fails past its timeout`' \
             2>&1 | tee "$RUNNER_TEMP/swift-readiness-gated/red-tests.log"
