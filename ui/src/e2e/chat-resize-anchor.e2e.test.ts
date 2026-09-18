@@ -231,4 +231,74 @@ describeControlUiE2e("Chat transcript resize anchoring", () => {
         .waitFor({ state: "visible", timeout: 2_000 });
     }
   }, 120_000);
+
+  it("preserves the reading position and draft through repeated split round trips", async () => {
+    const context = await browser.newContext({
+      viewport: { width: 1440, height: 900 },
+      deviceScaleFactor: 2,
+    });
+    contexts.add(context);
+    const page = await context.newPage();
+    const messageCount = 24;
+    await installMockGateway(page, {
+      sessionKey: "agent:main:main",
+      historyMessages: Array.from({ length: messageCount }, (_, index) => ({
+        role: index % 2 === 0 ? "user" : "assistant",
+        content: messageContent(index),
+        timestamp: 1_750_000_000_000 + index * 60_000,
+      })),
+    });
+    await page.goto(`${controlUi.baseUrl}chat`);
+    const pane = page.locator("openclaw-chat-pane.chat-pane-cache__pane--visible").first();
+    const composer = pane.locator(".agent-chat__composer-combobox textarea");
+    const draft = "Synthetic unsent draft for split reading proof.";
+    await composer.fill(draft);
+    await page
+      .getByText(`Message number ${messageCount - 1}:`)
+      .first()
+      .waitFor();
+    const scroller = pane.locator(".chat-thread");
+    await expect
+      .poll(() =>
+        scroller.evaluate(
+          (element) => element.scrollHeight - element.clientHeight - element.scrollTop,
+        ),
+      )
+      .toBeLessThanOrEqual(1);
+    await settleFrames(page, 30);
+    await scroller.click({ position: { x: 10, y: 150 } });
+    await page.keyboard.press("PageUp");
+    await page.keyboard.press("PageUp");
+    await settleFrames(page, 30);
+    const key = await scroller.evaluate((element) => {
+      const viewport = element.getBoundingClientRect();
+      return (
+        [...element.querySelectorAll<HTMLElement>(".chat-virtual-row")].find((row) => {
+          const rect = row.getBoundingClientRect();
+          return rect.top >= viewport.top && rect.top < viewport.bottom;
+        })?.dataset.virtualRowKey ?? null
+      );
+    });
+    expect(key).not.toBeNull();
+    const before = await sampleAnchor(page, key);
+    expect(before.contentVisible).toBe(true);
+    expect(before.scrollTop).toBeGreaterThan(0);
+    for (let cycle = 0; cycle < 3; cycle++) {
+      await pane.getByRole("button", { name: "Open split view", exact: true }).click();
+      const right = page.locator(".chat-split-view__cell").nth(1);
+      await right.getByRole("button", { name: "Close pane", exact: true }).waitFor();
+      await settleFrames(page, 30);
+      await right.getByRole("button", { name: "Close pane", exact: true }).click();
+      await expect.poll(() => page.locator(".chat-split-view__cell").count()).toBe(1);
+      await settleFrames(page, 30);
+      const after = await sampleAnchor(page, key);
+      expect(after.key).toBe(key);
+      expect(
+        Math.abs(after.topDelta - before.topDelta),
+        `split round trip ${cycle + 1}`,
+      ).toBeLessThanOrEqual(1);
+      expect(after.scrollTop).toBe(before.scrollTop);
+      expect(await composer.inputValue()).toBe(draft);
+    }
+  }, 120_000);
 });

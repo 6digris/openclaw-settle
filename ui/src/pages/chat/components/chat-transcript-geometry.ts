@@ -56,7 +56,10 @@ export function measureConnectedTranscriptRows(
   }
   // Width changes and retired smooth commands can have undelivered sizes.
   // Ordinary row refs stay on TanStack's observer path; never clear its cache.
-  for (const row of scrollElement.querySelectorAll<HTMLElement>(".chat-virtual-row")) {
+  const rows = scrollElement.querySelectorAll<HTMLElement>(".chat-virtual-row");
+  // Later rows cannot change the cached starts of earlier rows in this transcript.
+  for (let index = rows.length - 1; index >= 0; index--) {
+    const row = rows.item(index);
     virtualizer.resizeItem(virtualizer.indexFromElement(row), row.offsetHeight);
   }
 }
