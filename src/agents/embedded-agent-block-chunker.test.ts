@@ -394,6 +394,22 @@ describe("EmbeddedBlockChunker", () => {
     expectChunksWithinLength(chunks, 1000);
   });
 
+  it("does not add fence wrappers that exceed a smaller explicit transport limit", () => {
+    const text = "```\nabcdefghijk\n```";
+    const chunker = new EmbeddedBlockChunker({
+      minChars: 1,
+      maxChars: 30,
+      hardMaxChars: 8,
+      breakPreference: "paragraph",
+    });
+
+    chunker.append(text);
+    const chunks = drainChunks(chunker, true);
+
+    expect(chunks.join("")).toBe(text);
+    expectChunksWithinLength(chunks, 8);
+  });
+
   it("keeps links intact after degrading an oversized fence language hint", () => {
     const link = `[invite](https://example.com/${"a".repeat(80)})`;
     const text = `\`\`\`${"language".repeat(8)}\ncode\n\`\`\`\nSee ${link} now.`;
