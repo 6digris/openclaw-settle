@@ -14,6 +14,7 @@ import {
   probeProcessState,
   pushSuccessfulSchtasksResponses,
   readGatewayOwnerLease,
+  readWindowsProcessStartTimeSync,
   resolveScheduledTaskOwnedGatewayPids,
   resolveTaskScriptPath,
   restartScheduledTask,
@@ -368,7 +369,7 @@ describe("Scheduled Task stop/restart cleanup", () => {
     },
   );
 
-  it.each(["before graceful stop", "before forced stop"])(
+  it.each(["before ownership discovery", "before graceful stop", "before forced stop"])(
     "keeps terminating the same Scheduled Task owner after it becomes unknown %s",
     async (phase) => {
       await withPreparedGatewayTask(async ({ env }) => {
@@ -418,6 +419,8 @@ describe("Scheduled Task stop/restart cleanup", () => {
 
         await expect(terminateScheduledTaskGatewayListeners(env)).resolves.toEqual([4242]);
 
+        expect(readWindowsProcessStartTimeSync).toHaveBeenCalledWith(4242, 5_000, env);
+
         const taskkillCalls = spawnSync.mock.calls
           .filter(([command]) => command.toLowerCase().endsWith("taskkill.exe"))
           .map(([, args]) => args);
@@ -430,6 +433,28 @@ describe("Scheduled Task stop/restart cleanup", () => {
               ],
         );
         expect(taskkillCalls.flat()).not.toContain("9999");
+        expect(killProcessTreeMock).not.toHaveBeenCalled();
+      });
+    },
+  );
+
+  it.each([
+    { label: "belongs to another host", owner: { host: "another-host" }, currentStart: 100 },
+    { label: "has no recorded process identity", owner: { startedAt: null }, currentStart: 100 },
+    { label: "cannot read its current process identity", owner: {}, currentStart: null },
+    { label: "has reused its pid", owner: {}, currentStart: 101 },
+  ] as const)(
+    "does not terminate an unknown owner that $label",
+    async ({ owner, currentStart }) => {
+      await withPreparedGatewayTask(async ({ env }) => {
+        vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+        readGatewayOwnerLease.mockReturnValue({ ...GATEWAY_OWNER, ...owner, state: "unknown" });
+        readWindowsProcessStartTimeSync.mockReturnValue(currentStart);
+        mockWindowsTaskkillSuccess();
+
+        await expect(terminateScheduledTaskGatewayListeners(env)).resolves.toEqual([]);
+
+        expect(taskkillPids()).toEqual([]);
         expect(killProcessTreeMock).not.toHaveBeenCalled();
       });
     },

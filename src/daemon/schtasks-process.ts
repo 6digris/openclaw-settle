@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { hostname } from "node:os";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { readGatewayOwnerLease } from "../infra/gateway-owner-lease.js";
 import { isGatewayArgv } from "../infra/gateway-process-argv.js";
@@ -11,6 +12,7 @@ import {
   getWindowsSystem32ExePath,
 } from "../infra/windows-install-roots.js";
 import { readWindowsProcessArgsSync } from "../infra/windows-port-pids.js";
+import { readWindowsProcessStartTimeSync } from "../infra/windows-process-start.js";
 import { killProcessTree } from "../process/kill-tree.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { sleep } from "../utils.js";
@@ -218,10 +220,14 @@ async function resolveScheduledTaskGatewayOwnership(
   const taskName = resolveTaskName(env);
   const isTaskSupervisor = (supervisor: NonNullable<typeof owner>["supervisor"]) =>
     supervisor?.kind === "schtasks" && supervisor.name?.toLowerCase() === taskName.toLowerCase();
+  const hasCurrentProcessIdentity = (candidate: NonNullable<typeof owner>) =>
+    candidate.state === "live" ||
+    (candidate.state === "unknown" &&
+      candidate.host === hostname() &&
+      candidate.startedAt !== null &&
+      readWindowsProcessStartTimeSync(candidate.pid, 5_000, ownerEnv) === candidate.startedAt);
   const pids = owner
-    ? owner.port === port &&
-      (owner.state === "live" || owner.state === "unknown") &&
-      isTaskSupervisor(owner.supervisor)
+    ? owner.port === port && hasCurrentProcessIdentity(owner) && isTaskSupervisor(owner.supervisor)
       ? [owner.pid]
       : []
     : await resolveLegacyScheduledTaskOwnedGatewayPids(env, context, command);
@@ -274,7 +280,7 @@ async function resolveScheduledTaskGatewayOwnership(
         current.port !== port ||
         current.host !== owner.host ||
         current.startedAt !== owner.startedAt ||
-        (current.state !== "live" && current.state !== "unknown") ||
+        !hasCurrentProcessIdentity(current) ||
         !isTaskSupervisor(current.supervisor)
       ) {
         throw new Error(`Gateway owner changed before terminating process ${pid}`);
