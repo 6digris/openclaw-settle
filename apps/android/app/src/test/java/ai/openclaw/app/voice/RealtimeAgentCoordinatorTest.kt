@@ -1476,6 +1476,252 @@ class RealtimeAgentCoordinatorTest {
     coordinator.applyConversationSnapshot(owner, checkNotNull(coordinator.observationRevision(owner)), Json.parseToJsonElement("""{"sessionInfo":{"key":"$key","agentId":"scout","hasActiveRun":false,"activeRunIds":[]}}""").jsonObject)
   }
 
+  @Test
+  fun acceptedErrorDominatesOlderReading() = verifyAcceptedErrorPriority("reading")
+
+  @Test
+  fun acceptedErrorDominatesOlderWaiting() = verifyAcceptedErrorPriority("waiting")
+
+  @Test
+  fun acceptedErrorDominatesOlderUnknown() = verifyAcceptedErrorPriority("unknown")
+
+  private fun verifyAcceptedErrorPriority(older: String) =
+    runTest {
+      val coordinator = coordinator(responses = { "{}" })
+      val owner = observedOwner()
+      val key = owner.owner.sessionKey
+      coordinator.beginConversationObservation(owner)
+      coordinator.confirmConversationObservation(owner, key)
+      when (older) {
+        "reading" -> coordinator.handleAgentEvent(p2Tool("older", key))
+        "waiting" -> coordinator.handleAgentEvent(Json.parseToJsonElement("""{"runId":"older","sessionKey":"$key","agentId":"scout","seq":1,"stream":"lifecycle","data":{"phase":"end","yielded":true,"livenessState":"paused","stopReason":"end_turn"}}""").jsonObject)
+        else -> coordinator.applyConversationSnapshot(owner, checkNotNull(coordinator.observationRevision(owner)), Json.parseToJsonElement("""{"sessionInfo":{"key":"$key","agentId":"scout","hasActiveRun":true,"activeRunIds":["older"]}}""").jsonObject)
+      }
+      assertTrue(coordinator.handleChatEvent(key, "new-error", "error", null, "scout", 1))
+      assertEquals("An older $older activity cannot hide an authoritative failure", TalkAgentActivity.Error, coordinator.activity.value?.activity)
+      coordinator.endSession()
+    }
+
+  @Test
+  fun acceptedNativeQuestionExpiresAfterObservationRetirement() = verifyAcceptedQuestionExpiry(native = true, replace = false)
+
+  @Test
+  fun acceptedRelayQuestionExpiresAfterObservationRetirement() = verifyAcceptedQuestionExpiry(native = false, replace = false)
+
+  @Test
+  fun acceptedNativeQuestionExpiresAfterObservationReplacement() = verifyAcceptedQuestionExpiry(native = true, replace = true)
+
+  @Test
+  fun acceptedRelayQuestionExpiresAfterObservationReplacement() = verifyAcceptedQuestionExpiry(native = false, replace = true)
+
+  private fun verifyAcceptedQuestionExpiry(
+    native: Boolean,
+    replace: Boolean,
+  ) = runTest {
+    val owner = observedOwner()
+    val key = owner.owner.sessionKey
+    val coordinator = coordinator(responses = { """{"runId":"retained-writer","agentId":"scout","agentSessionKey":"$key"}""" })
+    coordinator.beginSession(RealtimeAgentSession(if (native) null else "relay", key))
+    coordinator.beginConversationObservation(owner)
+    coordinator.confirmConversationObservation(owner, key)
+    if (native) {
+      coordinator.finishChatSend(coordinator.beginChatSend(), "retained-writer", "scout")
+    } else {
+      coordinator.consult("retained-call")
+      runCurrent()
+    }
+    val deadline = System.currentTimeMillis() + 500
+    coordinator.handleQuestionEvent("question.requested", Json.parseToJsonElement("""{"id":"retained-question","runId":"retained-writer","sessionKey":"$key","agentId":"scout","status":"pending","expiresAtMs":$deadline}""").jsonObject)
+    runCurrent()
+    assertEquals(TalkAgentActivity.WaitingForInput, coordinator.activity.value?.activity)
+    if (replace) {
+      val replacement = observedOwner(agent = "other", key = "agent:other:new")
+      coordinator.beginConversationObservation(replacement)
+      coordinator.confirmConversationObservation(replacement, replacement.owner.sessionKey)
+    } else {
+      coordinator.retireConversationObservation(owner)
+    }
+    assertEquals("Observation retirement is not question resolution", TalkAgentActivity.WaitingForInput, coordinator.activity.value?.activity)
+    // The production deadline uses wall time; runTest's scheduler is advanced separately.
+    Thread.sleep((deadline - System.currentTimeMillis() + 20).coerceAtLeast(1))
+    advanceTimeBy(1_000)
+    runCurrent()
+    assertEquals("The retained writer's question must still expire", TalkAgentActivity.Thinking, coordinator.activity.value?.activity)
+    assertEquals(!native, coordinator.handleChatEvent(key, "retained-writer", "final", Json.parseToJsonElement("""{"role":"assistant","content":"owned result"}"""), "scout", 1))
+    runCurrent()
+    assertEquals(if (native) 0 else 1, calls.count { it.method == "talk.session.submitToolResult" })
+    coordinator.endSession()
+  }
+
+  @Test
+  fun acceptedErrorPreservesObligationPriorityAndNewWorkRecovery() =
+    runTest {
+      val coordinator = coordinator(responses = { "{}" })
+      val owner = observedOwner()
+      val key = owner.owner.sessionKey
+      coordinator.beginConversationObservation(owner)
+      coordinator.confirmConversationObservation(owner, key)
+      coordinator.handleAgentEvent(p2Tool("older", key))
+      coordinator.handleChatEvent(key, "failed", "error", null, "scout", 1)
+      coordinator.handleAgentEvent(r6Approval(key, "approval-run", 1, "pending"))
+      assertEquals(TalkAgentActivity.WaitingForApproval, coordinator.activity.value?.activity)
+      coordinator.handleAgentEvent(r6Approval(key, "approval-run", 2, "resolved"))
+      assertEquals(TalkAgentActivity.Error, coordinator.activity.value?.activity)
+      coordinator.handleQuestionEvent("question.requested", Json.parseToJsonElement("""{"id":"priority-question","runId":"question-run","sessionKey":"$key","agentId":"scout","status":"pending","expiresAtMs":${System.currentTimeMillis() + 60000}}""").jsonObject)
+      assertEquals(TalkAgentActivity.WaitingForInput, coordinator.activity.value?.activity)
+      coordinator.handleQuestionEvent("question.resolved", Json.parseToJsonElement("""{"id":"priority-question","status":"answered"}""").jsonObject)
+      assertEquals(TalkAgentActivity.Error, coordinator.activity.value?.activity)
+      coordinator.handleAgentEvent(p2Tool("authoritative-new-work", key))
+      assertEquals("A completed failure must not poison newer authoritative work", TalkAgentActivity.Reading, coordinator.activity.value?.activity)
+      coordinator.endSession()
+    }
+
+  @Test
+  fun acceptedQuestionRenewalKeepsExactIdentityAndCancelsOldExpiry() =
+    runTest {
+      val coordinator = coordinator(responses = { "{}" })
+      val owner = observedOwner()
+      val key = owner.owner.sessionKey
+      coordinator.beginSession(RealtimeAgentSession(null, key))
+      coordinator.beginConversationObservation(owner)
+      coordinator.confirmConversationObservation(owner, key)
+      coordinator.finishChatSend(coordinator.beginChatSend(), "renewed-writer", "scout")
+      val originalDeadline = System.currentTimeMillis() + 500
+
+      fun request(
+        agent: String?,
+        questionKey: String = key,
+        run: String = "renewed-writer",
+        deadline: Long,
+      ) {
+        val agentMember = agent?.let { """"agentId":"$it",""" }.orEmpty()
+        coordinator.handleQuestionEvent("question.requested", Json.parseToJsonElement("""{"id":"renewed-question","runId":"$run","sessionKey":"$questionKey",$agentMember"status":"pending","expiresAtMs":$deadline}""").jsonObject)
+      }
+      request("scout", deadline = originalDeadline)
+      runCurrent()
+      val replacement = observedOwner(agent = "other", key = "agent:other:new")
+      coordinator.beginConversationObservation(replacement)
+      coordinator.confirmConversationObservation(replacement, replacement.owner.sessionKey)
+      request("foreign", deadline = originalDeadline + 60000)
+      request("scout", questionKey = "agent:scout:foreign", deadline = originalDeadline + 60000)
+      request("scout", run = "foreign-run", deadline = originalDeadline + 60000)
+      assertEquals("A duplicate ID cannot retarget or resolve the existing obligation", TalkAgentActivity.WaitingForInput, coordinator.activity.value?.activity)
+      request(null, deadline = originalDeadline + 5000)
+      runCurrent()
+      Thread.sleep((originalDeadline - System.currentTimeMillis() + 20).coerceAtLeast(1))
+      advanceTimeBy(1_000)
+      runCurrent()
+      assertEquals("A retired expiry token cannot clear an exactly matching renewal", TalkAgentActivity.WaitingForInput, coordinator.activity.value?.activity)
+      coordinator.handleQuestionEvent("question.resolved", Json.parseToJsonElement("""{"id":"renewed-question","status":"answered"}""").jsonObject)
+      assertEquals(TalkAgentActivity.Thinking, coordinator.activity.value?.activity)
+      request("scout", deadline = originalDeadline + 5000)
+      assertEquals("Resolved ID cannot be replayed into a new obligation", TalkAgentActivity.Thinking, coordinator.activity.value?.activity)
+      assertFalse(coordinator.handleChatEvent(key, "renewed-writer", "final", null, "scout", 1))
+      assertTrue(calls.none { it.method == "talk.session.submitToolResult" })
+      coordinator.endSession()
+    }
+
+  @Test
+  fun acceptedResolvedQuestionCannotResurrectAcrossObservationRetirement() =
+    runTest {
+      val coordinator = coordinator(responses = { "{}" })
+      val owner = observedOwner()
+      val key = owner.owner.sessionKey
+      coordinator.beginSession(RealtimeAgentSession(null, key))
+      coordinator.beginConversationObservation(owner)
+      coordinator.confirmConversationObservation(owner, key)
+      coordinator.finishChatSend(coordinator.beginChatSend(), "resolved-writer", "scout")
+      val request = Json.parseToJsonElement("""{"id":"resolved-question","runId":"resolved-writer","sessionKey":"$key","agentId":"scout","status":"pending","expiresAtMs":${System.currentTimeMillis() + 60000}}""").jsonObject
+      coordinator.handleQuestionEvent("question.requested", request)
+      coordinator.handleQuestionEvent("question.resolved", Json.parseToJsonElement("""{"id":"resolved-question","status":"answered"}""").jsonObject)
+      coordinator.retireConversationObservation(owner)
+      coordinator.handleQuestionEvent("question.requested", request)
+      assertEquals(TalkAgentActivity.Thinking, coordinator.activity.value?.activity)
+      coordinator.endSession()
+    }
+
+  @Test
+  fun reviewPendingQuestionPrecedesSameRunToolFailure() =
+    runTest {
+      val coordinator = coordinator(responses = { "{}" })
+      val owner = observedOwner()
+      val key = owner.owner.sessionKey
+      coordinator.beginConversationObservation(owner)
+      coordinator.confirmConversationObservation(owner, key)
+      coordinator.handleAgentEvent(p2Tool("shared-run", key))
+      coordinator.handleQuestionEvent("question.requested", Json.parseToJsonElement("""{"id":"same-run-question","runId":"shared-run","sessionKey":"$key","agentId":"scout","status":"pending","expiresAtMs":${System.currentTimeMillis() + 60000}}""").jsonObject)
+      coordinator.handleAgentEvent(Json.parseToJsonElement("""{"runId":"shared-run","sessionKey":"$key","agentId":"scout","seq":2,"stream":"tool","data":{"phase":"result","toolCallId":"other-tool","isError":true}}""").jsonObject)
+      assertEquals("A sibling tool failure cannot hide a real pending question", TalkAgentActivity.WaitingForInput, coordinator.activity.value?.activity)
+      coordinator.handleQuestionEvent("question.resolved", Json.parseToJsonElement("""{"id":"same-run-question","status":"answered"}""").jsonObject)
+      assertEquals(TalkAgentActivity.Error, coordinator.activity.value?.activity)
+      coordinator.endSession()
+    }
+
+  @Test
+  fun reviewRemainingApprovalPrecedesSameRunDenial() =
+    runTest {
+      val coordinator = coordinator(responses = { "{}" })
+      val owner = observedOwner()
+      val key = owner.owner.sessionKey
+      coordinator.beginConversationObservation(owner)
+      coordinator.confirmConversationObservation(owner, key)
+      coordinator.handleAgentEvent(r6Approval(key, "shared-run", 1, "pending", "denied-one"))
+      coordinator.handleAgentEvent(r6Approval(key, "shared-run", 2, "pending", "still-pending"))
+      coordinator.handleAgentEvent(r6Approval(key, "shared-run", 3, "denied", "denied-one"))
+      assertEquals("Denying one approval does not resolve another", TalkAgentActivity.WaitingForApproval, coordinator.activity.value?.activity)
+      coordinator.handleAgentEvent(r6Approval(key, "shared-run", 4, "resolved", "still-pending"))
+      assertEquals(TalkAgentActivity.Error, coordinator.activity.value?.activity)
+      coordinator.endSession()
+    }
+
+  @Test
+  fun reviewSiblingSuccessPreservesToolFailure() = verifySiblingSuccess(approval = false)
+
+  @Test
+  fun reviewSiblingSuccessPreservesApprovalDenial() = verifySiblingSuccess(approval = true)
+
+  private fun verifySiblingSuccess(approval: Boolean) =
+    runTest {
+      val coordinator = coordinator(responses = { "{}" })
+      val owner = observedOwner()
+      val key = owner.owner.sessionKey
+      coordinator.beginConversationObservation(owner)
+      coordinator.confirmConversationObservation(owner, key)
+      coordinator.handleAgentEvent(p2Tool("shared-run", key))
+      coordinator.handleAgentEvent(Json.parseToJsonElement("""{"runId":"shared-run","sessionKey":"$key","agentId":"scout","seq":2,"stream":"tool","data":{"phase":"start","toolCallId":"sibling","name":"write"}}""").jsonObject)
+      if (approval) {
+        coordinator.handleAgentEvent(r6Approval(key, "shared-run", 3, "pending", "denied"))
+        coordinator.handleAgentEvent(r6Approval(key, "shared-run", 4, "denied", "denied"))
+      } else {
+        coordinator.handleAgentEvent(Json.parseToJsonElement("""{"runId":"shared-run","sessionKey":"$key","agentId":"scout","seq":3,"stream":"tool","data":{"phase":"result","toolCallId":"tool-fixture","isError":true}}""").jsonObject)
+      }
+      assertEquals(TalkAgentActivity.Error, coordinator.activity.value?.activity)
+      coordinator.handleAgentEvent(Json.parseToJsonElement("""{"runId":"shared-run","sessionKey":"$key","agentId":"scout","seq":5,"stream":"tool","data":{"phase":"result","toolCallId":"sibling","isError":false}}""").jsonObject)
+      assertEquals("A successful sibling is not an authoritative recovery", TalkAgentActivity.Error, coordinator.activity.value?.activity)
+      coordinator.handleAgentEvent(Json.parseToJsonElement("""{"runId":"shared-run","sessionKey":"$key","agentId":"scout","seq":6,"stream":"tool","data":{"phase":"start","toolCallId":"new-work","name":"write"}}""").jsonObject)
+      assertEquals(TalkAgentActivity.Writing, coordinator.activity.value?.activity)
+      coordinator.endSession()
+    }
+
+  @Test
+  fun reviewCanonicalAgentGapMarksLossWithoutResolvingApproval() =
+    runTest {
+      val coordinator = coordinator(responses = { "{}" })
+      val owner = observedOwner()
+      val key = owner.owner.sessionKey
+      coordinator.beginConversationObservation(owner)
+      coordinator.confirmConversationObservation(owner, key)
+      r6Inactive(coordinator, owner)
+      coordinator.handleAgentEvent(r6Approval(key, "gap-run", 1, "pending"))
+      val revision = coordinator.observationRevision(owner)
+      coordinator.handleAgentEvent(Json.parseToJsonElement("""{"runId":"gap-run","sessionKey":"agent:other:foreign","stream":"error","data":{"reason":"seq gap","expected":2,"received":4}}""").jsonObject)
+      assertEquals(revision, coordinator.observationRevision(owner))
+      coordinator.handleAgentEvent(Json.parseToJsonElement("""{"runId":"gap-run","sessionKey":"$key","stream":"error","data":{"reason":"seq gap","expected":2,"received":4}}""").jsonObject)
+      assertTrue("Canonical agent gap without seq must mark scoped observation loss", coordinator.activity.value?.incomplete == true)
+      assertEquals(TalkAgentActivity.WaitingForApproval, coordinator.activity.value?.activity)
+      coordinator.endSession()
+    }
+
   private fun p2Tool(
     runId: String,
     key: String,
@@ -1485,16 +1731,18 @@ class RealtimeAgentCoordinatorTest {
       """{"runId":"$runId","sessionKey":"$key","agentId":"scout","seq":1,"stream":"tool","data":{"phase":"start","toolCallId":"tool-fixture","name":"$name"}}""",
     ).jsonObject
 
-  private fun observedOwner() =
-    TalkModeManager.ChatStart(
-      ChatComposerOwner("observation-fixture", "scout", "agent:scout:call"),
-      GatewaySession.RequestLease("observation-fixture") { _, _, _, enqueue ->
-        enqueue {}
-        "{}"
-      },
-      withCurrentSelection = { it() },
-      isCurrentSelection = { true },
-    )
+  private fun observedOwner(
+    agent: String = "scout",
+    key: String = "agent:scout:call",
+  ) = TalkModeManager.ChatStart(
+    ChatComposerOwner("observation-fixture", agent, key),
+    GatewaySession.RequestLease("observation-fixture") { _, _, _, enqueue ->
+      enqueue {}
+      "{}"
+    },
+    withCurrentSelection = { it() },
+    isCurrentSelection = { true },
+  )
 
   private fun kotlinx.coroutines.test.TestScope.coordinator(
     responses: suspend (String) -> String,

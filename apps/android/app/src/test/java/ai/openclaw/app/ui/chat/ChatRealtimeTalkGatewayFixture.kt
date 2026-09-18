@@ -47,6 +47,8 @@ internal class ChatRealtimeTalkGatewayFixture : AutoCloseable {
 
   @Volatile var nativeTalk = false
 
+  @Volatile var deferTalkConfig: (((() -> Unit)) -> Unit)? = null
+
   @Volatile var nativeAssistantReply = "Synthetic native spoken reply"
   private val history = java.util.concurrent.ConcurrentHashMap<String, String>()
 
@@ -140,13 +142,16 @@ internal class ChatRealtimeTalkGatewayFixture : AutoCloseable {
           }
 
           "talk.config" -> {
-            respond(
-              if (nativeTalk) {
-                """{"config":{"talk":{"realtime":{"model":"gpt-live"},"silenceTimeoutMs":800}}}"""
-              } else {
-                """{"config":{"talk":{"realtime":{"provider":"openai","mode":"realtime","transport":"gateway-relay","model":"gpt-realtime-2.1"}}}}"""
-              },
-            )
+            val reply = {
+              respond(
+                if (nativeTalk) {
+                  """{"config":{"talk":{"realtime":{"model":"gpt-live"},"silenceTimeoutMs":800}}}"""
+                } else {
+                  """{"config":{"talk":{"realtime":{"provider":"openai","mode":"realtime","transport":"gateway-relay","model":"gpt-realtime-2.1"}}}}"""
+                },
+              )
+            }
+            deferTalkConfig?.invoke(reply) ?: reply()
           }
 
           "chat.send" -> {

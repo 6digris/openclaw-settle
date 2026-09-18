@@ -18,9 +18,8 @@ import ai.openclaw.app.i18n.NativeText
 import ai.openclaw.app.i18n.nativeText
 import ai.openclaw.app.i18n.notifyNativeLocaleChanged
 import ai.openclaw.app.i18n.verbatimText
+import ai.openclaw.app.installSpeechRecognitionServiceFixture
 import android.Manifest
-import android.content.ComponentName
-import android.content.IntentFilter
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
@@ -30,7 +29,6 @@ import android.os.Bundle
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.speech.RecognitionListener
-import android.speech.RecognitionService
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.util.Base64
@@ -243,7 +241,7 @@ class TalkModeManagerTest {
   @Test
   fun beginPushToTalkRejectsInvalidatedCaptureBeforeStarting() =
     runTest {
-      installSpeechRecognitionService()
+      installSpeechRecognitionServiceFixture()
       val manager = createManager()
       withMain {
         val error =
@@ -408,7 +406,7 @@ class TalkModeManagerTest {
   @Test
   fun cancelledEndPushToTalkClearsPendingReleaseBeforeNextBegin() =
     runTest {
-      installSpeechRecognitionService()
+      installSpeechRecognitionServiceFixture()
       val manager = createManager()
       setPrivateField(manager, "activePttCaptureId", "capture-a")
       setPrivateField(manager, "pttReleaseCompletion", CompletableDeferred<Unit>())
@@ -437,7 +435,7 @@ class TalkModeManagerTest {
   @Test
   fun replacementBeginDrainsPendingReleaseBeforeStartingNewCapture() =
     runTest {
-      installSpeechRecognitionService()
+      installSpeechRecognitionServiceFixture()
       var connectionChecks = 0
       val manager =
         createManager(
@@ -835,7 +833,7 @@ class TalkModeManagerTest {
   @Test
   fun talkConfigChangedRefreshesNextUseWithoutStoppingCapture() =
     runBlocking {
-      installSpeechRecognitionService()
+      installSpeechRecognitionServiceFixture()
       val config = AtomicReference(nativeTalkConfig("de-DE"))
       withStartedTalk(responseForRequest = { request, _ ->
         config.get().takeIf { request.getValue("method").jsonPrimitive.content == "talk.config" }
@@ -857,7 +855,7 @@ class TalkModeManagerTest {
   @Test
   fun removedSpeechInterruptionSettingDoesNotKeepInterruptingPlayback() =
     runBlocking {
-      installSpeechRecognitionService()
+      installSpeechRecognitionServiceFixture()
       val config = AtomicReference(nativeTalkConfig("de-DE", interrupt = true))
       withStartedTalk(responseForRequest = { request, _ ->
         config.get().takeIf { request.getValue("method").jsonPrimitive.content == "talk.config" }
@@ -891,7 +889,7 @@ class TalkModeManagerTest {
   @Test
   fun configConsumerWaitsForTheNewerRefreshBeforeUsingItsSettings() =
     runBlocking {
-      installSpeechRecognitionService()
+      installSpeechRecognitionServiceFixture()
       val holdReads = AtomicBoolean(false)
       val held = ConcurrentLinkedQueue<Pair<String, WebSocket>>()
       withStartedTalk(
@@ -933,7 +931,7 @@ class TalkModeManagerTest {
   @Test
   fun failedCurrentConfigReadReturnsOnceAndCanRetryOnNextUse() =
     runBlocking {
-      installSpeechRecognitionService()
+      installSpeechRecognitionServiceFixture()
       val failReads = AtomicBoolean(false)
       val failures = AtomicLong()
       withStartedTalk(
@@ -964,7 +962,7 @@ class TalkModeManagerTest {
 
   private fun verifyConfigResponseOwnership(loadNewerBeforeRelease: Boolean) =
     runBlocking {
-      installSpeechRecognitionService()
+      installSpeechRecognitionServiceFixture()
       val config = AtomicReference(nativeTalkConfig("de-DE"))
       val holdNext = AtomicBoolean(false)
       val held = ConcurrentLinkedQueue<Pair<String, WebSocket>>()
@@ -1805,6 +1803,35 @@ class TalkModeManagerTest {
     }
 
   @Test
+  fun reviewCanonicalAgentGapRecoversThroughActualHistoryOwner() =
+    runBlocking {
+      val active = AtomicBoolean(true)
+      withConversationObservation(historySnapshot = { key ->
+        conversationHistorySnapshot(key, active.get(), if (active.get()) listOf("gap-run") else emptyList())
+      }) { proof, requests ->
+        val key = "agent:scout:gap"
+        val start = startObservedCall(proof, key)
+        awaitTalkWork(proof) {
+          proof.manager.chatCall.value
+            ?.start === start && requests.any { it.getValue("method").jsonPrimitive.content == "chat.history" }
+        }
+        proof.manager.handleGatewayEvent(
+          "agent",
+          """{"runId":"gap-run","sessionKey":"$key","agentId":"scout","seq":1,"stream":"tool","data":{"phase":"start","toolCallId":"write-1","name":"write"}}""",
+        )
+        awaitTalkWork(proof) { proof.manager.callPresentation.value.activity == TalkAgentActivity.Writing }
+        active.set(false)
+        proof.manager.handleGatewayEvent("agent", """{"runId":"gap-run","sessionKey":"$key","stream":"error","data":{"reason":"seq gap","expected":2,"received":4}}""")
+        awaitTalkWork(proof) { requests.count { it.getValue("method").jsonPrimitive.content == "chat.history" } == 2 && !proof.manager.callPresentation.value.activityIncomplete }
+        assertNull("A refreshed idle snapshot clears stale tool activity", proof.manager.callPresentation.value.activity)
+        requests.filter { it.getValue("method").jsonPrimitive.content == "chat.history" }.forEach { assertConversationHistoryParams(it, key) }
+        assertEquals(1, requests.count { it.getValue("method").jsonPrimitive.content == "sessions.messages.subscribe" })
+        proof.manager.setEnabled(false)
+        awaitTalkWork(proof) { requests.any { it.getValue("method").jsonPrimitive.content == "sessions.messages.unsubscribe" } }
+      }
+    }
+
+  @Test
   fun conversationHistorySnapshotCannotOverwriteNewerAgentActivity() =
     runBlocking {
       val heldHistory = ConcurrentLinkedQueue<Pair<JsonObject, WebSocket>>()
@@ -1839,6 +1866,50 @@ class TalkModeManagerTest {
         assertFalse(proof.synthesizer.requested.isCompleted)
         proof.manager.setEnabled(false)
         awaitTalkWork(proof) { requests.any { it.getValue("method").jsonPrimitive.content == "sessions.messages.unsubscribe" } }
+      }
+    }
+
+  @Test
+  fun reviewRetiredObservationSetupCannotUnsubscribeReplacement() =
+    runBlocking {
+      withConversationObservation { proof, requests ->
+        val first = startObservedCall(proof, "agent:scout:old")
+        awaitTalkWork(proof) {
+          proof.manager.chatCall.value
+            ?.start === first && proof.manager.isListening.value
+        }
+        val oldGeneration = proof.manager.callPresentation.value.generation
+        proof.manager.setEnabled(false)
+        awaitTalkWork(proof) { requests.count { it.getValue("method").jsonPrimitive.content == "sessions.messages.unsubscribe" } == 1 }
+        val second = startObservedCall(proof, "agent:scout:replacement")
+        awaitTalkWork(proof) {
+          proof.manager.chatCall.value
+            ?.start === second && proof.manager.isListening.value
+        }
+        proof.manager.handleGatewayEvent("agent", """{"runId":"replacement-run","sessionKey":"agent:scout:replacement","agentId":"scout","seq":1,"stream":"tool","data":{"phase":"start","toolCallId":"read","name":"read"}}""")
+        awaitTalkWork(proof) { proof.manager.callPresentation.value.activity == TalkAgentActivity.Reading }
+        // Execute the actual boundary with the arguments held by A after its outer startup check.
+        val stale =
+          proof.scope.async {
+            runCatching {
+              kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn<Unit> { continuation ->
+                val method = TalkModeManager::class.java.getDeclaredMethod("prepareConversationObservation", TalkModeManager.ChatStart::class.java, java.lang.Long.TYPE, kotlin.coroutines.Continuation::class.java)
+                method.isAccessible = true
+                method.invoke(proof.manager, first, oldGeneration, continuation)
+              }
+            }
+          }
+        awaitTalkWork(proof) { stale.isCompleted }
+        stale.await()
+        assertEquals("Retired setup cannot release the replacement membership", 1, requests.count { it.getValue("method").jsonPrimitive.content == "sessions.messages.unsubscribe" })
+        assertSame(
+          second,
+          proof.manager.callPresentation.value.call
+            ?.start,
+        )
+        assertEquals(TalkAgentActivity.Reading, proof.manager.callPresentation.value.activity)
+        proof.manager.setEnabled(false)
+        awaitTalkWork(proof) { requests.count { it.getValue("method").jsonPrimitive.content == "sessions.messages.unsubscribe" } == 2 }
       }
     }
 
@@ -1909,7 +1980,7 @@ class TalkModeManagerTest {
     intercept: (JsonObject, WebSocket) -> Boolean = { _, _ -> false },
     block: suspend (RealtimePlaybackProof, ConcurrentLinkedQueue<JsonObject>) -> Unit,
   ) {
-    installSpeechRecognitionService()
+    installSpeechRecognitionServiceFixture()
     val requests = ConcurrentLinkedQueue<JsonObject>()
     withStartedTalk(
       startAutomatically = false,
@@ -1968,7 +2039,7 @@ class TalkModeManagerTest {
   }
 
   private suspend fun withNativeTalk(block: suspend (RealtimePlaybackProof, ConcurrentLinkedQueue<JsonObject>) -> Unit) {
-    installSpeechRecognitionService()
+    installSpeechRecognitionServiceFixture()
     val sends = ConcurrentLinkedQueue<JsonObject>()
     val relayCreates = ConcurrentLinkedQueue<JsonObject>()
     withStartedTalk(
@@ -2959,7 +3030,7 @@ class TalkModeManagerTest {
   @Test
   fun stoppedPushToTalkAdmissionCannotPauseLaterTalk() =
     runBlocking {
-      installSpeechRecognitionService()
+      installSpeechRecognitionServiceFixture()
       withStartedTalk { proof ->
         var stopped = false
         val stopBeforePause =
@@ -3001,7 +3072,7 @@ class TalkModeManagerTest {
   @Test
   fun retiredPushToTalkCannotEnqueueCancellationAfterPhysicalCleanup() =
     runBlocking {
-      installSpeechRecognitionService()
+      installSpeechRecognitionServiceFixture()
       val cancellations =
         java.util.concurrent.atomic
           .AtomicInteger()
@@ -3042,7 +3113,7 @@ class TalkModeManagerTest {
   @Test
   fun retiredPushToTalkCancellationCannotStopReplacementRelay() =
     runBlocking {
-      installSpeechRecognitionService()
+      installSpeechRecognitionServiceFixture()
       for (applied in listOf(false, true)) {
         val pending = CompletableDeferred<Pair<String, WebSocket>>()
         withStartedTalk(interceptRequest = { request, socket ->
@@ -3092,7 +3163,7 @@ class TalkModeManagerTest {
   @Test
   fun providerClearCannotCompletePushToTalkCancellation() =
     runBlocking {
-      installSpeechRecognitionService()
+      installSpeechRecognitionServiceFixture()
       val pending = CompletableDeferred<Pair<String, WebSocket>>()
       val providerClearDrained = mapOf("unkeyed" to CompletableDeferred<Unit>(), "keyed" to CompletableDeferred<Unit>())
       withStartedTalk(interceptRequest = { request, socket ->
@@ -4262,16 +4333,6 @@ class TalkModeManagerTest {
   ) = handleGatewayEvent("talk.event", realtimeTranscriptPayload(role, text, final))
 
   private fun TalkModeManager.realtimeEvent(payload: String) = handleGatewayEvent("talk.event", payload)
-
-  private fun installSpeechRecognitionService() {
-    val app = RuntimeEnvironment.getApplication()
-    shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)
-    val speechService = ComponentName(app, "TestSpeechRecognitionService")
-    shadowOf(app.packageManager).apply {
-      addServiceIfNotPresent(speechService)
-      addIntentFilterForService(speechService, IntentFilter(RecognitionService.SERVICE_INTERFACE))
-    }
-  }
 
   @Suppress("UNCHECKED_CAST")
   private fun playbackGeneration(manager: TalkModeManager) = readPrivateField(manager, "playbackGeneration") as AtomicLong

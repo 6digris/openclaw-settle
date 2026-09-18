@@ -42,12 +42,16 @@ Watch background behavior. See [Watch setup and limits](/platforms/ios#standalon
   during a call returns to that page without starting another call. **Go to chat**
   opens the call's original agent/session; Android Back changes only the view.
   **End** closes audio and is separate from the chat agent's **Stop** action.
-  The avatar uses the available center area; audio, photo, and End controls stay
-  at the bottom inside the safe area. A compact, read-only caption shows up to
+  The smaller avatar sits below a header with the captured agent identity,
+  **Go to chat**, and **Details**. Audio, photo, and End controls stay at the
+  bottom inside the safe area. Camera choice, previews, and explicit Send photos
+  share a scrollable photo area above those fixed actions. A compact, read-only caption shows up to
   four lines of the current or most recent spoken user or assistant text. It
   belongs to that call, including native speech and realtime Talk, not another
   selected chat. Captions remain visible with speaker audio off. No empty
-  transcript box is reserved; full history stays in Chat.
+  transcript box is reserved; full history stays in Chat. Speaker labels and
+  utterances align to the left within a theme-aware caption surface. **Details**
+  opens a read-only mobile sheet without ending the call or stopping agent work.
 - **Photo** captures a still image using the selected **Selfie** or **Rear**
   camera. Inspect its preview, then use **Send photos** directly on the conversation
   page. This sends only the displayed photos to the call's original chat; unsent
@@ -57,7 +61,8 @@ Watch background behavior. See [Watch setup and limits](/platforms/ios#standalon
 - Reading, writing/editing, searching, tool work, approvals, and input waits use
   Gateway events for the call's original conversation, including work not started
   by the current voice request. They do not follow another selected chat. Missing
-  or interrupted observation is marked incomplete rather than guessed as idle.
+  or interrupted observation is recorded as incomplete rather than guessed as idle;
+  its technical explanation appears under **Details**, not beside the avatar.
   Observation alone does not create another spoken reply or chat turn.
 - Dictation, voice-note recording, and Talk are mutually exclusive microphone
   paths; starting one stops or blocks the others.

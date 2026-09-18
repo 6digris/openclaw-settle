@@ -1,18 +1,33 @@
 package ai.openclaw.app
 
 import ai.openclaw.app.chat.AndroidClientDatabases
+import android.Manifest
+import android.content.ComponentName
+import android.content.IntentFilter
 import android.os.Handler
 import android.os.Looper
+import android.speech.RecognitionService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.job
 import kotlinx.coroutines.runBlocking
+import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.android.controller.ServiceController
 import org.robolectric.shadows.ShadowPausedLooper
 import org.robolectric.util.ReflectionHelpers
+
+internal fun installSpeechRecognitionServiceFixture() {
+  val app = RuntimeEnvironment.getApplication()
+  shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)
+  val speechService = ComponentName(app, "TestSpeechRecognitionService")
+  shadowOf(app.packageManager).apply {
+    addServiceIfNotPresent(speechService)
+    addIntentFilterForService(speechService, IntentFilter(RecognitionService.SERVICE_INTERFACE))
+  }
+}
 
 internal fun closeNodeRuntimeTestFixture(runtime: NodeRuntime) = drainWithMainLooper { closeRuntime(runtime) }
 

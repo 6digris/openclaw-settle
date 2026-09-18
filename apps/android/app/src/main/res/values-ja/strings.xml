@@ -40,6 +40,7 @@
     <string name="native_01bcfe7a9296b6d6" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Apply Patch"</string>
     <string name="native_01c14c9eadedae4d" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"%1$s 件のGateway"</string>
     <string name="native_01cfb797d96a35b6" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ピンチ操作中"</string>
+    <string name="native_01d17b553f7d346a" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Activity details may be incomplete."</string>
     <string name="native_024f9605eda4caf4" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"連続スキップ"</string>
     <string name="native_027d7c7db6d8b3ef" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"このフォルダにはまだファイルがありません。"</string>
     <string name="native_0303e18246708180" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"未接続"</string>
@@ -57,6 +58,7 @@
     <string name="native_049579fa8efbaa1b" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"聞き取り中 (PTT)"</string>
     <string name="native_04a3a0e94565c95d" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"提案を却下しました。"</string>
     <string name="native_04efae3fc7825d3a" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"サイドバーを表示"</string>
+    <string name="native_056393d57af29d0d" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"+%1$s more"</string>
     <string name="native_057b5de48d7b90f1" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"最小限"</string>
     <string name="native_05a2d7332eb9d8bf" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"拒否"</string>
     <string name="native_05dd0c51d15c5db7" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"アクティブなエージェント"</string>
@@ -128,6 +130,7 @@
     <string name="native_106808530413298b" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"自動化の詳細を開く"</string>
     <string name="native_1093115897879aa3" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ランタイム"</string>
     <string name="native_109e4d0f2c9c9b4f" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"進捗カードを展開"</string>
+    <string name="native_10c5739b95bdf361" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Waiting for approval"</string>
     <string name="native_10d2f9ed07a13f84" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"さらに 1 件のワーカー"</string>
     <string name="native_1102bd820f68901b" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"エージェント %1$s"</string>
     <string name="native_110bc9c13524d99d" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Gateway に接続して、マシンの画面を表示します。"</string>
@@ -186,6 +189,7 @@
     <string name="native_18b4885826c1440a" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"正確な位置情報"</string>
     <string name="native_18e34d7ead18aeca" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"今回のみ許可"</string>
     <string name="native_18e5a1a209b5873f" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"+%1$s 件"</string>
+    <string name="native_18e7a547ac62a5f2" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Return to the call\'s chat before taking a photo."</string>
     <string name="native_18ebf1bbc5b1c317" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"thread create"</string>
     <string name="native_18f2a0947f9d6523" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ブロック済み"</string>
     <string name="native_18f6e5973bc41268" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ウェイクワードまたはフレーズ"</string>
@@ -427,6 +431,7 @@
     <string name="native_38dcea3e5a6a342e" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"スマートフォンからOpenClawを使用"</string>
     <string name="native_3907fa7f80722a6f" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"外観"</string>
     <string name="native_3912c65bdd0a4356" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"スキルワークショップ"</string>
+    <string name="native_391e405152779acc" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Assistant"</string>
     <string name="native_3942b87daebe82bb" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"トークンが必要"</string>
     <string name="native_394308b6934dd9c1" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"プレビュー · %1$s"</string>
     <string name="native_395407e069aaa185" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"マイクの使用許可が必要"</string>
@@ -497,6 +502,7 @@
     <string name="native_430798d3e8250938" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"スレッドを読み込み中"</string>
     <string name="native_430df68ec29a85a2" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"このGatewayは現在、このデバイスが信頼する証明書を提示しています。"</string>
     <string name="native_432af41f893dc7e6" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"一致するGatewayはありません"</string>
+    <string name="native_435760070a20227c" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Go to chat"</string>
     <string name="native_4387e5d3966fc436" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"思考量"</string>
     <string name="native_43905968a540af6a" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"実行時刻の分散 ms"</string>
     <string name="native_43988c156beabf7d" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"event create"</string>
@@ -556,8 +562,10 @@
     <string name="native_4ba5121d4d1be174" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"デバイス"</string>
     <string name="native_4bc652d0bc018e69" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Android向けOpenClaw."</string>
     <string name="native_4bcf240ace02f19c" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"機能の承認待ち"</string>
+    <string name="native_4bd86a1dee849d6e" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"%1$s questions need answers"</string>
     <string name="native_4c086c788ad0fdab" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"検索結果の抜粋"</string>
     <string name="native_4c09c146861e92a9" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"この自動化を実行、有効化、無効化、削除、または更新する前に、編集内容を保存するか元に戻してください。"</string>
+    <string name="native_4c12829cf9d317cd" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Send the release summary"</string>
     <string name="native_4c27eb153d751834" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"自動化はまだありません。"</string>
     <string name="native_4c2dd6654a535240" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"このスキルには%1$s件のセットアップ項目が必要です。Androidではインストール済みの内容を確認できます。セットアップや設定の変更はデスクトップまたはCLIで行ってください。"</string>
     <string name="native_4c8346f441fa1651" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"最近の %1$s 件"</string>
@@ -586,6 +594,7 @@
     <string name="native_50c8b81faf51e7d1" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"既読にする"</string>
     <string name="native_50eeec67b7dae6d1" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ノードの承認待ち"</string>
     <string name="native_51391bf0ab33e827" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"wake"</string>
+    <string name="native_514e82a0b21c9fdd" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Rear camera · Switch to selfie"</string>
     <string name="native_51ad891dd2c5d288" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"%1$s件の提案"</string>
     <string name="native_51bc9903f8056c05" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Gateway認証への対応が必要です。"</string>
     <string name="native_51bfffbcdbcfbc00" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"接続の詳細"</string>
@@ -744,6 +753,7 @@
     <string name="native_66f4804ee23ddc09" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"アーカイブ"</string>
     <string name="native_6725e7bbcd28f3a8" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"システム"</string>
     <string name="native_672f3453e1dd571b" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"リモートIP"</string>
+    <string name="native_6741d49d196f9bd4" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"%1$s approvals need review"</string>
     <string name="native_674b38cae72bb0c8" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"グループ化なし"</string>
     <string name="native_674eb55d9c353900" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"スケジュールの詳細"</string>
     <string name="native_67528858c36397f7" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"スマートフォンの機能"</string>
@@ -830,6 +840,7 @@
     <string name="native_71988c4d8e0803ba" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"テキスト"</string>
     <string name="native_7198eaa9f18ee413" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"%2$s件中%1$s件を表示中. さらに表示するには検索を絞り込んでください。"</string>
     <string name="native_71aec38e93393296" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"v%1$s が利用可能"</string>
+    <string name="native_71cb19a1bbbd8742" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Speaker audio"</string>
     <string name="native_71dca4478e9cab11" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"%1$s... (OK)"</string>
     <string name="native_71eb964324a01777" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"プロバイダーと設定済みモデル"</string>
     <string name="native_72021eb70e91b4d5" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"接続中…"</string>
@@ -1013,6 +1024,7 @@
     <string name="native_8cac4b77b9c54695" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Cron の操作に失敗しました。"</string>
     <string name="native_8cb2bab2ce6a17b2" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Gatewayのコンピューターで実行してください:"</string>
     <string name="native_8cb650539ec84aa5" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"セッションを検索"</string>
+    <string name="native_8cc517533d79f594" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Update Gateway settings"</string>
     <string name="native_8d0160c0d84236dd" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"より速く"</string>
     <string name="native_8d0839802b4d6aca" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ログを更新"</string>
     <string name="native_8d0ee7798129f41c" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"画像を表示できません · タップして再試行"</string>
@@ -1243,6 +1255,7 @@
     <string name="native_acfc5be785a9bb3d" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"切断"</string>
     <string name="native_ad1c341c65f84ede" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Gateway コンピューターで承認コマンドを実行してから、もう一度確認してください。"</string>
     <string name="native_ad1fb9ec0cb3c7a4" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"自動化"</string>
+    <string name="native_ad9edbae8d4c6ca6" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Enable Camera in Settings before taking a photo."</string>
     <string name="native_adb7eb8a03ad699c" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"%1$s分"</string>
     <string name="native_add6dbc541874cdd" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"メッセージ全文を読み込み中…"</string>
     <string name="native_ade9248e0132b411" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"信頼する"</string>
@@ -1328,6 +1341,7 @@
     <string name="native_bc1b88907d3b748a" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"音声"</string>
     <string name="native_bc1c94a6dfce1058" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"アクセスを許可する前に、リクエスト元のデバイスを確認してください。"</string>
     <string name="native_bc6618670f3e8a17" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Bluetooth LEマイク"</string>
+    <string name="native_bca61b1685cd5ecc" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Return to conversation"</string>
     <string name="native_bcb06651437caa15" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"%1$s %2$s"</string>
     <string name="native_bd08450d63406844" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"自動化を有効にしました。"</string>
     <string name="native_bd38ed7732402b1a" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ピンク"</string>
@@ -1405,6 +1419,7 @@
     <string name="native_c66feb5eb8f217c7" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"上に移動"</string>
     <string name="native_c67415bcff328a59" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"式"</string>
     <string name="native_c6907e94a3b7ea1b" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"バックグラウンドタスク"</string>
+    <string name="native_c6c469bdd0480c46" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Selfie camera · Switch to rear"</string>
     <string name="native_c6d5ed757b66bfd3" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"夢を見る"</string>
     <string name="native_c6dd061350fc69b8" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ブロックされているアプリはありません。 ブロックを追加しない限り、アプリは転送できます。"</string>
     <string name="native_c753cdf0c19f1e38" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"音声認識を利用できません"</string>
@@ -1520,6 +1535,7 @@
     <string name="native_d696a35bdd1883da" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"プロフィール"</string>
     <string name="native_d6a99dbee26515ff" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Gatewayから報告されると、プロバイダーの制限がここに表示されます。"</string>
     <string name="native_d6bfda034106ecd6" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"1 件の問題"</string>
+    <string name="native_d6e645b7d2b2da64" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Call"</string>
     <string name="native_d6f931ca6d5f5b60" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"\"%1$s\" 内のスレッドは保持され、未分類に戻ります。"</string>
     <string name="native_d70604e843046137" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"推奨"</string>
     <string name="native_d70b9e24bca26b40" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"作成済み"</string>
@@ -1530,6 +1546,7 @@
     <string name="native_d803ca340ecdfb72" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"読み上げに失敗しました: %1$s"</string>
     <string name="native_d8194812c0189838" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"未コミット"</string>
     <string name="native_d82bd5d6c334fe2b" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"トークを開始"</string>
+    <string name="native_d84eebada93efee1" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Photo"</string>
     <string name="native_d8707d411d997657" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Secrets"</string>
     <string name="native_d876e657c0d9154a" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"このフォルダーを読み込めませんでした。"</string>
     <string name="native_d87c6a16d961e79a" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"テキストをコピーしました"</string>
@@ -1603,7 +1620,6 @@
     <string name="native_e10435f6306b06d9" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"1 アカウント"</string>
     <string name="native_e159b06187d369a0" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"一時停止中"</string>
     <string name="native_e18835ef2f6c8558" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"カメラを許可"</string>
-    <string name="native_e1db8571dfe6dfcf" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"このスマートフォンが接続されている間、実行承認リクエストがここに表示されます。"</string>
     <string name="native_e1f641311f07fe31" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">" · マイク: 保留中"</string>
     <string name="native_e21f935f11d7e966" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"コピー"</string>
     <string name="native_e2acabb2202be941" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"詳細をコピーしました"</string>
@@ -1627,6 +1643,7 @@
     <string name="native_e51aa2de89dcd71a" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"OpenClawロゴ"</string>
     <string name="native_e52b3044724b9f4d" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"モデルのピン留めを解除"</string>
     <string name="native_e5584bc5057284ae" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"このGatewayに接続されているメッセージングサービス。"</string>
+    <string name="native_e55edd8ab43ec629" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Send photos"</string>
     <string name="native_e56faa0fe752ff19" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"選択範囲の終点、右"</string>
     <string name="native_e595f17fac1d8384" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"送信中"</string>
     <string name="native_e5b87192a9e6321f" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"アーカイブ済みのスレッドがここに表示されます。"</string>
@@ -1666,6 +1683,7 @@
     <string name="native_ead77cf0387a667d" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"「接続」を選択するまで、現在の接続は変更されません。"</string>
     <string name="native_ead79d5de1e67915" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"%1$s%2$s を使用しました"</string>
     <string name="native_eadb3e64a1178e71" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ターミナルにはGatewayへの接続が必要です"</string>
+    <string name="native_eadc9653035e942c" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Waiting for answer"</string>
     <string name="native_eae47ccdd51f34b3" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Exec"</string>
     <string name="native_eaf3a81a6411115f" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"アプリフィルター"</string>
     <string name="native_eb814be3ca3b78c0" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"メイン"</string>
@@ -1722,8 +1740,10 @@
     <string name="native_f2cb21c53a33f72c" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"レイアウト: 詳細"</string>
     <string name="native_f2da2e47cd31a5dd" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"この画像をデコードできませんでした。"</string>
     <string name="native_f2fc431685c4e3e5" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"保護されたシークレット"</string>
+    <string name="native_f35b0cc55bb508a5" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Approval requests will appear here while this phone is connected."</string>
     <string name="native_f3753c0fe29b88db" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Gateway、音声、通知、プライバシー"</string>
     <string name="native_f386c32c1bf437d9" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"エージェントのワークスペースファイル"</string>
+    <string name="native_f3d045d48cf24463" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Taking photo…"</string>
     <string name="native_f418bf0894a1806a" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"このデバイスは Gateway への信頼済みアクセスを失います。"</string>
     <string name="native_f41d9e8b7e09aa24" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"保留中のコマンドのrequestIdをapproveコマンドで使用してください。"</string>
     <string name="native_f4830a1dae298044" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"スケジュール"</string>
@@ -1733,6 +1753,7 @@
     <string name="native_f4cc820d308495c4" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ペイロード · %1$s"</string>
     <string name="native_f4ccae29e1bb0c20" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"実行中"</string>
     <string name="native_f4ce53e24f86c82e" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"作業中"</string>
+    <string name="native_f4db1e48476f6075" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"End"</string>
     <string name="native_f4e2076014711222" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"システムの信頼設定を使用"</string>
     <string name="native_f4ef7a41caa88dd1" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"利用可能なプロバイダーはありません"</string>
     <string name="native_f503d14f0c32a9c0" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"接続済みの Bluetooth マイクを優先します。"</string>

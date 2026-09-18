@@ -76,16 +76,15 @@ private class RealtimeAgentRun(
   var incomplete = false
   val tools = linkedMapOf<String, TalkAgentActivity>()
   val approvals = linkedMapOf<String, Set<String>>()
-  val questions = mutableSetOf<String>()
 
-  fun activity(): TalkAgentActivity? =
+  fun activity(hasQuestion: Boolean): TalkAgentActivity? =
     when {
-      failed -> TalkAgentActivity.Error
-
-      // A run-liveness snapshot does not resolve approvals, questions, or yielded waits.
+      // A run-liveness snapshot or sibling tool failure does not resolve user obligations.
       approvals.isNotEmpty() -> TalkAgentActivity.WaitingForApproval
 
-      questions.isNotEmpty() -> TalkAgentActivity.WaitingForInput
+      hasQuestion -> TalkAgentActivity.WaitingForInput
+
+      failed -> TalkAgentActivity.Error
 
       waiting -> TalkAgentActivity.Waiting
 
@@ -366,6 +365,7 @@ internal class RealtimeAgentCoordinator(
               ?.agentId
         if (agentId != null && expectedAgent != null && agentId != expectedAgent) return@synchronized true
         val binding = run?.completion
+        var observedCompletion = false
         if (run != null && (agentId == null || run.agentId == null || agentId == run.agentId) &&
           (
             (binding != null && (sessionKey == null || sessionKey == run.agentSessionKey)) ||
@@ -381,39 +381,19 @@ internal class RealtimeAgentCoordinator(
             run.tools.clear()
             if (!yielded) run.approvals.clear()
           }
-          when (binding) {
-            is RealtimeRunCompletion.Relay -> {
-              run.completion = null
-              retireRunLocked(runId)
-              if (binding.session === activeSession) dispatch = binding to completion
-              if (run.observationOwner == null) runs.remove(runId)
-              publishActivityLocked()
-              true
-            }
-
-            is RealtimeRunCompletion.NativeInput -> {
-              run.completion = null
-              retireRunLocked(runId)
-              if (run.observationOwner == null) runs.remove(runId)
-              publishActivityLocked()
-              false
-            }
-
-            null -> {
-              publishActivityLocked()
-              if (runId in retiredRunIds) {
-                true
-              } else if (externalCompletionOwner) {
-                false
-              } else if (pendingCalls.any { !it.failed }) {
-                overflow = cacheEarlyCompletionLocked(runId, completion)
-                true
-              } else {
-                true
-              }
+          if (binding != null) {
+            if (binding is RealtimeRunCompletion.Relay && binding.session === activeSession) dispatch = binding to completion
+            retireCompletionLocked(run)
+            // Native finals still belong to their original waiter, not a relay result writer.
+            return@synchronized when (binding) {
+              is RealtimeRunCompletion.Relay -> true
+              is RealtimeRunCompletion.NativeInput -> false
             }
           }
-        } else if (runId in retiredRunIds) {
+          observedCompletion = true
+          publishActivityLocked()
+        }
+        if (runId in retiredRunIds) {
           true
         } else if (externalCompletionOwner) {
           false
@@ -421,7 +401,7 @@ internal class RealtimeAgentCoordinator(
           overflow = cacheEarlyCompletionLocked(runId, completion)
           true
         } else {
-          false
+          observedCompletion
         }
       }
     dispatch?.let { dispatchCompletion(it.first, it.second) }
@@ -484,7 +464,6 @@ internal class RealtimeAgentCoordinator(
             run.completion = RealtimeRunCompletion.NativeInput(pending.session)
             runs[runId] = run
             earlyAgentEvents.filter { it.runId == runId && pending in it.pending }.forEach { applyActivityLocked(run, it) }
-            questions.values.forEach { record -> attachQuestionLocked(run, record) }
           }
         }
         pruneEarlyActivityLocked()
@@ -501,22 +480,21 @@ internal class RealtimeAgentCoordinator(
       val run = runs[runId] ?: return
       if (run.completion !is RealtimeRunCompletion.NativeInput) return
       associateObservationLocked(run)
-      run.completion = null
-      if (run.observationOwner == null) runs.remove(runId)
-      retireRunLocked(runId)
-      publishActivityLocked()
+      retireCompletionLocked(run)
     }
+  }
+
+  private fun retireCompletionLocked(run: RealtimeAgentRun) {
+    run.completion = null
+    retireRunLocked(run.runId)
+    if (run.observationOwner == null) runs.remove(run.runId)
+    publishActivityLocked()
   }
 
   fun beginConversationObservation(owner: TalkModeManager.ChatStart) {
     synchronized(lock) {
       if (observation?.owner === owner) return
-      observation = RealtimeConversationObservation(owner)
-      runs.entries.removeAll { it.value.completion == null }
-      earlyAgentEvents.clear()
-      questions.clear()
-      resolvedQuestionIds.clear()
-      scheduleQuestionExpiryLocked()
+      resetObservationLocked(owner)
       publishActivityLocked()
     }
   }
@@ -536,9 +514,9 @@ internal class RealtimeAgentCoordinator(
         }
       }
       pruneEarlyActivityLocked { true }
-      questions.entries.removeAll { !matchesObservation(current, it.value.sessionKey, it.value.agentId) }
-      questions.values.forEach { record ->
-        record.runId?.let { runId -> admitObservedRunLocked(current, runId, key, owner.owner.agentId) }?.let { attachQuestionLocked(it, record) }
+      pruneQuestionsLocked()
+      questions.values.filter { matchesObservation(current, it.sessionKey, it.agentId) }.forEach { record ->
+        record.runId?.let { runId -> admitObservedRunLocked(current, runId, key, owner.owner.agentId) }
       }
       scheduleQuestionExpiryLocked()
       publishActivityLocked()
@@ -548,14 +526,18 @@ internal class RealtimeAgentCoordinator(
   fun retireConversationObservation(owner: TalkModeManager.ChatStart) {
     synchronized(lock) {
       if (observation?.owner !== owner) return
-      observation = null
-      runs.entries.removeAll { it.value.completion == null }
-      earlyAgentEvents.clear()
-      questions.clear()
-      resolvedQuestionIds.clear()
-      scheduleQuestionExpiryLocked()
+      resetObservationLocked(null)
       publishActivityLocked()
     }
+  }
+
+  private fun resetObservationLocked(owner: TalkModeManager.ChatStart?) {
+    observation = owner?.let { RealtimeConversationObservation(it) }
+    runs.entries.removeAll { it.value.completion == null }
+    runs.values.forEach { it.observationOwner = null }
+    earlyAgentEvents.clear()
+    pruneQuestionsLocked()
+    scheduleQuestionExpiryLocked()
   }
 
   fun observationRevision(owner: TalkModeManager.ChatStart): Long? =
@@ -632,22 +614,32 @@ internal class RealtimeAgentCoordinator(
   }
 
   /** Consume both agent and session.tool at their canonical ingress, before selected-chat filtering. */
-  fun handleAgentEvent(payload: JsonObject) {
-    val data = payload["data"] as? JsonObject ?: return
+  fun handleAgentEvent(payload: JsonObject): TalkModeManager.ChatStart? {
+    val data = payload["data"] as? JsonObject ?: return null
     synchronized(lock) {
-      val runId = payload["runId"].asIdOrNull() ?: return
-      val key = payload["sessionKey"].asIdOrNull() ?: return
-      val agent = payload["agentId"].asIdOrNull()
+      val runId = payload["runId"].asIdOrNull() ?: return null
+      val key = payload["sessionKey"].asIdOrNull() ?: return null
       val current = observation
-      if (current != null && !matchesObservationAgent(current, key, agent)) return
-      if (current?.key != null && !matchesObservation(current, key, agent)) return
+      val gap = payload["stream"].asStringOrNull() == "error" && data["reason"].asStringOrNull() == "seq gap"
+      val agent =
+        payload["agentId"].asIdOrNull()
+          ?: runs[runId]
+            ?.takeIf { gap && it.agentSessionKey == key && it.observationOwner === current?.owner }
+            ?.agentId
+      if (current != null && !matchesObservationAgent(current, key, agent)) return null
+      if (current?.key != null && !matchesObservation(current, key, agent)) return null
+      if (gap) {
+        val owner = current?.owner ?: return null
+        markObservationIncomplete(owner, clearTransient = true)
+        return owner
+      }
       val event =
         RealtimeAgentActivityEvent(
           runId = runId,
           sessionKey = key,
           agentId = agent,
-          sequence = (payload["seq"] as? JsonPrimitive)?.content?.toLongOrNull()?.takeIf { it >= 0 } ?: return,
-          stream = payload["stream"].asIdOrNull() ?: return,
+          sequence = (payload["seq"] as? JsonPrimitive)?.content?.toLongOrNull()?.takeIf { it >= 0 } ?: return null,
+          stream = payload["stream"].asIdOrNull() ?: return null,
           phase = data["phase"].asIdOrNull(),
           name = data["name"].asIdOrNull(),
           toolCallId = data["toolCallId"].asIdOrNull(),
@@ -678,6 +670,7 @@ internal class RealtimeAgentCoordinator(
         markDroppedActivityLocked(event)
       }
     }
+    return null
   }
 
   // ACK, timeout, confirmation and eviction consume the same recorded facts.
@@ -739,7 +732,7 @@ internal class RealtimeAgentCoordinator(
           ?: return false
       runs.remove(disposable.runId)
       if (disposable.approvals.isNotEmpty() || disposable.waiting) observation?.obligationsIncomplete = true
-      if (!disposable.finished || disposable.approvals.isNotEmpty() || disposable.questions.isNotEmpty() || disposable.waiting) observation?.incomplete = true
+      if (!disposable.finished || disposable.approvals.isNotEmpty() || hasQuestionLocked(disposable) || disposable.waiting) observation?.incomplete = true
       publishActivityLocked()
     }
     return true
@@ -765,7 +758,6 @@ internal class RealtimeAgentCoordinator(
       if (existing.agentSessionKey != key || (existing.agentId != null && existing.agentId != current.owner.owner.agentId)) return null
       if (existing.agentId == null) existing.agentId = current.owner.owner.agentId
       existing.observationOwner = current.owner
-      questions.values.forEach { attachQuestionLocked(existing, it) }
       return existing
     }
     if (!makeRunSpaceLocked(forCompletion = false)) {
@@ -774,7 +766,6 @@ internal class RealtimeAgentCoordinator(
     }
     return RealtimeAgentRun(runId, key, current.owner.owner.agentId, observationOwner = current.owner).also { run ->
       runs[runId] = run
-      questions.values.forEach { attachQuestionLocked(run, it) }
     }
   }
 
@@ -848,7 +839,7 @@ internal class RealtimeAgentCoordinator(
 
           "result" -> {
             run.tools.remove(id)
-            run.failed = event.isError
+            run.failed = run.failed || event.isError
           }
         }
       }
@@ -895,17 +886,21 @@ internal class RealtimeAgentCoordinator(
         resolvedQuestionIds.add(id)
         while (resolvedQuestionIds.size > maxCachedCompletions) resolvedQuestionIds.remove(resolvedQuestionIds.first())
         questions.remove(id)
-        runs.values.forEach { it.questions.remove(id) }
         scheduleQuestionExpiryLocked()
         publishActivityLocked()
         return
       }
       if (id in resolvedQuestionIds || payload["status"].asStringOrNull() != "pending") return
-      val record = RealtimeQuestionObservation(id, payload["runId"].asIdOrNull(), payload["sessionKey"].asIdOrNull(), payload["agentId"].asIdOrNull(), (payload["expiresAtMs"] as? JsonPrimitive)?.content?.toLongOrNull() ?: return)
+      val key = payload["sessionKey"].asIdOrNull()
+      val record = RealtimeQuestionObservation(id, payload["runId"].asIdOrNull(), key, payload["agentId"].asIdOrNull() ?: resolveAgentIdFromMainSessionKey(key), (payload["expiresAtMs"] as? JsonPrimitive)?.content?.toLongOrNull() ?: return)
       if (record.expiresAtMs <= System.currentTimeMillis()) return
+      val previous = questions[id]
+      if (previous != null && previous.copy(expiresAtMs = record.expiresAtMs) != record) return
       val current = observation
-      if (current != null && !matchesObservationAgent(current, record.sessionKey, record.agentId)) return
-      if (current?.key != null && !matchesObservation(current, record.sessionKey, record.agentId)) return
+      if (!isCompletionQuestionLocked(record)) {
+        if (current != null && !matchesObservationAgent(current, record.sessionKey, record.agentId)) return
+        if (current?.key != null && !matchesObservation(current, record.sessionKey, record.agentId)) return
+      }
       val run =
         record.runId?.let { id ->
           current
@@ -913,6 +908,7 @@ internal class RealtimeAgentCoordinator(
             ?.let { admitObservedRunLocked(it, id, record.sessionKey ?: return, record.agentId) }
             ?: runs[id]
         }
+      if (run != null && !matchesQuestion(run, record)) return
       if (run == null && pendingCalls.none { !it.failed } && current == null) return
       if (id !in questions && questions.size >= maxCachedCompletions) {
         current?.let {
@@ -925,29 +921,34 @@ internal class RealtimeAgentCoordinator(
       }
       if (questions[id] == record) return
       questions[id] = record
-      if (run != null) {
-        associateObservationLocked(run)
-        attachQuestionLocked(run, record)
-      }
+      if (run != null) associateObservationLocked(run)
       if (current != null) current.revision++
       scheduleQuestionExpiryLocked()
       publishActivityLocked()
     }
   }
 
-  private fun attachQuestionLocked(
+  // One bounded authoritative ledger owns question identity, lifetime and presentation.
+  private fun matchesQuestion(
     run: RealtimeAgentRun,
     record: RealtimeQuestionObservation,
-  ) {
-    if (record.runId == null || record.runId != run.runId || record.sessionKey != run.agentSessionKey) return
-    val expectedAgent = run.agentId ?: resolveAgentIdFromMainSessionKey(run.agentSessionKey)
-    val questionAgent = record.agentId ?: resolveAgentIdFromMainSessionKey(record.sessionKey)
-    if (expectedAgent == null || questionAgent != expectedAgent) return
-    if (run.questions.size >= MAX_RUN_ACTIVITY_ITEMS && record.id !in run.questions) {
-      run.incomplete = true
-      return
+  ): Boolean =
+    record.runId == run.runId && record.sessionKey == run.agentSessionKey &&
+      record.agentId != null && record.agentId == (run.agentId ?: resolveAgentIdFromMainSessionKey(run.agentSessionKey)) &&
+      record.expiresAtMs > System.currentTimeMillis()
+
+  private fun hasQuestionLocked(run: RealtimeAgentRun): Boolean = questions.values.any { matchesQuestion(run, it) }
+
+  private fun isCompletionQuestionLocked(record: RealtimeQuestionObservation): Boolean {
+    val run = record.runId?.let(runs::get) ?: return false
+    return run.completion?.let { it.session === activeSession } == true && matchesQuestion(run, record)
+  }
+
+  private fun pruneQuestionsLocked() {
+    questions.entries.removeAll { (_, record) ->
+      !isCompletionQuestionLocked(record) &&
+        observation?.let { matchesObservation(it, record.sessionKey, record.agentId) } != true
     }
-    if (record.expiresAtMs > System.currentTimeMillis()) run.questions.add(record.id)
   }
 
   private fun scheduleQuestionExpiryLocked() {
@@ -970,7 +971,6 @@ internal class RealtimeAgentCoordinator(
               .map { it.id }
               .toSet()
           expired.forEach(questions::remove)
-          runs.values.forEach { it.questions.removeAll(expired) }
           questionExpiryAt = null
           scheduleQuestionExpiryLocked()
           publishActivityLocked()
@@ -981,13 +981,15 @@ internal class RealtimeAgentCoordinator(
   private fun publishActivityLocked() {
     val current = observation?.takeIf { it.owner.lease.isCurrent() }
     val session = activeSession ?: current?.presentationSession
-    val activities = runs.values.filter { (it.completion?.session === activeSession && it.completion != null) || (current != null && it.observationOwner === current.owner) }.mapNotNull { it.activity() }
-    val unboundQuestion = current != null && questions.values.any { (it.runId == null || runs[it.runId]?.questions?.contains(it.id) != true) && matchesObservation(current, it.sessionKey, it.agentId) }
+    val visibleRuns = runs.values.filter { (it.completion?.session === activeSession && it.completion != null) || (current != null && it.observationOwner === current.owner) }
+    val activities = visibleRuns.mapNotNull { it.activity(hasQuestionLocked(it)) }
+    val unboundQuestion = current != null && questions.values.any { record -> matchesObservation(current, record.sessionKey, record.agentId) && visibleRuns.none { matchesQuestion(it, record) } }
     val activity =
       if (unboundQuestion) {
         TalkAgentActivity.WaitingForInput
       } else {
         activities.firstOrNull { it == TalkAgentActivity.WaitingForApproval || it == TalkAgentActivity.WaitingForInput }
+          ?: activities.firstOrNull { it == TalkAgentActivity.Error }
           ?: activities.firstOrNull { it != TalkAgentActivity.Thinking }
           ?: activities.firstOrNull()
           ?: TalkAgentActivity.Unknown.takeIf { current?.incomplete == true }
@@ -1112,7 +1114,6 @@ internal class RealtimeAgentCoordinator(
                 run.completion = binding
                 runs[runId] = run
                 earlyAgentEvents.filter { it.runId == runId && pendingCall in it.pending }.forEach { applyActivityLocked(run, it) }
-                questions.values.forEach { record -> attachQuestionLocked(run, record) }
                 publishActivityLocked()
                 null
               }
@@ -1298,11 +1299,8 @@ internal class RealtimeAgentCoordinator(
       runs.values.forEach { it.completion = null }
     } else {
       runs.clear()
-      observation = null
-      earlyAgentEvents.clear()
-      questions.clear()
+      resetObservationLocked(null)
       resolvedQuestionIds.clear()
-      scheduleQuestionExpiryLocked()
     }
     _activity.value = null
     return drainUnclaimedCompletionsLocked()
