@@ -2,6 +2,7 @@
 
 import { render } from "lit";
 import { describe, expect, it, vi } from "vitest";
+import { createEmptyCostUsageTotals } from "../../../../src/infra/session-cost-usage-totals.js";
 import { buildAggregatesFromSessions } from "./metrics.ts";
 import { buildUsageFilterOptions } from "./query.ts";
 import type { UsageProps, UsageSessionEntry, UsageTotals } from "./types.ts";
@@ -900,46 +901,57 @@ describe("renderUsage", () => {
     }
   });
 
-  it("shows the empty state for an all-zero successful response", () => {
-    const zeroTotals = {
-      totalTokens: 0,
-      totalCost: 0,
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      missingCostEntries: 0,
-    };
+  it("retains the loaded empty state while refreshing and disables repeat submissions", () => {
     const container = document.createElement("div");
-    render(
-      renderUsage(
-        createUsageProps({
-          data: {
-            ...createUsageProps().data,
-            // The gateway always returns a totals object, even with no usage.
-            totals: zeroTotals as UsageProps["data"]["totals"],
-          },
-        }),
-      ),
-      container,
-    );
-    expect(container.querySelector(".usage-empty-state")).not.toBeNull();
+    const props = createUsageProps();
+    const onRefresh = vi.fn();
+    props.data.totals = createEmptyCostUsageTotals();
+    props.callbacks.filters.onRefresh = onRefresh;
+    render(renderUsage(props), container);
+    const emptyCard = container.querySelector(".usage-empty-state");
+    expect(emptyCard).not.toBeNull();
+
+    for (const loading of [false, true, false]) {
+      render(renderUsage({ ...props, data: { ...props.data, loading } }), container);
+      expect(container.querySelector(".usage-empty-state")).toBe(emptyCard);
+      expect(container.querySelector(".usage-grid")).toBeNull();
+      expect(container.querySelector(".usage-loading-card")).toBeNull();
+      expect(container.querySelector(".usage-insight-card")).toBeNull();
+      expect(container.querySelectorAll(".usage-loading-spinner")).toHaveLength(loading ? 1 : 0);
+      expect(
+        container.querySelectorAll(".settings-section__actions .usage-query-hint"),
+      ).toHaveLength(loading ? 0 : 1);
+      const buttons = container.querySelectorAll<HTMLButtonElement>(
+        ".usage-controls button.primary, .usage-empty-state button",
+      );
+      expect(buttons).toHaveLength(2);
+      onRefresh.mockClear();
+      for (const button of buttons) {
+        expect(button.disabled).toBe(loading);
+        button.click();
+      }
+      expect(onRefresh).toHaveBeenCalledTimes(loading ? 0 : 2);
+    }
   });
 
-  it("does not render the empty state under an error callout", () => {
-    const container = document.createElement("div");
-    render(
-      renderUsage(
-        createUsageProps({
-          data: {
-            ...createUsageProps().data,
-            error: "usage failed",
-          },
-        }),
-      ),
-      container,
-    );
-    expect(container.querySelector(".usage-callout")).not.toBeNull();
-    expect(container.querySelector(".usage-empty-state")).toBeNull();
-  });
+  it.each([null, createEmptyCostUsageTotals()])(
+    "does not render the empty state under an error callout with totals %j",
+    (totals) => {
+      const container = document.createElement("div");
+      render(
+        renderUsage(
+          createUsageProps({
+            data: {
+              ...createUsageProps().data,
+              totals,
+              error: "usage failed",
+            },
+          }),
+        ),
+        container,
+      );
+      expect(container.querySelector(".usage-callout")).not.toBeNull();
+      expect(container.querySelector(".usage-empty-state")).toBeNull();
+    },
+  );
 });

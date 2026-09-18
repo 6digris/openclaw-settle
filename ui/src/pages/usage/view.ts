@@ -39,6 +39,7 @@ import {
 } from "./query.ts";
 import type { UsageProps, UsageSessionEntry, UsageTotals } from "./types.ts";
 import { renderSessionDetailPanel } from "./view-details.ts";
+import { renderUsageEmptyState } from "./view-empty.ts";
 import { renderUsageHeatmap } from "./view-heatmap.ts";
 import {
   renderCostBreakdownCompact,
@@ -55,23 +56,6 @@ function renderUsageLoadingStatus(label: unknown) {
       <span class="usage-loading-spinner" aria-hidden="true"></span>
       ${label}
     </span>
-  `;
-}
-
-function renderUsageEmptyState(onRefresh: () => void) {
-  return html`
-    <section class="settings-group usage-panel usage-empty-state">
-      <div class="usage-empty-state__title">${t("usage.empty.title")}</div>
-      <div class="card-sub usage-empty-state__subtitle">${t("usage.empty.subtitle")}</div>
-      <div class="usage-empty-state__features">
-        <span class="usage-empty-state__feature">${t("usage.empty.featureOverview")}</span>
-        <span class="usage-empty-state__feature">${t("usage.empty.featureSessions")}</span>
-        <span class="usage-empty-state__feature">${t("usage.empty.featureTimeline")}</span>
-      </div>
-      <div class="usage-empty-state__actions">
-        <button class="btn primary" @click=${onRefresh}>${t("common.refresh")}</button>
-      </div>
-    </section>
   `;
 }
 
@@ -261,7 +245,6 @@ export function renderUsage(props: UsageProps) {
   // where "no usage data yet" would misexplain the failure.
   const isEmpty =
     data.totals !== null &&
-    !data.loading &&
     !data.error &&
     data.sessions.length === 0 &&
     (data.totals?.totalTokens ?? 0) === 0;
@@ -382,7 +365,7 @@ export function renderUsage(props: UsageProps) {
             <div class="settings-section__actions">
               ${data.loading ? renderUsageLoadingStatus(t("usage.loading.badge")) : nothing}
               ${
-                isEmpty
+                isEmpty && !data.loading
                   ? html`<span class="usage-query-hint">${t("usage.empty.hint")}</span>`
                   : nothing
               }
@@ -745,7 +728,7 @@ export function renderUsage(props: UsageProps) {
                 </div>`
               : nothing
             : isEmpty
-              ? renderUsageEmptyState(filterActions.onRefresh)
+              ? renderUsageEmptyState(filterActions.onRefresh, data.loading)
               : html`
                   ${renderUsageInsights(
                     insightTotals,
