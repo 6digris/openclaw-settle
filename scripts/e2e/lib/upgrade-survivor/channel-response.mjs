@@ -47,9 +47,22 @@ async function request(pathname, options) {
   return { status: response.status, body: await response.json() };
 }
 const [mode, stage] = process.argv.slice(2);
-if (mode === "snapshot") {
+if (mode === "identities") {
+  const baseline = read(path.join(artifacts, "baseline-package-identity.json"));
+  const candidate = read(path.join(artifacts, "candidate-package-identity.json"));
+  write("channel-identities.json", {
+    baseline: {
+      sha256: baseline.sha256,
+      integrity: baseline.integrity,
+      buildInfo: baseline.buildInfo,
+    },
+    candidate: { sha256: candidate.sha256, buildInfo: candidate.buildInfo },
+  });
+} else if (mode === "snapshot") {
   const config = read(configPath);
   config.plugins.allow = [...new Set([...(config.plugins.allow ?? []), "clickclack"])];
+  config.models.catalogRefresh = { ...config.models.catalogRefresh, enabled: false };
+  config.update = { ...config.update, checkOnStart: false };
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
   write("channel-before.json", projection());
 } else if (mode === "preserved") {

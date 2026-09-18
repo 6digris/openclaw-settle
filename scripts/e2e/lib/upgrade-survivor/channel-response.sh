@@ -30,10 +30,12 @@ channel_response_prepare() {
   [ "$ready" = 1 ] || return 1
   node scripts/e2e/lib/upgrade-survivor/worker-cell-package.mjs baseline "$(package_root)"
   node scripts/e2e/lib/upgrade-survivor/worker-cell-package.mjs candidate "$(package_root)" "${CANDIDATE_SPEC#file:}"
+  node scripts/e2e/lib/upgrade-survivor/channel-response.mjs identities
   node scripts/e2e/lib/release-user-journey/write-clickclack-plugin.mjs "$RUNTIME_ROOT/channel-plugin"
   openclaw_e2e_fixture_plugin_command openclaw -- plugins install "$RUNTIME_ROOT/channel-plugin" --force >"$ARTIFACT_ROOT/channel-install.log" 2>&1
   node scripts/e2e/lib/release-scenarios/assertions.mjs configure-mock-openai "$MOCK_PORT"
   node scripts/e2e/lib/release-user-journey/assertions.mjs configure-clickclack http://127.0.0.1:44211
+  openclaw_e2e_fixture_plugin_command openclaw -- plugins enable openai >"$ARTIFACT_ROOT/channel-provider-enable.log" 2>&1
   node scripts/e2e/lib/upgrade-survivor/channel-response.mjs snapshot
 }
 channel_response_turn() {

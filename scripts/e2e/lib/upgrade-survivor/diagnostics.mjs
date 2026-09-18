@@ -21,6 +21,10 @@ const migrationLabels = {
   failureReport: "session migration failure report",
 };
 const logNames = [
+  "channel-provider-enable.log",
+  "channel-identities.json",
+  "channel-baseline-receipt.json",
+  "channel-candidate-receipt.json",
   "channel-baseline-gateway.log",
   "channel-candidate-gateway.log",
   "channel-install.log",
