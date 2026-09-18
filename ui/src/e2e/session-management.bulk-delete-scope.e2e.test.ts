@@ -1,3 +1,4 @@
+import { writeSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, it } from "vitest";
@@ -101,6 +102,9 @@ suite.define(() => {
           ".sidebar-session-pagination--roster > button",
         );
         return {
+          gatewayPhase: data?.context?.gateway.snapshot.phase ?? null,
+          statusFilter: sidebarElement?.sessionsStatusFilter ?? null,
+          renderedRowCount: sidebarElement?.querySelectorAll(".sidebar-recent-session").length ?? 0,
           selectedAgentId: sidebarElement?.expandedAgentId() ?? null,
           canonicalAgentId: sessions?.state.agentId ?? null,
           canonicalLoading: sessions?.state.loading ?? null,
@@ -280,6 +284,28 @@ suite.define(() => {
       if (paginationFailure) {
         throw paginationFailure;
       }
+    } catch (error) {
+      // CI omits local screenshots and observations; retain only bounded fixture facts.
+      try {
+        writeSync(
+          2,
+          `[control-ui-e2e] bulk-delete failure ${JSON.stringify({
+            state: await sidebarState(),
+            listRequests: {
+              total: (await gateway.getRequests("sessions.list")).length,
+              mainArchived: (
+                await gateway.getRequests("sessions.list", { agentId: "main", archived: true })
+              ).length,
+              researchArchived: (
+                await gateway.getRequests("sessions.list", { agentId: "research", archived: true })
+              ).length,
+            },
+          })}\n`,
+        );
+      } catch {
+        writeSync(2, "[control-ui-e2e] bulk-delete failure diagnostics unavailable\n");
+      }
+      throw error;
     } finally {
       await capture("final-state");
       await writeFile(
