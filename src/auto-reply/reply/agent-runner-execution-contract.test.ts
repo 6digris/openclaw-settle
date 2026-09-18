@@ -9,6 +9,26 @@ const state = await setupAgentRunnerExecutionTestState();
 const { executeAgentTurn } = await import("./agent-runner-execution.js");
 
 describe("executeAgentTurn contract", () => {
+  it("keeps requester identity separate from the conversation model policy", async () => {
+    const params = createMinimalRunAgentTurnParams();
+    params.followupRun.run.runtimePolicySessionKey = "agent:main:telegram:default:direct:123";
+    state.runEmbeddedAgentMock.mockResolvedValue({
+      payloads: [{ text: "done" }],
+      meta: { durationMs: 1 },
+    });
+
+    const result = await executeAgentTurn(params);
+
+    expect(result.outcome.kind).toBe("settled");
+    expect(state.runEmbeddedAgentEntryMock.mock.calls[0]?.[0]).toMatchObject({
+      identity: { sessionKey: "main" },
+      harness: { sessionKey: "agent:main:telegram:default:direct:123" },
+    });
+    expect(state.runWithModelFallbackMock.mock.calls[0]?.[0]).toMatchObject({
+      sessionKey: "agent:main:telegram:default:direct:123",
+    });
+  });
+
   it("returns one closed settled result with winner and fallback facts", async () => {
     state.runEmbeddedAgentMock.mockResolvedValue({
       payloads: [{ text: "done" }],

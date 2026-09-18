@@ -284,6 +284,8 @@ async function runEmbeddedAgentEntryInternal<T extends EmbeddedAgentRunResult>(
       runWithModelFallback<RunEntryCandidate<T>>({
         ...selection,
         ...params.identity,
+        // DM policy can be scoped separately from the requester's execution session.
+        sessionKey: params.harness.sessionKey ?? params.identity.sessionKey,
         abortSignal: params.abortSignal,
         resolveAgentHarnessRuntimeOverride: resolveRuntimeOverride,
         prepareCandidateChain: async (candidates) => {
