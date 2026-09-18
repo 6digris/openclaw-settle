@@ -1332,10 +1332,13 @@ function installControlUiMockGateway(
   } catch {
     // The scenario remains authoritative when browser storage is unavailable.
   }
-  const sessions = createSessions({
-    rows: canonicalSessionRows,
-    mainKey: scenario.mainSessionKey,
-  });
+  const sessions = createSessions(
+    {
+      rows: canonicalSessionRows,
+      mainKey: scenario.mainSessionKey,
+    },
+    isRecord,
+  );
   if (hasCanonicalSessionsOverride) {
     // Persisted explicit snapshots bypass scenario-default enrichment so reload
     // preserves the same exact owner rows used by CAS, describe, and startup.
@@ -2003,55 +2006,6 @@ function installControlUiMockGateway(
     });
   }
 
-  function applySessionPatches(response: unknown, params: unknown): unknown {
-    if (!isRecord(response) || !Array.isArray(response.sessions)) {
-      return response;
-    }
-    const archivedFilter =
-      isRecord(params) && params.archived === "all"
-        ? "all"
-        : isRecord(params) && params.archived === true
-          ? "archived"
-          : "active";
-    const projectedSessions = sessions.list(response.sessions).map((row) => {
-      if (!isRecord(row)) {
-        return row;
-      }
-      const next = Object.assign({}, row);
-      // Replay group renames/deletes over static fixtures: the real gateway
-      // rewrites member categories server-side before the next sessions.list.
-      let category = typeof next.category === "string" ? next.category : undefined;
-      for (const rename of groupsState.renames) {
-        if (category === rename.from) {
-          category = rename.to ?? undefined;
-        }
-      }
-      if (category === undefined) {
-        delete next.category;
-      } else {
-        next.category = category;
-      }
-      return next;
-    });
-    if (!scenario.sessionArchiveFiltering) {
-      return {
-        ...response,
-        ...(sessions.materializedCount() > 0 ? { count: projectedSessions.length } : {}),
-        sessions: projectedSessions,
-      };
-    }
-    const filteredSessions = projectedSessions.filter(
-      (row) =>
-        isRecord(row) &&
-        (archivedFilter === "all" || (row.archived === true) === (archivedFilter === "archived")),
-    );
-    return {
-      ...response,
-      count: filteredSessions.length,
-      sessions: filteredSessions,
-    };
-  }
-
   function stopRepeatingSessionEvents(): void {
     if (sessionMessageEventTimer !== null) {
       window.clearInterval(sessionMessageEventTimer);
@@ -2204,7 +2158,10 @@ function installControlUiMockGateway(
     if (configured.found) {
       const configuredValue = applyScenarioAgentModel(method, configured.value);
       return method === "sessions.list"
-        ? applySessionPatches(configuredValue, params)
+        ? sessions.listResponse(configuredValue, params, {
+            renames: groupsState.renames,
+            archiveFiltering: scenario.sessionArchiveFiltering,
+          })
         : configuredValue;
     }
     switch (method) {
@@ -2555,7 +2512,7 @@ function installControlUiMockGateway(
         return response;
       }
       case "sessions.list":
-        return applySessionPatches(
+        return sessions.listResponse(
           {
             count: sessions.list().length,
             defaults: {
@@ -2568,6 +2525,7 @@ function installControlUiMockGateway(
             ts: Date.now(),
           },
           params,
+          { renames: groupsState.renames, archiveFiltering: scenario.sessionArchiveFiltering },
         );
       case "sessions.search":
         return { results: [] };
