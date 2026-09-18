@@ -94,6 +94,13 @@ local files before its service starts. Register its bridge when ready and releas
 it when the service stops. Callers keep their existing document authorization.
 `isWorkspaceAccessUnavailableError(error)` identifies unavailable host access.
 
+`createWorkspaceBootstrapFilePolicy({ workspaceDir, config })` lets adapters
+restrict this bridge to native bootstrap documents and the configured
+`bootstrap-extra-files` patterns. Check `canList` for directory metadata,
+`canRead` for file bytes, and `canWrite` for the four owner-editable documents.
+Directory access does not grant reads of other files. The underlying bridge
+still enforces filesystem containment and returns the read's canonical source.
+
 Use `resolveWorkspaceWorkerArgv("memory")` from `agent-workspace-runtime`
 to resolve Memory worker arguments for source and installed OpenClaw builds.
 
