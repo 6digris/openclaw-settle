@@ -130,7 +130,6 @@ function taskEnv(root: string, config: string) {
       TEMP: path.join(root, "temp"),
       TMP: path.join(root, "temp"),
       TMPDIR: path.join(root, "temp"),
-      NODE_COMPILE_CACHE: path.join(root, "compile-cache"),
       OPENAI_API_KEY: "synthetic-local-mock-key",
       ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
       ...(process.env.ComSpec ? { ComSpec: process.env.ComSpec } : {}),
