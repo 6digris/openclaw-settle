@@ -10,7 +10,9 @@
     "../../src/agents/model-catalog.test.ts",
     "../../src/agents/model-catalog.planning.test.ts",
     "../../src/agents/workspace-access.test.ts",
-    "../../src/agents/workspace-attachments.test.ts"
+    "../../src/agents/workspace-attachments.test.ts",
+    "../../src/agents/workspace-bootstrap-policy.test.ts",
+    "../../src/agents/workspace-memory-client.test.ts"
   ],
   "exclude": [
     "../../node_modules",
