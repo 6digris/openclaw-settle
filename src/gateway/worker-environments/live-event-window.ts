@@ -2,11 +2,13 @@ import type { WorkerLiveEventParams } from "../../../packages/gateway-protocol/s
 import { releaseAgentRunContext } from "../../infra/agent-run-registry.js";
 import type { WorkerLiveTrajectoryRecorder } from "./live-event-projection.js";
 import type { LiveEventTarget } from "./live-event-session-binding.js";
+import type { WorkerTurnLiveEventOwner } from "./worker-turn-run-owner.js";
 
 export type PendingLiveEvent = {
   request: WorkerLiveEventParams;
   sizeBytes: number;
   recordApplied?: (event: WorkerLiveEventParams["event"]) => void;
+  runOwner?: WorkerTurnLiveEventOwner;
 };
 
 export type OwnedLiveRun = {

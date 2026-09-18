@@ -46,7 +46,7 @@ const hardTerminate = () => {
     });
     return;
   }
-  process.kill(-process.pid, "SIGKILL");
+  process.kill(process.pid, "SIGKILL");
 };
 const onMessage = (message) => {
   if (
@@ -54,8 +54,12 @@ const onMessage = (message) => {
     typeof message !== "object" ||
     message === null ||
     Array.isArray(message) ||
-    Object.keys(message).length !== 1 ||
-    message.type !== "openclaw-worker-start-v1"
+    Object.keys(message).some((key) => key !== "type" && key !== "lineageFds") ||
+    message.type !== "openclaw-worker-start-v1" ||
+    (Object.hasOwn(message, "lineageFds") && (
+      !Array.isArray(message.lineageFds) || message.lineageFds.length === 0 ||
+      message.lineageFds.some((fd) => !Number.isSafeInteger(fd) || fd < 3)
+    ))
   ) {
     hardTerminate();
     return;

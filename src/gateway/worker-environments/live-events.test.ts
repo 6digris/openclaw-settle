@@ -382,11 +382,12 @@ describe("worker live events", () => {
 
   it("settles accepted writes before returning a synchronous diagnostic failure", async () => {
     const failure = new Error("synthetic diagnostic failure");
-    const diagnostic = vi
-      .spyOn(workerRunOwner, "captureWorkerTurnDiagnosticRecorder")
-      .mockReturnValue(() => {
+    const diagnostic = vi.spyOn(workerRunOwner, "captureWorkerTurnLiveEventOwner").mockReturnValue({
+      record: () => {
         throw failure;
-      });
+      },
+      isCancelled: () => false,
+    });
     const writer = holdWriter();
     await writer.entered;
     let settled = false;
