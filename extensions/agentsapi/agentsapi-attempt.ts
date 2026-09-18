@@ -90,13 +90,13 @@ export async function runAgentsApiAttempt(
     if (!remoteSessionId || stopped || sessionSettled || rootTurn) {
       throw new Error("Agents API turn is stopped");
     }
-    const sessionId = remoteSessionId;
+    const submittedSessionId = remoteSessionId;
     submission = submission.then(() => {
       if (sessionSettled || rootTurn) {
         throw new Error("Agents API turn settled before steering was submitted");
       }
       admittedMessageCount++;
-      return client.message(sessionId, text, AbortSignal.timeout(60_000));
+      return client.message(submittedSessionId, text, AbortSignal.timeout(60_000));
     });
     void submission.catch(() => {});
     return submission;
@@ -144,7 +144,7 @@ export async function runAgentsApiAttempt(
     }
     controller.abort(new Error("Agents API turn interrupted"));
     if (remoteSessionId && submitted) {
-      const sessionId = remoteSessionId;
+      const cancelledSessionId = remoteSessionId;
       const admittedSubmission = submission;
       cancellation = (async () => {
         // Do not abort an admitted POST: cancel only after its response settles.
@@ -155,9 +155,11 @@ export async function runAgentsApiAttempt(
         } catch (error) {
           submissionError = error;
         }
-        await cleanupClient.cancel(sessionId, AbortSignal.timeout(30_000));
+        await cleanupClient.cancel(cancelledSessionId, AbortSignal.timeout(30_000));
         if (submissionError) {
-          throw submissionError;
+          throw submissionError instanceof Error
+            ? submissionError
+            : new Error(String(submissionError), { cause: submissionError });
         }
       })();
       // The settlement barrier below observes errors; attach immediately to prevent unhandled rejection.
@@ -426,7 +428,7 @@ export async function runAgentsApiAttempt(
             emitAssistantSnapshot(
               `agentsapi:${remoteSessionId}:${event.item.id}`,
               [...parts.entries()]
-                .sort(([left], [right]) => left - right)
+                .toSorted(([left], [right]) => left - right)
                 .map(([, text]) => text)
                 .join(""),
             );
@@ -455,7 +457,7 @@ export async function runAgentsApiAttempt(
             emitAssistantSnapshot(
               `agentsapi:${remoteSessionId}:${event.item_id}`,
               [...parts.entries()]
-                .sort(([left], [right]) => left - right)
+                .toSorted(([left], [right]) => left - right)
                 .map(([, text]) => text)
                 .join(""),
               event.delta ?? "",
