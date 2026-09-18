@@ -177,6 +177,8 @@ function resolveThemes(blocks: Map<string, TokenMap>): Map<string, TokenMap> {
     ["rose-light", layer(light, blocks.get(':root[data-theme="rose-light"]'))],
     ["miami", layer(blocks.get(':root[data-theme="miami"]'))],
     ["miami-light", layer(light, blocks.get(':root[data-theme="miami-light"]'))],
+    ["carapace", layer(blocks.get(':root[data-theme="carapace"]'))],
+    ["carapace-light", layer(light, blocks.get(':root[data-theme="carapace-light"]'))],
   ]);
 }
 
@@ -450,6 +452,19 @@ describe("Control UI theme contrast", () => {
       }
     }
     expect(failures).toEqual([]);
+  });
+
+  it.each(["carapace", "carapace-light"])("keeps selected text readable in %s", (name) => {
+    const tokens = themes.get(name)!;
+    const ink = resolveOpaqueColor("var(--selection-fg)", tokens);
+    const tint = resolveColor("var(--selection-bg)", tokens);
+    for (const surface of SURFACE_TOKENS) {
+      const background = composite(tint, resolveOpaqueColor(`var(${surface})`, tokens));
+      expect(
+        contrastRatio(ink, background),
+        `${name}: selection on ${surface}`,
+      ).toBeGreaterThanOrEqual(AA_NORMAL_TEXT_MIN);
+    }
   });
 
   it("keeps the markdown code chip separated from every surface it sits on", () => {

@@ -16,6 +16,7 @@ describe("resolveTheme", () => {
     ["manuscript", "manuscript", "manuscript-light"],
     ["rose", "rose", "rose-light"],
     ["miami", "miami", "miami-light"],
+    ["carapace", "carapace", "carapace-light"],
     ["custom", "custom", "custom-light"],
   ] satisfies [ThemeName, string, string][])(
     "resolves %s in both explicit modes",
@@ -38,8 +39,8 @@ describe("parseThemeSelection", () => {
       theme: "claw",
       mode: "system",
     });
-    expect(parseThemeSelection("dash", "light")).toEqual({
-      theme: "dash",
+    expect(parseThemeSelection("carapace", "light")).toEqual({
+      theme: "carapace",
       mode: "light",
     });
   });

@@ -12,6 +12,7 @@ export type ThemeName =
   | "manuscript"
   | "rose"
   | "miami"
+  | "carapace"
   | "custom";
 export type ThemeMode = "system" | "light" | "dark";
 export type ResolvedTheme =
@@ -37,6 +38,8 @@ export type ResolvedTheme =
   | "rose-light"
   | "miami"
   | "miami-light"
+  | "carapace"
+  | "carapace-light"
   | "custom"
   | "custom-light";
 
@@ -52,6 +55,7 @@ const VALID_THEME_NAMES = new Set<ThemeName>([
   "manuscript",
   "rose",
   "miami",
+  "carapace",
   "custom",
 ]);
 
@@ -99,7 +103,7 @@ export function syncThemePaletteStylesheet(theme: ThemeName, ready: () => void):
     ready();
     return;
   }
-  // Retain the six built-in families once visited. Their exclusive selectors
+  // Retain built-in palettes once visited. Their exclusive selectors
   // leave the previous theme intact during loading and make repeat switches synchronous.
   const id = `openclaw-theme-palette-${theme}`;
   const existing = document.getElementById(id);

@@ -54,6 +54,8 @@ export const THEME_TYPEFACES = {
   manuscript: { ui: "lora", chat: "lora" },
   rose: { ui: "dm-sans", chat: "dm-sans" },
   miami: { ui: "space-grotesk", chat: "space-grotesk" },
+  // Carapace documents system fallbacks; its licensed brand fonts are not bundled.
+  carapace: { ui: "system", chat: "system" },
   custom: { ui: "system", chat: "system" },
 } satisfies Record<ThemeName, TypefacePair>;
 

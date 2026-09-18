@@ -880,6 +880,10 @@ const enSettings = {
         label: "Miami",
         description: "Magenta & cyan",
       },
+      carapace: {
+        label: "Carapace",
+        description: "Neutral surfaces, coral & sea green",
+      },
     },
     textSizes: {
       small: "Small",

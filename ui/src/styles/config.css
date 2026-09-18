@@ -455,6 +455,19 @@
   --theme-chip-accent: #b0246f;
   --theme-chip-accent-2: #0f6f7d;
 }
+.settings-theme-card--carapace,
+.settings-accent-theme--carapace {
+  --theme-chip-bg: #080808;
+  --theme-chip-accent: #f5654a;
+  --theme-chip-accent-2: #4fc8ae;
+}
+
+:root[data-theme-mode="light"]
+  :is(.settings-theme-card--carapace, .settings-accent-theme--carapace) {
+  --theme-chip-bg: #fafafa;
+  --theme-chip-accent: #b33a26;
+  --theme-chip-accent-2: #14806e;
+}
 /* stylelint-enable color-no-hex */
 
 .settings-theme-card--custom,

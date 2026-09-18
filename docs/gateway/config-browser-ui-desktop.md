@@ -135,7 +135,7 @@ For the full key index and the other top-level config domains, see [Configuratio
   ui: {
     seamColor: "#FF4500",
     prefs: {
-      theme: "claw", // claw | knot | dash | absolutely | tide | beacon | phosphor | crt | manuscript | rose | miami | custom
+      theme: "claw", // claw | knot | dash | absolutely | tide | beacon | phosphor | crt | manuscript | rose | miami | carapace | custom
       themeMode: "system", // light | dark | system
       locale: "en",
       chatShowThinking: true,

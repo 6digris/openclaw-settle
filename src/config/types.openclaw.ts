@@ -167,6 +167,7 @@ export type OpenClawConfig = {
         | "manuscript"
         | "rose"
         | "miami"
+        | "carapace"
         | "custom";
       /** Light/dark preference. */
       themeMode?: "light" | "dark" | "system";

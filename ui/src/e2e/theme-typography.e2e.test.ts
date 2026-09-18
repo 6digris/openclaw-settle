@@ -548,6 +548,7 @@ suite.define(() => {
     ["manuscript", "manuscript", "#211e18", "#f6f1e4"],
     ["rose", "rose", "#191724", "#faf4ed"],
     ["miami", "miami", "#140f1e", "#f7f3f6"],
+    ["carapace", "carapace", "#080808", "#fafafa"],
   ])(
     "loads %s before paint in both modes without the app bundle",
     async (theme, resolved, dark, light) => {

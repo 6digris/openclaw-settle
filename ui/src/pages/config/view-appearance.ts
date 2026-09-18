@@ -106,6 +106,11 @@ const BUILTIN_THEME_OPTIONS: ThemeOption[] = [
     labelKey: "configView.themes.miami.label",
     descriptionKey: "configView.themes.miami.description",
   },
+  {
+    id: "carapace",
+    labelKey: "configView.themes.carapace.label",
+    descriptionKey: "configView.themes.carapace.description",
+  },
 ];
 
 const ACCENT_PRESETS = [

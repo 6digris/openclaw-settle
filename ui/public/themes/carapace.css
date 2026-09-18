@@ -1,0 +1,132 @@
+/* Carapace v0.6.2 (6c38d2a9b558104957d581033bce5a127632d60e),
+ * styles/{tokens,themes,typography}.css. Neutral OKLCH colors are rounded to
+ * sRGB here to match the Control UI palette contract. Light muted ink is
+ * strengthened for dense controls; brand fonts use the documented fallbacks.
+ * Keep this palette opt-in: the host owns layout, components, and overrides. */
+
+:root[data-theme="carapace"] {
+  --bg: #080808;
+  --bg-accent: #111111;
+  --bg-elevated: #171717;
+  --bg-hover: #1f1f1f;
+  --bg-muted: #1f1f1f;
+  --card: #111111;
+  --card-foreground: #fafafa;
+  --card-highlight: rgba(250, 250, 250, 0.04);
+  --popover: #171717;
+  --popover-foreground: #fafafa;
+  --panel: #080808;
+  --panel-strong: #171717;
+  --panel-hover: #1f1f1f;
+  --chrome: rgba(8, 8, 8, 0.96);
+  --chrome-strong: rgba(8, 8, 8, 0.98);
+
+  --text: #d4d4d4;
+  --text-strong: #fafafa;
+  --chat-text: #d4d4d4;
+  --muted: #a3a3a3;
+  --muted-strong: #bcbcc4;
+  --muted-foreground: #a3a3a3;
+  --border: #262626;
+  --border-strong: #454545;
+  --border-hover: #595959;
+  --input: #262626;
+
+  --accent: #f5654a;
+  --accent-hover: #e05540;
+  --accent-muted: #f5654a;
+  --accent-subtle: rgba(245, 101, 74, 0.14);
+  --accent-glow: rgba(245, 101, 74, 0.2);
+  --primary: #f5654a;
+  --primary-hover: #e05540;
+  --primary-foreground: #080808;
+  --accent-2: #4fc8ae;
+  --accent-2-muted: rgba(79, 200, 174, 0.75);
+  --accent-2-subtle: rgba(79, 200, 174, 0.14);
+  --secondary: #111111;
+  --secondary-foreground: #d4d4d4;
+  --ring: #4fc8ae;
+  --focus: rgba(79, 200, 174, 0.22);
+  --selection-bg: rgba(245, 101, 74, 0.28);
+  --grid-line: rgba(250, 250, 250, 0.1);
+
+  --destructive: #b91c1c;
+  --destructive-hover: #991b1b;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.12);
+  --shadow-md: 0 8px 24px -6px rgba(0, 0, 0, 0.28);
+  --shadow-lg: 0 24px 48px -12px rgba(0, 0, 0, 0.42);
+  --overlay-shadow: var(--shadow-md);
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius: 8px;
+  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+:root[data-theme="carapace-light"] {
+  --bg: #fafafa;
+  --bg-accent: #f5f5f5;
+  --bg-elevated: #ffffff;
+  --bg-hover: #e5e5e5;
+  --bg-muted: #e5e5e5;
+  --bg-content: #f5f5f5;
+  --card: #ffffff;
+  --card-foreground: #171717;
+  --card-highlight: rgba(23, 23, 23, 0.02);
+  --popover: #ffffff;
+  --popover-foreground: #171717;
+  --session-hovercard-surface: var(--card);
+  --session-hovercard-progress-surface: color-mix(
+    in srgb,
+    var(--card) 52%,
+    var(--panel-strong) 48%
+  );
+  --panel: #fafafa;
+  --panel-strong: #f5f5f5;
+  --panel-hover: #e5e5e5;
+  --chrome: rgba(250, 250, 250, 0.96);
+  --chrome-strong: rgba(250, 250, 250, 0.98);
+
+  --text: #262626;
+  --text-strong: #171717;
+  --chat-text: #262626;
+  --muted: #666666;
+  --muted-strong: #46464e;
+  --muted-foreground: #666666;
+  --border: #e5e5e5;
+  --border-strong: #bcbcbc;
+  --border-hover: #a3a3a3;
+  --input: #e5e5e5;
+
+  /* Upstream's AA-safe 60/40 and 30/70 coral mixtures, rounded to sRGB. */
+  --accent: #b33a26;
+  --accent-hover: #a73624;
+  --accent-muted: #b33a26;
+  --accent-subtle: rgba(179, 58, 38, 0.12);
+  --accent-glow: rgba(179, 58, 38, 0.16);
+  --primary: #b33a26;
+  --primary-hover: #a73624;
+  --primary-foreground: #ffffff;
+  --accent-2: #14806e;
+  --accent-2-muted: rgba(20, 128, 110, 0.75);
+  --accent-2-subtle: rgba(20, 128, 110, 0.13);
+  --secondary: #f5f5f5;
+  --secondary-foreground: #262626;
+  --ring: #0f6355;
+  --focus: rgba(20, 128, 110, 0.22);
+  --selection-bg: rgba(179, 58, 38, 0.2);
+  --selection-fg: #171717;
+  --grid-line: rgba(23, 23, 23, 0.12);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 8px 24px -6px rgba(0, 0, 0, 0.12);
+  --shadow-lg: 0 24px 48px -12px rgba(0, 0, 0, 0.18);
+  --overlay-shadow: var(--shadow-md);
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius: 8px;
+  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}

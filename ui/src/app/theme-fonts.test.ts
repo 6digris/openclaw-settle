@@ -35,6 +35,7 @@ describe("typeface presentation", () => {
     ["manuscript", ["lora", "lora"]],
     ["rose", ["dm-sans", "dm-sans"]],
     ["miami", ["space-grotesk", "space-grotesk"]],
+    ["carapace", ["system", "system"]],
     ["custom", ["system", "system"]],
   ] as const)("loads %s's default faces plus the shared mono face", (theme, [ui, chat]) => {
     const faces = resolveTypefaces(theme);
