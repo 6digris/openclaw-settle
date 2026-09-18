@@ -38,7 +38,8 @@ function containsTranscriptDiscontinuity(
       return false;
     }
     const type = event.type;
-    return type === "reset" || type === "compaction";
+    // Leaf appends can remove cached rows without changing the raw transcript generation.
+    return type === "reset" || type === "compaction" || type === "leaf";
   });
 }
 
