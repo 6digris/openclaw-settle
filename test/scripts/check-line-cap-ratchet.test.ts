@@ -106,6 +106,29 @@ describe("line-cap growth ratchet", () => {
     },
   );
 
+  it("allows under-cap syntax repairs while ratcheting other over-cap files", () => {
+    const root = fixture(5);
+    const repaired = path.join(root, "src/broken.ts");
+    fs.writeFileSync(
+      repaired,
+      `const value = 1;
+const value = 2;
+`,
+    );
+    git(root, "add", ".");
+    git(root, "commit", "-m", "broken baseline");
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    fs.writeFileSync(repaired, source(2));
+    fs.writeFileSync(path.join(root, "src/file.ts"), source(4));
+    expect(main(root, ["--base", "HEAD"])).toBe(0);
+    fs.writeFileSync(path.join(root, "src/file.ts"), source(6));
+    expect(main(root, ["--base", "HEAD"])).toBe(1);
+    expect(errors).toHaveBeenCalledWith(
+      expect.stringContaining("src/file.ts: 5 -> 6 counted lines (cap 3)"),
+    );
+  });
+
   it("compares a PR merge tree with its prepared base without blaming unrelated debt", () => {
     const root = fixture(2);
     vi.spyOn(console, "log").mockImplementation(() => {});
