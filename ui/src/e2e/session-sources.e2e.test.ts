@@ -120,6 +120,78 @@ suite.define(() => {
     });
   });
 
+  it.each([1440, 390])(
+    "retains source controls during a return refresh at %i px",
+    async (width) => {
+      await suite.withPage({ viewport: { width, height: 900 } }, async ({ page }) => {
+        const gateway = await installMockGateway(page, { featureMethods, methodResponses });
+        await page.goto(`${suite.server.baseUrl}settings/appearance`);
+        const section = page.locator("#settings-session-sources");
+        await expect.poll(() => section.locator("wa-switch").count()).toBe(4);
+        await page.evaluate(() => document.fonts.ready);
+        await page.getByText("No additional microphones found").waitFor();
+        await page.getByText("No additional cameras found").waitFor();
+        const geometry = () =>
+          section.evaluate((element) => {
+            const bounds = element.getBoundingClientRect();
+            const previous = element.previousElementSibling!;
+            const next = element.nextElementSibling!;
+            return {
+              height: bounds.height,
+              nextOffset: next.getBoundingClientRect().top - bounds.top,
+              previousHeight: previous.getBoundingClientRect().height,
+              previousText: previous.textContent,
+              nextHeight: next.getBoundingClientRect().height,
+              nextText: next.textContent,
+            };
+          });
+        const initial = await geometry();
+        for (let cycle = 0; cycle < 2; cycle += 1) {
+          for (const route of ["notifications", "appearance"] as const) {
+            if (route === "appearance") {
+              await gateway.deferNext("plugins.list");
+            }
+            const drawerToggle = page.locator(".topbar-nav-toggle");
+            if (await drawerToggle.isVisible()) {
+              await drawerToggle.click();
+            }
+            await page.locator(`.settings-sidebar__item[href="/settings/${route}"]`).click();
+            await page.waitForURL(`**/settings/${route}`);
+          }
+          await gateway.waitForRequest("plugins.list", { after: cycle + 1 });
+          await expect.poll(() => section.locator("wa-switch").count()).toBe(4);
+          await expect
+            .poll(() =>
+              section
+                .locator("wa-switch")
+                .evaluateAll((switches) =>
+                  switches.every(
+                    (toggle) => (toggle as HTMLElement & { disabled: boolean }).disabled,
+                  ),
+                ),
+            )
+            .toBe(true);
+          expect(await geometry()).toEqual(initial);
+          await gateway.resolveDeferred("plugins.list");
+          await expect
+            .poll(() =>
+              section
+                .locator("wa-switch")
+                .evaluateAll((switches) =>
+                  switches.every(
+                    (toggle) => !(toggle as HTMLElement & { disabled: boolean }).disabled,
+                  ),
+                ),
+            )
+            .toBe(true);
+          expect(await geometry()).toEqual(initial);
+          expect(await gateway.getRequests("plugins.list")).toHaveLength(cycle + 2);
+        }
+        expect(await gateway.getRequests("config.set")).toHaveLength(0);
+      });
+    },
+  );
+
   it("finds session sources from the sidebar and independently saves discovery preferences", async () => {
     await suite.withPage({ viewport: { width: 1440, height: 1000 } }, async ({ page }) => {
       const gateway = await installMockGateway(page, { featureMethods, methodResponses });

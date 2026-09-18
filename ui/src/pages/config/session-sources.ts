@@ -53,6 +53,7 @@ export function renderSessionSources(props: ConfigProps) {
     props.mutationAllowed === false ||
     props.loading ||
     props.schemaLoading ||
+    props.sessionSourcePluginsLoading ||
     props.saving ||
     props.applying ||
     props.updating ||

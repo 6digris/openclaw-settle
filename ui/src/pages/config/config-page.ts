@@ -5,7 +5,6 @@ import { asNullableRecord as asConfigRecord } from "@openclaw/normalization-core
 import { html, nothing, type PropertyValues } from "lit";
 import { property, state } from "lit/decorators.js";
 import type {
-  PluginsListResult,
   SessionsCatalogListResult,
   SystemInfoResult,
 } from "../../../../packages/gateway-protocol/src/index.js";
@@ -88,6 +87,7 @@ import {
   buildSessionObserverTogglePatch,
   buildSessionObserverUtilityModelPatch,
 } from "./session-observer-settings.ts";
+import { SessionSourcePluginsController } from "./session-source-plugins-controller.ts";
 import { renderSessionStorage } from "./session-storage.ts";
 import { renderTalkPage } from "./talk-page.ts";
 import { renderUpdates } from "./updates.ts";
@@ -374,27 +374,6 @@ export class ConfigPage extends OpenClawLightDomElement {
     },
     onError: () => this.resetSessionObserverModels(true),
   });
-  private readonly sessionSourcePluginsTask = new Task(this, {
-    args: () => {
-      const gateway = this.context?.gateway.snapshot;
-      return [
-        this.gateway.gateway,
-        this.pageId === "appearance" &&
-        canCallGatewayMethod(gateway, "plugins.list", "operator.read")
-          ? gateway?.client
-          : null,
-      ] as const;
-    },
-    task: async ([, client], { signal }) => {
-      if (!client) {
-        return null;
-      }
-      const result = await client.request<PluginsListResult>("plugins.list", {}, { signal });
-      return new Set(
-        result.plugins.filter((plugin) => plugin.installed).map((plugin) => plugin.id),
-      );
-    },
-  });
   private readonly hiddenSessionCatalogLabelsTask = new Task(this, {
     args: () => {
       const gateway = this.context?.gateway.snapshot;
@@ -437,6 +416,11 @@ export class ConfigPage extends OpenClawLightDomElement {
     invalidateRequests: () => this.invalidateSystemInfoRequest(),
     onSnapshot: (change) => this.handleGatewaySnapshot(change),
   });
+  private readonly sessionSourcePlugins = new SessionSourcePluginsController(
+    this,
+    this.gateway,
+    () => this.pageId === "appearance",
+  );
   private readonly subscriptions = new SubscriptionsController(this)
     .watch(
       () => this.context?.runtimeConfig,
@@ -688,6 +672,7 @@ export class ConfigPage extends OpenClawLightDomElement {
     sourceChanged,
     clientChanged,
   }: GatewayPageChange) {
+    this.sessionSourcePlugins.synchronizeAccess();
     this.customThemeImportOwner.synchronizeScope(
       this.context.gateway.connection.gatewayUrl,
       this.context.theme.serverSelection,
@@ -1235,11 +1220,8 @@ export class ConfigPage extends OpenClawLightDomElement {
       resetChatFollowUpMode: () => this.resetSyncedAppearancePref("chatFollowUpMode"),
       catalogOpenTarget: normalizeCatalogOpenTarget(this.settings.catalogOpenTarget),
       pluginsHref: pathForRoute("plugin-settings", this.context.basePath),
-      installedSessionSourcePluginIds:
-        this.sessionSourcePluginsTask.status === TaskStatus.COMPLETE
-          ? this.sessionSourcePluginsTask.value
-          : null,
-      sessionSourcePluginsLoading: this.sessionSourcePluginsTask.status === TaskStatus.PENDING,
+      installedSessionSourcePluginIds: this.sessionSourcePlugins.installedIds,
+      sessionSourcePluginsLoading: this.sessionSourcePlugins.loading,
       setCatalogOpenTarget: (value) => this.setSetting("catalogOpenTarget", value),
       microphone: {
         devices: this.microphoneDevices,
