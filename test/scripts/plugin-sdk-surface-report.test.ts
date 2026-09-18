@@ -136,6 +136,10 @@ describe("plugin SDK surface report", () => {
 
   it("keeps default public surface budgets pinned to current source counts", () => {
     expect(readDefaultPublicSurfaceBudgets()).toEqual(readCurrentPublicSurfaceCounts());
+    const { publicDeprecatedExportsByEntrypointBudget } = readPluginSdkSurfaceBudgets({});
+    expect(publicDeprecatedExportsByEntrypointBudget["channel-message"]).toBe(
+      surfaceReport.publicStats.byEntrypoint.get("channel-message")?.deprecatedExports,
+    );
   });
 
   it("keeps approval store internals out of the deprecated infra barrel", () => {
