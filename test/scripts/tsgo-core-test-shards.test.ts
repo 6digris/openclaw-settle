@@ -54,6 +54,10 @@ describe("tsgo core test shards", () => {
       }),
     ).toEqual([]);
     for (const [file, owner] of [
+      ["src/channels/typing.test.ts", "channels"],
+      ["src/channels/plugins/contracts/thread-binding-artifact.contract.test.ts", "channels"],
+      ["src/auto-reply/dispatch.test.ts", "messaging"],
+      ["src/infra/outbound/outbound-send-service.accepted-outcomes.test.ts", "messaging"],
       ["src/commands/doctor-session-worktree-workspace.test.ts", "commands-doctor"],
       ["src/commands/doctor/repair-sequencing.test.ts", "commands-doctor"],
       ["src/commands/oauth-tls-preflight.doctor.test.ts", "commands-doctor"],
