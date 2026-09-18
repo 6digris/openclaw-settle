@@ -7,7 +7,7 @@ import { createDeferred } from "../../../../../test/helpers/promise.js";
 import { makeChatHost } from "../chat-host.test-support.ts";
 import { createTestTranscript, stubAnimationFrames } from "../chat-view.test-helpers.ts";
 import {
-  handleChatScrollTakeover,
+  createChatScrollCallbacks,
   saveChatSessionScrollPosition,
   scheduleCommittedChatScroll,
 } from "../scroll.ts";
@@ -544,8 +544,7 @@ describe("chat transcript controller", () => {
         },
         {
           onViewportResize,
-          canFollowEnd: () => !policy.chatFollowLocked,
-          onReaderScroll: (towardEnd) => handleChatScrollTakeover(policy, towardEnd),
+          ...createChatScrollCallbacks(() => policy),
         },
       );
       const rows = numberedContentRows(12);

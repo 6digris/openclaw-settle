@@ -6,7 +6,7 @@ import {
   type ChatScrollToEndOptions,
   getChatSessionScrollPosition,
   handleChatScroll,
-  handleChatScrollTakeover,
+  createChatScrollCallbacks,
   lockChatScroll,
   resetChatScroll,
   saveChatSessionScrollPosition,
@@ -184,10 +184,10 @@ describe("handleChatScroll", () => {
     container.scrollTop = 1400;
     const invalidate = vi.fn();
     host.renderLifecycle.invalidate = invalidate;
-    handleChatScrollTakeover(host);
+    createChatScrollCallbacks(() => host).onReaderScroll();
     expect(host.chatReadingHistory).toBe(true);
     expect(host.chatFollowLocked).toBe(true);
-    handleChatScrollTakeover(host, true);
+    createChatScrollCallbacks(() => host).onReaderScroll("toward-end");
     expect(host.chatFollowLocked).toBe(false);
     expect(invalidate).toHaveBeenCalled();
   });
@@ -841,7 +841,7 @@ describe("programmatic scroll ownership", () => {
     host.chatLastScrollTop = 500;
     scheduleChatScroll(host, true, true, { source: "manual" });
 
-    handleChatScrollTakeover(host);
+    createChatScrollCallbacks(() => host).onReaderScroll();
     expect(frames.callbacks).toHaveLength(0);
 
     expect(host.chatScrollToEnd).not.toHaveBeenCalled();
@@ -900,7 +900,7 @@ describe("reader-controlled panel takeover", () => {
     expect(invalidate).toHaveBeenCalledTimes(1);
     lockChatScroll(host);
     expect(invalidate).toHaveBeenCalledTimes(1);
-    handleChatScrollTakeover(host, true);
+    createChatScrollCallbacks(() => host).onReaderScroll("toward-end");
     expect(host.chatFollowLocked).toBe(false);
     expect(host.chatUserNearBottom).toBe(true);
   });

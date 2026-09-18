@@ -285,7 +285,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
             isProgrammaticScroll: () => this.isProgrammaticScroll,
             cancelScroll: () => this.cancelScroll(),
             requestUpdate: () => this.host.requestUpdate(),
-            onReaderScroll: (towardEnd) => this.callbacks.onReaderScroll?.(towardEnd),
+            callbacks: this.callbacks,
           },
           instance,
           callback,

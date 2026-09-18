@@ -1,5 +1,6 @@
 import { resolveScrollBehavior } from "../../lib/scroll-behavior.ts";
 import { areUiSessionKeysEquivalent } from "../../lib/sessions/session-key.ts";
+import type { TranscriptCallbacks } from "./components/chat-transcript-session.ts";
 import type { RenderLifecycle } from "./render-lifecycle.ts";
 import { getSessionCacheValue, setSessionCacheValue } from "./session-cache.ts";
 
@@ -99,6 +100,34 @@ export type ChatScrollHost = {
   chatScrollElement?: () => HTMLElement | null;
   chatScrollToEnd?: (options: ChatScrollToEndOptions) => boolean;
 };
+
+export type ChatScrollDirection = "toward-start" | "toward-end";
+
+export function createChatScrollCallbacks(
+  getHost: () => ChatScrollHost | undefined,
+): Required<Pick<TranscriptCallbacks, "canFollowEnd" | "onReaderScroll" | "onScrollAdjustment">> {
+  // Resolve the current pane state when called; it can change after construction.
+  return {
+    canFollowEnd: () => {
+      const host = getHost();
+      return host !== undefined && !host.chatFollowLocked;
+    },
+    onReaderScroll: (direction) => {
+      const host = getHost();
+      if (host) {
+        handleChatScrollTakeover(host, direction);
+      }
+    },
+    onScrollAdjustment: (adjustment) => {
+      const host = getHost();
+      if (host) {
+        // A native event can combine reader movement with layout compensation.
+        // Remove compensation without consuming reader movement or command completion.
+        host.chatLastScrollTop += adjustment;
+      }
+    },
+  };
+}
 
 export type ChatScrollToEndOptions = {
   behavior?: ScrollBehavior;
@@ -258,13 +287,13 @@ export function handleChatScroll(host: ChatScrollHost, event: Event): void {
   updateChatScrollPosition(host, container);
 }
 
-export function handleChatScrollTakeover(host: ChatScrollHost, towardEnd = false): void {
+function handleChatScrollTakeover(host: ChatScrollHost, direction?: ChatScrollDirection): void {
   cancelChatScroll(host);
   const container = host.chatScrollElement?.();
   if (container) {
     // Intent can stop a smooth scroll without moving a pixel. Retire queued
     // follow work and publish reader policy even without a native scroll event.
-    updateChatScrollPosition(host, container, towardEnd ? "toward-end" : "reader");
+    updateChatScrollPosition(host, container, direction ?? "reader");
   }
 }
 
@@ -283,7 +312,7 @@ export function lockChatScroll(host: ChatScrollHost): void {
 function updateChatScrollPosition(
   host: ChatScrollHost,
   container: HTMLElement,
-  takeover: false | "reader" | "toward-end" = false,
+  takeover: false | "reader" | ChatScrollDirection = false,
 ): void {
   const scrollTop = Math.max(0, container.scrollTop);
   const delta = scrollTop - host.chatLastScrollTop;
@@ -298,9 +327,12 @@ function updateChatScrollPosition(
   }
   const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
   const wasReadingHistory = host.chatReadingHistory;
-  if (isUserScrollUp && distanceFromBottom > CHAT_TRANSCRIPT_END_THRESHOLD_PX) {
-    // Taking control before initial history settles must retire its queued
-    // force-scroll. Otherwise that delayed commit can overwrite the viewport.
+  if (
+    isUserScrollUp &&
+    (takeover === "toward-start" || distanceFromBottom > CHAT_TRANSCRIPT_END_THRESHOLD_PX)
+  ) {
+    // Home/wheel intent precedes native movement. Lock before a staged prepend
+    // can enqueue end-follow, and retire initial history's queued force-scroll.
     host.chatHasAutoScrolled = true;
     host.chatFollowLocked = true;
     host.chatReadingHistory = true;

@@ -23,7 +23,7 @@ export function observeTranscript(container: HTMLElement, cleanups: Array<() => 
       state.pendingScrollOffset = null;
     },
     requestUpdate() {},
-    onReaderScroll() {},
+    callbacks: {},
   };
   const virtualizer = new VirtualizerController<HTMLDivElement, HTMLElement>(
     {

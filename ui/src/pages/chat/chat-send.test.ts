@@ -82,7 +82,7 @@ import { handleChatInputHistoryKey } from "./input-history.ts";
 import { installOutboxBrowserStorage } from "./outbox-browser.test-support.ts";
 import { prepareOutboxPayload } from "./outbox-payloads.ts";
 import { cancelQueuedMessageEdit, updateQueuedMessageEdit } from "./queued-message-edit.ts";
-import { handleChatScrollTakeover } from "./scroll.ts";
+import { createChatScrollCallbacks } from "./scroll.ts";
 import {
   cacheChatSessionSnapshot,
   readChatMessagesFromCache,
@@ -2932,7 +2932,7 @@ describe("handleSendChat", () => {
         expect(host.request).not.toHaveBeenCalledWith("chat.send", expect.anything());
       }
       container.scrollTop = 1200;
-      handleChatScrollTakeover(host);
+      createChatScrollCallbacks(() => host).onReaderScroll();
       expect(host.chatFollowLocked).toBe(true);
       scrollToEnd.mockClear();
 

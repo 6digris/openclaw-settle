@@ -7,7 +7,10 @@ import {
   publishTranscriptScroll,
   type TranscriptScrollObservation,
 } from "./chat-transcript-scroll-events.ts";
-import type { ChatTranscriptPendingScrollOffset } from "./chat-transcript-session.ts";
+import type {
+  ChatTranscriptPendingScrollOffset,
+  TranscriptCallbacks,
+} from "./chat-transcript-session.ts";
 
 type TranscriptOffsetState = {
   pendingScrollOffset: ChatTranscriptPendingScrollOffset | null;
@@ -44,7 +47,7 @@ type OffsetOwner = {
   isProgrammaticScroll(): boolean;
   cancelScroll(): void;
   requestUpdate(): void;
-  onReaderScroll(towardEnd?: boolean): void;
+  callbacks: Pick<TranscriptCallbacks, "onReaderScroll" | "onScrollAdjustment">;
 };
 
 /** Observe native offsets and input with the transcript's touch and command lifecycle. */
@@ -81,6 +84,7 @@ export function observeTranscriptOffset(
     if (owner.state.scrollCommand || owner.state.pendingScrollOffset) {
       owner.state.maintenanceScrollOffset = null;
     } else if (before !== after) {
+      owner.callbacks.onScrollAdjustment?.(after - before);
       owner.state.maintenanceScrollOffset = after;
     }
   };
@@ -192,14 +196,21 @@ export function observeTranscriptOffset(
       (event instanceof KeyboardEvent &&
         (["ArrowDown", "PageDown", "End"].includes(event.key) ||
           (event.key === " " && !event.shiftKey)));
-    owner.onReaderScroll(towardEnd);
+    owner.callbacks.onReaderScroll?.(
+      towardEnd
+        ? "toward-end"
+        : event instanceof KeyboardEvent ||
+            (event instanceof WheelEvent && isUpwardTranscriptWheel(event))
+          ? "toward-start"
+          : undefined,
+    );
   };
   const moveTouch = (event: TouchEvent) => {
     const nextY = localTouchY(event);
     // At a resize-clamped end there may be no offset event. Contact alone is
     // not a return; only a gesture moving toward the end can resume following.
     if (touchY !== undefined && nextY !== undefined && nextY < touchY) {
-      owner.onReaderScroll(true);
+      owner.callbacks.onReaderScroll?.("toward-end");
     }
     touchY = nextY;
     publishInput(event);
@@ -259,4 +270,38 @@ export function observeTranscriptOffset(
       element?.removeEventListener(type, interrupt);
     }
   };
+}
+
+function isUpwardTranscriptWheel(event: WheelEvent): boolean {
+  if (
+    event.defaultPrevented ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.altKey ||
+    event.shiftKey ||
+    event.deltaY >= 0 ||
+    Math.abs(event.deltaX) > Math.abs(event.deltaY)
+  ) {
+    return false;
+  }
+  // Inner scrollports consume the wheel until their edge; contained scrolling
+  // never chains to the transcript, including at that edge.
+  for (const target of event.composedPath()) {
+    if (target === event.currentTarget) {
+      break;
+    }
+    if (!(target instanceof HTMLElement)) {
+      continue;
+    }
+    const style = getComputedStyle(target);
+    if (
+      /^(auto|scroll)$/.test(style.overflowY) &&
+      (target.scrollTop > 0 ||
+        style.overscrollBehaviorY === "contain" ||
+        style.overscrollBehaviorY === "none")
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
