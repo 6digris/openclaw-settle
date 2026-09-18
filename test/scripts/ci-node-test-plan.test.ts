@@ -1584,14 +1584,10 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
             shard.groups.find((group) => group.shard_name === original.shard_name),
             "retained ordinary group",
           );
-          if (usesTwoWorkerPacking(originalHybridJob)) {
-            expect(retained).toEqual({
-              ...original,
-              env: { OPENCLAW_VITEST_MAX_WORKERS: "2", ...original.env },
-            });
-          } else {
-            expect(retained).toStrictEqual(original);
-          }
+          expect(retained).toStrictEqual(original);
+        }
+        if (usesTwoWorkerPacking(originalHybridJob)) {
+          expect(shard.env?.OPENCLAW_VITEST_MAX_WORKERS).toBe("2");
         }
       }
       if (
