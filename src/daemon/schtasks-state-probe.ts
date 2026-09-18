@@ -4,6 +4,7 @@ import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { hasErrnoCode } from "../infra/errno.js";
 import { getWindowsPowerShellExePath } from "../infra/windows-install-roots.js";
 import { resolveServiceManagerEnv } from "./service-process-env.js";
+import { createServiceRuntimeInspectionFailure } from "./service-runtime.js";
 
 type ScheduledTaskSnapshot = {
   taskPath?: string;
@@ -18,6 +19,20 @@ type ScheduledTaskStateProbe =
   | ({ status: "found" } & ScheduledTaskSnapshot)
   | { status: "missing" }
   | { status: "unknown"; detail: string; timeoutMs?: number };
+
+export class ScheduledTaskInspectionError extends Error {
+  readonly timeoutMs?: number;
+
+  constructor(probe: Extract<ScheduledTaskStateProbe, { status: "unknown" }>) {
+    const failure = createServiceRuntimeInspectionFailure(
+      probe.detail,
+      probe.timeoutMs,
+    ).inspectionFailure;
+    super(`Effective Scheduled Task service command could not be inspected. ${failure.detail}`);
+    this.name = "ScheduledTaskInspectionError";
+    this.timeoutMs = failure.timeoutMs;
+  }
+}
 
 const READ_TASK = [
   "function Read-Task($task) {",

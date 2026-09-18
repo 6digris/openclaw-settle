@@ -4,6 +4,7 @@ import { theme } from "../../../packages/terminal-core/src/theme.js";
 import { isGatewayServiceEnv, resolveGatewayProfileSuffix } from "../../daemon/constants.js";
 import { resolveLaunchAgentLabel } from "../../daemon/launchd-label.js";
 import { resolveTaskName } from "../../daemon/schtasks-layout.js";
+import { ScheduledTaskInspectionError } from "../../daemon/schtasks-state-probe.js";
 import { ScheduledTaskAutoStartRecoveryError } from "../../daemon/schtasks-update-recovery.js";
 import { ServiceInspectionError } from "../../daemon/service-inspection-error.js";
 import { withGatewayServiceOperationLock } from "../../daemon/service-operation-lock.js";
@@ -363,28 +364,31 @@ async function stopManagedServiceBeforeMutableUpdate(
   try {
     const inspectedService = resolveGatewayService();
     service = inspectedService;
-    serviceState = await withCommandProcessScope(() =>
-      readGatewayServiceState(inspectedService, {
-        env: serviceEnv,
-        requireEffective: true,
-        requireLoadedCommand: true,
-        validateEnvBeforeStatusRead: assertGatewayServiceManagementAllowedForUpdate,
-        timeoutMs: params.timeoutMs,
-      }),
-    );
-    if (
-      process.platform === "win32" &&
-      serviceState.runtime?.inspectionFailure?.timeoutMs !== undefined
-    ) {
-      // Re-read the definition too: a timed-out snapshot cannot grant service ownership.
-      serviceState = await withCommandProcessScope(() =>
-        readGatewayServiceState(inspectedService, {
-          env: serviceEnv,
-          requireEffective: true,
-          validateEnvBeforeStatusRead: assertGatewayServiceManagementAllowedForUpdate,
-          timeoutMs: params.timeoutMs,
-        }),
-      );
+    for (let attempt = 0; ; attempt++) {
+      const retryTimeout = process.platform === "win32" && attempt === 0;
+      try {
+        serviceState = await withCommandProcessScope(() =>
+          readGatewayServiceState(inspectedService, {
+            env: serviceEnv,
+            requireEffective: true,
+            requireLoadedCommand: true,
+            validateEnvBeforeStatusRead: assertGatewayServiceManagementAllowedForUpdate,
+            timeoutMs: params.timeoutMs,
+          }),
+        );
+      } catch (error) {
+        if (
+          retryTimeout &&
+          error instanceof ScheduledTaskInspectionError &&
+          error.timeoutMs !== undefined
+        ) {
+          continue;
+        }
+        throw error;
+      }
+      if (!retryTimeout || serviceState.runtime?.inspectionFailure?.timeoutMs === undefined) {
+        break;
+      }
     }
   } catch (err) {
     if (hasCommandProcessCleanupError(err)) {
@@ -412,7 +416,9 @@ async function stopManagedServiceBeforeMutableUpdate(
     return unavailableServiceState({
       kind: "unavailable",
       message:
-        err instanceof ServiceInspectionError || err instanceof GatewayServiceUpdateOwnershipError
+        err instanceof ServiceInspectionError ||
+        err instanceof ScheduledTaskInspectionError ||
+        err instanceof GatewayServiceUpdateOwnershipError
           ? `${GATEWAY_SERVICE_INSPECTION_WARNING} ${err.message}`
           : GATEWAY_SERVICE_INSPECTION_WARNING,
       ...(err instanceof ServiceInspectionError ? { inspectionReason: err.reason } : {}),

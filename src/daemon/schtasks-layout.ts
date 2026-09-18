@@ -15,7 +15,11 @@ import { parseCmdScriptCommandLine, quoteCmdScriptArg } from "./cmd-argv.js";
 import { assertNoCmdLineBreak, parseCmdSetAssignment, renderCmdSetAssignment } from "./cmd-set.js";
 import { normalizeWindowsTaskIdentity, resolveGatewayWindowsTaskName } from "./constants.js";
 import { resolveGatewayTaskScriptPath } from "./paths.js";
-import { probeScheduledTaskExists, probeScheduledTaskState } from "./schtasks-state-probe.js";
+import {
+  probeScheduledTaskExists,
+  probeScheduledTaskState,
+  ScheduledTaskInspectionError,
+} from "./schtasks-state-probe.js";
 import type {
   GatewayServiceCommandConfig,
   GatewayServiceEnv,
@@ -415,7 +419,7 @@ export async function readScheduledTaskCommand(
       ? probeScheduledTaskState(taskName, options.timeoutMs)
       : undefined;
     if (registered?.status === "unknown") {
-      throw new Error("Scheduled Task registration unavailable");
+      throw new ScheduledTaskInspectionError(registered);
     }
     const action = registered?.status === "found" ? registered.actions?.[0] : undefined;
     if (
@@ -446,6 +450,9 @@ export async function readScheduledTaskCommand(
         throw new Error("Task launcher changed during inspection");
       }
       const current = probeScheduledTaskState(taskName, options?.timeoutMs);
+      if (current.status === "unknown") {
+        throw new ScheduledTaskInspectionError(current);
+      }
       if (
         current.status !== registered.status ||
         (registered.status === "found" &&
@@ -555,6 +562,9 @@ export async function readScheduledTaskCommand(
       sourcePath: scriptPath,
     };
   } catch (error) {
+    if (error instanceof ScheduledTaskInspectionError) {
+      throw error;
+    }
     if (!requireEffective) {
       return null;
     }
