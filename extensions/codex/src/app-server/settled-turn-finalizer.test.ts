@@ -354,9 +354,7 @@ describe("runCodexSettledTurnFinalization", () => {
           if (!isRecord(params) || !isRecord(params.config)) {
             throw new Error("Expected a configured finalizer thread.");
           }
-          expect({ ...configuredHookConfig, ...params.config }).toMatchObject(
-            configuredHookConfig,
-          );
+          expect({ ...configuredHookConfig, ...params.config }).toMatchObject(configuredHookConfig);
           return {
             ...threadStartResult(),
             thread: { ...threadStartResult().thread, ephemeral: true },
@@ -583,23 +581,20 @@ describe("runCodexSettledTurnFinalization", () => {
     "mcpToolCall",
     "hookPrompt",
     "futureCapabilityItem",
-  ])(
-    "rejects unexpected native %s evidence before transcript mutation",
-    async (type) => {
-      mocks.runBounded.mockResolvedValue({
-        ...boundedResult(),
-        items: [{ id: "item-1", type }],
-      });
+  ])("rejects unexpected native %s evidence before transcript mutation", async (type) => {
+    mocks.runBounded.mockResolvedValue({
+      ...boundedResult(),
+      items: [{ id: "item-1", type }],
+    });
 
-      await expect(
-        runCodexSettledTurnFinalization(
-          { attempt: createAttempt(), settledAttempt: createSettledAttempt() },
-          {},
-        ),
-      ).rejects.toThrow(`unexpected native item: ${type}`);
-      expect(mocks.mirror).not.toHaveBeenCalled();
-    },
-  );
+    await expect(
+      runCodexSettledTurnFinalization(
+        { attempt: createAttempt(), settledAttempt: createSettledAttempt() },
+        {},
+      ),
+    ).rejects.toThrow(`unexpected native item: ${type}`);
+    expect(mocks.mirror).not.toHaveBeenCalled();
+  });
 
   it("accepts the exact current-turn prompt echo once", async () => {
     const attempt = createAttempt();
