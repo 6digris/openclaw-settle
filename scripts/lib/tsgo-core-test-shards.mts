@@ -79,6 +79,11 @@ export const TSGO_CORE_TEST_SHARDS = [
     group: "src",
     config: "test/tsconfig/tsconfig.core.test.commands-doctor.json",
   },
+  {
+    name: "messaging-auto-reply",
+    group: "src",
+    config: "test/tsconfig/tsconfig.core.test.messaging-auto-reply.json",
+  },
 ] as const;
 
 export const TSGO_CORE_GRAPHS = [
