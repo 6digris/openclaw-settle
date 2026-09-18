@@ -46,7 +46,9 @@ async function readSelection(page: Page) {
     const bounds = results.getBoundingClientRect();
     const option = active.getBoundingClientRect();
     return {
-      visible: option.top >= bounds.top - 1 && option.bottom <= bounds.bottom + 1,
+      visible:
+        option.top >= Math.max(0, bounds.top) - 1 &&
+        option.bottom <= Math.min(innerHeight, bounds.bottom) + 1,
       focused: document.activeElement === input,
       bound: input.getAttribute("aria-activedescendant") === active.id,
       label: active.textContent?.replace(/\s+/gu, " ").trim(),
@@ -75,6 +77,67 @@ async function settleFrames(page: Page) {
 }
 
 suite.define(() => {
+  it.each([
+    { width: 1280, height: 480 },
+    { width: 844, height: 390 },
+  ])("keeps the selected result visible after shrinking to $height px", async (viewport) => {
+    await suite.withPage({ viewport: viewports[0] }, async ({ page }) => {
+      await installMockGateway(page);
+      const input = await openPalette(page);
+      await input.press("ArrowUp");
+      await expectVisibleSelection(page, 0);
+      const selected = await readSelection(page);
+      await settleFrames(page);
+
+      await page.setViewportSize(viewport);
+      await expectVisibleSelection(page, selected.documentScroll);
+      expect((await readSelection(page)).label).toBe(selected.label);
+
+      // Closing releases the old list; reopening must observe the new one.
+      await input.press("Escape");
+      await expect.poll(() => input.count()).toBe(0);
+      await page.setViewportSize(viewports[0]);
+      await page.keyboard.press("ControlOrMeta+K");
+      await input.waitFor({ state: "visible" });
+      await input.focus();
+      await input.press("ArrowUp");
+      await expectVisibleSelection(page, 0);
+      await settleFrames(page);
+      await page.setViewportSize(viewport);
+      await expectVisibleSelection(page, 0);
+      expect((await readSelection(page)).label).toBe(selected.label);
+    });
+  });
+
+  it("preserves scrolling away from the selection when the result viewport shrinks", async () => {
+    await suite.withPage({ viewport: viewports[0] }, async ({ page }) => {
+      await installMockGateway(page);
+      const input = await openPalette(page);
+      await input.press("ArrowUp");
+      await expectVisibleSelection(page, 0);
+      const selected = await readSelection(page);
+      const results = page.locator(".cmd-palette__results");
+      const bounds = await results.boundingBox();
+      if (!bounds) {
+        throw new Error("Expected the palette result viewport");
+      }
+      await page.mouse.move(bounds.x + bounds.width - 1, bounds.y + bounds.height / 2);
+      await page.mouse.wheel(0, -1000);
+      await page.mouse.move(0, 0);
+      await expect.poll(async () => (await readSelection(page)).scrollTop).toBe(0);
+      await settleFrames(page);
+      const manual = await readSelection(page);
+      expect(manual.visible).toBe(false);
+      expect(manual.label).toBe(selected.label);
+
+      await page.setViewportSize({ width: 1280, height: 480 });
+      await settleFrames(page);
+      expect(await readSelection(page)).toEqual(manual);
+      await input.press("ArrowUp");
+      await expectVisibleSelection(page, 0);
+    });
+  });
+
   it.each(viewports)(
     "reveals the selected result after filtering at $width px",
     async (viewport) => {

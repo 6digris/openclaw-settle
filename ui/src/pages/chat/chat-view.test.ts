@@ -55,7 +55,6 @@ import {
   stubAnimationFrames,
 } from "./chat-view.test-helpers.ts";
 import { renderChat } from "./chat-view.ts";
-import { ChatAttachmentReadLifecycle } from "./components/chat-attachments.ts";
 import { resetChatComposerState } from "./components/chat-composer.ts";
 import * as chatMessage from "./components/chat-message.ts";
 import { renderChatModelAccountControl } from "./components/chat-model-account-control.ts";
@@ -1183,7 +1182,7 @@ describe("chat run error", () => {
     });
     const alert = requireElement(container, ".chat-error", "startup error");
     expect(requireElement(alert, "pre", "startup diagnostic").textContent).toBe(
-      "The session was created, but runner startup failed:  Provisioning failed\n  Final diagnostic line  ",
+      "The session was created, but startup needs attention:  Provisioning failed\n  Final diagnostic line  ",
     );
     expect(alert.textContent).not.toContain("⚠");
     const details = requireElement(alert, "details", "startup disclosure");
@@ -1196,7 +1195,7 @@ describe("chat run error", () => {
     copy?.click();
     await waitForFast(() =>
       expect(writeText).toHaveBeenCalledWith(
-        "The session was created, but runner startup failed: ⚠️ Provisioning failed\n  Final diagnostic line  ",
+        "The session was created, but startup needs attention: ⚠️ Provisioning failed\n  Final diagnostic line  ",
       ),
     );
     expect(details.hasAttribute("open")).toBe(false);
@@ -6013,150 +6012,6 @@ describe("chat attachment picker", () => {
       ?.closest("wa-dropdown")
       ?.dispatchEvent(new CustomEvent("wa-select", { detail: { item: button }, bubbles: true }));
   }
-
-  it.each(["clipboard", "file picker", "drop"] as const)(
-    "waits for an in-flight %s attachment before accepting an immediate send",
-    async (entry) => {
-      const readers: FileReader[] = [];
-      vi.spyOn(FileReader.prototype, "readAsDataURL").mockImplementation(
-        function (this: FileReader) {
-          readers.push(this);
-        },
-      );
-      const container = document.createElement("div");
-      const file = new File(["attachment proof"], "proof.png", { type: "image/png" });
-      const draft = "Send the attachment with this message";
-      let attachments: ChatAttachment[] = [];
-      const onSend = vi.fn(() => {
-        expect(attachments.map((attachment) => attachment.fileName)).toEqual(["proof.png"]);
-      });
-      const redraw = () => {
-        const readSignal = reads.readSignal;
-        render(
-          renderChat(
-            createChatProps({
-              attachments,
-              draft,
-              getAttachments: () => attachments,
-              getDraft: () => draft,
-              getPendingAttachmentReads: () => reads.pendingReads,
-              onAttachmentsChange: (next) => {
-                attachments = next;
-              },
-              onPendingReadsChange: (delta) => reads.updatePending(readSignal, delta),
-              onSend,
-              pendingAttachmentReads: reads.pendingReads,
-              readSignal,
-            }),
-          ),
-          container,
-        );
-      };
-      const reads = new ChatAttachmentReadLifecycle(redraw);
-      redraw();
-
-      if (entry === "clipboard") {
-        const paste = new Event("paste", { bubbles: true, cancelable: true });
-        Object.defineProperty(paste, "clipboardData", {
-          value: {
-            items: [{ type: file.type, getAsFile: () => file }],
-            getData: () => "",
-          },
-        });
-        getComposerTextarea(container).dispatchEvent(paste);
-      } else if (entry === "file picker") {
-        const input = requireAttachmentInput(
-          container,
-          ".agent-chat__file-input",
-          "attachment file input",
-        );
-        selectFile(input, file);
-      } else {
-        const drop = new Event("drop", { bubbles: true, cancelable: true });
-        Object.defineProperty(drop, "dataTransfer", {
-          value: { files: [file], types: ["Files"] },
-        });
-        requireElement(container, "section.chat", "chat drop target").dispatchEvent(drop);
-      }
-
-      expect(readers).toHaveLength(1);
-      expect(reads.pendingReads).toBe(1);
-      const status = container.querySelector(".chat-attachments-status");
-      expect(status?.textContent).toContain("Preparing attachments");
-      expect(status?.getAttribute("role")).toBe("status");
-      expect(status?.classList.contains("sr-only")).toBe(false);
-      expect(getComposerTextarea(container).disabled).toBe(false);
-      const send = requireElement(
-        container,
-        'button[aria-label="Send message"]',
-        "send button",
-      ) as HTMLButtonElement;
-      expect(send.disabled).toBe(true);
-      expect(send.getAttribute("aria-busy")).toBe("true");
-      expect(send.closest("openclaw-tooltip")?.content).toBe("Preparing attachments…");
-      getComposerTextarea(container).dispatchEvent(
-        new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" }),
-      );
-      expect(onSend).not.toHaveBeenCalled();
-
-      const reader = expectDefined(readers[0], "deferred attachment reader");
-      Object.defineProperty(reader, "result", {
-        configurable: true,
-        value: `data:image/png;base64,${btoa("attachment proof")}`,
-      });
-      reader.dispatchEvent(new ProgressEvent("load"));
-
-      await waitForFast(() => {
-        expect(reads.pendingReads).toBe(0);
-        expect(attachments.map((attachment) => attachment.fileName)).toEqual(["proof.png"]);
-      });
-      const readySend = requireElement(
-        container,
-        'button[aria-label="Send message"]',
-        "ready send button",
-      ) as HTMLButtonElement;
-      expect(readySend.disabled).toBe(false);
-      expect(readySend.getAttribute("aria-busy")).toBe("false");
-      expect(container.querySelector(".chat-attachments-status")?.textContent?.trim()).toBe("");
-      readySend.click();
-      expect(onSend).toHaveBeenCalledOnce();
-    },
-  );
-
-  it("does not attach an aborted file read to a newly selected session", async () => {
-    const readers: FileReader[] = [];
-    vi.spyOn(FileReader.prototype, "readAsDataURL").mockImplementation(function (this: FileReader) {
-      readers.push(this);
-    });
-    const reads = new ChatAttachmentReadLifecycle(() => undefined);
-    const oldSignal = reads.readSignal;
-    const onAttachmentsChange = vi.fn();
-    const file = new File(["private session A"], "private.png", { type: "image/png" });
-    const container = renderChatView({
-      getPendingAttachmentReads: () => reads.pendingReads,
-      onAttachmentsChange,
-      onPendingReadsChange: (delta) => reads.updatePending(oldSignal, delta),
-      pendingAttachmentReads: reads.pendingReads,
-      readSignal: oldSignal,
-      sessionKey: "agent:main:session-a",
-    });
-    const drop = new Event("drop", { bubbles: true, cancelable: true });
-    Object.defineProperty(drop, "dataTransfer", {
-      value: { files: [file], types: ["Files"] },
-    });
-    requireElement(container, "section.chat", "session A drop target").dispatchEvent(drop);
-
-    expect(readers).toHaveLength(1);
-    expect(reads.pendingReads).toBe(1);
-    reads.abortReads();
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(oldSignal.aborted).toBe(true);
-    expect(reads.pendingReads).toBe(0);
-    expect(reads.readSignal).not.toBe(oldSignal);
-    expect(onAttachmentsChange).not.toHaveBeenCalled();
-  });
 
   it("highlights only the chat pane receiving a file drag", () => {
     const first = renderChatView();

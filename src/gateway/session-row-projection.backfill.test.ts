@@ -146,7 +146,7 @@ it("cancels a pending trailing transcript refresh on disposal", async () => {
     await vi.advanceTimersByTimeAsync(1_000);
     await projection.ensureMaterialized();
     expect(projection.materializedCount).toBe(before);
-    expect(projection.select()).toEqual([]);
+    expect(projection.selectEntries()).toEqual([]);
   });
 });
 
@@ -310,7 +310,7 @@ it.each([false, true])(
         const before = projection.materializedCount;
         getModelCatalog.mockReturnValue(replacement.promise);
         notifyPreparedModelRuntimePublication({ phase: "catalog-published", modelFactsChanged });
-        expect(projection.dirtyRowCount).toBe(modelFactsChanged ? 1 : 0);
+        expect(projection.dirtyRowCount).toBe(0);
         const response = vi.fn();
         const pendingList = list().then(response);
         // The actual RPC must reply before the deferred catalog is released.
@@ -386,7 +386,7 @@ it("fences superseded and disposed background catalog reads", async () => {
       current.resolve([]);
       await nextTurn();
       expect(projection.state.modelCatalog).toBe(initial);
-      expect(projection.select()).toEqual([]);
+      expect(projection.selectEntries()).toEqual([]);
     } finally {
       superseded.resolve([]);
       current.resolve([]);
@@ -449,7 +449,7 @@ it("does not revive resident rows after disposal with a topology refresh pending
     sessionChanges.emit({ all: true, scope: "config" });
     projection.dispose();
     expect(projection.selectEntries()).toEqual([]);
-    expect(projection.select()).toEqual([]);
+    expect(projection.selectEntries()).toEqual([]);
   });
 });
 

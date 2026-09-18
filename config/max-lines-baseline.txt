@@ -22,7 +22,6 @@ extensions/browser/src/cli/browser-cli-manage.ts
 extensions/codex/doctor-contract-api.test.ts
 extensions/codex/src/app-server/approval-bridge.test.ts
 extensions/codex/src/app-server/approval-bridge.ts
-extensions/codex/src/app-server/attempt-context.ts
 extensions/codex/src/app-server/auth-bridge.test.ts
 extensions/codex/src/app-server/auth-bridge.ts
 extensions/codex/src/app-server/client.ts
@@ -131,7 +130,6 @@ extensions/memory-core/src/cli.test.ts
 extensions/memory-core/src/dreaming-phases.test.ts
 extensions/memory-core/src/dreaming-phases.ts
 extensions/memory-core/src/dreaming.test.ts
-extensions/memory-core/src/dreaming.ts
 extensions/memory-core/src/memory/index.test.ts
 extensions/memory-core/src/memory/manager-embedding-ops.ts
 extensions/memory-core/src/memory/manager-search.test.ts
@@ -272,7 +270,6 @@ packages/markdown-core/src/ir.ts
 packages/memory-host-sdk/src/host/session-files.ts
 packages/sdk/src/client.ts
 packages/sdk/src/index.test.ts
-packages/tool-call-repair/src/stream-normalizer.test.ts
 packages/tool-call-repair/src/stream-normalizer.ts
 src/acp/control-plane/manager.test.ts
 src/acp/control-plane/manager.turn-results.test.ts
@@ -667,7 +664,6 @@ src/infra/restart.ts
 src/infra/run-node.test.ts
 src/infra/session-cost-usage.test.ts
 src/infra/state-migrations.doctor.ts
-src/infra/state-migrations.runtime-state.ts
 src/infra/state-migrations.session-store.ts
 src/infra/state-migrations.storage.ts
 src/infra/state-migrations.test.ts
