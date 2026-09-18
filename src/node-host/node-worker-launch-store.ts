@@ -75,11 +75,12 @@ function ensureNodeWorkerLaunchSchema(
   database: DatabaseSync,
   table: Exclude<keyof NodeWorkerLaunchDatabase, "node_worker_turns">,
 ): void {
+  // sqlite-allow-raw -- Canonical feature-local additive DDL only.
   database.exec(
     extractSqliteTableSchema(OPENCLAW_STATE_SCHEMA_SQL, table, {
       endMarker: table === "node_worker_launches" ? NODE_WORKER_LAUNCH_SCHEMA_END : undefined,
     }),
-  ); // sqlite-allow-raw -- Canonical feature-local additive DDL only.
+  );
 }
 
 function query(database: DatabaseSync) {
