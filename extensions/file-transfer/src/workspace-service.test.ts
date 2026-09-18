@@ -262,6 +262,21 @@ describe("registered node workspace service", () => {
     },
   );
 
+  it("rejects owner document writes through a hard link outside the workspace", async () => {
+    const outside = path.join(path.dirname(remote), "outside.md");
+    await fs.link(path.join(remote, "AGENTS.md"), outside);
+    await service.start(context());
+
+    await expect(
+      getAgentWorkspaceAccess(local)!.bridge.writeFile({
+        filePath: "AGENTS.md",
+        data: "Must not write",
+      }),
+    ).rejects.toThrow("HARDLINK_TARGET_DENIED");
+    expect(await fs.readFile(outside, "utf8")).toBe("Harness instructions");
+    expect(await fs.readFile(path.join(remote, "AGENTS.md"), "utf8")).toBe("Harness instructions");
+  });
+
   it.each(["parent", "root"])(
     "rejects a symlinked %s before writing outside the workspace",
     async (kind) => {

@@ -443,6 +443,28 @@ describe("file-transfer node invoke policy", () => {
     expect(requireInvokeParams(invokeNode, 1).preflightOnly).toBeUndefined();
   });
 
+  it("refuses restricted writes before mutation when an old node ignores hardlink rejection", async () => {
+    const policy = createFileTransferNodeInvokePolicy();
+    const { ctx, invokeNode } = createCtx({
+      command: "file.write",
+      params: {
+        path: "/tmp/AGENTS.md",
+        contentBase64: Buffer.from("payload").toString("base64"),
+        overwrite: true,
+        rejectHardlinks: true,
+      },
+    });
+
+    const result = await policy.handle(ctx);
+
+    expectResultFields(result, { ok: false, code: "HARDLINK_REJECTION_UNSUPPORTED" });
+    expect(invokeNode).toHaveBeenCalledTimes(1);
+    expectRecordFields(requireInvokeParams(invokeNode, 0), {
+      preflightOnly: true,
+      rejectHardlinks: true,
+    });
+  });
+
   it("checks file.write canonical policy before the mutating node call", async () => {
     const policy = createFileTransferNodeInvokePolicy();
     const { ctx, invokeNode } = createCtx({

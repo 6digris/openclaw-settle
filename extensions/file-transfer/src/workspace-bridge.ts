@@ -142,6 +142,7 @@ export function createNodeWorkspaceBridge(options: {
           path: remotePath(params),
           contentBase64: data.toString("base64"),
           overwrite: true,
+          rejectHardlinks: true,
           createParents: params.mkdir !== false,
           expectedSha256: sha256,
         },
