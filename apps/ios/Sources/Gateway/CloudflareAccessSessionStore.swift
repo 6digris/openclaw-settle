@@ -39,6 +39,7 @@ final class CloudflareAccessSessionStore {
     private struct Lifecycle {
         var phase: State = .signedOut
         var admissionRevokedAt: UInt64 = 0
+        var transitionRevision: UInt64 = 0
     }
 
     private struct Attempt {
@@ -47,8 +48,10 @@ final class CloudflareAccessSessionStore {
         let task: Task<Snapshot, Error>
     }
 
-    private struct Retirement {
+    struct Retirement: Sendable {
         let id: UUID
+        let origin: CloudflareAccessOrigin
+        let transitionRevision: UInt64
         let task: Task<Void, Error>
     }
 
@@ -90,9 +93,8 @@ final class CloudflareAccessSessionStore {
                let session = try? JSONDecoder().decode(CloudflareAccessSession.self, from: data),
                session.origin == origin, (try? session.validate(now: now)) != nil
             {
-                self.revision &+= 1
-                self.sessions[origin] = Snapshot(session: session, revision: self.revision)
                 self.setState(.authenticated, for: origin)
+                self.sessions[origin] = Snapshot(session: session, revision: self.revision)
             } else {
                 self.setState(.signedOut, for: origin)
             }
@@ -101,7 +103,6 @@ final class CloudflareAccessSessionStore {
         guard snapshot.session.authorizationHeader(for: origin.url, now: now) != nil else {
             self.sessions.removeValue(forKey: origin)
             self.setState(.reauthenticationRequired, for: origin)
-            self.revision &+= 1
             _ = self.queueRetirement(origin)
             return nil
         }
@@ -128,8 +129,8 @@ final class CloudflareAccessSessionStore {
                 // Close transports, browser cookies and cached media before a new
                 // Access principal can be committed. Gateway device tokens survive.
                 self.sessions.removeValue(forKey: origin)
-                self.revision &+= 1
-                try await self.queueRetirement(origin).value
+                self.setState(.signingIn, for: origin)
+                try await self.queueRetirement(origin).task.value
                 try self.checkAttempt(origin: origin, id: id)
                 // Teardown can suspend across backgrounding or expiry. Admission
                 // must still be valid when persistence and publication happen.
@@ -138,24 +139,21 @@ final class CloudflareAccessSessionStore {
                 guard let value = String(data: encoded, encoding: .utf8), self.persistence.save(origin, value) else {
                     throw CloudflareAccessError.storageFailed
                 }
-                self.revision &+= 1
+                self.setState(.authenticated, for: origin)
                 let snapshot = Snapshot(session: session, revision: self.revision)
                 self.sessions[origin] = snapshot
-                self.setState(.authenticated, for: origin)
                 self.attempts.removeValue(forKey: origin)
                 return snapshot
             } catch {
                 if self.attempts[origin]?.id == id {
                     self.attempts.removeValue(forKey: origin)
                     self.setState(.reauthenticationRequired, for: origin)
-                    self.revision &+= 1
                 }
                 throw error
             }
         }
         self.attempts[origin] = Attempt(id: id, application: application, task: task)
         self.setState(.signingIn, for: origin)
-        self.revision &+= 1
         return task
     }
 
@@ -163,7 +161,6 @@ final class CloudflareAccessSessionStore {
         guard let attempt = self.attempts.removeValue(forKey: origin) else { return }
         attempt.task.cancel()
         self.setState(.reauthenticationRequired, for: origin)
-        self.revision &+= 1
     }
 
     func currentRevision(for origin: CloudflareAccessOrigin) -> UInt64 {
@@ -179,8 +176,7 @@ final class CloudflareAccessSessionStore {
         guard self.sessions[origin]?.revision == revision else { return }
         self.sessions.removeValue(forKey: origin)
         self.setState(.reauthenticationRequired, for: origin)
-        self.revision &+= 1
-        try await self.queueRetirement(origin).value
+        try await self.queueRetirement(origin).task.value
     }
 
     /// Capture before endpoint/QR resolution; a later resolved origin can reject only
@@ -193,21 +189,26 @@ final class CloudflareAccessSessionStore {
         (self.states[origin]?.admissionRevokedAt ?? 0) <= checkpoint
     }
 
-    func forget(_ origin: CloudflareAccessOrigin) -> Task<Void, Error> {
+    func forget(_ origin: CloudflareAccessOrigin) -> Retirement {
         self.cancelSignIn(for: origin)
         self.sessions.removeValue(forKey: origin)
         self.setState(.signedOut, for: origin)
-        self.revision &+= 1
         self.states[origin, default: Lifecycle()].admissionRevokedAt = self.revision
         return self.queueRetirement(origin)
     }
 
-    private func setState(_ phase: State, for origin: CloudflareAccessOrigin) {
-        // Phase changes and replacement grants must not revive an old admission.
-        self.states[origin, default: Lifecycle()].phase = phase
+    func isCurrent(_ retirement: Retirement) -> Bool {
+        self.states[retirement.origin]?.transitionRevision == retirement.transitionRevision
     }
 
-    private func queueRetirement(_ origin: CloudflareAccessOrigin) -> Task<Void, Error> {
+    private func setState(_ phase: State, for origin: CloudflareAccessOrigin) {
+        // Phase changes and replacement grants must not revive an old admission.
+        self.revision &+= 1
+        self.states[origin, default: Lifecycle()].phase = phase
+        self.states[origin, default: Lifecycle()].transitionRevision = self.revision
+    }
+
+    private func queueRetirement(_ origin: CloudflareAccessOrigin) -> Retirement {
         let previous = self.retirements[origin]?.task
         let id = UUID()
         let task = Task { @MainActor in
@@ -220,8 +221,11 @@ final class CloudflareAccessSessionStore {
             await self.retireTransports(origin)
             guard self.persistence.delete(origin) else { throw CloudflareAccessError.storageFailed }
         }
-        self.retirements[origin] = Retirement(id: id, task: task)
-        return task
+        // Queue completion only releases its task. Its acknowledgement stays current
+        // until a later transition for this origin, even after the queue entry is gone.
+        let retirement = Retirement(id: id, origin: origin, transitionRevision: self.revision, task: task)
+        self.retirements[origin] = retirement
+        return retirement
     }
 
     private func checkAttempt(origin: CloudflareAccessOrigin, id: UUID) throws {
