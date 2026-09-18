@@ -118,6 +118,20 @@ export function createSessionRowProjectionFixture(params: {
   for (const [key, entry] of Object.entries(store)) {
     setEntry(key, entry);
   }
+  const select = (options?: Parameters<SessionRowProjection["select"]>[0]) => {
+    const query = options ?? {};
+    return [...rows.values()]
+      .filter(
+        (row) =>
+          (!query.agentId || row.agentId === query.agentId) &&
+          (!query.storePath || row.storeTarget.storePath === query.storePath) &&
+          (!query.key || row.key === query.key) &&
+          (!query.parentSessionKey || row.parents.has(query.parentSessionKey)),
+      )
+      .toSorted((a, b) =>
+        compareSessionEntryPairs([a.key, a.entry], [b.key, b.entry], query.sortBy),
+      );
+  };
   const projection: SessionRowProjection = {
     capture: describe,
     findBySessionId: (query) =>
@@ -130,6 +144,10 @@ export function createSessionRowProjectionFixture(params: {
           (!query.storePath || row.storeTarget.storePath === query.storePath),
       ),
     describe,
+    withPreparedExactRows: async (_queries, consume) => ({
+      kind: "complete",
+      value: consume(projection),
+    }),
     present: (record, options) => {
       const now = options?.now ?? Date.now();
       const row = presentSessionRow(record.materialized, {
@@ -165,20 +183,8 @@ export function createSessionRowProjectionFixture(params: {
       }),
     },
     isCurrent: (row) => rows.get(id(row))?.generation === row.generation,
-    select: (options?: Parameters<SessionRowProjection["select"]>[0]) => {
-      const query = options ?? {};
-      return [...rows.values()]
-        .filter(
-          (row) =>
-            (!query.agentId || row.agentId === query.agentId) &&
-            (!query.storePath || row.storeTarget.storePath === query.storePath) &&
-            (!query.key || row.key === query.key) &&
-            (!query.parentSessionKey || row.parents.has(query.parentSessionKey)),
-        )
-        .toSorted((a, b) =>
-          compareSessionEntryPairs([a.key, a.entry], [b.key, b.entry], query.sortBy),
-        );
-    },
+    select,
+    selectEntries: select,
     snapshot: (query, options) => {
       const record = describe(query);
       return record

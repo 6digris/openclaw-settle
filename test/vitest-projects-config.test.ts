@@ -57,6 +57,7 @@ import {
   createGatewayVitestConfig,
 } from "./vitest/vitest.gateway.config.ts";
 import { createInfraVitestConfig } from "./vitest/vitest.infra.config.ts";
+import liveConfig from "./vitest/vitest.live.config.ts";
 import { createPluginSdkLightVitestConfig } from "./vitest/vitest.plugin-sdk-light.config.ts";
 import { createProjectShardVitestConfig } from "./vitest/vitest.project-shard-config.ts";
 import {
@@ -75,6 +76,9 @@ import { createUnitFastVitestConfig } from "./vitest/vitest.unit-fast.config.ts"
 
 const patternFiles = createPatternFileHelper("openclaw-vitest-projects-config-");
 const scopedGatewayMethodsIsolatedTestFiles = [
+  "server-methods/tasks.access.test.ts",
+  "server-methods/tasks.test.ts",
+  "server-methods/agent.task-runtime.test.ts",
   "server-methods/agent.test.ts",
   "server-methods/board.runtime-boundaries.test.ts",
   "server-methods/chat.reset-visible-yield.test.ts",
@@ -253,6 +257,9 @@ describe("projects vitest config", () => {
     expect(gatewayFallback.exclude).toContain(overrideFixture);
     expect(methodsConfig.exclude).toContain("src/gateway/server-methods/agent.test.ts");
     expect(methodsConfig.exclude).toContain(
+      "src/gateway/server-methods/agent.task-runtime.test.ts",
+    );
+    expect(methodsConfig.exclude).toContain(
       "src/gateway/server-methods/health.owner-routing.test.ts",
     );
     expect(methodsConfig.exclude).toContain(
@@ -265,6 +272,9 @@ describe("projects vitest config", () => {
       "src/gateway/server-methods/system-agent-setup-control-ui.test.ts",
     );
     expect(gatewayFallback.exclude).toContain("src/gateway/server-methods/agent.test.ts");
+    expect(gatewayFallback.exclude).toContain(
+      "src/gateway/server-methods/agent.task-runtime.test.ts",
+    );
     expect(gatewayFallback.exclude).toContain(
       "src/gateway/server-methods/health.owner-routing.test.ts",
     );
@@ -695,6 +705,12 @@ describe("projects vitest config", () => {
     expect(testConfig.pool).toBe("forks");
     expect(rootVitestProjects).toContain(project);
     expect(fullSuiteVitestShards.flatMap((shard) => shard.projects ?? [])).toContain(project);
+  });
+
+  it("runs live Gateway hosts in process forks for shared-state admission", () => {
+    const testConfig = requireTestConfig(liveConfig);
+    expect(testConfig.pool).toBe("forks");
+    expect(testConfig.maxWorkers).toBe(1);
   });
 
   it("keeps Slack's real cooldown store in its forked project", () => {
