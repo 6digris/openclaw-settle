@@ -281,7 +281,7 @@ describe("readGatewayServiceState", () => {
     "handles managerless Linux inspection for $updateInstallKind restart=$shouldRestart ($condition)",
     async ({ updateInstallKind, shouldRestart, condition, portUsage, portSource }) => {
       const { maybeStopManagedServiceBeforeMutableUpdate } =
-        await import("../cli/update-cli/update-command-service.js");
+        await import("../cli/update-cli/update-command-service-maintenance.js");
       const home = await makeTempWorkspace("openclaw-managerless-preflight-");
       const keys = [
         "HOME",

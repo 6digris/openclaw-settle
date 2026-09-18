@@ -31,13 +31,13 @@ const READ_TASK = [
 ].join("; ");
 
 function queryTaskScheduler(
-  taskName: string,
+  taskName: string | undefined,
   timeoutMs?: number,
   readTask = READ_TASK,
 ): { status: "ok"; value: unknown } | Exclude<ScheduledTaskStateProbe, { status: "found" }> {
   const probeTimeoutMs =
     timeoutMs !== undefined && Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 5_000;
-  const encodedTaskName = Buffer.from(taskName, "utf8").toString("base64");
+  const encodedTaskName = Buffer.from(taskName ?? "", "utf8").toString("base64");
   const script = [
     "$ErrorActionPreference='Stop'",
     "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)",
@@ -45,7 +45,9 @@ function queryTaskScheduler(
     "$lookup=$false",
     readTask,
     "try { $service=New-Object -ComObject 'Schedule.Service'; $service.Connect() } catch { Write-Output $_.Exception.HResult; exit 2 }",
-    "try { $lookup=$true; $task=$service.GetFolder('\\').GetTask($taskName); $lookup=$false; Read-Task $task | ConvertTo-Json -Depth 4 -Compress; exit 0 } catch { $exception=$_.Exception; while($null -ne $exception.InnerException){$exception=$exception.InnerException}; Write-Output $exception.HResult; if($lookup){exit 1}; exit 2 }",
+    taskName === undefined
+      ? "function Read-Folder($folder) { foreach($task in $folder.GetTasks(1)) { Read-Task $task }; foreach($child in $folder.GetFolders(0)) { Read-Folder $child } }; try { $tasks=@(Read-Folder ($service.GetFolder('\\'))); ConvertTo-Json -InputObject $tasks -Depth 4 -Compress; exit 0 } catch { Write-Output $_.Exception.HResult; exit 2 }"
+      : "try { $lookup=$true; $task=$service.GetFolder('\\').GetTask($taskName); $lookup=$false; Read-Task $task | ConvertTo-Json -Depth 4 -Compress; exit 0 } catch { $exception=$_.Exception; while($null -ne $exception.InnerException){$exception=$exception.InnerException}; Write-Output $exception.HResult; if($lookup){exit 1}; exit 2 }",
   ].join("; ");
   const probe = spawnSync(
     getWindowsPowerShellExePath(),
@@ -140,6 +142,17 @@ export function probeScheduledTaskState(
   return snapshot
     ? { status: "found", ...snapshot }
     : { status: "unknown", detail: "Scheduled Task probe returned invalid JSON." };
+}
+
+export function listScheduledTasks(timeoutMs?: number): ScheduledTaskSnapshot[] {
+  const result = queryTaskScheduler(undefined, timeoutMs);
+  if (result.status === "ok" && Array.isArray(result.value)) {
+    const tasks = result.value.map(readTaskSnapshot);
+    if (tasks.every((task) => task?.taskPath)) {
+      return tasks.filter((task): task is ScheduledTaskSnapshot => task !== undefined);
+    }
+  }
+  throw new Error("Scheduled Task inventory could not be inspected.");
 }
 
 /** Prepare a detached definition; only the guarded schtasks writer can publish it. */

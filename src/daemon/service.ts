@@ -235,8 +235,13 @@ export async function readGatewayServiceState(
 ): Promise<GatewayServiceState> {
   let args = input;
   const baseEnv = args.env ?? (process.env as GatewayServiceEnv);
-  if (service.readCommand === readSystemdServiceExecStart && !args.systemdReadTarget) {
-    const installation = await findSystemdGatewayInstallation(baseEnv);
+  const supplied = args.systemdInstallation;
+  const selected = supplied?.kind === "system" || supplied?.kind === "user" ? supplied : undefined;
+  if (
+    !args.systemdReadTarget &&
+    (selected || service.readCommand === readSystemdServiceExecStart)
+  ) {
+    const installation = selected ?? (await findSystemdGatewayInstallation(baseEnv));
     if (installation.kind === "dueling" && args.requireEffective && args.requireLoadedCommand) {
       throw new Error(
         "Both user and system systemd units own this Gateway name. Run openclaw doctor interactively to inspect the competing supervisors before maintenance.",
@@ -319,7 +324,11 @@ async function readGatewayServiceStateWithBinding(
             },
           })
           .catch(() => null);
-  const env = mergeGatewayServiceEnv(baseEnv, command);
+  const mergedEnv = mergeGatewayServiceEnv(baseEnv, command);
+  const env =
+    process.platform === "win32" && args.requireLoadedCommand && command?.sourcePath
+      ? { ...mergedEnv, OPENCLAW_TASK_SCRIPT: command.sourcePath }
+      : mergedEnv;
   // Reject persisted selector drift before invoking the native service manager.
   args.validateEnvBeforeStatusRead?.(env);
   // Strict user-unit absence still needs the platform owner's system-scope proof.

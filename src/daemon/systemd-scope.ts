@@ -203,11 +203,7 @@ export async function findSystemdGatewayInstallation(
     findSystemSystemdGatewayScope(env),
   ]);
   if (system) {
-    // A template is shared; native inspection needs this account's runnable instance.
-    system.unitName = system.unitName.replace(
-      /@\.service$/,
-      () => `@${os.userInfo().username}.service`,
-    );
+    system.unitName = resolveSystemdGatewayInstanceName(system.unitName);
   }
   if (user && system) {
     // Only the SAME canonical gateway installed in both scopes is a dueling
@@ -229,6 +225,11 @@ export async function findSystemdGatewayInstallation(
     return { kind: "system", system };
   }
   return { kind: "none" };
+}
+
+/** A template is shared; native inspection needs this account's runnable instance. */
+function resolveSystemdGatewayInstanceName(unitName: string): string {
+  return unitName.replace(/@\.service$/, () => `@${os.userInfo().username}.service`);
 }
 
 /**

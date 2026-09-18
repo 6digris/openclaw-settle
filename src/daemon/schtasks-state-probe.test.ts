@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { probeScheduledTaskState } from "./schtasks-state-probe.js";
+import { listScheduledTasks, probeScheduledTaskState } from "./schtasks-state-probe.js";
 
 vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }));
 
@@ -29,7 +29,37 @@ it("reads nested native action metadata without localized field names", () => {
     signal: null,
   });
   expect(probeScheduledTaskState(snapshot.taskPath)).toEqual({ status: "found", ...snapshot });
+  vi.mocked(spawnSync).mockReturnValue({
+    pid: 0,
+    output: [null, "", ""],
+    status: 0,
+    stdout: JSON.stringify([snapshot]),
+    stderr: "",
+    signal: null,
+  });
+  expect(listScheduledTasks()).toEqual([snapshot]);
 });
+
+it.each([{}, [{ state: 4 }], [{ taskPath: "\\Ops\\Backup", actions: [{ type: 0 }] }]])(
+  "keeps malformed native inventory closed: %j",
+  (value) => {
+    vi.mocked(spawnSync).mockReturnValue({
+      pid: 0,
+      output: [null, "", ""],
+      status: 0,
+      stdout: JSON.stringify(value),
+      stderr: "",
+      signal: null,
+    });
+    if (Array.isArray(value) && value[0] && "taskPath" in value[0]) {
+      expect(listScheduledTasks()).toEqual([{ taskPath: "\\Ops\\Backup", state: null }]);
+    } else {
+      expect(() => listScheduledTasks()).toThrow(
+        "Scheduled Task inventory could not be inspected.",
+      );
+    }
+  },
+);
 
 it("reads task state when PowerShell rejects a no-console launch", () => {
   vi.mocked(spawnSync).mockImplementation((_command, _args, options) => {
