@@ -14,6 +14,12 @@ native compaction, and app-server execution. OpenClaw still owns chat
 channels, session files, model selection, OpenClaw dynamic tools, approvals,
 media delivery, and the visible transcript mirror.
 
+App-server notifications retain their complete decoded payloads for the turn and
+catalog consumers. Synchronous observers do not schedule extra promise work.
+Recovery of raw newlines inside JSON strings keeps the existing size and
+line-count limits; plain string fragments wait for a delimiter before retrying
+the accumulated JSON. Closing the client releases any unfinished fragment.
+
 The native session catalog keeps one resident index per Codex home, shared across
 agents, working-directory filters, searches, and pages. Lists normally filter and page
 bounded display rows in memory. They do not expire or restart native discovery
