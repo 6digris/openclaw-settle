@@ -1,6 +1,8 @@
 import { writeSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { expect, it } from "vitest";
+import type { ApplicationContext } from "../app/context.ts";
+import type { ChatPaneBase } from "../pages/chat/chat-pane-base.ts";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import { takeControlUiViewportScreenshot } from "../test-helpers/control-ui-e2e-screenshot.ts";
 import {
@@ -41,6 +43,16 @@ suite.define(() => {
     });
     phase("create page");
     const page = await context.newPage();
+    page.on("console", (message) => {
+      const text = message.text();
+      if (
+        /^\[outbox-refresh\] (entered|settled|runtime=(true|false) loading=(true|false) ready=(true|false))$/.test(
+          text,
+        )
+      ) {
+        phase(text);
+      }
+    });
     const activePane = page.locator(".chat-pane-cache__pane--active");
     const agentsList = {
       agents: [
@@ -162,10 +174,19 @@ suite.define(() => {
         .waitFor({ state: "detached", timeout: 10_000 });
       phase("refresh main sessions");
       await page.evaluate(async () => {
+        console.info("[outbox-refresh] entered");
         const app = document.querySelector("openclaw-app") as HTMLElement & {
-          runtime?: { context: { sessions: { refresh: (options: unknown) => Promise<void> } } };
+          runtime?: { context: Pick<ApplicationContext, "sessions"> };
         };
-        await app.runtime?.context.sessions.refresh({ agentId: "main", force: true });
+        const pane = document.querySelector<ChatPaneBase>(".chat-pane-cache__pane--active");
+        console.info(
+          `[outbox-refresh] runtime=${Boolean(app.runtime)} loading=${app.runtime?.context.sessions.state.loading === true} ready=${pane?.transcriptReady === true}`,
+        );
+        try {
+          await app.runtime?.context.sessions.refresh({ agentId: "main", force: true });
+        } finally {
+          console.info("[outbox-refresh] settled");
+        }
       });
 
       phase("verify main sessions request");
