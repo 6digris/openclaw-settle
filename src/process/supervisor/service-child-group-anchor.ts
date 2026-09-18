@@ -176,6 +176,12 @@ export function runServiceChildGroupAnchor(): void {
     }
     state = "closing";
     forceCleanup = signal === "SIGKILL";
+    // Group TERM can stop a source loader's compiler. Resolve the host-only
+    // writer first; a failed import must still allow process cleanup to run.
+    const lineageCompletion =
+      start.ownedWorker && (typeof WORKER_DEPLOY_BUILD !== "boolean" || !WORKER_DEPLOY_BUILD)
+        ? await import("../../node-host/node-worker-lineage-completion.js").catch(() => undefined)
+        : undefined;
     const cleanupDeadline = Date.now() + GRACEFUL_CANCEL_TIMEOUT_MS;
     const termGraceDone = delay(GRACEFUL_CANCEL_TIMEOUT_MS);
     if (start.ownedWorker) {
@@ -194,17 +200,9 @@ export function runServiceChildGroupAnchor(): void {
       await settled;
       await rootResultDelivery;
       let lineageRecorded = false;
-      if (
-        rootExit &&
-        lineageClosed &&
-        (typeof WORKER_DEPLOY_BUILD !== "boolean" || !WORKER_DEPLOY_BUILD)
-      ) {
+      if (rootExit && lineageClosed && lineageCompletion) {
         try {
-          // Portable command helpers do not own the node journal. The top-level
-          // node anchor is a host runtime helper and must write before retiring.
-          const { recordNodeWorkerLineageSettled } =
-            await import("../../node-host/node-worker-lineage-completion.js");
-          lineageRecorded = recordNodeWorkerLineageSettled(start.cleanupBinding);
+          lineageRecorded = lineageCompletion.recordNodeWorkerLineageSettled(start.cleanupBinding);
         } catch {
           // An unrecorded completion remains unknown to the next node host.
         }
