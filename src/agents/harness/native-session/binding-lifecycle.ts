@@ -10,7 +10,9 @@ import {
 } from "./binding-leases.js";
 
 /** Shared binding coordination; backend callbacks retain native ownership and retention policy. */
-export function createNativeSessionBindingLifecycle<TRecord extends NativeSessionBindingRecord<unknown>>(
+export function createNativeSessionBindingLifecycle<
+  TRecord extends NativeSessionBindingRecord<unknown>,
+>(
   state: NativeSessionBindingStateStore<TRecord>,
   options: NativeSessionBindingLifecycleOptions<TRecord>,
 ) {
@@ -183,14 +185,12 @@ export function createNativeSessionBindingLifecycle<TRecord extends NativeSessio
   };
 }
 
-export type NativeSessionBindingLifecycle<TRecord extends NativeSessionBindingRecord<unknown>> = ReturnType<
-  typeof createNativeSessionBindingLifecycle<TRecord>
->;
+export type NativeSessionBindingLifecycle<TRecord extends NativeSessionBindingRecord<unknown>> =
+  ReturnType<typeof createNativeSessionBindingLifecycle<TRecord>>;
 
-export type NativeSessionBindingLifecycleOptions<TRecord extends NativeSessionBindingRecord<unknown>> = Omit<
-  NativeSessionBindingLeaseConfig<TRecord>,
-  "errors"
-> & {
+export type NativeSessionBindingLifecycleOptions<
+  TRecord extends NativeSessionBindingRecord<unknown>,
+> = Omit<NativeSessionBindingLeaseConfig<TRecord>, "errors"> & {
   errors: NativeSessionBindingLeaseConfig<TRecord>["errors"] & {
     mutationBlocked: () => Error;
     conditionalDeletionRequired: () => Error;
@@ -199,11 +199,12 @@ export type NativeSessionBindingLifecycleOptions<TRecord extends NativeSessionBi
   };
 };
 
-export type NativeSessionBindingDeletionOptions<TRecord extends NativeSessionBindingRecord<unknown>> =
-  NativeSessionBindingLeaseOptions<TRecord> & {
-    assertCurrent: () => void;
-    assertRecordCurrent: (current: TRecord | undefined) => void;
-  };
+export type NativeSessionBindingDeletionOptions<
+  TRecord extends NativeSessionBindingRecord<unknown>,
+> = NativeSessionBindingLeaseOptions<TRecord> & {
+  assertCurrent: () => void;
+  assertRecordCurrent: (current: TRecord | undefined) => void;
+};
 
 export type {
   NativeSessionBindingLease,

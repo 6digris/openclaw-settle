@@ -62,8 +62,10 @@ hooks are notifications, not the owner of durable binding removal.
 ## Shared native binding lifecycle
 
 `createNativeSessionBindingLifecycle` from
-`openclaw/plugin-sdk/agent-harness-runtime` supplies the binding
-coordination used by external harnesses. It consumes an existing synchronous
+`openclaw/plugin-sdk/agent-harness-session-runtime` supplies the binding
+coordination used by bundled and separately published official harnesses.
+This private-local runtime is packaged as JavaScript only; it is not a supported
+third-party plugin API. It consumes an existing synchronous
 plugin-state store; it does not create a database or a second session store.
 The synchronous store contract remains available through the next Plugin SDK
 major.
@@ -75,14 +77,14 @@ release TTL policy, error constructors, and lease timing budgets. Native
 credentials, model selection, supervision rules, and resource cleanup remain
 with that harness.
 
-| Operation | Contract |
-| --------- | -------- |
-| `transact(key, apply, options)` | Applies a synchronous state change through atomic plugin-state updates, respecting live leases and the supplied current-owner check. |
-| `withLease(key, run, options)` | Acquires and renews one exact-token lease, reuses it for nested work, and releases only that lease. |
-| `withMutation(run)` | Admits binding changes unless an exclusive operation is pending. |
-| `withExclusiveMutationFence(run)` | Drains admitted changes, rejects later changes, and permits the exclusive operation's own scoped changes. |
-| `withDeletion(key, options, run)` | Prepares exact synchronous removal and conditional rollback for the host's session transaction. |
-| `hasLease(key)` | Reports a lease in the current async scope for backend retention policy; it is not execution authority. |
+| Operation                         | Contract                                                                                                                             |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `transact(key, apply, options)`   | Applies a synchronous state change through atomic plugin-state updates, respecting live leases and the supplied current-owner check. |
+| `withLease(key, run, options)`    | Acquires and renews one exact-token lease, reuses it for nested work, and releases only that lease.                                  |
+| `withMutation(run)`               | Admits binding changes unless an exclusive operation is pending.                                                                     |
+| `withExclusiveMutationFence(run)` | Drains admitted changes, rejects later changes, and permits the exclusive operation's own scoped changes.                            |
+| `withDeletion(key, options, run)` | Prepares exact synchronous removal and conditional rollback for the host's session transaction.                                      |
+| `hasLease(key)`                   | Reports a lease in the current async scope for backend retention policy; it is not execution authority.                              |
 
 Pass the host-provided authority callback through `assertCurrent`, and validate
 the expected physical session generation in `assertRecordCurrent` for deletion.

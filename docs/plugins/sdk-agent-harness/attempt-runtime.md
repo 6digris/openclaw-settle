@@ -88,9 +88,12 @@ arguments or transcript mirrors.
 
 ## Execution and settlement deadlines
 
-Use `createAgentHarnessAttemptDeadlineController(...)` from
-`openclaw/plugin-sdk/agent-harness-runtime` to track an attempt's execution
-budget separately from local result settlement. Pass the original admission
+Bundled and separately published official harnesses can use
+`createAgentHarnessAttemptDeadlineController(...)` from
+`openclaw/plugin-sdk/agent-harness-session-runtime`. This private-local runtime
+is packaged as JavaScript only; it is not a supported third-party plugin API.
+The controller tracks an attempt's execution budget separately from local result
+settlement. Pass the original admission
 time as `startedAtMs`, the prepared execution `timeoutMs`, an explicit finite
 positive `settlementTimeoutMs` no greater than `MAX_TIMER_TIMEOUT_MS`
 (`2,147,000,000` milliseconds), and the attempt's `signal`. Invalid settlement

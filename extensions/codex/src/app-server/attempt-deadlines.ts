@@ -1,7 +1,7 @@
 import {
   createAgentHarnessAttemptDeadlineController,
   type AgentHarnessAttemptTimeout,
-} from "openclaw/plugin-sdk/agent-harness-runtime";
+} from "openclaw/plugin-sdk/agent-harness-session-runtime";
 import { TURN_TERMINAL_SETTLEMENT_TIMEOUT_MS } from "./attempt-timeouts.js";
 
 export type CodexAttemptTimeout = AgentHarnessAttemptTimeout;

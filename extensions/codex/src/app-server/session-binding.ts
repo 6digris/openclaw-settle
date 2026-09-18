@@ -3,11 +3,13 @@
 import { createHash } from "node:crypto";
 import {
   AgentHarnessSessionSupersededError,
-  createNativeSessionBindingLifecycle,
   embeddedAgentLog,
   type AgentHarnessSessionDeletionMutation,
-  type NativeSessionBindingLeaseOptions,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import {
+  createNativeSessionBindingLifecycle,
+  type NativeSessionBindingLeaseOptions,
+} from "openclaw/plugin-sdk/agent-harness-session-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { PluginStateSyncKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { getSessionEntry, resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
@@ -920,7 +922,8 @@ export function createCodexAppServerBindingStore(
             }
           },
         },
-        (stored, mutation) => run(stored?.state === "active" ? stored.binding : undefined, mutation),
+        (stored, mutation) =>
+          run(stored?.state === "active" ? stored.binding : undefined, mutation),
       );
     },
 
@@ -981,7 +984,5 @@ function preservedSessionGeneration(
   }
   return storedSessionGeneration(identity, current);
 }
-
-
 
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

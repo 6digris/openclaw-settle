@@ -3,7 +3,9 @@ import { randomUUID } from "node:crypto";
 import type { PluginStateSyncKeyedStore } from "../../../plugin-state/plugin-state-store.js";
 
 /** Serializes native binding changes across processes without owning backend policy. */
-export function createNativeSessionBindingLeases<TRecord extends NativeSessionBindingRecord<unknown>>(
+export function createNativeSessionBindingLeases<
+  TRecord extends NativeSessionBindingRecord<unknown>,
+>(
   state: NativeSessionBindingStateStore<TRecord>,
   options: NativeSessionBindingLeaseConfig<TRecord>,
 ) {
@@ -224,19 +226,18 @@ export type NativeSessionBindingRecord<TBinding> =
       retired?: true;
     };
 
-export type NativeSessionBindingStateStore<TRecord extends NativeSessionBindingRecord<unknown>> = Pick<
-  PluginStateSyncKeyedStore<TRecord>,
-  "deleteIf" | "lookup" | "registerIfAbsent" | "update"
->;
+export type NativeSessionBindingStateStore<TRecord extends NativeSessionBindingRecord<unknown>> =
+  Pick<PluginStateSyncKeyedStore<TRecord>, "deleteIf" | "lookup" | "registerIfAbsent" | "update">;
 
-export type NativeSessionBindingLeaseOptions<TRecord extends NativeSessionBindingRecord<unknown>> = {
-  assertCurrent?: () => void;
-  /** Undefined refuses acquisition without changing the current row. */
-  prepareLease: (
-    current: TRecord | undefined,
-    lease: NativeSessionBindingLease,
-  ) => TRecord | undefined;
-};
+export type NativeSessionBindingLeaseOptions<TRecord extends NativeSessionBindingRecord<unknown>> =
+  {
+    assertCurrent?: () => void;
+    /** Undefined refuses acquisition without changing the current row. */
+    prepareLease: (
+      current: TRecord | undefined,
+      lease: NativeSessionBindingLease,
+    ) => TRecord | undefined;
+  };
 
 export type NativeSessionBindingLeaseConfig<TRecord extends NativeSessionBindingRecord<unknown>> = {
   readRecord: (raw: unknown) => TRecord | undefined;
