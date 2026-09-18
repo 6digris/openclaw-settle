@@ -571,10 +571,10 @@ suite.define(() => {
 
       // The delayed swarm child query publishes roster metadata after first paint.
       // Observe its committed result before measuring stream-driven invalidations.
-      const childList = await gateway.waitForRequest("sessions.list", {
+      const childRoster = await gateway.waitForRequest("sessions.list", {
         match: { spawnedBy: "agent:main:main" },
       });
-      const childScope = requireRecord(childList.params);
+      const childScope = requireRecord(childRoster.params);
       await expect
         .poll(() =>
           page.evaluate((scope) => {
