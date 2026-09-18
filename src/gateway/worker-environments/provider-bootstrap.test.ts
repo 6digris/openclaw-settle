@@ -272,9 +272,9 @@ describe("worker environment service", () => {
       "sessions.describe",
       { key: "main" },
       {
+        placementFactsReader: placements,
         context: {
           getRuntimeConfig: () => ({ session: { store: sessionStorePath } }),
-          workerSessionPlacementService: placements,
         },
       },
     );
