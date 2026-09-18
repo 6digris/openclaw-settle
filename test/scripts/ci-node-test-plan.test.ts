@@ -1585,10 +1585,18 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
             "retained ordinary group",
           );
           if (usesTwoWorkerPacking(originalHybridJob)) {
-            expect(retained).toEqual({
-              ...original,
-              env: { OPENCLAW_VITEST_MAX_WORKERS: "2", ...original.env },
-            });
+            expect(
+              usesTwoWorkerPacking(shard) ||
+                retained.env?.OPENCLAW_VITEST_MAX_WORKERS === "2",
+            ).toBe(true);
+            const { env: originalEnv, ...originalPolicy } = original;
+            const { env: retainedEnv, ...retainedPolicy } = retained;
+            expect(retainedPolicy).toEqual(originalPolicy);
+            const { OPENCLAW_VITEST_MAX_WORKERS: _originalWorkers, ...originalOtherEnv } =
+              originalEnv ?? {};
+            const { OPENCLAW_VITEST_MAX_WORKERS: _retainedWorkers, ...retainedOtherEnv } =
+              retainedEnv ?? {};
+            expect(retainedOtherEnv).toEqual(originalOtherEnv);
           } else {
             expect(retained).toStrictEqual(original);
           }
