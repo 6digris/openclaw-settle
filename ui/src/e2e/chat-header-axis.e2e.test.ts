@@ -16,6 +16,8 @@ suite.define(() => {
     for (const viewport of [
       { label: "desktop", width: 769, height: 520, mobile: false, mergedChrome: true },
       { label: "mobile", width: 768, height: 520, mobile: true, mergedChrome: true },
+      { label: "narrow mobile", width: 390, height: 650, mobile: true, mergedChrome: true },
+      { label: "small mobile", width: 360, height: 650, mobile: true, mergedChrome: true },
       { label: "landscape phone", width: 932, height: 500, mobile: true, mergedChrome: true },
       { label: "wide landscape", width: 933, height: 500, mobile: false, mergedChrome: false },
     ] as const) {
@@ -93,6 +95,7 @@ suite.define(() => {
                 ...root.querySelectorAll<HTMLElement>(".chat-pane__crumb-sep"),
               ].map((node) => getComputedStyle(node).display),
               headerBottom: root.getBoundingClientRect().bottom,
+              headerHeight: root.getBoundingClientRect().height,
               contentTop: main.getBoundingClientRect().top,
             };
           });
@@ -123,8 +126,9 @@ suite.define(() => {
           } else {
             expect(geometry.projectIcon).toBeCloseTo(geometry.projectText, 1);
             expect(geometry.projectText).toBeLessThan(geometry.sessionText);
-            expect(geometry.parentText).toBeCloseTo(geometry.sessionText, 1);
-            expect(geometry.separatorDisplays).toEqual(["none", "none"]);
+            expect(geometry.parentText).toBeCloseTo(geometry.projectText, 1);
+            expect(geometry.separatorDisplays).toEqual(["block", "none"]);
+            expect(geometry.headerHeight).toBe(52);
           }
           expect(geometry.projectTextVisible).toBe(viewport.mobile);
           expect(await header.locator(".chat-pane__crumb-sep").count()).toBe(2);
@@ -139,12 +143,23 @@ suite.define(() => {
               childEllipses: childText.scrollWidth > childText.clientWidth,
               headerWidth: headerRect.width,
               parentEllipses: parentText.scrollWidth > parentText.clientWidth,
+              overflow: [parentText, childText].map((node) => getComputedStyle(node).textOverflow),
+              childWidth: child.getBoundingClientRect().width,
+              availableWidth: root.querySelector(".chat-pane__crumbs")!.getBoundingClientRect()
+                .width,
               width: child.getBoundingClientRect().right - parentCrumb.getBoundingClientRect().left,
             };
           });
-          expect(nestedTrail.parentEllipses).toBe(true);
-          expect(nestedTrail.childEllipses).toBe(true);
-          expect(nestedTrail.width).toBeLessThanOrEqual(nestedTrail.headerWidth / 2 + 1);
+          expect(nestedTrail.overflow).toEqual(["ellipsis", "ellipsis"]);
+          if (!viewport.mobile || viewport.width <= 390) {
+            expect(nestedTrail.parentEllipses).toBe(true);
+            expect(nestedTrail.childEllipses).toBe(true);
+          }
+          if (viewport.mobile) {
+            expect(nestedTrail.childWidth).toBeLessThanOrEqual(nestedTrail.availableWidth);
+          } else {
+            expect(nestedTrail.width).toBeLessThanOrEqual(nestedTrail.headerWidth / 2 + 1);
+          }
           expect((await parent.textContent())?.trim()).toBe(
             "Release readiness and production rollout coordination",
           );
