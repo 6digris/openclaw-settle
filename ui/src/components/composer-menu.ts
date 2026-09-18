@@ -72,7 +72,12 @@ export function renderComposerMenuOption(options: {
     aria-selected=${options.active}
     @mousedown=${options.preserveFocus === false ? nothing : (event: MouseEvent) => event.preventDefault()}
     @click=${options.select}
-    @mouseenter=${options.hover}
+    @pointermove=${(event: PointerEvent) => {
+      // Reflow and scrolling can move an option beneath a stationary pointer.
+      if (!options.active && event.pointerType !== "touch") {
+        options.hover();
+      }
+    }}
   >
     <span class="slash-menu-icon" aria-hidden=${options.iconHidden ? "true" : nothing}
       >${options.icon}</span

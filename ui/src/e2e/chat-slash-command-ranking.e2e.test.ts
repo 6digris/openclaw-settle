@@ -166,7 +166,6 @@ suite.define(() => {
         await expect.poll(() => scroll.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
         if (selection === "pointer") {
           await options.nth(targetIndex).click();
-          await page.mouse.move(0, 0);
         } else {
           await composer.press(selection);
         }
@@ -175,12 +174,7 @@ suite.define(() => {
         const active = picker.locator("[role='option'][aria-selected='true']");
         const first = options.first();
         await expect.poll(() => first.locator(".slash-menu-name").textContent()).toBe("choice-00");
-        // Pointer selection may activate the option under the cursor after the viewport changes.
-        if (selection !== "pointer") {
-          await expect
-            .poll(() => active.locator(".slash-menu-name").textContent())
-            .toBe("choice-00");
-        }
+        await expect.poll(() => active.locator(".slash-menu-name").textContent()).toBe("choice-00");
         expect(
           await scroll.evaluate((element) => element.scrollHeight > element.clientHeight),
         ).toBe(true);
