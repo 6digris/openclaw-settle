@@ -10,7 +10,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createRebindableDirectoryAlias,
   withRealpathSymlinkRebindRace,
-} from "../test-utils/symlink-rebind-race.js";
+} from "../infra/symlink-rebind-race.test-support.js";
 import { createApplyPatchTool } from "./apply-patch.js";
 import { applyPatch, createMemoryPatchSandbox } from "./apply-patch.test-support.js";
 import { resolveSandboxFileMutationQueueKey } from "./sandbox/file-mutation-identity.js";
