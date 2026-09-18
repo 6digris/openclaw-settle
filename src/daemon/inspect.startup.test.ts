@@ -3,7 +3,6 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { hasErrnoCode } from "../infra/errno.js";
 import { encodeWindowsLauncherScript } from "../infra/windows-launcher-encoding.js";
 import { findGatewayServices, renderGatewayServiceCleanupHints } from "./inspect.js";
 import { readStartupEntryCommand, resolveStartupEntryPath } from "./schtasks-layout.js";
@@ -11,26 +10,13 @@ import * as taskProbe from "./schtasks-state-probe.js";
 
 const nativePlatform = process.platform;
 let root: string;
-let createdDrive = false;
 
 beforeEach(async () => {
-  // Keep real fixture bytes behind Windows-spelled paths on non-Windows hosts.
-  if (nativePlatform !== "win32") {
-    await fs.mkdir("C:").then(
-      () => {
-        createdDrive = true;
-      },
-      (error: unknown) => {
-        if (!hasErrnoCode(error, "EEXIST")) {
-          throw error;
-        }
-      },
-    );
-  }
+  // A UNC spelling also resolves to a real fixture directory on POSIX hosts.
   root = await fs.mkdtemp(
     nativePlatform === "win32"
       ? path.join(os.tmpdir(), "openclaw-startup-")
-      : "C:/openclaw-startup-",
+      : "\\\\openclaw-startup-",
   );
   vi.spyOn(process, "platform", "get").mockReturnValue("win32");
   vi.spyOn(taskProbe, "listScheduledTasks").mockReturnValue([]);
@@ -39,10 +25,6 @@ beforeEach(async () => {
 afterEach(async () => {
   vi.restoreAllMocks();
   await fs.rm(root, { recursive: true, force: true });
-  if (createdDrive) {
-    await fs.rmdir("C:");
-    createdDrive = false;
-  }
 });
 
 function environment() {
@@ -212,6 +194,49 @@ describe("Windows Startup service inventory", () => {
     expect(await findGatewayServices(env)).toEqual({
       services: [],
       errors: [{ source: path.dirname(resolveStartupEntryPath(env)), message: expect.any(String) }],
+    });
+  });
+
+  it("reports a non-directory ancestor when Windows labels it missing", async () => {
+    const env = environment();
+    await fs.writeFile(env.APPDATA, "not a directory");
+    vi.spyOn(fs, "readdir").mockRejectedValueOnce(
+      Object.assign(new Error("scandir failed"), { code: "ENOENT" }),
+    );
+    expect(await findGatewayServices(env)).toEqual({
+      services: [],
+      errors: [{ source: path.dirname(resolveStartupEntryPath(env)), message: expect.any(String) }],
+    });
+  });
+
+  it.each([false, true])(
+    "distinguishes missing Startup children from a dangling directory link (target exists=%s)",
+    async (targetExists) => {
+      const env = environment();
+      const target = path.resolve(root, "redirected-appdata");
+      if (targetExists) {
+        await fs.mkdir(target);
+      }
+      await fs.symlink(target, env.APPDATA, "junction");
+      expect(await findGatewayServices(env)).toEqual({
+        services: [],
+        errors: targetExists
+          ? []
+          : [{ source: path.dirname(resolveStartupEntryPath(env)), message: expect.any(String) }],
+      });
+    },
+  );
+
+  it("reports an unreadable Startup directory instead of treating it as absent", async () => {
+    const env = environment();
+    const directory = path.dirname(resolveStartupEntryPath(env));
+    await fs.mkdir(directory, { recursive: true });
+    vi.spyOn(fs, "readdir").mockRejectedValueOnce(
+      Object.assign(new Error("access denied"), { code: "EACCES" }),
+    );
+    expect(await findGatewayServices(env)).toEqual({
+      services: [],
+      errors: [{ source: directory, message: expect.any(String) }],
     });
   });
 

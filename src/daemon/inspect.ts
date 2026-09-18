@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { hasErrnoCode } from "../infra/errno.js";
+import { findExistingAncestor } from "../infra/fs-safe.js";
 import {
   GATEWAY_SERVICE_KIND,
   GATEWAY_SERVICE_MARKER,
@@ -396,7 +397,20 @@ async function scanWindowsStartupEntries(
   try {
     entries = await fs.readdir(directory);
   } catch (error) {
-    if (!hasErrnoCode(error, "ENOENT")) {
+    try {
+      if (!hasErrnoCode(error, "ENOENT")) {
+        throw error;
+      }
+      // Windows also reports ENOENT when a path traverses a non-directory.
+      const ancestor = await findExistingAncestor(directory);
+      if (
+        !ancestor ||
+        ancestor === path.resolve(directory) ||
+        !(await fs.stat(ancestor)).isDirectory()
+      ) {
+        throw error;
+      }
+    } catch {
       errors.push({ source: directory, message: "Windows Startup folder could not be inspected." });
     }
     return [];
