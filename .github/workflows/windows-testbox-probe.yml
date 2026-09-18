@@ -424,7 +424,7 @@ jobs:
         if: ${{ inputs.installed_startup_package != '' }}
         run: |
           $ErrorActionPreference = "Stop"
-          node --import ./scripts/tsx.mjs scripts/bench-gateway-startup.ts --installed-cohort .artifacts/windows-installed-startup/input.json --output .artifacts/windows-installed-startup/results.json 2>&1 | Tee-Object -FilePath .artifacts/windows-installed-startup/cohort.log
+          node --import ./scripts/tsx.mjs scripts/task-agent-turn-first-use-windows.mts .artifacts/windows-installed-startup/input.json .artifacts/windows-installed-startup/results.json 2>&1 | Tee-Object -FilePath .artifacts/windows-installed-startup/cohort.log
           if ($LASTEXITCODE -ne 0) { throw "Installed startup cohort failed; retain every sample and cleanup result." }
 
       - name: Upload installed startup evidence
@@ -435,6 +435,7 @@ jobs:
           path: |
             .artifacts/windows-installed-startup/*.json
             .artifacts/windows-installed-startup/*.log
+            .artifacts/windows-installed-startup/*.jsonl
           if-no-files-found: error
           retention-days: 7
 

@@ -1,0 +1,4 @@
+{
+  "id": "startup-internal-turn-probe",
+  "configSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+}
