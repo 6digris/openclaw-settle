@@ -142,7 +142,10 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
           // The memory miss fences network replacement; the pane projection merges
           // live and pending rows that arrived while IndexedDB was pending.
           applyChatCacheSnapshot(state, snapshot);
-          const mergedSnapshot = { ...snapshot, messages: state.chatMessages };
+          const mergedSnapshot =
+            state.chatMessages === snapshot.messages
+              ? snapshot
+              : { ...snapshot, messages: state.chatMessages };
           cacheChatSessionSnapshot(
             state.chatMessagesBySession,
             state,

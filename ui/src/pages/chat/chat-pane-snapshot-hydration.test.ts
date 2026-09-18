@@ -1,11 +1,12 @@
 import { expectDefined } from "@openclaw/normalization-core";
-import { IDBFactory } from "fake-indexeddb";
+import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { render } from "lit";
 /* @vitest-environment jsdom */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import { gatewayHelloForMethods } from "../../test-helpers/gateway-methods.ts";
+import { commitCurrentChatHistorySnapshot } from "./chat-history-snapshot.ts";
 import { loadChatHistory } from "./chat-history.ts";
 import {
   createInitializationContext,
@@ -56,9 +57,11 @@ describe("stored chat snapshot hydration", () => {
   async function writeStoredSnapshot(
     targetSessionKey: string,
     messages: ReturnType<typeof nativeHistoryMessage>[],
+    deltaCursor?: string,
   ) {
     const writer = new SessionSnapshotStore();
     writer.write(targetSessionKey, {
+      deltaCursor,
       messages,
       pagination: { hasMore: false, completeSnapshot: true },
       sessionId: "persistent-session",
@@ -246,6 +249,74 @@ describe("stored chat snapshot hydration", () => {
         releaseChatMediaResourceSubscriber(renderPane);
         transcript.hostDisconnected();
         remounted.disconnectedCallback();
+        await store.flush();
+        await clearStoredChatSnapshots();
+      }
+    },
+  );
+
+  it.each([0, 1])(
+    "does not rewrite %i hydrated messages or unchanged revalidation, but persists changed history",
+    async (messageCount) => {
+      vi.stubGlobal("indexedDB", new IDBFactory());
+      const targetSessionKey = "agent:main:unchanged-hydration";
+      const cachedMessages = Array.from({ length: messageCount }, () =>
+        nativeHistoryMessage(1, "persistent history"),
+      );
+      await writeStoredSnapshot(targetSessionKey, cachedMessages, "persisted-cursor");
+      const put = vi.spyOn(IDBObjectStore.prototype, "put");
+      const response = createDeferred<Record<string, unknown>>();
+      const request = vi.fn(() => response.promise);
+      const client = { request } as unknown as GatewayBrowserClient;
+      const sharedMessages: ChatMessageCache = new Map();
+      const store = new SessionSnapshotStore(sharedMessages);
+      observeChatCache(sharedMessages, store);
+      const pane = createMountedPane(targetSessionKey, sharedMessages, client);
+      pane.sessionSnapshotStore = store;
+      const stopAfterAttach = new Error("stop after attach");
+      vi.spyOn(pane.chatState, "attach").mockImplementation((state) => {
+        state.client = client;
+        state.connected = true;
+        state.connectionEpoch = 1;
+        throw stopAfterAttach;
+      });
+
+      try {
+        expect(() => pane.connectedCallback()).toThrow(stopAfterAttach);
+        await vi.waitFor(() => expect(pane.state.currentSessionId).toBe("persistent-session"));
+        expect(pane.state.chatMessages).toEqual(cachedMessages);
+        await store.flush();
+        expect(put).not.toHaveBeenCalled();
+
+        commitCurrentChatHistorySnapshot(pane.state);
+        await store.flush();
+        expect(put).not.toHaveBeenCalled();
+
+        const revalidation = loadChatHistory(pane.state);
+        response.resolve({
+          kind: "delta",
+          messages: [],
+          deltaCursor: "persisted-cursor",
+          sessionInfo: { key: targetSessionKey, sessionId: "persistent-session" },
+        });
+        await revalidation;
+        await store.flush();
+        expect(put).not.toHaveBeenCalled();
+
+        const changedMessages = [nativeHistoryMessage(1, "updated history")];
+        request.mockResolvedValue({
+          messages: changedMessages,
+          sessionId: "persistent-session",
+          completeSnapshot: true,
+        });
+        await loadChatHistory(pane.state);
+        await store.flush();
+        expect(put).toHaveBeenCalledTimes(2);
+        expect((await new SessionSnapshotStore().read(targetSessionKey))?.messages).toEqual(
+          changedMessages,
+        );
+      } finally {
+        pane.disconnectedCallback();
         await store.flush();
         await clearStoredChatSnapshots();
       }

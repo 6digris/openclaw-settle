@@ -258,6 +258,7 @@ export function getChatModelObservedRunId(
 export function publishChatSessionProjection(
   owner: ChatSessionProjectionOwner,
   projection: SessionProjectionState,
+  reusableMessages?: unknown[],
 ): void {
   const current = chatSessionProjections.get(owner);
   const runId = current?.runId;
@@ -295,6 +296,16 @@ export function publishChatSessionProjection(
         : current?.modelObservation,
     runId: retainedRunId,
   });
+  // A cache snapshot can keep its persistence identity only when reconciliation
+  // preserved every row, including any live or pending submissions.
+  if (
+    reusableMessages &&
+    reusableMessages.length === projection.messages.length &&
+    reusableMessages.every((message, index) => message === projection.messages[index])
+  ) {
+    owner.chatMessages = reusableMessages;
+    return;
+  }
   // Run-only transitions share the transcript array. Preserve their ownership
   // updates above without traversing or republishing every displayed row.
   if (current?.projection?.messages === projection.messages) {
@@ -496,6 +507,7 @@ export function reduceChatSessionProjection(
   options: {
     scope?: SessionProjectionScope;
     runActive?: boolean;
+    reusableMessages?: unknown[];
   } = {},
 ): SessionProjectionState {
   const scope = options.scope ?? readChatSessionProjectionScope(owner);
@@ -563,7 +575,7 @@ export function reduceChatSessionProjection(
       projection = { ...projection, entries, messages: entries.map((entry) => entry.message) };
     }
   }
-  publishChatSessionProjection(owner, projection);
+  publishChatSessionProjection(owner, projection, options.reusableMessages);
   if (handoff && !handoff.pending && options.runActive === false) {
     owner.chatSubmissions?.clearInitial(sessionKey);
   }

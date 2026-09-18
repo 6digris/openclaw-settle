@@ -81,6 +81,7 @@ export function applyChatCacheSnapshot(
     state,
     { type: "snapshotLoaded", messages: snapshot.messages },
     {
+      reusableMessages: snapshot.messages,
       scope: readChatSessionProjectionScope(state, {
         sessionId: snapshot.sessionId,
         ...(Object.hasOwn(snapshot, "displayedLeafEntryId")
