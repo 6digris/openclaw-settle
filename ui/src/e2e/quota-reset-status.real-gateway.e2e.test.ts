@@ -100,11 +100,19 @@ async function captureFinalStatus(
   expect
     .soft(status.auth.unusableProfiles)
     .not.toContainEqual(expect.objectContaining({ profileId: fixture.profileId }));
+  // The fixture refreshes to a one-hour token; the CLI explicitly requests a
+  // 24-hour expiry warning even though the credential remains usable.
   expect
     .soft(status.auth.oauth.profiles)
     .toContainEqual(
-      expect.objectContaining({ profileId: fixture.profileId, type: "oauth", status: "ok" }),
+      expect.objectContaining({ profileId: fixture.profileId, type: "oauth", status: "expiring" }),
     );
+  expect
+    .soft(
+      status.auth.oauth.profiles.find((profile) => profile.profileId === fixture.profileId)
+        ?.remainingMs,
+    )
+    .toBeGreaterThan(0);
 
   const dashboard = await fixture.gateway.cli(["dashboard", "--json"]);
   expect(dashboard.code, dashboard.stderr).toBe(0);

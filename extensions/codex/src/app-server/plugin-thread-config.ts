@@ -113,7 +113,7 @@ type BuildCodexPluginThreadConfigParams = {
 
 // Admission changes must rebuild existing bindings too, or older bindings can
 // bypass updated app approval checks after the gateway has been upgraded.
-const CODEX_PLUGIN_THREAD_CONFIG_INPUT_FINGERPRINT_VERSION = 7;
+const CODEX_PLUGIN_THREAD_CONFIG_INPUT_FINGERPRINT_VERSION = 13;
 const CODEX_PLUGIN_THREAD_CONFIG_FINGERPRINT_VERSION = 2;
 
 /** Returns true when plugin config exists and thread config may need app patches. */
@@ -321,12 +321,12 @@ export async function buildCodexPluginThreadConfig(
   const policyApps: Record<string, CodexAppPolicyContextEntry> = {};
   const pluginAppIds: Record<string, string[]> = {};
   const pluginOwnedAppIds = collectCodexReservedPluginAppIds({
-    policy,
+    policy: inventory.policy,
     inventory,
     accountApps: accountAppsResult.apps,
   });
   const unresolvedDisabledPluginOwnership = policy.allowAllPlugins
-    ? policy.pluginPolicies.find((pluginPolicy) => {
+    ? inventory.policy.pluginPolicies.find((pluginPolicy) => {
         const record = inventory.records.find(
           (candidate) => candidate.policy.configKey === pluginPolicy.configKey,
         );

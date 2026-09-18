@@ -160,8 +160,7 @@ const defaultPublicDeprecatedExportsByEntrypointBudget = Object.freeze({
   // +1: shared ingress retention defaults projected through the deprecated message barrel.
   // +1: WhatsApp ack-policy bridge counted through the channel-message legacy facade.
   // Rendering helpers also remain available through this shipped legacy facade.
-  // +1: retain main's complete-preamble predicate when freezing the legacy facade.
-  "channel-message": 137,
+  "channel-message": 136,
   // +2: Slack progress-draft render bridge (function + mode type).
   "channel-outbound": 2,
   // +2: WhatsApp ack-policy bridge (function + mode type).
@@ -379,8 +378,9 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +2: approved process-diagnostics predicate and lightweight subsystem logger.
       // +1: approved shared native-command argument-menu applicability predicate.
       // +4: shared activity projectors and complete-preamble admission, including the shipped barrel.
+      // -1: keep complete-preamble admission off the deprecated compatibility facade.
       // +1: preserve opaque host reply metadata through Telegram recovery text clones.
-      4490,
+      4489,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -522,8 +522,9 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +2: approved process-diagnostics predicate and lightweight subsystem logger.
       // +1: approved shared native-command argument-menu applicability predicate.
       // +4: shared activity projectors and complete-preamble admission, including the shipped barrel.
+      // -1: keep complete-preamble admission off the deprecated compatibility facade.
       // +1: preserve opaque host reply metadata through Telegram recovery text clones.
-      2653,
+      2652,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
@@ -551,7 +552,7 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // -1: infra-runtime now names its error exports explicitly.
       // -1: infra-runtime excludes the internal system-event receipt API.
       // -1: infra-runtime re-exports number coercion directly from its canonical owner.
-      // -1: freeze channel-message to its existing named reexports.
+      // -1: channel-message pins its published compatibility exports explicitly.
       49,
       env,
     ),

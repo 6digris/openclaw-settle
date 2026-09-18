@@ -3,7 +3,7 @@
  * lifecycle helpers and `openclaw/plugin-sdk/channel-inbound` for inbound
  * reply dispatch helpers.
  */
-// Freeze this deprecated facade; new outbound APIs belong on channel-outbound.
+// Pin the compatibility surface; new outbound helpers belong on channel-outbound.
 export {
   bindIngressLifecycleToReplyOptions,
   buildChannelProgressDraftLine,
@@ -52,7 +52,6 @@ export {
   INGRESS_CLAIM_PROCESS_ID,
   isChannelProgressAttentionLine,
   isChannelProgressDraftWorkToolName,
-  isCompleteAgentPreamble,
   isPotentialTruncatedFinal,
   isRecentOutboundMessageIdentity,
   keepHttpServerTaskAlive,

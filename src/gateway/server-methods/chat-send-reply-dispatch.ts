@@ -229,6 +229,7 @@ export function createChatSendReplyDispatch(params: {
       cfg,
       sessionKey,
       agentId,
+      sessionEntry: loadSessionEntry(sessionKey, { ...sessionLoadOptions, agentId }).entry,
       accountId,
       payloads: [stripVisibleTextFromTtsSupplement(payload)],
     });

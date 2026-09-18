@@ -76,14 +76,10 @@ type UnpackedFileEntry = {
 };
 
 function savedDirectoryText(rootDir: string, files: UnpackedFileEntry[]): string {
-  const visible: Array<{ relPath: string; size: number }> = [];
+  const header = JSON.stringify({ rootDir, fileCount: files.length }).slice(0, -1);
+  const visible: string[] = [];
   const render = () => {
-    const manifest = JSON.stringify({
-      rootDir,
-      fileCount: files.length,
-      displayedCount: visible.length,
-      files: visible,
-    });
+    const manifest = `${header},"displayedCount":${visible.length},"files":[${visible.join(",")}]}`;
     const omitted = files.length - visible.length;
     // A stable footer lets each additional complete record consume more bytes,
     // including the last one; omission guidance must not crowd out a full manifest.
@@ -103,7 +99,7 @@ function savedDirectoryText(rootDir: string, files: UnpackedFileEntry[]): string
   for (const { relPath, size } of files.toSorted((a, b) =>
     a.relPath < b.relPath ? -1 : a.relPath > b.relPath ? 1 : 0,
   )) {
-    visible.push({ relPath, size });
+    visible.push(JSON.stringify({ relPath, size }));
     const candidate = render();
     if (!candidate) {
       break;
