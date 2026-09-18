@@ -85,6 +85,32 @@ describe("browser extension pairing Gateway URL", () => {
     resetRuntimeCapture();
   });
 
+  it("runs canonical setup from the real command entry without exporting a pairing secret", async () => {
+    relayMocks.ensureExtensionRelayToken.mockClear();
+    vi.spyOn(cliCoreApiModule, "getRuntimeConfig").mockReturnValue({});
+    const jsonSpy = vi
+      .spyOn(cliCoreApiModule.defaultRuntime, "writeJson")
+      .mockImplementation(runtime.writeJson);
+    const { registerBrowserExtensionCommands } = await import("./browser-cli-extension.js");
+    const program = new Command();
+    registerBrowserExtensionCommands(program.command("browser"), () => ({}));
+    await program.parseAsync(["browser", "extension", "setup", "--action", "install", "--json"], {
+      from: "user",
+    });
+    expect(installMocks.installChromeExtensionBootstrap).toHaveBeenCalledWith(
+      expect.objectContaining({ browserProfile: "chrome" }),
+    );
+    expect(jsonSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "install",
+        target: expect.objectContaining({ kind: "local-host", profile: "chrome" }),
+        connection: { state: "not_checked" },
+      }),
+    );
+    expect(JSON.stringify(jsonSpy.mock.calls)).not.toContain(relayMocks.relayKey);
+    expect(relayMocks.ensureExtensionRelayToken).not.toHaveBeenCalled();
+  });
+
   it("prints the Store CTA only after native pre-registration is ready", async () => {
     installMocks.installChromeExtensionBootstrap.mockImplementation(
       async (params: Parameters<typeof installChromeExtensionBootstrap>[0]) => {

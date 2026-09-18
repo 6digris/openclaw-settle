@@ -3,16 +3,15 @@
  * native bootstrap host, and retain advanced manual pairing.
  */
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Command } from "commander";
 import { resolveBrowserConfig } from "../browser/config.js";
 import {
-  browserExtensionStatus,
   FOUNDATION_CHROME_WEB_STORE_URL,
-  installChromeExtensionBootstrap,
   normalizeExtensionInstallWaitMs,
   removeChromeStoreInstallRequests,
   resolveChromeExtensionLoadPath,
+  resolveNativeHostPath,
   uninstallChromeExtensionNativeHosts,
 } from "../browser/extension-install.js";
 import { buildBrowserExtensionPairing } from "../browser/extension-pairing.js";
@@ -26,6 +25,10 @@ import {
   BROWSER_RELAY_AUTH_COMPLETE_PATH,
 } from "../browser/extension-relay/auth-v2.js";
 import { ensureExtensionRelayToken } from "../browser/extension-relay/relay-auth.js";
+import {
+  observeBrowserExtensionSetup,
+  runBrowserExtensionSetup,
+} from "../browser/extension-setup.js";
 import type { BrowserParentOpts } from "./browser-cli-shared.js";
 import {
   danger,
@@ -150,6 +153,59 @@ export function registerBrowserExtensionCommands(
     .description("Install and inspect the OpenClaw Chrome extension bootstrap");
 
   extension
+    .command("native-host", { hidden: true })
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .action(async () => {
+      // The entry owns binary framing and origin validation. Never print CLI diagnostics here.
+      try {
+        const entry = await resolveNativeHostPath(resolveBrowserPluginRoot(pluginRoot));
+        await import(pathToFileURL(entry).href);
+      } catch {
+        process.exitCode = 1;
+      }
+    });
+
+  extension
+    .command("setup")
+    .description("Inspect, prepare, or verify automatic Chrome setup on this host")
+    .option("--action <action>", "inspect, install, or verify", "inspect")
+    .option("--browser-profile <name>", "Local extension profile")
+    .option("--wait-ms <ms>", "Bounded Chrome discovery wait", "1000")
+    .option("--json", "Print the redacted setup result")
+    .action(async (opts, command) => {
+      await runCommandWithRuntime(
+        defaultRuntime,
+        async () => {
+          if (opts.action !== "inspect" && opts.action !== "install" && opts.action !== "verify") {
+            throw new Error("--action must be inspect, install, or verify");
+          }
+          const result = await runBrowserExtensionSetup({
+            action: opts.action,
+            bundledDir: resolveChromeExtensionDir(pluginRoot),
+            pluginRoot: resolveBrowserPluginRoot(pluginRoot),
+            cfg: getRuntimeConfig(),
+            profile: opts.browserProfile ?? parentOpts(command).browserProfile,
+            waitMs: normalizeExtensionInstallWaitMs(opts.waitMs),
+          });
+          if (opts.json || parentOpts(command).json) {
+            defaultRuntime.writeJson(result);
+          } else {
+            defaultRuntime.log(
+              `${result.target.hostname} · ${result.target.profile}: ${result.phase} (${result.reason}); next: ${result.nextAction}`,
+            );
+          }
+        },
+        () => {
+          defaultRuntime.error(
+            "Chrome setup could not finish. Check the action, local profile, and native host installation.",
+          );
+          defaultRuntime.exit(1);
+        },
+      );
+    });
+
+  extension
     .command("path")
     .description("Print the unpacked Chrome extension directory (Load unpacked)")
     .action(async () => {
@@ -183,7 +239,8 @@ export function registerBrowserExtensionCommands(
           if (!json) {
             defaultRuntime.log(info("Preparing the OpenClaw Chrome extension…"));
           }
-          const status = await installChromeExtensionBootstrap({
+          const status = await observeBrowserExtensionSetup({
+            action: "install",
             bundledDir,
             pluginRoot: resolveBrowserPluginRoot(pluginRoot),
             waitMs,
@@ -228,7 +285,9 @@ export function registerBrowserExtensionCommands(
     .action(async (opts, command) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const json = opts.json === true || parentOpts(command).json === true;
-        const status = await browserExtensionStatus({
+        const status = await observeBrowserExtensionSetup({
+          action: "inspect",
+          pluginRoot: resolveBrowserPluginRoot(pluginRoot),
           bundledDir: resolveChromeExtensionDir(pluginRoot),
         });
         if (json) {

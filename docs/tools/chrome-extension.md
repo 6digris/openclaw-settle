@@ -118,6 +118,42 @@ connection. Verify the extension's connected state and run
 `openclaw browser --browser-profile chrome tabs` against the intended Gateway
 or browser node. JSON output never includes a relay key or pairing string.
 
+## Shared setup controller
+
+CLI, native desktop adapters, and the terminal setup flow use the same Browser-owned
+controller on the machine that hosts Chrome:
+
+```bash
+openclaw browser extension setup --action inspect --json
+openclaw browser extension setup --action install --json
+openclaw browser extension setup --action verify --browser-profile chrome --json
+```
+
+`inspect` reads installation state without installing or connecting. `install`
+prepares automatic local bootstrap; Chrome still owns extension installation and
+permission approval. There is no pairing code to copy for supported local native
+bootstrap. Existing pairings and an explicit automatic-setup opt-out remain intact.
+`verify` authenticates the exact local profile relay with the existing per-host
+key. It does not create a key, start another relay, or fetch a remote Gateway key.
+
+The JSON result contains `action`, a `target` with `kind: "local-host"`, platform,
+hostname, profile and relay port, plus `phase`, `reason`, `installation`,
+`connection`, and `nextAction`. Valid pending or blocked results exit successfully;
+command or execution failures exit nonzero. Results never contain pairing strings
+or relay keys. Existing `install` and `status` commands retain their documented
+output formats.
+
+Installation, Chrome approval, and authenticated connection are separate facts.
+`ready` means the selected relay has an authenticated extension; it does not mean
+there are eligible tabs. An empty tab list is not a disconnected extension. Check
+tabs through the intended Gateway or browser node before using automation.
+
+The target is the process host, not the computer displaying a remote dashboard.
+A TUI reached through SSH runs setup on that SSH host. A loopback URL can be an
+SSH tunnel and is not proof that a Gateway and Chrome share a machine. Native
+setup does not silently retarget to the currently displayed Gateway. A web-only
+dashboard offers Store and setup-guide links rather than installing on the viewer.
+
 ## Use it
 
 Select the built-in `chrome` profile, or make it the default:

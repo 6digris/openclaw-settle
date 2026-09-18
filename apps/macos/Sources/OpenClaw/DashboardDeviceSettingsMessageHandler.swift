@@ -90,9 +90,9 @@ final class DashboardDeviceSettingsMessageHandler: NSObject, WKScriptMessageHand
                 replyHandler(nil, "The device settings document is no longer available.")
                 return
             }
-            if request == .installChromeExtension {
+            if case let .chromeExtensionSetup(action) = request {
                 do {
-                    let result = try await ChromeExtensionSetup.install {
+                    let result = try await ChromeExtensionSetup.run(action: action) {
                         owner.canUseDeviceSettings(sourceID: sourceID) && !Task.isCancelled
                     }
                     guard owner.canUseDeviceSettings(sourceID: sourceID), !Task.isCancelled else {

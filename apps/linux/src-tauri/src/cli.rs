@@ -192,6 +192,76 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn chrome_setup_preserves_canonical_pending_and_blocked_results() {
+        use crate::chrome_setup::{run, Action};
+        use serde_json::json;
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        struct Fixture(PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let fixture = Fixture(std::env::temp_dir().join(format!(
+            "openclaw-chrome-setup-{}",
+            uuid::Uuid::new_v4()
+        )));
+        fs::create_dir_all(&fixture.0).unwrap();
+        let executable = fixture.0.join("openclaw");
+        fs::write(
+            &executable,
+            r#"#!/bin/sh
+root=$(dirname "$0")
+printf '%s\n' "$*" >> "$root/calls"
+if test -f "$root/fail"; then
+  printf 'fixture-private-diagnostic\n' >&2
+  exit 1
+fi
+cat "$root/result.json"
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let cli = OpenClawCli::new(executable, fixture.0.clone());
+        for (action, name, phase) in [
+            (Action::Inspect, "inspect", "inspection_required"),
+            (Action::Install, "install", "needs_browser_action"),
+            (Action::Verify, "verify", "blocked"),
+        ] {
+            let expected = json!({
+                "action": name,
+                "target": {"kind": "local-host", "platform": "fixture", "hostname": "fixture",
+                    "profile": "chrome", "relayPort": 18792},
+                "phase": phase, "reason": "fixture",
+                "installation": {"nativeHostRegistered": false, "installRequested": false,
+                    "discoveredProfiles": [], "awaitingApproval": false,
+                    "automaticBootstrapSupported": false},
+                "connection": {"state": "not_checked"}, "nextAction": "install"
+            });
+            fs::write(fixture.0.join("result.json"), expected.to_string()).unwrap();
+            assert_eq!(run(&cli, action).unwrap(), expected);
+        }
+        assert_eq!(
+            fs::read_to_string(fixture.0.join("calls")).unwrap(),
+            ["inspect", "install", "verify"]
+                .map(|action| format!("browser extension setup --action {action} --json --browser-profile chrome --wait-ms 1000\n"))
+                .concat()
+        );
+        fs::write(fixture.0.join("fail"), "").unwrap();
+        let error = run(&cli, Action::Install).unwrap_err();
+        assert!(error.contains("Chrome setup failed"));
+        assert!(!error.contains("fixture-private-diagnostic"));
+        fs::remove_file(fixture.0.join("fail")).unwrap();
+        fs::write(fixture.0.join("result.json"), "invalid JSON").unwrap();
+        assert!(run(&cli, Action::Inspect)
+            .unwrap_err()
+            .contains("invalid Chrome setup result"));
+    }
+
     #[test]
     fn missing_executable_invalidates_the_cached_cli() {
         let cli = OpenClawCli::new(

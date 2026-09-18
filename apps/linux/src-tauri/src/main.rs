@@ -1,3 +1,4 @@
+mod chrome_setup;
 mod cli;
 #[cfg(target_os = "linux")]
 mod desktop_bridge;

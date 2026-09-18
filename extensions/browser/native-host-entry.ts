@@ -29,7 +29,9 @@ async function main(): Promise<void> {
       // Config and relay-key work must remain behind the host's validation boundary.
       const { buildBrowserNativeHostPairing } =
         await import("./src/browser/extension-native-host.runtime.js");
-      return await buildBrowserNativeHostPairing();
+      const profileIndex = process.argv.indexOf("--browser-profile");
+      const profile = profileIndex >= 0 ? requiredArgument("--browser-profile") : undefined;
+      return await buildBrowserNativeHostPairing(profile);
     },
     ensureRelay: async (port) => {
       const { ensureBrowserNativeRelay } =

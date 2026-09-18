@@ -47,7 +47,7 @@ type NativeHostRegistrationStatus = {
   issue?: string;
 };
 
-type BrowserExtensionStatus = {
+export type BrowserExtensionStatus = {
   platform: NodeJS.Platform;
   platformSupport: "automatic" | "manual_required";
   installedCopy: { path: string; present: boolean; owned: boolean };
@@ -79,7 +79,10 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
-async function resolveNativeHostPath(pluginRoot: string, explicit?: string): Promise<string> {
+export async function resolveNativeHostPath(
+  pluginRoot: string,
+  explicit?: string,
+): Promise<string> {
   if (explicit) {
     return await fs.realpath(explicit);
   }
@@ -165,8 +168,9 @@ function parseOwnedLauncherTargets(params: {
       escapeRegExp(shellQuote(origin)),
     ]),
   ].join(" ");
+  const profileArgument = `(?: ${escapeRegExp(shellQuote("--browser-profile"))} ${quotedValue})?`;
   const pattern = new RegExp(
-    `^#!/bin/sh\\n${escapeRegExp(OWNED_LAUNCHER_MARKER)}\\nexport OPENCLAW_STATE_DIR=${quotedValue}\\n(?:export OPENCLAW_CONFIG_PATH=${quotedValue}\\n)?exec ${command} "\\$@"\\n$`,
+    `^#!/bin/sh\\n${escapeRegExp(OWNED_LAUNCHER_MARKER)}\\nexport OPENCLAW_STATE_DIR=${quotedValue}\\n(?:export OPENCLAW_CONFIG_PATH=${quotedValue}\\n)?exec ${command}${profileArgument} "\\$@"\\n$`,
     "u",
   );
   // Decode only shellQuote's two target words after the entire ownership grammar matches.
@@ -205,6 +209,7 @@ async function resolveLauncherInstall(params: {
   pluginRoot: string;
   extensionIds: string[];
   deps: ExtensionInstallDeps;
+  browserProfile?: string;
 }): Promise<{ path: string; content: string }> {
   const launcherPath = launcherPathForManifest(params.manifestPath, params.deps);
   const nodePath = await fs.realpath(params.deps.nodePath ?? process.execPath);
@@ -223,6 +228,9 @@ async function resolveLauncherInstall(params: {
       origin,
     ]),
   ];
+  if (params.browserProfile) {
+    command.push("--browser-profile", params.browserProfile);
+  }
   const configPath = resolveInstallConfigPath(params.deps);
   return {
     path: launcherPath,
@@ -342,6 +350,8 @@ async function installRegistration(params: {
   extensionIds: string[];
   pluginRoot: string;
   deps: ExtensionInstallDeps;
+  browserProfile?: string;
+  signal?: AbortSignal;
 }): Promise<NativeHostRegistrationStatus> {
   const { root, extensionIds, deps } = params;
   const manifestPath = path.join(root.nativeManifestDir, `${BROWSER_NATIVE_HOST_NAME}.json`);
@@ -358,13 +368,16 @@ async function installRegistration(params: {
   ) {
     throw new Error(`Refusing to overwrite owned native host with unexpected allowed origins`);
   }
+  params.signal?.throwIfAborted();
   await ensurePrivateDirectory(nativeMessagingRoot(deps));
+  params.signal?.throwIfAborted();
   await ensurePrivateDirectory(root.nativeManifestDir);
   const launcher = await resolveLauncherInstall({
     manifestPath,
     pluginRoot: params.pluginRoot,
     extensionIds,
     deps,
+    browserProfile: params.browserProfile,
   });
   const launcherPath = launcher.path;
   if (await pathInfo(launcherPath)) {
@@ -374,11 +387,14 @@ async function installRegistration(params: {
       throw new Error(`Refusing to overwrite foreign native host launcher: ${launcherPath}`);
     }
     if (existingLauncher !== launcher.content) {
+      params.signal?.throwIfAborted();
       await replaceFileAtomic({ filePath: launcherPath, content: launcher.content, mode: 0o700 });
     }
   } else {
+    params.signal?.throwIfAborted();
     await fs.writeFile(launcherPath, launcher.content, { mode: 0o700, flag: "wx" });
   }
+  params.signal?.throwIfAborted();
   if (process.platform !== "win32") {
     await fs.chmod(launcherPath, 0o700);
   }
@@ -389,6 +405,7 @@ async function installRegistration(params: {
     type: "stdio",
     allowed_origins: expectedOriginsForExtensionIds(extensionIds),
   };
+  params.signal?.throwIfAborted();
   await replaceFileAtomic({
     filePath: manifestPath,
     content: `${JSON.stringify(manifest, null, 2)}\n`,
@@ -433,9 +450,12 @@ export async function installChromeExtensionBootstrap(params: {
   requestStoreInstall?: boolean;
   deps?: ExtensionInstallDeps;
   onProgress?: (message: string) => void;
+  signal?: AbortSignal;
+  browserProfile?: string;
 }): Promise<BrowserExtensionStatus> {
   const deps = params.deps ?? {};
   const platform = deps.platform ?? process.platform;
+  params.signal?.throwIfAborted();
   const installed = await installStableChromeExtension(params.bundledDir, deps);
   if (platform === "win32") {
     return await browserExtensionStatus({ bundledDir: params.bundledDir, deps });
@@ -449,26 +469,32 @@ export async function installChromeExtensionBootstrap(params: {
   const preRegistrationIssues: string[] = [];
   let preRegisteredRoots = 0;
   for (const root of chromeProductRoots(deps)) {
+    params.signal?.throwIfAborted();
     if (!(await pathInfo(root.userDataDir))) {
       continue;
     }
     try {
       await assertOwnedPath(root.userDataDir, "directory");
+      params.signal?.throwIfAborted();
       await installRegistration({
         root,
         extensionIds: predictedIds,
         pluginRoot: params.pluginRoot,
         deps,
+        browserProfile: params.browserProfile,
+        signal: params.signal,
       });
       preRegisteredRoots += 1;
       params.onProgress?.(`Pre-registered the native host for ${root.label}.`);
     } catch (error) {
+      params.signal?.throwIfAborted();
       preRegistrationIssues.push(
         `${root.label}: native host pre-registration refused (${error instanceof Error ? error.message : String(error)})`,
       );
       continue;
     }
     try {
+      params.signal?.throwIfAborted();
       const request =
         params.requestStoreInstall === false
           ? undefined
@@ -479,6 +505,7 @@ export async function installChromeExtensionBootstrap(params: {
         );
       }
     } catch (error) {
+      params.signal?.throwIfAborted();
       preRegistrationIssues.push(
         `${root.label}: Store installation request refused (${error instanceof Error ? error.message : String(error)}). Add OpenClaw directly: ${FOUNDATION_CHROME_WEB_STORE_URL}`,
       );
@@ -517,7 +544,9 @@ export async function installChromeExtensionBootstrap(params: {
       params.onProgress?.("Waiting for Chrome to verify the OpenClaw extension…");
       announcedWait = true;
     }
+    params.signal?.throwIfAborted();
     await sleep(Math.min(500, Math.max(1, deadline - now())));
+    params.signal?.throwIfAborted();
     discovery = await discoverChromeExtensionIds({
       approvedDirs: approvedPaths,
       storeExtensionId: FOUNDATION_CHROME_WEB_STORE_EXTENSION_ID,

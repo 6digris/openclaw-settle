@@ -139,6 +139,9 @@ The macOS app exposes the same capability under **Dashboard → Settings → Thi
 
 ```bash
 openclaw browser extension path
+openclaw browser extension setup --action inspect --json
+openclaw browser extension setup --action install --json
+openclaw browser extension setup --action verify --browser-profile chrome --json
 openclaw browser extension install
 openclaw browser extension install --no-store
 openclaw browser extension install --json --wait-ms 60000
@@ -152,6 +155,12 @@ openclaw browser extension cdp
 openclaw browser extension cdp --json
 ```
 
+- `extension setup` is the shared host-local controller for CLI, TUI, and native
+  desktop adapters. `inspect` is read-only installation discovery, `install`
+  prepares native bootstrap, and `verify` authenticates the selected local relay.
+  Its redacted JSON separates preparation, Chrome approval, and connection.
+  Valid pending/blocked states exit 0; execution failures exit nonzero. It never
+  treats a remote dashboard or SSH loopback URL as proof of a local browser host.
 - `extension install` pre-registers the origin-locked native bootstrap host in
   existing Chrome-family user-data roots. On macOS, it then requests the official
   Store installation in Google Chrome for all profiles in its user-data directory.

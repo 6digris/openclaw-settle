@@ -1,6 +1,7 @@
 /* @vitest-environment jsdom */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { createChromeExtensionSetupResult } from "../test-helpers/chrome-extension-setup.ts";
 import {
   createIosNativeDeviceSettingsSnapshot,
   createNativeDeviceSettingsSnapshot,
@@ -29,16 +30,38 @@ function publish(detail: unknown) {
 }
 
 describe("native device settings wire contract", () => {
-  it("validates setup results and forwards an explicit parameter-free installation action", async () => {
+  it.each(["inspect", "install", "verify"] as const)(
+    "forwards only the explicit %s action and validates its host-bound result",
+    async (action) => {
+      const post = installBridge();
+      const result = createChromeExtensionSetupResult({ action });
+      post.mockResolvedValueOnce({ ...result, privatePath: "not forwarded" });
+      await expect(capability!.setupChromeExtension(action)).resolves.toEqual(result);
+      expect(post).toHaveBeenLastCalledWith({ type: "chrome-extension-setup", action });
+      for (const invalid of [
+        { ...result, action: "other" },
+        { ...result, target: { ...result.target, kind: "remote-host" } },
+        { ...result, target: { ...result.target, relayPort: 0 } },
+        { ...result, installation: { ...result.installation, discoveredProfiles: -1 } },
+        { ...result, reason: "raw failure with private details" },
+      ]) {
+        post.mockResolvedValueOnce(invalid);
+        await expect(capability!.setupChromeExtension(action)).rejects.toThrow("invalid result");
+      }
+      post.mockRejectedValueOnce(new Error("CLI unavailable"));
+      await expect(capability!.setupChromeExtension(action)).rejects.toThrow("CLI unavailable");
+    },
+  );
+
+  it("rejects setup completion after the document capability is disposed", async () => {
     const post = installBridge();
-    const result = { nativeHostRegistered: true, installRequested: true, discoveredProfiles: 0 };
-    post.mockResolvedValueOnce(result);
-    await expect(capability!.installChromeExtension()).resolves.toEqual(result);
-    expect(post).toHaveBeenLastCalledWith({ type: "install-chrome-extension" });
-    post.mockResolvedValueOnce({ ...result, discoveredProfiles: -1 });
-    await expect(capability!.installChromeExtension()).rejects.toThrow("invalid result");
-    post.mockRejectedValueOnce(new Error("CLI unavailable"));
-    await expect(capability!.installChromeExtension()).rejects.toThrow("CLI unavailable");
+    const pending = createDeferred<unknown>();
+    post.mockReturnValueOnce(pending.promise);
+    const response = capability!.setupChromeExtension("verify");
+    const rejected = expect(response).rejects.toThrow("invalid result");
+    capability!.dispose();
+    pending.resolve(createChromeExtensionSetupResult({ action: "verify" }));
+    await rejected;
   });
   it("exists only with the native message handler and reads the document-start snapshot", () => {
     vi.stubGlobal("webkit", undefined);

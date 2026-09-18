@@ -130,6 +130,10 @@ public enum DeviceSettingsLocationMode: String, CaseIterable, Encodable, Sendabl
     }
 }
 
+public enum ChromeExtensionSetupAction: String, Codable, CaseIterable, Sendable {
+    case inspect, install, verify
+}
+
 public enum DeviceSettingsRequest: Equatable, Sendable {
     case status
     case set(DeviceSettingKey, DeviceSettingValue)
@@ -137,7 +141,7 @@ public enum DeviceSettingsRequest: Equatable, Sendable {
     case openSystemSettings(DeviceSettingsPermission)
     case open(DeviceSettingsPanel)
     case checkForUpdates
-    case installChromeExtension
+    case chromeExtensionSetup(ChromeExtensionSetupAction)
 
     public init?(body: Any) {
         guard let payload = body as? [String: Any], let type = payload["type"] as? String else { return nil }
@@ -157,9 +161,10 @@ public enum DeviceSettingsRequest: Equatable, Sendable {
             else { return nil }
             self = .open(panel)
         case "check-for-updates": self = .checkForUpdates
-        case "install-chrome-extension":
-            guard payload.count == 1 else { return nil }
-            self = .installChromeExtension
+        case "chrome-extension-setup":
+            guard payload.count == 2, let rawAction = payload["action"] as? String,
+                  let action = ChromeExtensionSetupAction(rawValue: rawAction) else { return nil }
+            self = .chromeExtensionSetup(action)
         default: return nil
         }
     }

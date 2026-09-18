@@ -1,4 +1,10 @@
 import { z } from "zod";
+import {
+  nativeChromeExtensionSetupActionSchema,
+  nativeChromeExtensionSetupResultSchema,
+  type NativeChromeExtensionSetupAction,
+  type NativeChromeExtensionSetupResult,
+} from "./native-chrome-setup.ts";
 
 const permissionIdSchema = z.enum([
   "notifications",
@@ -187,16 +193,7 @@ type NativeDeviceSettingsMessage =
   | { type: "open-system-settings"; id: PermissionId }
   | { type: "open"; panel: NativePanel }
   | { type: "check-for-updates" }
-  | { type: "install-chrome-extension" };
-
-const nativeChromeExtensionSetupResultSchema = z.object({
-  nativeHostRegistered: z.boolean(),
-  installRequested: z.boolean(),
-  discoveredProfiles: z.number().int().nonnegative(),
-});
-export type NativeChromeExtensionSetupResult = z.infer<
-  typeof nativeChromeExtensionSetupResultSchema
->;
+  | { type: "chrome-extension-setup"; action: NativeChromeExtensionSetupAction };
 
 export type NativeDeviceSettingsCapability = {
   readonly snapshot: NativeDeviceSettingsSnapshot | null;
@@ -206,7 +203,9 @@ export type NativeDeviceSettingsCapability = {
   openSystemSettings(id: PermissionId): void;
   openPanel(panel: NativePanel): void;
   checkForUpdates(): void;
-  installChromeExtension(): Promise<NativeChromeExtensionSetupResult>;
+  setupChromeExtension(
+    action: NativeChromeExtensionSetupAction,
+  ): Promise<NativeChromeExtensionSetupResult>;
   refresh(): void;
   dispose(): void;
 };
@@ -295,13 +294,19 @@ export function createNativeDeviceSettingsCapability(): NativeDeviceSettingsCapa
     openSystemSettings: (id) => void send({ type: "open-system-settings", id }),
     openPanel: (panel) => void send({ type: "open", panel }),
     checkForUpdates: () => void send({ type: "check-for-updates" }),
-    async installChromeExtension() {
+    async setupChromeExtension(action) {
       if (disposed) {
         throw new Error("Native device settings is unavailable");
       }
-      const reply = await post({ type: "install-chrome-extension" });
+      const validatedAction = nativeChromeExtensionSetupActionSchema.parse(action);
+      const reply = await post({ type: "chrome-extension-setup", action: validatedAction });
       const result = nativeChromeExtensionSetupResultSchema.safeParse(reply);
-      if (disposed || !result.success) {
+      if (
+        disposed ||
+        !result.success ||
+        result.data.action !== action ||
+        result.data.target.platform !== "darwin"
+      ) {
         throw new Error("Native Chrome setup returned an invalid result");
       }
       return result.data;
