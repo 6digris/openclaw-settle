@@ -76,7 +76,7 @@ export function createPluginServiceGatewayEvents({
   };
 }
 
-export function subscribePluginSessionsChanged(
+function subscribePluginSessionsChanged(
   handler: (event: OpenClawPluginSessionsChangedEvent) => void,
 ): () => void {
   const subscription: SessionsChangedHandler = (event) => handler(event);
