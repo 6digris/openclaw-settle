@@ -34,6 +34,7 @@ import ai.openclaw.app.chat.ChatSubagentActivity
 import ai.openclaw.app.chat.ChatThinkingLevelOption
 import ai.openclaw.app.chat.ChatThinkingLevelSelection
 import ai.openclaw.app.chat.ChatToolActivity
+import ai.openclaw.app.chat.ChatToolKind
 import ai.openclaw.app.chat.ChatTranscriptAnchorState
 import ai.openclaw.app.chat.ChatWidgetResource
 import ai.openclaw.app.chat.MessageSpeechPhase
@@ -41,6 +42,7 @@ import ai.openclaw.app.chat.MessageSpeechState
 import ai.openclaw.app.chat.SessionBranch
 import ai.openclaw.app.chat.VoiceNoteRecorderState
 import ai.openclaw.app.chat.chatOutboxQueueFailureText
+import ai.openclaw.app.chat.chatToolKind
 import ai.openclaw.app.chat.isTranscriptOnlyOpenClawAssistant
 import ai.openclaw.app.chat.questionsForSession
 import ai.openclaw.app.chat.resolveChatComposerOwner
@@ -1052,18 +1054,7 @@ internal fun ChatScreen(
     },
   ) { onJumpToLatest, compactHeight, tabletop ->
     ChatComposer(
-      callCard = chatTalkCall?.takeIf { talkModeEnabled }?.let { call ->
-        { openDetails ->
-          key(call.start) {
-            ChatCallCard(
-              viewModel = viewModel,
-              call = call,
-              photoOwnerReady = composerOwnerReady && composerOwner == call.start.owner,
-              onOpenDetails = openDetails,
-            )
-          }
-        }
-      },
+      chatCallActive = chatTalkCall != null,
       ownerReady = composerOwnerReady,
       compactHeight = compactHeight,
       detailsExpanded = detailsExpanded,
@@ -2485,7 +2476,7 @@ private fun CompletedToolActivity(
     )
     return
   }
-  if (tools.all { completedToolKind(it.name) == CompletedToolKind.Progress }) {
+  if (tools.all { chatToolKind(it.name) == ChatToolKind.Progress }) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
       tools.forEach { ProgressToolReceipt(it) }
     }
@@ -2603,12 +2594,12 @@ private fun CompletedToolActivityItem(
   saveableKey: String,
   parentStableKey: String,
 ) {
-  if (completedToolKind(tool.name) == CompletedToolKind.Progress) {
+  if (chatToolKind(tool.name) == ChatToolKind.Progress) {
     ProgressToolReceipt(tool)
     return
   }
   var expanded by rememberSaveable(parentStableKey, saveableKey) { mutableStateOf(false) }
-  val kind = completedToolKind(tool.name)
+  val kind = chatToolKind(tool.name)
   val resultPresentation = completedToolResultPresentation(tool)
   val preview =
     tool.detail
@@ -2616,7 +2607,7 @@ private fun CompletedToolActivityItem(
       ?.firstOrNull { it.isNotBlank() }
       ?.trim()
   val summary =
-    if (kind == CompletedToolKind.Command) {
+    if (kind == ChatToolKind.Command) {
       completedCommandText(tool).orEmpty()
     } else {
       val name = completedToolDisplayName(tool.name)
@@ -2649,10 +2640,10 @@ private fun CompletedToolActivityItem(
         Icon(
           imageVector =
             when (kind) {
-              CompletedToolKind.Command -> Icons.Default.Terminal
-              CompletedToolKind.Read -> Icons.Default.Description
-              CompletedToolKind.Edit, CompletedToolKind.Write -> Icons.Default.Edit
-              CompletedToolKind.Search, CompletedToolKind.Fetch -> Icons.Default.Search
+              ChatToolKind.Command -> Icons.Default.Terminal
+              ChatToolKind.Read -> Icons.Default.Description
+              ChatToolKind.Edit, ChatToolKind.Write -> Icons.Default.Edit
+              ChatToolKind.Search, ChatToolKind.Fetch -> Icons.Default.Search
               else -> Icons.AutoMirrored.Filled.List
             },
           contentDescription = null,
@@ -2663,7 +2654,7 @@ private fun CompletedToolActivityItem(
           modifier = Modifier.weight(1f),
           horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-          if (kind == CompletedToolKind.Command) {
+          if (kind == ChatToolKind.Command) {
             Text(
               text = nativeString("\$"),
               modifier = Modifier.alignByBaseline().padding(end = 2.dp),
@@ -2690,7 +2681,7 @@ private fun CompletedToolActivityItem(
         }
       }
     }
-    if (expanded && kind == CompletedToolKind.Command) {
+    if (expanded && kind == ChatToolKind.Command) {
       CompletedCommandOutput(tool)
     } else if (expanded) {
       tool.detail?.let { detail ->
@@ -3187,7 +3178,7 @@ private fun minimumChatInputHeight(): Dp {
 
 @Composable
 private fun ChatComposer(
-  callCard: (@Composable (onOpenDetails: () -> Unit) -> Unit)?,
+  chatCallActive: Boolean,
   ownerReady: Boolean,
   compactHeight: Boolean,
   detailsExpanded: Boolean,
@@ -3253,7 +3244,7 @@ private fun ChatComposer(
   val sendEnabled =
     chatComposerSendEnabled(
       voiceNoteState = voiceNoteState,
-      talkActive = talkActive && callCard == null,
+      talkActive = talkActive && !chatCallActive,
       hasContent = hasContent,
       shareStaging = shareStaging,
       sendInFlight = sendInFlight,
@@ -3301,7 +3292,6 @@ private fun ChatComposer(
     if (attachments.isNotEmpty()) {
       AttachmentStrip(attachments = attachments, onRemoveAttachment = onRemoveAttachment)
     }
-    callCard?.invoke { onDetailsExpandedChange(true) }
 
     if (shouldShowSlashCommandMenu(value)) {
       SlashCommandPanel(
@@ -3335,15 +3325,17 @@ private fun ChatComposer(
     val inputHeightLimit =
       when {
         // Reserve a usable text/action row; the existing auxiliary scroller owns card/preview overflow.
-        callCard != null -> minOf(minimumChatInputHeight(), maxHeight)
+        chatCallActive -> minOf(minimumChatInputHeight(), maxHeight)
+
         compactHeight -> maxHeight
+
         else -> maxOf(minimumChatInputHeight(), maxHeight - ClawTheme.spacing.touchTarget)
       }
     Column(
       modifier = if (detailsExpanded) Modifier.clearAndSetSemantics {} else Modifier,
-      verticalArrangement = Arrangement.spacedBy(if (attachedProgress && callCard == null && !compactHeight && !detailsExpanded) (-18).dp else 4.dp),
+      verticalArrangement = Arrangement.spacedBy(if (attachedProgress && !chatCallActive && !compactHeight && !detailsExpanded) (-18).dp else 4.dp),
     ) {
-      if ((!compactHeight || callCard != null) && !detailsExpanded) {
+      if ((!compactHeight || chatCallActive) && !detailsExpanded) {
         BoxWithConstraints(Modifier.weight(1f, fill = false)) {
           val auxiliaryHeight = maxHeight
           Column(
@@ -3384,8 +3376,8 @@ private fun ChatComposer(
             dictationEnabled = ownerReady && dictationEnabled,
             onToggleDictation = onToggleDictation,
             talkActive = talkActive,
-            allowSendDuringTalk = callCard != null,
-            onToggleTalk = { if (ownerReady) onToggleTalk() },
+            allowSendDuringTalk = chatCallActive,
+            onToggleTalk = { if (talkActive || ownerReady) onToggleTalk() },
             runActive = pendingRunCount > 0,
             onAbort = onAbort,
             hasContent = hasContent,
@@ -4669,7 +4661,7 @@ private fun LiveTalkButton(
   active: Boolean,
   onClick: () -> Unit,
 ) {
-  val buttonDescription = if (active) nativeString("End Talk") else nativeString("Start Talk")
+  val buttonDescription = if (active) nativeString("Return to conversation") else nativeString("Start Talk")
   Surface(
     onClick = onClick,
     modifier =
@@ -4738,13 +4730,25 @@ private fun LiveTalkWaveform(
 }
 
 @Composable
-private fun AttachmentStrip(
+internal fun AttachmentStrip(
   attachments: List<PendingAttachment>,
   onRemoveAttachment: (String) -> Unit,
 ) {
-  Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-    attachments.forEach { attachment ->
-      AttachmentChip(attachment = attachment, onRemove = { onRemoveAttachment(attachment.id) })
+  BoxWithConstraints(Modifier.fillMaxWidth()) {
+    val availableWidth = maxWidth
+    Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+      attachments.forEach { attachment ->
+        if (attachment.mimeType.startsWith("image/")) {
+          Column(modifier = Modifier.width(minOf(160.dp, availableWidth)), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            ChatBase64Image(base64 = attachment.base64, mimeType = attachment.mimeType)
+            AttachmentChip(attachment = attachment, onRemove = { onRemoveAttachment(attachment.id) }, modifier = Modifier.fillMaxWidth())
+          }
+        } else {
+          // The scroller measures children with infinite width. Restore the actual
+          // viewport bound before allocating filename space; short chips still wrap.
+          AttachmentChip(attachment = attachment, onRemove = { onRemoveAttachment(attachment.id) }, modifier = Modifier.widthIn(max = availableWidth))
+        }
+      }
     }
   }
 }
@@ -4753,12 +4757,14 @@ private fun AttachmentStrip(
 private fun AttachmentChip(
   attachment: PendingAttachment,
   onRemove: () -> Unit,
+  modifier: Modifier = Modifier,
 ) {
   val videoThumbnail =
     remember(attachment.videoThumbnailBase64) {
       attachment.videoThumbnailBase64?.let(::decodeBase64Bitmap)
     }
   Surface(
+    modifier = modifier,
     shape = RoundedCornerShape(ClawTheme.radii.pill),
     color = ClawTheme.colors.surfaceRaised,
     contentColor = ClawTheme.colors.text,
@@ -4787,6 +4793,7 @@ private fun AttachmentChip(
         text =
           attachment.durationMs?.let { duration -> nativeString("Voice note · \${formatVoiceNoteDuration(duration)}", formatVoiceNoteDuration(duration)) }
             ?: attachment.fileName,
+        modifier = Modifier.weight(1f, fill = false),
         style = ClawTheme.type.caption,
         color = ClawTheme.colors.textMuted,
         maxLines = 1,

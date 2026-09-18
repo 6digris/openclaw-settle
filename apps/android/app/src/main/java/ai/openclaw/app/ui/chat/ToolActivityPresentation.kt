@@ -1,25 +1,13 @@
 package ai.openclaw.app.ui.chat
 
 import ai.openclaw.app.chat.ChatToolActivity
+import ai.openclaw.app.chat.ChatToolKind
+import ai.openclaw.app.chat.chatToolKind
 import ai.openclaw.app.i18n.nativeString
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
-
-internal enum class CompletedToolKind { Command, Read, Edit, Write, Search, Fetch, Progress, Other }
-
-internal fun completedToolKind(name: String): CompletedToolKind =
-  when (name.trim().lowercase()) {
-    "bash", "exec", "shell", "run_command", "run_terminal_cmd", "terminal", "exec_command" -> CompletedToolKind.Command
-    "read", "read_file", "readfile", "notebookread", "notebook_read" -> CompletedToolKind.Read
-    "edit", "edit_file", "multiedit", "multi_edit", "apply_patch", "applypatch", "patch" -> CompletedToolKind.Edit
-    "write", "write_file", "create_file" -> CompletedToolKind.Write
-    "grep", "find", "glob", "ls", "list", "codebase_search" -> CompletedToolKind.Search
-    "web_fetch", "webfetch", "fetch" -> CompletedToolKind.Fetch
-    "progress_card" -> CompletedToolKind.Progress
-    else -> CompletedToolKind.Other
-  }
 
 internal fun completedToolDisplayName(name: String): String =
   when (name.trim().lowercase()) {
@@ -30,23 +18,23 @@ internal fun completedToolDisplayName(name: String): String =
 
 internal fun completedToolGroupSummary(tools: List<ChatToolActivity>): String {
   val segments = mutableListOf<String>()
-  val counts = mutableMapOf<CompletedToolKind, Int>()
+  val counts = mutableMapOf<ChatToolKind, Int>()
   val others = mutableListOf<ChatToolActivity>()
   tools.forEach { tool ->
-    val kind = completedToolKind(tool.name)
+    val kind = chatToolKind(tool.name)
     counts[kind] = (counts[kind] ?: 0) + 1
-    if (kind == CompletedToolKind.Progress || kind == CompletedToolKind.Other) others += tool
+    if (kind == ChatToolKind.Progress || kind == ChatToolKind.Other) others += tool
   }
 
-  fun count(kind: CompletedToolKind) = counts[kind] ?: 0
-  val commands = count(CompletedToolKind.Command)
+  fun count(kind: ChatToolKind) = counts[kind] ?: 0
+  val commands = count(ChatToolKind.Command)
   if (commands > 0) segments += if (commands == 1) nativeString("ran a command") else nativeString("ran \$count commands", commands)
   listOf(
-    CompletedToolKind.Read to (nativeString("read a file") to { count: Int -> nativeString("read \$count files", count) }),
-    CompletedToolKind.Edit to (nativeString("edited a file") to { count: Int -> nativeString("edited \$count files", count) }),
-    CompletedToolKind.Write to (nativeString("created a file") to { count: Int -> nativeString("created \$count files", count) }),
-    CompletedToolKind.Search to (nativeString("ran a search") to { count: Int -> nativeString("ran \$count searches", count) }),
-    CompletedToolKind.Fetch to (nativeString("fetched a page") to { count: Int -> nativeString("fetched \$count pages", count) }),
+    ChatToolKind.Read to (nativeString("read a file") to { count: Int -> nativeString("read \$count files", count) }),
+    ChatToolKind.Edit to (nativeString("edited a file") to { count: Int -> nativeString("edited \$count files", count) }),
+    ChatToolKind.Write to (nativeString("created a file") to { count: Int -> nativeString("created \$count files", count) }),
+    ChatToolKind.Search to (nativeString("ran a search") to { count: Int -> nativeString("ran \$count searches", count) }),
+    ChatToolKind.Fetch to (nativeString("fetched a page") to { count: Int -> nativeString("fetched \$count pages", count) }),
   ).forEach { (kind, labels) ->
     val amount = count(kind)
     if (amount > 0) segments += if (amount == 1) labels.first else labels.second(amount)
@@ -99,7 +87,7 @@ internal data class CompletedToolResultPresentation(
 internal fun completedToolResultPresentation(tool: ChatToolActivity): CompletedToolResultPresentation {
   val result = tool.result?.takeIf { it.isNotBlank() }
   val hasDetail =
-    if (completedToolKind(tool.name) == CompletedToolKind.Command) {
+    if (chatToolKind(tool.name) == ChatToolKind.Command) {
       completedCommandText(tool, singleLine = false)?.isNotBlank() == true
     } else {
       tool.detail?.isNotBlank() == true

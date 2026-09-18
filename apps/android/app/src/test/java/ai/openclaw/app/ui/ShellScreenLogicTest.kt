@@ -156,6 +156,24 @@ class ShellScreenLogicTest {
   }
 
   @Test
+  fun conversationIsTransientAndBackReturnsToChatWithoutAnotherDestination() {
+    val nav = ShellNavigation()
+    nav.openConversation()
+    assertTrue(nav.conversationOpen)
+    assertEquals(Tab.Chat, nav.activeTab)
+    val saved = with(ShellNavigation.Saver) { SaverScope { true }.save(nav) }!!
+    val restored = ShellNavigation.Saver.restore(saved)!!
+    assertFalse(restored.conversationOpen)
+    assertEquals(Tab.Chat, restored.activeTab)
+    nav.back()
+    assertFalse(nav.conversationOpen)
+    assertEquals(Tab.Chat, nav.activeTab)
+    nav.openConversation()
+    nav.openSettingsRoute(SettingsRoute.Voice)
+    assertFalse(nav.conversationOpen)
+  }
+
+  @Test
   fun shellNavigationSaverRoundTripsCrossTabState() {
     val nav = ShellNavigation()
     nav.selectTab(Tab.Chat)

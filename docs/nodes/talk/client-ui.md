@@ -37,6 +37,20 @@ Watch background behavior. See [Watch setup and limits](/platforms/ios#standalon
   lives in the Chat composer rather than a separate Voice tab.
 - Tap the composer microphone for on-device dictation. Long-press it to record
   a voice-note attachment. Start continuous Talk from the Talk waveform.
+- Talk opens a dedicated conversation page with the existing animated mascot.
+  Its speaking mouth follows audio playback, not text generation. Tapping Talk
+  during a call returns to that page without starting another call. **Go to chat**
+  opens the call's original agent/session; Android Back changes only the view.
+  **End** closes audio and is separate from the chat agent's **Stop** action.
+- **Photo** captures a still image using the selected **Selfie** or **Rear**
+  camera. The image stays in the original chat's attachment preview. Use
+  **Go to chat** and the normal **Send** action to submit it; capture never sends
+  automatically. Camera capture remains foreground-only and permission-gated.
+- Reading, writing/editing, searching, tool work, approvals, and input waits use
+  Gateway events for the call's original conversation, including work not started
+  by the current voice request. They do not follow another selected chat. Missing
+  or interrupted observation is marked incomplete rather than guessed as idle.
+  Observation alone does not create another spoken reply or chat turn.
 - Dictation, voice-note recording, and Talk are mutually exclusive microphone
   paths; starting one stops or blocks the others.
 - Realtime Talk prefers a connected Bluetooth Classic or BLE headset
@@ -54,12 +68,18 @@ Watch background behavior. See [Watch setup and limits](/platforms/ios#standalon
 - Losing audio focus or encountering a playback-device failure ends realtime
   Talk with an error. Interruption clears queued output before capture resumes;
   stopped sessions cannot acknowledge playback through a replacement Gateway.
-- Realtime **Thinking** follows provider response generation or an accepted
-  OpenClaw consult, not input transcription, which may finish after the answer.
+- Realtime **Thinking** follows provider response generation, an accepted
+  OpenClaw consult, or matching original-conversation work—not input transcription,
+  which may finish after the answer.
   Direct replies without a provider or Gateway response-start signal stay
   **Listening** until output arrives. Empty completed responses return to **Listening**;
   buffered audio stays **Speaking** until playback drains.
 - Dictation and voice-note recording stop when the app leaves the foreground or
   the user leaves Chat.
-- Talk Mode keeps running until toggled off or the node disconnects, using Android's microphone foreground-service type while active.
+- An admitted, foreground-started Chat call retains Android's microphone
+  foreground service when navigating away, switching apps, or locking the screen.
+  Pending startup, generic Talk, and push-to-talk do not acquire that exception.
+  Connection or microphone-permission loss ends the call; reconnecting does not
+  restart it. Physical-device background/lock-screen verification is still
+  required, and this is not a guarantee for every manufacturer's power policy.
 - Android supports `pcm_16000`, `pcm_22050`, `pcm_24000`, and `pcm_44100` output formats for low-latency `AudioTrack` streaming.

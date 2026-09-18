@@ -68,6 +68,7 @@ import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.platform.AbstractComposeView
@@ -189,6 +190,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import org.robolectric.shadows.ShadowDialog
 import org.robolectric.shadows.ShadowSpeechRecognizer
+import java.io.File
 import java.io.IOException
 import java.util.Base64
 import java.util.UUID
@@ -3934,6 +3936,49 @@ class ChatComposerLayoutTest {
   }
 
   @Test
+  fun longAttachmentNamesKeepRemoveVisibleAtLargeFont() {
+    val model = showChat(viewportWidth = 320.dp, viewportHeight = { 720.dp }, fontScale = { 2f })
+    val owner = model.captureChatShareOwner()
+    val otherOwner = owner.copy(sessionKey = owner.sessionKey + "-other")
+    val originalMessages = model.chatMessages.value
+    val originalOutbox = model.chatOutboxItems.value
+    val longName = "A very long captured attachment name that must leave the remove action usable"
+    for (mimeType in listOf("image/jpeg", "audio/wav", "video/mp4", "text/plain")) {
+      val attachment = PendingAttachment("shared-id", longName, mimeType, syntheticChatPhotoBase64())
+      composeRule.runOnIdle {
+        model.chatComposerState.textDrafts[owner] = "Keep this unsent caption"
+        model.chatComposerState.replaceAttachments(owner, listOf(attachment))
+        model.chatComposerState.replaceAttachments(otherOwner, listOf(attachment))
+      }
+      captureTalkAttachmentProof("attachment-" + mimeType.substringBefore("/"))
+      val remove = composeRule.onNodeWithContentDescription(nativeString("Remove attachment"))
+      remove.performScrollTo().assertIsDisplayed().assertIsEnabled()
+      val button = remove.getUnclippedBoundsInRoot()
+      val viewport = composeRule.onNodeWithTag("chat-viewport").getUnclippedBoundsInRoot()
+      assertTrue("Remove must retain its 48dp target for $mimeType: $button", button.right - button.left >= 48.dp && button.bottom - button.top >= 48.dp)
+      assertTrue("Remove must fit inside the viewport for $mimeType: $button / $viewport", button.left >= viewport.left && button.right <= viewport.right)
+      val layouts = mutableListOf<TextLayoutResult>()
+      composeRule.onNodeWithText(longName, useUnmergedTree = true).performSemanticsAction(SemanticsActions.GetTextLayoutResult) { action -> assertTrue(action(layouts)) }
+      assertTrue("Long filename should ellipsize rather than consume Remove's space", layouts.single().isLineEllipsized(0))
+      remove.performClick()
+      composeRule.runOnIdle {
+        assertTrue(
+          model.chatComposerState.attachments.value[owner]
+            .isNullOrEmpty(),
+        )
+        assertEquals(listOf(attachment), model.chatComposerState.attachments.value[otherOwner])
+        assertEquals("Keep this unsent caption", model.chatComposerState.textDrafts[owner])
+        assertEquals(originalMessages, model.chatMessages.value)
+        assertEquals(originalOutbox, model.chatOutboxItems.value)
+        assertTrue(
+          model.chatComposerState.sendStates.value
+            .isEmpty(),
+        )
+      }
+    }
+  }
+
+  @Test
   fun pickerImportKeepsSendDisabledUntilCaptionAndAttachmentAreReady() {
     val caption = "Caption for the picked note"
     withDeferredPickerAttachment(caption) { model, attachment, release ->
@@ -4858,6 +4903,17 @@ class ChatComposerLayoutTest {
     )
   }
 
+  private fun captureTalkAttachmentProof(name: String) {
+    val directory = System.getenv("OPENCLAW_TALK_PROOF_DIR") ?: return
+    val folder = File(directory)
+    check(folder.isDirectory || folder.mkdirs())
+    val image = composeRule.onNodeWithTag("chat-viewport").captureToImage().asAndroidBitmap()
+    assertTrue("Capture the complete production ChatScreen", image.width > 0 && image.height > 0)
+    File(folder, "$name.png").outputStream().use { output ->
+      assertTrue(image.compress(Bitmap.CompressFormat.PNG, 100, output))
+    }
+  }
+
   private fun showChat(
     viewportWidth: Dp = 360.dp,
     viewportHeight: () -> Dp = { 400.dp },
@@ -4926,6 +4982,7 @@ class ChatComposerLayoutTest {
                       onOpenDashboard = {},
                       onOpenGatewaySettings = {},
                       onOpenProvidersModels = {},
+                      onOpenTalk = {},
                       tabletopPanes = panes,
                       features = features,
                     )
@@ -4973,7 +5030,7 @@ class ChatComposerLayoutTest {
     val editor = editorNode.getUnclippedBoundsInRoot()
     assertTrue("Editor must retain a visible line: $editor inside $viewport", editor.bottom > editor.top)
     val controls =
-      (listOf(primaryAction) + if (talkActive) listOf("End Talk") else emptyList()).map { label ->
+      (listOf(primaryAction) + if (talkActive) listOf("Return to conversation") else emptyList()).map { label ->
         composeRule.onNodeWithContentDescription(nativeString(label)).assertIsDisplayed().assertHasClickAction()
       } +
         listOf(

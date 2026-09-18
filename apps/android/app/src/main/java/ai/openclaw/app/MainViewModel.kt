@@ -75,6 +75,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 
@@ -646,6 +648,7 @@ class MainViewModel private constructor(
   val talkModeSpeaking: StateFlow<Boolean> = runtimeState(initial = false) { it.talkModeSpeaking }
   val talkAwaitingAgent: StateFlow<Boolean> = runtimeState(initial = false) { it.talkAwaitingAgent }
   val talkModeStatusText: StateFlow<String> = runtimeState(initial = "Off") { it.talkModeStatusText }
+  internal val talkCallPresentation: StateFlow<TalkModeManager.CallPresentation> = runtimeState(initial = TalkModeManager.CallPresentation()) { it.talkCallPresentation }
   internal val chatTalkCall: StateFlow<TalkModeManager.ChatCall?> = runtimeState(initial = null) { it.chatTalkCall }
 
   val chatSessionKey: StateFlow<String> = runtimeState(initial = "main") { it.chatSessionKey }
@@ -1236,19 +1239,44 @@ class MainViewModel private constructor(
     runtimeRef.value?.endChatTalk(start)
   }
 
+  internal fun returnToChatTalkOwner(start: TalkModeManager.ChatStart): Boolean {
+    val runtime = runtimeRef.value ?: return false
+    if (runtime.chatTalkCall.value?.start !== start || !start.lease.isCurrent()) return false
+    switchChatSession(start.owner.sessionKey, start.owner.agentId)
+    return true
+  }
+
+  internal fun captureTalkEndAction(generation: Long): () -> Unit {
+    val runtime = runtimeRef.value ?: return {}
+    val end = runtime.captureTalkEndAction(generation)
+    return { if (runtimeRef.value === runtime) end() }
+  }
+
+  internal fun removeChatTalkAttachment(
+    start: TalkModeManager.ChatStart,
+    id: String,
+  ) {
+    val runtime = runtimeRef.value ?: return
+    runtime.removeChatTalkAttachment(start) {
+      if (runtimeRef.value === runtime) chatComposerState.removeAttachments(start.owner, setOf(id))
+    }
+  }
+
   internal fun toggleChatTalkAudio(start: TalkModeManager.ChatStart) {
     runtimeRef.value?.toggleChatTalkAudio(start)
   }
 
   internal suspend fun stageChatTalkPhoto(
     start: TalkModeManager.ChatStart,
+    facing: String = "front",
     capturePhoto: suspend (runtime: NodeRuntime, isCurrent: () -> Boolean) -> CameraCaptureManager.Payload =
-      { runtime, isCurrent -> runtime.camera.snap(null, isCurrent = isCurrent) },
+      { runtime, isCurrent -> runtime.camera.snap(buildJsonObject { put("facing", JsonPrimitive(facing)) }.toString(), isCurrent = isCurrent) },
   ): NativeText {
     val runtime = runtimeRef.value ?: return nativeText("Call is no longer active.")
     val owner = start.owner
-    val authorization = chatComposerState.beginMediaAcquisition(owner)
-      ?: return nativeText("Return to the call's chat before taking a photo.")
+    val authorization =
+      chatComposerState.beginMediaAcquisition(owner)
+        ?: return nativeText("Return to the call's chat before taking a photo.")
     try {
       return runtime.stageChatTalkPhoto(
         start = start,

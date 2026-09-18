@@ -1,5 +1,6 @@
 package ai.openclaw.app.ui.chat
 
+import ai.openclaw.app.HomeDestination
 import ai.openclaw.app.MainViewModel
 import ai.openclaw.app.NodeApp
 import ai.openclaw.app.NodeRuntime
@@ -9,18 +10,18 @@ import ai.openclaw.app.bindNodeRuntimeTestFixture
 import ai.openclaw.app.chat.ChatComposerOwner
 import ai.openclaw.app.closeNodeRuntimeTestFixture
 import ai.openclaw.app.resolveAgentIdFromMainSessionKey
+import ai.openclaw.app.ui.ShellScreen
 import ai.openclaw.app.voice.TalkModeManager
 import android.Manifest
 import android.content.Context
+import android.provider.Settings
 import androidx.activity.compose.LocalActivityResultRegistryOwner
 import androidx.activity.result.ActivityResultRegistry
 import androidx.activity.result.ActivityResultRegistryOwner
 import androidx.activity.result.contract.ActivityResultContract
-import androidx.compose.material3.Button
-import androidx.compose.material3.Text
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.junit4.v2.createComposeRule
-import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performClick
 import androidx.core.app.ActivityOptionsCompat
 import androidx.lifecycle.SavedStateHandle
@@ -70,6 +71,7 @@ class ChatRealtimeTalkOwnershipTest {
   private lateinit var prefs: SecurePrefs
   private lateinit var gateway: ChatRealtimeTalkGatewayFixture
   private var previousRuntime: NodeRuntime? = null
+  private var previousAnimatorScale: String? = null
   private val models = ViewModelStore()
   private val gateways = mutableListOf<ChatRealtimeTalkGatewayFixture>()
   private val permissions = DeferredTalkPermissionRegistry()
@@ -80,6 +82,8 @@ class ChatRealtimeTalkOwnershipTest {
   fun setUp() {
     app = RuntimeEnvironment.getApplication() as NodeApp
     previousRuntime = app.peekRuntime()
+    previousAnimatorScale = Settings.Global.getString(app.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE)
+    Settings.Global.putFloat(app.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 0f)
     shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)
     gateway = ChatRealtimeTalkGatewayFixture().also(gateways::add)
     prefs = SecurePrefs(app, app.getSharedPreferences("talk-ownership-${UUID.randomUUID()}", Context.MODE_PRIVATE))
@@ -95,7 +99,10 @@ class ChatRealtimeTalkOwnershipTest {
     // canceled tasks drain during teardown without ever opening a microphone.
     val captureDispatcher =
       object : CoroutineDispatcher() {
-        override fun dispatch(context: CoroutineContext, block: Runnable) {
+        override fun dispatch(
+          context: CoroutineContext,
+          block: Runnable,
+        ) {
           captureTasks.add(block)
         }
       }
@@ -106,12 +113,12 @@ class ChatRealtimeTalkOwnershipTest {
       }
     composeRule.setContent {
       CompositionLocalProvider(LocalActivityResultRegistryOwner provides permissionOwner) {
-        val launch = rememberChatRealtimeTalkLauncher(model)
-        Button(onClick = launch) { Text("Start test Talk") }
+        ShellScreen(model)
       }
     }
     connect(gateway)
     selectChat(FIRST_CHAT)
+    composeRule.runOnIdle { model.requestHomeDestination(HomeDestination.Chat) }
   }
 
   @Test
@@ -120,15 +127,33 @@ class ChatRealtimeTalkOwnershipTest {
     startTalk()
     awaitCreate()
     val request = gateway.creates.single().request
-    val key = request.params.getValue("sessionKey").jsonPrimitive.content
+    val key =
+      request.params
+        .getValue("sessionKey")
+        .jsonPrimitive.content
     assertEquals(
       ChatComposerOwner(gateway.endpoint.stableId, "scout", FIRST_CHAT),
       ChatComposerOwner(gateway.endpoint.stableId, checkNotNull(resolveAgentIdFromMainSessionKey(key)), key),
     )
     assertEquals(FIRST_CHAT, runtime.chatSessionKey.value)
-    assertEquals("realtime", request.params.getValue("mode").jsonPrimitive.content)
-    assertEquals("gateway-relay", request.params.getValue("transport").jsonPrimitive.content)
-    assertEquals("agent-consult", request.params.getValue("brain").jsonPrimitive.content)
+    assertEquals(
+      "realtime",
+      request.params
+        .getValue("mode")
+        .jsonPrimitive.content,
+    )
+    assertEquals(
+      "gateway-relay",
+      request.params
+        .getValue("transport")
+        .jsonPrimitive.content,
+    )
+    assertEquals(
+      "agent-consult",
+      request.params
+        .getValue("brain")
+        .jsonPrimitive.content,
+    )
   }
 
   @Test
@@ -136,7 +161,32 @@ class ChatRealtimeTalkOwnershipTest {
     requestMicrophonePermission()
     grantMicrophonePermission()
     awaitCreate()
-    assertEquals(FIRST_CHAT, gateway.creates.single().request.params.getValue("sessionKey").jsonPrimitive.content)
+    assertEquals(
+      FIRST_CHAT,
+      gateway.creates
+        .single()
+        .request.params
+        .getValue("sessionKey")
+        .jsonPrimitive.content,
+    )
+  }
+
+  @Test
+  fun permissionResultSurvivesLeavingTheChatPageWithoutChangingItsOwner() {
+    requestMicrophonePermission()
+    composeRule.runOnIdle { model.requestHomeDestination(HomeDestination.Settings) }
+    composeRule.waitForIdle()
+    grantMicrophonePermission()
+    awaitCreate()
+    assertEquals(
+      FIRST_CHAT,
+      gateway.creates
+        .single()
+        .request.params
+        .getValue("sessionKey")
+        .jsonPrimitive.content,
+    )
+    assertEquals(1, gateway.creates.size)
   }
 
   @Test
@@ -206,7 +256,14 @@ class ChatRealtimeTalkOwnershipTest {
     val closed = closeRequests()
     assertEquals(1, closed.size)
     assertEquals(pending.request.connection, closed.single().connection)
-    assertEquals("ownership-relay", closed.single().params.getValue("sessionId").jsonPrimitive.content)
+    assertEquals(
+      "ownership-relay",
+      closed
+        .single()
+        .params
+        .getValue("sessionId")
+        .jsonPrimitive.content,
+    )
     assertNoPendingTalkStart(expectedCreates = 1)
     assertEquals(SECOND_CHAT, runtime.chatSessionKey.value)
   }
@@ -220,7 +277,14 @@ class ChatRealtimeTalkOwnershipTest {
     pending.complete()
     composeRule.waitUntil(TIMEOUT_MS) { closeRequests().isNotEmpty() }
     assertEquals(pending.request.connection, closeRequests().single().connection)
-    assertEquals("ownership-relay", closeRequests().single().params.getValue("sessionId").jsonPrimitive.content)
+    assertEquals(
+      "ownership-relay",
+      closeRequests()
+        .single()
+        .params
+        .getValue("sessionId")
+        .jsonPrimitive.content,
+    )
     assertNoPendingTalkStart(expectedCreates = 1)
   }
 
@@ -233,7 +297,10 @@ class ChatRealtimeTalkOwnershipTest {
     }
   }
 
-  private fun selectChat(key: String, agentId: String = "scout") {
+  private fun selectChat(
+    key: String,
+    agentId: String = "scout",
+  ) {
     composeRule.runOnIdle { model.switchChatSession(key, ownerAgentId = agentId) }
     composeRule.waitUntil(TIMEOUT_MS) {
       runtime.chatSessionKey.value == key && model.chatSessionKey.value == key &&
@@ -242,7 +309,7 @@ class ChatRealtimeTalkOwnershipTest {
   }
 
   private fun startTalk() {
-    composeRule.onNodeWithText("Start test Talk").performClick()
+    composeRule.onNodeWithContentDescription("Start Talk").performClick()
   }
 
   private fun awaitCreate() {
@@ -286,7 +353,10 @@ class ChatRealtimeTalkOwnershipTest {
       models.clear()
       if (::runtime.isInitialized) closeNodeRuntimeTestFixture(runtime)
     } finally {
-      if (::app.isInitialized) bindNodeRuntimeTestFixture(app, previousRuntime)
+      if (::app.isInitialized) {
+        bindNodeRuntimeTestFixture(app, previousRuntime)
+        Settings.Global.putString(app.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, previousAnimatorScale)
+      }
       gateways.forEach { it.close() }
     }
   }

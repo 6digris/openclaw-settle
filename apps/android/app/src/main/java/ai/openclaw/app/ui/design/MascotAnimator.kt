@@ -8,6 +8,20 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
 
+/** A bounded mouth overlay during audible playout; not phoneme synchronization. */
+internal fun MascotPose.withSpeechMouth(
+  speaking: Boolean,
+  timeSeconds: Double,
+): MascotPose =
+  if (!speaking) {
+    this
+  } else {
+    copy(
+      mouthOpen = 0.2 + 0.6 * abs(sin(timeSeconds * 12.0)),
+      mouthRound = 0.15 + 0.35 * abs(sin(timeSeconds * 8.0)),
+    )
+  }
+
 private const val NONZERO_SEED: ULong = 0x9E37_79B9_7F4A_7C15uL
 private const val XORSHIFT_MULTIPLIER: ULong = 2_685_821_657_736_338_717uL
 private const val TAU = PI * 2.0

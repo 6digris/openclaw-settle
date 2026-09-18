@@ -40,9 +40,11 @@ internal class PendingTalkOwnershipCreate(
 internal class ChatRealtimeTalkGatewayFixture : AutoCloseable {
   private val server = MockWebServer()
   private val connectionSequence = AtomicInteger()
+  private val operatorSockets = CopyOnWriteArrayList<WebSocket>()
   val requests = CopyOnWriteArrayList<TalkOwnershipRequest>()
   val creates = CopyOnWriteArrayList<PendingTalkOwnershipCreate>()
   val endpoint: GatewayEndpoint
+  private val history = java.util.concurrent.ConcurrentHashMap<String, String>()
 
   init {
     server.dispatcher =
@@ -93,6 +95,7 @@ internal class ChatRealtimeTalkGatewayFixture : AutoCloseable {
         when (method) {
           "connect" -> {
             val role = params.getValue("role").jsonPrimitive.content
+            if (role == "operator") operatorSockets.add(webSocket)
             val scopes = if (role == "operator") "[\"operator.admin\"]" else "[]"
             respond(
               """{"type":"hello-ok","protocol":3,"server":{"host":"talk-ownership","version":"fixture"},"features":{"methods":["chat.history","chat.metadata","sessions.describe","sessions.list","models.list","health","talk.config","talk.session.create","talk.session.close"],"events":[]},"auth":{"role":"$role","scopes":$scopes},"snapshot":{"sessionDefaults":{"mainSessionKey":"agent:scout:main"}}}""",
@@ -101,17 +104,49 @@ internal class ChatRealtimeTalkGatewayFixture : AutoCloseable {
 
           "chat.history" -> {
             val key = params.getValue("sessionKey").jsonPrimitive.content
-            respond("""{"sessionId":"transcript-$key","messages":[]}""")
+            respond("""{"sessionId":"transcript-$key","messages":${history[key] ?: "[]"}}""")
           }
 
-          "sessions.describe" -> respond("""{"session":{"label":"Existing Android chat"}}""")
-          "sessions.list" -> respond("""{"sessions":[]}""")
-          "models.list" -> respond("""{"models":[]}""")
-          "chat.metadata" -> respond("""{"commands":[]}""")
-          "question.list" -> respond("""{"questions":[]}""")
-          "health" -> respond("""{"ok":true}""")
-          "sessions.subscribe", "sessions.messages.subscribe", "talk.session.close" -> respond("{}")
-          "talk.config" -> respond("""{"config":{"talk":{"realtime":{"provider":"openai","mode":"realtime","transport":"gateway-relay","model":"gpt-realtime-2.1"}}}}""")
+          "sessions.describe" -> {
+            respond("""{"session":{"label":"Existing Android chat"}}""")
+          }
+
+          "sessions.list" -> {
+            respond("""{"sessions":[]}""")
+          }
+
+          "models.list" -> {
+            respond("""{"models":[]}""")
+          }
+
+          "chat.metadata" -> {
+            respond("""{"commands":[]}""")
+          }
+
+          "question.list" -> {
+            respond("""{"questions":[]}""")
+          }
+
+          "health" -> {
+            respond("""{"ok":true}""")
+          }
+
+          "sessions.subscribe", "sessions.messages.subscribe", "talk.session.close" -> {
+            respond("{}")
+          }
+
+          "talk.config" -> {
+            respond("""{"config":{"talk":{"realtime":{"provider":"openai","mode":"realtime","transport":"gateway-relay","model":"gpt-realtime-2.1"}}}}""")
+          }
+
+          "talk.client.toolCall" -> {
+            respond("""{"runId":"call-work","agentId":"scout","agentSessionKey":"${params.getValue("sessionKey").jsonPrimitive.content}"}""")
+          }
+
+          "talk.session.submitToolResult" -> {
+            respond("{}")
+          }
+
           "talk.session.create" -> {
             creates += PendingTalkOwnershipCreate(request) { respond("""{"relaySessionId":"ownership-relay"}""") }
           }
@@ -135,6 +170,32 @@ internal class ChatRealtimeTalkGatewayFixture : AutoCloseable {
         }
       }
     }
+
+  fun publishTranscriptHistory(
+    sessionKey: String,
+    messages: String,
+  ) {
+    history[sessionKey] = messages
+    sendEvent("session.message", """{"sessionKey":"$sessionKey","agentId":"scout","phase":"message"}""")
+  }
+
+  fun sendEvent(
+    event: String,
+    payload: String,
+  ) {
+    val frame =
+      buildJsonObject {
+        put("type", JsonPrimitive("event"))
+        put("event", JsonPrimitive(event))
+        put("payload", Json.parseToJsonElement(payload))
+      }.toString()
+    operatorSockets.forEach { check(it.send(frame)) }
+  }
+
+  fun dropOperatorConnection() {
+    operatorSockets.forEach { it.close(1011, "Synthetic connection loss") }
+    operatorSockets.clear()
+  }
 
   fun releaseCreates() {
     creates.forEach { it.complete() }

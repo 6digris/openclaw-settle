@@ -1722,6 +1722,7 @@ class NodeRuntime private constructor(
         }
       },
       onDisconnected = { message ->
+        if (_voiceCaptureMode.value == VoiceCaptureMode.TalkMode) talkMode.interruptChatCall(nativeText("Talk interrupted: Gateway disconnected. Start Talk again when connected."))
         if (wearRealtimeTalkControllerLazy.isInitialized()) wearRealtimeTalkController.abort()
         clearOperatorGatewayState(retirePendingCronRuns = false)
         chat.applyMainSessionKey(resolveMainSessionKey())
@@ -2431,6 +2432,9 @@ class NodeRuntime private constructor(
 
   val talkModeStatusText: StateFlow<String>
     get() = talkMode.statusText
+
+  internal val talkCallPresentation: StateFlow<TalkModeManager.CallPresentation>
+    get() = talkMode.callPresentation
 
   internal val chatTalkCall: StateFlow<TalkModeManager.ChatCall?>
     get() = talkMode.chatCall
@@ -3836,13 +3840,16 @@ class NodeRuntime private constructor(
   fun refreshNodePermissionSurface() {
     val permissions = connectionManager.buildPermissions()
     if (permissions == lastNodePermissions) return
-    refreshAcceptedGatewayConnection()
+    if (_voiceCaptureMode.value == VoiceCaptureMode.TalkMode && !hasRecordAudioPermission()) {
+      talkMode.interruptChatCall(nativeText("Microphone permission required"))
+    }
+    refreshAcceptedGatewayConnection(nodeOnly = retainChatOperatorForNodeRefresh())
   }
 
   fun setCameraEnabled(value: Boolean) {
     if (prefs.cameraEnabled.value == value) return
     prefs.setCameraEnabled(value)
-    refreshAcceptedGatewayConnection()
+    refreshAcceptedGatewayConnection(nodeOnly = retainChatOperatorForNodeRefresh())
   }
 
   fun setLocationMode(mode: LocationMode) {
@@ -4023,27 +4030,45 @@ class NodeRuntime private constructor(
     val gatewayId = owner.gatewayStableId ?: return null
     val lease = operatorSession.captureRequestLease(gatewayId) ?: return null
     val lifecycleEpoch = voiceLifecycleEpoch.get()
+
     fun canAdmit() =
       _isForeground.value && voiceLifecycleEpoch.get() == lifecycleEpoch &&
         !gatewayConnectionHandoff.value.pending && isCurrentSelection()
-    return TalkModeManager.ChatStart(
-      owner = owner,
-      lease = lease,
-      withCurrentSelection = { claim ->
-        chat.withCurrentComposerOwner(owner, selectionGeneration) {
-          canAdmit() && claim()
-        }
-      },
-      isCurrentSelection = ::canAdmit,
-    ).takeIf { it.isCurrent() }
+    return TalkModeManager
+      .ChatStart(
+        owner = owner,
+        lease = lease,
+        withCurrentSelection = { claim ->
+          chat.withCurrentComposerOwner(owner, selectionGeneration) {
+            canAdmit() && claim()
+          }
+        },
+        isCurrentSelection = ::canAdmit,
+      ).takeIf { it.isCurrent() }
   }
 
   internal fun startChatTalk(start: TalkModeManager.ChatStart) {
     setVoiceCaptureMode(VoiceCaptureMode.TalkMode, chatStart = start)
   }
 
+  /** Generic/pending End actions must not acquire a replacement call's authority. */
+  internal fun captureTalkEndAction(generation: Long): () -> Unit {
+    val epoch = voiceCaptureOwnershipEpoch.get()
+    return { setVoiceCaptureMode(VoiceCaptureMode.Off, expectedOwnershipEpoch = epoch, expectedTalkGeneration = generation) }
+  }
+
   internal fun endChatTalk(start: TalkModeManager.ChatStart) {
     setVoiceCaptureMode(VoiceCaptureMode.Off, expectedChatCall = start)
+  }
+
+  internal fun removeChatTalkAttachment(
+    start: TalkModeManager.ChatStart,
+    remove: () -> Unit,
+  ) {
+    synchronized(voiceCaptureOwnershipLock) {
+      if (!talkMode.isActiveChatCall(start)) return
+      remove()
+    }
   }
 
   internal fun toggleChatTalkAudio(start: TalkModeManager.ChatStart) {
@@ -4064,6 +4089,7 @@ class NodeRuntime private constructor(
     if (!talkMode.isActiveChatCall(start)) return nativeText("Call is no longer active.")
     val selection = chatSelectionGeneration.value
     val lifecycle = voiceLifecycleEpoch.get()
+
     fun isCurrent() =
       isCurrentOwner() && _isForeground.value && voiceLifecycleEpoch.get() == lifecycle &&
         chatSelectionGeneration.value == selection && chat.isCurrentComposerOwner(start.owner) &&
@@ -4071,6 +4097,7 @@ class NodeRuntime private constructor(
     if (!isCurrent()) return nativeText("Return to the call's chat before taking a photo.")
     if (!cameraEnabled.value) return nativeText("Enable Camera in Settings before taking a photo.")
     if (!requestPermission()) return nativeText("Camera permission required")
+
     fun canCapture() =
       isCurrent() && cameraEnabled.value &&
         ContextCompat.checkSelfPermission(appContext, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
@@ -4084,7 +4111,9 @@ class NodeRuntime private constructor(
     kotlin.coroutines.coroutineContext.ensureActive()
     var omitted: Int? = null
     chat.withCurrentComposerOwner(start.owner, selection) {
-      if (!canCapture()) false else {
+      if (!canCapture()) {
+        false
+      } else {
         omitted = stage(image)
         true
       }
@@ -4608,13 +4637,19 @@ class NodeRuntime private constructor(
     persistManualMic: Boolean = true,
     chatStart: TalkModeManager.ChatStart? = null,
     expectedChatCall: TalkModeManager.ChatStart? = null,
+    expectedOwnershipEpoch: Long? = null,
+    expectedTalkGeneration: Long? = null,
   ) {
     var startAfterSuppression: VoiceCaptureMode? = null
     var ownershipEpoch = 0L
     val suppressionUpdate =
       synchronized(voiceCaptureOwnershipLock) {
+        if (expectedOwnershipEpoch != null && voiceCaptureOwnershipEpoch.get() != expectedOwnershipEpoch) return
+        if (expectedTalkGeneration != null && !talkMode.isCurrentCallGeneration(expectedTalkGeneration)) return
         if (expectedChatCall != null && talkMode.chatCall.value?.start !== expectedChatCall) return
         if (chatStart != null && !chatStart.isCurrent()) return
+        // Repeated taps during audio retirement/admission return to the existing start.
+        if (chatStart != null && _voiceCaptureMode.value == VoiceCaptureMode.TalkMode && externalAudioCaptureActive.value) return
         if (mode != VoiceCaptureMode.Off && (gatewayConnectionHandoff.value.pending || voiceNoteOwnsMic || dictationOwnsMic)) return
         if (mode != VoiceCaptureMode.Off && cameraAudioOwnsMic) return
         // Every mode command cancels queued PTT intent; only a real transition replaces the capture owner.
@@ -4884,7 +4919,11 @@ class NodeRuntime private constructor(
     }
   }
 
-  private fun refreshAcceptedGatewayConnection() {
+  private fun retainChatOperatorForNodeRefresh(): Boolean =
+    _voiceCaptureMode.value == VoiceCaptureMode.TalkMode && hasRecordAudioPermission() &&
+      talkMode.canKeepChatCallInBackground() && activeGatewayConnection?.bootstrapHandoff?.completed != false
+
+  private fun refreshAcceptedGatewayConnection(nodeOnly: Boolean = false) {
     val connection = activeGatewayConnection ?: return
     val endpoint = connectedEndpoint ?: return
     launchGatewayLifecycle({
@@ -4895,7 +4934,18 @@ class NodeRuntime private constructor(
         connectedEndpoint?.stableId == endpoint.stableId
     }) {
       if (preferredGatewayReconnectSuppressed) return@launchGatewayLifecycle
-      connectWithAuth(endpoint = endpoint, auth = resolveGatewayConnectAuth(endpoint))
+      val auth = resolveGatewayConnectAuth(endpoint)
+      if (nodeOnly) {
+        // Phone permission metadata belongs to the node socket. A camera grant
+        // must not replace the admitted chat call's unchanged operator lease.
+        runGatewayConnectOperation {
+          val options = connectionManager.buildNodeConnectOptions()
+          lastNodePermissions = options.permissions
+          nodeSession.connect(endpoint, auth.token, auth.bootstrapToken, auth.password, options, connectionManager.resolveTlsParams(endpoint), bootstrapHandoff = connection.bootstrapHandoff)
+        }
+      } else {
+        connectWithAuth(endpoint = endpoint, auth = auth)
+      }
     }
   }
 

@@ -17,6 +17,19 @@ internal class ShellNavigation(
   settingsRouteFromHome: Boolean = false,
   dashboardSessionKey: String = "main",
 ) {
+  // A transient view of the current call, never a restored microphone-start intent.
+  var conversationOpen by mutableStateOf(false)
+    private set
+
+  fun openConversation() {
+    selectTab(Tab.Chat)
+    conversationOpen = true
+  }
+
+  fun closeConversation() {
+    conversationOpen = false
+  }
+
   var activeTab by mutableStateOf(activeTab)
     private set
   var settingsRoute by mutableStateOf(settingsRoute)
@@ -35,6 +48,7 @@ internal class ShellNavigation(
 
   /** Tab-bar-style switch: Back from the selected tab returns to Overview. */
   fun selectTab(tab: Tab) {
+    conversationOpen = false
     if (tab == Tab.Settings) settingsRoute = SettingsRoute.Home
     settingsRouteFromHome = false
     returnTab = null
@@ -56,6 +70,7 @@ internal class ShellNavigation(
 
   /** Opens a detail tab (Sessions, Providers) from another tab, remembering the origin for Back. */
   fun openDetailTab(tab: Tab) {
+    conversationOpen = false
     if (activeTab != tab) returnTab = activeTab
     activeTab = tab
   }
@@ -68,6 +83,10 @@ internal class ShellNavigation(
 
   /** Unwinds one Back step: settings detail to Home or origin, otherwise tab to origin or Overview. */
   fun back() {
+    if (conversationOpen) {
+      closeConversation()
+      return
+    }
     if (activeTab == Tab.Settings && settingsRoute != SettingsRoute.Home) {
       settingsRoute = SettingsRoute.Home
       if (settingsRouteFromHome) {

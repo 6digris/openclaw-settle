@@ -73,12 +73,14 @@ fun OpenClawMascot(
   tint: Color? = null,
   contentDescription: String? = null,
   mood: MascotMood = MascotMood.Idle,
+  speaking: Boolean = false,
 ) {
   val animationsEnabled = rememberSystemAnimationsEnabled()
   val animator = remember { MascotAnimator() }
   var pose by remember { mutableStateOf(staticPose(mood)) }
+  var animatorTimeSeconds by remember { mutableStateOf(0.0) }
 
-  LaunchedEffect(animationsEnabled, mood, tint) {
+  LaunchedEffect(animationsEnabled, mood, tint, speaking) {
     if (!animationsEnabled) {
       pose = staticPose(effectiveMascotMood(mood = mood, tinted = tint != null))
       return@LaunchedEffect
@@ -86,6 +88,7 @@ fun OpenClawMascot(
     while (true) {
       withInfiniteAnimationFrameNanos { frameTimeNanos ->
         val timeSeconds = frameTimeNanos / 1_000_000_000.0
+        animatorTimeSeconds = timeSeconds
         animator.setMood(effectiveMascotMood(mood = mood, tinted = tint != null), timeSeconds)
         pose = animator.poseAt(timeSeconds)
       }
@@ -107,7 +110,7 @@ fun OpenClawMascot(
       scale(artScale, artScale, pivot = Offset.Zero)
       translate(top = pose.floatOffset.toFloat())
     }) {
-      drawMascot(pose, tint)
+      drawMascot(pose.withSpeechMouth(speaking && animationsEnabled && tint == null, animatorTimeSeconds), tint)
     }
   }
 }

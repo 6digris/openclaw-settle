@@ -62,8 +62,8 @@ internal fun rememberChatRealtimeTalkLauncher(viewModel: MainViewModel): () -> U
       }
     }
 
-  return launchTalk@ {
-    if (pendingStart != null) return@launchTalk
+  return launchTalk@{
+    if (pendingStart != null || viewModel.voiceCaptureMode.value == ai.openclaw.app.VoiceCaptureMode.TalkMode) return@launchTalk
     val action =
       resolveChatRealtimeTalkLaunch(
         hasMicPermission = context.hasRecordAudioPermission(),
@@ -77,8 +77,11 @@ internal fun rememberChatRealtimeTalkLauncher(viewModel: MainViewModel): () -> U
     val start = viewModel.captureChatTalkStart()
     if (start == null) {
       val message =
-        if (currentTalkSetup.requiresSetup) gatewayTalkSetupDescription(currentTalkSetup)
-        else nativeText("Talk is not ready. Check the Gateway connection and try again.").resolveNativeText()
+        if (currentTalkSetup.requiresSetup) {
+          gatewayTalkSetupDescription(currentTalkSetup)
+        } else {
+          nativeText("Talk is not ready. Check the Gateway connection and try again.").resolveNativeText()
+        }
       Toast.makeText(context, message, Toast.LENGTH_LONG).show()
       return@launchTalk
     }
