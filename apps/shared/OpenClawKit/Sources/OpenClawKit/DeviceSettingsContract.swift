@@ -142,7 +142,7 @@ public enum DeviceSettingsRequest: Equatable, Sendable {
     case open(DeviceSettingsPanel)
     case checkForUpdates
     case chromeExtensionSetup(ChromeExtensionSetupAction)
-    // Shipped contract-1 request; projects through the same canonical setup owner.
+    /// Shipped contract-1 request; projects through the same canonical setup owner.
     case installChromeExtension
 
     public init?(body: Any) {

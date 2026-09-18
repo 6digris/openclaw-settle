@@ -22,18 +22,8 @@ import {
   runWindowsManagement,
   WindowsManagementTransportError,
 } from "./extension-windows-management.js";
-import {
-  createWindowsNativePlatform,
-  type WindowsNativePlatform,
-} from "./extension-windows-platform.js";
+import { createWindowsNativePlatform } from "./extension-windows-platform.js";
 
-export type WindowsNativeHostDeps = {
-  platform?: WindowsNativePlatform;
-  manage?: typeof runWindowsManagement;
-  context?: NativeWindowsContext;
-  cliPath?: string;
-  executable?: string;
-};
 const products: Array<[ChromeProduct, string]> = [
   ["chrome", "Google Chrome"],
   ["chromium", "Chromium"],

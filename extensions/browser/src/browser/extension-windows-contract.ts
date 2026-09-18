@@ -13,9 +13,10 @@ export const WINDOWS_BINDING = "OpenClaw.BrowserBootstrap.binding.json";
 export const WINDOWS_RECEIPT = "OpenClaw.BrowserBootstrap.owned.json";
 export const WINDOWS_MANIFEST = BROWSER_NATIVE_HOST_NAME + ".json";
 export const WINDOWS_OFFICIAL_ORIGIN = "chrome-extension://kcdjddhmeafeomebliikmbpblkmkfoig/";
-export const windowsPathKey = (value: string) => value.replace(/[A-Z]/g, (c) => c.toLowerCase());
+const windowsPathKey = (value: string) => value.replace(/[A-Z]/g, (c) => c.toLowerCase());
 export const sameWindowsPath = (a: string, b: string) => windowsPathKey(a) === windowsPathKey(b);
-const wellFormed = (value: string) => value.isWellFormed();
+// In Unicode mode, paired surrogates form a scalar and do not match this range.
+const wellFormed = (value: string) => !/[\uD800-\uDFFF]/u.test(value);
 export function isWindowsNativePath(value: string): boolean {
   if (
     !value ||
@@ -45,7 +46,7 @@ export function isWindowsNativePath(value: string): boolean {
     );
 }
 export const windowsPathSchema = z.string().refine(isWindowsNativePath);
-export const generationSchema = z
+const generationSchema = z
   .string()
   .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
   .refine((s) => s !== "00000000-0000-0000-0000-000000000000");
@@ -132,7 +133,7 @@ export const installationSchema = z
     );
   });
 export type WindowsInstallation = z.infer<typeof installationSchema>;
-export const managementResponseSchema = z
+const managementResponseSchema = z
   .strictObject({
     v: z.literal(1),
     ok: z.boolean(),

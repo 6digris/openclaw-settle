@@ -4,7 +4,7 @@ import {
   isWindowsNativePath,
   sameWindowsPath,
   sidSchema,
-  generationSchema,
+  installationSchema,
   nativeWindowsContextSchema,
 } from "./extension-windows-contract.js";
 import { createWindowsNativePlatform } from "./extension-windows-platform.js";
@@ -39,6 +39,10 @@ describe("Windows read-only authority and portable path boundaries", () => {
   });
   it("admits canonical local Unicode spelling without cross-runtime Unicode case folding", () => {
     expect(isWindowsNativePath("C:\\Program Files\\nodejs\\node.exe")).toBe(true);
+    expect(isWindowsNativePath("C:\\😀\\node.exe")).toBe(true);
+    for (const value of ["\ud800", "\udfff", "a\ud800b", "\udc00\ud800"]) {
+      expect(isWindowsNativePath(`C:\\${value}`)).toBe(false);
+    }
     expect(sameWindowsPath("C:\\Root\\node.exe", "c:\\ROOT\\NODE.EXE")).toBe(true);
     expect(sameWindowsPath("C:\\é", "C:\\É")).toBe(false);
     expect(isWindowsNativePath("C:\\" + "a".repeat(4093))).toBe(true);
@@ -74,7 +78,10 @@ describe("Windows read-only authority and portable path boundaries", () => {
       "00000000-0000-0000-0000-000000000000",
       "12345678-1234-4234-8234-123456789ABC",
     ]) {
-      expect(generationSchema.safeParse(guid).success).toBe(false);
+      expect(
+        installationSchema.safeParse({ ...windowsFixture().installation, generation: guid })
+          .success,
+      ).toBe(false);
     }
   });
   it.skipIf(process.platform === "win32")(

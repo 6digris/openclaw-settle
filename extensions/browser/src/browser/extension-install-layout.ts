@@ -5,7 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import { inspectPathPermissions } from "openclaw/plugin-sdk/file-access-runtime";
 import { resolveStateDir } from "openclaw/plugin-sdk/state-paths";
-import type { WindowsNativeHostDeps } from "./extension-windows-host.js";
+import type { NativeWindowsContext } from "./extension-windows-contract.js";
+import type { runWindowsManagement } from "./extension-windows-management.js";
+import type { WindowsNativePlatform } from "./extension-windows-platform.js";
 
 const EXTENSION_ID_PATTERN = /^[a-p]{32}$/;
 const UNPACKED_MANIFEST_LOCATION = 4;
@@ -33,6 +35,13 @@ export type DiscoveredChromeStoreExtension = Omit<DiscoveredChromeExtension, "ex
   /** Chrome's recorded state is not proof of an authenticated relay connection. */
   enabled: boolean;
   awaitingApproval: boolean;
+};
+type WindowsNativeHostDeps = {
+  platform?: WindowsNativePlatform;
+  manage?: typeof runWindowsManagement;
+  context?: NativeWindowsContext;
+  cliPath?: string;
+  executable?: string;
 };
 export type ExtensionInstallDeps = {
   platform?: NodeJS.Platform;

@@ -18,8 +18,8 @@ enum BundledNodeWorker {
             environment: runtime.environment)
     }
 
-    // Browser setup needs the same host-local runtime as the node, including on a remote-only Mac.
-    // Keep this fixed operation separate from the external CLI/Gateway resolver.
+    /// Browser setup needs the same host-local runtime as the node, including on a remote-only Mac.
+    /// Keep this fixed operation separate from the external CLI/Gateway resolver.
     static func browserSetupLaunch(
         bundle: Bundle,
         action: ChromeExtensionSetupAction = .install,

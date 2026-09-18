@@ -1,6 +1,6 @@
 import Foundation
-import OSLog
 import OpenClawKit
+import OSLog
 
 @MainActor
 final class ChromeExtensionSetup {
@@ -11,6 +11,7 @@ final class ChromeExtensionSetup {
             "--json", "--browser-profile", "chrome", "--wait-ms", "1000",
         ]
     }
+
     private static let logger = Logger(subsystem: "ai.openclaw", category: "ChromeExtensionSetup")
     private let requests = DeviceSettingsRequestQueue()
     private let performAction: @MainActor (
@@ -34,7 +35,7 @@ final class ChromeExtensionSetup {
         let discoveredProfiles: Int
     }
 
-    // Decode and re-encode only the public setup projection, never installer paths or credentials.
+    /// Decode and re-encode only the public setup projection, never installer paths or credentials.
     struct Result: Codable, Equatable {
         var legacyInstallation: LegacyInstallation {
             LegacyInstallation(
@@ -42,6 +43,7 @@ final class ChromeExtensionSetup {
                 installRequested: self.installation.installRequested,
                 discoveredProfiles: self.installation.discoveredProfiles)
         }
+
         struct Target: Codable, Equatable {
             let kind: String
             let platform: String
@@ -137,10 +139,14 @@ final class ChromeExtensionSetup {
         self.observer = nil
         self.notificationCenter = nil
         self.requests.cancel()
-        for task in self.manualTasks.values { task.cancel() }
+        for task in self.manualTasks.values {
+            task.cancel()
+        }
         let replies = Array(self.manualReplies.values)
         self.manualReplies.removeAll()
-        for reply in replies { reply.resume(throwing: SetupError.retired) }
+        for reply in replies {
+            reply.resume(throwing: SetupError.retired)
+        }
     }
 
     isolated deinit {
