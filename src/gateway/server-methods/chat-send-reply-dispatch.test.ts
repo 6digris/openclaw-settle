@@ -29,6 +29,17 @@ function buildRawTranscriptReplyText(payloads: ReplyPayload[]): string {
   return buildTranscriptReplyTextFromInputs(payloads.map((payload) => ({ kind: "raw", payload })));
 }
 
+function createReplyDispatchSession(clientRunId: string) {
+  return {
+    agentId: "main",
+    backingSessionId: undefined,
+    cfg: {},
+    clientRunId,
+    sessionKey: "agent:main:main",
+    sessionLoadOptions: { agentId: "main" },
+  };
+}
+
 describe("buildTranscriptReplyTextFromInputs", () => {
   it.each(["NO_REPLY", "ANNOUNCE_SKIP", "REPLY_SKIP"])(
     "keeps %s out of combined command display text",
@@ -145,15 +156,8 @@ describe("createChatSendReplyDispatch", () => {
       accountId: undefined,
       isAgentRunStarted: () => true,
       isRunCurrent: () => current,
-      logGateway: { warn: vi.fn() } as never,
-      session: {
-        agentId: "main",
-        backingSessionId: undefined,
-        cfg: {},
-        clientRunId: "run-media",
-        sessionKey: "agent:main:main",
-        sessionLoadOptions: { agentId: "main" },
-      },
+      logGateway: { ...createSubsystemLogger("test/chat-send-reply-dispatch"), warn: vi.fn() },
+      session: createReplyDispatchSession("run-media"),
       userTurnRecorder: { markBlocked: vi.fn() },
     });
     const rawText =
@@ -200,15 +204,8 @@ describe("createChatSendReplyDispatch", () => {
       isAgentRunStarted: () => false,
       isRunCurrent: () => true,
       onCommandBlock,
-      logGateway: { warn: vi.fn() } as never,
-      session: {
-        agentId: "main",
-        backingSessionId: undefined,
-        cfg: {},
-        clientRunId: "run-1",
-        sessionKey: "agent:main:main",
-        sessionLoadOptions: { agentId: "main" },
-      },
+      logGateway: { ...createSubsystemLogger("test/chat-send-reply-dispatch"), warn: vi.fn() },
+      session: createReplyDispatchSession("run-1"),
       userTurnRecorder: { markBlocked },
     });
     expect(dispatch.hasAppendedWebchatAgentMedia()).toBe(false);
@@ -253,14 +250,7 @@ describe("createChatSendReplyDispatch", () => {
       isAgentRunStarted: () => true,
       isRunCurrent: () => true,
       logGateway: { ...createSubsystemLogger("test/chat-send-reply-dispatch"), warn: vi.fn() },
-      session: {
-        agentId: "main",
-        backingSessionId: undefined,
-        cfg: {},
-        clientRunId: "run-prepared",
-        sessionKey: "agent:main:main",
-        sessionLoadOptions: { agentId: "main" },
-      },
+      session: createReplyDispatchSession("run-prepared"),
       userTurnRecorder: { markBlocked: vi.fn() },
     });
     const dispatcher = createReplyDispatcher({
@@ -318,14 +308,7 @@ describe("createChatSendReplyDispatch", () => {
         isAgentRunStarted: () => true,
         isRunCurrent: () => true,
         logGateway: { ...createSubsystemLogger("test/chat-send-reply-dispatch"), warn: vi.fn() },
-        session: {
-          agentId: "main",
-          backingSessionId: undefined,
-          cfg: {},
-          clientRunId: "run-indented-code",
-          sessionKey: "agent:main:main",
-          sessionLoadOptions: { agentId: "main" },
-        },
+        session: createReplyDispatchSession("run-indented-code"),
         userTurnRecorder: { markBlocked: vi.fn() },
       });
       const dispatcher = createReplyDispatcher(dispatch.dispatcherOptions);
@@ -367,15 +350,8 @@ describe("createChatSendReplyDispatch", () => {
       isAgentRunStarted: () => agentRunStarted,
       isRunCurrent: () => current,
       onCommandBlock,
-      logGateway: { warn: vi.fn() } as never,
-      session: {
-        agentId: "main",
-        backingSessionId: undefined,
-        cfg: {},
-        clientRunId: "run-command",
-        sessionKey: "agent:main:main",
-        sessionLoadOptions: { agentId: "main" },
-      },
+      logGateway: { ...createSubsystemLogger("test/chat-send-reply-dispatch"), warn: vi.fn() },
+      session: createReplyDispatchSession("run-command"),
       userTurnRecorder: { markBlocked: vi.fn() },
     });
     const dispatcher = createReplyDispatcher(dispatch.dispatcherOptions);
@@ -413,15 +389,8 @@ describe("createChatSendReplyDispatch", () => {
     const dispatch = createChatSendReplyDispatch({
       accountId: undefined,
       isAgentRunStarted: () => true,
-      logGateway: { warn: vi.fn() } as never,
-      session: {
-        agentId: "main",
-        backingSessionId: undefined,
-        cfg: {},
-        clientRunId: "run-cancel",
-        sessionKey: "agent:main:main",
-        sessionLoadOptions: { agentId: "main" },
-      },
+      logGateway: { ...createSubsystemLogger("test/chat-send-reply-dispatch"), warn: vi.fn() },
+      session: createReplyDispatchSession("run-cancel"),
       userTurnRecorder: { markBlocked },
     });
     const dispatcher = createReplyDispatcher({
@@ -463,15 +432,8 @@ describe("createChatSendReplyDispatch", () => {
         finalizedInsideAdmission = insideAdmission;
         throw new Error("finalizer failed");
       },
-      logGateway: { warn } as never,
-      session: {
-        agentId: "main",
-        backingSessionId: undefined,
-        cfg: {},
-        clientRunId: "run-finalize",
-        sessionKey: "agent:main:main",
-        sessionLoadOptions: { agentId: "main" },
-      },
+      logGateway: { ...createSubsystemLogger("test/chat-send-reply-dispatch"), warn },
+      session: createReplyDispatchSession("run-finalize"),
       userTurnRecorder: { markBlocked: vi.fn() },
     });
     const dispatcher = createReplyDispatcher(dispatch.dispatcherOptions);

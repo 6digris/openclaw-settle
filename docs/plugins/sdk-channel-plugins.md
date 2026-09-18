@@ -312,6 +312,10 @@ raw callback string. Actor and source-message checks remain channel-owned.
       including Markdown-image extraction. Both operations use
       `projectOutboundPayloadPlanForDelivery(plan)` for their delivery projection.
 
+      When cloning a host-supplied reply, use `copyReplyPayloadMetadata(source, clone)`
+      from `openclaw/plugin-sdk/reply-payload` to preserve its non-serialized runtime
+      metadata. Persisted transcript delivery facts cannot replace that metadata.
+
       Streaming delivery can carry one `OutboundPayloadPlan` through the optional
       `onPreparedBlockReply(plan, context)`, dispatcher `sendPreparedReply(kind, plan)`,
       and adapter `deliverPrepared(plan, info)` operations. Modifiers rebuild that

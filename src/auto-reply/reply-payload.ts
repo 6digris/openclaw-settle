@@ -177,11 +177,11 @@ export function buildTtsSupplementMediaPayload(payload: ReplyPayload): ReplyPayl
     btw: _btw,
     ...mediaPayload
   } = payload;
-  return {
+  return copyReplyPayloadMetadata(payload, {
     ...mediaPayload,
     spokenText: supplement.spokenText,
     ttsSupplement: supplement,
-  };
+  });
 }
 
 /** WeakMap-backed metadata attached to payload objects without changing wire shape. */

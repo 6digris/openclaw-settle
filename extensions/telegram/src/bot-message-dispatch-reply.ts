@@ -117,7 +117,7 @@ function resolvePayloadTelegramControls(
   );
   const text = appendTelegramDroppedControlFallback(payload.text ?? "", droppedControls);
   return {
-    payload: text === (payload.text ?? "") ? payload : { ...payload, text },
+    payload: text === (payload.text ?? "") ? payload : applyTextToPayload(payload, text),
     buttons,
   };
 }
@@ -255,10 +255,10 @@ async function deliverReplyWithNormalization(
   }
   let payload = incomingPayload;
   if (info.participant && (payload.text || payload.mediaUrl || payload.mediaUrls?.length)) {
-    payload = {
-      ...payload,
-      text: formatTelegramGroupThreadReply(payload.text ?? "", info.participant),
-    };
+    payload = applyTextToPayload(
+      payload,
+      formatTelegramGroupThreadReply(payload.text ?? "", info.participant),
+    );
   }
   const normalizedPayload = normalizePayload(turn, payload);
   if (!normalizedPayload) {
@@ -292,7 +292,7 @@ async function deliverReplyWithNormalization(
     payload.text.trimEnd() === effectivePayload.text &&
     !effectivePayload.mediaUrl &&
     !effectivePayload.mediaUrls?.length
-      ? { ...effectivePayload, text: payload.text }
+      ? applyTextToPayload(effectivePayload, payload.text)
       : effectivePayload;
   const split = splitTextIntoLaneSegments(turn, { text: lanePayload.text }, payload.isReasoning);
   const segments = split.segments;
@@ -514,7 +514,7 @@ async function deliverReplyWithNormalization(
     if (reply.hasMedia) {
       const payloadWithoutReasoning =
         typeof effectivePayload.text === "string"
-          ? { ...effectivePayload, text: "" }
+          ? applyTextToPayload(effectivePayload, "")
           : effectivePayload;
       delivered = await sendPayload(turn, payloadWithoutReasoning, {
         durable: info.kind === "final",

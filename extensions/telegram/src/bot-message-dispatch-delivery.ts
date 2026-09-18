@@ -8,7 +8,7 @@ import {
 } from "openclaw/plugin-sdk/channel-outbound";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { getAgentScopedMediaLocalRoots } from "openclaw/plugin-sdk/media-runtime";
-import type { ReplyPayload } from "openclaw/plugin-sdk/reply-payload";
+import { copyReplyPayloadMetadata, type ReplyPayload } from "openclaw/plugin-sdk/reply-payload";
 import { isSingleUseReplyToMode } from "openclaw/plugin-sdk/reply-reference";
 import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
 import {
@@ -87,7 +87,9 @@ function resolvePromptContextSource(
   final: CurrentTurnTranscriptFinal | undefined,
   ...payloads: ReplyPayload[]
 ): TelegramPromptContextSource | undefined {
-  const finalPayload = final ? projectPayloadForDelivery(turn, { text: final.text }) : undefined;
+  const finalPayload = final
+    ? projectPayloadForDelivery(turn, { text: final.text }, final.openclawDelivery)
+    : undefined;
   const finalSignature = finalPayload ? promptContextDeliverySignature(finalPayload) : undefined;
   if (!final?.messageId || !finalSignature) {
     return undefined;
@@ -197,7 +199,10 @@ function applyQuoteReplyTarget(turn: Turn, payload: ReplyPayload): ReplyPayload 
   ) {
     return payload;
   }
-  return { ...payload, replyToId: turn.implicitQuoteReplyTargetId };
+  return copyReplyPayloadMetadata(payload, {
+    ...payload,
+    replyToId: turn.implicitQuoteReplyTargetId,
+  });
 }
 
 const usesNativeTelegramQuote = (turn: Turn, payload: ReplyPayload): boolean =>
@@ -240,8 +245,11 @@ export async function sendPayload(
     isSingleUseReplyToMode(turn.replyToMode) &&
     !targetsDifferentMessage;
   const deliverablePayload = consumedSingleUseReply
-    ? (({ replyToId: _replyToId, replyToTag: _tag, replyToCurrent: _current, ...rest }) => rest)(
+    ? copyReplyPayloadMetadata(
         targetedPayload,
+        (({ replyToId: _replyToId, replyToTag: _tag, replyToCurrent: _current, ...rest }) => rest)(
+          targetedPayload,
+        ),
       )
     : targetedPayload;
   const effectiveReplyToMode = consumedSingleUseReply ? "off" : turn.replyToMode;
@@ -525,7 +533,11 @@ export async function deliverFinalAnswerText(
   const finalPayload =
     selectedText === text
       ? answerPayload
-      : projectPayloadForDelivery(turn, applyTextToPayload(answerPayload, selectedText));
+      : projectPayloadForDelivery(
+          turn,
+          applyTextToPayload(answerPayload, selectedText),
+          transcriptFinal?.openclawDelivery,
+        );
   if (!finalPayload) {
     return { kind: "skipped" };
   }
@@ -666,7 +678,11 @@ export function createDeliveryState(
       if (selectedText === finalText) {
         return undefined;
       }
-      const recovered = projectPayloadForDelivery(turn, applyTextToPayload(payload, selectedText));
+      const recovered = projectPayloadForDelivery(
+        turn,
+        applyTextToPayload(payload, selectedText),
+        transcriptFinal?.openclawDelivery,
+      );
       return recovered &&
         previewText &&
         previewText.length > (recovered.text ?? "").trimEnd().length

@@ -203,7 +203,7 @@ export async function buildAssistantReplyContentFromInputs(
   const preserveTextBoundaries =
     plan.filter(({ payload }) => typeof payload.text === "string" && payload.text.trim()).length >
     1;
-  const content: AssistantDisplayContentBlock[] = [];
+  const content: Array<AssistantDisplayContentBlock | [string, ...string[]]> = [];
   const persistedContent: AssistantDisplayContentBlock[] = [];
   const persistSensitiveDisplay = !hasSensitiveMediaPayload(payloads);
   let strippedTextPayloadCount = 0;
@@ -211,19 +211,17 @@ export async function buildAssistantReplyContentFromInputs(
     const payload = entry.payload;
     const metadataSource = payloads[entry.sourceIndex] ?? payload;
     const mediaFailures = getReplyPayloadMetadata(metadataSource)?.assistantMediaFailures ?? [];
-    const displayText =
-      params.inputs[entry.sourceIndex]?.kind === "prepared"
-        ? prepareAssistantDisplayText
-        : sanitizeAssistantDisplayText;
+    const isPrepared = params.inputs[entry.sourceIndex]?.kind === "prepared";
+    const displayText = isPrepared ? prepareAssistantDisplayText : sanitizeAssistantDisplayText;
     const text = displayText(stripReplyMediaFailureFallback(payload.text, mediaFailures), {
       preserveBoundaries: preserveTextBoundaries,
     });
-    if (text && !isSuppressedControlReplyText(text)) {
+    if (text && (isPrepared || !isSuppressedControlReplyText(text))) {
       const previousBlock = content.at(-1);
-      if (previousBlock?.type === "text" && typeof previousBlock.text === "string") {
-        previousBlock.text = combineNonStreamingReplyParts([previousBlock.text, text]);
+      if (Array.isArray(previousBlock)) {
+        previousBlock.push(text);
       } else {
-        content.push({ type: "text", text });
+        content.push([text]);
       }
     } else if (typeof payload.text === "string" && payload.text.trim().length > 0) {
       strippedTextPayloadCount += 1;
@@ -231,7 +229,7 @@ export async function buildAssistantReplyContentFromInputs(
     // Display text may merge across payloads. Transcript captions and directives
     // stay attached to their source payload instead of matching display slots.
     const transcriptText = params.transcriptMediaMessage?.payloadTexts[entry.sourceIndex] ?? text;
-    if (transcriptText && !isSuppressedControlReplyText(transcriptText)) {
+    if (transcriptText && (isPrepared || !isSuppressedControlReplyText(transcriptText))) {
       persistedContent.push({ type: "text", text: transcriptText });
     }
     if (params.includeSensitiveDisplay === true) {
@@ -274,7 +272,14 @@ export async function buildAssistantReplyContentFromInputs(
 
   const assistantContent =
     content.length > 0
-      ? content
+      ? content.map((block) =>
+          Array.isArray(block)
+            ? {
+                type: "text",
+                text: block.length === 1 ? block[0] : combineNonStreamingReplyParts(block),
+              }
+            : block,
+        )
       : strippedTextPayloadCount > 0
         ? [{ type: "text", text: "" }]
         : undefined;

@@ -98,6 +98,7 @@ type ReadCodexPluginInventoryParams = {
   request: CodexPluginRuntimeRequest;
   appCache?: CodexAppInventoryCache;
   appCacheKey?: string;
+  appInventoryCacheKey?: string;
   configCwd?: string;
   metadataCache?: CodexPluginMetadataCache;
   nowMs?: number;
@@ -429,7 +430,7 @@ function readCachedAppInventory(
   const request: CodexAppInventoryRequest = async (method, requestParams) =>
     (await params.request(method, requestParams)) as CodexAppServerRequestResult<typeof method>;
   return params.appCache.read({
-    key: params.appCacheKey,
+    key: params.appInventoryCacheKey ?? params.appCacheKey,
     request,
     nowMs: params.nowMs,
     suppressRefresh: params.suppressAppInventoryRefresh,
@@ -510,6 +511,7 @@ function resolveOwnedApps(params: {
     return [];
   }
   const appInfos = params.appInventory?.snapshot?.apps ?? [];
+  const installedApps = params.appInventory?.snapshot?.installedApps ?? [];
   return detailApps
     .map((app) => {
       const info = findCodexAppById(appInfos, app.id);
@@ -526,11 +528,11 @@ function resolveOwnedApps(params: {
         {
           id: info.id,
           name: app.name,
-          accessible: info.isAccessible,
-          enabled: info.isEnabled,
+          accessible: true,
+          enabled: findCodexAppById(installedApps, info.id)?.enabled ?? false,
           // Modern plugin summaries carry no auth bit; account-authorized
           // app/read metadata is the canonical connector access proof.
-          needsAuth: !info.isAccessible,
+          needsAuth: false,
         },
         resolveOwnedAppApprovalOverrideKeys(info),
       );
@@ -540,7 +542,7 @@ function resolveOwnedApps(params: {
 
 /** Returns current tool keys whose overrides could bypass the requested reviewer. */
 export function resolveOwnedAppApprovalOverrideKeys(
-  app: v2.AppInfo,
+  app: Pick<CodexAppServerRequestResult<"app/read">["apps"][number], "name" | "toolSummaries">,
 ): Pick<CodexPluginOwnedApp, "approvalOverrideToolConfigKeys"> {
   if (!app.toolSummaries) {
     return {};

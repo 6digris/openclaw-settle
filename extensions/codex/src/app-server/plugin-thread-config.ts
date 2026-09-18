@@ -187,7 +187,8 @@ export async function buildCodexPluginThreadConfig(
           policy,
           request: threadRequest,
           appCache,
-          appCacheKey: threadAppCacheKey,
+          appCacheKey: params.appCacheKey,
+          appInventoryCacheKey: threadAppCacheKey,
           configCwd: params.configCwd,
           metadataCache: params.metadataCache,
           nowMs: params.nowMs,
@@ -211,7 +212,8 @@ export async function buildCodexPluginThreadConfig(
       policy,
       request: threadRequest,
       appCache,
-      appCacheKey: threadAppCacheKey,
+      appCacheKey: params.appCacheKey,
+      appInventoryCacheKey: threadAppCacheKey,
       configCwd: params.configCwd,
       metadataCache: params.metadataCache,
       nowMs: params.nowMs,
@@ -231,7 +233,8 @@ export async function buildCodexPluginThreadConfig(
       identity: record.policy,
       request: threadRequest,
       appCache,
-      appCacheKey: threadAppCacheKey,
+      appCacheKey: params.appCacheKey,
+      appInventoryCacheKey: threadAppCacheKey,
       configCwd: params.configCwd,
       metadataCache: params.metadataCache,
       deferAppInventoryRefresh: true,
@@ -266,7 +269,8 @@ export async function buildCodexPluginThreadConfig(
       policy,
       request: threadRequest,
       appCache,
-      appCacheKey: threadAppCacheKey,
+      appCacheKey: params.appCacheKey,
+      appInventoryCacheKey: threadAppCacheKey,
       configCwd: params.configCwd,
       metadataCache: params.metadataCache,
       nowMs: params.nowMs,
@@ -287,7 +291,8 @@ export async function buildCodexPluginThreadConfig(
       policy,
       request: threadRequest,
       appCache,
-      appCacheKey: threadAppCacheKey,
+      appCacheKey: params.appCacheKey,
+      appInventoryCacheKey: threadAppCacheKey,
       configCwd: params.configCwd,
       metadataCache: params.metadataCache,
       nowMs: params.nowMs,
@@ -301,7 +306,7 @@ export async function buildCodexPluginThreadConfig(
   const accountAppsResult: Awaited<ReturnType<typeof readCodexThreadAdmissibleAccountApps>> =
     policy.allowAllPlugins
       ? await readCodexThreadAdmissibleAccountApps(params, appCache)
-      : { apps: [] };
+      : { apps: [], installedApps: [] };
   // A deny-all thread needs no native settings; read them only before admitting an app.
   let appAdmissionConfig: Promise<CodexPluginThreadAppAdmissionConfig> | undefined;
   const getAdmissionConfig = () => (appAdmissionConfig ??= readCodexConfigForAppAdmission(params));
@@ -410,7 +415,10 @@ export async function buildCodexPluginThreadConfig(
     if (resolveCodexExplicitAppEnablement(admissionConfig.layers, app.id) === false) {
       continue;
     }
-    const accountApp = toCodexPluginOwnedAccountApp(app);
+    const accountApp = toCodexPluginOwnedAccountApp(
+      app,
+      accountAppsResult.installedApps.find((installed) => installed.id === app.id),
+    );
     // Global callability does not prove this thread's workspace/managed policy.
     provisionalAppIds.add(app.id);
     apps[app.id] = buildEnabledAppConfig(
@@ -605,7 +613,13 @@ export async function refreshCodexPluginAppApprovalPolicy(params: {
     admissionConfig.config,
   );
   const currentApps = new Map(
-    inventory?.apps.map((app) => [app.id, toCodexPluginOwnedAccountApp(app)]),
+    inventory?.apps.map((app) => [
+      app.id,
+      toCodexPluginOwnedAccountApp(
+        app,
+        inventory.installedApps.find((installed) => installed.id === app.id),
+      ),
+    ]),
   );
   const apps = { ...params.policyContext.apps };
   for (const [id, policy] of targetApps) {

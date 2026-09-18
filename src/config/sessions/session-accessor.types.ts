@@ -1,4 +1,8 @@
-import type { SessionTranscriptUpdate } from "../../sessions/transcript-events.js";
+import type { AssistantMessage } from "../../llm/types.js";
+import type {
+  InternalSessionTranscriptUpdate,
+  SessionTranscriptUpdate,
+} from "../../sessions/transcript-events.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import type {
   SessionTranscriptTurnMutation,
@@ -348,12 +352,14 @@ export type TranscriptMessageAppendResult<TMessage> = {
 };
 
 /** Transcript update fields supplied by callers; the target is resolved here. */
-export type TranscriptUpdatePayload = Partial<SessionTranscriptUpdate>;
+export type TranscriptUpdatePayload = Partial<SessionTranscriptUpdate> &
+  Pick<InternalSessionTranscriptUpdate, "lifecycleRevision">;
 
 export type LatestTranscriptAssistantText = {
   id?: string;
   text: string;
   timestamp?: number;
+  openclawDelivery?: AssistantMessage["openclawDelivery"];
 };
 
 export type SessionTranscriptWriteLockAccessorContext = {
@@ -364,6 +370,8 @@ export type SessionTranscriptWriteLockAccessorContext = {
   appendMessageWithMessageSequence: <TMessage>(
     options: TranscriptMessageAppendOptions<TMessage>,
   ) => Promise<{
+    /** Unfenced imports omit ownership and retain canonical-history refresh. */
+    lifecycleRevision?: string;
     messageSeq?: number;
     result: TranscriptMessageAppendResult<TMessage> | undefined;
   }>;
@@ -888,6 +896,10 @@ export type SessionEntryCreateWithTranscriptOptions = {
   requireWriteSuccess?: boolean;
   /** Synchronous caller-authority guard checked by the storage owner before commits. */
   commitGuard?: () => void;
+  /** Retain source authority around each final writer, after asynchronous preparation. */
+  withCommit?: <T>(run: (assertSourceCurrent: () => void) => Promise<T>) => Promise<T>;
+  /** Non-throwing notification after the entry's outer COMMIT, before publication or cleanup. */
+  onLifecycleCommitted?: (entry: SessionEntry) => void;
 };
 
 export type SessionPatchProjectionSnapshot = { store: Readonly<Record<string, SessionEntry>> };

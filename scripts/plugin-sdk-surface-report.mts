@@ -160,7 +160,8 @@ const defaultPublicDeprecatedExportsByEntrypointBudget = Object.freeze({
   // +1: shared ingress retention defaults projected through the deprecated message barrel.
   // +1: WhatsApp ack-policy bridge counted through the channel-message legacy facade.
   // Rendering helpers also remain available through this shipped legacy facade.
-  "channel-message": 136,
+  // +1: retain main's complete-preamble predicate when freezing the legacy facade.
+  "channel-message": 137,
   // +2: Slack progress-draft render bridge (function + mode type).
   "channel-outbound": 2,
   // +2: WhatsApp ack-policy bridge (function + mode type).
@@ -377,7 +378,9 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +13: runtime-neutral WebSocket client/server, stream, data, and option contracts.
       // +2: approved process-diagnostics predicate and lightweight subsystem logger.
       // +1: approved shared native-command argument-menu applicability predicate.
-      4485,
+      // +4: shared activity projectors and complete-preamble admission, including the shipped barrel.
+      // +1: preserve opaque host reply metadata through Telegram recovery text clones.
+      4490,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -518,7 +521,9 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +4: runtime-neutral WebSocket client/server and stream constructors.
       // +2: approved process-diagnostics predicate and lightweight subsystem logger.
       // +1: approved shared native-command argument-menu applicability predicate.
-      2648,
+      // +4: shared activity projectors and complete-preamble admission, including the shipped barrel.
+      // +1: preserve opaque host reply metadata through Telegram recovery text clones.
+      2653,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

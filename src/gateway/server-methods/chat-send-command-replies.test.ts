@@ -56,7 +56,6 @@ describe("selectChatSendFinalReplyInputs", () => {
         suppressReplies: false,
       });
 
-      expect(inputs).toHaveLength(2);
       expect(inputs.map((input) => readChatSendReplyPayload(input).sensitiveMedia)).toEqual([
         true,
         true,
@@ -94,12 +93,12 @@ describe("selectChatSendFinalReplyInputs", () => {
       suppressReplies: false,
     });
 
-    expect(inputs).toHaveLength(2);
     expect(inputs.map((input) => input.kind === "prepared" && input.plan)).toEqual(plans);
     expect(
-      plans.map(
-        ({ payload }) =>
-          getReplyPayloadMetadata(payload)?.sessionWriterDeliveryAuthority?.expectedWriterRunId,
+      inputs.map(
+        (input) =>
+          getReplyPayloadMetadata(readChatSendReplyPayload(input))?.sessionWriterDeliveryAuthority
+            ?.expectedWriterRunId,
       ),
     ).toEqual(["first-writer", "second-writer"]);
   });

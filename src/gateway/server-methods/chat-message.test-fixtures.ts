@@ -42,3 +42,64 @@ export function createPngBuffer(size: number): Buffer {
   buffer.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
   return buffer;
 }
+
+export function getMessage(payload: unknown): Record<string, unknown> | undefined {
+  if (!payload || typeof payload !== "object") {
+    return undefined;
+  }
+  const message = (payload as { message?: unknown }).message;
+  return message && typeof message === "object" ? (message as Record<string, unknown>) : undefined;
+}
+
+export function getMessageContent(payload: unknown): Array<Record<string, unknown>> {
+  const content = getMessage(payload)?.content;
+  return Array.isArray(content) ? (content as Array<Record<string, unknown>>) : [];
+}
+
+export function mockCallAt(
+  mock: { mock: { calls: ReadonlyArray<ReadonlyArray<unknown>> } },
+  index: number,
+): ReadonlyArray<unknown> | undefined {
+  const calls = mock.mock.calls;
+  const normalizedIndex = index < 0 ? calls.length + index : index;
+  return calls[normalizedIndex];
+}
+
+export function responseErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (error && typeof error === "object") {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string") {
+      return message;
+    }
+    return JSON.stringify(error);
+  }
+  return String(error);
+}
+
+export function createScopedCliClient(
+  scopes?: string[],
+  client: Partial<{
+    id: string;
+    mode: string;
+    displayName: string;
+    version: string;
+  }> = {},
+  caps?: string[],
+) {
+  const id = client.id ?? "openclaw-cli";
+  return {
+    connect: {
+      scopes,
+      caps,
+      client: {
+        id,
+        mode: client.mode ?? "cli",
+        displayName: client.displayName ?? id,
+        version: client.version ?? "1.0.0",
+      },
+    },
+  };
+}

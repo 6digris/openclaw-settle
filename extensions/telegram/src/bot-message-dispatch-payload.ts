@@ -1,17 +1,43 @@
-import { createOutboundPayloadPlan } from "openclaw/plugin-sdk/channel-outbound";
-import type { ReplyPayload } from "openclaw/plugin-sdk/reply-payload";
-import type { TelegramDispatchTurn as Turn } from "./bot-message-dispatch.types.js";
+import {
+  createOutboundPayloadPlan,
+  createStructuredOutboundPayloadPlan,
+} from "openclaw/plugin-sdk/channel-outbound";
+import { copyReplyPayloadMetadata, type ReplyPayload } from "openclaw/plugin-sdk/reply-payload";
+import type {
+  CurrentTurnTranscriptFinal,
+  TelegramDispatchTurn as Turn,
+} from "./bot-message-dispatch.types.js";
 import { canonicalizeTelegramPresentationPayload } from "./interactive-fallback.js";
 import { resolveTelegramTargetChatType } from "./targets.js";
 
 export const applyTextToPayload = (payload: ReplyPayload, text: string): ReplyPayload =>
-  payload.text === text ? payload : { ...payload, text };
+  payload.text === text ? payload : copyReplyPayloadMetadata(payload, { ...payload, text });
 
 export const projectPayloadForDelivery = (
   turn: Turn,
   payload: ReplyPayload,
+  delivery?: CurrentTurnTranscriptFinal["openclawDelivery"],
 ): ReplyPayload | undefined => {
-  const projected = createOutboundPayloadPlan([payload])[0]?.payload;
+  // Persisted delivery facts can accompany raw MEDIA lines; transcript text is not fully prepared.
+  let projected = createOutboundPayloadPlan([payload])[0]?.payload;
+  if (projected && delivery) {
+    if (payload.replyToId !== undefined || payload.replyToCurrent === true) {
+      // A current-message target and an explicit id are alternative intents, not mergeable fields.
+      projected.replyToId = payload.replyToId;
+      projected.replyToCurrent = payload.replyToCurrent;
+      projected.replyToTag = payload.replyToTag || payload.replyToCurrent === true;
+    } else if (delivery.replyToId !== undefined || delivery.replyToCurrent === true) {
+      projected.replyToId = delivery.replyToId;
+      projected.replyToCurrent = delivery.replyToCurrent;
+      projected.replyToTag = true;
+    }
+    projected.audioAsVoice =
+      payload.audioAsVoice ?? delivery.audioAsVoice ?? projected.audioAsVoice;
+    if (delivery.mediaUrls?.length) {
+      projected.mediaUrls = [...(projected.mediaUrls ?? []), ...delivery.mediaUrls];
+      projected = createStructuredOutboundPayloadPlan([projected])[0]?.payload;
+    }
+  }
   if (projected?.replyToCurrent && projected.replyToId === undefined) {
     // The raw planner has no turn context; resolve current-message intent before preview reuse.
     projected.replyToId =
@@ -25,7 +51,9 @@ export function normalizeDeliveryPayload(
   payload: ReplyPayload,
 ): ReplyPayload | undefined {
   const keepReasoningLane = payload.isReasoning === true && turn.durableReasoningPayloadsEnabled;
-  const payloadForPlan = keepReasoningLane ? { ...payload } : payload;
+  const payloadForPlan = keepReasoningLane
+    ? copyReplyPayloadMetadata(payload, { ...payload })
+    : payload;
   if (keepReasoningLane) {
     delete payloadForPlan.isReasoning;
   }

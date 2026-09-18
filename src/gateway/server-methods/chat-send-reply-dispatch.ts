@@ -92,7 +92,7 @@ export function buildTranscriptReplyTextFromInputs(
         input.kind === "raw" && payload.text
           ? stripInlineDirectiveTagsForDelivery(payload.text).text
           : (payload.text ?? "");
-      if (text.trim() && !isSuppressedControlReplyText(text)) {
+      if (text.trim() && (input.kind === "prepared" || !isSuppressedControlReplyText(text))) {
         lines.push(text);
       }
       for (const mediaUrl of parts.mediaUrls) {
@@ -471,7 +471,9 @@ export function createChatSendReplyDispatch(params: {
                 ? prepareAssistantDisplayText
                 : sanitizeAssistantDisplayText;
             const text = displayText(reply.text, { preserveBoundaries: true });
-            return text && !isSuppressedControlReplyText(text) ? text : "";
+            return text && (replyInput.kind === "prepared" || !isSuppressedControlReplyText(text))
+              ? text
+              : "";
           });
           if (parts.at(-1)) {
             params.onCommandBlock(combineNonStreamingReplyParts(parts));

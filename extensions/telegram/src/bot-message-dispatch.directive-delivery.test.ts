@@ -1,4 +1,12 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { SessionManager } from "openclaw/plugin-sdk/agent-sessions";
 import { createStructuredOutboundPayloadPlan } from "openclaw/plugin-sdk/channel-outbound";
+import { closeQaRuntimeStores } from "openclaw/plugin-sdk/qa-runtime";
+import { isReplyPayloadNonTerminalToolErrorWarning } from "openclaw/plugin-sdk/reply-payload";
+import { setReplyPayloadMetadata } from "openclaw/plugin-sdk/reply-payload-testing";
+import { patchSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { expect, it, vi } from "vitest";
 import {
   createBot,
@@ -14,8 +22,242 @@ import {
   setupDraftStreams,
   telegramDepsForTest,
 } from "./bot-message-dispatch.test-harness.js";
+import { resolveTelegramPromptContextSource } from "./prompt-context-projection.js";
 
 describeTelegramDispatch("dispatchTelegramMessage directive delivery", () => {
+  it.each([
+    {
+      name: "matching transcript signature",
+      existingTarget: undefined,
+      existingCurrent: false,
+      preceding: false,
+      stale: false,
+    },
+    {
+      name: "new target",
+      existingTarget: undefined,
+      existingCurrent: false,
+      preceding: false,
+      stale: false,
+    },
+    {
+      name: "existing target",
+      existingTarget: "42",
+      existingCurrent: false,
+      preceding: false,
+      stale: false,
+    },
+    {
+      name: "existing current-message target",
+      existingTarget: undefined,
+      existingCurrent: true,
+      preceding: false,
+      stale: false,
+    },
+    {
+      name: "preceding input after block media",
+      existingTarget: undefined,
+      existingCurrent: false,
+      preceding: true,
+      stale: false,
+    },
+    {
+      name: "preceding input",
+      existingTarget: undefined,
+      existingCurrent: false,
+      preceding: true,
+      stale: false,
+    },
+    {
+      name: "prior turn",
+      existingTarget: undefined,
+      existingCurrent: false,
+      preceding: false,
+      stale: true,
+    },
+  ] as const)(
+    "recovers persisted delivery facts through the scoped transcript SDK ($name)",
+    async ({ name, existingTarget, existingCurrent, preceding, stale }) => {
+      const extraMedia = name !== "matching transcript signature";
+      const blockMedia = name === "preceding input after block media";
+      const recover = !preceding && !stale;
+      const streaming = recover && existingTarget === undefined;
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "telegram-persisted-recovery-"));
+      const scope = {
+        agentId: "default",
+        sessionId: "persisted-recovery",
+        sessionKey: "agent:default:telegram:direct:123",
+        storePath: path.join(root, "sessions.json"),
+      };
+      const entry = { sessionId: scope.sessionId, updatedAt: Date.now() };
+      const prefix = "The persisted answer continues after this sufficiently long stable opening";
+      const literalExamples = [
+        "```text",
+        "MEDIA:/tmp/fenced-literal.png",
+        "```",
+        "",
+        "    MEDIA:/tmp/indented-literal.png",
+      ].join("\n");
+      const fullText = `${prefix} paragraph with the remaining explanation and its voice attachment.${extraMedia ? "" : `\n\n${literalExamples}\n\nThe complete answer ends here.`}`;
+      const rawMediaUrls = extraMedia ? [] : ["/tmp/actual-attachment.txt"];
+      const transcriptText = `${fullText}${rawMediaUrls.map((url) => `\n\nMEDIA:${url}`).join("")}`;
+      const aliasRecord = {
+        filePath: "/tmp/source-note.txt",
+        name: "Displayed attachment.txt",
+        mimeType: "text/plain",
+      };
+      const mediaUrls = extraMedia ? ["/tmp/lead.txt", aliasRecord.filePath] : [];
+      const recordedMedia = "/tmp/recorded.ogg";
+      let transcriptMessageId: string | undefined;
+      try {
+        await patchSessionEntry({ ...scope, fallbackEntry: entry, update: () => entry });
+        const manager = SessionManager.open(scope, root);
+        const transcript = await vi.importActual<
+          typeof import("openclaw/plugin-sdk/session-transcript-runtime")
+        >("openclaw/plugin-sdk/session-transcript-runtime");
+        readLatestAssistantTextByIdentity.mockImplementation(
+          transcript.readLatestAssistantTextByIdentity,
+        );
+        const { answerDraftStream } = setupDraftStreams({ answerMessageId: 2001 });
+        const context = createContext();
+        context.ctxPayload.SessionKey = scope.sessionKey;
+        context.ctxPayload.MessageSid = "456";
+        deliverInboundReplyWithMessageSendContext.mockResolvedValue({
+          status: "handled_visible",
+          delivery: { messageIds: ["2002"], visibleReplySent: true },
+        });
+        dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+          async ({ dispatcherOptions, replyOptions }) => {
+            await replyOptions?.onPartialReply?.({ text: prefix });
+            if (blockMedia) {
+              const [blockPlan] = createStructuredOutboundPayloadPlan([{ mediaUrl: mediaUrls[0] }]);
+              if (!blockPlan || !dispatcherOptions.deliverPrepared) {
+                throw new Error("Prepared block delivery missing");
+              }
+              await dispatcherOptions.deliverPrepared(blockPlan, { kind: "block" });
+            }
+            transcriptMessageId = manager.appendMessage({
+              role: "assistant",
+              content: [
+                {
+                  type: "text",
+                  text: `${transcriptText} ${existingCurrent ? "[[reply_to:999]]" : "[[reply_to_current]]"} [[audio_as_voice]]`,
+                },
+              ],
+              openclawDelivery: { mediaUrls: [recordedMedia] },
+              api: "openai-responses",
+              provider: "openai",
+              model: "gpt-test",
+              stopReason: "stop",
+              usage: {
+                input: 1,
+                output: 1,
+                cacheRead: 0,
+                cacheWrite: 0,
+                totalTokens: 2,
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+              },
+              timestamp: stale ? Date.now() - 60_000 : Date.now(),
+            });
+            const persisted = manager.getBranch().at(-1);
+            expect(persisted).toMatchObject({
+              type: "message",
+              message: {
+                content: [{ type: "text", text: transcriptText }],
+                openclawDelivery: {
+                  ...(existingCurrent ? { replyToId: "999" } : { replyToCurrent: true }),
+                  audioAsVoice: true,
+                  mediaUrls: [recordedMedia],
+                },
+              },
+            });
+            const payload = setReplyPayloadMetadata(
+              {
+                text: `${prefix}...`,
+                ...(extraMedia
+                  ? { mediaUrls, mediaUrl: aliasRecord.filePath, attachments: [aliasRecord] }
+                  : {}),
+                ...(existingTarget ? { replyToId: existingTarget, audioAsVoice: false } : {}),
+                ...(existingCurrent
+                  ? { replyToCurrent: true }
+                  : name === "new target"
+                    ? { replyToCurrent: false }
+                    : {}),
+              },
+              {
+                ...(preceding ? { precedingInputAnswer: true } : {}),
+                nonTerminalToolErrorWarning: true,
+                tts: { tagged: true, text: "Host-owned spoken answer" },
+              },
+            );
+            const [plan] = createStructuredOutboundPayloadPlan([payload]);
+            if (!plan || !dispatcherOptions.deliverPrepared) {
+              throw new Error("Prepared delivery missing");
+            }
+            await dispatcherOptions.deliverPrepared(plan, { kind: "final" });
+            return { queuedFinal: true };
+          },
+        );
+        await dispatchWithContext({
+          context,
+          replyToMode: "off",
+          streamMode: streaming ? "partial" : "off",
+          telegramDeps: {
+            ...telegramDepsForTest,
+            resolveStorePath: () => scope.storePath,
+            getSessionEntry: () => entry,
+          },
+        });
+        expect(readLatestAssistantTextByIdentity).toHaveBeenCalledWith(scope);
+        expect(deliverInboundReplyWithMessageSendContext).toHaveBeenCalledWith(
+          expect.objectContaining({
+            payload: expect.objectContaining({
+              text: recover ? fullText : `${prefix}...`,
+              ...(recover
+                ? {
+                    replyToId: existingTarget ?? "456",
+                    replyToCurrent: existingTarget ? undefined : true,
+                    replyToTag: !existingTarget,
+                    audioAsVoice: !existingTarget,
+                  }
+                : {}),
+              mediaUrls: recover
+                ? [...mediaUrls, ...rawMediaUrls, recordedMedia]
+                : blockMedia
+                  ? mediaUrls.slice(1)
+                  : mediaUrls,
+              ...(extraMedia && !blockMedia
+                ? { attachments: recover ? [{}, aliasRecord, {}] : [{}, aliasRecord] }
+                : {}),
+            }),
+          }),
+        );
+        const deliveredPayload =
+          deliverInboundReplyWithMessageSendContext.mock.calls[0]?.[0]?.payload;
+        if (!extraMedia) {
+          expect(deliveredPayload && resolveTelegramPromptContextSource(deliveredPayload)).toEqual({
+            transcriptMessageId,
+          });
+        }
+        expect(
+          deliveredPayload && isReplyPayloadNonTerminalToolErrorWarning(deliveredPayload),
+        ).toBe(true);
+        if (streaming) {
+          expect(answerDraftStream.clear).toHaveBeenCalledOnce();
+        }
+        if (!recover) {
+          const payload = deliverInboundReplyWithMessageSendContext.mock.calls[0]?.[0]?.payload;
+          expect(payload?.replyToId).toBeUndefined();
+          expect(payload?.audioAsVoice).not.toBe(true);
+        }
+        expect(answerDraftStream.update).not.toHaveBeenCalledWith(fullText);
+      } finally {
+        await closeQaRuntimeStores(root);
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it.each(["raw", "prepared"] as const)(
     "keeps the %s ingress contract through the registered Telegram media sender",
     async (source) => {
@@ -80,7 +322,10 @@ describeTelegramDispatch("dispatchTelegramMessage directive delivery", () => {
       } else {
         expect(sendVoice).toHaveBeenCalledTimes(1);
         expect(sendAudio).not.toHaveBeenCalled();
-        expect(sendVoice.mock.calls[0]?.[2]).toMatchObject({ reply_to_message_id: 999 });
+        expect(sendVoice.mock.calls[0]?.[2]).toMatchObject({
+          caption: "Example",
+          reply_to_message_id: 999,
+        });
       }
     },
   );
@@ -202,6 +447,7 @@ describeTelegramDispatch("dispatchTelegramMessage directive delivery", () => {
         }),
       );
       expect(answerDraftStream.update).not.toHaveBeenCalledWith(fullText);
+      expect(answerDraftStream.clear).toHaveBeenCalledOnce();
       if (media) {
         const payload = deliverInboundReplyWithMessageSendContext.mock.calls[0]?.[0]?.payload;
         expect(payload?.mediaUrls).toEqual(mediaUrls);

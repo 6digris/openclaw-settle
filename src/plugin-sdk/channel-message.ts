@@ -52,6 +52,7 @@ export {
   INGRESS_CLAIM_PROCESS_ID,
   isChannelProgressAttentionLine,
   isChannelProgressDraftWorkToolName,
+  isCompleteAgentPreamble,
   isPotentialTruncatedFinal,
   isRecentOutboundMessageIdentity,
   keepHttpServerTaskAlive,

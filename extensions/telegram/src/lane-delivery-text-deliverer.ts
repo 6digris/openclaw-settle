@@ -7,6 +7,7 @@ import {
 } from "openclaw/plugin-sdk/channel-outbound";
 import {
   buildTtsSupplementMediaPayload,
+  copyReplyPayloadMetadata,
   getReplyPayloadTtsSupplement,
   resolveSendableOutboundReplyParts,
   type ReplyPayload,
@@ -150,10 +151,10 @@ export function createLaneTextDeliverer(params: CreateLaneTextDelivererParams): 
       return payload;
     }
     if (channelData) {
-      return { ...payload, channelData };
+      return copyReplyPayloadMetadata(payload, { ...payload, channelData });
     }
     const { channelData: _channelData, ...rest } = payload;
-    return rest;
+    return copyReplyPayloadMetadata(payload, rest);
   };
   const withFallbackTelegramButtons = (
     payload: ReplyPayload,
@@ -173,7 +174,7 @@ export function createLaneTextDeliverer(params: CreateLaneTextDelivererParams): 
       return payload;
     }
     const telegramRest = asNonArrayRecord(telegramData);
-    return {
+    return copyReplyPayloadMetadata(payload, {
       ...payload,
       channelData: {
         ...channelData,
@@ -182,7 +183,7 @@ export function createLaneTextDeliverer(params: CreateLaneTextDelivererParams): 
           buttons,
         },
       },
-    };
+    });
   };
   const mediaOnlyPayload = (
     payload: ReplyPayload,
@@ -208,7 +209,10 @@ export function createLaneTextDeliverer(params: CreateLaneTextDelivererParams): 
         ...voicePayload
       } = params.applyTextToPayload(payload, text);
       return withFallbackTelegramButtons(
-        withMediaChannelData({ ...voicePayload, spokenText: text }, options),
+        withMediaChannelData(
+          copyReplyPayloadMetadata(payload, { ...voicePayload, spokenText: text }),
+          options,
+        ),
         options?.fallbackButtons,
       );
     }
@@ -220,7 +224,7 @@ export function createLaneTextDeliverer(params: CreateLaneTextDelivererParams): 
       ...rest
     } = payload;
     return withFallbackTelegramButtons(
-      withMediaChannelData(rest, options),
+      withMediaChannelData(copyReplyPayloadMetadata(payload, rest), options),
       options?.fallbackButtons,
     );
   };

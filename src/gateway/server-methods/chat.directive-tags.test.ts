@@ -51,6 +51,7 @@ import { resolveMirroredTranscriptText } from "../../config/sessions/transcript-
 import { resolveSessionTranscriptActiveLeafEntryId } from "../../config/sessions/transcript-tree.js";
 import { withOwnedSessionTranscriptWrites } from "../../config/sessions/transcript-write-context.js";
 import { getAgentRunContext } from "../../infra/agent-run-registry.js";
+import { createStructuredOutboundPayloadPlan } from "../../infra/outbound/payloads.js";
 import { RUN_STALE_TAKEOVER_MS } from "../../logging/diagnostic-run-activity.js";
 import {
   getActiveSessionWorkAdmissionCount,
@@ -76,6 +77,11 @@ import {
   createFileAttachment,
   createImageAttachment,
   createPngBuffer,
+  createScopedCliClient,
+  getMessage,
+  getMessageContent,
+  mockCallAt,
+  responseErrorMessage,
   INLINE_PNG_BASE64,
   OFFLOAD_PNG_BASE64,
   TINY_JPEG_BASE64,
@@ -788,46 +794,10 @@ async function readActiveAssistantTranscriptMessages(): Promise<Array<Record<str
   return (await readRawActiveAssistantTranscriptMessages()).map(projectAssistantDisplayContent);
 }
 
-function getMessage(payload: unknown): Record<string, any> | undefined {
-  if (!payload || typeof payload !== "object") {
-    return undefined;
-  }
-  const message = (payload as { message?: unknown }).message;
-  return message && typeof message === "object" ? (message as Record<string, any>) : undefined;
-}
-
-function getMessageContent(payload: unknown): Array<Record<string, any>> {
-  const content = getMessage(payload)?.content;
-  return Array.isArray(content) ? (content as Array<Record<string, any>>) : [];
-}
-
-function mockCallAt(
-  mock: { mock: { calls: ReadonlyArray<ReadonlyArray<unknown>> } },
-  index: number,
-): ReadonlyArray<unknown> | undefined {
-  const calls = mock.mock.calls;
-  const normalizedIndex = index < 0 ? calls.length + index : index;
-  return calls[normalizedIndex];
-}
-
 function lastRespondCall(respond: RespondMock) {
   return mockCallAt(respond, -1) as
     | [boolean, Record<string, any> | undefined, Record<string, any> | undefined]
     | undefined;
-}
-
-function responseErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  if (error && typeof error === "object") {
-    const message = (error as { message?: unknown }).message;
-    if (typeof message === "string") {
-      return message;
-    }
-    return JSON.stringify(error);
-  }
-  return String(error);
 }
 
 function lastBroadcastPayload(context: ChatContext): Record<string, any> | undefined {
@@ -875,14 +845,6 @@ function findUserUpdate() {
   });
 }
 
-function userUpdateMessage(
-  update: { message?: unknown } | undefined,
-): Record<string, any> | undefined {
-  return update?.message && typeof update.message === "object"
-    ? (update.message as Record<string, any>)
-    : undefined;
-}
-
 function expectUserUpdateIdentity(update: ReturnType<typeof findUserUpdate>) {
   expect(update?.target).toEqual({
     agentId: "main",
@@ -917,31 +879,6 @@ function expectDispatchContextFields(expected: {
   for (const [key, value] of Object.entries(expected)) {
     expect((mockState.lastDispatchCtx as Record<string, unknown> | undefined)?.[key]).toBe(value);
   }
-}
-
-function createScopedCliClient(
-  scopes?: string[],
-  client: Partial<{
-    id: string;
-    mode: string;
-    displayName: string;
-    version: string;
-  }> = {},
-  caps?: string[],
-) {
-  const id = client.id ?? "openclaw-cli";
-  return {
-    connect: {
-      scopes,
-      caps,
-      client: {
-        id,
-        mode: client.mode ?? "cli",
-        displayName: client.displayName ?? id,
-        version: client.version ?? "1.0.0",
-      },
-    },
-  };
 }
 
 function createChatContext() {
@@ -2166,14 +2103,11 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       steerTargetRunId: "active-run",
     });
     const userUpdates = mockState.emittedTranscriptUpdates.filter(
-      (update) => userUpdateMessage(update)?.role === "user",
+      (update) => getMessage(update)?.role === "user",
     );
     expect(userUpdates).toHaveLength(2);
-    expect(userUpdateMessage(userUpdates[0])).not.toHaveProperty("__openclaw.steerTargetRunId");
-    expect(userUpdateMessage(userUpdates[1])).toHaveProperty(
-      "__openclaw.steerTargetRunId",
-      "active-run",
-    );
+    expect(getMessage(userUpdates[0])).not.toHaveProperty("__openclaw.steerTargetRunId");
+    expect(getMessage(userUpdates[1])).toHaveProperty("__openclaw.steerTargetRunId", "active-run");
     expect(queueMessage).toHaveBeenCalledWith(
       "hello",
       expect.objectContaining({
@@ -4787,6 +4721,47 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     expect(JSON.stringify(assistantUpdates[0]?.message)).toContain("Command result with TTS.");
   });
 
+  it.each(["NO_REPLY", "ANNOUNCE_SKIP", "REPLY_SKIP"])(
+    "persists admitted prepared literal %s through chat.send",
+    async (controlText) => {
+      await createTranscriptFixture("openclaw-chat-prepared-control-");
+      const literal = `${controlText}\n`;
+      const fragments = ["Here is the example:\n\n```text\n", "literal-slot", "```\n\nDone"];
+      const deliveredTexts: Array<string | undefined> = [];
+      dispatchInboundMessageMock.mockImplementationOnce(
+        async ({ dispatcher }: TestDispatchParams) => {
+          expectDefined(
+            dispatcher.appendBeforeDeliver,
+            "before-delivery modifier",
+          )((payload) => {
+            const prepared =
+              payload.text === "literal-slot" ? { ...payload, text: literal } : payload;
+            deliveredTexts.push(prepared.text);
+            return prepared;
+          });
+          const plans = createStructuredOutboundPayloadPlan(fragments.map((text) => ({ text })));
+          for (const plan of plans) {
+            expect(dispatcher.sendPreparedReply("final", plan)).toBe(true);
+          }
+          dispatcher.markComplete();
+          await dispatcher.waitForIdle();
+          return { queuedFinal: true, counts: { tool: 0, block: 0, final: plans.length } };
+        },
+      );
+      const { context, payload } = await sendNewChatRequest({
+        idempotencyKey: "idem-prepared-control",
+      });
+      const content = [
+        { type: "text", text: `Here is the example:\n\n\`\`\`text\n${literal}\`\`\`\n\nDone` },
+      ];
+      const assistantMessages = await readRawActiveAssistantTranscriptMessages();
+      expect(deliveredTexts).toEqual([fragments[0], literal, fragments[2]]);
+      expect.soft(getMessageContent(payload)).toEqual(content);
+      expect.soft(getMessageContent(lastNodeSendCall(context)?.[2])).toEqual(content);
+      expect.soft(assistantMessages.map((message) => message.content)).toEqual([content]);
+    },
+  );
+
   it.each([
     {
       name: "prose",
@@ -5673,9 +5648,6 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     expect(payload?.runId).toBe("idem-telegram-final");
     expect(payload?.sessionKey).toBe(sessionKey);
     expect(payload?.state).toBe("final");
-    if (!getMessage(payload)) {
-      throw new Error("Expected Telegram final message");
-    }
     expect(extractFirstTextBlock(getMessage(payload))).toBe("telegram ok");
     const nodeSend = lastNodeSendCall(context);
     expect(nodeSend?.[0]).toBe(sessionKey);
@@ -6229,7 +6201,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     await waitForAssertion(() => {
       expect(context.dedupe.get("chat:idem-user-transcript-gate-pass-error")?.ok).toBe(false);
       const userUpdate = findUserUpdate();
-      const message = userUpdateMessage(userUpdate);
+      const message = getMessage(userUpdate);
       expectUserUpdateIdentity(userUpdate);
       expect(message?.role).toBe("user");
       expect(message?.content).toBe("prompt allowed before model error");
@@ -7406,7 +7378,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     });
 
     const userUpdate = findUserUpdate();
-    const message = userUpdateMessage(userUpdate);
+    const message = getMessage(userUpdate);
     expectUserUpdateIdentity(userUpdate);
     expect(message?.role).toBe("user");
     expect(message?.content).toBe("quick command");
@@ -7483,7 +7455,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     await waitForAssertion(() => {
       expect(context.dedupe.get("chat:idem-user-transcript-error-no-run")?.ok).toBe(false);
       const userUpdate = findUserUpdate();
-      const message = userUpdateMessage(userUpdate);
+      const message = getMessage(userUpdate);
       expectUserUpdateIdentity(userUpdate);
       expect(message?.role).toBe("user");
       expect(message?.content).toBe("hello from failed dispatch");
@@ -7508,7 +7480,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     await waitForAssertion(() => {
       expect(context.dedupe.get("chat:idem-user-transcript-slash-error-no-run")?.ok).toBe(false);
       const userUpdate = findUserUpdate();
-      const message = userUpdateMessage(userUpdate);
+      const message = getMessage(userUpdate);
       expectUserUpdateIdentity(userUpdate);
       expect(message?.role).toBe("user");
       expect(message?.content).toBe("/unknown keep this user turn");
@@ -7545,7 +7517,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
         }),
       ]);
       const userUpdates = mockState.emittedTranscriptUpdates.filter(
-        (update) => userUpdateMessage(update)?.role === "user",
+        (update) => getMessage(update)?.role === "user",
       );
       expect(userUpdates).toHaveLength(1);
     });
@@ -7566,7 +7538,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     await waitForAssertion(() => {
       expect(context.dedupe.get("chat:idem-user-transcript-error-hook-pre-start")?.ok).toBe(false);
       const userUpdate = findUserUpdate();
-      const message = userUpdateMessage(userUpdate);
+      const message = getMessage(userUpdate);
       expectUserUpdateIdentity(userUpdate);
       expect(message?.role).toBe("user");
       expect(message?.content).toBe("hello before hooked startup failure");
@@ -7592,7 +7564,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
         false,
       );
       const userUpdate = findUserUpdate();
-      const message = userUpdateMessage(userUpdate);
+      const message = getMessage(userUpdate);
       expectUserUpdateIdentity(userUpdate);
       expect(message?.role).toBe("user");
       expect(message?.content).toBe("hello before cli startup failure");
@@ -7617,7 +7589,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     await waitForAssertion(() => {
       const userUpdate = findUserUpdate();
       expectUserUpdateIdentity(userUpdate);
-      const message = userUpdateMessage(userUpdate);
+      const message = getMessage(userUpdate);
       expect(message?.content).toBe("[redacted by hook]");
       expect(mockState.beforeMessageWriteCalls).toHaveLength(1);
       const persistedUser = readPersistedUserMessages()[0];
@@ -7678,7 +7650,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
         context.dedupe.get("chat:idem-user-transcript-agent-error-no-runtime-persist")?.ok,
       ).toBe(false);
       const userUpdate = findUserUpdate();
-      const message = userUpdateMessage(userUpdate);
+      const message = getMessage(userUpdate);
       expectUserUpdateIdentity(userUpdate);
       expect(message?.role).toBe("user");
       expect(message?.content).toBe("hello before agent error payload");
@@ -7708,7 +7680,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       ).toBe(true);
       const userUpdate = findUserUpdate();
       expectUserUpdateIdentity(userUpdate);
-      const message = userUpdateMessage(userUpdate);
+      const message = getMessage(userUpdate);
       expect(message?.role).toBe("user");
       expect(message?.content).toBe("hello before successful fallback");
       expect(message?.idempotencyKey).toBe(
@@ -7735,7 +7707,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     await waitForAssertion(() => {
       expect(context.dedupe.get("chat:idem-user-transcript-agent-error-hook-pass")?.ok).toBe(false);
       const userUpdate = findUserUpdate();
-      const message = userUpdateMessage(userUpdate);
+      const message = getMessage(userUpdate);
       expectUserUpdateIdentity(userUpdate);
       expect(message?.role).toBe("user");
       expect(message?.content).toBe("hello before hooked agent error payload");

@@ -11,8 +11,8 @@ import {
 } from "@openclaw/net-policy/ip";
 import { hasHttpUrlPrefix } from "@openclaw/net-policy/url-protocol";
 import { expectDefined } from "@openclaw/normalization-core";
-import { parseFenceSpans } from "../../packages/markdown-core/src/fences.js";
 import type { MarkdownImageSpan as MarkdownImageMatch } from "../../packages/markdown-core/src/image-spans.js";
+import { findCodeRegions } from "../shared/text/code-regions.js";
 import { parseInlineDirectives } from "../utils/directive-tags.js";
 
 /** Captures legacy MEDIA: attachment directives from model/tool output. */
@@ -262,10 +262,6 @@ function normalizeMarkdownImageDestination(destination: string): string {
   return normalizeMediaSource(destination.trim());
 }
 
-function mayContainFenceMarkers(input: string): boolean {
-  return input.includes("```") || input.includes("~~~");
-}
-
 function cleanLineText(text: string): string {
   return text.replace(/[ \t]{2,}/g, " ").trim();
 }
@@ -455,9 +451,7 @@ export function splitMediaOutput(
     }
   };
 
-  // Parse fenced code blocks to avoid extracting MEDIA tokens from inside them
-  const hasFenceMarkers = mayContainFenceMarkers(trimmedRaw);
-  const fenceSpans = hasFenceMarkers ? parseFenceSpans(trimmedRaw) : [];
+  const codeBlocks = findCodeRegions(trimmedRaw).filter((region) => region.block);
 
   // Line-wise parsing preserves visible text while letting MEDIA-only lines disappear cleanly.
   const lines = trimmedRaw.split("\n");
@@ -469,9 +463,9 @@ export function splitMediaOutput(
       : [];
   let markdownImageIndex = 0;
 
-  let lineOffset = 0; // Track character offset for fence checking
+  let lineOffset = 0; // Track character offset for code-block checking
   // Line offsets and scanner spans advance in source order.
-  let fenceIndex = 0;
+  let codeBlockIndex = 0;
   for (const line of lines) {
     const lineEnd = lineOffset + line.length;
     const lineImages: MarkdownImageMatch[] = [];
@@ -493,13 +487,13 @@ export function splitMediaOutput(
         });
       }
     }
-    // Fenced examples must remain text; extracting their MEDIA tokens would mutate transcripts.
-    let fence = fenceSpans[fenceIndex];
-    while (fence && lineOffset >= fence.end) {
-      fenceIndex += 1;
-      fence = fenceSpans[fenceIndex];
+    // Block spans can start after container indentation on their first source line.
+    let codeBlock = codeBlocks[codeBlockIndex];
+    while (codeBlock && lineOffset >= codeBlock.end) {
+      codeBlockIndex += 1;
+      codeBlock = codeBlocks[codeBlockIndex];
     }
-    if (fence && lineOffset >= fence.start) {
+    if (codeBlock && lineEnd > codeBlock.start) {
       keptLines.push(line);
       pushTextSegment(line);
       lineOffset += line.length + 1; // +1 for newline
