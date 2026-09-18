@@ -78,6 +78,7 @@ export type BlockStreamingCoalescing = {
 type BlockStreamingChunking = {
   minChars: number;
   maxChars: number;
+  hardMaxChars?: number;
   breakPreference: "paragraph" | "newline" | "sentence";
   flushOnParagraph?: boolean;
 };
@@ -124,6 +125,7 @@ export function resolveEffectiveBlockStreamingConfig(params: {
     ...chunkingDefaults,
     minChars: Math.min(chunkingDefaults.minChars, chunkingMax),
     maxChars: chunkingMax,
+    hardMaxChars: Math.max(chunkingMax, chunkingDefaults.hardMaxChars ?? textLimit),
   };
   const coalescingDefaults = resolveBlockStreamingCoalescing(
     params.cfg,
@@ -183,6 +185,7 @@ export function resolveBlockStreamingChunking(
   return {
     minChars,
     maxChars,
+    hardMaxChars: textLimit,
     breakPreference,
     flushOnParagraph: chunkMode === "newline",
   };

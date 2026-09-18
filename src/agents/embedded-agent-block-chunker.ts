@@ -18,6 +18,8 @@ import {
 export type BlockReplyChunking = {
   minChars: number;
   maxChars: number;
+  /** Absolute transport ceiling; links may exceed maxChars but never this limit. */
+  hardMaxChars?: number;
   breakPreference?: "paragraph" | "newline" | "sentence";
   /** When true, prefer \n\n paragraph boundaries once minChars has been satisfied. */
   flushOnParagraph?: boolean;
@@ -219,6 +221,7 @@ export class EmbeddedBlockChunker {
     }
     const minChars = Math.max(1, Math.floor(chunking?.minChars ?? 1));
     const maxChars = Math.max(minChars, Math.floor(chunking?.maxChars ?? Infinity));
+    const hardMaxChars = Math.max(maxChars, Math.floor(chunking?.hardMaxChars ?? maxChars));
     let source = this.bufferedText;
     const startsAtLineStart = Boolean(this.#reopenPrefix) || this.#bufferStartsAtLineStart;
 
@@ -268,7 +271,7 @@ export class EmbeddedBlockChunker {
       fence.end -= removedLength;
       removedFenceInfoLength += removedLength;
     }
-    const unbreakableSpans = scanUnbreakableSpans(source, fenceSpans, maxChars);
+    const unbreakableSpans = scanUnbreakableSpans(source, fenceSpans, hardMaxChars);
     const sourceOffset = (index: number) =>
       Math.max(
         0,
@@ -351,6 +354,7 @@ export class EmbeddedBlockChunker {
               force ? 1 : undefined,
               start,
               maxChars - reopenPrefix.length,
+              hardMaxChars - reopenPrefix.length,
               openFence,
             );
       if (breakResult.index <= 0) {
@@ -517,47 +521,61 @@ export class EmbeddedBlockChunker {
     minCharsOverride?: number,
     offset = 0,
     maxCharsOverride?: number,
+    hardMaxCharsOverride?: number,
     openFence?: FenceSpan,
   ): BreakResult {
     const minChars = Math.max(1, Math.floor(minCharsOverride ?? chunking.minChars));
     const maxChars = Math.max(1, Math.floor(maxCharsOverride ?? chunking.maxChars));
+    const hardMaxChars = Math.max(
+      maxChars,
+      Math.floor(hardMaxCharsOverride ?? chunking.hardMaxChars ?? maxChars),
+    );
     if (buffer.length < minChars) {
       return { index: -1 };
     }
     const window = buffer.slice(0, Math.min(maxChars, buffer.length));
-
-    const preferred = this.#pickPreferredBreakIndex(
-      window,
-      fenceSpans,
-      unbreakableSpans,
-      chunking,
-      force,
-      true,
-      minChars,
-      offset,
-      openFence,
+    const oversizedSpanAtStart = unbreakableSpans.some(
+      (span) => span.start <= offset && span.end > offset + hardMaxChars,
     );
-    if (preferred.index !== -1) {
-      return preferred;
-    }
 
-    if (buffer.length < maxChars) {
-      return { index: -1 };
-    }
+    if (!oversizedSpanAtStart) {
+      const preferred = this.#pickPreferredBreakIndex(
+        window,
+        fenceSpans,
+        unbreakableSpans,
+        chunking,
+        force,
+        true,
+        minChars,
+        offset,
+        openFence,
+      );
+      if (preferred.index !== -1) {
+        return preferred;
+      }
 
-    for (let i = window.length - 1; i >= minChars; i--) {
-      if (/\s/.test(window.charAt(i)) && isSafeFenceBreak(fenceSpans, offset + i)) {
-        return { index: protectBreakIndex(unbreakableSpans, i, offset, force) };
+      if (buffer.length < maxChars) {
+        return { index: -1 };
+      }
+
+      for (let i = window.length - 1; i >= minChars; i--) {
+        if (/\s/.test(window.charAt(i)) && isSafeFenceBreak(fenceSpans, offset + i)) {
+          return { index: protectBreakIndex(unbreakableSpans, i, offset, force) };
+        }
       }
     }
 
-    if (buffer.length >= maxChars) {
+    const forcedLimit = oversizedSpanAtStart ? hardMaxChars : maxChars;
+    if (buffer.length >= forcedLimit) {
       const firstCodePointWidth = (buffer.codePointAt(0) ?? 0) > 0xffff ? 2 : 1;
       const forcedBreakIndex = sliceUtf16Safe(
         buffer,
         0,
-        Math.max(maxChars, firstCodePointWidth),
+        Math.max(forcedLimit, firstCodePointWidth),
       ).length;
+      if (oversizedSpanAtStart) {
+        return { index: forcedBreakIndex };
+      }
       // An unfinished span ends at the buffer boundary without a source closer.
       const absoluteBreakIndex = offset + forcedBreakIndex;
       const fence =

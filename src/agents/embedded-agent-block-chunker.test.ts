@@ -167,7 +167,7 @@ describe("EmbeddedBlockChunker", () => {
     expect(drainChunks(chunker, true)).toEqual(["Tail"]);
   });
 
-  it("keeps a streamed over-budget Markdown link target intact", () => {
+  it("keeps a streamed link intact above the preferred size but below the transport limit", () => {
     const target =
       `https://outlook.office365.com/owa/?itemid=${"A".repeat(120)}` +
       "%3D%3D&exvsurl=1&path=/calendar/item";
@@ -177,6 +177,7 @@ describe("EmbeddedBlockChunker", () => {
     const chunker = new EmbeddedBlockChunker({
       minChars: prefix.length + 1,
       maxChars: text.indexOf("itemid="),
+      hardMaxChars: 400,
       breakPreference: "paragraph",
     });
     const chunks: string[] = [];
@@ -199,10 +200,11 @@ describe("EmbeddedBlockChunker", () => {
     ["relative link with title", `[event](/calendar/${"a".repeat(80)} 'Invite')`],
     ["nested label", `[outer [inner]](/calendar/${"a".repeat(80)})`],
     ["escaped label bracket", `[outer \\[inner\\]](/calendar/${"a".repeat(80)})`],
-  ])("waits for a streamed over-budget %s to close", (_name, protectedText) => {
+  ])("waits for a streamed soft-limit %s to close", (_name, protectedText) => {
     const chunker = new EmbeddedBlockChunker({
       minChars: 10,
       maxChars: 30,
+      hardMaxChars: 160,
       breakPreference: "paragraph",
     });
     const chunks: string[] = [];
@@ -223,11 +225,12 @@ describe("EmbeddedBlockChunker", () => {
     expect(chunks).toEqual([protectedText, " Tail"]);
   });
 
-  it("waits for a streamed over-budget bare URL to end", () => {
+  it("waits for a streamed soft-limit bare URL to end", () => {
     const protectedText = `https://example.com/${"a".repeat(80)}`;
     const chunker = new EmbeddedBlockChunker({
       minChars: 10,
       maxChars: 30,
+      hardMaxChars: 160,
       breakPreference: "paragraph",
     });
     const chunks: string[] = [];
@@ -252,6 +255,7 @@ describe("EmbeddedBlockChunker", () => {
     const chunker = new EmbeddedBlockChunker({
       minChars: 1,
       maxChars: 30,
+      hardMaxChars: 160,
       breakPreference: "paragraph",
     });
     const chunks: string[] = [];
@@ -288,6 +292,7 @@ describe("EmbeddedBlockChunker", () => {
     const chunker = new EmbeddedBlockChunker({
       minChars: 1,
       maxChars: 30,
+      hardMaxChars: 160,
       breakPreference: "paragraph",
     });
     const chunks: string[] = [];
@@ -302,19 +307,40 @@ describe("EmbeddedBlockChunker", () => {
     expect(chunks).toEqual([prefix, link, " Tail"]);
   });
 
-  it("force flushes an unfinished over-budget URL without stalling", () => {
+  it("hard-splits an unfinished URL at the transport limit without stalling", () => {
     const text = `https://example.com/${"a".repeat(80)}`;
     const chunker = new EmbeddedBlockChunker({
       minChars: 10,
       maxChars: 30,
+      hardMaxChars: 50,
       breakPreference: "paragraph",
     });
 
     chunker.append(text);
 
-    expect(drainChunks(chunker)).toStrictEqual([]);
-    expect(drainChunks(chunker, true)).toEqual([text]);
+    const chunks = drainChunks(chunker);
+    chunks.push(...drainChunks(chunker, true));
+    expect(chunks.join("")).toBe(text);
+    expectChunksWithinLength(chunks, 50);
     expect(chunker.bufferedText).toBe("");
+  });
+
+  it("hard-splits a complete link that exceeds the transport limit", () => {
+    const link = `[invite](https://example.com/${"a".repeat(80)})`;
+    const text = `${link} Tail`;
+    const chunker = new EmbeddedBlockChunker({
+      minChars: 10,
+      maxChars: 30,
+      hardMaxChars: 50,
+      breakPreference: "paragraph",
+    });
+
+    chunker.append(text);
+    const chunks = drainChunks(chunker, true);
+
+    expect(chunks.join("")).toBe(text);
+    expect(chunks).not.toContain(link);
+    expectChunksWithinLength(chunks, 50);
   });
 
   it("keeps links intact after degrading an oversized fence language hint", () => {
@@ -323,6 +349,7 @@ describe("EmbeddedBlockChunker", () => {
     const chunker = new EmbeddedBlockChunker({
       minChars: 10,
       maxChars: 30,
+      hardMaxChars: 160,
       breakPreference: "paragraph",
     });
     const chunks: string[] = [];
