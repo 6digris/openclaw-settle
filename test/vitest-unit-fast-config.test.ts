@@ -4,8 +4,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { spawnNodeEvalSync } from "../src/test-utils/node-process.js";
+import { useAutoCleanupTempDirTracker } from "./helpers/temp-dir.js";
 import { cliProcessTestFiles } from "./vitest/vitest.cli-process-paths.mjs";
 import { createCommandsLightVitestConfig } from "./vitest/vitest.commands-light.config.ts";
 import { createContractsPluginVitestConfig } from "./vitest/vitest.contracts-plugin.config.ts";
@@ -31,6 +32,8 @@ import {
   resolveUnitFastTimerTestIncludePattern,
 } from "./vitest/vitest.unit-fast-paths.mjs";
 import { createUnitFastVitestConfig } from "./vitest/vitest.unit-fast.config.ts";
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 const ENV_ISOLATION_SETUP_PATH = /[\\/]test[\\/]setup\.env\.ts$/u;
 
@@ -260,6 +263,70 @@ describe("unit-fast vitest lane", () => {
       { include, excluded },
     ]);
     expect(configProbeResult.stdout).toContain("UNIT_FULL_EXCLUSION_PROBE true");
+  });
+
+  it("keeps large Git inventories on the fast path and retains non-Git discovery", () => {
+    const gitRoot = tempDirs.make("openclaw-large-git-inventory-");
+    const fallbackRoot = tempDirs.make("openclaw-non-git-inventory-");
+    const included = "src/hooks/included.test.ts";
+    const ignored = "src/hooks/ignored.test.ts";
+    for (const cwd of [gitRoot, fallbackRoot]) {
+      fs.mkdirSync(path.join(cwd, "src/hooks"), { recursive: true });
+      fs.writeFileSync(path.join(cwd, ".gitignore"), `${ignored}\n`);
+      for (const file of [included, ignored]) {
+        fs.writeFileSync(path.join(cwd, file), 'export const fixture = "pure";');
+      }
+    }
+    expect(spawnSync("git", ["init"], { cwd: gitRoot }).status).toBe(0);
+    const blob = spawnSync("git", ["hash-object", "-w", "--stdin"], {
+      cwd: gitRoot,
+      encoding: "utf8",
+      input: "",
+    });
+    expect(blob.status, blob.stderr).toBe(0);
+    // Populate the real index without creating thousands of unrelated fixture files.
+    const index = Array.from(
+      { length: 6_000 },
+      (_, number) => `100644 ${blob.stdout.trim()}\tsrc/hooks/${number}-${"x".repeat(180)}.ts\n`,
+    ).join("");
+    const staged = spawnSync("git", ["update-index", "--index-info"], {
+      cwd: gitRoot,
+      encoding: "utf8",
+      input: index,
+    });
+    expect(staged.status, staged.stderr).toBe(0);
+    const inventory = spawnSync("git", ["ls-files", "-z"], {
+      cwd: gitRoot,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    expect(inventory.status, inventory.stderr?.toString()).toBe(0);
+    expect(inventory.stdout.length).toBeGreaterThan(1024 * 1024);
+
+    const moduleUrl = pathToFileURL(path.resolve("test/vitest/vitest.unit-fast-paths.mjs"));
+    const result = spawnNodeEvalSync(`
+      import fs from "node:fs";
+      const paths = await import(${JSON.stringify(moduleUrl.href)});
+      const originalReaddirSync = fs.readdirSync;
+      let directoryReads = 0;
+      fs.readdirSync = (...args) => {
+        directoryReads += 1;
+        return originalReaddirSync(...args);
+      };
+      const results = ${JSON.stringify([gitRoot, fallbackRoot])}.map((cwd) => {
+        process.chdir(cwd);
+        directoryReads = 0;
+        const files = paths.getUnitFastTestFilesForIncludePatterns(["src/hooks/**/*.test.ts"]);
+        return { files, directoryReads };
+      });
+      console.log(JSON.stringify(results));
+    `);
+    expect(result.status, result.stderr).toBe(0);
+    const inventories = JSON.parse(result.stdout);
+    expect(inventories).toEqual([
+      { files: [included], directoryReads: 0 },
+      { files: [ignored, included], directoryReads: expect.any(Number) },
+    ]);
+    expect(inventories[1].directoryReads).toBeGreaterThan(0);
   });
 
   it("keeps untracked tests in their planned fast lane and execution include list", () => {
