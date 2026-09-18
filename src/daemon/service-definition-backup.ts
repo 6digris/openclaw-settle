@@ -16,7 +16,11 @@ import {
   restoreScheduledTaskDefinition,
 } from "./schtasks-install-files.js";
 import { resolveTaskScriptPath, setScheduledTaskXmlEnabled } from "./schtasks-layout.js";
-import { readServiceFileState, type GatewayServiceDefinitionPublication } from "./service-stage.js";
+import {
+  readServiceFileState,
+  type GatewayServiceDefinitionGuard,
+  type GatewayServiceDefinitionPublication,
+} from "./service-stage.js";
 import {
   resolveManagedGatewayServiceCommand,
   type GatewayServiceCommandConfig,
@@ -32,8 +36,10 @@ import {
 
 export type GatewayServiceDefinitionBackup = {
   backupPaths: string[];
-  seal: (publication: GatewayServiceDefinitionPublication | "original") => Promise<void>;
-  restore: () => Promise<void>;
+  seal: (
+    publication: GatewayServiceDefinitionPublication | "original" | "regenerate",
+  ) => Promise<void>;
+  restore: () => Promise<GatewayServiceDefinitionGuard>;
 };
 
 function definitionFiles(env: GatewayServiceEnv, command: GatewayServiceCommandConfig) {
@@ -63,6 +69,46 @@ function definitionFiles(env: GatewayServiceEnv, command: GatewayServiceCommandC
 
 function taskPolicySha256(xml: string | null): string | null {
   return xml === null ? null : sha256Hex(setScheduledTaskXmlEnabled(xml, false));
+}
+
+/** Verify retained conditions under the native writer's operation lock. */
+export async function assertGatewayServiceDefinitionGuard(params: {
+  env: GatewayServiceEnv;
+  command: GatewayServiceCommandConfig | null;
+  guard: GatewayServiceDefinitionGuard;
+}): Promise<void> {
+  try {
+    if (!params.command) {
+      throw new Error("Service definition is no longer available.");
+    }
+    const paths = [
+      ...new Set([
+        ...definitionFiles(params.env, params.command),
+        ...(params.command.definitionPaths ?? []),
+      ]),
+    ];
+    if (
+      !isDeepStrictEqual(
+        paths.toSorted(),
+        params.guard.files.map((file) => file.sourcePath).toSorted(),
+      ) ||
+      (params.command.sourcePath &&
+        path.resolve(params.command.sourcePath) !== path.resolve(paths[0]!))
+    ) {
+      throw new Error("Service definition inputs changed before the installer rewrite.");
+    }
+    for (const { sourcePath, after } of params.guard.files) {
+      if (!isDeepStrictEqual(after, await readServiceFileState(sourcePath))) {
+        throw new Error(`Service definition changed; preserved the newer edit at ${sourcePath}`);
+      }
+    }
+    const xml = process.platform === "win32" ? await readScheduledTaskDefinition(params.env) : null;
+    if (taskPolicySha256(xml) !== params.guard.taskPolicySha256) {
+      throw new Error("Scheduled Task changed; preserved the newer definition.");
+    }
+  } catch (cause) {
+    throw new Error(`SERVICE_DEFINITION_UNKNOWN: ${String(cause)}`, { cause });
+  }
 }
 
 /** Capture inside the installer's native operation lock, before another writer can enter. */
@@ -151,19 +197,18 @@ export async function captureGatewayServiceDefinitionBackup(params: {
   );
 
   let expectedXml = taskPolicySha256(originalXml);
+  const guard = (): GatewayServiceDefinitionGuard =>
+    structuredClone({
+      files: snapshots.map(({ file, expected }) => ({ sourcePath: file, after: expected })),
+      taskPolicySha256: expectedXml,
+    });
   const assertUnchanged = async () => {
-    for (const { file, expected } of snapshots) {
-      if (!isDeepStrictEqual(expected, await readServiceFileState(file))) {
-        throw new Error(`Service definition changed; preserved the newer edit at ${file}`);
-      }
-    }
-    if (taskPolicySha256(await readXml()) !== expectedXml) {
-      throw new Error("Scheduled Task changed; preserved the newer definition.");
-    }
+    assertCurrent();
+    await assertGatewayServiceDefinitionGuard({ ...params, guard: guard() });
     assertCurrent();
   };
   await assertUnchanged();
-  let sealed = false;
+  let sealed: "restore" | "regenerate" | undefined;
   let restored = false;
   return {
     backupPaths,
@@ -172,9 +217,10 @@ export async function captureGatewayServiceDefinitionBackup(params: {
         throw new Error("Service definition backup is already sealed.");
       }
       const verifyOriginal = publication === "original";
-      const published = verifyOriginal
-        ? await readGatewayServiceDefinitionPublication(params)
-        : structuredClone(publication);
+      const published =
+        typeof publication === "string"
+          ? await readGatewayServiceDefinitionPublication(params)
+          : structuredClone(publication);
       if (
         !isDeepStrictEqual(
           published.files.map((file) => file.sourcePath).toSorted(),
@@ -204,11 +250,12 @@ export async function captureGatewayServiceDefinitionBackup(params: {
       }
       expectedXml = published.taskPolicySha256;
       await assertUnchanged();
-      sealed = true;
+      sealed = publication === "regenerate" ? "regenerate" : "restore";
     },
     restore: async () => {
       if (restored) {
-        return;
+        await assertUnchanged();
+        return guard();
       }
       if (!sealed) {
         throw new Error("Service rewrite was not sealed; retained its backup for recovery.");
@@ -216,6 +263,11 @@ export async function captureGatewayServiceDefinitionBackup(params: {
       await assertUnchanged();
       if (platform === "linux") {
         await assertNoSystemGatewayOwnership(params.env);
+      }
+      if (sealed === "regenerate") {
+        // Parent observations guard later edits; they cannot authorize restoring old bytes.
+        await assertUnchanged();
+        return guard();
       }
       // Restore ancillary inputs before the definition that references them.
       for (const snapshot of snapshots.toReversed()) {
@@ -253,12 +305,14 @@ export async function captureGatewayServiceDefinitionBackup(params: {
           beforeMutation: assertUnchanged,
           assertCurrent,
         });
+        expectedXml = taskPolicySha256(await readXml());
       } else if (platform === "linux") {
         assertCurrent();
         await reloadSystemdUserManager(params.env);
       }
-      assertCurrent();
+      await assertUnchanged();
       restored = true;
+      return guard();
     },
   };
 }

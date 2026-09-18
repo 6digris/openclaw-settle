@@ -1,14 +1,19 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { GatewayServiceDefinitionGuard } from "./service-stage.js";
 
 export const GATEWAY_UPDATE_EXECUTOR_CONTRACT = "root-spawner-v1";
 
-const owners = new AsyncLocalStorage<() => void>();
+const owners = new AsyncLocalStorage<{
+  assertCurrent: () => void;
+  definitionGuard?: GatewayServiceDefinitionGuard;
+}>();
 
 /** The target CLI installs this only after binding its original update grant.
  * It remains in inherited async work after closure, where assertions must fail. */
 export async function withGatewayServiceUpdateAuthority<T>(
   assertOwner: () => void,
   operation: () => Promise<T>,
+  definitionGuard?: GatewayServiceDefinitionGuard,
 ): Promise<T> {
   let active = true;
   const assertCurrent = () => {
@@ -19,11 +24,14 @@ export async function withGatewayServiceUpdateAuthority<T>(
   };
   assertCurrent();
   try {
-    return await owners.run(assertCurrent, async () => {
-      const result = await operation();
-      assertCurrent();
-      return result;
-    });
+    return await owners.run(
+      { assertCurrent, definitionGuard: structuredClone(definitionGuard) },
+      async () => {
+        const result = await operation();
+        assertCurrent();
+        return result;
+      },
+    );
   } finally {
     active = false;
   }
@@ -31,7 +39,13 @@ export async function withGatewayServiceUpdateAuthority<T>(
 
 /** Ordinary user service commands have no update owner and retain their behavior. */
 export function assertGatewayServiceUpdateCurrent(): void {
-  owners.getStore()?.();
+  owners.getStore()?.assertCurrent();
+}
+
+export function readGatewayServiceDefinitionGuard(): GatewayServiceDefinitionGuard | undefined {
+  const owner = owners.getStore();
+  owner?.assertCurrent();
+  return owner?.definitionGuard;
 }
 
 export function isUpdateOwnedGatewayServiceCommand(): boolean {

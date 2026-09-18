@@ -7,6 +7,7 @@ import {
 import { withGatewayServiceOperationLock } from "../../daemon/service-operation-lock.js";
 import {
   GatewayServiceDefinitionPublicationSchema,
+  type GatewayServiceDefinitionGuard,
   type GatewayServiceDefinitionPublication,
 } from "../../daemon/service-stage.js";
 import { GATEWAY_UPDATE_EXECUTOR_CONTRACT } from "../../daemon/service-update-authority.js";
@@ -59,6 +60,7 @@ export async function isUpdatedInstallGatewayExecutorSupported(params: {
   timeoutMs: number;
   nodeRunner?: string;
   signal?: AbortSignal;
+  requireDefinitionGuard?: boolean;
 }): Promise<boolean> {
   params.signal?.throwIfAborted();
   params.executor.assertCurrent();
@@ -108,7 +110,8 @@ export async function isUpdatedInstallGatewayExecutorSupported(params: {
     !check.outputLimitExceeded &&
     !check.outputErrorStream &&
     capability?.updateExecutor === GATEWAY_UPDATE_EXECUTOR_CONTRACT &&
-    capability.targetRootBinding === true
+    capability.targetRootBinding === true &&
+    (!params.requireDefinitionGuard || capability.definitionGuard === true)
   );
 }
 
@@ -125,6 +128,7 @@ type UpdatedInstallGatewayCommandParams = {
   signal?: AbortSignal;
   assertCurrent?: () => void;
   serviceLoadBoundary?: UpdateServiceLoadBoundary;
+  definitionGuard?: GatewayServiceDefinitionGuard;
   onResponse?: (response: Record<string, unknown>) => void;
 };
 
@@ -132,7 +136,7 @@ export async function refreshUpdatedGatewayService(
   params: UpdatedInstallGatewayCommandParams & {
     serviceEnv: NodeJS.ProcessEnv;
     assertCurrent: () => void;
-    onDefinitionBackup?: (backup: GatewayServiceDefinitionBackup | undefined) => void;
+    onDefinitionBackup?: (backup: GatewayServiceDefinitionBackup) => void;
     onWarnings?: (warnings: readonly string[]) => void;
   },
 ): Promise<void> {
@@ -200,9 +204,11 @@ export async function refreshUpdatedGatewayService(
   });
   if (backup) {
     const published = publication;
-    if (published) {
+    if (published || installedWithoutPublication) {
       try {
-        await withGatewayServiceOperationLock(params.serviceEnv, () => backup.seal(published));
+        await withGatewayServiceOperationLock(params.serviceEnv, () =>
+          backup.seal(published ?? "regenerate"),
+        );
       } catch (error) {
         assertCurrent();
         params.onWarnings?.(warnings);
@@ -211,12 +217,11 @@ export async function refreshUpdatedGatewayService(
           { cause: error },
         );
       }
-    } else if (installedWithoutPublication) {
-      // Older installers leave regeneration to the restored release; keep the disk backup.
-      params.onDefinitionBackup?.(undefined);
-      warnings.push(
-        "The installer did not return service publication facts; rollback will use the previous release's installer. The service backup is retained.",
-      );
+      if (!published) {
+        warnings.push(
+          "The installer did not return service publication facts; rollback will use the previous release's installer. The service backup is retained.",
+        );
+      }
     } else {
       warnings.push(
         "The installer did not return service publication facts; the backup is retained for manual recovery.",
@@ -247,6 +252,11 @@ export async function runUpdatedInstallGatewayCommand(
   };
   assertCurrent();
   const installing = action === "install";
+  if (params.definitionGuard && (!installing || !executor || params.serviceLoadBoundary)) {
+    throw new UpdateCommandRecoveryPendingError(
+      "Guarded service rewrite requires its original native update executor.",
+    );
+  }
   const entrypoint = await resolveGatewayInstallEntrypoint(params.result.root);
   assertCurrent();
   if (!entrypoint) {
@@ -319,6 +329,7 @@ export async function runUpdatedInstallGatewayCommand(
         timeoutMs: installTimeoutMs,
         nodeRunner,
         signal: params.signal,
+        ...(params.definitionGuard ? { requireDefinitionGuard: true } : {}),
       }))
     ) {
       throw new UpdateCommandRecoveryPendingError(
@@ -342,6 +353,7 @@ export async function runUpdatedInstallGatewayCommand(
               executor: grant,
               action,
               targetRoot: resolveUpdateInstallRoot(params.result.root!),
+              ...(params.definitionGuard ? { definitionGuard: params.definitionGuard } : {}),
             }),
             beforeInput: bindChild,
           }

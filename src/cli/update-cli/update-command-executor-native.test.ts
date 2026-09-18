@@ -6,6 +6,9 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { resolveLaunchAgentPlistPath } from "../../daemon/launchd-service-files.js";
+import { readGatewayServiceDefinitionPublication } from "../../daemon/service-definition-backup.js";
+import { resolveSystemdUnitPath } from "../../daemon/systemd-service-files.js";
 import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
 import * as tempRoot from "../../infra/tmp-openclaw-dir.js";
 import { createManagedHandoffLeaseStore } from "../../infra/update-managed-service-handoff-lease.js";
@@ -26,6 +29,75 @@ const sourceImportArgs = resolveRuntimeWorkerUrl(
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => vi.restoreAllMocks());
+
+it.skipIf(process.platform === "win32").each([false, true])(
+  "native receiver preserves an intervening definition edit: edited=%s",
+  async (edited) => {
+    const root = fs.realpathSync(dirs.make("native-definition-guard-"));
+    const control = path.join(root, "control");
+    fs.mkdirSync(control);
+    vi.spyOn(tempRoot, "resolvePreferredOpenClawTmpDir").mockReturnValue(control);
+    const env = {
+      HOME: root,
+      OPENCLAW_STATE_DIR: path.join(root, "state"),
+      OPENCLAW_PROFILE: path.basename(root).toLowerCase(),
+    };
+    const definition =
+      process.platform === "darwin"
+        ? resolveLaunchAgentPlistPath(env)
+        : resolveSystemdUnitPath(env);
+    fs.mkdirSync(path.dirname(definition), { recursive: true });
+    fs.writeFileSync(definition, "installer publication");
+    const command = {
+      sourcePath: definition,
+      programArguments: [process.execPath, "/fixture/openclaw/dist/index.js", "gateway"],
+    };
+    const definitionGuard = await readGatewayServiceDefinitionPublication({ env, command });
+    if (edited) {
+      fs.writeFileSync(definition, "later operator edit");
+    }
+    const receiver = `
+      import fs from "node:fs/promises";
+      import {runGatewayServiceUpdateCommand} from ${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.nativeExecutor).href)};
+      import {withGatewayServiceOperationLock} from ${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.serviceOperationLock).href)};
+      import {reconcileGatewayServiceDefinition} from ${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.serviceReconciliation).href)};
+      const env=${JSON.stringify(env)},command=${JSON.stringify(command)};
+      await runGatewayServiceUpdateCommand("run","install",()=>
+        withGatewayServiceOperationLock(env,assertCurrent=>reconcileGatewayServiceDefinition({
+          env,command,expectedCommand:command,automatic:false,assertCurrent,warn:()=>{},
+          install:()=>fs.writeFile(command.sourcePath,"restored installer output")
+        })));
+    `;
+    const target = fs.realpathSync(process.cwd());
+    const result = await withUpdateCommandExecutor(randomUUID(), async (executor) => {
+      const fence = await executor.enter(root);
+      return await withUpdateCommandExecutorChild(fence, target, (grant, beforeInput) =>
+        runUtf8CommandWithTimeout(
+          [process.execPath, ...sourceImportArgs, "--input-type=module", "-e", receiver],
+          {
+            input: JSON.stringify({
+              action: "install",
+              targetRoot: target,
+              executor: grant,
+              definitionGuard,
+            }),
+            beforeInput,
+            timeoutMs: 20_000,
+            killProcessTree: true,
+            requireProcessTreeExtinction: true,
+          },
+        ),
+      );
+    });
+    if (edited) {
+      expect(result.code, result.stderr).not.toBe(0);
+      expect(fs.readFileSync(definition, "utf8")).toBe("later operator edit");
+    } else {
+      expect(result.code, result.stderr).toBe(0);
+      expect(fs.readFileSync(definition, "utf8")).toBe("restored installer output");
+    }
+  },
+);
 
 it.each(["healthy", "spawner-settled", "root-replaced", "spawner-replaced"] as const)(
   "nested native child keeps original and immediate authority: %s",

@@ -108,6 +108,7 @@ describe("candidate service capability startup", () => {
         expect(JSON.parse(result.stdout)).toEqual({
           updateExecutor: "root-spawner-v1",
           targetRootBinding: true,
+          definitionGuard: true,
         });
         const state = acquireStateDatabaseCoordinator({ databasePath: fixture.databasePath });
         try {

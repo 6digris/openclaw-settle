@@ -13,6 +13,7 @@ import {
   resolveLaunchAgentEnvFilePath,
   resolveLaunchAgentEnvWrapperPath,
 } from "../../daemon/launchd-service-files.js";
+import { assertGatewayServiceDefinitionGuard } from "../../daemon/service-definition-backup.js";
 import { readGatewayServiceState, resolveGatewayService } from "../../daemon/service.js";
 import { resolveSystemdUnitPath } from "../../daemon/systemd-service-files.js";
 import { buildSystemdUnit } from "../../daemon/systemd-unit.js";
@@ -160,14 +161,22 @@ vi.mock("./update-command-service-command.js", async (importOriginal) => {
     refreshUpdatedGatewayService: (
       params: Parameters<typeof actual.refreshUpdatedGatewayService>[0],
     ) => actual.refreshUpdatedGatewayService({ ...params, opts: { json: params.opts.json } }),
-    runUpdatedInstallGatewayCommand: (
+    runUpdatedInstallGatewayCommand: async (
       ...[params, action, preserve]: Parameters<typeof actual.runUpdatedInstallGatewayCommand>
-    ) =>
-      actual.runUpdatedInstallGatewayCommand(
-        { ...params, opts: { json: params.opts.json } },
+    ) => {
+      if (params.definitionGuard) {
+        await assertGatewayServiceDefinitionGuard({
+          env: process.env,
+          command: await mocks.command(process.env),
+          guard: params.definitionGuard,
+        });
+      }
+      return await actual.runUpdatedInstallGatewayCommand(
+        { ...params, definitionGuard: undefined, opts: { json: params.opts.json } },
         action,
         preserve,
-      ),
+      );
+    },
   };
 });
 vi.mock("../../process/exec.js", async (importOriginal) => {

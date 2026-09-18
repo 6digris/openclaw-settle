@@ -238,7 +238,7 @@ export async function maybeRestartService(params: {
   onVerificationFailure?: (reason: string) => void;
   onPluginWarnings?: (warnings: readonly PluginUpdateWarning[]) => void;
   onVerified?: (verifiedAtMs: number) => void;
-  onDefinitionBackup?: (backup: GatewayServiceDefinitionBackup | undefined) => void;
+  onDefinitionBackup?: (backup: GatewayServiceDefinitionBackup) => void;
 }): Promise<
   "ok" | "readiness-pending" | "reconciliation-pending" | "failed" | "restart-health-failed"
 > {

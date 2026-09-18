@@ -91,10 +91,10 @@ async function fixture(platform: "linux" | "darwin" | "win32") {
 
 it.each(
   (["linux", "darwin", "win32"] as const).flatMap((platform) =>
-    (["publication", "original"] as const).map((seal) => ({ platform, seal })),
+    (["publication", "original", "regenerate"] as const).map((seal) => ({ platform, seal })),
   ),
 )(
-  "restores $platform definitions and ancillary files after $seal sealing",
+  "protects $platform definitions and ancillary files during $seal rollback",
   async ({ platform, seal }) => {
     const current = await fixture(platform);
     const backup = await captureGatewayServiceDefinitionBackup({
@@ -124,12 +124,14 @@ it.each(
       current.setXml(current.originalXml.replace("<Count>0</Count>", "<Count>3</Count>"));
     }
     const expectedXml =
-      platform === "win32" && seal === "original"
-        ? current.originalXml.replace(
-            /(<Settings>[\s\S]*?<Enabled>)true(<\/Enabled>)/u,
-            "$1false$2",
-          )
-        : current.originalXml;
+      seal === "regenerate"
+        ? current.readXml()
+        : platform === "win32" && seal === "original"
+          ? current.originalXml.replace(
+              /(<Settings>[\s\S]*?<Enabled>)true(<\/Enabled>)/u,
+              "$1false$2",
+            )
+          : current.originalXml;
     if (seal === "original") {
       for (const file of current.files) {
         await fs.writeFile(file, current.originals.get(file)!);
@@ -139,15 +141,25 @@ it.each(
       current.setXml(expectedXml);
     }
     await backup.seal(
-      seal === "original" ? "original" : await readGatewayServiceDefinitionPublication(current),
+      seal === "publication" ? await readGatewayServiceDefinitionPublication(current) : seal,
     );
+    const beforeRestore =
+      seal === "regenerate" ? await readGatewayServiceDefinitionPublication(current) : undefined;
     await backup.restore();
+    if (seal === "regenerate") {
+      expect(await readGatewayServiceDefinitionPublication(current)).toEqual(beforeRestore);
+      expect(native.task.mock.calls.every(([args]) => args[0] === "/Query")).toBe(true);
+    }
     for (const [index, file] of current.files.entries()) {
-      expect(await fs.readFile(file, "utf8")).toBe(current.originals.get(file));
+      expect(await fs.readFile(file, "utf8")).toBe(
+        seal === "regenerate" ? "candidate definition\n" : current.originals.get(file),
+      );
       expect((await fs.stat(file)).mode).toBe(modes[index]);
     }
     expect(current.readXml()).toBe(expectedXml);
-    expect(native.reload).toHaveBeenCalledTimes(platform === "linux" ? 1 : 0);
+    expect(native.reload).toHaveBeenCalledTimes(
+      platform === "linux" && seal !== "regenerate" ? 1 : 0,
+    );
   },
 );
 
@@ -228,43 +240,46 @@ it.each(
   expect(native.task.mock.calls.some(([args]) => args[0] === "/Create")).toBe(false);
 });
 
-it.each(["managed file", "drop-in", "task XML", "authority"] as const)(
-  "preserves later %s changes instead of overwriting them during rollback",
-  async (changed) => {
-    const current = await fixture(changed === "task XML" ? "win32" : "linux");
-    const dropIn = `${current.primary}.d/operator.conf`;
-    await fs.mkdir(path.dirname(dropIn));
-    await fs.writeFile(dropIn, "[Service]\nEnvironment=OPERATOR=before\n");
-    let active = true;
-    const backup = await captureGatewayServiceDefinitionBackup({
-      ...current,
-      command: { ...current.command, definitionPaths: [current.primary, dropIn] },
-      assertCurrent: () => {
-        if (!active) {
-          throw new Error("Update authority closed");
-        }
-      },
-    });
-    await fs.writeFile(current.primary, "candidate definition\n");
-    await backup.seal(await readGatewayServiceDefinitionPublication(current));
-    if (changed === "managed file") {
-      await fs.writeFile(current.primary, "operator edit\n");
-    } else if (changed === "drop-in") {
-      await fs.writeFile(dropIn, "[Service]\nEnvironment=OPERATOR=after\n");
-    } else if (changed === "task XML") {
-      current.setXml(
-        current.originalXml.replace("<Interval>PT1M</Interval>", "<Interval>PT2M</Interval>"),
-      );
-    } else {
-      active = false;
-    }
-    await expect(backup.restore()).rejects.toThrow(
-      changed === "authority" ? "authority closed" : /changed/i,
+it.each(
+  (["managed file", "drop-in", "task XML", "authority"] as const).flatMap((changed) =>
+    (["publication", "regenerate"] as const).map((seal) => ({ changed, seal })),
+  ),
+)("preserves later $changed changes during $seal rollback", async ({ changed, seal }) => {
+  const current = await fixture(changed === "task XML" ? "win32" : "linux");
+  const dropIn = `${current.primary}.d/operator.conf`;
+  await fs.mkdir(path.dirname(dropIn));
+  await fs.writeFile(dropIn, "[Service]\nEnvironment=OPERATOR=before\n");
+  let active = true;
+  const backup = await captureGatewayServiceDefinitionBackup({
+    ...current,
+    command: { ...current.command, definitionPaths: [current.primary, dropIn] },
+    assertCurrent: () => {
+      if (!active) {
+        throw new Error("Update authority closed");
+      }
+    },
+  });
+  await fs.writeFile(current.primary, "candidate definition\n");
+  await backup.seal(
+    seal === "regenerate" ? "regenerate" : await readGatewayServiceDefinitionPublication(current),
+  );
+  if (changed === "managed file") {
+    await fs.writeFile(current.primary, "operator edit\n");
+  } else if (changed === "drop-in") {
+    await fs.writeFile(dropIn, "[Service]\nEnvironment=OPERATOR=after\n");
+  } else if (changed === "task XML") {
+    current.setXml(
+      current.originalXml.replace("<Interval>PT1M</Interval>", "<Interval>PT2M</Interval>"),
     );
-    expect(await fs.readFile(current.primary, "utf8")).toBe(
-      changed === "managed file" ? "operator edit\n" : "candidate definition\n",
-    );
-    expect(native.reload).not.toHaveBeenCalled();
-    expect(native.task.mock.calls.some(([args]) => args[0] === "/Create")).toBe(false);
-  },
-);
+  } else {
+    active = false;
+  }
+  await expect(backup.restore()).rejects.toThrow(
+    changed === "authority" ? "authority closed" : /changed/i,
+  );
+  expect(await fs.readFile(current.primary, "utf8")).toBe(
+    changed === "managed file" ? "operator edit\n" : "candidate definition\n",
+  );
+  expect(native.reload).not.toHaveBeenCalled();
+  expect(native.task.mock.calls.some(([args]) => args[0] === "/Create")).toBe(false);
+});

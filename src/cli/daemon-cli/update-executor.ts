@@ -1,4 +1,5 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { GatewayServiceDefinitionGuardSchema } from "../../daemon/service-stage.js";
 import { withGatewayServiceUpdateAuthority } from "../../daemon/service-update-authority.js";
 import { resolveOpenClawPackageRoot } from "../../infra/openclaw-root.js";
 import { resolveUpdateInstallRoot } from "../../infra/update-install-root.js";
@@ -34,7 +35,8 @@ export async function runGatewayServiceUpdateCommand(
     for await (const chunk of process.stdin) {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       bytes += buffer.byteLength;
-      if (bytes > 64 * 1024) {
+      // Retained definition and drop-in conditions extend the small executor envelope.
+      if (bytes > 1024 * 1024) {
         throw new Error("Update executor input exceeds its bound.");
       }
       chunks.push(buffer);
@@ -57,6 +59,13 @@ export async function runGatewayServiceUpdateCommand(
     ) {
       throw new Error("Invalid native update executor input.");
     }
+    if (input.definitionGuard !== undefined && action !== "install") {
+      throw new Error("Service definition guards require an install action.");
+    }
+    const definitionGuard =
+      input.definitionGuard === undefined
+        ? undefined
+        : GatewayServiceDefinitionGuardSchema.parse(input.definitionGuard);
     // SAFETY: Partial transport data is validated against live lease rows before effects.
     const grant = input.executor as UpdateCommandChildGrant;
     const root = await resolveOpenClawPackageRoot({ moduleUrl: import.meta.url });
@@ -70,9 +79,13 @@ export async function runGatewayServiceUpdateCommand(
     }
     // Destination admission never replaces the original installation's live authority.
     await withDelegatedUpdateCommandExecutor(grant, grant.runId, grant.root, async (fence) =>
-      withGatewayServiceUpdateAuthority(fence.assertCurrent, async () => {
-        await operation();
-      }),
+      withGatewayServiceUpdateAuthority(
+        fence.assertCurrent,
+        async () => {
+          await operation();
+        },
+        definitionGuard,
+      ),
     );
   } catch (cause) {
     throw new Error(

@@ -7,6 +7,7 @@ import { execFileUtf8 } from "./exec-file.js";
 import { publishLaunchAgentPlist } from "./launchd-service-files.js";
 import {
   assertGatewayServiceUpdateCurrent,
+  readGatewayServiceDefinitionGuard,
   withGatewayServiceUpdateAuthority,
 } from "./service-update-authority.js";
 
@@ -98,14 +99,46 @@ it("async work cannot retain an admitted native owner after command completion",
   const ready = new Promise<void>((resolve) => {
     release = resolve;
   });
-  let late!: Promise<void>;
+  const guard = {
+    files: [{ sourcePath: path.resolve("fixture.service"), after: null }],
+    taskPolicySha256: null,
+  };
+  let late!: Promise<unknown>;
   await withGatewayServiceUpdateAuthority(
     () => {},
     async () => {
-      late = ready.then(() => assertGatewayServiceUpdateCurrent());
+      expect(readGatewayServiceDefinitionGuard()).toEqual(guard);
+      late = ready.then(() => readGatewayServiceDefinitionGuard());
     },
+    guard,
   );
   release();
   await expect(late).rejects.toThrow("has closed");
   expect(assertGatewayServiceUpdateCurrent).not.toThrow();
+  expect(readGatewayServiceDefinitionGuard()).toBeUndefined();
+});
+
+it("retained definition facts cannot outlive their current update authority", async () => {
+  let current = true;
+  let consumed = false;
+  await expect(
+    withGatewayServiceUpdateAuthority(
+      () => {
+        if (!current) {
+          throw new Error("original update owner revoked");
+        }
+      },
+      async () => {
+        await Promise.resolve();
+        current = false;
+        readGatewayServiceDefinitionGuard();
+        consumed = true;
+      },
+      {
+        files: [{ sourcePath: path.resolve("fixture.service"), after: null }],
+        taskPolicySha256: null,
+      },
+    ),
+  ).rejects.toThrow("original update owner revoked");
+  expect(consumed).toBe(false);
 });

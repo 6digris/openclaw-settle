@@ -19,6 +19,7 @@ export function registerServiceDefinitionPublicationTests(getFixture: () => Publ
     "published",
     "changed",
     "missing",
+    "missing-edited",
     "invalid-publication",
     "unverified-response",
     "failed",
@@ -27,6 +28,7 @@ export function registerServiceDefinitionPublicationTests(getFixture: () => Publ
     "refused",
   ] as const)("uses the installer publication to guard rollback (%s)", async (scenario) => {
     const { root, run, mocks } = getFixture();
+    const missing = scenario === "missing" || scenario === "missing-edited";
     vi.spyOn(systemdScope, "assertNoSystemGatewayOwnership").mockResolvedValue(undefined);
     vi.spyOn(systemdExec, "reloadSystemdUserManager").mockResolvedValue(undefined);
     const command = await mocks.command(process.env);
@@ -37,6 +39,10 @@ export function registerServiceDefinitionPublicationTests(getFixture: () => Publ
     const original = await fs.readFile(unitPath, "utf8");
     const candidate = original.replace("RestartSec=5", "RestartSec=10");
     const edited = candidate.replace("RestartSec=10", "RestartSec=120");
+    const operatorEdited = candidate.replace(
+      "[Service]",
+      "[Service]\nExecStartPre=/operator/custom-hook",
+    );
     mocks.child.mockImplementation(async (argv) => {
       expect(argv).toContain("install");
       if (scenario === "unchanged" || scenario === "refused") {
@@ -70,7 +76,7 @@ export function registerServiceDefinitionPublicationTests(getFixture: () => Publ
             : {
                 action: "install",
                 ok: true,
-                ...(scenario === "missing"
+                ...(missing
                   ? {}
                   : {
                       definitionPublication:
@@ -84,10 +90,7 @@ export function registerServiceDefinitionPublicationTests(getFixture: () => Publ
         termination: "exit",
       };
     });
-    const retained: {
-      backup?: GatewayServiceDefinitionBackup;
-      captured?: GatewayServiceDefinitionBackup;
-    } = {};
+    const retained: { backup?: GatewayServiceDefinitionBackup } = {};
     const warnings: string[] = [];
     const refresh = refreshUpdatedGatewayService({
       result: { root, mode: "npm" },
@@ -96,13 +99,18 @@ export function registerServiceDefinitionPublicationTests(getFixture: () => Publ
       serviceEnv: process.env,
       assertCurrent: () => {},
       onDefinitionBackup: (backup) => {
-        retained.captured ??= backup;
         retained.backup = backup;
       },
       onWarnings: (values) => warnings.push(...values),
     });
     if (
-      !["published", "missing", "invalid-publication", "unverified-response"].includes(scenario)
+      ![
+        "published",
+        "missing",
+        "missing-edited",
+        "invalid-publication",
+        "unverified-response",
+      ].includes(scenario)
     ) {
       await expect(refresh).rejects.toThrow(
         scenario === "changed" || scenario === "refused"
@@ -112,29 +120,36 @@ export function registerServiceDefinitionPublicationTests(getFixture: () => Publ
     } else {
       await refresh;
     }
-    const backup = retained.captured;
+    if (scenario === "missing-edited") {
+      await fs.writeFile(unitPath, operatorEdited);
+    }
+    const backup = retained.backup;
     if (!backup) {
       throw new Error("rollback backup was not retained");
     }
-    if (scenario === "missing") {
-      expect(retained.backup).toBeUndefined();
-      expect(await fs.readFile(unitPath, "utf8")).toBe(candidate);
-    } else {
-      expect(retained.backup).toBe(backup);
-      const restore = () => withGatewayServiceOperationLock(process.env, () => backup.restore());
-      if (["published", "unchanged", "compensated"].includes(scenario)) {
-        await restore();
-        expect(await fs.readFile(unitPath, "utf8")).toBe(original);
+    const restore = () => withGatewayServiceOperationLock(process.env, () => backup.restore());
+    if (missing) {
+      if (scenario === "missing-edited") {
+        await expect(restore()).rejects.toThrow(/changed/i);
       } else {
-        await expect(restore()).rejects.toThrow("not sealed");
-        expect(await fs.readFile(unitPath, "utf8")).toBe(
-          scenario === "changed" ? edited : scenario === "refused" ? original : candidate,
-        );
+        await restore();
       }
+      expect(await fs.readFile(unitPath, "utf8")).toBe(
+        scenario === "missing-edited" ? operatorEdited : candidate,
+      );
+      expect(systemdExec.reloadSystemdUserManager).not.toHaveBeenCalled();
+    } else if (["published", "unchanged", "compensated"].includes(scenario)) {
+      await restore();
+      expect(await fs.readFile(unitPath, "utf8")).toBe(original);
+    } else {
+      await expect(restore()).rejects.toThrow("not sealed");
+      expect(await fs.readFile(unitPath, "utf8")).toBe(
+        scenario === "changed" ? edited : scenario === "refused" ? original : candidate,
+      );
     }
     expect(await fs.readFile(backup.backupPaths[0]!, "utf8")).toBe(original);
     expect(warnings.join("\n")).toContain(backup.backupPaths[0]);
-    if (scenario === "missing") {
+    if (missing) {
       expect(warnings.join("\n")).toContain("publication facts");
     }
   });

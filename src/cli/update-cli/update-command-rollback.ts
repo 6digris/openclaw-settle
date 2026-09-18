@@ -392,9 +392,9 @@ export async function rollbackFailedUpdate(params: {
     let verdict = stopped.serviceUpdateVerdict ?? before?.serviceUpdateVerdict;
     const nodeRunner = before?.serviceNodeRunner ?? params.nodeRunner;
     const definitionBackup = params.serviceDefinitionBackup;
-    if (definitionBackup) {
-      await withGatewayServiceOperationLock(recoveryEnv, () => definitionBackup.restore());
-    }
+    const definitionGuard = definitionBackup
+      ? await withGatewayServiceOperationLock(recoveryEnv, () => definitionBackup.restore())
+      : undefined;
     assertCurrent();
     if (verdict?.kind === "owned" && verdict.refreshDefinition) {
       await runUpdatedInstallGatewayCommand(
@@ -407,6 +407,7 @@ export async function rollbackFailedUpdate(params: {
           timeoutMs: params.timeoutMs,
           invocationCwd: params.invocationCwd,
           assertCurrent,
+          definitionGuard,
         },
         "install",
       );

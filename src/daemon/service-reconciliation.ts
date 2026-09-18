@@ -3,12 +3,16 @@ import { UPDATE_RUN_ID_ENV } from "../infra/update-control-plane-sentinel.js";
 import { recordUpdateRunStep } from "../infra/update-run-ledger.js";
 import { auditGatewayServiceConfig } from "./service-audit.js";
 import {
+  assertGatewayServiceDefinitionGuard,
   captureGatewayServiceDefinitionBackup,
   readGatewayServiceDefinitionPublication,
 } from "./service-definition-backup.js";
 import type { GatewayServiceDefinitionPublication } from "./service-stage.js";
 import type { GatewayServiceCommandConfig, GatewayServiceEnv } from "./service-types.js";
-import { isUpdateOwnedGatewayServiceCommand } from "./service-update-authority.js";
+import {
+  isUpdateOwnedGatewayServiceCommand,
+  readGatewayServiceDefinitionGuard,
+} from "./service-update-authority.js";
 import { resolveGatewayService } from "./service.js";
 
 /** Call under the installer lock; current update parents retain their own rollback receipt. */
@@ -22,10 +26,21 @@ export async function reconcileGatewayServiceDefinition(params: {
   install: () => Promise<void>;
   warn: (message: string) => void;
 }): Promise<GatewayServiceDefinitionPublication | undefined> {
-  if (!params.automatic || !params.command) {
+  const install = async () => {
+    const guard = readGatewayServiceDefinitionGuard();
+    if (guard) {
+      await assertGatewayServiceDefinitionGuard({
+        env: params.env,
+        command: params.command,
+        guard,
+      });
+    }
     params.assertCurrent();
     await params.install();
     params.assertCurrent();
+  };
+  if (!params.automatic || !params.command) {
+    await install();
     return undefined;
   }
   const parentOwnsBackup = isUpdateOwnedGatewayServiceCommand();
@@ -62,8 +77,7 @@ export async function reconcileGatewayServiceDefinition(params: {
           },
         )
       : undefined;
-  params.assertCurrent();
-  await params.install();
+  await install();
   const publication = parentOwnsBackup
     ? await readGatewayServiceDefinitionPublication({
         env: params.env,

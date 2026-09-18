@@ -39,14 +39,16 @@ const dirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => vi.restoreAllMocks());
 
 it.each([
-  { supported: true, destination: "same" },
-  { supported: false, destination: "same" },
-  { supported: "legacy", destination: "same" },
-  { supported: true, destination: "changed" },
-  { supported: true, destination: "foreign" },
+  { supported: true, destination: "same", guarded: false },
+  { supported: false, destination: "same", guarded: false },
+  { supported: "legacy", destination: "same", guarded: false },
+  { supported: true, destination: "changed", guarded: false },
+  { supported: true, destination: "foreign", guarded: false },
+  { supported: true, destination: "same", guarded: true },
+  { supported: "guardless", destination: "same", guarded: true },
 ])(
-  "native command admits only the bound receiver: $supported / $destination",
-  async ({ supported, destination }) => {
+  "native command admits only the bound receiver: $supported / $destination / guarded=$guarded",
+  async ({ supported, destination, guarded }) => {
     const scratch = dirs.make("native-command-custody-");
     const receiverRoot = await fs.realpath(process.cwd());
     const root = destination === "same" ? receiverRoot : scratch;
@@ -56,6 +58,10 @@ it.each([
     vi.spyOn(tempRoot, "resolvePreferredOpenClawTmpDir").mockReturnValue(control);
     const entrypoint = path.join(scratch, "entry.mjs");
     const effect = path.join(scratch, "effect");
+    const action = guarded ? "install" : "restart";
+    const definitionGuard = guarded
+      ? { files: [{ sourcePath: effect, after: null }], taskPolicySha256: null }
+      : undefined;
     const receipt = path.join(scratch, "receipt");
     const probeReceipt = path.join(scratch, "probe-receipt");
     await fs.writeFile(
@@ -65,6 +71,7 @@ it.each([
     ${sourceLoader ? `await import(${JSON.stringify(sourceLoader)});` : ""}
     const {runGatewayServiceUpdateCommand}=await import(${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.nativeExecutor).href)});
     const {execFileUtf8}=await import(${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.nativeExec).href)});
+    const {readGatewayServiceDefinitionGuard}=await import(${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.serviceAuthority).href)});
     const fs=await import("node:fs");
     const mode=process.argv[process.argv.indexOf("--update-executor")+1];
     if(mode==="check") {
@@ -88,11 +95,14 @@ it.each([
     else if(mode==="check" && ${JSON.stringify(supported)}==="legacy") {
       process.stdout.write(JSON.stringify({updateExecutor:"root-spawner-v1"}));
     }
-    else try { await runGatewayServiceUpdateCommand(mode,"restart",async()=>{
-      fs.writeFileSync(${JSON.stringify(receipt)},JSON.stringify({pid:process.pid,parent:process.ppid,noRespawn:process.env.OPENCLAW_NO_RESPAWN}));
+    else if(mode==="check" && ${JSON.stringify(supported)}==="guardless") {
+      process.stdout.write(JSON.stringify({updateExecutor:"root-spawner-v1",targetRootBinding:true}));
+    }
+    else try { await runGatewayServiceUpdateCommand(mode,${JSON.stringify(action)},async()=>{
+      fs.writeFileSync(${JSON.stringify(receipt)},JSON.stringify({pid:process.pid,parent:process.ppid,noRespawn:process.env.OPENCLAW_NO_RESPAWN,definitionGuard:readGatewayServiceDefinitionGuard()}));
       const result=await execFileUtf8(process.execPath,["-e",${JSON.stringify(`require("node:fs").writeFileSync(${JSON.stringify(effect)},"owned")`)}]);
       if(result.code!==0)throw new Error(result.stderr);
-      process.stdout.write(JSON.stringify({action:"restart",ok:true,result:"restarted"}));
+      process.stdout.write(JSON.stringify({action:${JSON.stringify(action)},ok:true,result:"restarted"}));
     }); } catch(error) { process.stderr.write(error.message); process.exitCode=1; }
   `,
     );
@@ -106,16 +116,18 @@ it.each([
           opts: { json: true, run: { runId, env: process.env, executorFence: fence } },
           invocationEnv: process.env,
           timeoutMs: 20_000,
+          definitionGuard,
         },
-        "restart",
+        action,
       );
     });
     if (supported === true && destination !== "foreign") {
-      expect(await work).toBe("accepted");
+      expect(await work).toBe(guarded ? "unverified" : "accepted");
       expect(await fs.readFile(effect, "utf8")).toBe("owned");
       const observed = JSON.parse(await fs.readFile(receipt, "utf8"));
       expect(observed).toMatchObject({ parent: process.pid, noRespawn: "1" });
       expect(observed.pid).not.toBe(process.pid);
+      expect(observed.definitionGuard).toEqual(definitionGuard);
     } else {
       await expect(work).rejects.toThrow(
         destination === "foreign" ? /installation|binding/ : "cannot fence",

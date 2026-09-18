@@ -67,6 +67,16 @@ export const updateExecutorNativeEntrypoints = {
     sourceWorkerName: "../../daemon/service-update-authority",
     distWorkerPath: "daemon/service-update-authority.js",
   },
+  serviceReconciliation: {
+    currentModuleUrl,
+    sourceWorkerName: "../../daemon/service-reconciliation",
+    distWorkerPath: "daemon/service-reconciliation.js",
+  },
+  serviceOperationLock: {
+    currentModuleUrl,
+    sourceWorkerName: "../../daemon/service-operation-lock",
+    distWorkerPath: "daemon/service-operation-lock.js",
+  },
   configIO: {
     currentModuleUrl,
     sourceWorkerName: "../../config/io.factory",

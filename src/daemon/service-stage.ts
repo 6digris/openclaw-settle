@@ -41,6 +41,12 @@ export const GatewayServiceDefinitionPublicationSchema = z.strictObject({
 export type GatewayServiceDefinitionPublication = z.infer<
   typeof GatewayServiceDefinitionPublicationSchema
 >;
+export const GatewayServiceDefinitionGuardSchema = GatewayServiceDefinitionPublicationSchema.extend(
+  {
+    files: z.array(GatewayServiceDefinitionPublicationSchema.shape.files.element).min(1),
+  },
+);
+export type GatewayServiceDefinitionGuard = z.infer<typeof GatewayServiceDefinitionGuardSchema>;
 type GatewayServiceFileState = z.infer<typeof fileState>;
 
 /** Read one stable regular file; publication owners compare it to retained write facts. */
