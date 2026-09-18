@@ -1,5 +1,6 @@
 // Defines user-facing config field labels used by schema metadata.
 import { MEDIA_AUDIO_FIELD_LABELS } from "./media-audio-field-metadata.js";
+import { META_FIELD_LABELS } from "./schema.meta.js";
 import { NODE_CAPABILITY_FIELD_LABELS } from "./schema.node-capabilities.js";
 import { CLOUD_WORKER_FIELD_LABELS } from "./zod-schema.cloud-workers.js";
 import { DESKTOP_FIELD_LABELS } from "./zod-schema.desktop.js";
@@ -11,10 +12,7 @@ export const FIELD_LABELS: Record<string, string> = {
   "channels.discord.activities": "Discord Activities",
   "channels.discord.activities.clientSecret": "Discord Activities Client Secret",
   "channels.discord.activities.applicationId": "Discord Activities Application ID",
-  meta: "Compatibility Metadata",
-  "meta.lastTouchedVersion": "Config Last Touched Version",
-  "meta.migrations": "Config Migration Markers",
-  "meta.migrations.modelPolicyAllowlist": "Model Policy Allowlist Migration",
+  ...META_FIELD_LABELS,
   env: "Environment",
   "env.shellEnv": "Shell Environment Import",
   "env.shellEnv.enabled": "Shell Environment Import Enabled",
@@ -268,6 +266,8 @@ export const FIELD_LABELS: Record<string, string> = {
   "tools.exec.ask": "Exec Ask",
   "tools.exec.reviewer": "Exec Reviewer",
   "tools.exec.reviewer.model": "Exec Reviewer Model",
+  "tools.exec.reviewer.thinking": "Exec Reviewer Thinking",
+  "tools.exec.reviewer.fastMode": "Exec Reviewer Fast Mode",
   "tools.exec.reviewer.timeoutMs": "Exec Reviewer Timeout (ms)",
   "tools.exec.node": "Exec Node Binding",
   "tools.agentToAgent": "Agent-to-Agent Tool Access",
@@ -616,6 +616,10 @@ export const FIELD_LABELS: Record<string, string> = {
   "agents.defaults.models.*.codeMode": "Code Mode",
   "agents.defaults.model.primary": "Primary Model",
   "agents.defaults.model.fallbacks": "Model Fallbacks",
+  "agents.defaults.embeddedAgent.cyberFailover": "Cyber Policy Failover",
+  "agents.defaults.embeddedAgent.cyberFailover.mode": "Cyber Policy Failover Mode",
+  "agents.defaults.embeddedAgent.cyberFailover.model": "Cyber Policy Failover Model",
+  "agents.defaults.embeddedAgent.cyberFailover.cooloffMs": "Cyber Policy Failover Cooloff",
   "agents.defaults.utilityModel": "Utility Model",
   "agents.entries.*.utilityModel": "Agent Utility Model",
   "agents.defaults.imageModel.primary": "Image Model",

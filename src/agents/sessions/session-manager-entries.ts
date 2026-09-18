@@ -1,3 +1,4 @@
+import { buildSessionContext as buildCoreSessionContext } from "../../../packages/agent-core/src/harness/session/session.js";
 import {
   readActiveTranscriptEntryAnchor,
   readTranscriptEventAtSeqSync,
@@ -10,10 +11,8 @@ import { applyAssistantDeliveryDirectives } from "../../config/sessions/transcri
 import { isSessionTranscriptSideAppendEntry } from "../../config/sessions/transcript-tree.js";
 import type { ImageContent, Message, TextContent } from "../../llm/types.js";
 import { copyPreparedModelVisibleToolText } from "../../logging/redact-internal.js";
-import {
-  buildSessionContext as buildCoreSessionContext,
-  type SessionTreeEntry as CoreSessionTreeEntry,
-} from "../runtime/index.js";
+import { readNestedToolActivity } from "../../sessions/nested-tool-activity.js";
+import type { SessionTreeEntry as CoreSessionTreeEntry } from "../runtime/index.js";
 import {
   copyCodeModeSourceAppend,
   getCodeModeSourceAppend,
@@ -97,7 +96,10 @@ export class SessionManagerEntries extends SessionManagerPersistence {
     const preparedTurnAppend =
       activeBranchAppend &&
       canonicalEntry.type === "message" &&
-      (canonicalEntry.message.role === "assistant" || canonicalEntry.message.role === "toolResult");
+      (canonicalEntry.message.role === "assistant" ||
+        canonicalEntry.message.role === "toolResult" ||
+        // A nested send can advance the transcript before its tool activity is recorded.
+        readNestedToolActivity(canonicalEntry.message) !== undefined);
     let attemptOptions: AppendPersistenceOptions & { expectedMutationAt?: number | null } =
       persistenceOptions;
     const admittedUserId = this.persistenceTarget

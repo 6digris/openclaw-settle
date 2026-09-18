@@ -7,7 +7,8 @@ import { isTruthyEnvValue } from "../infra/env.js";
 import type { HeartbeatEventPayload } from "../infra/heartbeat-events.js";
 import type { PluginCompatibilityNotice } from "../plugins/status.js";
 import type { BackupRunFreshness } from "../state/backup-run-records.js";
-import type { StatusSummary } from "../status/types.js";
+import type { MemoryPluginStatus } from "../status/memory-plugin.js";
+import type { StatusSummary } from "../status/summary.js";
 import { VERSION } from "../version.js";
 import { buildBackupStatusValue } from "./backup-health.js";
 import type { HealthSummary } from "./health.js";
@@ -33,11 +34,15 @@ import {
   buildStatusTasksValue,
   type StatusMemoryStateResolvers,
 } from "./status.command-sections.js";
-import type { MemoryPluginStatus, MemoryStatusSnapshot } from "./status.scan.shared.js";
+import type { MemoryStatusSnapshot } from "./status.scan.shared.js";
 
 type StatusDegradationSummary = Pick<
   StatusSummary,
-  "degradedSecretOwners" | "degradedPlugins" | "startupMigrationWarning" | "secretEgressProxy"
+  | "degradedSecretOwners"
+  | "degradedPlugins"
+  | "startupMigrationWarning"
+  | "startupRecoveryWarning"
+  | "secretEgressProxy"
 >;
 
 function buildStatusDegradationRows(
@@ -47,6 +52,9 @@ function buildStatusDegradationRows(
   const rows: Array<{ Item: string; Value: string }> = [];
   if (summary.startupMigrationWarning) {
     rows.push({ Item: "Startup migrations", Value: decorate(summary.startupMigrationWarning) });
+  }
+  if (summary.startupRecoveryWarning) {
+    rows.push({ Item: "Session recovery", Value: decorate(summary.startupRecoveryWarning) });
   }
   if (summary.secretEgressProxy) {
     const status = summary.secretEgressProxy;

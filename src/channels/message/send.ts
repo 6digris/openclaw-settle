@@ -19,6 +19,7 @@ import {
   type DeliverOutboundPayloadsParams,
   type OutboundDeliveryIntent,
 } from "../../infra/outbound/deliver.js";
+import type { ConversationDeliveryTarget } from "../../infra/outbound/delivery-completion.js";
 import type { OutboundPayloadPlan } from "../../infra/outbound/reply-payload-parts.js";
 import { normalizeOutboundReplyFacts } from "../../infra/outbound/reply-policy.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
@@ -213,14 +214,21 @@ export type DurableMessageSendContext = MessageSendContext<
 export async function withDurableMessageSendContextCore<T>(
   params: DurableMessageSendContextParams,
   run: (ctx: DurableMessageSendContext) => Promise<T>,
+  conversationDeliveryTarget?: ConversationDeliveryTarget,
 ): Promise<T> {
-  return await withMessageSendContext(params, run, deliverOutboundPayloadsInternal);
+  return await withMessageSendContext(
+    params,
+    run,
+    deliverOutboundPayloadsInternal,
+    conversationDeliveryTarget,
+  );
 }
 
 async function withMessageSendContext<T>(
   params: DurableMessageSendContextParams,
   run: (ctx: DurableMessageSendContext) => Promise<T>,
   deliver: typeof deliverOutboundPayloadsInternal,
+  conversationDeliveryTarget?: ConversationDeliveryTarget,
 ): Promise<T> {
   let deliveryIntent: OutboundDeliveryIntent | undefined;
   const {
@@ -268,6 +276,8 @@ async function withMessageSendContext<T>(
       try {
         const results = await deliver({
           ...deliveryParams,
+          // Public SDK callers cannot select a private conversation storage target.
+          conversationDeliveryTarget,
           payloads: rendered.payloads,
           renderedBatchPlan: rendered.plan,
           queuePolicy,
@@ -403,26 +413,34 @@ async function withMessageSendContext<T>(
 
 export async function sendDurableMessageBatchCore(
   params: DurableMessageSendContextParams,
+  conversationDeliveryTarget?: ConversationDeliveryTarget,
 ): Promise<DurableMessageBatchSendResult> {
-  return await sendMessageBatch(params, deliverOutboundPayloadsInternal);
+  return await sendMessageBatch(
+    params,
+    deliverOutboundPayloadsInternal,
+    conversationDeliveryTarget,
+  );
 }
 
 export async function sendStructuredDurableMessageBatchCore(
   input: Omit<DurableMessageSendContextParams, "payloads"> & {
     plan: readonly OutboundPayloadPlan[];
   },
+  conversationDeliveryTarget?: ConversationDeliveryTarget,
 ): Promise<DurableMessageBatchSendResult> {
   const { plan, ...params } = input;
   return await sendMessageBatch(
     { ...params, payloads: plan.map((entry) => entry.payload) },
     ({ payloads: _payloads, ...delivery }) =>
       deliverStructuredOutboundPayloadsInternal({ ...delivery, plan }),
+    conversationDeliveryTarget,
   );
 }
 
 async function sendMessageBatch(
   params: DurableMessageSendContextParams,
   deliver: typeof deliverOutboundPayloadsInternal,
+  conversationDeliveryTarget?: ConversationDeliveryTarget,
 ): Promise<DurableMessageBatchSendResult> {
   const pendingFinalCompletion = params.deliveryCompletion
     ? undefined
@@ -476,5 +494,6 @@ async function sendMessageBatch(
       return result;
     },
     deliver,
+    conversationDeliveryTarget,
   );
 }

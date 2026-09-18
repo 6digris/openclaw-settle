@@ -25,7 +25,7 @@ import {
 import { renderUserFacingText } from "./embedded-agent-helpers/user-facing-text.js";
 import type { AgentMessage } from "./runtime/index.js";
 
-export { stripDowngradedToolCallText } from "../shared/text/assistant-visible-text.js";
+export { stripDowngradedToolCallText } from "../shared/text/downgraded-tool-call-text.js";
 
 /** Narrow an agent message to an assistant message. */
 export function isAssistantMessage(msg: AgentMessage | undefined): msg is AssistantMessage {

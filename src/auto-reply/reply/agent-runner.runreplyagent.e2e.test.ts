@@ -46,6 +46,7 @@ import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-trans
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
 import type { TemplateContext } from "../templating.js";
 import { createReplyAgentRestartRecoveryController } from "./agent-runner-execute.js";
+import { registerReasoningFallbackTests } from "./agent-runner.reasoning-fallback.test-support.js";
 import { resolveActiveExplicitSteerSessionKey } from "./explicit-steer-routing.js";
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
 import {
@@ -58,7 +59,6 @@ import {
   type QueueSettings,
 } from "./queue.js";
 import { getExistingFollowupQueue } from "./queue/state.js";
-import { createReplyDispatcher } from "./reply-dispatcher.js";
 import {
   REPLY_OPERATION_RUN_STATE,
   resolveReplyOperationAgentTurn,
@@ -2286,73 +2286,62 @@ describe("runReplyAgent heartbeat followup guard", () => {
   );
 
   it.each([
-    { label: "accepted answer", payload: { text: "answer block" }, delivered: true },
-    { label: "in-flight answer", payload: { text: "answer block" }, delivered: true },
-    { label: "queued answer", payload: { text: "answer block" }, delivered: true },
-    { label: "aborted answer", payload: { text: "answer block" }, delivered: false },
-    {
-      label: "reasoning",
-      payload: { text: "internal reasoning", isReasoning: true },
-      delivered: false,
-    },
-    {
-      label: "commentary",
-      payload: { text: "working on it", isCommentary: true },
-      delivered: false,
-    },
-    { label: "rejected answer", payload: { text: "answer block" }, delivered: false },
-  ])(
-    "reports provider failure after $label block delivery",
-    async ({ label, payload, delivered }) => {
-      const replyOperation =
-        label === "aborted answer"
-          ? createReplyOperation({
-              sessionKey: "main",
-              sessionId: "session",
-              resetTriggered: false,
-            })
-          : undefined;
-      const deliveryStarted = createDeferred();
-      let blockFlush: Promise<void> | undefined;
-      const onBlockReply = vi.fn(async () => {
-        deliveryStarted.resolve();
-        if (label === "in-flight answer" || replyOperation) {
-          await setImmediate();
-          replyOperation?.abortByUser();
-        }
-        if (label === "rejected answer") {
-          throw new Error("transport rejected the block");
-        }
-      });
-      state.runEmbeddedAgentMock.mockImplementationOnce(async (params: AgentRunParams) => {
-        await params.onBlockReply?.(payload);
-        blockFlush = label === "queued answer" ? undefined : params.onBlockReplyFlush?.();
-        if (label !== "queued answer") {
-          await deliveryStarted.promise;
-        }
-        if (label !== "in-flight answer" && label !== "queued answer" && !replyOperation) {
-          await blockFlush;
-        }
-        throw new Error("model stream failed after block delivery");
-      });
-      const { run } = createMinimalRun({
-        replyOperation,
-        blockStreamingEnabled: true,
-        opts: { onBlockReply, reasoningPayloadsEnabled: true, commentaryPayloadsEnabled: true },
-        sessionCtx: { ChatType: "group" },
-      });
+    ["accepted answer", { text: "answer block" }, true],
+    ["in-flight answer", { text: "answer block" }, true],
+    ["queued answer", { text: "answer block" }, true],
+    ["aborted answer", { text: "answer block" }, false],
+    ["reasoning", { text: "internal reasoning", isReasoning: true }, false],
+    ["commentary", { text: "working on it", isCommentary: true }, false],
+    ["rejected answer", { text: "answer block" }, false],
+  ])("reports provider failure after %s block delivery", async (label, payload, delivered) => {
+    const replyOperation =
+      label === "aborted answer"
+        ? createReplyOperation({
+            sessionKey: "main",
+            sessionId: "session",
+            resetTriggered: false,
+          })
+        : undefined;
+    const deliveryStarted = createDeferred();
+    let blockFlush: Promise<void> | undefined;
+    const onBlockReply = vi.fn(async () => {
+      deliveryStarted.resolve();
+      if (label === "in-flight answer" || replyOperation) {
+        await setImmediate();
+        replyOperation?.abortByUser();
+      }
+      if (label === "rejected answer") {
+        throw new Error("transport rejected the block");
+      }
+    });
+    state.runEmbeddedAgentMock.mockImplementationOnce(async (params: AgentRunParams) => {
+      await params.onBlockReply?.(payload);
+      blockFlush = label === "queued answer" ? undefined : params.onBlockReplyFlush?.();
+      if (label !== "queued answer") {
+        await deliveryStarted.promise;
+      }
+      if (label !== "in-flight answer" && label !== "queued answer" && !replyOperation) {
+        await blockFlush;
+      }
+      throw new Error("model stream failed after block delivery");
+    });
+    const { run } = createMinimalRun({
+      replyOperation,
+      blockStreamingEnabled: true,
+      opts: { onBlockReply, reasoningPayloadsEnabled: true, commentaryPayloadsEnabled: true },
+      sessionCtx: { ChatType: "group" },
+    });
 
-      const result = await run();
-      await blockFlush;
-      const reply = Array.isArray(result) ? result[0] : result;
+    const result = await run();
+    await blockFlush;
+    const reply = Array.isArray(result) ? result[0] : result;
 
-      expect(onBlockReply).toHaveBeenCalledOnce();
-      expect(reply).toMatchObject({
-        text: delivered ? GENERIC_EXTERNAL_RUN_FAILURE_TEXT : "NO_REPLY",
-        ...(delivered ? { isError: true } : {}),
-      });
-    },
-  );
+    expect(onBlockReply).toHaveBeenCalledOnce();
+    expect(reply).toMatchObject({
+      text: delivered ? GENERIC_EXTERNAL_RUN_FAILURE_TEXT : "NO_REPLY",
+      ...(delivered ? { isError: true } : {}),
+    });
+  });
 
   it("rethrows after a delivered partial without visible content", async () => {
     const accounting = await import("./session-usage.js");
@@ -4927,101 +4916,10 @@ describe("runReplyAgent typing (heartbeat)", () => {
     }
   });
 
-  it.each([
-    { lane: "reasoning", payload: { text: "internal", isReasoning: true } },
-    { lane: "commentary", payload: { text: "internal", isCommentary: true } },
-  ])("does not let streamed $lane suppress the empty-reply fallback", async ({ payload }) => {
-    const onBlockReply = vi.fn();
-    state.runEmbeddedAgentMock.mockImplementationOnce(async (params: AgentRunParams) => {
-      await params.onBlockReply?.(payload);
-      return { payloads: [], meta: {} };
-    });
-    const { run } = createMinimalRun({
-      blockStreamingEnabled: true,
-      opts: {
-        onBlockReply,
-        reasoningPayloadsEnabled: true,
-        commentaryPayloadsEnabled: true,
-      },
-    });
-
-    const result = await run();
-    const payloads = Array.isArray(result) ? result : [result];
-
-    expect(onBlockReply).toHaveBeenCalled();
-    expect(onBlockReply.mock.calls[0]?.[0]).toEqual(expect.objectContaining(payload));
-    expect(payloads).toContainEqual(
-      expect.objectContaining({
-        text: expect.stringContaining("did not produce a visible reply"),
-        isError: true,
-      }),
-    );
+  registerReasoningFallbackTests({
+    runEmbeddedAgentMock: state.runEmbeddedAgentMock,
+    createMinimalRun,
   });
-
-  it.each([
-    { delivery: "direct", blockStreamingEnabled: false, reasoning: "enabled", enabled: true },
-    { delivery: "pipeline", blockStreamingEnabled: true, reasoning: "enabled", enabled: true },
-    {
-      delivery: "direct",
-      blockStreamingEnabled: false,
-      reasoning: "default-off",
-      enabled: undefined,
-    },
-    {
-      delivery: "pipeline",
-      blockStreamingEnabled: true,
-      reasoning: "default-off",
-      enabled: undefined,
-    },
-  ])(
-    "keeps $reasoning reasoning separate from the final fallback through prepared $delivery delivery",
-    async ({ blockStreamingEnabled, enabled }) => {
-      const reasoning = { text: "Thinking\n\n_Checking the result._", isReasoning: true };
-      const delivered = vi.fn(async (_payload: ReplyPayload) => {});
-      const onBlockReply = vi.fn();
-      const dispatcher = createReplyDispatcher({
-        deliver: delivered,
-        deliverPrepared: async (plan) => delivered(plan.payload),
-      });
-      state.runEmbeddedAgentMock.mockImplementationOnce(async (params: AgentRunParams) => {
-        await params.onBlockReply?.(reasoning);
-        return { payloads: [], meta: {} };
-      });
-      const { run } = createMinimalRun({
-        blockStreamingEnabled,
-        opts: {
-          onBlockReply,
-          onPreparedBlockReply: async (plan) => {
-            dispatcher.sendPreparedReply("block", plan);
-            await dispatcher.waitForIdle();
-          },
-          ...(enabled ? { reasoningPayloadsEnabled: true } : {}),
-        },
-      });
-
-      try {
-        const result = await run();
-        await dispatcher.waitForIdle();
-        const payloads = Array.isArray(result) ? result : [result];
-
-        expect(onBlockReply).not.toHaveBeenCalled();
-        if (enabled) {
-          expect(delivered).toHaveBeenCalledExactlyOnceWith(expect.objectContaining(reasoning));
-        } else {
-          expect(delivered).not.toHaveBeenCalled();
-        }
-        expect(payloads).toContainEqual(
-          expect.objectContaining({
-            text: expect.stringContaining("did not produce a visible reply"),
-            isError: true,
-          }),
-        );
-      } finally {
-        dispatcher.markComplete();
-        await dispatcher.waitForIdle();
-      }
-    },
-  );
 
   it.each([
     {
@@ -5031,11 +4929,6 @@ describe("runReplyAgent typing (heartbeat)", () => {
         payloads: [{ text: "NO_REPLY" }],
         meta: { finalAssistantVisibleText: "NO_REPLY" },
       },
-    },
-    {
-      label: "yielded continuation",
-      pendingContinuation: true,
-      result: { payloads: [], meta: { yielded: true } },
     },
     {
       label: "pending tool continuation",
@@ -5051,105 +4944,81 @@ describe("runReplyAgent typing (heartbeat)", () => {
     expect(onPendingContinuation).toHaveBeenCalledTimes(pendingContinuation ? 1 : 0);
   });
 
-  it("delivers one bounded status for an accepted child continuation", async () => {
+  it.each([
+    { label: "implicit continuation", meta: { continuationPending: true }, implicit: true },
+    { label: "yield without acknowledgment", meta: { yielded: true }, implicit: false },
+    {
+      label: "explicit acknowledgment",
+      meta: { yielded: true, yieldAcknowledgment: "Research started; results will follow." },
+      implicit: false,
+    },
+  ])("delivers one waiting status for $label", async ({ meta, implicit }) => {
     state.runEmbeddedAgentMock.mockResolvedValueOnce({
-      payloads: [{ text: "I’m continuing this work and will send the result when it is ready." }],
-      meta: { continuationPending: true },
-      acceptedSessionSpawns: [{ runId: "child", childSessionKey: "agent:main:child" }],
+      payloads: [],
+      meta: { durationMs: 0, ...meta },
+      acceptedSessionSpawns: [
+        {
+          runId: "child-run",
+          childSessionKey: "agent:main:subagent:child",
+          expectsCompletionMessage: true,
+        },
+      ],
     });
     const onPendingContinuation = vi.fn();
     const { run } = createMinimalRun({ opts: { onPendingContinuation } });
 
     const result = await run();
     expect(result).toMatchObject({
-      text: "I’m continuing this work and will send the result when it is ready.",
+      text:
+        meta.yieldAcknowledgment ??
+        "I’m continuing this work and will send the result when it is ready.",
       replyToId: "msg",
     });
     expect(onPendingContinuation).toHaveBeenCalledOnce();
-    expect(
-      getReplyPayloadMetadata(requireRecord(result, "continuation status"))?.continuationStatus,
-    ).toBe(true);
+    const metadata = getReplyPayloadMetadata(requireRecord(result, "waiting status"));
+    expect(metadata?.deliverDespiteSourceReplySuppression).toBe(true);
+    expect(metadata?.continuationStatus === true).toBe(implicit);
+    expect(onPendingContinuation.mock.calls[0]).toEqual(
+      implicit ? [{ settle: expect.any(Function) }] : [],
+    );
   });
 
-  it("delivers an explicit yield acknowledgment after accepting a child spawn", async () => {
-    state.runEmbeddedAgentMock.mockResolvedValueOnce({
-      payloads: [],
-      meta: {
-        yielded: true,
-        yieldAcknowledgment: "Research started; results will follow.",
-      },
-      acceptedSessionSpawns: [{ runId: "child", childSessionKey: "agent:main:child" }],
-    });
-    const onPendingContinuation = vi.fn();
-    const { run } = createMinimalRun({ opts: { onPendingContinuation } });
-
-    await expect(run()).resolves.toMatchObject({
-      text: "Research started; results will follow.",
-      replyToId: "msg",
-    });
-    expect(onPendingContinuation).toHaveBeenCalledOnce();
-  });
-
-  it("prefers a yield acknowledgment over an earlier generated tool warning", async () => {
+  it.each([
+    { label: "default status" },
+    { label: "explicit status", acknowledgment: "Research started; results will follow." },
+    {
+      label: "room event",
+      acknowledgment: "Research started; results will follow.",
+      roomEvent: true,
+      warning: true,
+    },
+    { label: "empty acknowledgment", acknowledgment: "[[reply_to_current]]", warning: true },
+  ])("resolves an earlier tool warning with $label", async (testCase) => {
     const toolWarning = setReplyPayloadMetadata(
       { text: "⚠️ Bash failed", isError: true },
       { toolErrorWarning: { toolName: "bash" } },
     );
     state.runEmbeddedAgentMock.mockResolvedValueOnce({
       payloads: [toolWarning],
-      meta: {
-        yielded: true,
-        yieldAcknowledgment: "Research started; results will follow.",
-      },
-      acceptedSessionSpawns: [{ runId: "child", childSessionKey: "agent:main:child" }],
+      meta: { yielded: true, yieldAcknowledgment: testCase.acknowledgment },
+      acceptedSessionSpawns: [
+        {
+          runId: "child-run",
+          childSessionKey: "agent:main:subagent:child",
+          expectsCompletionMessage: true,
+        },
+      ],
     });
-    const { run } = createMinimalRun();
+    const { run } = createMinimalRun({
+      currentInboundEventKind: testCase.roomEvent ? "room_event" : undefined,
+    });
 
     await expect(run()).resolves.toMatchObject({
-      text: "Research started; results will follow.",
-      replyToId: "msg",
-    });
-  });
-
-  it("keeps a generated tool warning when the yield acknowledgment is not deliverable", async () => {
-    const toolWarning = setReplyPayloadMetadata(
-      { text: "⚠️ Bash failed", isError: true },
-      { toolErrorWarning: { toolName: "bash" } },
-    );
-    state.runEmbeddedAgentMock.mockResolvedValueOnce({
-      payloads: [toolWarning],
-      meta: {
-        yielded: true,
-        yieldAcknowledgment: "Research started; results will follow.",
-      },
-    });
-    const { run } = createMinimalRun({ currentInboundEventKind: "room_event" });
-
-    await expect(run()).resolves.toMatchObject({
-      text: "⚠️ Bash failed",
-      isError: true,
-      replyToId: "msg",
-    });
-  });
-
-  it("keeps a generated tool warning when the yield acknowledgment normalizes to empty", async () => {
-    const toolWarning = setReplyPayloadMetadata(
-      { text: "⚠️ Bash failed", isError: true },
-      { toolErrorWarning: { toolName: "bash" } },
-    );
-    state.runEmbeddedAgentMock.mockResolvedValueOnce({
-      payloads: [toolWarning],
-      meta: {
-        yielded: true,
-        yieldAcknowledgment: "[[reply_to_current]]",
-      },
-      acceptedSessionSpawns: [{ runId: "child", childSessionKey: "agent:main:child" }],
-    });
-    const { run } = createMinimalRun();
-
-    await expect(run()).resolves.toMatchObject({
-      text: "⚠️ Bash failed",
-      isError: true,
+      text: testCase.warning
+        ? "⚠️ Bash failed"
+        : (testCase.acknowledgment ??
+          "I’m continuing this work and will send the result when it is ready."),
+      ...(testCase.warning ? { isError: true } : {}),
       replyToId: "msg",
     });
   });
@@ -6215,6 +6084,150 @@ describe("runReplyAgent typing (heartbeat)", () => {
       }
     },
   );
+
+  it.each([
+    {
+      label: "direct chats",
+      chatType: "direct" as const,
+      retryProvider: "openai",
+      retryModel: "gpt-daybreak-blue-latest",
+      expectedNotice: "↪️ Retried on Daybreak",
+    },
+    {
+      label: "group chats",
+      chatType: "group" as const,
+      retryProvider: "openai",
+      retryModel: "gpt-daybreak-blue-latest",
+      expectedNotice: "↪️ Retried on Daybreak",
+    },
+    {
+      label: "channels",
+      chatType: "channel" as const,
+      retryProvider: "openai",
+      retryModel: "gpt-daybreak-blue-latest",
+      expectedNotice: "↪️ Retried on Daybreak",
+    },
+    {
+      label: "custom retry targets",
+      chatType: "direct" as const,
+      retryProvider: "anthropic",
+      retryModel: "claude-opus-4-7",
+      expectedNotice: "↪️ Retried on anthropic/claude-opus-4-7",
+    },
+  ])(
+    "delivers successful policy retry notices to $label",
+    async ({ chatType, retryProvider, retryModel, expectedNotice }) => {
+      const { sessionEntry, sessionStore, storePath } = await makeSessionFixture({
+        modelProvider: "openai",
+        model: "gpt-5.6-sol",
+      });
+
+      state.runEmbeddedAgentMock.mockResolvedValue({
+        payloads: [{ text: "final" }],
+        meta: {
+          executionTrace: {
+            winnerProvider: retryProvider,
+            winnerModel: retryModel,
+            providerPolicyRetry: {
+              category: "cyber",
+              provider: retryProvider,
+              model: retryModel,
+            },
+          },
+        },
+      });
+      const fallbackSpy = vi
+        .spyOn(modelFallbackModule, "runWithModelFallback")
+        .mockImplementation(async (params: TestModelFallbackRunnerParams) => ({
+          outcome: "completed" as const,
+          result: await runFallbackModelAttempt(params, retryProvider, retryModel, "unknown"),
+          provider: retryProvider,
+          model: retryModel,
+          attempts: [
+            {
+              provider: "openai",
+              model: "gpt-5.6-sol",
+              error: "OpenAI cyber policy refusal",
+              reason: "unknown",
+              code: "OPENAI_CYBER_POLICY_REFUSAL",
+            },
+          ],
+        }));
+      try {
+        const { run } = createMinimalRun({
+          resolvedVerboseLevel: "on",
+          sessionEntry,
+          sessionStore,
+          sessionKey: "main",
+          storePath,
+          sessionCtx: { ChatType: chatType },
+        });
+
+        const result = await run();
+        expect(result).toEqual([
+          expect.objectContaining({
+            text: expectedNotice,
+            isFallbackNotice: true,
+          }),
+          expect.objectContaining({ text: "final" }),
+        ]);
+      } finally {
+        fallbackSpy.mockRestore();
+      }
+    },
+  );
+
+  it("does not report an interrupted policy retry as successful", async () => {
+    const { sessionEntry, sessionStore, storePath } = await makeSessionFixture({
+      modelProvider: "openai",
+      model: "gpt-5.6-sol",
+    });
+
+    state.runEmbeddedAgentMock.mockResolvedValue({
+      payloads: [{ text: "interrupted output" }],
+      meta: { aborted: true },
+    });
+    const fallbackSpy = vi
+      .spyOn(modelFallbackModule, "runWithModelFallback")
+      .mockImplementation(async (params: TestModelFallbackRunnerParams) => ({
+        outcome: "completed" as const,
+        result: await runFallbackModelAttempt(
+          params,
+          "openai",
+          "gpt-daybreak-blue-latest",
+          "unknown",
+        ),
+        provider: "openai",
+        model: "gpt-daybreak-blue-latest",
+        attempts: [
+          {
+            provider: "openai",
+            model: "gpt-5.6-sol",
+            error: "OpenAI cyber policy refusal",
+            reason: "unknown",
+            code: "OPENAI_CYBER_POLICY_REFUSAL",
+          },
+        ],
+      }));
+    try {
+      const { run } = createMinimalRun({
+        resolvedVerboseLevel: "on",
+        sessionEntry,
+        sessionStore,
+        sessionKey: "main",
+        storePath,
+        sessionCtx: { ChatType: "direct" },
+      });
+
+      const result = await run();
+      const text = Array.isArray(result)
+        ? result.map((payload) => payload.text).join("\n")
+        : result?.text;
+      expect(text).not.toContain("Retried on");
+    } finally {
+      fallbackSpy.mockRestore();
+    }
+  });
 
   it("clears native fallback state without attributing finalizer response usage to the native model", async () => {
     const runtimeModelSelection = { provider: "openai", model: "gpt-5.6-sol" };

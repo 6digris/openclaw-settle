@@ -1,10 +1,11 @@
 import type { LegacyConfigUpdatePlan } from "../../commands/doctor/legacy-config-repair.js";
 import { normalizeUpdateChannel } from "../../infra/update-channels.js";
+import { canResolveRegistryVersionForPackageTarget } from "../../infra/update-global.js";
 import { withPluginLifecycleLease } from "../../plugins/plugin-lifecycle-lease.js";
 import { defaultRuntime } from "../../runtime.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { assertOpenClawStateWriteAllowedAtPath } from "../../state/openclaw-state-ownership.js";
-import { readPackageVersion, resolveNodeRunner, UpdatePreMutationError } from "./shared.js";
+import { readPackageVersion, UpdatePreMutationError } from "./shared.js";
 import { maybeRepairLegacyConfigForUpdateChannel } from "./update-command-config.js";
 import { inspectUpdateDatabaseContexts } from "./update-command-database-context.js";
 import type { FinishUpdateParams } from "./update-command-finish-types.js";
@@ -51,6 +52,7 @@ export async function finishAlreadyCurrentUpdate(
     | "packageUpdateNodeRunner"
     | "ownedManagedUpdateEnv"
   > & {
+    packageInstallSpec: string | null;
     managedServiceRootRedirect: ManagedServiceRootRedirect | null;
     legacyConfigPlan?: LegacyConfigUpdatePlan;
     runtimeTarget?: { version: string; nodeEngine: string | null };
@@ -70,33 +72,28 @@ export async function finishAlreadyCurrentUpdate(
       },
     };
     const inspection = {
+      ...params,
       roots: [params.root],
-      legacyConfigPlan: params.legacyConfigPlan,
       updateInstallKind: params.result.mode === "git" ? ("git" as const) : ("package" as const),
-      shouldRestart: params.shouldRestart,
       jsonMode: Boolean(params.opts.json),
       timeoutMs: params.updateStepTimeoutMs,
-      invocationCwd: params.invocationCwd,
-      managedServiceRootRedirect: params.managedServiceRootRedirect,
     };
     const admission = await inspectUpdateDatabaseContexts(inspection);
     const service = admission.service;
     const runtime = await resolvePackageRuntimePreflight({
+      ...params,
       target: params.runtimeTarget,
       installedRoot: params.root,
-      nodeRunner: service?.serviceNodeRunner ?? params.packageUpdateNodeRunner,
-      fallbackNodeRunner:
-        params.shouldRestart &&
-        service?.running &&
-        service.serviceUpdateVerdict?.kind === "owned" &&
-        service.serviceUpdateVerdict.refreshDefinition
-          ? resolveNodeRunner()
-          : undefined,
+      nodeRunner: params.packageUpdateNodeRunner,
+      alreadyCurrent: true,
+      service: service ?? admission.services.get(params.root),
+      sourceRoot: result.mode === "git" ? params.root : undefined,
       timeoutMs: params.updateStepTimeoutMs,
     });
     if (!runtime.ok) {
       throw new UpdatePreMutationError("node-runtime-preflight", runtime.error, {
         failureFacts: runtime.failureFacts,
+        recoverySteps: runtime.recoverySteps,
       });
     }
     const packageUpdateNodeRunner = runtime.value.nodeRunner;
@@ -134,7 +131,10 @@ export async function finishAlreadyCurrentUpdate(
             tag:
               params.channel === "extended-stable"
                 ? undefined
-                : (result.after.version ?? undefined),
+                : params.packageInstallSpec &&
+                    !canResolveRegistryVersionForPackageTarget(params.packageInstallSpec)
+                  ? params.packageInstallSpec
+                  : (result.after.version ?? undefined),
             timeoutMs: params.updateStepTimeoutMs,
             nodeRunner: packageUpdateNodeRunner,
             invocationCwd: params.invocationCwd,
@@ -223,6 +223,7 @@ export async function finishAlreadyCurrentUpdate(
         error instanceof UpdatePreMutationError ? error.reason : "managed-service-preflight",
         error.message,
         error.failureFacts,
+        error instanceof UpdatePreMutationError ? error.recoverySteps : undefined,
       );
       return;
     }

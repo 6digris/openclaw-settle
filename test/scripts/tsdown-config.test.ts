@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import { createRequire, isBuiltin } from "node:module";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { build } from "tsdown";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -17,12 +18,14 @@ import {
 } from "../../scripts/lib/tsdown-config-groups.mts";
 import { WORKER_DEPLOY_OPTIONAL_NATIVE_MODULE_ID } from "../../scripts/lib/worker-deploy-build-plugin.mts";
 import { importFreshModule } from "../../src/plugin-sdk/test-helpers/import-fresh.js";
+import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 import buildConfigs from "../../tsdown.config.ts";
 import { copyFsSafePackageFixture } from "./fs-safe-package.test-support.js";
 import { createScriptTestHarness } from "./test-helpers.js";
 
 const configs = Array.isArray(buildConfigs) ? buildConfigs : [buildConfigs];
 const { createTempDir } = createScriptTestHarness();
+const testNodeExecPath = resolveTestNodeExecPath();
 afterEach(() => vi.unstubAllEnvs());
 
 type TsdownConfig = (typeof configs)[number];
@@ -93,6 +96,25 @@ if (loaded.length) assert(loaded[0].startsWith(path.dirname(rootDir) + path.sep)
 `;
 
 describe("tsdown config", () => {
+  it("emits every private Telegram QA harness entry only in private QA builds", async () => {
+    const expectedEntries = {
+      "plugin-sdk/qa-channel-protocol": "src/plugin-sdk/qa-channel-protocol.ts",
+      "plugin-sdk/qa-lab": "src/plugin-sdk/qa-lab.ts",
+      "plugin-sdk/qa-runtime": "src/plugin-sdk/qa-runtime.ts",
+    };
+    const defaultUnified = configs.find((config) => config.name === TSDOWN_UNIFIED_CONFIG_GROUP);
+    expect(defaultUnified?.entry).not.toMatchObject(expectedEntries);
+
+    vi.stubEnv("OPENCLAW_BUILD_PRIVATE_QA", "1");
+    const { default: privateQaBuildConfigs } = await importFreshModule<
+      typeof import("../../tsdown.config.ts")
+    >(import.meta.url, "../../tsdown.config.ts?private-qa-entries");
+    const privateQaUnified = privateQaBuildConfigs.find(
+      (config) => config.name === TSDOWN_UNIFIED_CONFIG_GROUP,
+    );
+    expect(privateQaUnified?.entry).toMatchObject(expectedEntries);
+  });
+
   it.each([
     "extensions/openai/setup-api",
     "extensions/openai/capability-catalog",
@@ -176,7 +198,7 @@ describe("tsdown config", () => {
       `;
         const result = await new Promise<{ error: Error | null; stderr: string }>((resolve) => {
           execFile(
-            process.execPath,
+            testNodeExecPath,
             ["--input-type=module", "-e", script],
             { cwd: root, timeout: 30_000 },
             (error, _stdout, stderr) => resolve({ error, stderr }),
@@ -273,7 +295,7 @@ describe("tsdown config", () => {
         const result = await new Promise<{ error: Error | null; stdout: string; stderr: string }>(
           (resolve) => {
             execFile(
-              process.execPath,
+              testNodeExecPath,
               [
                 "--input-type=module",
                 "-e",
@@ -298,6 +320,123 @@ describe("tsdown config", () => {
       }
     },
   );
+
+  it("routes HTML-only mail and advances the cursor through packaged imap-watch", async () => {
+    const entryName = "extensions/imap/index";
+    const selected = configs.find((config) =>
+      hasWorkerEntry(config, entryName, "extensions/imap/index.ts"),
+    );
+    if (!selected) {
+      throw new Error("Missing IMAP build config");
+    }
+    const root = fs.realpathSync(createTempDir("openclaw-tsdown-imap-"));
+    fs.writeFileSync(path.join(root, "package.json"), '{"type":"module"}');
+    fs.symlinkSync(fs.realpathSync("node_modules"), path.join(root, "node_modules"), "dir");
+    const { bundles } = await build({
+      ...selected,
+      config: false,
+      entry: {
+        [entryName]: "extensions/imap/index.ts",
+        "plugin-sdk/plugin-state-store-runtime": "src/plugin-sdk/plugin-state-store-runtime.ts",
+      },
+      outDir: path.join(root, "dist"),
+      dts: false,
+      logLevel: "silent",
+    });
+    try {
+      const result = await new Promise<{ error: Error | null; stdout: string; stderr: string }>(
+        (resolve) => {
+          execFile(
+            testNodeExecPath,
+            [
+              fileURLToPath(new URL("./imap-packaged-service.test-support.mjs", import.meta.url)),
+              root,
+            ],
+            {
+              cwd: root,
+              env: { ...process.env, OPENCLAW_STATE_DIR: path.join(root, "state") },
+              timeout: 30_000,
+            },
+            (error, stdout, stderr) => resolve({ error, stdout, stderr }),
+          );
+        },
+      );
+      expect(result.error, result.stderr || result.stdout).toBeNull();
+    } finally {
+      for (const bundle of bundles) {
+        await bundle[Symbol.asyncDispose]();
+      }
+    }
+  });
+
+  it("keeps writable database and session lifecycle outside the archive worker bootstrap", async () => {
+    const workerEntry = "config/sessions/session-accessor.sqlite-archive.worker";
+    const selected = configs.find((config) => config.name === TSDOWN_UNIFIED_CONFIG_GROUP);
+    if (!selected) {
+      throw new Error("Missing session archive worker build config");
+    }
+    const entries = selected.entry as Record<string, string>;
+    // Include the parent store: shared chunks must not pull its lifecycle writes
+    // into the one-shot materialize/publish worker's static closure.
+    const { bundles } = await build({
+      ...selected,
+      config: false,
+      entry: Object.fromEntries(
+        [workerEntry, "plugin-sdk/session-store-runtime"].map((name) => [name, entries[name]!]),
+      ),
+      outDir: fs.realpathSync(createTempDir("openclaw-archive-worker-imports-")),
+      dts: false,
+      logLevel: "silent",
+    });
+    try {
+      const chunks = new Map(
+        bundles.flatMap((bundle) =>
+          bundle.chunks
+            .filter((chunk) => chunk.type === "chunk")
+            .map((chunk) => [chunk.fileName, chunk] as const),
+        ),
+      );
+      const queue = [`${workerEntry}.js`];
+      const visited = new Set<string>();
+      const modules = new Set<string>();
+      for (const name of queue) {
+        if (visited.has(name)) {
+          continue;
+        }
+        visited.add(name);
+        const chunk = chunks.get(name);
+        if (!chunk) {
+          throw new Error(`Missing archive worker chunk: ${name}`);
+        }
+        for (const [id, module] of Object.entries(chunk.modules)) {
+          if (module.renderedLength > 0) {
+            modules.add(id.replaceAll("\\", "/"));
+          }
+        }
+        for (const specifier of chunk.imports) {
+          const target = specifier.startsWith(".")
+            ? path.posix.normalize(path.posix.join(path.posix.dirname(name), specifier))
+            : specifier;
+          if (chunks.has(target)) {
+            queue.push(target);
+          }
+        }
+      }
+      expect(
+        [...modules].filter(
+          (id) =>
+            id.endsWith("/src/state/openclaw-agent-db.ts") ||
+            /\/session-accessor\.sqlite-(?:reclamation|lifecycle-state|entry-store|archive)\.ts$/u.test(
+              id,
+            ),
+        ),
+      ).toEqual([]);
+    } finally {
+      for (const bundle of bundles) {
+        await bundle[Symbol.asyncDispose]();
+      }
+    }
+  });
 
   it("builds retained config repairs without plugin runtime or state migration closures", async () => {
     const selected = configs.find((config) => config.outDir === "dist/config-doctor");
@@ -407,7 +546,7 @@ describe("tsdown config", () => {
       const result = await new Promise<{ error: Error | null; stdout: string; stderr: string }>(
         (resolve) => {
           execFile(
-            process.execPath,
+            testNodeExecPath,
             ["--input-type=module", "-e", script, root, JSON.stringify(Object.keys(entries))],
             { cwd: root, timeout: 30_000 },
             (error, stdout, stderr) => resolve({ error, stdout, stderr }),
@@ -491,7 +630,7 @@ describe("tsdown config", () => {
           const result = await new Promise<{ error: Error | null; stdout: string; stderr: string }>(
             (resolve) => {
               execFile(
-                process.execPath,
+                testNodeExecPath,
                 [
                   "--input-type=module",
                   "--eval",
@@ -547,8 +686,8 @@ describe("tsdown config", () => {
             ...["FS_SAFE_NATIVE_MODE", "OPENCLAW_FS_SAFE_NATIVE_MODE"].map((key) =>
               probe(key, "require", "native", { [key]: "require" }),
             ),
-            probe("shared-config", "configured", "native"),
-            probe("default", "off", "fallback"),
+            probe("shared-config", "configured", "native", { FS_SAFE_NATIVE_MODE: "off" }),
+            probe("default", "auto", "native"),
           ]);
           for (const nativePackage of nativePackages) {
             fs.rmSync(path.join(relocatedRoot, path.relative(sourceRoot, nativePackage.root)), {

@@ -9,6 +9,7 @@ import { asResolvedSourceConfig, asRuntimeConfig } from "../config/materialize.j
 import { GATEWAY_UPDATE_EXECUTOR_CONTRACT } from "../daemon/service-update-authority.js";
 import { mockSystemAccountHome } from "../daemon/service.test-helpers.js";
 import * as tempRoot from "../infra/tmp-openclaw-dir.js";
+import { normalizeControlPlaneUpdateResult } from "../infra/update-restart-sentinel-payload.js";
 import type { UpdateRunResult } from "../infra/update-runner-types.js";
 import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
 import { maybeOfferUpdateBeforeDoctor } from "./doctor-update.js";
@@ -55,7 +56,8 @@ const mocks = vi.hoisted(() => ({
   triageCommand: vi.fn<typeof import("./triage.js").triageCommand>(),
 }));
 
-vi.mock("../cli/update-cli/progress.js", () => ({
+vi.mock("../cli/update-cli/progress.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../cli/update-cli/progress.js")>()),
   createUpdateProgress: mocks.createUpdateProgress,
 }));
 
@@ -170,6 +172,7 @@ export async function runOffer(params?: {
   root?: string;
   confirm?: (p: { message: string; initialValue: boolean }) => Promise<boolean>;
   runtime?: RuntimeEnv;
+  outro?: (message: string) => void;
 }): Promise<Awaited<ReturnType<typeof maybeOfferUpdateBeforeDoctor>>> {
   const confirm = params?.confirm ?? vi.fn().mockResolvedValue(false);
   return await maybeOfferUpdateBeforeDoctor({
@@ -181,7 +184,7 @@ export async function runOffer(params?: {
     options: {},
     root: params?.root ?? "/repo/link",
     confirm,
-    outro: vi.fn(),
+    outro: params?.outro ?? vi.fn(),
   });
 }
 
@@ -322,7 +325,7 @@ export function installDoctorUpdateTestHooks(): void {
       env: createManagedDoctorEnvironment(),
     });
     mocks.completeUpdateCommandRun.mockReset().mockImplementation((result, run) => ({
-      ...result,
+      ...normalizeControlPlaneUpdateResult(result),
       runId: run?.runId,
     }));
     mocks.failUpdateCommandRun.mockReset();

@@ -47,13 +47,11 @@ export const emitTelegramMessageSentHooks: UnknownMock = deliveryMocks.emitTeleg
 
 vi.mock("./bot/delivery.js", () => ({
   deliverReplies,
-  deliverStructuredReplies: deliverReplies,
   emitTelegramMessageSentHooks,
 }));
 
 vi.mock("./bot/delivery.replies.js", () => ({
   deliverReplies,
-  deliverStructuredReplies: deliverReplies,
 }));
 
 export async function waitForRegisteredCommands(
@@ -103,16 +101,6 @@ export function createNativeCommandTestParams(
     readChannelAllowFromStore: vi.fn(
       async () => [],
     ) as TelegramNativeCommandDeps["readChannelAllowFromStore"],
-    dispatchChannelInboundTurn: vi.fn(async (plan) => ({
-      admission: { kind: "dispatch" },
-      dispatched: true,
-      ctxPayload: plan.ctxPayload,
-      routeSessionKey: plan.route.sessionKey,
-      dispatchResult: {
-        queuedFinal: false,
-        counts: { block: 0, final: 0, tool: 0 },
-      },
-    })) as TelegramNativeCommandDeps["dispatchChannelInboundTurn"],
     listSkillCommandsForAgents,
     syncTelegramMenuCommands: vi.fn(({ bot, commandsToRegister }) => {
       if (commandsToRegister.length === 0) {

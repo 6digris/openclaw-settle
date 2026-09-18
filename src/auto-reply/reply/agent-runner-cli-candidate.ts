@@ -356,6 +356,7 @@ export async function runCliFallbackCandidate(
               : undefined,
           runParams: {
             preparedRunAdmission: params.preparedRunAdmission,
+            messageActionTurnCapability: params.messageActionTurnCapability,
             diagnosticOwner,
             sessionId: turn.followupRun.run.sessionId,
             sessionKey,
@@ -402,6 +403,7 @@ export async function runCliFallbackCandidate(
               }),
             ),
             modelProvider: params.provider,
+            requesterModel: { provider: params.provider, model: params.model },
             modelHasVision,
             modelContextWindow: selectedModelEntry?.contextWindow,
             modelContextTokens: selectedModelEntry?.contextTokens,
@@ -425,6 +427,7 @@ export async function runCliFallbackCandidate(
             taskSuggestionDeliveryMode: turn.followupRun.run.taskSuggestionDeliveryMode,
             // Heartbeat ambient routes are never implicit message recipients.
             ...(turn.isHeartbeat ? { requireExplicitMessageTarget: true } : {}),
+            cleanupBundleMcpOnRunEnd: turn.opts?.cleanupBundleMcpOnRunEnd,
             silentReplyPromptMode: turn.followupRun.run.silentReplyPromptMode,
             allowEmptyAssistantReplyAsSilent: turn.followupRun.run.allowEmptyAssistantReplyAsSilent,
             extraSystemPromptStatic: turn.followupRun.run.extraSystemPromptStatic,
@@ -447,6 +450,7 @@ export async function runCliFallbackCandidate(
             messageChannel: turn.followupRun.originatingChannel ?? undefined,
             messageProvider: hookMessageProvider,
             clientCaps: turn.followupRun.run.clientCaps,
+            gatewayUiCommandTarget: turn.followupRun.run.gatewayUiCommandTarget,
             currentChannelId:
               turn.followupRun.originatingTo ?? turn.sessionCtx.OriginatingTo ?? turn.sessionCtx.To,
             senderId: turn.followupRun.run.senderId,

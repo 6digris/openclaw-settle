@@ -203,7 +203,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: canonical node CLI owners for plugin-provided node commands.
       // +3: typed feature contracts, backend registration, and native Control UI hosting.
       // +1: public provider-owned asynchronous embedding batch contract.
-      153,
+      // +1: runtime-neutral WebSocket client/server adapter for bundled and external plugins.
+      154,
       env,
     ),
     publicExports: readPluginSdkSurfaceBudgetEnv(
@@ -372,7 +373,11 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +2: shared stored-account key selection and its plugin-owned policy type.
       // +3: prepared outbound planning, its plan type, and inbound delivery on channel-outbound only.
       // +1: shared per-connection webhook request ordering for channel listeners.
-      4468,
+      // +1: approved shared widget CDN policy for core and channel presenters.
+      // +13: runtime-neutral WebSocket client/server, stream, data, and option contracts.
+      // +2: approved process-diagnostics predicate and lightweight subsystem logger.
+      // +1: approved shared native-command argument-menu applicability predicate.
+      4485,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -510,7 +515,10 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: shared stored-account key selection for channel readers and writers.
       // +2: prepared outbound planning and inbound delivery; deprecated channel-message stays frozen.
       // +1: shared per-connection webhook request ordering for channel listeners.
-      2641,
+      // +4: runtime-neutral WebSocket client/server and stream constructors.
+      // +2: approved process-diagnostics predicate and lightweight subsystem logger.
+      // +1: approved shared native-command argument-menu applicability predicate.
+      2648,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

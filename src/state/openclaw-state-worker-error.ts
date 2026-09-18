@@ -4,6 +4,11 @@ import { StartupMaintenanceRequiredError } from "../infra/startup-maintenance-re
 import { OpenClawAgentDatabaseMediaMigrationRequiredError } from "./openclaw-agent-db-migration-required.js";
 import { OpenClawStateDatabaseSchemaMigrationRequiredError } from "./openclaw-state-db-schema-migration-required.js";
 import {
+  isOpenClawStateLeaseErrorCode,
+  OpenClawStateLeaseError,
+  type OpenClawStateLeaseErrorCode,
+} from "./openclaw-state-lease-error.js";
+import {
   OpenClawStateExternalOwnershipError,
   OpenClawStateOwnershipError,
   OpenClawStateOwnershipMetadataError,
@@ -20,9 +25,10 @@ type ErrorValue =
   | { undefined: true };
 
 type ErrorIdentity =
-  | { type: "error" | "aggregate" | "ownership" | "newer-schema" }
+  | { type: "error" | "aggregate" | "ownership" | "newer-schema" | "range-error" }
   | { type: "ownership-metadata"; databasePath: string }
   | { type: "external-ownership"; databasePath: string; managerId: string }
+  | { type: "state-lease"; leaseCode: OpenClawStateLeaseErrorCode }
   | { type: "maintenance"; kind: MaintenanceKind }
   | { type: "state-migration"; kind: StateMigrationKind; pathname: string }
   | { type: "agent-media-migration"; pathname: string; schemaVersion: number };
@@ -42,7 +48,12 @@ export type OpenClawStateWorkerErrorPayload = {
   nodes: ErrorNode[];
 };
 
+type ErrorGraphOptions = { includeOrdinary?: boolean };
+
 function identifyError(error: Error): ErrorIdentity {
+  if (error instanceof OpenClawStateLeaseError) {
+    return { type: "state-lease", leaseCode: error.code };
+  }
   if (error instanceof OpenClawStateOwnershipMetadataError) {
     return { type: "ownership-metadata", databasePath: error.databasePath };
   }
@@ -72,6 +83,9 @@ function identifyError(error: Error): ErrorIdentity {
   if (error instanceof StartupMaintenanceRequiredError) {
     return { type: "maintenance", kind: error.kind };
   }
+  if (error instanceof RangeError) {
+    return { type: "range-error" };
+  }
   return { type: error instanceof AggregateError ? "aggregate" : "error" };
 }
 
@@ -86,6 +100,7 @@ function isScalar(value: unknown): value is string | number | boolean | null {
 
 export function encodeOpenClawStateWorkerError(
   error: unknown,
+  options: ErrorGraphOptions = {},
 ): OpenClawStateWorkerErrorPayload | undefined {
   if (!(error instanceof Error)) {
     return undefined;
@@ -125,7 +140,9 @@ export function encodeOpenClawStateWorkerError(
         ...(current instanceof AggregateError ? { errors: current.errors.map(encodeValue) } : {}),
       });
     }
-    return canonical ? { version: 1, root: 0, nodes } : undefined;
+    return canonical || options.includeOrdinary === true
+      ? { version: 1, root: 0, nodes }
+      : undefined;
   } catch {
     return undefined;
   }
@@ -149,6 +166,7 @@ function parseIdentity(node: Record<string, unknown>): ErrorIdentity | undefined
     case "aggregate":
     case "ownership":
     case "newer-schema":
+    case "range-error":
       return { type: node.type };
     case "ownership-metadata":
       return typeof node.databasePath === "string"
@@ -157,6 +175,10 @@ function parseIdentity(node: Record<string, unknown>): ErrorIdentity | undefined
     case "external-ownership":
       return typeof node.databasePath === "string" && typeof node.managerId === "string"
         ? { type: node.type, databasePath: node.databasePath, managerId: node.managerId }
+        : undefined;
+    case "state-lease":
+      return isOpenClawStateLeaseErrorCode(node.leaseCode) && node.code === node.leaseCode
+        ? { type: node.type, leaseCode: node.leaseCode }
         : undefined;
     case "maintenance":
       return isMaintenanceKind(node.kind) ? { type: node.type, kind: node.kind } : undefined;
@@ -245,6 +267,8 @@ function createError(node: ErrorNode): Error {
   switch (node.type) {
     case "error":
       return new Error(node.message);
+    case "range-error":
+      return new RangeError(node.message);
     case "aggregate":
       return new AggregateError([], node.message);
     case "ownership":
@@ -255,6 +279,8 @@ function createError(node: ErrorNode): Error {
       return new OpenClawStateExternalOwnershipError(node.databasePath, node.managerId);
     case "newer-schema":
       return new SqliteSchemaVersionError(node.message);
+    case "state-lease":
+      return new OpenClawStateLeaseError(node.message, { code: node.leaseCode });
     case "maintenance":
       return new StartupMaintenanceRequiredError(node.kind, node.message);
     case "state-migration":
@@ -268,7 +294,10 @@ function createError(node: ErrorNode): Error {
   return unreachableErrorNode(node);
 }
 
-export function decodeOpenClawStateWorkerError(value: unknown): Error | undefined {
+function decodeErrorGraph(
+  value: unknown,
+  options: ErrorGraphOptions,
+): { errors: Error[]; nodes: ErrorNode[]; root: number } | undefined {
   try {
     if (
       !isRecord(value) ||
@@ -306,7 +335,7 @@ export function decodeOpenClawStateWorkerError(value: unknown): Error | undefine
         }
       }
     }
-    if (!canonical || visited.size !== nodes.length) {
+    if ((!canonical && options.includeOrdinary !== true) || visited.size !== nodes.length) {
       return undefined;
     }
     const errors = nodes.map(createError);
@@ -334,8 +363,165 @@ export function decodeOpenClawStateWorkerError(value: unknown): Error | undefine
         error.errors = (node.errors ?? []).map(decodeValue);
       }
     }
-    return errors[value.root];
+    const group = Object.freeze({});
+    for (const [index, error] of errors.entries()) {
+      retainPayload(error, value, index, true, group);
+    }
+    return { errors, nodes, root: value.root };
   } catch {
     return undefined;
   }
+}
+
+const retainedPayloadKey = Symbol.for("openclaw.sharedStateWorkerErrorPayload");
+
+function retainPayload(
+  error: Error,
+  payload: unknown,
+  node: number,
+  materialized: boolean,
+  group: object,
+): void {
+  Object.defineProperty(error, retainedPayloadKey, {
+    value: Object.freeze({ payload, node, materialized, group }),
+  });
+}
+
+/** Keep the closed wire graph without binding it to a process-global broker's classes. */
+export function retainOpenClawStateWorkerErrorPayload(error: Error, payload: unknown): void {
+  retainPayload(error, payload, 0, false, Object.freeze({}));
+}
+
+/** Hydrate each caller independently; never rewrite a cached opening rejection. */
+export function hydrateOpenClawStateWorkerError(value: Error, options?: ErrorGraphOptions): Error;
+export function hydrateOpenClawStateWorkerError(
+  value: unknown,
+  options?: ErrorGraphOptions,
+): unknown;
+export function hydrateOpenClawStateWorkerError(
+  value: unknown,
+  options: ErrorGraphOptions = {},
+): unknown {
+  if (!(value instanceof Error)) {
+    return value;
+  }
+  type Node = {
+    source: Error;
+    parents: Set<Node>;
+    changed: boolean;
+    opaque: boolean;
+    replacement: Error;
+    cause?: { value: unknown };
+    errors?: unknown[];
+  };
+  const groups = new Map<unknown, ReturnType<typeof decodeErrorGraph>>();
+  const nodes = new Map<Error, Node>();
+  const queue: Node[] = [];
+  const add = (error: Error): Node => {
+    const previous = nodes.get(error);
+    if (previous) {
+      return previous;
+    }
+    const node: Node = {
+      source: error,
+      replacement: error,
+      parents: new Set(),
+      changed: false,
+      opaque: false,
+    };
+    nodes.set(error, node);
+    queue.push(node);
+    const retained: unknown = Object.getOwnPropertyDescriptor(error, retainedPayloadKey)?.value;
+    if (
+      isRecord(retained) &&
+      typeof retained.node === "number" &&
+      Number.isSafeInteger(retained.node) &&
+      retained.node >= 0 &&
+      typeof retained.materialized === "boolean" &&
+      isRecord(retained.group)
+    ) {
+      if (!groups.has(retained.group)) {
+        groups.set(retained.group, decodeErrorGraph(retained.payload, options));
+      }
+      const graph = groups.get(retained.group);
+      const index = retained.materialized ? retained.node : graph?.root;
+      const replacement = index === undefined ? undefined : graph?.errors[index];
+      const identity = index === undefined ? undefined : graph?.nodes[index];
+      if (replacement && identity) {
+        node.replacement = replacement;
+        node.opaque = !retained.materialized;
+        node.changed = node.opaque || identifyError(error).type !== identity.type;
+      }
+    }
+    return node;
+  };
+  const root = add(value);
+  for (const node of queue) {
+    if (node.opaque) {
+      continue;
+    }
+    const edge = (child: unknown) => {
+      if (child instanceof Error) {
+        add(child).parents.add(node);
+      }
+    };
+    if ("cause" in node.source) {
+      node.cause = { value: node.source.cause };
+      edge(node.cause.value);
+    }
+    if (node.source instanceof AggregateError) {
+      node.errors = [...node.source.errors];
+      node.errors.forEach(edge);
+    }
+  }
+  const affected = queue.filter((node) => node.changed);
+  for (const node of affected) {
+    for (const parent of node.parents) {
+      if (!parent.changed) {
+        parent.changed = true;
+        affected.push(parent);
+      }
+    }
+  }
+  if (!root.changed) {
+    return value;
+  }
+  for (const node of affected) {
+    if (node.replacement === node.source) {
+      node.replacement =
+        node.source instanceof AggregateError
+          ? new AggregateError([], node.source.message)
+          : new Error(node.source.message);
+      Object.setPrototypeOf(node.replacement, Object.getPrototypeOf(node.source));
+    }
+  }
+  const replace = (child: unknown): unknown => {
+    const node = child instanceof Error ? nodes.get(child) : undefined;
+    return node?.changed ? node.replacement : child;
+  };
+  for (const node of affected) {
+    if (node.opaque) {
+      continue;
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(node.source);
+    Reflect.deleteProperty(descriptors, retainedPayloadKey);
+    if (node.cause) {
+      descriptors.cause = {
+        configurable: descriptors.cause?.configurable ?? true,
+        enumerable: descriptors.cause?.enumerable ?? false,
+        writable: descriptors.cause?.writable ?? true,
+        value: replace(node.cause.value),
+      };
+    }
+    if (node.errors) {
+      descriptors.errors = {
+        configurable: descriptors.errors?.configurable ?? true,
+        enumerable: descriptors.errors?.enumerable ?? false,
+        writable: descriptors.errors?.writable ?? true,
+        value: node.errors.map(replace),
+      };
+    }
+    Object.defineProperties(node.replacement, descriptors);
+  }
+  return root.replacement;
 }

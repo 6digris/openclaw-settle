@@ -111,7 +111,7 @@ export function publishPendingSendMessage(host: ChatHost, pending: ChatQueueItem
     recordChatSendTiming(host, pending, pending.sendState, submittedAtMs);
   }
   schedulePendingSendPaintTiming(host, pending, submittedAtMs);
-  scheduleChatScroll(host, true, false, { source: "manual" });
+  scheduleChatScroll(host, true, true, { source: "manual" });
 }
 
 export function reconnectSafeQueuedSendState(
@@ -166,6 +166,10 @@ export function waitForQueuedChatHistory(
   const connectionIsCurrent = captureChatConnectionOwner(host);
   const sessions = host.sessions;
   const history = getChatHistoryLoadState(host);
+  // Background outbox wakeups cannot take over the transcript's visible Retry action.
+  if (history.phase === "failed") {
+    return Promise.resolve(null);
+  }
   // The outbox already owns the draft. Join startup before reusing cached
   // session/branch identity, without issuing a competing history request.
   const loading =
@@ -306,10 +310,7 @@ export async function prepareQueuedChatPayload(
     !connectionIsCurrent() ||
     !ownerIsCurrent() ||
     !current ||
-    current.sendRunId !== original.sendRunId ||
-    current.attachmentPayload?.key !== original.attachmentPayload?.key ||
-    current.sendAttempts !== original.sendAttempts ||
-    current.sendState !== original.sendState ||
+    !sameQueuedDeliveryVersion(current, original) ||
     isQueuedMessageBeingEdited(host, id)
   ) {
     if (payload.status === "ready" && !original.attachmentPayload) {

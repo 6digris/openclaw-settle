@@ -1,8 +1,10 @@
 import type { IncomingMessage } from "node:http";
-import { createRequire } from "node:module";
-import path from "node:path";
 import type { Duplex } from "node:stream";
 import type { RawData } from "ws";
+import {
+  WebSocket as NpmWebSocket,
+  WebSocketServer as NpmWebSocketServer,
+} from "../../../packages/gateway-client/src/websocket.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { createOneTimeTicketStore } from "../../shared/one-time-ticket-store.js";
 import { rejectWebSocketUpgrade } from "../../shared/websocket-upgrade-reject.js";
@@ -19,11 +21,6 @@ import {
 import { createRfbClientMessageFilter } from "./rfb-view-only-filter.js";
 import type { DesktopSessionRegistry } from "./session-registry.js";
 
-// Desktop flow control needs the installed ws receiver; Bun's server adapter omits pause/resume.
-const require = createRequire(import.meta.url);
-const { WebSocket, WebSocketServer }: typeof import("ws") = require(
-  path.join(path.dirname(require.resolve("ws/package.json")), "index.js"),
-);
 type WebSocket = import("ws").WebSocket;
 
 export const DESKTOP_OBSERVE_PATH = "/desktop/observe";
@@ -50,10 +47,14 @@ type DesktopObserverTokenEntry = {
   attachment: DesktopRfbAttachment;
   preauth?: RfbPreauthDescriptor;
   requester?: DesktopObserveRequester;
+  onAbandon?: () => Promise<void>;
 };
 
 const observerTokens = createOneTimeTicketStore<DesktopObserverTokenEntry>({ ttlMs: TOKEN_TTL_MS });
-const desktopObserverWss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD_BYTES });
+const desktopObserverWss = new NpmWebSocketServer({
+  noServer: true,
+  maxPayload: MAX_PAYLOAD_BYTES,
+});
 
 export function mintDesktopObserverToken(params: {
   sourceKey: string;
@@ -62,6 +63,7 @@ export function mintDesktopObserverToken(params: {
   attachment: DesktopRfbAttachment;
   preauth?: RfbPreauthDescriptor;
   requester?: DesktopObserveRequester;
+  onAbandon?: () => Promise<void>;
   nowMs?: number;
 }): { token: string; expiresAtMs: number } {
   const { nowMs, ...payload } = params;
@@ -77,6 +79,38 @@ function consumeDesktopObserverToken(
   nowMs = Date.now(),
 ): DesktopObserverTokenEntry | undefined {
   return observerTokens.consume(token, nowMs);
+}
+
+export async function releaseDesktopObserverToken(
+  wsPath: string,
+  requester: DesktopObserveRequester | undefined,
+): Promise<boolean> {
+  const connId = requester?.connId;
+  if (!connId || !requester.isCurrent()) {
+    return false;
+  }
+  let resource: URL;
+  try {
+    resource = new URL(wsPath, "http://127.0.0.1");
+  } catch {
+    return false;
+  }
+  if (resource.pathname !== DESKTOP_OBSERVE_PATH) {
+    return false;
+  }
+  const entry = observerTokens.consume(
+    resource.searchParams.get("token") ?? "",
+    Date.now(),
+    (candidate) =>
+      candidate.requester?.connId === connId &&
+      candidate.requester.isCurrent() &&
+      requester.isCurrent(),
+  );
+  if (!entry) {
+    return false;
+  }
+  await entry.onAbandon?.();
+  return true;
 }
 
 function rawDataBuffer(data: RawData): Buffer {
@@ -220,7 +254,7 @@ export function handleDesktopObserveUpgrade(
       // A blocked desktop cannot drain, but the browser must still acknowledge close.
       ws.resume();
       desktopSocket.destroy();
-      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+      if (ws.readyState === NpmWebSocket.OPEN || ws.readyState === NpmWebSocket.CONNECTING) {
         ws.close(code, reason);
       }
     };
@@ -254,7 +288,7 @@ export function handleDesktopObserveUpgrade(
         forwardClientChunk(rawDataBuffer(data));
       });
       desktopSocket.on("data", (chunk) => {
-        if (closeCause || ws.readyState !== WebSocket.OPEN) {
+        if (closeCause || ws.readyState !== NpmWebSocket.OPEN) {
           return;
         }
         if (entry.requester?.isCurrent() === false) {

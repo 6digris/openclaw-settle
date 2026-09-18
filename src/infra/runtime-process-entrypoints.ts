@@ -4,6 +4,26 @@ const currentModuleUrl = import.meta.url;
 export const SQLITE_READONLY_CHILD_ARG = "--openclaw-sqlite-readonly-child";
 
 export const runtimeProcessEntrypoints = {
+  spawnBroker: {
+    currentModuleUrl,
+    sourceWorkerName: "../process/spawn-broker/worker",
+    distWorkerPath: "process/spawn-broker/worker.js",
+  },
+  cronStreamMatcher: {
+    currentModuleUrl,
+    sourceWorkerName: "../gateway/cron-stream-matcher.worker",
+    distWorkerPath: "gateway/cron-stream-matcher.worker.js",
+  },
+  nativeHookRelayClient: {
+    currentModuleUrl,
+    sourceWorkerName: "../agents/harness/native-hook-relay-client.worker",
+    distWorkerPath: "agents/harness/native-hook-relay-client.worker.js",
+  },
+  computerHost: {
+    currentModuleUrl,
+    sourceWorkerName: "../gateway/desktop/computer.worker",
+    distWorkerPath: "gateway/desktop/computer.worker.js",
+  },
   imageProcessor: {
     currentModuleUrl,
     sourceWorkerName: "../media/image-processor.worker",
@@ -14,6 +34,11 @@ export const runtimeProcessEntrypoints = {
     sourceWorkerName: "git-operation.worker",
     distWorkerPath: "infra/git-operation.worker.js",
   },
+  fsSafeCopy: {
+    currentModuleUrl,
+    sourceWorkerName: "fs-safe-copy.worker",
+    distWorkerPath: "infra/fs-safe-copy.worker.js",
+  },
   sharedStateStore: {
     currentModuleUrl,
     sourceWorkerName: "../state/openclaw-state.worker",
@@ -23,6 +48,11 @@ export const runtimeProcessEntrypoints = {
     currentModuleUrl,
     sourceWorkerName: "sqlite-store.worker",
     distWorkerPath: "infra/sqlite-store.worker.js",
+  },
+  agentSchemaInspection: {
+    currentModuleUrl,
+    sourceWorkerName: "../state/openclaw-agent-schema-inspection.worker",
+    distWorkerPath: "state/openclaw-agent-schema-inspection.worker.js",
   },
   stateMigrationSnapshot: {
     currentModuleUrl,
@@ -79,10 +109,10 @@ export const runtimeProcessEntrypoints = {
     sourceWorkerName: "../config/sessions/session-accessor.sqlite-archive.worker",
     distWorkerPath: "config/sessions/session-accessor.sqlite-archive.worker.js",
   },
-  sessionModelContext: {
+  sessionTranscript: {
     currentModuleUrl,
-    sourceWorkerName: "../config/sessions/session-model-context.worker",
-    distWorkerPath: "config/sessions/session-model-context.worker.js",
+    sourceWorkerName: "../config/sessions/session-transcript.worker",
+    distWorkerPath: "config/sessions/session-transcript.worker.js",
   },
   sessionTranscriptReconcile: {
     currentModuleUrl,

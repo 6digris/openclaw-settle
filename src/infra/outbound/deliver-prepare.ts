@@ -8,6 +8,7 @@ import {
 import type { ReplyPayload } from "../../auto-reply/types.js";
 import { splitMediaFromOutput } from "../../media/parse.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
+import type { HookRunner } from "../../plugins/hooks.js";
 import { throwIfAborted } from "./abort.js";
 import { createChannelHandler, resolveChannelOutboundDirectiveOptions } from "./deliver-channel.js";
 import type { DeliverOutboundPayloadsParams } from "./deliver-contracts.js";
@@ -162,13 +163,18 @@ function projectMarkdownImages(payload: ReplyPayload): ReplyPayload {
   });
 }
 
+type OutboundPayloadPreparationOptions = {
+  onBeforeFirstModifier?: () => Promise<void>;
+  hookRunner?: HookRunner;
+};
+
 /**
  * Runs each modifier exactly once and returns the sole payload representation
  * eligible for durable persistence or provider delivery.
  */
 export async function prepareOutboundPayloadBatch(
   params: DeliverOutboundPayloadsParams,
-  options?: { onBeforeFirstModifier?: () => void },
+  options?: OutboundPayloadPreparationOptions,
 ): Promise<PreparedOutboundBatch> {
   const directiveOptions = await resolveChannelOutboundDirectiveOptions({
     cfg: params.cfg,
@@ -191,7 +197,7 @@ export async function prepareOutboundPayloadBatch(
 export async function prepareStructuredOutboundPayloadBatch(
   params: DeliverOutboundPayloadsParams,
   plan: readonly OutboundPayloadPlan[],
-  options?: { onBeforeFirstModifier?: () => void },
+  options?: OutboundPayloadPreparationOptions,
 ): Promise<PreparedOutboundBatch> {
   const directiveOptions = await resolveChannelOutboundDirectiveOptions({
     cfg: params.cfg,
@@ -219,7 +225,7 @@ export async function prepareStructuredOutboundPayloadBatch(
 async function prepareOutboundPlan(
   params: DeliverOutboundPayloadsParams,
   plan: readonly OutboundPayloadPlan[],
-  options?: { onBeforeFirstModifier?: () => void; extractMarkdownImages?: boolean },
+  options?: OutboundPayloadPreparationOptions & { extractMarkdownImages?: boolean },
   preservePayloadMetadata?: (source: ReplyPayload, payload: ReplyPayload) => ReplyPayload,
 ): Promise<PreparedOutboundBatch> {
   const copyMetadata = preservePayloadMetadata ?? ((_source, payload) => payload);
@@ -233,7 +239,7 @@ async function prepareOutboundPlan(
     }
   }
 
-  const hookRunner = getGlobalHookRunner();
+  const hookRunner = options?.hookRunner ?? getGlobalHookRunner();
   const hasReplyPayloadSendingHooks =
     params.replyPayloadSendingHook !== undefined &&
     (hookRunner?.hasHooks("reply_payload_sending") ?? false);
@@ -246,15 +252,19 @@ async function prepareOutboundPlan(
   for (const { index: sourceIndex, payload } of normalized) {
     throwIfPreparationAborted(params.abortSignal, sourceIndex, payload);
     if (hasModifyingHooks && !modifierBoundaryEntered) {
-      options?.onBeforeFirstModifier?.();
+      await options?.onBeforeFirstModifier?.();
+      throwIfPreparationAborted(params.abortSignal, sourceIndex, payload);
       modifierBoundaryEntered = true;
     }
     let replyHookResult: Awaited<ReturnType<typeof applyReplyPayloadSendingHook>>;
     try {
-      replyHookResult = await applyReplyPayloadSendingHook({
-        hook: params.replyPayloadSendingHook,
-        payload,
-      });
+      replyHookResult = await applyReplyPayloadSendingHook(
+        {
+          hook: params.replyPayloadSendingHook,
+          payload,
+        },
+        hookRunner,
+      );
     } catch (error) {
       throw new OutboundPayloadPreparationError(error, sourceIndex, payload);
     }

@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { zstdDecompressSync } from "node:zlib";
+import { rawDataToString } from "@openclaw/gateway-client/websocket-data";
 import { expect, type TestContext } from "vitest";
 import { WebSocketServer } from "ws";
 import { readPersistedSharedAuthProfileStateRaw } from "../../../../src/agents/auth-profiles/sqlite.js";
@@ -61,7 +62,7 @@ type ChatHistory = {
     content?: string | Array<{ type: string; text?: string }>;
   }>;
 };
-type HeldUsageResponse = {
+type HeldProviderResponse = {
   phase: Phase;
   path: string;
   status: number;
@@ -102,11 +103,13 @@ function assistantTexts(history: ChatHistory): string[] {
     );
 }
 
-async function startQuotaProvider(source: BlockSource, responseText: string) {
+export async function startQuotaProvider(source: BlockSource, responseText: string) {
   let phase: Phase = "healthy";
-  let nextSuccessObserver: (() => void) | undefined;
-  let nextUsageHold: { arrived: Deferred<HeldUsageResponse>; released: Deferred<void> } | undefined;
-  const heldUsageResponses: HeldUsageResponse[] = [];
+  let nextSuccessObserver: { observe: () => void; model: string; path: string } | undefined;
+  let nextUsageHold: { arrived: Deferred<HeldProviderResponse>; released: Deferred } | undefined;
+  let nextCatalogHold: { arrived: Deferred<HeldProviderResponse>; released: Deferred } | undefined;
+  const heldUsageResponses: HeldProviderResponse[] = [];
+  const heldCatalogResponses: HeldProviderResponse[] = [];
   const resetAt = Math.floor(Date.now() / 1000) + 5 * 86_400;
   const requests: RequestRecord[] = [];
   const responses: Array<{
@@ -124,7 +127,7 @@ async function startQuotaProvider(source: BlockSource, responseText: string) {
     transport: RequestRecord["transport"],
     bodyBytes?: Buffer,
   ) => {
-    requests.push({
+    const recorded: RequestRecord = {
       phase,
       transport,
       path: request.url ?? "",
@@ -135,7 +138,9 @@ async function startQuotaProvider(source: BlockSource, responseText: string) {
       bodyBase64: bodyBytes?.toString("base64"),
       authorization: request.headers.authorization,
       accountId: request.headers["chatgpt-account-id"],
-    });
+    };
+    requests.push(recorded);
+    return recorded;
   };
   const usage = () => {
     const usageExhausted =
@@ -219,10 +224,20 @@ async function startQuotaProvider(source: BlockSource, responseText: string) {
       headers,
     };
   };
-  const successEvents = (marker = responseText) => {
-    const observe = nextSuccessObserver;
-    nextSuccessObserver = undefined;
-    observe?.();
+  const successEvents = (request: RequestRecord, marker = responseText) => {
+    const observer = nextSuccessObserver;
+    if (observer && new URL(request.path, "http://127.0.0.1").pathname === observer.path) {
+      let body: unknown;
+      try {
+        body = JSON.parse(request.body ?? "null");
+      } catch {
+        // An unidentified request cannot consume an inference-specific observer.
+      }
+      if (body && typeof body === "object" && "model" in body && body.model === observer.model) {
+        nextSuccessObserver = undefined;
+        observer.observe();
+      }
+    }
     const id = randomUUID().replaceAll("-", "");
     const item = {
       type: "message",
@@ -274,7 +289,7 @@ async function startQuotaProvider(source: BlockSource, responseText: string) {
           : encoding === "zstd"
             ? zstdDecompressSync(bodyBytes)
             : undefined;
-      recordRequest(request, decoded?.toString(), "http", bodyBytes);
+      const recorded = recordRequest(request, decoded?.toString(), "http", bodyBytes);
       const requestPath = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
       const json = (
         status: number,
@@ -301,7 +316,7 @@ async function startQuotaProvider(source: BlockSource, responseText: string) {
           const hold = requestPath === "/core-wham/usage" ? nextUsageHold : undefined;
           if (hold) {
             nextUsageHold = undefined;
-            const captured: HeldUsageResponse = {
+            const captured: HeldProviderResponse = {
               phase,
               path: requestPath,
               status: 200,
@@ -342,7 +357,7 @@ async function startQuotaProvider(source: BlockSource, responseText: string) {
           });
         }
       } else if (requestPath === "/catalog/models") {
-        json(200, {
+        const value = {
           models: [
             {
               slug: "gpt-5.5",
@@ -353,7 +368,38 @@ async function startQuotaProvider(source: BlockSource, responseText: string) {
               max_output_tokens: 4096,
             },
           ],
-        });
+        };
+        const hold = nextCatalogHold;
+        if (hold) {
+          nextCatalogHold = undefined;
+          const captured: HeldProviderResponse = {
+            phase,
+            path: requestPath,
+            status: 200,
+            body: JSON.stringify(value),
+            capturedAt: Date.now(),
+          };
+          heldCatalogResponses.push(captured);
+          hold.arrived.resolve(captured);
+          const aborted = createDeferredCore<"aborted">();
+          const onClose = () => aborted.resolve("aborted");
+          response.once("close", onClose);
+          try {
+            captured.releaseReason = await Promise.race([
+              hold.released.promise.then(() => "explicit" as const),
+              aborted.promise,
+            ]);
+            captured.releasedAt = Date.now();
+            if (captured.releaseReason === "aborted") {
+              return;
+            }
+          } finally {
+            response.off("close", onClose);
+          }
+          json(captured.status, value, {}, captured.phase);
+        } else {
+          json(200, value);
+        }
       } else if (requestPath.endsWith("/models")) {
         json(200, { models: [] });
       } else if (requestPath.endsWith("/responses")) {
@@ -362,7 +408,7 @@ async function startQuotaProvider(source: BlockSource, responseText: string) {
           const event = failure();
           json(event.status, { error: event.error }, event.headers);
         } else {
-          const events = successEvents(backup ? BACKUP_MARKER : responseText);
+          const events = successEvents(recorded, backup ? BACKUP_MARKER : responseText);
           responses.push({ phase, path: requestPath, value: events });
           response.writeHead(200, { "content-type": "text/event-stream" });
           for (const event of events) {
@@ -386,8 +432,8 @@ async function startQuotaProvider(source: BlockSource, responseText: string) {
     sockets.handleUpgrade(request, socket, head, (websocket) => {
       websocket.on("error", (error) => errors.push(String(error)));
       websocket.on("message", (raw) => {
-        recordRequest(request, raw.toString(), "websocket");
-        const events = exhausted() || phase === "revoked" ? [failure()] : successEvents();
+        const recorded = recordRequest(request, rawDataToString(raw), "websocket");
+        const events = exhausted() || phase === "revoked" ? [failure()] : successEvents(recorded);
         for (const event of events) {
           responses.push({ phase, path: request.url ?? "", value: event });
           websocket.send(JSON.stringify(event));
@@ -408,22 +454,34 @@ async function startQuotaProvider(source: BlockSource, responseText: string) {
     requests,
     responses,
     heldUsageResponses,
+    heldCatalogResponses,
     errors,
     setPhase(next: Phase) {
       phase = next;
     },
-    observeNextSuccess(observer: () => void) {
-      nextSuccessObserver = observer;
+    observeNextSuccess(observe: () => void, request: { model: string; path: string }) {
+      nextSuccessObserver = { observe, ...request };
     },
     holdNextUsage() {
       if (nextUsageHold) {
         throw new Error("A usage response hold is already armed");
       }
       const hold = {
-        arrived: createDeferredCore<HeldUsageResponse>(),
-        released: createDeferredCore<void>(),
+        arrived: createDeferredCore<HeldProviderResponse>(),
+        released: createDeferredCore(),
       };
       nextUsageHold = hold;
+      return { arrived: hold.arrived.promise, release: () => hold.released.resolve() };
+    },
+    holdNextCatalog() {
+      if (nextCatalogHold) {
+        throw new Error("A catalog response hold is already armed");
+      }
+      const hold = {
+        arrived: createDeferredCore<HeldProviderResponse>(),
+        released: createDeferredCore(),
+      };
+      nextCatalogHold = hold;
       return { arrived: hold.arrived.promise, release: () => hold.released.resolve() };
     },
     async stop() {
@@ -676,6 +734,7 @@ export async function createQuotaResetFixture(
         requests: provider.requests,
         responses: provider.responses,
         heldUsageResponses: provider.heldUsageResponses,
+        heldCatalogResponses: provider.heldCatalogResponses,
         errors: provider.errors,
         turns,
         stats: stats(),

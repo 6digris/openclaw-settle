@@ -14,11 +14,8 @@ import {
 import { danger } from "openclaw/plugin-sdk/runtime-env";
 import type { TelegramBotDeps } from "./bot-deps.js";
 import {
-  applyTextToPayload,
   deliverFinalAnswerText,
   handlePreviewFinalizedResult,
-  normalizeDeliveryPayload,
-  normalizePreparedDeliveryPayload,
   registerTelegramQuestionDeliveryForMessage,
   sendPayload,
 } from "./bot-message-dispatch-delivery.js";
@@ -33,6 +30,11 @@ import {
   splitTextIntoLaneSegments,
   takeQueuedAnswerBlockRotation,
 } from "./bot-message-dispatch-draft.js";
+import {
+  applyTextToPayload,
+  normalizeDeliveryPayload,
+  normalizePreparedDeliveryPayload,
+} from "./bot-message-dispatch-payload.js";
 import {
   markFinalDelivered,
   markFinalStarted,
@@ -573,6 +575,14 @@ export function handleReplyError(
   err: Parameters<ErrorCallback>[0],
   info: Parameters<ErrorCallback>[1],
 ): void {
+  if (info.kind === "final") {
+    if (isChannelPartialDeliveryError(err)) {
+      turn.deliveryState.markDelivered();
+      markFinalDelivered(turn);
+    } else {
+      turn.finalReplyOutcome = "failed";
+    }
+  }
   const errorPolicy = resolveTelegramErrorPolicy({
     accountConfig: turn.telegramCfg,
     groupConfig: turn.context.groupConfig,

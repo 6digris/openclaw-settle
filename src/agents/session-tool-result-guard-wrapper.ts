@@ -31,6 +31,7 @@ import { projectAgentHarnessTranscriptMessageForDisplay } from "./harness/transc
 import type { AgentMessage } from "./runtime/index.js";
 import { installSessionToolResultGuard } from "./session-tool-result-guard.js";
 import type { SessionManager } from "./sessions/index.js";
+import type { CompactionAppendPersistence } from "./sessions/session-compaction-persistence.js";
 import { setSessionToolTextPreparer } from "./sessions/session-tool-result-redaction.js";
 import {
   copyCodeModeSourceAppend,
@@ -40,6 +41,7 @@ import { resolveTranscriptLoggingConfig } from "./transcript-redact-text.js";
 import { redactTranscriptMessage } from "./transcript-redact.js";
 
 type GuardedSessionManager = SessionManager & {
+  hasPendingToolResults?: () => boolean;
   /** Flush any synthetic tool results for pending tool calls. Idempotent. */
   flushPendingToolResults?: () => void;
   /** Clear pending tool calls without persisting synthetic tool results. Idempotent. */
@@ -52,6 +54,7 @@ type GuardedSessionManager = SessionManager & {
     prepareAssistantTranscriptMessage: PrepareAssistantTranscriptMessage | undefined,
     skipBeforeMessageWriteHooks: boolean | undefined,
     assistantErrorTranscript: AssistantErrorTranscript | undefined,
+    inputProvenance: InputProvenance | undefined,
   ) => void;
 };
 
@@ -95,22 +98,21 @@ export function guardSessionManager(
     ) => void;
     onUserMessageBlocked?: (message: Extract<AgentMessage, { role: "user" }>) => void;
     onMessagePersisted?: (message: AgentMessage) => void | Promise<void>;
-    withCompactionPersistence?: (
-      append: () => string,
-      validateAppend: (entryId: string, appendedText: string) => boolean,
-    ) => string;
+    withCompactionPersistence?: CompactionAppendPersistence;
   },
 ): GuardedSessionManager {
   const guardedSessionManager: GuardedSessionManager = sessionManager;
   let prepareAssistantTranscriptMessage =
     opts?.trigger === "memory" ? undefined : opts?.prepareAssistantTranscriptMessage;
   let skipBeforeMessageWriteHooks = opts?.skipBeforeMessageWriteHooks;
+  let inputProvenance = opts?.inputProvenance;
   if (typeof guardedSessionManager.flushPendingToolResults === "function") {
     guardedSessionManager.setTranscriptRunContext?.(
       opts?.runId,
       prepareAssistantTranscriptMessage,
       skipBeforeMessageWriteHooks,
       opts?.assistantErrorTranscript,
+      inputProvenance,
     );
     return guardedSessionManager;
   }
@@ -186,6 +188,7 @@ export function guardSessionManager(
     }
     const projectedMessage = projectAgentHarnessTranscriptMessageForDisplay({
       hidden: opts?.trigger === "memory",
+      inputProvenance,
       message,
     });
     if (projectedMessage !== message) {
@@ -236,7 +239,7 @@ export function guardSessionManager(
     runId: opts?.runId,
     transformMessageForPersistence: (message) => {
       queuedUserTurnTranscriptRecorder = undefined;
-      const withProvenance = applyInputProvenanceToUserMessage(message, opts?.inputProvenance);
+      const withProvenance = applyInputProvenanceToUserMessage(message, inputProvenance);
       const runtimeContext = takeRuntimeUserTurnTranscriptContext(message);
       // Replay may reuse the current user without appending it. Its prepared
       // metadata must not leak onto a later queued user, including staged steering.
@@ -310,14 +313,22 @@ export function guardSessionManager(
   setSessionToolTextPreparer(guardedSessionManager, (block) =>
     prepareModelVisibleToolTextBlock(block, resolveTranscriptLoggingConfig(opts?.config)),
   );
+  guardedSessionManager.hasPendingToolResults = guard.hasPendingToolResults;
   guardedSessionManager.flushPendingToolResults = guard.flushPendingToolResults;
   guardedSessionManager.clearPendingToolResults = guard.clearPendingToolResults;
   guardedSessionManager.clearNextUserMessagePersistenceSuppression =
     guard.clearNextUserMessagePersistenceSuppression;
-  guardedSessionManager.setTranscriptRunContext = (runId, prepare, skipHooks, errors) => {
+  guardedSessionManager.setTranscriptRunContext = (
+    runId,
+    prepare,
+    skipHooks,
+    errors,
+    provenance,
+  ) => {
     guard.setTranscriptRunId(runId, errors);
     prepareAssistantTranscriptMessage = prepare;
     skipBeforeMessageWriteHooks = skipHooks;
+    inputProvenance = provenance;
   };
   return guardedSessionManager;
 }

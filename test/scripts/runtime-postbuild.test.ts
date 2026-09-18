@@ -26,8 +26,11 @@ import {
   writeStableRootRuntimeAliases,
 } from "../../scripts/runtime-postbuild.mts";
 import { expectNoNodeFsScans } from "../../src/test-utils/fs-scan-assertions.js";
+import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 import { readBuildIdFromBuildInfoForModuleUrl } from "../../src/version.js";
 import { createScriptTestHarness } from "./test-helpers.js";
+
+const testNodeExecPath = resolveTestNodeExecPath();
 import {
   previousReleaseInventory,
   writeUpdateCompatibilityBuildFixture,
@@ -126,6 +129,7 @@ describe("runtime postbuild static assets", () => {
     expect(payload.outputs).toEqual([
       "dist/extensions/acpx/mcp-command-line.mjs",
       "dist/extensions/acpx/mcp-proxy.mjs",
+      "dist/extensions/apple-fm/assets/AppleFoundationModels.swift",
       "dist/extensions/crabbox/assets/openclaw-worker-wallpaper.png",
       "dist/extensions/onepassword/onepassword-op-path.js",
       "dist/extensions/onepassword/onepassword-secret-id.js",
@@ -171,6 +175,59 @@ describe("runtime postbuild static assets", () => {
         dest: "dist/extensions/demo/assets/runtime.js",
       },
     ]);
+  });
+
+  it("copies each package asset once with multiple Git index stages", async () => {
+    const rootDir = createTempDir("openclaw-static-assets-index-");
+    const git = (args: string[], input?: string) =>
+      childProcess.execFileSync("git", args, { cwd: rootDir, encoding: "utf8", input });
+    const pluginIds = ["conflicted", "package-only", "with-manifest"];
+    for (const id of pluginIds) {
+      const pluginDir = path.join(rootDir, "extensions", id);
+      await fs.mkdir(pluginDir, { recursive: true });
+      await fs.writeFile(path.join(pluginDir, "asset.txt"), `${id} bytes\n`);
+      await fs.writeFile(
+        path.join(pluginDir, "package.json"),
+        JSON.stringify({
+          openclaw: { build: { staticAssets: [{ source: "asset.txt", output: "asset.txt" }] } },
+        }),
+      );
+    }
+    for (const id of ["with-manifest", "manifest-only"]) {
+      const pluginDir = path.join(rootDir, "extensions", id);
+      await fs.mkdir(pluginDir, { recursive: true });
+      await fs.writeFile(path.join(pluginDir, "openclaw.plugin.json"), "not valid JSON");
+    }
+    git(["init", "-q"]);
+    git(["add", "extensions"]);
+    const packagePath = "extensions/conflicted/package.json";
+    const blob = git(["hash-object", "-w", "--stdin"], "{}").trim();
+    // Keep resolved working-tree metadata while the index still holds all merge stages.
+    git(
+      ["update-index", "--index-info"],
+      [
+        `0 ${"0".repeat(blob.length)}\t${packagePath}`,
+        ...[1, 2, 3].map((stage) => `100644 ${blob} ${stage}\t${packagePath}`),
+        "",
+      ].join("\n"),
+    );
+    expect(git(["ls-files", "--", packagePath]).trim().split("\n")).toHaveLength(3);
+
+    const copy = vi.spyOn(fsSync, "copyFileSync");
+    try {
+      copyStaticExtensionAssets({ rootDir });
+      expect(copy).toHaveBeenCalledTimes(3);
+      expect(discoverStaticExtensionAssets({ rootDir }).map(({ pluginDir }) => pluginDir)).toEqual(
+        pluginIds,
+      );
+      for (const id of pluginIds) {
+        await expect(
+          fs.readFile(path.join(rootDir, "dist", "extensions", id, "asset.txt"), "utf8"),
+        ).resolves.toBe(`${id} bytes\n`);
+      }
+    } finally {
+      copy.mockRestore();
+    }
   });
 
   it.each([
@@ -1199,7 +1256,7 @@ describe("runtime postbuild static assets", () => {
       'export async function restart() { return (await import("./shared-1Uyqkfns.js")).resolveNodeRunner(); }\n',
     );
     const output = childProcess.execFileSync(
-      process.execPath,
+      testNodeExecPath,
       [
         "--import",
         path.join(MODULE_ROOT, "scripts/tsx.mjs"),
@@ -1221,7 +1278,7 @@ describe("runtime postbuild static assets", () => {
       { encoding: "utf8" },
     );
 
-    expect(output).toBe(process.execPath);
+    expect(output).toBe(testNodeExecPath);
   });
 
   it.each(["shared-Y6bNiw2w.js", "shared-DTaQo6Hi.js"])(
@@ -1232,7 +1289,7 @@ describe("runtime postbuild static assets", () => {
       writeLegacyCliExitCompatChunks({ rootDir });
 
       const bridge = await import(pathToFileURL(path.join(rootDir, "dist", chunk)).href);
-      expect(bridge.resolveNodeRunner()).toBe(process.execPath);
+      expect(bridge.resolveNodeRunner()).toBe(process.versions.bun ? "node" : process.execPath);
     },
   );
 });
@@ -1513,7 +1570,7 @@ describe("previous release update compatibility", () => {
       write(root, "dist/left.mjs", '//#region src/infra/original.ts\nexport const x = "left";\n');
       write(root, "dist/right.mjs", '//#region src/infra/other.ts\nexport const x = "right";\n');
       const namespaceHasX = childProcess.execFileSync(
-        process.execPath,
+        testNodeExecPath,
         [
           "--input-type=module",
           "-e",
@@ -1626,7 +1683,7 @@ describe("previous release update compatibility", () => {
       root,
       "bin/npm.cjs",
       [
-        `#!${process.execPath}`,
+        `#!${testNodeExecPath}`,
         'const fs = require("node:fs");',
         `const callsFile = ${JSON.stringify(callsFile)};`,
         `const replies = ${JSON.stringify(replies)};`,
@@ -1640,13 +1697,13 @@ describe("previous release update compatibility", () => {
       ].join("\n"),
     );
     if (process.platform === "win32") {
-      write(root, "bin/npm.cmd", `@"${process.execPath}" "${stub}" %*\r\n`);
+      write(root, "bin/npm.cmd", `@"${testNodeExecPath}" "${stub}" %*\r\n`);
     } else {
       fsSync.copyFileSync(stub, path.join(bin, "npm"));
       fsSync.chmodSync(path.join(bin, "npm"), 0o755);
     }
     const result = childProcess.spawnSync(
-      process.execPath,
+      testNodeExecPath,
       [path.join(MODULE_ROOT, "scripts/update-compat-inventory.mts"), ...args],
       {
         encoding: "utf8",

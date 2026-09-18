@@ -18,8 +18,6 @@ import {
   OutboundDeliveryError,
   PlatformMessageNotDispatchedError,
 } from "../../infra/outbound/deliver-types.js";
-import { createStructuredOutboundPayloadPlan } from "../../infra/outbound/payloads.js";
-import type { OutboundPayloadPlan } from "../../infra/outbound/reply-payload-parts.js";
 import type { SessionBindingRecord } from "../../infra/outbound/session-binding-service.js";
 import type { PluginTargetedInboundClaimOutcome } from "../../plugins/hooks.test-fixtures.js";
 import { createTestRegistry } from "../../test-utils/channel-plugins.js";
@@ -28,6 +26,7 @@ import type { MsgContext } from "../templating.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import { needsTtsFallback } from "./dispatch-from-config.finalize.js";
 import { buildNoVisibleReplyFallbackText } from "./dispatch-from-config.payloads.js";
+import { registerPreparedSettlementTests } from "./dispatch-from-config.prepared-settlement.test-support.js";
 import {
   createDispatcher,
   createPluginBindingRecord,
@@ -72,93 +71,7 @@ describe("dispatchReplyFromConfig", () => {
   });
   afterEach(clearRuntimeConfigSnapshot);
 
-  it.each(["prepared", "legacy"] as const)(
-    "settles a prepared block through a %s dispatcher without sending a duplicate final",
-    async (mode) => {
-      setNoAbort();
-      const rawDeliver = vi.fn(async (_payload: ReplyPayload) => ({ visibleReplySent: true }));
-      const preparedDeliver = vi.fn(async (_plan: OutboundPayloadPlan) => ({
-        visibleReplySent: true,
-      }));
-      const owner = createReplyDispatcher({
-        deliver: rawDeliver,
-        deliverPrepared: preparedDeliver,
-      });
-      const dispatcher = mode === "legacy" ? { ...owner, sendPreparedReply: undefined } : owner;
-      const onBlockReplyQueued = vi.fn();
-      const payload = setReplyPayloadMetadata(
-        { text: "literal [[reply_to:example]] and [[audio_as_voice]] tail" },
-        { assistantMessageIndex: 7 },
-      );
-      const result = await dispatchReplyFromConfig({
-        ctx: buildTestCtx({ Provider: "qa-channel", Surface: "qa-channel" }),
-        cfg: emptyConfig,
-        dispatcher,
-        replyOptions: { onBlockReplyQueued },
-        replyResolver: async (_ctx, opts) => {
-          const plan = expectDefined(
-            createStructuredOutboundPayloadPlan([payload])[0],
-            "prepared block",
-          );
-          await opts?.onPreparedBlockReply?.(plan);
-          return payload;
-        },
-      });
-      dispatcher.markComplete();
-      await dispatcher.waitForIdle();
-
-      expect(result.counts).toEqual({ tool: 0, block: 1, final: 0 });
-      expect(onBlockReplyQueued).toHaveBeenCalledOnce();
-      expect(onBlockReplyQueued.mock.calls[0]?.[1]).toMatchObject({ assistantMessageIndex: 7 });
-      const deliveredPayload = expectDefined(
-        mode === "prepared"
-          ? preparedDeliver.mock.calls[0]?.[0].payload
-          : rawDeliver.mock.calls[0]?.[0],
-        "delivered block",
-      );
-      expect(deliveredPayload).toMatchObject({ text: payload.text });
-      expect(getReplyPayloadMetadata(deliveredPayload)).toMatchObject({ assistantMessageIndex: 7 });
-      expect(preparedDeliver).toHaveBeenCalledTimes(mode === "prepared" ? 1 : 0);
-      expect(rawDeliver).toHaveBeenCalledTimes(mode === "legacy" ? 1 : 0);
-    },
-  );
-
-  it("records channel transform suppression before TTS or visible fallback delivery", async () => {
-    setNoAbort();
-    const transport = vi.fn(async () => {});
-    const transformReplyPayload = vi.fn(() => null);
-    const dispatcher = createReplyDispatcher({ deliver: transport, transformReplyPayload });
-    const ctx = buildTestCtx({
-      Provider: "telegram",
-      Surface: "telegram",
-      SessionKey: "agent:main:telegram:direct:123",
-    });
-
-    const result = await dispatchReplyFromConfig({
-      ctx,
-      cfg: emptyConfig,
-      dispatcher,
-      replyResolver: vi.fn(async (_ctx, opts) => {
-        await opts?.onBlockReply?.({ text: "private block" });
-        return { text: "private reply" };
-      }),
-    });
-    dispatcher.markComplete();
-    await dispatcher.waitForIdle();
-
-    expect(result).toMatchObject({
-      queuedFinal: false,
-      counts: { tool: 0, block: 0, final: 0 },
-    });
-    expect(result).not.toHaveProperty("noVisibleReplyFallbackEligible");
-    expect(result).not.toHaveProperty("noVisibleReplyFallbackDelivered");
-    expect(transformReplyPayload).toHaveBeenCalledTimes(2);
-    expect(ttsMocks.maybeApplyTtsToPayload).not.toHaveBeenCalled();
-    expect(transport).not.toHaveBeenCalled();
-    expect(diagnosticMocks.logMessageProcessed).toHaveBeenCalledWith(
-      expect.objectContaining({ outcome: "completed", reason: "channel_transform" }),
-    );
-  });
+  registerPreparedSettlementTests();
 
   it.each([true, false])(
     "keeps a held native final with its delivery owner (primary=%s)",
@@ -1275,7 +1188,6 @@ describe("dispatchReplyFromConfig", () => {
     setNoAbort();
     const cfg = { diagnostics: { enabled: true } } as OpenClawConfig;
     const ctx = buildTestCtx({
-      Provider: "whatsapp",
       OriginatingChannel: "whatsapp",
       OriginatingTo: "whatsapp:+15555550123",
       AccountId: "default",
@@ -1316,7 +1228,6 @@ describe("dispatchReplyFromConfig", () => {
     setNoAbort();
     const cfg = { diagnostics: { enabled: true } } as OpenClawConfig;
     const ctx = buildTestCtx({
-      Provider: "whatsapp",
       OriginatingChannel: "whatsapp",
       OriginatingTo: "whatsapp:+15555550123",
       AccountId: "default",
@@ -1364,7 +1275,6 @@ describe("dispatchReplyFromConfig", () => {
     setNoAbort();
     const cfg = { diagnostics: { enabled: true } } as OpenClawConfig;
     const ctx = buildTestCtx({
-      Provider: "whatsapp",
       OriginatingChannel: "whatsapp",
       OriginatingTo: "whatsapp:+15555550124",
       To: "whatsapp:+15555550124",
@@ -1443,7 +1353,6 @@ describe("dispatchReplyFromConfig", () => {
       sessionStoreMocks.currentEntry = { sessionId: "s1", updatedAt: 0, sendPolicy: "deny" };
     }
     const ctx = buildTestCtx({
-      Provider: "whatsapp",
       OriginatingChannel: "whatsapp",
       OriginatingTo: `whatsapp:${phone}`,
       To: `whatsapp:${phone}`,
@@ -1537,7 +1446,6 @@ describe("dispatchReplyFromConfig", () => {
         dispatcher,
         replyResolver,
         configOverride: overrideCfg,
-        usePublishedModelRuntime: true,
       });
     } finally {
       preparedLookup.mockRestore();
@@ -1607,7 +1515,6 @@ describe("dispatchReplyFromConfig", () => {
       ctx: buildTestCtx({ Provider: "slack", Surface: "slack" }),
       cfg,
       dispatcher: createDispatcher(),
-      usePublishedModelRuntime: true,
       replyResolver: async (_ctx, _opts, cfgArg) => {
         receivedCfg = cfgArg;
         return { text: "hi" };
@@ -1676,7 +1583,6 @@ describe("dispatchReplyFromConfig", () => {
         cfg,
         dispatcher,
         replyResolver,
-        usePublishedModelRuntime: true,
       });
     } finally {
       preparedLookup.mockRestore();
@@ -2070,9 +1976,17 @@ describe("dispatchReplyFromConfig", () => {
   it("strips split TTS directives from streamed block text before delivery", async () => {
     setNoAbort();
     ttsMocks.state.synthesizeFinalAudio = true;
-    const dispatcher = createDispatcher();
+
     const ctx = buildTestCtx({ Provider: "whatsapp" });
     const blockReplySentTexts: string[] = [];
+    const dispatcher = createReplyDispatcher({
+      deliver: async (payload, { kind }) => {
+        if (kind === "block" && payload.text) {
+          blockReplySentTexts.push(payload.text);
+        }
+      },
+    });
+    vi.spyOn(dispatcher, "sendFinalReply");
     const replyResolver = async (
       _ctx: MsgContext,
       opts?: GetReplyOptions,
@@ -2081,14 +1995,6 @@ describe("dispatchReplyFromConfig", () => {
       await opts?.onBlockReply?.({ text: "xt]]hidden[[/tts:text]] visible" });
       return undefined;
     };
-    (dispatcher.sendBlockReply as ReturnType<typeof vi.fn>).mockImplementation(
-      (payload: ReplyPayload) => {
-        if (payload.text) {
-          blockReplySentTexts.push(payload.text);
-        }
-        return true;
-      },
-    );
 
     await dispatchReplyFromConfig({ ctx, cfg: emptyConfig, dispatcher, replyResolver });
 
@@ -2109,8 +2015,6 @@ describe("dispatchReplyFromConfig", () => {
     setNoAbort();
     const dispatcher = createDispatcher();
     const ctx = buildTestCtx({
-      Provider: "whatsapp",
-      Surface: "whatsapp",
       ChatType: "group",
       From: "whatsapp:120363111111111@g.us",
       To: "whatsapp:120363111111111@g.us",

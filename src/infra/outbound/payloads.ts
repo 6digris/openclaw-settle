@@ -191,7 +191,7 @@ function normalizeRawOutboundPayload(
     strippedText === (parsed.text ?? "") ? parsed : parseReplyDirectives(strippedText);
   const parsedText = strippedParsed.text ?? "";
   const suppressedText = strippedParsed.isSilent || isSuppressedRelayStatusText(parsedText);
-  const normalizedPayload: ReplyPayload = {
+  const normalizedPayload: ReplyPayload = copyReplyPayloadMetadata(payload, {
     ...payload,
     text:
       formatBtwTextForExternalDelivery({ ...payload, text: suppressedText ? "" : parsedText }) ??
@@ -212,7 +212,7 @@ function normalizeRawOutboundPayload(
     replyToTag: payload.replyToTag || parsed.replyToTag,
     replyToCurrent: payload.replyToCurrent || parsed.replyToCurrent,
     audioAsVoice: Boolean(payload.audioAsVoice || parsed.audioAsVoice),
-  };
+  });
   return suppressedText && !hasReplyPayloadContent(normalizedPayload) ? null : normalizedPayload;
 }
 

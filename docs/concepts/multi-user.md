@@ -139,7 +139,7 @@ The Control UI keeps ownership and presence visually distinct:
 - Ringed or translucent presence avatars show people who are currently connected or watching. They come from live presence, not ownership, and disappear when those viewers leave. A person already shown by an owner or participant avatar is not repeated in that surface's live viewers. Participants summarized by a **+N** count can still appear individually as live viewers.
 - Under **Group by Person**, the owner avatar in a section header shows a small green dot while that person is connected. It fades once they have been idle for a couple of minutes and disappears when they leave. Your own section never shows one.
 
-When several people watch the same session, the transcript also shows a live typing indicator above the composer. Someone typing in the Control UI streams their draft text into the indicator bubble as they type. Other typists show a three-dot bubble. Drafts are ephemeral presence. They are never persisted. They never enter the session transcript or the model's context. They fade a moment after the typist pauses or sends.
+When several people watch the same session, the transcript also shows a live typing indicator above the composer. Someone typing in the Control UI streams their draft text into a softer version of their sent-message bubble, with the same sender identity, a caret, and a **Typing · not sent** label. Other typists show a three-dot bubble with the same unsent label. Drafts are ephemeral presence. They are never persisted. They never enter the session transcript or the model's context. They fade a moment after the typist pauses or sends.
 
 When the loaded session list contains fewer than two distinct owner identities and no session has recorded outside participants, OpenClaw hides all ownership and owner-filter chrome. A single-user gateway therefore looks unchanged.
 
@@ -159,7 +159,9 @@ The Gateway also filters watched-session references for each recipient using `se
 
 ## Mentioning people
 
-In a normal Control UI chat, type `@` and select a person from the picker. The composer shows **Will notify** with your selected recipients. You can select up to ten mentions per message. Typing or pasting `@name` without selecting a person sends ordinary text and does not notify anyone. **Remove mention** clears the recipient selections while keeping the message text.
+In a normal Control UI chat, type `@` and search by a person's display name (including spaces) or any linked verified GitHub handle, then select the person from the picker. The composer shows **Will notify** with your selected recipients. You can select up to ten mentions per message. Typing or pasting `@name` without selecting a person sends ordinary text and does not notify anyone. **Remove mention** clears the recipient selections while keeping the message text.
+
+Selected mentions render as distinct person references in the transcript. Hover, focus, or tap a reference to open a card with the person's current name, avatar, and Activity link. The original message label and copied text stay unchanged. Cards follow explicit profile merges; ordinary unselected `@name` text does not become a person reference.
 
 The picker includes known Gateway profiles eligible to read the session, including people who are offline. Its online indicator is only a connection hint, not an eligibility requirement. Sign in with a durable Gateway profile to use human mentions. A mention never adds session membership, changes visibility, or grants access. The Gateway rechecks the recipient's current access when creating and displaying it.
 

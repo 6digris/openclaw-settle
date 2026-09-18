@@ -371,7 +371,7 @@ export class EmbeddedBlockChunker {
       const view = source.slice(start);
       const breakResult =
         force && remainingLength <= maxChars
-          ? this.#pickSoftBreakIndex(view, fenceSpans, chunking, 1, start, openFence)
+          ? this.#pickPreferredBreakIndex(view, fenceSpans, chunking, false, 1, start, openFence)
           : this.#pickBreakIndex(
               view,
               fenceSpans,
@@ -473,10 +473,12 @@ export class EmbeddedBlockChunker {
     };
   }
 
-  #pickSoftBreakIndex(
+  // Forced tails take the first paragraph/newline break; capped windows take the last.
+  #pickPreferredBreakIndex(
     buffer: string,
     fenceSpans: FenceSpan[],
     chunking: BlockReplyChunking,
+    reverse: boolean,
     minCharsOverride?: number,
     offset = 0,
     openFence?: FenceSpan,
@@ -492,7 +494,7 @@ export class EmbeddedBlockChunker {
         text: buffer,
         fenceSpans,
         minChars,
-        reverse: false,
+        reverse,
         offset,
       });
       if (paragraphIdx !== -1) {
@@ -505,7 +507,7 @@ export class EmbeddedBlockChunker {
         text: buffer,
         fenceSpans,
         minChars,
-        reverse: false,
+        reverse,
         offset,
       });
       if (newlineIdx !== -1) {
@@ -545,44 +547,17 @@ export class EmbeddedBlockChunker {
     }
     const window = buffer.slice(0, Math.min(maxChars, buffer.length));
 
-    const preference = chunking.breakPreference ?? "paragraph";
-    if (preference === "paragraph") {
-      const paragraphIdx = findSafeParagraphBreakIndex({
-        text: window,
-        fenceSpans,
-        minChars,
-        reverse: true,
-        offset,
-      });
-      if (paragraphIdx !== -1) {
-        return { index: paragraphIdx };
-      }
-    }
-
-    if (preference === "paragraph" || preference === "newline") {
-      const newlineIdx = findSafeNewlineBreakIndex({
-        text: window,
-        fenceSpans,
-        minChars,
-        reverse: true,
-        offset,
-      });
-      if (newlineIdx !== -1) {
-        return { index: newlineIdx };
-      }
-    }
-
-    if (preference !== "newline") {
-      const sentenceIdx = findSafeSentenceBreakIndex(
-        window,
-        fenceSpans,
-        minChars,
-        offset,
-        openFence,
-      );
-      if (sentenceIdx !== -1) {
-        return { index: sentenceIdx };
-      }
+    const preferred = this.#pickPreferredBreakIndex(
+      window,
+      fenceSpans,
+      chunking,
+      true,
+      minChars,
+      offset,
+      openFence,
+    );
+    if (preferred.index !== -1) {
+      return preferred;
     }
 
     if (buffer.length < maxChars) {

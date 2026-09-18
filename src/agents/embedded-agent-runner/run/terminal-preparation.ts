@@ -23,6 +23,7 @@ import {
 } from "./helpers.js";
 import type { RunEmbeddedAgentParams } from "./params.js";
 import { buildEmbeddedRunPayloads } from "./payloads.js";
+import { resolveProviderRefusal } from "./provider-refusal.js";
 import { buildTraceToolSummary, resolveSuccessfulToolNames } from "./run-attempt-result.js";
 import {
   isEmbeddedRunTerminalInterrupted,
@@ -123,6 +124,7 @@ export function prepareEmbeddedRunTerminal(input: {
         }
       : {}),
     agentHarnessId: attempt.agentHarnessId,
+    providerRefusal: resolveProviderRefusal(attributionAssistant),
     ...(attempt.runtimeModelSelection
       ? { runtimeModelSelection: attempt.runtimeModelSelection }
       : {}),
@@ -169,6 +171,7 @@ export function prepareEmbeddedRunTerminal(input: {
         responseModel,
       },
       successfulToolNames: resolveSuccessfulToolNames(attempt),
+      assistantTranscriptIdempotencyKey: attempt.assistantTranscriptIdempotencyKey,
       sourceReplyDelivered: attempt.sourceReplyDelivered,
       rerouted: isProviderModelRerouted(
         { provider: input.provider, model: input.model },
@@ -183,6 +186,7 @@ export function prepareEmbeddedRunTerminal(input: {
     : input.currentAttemptCompletedAssistant;
   const payloads = buildEmbeddedRunPayloads({
     assistantTexts: attempt.assistantTexts,
+    answerSegments: attempt.answerSegments,
     assistantMessageIndex: attempt.lastAssistantTextMessageIndex,
     assistantTranscriptOwned: attempt.assistantTranscriptOwned,
     assistantTranscriptIdempotencyKey: attempt.assistantTranscriptIdempotencyKey,

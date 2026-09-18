@@ -8,7 +8,10 @@ import { exitCliAfterOutput } from "../cli/one-shot-exit.js";
 import { isTerminalInteractive } from "../cli/terminal-interactivity.js";
 import { createUpdateProgress } from "../cli/update-cli/progress.js";
 import { tryResolveInvocationCwd, UpdatePreMutationError } from "../cli/update-cli/shared.js";
-import { withUpdateCommandExecutor } from "../cli/update-cli/update-command-executor.js";
+import {
+  withUpdateCommandExecutor,
+  type UpdateCommandExecutor,
+} from "../cli/update-cli/update-command-executor.js";
 import {
   continueMigratedUpdateInFreshProcess,
   inspectActivatedUpdateState,
@@ -30,6 +33,7 @@ import {
   resolveServiceRefreshEnv,
   resolveUpdatedInstallCommandEnv,
 } from "../cli/update-cli/update-command-service-env.js";
+import { withUpdateCommandTerminalResult } from "../cli/update-cli/update-command-terminal.js";
 import { resolveUnsafeUpdateRecoveryGuidance } from "../cli/update-cli/update-recovery-guidance.js";
 import { readConfigFileSnapshot } from "../config/config.js";
 import { isDefaultInstallIdentity, resolveStateDir } from "../config/paths.js";
@@ -38,8 +42,10 @@ import { readGatewayServiceState, resolveGatewayService } from "../daemon/servic
 import { isTruthyEnvValue } from "../infra/env.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { readUpdateStateSchemaVersions } from "../infra/update-candidate-state.js";
+import { resolveUpdateFinalizationTimeoutMs } from "../infra/update-finalization-budget.js";
 import type { UpdateRecovery } from "../infra/update-recovery.js";
-import { UPDATE_RUNNER_TIMEOUT_MS } from "../infra/update-runner-command.js";
+import { recordUpdateRunPhase } from "../infra/update-run-ledger.js";
+import { UPDATE_RUNNER_TIMEOUT_MS } from "../infra/update-run-timeouts.js";
 import { readCurrentGitUpdateRecovery } from "../infra/update-runner-git-recovery.js";
 import { runGatewayUpdate } from "../infra/update-runner.js";
 import type { UpdateRunResult } from "../infra/update-runner.js";
@@ -86,7 +92,7 @@ export async function maybeOfferUpdateBeforeDoctor(params: {
   root: string | null;
   confirm: (p: { message: string; initialValue: boolean }) => Promise<boolean>;
   outro: (message: string) => void;
-}): Promise<{ updated: boolean; handled?: boolean }> {
+}): Promise<{ updated: boolean; handled?: boolean; reason?: "gateway-readiness-unverified" }> {
   const updateInProgress = isTruthyEnvValue(process.env.OPENCLAW_UPDATE_IN_PROGRESS);
   const canOfferUpdate =
     !updateInProgress &&
@@ -240,6 +246,7 @@ export async function maybeOfferUpdateBeforeDoctor(params: {
       if (continued.exitCode !== 0) {
         throw new UpdateCommandFailure(continued.result, continued.exitCode);
       }
+      result = continued.result;
       return true;
     };
     const completeNativeRecovery = async (input: UpdateRunResult) => {
@@ -260,7 +267,7 @@ export async function maybeOfferUpdateBeforeDoctor(params: {
         result = failedUpdate(error, input.reason ?? "windows-task-autostart-restore-failed");
       }
     };
-    const executeUpdate = async () => {
+    const executeUpdate = async (executor: UpdateCommandExecutor) => {
       try {
         result = await withOwnedManagedUpdateEnv(run.env, async () =>
           runGatewayUpdate({
@@ -278,11 +285,12 @@ export async function maybeOfferUpdateBeforeDoctor(params: {
             inspectGitCandidate:
               inspection?.serviceUpdateVerdict?.kind === "owned"
                 ? async (candidateRoot: string) => {
-                    const executor = assertCurrent();
+                    const candidateExecutor = assertCurrent();
                     const supported = await isUpdatedInstallGatewayExecutorSupported({
                       root: candidateRoot,
                       env: resolveUpdatedInstallCommandEnv({ processEnv: run.env, invocationCwd }),
-                      executor,
+                      executor: candidateExecutor,
+                      timeoutMs: UPDATE_RUNNER_TIMEOUT_MS,
                     });
                     assertCurrent();
                     if (!supported) {
@@ -311,9 +319,22 @@ export async function maybeOfferUpdateBeforeDoctor(params: {
               });
               assertCurrent();
               candidateSchemaVersions = target.schemaVersions;
+              await executor.enter(updateRoot, {
+                activationTimeoutMs: (run.activationTimeoutMs =
+                  await resolveUpdateFinalizationTimeoutMs(UPDATE_RUNNER_TIMEOUT_MS, {
+                    env: run.env,
+                    databases: schemaVersions,
+                    pluginCount: Object.keys(preUpdatePluginInstallRecords).length,
+                  })),
+              });
+              assertCurrent();
+              recordUpdateRunPhase(run.runId, "activating", undefined, { env: run.env });
               if (serviceLifecycle) {
                 // A native stop can mutate before preparation returns or Git starts.
-                originalRecovery = await readCurrentGitUpdateRecovery(updateRoot);
+                originalRecovery = await readCurrentGitUpdateRecovery(
+                  updateRoot,
+                  UPDATE_RUNNER_TIMEOUT_MS,
+                );
                 assertCurrent();
                 const previousSkip = inspection?.serviceMutationSkipMessage;
                 inspection = await serviceLifecycle.maybeStopManagedServiceBeforeMutableUpdate({
@@ -487,12 +508,17 @@ export async function maybeOfferUpdateBeforeDoctor(params: {
             timeoutMs: UPDATE_RUNNER_TIMEOUT_MS,
           });
           assertCurrent();
-          if (activated !== "ok") {
+          if (activated !== "ok" && activated !== "readiness-pending") {
             throw new Error(
               "Gateway restart was not verified; run `openclaw gateway status --deep` before restarting manually.",
             );
           }
-          note("Restarted the running gateway service after updating OpenClaw.", "Update");
+          note(
+            activated === "readiness-pending"
+              ? "Gateway is still starting; readiness remains unverified. Keep recovery backups and check `openclaw gateway status --deep`."
+              : "Restarted the running gateway service after updating OpenClaw.",
+            "Update",
+          );
         } catch (err) {
           if (
             err instanceof UpdateCommandRecoveryPendingError ||
@@ -518,18 +544,23 @@ export async function maybeOfferUpdateBeforeDoctor(params: {
     let outcome: Awaited<ReturnType<typeof executeUpdate>>;
     let operationError: Error | undefined;
     try {
-      outcome = await withUpdateCommandExecutor(run.runId, async (executor) => {
-        executorFence = await executor.enter(updateRoot);
-        run.executorFence = executorFence;
-        assertCurrent();
-        try {
-          return await executeUpdate();
-        } catch (error) {
-          // Keep the same normalized failure across the executor's error boundary.
-          operationError =
-            error instanceof Error ? error : new Error("Update execution failed", { cause: error });
-          throw operationError;
-        }
+      outcome = await withUpdateCommandTerminalResult((registerRun) => {
+        registerRun(run);
+        return withUpdateCommandExecutor(run.runId, async (executor) => {
+          executorFence = await executor.enter(updateRoot);
+          run.executorFence = executorFence;
+          assertCurrent();
+          try {
+            return await executeUpdate(executor);
+          } catch (error) {
+            // Keep the same normalized failure across the executor's error boundary.
+            operationError =
+              error instanceof Error
+                ? error
+                : new Error("Update execution failed", { cause: error });
+            throw operationError;
+          }
+        });
       });
     } catch (error) {
       // The candidate retains its ledger even when its response is lost.
@@ -546,8 +577,20 @@ export async function maybeOfferUpdateBeforeDoctor(params: {
     } finally {
       stop();
     }
-    if (ledgerHandoffOwned) {
+    const finishOffer = () => {
+      if (result?.status === "skipped" && result.reason === "gateway-readiness-unverified") {
+        params.outro(
+          "OpenClaw installed; Gateway readiness remains unverified. Keep recovery backups and check `openclaw gateway status --deep`.",
+        );
+        return { ...outcome, handled: true, reason: "gateway-readiness-unverified" as const };
+      }
+      if (completionMessage) {
+        params.outro(completionMessage);
+      }
       return outcome;
+    };
+    if (ledgerHandoffOwned) {
+      return finishOffer();
     }
     if (!result) {
       throw new Error("Doctor update completed without a result.");
@@ -576,10 +619,7 @@ export async function maybeOfferUpdateBeforeDoctor(params: {
       });
       exitCliAfterOutput(params.runtime, 1);
     }
-    if (completionMessage) {
-      params.outro(completionMessage);
-    }
-    return outcome;
+    return finishOffer();
   }
 
   if (git === "not-git") {

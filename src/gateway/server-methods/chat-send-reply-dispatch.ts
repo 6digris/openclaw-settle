@@ -48,6 +48,7 @@ import {
   replaceChatSendReplyPayload,
   type DeliveredChatSendReply,
 } from "./chat-send-command-replies.js";
+import { observeChatSendCommentaryMedia } from "./chat-send-commentary-media.js";
 import type { PreparedChatSendSession } from "./chat-send-session.js";
 import {
   appendAssistantTranscriptMessage,
@@ -121,6 +122,7 @@ export function createChatSendReplyDispatch(params: {
   isAgentRunStarted: () => boolean;
   onCommandBlock?: (text: string) => void;
   isRunCurrent?: () => boolean;
+  abortSignal?: AbortSignal;
   getReplyDispatchRun?: () => ReplyDispatchRun | undefined;
   prepareAssistantTranscriptMessage?: PrepareAssistantTranscriptMessage;
   logGateway: GatewayRequestContext["logGateway"];
@@ -139,7 +141,9 @@ export function createChatSendReplyDispatch(params: {
     generation: null as string | null,
     afterSeq: 0,
   };
-  const captureAgentTranscriptStart = () => {
+  let agentRunId = clientRunId;
+  const captureAgentTranscriptStart = (runId = clientRunId) => {
+    agentRunId = runId;
     const current = loadSessionEntry(session.sessionKey, sessionLoadOptions);
     const sessionId = current.entry?.sessionId ?? backingSessionId;
     const watermark = sessionId
@@ -522,10 +526,25 @@ export function createChatSendReplyDispatch(params: {
   ): Promise<T> => {
     return await admission.run(async () => {
       preparingTranscript = true;
+      const commentaryMedia = observeChatSendCommentaryMedia({
+        session,
+        accountId,
+        getRunId: () => agentRunId,
+        isCurrent: () => isAgentRunStarted() && params.isRunCurrent?.() === true,
+        abortSignal: params.abortSignal,
+        logGateway,
+      });
       try {
         return await operation();
       } finally {
         preparingTranscript = false;
+        const commentaryRewrite = await commentaryMedia.close();
+        if (
+          commentaryRewrite &&
+          commentaryRewrite.sessionId === assistantTranscriptRewriteState.sessionId
+        ) {
+          assistantTranscriptRewriteState.generation = commentaryRewrite.generation;
+        }
         // Stay inside the session admission after the runtime owner unwinds; callers chain
         // post-dispatch persistence from this Promise, and finalizer errors stay best-effort.
         await finalizeAgentMediaTranscript();

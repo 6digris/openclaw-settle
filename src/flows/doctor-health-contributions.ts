@@ -305,7 +305,7 @@ async function runLegacyStateHealth(ctx: DoctorHealthFlowContext): Promise<void>
         ctx,
         [],
         migrated.stepReceipts.flatMap((receipt) =>
-          receipt.outcome === "warning" ? receipt.warnings : [],
+          receipt.outcome === "warning" || receipt.outcome === "deferred" ? receipt.warnings : [],
         ),
       );
       if (migrated.changes.length > 0) {
@@ -453,10 +453,11 @@ async function runGatewayHealthChecks(ctx: DoctorHealthFlowContext): Promise<voi
   }
   const { checkGatewayHealth, probeGatewayMemoryStatus } =
     await import("../commands/doctor-gateway-health.js");
+  const timeoutMs = ctx.options.nonInteractive === true ? 3000 : 10_000;
   const { healthOk, authenticated, status } = await checkGatewayHealth({
     runtime: ctx.runtime,
     cfg: ctx.cfg,
-    timeoutMs: ctx.options.nonInteractive === true ? 3000 : 10_000,
+    timeoutMs,
   });
   ctx.gatewayHealthSkipped = false;
   ctx.healthOk = healthOk;
@@ -465,7 +466,7 @@ async function runGatewayHealthChecks(ctx: DoctorHealthFlowContext): Promise<voi
   ctx.gatewayMemoryProbe = authenticated
     ? await probeGatewayMemoryStatus({
         cfg: ctx.cfg,
-        timeoutMs: ctx.options.nonInteractive === true ? 3000 : 10_000,
+        timeoutMs,
       })
     : { checked: false, ready: false, skipped: healthOk };
 }

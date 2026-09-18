@@ -17,10 +17,8 @@ import {
   validateSystemEventParams,
 } from "../../../packages/gateway-protocol/src/schema/system-event.js";
 import { listAgentIds } from "../../agents/agent-scope.js";
-import {
-  readUtilityModelSetting,
-  resolveUtilityModelRefForAgent,
-} from "../../agents/utility-model.js";
+import { readUtilityModelSetting } from "../../agents/utility-model-setting.js";
+import { resolveUtilityModelRefForAgent } from "../../agents/utility-model.js";
 import { tryResolveLegacyCompatibilityAgentId } from "../../config/legacy.default-agent-owner.js";
 import { resolveGatewayPort, resolveStateDir } from "../../config/paths.js";
 import { resolveSystemMainSessionTarget } from "../../config/sessions.js";
@@ -42,6 +40,7 @@ import { normalizeAgentId, resolveAgentIdFromSessionKey } from "../../routing/se
 import { createPresenceRecipientProjection } from "../presence-projection.js";
 import { getGatewayProcessInstanceId } from "../process-instance.js";
 import { broadcastPresenceSnapshot } from "../server/presence-events.js";
+import { readGatewayProcessVitals } from "../server/process-vitals.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import { loadGatewaySessionEntryReadOnly } from "../session-utils.js";
 import type { GatewayRequestContext, GatewayRequestHandlers } from "./types.js";
@@ -102,6 +101,7 @@ async function collectSystemInfo(context: GatewayRequestContext): Promise<System
     ...(loadAverage.some((value) => value !== 0) ? { loadAverage } : {}),
     memoryTotalBytes: os.totalmem(),
     memoryFreeBytes: os.freemem(),
+    ...readGatewayProcessVitals(context.getEventLoopHealth),
     // Keep the existing state-volume reading when native discovery is unavailable;
     // an empty successful discovery intentionally stays empty.
     disks:

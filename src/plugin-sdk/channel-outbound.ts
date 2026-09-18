@@ -101,7 +101,6 @@ export {
   formatChannelProgressDraftText,
   getChannelStreamingConfigObject,
   isChannelProgressDraftWorkToolName,
-  isPotentialTruncatedFinal,
   formatPlanChecklistLines,
   selectPlanChecklistSteps,
   compactChannelProgressDraftLine,
@@ -122,8 +121,6 @@ export {
   resolveChannelStreamingProgressCommentary,
   resolveChannelStreamingProgressNarration,
   resolveChannelStreamingSuppressDefaultToolProgressMessages,
-  resolveTranscriptBackedChannelFinalText,
-  selectLongerFinalText,
 } from "../channels/streaming.js";
 export type {
   AgentPlanStep,
@@ -254,3 +251,9 @@ export async function withDurableMessageSendContext<T>(
   const mod = await loadChannelMessageRuntimeModule();
   return await mod.withDurableMessageSendContextCore(params, run);
 }
+
+export {
+  isPotentialTruncatedFinal,
+  resolveTranscriptBackedChannelFinalText,
+  selectLongerFinalText,
+} from "../channels/streaming-final-text.js";

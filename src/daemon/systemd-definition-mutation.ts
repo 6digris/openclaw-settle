@@ -16,6 +16,7 @@ import {
   type ServiceDefinitionMutationArtifact,
   type ServiceDefinitionMutationCapability,
   type SystemdServiceReadBinding,
+  type SystemdServiceReadTarget,
 } from "./service-types.js";
 import { assertGatewayServiceUpdateCurrent } from "./service-update-authority.js";
 import {
@@ -96,8 +97,12 @@ async function inspect(
   const fingerprint = new Map<string, string>();
   let shared = new Set<string>();
   let sourcePath: string | undefined;
+  let artifactPath: string | undefined;
   const result = (capability: ServiceDefinitionMutationCapability) => ({
-    capability,
+    capability:
+      capability.kind !== "writable" && capability.artifact === "service-file" && artifactPath
+        ? { ...capability, path: artifactPath }
+        : capability,
     snapshots,
     fingerprint,
     shared,
@@ -141,6 +146,7 @@ async function inspect(
             : "definition-directory";
       const inspected =
         directory && !required ? ((await findExistingAncestor(file)) ?? file) : file;
+      artifactPath = inspected;
       const stat = await fs.lstat(inspected).catch((error: unknown) => {
         if (required || !hasErrnoCode(error, "ENOENT")) {
           throw error;
@@ -192,8 +198,12 @@ export async function readSystemdDefinitionMutationCapability(
     timeoutMs?: number;
     requireLoaded?: boolean;
     systemdReadBinding?: SystemdServiceReadBinding;
+    systemdReadTarget?: SystemdServiceReadTarget;
   },
 ): Promise<ServiceDefinitionMutationCapability> {
+  if (options?.systemdReadTarget?.scope === "system") {
+    return { kind: "sealed", reason: "system-owned" };
+  }
   const selected = path.basename(resolveSystemdUnitPath(env));
   const names =
     selected === "openclaw-gateway.service" ? [selected, "openclaw.service"] : [selected];

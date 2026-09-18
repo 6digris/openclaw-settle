@@ -1,7 +1,6 @@
 import type { Message } from "grammy/types";
 import { getGroupThreadDeliverySession } from "openclaw/plugin-sdk/channel-inbound";
 import {
-  createOutboundPayloadPlan,
   createStructuredOutboundPayloadPlan,
   deriveDurableFinalDeliveryRequirements,
   resolveTranscriptBackedChannelFinalText,
@@ -18,6 +17,7 @@ import {
   rotateAnswerLaneAfterQueuedBlocksSettle,
   rotateAnswerLaneAfterToolProgress,
 } from "./bot-message-dispatch-draft.js";
+import { applyTextToPayload, projectPayloadForDelivery } from "./bot-message-dispatch-payload.js";
 import {
   markFinalDelivered,
   markFinalStarted,
@@ -42,7 +42,6 @@ import {
 import { resolveTelegramReplyId } from "./bot/helpers.js";
 import type { TelegramInlineButtons } from "./button-types.js";
 import { mergeTelegramPartialDeliveryError } from "./chunk-delivery.js";
-import { canonicalizeTelegramPresentationPayload } from "./interactive-fallback.js";
 import { createLaneDeliveryStateTracker } from "./lane-delivery-state.js";
 import {
   createLaneTextDeliverer,
@@ -61,7 +60,6 @@ import {
 } from "./prompt-context-projection.js";
 import { registerTelegramQuestionDelivery } from "./question-finalization.js";
 import { editMessageReplyMarkupTelegram, editMessageTelegram } from "./send.js";
-import { resolveTelegramTargetChatType } from "./targets.js";
 
 type TelegramDeliveryConfig = TurnConfig & {
   lanes: Record<LaneName, DraftLaneState>;
@@ -77,16 +75,6 @@ type TelegramSendPayloadOptions = {
   onPlatformSendDispatch?: () => Promise<void>;
   assertPlatformSendAuthorized?: () => void;
   bindPendingFinalDelivery?: <T extends ReplyPayload>(payload: T) => T;
-};
-
-const projectPayloadForDelivery = (turn: Turn, payload: ReplyPayload): ReplyPayload | undefined => {
-  const projected = createOutboundPayloadPlan([payload])[0]?.payload;
-  if (projected?.replyToCurrent && projected.replyToId === undefined) {
-    // The raw planner has no turn context; resolve current-message intent before preview reuse.
-    projected.replyToId =
-      turn.context.ctxPayload.MessageSidFull ?? turn.context.ctxPayload.MessageSid;
-  }
-  return projected;
 };
 
 const promptContextDeliverySignature = (payload: ReplyPayload): string | undefined => {
@@ -198,9 +186,6 @@ function createDeliveryBaseOptions(turn: Turn) {
     transcriptMirror: createTranscriptMirror(turn),
   };
 }
-
-export const applyTextToPayload = (payload: ReplyPayload, text: string): ReplyPayload =>
-  payload.text === text ? payload : { ...payload, text };
 
 function applyQuoteReplyTarget(turn: Turn, payload: ReplyPayload): ReplyPayload {
   if (
@@ -533,6 +518,7 @@ export async function deliverFinalAnswerText(
 ): Promise<LaneDeliveryResult> {
   const transcriptFinal = await turn.resolveCurrentTurnTranscriptFinal();
   const selectedText = await resolveTranscriptBackedChannelFinalText({
+    payload: answerPayload,
     finalText: text,
     resolveCandidateText: async () => transcriptFinal?.text,
   });
@@ -625,36 +611,6 @@ export async function deliverFallback(turn: Turn, replies: ReplyPayload[], silen
   });
 }
 
-export function normalizeDeliveryPayload(
-  turn: Turn,
-  payload: ReplyPayload,
-): ReplyPayload | undefined {
-  const keepReasoningLane = payload.isReasoning === true && turn.durableReasoningPayloadsEnabled;
-  const payloadForPlan = keepReasoningLane ? { ...payload } : payload;
-  if (keepReasoningLane) {
-    delete payloadForPlan.isReasoning;
-  }
-  const normalized = projectPayloadForDelivery(turn, payloadForPlan);
-  if (!normalized) {
-    return undefined;
-  }
-  return normalizePreparedDeliveryPayload(turn, normalized);
-}
-
-export function normalizePreparedDeliveryPayload(turn: Turn, payload: ReplyPayload): ReplyPayload {
-  // Retained finals can still select HTML at send time, and HTML bypasses
-  // rich blocks. Converting a presentation here would strip it while the
-  // final funnel is still undecided, so rich accounts defer canonicalization
-  // to the sender which knows the text mode.
-  if (turn.telegramCfg.richMessages === true && payload.presentation) {
-    return payload;
-  }
-  return canonicalizeTelegramPresentationPayload(payload, {
-    allowWebAppButtons: resolveTelegramTargetChatType(String(turn.context.chatId)) === "direct",
-    richTables: false,
-  });
-}
-
 export function createDeliveryState(
   config: TelegramDeliveryConfig,
   getTurn: () => Turn,
@@ -703,6 +659,7 @@ export function createDeliveryState(
       const transcriptFinal = await turn.resolveCurrentTurnTranscriptFinal();
       const previewText = selectLongerFinalText({ finalText, candidateTexts });
       const selectedText = await resolveTranscriptBackedChannelFinalText({
+        payload,
         finalText,
         resolveCandidateText: async () => transcriptFinal?.text,
       });

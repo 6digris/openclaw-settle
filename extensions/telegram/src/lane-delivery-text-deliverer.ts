@@ -1,6 +1,7 @@
 import {
   createPreviewMessageReceipt,
   isPotentialTruncatedFinal,
+  resolveTranscriptBackedChannelFinalText,
   selectLongerFinalText,
   type MessageReceipt,
 } from "openclaw/plugin-sdk/channel-outbound";
@@ -117,16 +118,6 @@ function result(
 }
 
 export function createLaneTextDeliverer(params: CreateLaneTextDelivererParams): LaneTextDeliverer {
-  const textOnlyPayload = (payload: ReplyPayload): ReplyPayload => {
-    const {
-      mediaUrl: _mediaUrl,
-      mediaUrls: _mediaUrls,
-      audioAsVoice: _audioAsVoice,
-      spokenText: _spokenText,
-      ...rest
-    } = payload;
-    return rest;
-  };
   const mediaChannelData = (
     channelData: ReplyPayload["channelData"],
     options?: { stripButtons?: boolean },
@@ -294,11 +285,17 @@ export function createLaneTextDeliverer(params: CreateLaneTextDelivererParams): 
     rotateFinalizedStream(lane);
 
     const finalText = text.trimEnd();
-    const candidateTexts = [stream.lastDeliveredText(), lane.lastPartialText];
-    const previewText =
-      useFinalTextRecovery && isPotentialTruncatedFinal(finalText)
-        ? (selectLongerFinalText({ finalText, candidateTexts }) ?? finalText)
-        : finalText;
+    const previewText = useFinalTextRecovery
+      ? await resolveTranscriptBackedChannelFinalText({
+          payload,
+          finalText,
+          resolveCandidateText: async () =>
+            selectLongerFinalText({
+              finalText,
+              candidateTexts: [stream.lastDeliveredText(), lane.lastPartialText],
+            }),
+        })
+      : finalText;
     lane.lastPartialText = previewText;
     lane.hasStreamedMessage = true;
     lane.finalized = false;
@@ -463,11 +460,19 @@ export function createLaneTextDeliverer(params: CreateLaneTextDelivererParams): 
       (canRecoverFromTextPreview || canRecoverFromMediaPreview) &&
       isPotentialTruncatedFinal(recoveryText)
     ) {
-      const candidate = await params.resolveFinalPayloadCandidate?.({
-        finalText: recoveryText,
-        laneName,
+      let candidate: ReplyPayload | undefined;
+      await resolveTranscriptBackedChannelFinalText({
         payload,
-        candidateTexts: [lane.stream.lastDeliveredText(), lane.lastPartialText],
+        finalText: recoveryText,
+        resolveCandidateText: async () => {
+          candidate = await params.resolveFinalPayloadCandidate?.({
+            finalText: recoveryText,
+            laneName,
+            payload,
+            candidateTexts: [lane.stream?.lastDeliveredText(), lane.lastPartialText],
+          });
+          return candidate?.text;
+        },
       });
       if (candidate) {
         payload = candidate;
@@ -512,7 +517,7 @@ export function createLaneTextDeliverer(params: CreateLaneTextDelivererParams): 
         laneName,
         lane,
         text,
-        textOnlyPayload(payload),
+        payload,
         isDurableFinal,
         true,
         buttons,

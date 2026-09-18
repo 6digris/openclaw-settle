@@ -1,6 +1,3 @@
 // Telegram plugin module implements delivery behavior.
-export {
-  deliverReplies,
-  deliverStructuredReplies,
-  emitTelegramMessageSentHooks,
-} from "./delivery.replies.js";
+export { deliverReplies, deliverStructuredReplies } from "./delivery.replies.js";
+export { emitTelegramMessageSentHooks } from "./delivery.hooks.js";

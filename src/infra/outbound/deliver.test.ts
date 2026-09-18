@@ -2,17 +2,12 @@
 // checks, adapter sends, transcript mirroring, and payload outcomes.
 import fsPromises from "node:fs/promises";
 import path from "node:path";
+import { setImmediate as waitForImmediate } from "node:timers/promises";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { TrustedMessageAuditEvent } from "../../audit/message-audit-events.js";
 import { onTrustedMessageAuditEventForTest as onTrustedMessageAuditEvent } from "../../audit/message-audit-events.test-support.js";
 import { chunkText } from "../../auto-reply/chunk.js";
-import {
-  getReplyPayloadMetadata,
-  isReplyPayloadSessionWriterDeliveryAuthorized,
-  setReplyPayloadMetadata,
-  type ReplyPayload,
-} from "../../auto-reply/reply-payload.js";
 import { createMessageReceiptFromOutboundResults } from "../../channels/message/receipt.js";
 import type {
   ChannelMessageSendResult,
@@ -21,6 +16,7 @@ import type {
 } from "../../channels/message/types.js";
 import type { ChannelOutboundAdapter, ChannelPlugin } from "../../channels/plugins/types.public.js";
 import type { OpenClawConfig } from "../../config/config.js";
+import { resolveStateDir } from "../../config/state-dir.js";
 import { renderMessagePresentationFallbackText } from "../../interactive/payload.js";
 import * as mediaCapabilityModule from "../../media/read-capability.js";
 import type { PluginHookHandlerMap } from "../../plugins/hook-types.js";
@@ -30,7 +26,6 @@ import { createEmptyPluginRegistry } from "../../plugins/registry.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import type { PluginHookRegistration } from "../../plugins/types.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import { loadBundledPluginFacade } from "../../test-utils/bundled-plugin-public-surface.js";
 import { createOutboundTestPlugin, createTestRegistry } from "../../test-utils/channel-plugins.js";
 import { createInternalHookEventPayload } from "../../test-utils/internal-hook-event-payload.js";
 import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
@@ -41,16 +36,13 @@ import {
 } from "../diagnostic-events.js";
 import { retryAsync } from "../retry.js";
 import { resolvePreferredOpenClawTmpDir } from "../tmp-openclaw-dir.js";
-import {
-  prepareOutboundPayloadBatch,
-  prepareStructuredOutboundPayloadBatch,
-} from "./deliver-prepare.js";
+import { prepareOutboundPayloadBatch } from "./deliver-prepare.js";
 import { countPhysicalOutboundSends, PlatformMessageNotDispatchedError } from "./deliver-types.js";
 import {
-  createOutboundPayloadPlan,
-  createStructuredOutboundPayloadPlan,
-  projectOutboundPayloadPlanForOutbound,
-} from "./payloads.js";
+  registerOutboundImageProjectionTests,
+  registerOutboundPreparationMetadataTests,
+} from "./deliver.projection.test-support.js";
+import { createOutboundPayloadPlan, projectOutboundPayloadPlanForOutbound } from "./payloads.js";
 import { createUnmodifiedPreparedOutboundBatch } from "./prepared-batch.js";
 
 type AppendAssistantTranscript =
@@ -275,7 +267,7 @@ const matrixChunkConfig: OpenClawConfig = {
   channels: { matrix: { textChunkLimit: 4000 } } as OpenClawConfig["channels"],
 };
 
-const expectedPreferredTmpRoot = resolvePreferredOpenClawTmpDir();
+const expectedPreferredTmpRoot = await fsPromises.realpath(resolvePreferredOpenClawTmpDir());
 
 type DeliverOutboundArgs = Parameters<DeliverModule["deliverOutboundPayloads"]>[0];
 type DeliverOutboundPayload = DeliverOutboundArgs["payloads"][number];
@@ -355,26 +347,6 @@ function setTestOutbound(
   id: Parameters<typeof createOutboundTestPlugin>[0]["id"] = "matrix",
 ) {
   setTestPlugin(createOutboundTestPlugin({ id, outbound: createTestOutbound(overrides, id) }));
-}
-
-function installRegisteredPayloadHooks(
-  hooks: Pick<PluginHookHandlerMap, "reply_payload_sending" | "message_sending">,
-) {
-  const registry = createEmptyPluginRegistry();
-  for (const hookName of ["reply_payload_sending", "message_sending"] as const) {
-    addTestHook({ registry, pluginId: "image-presentation", hookName, handler: hooks[hookName] });
-  }
-  const runner = createHookRunner(registry);
-  hookMocks.runner.hasHooks.mockImplementation(
-    (name) =>
-      (name === "reply_payload_sending" || name === "message_sending") && runner.hasHooks(name),
-  );
-  hookMocks.runner.runReplyPayloadSending.mockImplementation((event, context) =>
-    runner.runReplyPayloadSending(event, context),
-  );
-  hookMocks.runner.runMessageSending.mockImplementation((event, context) =>
-    runner.runMessageSending(event, context),
-  );
 }
 
 type OutboundTextSender = NonNullable<ChannelOutboundAdapter["sendText"]>;
@@ -594,6 +566,8 @@ async function runBestEffortPartialFailureDelivery(params?: { onError?: boolean 
 }
 
 describe("deliverOutboundPayloads", () => {
+  let expectedQueueStateDir: string;
+
   beforeAll(async () => {
     ({
       deliverOutboundPayloads,
@@ -603,6 +577,7 @@ describe("deliverOutboundPayloads", () => {
   });
 
   beforeEach(() => {
+    expectedQueueStateDir = resolveStateDir();
     resetDiagnosticEventsForTest();
     setActivePluginRegistry(defaultRegistry);
     vi.clearAllMocks();
@@ -631,9 +606,9 @@ describe("deliverOutboundPayloads", () => {
       async (params: {
         id: string;
         run: (owner: {
-          current: () => Record<string, unknown>;
-          beforeFirstModifier: () => void;
-          markPrepared: () => void;
+          current: () => Promise<Record<string, unknown>>;
+          beforeFirstModifier: () => Promise<void>;
+          markPrepared: () => Promise<void>;
           markPublished: () => void;
         }) => Promise<unknown>;
       }) => {
@@ -650,11 +625,11 @@ describe("deliverOutboundPayloads", () => {
         return {
           status: "claimed",
           value: await params.run({
-            current: () => entry,
-            beforeFirstModifier: () => {
+            current: async () => entry,
+            beforeFirstModifier: async () => {
               entry.preparationState = "modifiers_started";
             },
-            markPrepared: () => {
+            markPrepared: async () => {
               entry.preparationState = "prepared";
             },
             markPublished: () => {},
@@ -951,7 +926,7 @@ describe("deliverOutboundPayloads", () => {
     expect(beforeParams?.deliveryQueueId).toBe("queue-1");
     expect(queueMocks.markDeliveryPlatformSendDispatched).toHaveBeenCalledWith(
       "queue-1",
-      undefined,
+      expectedQueueStateDir,
       expect.objectContaining({ replyToId: undefined, threadId: undefined }),
     );
     expect(queueMocks.markDeliveryPlatformSendDispatched).toHaveBeenCalledOnce();
@@ -1117,25 +1092,6 @@ describe("deliverOutboundPayloads", () => {
     expect(messageSendText).not.toHaveBeenCalled();
   });
 
-  it("fails closed for an unfinished conversation intent without route authority", async () => {
-    const messageSendText = installMatrixTextMessageAdapter({
-      messageId: "should-not-send",
-      durableFinal: { capabilities: { text: true } },
-    });
-
-    await expect(
-      deliverMatrix({
-        deliveryCompletion: {
-          kind: "conversation",
-          agentId: "main",
-          operationId: "legacy-operation",
-        },
-        onDeliveryAttempt: async () => {},
-      }),
-    ).rejects.toMatchObject({ cause: { retryable: false }, queueCustody: "released" });
-    expect(messageSendText).not.toHaveBeenCalled();
-  });
-
   it("does not claim platform custody when message adapter preflight fails", async () => {
     const messageSendText = vi.fn();
     setMatrixMessageAdapter({
@@ -1238,6 +1194,59 @@ describe("deliverOutboundPayloads", () => {
     expect(sendMatrix).toHaveBeenCalledOnce();
   });
 
+  it.each([false, true])(
+    "waits for the modifier checkpoint before policy (cancel=%s)",
+    async (cancel) => {
+      const checkpoint = createDeferredCore();
+      const entered = createDeferredCore();
+      const controller = new AbortController();
+      hookMocks.runner.hasHooks.mockImplementation(
+        (name?: string) => name === "reply_payload_sending" || name === "message_sending",
+      );
+      const pending = prepareOutboundPayloadBatch(
+        {
+          cfg: {},
+          channel: "matrix",
+          to: "!room:example",
+          payloads: [{ text: "prepared" }],
+          deps: { matrix: vi.fn() },
+          abortSignal: controller.signal,
+          replyPayloadSendingHook: { kind: "final", context: { channelId: "matrix" } },
+        },
+        {
+          onBeforeFirstModifier: () => {
+            entered.resolve();
+            return checkpoint.promise;
+          },
+        },
+      );
+      const outcome = pending.then(
+        (batch) => ({ batch, error: undefined }),
+        (error: unknown) => ({ batch: undefined, error }),
+      );
+      await entered.promise;
+      await waitForImmediate();
+      const callsBeforeCheckpoint = hookMocks.runner.runReplyPayloadSending.mock.calls.length;
+      if (cancel) {
+        controller.abort();
+      }
+      checkpoint.resolve();
+      const result = await outcome;
+      expect(callsBeforeCheckpoint).toBe(0);
+      if (cancel) {
+        expect(result.error).toBeInstanceOf(Error);
+        expect(hookMocks.runner.runReplyPayloadSending).not.toHaveBeenCalled();
+        expect(hookMocks.runner.runMessageSending).not.toHaveBeenCalled();
+      } else {
+        expect(result.batch?.entries).toEqual([
+          expect.objectContaining({ status: "accepted", payload: { text: "prepared" } }),
+        ]);
+        expect(hookMocks.runner.runReplyPayloadSending).toHaveBeenCalledOnce();
+        expect(hookMocks.runner.runMessageSending).toHaveBeenCalledOnce();
+      }
+    },
+  );
+
   it("does not enter the modifier crash boundary when no modifying hook is registered", async () => {
     const onBeforeFirstModifier = vi.fn();
 
@@ -1264,84 +1273,12 @@ describe("deliverOutboundPayloads", () => {
     expect(hookMocks.runner.runMessageSending).not.toHaveBeenCalled();
   });
 
-  it.each(["raw", "structured"] as const)(
-    "keeps %s preparation metadata semantics through channel and awaited hook transforms",
-    async (operation) => {
-      const capture = {};
-      let currentWriter = {
-        activeWriterRunId: "run-original",
-        lifecycleRevision: "revision-original",
-        sessionId: "session-original",
-      };
-      const sourcePayload = setReplyPayloadMetadata(
-        { text: "original", mediaUrl: "https://example.com/attachment.png" },
-        {
-          assistantMessageIndex: 4,
-          finalDeliveryCapture: capture,
-          sessionWriterDeliveryAuthority: {
-            expectedWriterRunId: currentWriter.activeWriterRunId,
-            expectedLifecycleRevision: currentWriter.lifecycleRevision,
-            expectedSessionId: currentWriter.sessionId,
-            sessionKey: "agent:main:matrix:room:prepared",
-          },
-        },
-      );
-      expect(isReplyPayloadSessionWriterDeliveryAuthorized(sourcePayload, currentWriter)).toBe(
-        true,
-      );
-      setTestOutbound({
-        ...matrixOutboundForTest,
-        normalizePayload: ({ payload }) =>
-          setReplyPayloadMetadata(
-            {
-              ...payload,
-              text: payload.channelData?.normalized ? payload.text : " ",
-              channelData: { normalized: true },
-            },
-            { assistantMessageIndex: undefined },
-          ),
-        normalizePayloadBatch: ({ payloads }) => payloads.map(({ payload }) => ({ ...payload })),
-      });
-      hookMocks.runner.hasHooks.mockImplementation((name) => name === "message_sending");
-      hookMocks.runner.runMessageSending.mockImplementationOnce(async () => {
-        await Promise.resolve();
-        currentWriter = { ...currentWriter, activeWriterRunId: "run-replacement" };
-        return { content: "after modifier" };
-      });
-      const params = {
-        cfg: matrixChunkConfig,
-        channel: "matrix" as const,
-        to: "!room:example",
-        payloads: [sourcePayload],
-        deps: { matrix: vi.fn() },
-      };
-      const batch =
-        operation === "structured"
-          ? await prepareStructuredOutboundPayloadBatch(
-              params,
-              createStructuredOutboundPayloadPlan([sourcePayload]),
-            )
-          : await prepareOutboundPayloadBatch(params);
-      const [entry] = batch.entries;
-      expect(entry?.status).toBe("accepted");
-      if (!entry || entry.status !== "accepted") {
-        throw new Error("expected prepared payload");
-      }
-      expect(entry.payload.text).toBe("after modifier");
-      const metadata = getReplyPayloadMetadata(entry.payload);
-      expect(metadata).toHaveProperty("assistantMessageIndex", undefined);
-      expect(getReplyPayloadMetadata(sourcePayload)?.assistantMessageIndex).toBe(4);
-      if (operation === "structured") {
-        expect(metadata?.finalDeliveryCapture).toBe(capture);
-        expect(isReplyPayloadSessionWriterDeliveryAuthorized(entry.payload, currentWriter)).toBe(
-          false,
-        );
-      } else {
-        expect(metadata?.finalDeliveryCapture).toBeUndefined();
-        expect(metadata?.sessionWriterDeliveryAuthority).toBeUndefined();
-      }
-    },
-  );
+  registerOutboundPreparationMetadataTests({
+    matrixChunkConfig,
+    matrixOutboundForTest,
+    setTestOutbound,
+    hookMocks,
+  });
 
   it("revalidates conversation authority after queue admission and before the adapter", async () => {
     const order: string[] = [];
@@ -1437,7 +1374,7 @@ describe("deliverOutboundPayloads", () => {
     expect(completionMocks.completeDurableDelivery).toHaveBeenCalledWith(
       expect.objectContaining({ operationId: "operation-chunked" }),
       expect.objectContaining({ messageId: "chunk-2" }),
-      undefined,
+      expectedQueueStateDir,
     );
   });
 
@@ -2184,7 +2121,11 @@ describe("deliverOutboundPayloads", () => {
     );
     expect(commitParams?.kind).toBe("text");
     expect(commitParams?.result?.messageId).toBe("message-adapter-1");
-    expect(queueMocks.ackDelivery).toHaveBeenCalledWith("mock-queue-id");
+    expect(queueMocks.ackDelivery).toHaveBeenCalledWith(
+      "mock-queue-id",
+      expectedQueueStateDir,
+      undefined,
+    );
     expect(queueMocks.failDelivery).not.toHaveBeenCalled();
   });
 
@@ -2327,7 +2268,7 @@ describe("deliverOutboundPayloads", () => {
 
     expect(queueMocks.markDeliveryPlatformSendAttemptStarted).toHaveBeenCalledWith(
       "mock-queue-id",
-      undefined,
+      expectedQueueStateDir,
       { replyToId: null },
     );
     expect(queueMocks.markDeliveryPlatformOutcomeUnknown).not.toHaveBeenCalled();
@@ -2363,7 +2304,7 @@ describe("deliverOutboundPayloads", () => {
 
       expect(queueMocks.moveToFailed).toHaveBeenCalledWith(
         "mock-queue-id",
-        undefined,
+        expectedQueueStateDir,
         expect.any(String),
       );
       expect(queueMocks.failDeliveryBeforePlatformSend).not.toHaveBeenCalled();
@@ -2394,7 +2335,7 @@ describe("deliverOutboundPayloads", () => {
 
     expect(queueMocks.moveToFailed).toHaveBeenCalledWith(
       "mock-queue-id",
-      undefined,
+      expectedQueueStateDir,
       expect.any(String),
     );
     expect(queueMocks.failDeliveryBeforePlatformSend).not.toHaveBeenCalled();
@@ -2552,7 +2493,7 @@ describe("deliverOutboundPayloads", () => {
 
     expect(queueMocks.moveToFailed).toHaveBeenCalledWith(
       "mock-queue-id",
-      undefined,
+      expectedQueueStateDir,
       expect.any(String),
     );
     expect(queueMocks.failDeliveryBeforePlatformSend).not.toHaveBeenCalled();
@@ -2616,7 +2557,7 @@ describe("deliverOutboundPayloads", () => {
 
     expect(queueMocks.moveToFailed).toHaveBeenCalledWith(
       "mock-queue-id",
-      undefined,
+      expectedQueueStateDir,
       expect.any(String),
     );
     expect(queueMocks.failDeliveryBeforePlatformSend).not.toHaveBeenCalled();
@@ -2645,7 +2586,7 @@ describe("deliverOutboundPayloads", () => {
 
     expect(queueMocks.moveToFailed).toHaveBeenCalledWith(
       "mock-queue-id",
-      undefined,
+      expectedQueueStateDir,
       expect.any(String),
     );
     expect(queueMocks.failDeliveryBeforePlatformSend).not.toHaveBeenCalled();
@@ -2714,87 +2655,6 @@ describe("deliverOutboundPayloads", () => {
     expect(queueMocks.failDelivery).not.toHaveBeenCalled();
   });
 
-  it("terminally retires a permanent provider rejection before platform dispatch", async () => {
-    const order: string[] = [];
-    hookMocks.runner.hasHooks.mockImplementation((name?: string) => name === "message_sent");
-    hookMocks.runner.runMessageSent.mockImplementationOnce(async () => {
-      order.push("message-sent");
-    });
-    const rejection = new PlatformMessageNotDispatchedError("atomic message limit", {
-      cause: new Error("rendered text is too large"),
-      retryable: false,
-    });
-    const sendMatrix = vi.fn().mockRejectedValueOnce(rejection);
-    completionMocks.rejectDurableDelivery.mockImplementationOnce(() => {
-      order.push("reject-owner");
-    });
-    queueMocks.ackDelivery.mockImplementationOnce(async () => {
-      order.push("ack-queue");
-    });
-
-    await expect(
-      deliverMatrix({
-        payloads: [{ text: "rendered text" }],
-        deps: { matrix: sendMatrix },
-        queuePolicy: "required",
-        deliveryCompletion: {
-          kind: "conversation",
-          agentId: "main",
-          operationId: "operation-rejected",
-          routeFingerprint: "route-rejected",
-        },
-        onDeliveryAttempt: async () => {},
-      }),
-    ).rejects.toThrow("atomic message limit");
-
-    expect(order).toEqual(["reject-owner", "ack-queue", "message-sent"]);
-    expect(completionMocks.rejectDurableDelivery).toHaveBeenCalledWith(
-      expect.objectContaining({ operationId: "operation-rejected" }),
-      "atomic message limit",
-      undefined,
-    );
-    expect(queueMocks.failDeliveryBeforePlatformSend).not.toHaveBeenCalled();
-    expect(queueMocks.failDelivery).not.toHaveBeenCalled();
-    expect(hookMocks.runner.runMessageSent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        content: "rendered text",
-        error: expect.stringContaining("atomic message limit"),
-        success: false,
-      }),
-      expect.objectContaining({ channelId: "matrix" }),
-    );
-  });
-
-  it("normalizes an empty permanent rejection reason before durable retirement", async () => {
-    const sendMatrix = vi.fn().mockRejectedValueOnce(
-      new PlatformMessageNotDispatchedError("   ", {
-        cause: new Error("provider rejected the rendered payload"),
-        retryable: false,
-      }),
-    );
-
-    await expect(
-      deliverMatrix({
-        payloads: [{ text: "rendered text" }],
-        deps: { matrix: sendMatrix },
-        queuePolicy: "required",
-        deliveryCompletion: {
-          kind: "conversation",
-          agentId: "main",
-          operationId: "operation-empty-rejection",
-          routeFingerprint: "route-empty-rejection",
-        },
-        onDeliveryAttempt: async () => {},
-      }),
-    ).rejects.toThrow("Platform rejected the message before dispatch");
-
-    expect(completionMocks.rejectDurableDelivery).toHaveBeenCalledWith(
-      expect.objectContaining({ operationId: "operation-empty-rejection" }),
-      "Platform rejected the message before dispatch",
-      undefined,
-    );
-  });
-
   it("preserves queued send evidence when a marked best-effort batch has an ambiguous failure", async () => {
     const ambiguousError = createNetworkError("connect ECONNRESET", "ECONNRESET", "connect");
     const notDispatchedError = new PlatformMessageNotDispatchedError(
@@ -2835,7 +2695,11 @@ describe("deliverOutboundPayloads", () => {
     });
 
     expect(sendMatrix).toHaveBeenCalled();
-    expect(queueMocks.ackDelivery).toHaveBeenCalledWith("mock-queue-id");
+    expect(queueMocks.ackDelivery).toHaveBeenCalledWith(
+      "mock-queue-id",
+      expectedQueueStateDir,
+      undefined,
+    );
     expect(queueMocks.failDelivery).not.toHaveBeenCalled();
   });
 
@@ -3635,7 +3499,7 @@ describe("deliverOutboundPayloads", () => {
     );
     expect(queueMocks.markDeliveryPlatformSendAttemptStarted).toHaveBeenCalledWith(
       "mock-queue-id",
-      undefined,
+      expectedQueueStateDir,
       { replyToId: "hooked-reply" },
     );
   });
@@ -4914,285 +4778,13 @@ describe("deliverOutboundPayloads", () => {
     expect(sendMatrixOptions?.mediaUrl).toBe("https://example.com/a.png");
   });
 
-  it("keeps markdown images as text for channels that do not opt in", async () => {
-    const sendMatrix = vi.fn().mockResolvedValue({ messageId: "m-text", roomId: "!room" });
-
-    await deliverMatrix({
-      cfg: matrixChunkConfig,
-      payloads: [{ text: "Tech: ![Node.js](https://img.shields.io/badge/Node.js-339933)" }],
-      deps: { matrix: sendMatrix },
-    });
-
-    const sendMatrixCall = requireMatrixSendCall(sendMatrix);
-    const sendMatrixOptions = sendMatrixCall[2] as { mediaUrl?: unknown } | undefined;
-    expect(sendMatrixCall[0]).toBe("!room:example");
-    expect(sendMatrixCall[1]).toBe("Tech: ![Node.js](https://img.shields.io/badge/Node.js-339933)");
-    expect(sendMatrixOptions?.mediaUrl).toBeUndefined();
-  });
-
-  it("extracts markdown images for channels that opt in", async () => {
-    const sendMatrix = vi.fn().mockResolvedValue({ messageId: "m-media", roomId: "!room" });
-    setTestOutbound({ ...matrixOutboundForTest, extractMarkdownImages: true });
-
-    await deliverMatrix({
-      cfg: matrixChunkConfig,
-      payloads: [{ text: "Chart ![chart](https://example.com/chart.png) now" }],
-      deps: { matrix: sendMatrix },
-    });
-
-    const sendMatrixCall = requireMatrixSendCall(sendMatrix);
-    const sendMatrixOptions = sendMatrixCall[2] as { mediaUrl?: unknown } | undefined;
-    expect(sendMatrixCall[0]).toBe("!room:example");
-    expect(sendMatrixCall[1]).toBe("Chart now");
-    expect(sendMatrixOptions?.mediaUrl).toBe("https://example.com/chart.png");
-  });
-
-  it.each([
-    { operation: "raw", extractMarkdownImages: true },
-    { operation: "structured", extractMarkdownImages: true },
-    { operation: "raw", extractMarkdownImages: false },
-    { operation: "structured", extractMarkdownImages: false },
-  ] as const)(
-    "projects hook-added channel images ($operation; enabled=$extractMarkdownImages)",
-    async ({ operation, extractMarkdownImages }) => {
-      const { telegramOutbound } = await loadBundledPluginFacade<{
-        telegramOutbound: ChannelOutboundAdapter;
-      }>({ pluginId: "telegram", artifactBasename: "api.js" });
-      setTestOutbound({ ...telegramOutbound, extractMarkdownImages }, "telegram");
-      const explicitUrl = "https://example.com/explicit.png";
-      const originalUrl = "https://example.com/original.png";
-      const replyUrl = "https://example.com/reply.png";
-      const messageUrl = "https://example.com/message.png";
-      const literalText =
-        "[[reply_to:literal]] [[audio_as_voice]]\nMEDIA:https://example.com/literal.png";
-      const replyText = `Reply![reply](${replyUrl}) caption.`;
-      const messageText =
-        `![leading](${messageUrl})    Keep  prose. Use \`a  b\`![message](${messageUrl}).  \r\n` +
-        `Chart ![trailing](${messageUrl})  \r\nLeft ![adjacent](${messageUrl})caption.\r\n` +
-        `  ![indented](${messageUrl})    Prefix.\r\n` +
-        `Left![one](${messageUrl}) ![two](${messageUrl})right\r\n` +
-        `Next\r\n${literalText}\r\nAfter  \r\n`;
-      const replyHook = vi.fn<PluginHookHandlerMap["reply_payload_sending"]>(
-        async ({ payload }) => ({ payload: { ...payload, text: replyText } }),
-      );
-      const messageHook = vi.fn<PluginHookHandlerMap["message_sending"]>(async () => ({
-        content: messageText,
-      }));
-      installRegisteredPayloadHooks({
-        reply_payload_sending: replyHook,
-        message_sending: messageHook,
-      });
-      const payloads: ReplyPayload[] = [
-        {
-          text: `Original ![original](${originalUrl}) caption.`,
-          mediaUrls: [explicitUrl],
-          attachments: [{ url: explicitUrl, name: "explicit.png", mimeType: "image/png" }],
-          replyToId: "123",
-        },
-      ];
-      const params = {
-        cfg: {},
-        channel: "telegram" as const,
-        to: "12345",
-        payloads,
-        replyPayloadSendingHook: {
-          kind: "final" as const,
-          channel: "telegram",
-          context: { channelId: "telegram", conversationId: "12345" },
-        },
-      };
-      const batch =
-        operation === "structured"
-          ? await prepareStructuredOutboundPayloadBatch(
-              params,
-              createStructuredOutboundPayloadPlan(payloads),
-            )
-          : await prepareOutboundPayloadBatch(params);
-
-      const mediaBeforeMessage = extractMarkdownImages
-        ? [explicitUrl, originalUrl, replyUrl]
-        : [explicitUrl];
-      expect(messageHook).toHaveBeenCalledWith(
-        expect.objectContaining({
-          content: extractMarkdownImages ? "Reply caption." : replyText,
-          metadata: expect.objectContaining({ mediaUrls: mediaBeforeMessage }),
-        }),
-        expect.objectContaining({ channelId: "telegram", conversationId: "12345" }),
-      );
-      const entry = batch.entries[0];
-      expect(batch.entries).toHaveLength(1);
-      expect(entry?.status).toBe("accepted");
-      if (!entry || entry.status !== "accepted") {
-        throw new Error("expected accepted image payload");
-      }
-      const expectedMedia = extractMarkdownImages
-        ? [...mediaBeforeMessage, messageUrl]
-        : mediaBeforeMessage;
-      expect(entry.preparedMediaCount).toBe(expectedMedia.length);
-      expect(entry.payload.mediaUrls ?? [entry.payload.mediaUrl]).toEqual(expectedMedia);
-      expect(entry.payload.text).toBe(
-        extractMarkdownImages
-          ? `Keep  prose. Use \`a  b\`.  \r\nChart  \r\nLeft caption.\r\n  Prefix.\r\nLeft right\r\nNext\r\n${literalText}\r\nAfter  \r\n`
-          : messageText,
-      );
-      expect(entry.payload.replyToId).toBe("123");
-      expect(entry.payload.audioAsVoice).toBeUndefined();
-      expect(entry.payload.attachments?.[0]).toEqual({
-        url: explicitUrl,
-        name: "explicit.png",
-        mimeType: "image/png",
-      });
-    },
-  );
-
-  it.each(["reply_payload_sending", "message_sending"] as const)(
-    "cancels hook-added channel images at %s",
-    async (cancelHook) => {
-      const { telegramOutbound } = await loadBundledPluginFacade<{
-        telegramOutbound: ChannelOutboundAdapter;
-      }>({ pluginId: "telegram", artifactBasename: "api.js" });
-      setTestOutbound(telegramOutbound, "telegram");
-      const imageUrl = "https://example.com/cancelled.png";
-      const replyHook = vi.fn<PluginHookHandlerMap["reply_payload_sending"]>(
-        async ({ payload }) => ({
-          payload: { ...payload, text: `Changed ![image](${imageUrl}) caption.` },
-          cancel: cancelHook === "reply_payload_sending",
-        }),
-      );
-      const messageHook = vi.fn<PluginHookHandlerMap["message_sending"]>(async () => ({
-        cancel: true,
-      }));
-      installRegisteredPayloadHooks({
-        reply_payload_sending: replyHook,
-        message_sending: messageHook,
-      });
-      const payloads = [{ text: "Original caption." }];
-      const batch = await prepareStructuredOutboundPayloadBatch(
-        {
-          cfg: {},
-          channel: "telegram",
-          to: "12345",
-          payloads,
-          replyPayloadSendingHook: {
-            kind: "final",
-            channel: "telegram",
-            context: { channelId: "telegram", conversationId: "12345" },
-          },
-        },
-        createStructuredOutboundPayloadPlan(payloads),
-      );
-
-      expect(batch.entries).toEqual([
-        {
-          sourceIndex: 0,
-          status: "suppressed",
-          reason: `cancelled_by_${cancelHook}_hook`,
-        },
-      ]);
-      if (cancelHook === "reply_payload_sending") {
-        expect(messageHook).not.toHaveBeenCalled();
-      } else {
-        expect(messageHook).toHaveBeenCalledWith(
-          expect.objectContaining({
-            content: "Changed caption.",
-            metadata: expect.objectContaining({ mediaUrls: [imageUrl] }),
-          }),
-          expect.anything(),
-        );
-      }
-    },
-  );
-
-  it.each([false, true])(
-    "prepares channel images without reinterpreting prepared directive literals (images: %s)",
-    async (extractMarkdownImages) => {
-      setTestOutbound({ ...matrixOutboundForTest, extractMarkdownImages });
-      const text =
-        "[[reply_to:literal]] [[audio_as_voice]]\n" +
-        "MEDIA:https://example.com/literal.png\n" +
-        "Chart ![one](https://example.com/one.png) ![two](https://example.com/two.png)\nAfter  \n";
-      const payloads: ReplyPayload[] = [
-        { text: "" },
-        {
-          text,
-          replyToId: undefined,
-          mediaUrl: "https://example.com/primary.png",
-          mediaUrls: ["https://example.com/explicit.png", "https://example.com/one.png"],
-        },
-      ];
-      const batch = await prepareStructuredOutboundPayloadBatch(
-        {
-          cfg: matrixChunkConfig,
-          channel: "matrix",
-          to: "!room:example",
-          payloads,
-          deps: { matrix: vi.fn() },
-        },
-        createStructuredOutboundPayloadPlan(payloads),
-      );
-
-      expect(batch.entries).toEqual([
-        { sourceIndex: 0, status: "suppressed", reason: "no_visible_payload" },
-        expect.objectContaining({
-          sourceIndex: 1,
-          status: "accepted",
-          preparedMediaCount: extractMarkdownImages ? 4 : 3,
-          payload: {
-            text: extractMarkdownImages
-              ? "[[reply_to:literal]] [[audio_as_voice]]\nMEDIA:https://example.com/literal.png\nChart\nAfter  \n"
-              : text,
-            replyToId: undefined,
-            mediaUrls: [
-              "https://example.com/explicit.png",
-              "https://example.com/one.png",
-              "https://example.com/primary.png",
-              ...(extractMarkdownImages ? ["https://example.com/two.png"] : []),
-            ],
-          },
-        }),
-      ]);
-    },
-  );
-
-  it.each([
-    {
-      name: "MEDIA directives",
-      text: "Caption\nMEDIA:https://example.com/one.png\nMEDIA:https://example.com/two.png",
-      extractMarkdownImages: false,
-    },
-    {
-      name: "Markdown images",
-      text: "Caption ![one](https://example.com/one.png) ![two](https://example.com/two.png)",
-      extractMarkdownImages: true,
-    },
-  ])("delivers explicit attachments and every extracted $name", async (testCase) => {
-    const sendMedia = vi.fn<NonNullable<ChannelOutboundAdapter["sendMedia"]>>(async () => ({
-      channel: "matrix",
-      messageId: "sent",
-    }));
-    setTestOutbound({
-      ...matrixOutboundForTest,
-      sendMedia,
-      extractMarkdownImages: testCase.extractMarkdownImages,
-    });
-
-    await deliverMatrix({
-      cfg: matrixChunkConfig,
-      payloads: [
-        {
-          text: testCase.text,
-          mediaUrl: "https://example.com/primary.png",
-          mediaUrls: ["https://example.com/explicit.png", "https://example.com/one.png"],
-        },
-      ],
-    });
-
-    expect(sendMedia.mock.calls.map(([params]) => params.mediaUrl)).toEqual([
-      "https://example.com/explicit.png",
-      "https://example.com/one.png",
-      "https://example.com/primary.png",
-      "https://example.com/two.png",
-    ]);
+  registerOutboundImageProjectionTests({
+    matrixChunkConfig,
+    matrixOutboundForTest,
+    setTestOutbound,
+    hookMocks,
+    deliverMatrix,
+    requireMatrixSendCall,
   });
 
   it("continues on errors when bestEffort is enabled", async () => {
@@ -5418,7 +5010,11 @@ describe("deliverOutboundPayloads", () => {
       unsubscribe();
     }
 
-    expect(queueMocks.ackDelivery).toHaveBeenCalledWith("mock-queue-id");
+    expect(queueMocks.ackDelivery).toHaveBeenCalledWith(
+      "mock-queue-id",
+      expectedQueueStateDir,
+      undefined,
+    );
     expect(queueMocks.failDelivery).not.toHaveBeenCalled();
     expect(hookMocks.runner.runMessageSent).toHaveBeenCalledOnce();
     expect(hookMocks.runner.runMessageSent).toHaveBeenCalledWith(

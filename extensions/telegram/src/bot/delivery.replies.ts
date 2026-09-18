@@ -9,15 +9,6 @@ import {
   projectOutboundPayloadPlanForDelivery,
 } from "openclaw/plugin-sdk/channel-outbound";
 import type { MarkdownTableMode, ReplyToMode } from "openclaw/plugin-sdk/config-contracts";
-import {
-  buildCanonicalSentMessageHookContext,
-  createInternalHookEvent,
-  fireAndForgetHook,
-  toInternalMessageSentContext,
-  toPluginMessageContext,
-  toPluginMessageSentEvent,
-  triggerInternalHook,
-} from "openclaw/plugin-sdk/hook-runtime";
 import type { ReplyPayloadDelivery } from "openclaw/plugin-sdk/interactive-runtime";
 import { normalizeMessagePresentation } from "openclaw/plugin-sdk/interactive-runtime";
 import {
@@ -69,6 +60,7 @@ import {
   planTelegramTextDeliveryPages,
   type TelegramTextDeliveryPage,
 } from "../telegram-text-delivery.js";
+import { emitMessageSentHooks } from "./delivery.hooks.js";
 import { resolveTelegramReplyId, type TelegramThreadSpec } from "./helpers.js";
 import type { TelegramNativeQuoteCandidateByMessageId } from "./native-quote.js";
 
@@ -186,7 +178,7 @@ async function deliverTextReply(params: {
   replyToId?: number;
   replyToMode: ReplyToMode;
   progress: DeliveryProgress;
-  recordMessageId: (messageId: number) => void;
+  recordMessageId: (messageId: number) => Promise<void>;
   quoteOnlyOnFirstChunk?: boolean;
 }): Promise<number | undefined> {
   const chunks = filterEmptyTelegramTextChunks(params.chunkText(params.text));
@@ -256,7 +248,7 @@ async function deliverTextReply(params: {
         });
       }
       params.runtime.log?.(`telegram text delivery ok chat=${params.chatId} message=${messageId}`);
-      params.recordMessageId(messageId);
+      await params.recordMessageId(messageId);
       await params.progress.promptContext?.accept({ messageId, text: plainText });
     },
   });
@@ -298,7 +290,7 @@ async function deliverMediaReply(params: {
   replyToId?: number;
   replyToMode: ReplyToMode;
   progress: DeliveryProgress;
-  recordMessageId: (messageId: number) => void;
+  recordMessageId: (messageId: number) => Promise<void>;
   textMode?: "html";
 }): Promise<{
   firstDeliveredMessageId?: number;
@@ -335,7 +327,7 @@ async function deliverMediaReply(params: {
     if (captionRemoved) {
       visibleFallbackText = "";
     }
-    params.recordMessageId(messageId);
+    await params.recordMessageId(messageId);
     await recordPromptContextMessage(message, plainText || undefined);
     markDelivered(params.progress);
   };
@@ -638,84 +630,6 @@ async function maybePinFirstDeliveredMessage(params: {
   }
 }
 
-type EmitMessageSentHookParams = {
-  sessionKeyForInternalHooks?: string;
-  chatId: string;
-  accountId?: string;
-  content: string;
-  success: boolean;
-  error?: string;
-  messageId?: number;
-  isGroup?: boolean;
-  groupId?: string;
-};
-
-function buildTelegramSentHookContext(params: EmitMessageSentHookParams) {
-  return buildCanonicalSentMessageHookContext({
-    to: params.chatId,
-    content: params.content,
-    success: params.success,
-    error: params.error,
-    channelId: "telegram",
-    accountId: params.accountId,
-    conversationId: params.chatId,
-    messageId: typeof params.messageId === "number" ? String(params.messageId) : undefined,
-    isGroup: params.isGroup,
-    groupId: params.groupId,
-  });
-}
-
-function emitInternalMessageSentHook(params: EmitMessageSentHookParams): void {
-  if (!params.sessionKeyForInternalHooks) {
-    return;
-  }
-  const canonical = buildTelegramSentHookContext(params);
-  fireAndForgetHook(
-    triggerInternalHook(
-      createInternalHookEvent(
-        "message",
-        "sent",
-        params.sessionKeyForInternalHooks,
-        toInternalMessageSentContext(canonical),
-      ),
-    ),
-    "telegram: message:sent internal hook failed",
-  );
-}
-
-function emitMessageSentHooks(
-  params: EmitMessageSentHookParams & {
-    hookRunner: ReturnType<typeof getGlobalHookRunner>;
-    enabled: boolean;
-  },
-): void {
-  if (!params.enabled && !params.sessionKeyForInternalHooks) {
-    return;
-  }
-  const canonical = buildTelegramSentHookContext(params);
-  if (params.enabled) {
-    fireAndForgetHook(
-      Promise.resolve(
-        params.hookRunner!.runMessageSent(
-          toPluginMessageSentEvent(canonical),
-          toPluginMessageContext(canonical),
-        ),
-      ),
-      "telegram: message_sent plugin hook failed",
-    );
-  }
-  emitInternalMessageSentHook(params);
-}
-
-export function emitTelegramMessageSentHooks(params: EmitMessageSentHookParams): void {
-  const hookRunner = getGlobalHookRunner();
-  emitMessageSentHooks({
-    ...params,
-    hookRunner,
-    enabled: hookRunner?.hasHooks("message_sent") ?? false,
-  });
-}
-
 type DeliverRepliesParams = {
   replies: ReplyPayload[];
   cfg?: import("openclaw/plugin-sdk/config-contracts").OpenClawConfig;
@@ -794,15 +708,15 @@ async function deliverReplyPlan(
     deliveredCount: 0,
     ...(params.promptContextSequence ? { promptContext: params.promptContextSequence } : {}),
   };
-  const recordMessageId = (messageId: number) => {
+  const recordMessageId = async (messageId: number) => {
     if (params.accountId || params.ownerAgentId) {
-      recordSentMessage(params.chatId, messageId, params.cfg, {
+      await recordSentMessage(params.chatId, messageId, params.cfg, {
         accountId: params.accountId,
         agentId: params.ownerAgentId,
       });
       return;
     }
-    recordSentMessage(params.chatId, messageId, params.cfg);
+    await recordSentMessage(params.chatId, messageId, params.cfg);
   };
   const mediaLoader = params.mediaLoader ?? loadWebMedia;
   const transcriptMirror = params.transcriptMirror;

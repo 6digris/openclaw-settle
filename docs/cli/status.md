@@ -8,6 +8,13 @@ title: "openclaw status"
 
 Diagnostics for channels + sessions.
 
+Task counts and audit totals use a read-only metadata summary. Retained task
+payloads and delivery history are not loaded for each status request, and
+overlapping requests share the pending summary read. Database work runs on the
+shared SQLite worker; live task ownership is still checked by the Gateway.
+These summaries are not a full physical database-integrity check. Full registry
+restoration and Doctor retain their integrity verification.
+
 ```bash
 openclaw status
 openclaw status --all
@@ -53,6 +60,24 @@ command. Compare `openclaw gateway call status --json` with `openclaw status --j
 to separate the Gateway response from local report collection. Gateway
 [Prometheus RPC timings](/gateway/prometheus) exclude CLI startup and connection
 setup; a slow CLI can finish without a slow Gateway handler.
+
+When the Gateway is reachable and authorized, `status --json` uses its status
+projection instead of scanning every agent's plugin metadata and database
+ownership locally. The Gateway supplies session counts, heartbeat and task
+state, runtime vitals, and agent roster facts. The request keeps `operator.read`
+scope, including its redaction of session paths, recent sessions, model defaults,
+and detailed admission refusals.
+
+JSON `collection.notCollected` names fields that were not inspected and explains
+why. Online status leaves workspace and bootstrap checks unknown, including
+`agents.bootstrapPendingCount: null`. It also skips local config validation,
+channel and memory credential inspection, and the local plugin inspections
+normally requested by `--all` or `--deep`. Requested security audit and plugin
+compatibility sections report `collected: false`; memory remains `null`. Use
+`openclaw security audit`, `openclaw plugins inspect --all`, or
+`openclaw memory status --deep` for those local inspections. `--deep` still requests
+Gateway health, and `--usage --agent <id>` retains its credential scope.
+When the Gateway is unavailable, JSON status retains local diagnostics.
 
 For Git installs, plain status compares cached remote-tracking refs without a
 network fetch. If the latest recorded update fetch failed and no later update
@@ -141,6 +166,8 @@ Use `openclaw skills check --agent <id>` to inspect the missing requirements.
 
 ## Overview and update status
 
+- The **Sessions** overview counts stored conversation rows, including archived
+  rows. Running turns and recent activity are separate from this inventory.
 - Overview includes Gateway + node host service install/runtime status when
   available, plus compact Gateway process uptime and host system uptime.
 - `status --all` shows returned host, IP, version, and platform in **Gateway self**.

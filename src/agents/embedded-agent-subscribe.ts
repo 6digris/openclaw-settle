@@ -280,6 +280,8 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
       state.acceptedSessionSpawns.length > 0 ||
       state.visibleBlockReplyCount > 0;
     assistantTexts.length = 0;
+    state.answerSegments.length = 0;
+    state.lastAssistant = undefined;
     state.lastAssistantTextMessageIndex = -1;
     state.lastAssistantTextContentIndex = undefined;
     state.lastAssistantTextItemId = undefined;
@@ -444,6 +446,7 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
 
   return {
     assistantTexts,
+    answerSegments: state.answerSegments,
     getCurrentAttemptAssistant,
     getLastAssistantTextMessageIndex: () =>
       state.lastAssistantTextMessageIndex >= 0 ? state.lastAssistantTextMessageIndex : undefined,

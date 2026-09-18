@@ -161,6 +161,11 @@ Bounded loaded-owner lookups retain the owner's artifact policy when no preferen
 is specified. An explicit preference is checked; exact loader requests apply the
 full cache identity and cold-load defaults.
 
+A completed registry is cached under both its original request and its resolved
+manifest selection. Reusing those prepared manifests does not repeat plugin
+registration. Both keys share the existing bounded cache and are removed when
+the registry retires or the load cache is cleared.
+
 Provider lookup uses an explicit caller workspace first, then the workspace
 recorded by its metadata snapshot, including an explicitly shared-root scope.
 Only narrowed metadata views without a workspace field inherit the active
@@ -213,6 +218,14 @@ changed artifacts cannot inherit approval for older capabilities. The plugin
 cache releases failed loads, but Node retains failed native ESM evaluations for
 the process lifetime; restarting an account cannot repair that module graph.
 A successful import is shared across consumers.
+
+Bundled provider policy lookups retain their resolved surface, including absence,
+in the metadata cache. Repeated model-reference canonicalization reuses that
+surface without resolving artifact candidates again. The memo follows the
+selected registry's publication version and bundled-directory selection;
+registration and unpublished registries remain uncached. A new generation or
+explicit metadata invalidation resolves the surface again, and managed surfaces
+retain their instance's admission checks.
 
 The CLI invocation owns one operation cache across config reads, output metadata,
 command ownership, nested registration, and actions. Standalone registration uses
