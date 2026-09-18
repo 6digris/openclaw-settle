@@ -1,7 +1,7 @@
 // Control UI component renders the command palette.
 import { consume } from "@lit/context";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { html, nothing } from "lit";
+import { html, nothing, type PropertyValues } from "lit";
 import { property, state } from "lit/decorators.js";
 import { ref } from "lit/directives/ref.js";
 import { pathForAgentPanel, type RouteId } from "../app-route-paths.ts";
@@ -66,7 +66,7 @@ type CommandPaletteProps = {
   archivedTranscriptsExcluded: number;
   onToggle: () => void;
   onQueryChange: (query: string) => void;
-  onActiveIdChange: (id: string) => void;
+  onActiveIdChange: (id: string, keyboard?: boolean) => void;
   onNavigate?: ApplicationContext<RouteId>["navigate"];
   onSelectSession?: (sessionKey: string) => void;
   onSlashCommand?: (command: string) => void;
@@ -117,13 +117,6 @@ function closePalette(props: CommandPaletteProps) {
   props.onToggle();
 }
 
-function scrollActiveIntoView() {
-  requestAnimationFrame(() => {
-    const el = document.querySelector(".cmd-palette__item--active");
-    el?.scrollIntoView({ block: "nearest" });
-  });
-}
-
 function handleKeydown(
   e: KeyboardEvent,
   props: CommandPaletteProps,
@@ -141,13 +134,11 @@ function handleKeydown(
   switch (e.key) {
     case "ArrowDown":
       e.preventDefault();
-      props.onActiveIdChange(items[(activeIndex + 1) % items.length]!.id);
-      scrollActiveIntoView();
+      props.onActiveIdChange(items[(activeIndex + 1) % items.length]!.id, true);
       break;
     case "ArrowUp":
       e.preventDefault();
-      props.onActiveIdChange(items[(activeIndex - 1 + items.length) % items.length]!.id);
-      scrollActiveIntoView();
+      props.onActiveIdChange(items[(activeIndex - 1 + items.length) % items.length]!.id, true);
       break;
     case "Enter":
       e.preventDefault();
@@ -288,6 +279,7 @@ function renderCommandPalette(props: CommandPaletteProps) {
                       return html`
                         <div
                           id=${getOptionId(globalIndex)}
+                          data-command-id=${item.id}
                           class="cmd-palette__item ${isActive ? "cmd-palette__item--active" : ""}"
                           role="option"
                           aria-selected=${isActive ? "true" : "false"}
@@ -342,6 +334,10 @@ export class CommandPalette extends OpenClawLightDomContentsElement {
   @state() private sessionSearchPartial = false;
   @state() private archivedTranscriptsExcluded = 0;
   @state() private sessionSearchIncomplete = false;
+
+  private keyboardSelection = false;
+  private renderedActiveId: string | undefined;
+  private renderedOptionId: string | undefined;
 
   private readonly subscriptions = new SubscriptionsController(this);
   @state() private sessionSearchTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
@@ -402,6 +398,25 @@ export class CommandPalette extends OpenClawLightDomContentsElement {
     this.clearSessionSearch();
     this.clearCatalogSearch();
     super.disconnectedCallback();
+  }
+
+  override updated(changed: PropertyValues) {
+    const active = this.querySelector<HTMLElement>('.cmd-palette__item[aria-selected="true"]');
+    const activeId = active?.dataset.commandId;
+    // Result changes can replace or move the rendered selection without changing
+    // activeId. Preserve manual scrolling on updates that leave that choice in place.
+    const selectionMoved =
+      activeId !== this.renderedActiveId || active?.id !== this.renderedOptionId;
+    if (
+      this.keyboardSelection ||
+      changed.has("query") ||
+      (!changed.has("activeId") && selectionMoved)
+    ) {
+      active?.scrollIntoView({ block: "nearest" });
+    }
+    this.keyboardSelection = false;
+    this.renderedActiveId = activeId;
+    this.renderedOptionId = active?.id;
   }
 
   openPalette() {
@@ -696,8 +711,12 @@ export class CommandPalette extends OpenClawLightDomContentsElement {
         this.activeId = null;
         this.scheduleSessionSearch(query);
       },
-      onActiveIdChange: (id) => {
+      onActiveIdChange: (id, keyboard = false) => {
+        this.keyboardSelection = keyboard;
         this.activeId = id;
+        if (keyboard) {
+          this.requestUpdate();
+        }
       },
       onNavigate: this.onNavigate,
       onSelectSession: this.onSelectSession,

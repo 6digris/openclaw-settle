@@ -19,15 +19,26 @@ import "./command-palette.ts";
 
 describe("CommandPalette pending searches", () => {
   let restoreDialogPolyfill: () => void;
+  let scrollIntoViewDescriptor: PropertyDescriptor | undefined;
 
   beforeEach(() => {
     vi.useFakeTimers();
     restoreDialogPolyfill = installDialogPolyfill();
+    scrollIntoViewDescriptor = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
+    Object.defineProperty(Element.prototype, "scrollIntoView", {
+      configurable: true,
+      value: vi.fn(),
+    });
   });
 
   afterEach(() => {
     document.body.replaceChildren();
     restoreDialogPolyfill();
+    if (scrollIntoViewDescriptor) {
+      Object.defineProperty(Element.prototype, "scrollIntoView", scrollIntoViewDescriptor);
+    } else {
+      delete (Element.prototype as Partial<Element>).scrollIntoView;
+    }
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
