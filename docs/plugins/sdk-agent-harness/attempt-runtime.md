@@ -86,6 +86,27 @@ before middleware transforms its result, and carry it into the attempt result.
 This confirms a final external source reply and does not depend on destination
 arguments or transcript mirrors.
 
+## Execution and settlement deadlines
+
+Use `createAgentHarnessAttemptDeadlineController(...)` from
+`openclaw/plugin-sdk/agent-harness-runtime` to track an attempt's execution
+budget separately from local result settlement. Pass the original admission
+time as `startedAtMs`, the prepared execution `timeoutMs`, an explicit finite
+positive `settlementTimeoutMs` no greater than `MAX_TIMER_TIMEOUT_MS`
+(`2,147,000,000` milliseconds), and the attempt's `signal`. Invalid settlement
+budgets throw `RangeError` before any timer is created. The `onTimeout`
+callback receives an `AgentHarnessAttemptTimeout` with `kind`, `elapsedMs`,
+and `timeoutMs`; the harness owns cancellation and result handling.
+
+Call `beginSettlement(receivedAtMs)` when the first native terminal receipt or
+explicit local terminal result ends execution. Its original timestamp starts
+one absolute settlement deadline, including time already spent waiting for
+projection. Repeated calls do not extend it. `ownsExecutionWait()` stops claiming
+execution after expiry, even before the timer callback runs. A normalized
+unlimited execution budget still has bounded settlement. Abort or `dispose()`
+closes the controller permanently; call `dispose()` during attempt cleanup.
+These timers do not establish native completion or grant execution authority.
+
 ## Terminal outcome classification
 
 Native harnesses that own their own protocol projection can use

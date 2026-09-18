@@ -59,6 +59,43 @@ mutating native state. The callback belongs to one registered harness lifetime;
 retaining it after the operation closes does not retain authority. Post-delete
 hooks are notifications, not the owner of durable binding removal.
 
+## Shared native binding lifecycle
+
+`createNativeSessionBindingLifecycle` from
+`openclaw/plugin-sdk/agent-harness-runtime` supplies the binding
+coordination used by external harnesses. It consumes an existing synchronous
+plugin-state store; it does not create a database or a second session store.
+The synchronous store contract remains available through the next Plugin SDK
+major.
+
+The shared record envelope contains an active backend payload or a cleared
+binding, with optional physical session generation, retirement fence, and
+lease. The harness supplies its record codec, lease-acquisition policy,
+release TTL policy, error constructors, and lease timing budgets. Native
+credentials, model selection, supervision rules, and resource cleanup remain
+with that harness.
+
+| Operation | Contract |
+| --------- | -------- |
+| `transact(key, apply, options)` | Applies a synchronous state change through atomic plugin-state updates, respecting live leases and the supplied current-owner check. |
+| `withLease(key, run, options)` | Acquires and renews one exact-token lease, reuses it for nested work, and releases only that lease. |
+| `withMutation(run)` | Admits binding changes unless an exclusive operation is pending. |
+| `withExclusiveMutationFence(run)` | Drains admitted changes, rejects later changes, and permits the exclusive operation's own scoped changes. |
+| `withDeletion(key, options, run)` | Prepares exact synchronous removal and conditional rollback for the host's session transaction. |
+| `hasLease(key)` | Reports a lease in the current async scope for backend retention policy; it is not execution authority. |
+
+Pass the host-provided authority callback through `assertCurrent`, and validate
+the expected physical session generation in `assertRecordCurrent` for deletion.
+A lease token coordinates state changes; it does not grant permission to run
+tools or alter native resources. Keep native cleanup after the authoritative
+session transaction completes.
+
+Deletion compares the prepared record while allowing heartbeat expiry renewal.
+Commit removes only the matching record with the live lease and suspends
+renewal. Rollback restores only that removal, only while the operation remains
+current, and renews the same lease. Expired, replaced, or closed owners cannot
+mutate another owner's binding.
+
 ## Subagent task history
 
 Native subagents can expose the shared task transcript view through the optional

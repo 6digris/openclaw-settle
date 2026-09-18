@@ -59,6 +59,15 @@ export const TOOL_PROGRESS_OUTPUT_MAX_CHARS = 8_000;
 /** Core exec mode algebra for plugin-owned policy adapters. */
 export const execPolicy = Object.freeze({ resolveExecModePolicy, minSecurity, maxAsk });
 
+export { createAgentHarnessAttemptDeadlineController } from "../agents/harness/attempt-deadlines.js";
+export type { AgentHarnessAttemptTimeout } from "../agents/harness/attempt-deadlines.js";
+export {
+  createNativeSessionBindingLifecycle,
+  type NativeSessionBindingLeaseOptions,
+  type NativeSessionBindingRecord,
+  type NativeSessionBindingLifecycleOptions,
+} from "../agents/harness/native-session/binding-lifecycle.js";
+
 /**
  * Renders the Watched Sessions prompt block for plugin-owned harness prompts.
  * Harness runtimes that assemble their own instruction layers (e.g. Codex)
