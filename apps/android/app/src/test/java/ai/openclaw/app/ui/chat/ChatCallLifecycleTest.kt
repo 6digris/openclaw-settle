@@ -19,20 +19,35 @@ import ai.openclaw.app.node.InvokeDispatcher
 import ai.openclaw.app.ui.ShellScreen
 import ai.openclaw.app.ui.design.ClawDesignTheme
 import ai.openclaw.app.voice.TalkAgentActivity
+import ai.openclaw.app.voice.TalkAudioPlaying
 import ai.openclaw.app.voice.TalkModeManager
+import ai.openclaw.app.voice.TalkSpeakAudio
 import android.Manifest
+import android.content.ComponentName
 import android.content.Context
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.os.Bundle
 import android.provider.Settings
+import android.speech.RecognitionService
+import android.speech.SpeechRecognizer
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedDispatcher
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.DeviceConfigurationOverride
+import androidx.compose.ui.test.FontScale
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -49,6 +64,8 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModelStore
 import kotlinx.coroutines.CompletableDeferred
@@ -62,9 +79,11 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -85,8 +104,11 @@ import org.robolectric.android.controller.ActivityController
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import org.robolectric.shadows.ShadowDialog
+import org.robolectric.shadows.ShadowSpeechRecognizer
+import org.robolectric.shadows.ShadowSystemClock
 import org.robolectric.util.ReflectionHelpers
 import java.io.File
+import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.coroutines.CoroutineContext
@@ -97,6 +119,8 @@ import kotlin.coroutines.CoroutineContext
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class ChatCallLifecycleTest {
   private val composeRule = createComposeRule()
+  private var viewportHeight by mutableStateOf(800.dp)
+  private var fixtureFontScale by mutableStateOf(1f)
 
   @get:Rule
   val fixtureRules: RuleChain =
@@ -160,8 +184,12 @@ class ChatCallLifecycleTest {
     )
     composeRule.setContent {
       backDispatcher = checkNotNull(LocalOnBackPressedDispatcherOwner.current).onBackPressedDispatcher
-      ClawDesignTheme {
-        ShellScreen(viewModel = model, modifier = Modifier.testTag("chat-avatar-proof"))
+      DeviceConfigurationOverride(DeviceConfigurationOverride.FontScale(fixtureFontScale)) {
+        ClawDesignTheme {
+          Box(Modifier.size(360.dp, viewportHeight).clipToBounds()) {
+            ShellScreen(viewModel = model, modifier = Modifier.testTag("chat-avatar-proof"))
+          }
+        }
       }
     }
     composeRule.runOnIdle { runtime.connect(gateway.endpoint) }
@@ -172,6 +200,363 @@ class ChatCallLifecycleTest {
     }
     selectChat(FIRST_CHAT)
     composeRule.runOnIdle { model.requestHomeDestination(HomeDestination.Chat) }
+  }
+
+  @Test
+  fun layoutFollowupEmptyCallCentersAvatarAndAnchorsEnd() {
+    startCall()
+    for (dark in listOf(true, false)) {
+      composeRule.runOnIdle { prefs.setAppearanceThemeMode(if (dark) AppearanceThemeMode.Dark else AppearanceThemeMode.Light) }
+      composeRule.waitForIdle()
+      captureTalkProof(if (dark) "layout-empty-dark" else "layout-empty-light")
+    }
+    val page = composeRule.onNodeWithTag("chat-conversation-page").fetchSemanticsNode().boundsInRoot
+    val end =
+      composeRule
+        .onNodeWithText("End")
+        .assertIsDisplayed()
+        .fetchSemanticsNode()
+        .boundsInRoot
+    val avatar =
+      composeRule
+        .onNodeWithTag("conversation-mascot")
+        .assertIsDisplayed()
+        .fetchSemanticsNode()
+        .boundsInRoot
+    val density = app.resources.displayMetrics.density
+    assertTrue("End must remain at the bottom safe-area edge, not halfway up the page", page.bottom - end.bottom <= 12f * density)
+    assertTrue("The centered avatar should be modestly larger than 240dp", avatar.width / density in 250f..272f)
+    assertTrue("The avatar must use the available middle area", avatar.center.y > page.top + page.height * 0.32f)
+    composeRule.onNodeWithTag("conversation-transcript").assertDoesNotExist()
+  }
+
+  @Test
+  fun layoutFollowupShowsFourLinesOfActualSpeech() {
+    startCall()
+    val spoken = "First spoken line.\nSecond spoken line.\nThird spoken line.\nFourth spoken line.\nThis fifth line must be ellipsized."
+    sendCaption("assistant", spoken)
+    awaitUiState {
+      talkManager()
+        .conversation.value
+        .lastOrNull()
+        ?.text == spoken
+    }
+    for (dark in listOf(true, false)) {
+      composeRule.runOnIdle { prefs.setAppearanceThemeMode(if (dark) AppearanceThemeMode.Dark else AppearanceThemeMode.Light) }
+      composeRule.waitForIdle()
+      captureTalkProof(if (dark) "layout-transcript-dark" else "layout-transcript-light")
+    }
+    val text = composeRule.onNodeWithText(spoken).assertIsDisplayed().fetchSemanticsNode()
+    val layouts = mutableListOf<TextLayoutResult>()
+    checkNotNull(text.config[SemanticsActions.GetTextLayoutResult].action).invoke(layouts)
+    assertEquals("Exactly four displayed lines for a longer spoken utterance", 4, layouts.single().lineCount)
+    assertTrue(layouts.single().isLineEllipsized(3))
+    composeRule.onNodeWithText("scout").assertIsDisplayed()
+    composeRule.onNodeWithText("End").assertIsDisplayed()
+  }
+
+  @Test
+  fun layoutFollowupControlsStayFixedWithSpeechPhotosAndNotices() {
+    startCall()
+    val initial =
+      composeRule
+        .onNodeWithText("End")
+        .assertIsDisplayed()
+        .fetchSemanticsNode()
+        .boundsInRoot
+    sendCaption("user", "A real spoken question for this call.")
+    awaitCaption("A real spoken question for this call.")
+    composeRule.onNodeWithText("You").assertIsDisplayed()
+    assertEquals(initial, composeRule.onNodeWithText("End").fetchSemanticsNode().boundsInRoot)
+    shadowOf(app).grantPermissions(Manifest.permission.CAMERA)
+    assertEquals("Photo ready to send.", awaitPhoto(takePhoto()))
+    assertEquals(
+      initial,
+      composeRule
+        .onNodeWithText("End")
+        .assertIsDisplayed()
+        .fetchSemanticsNode()
+        .boundsInRoot,
+    )
+    composeRule.onNodeWithText("Send photos").performScrollTo().assertIsDisplayed()
+    composeRule.runOnIdle { prefs.setCameraEnabled(false) }
+    composeRule.waitForIdle()
+    assertEquals(
+      initial,
+      composeRule
+        .onNodeWithText("End")
+        .assertIsDisplayed()
+        .fetchSemanticsNode()
+        .boundsInRoot,
+    )
+    captureTalkProof("layout-photos-controls")
+    assertNoPhotoSend()
+  }
+
+  @Test
+  fun layoutFollowupOriginalCallCaptionIgnoresSelectedChatAndNonSpeech() {
+    startCall()
+    sendCaption("user", "Original spoken words")
+    awaitCaption("Original spoken words")
+    composeRule.runOnIdle { model.switchChatSession("agent:writer:foreign", ownerAgentId = "writer") }
+    awaitUiState { model.chatSessionKey.value == "agent:writer:foreign" }
+    gateway.publishTranscriptHistory("agent:writer:foreign", """[{"role":"assistant","content":[{"type":"text","text":"Unrelated selected chat text"}]}]""")
+    for (role in listOf("tool", "system", "reasoning")) sendCaption(role, "Not spoken: $role")
+    sendCaption("assistant", "The original call still speaks.")
+    awaitCaption("The original call still speaks.")
+    composeRule.onNodeWithText("scout").assertIsDisplayed()
+    composeRule.onNodeWithText("Unrelated selected chat text").assertDoesNotExist()
+    for (role in listOf("tool", "system", "reasoning")) composeRule.onNodeWithText("Not spoken: $role").assertDoesNotExist()
+    assertEquals(
+      FIRST_CHAT,
+      model.talkCallPresentation.value.call
+        ?.start
+        ?.owner
+        ?.sessionKey,
+    )
+    assertNoPhotoSend()
+  }
+
+  @Test
+  fun layoutFollowupReplacementNeverReplaysPreviousCallCaption() {
+    startCall()
+    sendCaption("assistant", "Previous call private speech")
+    awaitCaption("Previous call private speech")
+    val first = checkNotNull(model.chatTalkCall.value).start
+    composeRule.onNodeWithText("End").assertIsDisplayed().performClick()
+    awaitStopped()
+    sendCaption("assistant", "Retired relay callback")
+    composeRule.onNodeWithText("Go to chat").assertIsDisplayed().performClick()
+    startCall(createCount = 2)
+    assertTrue(model.chatTalkCall.value?.start !== first)
+    assertTrue(talkManager().conversation.value.any { it.text == "Previous call private speech" })
+    composeRule.onNodeWithTag("conversation-transcript").assertDoesNotExist()
+    sendCaption("user", "New call words")
+    awaitCaption("New call words")
+    composeRule.onNodeWithText("Previous call private speech").assertDoesNotExist()
+    composeRule.onNodeWithText("Retired relay callback").assertDoesNotExist()
+  }
+
+  @Test
+  fun layoutFollowupSmallViewportLargeFontKeepsEndVisible() {
+    composeRule.runOnIdle {
+      viewportHeight = 480.dp
+      fixtureFontScale = 2f
+    }
+    startCall()
+    val initial =
+      composeRule
+        .onNodeWithText("End")
+        .assertIsDisplayed()
+        .fetchSemanticsNode()
+        .boundsInRoot
+    sendCaption("assistant", "Long spoken sentence. ".repeat(30))
+    awaitCaption("Long spoken sentence. ".repeat(30), requireDisplayed = false)
+    shadowOf(app).grantPermissions(Manifest.permission.CAMERA)
+    assertEquals("Photo ready to send.", awaitPhoto(takePhoto()))
+    composeRule.onNodeWithText("Send photos").performScrollTo().assertIsDisplayed()
+    val current =
+      composeRule
+        .onNodeWithText("End")
+        .assertIsDisplayed()
+        .fetchSemanticsNode()
+        .boundsInRoot
+    assertEquals(initial, current)
+    val page = composeRule.onNodeWithTag("chat-conversation-page").fetchSemanticsNode().boundsInRoot
+    assertTrue(current.bottom <= page.bottom + 1f)
+    captureTalkProof("layout-small-large-font")
+    composeRule.onNodeWithText("End").performClick()
+    awaitStopped()
+  }
+
+  @Test
+  fun layoutFollowupMutedNativeReplyStillPublishesCaptionWithoutAudio() {
+    val speechService = ComponentName(app, "TestSpeechRecognitionService")
+    shadowOf(app.packageManager).apply {
+      addServiceIfNotPresent(speechService)
+      addIntentFilterForService(speechService, IntentFilter(RecognitionService.SERVICE_INTERFACE))
+    }
+    gateway.nativeTalk = true
+    gateway.nativeAssistantReply = "{\"voice\":\"synthetic-voice\"}\nCaption while audio is off"
+    val refresh = photoScope.async { talkManager().refreshConfig() }
+    awaitUiState { refresh.isCompleted }
+    val played = CompletableDeferred<Unit>()
+    ReflectionHelpers.setField(
+      talkManager(),
+      "talkAudioPlayer",
+      object : TalkAudioPlaying {
+        override suspend fun play(audio: TalkSpeakAudio) {
+          played.complete(Unit)
+        }
+
+        override fun stop() {}
+      },
+    )
+    composeRule.onNodeWithContentDescription("Start Talk").performClick()
+    awaitListening(expectChatCall = true)
+    val start = checkNotNull(model.chatTalkCall.value).start
+    val generation = model.talkCallPresentation.value.generation
+    composeRule.onNodeWithContentDescription("Speaker audio").performClick()
+    awaitUiState { !model.speakerEnabled.value }
+    val recognizer = shadowOf(checkNotNull(ShadowSpeechRecognizer.getLatestSpeechRecognizer()))
+    val result = Bundle().apply { putStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION, arrayListOf("Muted native question")) }
+    composeRule.runOnIdle { recognizer.triggerOnPartialResults(result) }
+    awaitCaption("Muted native question")
+    composeRule.runOnIdle {
+      recognizer.triggerOnResults(result)
+      ShadowSystemClock.advanceBy(Duration.ofMillis(1200))
+    }
+    // Completion is the real native turn returning to listening with a new recognizer, not caption arrival.
+    awaitUiState {
+      gateway.requests.any { it.method == "chat.send" } &&
+        model.talkModeListening.value && model.talkCallPresentation.value.generation > generation &&
+        model.talkCallPresentation.value.call
+          ?.start === start &&
+        ShadowSpeechRecognizer.getLatestSpeechRecognizer()?.let { shadowOf(it) !== recognizer } == true
+    }
+    assertFalse(model.speakerEnabled.value)
+    assertFalse(played.isCompleted)
+    assertFalse(gateway.requests.any { it.method == "talk.speak" || it.method == "talk.session.create" || it.method == "talk.session.appendAudio" })
+    assertEquals(1, gateway.requests.count { it.method == "chat.send" })
+    captureTalkProof("layout-native-muted-caption")
+    composeRule.onNodeWithText("Caption while audio is off").assertIsDisplayed()
+    composeRule.onNodeWithText("scout").assertIsDisplayed()
+    composeRule.onNodeWithText("Muted native question").assertDoesNotExist()
+    composeRule.onNodeWithText(gateway.nativeAssistantReply).assertDoesNotExist()
+  }
+
+  @Test
+  fun layoutFollowupNativeSpeechUsesSameCallAndRejectsRetiredRecognizer() {
+    val speechService = ComponentName(app, "TestSpeechRecognitionService")
+    shadowOf(app.packageManager).apply {
+      addServiceIfNotPresent(speechService)
+      addIntentFilterForService(speechService, IntentFilter(RecognitionService.SERVICE_INTERFACE))
+    }
+    gateway.nativeTalk = true
+    val refresh = photoScope.async { talkManager().refreshConfig() }
+    awaitUiState { refresh.isCompleted }
+    val played = CompletableDeferred<Unit>()
+    val finish = CompletableDeferred<Unit>()
+    ReflectionHelpers.setField(
+      talkManager(),
+      "talkAudioPlayer",
+      object : TalkAudioPlaying {
+        override suspend fun play(audio: TalkSpeakAudio) {
+          played.complete(Unit)
+          finish.await()
+        }
+
+        override fun stop() {
+          finish.complete(Unit)
+        }
+      },
+    )
+    composeRule.onNodeWithContentDescription("Start Talk").performClick()
+    awaitListening(expectChatCall = true)
+    val first = checkNotNull(model.chatTalkCall.value).start
+    val recognizer = shadowOf(checkNotNull(ShadowSpeechRecognizer.getLatestSpeechRecognizer()))
+    val result = Bundle().apply { putStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION, arrayListOf("Native spoken question")) }
+    composeRule.runOnIdle { recognizer.triggerOnPartialResults(result) }
+    awaitCaption("Native spoken question")
+    composeRule.onNodeWithText("You").assertIsDisplayed()
+    composeRule.runOnIdle {
+      recognizer.triggerOnResults(result)
+      ShadowSystemClock.advanceBy(Duration.ofMillis(1200))
+    }
+    awaitUiState { played.isCompleted }
+    awaitCaption(gateway.nativeAssistantReply)
+    composeRule.onNodeWithText("scout").assertIsDisplayed()
+    assertEquals(
+      gateway.nativeAssistantReply,
+      gateway.requests
+        .single { it.method == "talk.speak" }
+        .params
+        .getValue("text")
+        .jsonPrimitive.content,
+    )
+    assertEquals(
+      FIRST_CHAT,
+      gateway.requests
+        .single { it.method == "chat.send" }
+        .params
+        .getValue("sessionKey")
+        .jsonPrimitive.content,
+    )
+    composeRule.runOnIdle { finish.complete(Unit) }
+    awaitUiState {
+      model.talkModeListening.value && model.talkCallPresentation.value.call
+        ?.start === first
+    }
+    awaitCaption(gateway.nativeAssistantReply)
+    composeRule.runOnIdle { recognizer.triggerOnPartialResults(Bundle().apply { putStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION, arrayListOf("Retired recognizer words")) }) }
+    composeRule.onNodeWithText("Retired recognizer words").assertDoesNotExist()
+    captureTalkProof("layout-native-caption")
+    composeRule.onNodeWithText("End").assertIsDisplayed().performClick()
+    awaitStopped()
+    composeRule.onNodeWithText("Go to chat").assertIsDisplayed().performClick()
+    composeRule.onNodeWithContentDescription("Start Talk").performClick()
+    awaitListening(expectChatCall = true)
+    assertTrue(model.chatTalkCall.value?.start !== first)
+    composeRule.onNodeWithTag("conversation-transcript").assertDoesNotExist()
+    assertTrue(gateway.creates.isEmpty())
+  }
+
+  private fun awaitCaption(
+    text: String,
+    requireDisplayed: Boolean = true,
+  ) {
+    awaitUiState {
+      model.talkCallPresentation.value.call
+        ?.utterance
+        ?.text == text
+    }
+    if (requireDisplayed) composeRule.onNodeWithText(text).assertIsDisplayed()
+  }
+
+  @Test
+  fun layoutFollowupLateUserFinalDoesNotReplaceCurrentAssistantCaption() {
+    startCall()
+    sendCaption("user", "Can you tack", isFinal = false)
+    sendCaption("assistant", "Checking", isFinal = false)
+    sendCaption("user", "Can you check?", isFinal = true)
+    val manager = talkManager()
+    val publicationLock = ReflectionHelpers.getField<Any>(manager, "realtimeCapturePauseLock")
+    awaitUiState {
+      synchronized(publicationLock) {
+        manager.conversation.value.size == 2 &&
+          manager.conversation.value
+            .first()
+            .text == "Can you check?" &&
+          model.talkCallPresentation.value.call == manager.chatCall.value
+      }
+    }
+    assertEquals(
+      "Checking",
+      manager.conversation.value
+        .last()
+        .text,
+    )
+    captureTalkProof("layout-late-user-final")
+    composeRule.onNodeWithText("Checking").assertIsDisplayed()
+    composeRule.onNodeWithText("scout").assertIsDisplayed()
+    composeRule.onNodeWithText("Can you check?").assertDoesNotExist()
+  }
+
+  private fun sendCaption(
+    role: String,
+    text: String,
+    isFinal: Boolean = true,
+  ) {
+    gateway.sendEvent(
+      "talk.event",
+      buildJsonObject {
+        put("relaySessionId", "ownership-relay")
+        put("type", "transcript")
+        put("role", role)
+        put("text", text)
+        put("final", isFinal)
+      }.toString(),
+    )
   }
 
   @Test
@@ -254,7 +639,7 @@ class ChatCallLifecycleTest {
         .jsonPrimitive.content,
     )
     assertEquals("Keep this unsent draft", model.chatComposerState.textDrafts[owner])
-    composeRule.onNodeWithText("Go to chat").performScrollTo().performClick()
+    composeRule.onNodeWithText("Go to chat").assertIsDisplayed().performClick()
     composeRule.onNodeWithTag("chat-conversation-page").assertDoesNotExist()
   }
 
@@ -286,7 +671,7 @@ class ChatCallLifecycleTest {
     awaitUiState { closes().isNotEmpty() }
     assertEquals(pending.request.connection, closes().single().connection)
     composeRule.runOnIdle { model.setForeground(true) }
-    composeRule.onNodeWithText("Go to chat").performScrollTo().performClick()
+    composeRule.onNodeWithText("Go to chat").assertIsDisplayed().performClick()
     composeRule.onNodeWithTag("chat-conversation-page").assertDoesNotExist()
     assertEquals(1, gateway.creates.size)
     assertFalse(runtime.talkModeListening.value)
@@ -678,7 +1063,7 @@ class ChatCallLifecycleTest {
     captureTalkProof("photo-fullscreen", dialog = true)
     composeRule.onNodeWithContentDescription("Close image preview").performClick()
     composeRule.onNodeWithTag("chat-conversation-page").assertIsDisplayed()
-    composeRule.onNodeWithText("Go to chat").performScrollTo().performClick()
+    composeRule.onNodeWithText("Go to chat").assertIsDisplayed().performClick()
     composeRule.onNode(hasSetTextAction()).performTextInput("Describe this photo")
     assertEquals("Describe this photo", model.chatComposerState.textDrafts[owner])
     assertNoPhotoSend()
@@ -703,15 +1088,13 @@ class ChatCallLifecycleTest {
     composeRule.onNode(hasSetTextAction()).assertDoesNotExist()
     composeRule
       .onNodeWithText("Photo")
-      .performScrollTo()
       .assertIsDisplayed()
       .assertIsEnabled()
     composeRule
       .onNodeWithText("End")
-      .performScrollTo()
       .assertIsDisplayed()
       .assertIsEnabled()
-    composeRule.onNodeWithText("Go to chat").performScrollTo().performClick()
+    composeRule.onNodeWithText("Go to chat").assertIsDisplayed().performClick()
     composeRule.onNode(hasSetTextAction()).assertIsDisplayed()
     val input = composeRule.onNodeWithTag("chat-composer-surface").fetchSemanticsNode().boundsInRoot
     val returnButton = composeRule.onNodeWithContentDescription("Return to conversation").fetchSemanticsNode().boundsInRoot
@@ -795,7 +1178,7 @@ class ChatCallLifecycleTest {
     awaitUiState { model.chatComposerState.hasPendingGatewaySwitchWork(owner) }
     composeRule.onNodeWithText("End").performClick()
     awaitStopped()
-    composeRule.onNodeWithText("Go to chat").performScrollTo().performClick()
+    composeRule.onNodeWithText("Go to chat").assertIsDisplayed().performClick()
     startCall(createCount = 2)
     image.complete(photoPayload())
     assertEquals("Photo cancelled because the call or camera access changed.", awaitPhoto(photo))
@@ -880,7 +1263,7 @@ class ChatCallLifecycleTest {
     composeRule.onNodeWithContentDescription("Return to conversation").performClick()
     assertSame(start, model.chatTalkCall.value?.start)
     assertEquals(SECOND_CHAT, runtime.chatSessionKey.value)
-    composeRule.onNodeWithText("Go to chat").performScrollTo().performClick()
+    composeRule.onNodeWithText("Go to chat").assertIsDisplayed().performClick()
     awaitUiState { runtime.chatSessionKey.value == FIRST_CHAT && model.chatSessionKey.value == FIRST_CHAT }
     composeRule.onNode(hasSetTextAction()).assertIsDisplayed()
     assertSame(start, model.chatTalkCall.value?.start)
@@ -910,7 +1293,7 @@ class ChatCallLifecycleTest {
       composeRule.onNodeWithTag("chat-conversation-page").assertIsDisplayed()
       assertSame(start, model.chatTalkCall.value?.start)
       assertEquals(index + 1, gateway.creates.size)
-      composeRule.onNodeWithText("End").performScrollTo().performClick()
+      composeRule.onNodeWithText("End").assertIsDisplayed().performClick()
       awaitStopped()
     }
   }
@@ -925,7 +1308,7 @@ class ChatCallLifecycleTest {
       model.chatComposerState.attachments.value
         .getValue(owner)
         .single()
-    composeRule.onNodeWithText("Go to chat").performScrollTo().performClick()
+    composeRule.onNodeWithText("Go to chat").assertIsDisplayed().performClick()
     selectChat(SECOND_CHAT)
     val otherOwner = model.captureChatShareOwner()
     composeRule.runOnIdle { model.chatComposerState.addAttachments(otherOwner, listOf(attachment)) }
@@ -955,12 +1338,10 @@ class ChatCallLifecycleTest {
     val owner = checkNotNull(model.chatTalkCall.value).start.owner
     composeRule
       .onNodeWithText("Selfie camera · Switch to rear")
-      .performScrollTo()
       .assertIsDisplayed()
       .performClick()
     composeRule
       .onNodeWithText("Photo")
-      .performScrollTo()
       .assertIsDisplayed()
       .performClick()
     awaitUiState { cameraPermissionRequests.size == 1 }
@@ -1007,7 +1388,7 @@ class ChatCallLifecycleTest {
   @Test
   fun callActivityFollowsItsRunWhileAnotherChatIsSelected() {
     startCall()
-    composeRule.onNodeWithText("Go to chat").performScrollTo().performClick()
+    composeRule.onNodeWithText("Go to chat").assertIsDisplayed().performClick()
     selectChat(SECOND_CHAT)
     composeRule.onNodeWithContentDescription("Return to conversation").performClick()
     gateway.sendEvent("talk.event", """{"relaySessionId":"ownership-relay","type":"toolCall","callId":"consult-1","name":"openclaw_agent_consult","args":{"text":"Inspect the file"}}""")
@@ -1041,7 +1422,7 @@ class ChatCallLifecycleTest {
     startCall()
     gateway.sendEvent("talk.event", """{"relaySessionId":"ownership-relay","type":"transcript","role":"user","text":"Spoken question","final":true}""")
     gateway.sendEvent("talk.event", """{"relaySessionId":"ownership-relay","type":"transcript","role":"assistant","text":"Spoken answer","final":true}""")
-    composeRule.onNodeWithText("Go to chat").performScrollTo().performClick()
+    composeRule.onNodeWithText("Go to chat").assertIsDisplayed().performClick()
     val playback = ReflectionHelpers.getField<java.util.concurrent.atomic.AtomicLong>(talkManager(), "playbackGeneration")
     val generation = playback.get()
     composeRule.runOnIdle { talkManager().ttsOnAllResponses = true }

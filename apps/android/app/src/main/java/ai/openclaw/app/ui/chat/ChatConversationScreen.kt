@@ -11,11 +11,14 @@ import ai.openclaw.app.ui.design.MascotMood
 import ai.openclaw.app.ui.design.OpenClawMascot
 import ai.openclaw.app.voice.TalkAgentActivity
 import ai.openclaw.app.voice.TalkModeManager
+import ai.openclaw.app.voice.VoiceConversationRole
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -110,7 +113,7 @@ internal fun ChatConversationScreen(
   ClawScaffold {
     CompositionLocalProvider(LocalContentColor provides ClawTheme.colors.text) {
       Column(
-        modifier = Modifier.fillMaxSize().testTag("chat-conversation-page").verticalScroll(rememberScrollState()),
+        modifier = Modifier.fillMaxSize().testTag("chat-conversation-page"),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(ClawTheme.spacing.sm),
       ) {
@@ -119,10 +122,19 @@ internal fun ChatConversationScreen(
           if (current == null || viewModel.returnToChatTalkOwner(current.start)) onGoToChat()
         }) { Text(nativeString("Go to chat")) }
         if (current != null) {
-          key(current.start) { ChatConversationContent(viewModel, current, presentation) }
+          key(current.start) { ChatConversationContent(viewModel, current, presentation, Modifier.weight(1f)) }
         } else {
-          OpenClawMascot(modifier = Modifier.size(240.dp))
-          Text(presentation.status.resolveNativeText(), style = ClawTheme.type.title)
+          BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+            val avatarSize = minOf(264.dp, maxWidth, maxHeight * 0.6f)
+            Column(
+              Modifier.fillMaxSize().verticalScroll(rememberScrollState()).heightIn(min = maxHeight),
+              horizontalAlignment = Alignment.CenterHorizontally,
+              verticalArrangement = Arrangement.Center,
+            ) {
+              OpenClawMascot(modifier = Modifier.size(avatarSize))
+              Text(presentation.status.resolveNativeText(), style = ClawTheme.type.title)
+            }
+          }
           if (enabled || mode == ai.openclaw.app.VoiceCaptureMode.TalkMode) {
             TextButton(onClick = end) { Text(nativeString("End")) }
           } else {
@@ -140,6 +152,7 @@ private fun ChatConversationContent(
   viewModel: MainViewModel,
   call: TalkModeManager.ChatCall,
   presentation: TalkModeManager.CallPresentation,
+  modifier: Modifier,
 ) {
   val listening = presentation.listening
   val thinking = presentation.thinking
@@ -176,44 +189,105 @@ private fun ChatConversationContent(
   val audioDescription = nativeString("Speaker audio")
   val audioState = if (speakerEnabled) nativeString("On") else nativeString("Off")
 
-  Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
-    // Existing geometry, animator and Android remove-animations behavior; no avatar engine.
-    OpenClawMascot(
-      modifier = Modifier.size(240.dp).testTag("conversation-mascot").semantics { stateDescription = status },
-      contentDescription = nativeString("OpenClaw"),
-      speaking = speaking,
-      mood =
-        if (presentation.failed || presentation.activity == TalkAgentActivity.Error) {
-          MascotMood.Sad
-        } else if (presentation.activity in setOf(TalkAgentActivity.Reading, TalkAgentActivity.Writing, TalkAgentActivity.Searching, TalkAgentActivity.ToolWork) && !speaking) {
-          MascotMood.Working
-        } else {
-          chatCallMascotMood(listening, thinking, speaking)
-        },
-    )
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-      Text(
-        text = nativeString("Call") + " · " + call.start.owner.agentId,
-        style = ClawTheme.type.label,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-      )
-      if (details) {
-        Text(
-          text = call.start.owner.sessionKey,
-          style = ClawTheme.type.caption,
-          color = ClawTheme.colors.textMuted,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
+  Column(modifier = modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+    BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+      val avatarSize = minOf(264.dp, maxWidth, maxHeight * 0.6f)
+      Column(
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).heightIn(min = maxHeight),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
+      ) {
+        // Existing geometry, animator and Android remove-animations behavior; no avatar engine.
+        OpenClawMascot(
+          modifier = Modifier.size(avatarSize).testTag("conversation-mascot").semantics { stateDescription = status },
+          contentDescription = nativeString("OpenClaw"),
+          speaking = speaking,
+          mood =
+            if (presentation.failed || presentation.activity == TalkAgentActivity.Error) {
+              MascotMood.Sad
+            } else if (presentation.activity in setOf(TalkAgentActivity.Reading, TalkAgentActivity.Writing, TalkAgentActivity.Searching, TalkAgentActivity.ToolWork) && !speaking) {
+              MascotMood.Working
+            } else {
+              chatCallMascotMood(listening, thinking, speaking)
+            },
         )
-      }
-      Text(text = status, style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-      if (presentation.activityIncomplete || presentation.activity == TalkAgentActivity.Unknown) {
-        Text(nativeString("Activity details may be incomplete."), style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted)
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+          Text(
+            text = nativeString("Call") + " · " + call.start.owner.agentId,
+            style = ClawTheme.type.label,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
+          if (details) {
+            Text(
+              text = call.start.owner.sessionKey,
+              style = ClawTheme.type.caption,
+              color = ClawTheme.colors.textMuted,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+            )
+          }
+          Text(text = status, style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+          if (presentation.activityIncomplete || presentation.activity == TalkAgentActivity.Unknown) {
+            Text(nativeString("Activity details may be incomplete."), style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted)
+          }
+        }
+        IconButton(onClick = { details = !details }) {
+          Icon(Icons.Default.MoreVert, contentDescription = nativeString("Details"))
+        }
+        call.utterance?.let { utterance ->
+          Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+              if (utterance.role == VoiceConversationRole.User) nativeString("You") else call.start.owner.agentId,
+              style = ClawTheme.type.label,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+              utterance.text,
+              modifier = Modifier.fillMaxWidth().testTag("conversation-transcript"),
+              style = ClawTheme.type.body,
+              maxLines = 4,
+              overflow = TextOverflow.Ellipsis,
+            )
+          }
+        }
+        if (photos.isNotEmpty()) {
+          AttachmentStrip(attachments = photos, onRemoveAttachment = { id ->
+            viewModel.removeChatTalkAttachment(call.start, id)
+          })
+          TextButton(
+            enabled = photoOwnerReady && !takingPhoto && !sending && !viewModel.chatComposerState.hasPendingImport(call.start.owner),
+            onClick = {
+              when (viewModel.beginChatTalkPhotoSend(call.start, photos)) {
+                ChatComposerSendStartResult.Started -> {
+                  photoNotice = null
+                  photoSendAttempted = true
+                }
+
+                ChatComposerSendStartResult.CheckpointFull, ChatComposerSendStartResult.MessageTooLong -> {
+                  photoNotice = nativeText("Photo not sent. Try again.")
+                }
+
+                ChatComposerSendStartResult.Unavailable -> {
+                  // A busy or retired callback must leave the staged photos untouched.
+                }
+              }
+            },
+          ) { Text(nativeString("Send photos")) }
+        }
+        if (photoSendAttempted && photoOwnerReady && !sending && photos.isNotEmpty()) {
+          chatError?.takeIf { it.isNotBlank() }?.let {
+            Text(it, style = ClawTheme.type.caption, color = ClawTheme.colors.danger)
+          }
+        }
+        (if (takingPhoto) nativeString("Taking photo…") else photoNotice?.resolveNativeText() ?: photoUnavailable)?.let { notice ->
+          Text(text = notice, style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted)
+        }
       }
     }
-    IconButton(onClick = { details = !details }) {
-      Icon(Icons.Default.MoreVert, contentDescription = nativeString("Details"))
+    TextButton(enabled = !takingPhoto, onClick = { frontCamera = !frontCamera }) {
+      Text(if (frontCamera) nativeString("Selfie camera · Switch to rear") else nativeString("Rear camera · Switch to selfie"), maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
       TextButton(
@@ -229,7 +303,7 @@ private fun ChatConversationContent(
           contentDescription = null,
           modifier = Modifier.size(18.dp),
         )
-        Text(nativeString("Audio"))
+        Text(nativeString("Audio"), maxLines = 1, overflow = TextOverflow.Ellipsis)
       }
       TextButton(
         modifier = Modifier.weight(1f),
@@ -260,47 +334,12 @@ private fun ChatConversationContent(
         },
       ) {
         Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(18.dp))
-        Text(nativeString("Photo"))
+        Text(nativeString("Photo"), maxLines = 1, overflow = TextOverflow.Ellipsis)
       }
       TextButton(onClick = { viewModel.endChatTalk(call.start) }, modifier = Modifier.weight(1f)) {
         Icon(Icons.Default.CallEnd, contentDescription = null, tint = ClawTheme.colors.danger, modifier = Modifier.size(18.dp))
-        Text(nativeString("End"), color = ClawTheme.colors.danger)
+        Text(nativeString("End"), color = ClawTheme.colors.danger, maxLines = 1, overflow = TextOverflow.Ellipsis)
       }
-    }
-    TextButton(enabled = !takingPhoto, onClick = { frontCamera = !frontCamera }) {
-      Text(if (frontCamera) nativeString("Selfie camera · Switch to rear") else nativeString("Rear camera · Switch to selfie"))
-    }
-    if (photos.isNotEmpty()) {
-      AttachmentStrip(attachments = photos, onRemoveAttachment = { id ->
-        viewModel.removeChatTalkAttachment(call.start, id)
-      })
-      TextButton(
-        enabled = photoOwnerReady && !takingPhoto && !sending && !viewModel.chatComposerState.hasPendingImport(call.start.owner),
-        onClick = {
-          when (viewModel.beginChatTalkPhotoSend(call.start, photos)) {
-            ChatComposerSendStartResult.Started -> {
-              photoNotice = null
-              photoSendAttempted = true
-            }
-
-            ChatComposerSendStartResult.CheckpointFull, ChatComposerSendStartResult.MessageTooLong -> {
-              photoNotice = nativeText("Photo not sent. Try again.")
-            }
-
-            ChatComposerSendStartResult.Unavailable -> {
-              // A busy or retired callback must leave the staged photos untouched.
-            }
-          }
-        },
-      ) { Text(nativeString("Send photos")) }
-    }
-    if (photoSendAttempted && photoOwnerReady && !sending && photos.isNotEmpty()) {
-      chatError?.takeIf { it.isNotBlank() }?.let {
-        Text(it, style = ClawTheme.type.caption, color = ClawTheme.colors.danger)
-      }
-    }
-    (if (takingPhoto) nativeString("Taking photo…") else photoNotice?.resolveNativeText() ?: photoUnavailable)?.let { notice ->
-      Text(text = notice, style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted)
     }
   }
 }

@@ -287,9 +287,15 @@ class TalkModeManager internal constructor(
 
   @Volatile private var chatStart: ChatStart? = null
 
+  internal data class CallUtterance(
+    val role: VoiceConversationRole,
+    val text: String,
+  )
+
   internal data class ChatCall(
     val start: ChatStart,
     val realtime: Boolean,
+    val utterance: CallUtterance? = null,
   )
 
   internal data class CallPresentation(
@@ -307,6 +313,33 @@ class TalkModeManager internal constructor(
   private val chatCallState = MutableStateFlow<ChatCall?>(null)
   internal val chatCall: StateFlow<ChatCall?> = chatCallState
   private val activeSessionKey: String get() = chatStart?.owner?.sessionKey ?: mainSessionKey.ifBlank { "main" }
+
+  /** Reinstalling native capture or a voice route keeps only this admitted call's caption. */
+  private fun installChatCall(
+    target: ChatStart?,
+    realtime: Boolean,
+  ) {
+    val previous = chatCallState.value?.takeIf { it.start === target }
+    chatCallState.value = target?.let { ChatCall(it, realtime, previous?.utterance) }
+  }
+
+  /** A presentation value, not transcript history; producers retain their own speech authority. */
+  private fun publishCallUtterance(
+    target: ChatStart?,
+    generation: Long,
+    role: VoiceConversationRole,
+    text: String,
+  ) {
+    synchronized(realtimeCapturePauseLock) {
+      val call = chatCallState.value ?: return
+      if (call.start !== target || chatStart !== target || generation != startGeneration.get() ||
+        !_isEnabled.value || stopRequested || !call.start.lease.isCurrent() || text.isBlank()
+      ) {
+        return
+      }
+      chatCallState.value = call.copy(utterance = CallUtterance(role, text))
+    }
+  }
 
   /** Only an installed chat call may retain its foreground-started microphone service. */
   internal fun isActiveChatCall(target: ChatStart): Boolean =
@@ -1583,7 +1616,7 @@ class TalkModeManager internal constructor(
           if (change == null) setStatus(nativeText("Listening"))
           startRealtimeCaptureLocked(sessionId)
         }
-        chatCallState.value = target?.let { ChatCall(it, realtime = true) }
+        installChatCall(target, realtime = true)
         true
       }
     if (!admitted) {
@@ -1782,7 +1815,7 @@ class TalkModeManager internal constructor(
         startListeningInternal(markListening = true)
         startSilenceMonitor()
         target?.let { realtimeAgentCoordinator.beginSession(RealtimeAgentSession(null, it.owner.sessionKey), observationOwner = it) }
-        chatCallState.value = target?.let { ChatCall(it, realtime = false) }
+        installChatCall(target, realtime = false)
       }
     }
   }
@@ -2422,6 +2455,11 @@ class TalkModeManager internal constructor(
         realtimeAssistantEntryId = if (isFinal) null else resolvedEntryId
       }
     }
+    // Late finals can rewrite an earlier user entry after the assistant has begun.
+    // Only the latest entry updated by this live relay may replace the caption.
+    _conversation.value.lastOrNull()?.takeIf { it.id == resolvedEntryId }?.let { entry ->
+      publishCallUtterance(chatStart, startGeneration.get(), entry.role, entry.text)
+    }
   }
 
   private fun finishRealtimeConversationEntry(role: VoiceConversationRole) {
@@ -2884,6 +2922,7 @@ class TalkModeManager internal constructor(
     if (trimmed.isNotEmpty()) {
       lastTranscript = trimmed
       lastHeardAtMs = SystemClock.elapsedRealtime()
+      publishCallUtterance(chatStart, startGeneration.get(), VoiceConversationRole.User, trimmed)
     }
 
     if (isFinal) {
@@ -2983,6 +3022,9 @@ class TalkModeManager internal constructor(
         Log.w(tag, "assistant text timeout runId=$runId")
         return
       }
+      currentCoroutineContext().ensureActive()
+      // The captured native turn owns its text even when speaker audio is muted.
+      publishCallUtterance(target, speechGeneration, VoiceConversationRole.Assistant, TalkDirectiveParser.parse(assistant).stripped.trim())
       Log.d(tag, "assistant text ok chars=${assistant.length}")
       val playbackToken = cancelActivePlayback()
       // Muting owns only this reply's audio. Stopping capture still cancels the
@@ -3318,17 +3360,8 @@ class TalkModeManager internal constructor(
         val timestamp = obj["timestamp"].asDoubleOrNull()
         if (timestamp != null && !TalkModeRuntime.isMessageTimestampAfter(timestamp, sinceSeconds)) continue
       }
-      val content = obj["content"] as? JsonArray ?: continue
-      val text =
-        content
-          .mapNotNull { entry ->
-            entry
-              .asObjectOrNull()
-              ?.get("text")
-              ?.asStringOrNull()
-              ?.trim()
-          }.filter { it.isNotEmpty() }
-      if (text.isNotEmpty()) return text.joinToString("\n")
+      val text = extractTextFromChatEventMessage(obj)
+      if (!text.isNullOrBlank()) return text
     }
     return null
   }

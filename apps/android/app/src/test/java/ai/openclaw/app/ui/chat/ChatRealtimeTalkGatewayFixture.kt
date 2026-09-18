@@ -44,6 +44,10 @@ internal class ChatRealtimeTalkGatewayFixture : AutoCloseable {
   val requests = CopyOnWriteArrayList<TalkOwnershipRequest>()
   val creates = CopyOnWriteArrayList<PendingTalkOwnershipCreate>()
   val endpoint: GatewayEndpoint
+
+  @Volatile var nativeTalk = false
+
+  @Volatile var nativeAssistantReply = "Synthetic native spoken reply"
   private val history = java.util.concurrent.ConcurrentHashMap<String, String>()
 
   init {
@@ -136,7 +140,41 @@ internal class ChatRealtimeTalkGatewayFixture : AutoCloseable {
           }
 
           "talk.config" -> {
-            respond("""{"config":{"talk":{"realtime":{"provider":"openai","mode":"realtime","transport":"gateway-relay","model":"gpt-realtime-2.1"}}}}""")
+            respond(
+              if (nativeTalk) {
+                """{"config":{"talk":{"realtime":{"model":"gpt-live"},"silenceTimeoutMs":800}}}"""
+              } else {
+                """{"config":{"talk":{"realtime":{"provider":"openai","mode":"realtime","transport":"gateway-relay","model":"gpt-realtime-2.1"}}}}"""
+              },
+            )
+          }
+
+          "chat.send" -> {
+            if (nativeTalk) {
+              val key = params.getValue("sessionKey").jsonPrimitive.content
+              val spoken = JsonPrimitive(nativeAssistantReply).toString()
+              history[key] = """[{"role":"assistant","content":[{"type":"thinking","text":"Private reasoning must not become speech"},{"type":"image","text":"Attachment metadata must not become speech"},{"type":"text","text":$spoken}]}]"""
+              respond("""{"runId":"native-caption-turn","status":"ok"}""")
+            } else {
+              webSocket.send(
+                buildJsonObject {
+                  put("type", JsonPrimitive("res"))
+                  put("id", id)
+                  put("ok", JsonPrimitive(false))
+                  put(
+                    "error",
+                    buildJsonObject {
+                      put("code", JsonPrimitive("INVALID_REQUEST"))
+                      put("message", JsonPrimitive("Talk ownership fixture does not implement $method"))
+                    },
+                  )
+                }.toString(),
+              )
+            }
+          }
+
+          "talk.speak" -> {
+            respond("""{"audioBase64":"AQIDBA==","provider":"synthetic","outputFormat":"pcm_24000"}""")
           }
 
           "talk.client.toolCall" -> {

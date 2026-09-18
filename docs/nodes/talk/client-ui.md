@@ -42,6 +42,12 @@ Watch background behavior. See [Watch setup and limits](/platforms/ios#standalon
   during a call returns to that page without starting another call. **Go to chat**
   opens the call's original agent/session; Android Back changes only the view.
   **End** closes audio and is separate from the chat agent's **Stop** action.
+  The avatar uses the available center area; audio, photo, and End controls stay
+  at the bottom inside the safe area. A compact, read-only caption shows up to
+  four lines of the current or most recent spoken user or assistant text. It
+  belongs to that call, including native speech and realtime Talk, not another
+  selected chat. Captions remain visible with speaker audio off. No empty
+  transcript box is reserved; full history stays in Chat.
 - **Photo** captures a still image using the selected **Selfie** or **Rear**
   camera. Inspect its preview, then use **Send photos** directly on the conversation
   page. This sends only the displayed photos to the call's original chat; unsent
