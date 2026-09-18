@@ -487,17 +487,7 @@ export function probeProcessState(pid: number): "alive" | "missing" | "unknown" 
     if (snapshot) {
       return snapshot.some((entry) => getSnapshotProcessId(entry) === pid) ? "alive" : "missing";
     }
-    const tasklist = spawnSync(
-      getWindowsSystem32ExePath("tasklist.exe"),
-      ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"],
-      { env: resolveServiceManagerEnv(), encoding: "utf8", timeout: 1_500, windowsHide: true },
-    );
-    if (tasklist.error || tasklist.status !== 0) {
-      return "unknown";
-    }
-    return tasklist.stdout.split(/\r?\n/).some((line) => line.includes(`,"${pid}",`))
-      ? "alive"
-      : "missing";
+    return probeWindowsTasklistProcessState(pid);
   }
   try {
     process.kill(pid, 0);
@@ -507,15 +497,33 @@ export function probeProcessState(pid: number): "alive" | "missing" | "unknown" 
   }
 }
 
-async function waitForProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
+function probeWindowsTasklistProcessState(pid: number): "alive" | "missing" | "unknown" {
+  const tasklist = spawnSync(
+    getWindowsSystem32ExePath("tasklist.exe"),
+    ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"],
+    { env: resolveServiceManagerEnv(), encoding: "utf8", timeout: 1_500, windowsHide: true },
+  );
+  if (tasklist.error || tasklist.status !== 0) {
+    return "unknown";
+  }
+  return tasklist.stdout.split(/\r?\n/).some((line) => line.includes(`,"${pid}",`))
+    ? "alive"
+    : "missing";
+}
+
+async function waitForProcessExit(
+  pid: number,
+  timeoutMs: number,
+  probe: (pid: number) => "alive" | "missing" | "unknown" = probeProcessState,
+): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (probeProcessState(pid) === "missing") {
+    if (probe(pid) === "missing") {
       return true;
     }
     await sleep(100);
   }
-  return probeProcessState(pid) === "missing";
+  return probe(pid) === "missing";
 }
 
 export async function terminateGatewayProcessTree(
@@ -555,7 +563,11 @@ export async function terminateGatewayProcessTree(
     }
     throw new Error(`taskkill could not terminate gateway process ${pid}`);
   }
-  if (!(await waitForProcessExit(pid, 5_000)) && probeProcessState(pid) === "alive") {
+  // CIM snapshots can lag a successful forced termination. Verify the PID directly here.
+  if (
+    !(await waitForProcessExit(pid, 5_000, probeWindowsTasklistProcessState)) &&
+    probeWindowsTasklistProcessState(pid) === "alive"
+  ) {
     throw new Error(`gateway process ${pid} is still running after taskkill`);
   }
 }

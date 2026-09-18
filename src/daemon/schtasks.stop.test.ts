@@ -595,6 +595,11 @@ describe("Scheduled Task stop/restart cleanup", () => {
           ["/T", "/PID", "4242"],
           ["/F", "/T", "/PID", "4242"],
         ]);
+        expect(spawnSync.mock.calls).toContainEqual([
+          expect.stringMatching(/tasklist\.exe$/i),
+          ["/FI", "PID eq 4242", "/FO", "CSV", "/NH"],
+          expect.objectContaining({ timeout: 1_500 }),
+        ]);
         expect(taskkillCalls.flat()).not.toContain("3131");
         expect(taskkillCalls.flat()).not.toContain("4141");
         expect(killProcessTreeMock).not.toHaveBeenCalled();
