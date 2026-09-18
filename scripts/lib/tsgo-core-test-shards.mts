@@ -79,6 +79,11 @@ export const TSGO_CORE_TEST_SHARDS = [
     group: "src",
     config: "test/tsconfig/tsconfig.core.test.commands-doctor.json",
   },
+  {
+    name: "messaging-outbound",
+    group: "src",
+    config: "test/tsconfig/tsconfig.core.test.messaging-outbound.json",
+  },
 ] as const;
 
 export const TSGO_CORE_GRAPHS = [
