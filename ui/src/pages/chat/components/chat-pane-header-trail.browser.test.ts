@@ -1,7 +1,7 @@
 import "@awesome.me/webawesome/dist/components/dropdown/dropdown.js";
 import "@awesome.me/webawesome/dist/components/dropdown-item/dropdown-item.js";
 import { html, render } from "lit";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, assert, describe, expect, it, vi } from "vitest";
 import { i18n } from "../../../i18n/index.ts";
 import "../../../styles.css";
 import "../../../styles/chat/startup-layout.css";
@@ -132,7 +132,9 @@ describe.skipIf(typeof HTMLElement.prototype.checkVisibility !== "function")(
                     label!.getBoundingClientRect().top,
                     1,
                   );
-                  const separator = separators[0].getBoundingClientRect();
+                  const separatorElement = separators[0];
+                  assert(separatorElement);
+                  const separator = separatorElement.getBoundingClientRect();
                   const project = label!.getBoundingClientRect();
                   const parentBox = parent.getBoundingClientRect();
                   if (direction === "rtl") {
