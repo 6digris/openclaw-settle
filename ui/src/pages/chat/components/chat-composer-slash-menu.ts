@@ -631,6 +631,10 @@ export function renderSlashMenu(
     renderComposerMenu({
       id: listboxId,
       label: t("chat.commands.menu"),
+      activeOptionVisibilityKey: JSON.stringify([
+        state.slashMenuCompletion?.query,
+        state.slashMenuItems.map((command) => [command.name, command.category]),
+      ]),
       content: html`
         ${groups.map(
           ([category, entries]) => html`<div class="slash-menu-group">

@@ -1,4 +1,6 @@
 import { html, nothing } from "lit";
+import { AsyncDirective } from "lit/async-directive.js";
+import { directive, type ElementPart } from "lit/directive.js";
 import { scrollState } from "./scroll-state.ts";
 
 export function handleComposerMenuKeydown(
@@ -35,11 +37,41 @@ export function handleComposerMenuKeydown(
   return true;
 }
 
+class RevealActiveOptionDirective extends AsyncDirective {
+  private key: string | undefined;
+  private pending = false;
+
+  render(_key?: string) {
+    return nothing;
+  }
+
+  override update(part: ElementPart, [key]: [string?]) {
+    if (key !== this.key) {
+      this.key = key;
+      if (key !== undefined && !this.pending) {
+        this.pending = true;
+        // Children commit after element directives; reveal the current selection
+        // only when the query or results change, preserving deliberate scrolling.
+        queueMicrotask(() => {
+          this.pending = false;
+          if (this.isConnected && part.element.isConnected) {
+            scrollActiveOptionInRegion(part.element);
+          }
+        });
+      }
+    }
+    return nothing;
+  }
+}
+
+const revealActiveOption = directive(RevealActiveOptionDirective);
+
 export function renderComposerMenu(options: {
   id: string;
   label: string;
   className?: string;
   trackScroll?: boolean;
+  activeOptionVisibilityKey?: string;
   content: unknown;
 }) {
   return html`<div
@@ -48,7 +80,11 @@ export function renderComposerMenu(options: {
     role="listbox"
     aria-label=${options.label}
   >
-    <div class="slash-menu__scroll" ${scrollState(false, options.trackScroll)}>
+    <div
+      class="slash-menu__scroll"
+      ${scrollState(false, options.trackScroll)}
+      ${revealActiveOption(options.activeOptionVisibilityKey)}
+    >
       ${options.content}
     </div>
   </div>`;
@@ -89,18 +125,24 @@ function scrollActiveOptionIntoView(activeId: string | null): void {
     return;
   }
   requestAnimationFrame(() => {
-    const activeOption = document.getElementById(activeId);
-    const scrollRegion = activeOption?.closest<HTMLElement>(".slash-menu__scroll");
-    if (!activeOption || !scrollRegion) {
-      return;
-    }
-    const menuBounds = scrollRegion.getBoundingClientRect();
-    const optionBounds = activeOption.getBoundingClientRect();
-    // scrollIntoView also moves the short-landscape composer and page.
-    if (optionBounds.top < menuBounds.top) {
-      scrollRegion.scrollTop -= menuBounds.top - optionBounds.top;
-    } else if (optionBounds.bottom > menuBounds.bottom) {
-      scrollRegion.scrollTop += optionBounds.bottom - menuBounds.bottom;
-    }
+    scrollActiveOptionInRegion(document.getElementById(activeId)?.closest(".slash-menu__scroll"));
   });
+}
+
+function scrollActiveOptionInRegion(scrollRegion: Element | null | undefined): void {
+  const activeOption = scrollRegion?.querySelector('[role="option"][aria-selected="true"]');
+  if (!activeOption || !scrollRegion) {
+    return;
+  }
+  const menuBounds = scrollRegion.getBoundingClientRect();
+  const optionBounds = activeOption.getBoundingClientRect();
+  // scrollIntoView also moves the short-landscape composer and page.
+  // Round outward because scrollTop can be quantized to whole CSS pixels.
+  if (optionBounds.top < menuBounds.top) {
+    scrollRegion.scrollTop = Math.floor(scrollRegion.scrollTop + optionBounds.top - menuBounds.top);
+  } else if (optionBounds.bottom > menuBounds.bottom) {
+    scrollRegion.scrollTop = Math.ceil(
+      scrollRegion.scrollTop + optionBounds.bottom - menuBounds.bottom,
+    );
+  }
 }
