@@ -10,7 +10,7 @@ import { findVitestResourceOwner } from "../../scripts/lib/vitest-resource-owner
 import { nativeSchtasksIntegrationEnabled } from "../../scripts/lib/vitest-worker-declarations.mts";
 import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
 import { resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
-import { closeOpenClawStateDatabaseByPath } from "../state/openclaw-state-db-cache.js";
+import { closeOpenClawStateDatabaseByPathAsync } from "../state/openclaw-state-db-cache.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { resolveGatewayWindowsTaskName } from "./constants.js";
@@ -362,10 +362,10 @@ async function cleanupNativeTask(params: {
     cleanupErrors.push(new Error("Scheduled Task cleanup left related processes alive"));
   }
   try {
-    // Service guards observe config in this test process. Native child exit does
-    // not close that parent-held database; release only this fixture before unlink.
+    // Service guards retain config readers in this test process. Join this fixture's
+    // database workers before closing native handles and unlinking their files.
     const databasePath = resolveOpenClawStateSqlitePath({ OPENCLAW_STATE_DIR: params.stateDir });
-    const cachedStateHandleClosed = closeOpenClawStateDatabaseByPath(databasePath);
+    const cachedStateHandleClosed = await closeOpenClawStateDatabaseByPathAsync(databasePath);
     console.log(`[windows-schtasks-cleanup] ${JSON.stringify({ cachedStateHandleClosed })}`);
   } catch (error) {
     cleanupErrors.push(error);
