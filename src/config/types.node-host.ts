@@ -30,6 +30,8 @@ export type NodeHostConfig = {
     isolation?: "none" | "container";
     /** Optional Node 24.16+ or 26.1+ container image override for isolated worker sessions. */
     containerImage?: string;
+    /** Absolute path to trusted native inference startup configuration on this node. */
+    nativeInferenceConfig?: string;
   };
   /** Browser proxy settings for node hosts. */
   browserProxy?: NodeHostBrowserProxyConfig;

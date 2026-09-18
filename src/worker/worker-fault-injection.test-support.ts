@@ -22,6 +22,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { GatewayConnectionWork } from "../gateway/server-connection-work.js";
 import * as workerServer from "../gateway/server/ws-connection/worker-connection.js";
 import type { GatewayWsClient } from "../gateway/server/ws-types.js";
+import type { WorkerInstallationArtifact } from "../gateway/worker-environments/bundle.js";
 import type { WorkerConnectionIdentity } from "../gateway/worker-environments/connection-identity.js";
 import { hashWorkerCredential } from "../gateway/worker-environments/credential.js";
 import { createWorkerInferenceStore } from "../gateway/worker-environments/inference-store.js";
@@ -193,7 +194,10 @@ export class ComposedGatewayHarness {
   private useReplacementExecutor = false;
   private unsubscribeLive: (() => void) | undefined;
 
-  static async create(root: string): Promise<ComposedGatewayHarness> {
+  static async create(
+    root: string,
+    artifact: WorkerInstallationArtifact = BUNDLE_ARTIFACT,
+  ): Promise<ComposedGatewayHarness> {
     const sessionsDir = path.join(root, "agents", "main", "sessions");
     const storePath = path.join(sessionsDir, "sessions.json");
     await upsertSessionEntryCore(
@@ -206,12 +210,13 @@ export class ComposedGatewayHarness {
       sessionKey: SESSION_KEY,
       storePath,
     });
-    return new ComposedGatewayHarness(root, sessionTarget);
+    return new ComposedGatewayHarness(root, sessionTarget, artifact);
   }
 
   private constructor(
     readonly root: string,
     readonly sessionTarget: Awaited<ReturnType<typeof resolveSessionTranscriptRuntimeTarget>>,
+    private readonly artifact: WorkerInstallationArtifact,
   ) {
     const stateDir = path.join(root, "state");
     this.socketPath = path.join(root, "gateway.sock");
@@ -236,7 +241,7 @@ export class ComposedGatewayHarness {
     this.liveEventsValue = this.createLiveEvents(true);
     this.placementLifecycle = new WorkerFaultPlacementLifecycle({
       agentId: "main",
-      bundleHash: BUNDLE_HASH,
+      bundleHash: this.artifact.bundleHash,
       environmentId: ENVIRONMENT_ID,
       environmentStore: this.store,
       getLiveEvents: () => this.liveEventsValue,
@@ -257,6 +262,14 @@ export class ComposedGatewayHarness {
         this.liveDeltas.push(event.data.delta);
       }
     });
+  }
+
+  private get handshake() {
+    return {
+      bundleHash: this.artifact.bundleHash,
+      openclawVersion: this.artifact.openclawVersion,
+      protocolFeatures: [...this.artifact.protocolFeatures],
+    };
   }
 
   get epoch(): number {
@@ -307,7 +320,7 @@ export class ComposedGatewayHarness {
         sessionId: SESSION_ID,
         ownerEpoch: epoch,
         rpcSetVersion: WORKER_RPC_SET_VERSION,
-        handshake: HANDSHAKE,
+        handshake: this.handshake,
       },
       assignment: {
         agentId: "worker-agent",
@@ -490,7 +503,7 @@ export class ComposedGatewayHarness {
       {
         to: "ready",
         patch: {
-          bootstrapReceipt: HANDSHAKE,
+          bootstrapReceipt: this.handshake,
           credential: {
             credentialHash: hashWorkerCredential([CREDENTIAL, "ready"].join("-")),
             sessionId: null,
@@ -588,8 +601,8 @@ export class ComposedGatewayHarness {
       store: this.store,
       getConfig: () => this.cfg,
       resolveProvider: (providerId) => (providerId === PROVIDER.id ? PROVIDER : undefined),
-      prepareInstallation: async () => BUNDLE_ARTIFACT,
-      bootstrapWorker: async () => HANDSHAKE,
+      prepareInstallation: async () => this.artifact,
+      bootstrapWorker: async () => this.handshake,
       resolveSshIdentity: async () => ({ kind: "path", path: "/keys/worker" }),
       applyTranscriptCommit: async (params) => {
         const gate = this.transcriptGate;

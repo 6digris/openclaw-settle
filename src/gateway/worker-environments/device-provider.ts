@@ -85,6 +85,13 @@ export async function reconcileDeviceWorker(
 }
 
 function requireDeviceId(profile: WorkerProfile): string {
+  if (
+    profile.inference !== undefined &&
+    profile.inference !== "gateway" &&
+    profile.inference !== "runtime-local"
+  ) {
+    throw new WorkerProviderError("device worker inference must be gateway or runtime-local");
+  }
   const deviceId = profile.device;
   if (typeof deviceId !== "string" || !deviceId.trim()) {
     throw new WorkerProviderError("device worker profile requires a device setting");

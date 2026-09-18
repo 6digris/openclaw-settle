@@ -7,7 +7,9 @@ import {
   claimAgentRunDelegatedAuthority,
   releaseAgentRunDelegatedAuthority,
 } from "../../infra/agent-run-registry.js";
+import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import type { DB as StateDatabase } from "../../state/openclaw-state-db.generated.js";
 import { hashWorkerCredential } from "./credential.js";
 import type { WorkerSessionTurnClaim } from "./placement-record.js";
 import { createWorkerSessionPlacementStore } from "./placement-store.js";
@@ -15,6 +17,7 @@ import { bindWorkerTurnOwner } from "./placement-turn-claim-events.js";
 import { signalWorkerTurnClaimClosed } from "./placement-turn-claims.js";
 import { createWorkerSessionPlacementGate } from "./placement-worker-gate.js";
 import * as support from "./service.test-support.js";
+import { createWorkerEnvironmentStoreWriter } from "./store-write.js";
 import { claimWorkerPlacement } from "./worker-turn-rpc.test-support.js";
 
 type WorkerEnvironmentServiceOptions = support.WorkerEnvironmentServiceOptions;
@@ -837,6 +840,66 @@ describe("worker environment service", () => {
       ),
     ).resolves.toMatchObject({ ok: true });
     expect(applyTranscriptCommit).toHaveBeenCalledOnce();
+  });
+
+  it("denies Gateway inference for a stored runtime-local placement after exact binding", () => {
+    const executeInference = vi.fn<WorkerEnvironmentServiceOptions["executeInference"]>();
+    const { identity, placementStore, workerService } = support.placementHarness(
+      "worker-runtime-local-proxy-denial",
+      "session-runtime-local-proxy-denial",
+      { executeInference },
+    );
+    // Profiles are immutable after provisioning. Seed the stored snapshot through
+    // the store writer, rather than changing live config or mocking the RPC gate.
+    createWorkerEnvironmentStoreWriter(support.testState.stateDb.path).write((db) => {
+      executeSqliteQuerySync(
+        db,
+        getNodeSqliteKysely<StateDatabase>(db)
+          .updateTable("worker_environments")
+          .set({
+            provider_id: "device",
+            node_device_id: "paired-inference-node",
+            shared_host: 1,
+            ssh_host: null,
+            ssh_port: null,
+            ssh_user: null,
+            ssh_host_key: null,
+            ssh_key_ref_json: null,
+            profile_snapshot_json: JSON.stringify({ settings: { inference: "runtime-local" } }),
+          })
+          .where("environment_id", "=", identity.environmentId),
+      );
+    });
+    expect(support.testState.store.get(identity.environmentId)).toMatchObject({
+      providerId: "device",
+      profileSnapshot: { settings: { inference: "runtime-local" } },
+    });
+    expect(workerService.validateWorkerConnection(identity)).toBeNull();
+    const request = support.inferenceRequest(identity);
+    const send = vi.fn();
+    const sink = { connectionId: "runtime-local-proxy-attempt", send };
+
+    expect(
+      workerService.startInference(identity, { ...request, sessionId: "session-other" }, sink),
+    ).toEqual({ ok: false, reason: "session-not-attached" });
+    expect(
+      workerService.startInference(identity, { ...request, runId: "run-other" }, sink),
+    ).toEqual({ ok: false, reason: "session-not-attached" });
+    expect(
+      workerService.startInference(identity, { ...request, runEpoch: request.runEpoch + 1 }, sink),
+    ).toEqual({ ok: false, reason: "epoch-mismatch" });
+    placementStore.validateWorkerTurn.mockReturnValue(false);
+    expect(workerService.startInference(identity, request, sink)).toEqual({
+      ok: false,
+      closeReason: "placement-mismatch",
+    });
+    placementStore.validateWorkerTurn.mockReturnValue(true);
+    expect(workerService.startInference(identity, request, sink)).toEqual({
+      ok: false,
+      reason: "model-not-approved",
+    });
+    expect(executeInference).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("fences inference by epoch and the durable session credential", async () => {

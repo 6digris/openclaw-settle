@@ -15,6 +15,8 @@ export const runtimeProcessDeclarationEntries = {
     "extensions/memory-core/src/memory/manager-search-knn-entrypoint.ts",
 };
 export const vitestWorkerDeclarationEntries = {
+  "worker/native-worker-entrypoints.test-support":
+    "src/worker/native-worker-entrypoints.test-support.ts",
   ...runtimeProcessDeclarationEntries,
   // Codex is package-owned and excluded from the root runtime bundle.
   "extensions/codex/catalog-page-worker-entrypoint":

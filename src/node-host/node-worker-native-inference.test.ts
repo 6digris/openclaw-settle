@@ -1,0 +1,379 @@
+import fs from "node:fs";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { resetSecretRedactionRegistryForTest } from "../logging/secret-redaction-registry.test-support.js";
+import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import { completeWorkerLaunchDescriptor } from "../worker/launch-descriptor.js";
+import {
+  WORKER_NATIVE_INFERENCE_STARTUP_ENV,
+  projectNativeInferenceStartup,
+} from "../worker/native-inference-startup.js";
+import { snapshotNodeWorkerEnv } from "./node-worker-environment.js";
+import { NodeWorkerLaunchStore } from "./node-worker-launch-store.js";
+import * as launchTransport from "./node-worker-launch-transport.js";
+import {
+  nodeWorkerNativeInferenceSecrets,
+  snapshotNodeWorkerNativeInference,
+} from "./node-worker-native-inference.js";
+import { createNodeWorkerCredentialScrubber } from "./node-worker-output.js";
+import { requireNodeWorkerProcessIdentity } from "./node-worker-process-identity.js";
+import { nodeWorkerEnvironmentBinding } from "./node-worker-supervisor-ownership.js";
+import { waitForNodeWorkerTerminal } from "./node-worker-supervisor.fixture.test-support.js";
+import { createNodeWorkerSupervisor } from "./node-worker-supervisor.js";
+import {
+  TEST_WORKER_ENDPOINT,
+  TEST_WORKER_SOURCE,
+  testWorkerLaunchInput,
+  writeNodeWorkerFixture,
+} from "./node-worker-supervisor.test-support.js";
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const credential = "synthetic-native-key";
+const header = "synthetic-native-header";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  resetSecretRedactionRegistryForTest();
+  closeOpenClawStateDatabaseForTest();
+});
+
+function createFixture() {
+  const fixture = writeNodeWorkerFixture(tempDirs.make("node-native-inference-"));
+  const configPath = path.join(fixture.root, "native.json");
+  const config = {
+    models: [
+      {
+        provider: "provider-1",
+        id: "model-1",
+        api: "openai-completions",
+        baseUrl: "https://model.example.test/v1",
+        contextWindow: 8192,
+        maxTokens: 1024,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        apiKeyEnv: "NATIVE_TEST_KEY",
+        headers: { "x-private": header },
+      },
+    ],
+    workspaces: [
+      {
+        id: "agent-1",
+        path: fixture.workspaceDir,
+        sessionId: "session-1",
+        models: ["provider-1/model-1"],
+      },
+    ],
+  };
+  fs.writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });
+  const env = {
+    ...fixture.env,
+    NATIVE_TEST_KEY: credential,
+    UNRELATED_SECRET: "unrelated-secret",
+    [WORKER_NATIVE_INFERENCE_STARTUP_ENV]: "untrusted-carrier",
+  };
+  return { ...fixture, env, config, configPath };
+}
+
+function nativeInput(workspaceDir: string, turnId = "native-turn", prompt = "success") {
+  const input = testWorkerLaunchInput(workspaceDir, turnId, prompt);
+  input.descriptor.assignment.inference = "runtime-local";
+  return input;
+}
+
+describe("node-local native inference startup custody", () => {
+  it("projects only the admitted agent grant and its model credentials", () => {
+    const f = createFixture();
+    const startup = snapshotNodeWorkerNativeInference(f.configPath, f.env)!;
+    startup.config.models.push({
+      ...startup.config.models[0]!,
+      id: "other-model",
+      apiKeyEnv: "OTHER_AGENT_KEY",
+      headers: { "x-private": "other-agent-header" },
+    });
+    startup.config.workspaces.push({
+      id: "other-agent",
+      path: f.root,
+      models: ["provider-1/other-model"],
+    });
+    startup.credentials.OTHER_AGENT_KEY = "other-agent-secret";
+    const descriptor = completeWorkerLaunchDescriptor(
+      nativeInput(f.workspaceDir).descriptor,
+      TEST_WORKER_ENDPOINT,
+    );
+    const projected = projectNativeInferenceStartup(startup, descriptor);
+    expect(projected.config.workspaces).toHaveLength(1);
+    expect(projected.config.models).toHaveLength(1);
+    expect(projected.credentials).toEqual({ NATIVE_TEST_KEY: credential });
+    expect(JSON.stringify(projected)).not.toContain("other-agent");
+    expect(projected.config.workspaces[0]!.id).toBe("agent-1");
+  });
+
+  it("admits generated workspaces under an explicit canonical root and rejects escapes", () => {
+    const f = createFixture();
+    const startup = snapshotNodeWorkerNativeInference(f.configPath, f.env)!;
+    startup.config.workspaces[0] = {
+      ...startup.config.workspaces[0]!,
+      path: f.root,
+      scope: "subdirectories",
+    };
+    const descriptor = completeWorkerLaunchDescriptor(
+      nativeInput(f.workspaceDir).descriptor,
+      TEST_WORKER_ENDPOINT,
+    );
+    expect(projectNativeInferenceStartup(startup, descriptor).config.workspaces[0]!.path).toBe(
+      fs.realpathSync(f.root),
+    );
+    descriptor.assignment.workspaceDir = path.dirname(f.root);
+    expect(() => projectNativeInferenceStartup(startup, descriptor)).toThrow("not authorized");
+    const link = path.join(f.root, "outside-link");
+    fs.symlinkSync(path.dirname(f.root), link, "junction");
+    descriptor.assignment.workspaceDir = link;
+    expect(() => projectNativeInferenceStartup(startup, descriptor)).toThrow("escapes");
+  });
+  it("snapshots only referenced credentials and header bytes without changing worker environments", () => {
+    const { configPath, env, config } = createFixture();
+    const startup = snapshotNodeWorkerNativeInference(configPath, env)!;
+    env.NATIVE_TEST_KEY = "changed-after-snapshot";
+    fs.writeFileSync(configPath, "invalid after snapshot");
+    expect(startup.config).toEqual(config);
+    expect(startup.credentials).toEqual({ NATIVE_TEST_KEY: credential });
+    expect(nodeWorkerNativeInferenceSecrets(startup)).toEqual([credential, header]);
+    const workerEnv = snapshotNodeWorkerEnv(env);
+    expect(workerEnv.NATIVE_TEST_KEY).toBeUndefined();
+    expect(workerEnv.UNRELATED_SECRET).toBeUndefined();
+    expect(workerEnv[WORKER_NATIVE_INFERENCE_STARTUP_ENV]).toBeUndefined();
+    expect(snapshotNodeWorkerNativeInference(undefined, env)).toBeUndefined();
+  });
+
+  it.each([undefined, "", "  "])("fails closed on missing named credentials (%j)", (value) => {
+    const { configPath, env } = createFixture();
+    expect(() =>
+      snapshotNodeWorkerNativeInference(configPath, { ...env, NATIVE_TEST_KEY: value }),
+    ).toThrow("Node worker native inference credential is unavailable");
+  });
+
+  it("rejects relative, unreadable and invalid files without exposing source bytes", () => {
+    const { configPath, env } = createFixture();
+    expect(() => snapshotNodeWorkerNativeInference("native.json", env)).toThrow("absolute path");
+    fs.writeFileSync(configPath, credential);
+    expect(() => snapshotNodeWorkerNativeInference(configPath, env)).toThrow(
+      "Node worker native inference configuration is invalid or unavailable",
+    );
+    fs.unlinkSync(configPath);
+    expect(() => snapshotNodeWorkerNativeInference(configPath, env)).toThrow(
+      "Node worker native inference configuration is invalid or unavailable",
+    );
+  });
+
+  it("captures config and credentials in the constructor before any initialization", async () => {
+    const f = createFixture();
+    const supervisor = createNodeWorkerSupervisor({
+      bundleRoot: f.bundleRoot,
+      env: f.env,
+      nativeInferenceConfig: f.configPath,
+    });
+    f.env.NATIVE_TEST_KEY = "changed-before-initialize";
+    fs.writeFileSync(f.configPath, "invalid before initialize");
+    const prepare = launchTransport.prepareNodeWorkerLaunchTransport;
+    const seen = vi
+      .spyOn(launchTransport, "prepareNodeWorkerLaunchTransport")
+      .mockImplementation(async (options) => {
+        expect(options.nativeInferenceStartup?.credentials).toEqual({
+          NATIVE_TEST_KEY: credential,
+        });
+        expect(options.nativeInferenceStartup?.config).toEqual(f.config);
+        expect(options.workerEnv.NATIVE_TEST_KEY).toBeUndefined();
+        expect(options.workerEnv[WORKER_NATIVE_INFERENCE_STARTUP_ENV]).toBeUndefined();
+        return await prepare(options);
+      });
+    try {
+      await supervisor.launch(nativeInput(f.workspaceDir), TEST_WORKER_ENDPOINT);
+      expect((await waitForNodeWorkerTerminal(supervisor, "native-turn")).state).toBe("completed");
+      expect(seen).toHaveBeenCalledOnce();
+    } finally {
+      await supervisor.close();
+    }
+  });
+
+  it("rejects invalid local startup configuration synchronously at supervisor construction", () => {
+    const f = createFixture();
+    expect(() =>
+      createNodeWorkerSupervisor({
+        bundleRoot: f.bundleRoot,
+        env: { ...f.env, NATIVE_TEST_KEY: undefined },
+        nativeInferenceConfig: f.configPath,
+      }),
+    ).toThrow("Node worker native inference credential is unavailable");
+  });
+
+  it("does not treat an ambient startup carrier as local configuration", async () => {
+    const f = createFixture();
+    const supervisor = createNodeWorkerSupervisor({ bundleRoot: f.bundleRoot, env: f.env });
+    try {
+      expect(
+        await supervisor.launch(nativeInput(f.workspaceDir), TEST_WORKER_ENDPOINT),
+      ).toMatchObject({
+        state: "failed",
+        errorText: "Node worker native inference requires node-local startup configuration",
+      });
+      expect(fs.existsSync(path.join(f.workspaceDir, "native-turn.started.json"))).toBe(false);
+    } finally {
+      await supervisor.close();
+    }
+  });
+
+  it("rejects nested container inference before spawning an engine", async () => {
+    const f = createFixture();
+    const input = nativeInput(f.workspaceDir);
+    await expect(
+      launchTransport.prepareNodeWorkerLaunchTransport({
+        bundleRoot: f.bundleRoot,
+        workerEnv: snapshotNodeWorkerEnv(f.env),
+        engineEnv: {},
+        nativeInferenceStartup: snapshotNodeWorkerNativeInference(f.configPath, f.env),
+        input,
+        descriptor: completeWorkerLaunchDescriptor(input.descriptor, TEST_WORKER_ENDPOINT),
+        planHash: "synthetic-plan",
+        supervisor: requireNodeWorkerProcessIdentity(process.pid),
+        connectionFailure: {},
+        scrubber: createNodeWorkerCredentialScrubber(credential),
+        store: new NodeWorkerLaunchStore({ env: f.env }),
+        containerEngine: { id: "docker", command: "must-not-execute", target: "synthetic-target" },
+      }),
+    ).rejects.toThrow("requires isolation none, not a nested container");
+  });
+
+  it.each(["agent", "workspace", "session", "model"])(
+    "rejects unauthorized %s before child creation",
+    async (mismatch) => {
+      const f = createFixture();
+      const supervisor = createNodeWorkerSupervisor({
+        bundleRoot: f.bundleRoot,
+        env: f.env,
+        nativeInferenceConfig: f.configPath,
+      });
+      const input = nativeInput(f.workspaceDir);
+      if (mismatch === "agent") {
+        input.descriptor.assignment.agentId = "other-agent";
+      }
+      if (mismatch === "workspace") {
+        input.descriptor.assignment.workspaceDir = path.join(f.root, "other");
+      }
+      if (mismatch === "session") {
+        input.descriptor.admission.sessionId = "other-session";
+      }
+      if (mismatch === "model") {
+        input.descriptor.assignment.modelRef = {
+          ...input.descriptor.assignment.modelRef,
+          model: "other-model",
+        };
+      }
+      try {
+        expect(await supervisor.launch(input, TEST_WORKER_ENDPOINT)).toMatchObject({
+          state: "failed",
+        });
+        expect(fs.existsSync(path.join(f.workspaceDir, "native-turn.started.json"))).toBe(false);
+      } finally {
+        await supervisor.close();
+      }
+    },
+  );
+
+  it("binds retained environment identity to inference custody", () => {
+    const input = testWorkerLaunchInput("/workspace", "turn");
+    const proxied = nodeWorkerEnvironmentBinding(input);
+    input.descriptor.assignment.inference = "runtime-local";
+    expect(nodeWorkerEnvironmentBinding(input)).not.toEqual(proxied);
+  });
+
+  it.each([false, true])(
+    "delivers the carrier only to native children (native=%s)",
+    async (native) => {
+      const f = createFixture();
+      const source = TEST_WORKER_SOURCE.replace(
+        "const mode = descriptor.assignment.prompt;",
+        `writeArtifact(descriptor, "carrier", { present: process.env.OPENCLAW_WORKER_NATIVE_INFERENCE_STARTUP !== undefined, namedKey: process.env.NATIVE_TEST_KEY !== undefined });
+const mode = descriptor.assignment.prompt;`,
+      );
+      fs.writeFileSync(
+        path.join(f.bundleRoot, "gateway-1", "bundles", "a".repeat(64), "worker.mjs"),
+        source,
+      );
+      const supervisor = createNodeWorkerSupervisor({
+        bundleRoot: f.bundleRoot,
+        env: f.env,
+        nativeInferenceConfig: f.configPath,
+      });
+      const input = native
+        ? nativeInput(f.workspaceDir)
+        : testWorkerLaunchInput(f.workspaceDir, "native-turn");
+      try {
+        await supervisor.launch(input, TEST_WORKER_ENDPOINT);
+        expect((await waitForNodeWorkerTerminal(supervisor, input.launchId)).state).toBe(
+          "completed",
+        );
+        expect(
+          JSON.parse(
+            fs.readFileSync(path.join(f.workspaceDir, "native-turn.carrier.json"), "utf8"),
+          ),
+        ).toEqual({ present: native, namedKey: false });
+      } finally {
+        await supervisor.close();
+      }
+    },
+  );
+
+  it("scrubs captured keys and headers on initial and retained turns without global registry help", async () => {
+    const f = createFixture();
+    const source = TEST_WORKER_SOURCE.replace(
+      "const mode = descriptor.assignment.prompt;",
+      `const nativeStartup = JSON.parse(process.env.OPENCLAW_WORKER_NATIVE_INFERENCE_STARTUP);
+const mode = descriptor.assignment.prompt;
+if (mode === "native-secret-fail") { fs.writeSync(2, nativeStartup.credentials.NATIVE_TEST_KEY + " " + nativeStartup.config.models[0].headers["x-private"]); exitWorker(7); return; }`,
+    );
+    fs.writeFileSync(
+      path.join(f.bundleRoot, "gateway-1", "bundles", "a".repeat(64), "worker.mjs"),
+      source,
+    );
+    const supervisor = createNodeWorkerSupervisor({
+      bundleRoot: f.bundleRoot,
+      env: f.env,
+      nativeInferenceConfig: f.configPath,
+    });
+    const prepare = launchTransport.prepareNodeWorkerLaunchTransport;
+    vi.spyOn(launchTransport, "prepareNodeWorkerLaunchTransport").mockImplementation(
+      async (options) => {
+        resetSecretRedactionRegistryForTest();
+        return await prepare(options);
+      },
+    );
+    try {
+      await supervisor.launch(
+        nativeInput(f.workspaceDir, "first", "native-secret-fail"),
+        TEST_WORKER_ENDPOINT,
+      );
+      const first = await waitForNodeWorkerTerminal(supervisor, "first");
+      expect(first.state).toBe("failed");
+      expect(first.errorText).toContain("[REDACTED] [REDACTED]");
+      expect(first.errorText).not.toContain(credential);
+      expect(first.errorText).not.toContain(header);
+      await supervisor.launch(
+        nativeInput(f.workspaceDir, "retained", "diagnostic-retain"),
+        TEST_WORKER_ENDPOINT,
+      );
+      await waitForNodeWorkerTerminal(supervisor, "retained");
+      resetSecretRedactionRegistryForTest();
+      await supervisor.launch(
+        nativeInput(f.workspaceDir, "next", "native-secret-fail"),
+        TEST_WORKER_ENDPOINT,
+      );
+      const next = await waitForNodeWorkerTerminal(supervisor, "next");
+      expect(next.state).toBe("failed");
+      expect(next.errorText).toContain("[REDACTED] [REDACTED]");
+      expect(next.errorText).not.toContain(credential);
+      expect(next.errorText).not.toContain(header);
+    } finally {
+      await supervisor.close();
+    }
+  });
+});
