@@ -47,10 +47,19 @@ function resolveRpcOptions(cmdOpts: GatewayRpcOpts, command?: Command): GatewayR
 
 function resolveRestartOptions(cmdOpts: DaemonLifecycleOptions, command?: Command) {
   const parentForce = inheritOptionFromParent<boolean>(command, "force");
+  const force = Boolean(cmdOpts.force || parentForce);
+  const serviceKind = process.env.OPENCLAW_SERVICE_KIND?.trim();
+  const safeFromGateway =
+    process.platform === "win32" &&
+    process.env.OPENCLAW_SERVICE_MARKER?.trim() === "openclaw" &&
+    (!serviceKind || serviceKind === "gateway") &&
+    !force &&
+    cmdOpts.wait === undefined &&
+    !cmdOpts.skipDeferral;
   return {
     ...cmdOpts,
-    force: Boolean(cmdOpts.force || parentForce),
-    safe: Boolean(cmdOpts.safe),
+    force,
+    safe: cmdOpts.safe || safeFromGateway,
   };
 }
 

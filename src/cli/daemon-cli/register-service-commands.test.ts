@@ -1,6 +1,8 @@
 // Register service command tests cover daemon service subcommand registration.
 import { Command } from "commander";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { captureEnv, deleteTestEnvValue, setTestEnvValue } from "../../test-utils/env.js";
+import { mockProcessPlatform } from "../../test-utils/vitest-spies.js";
 import { addGatewayServiceCommands } from "./register-service-commands.js";
 
 const runDaemonInstall = vi.fn(async (_opts: unknown) => {});
@@ -45,14 +47,36 @@ function expectSingleDaemonCall(mockFn: ReturnType<typeof vi.fn>) {
   return opts;
 }
 
+const restartRouteEnvKeys = ["OPENCLAW_SERVICE_MARKER", "OPENCLAW_SERVICE_KIND"];
+
+function setRestartRouteEnv(env: Record<string, string | undefined>) {
+  for (const key of restartRouteEnvKeys) {
+    const value = env[key];
+    if (value === undefined) {
+      deleteTestEnvValue(key);
+    } else {
+      setTestEnvValue(key, value);
+    }
+  }
+}
+
 describe("addGatewayServiceCommands", () => {
+  let restartRouteEnvSnapshot: ReturnType<typeof captureEnv>;
+
   beforeEach(() => {
+    restartRouteEnvSnapshot = captureEnv(restartRouteEnvKeys);
+    setRestartRouteEnv({});
     runDaemonInstall.mockClear();
     runDaemonRestart.mockClear();
     runDaemonStart.mockClear();
     runDaemonStatus.mockClear();
     runDaemonStop.mockClear();
     runDaemonUninstall.mockClear();
+  });
+
+  afterEach(() => {
+    restartRouteEnvSnapshot.restore();
+    vi.restoreAllMocks();
   });
 
   it.each([
@@ -112,5 +136,65 @@ describe("addGatewayServiceCommands", () => {
     const gateway = createGatewayParentLikeCommand();
     await gateway.parseAsync(argv, { from: "user" });
     assert();
+  });
+
+  it.each([
+    {
+      name: "uses safe restart for a plain Windows Gateway service restart",
+      platform: "win32" as const,
+      env: { OPENCLAW_SERVICE_MARKER: "openclaw", OPENCLAW_SERVICE_KIND: "gateway" },
+      argv: ["restart"],
+      expected: { safe: true, force: false },
+    },
+    {
+      name: "keeps a plain restart non-safe outside a service process",
+      platform: "win32" as const,
+      env: {},
+      argv: ["restart"],
+      expected: { safe: false },
+    },
+    {
+      name: "keeps a plain restart non-safe inside a node service",
+      platform: "win32" as const,
+      env: { OPENCLAW_SERVICE_MARKER: "openclaw", OPENCLAW_SERVICE_KIND: "node" },
+      argv: ["restart"],
+      expected: { safe: false },
+    },
+    {
+      name: "keeps a plain Gateway service restart non-safe outside Windows",
+      platform: "linux" as const,
+      env: { OPENCLAW_SERVICE_MARKER: "openclaw", OPENCLAW_SERVICE_KIND: "gateway" },
+      argv: ["restart"],
+      expected: { safe: false },
+    },
+    {
+      name: "preserves explicit force instead of adding implicit safe mode",
+      platform: "win32" as const,
+      env: { OPENCLAW_SERVICE_MARKER: "openclaw", OPENCLAW_SERVICE_KIND: "gateway" },
+      argv: ["restart", "--force"],
+      expected: { safe: false, force: true },
+    },
+    {
+      name: "preserves wait instead of adding implicit safe mode",
+      platform: "win32" as const,
+      env: { OPENCLAW_SERVICE_MARKER: "openclaw", OPENCLAW_SERVICE_KIND: "gateway" },
+      argv: ["restart", "--wait", "30s"],
+      expected: { safe: false, wait: "30s" },
+    },
+    {
+      name: "preserves skip-deferral validation instead of adding implicit safe mode",
+      platform: "win32" as const,
+      env: { OPENCLAW_SERVICE_MARKER: "openclaw", OPENCLAW_SERVICE_KIND: "gateway" },
+      argv: ["restart", "--skip-deferral"],
+      expected: { safe: false, skipDeferral: true },
+    },
+  ])("$name", async ({ platform, env, argv, expected }) => {
+    mockProcessPlatform(platform);
+    setRestartRouteEnv(env);
+    const gateway = createGatewayParentLikeCommand().enablePositionalOptions();
+
+    await gateway.parseAsync(argv, { from: "user" });
+
+    expect(expectSingleDaemonCall(runDaemonRestart)).toMatchObject(expected);
   });
 });
