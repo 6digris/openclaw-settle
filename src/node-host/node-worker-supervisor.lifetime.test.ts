@@ -282,7 +282,10 @@ describe("node worker environment lifetime", () => {
       await supervisor.stopEnvironment(environment);
       await vi.waitFor(() => expectBackgroundRetired(connection!, running.worker!, server));
       expect(capacitySnapshots.at(-1)).toEqual({ total: 1, available: 1 });
-      expect(await supervisor.status(first.launchId)).toEqual(completed);
+      expect(await supervisor.status(first.launchId)).toEqual({
+        ...completed,
+        workerLineageSettled: completed.workerCleanupMode === "owned-anchor",
+      });
       expect((await supervisor.status(waiting.launchId))?.state).toBe("cancelled");
     } finally {
       try {
@@ -309,7 +312,10 @@ describe("node worker environment lifetime", () => {
 
       await supervisor.close();
 
-      expect(await supervisor.status(input.launchId)).toEqual(completed);
+      expect(await supervisor.status(input.launchId)).toEqual({
+        ...completed,
+        workerLineageSettled: completed.workerCleanupMode === "owned-anchor",
+      });
       await vi.waitFor(() => expectBackgroundRetired(connection!, running.worker!, server));
     } finally {
       try {
@@ -447,7 +453,10 @@ describe("node worker environment lifetime", () => {
         ),
       ).toBe("live");
       expect(await (await fetch(background.url)).text()).toBe("preview-ready");
-      expect(await supervisor.status(first.launchId)).toEqual(completed);
+      expect(await supervisor.status(first.launchId)).toEqual({
+        ...completed,
+        workerLineageSettled: completed.workerCleanupMode === "owned-anchor",
+      });
       if (binding === "owner epoch" || binding === "session") {
         await supervisor.stopEnvironment(testNodeWorkerEnvironmentIdentity(first));
         expect(inspectNodeWorkerProcessIdentity(replacement.worker!)).toBe("live");
@@ -655,7 +664,10 @@ describe("node worker environment lifetime", () => {
           { timeout: 3_000 },
         );
         expect(store.get(first.launchId)?.state).toBe("interrupted");
-        expect(await supervisor.status(first.launchId)).toEqual(completed);
+        expect(await supervisor.status(first.launchId)).toEqual({
+          ...completed,
+          workerLineageSettled: completed.workerCleanupMode === "owned-anchor",
+        });
         expect(await supervisor.status(next.launchId)).toBeUndefined();
         expect(fs.existsSync(path.join(workspaceDir, `${next.launchId}.started.json`))).toBe(false);
         if (operation === "environment stop") {

@@ -46,7 +46,7 @@ export async function createServiceChildRelayAdapter(
 ): Promise<ProcessAdapterStartup<ServiceChildRelayAdapter>> {
   const generation = randomUUID();
   using preparation = prepareServiceChildRelay(params);
-  const { useWindowsJobAnchor, controlFd, lineageFd, parentLineageFds } = preparation;
+  const { useWindowsJobAnchor, controlFd, lineageFd } = preparation;
 
   if (params.abortSignal?.aborted) {
     throw new Error("service child construction aborted");
@@ -598,10 +598,8 @@ export async function createServiceChildRelayAdapter(
     stdinMode: params.stdinMode,
     secretFd: params.secretInput?.fd,
     controlFd,
-    lineageFd: params.ownedWorker ? undefined : lineageFd,
-    parentLineageFds: params.ownedWorker ? [lineageFd!, ...parentLineageFds] : parentLineageFds,
+    ...preparation.ownership,
     ...(control ? { acknowledgeClosing: true as const } : {}),
-    ...(params.ownedWorker ? { ownedWorker: true as const } : {}),
     windowsShellCommand: params.windowsShellCommand,
   };
   const stdin = createManagedChildStdin(child.stdin);

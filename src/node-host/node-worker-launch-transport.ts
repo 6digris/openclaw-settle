@@ -17,6 +17,7 @@ import {
 } from "./node-worker-container-engine.js";
 import type { NodeWorkerContainerLifecycle } from "./node-worker-container-lifecycle.js";
 import { resolveNodeWorkerEntry } from "./node-worker-entry.js";
+import type { NodeWorkerCleanupMode } from "./node-worker-launch-receipt.js";
 import type {
   NodeWorkerContainerIdentity,
   NodeWorkerLaunchReceipt,
@@ -26,6 +27,7 @@ import {
   sanitizeNodeWorkerDiagnostic,
   type NodeWorkerCredentialScrubber,
 } from "./node-worker-output.js";
+import type { NodeWorkerProcessIdentity } from "./node-worker-process-identity.js";
 import type { NodeWorkerLaunchInput } from "./node-worker-supervisor-contract.js";
 
 export type NodeWorkerChildAdapter = Awaited<ReturnType<typeof createChildAdapter>>["adapter"] & {
@@ -38,6 +40,8 @@ type NodeWorkerLaunchTransportOptions = {
   engineEnv: NodeJS.ProcessEnv;
   input: NodeWorkerLaunchInput;
   descriptor: WorkerLaunchDescriptor;
+  planHash: string;
+  supervisor: NodeWorkerProcessIdentity;
   connectionFailure: { errorText?: string };
   scrubber: NodeWorkerCredentialScrubber;
   store: NodeWorkerLaunchStore;
@@ -51,6 +55,7 @@ type NodeWorkerLaunchTransport =
   | {
       kind: "started";
       adapter: NodeWorkerChildAdapter;
+      cleanupMode: NodeWorkerCleanupMode | null;
       container?: NodeWorkerContainerIdentity;
     };
 
@@ -92,12 +97,17 @@ export async function prepareNodeWorkerLaunchTransport(
     ) {
       const { adapter, ready } = await createServiceChildRelayAdapter({
         ...workerOptions,
+        cleanupBinding: options.store.cleanupBinding({
+          launchId: options.input.launchId,
+          planHash: options.planHash,
+          supervisor: options.supervisor,
+        }),
         command: process.execPath,
         args,
         oomScoreWrapperSelected: false,
       });
       await ready;
-      return { kind: "started", adapter };
+      return { kind: "started", adapter, cleanupMode: "owned-anchor" };
     }
     const { adapter, ready } = await createChildAdapter({
       ...workerOptions,
@@ -105,7 +115,7 @@ export async function prepareNodeWorkerLaunchTransport(
       exactEnv: true,
     });
     await ready;
-    return { kind: "started", adapter };
+    return { kind: "started", adapter, cleanupMode: "process-group" };
   }
 
   const endpoint = options.descriptor.connectionEndpoint;
@@ -153,7 +163,7 @@ export async function prepareNodeWorkerLaunchTransport(
       stdinMode: "pipe-open",
     });
     await ready;
-    return { kind: "started", adapter, container };
+    return { kind: "started", adapter, container, cleanupMode: null };
   } catch (error) {
     if (container) {
       await lifecycle.remove(container, options.input);

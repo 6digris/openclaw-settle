@@ -17,6 +17,7 @@ import {
 
 type AnchorState = "starting" | "active" | "closing" | "closed";
 type StdioEntry = "ignore" | "inherit" | "pipe" | "ipc" | number;
+declare const WORKER_DEPLOY_BUILD: boolean;
 
 function commandStdio(start: ServiceChildStart): {
   stdio: StdioEntry[];
@@ -78,6 +79,7 @@ export function runServiceChildGroupAnchor(): void {
   let stdoutDrained = false;
   let stderrDrained = false;
   let lineageClosed = false;
+  let lineageObservationFailed = false;
   let markHostLineageClosed: (() => void) | undefined;
   let forceCleanup = false;
   const forceCleanupRequested = createDeferredCore();
@@ -191,6 +193,30 @@ export function runServiceChildGroupAnchor(): void {
       // until they close lineage; killing this observer would discard that custody.
       await settled;
       await rootResultDelivery;
+      let lineageRecorded = false;
+      if (
+        rootExit &&
+        lineageClosed &&
+        (typeof WORKER_DEPLOY_BUILD !== "boolean" || !WORKER_DEPLOY_BUILD)
+      ) {
+        try {
+          // Portable command helpers do not own the node journal. The top-level
+          // node anchor is a host runtime helper and must write before retiring.
+          const { recordNodeWorkerLineageSettled } =
+            await import("../../node-host/node-worker-lineage-completion.js");
+          lineageRecorded = recordNodeWorkerLineageSettled(start.cleanupBinding);
+        } catch {
+          // An unrecorded completion remains unknown to the next node host.
+        }
+      }
+      if (!lineageRecorded) {
+        await send({
+          type: "output",
+          stream: "stderr",
+          chunk:
+            "node worker lineage completion was not recorded; restart recovery will retain capacity until cleanup can be verified\n",
+        });
+      }
       if (!forceCleanup) {
         await Promise.race([rootSettledDone.promise, termGraceDone, forceCleanupRequested.promise]);
       }
@@ -375,7 +401,7 @@ export function runServiceChildGroupAnchor(): void {
       return;
     }
     const markLineageClosed = () => {
-      if (lineageClosed) {
+      if (lineageClosed || lineageObservationFailed) {
         return;
       }
       lineageClosed = true;
@@ -415,8 +441,21 @@ export function runServiceChildGroupAnchor(): void {
         return;
       }
       lineage.once("end", markLineageClosed);
-      lineage.once("close", markLineageClosed);
-      lineage.once("error", markLineageClosed);
+      const markLineageFailed = () => {
+        if (lineageClosed || lineageObservationFailed) {
+          return;
+        }
+        lineageObservationFailed = true;
+        lineageDone.resolve();
+        void requestCleanup("lineage-lost");
+      };
+      lineage.once("close", () => {
+        if (!lineage.readableEnded) {
+          markLineageFailed();
+        }
+      });
+      lineage.once("error", markLineageFailed);
+      lineage.resume();
     }
     const settleRoot = async () => {
       if (rootSettlementStarted || !rootResultDelivery || !stdoutDrained || !stderrDrained) {

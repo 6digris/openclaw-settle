@@ -7,11 +7,10 @@ import {
 } from "../../infra/runtime-process-url.js";
 import { resolveRuntimeWorkerArgv } from "../../infra/runtime-worker-url.js";
 import { isOwnedProcessGroupGone } from "./service-child-group-ownership.js";
-import {
-  OWNED_NODE_WORKER_ANCHOR_ARG,
-  type ServiceChildControlMessage,
-  type ServiceChildRelayMessage,
-  type ServiceChildStart,
+import type {
+  ServiceChildControlMessage,
+  ServiceChildRelayMessage,
+  ServiceChildStart,
 } from "./service-child-protocol.js";
 
 type StdioEntry = "ignore" | "inherit" | "ipc" | number;
@@ -192,11 +191,7 @@ function runServiceChildRelay(): void {
     }
     reserveIpcFd(stdio);
     try {
-      const argv = resolveRuntimeWorkerArgv(anchorUrl);
-      if (start.ownedWorker) {
-        argv.push(OWNED_NODE_WORKER_ANCHOR_ARG);
-      }
-      anchor = spawn(process.execPath, argv, {
+      anchor = spawn(process.execPath, resolveRuntimeWorkerArgv(anchorUrl), {
         stdio,
         detached: true,
         windowsHide: true,

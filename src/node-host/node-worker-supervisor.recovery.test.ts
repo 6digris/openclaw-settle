@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { stableStringify } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import * as spawnPs from "../infra/spawn-ps.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
@@ -26,6 +27,7 @@ import {
   testWorkerLaunchInput,
   writeNodeWorkerFixture,
 } from "./node-worker-supervisor.test-support.js";
+import { inspectOwnedNodeWorkerTree } from "./node-worker-tree-control.js";
 import { NodeWorkerTurnStore } from "./node-worker-turn-store.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -123,7 +125,11 @@ function insertLaunch(params: {
         planHash: planHash(params.input),
         supervisor: params.supervisor,
         worker: params.worker!,
+        cleanupMode: "process-group",
       });
+      database
+        .prepare("DELETE FROM node_worker_launch_cleanup WHERE launch_id = ?")
+        .run(params.input.launchId);
     }
   }
 }
@@ -218,11 +224,17 @@ async function waitForIdentityDeath(identity: NodeWorkerProcessIdentity) {
 }
 
 describe("node worker supervisor recovery", () => {
-  it.runIf(process.platform === "linux" || process.platform === "darwin")(
-    "closes while recovery observes a stopped former owner without releasing its slot",
-    async () => {
+  it
+    .runIf(process.platform === "linux" || process.platform === "darwin")
+    .each(["close", "recover", "anchor-lost"])(
+    "%s observes a stopped cleanup anchor with unreadable argv without releasing its slot",
+    async (operation) => {
       const { bundleRoot, env, root, workspaceDir } = fixture("node-worker-stopped-recovery-");
-      const input = testWorkerLaunchInput(workspaceDir, "stopped-former-owner", "wait");
+      const input = testWorkerLaunchInput(
+        workspaceDir,
+        "stopped-former-owner",
+        operation === "anchor-lost" ? "tree" : "wait",
+      );
       const previous = spawnSupervisorOwner({ bundleRoot, env, input, root });
       const receipt = JSON.parse(await waitForChildLine(previous)) as NodeWorkerLaunchReceipt;
       const anchor = receipt.worker!;
@@ -238,7 +250,31 @@ describe("node worker supervisor recovery", () => {
       let closing: Promise<void> | undefined;
       let initialized = false;
       let closed = false;
+      const openSync = fs.openSync;
+      const psSync = spawnPs.spawnPsSync;
+      const openProbe = vi.spyOn(fs, "openSync").mockImplementation((...args) => {
+        if (args[0] === `/proc/${anchor.pid}/cmdline`) {
+          throw new Error("process command line unavailable");
+        }
+        return openSync(...args);
+      });
+      const psProbe = vi.spyOn(spawnPs, "spawnPsSync").mockImplementation((args, timeout) => {
+        if (args.includes(String(anchor.pid)) && args.includes("command=")) {
+          throw new Error("process command line unavailable");
+        }
+        return psSync(args, timeout);
+      });
       try {
+        let descendant: NodeWorkerProcessIdentity | undefined;
+        if (operation === "anchor-lost") {
+          const descendantPath = path.join(workspaceDir, "grandchild.pid");
+          await vi.waitFor(() =>
+            expect(fs.readFileSync(descendantPath, "utf8")).toMatch(/^[1-9]\d*$/u),
+          );
+          descendant = requireNodeWorkerProcessIdentity(
+            Number(fs.readFileSync(descendantPath, "utf8")),
+          );
+        }
         process.kill(anchor.pid, "SIGSTOP");
         previous.kill("SIGKILL");
         await waitForChildExit(previous);
@@ -250,6 +286,33 @@ describe("node worker supervisor recovery", () => {
           expect(capacitySnapshots.at(-1)).toEqual({ total: 1, available: 0 }),
         );
         expect(initialized).toBe(false);
+        if (descendant) {
+          process.kill(anchor.pid, "SIGKILL");
+          await initialization;
+          expect(new NodeWorkerLaunchStore({ env }).get(input.launchId)).toMatchObject({
+            state: "running",
+            worker: anchor,
+            workerCleanupMode: "owned-anchor",
+            workerLineageSettled: false,
+          });
+          expect(inspectOwnedNodeWorkerTree(anchor)).toBe("live");
+          expect(inspectNodeWorkerProcessIdentity(descendant)).toBe("live");
+          expect(capacitySnapshots.at(-1)).toEqual({ total: 1, available: 0 });
+          return;
+        }
+        if (operation === "recover") {
+          process.kill(anchor.pid, "SIGCONT");
+          await initialization;
+          expect(new NodeWorkerLaunchStore({ env }).get(input.launchId)).toMatchObject({
+            state: "interrupted",
+            worker: anchor,
+            workerCleanupMode: "owned-anchor",
+            workerLineageSettled: true,
+          });
+          expect(inspectOwnedNodeWorkerTree(anchor)).toBe("dead");
+          expect(capacitySnapshots.at(-1)).toEqual({ total: 1, available: 1 });
+          return;
+        }
         closing = replacement.close().then(() => {
           closed = true;
         });
@@ -266,11 +329,63 @@ describe("node worker supervisor recovery", () => {
           "node worker supervisor is closed",
         );
       } finally {
+        openProbe.mockRestore();
+        psProbe.mockRestore();
         if (inspectNodeWorkerProcessIdentity(anchor) === "live") {
           process.kill(anchor.pid, "SIGCONT");
         }
         await waitForIdentityDeath(anchor);
         await Promise.allSettled([initialization, closing]);
+        await replacement.close();
+      }
+    },
+  );
+
+  it.runIf(process.platform === "linux" || process.platform === "darwin")(
+    "retains capacity when a dead anchor has an empty group but an escaped descendant remains",
+    async () => {
+      const { bundleRoot, env, root, workspaceDir } = fixture("node-worker-lost-lineage-");
+      const input = testWorkerLaunchInput(workspaceDir, "lost-lineage", "escaped-tree");
+      const owner = spawnSupervisorOwner({ bundleRoot, env, input, root });
+      const receipt = JSON.parse(await waitForChildLine(owner)) as NodeWorkerLaunchReceipt;
+      const anchor = receipt.worker!;
+      ownedProcessGroups.push(anchor);
+      const descendantPath = path.join(workspaceDir, "grandchild.pid");
+      await vi.waitFor(() =>
+        expect(fs.readFileSync(descendantPath, "utf8")).toMatch(/^[1-9]\d*$/u),
+      );
+      const descendant = requireNodeWorkerProcessIdentity(
+        Number(fs.readFileSync(descendantPath, "utf8")),
+      );
+      ownedProcessGroups.push(descendant);
+      const capacitySnapshots: Array<{ total: number; available: number }> = [];
+      const replacement = createNodeWorkerSupervisor({
+        bundleRoot,
+        env,
+        capacity: 1,
+        onCapacityChanged: (capacity) => capacitySnapshots.push(capacity),
+      });
+      try {
+        // Freeze the old observer before losing its anchor so it cannot settle this row.
+        process.kill(owner.pid!, "SIGSTOP");
+        process.kill(-anchor.pid, "SIGKILL");
+        owner.kill("SIGKILL");
+        await waitForChildExit(owner);
+        await vi.waitFor(() => expect(inspectOwnedNodeWorkerTree(anchor)).toBe("dead"));
+        expect(inspectNodeWorkerProcessIdentity(descendant)).toBe("live");
+        expect(() => process.kill(-anchor.pid, 0)).toThrow();
+
+        await replacement.initialize();
+
+        expect(await replacement.status(input.launchId)).toMatchObject({
+          state: "running",
+          worker: anchor,
+          workerCleanupMode: "owned-anchor",
+          workerLineageSettled: false,
+        });
+        expect(capacitySnapshots.at(-1)).toEqual({ total: 1, available: 0 });
+        expect(inspectNodeWorkerProcessIdentity(descendant)).toBe("live");
+      } finally {
         await replacement.close();
       }
     },
@@ -367,18 +482,23 @@ describe("node worker supervisor recovery", () => {
   });
 
   it.runIf(process.platform !== "win32").each([
-    { operation: "replay" as const, state: "interrupted" as const },
-    { operation: "cancel" as const, state: "cancelled" as const },
+    { operation: "replay", state: "interrupted", leader: "live" },
+    { operation: "cancel", state: "cancelled", leader: "live" },
+    { operation: "replay", state: "interrupted", leader: "dead" },
+    { operation: "cancel", state: "cancelled", leader: "dead" },
+    { operation: "initialize", state: "interrupted", leader: "dead" },
   ])(
-    "$operation kills the exact stale-owner worker group before terminal persistence",
-    async ({ operation, state }) => {
+    "$operation kills the exact stale-owner worker group with a $leader leader before releasing capacity",
+    async ({ operation, state, leader }) => {
       const { bundleRoot, env, root, workspaceDir } = fixture("node-worker-stale-running-");
       const marker = path.join(root, "recovery-grandchild.pid");
       const workerSource = `
         const { spawn } = require("node:child_process");
-        const fs = require("node:fs");
-        const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
-        fs.writeFileSync(process.argv[1], String(child.pid));
+        spawn(process.execPath, ["-e", ${JSON.stringify(`
+          ${operation === "initialize" ? 'process.on("SIGTERM", () => {});' : ""}
+          require("node:fs").writeFileSync(process.argv[1], String(process.pid));
+          setInterval(() => {}, 1000);
+        `)}, process.argv[1]], { stdio: "ignore" });
         setInterval(() => {}, 1000);
       `;
       const workerProcess = spawn(process.execPath, ["-e", workerSource, marker], {
@@ -391,8 +511,17 @@ describe("node worker supervisor recovery", () => {
       await vi.waitFor(() => expect(fs.readFileSync(marker, "utf8")).toMatch(/^[1-9]\d*$/u));
       const grandchild = requireNodeWorkerProcessIdentity(Number(fs.readFileSync(marker, "utf8")));
       const input = testWorkerLaunchInput(workspaceDir, "stale-running-launch", "wait");
-      const supervisor = createNodeWorkerSupervisor({ bundleRoot, env });
-      await supervisor.status("schema-probe");
+      const capacitySnapshots: Array<{ total: number; available: number }> = [];
+      const supervisor = createNodeWorkerSupervisor({
+        bundleRoot,
+        env,
+        capacity: 1,
+        onCapacityChanged: (capacity) => capacitySnapshots.push(capacity),
+      });
+      new NodeWorkerLaunchStore({ env }).get("schema-probe");
+      if (operation !== "initialize") {
+        await supervisor.initialize();
+      }
       insertLaunch({
         env,
         input,
@@ -401,23 +530,35 @@ describe("node worker supervisor recovery", () => {
         worker,
         turn: true,
       });
+      if (leader === "dead") {
+        workerProcess.kill("SIGKILL");
+        await waitForChildExit(workerProcess);
+        expect(inspectNodeWorkerProcessIdentity(worker)).toBe("dead");
+        expect(inspectNodeWorkerProcessIdentity(grandchild)).toBe("live");
+      }
 
       if (operation === "cancel") {
         await expect(
           supervisor.cancel({ ...testNodeWorkerLaunchIdentity(input), runId: "run-mismatch" }),
         ).resolves.toBeUndefined();
-        expect(inspectNodeWorkerProcessIdentity(worker)).toBe("live");
+        expect(inspectNodeWorkerProcessIdentity(grandchild)).toBe("live");
       }
-      const recovered =
-        operation === "cancel"
-          ? await supervisor.cancel(testNodeWorkerLaunchIdentity(input))
-          : await supervisor.launch(input, TEST_WORKER_ENDPOINT);
+      try {
+        const recovered =
+          operation === "initialize"
+            ? await supervisor.initialize().then(() => supervisor.status(input.launchId))
+            : operation === "cancel"
+              ? await supervisor.cancel(testNodeWorkerLaunchIdentity(input))
+              : await supervisor.launch(input, TEST_WORKER_ENDPOINT);
 
-      expect(recovered).toMatchObject({ state, worker });
-      await waitForIdentityDeath(worker);
-      await waitForIdentityDeath(grandchild);
-      expect((await supervisor.status(input.launchId))?.worker).toEqual(worker);
-      await supervisor.close();
+        expect(recovered).toMatchObject({ state, worker });
+        await waitForIdentityDeath(worker);
+        await waitForIdentityDeath(grandchild);
+        expect((await supervisor.status(input.launchId))?.worker).toEqual(worker);
+        expect(capacitySnapshots.at(-1)).toEqual({ total: 1, available: 1 });
+      } finally {
+        await supervisor.close();
+      }
     },
   );
 
@@ -483,6 +624,11 @@ describe("node worker supervisor recovery", () => {
       await waitForIdentityDeath(owned.supervisor);
       await waitForIdentityDeath(owned.worker!);
       await waitForIdentityDeath(grandchild);
+      expect(new NodeWorkerLaunchStore({ env }).get(input.launchId)).toMatchObject({
+        state: "running",
+        workerCleanupMode: "owned-anchor",
+        workerLineageSettled: true,
+      });
 
       const restarted = createNodeWorkerSupervisor({ bundleRoot, env });
       const reconciled = await restarted.status(input.launchId);
@@ -490,6 +636,8 @@ describe("node worker supervisor recovery", () => {
         state: "interrupted",
         supervisor: owned.supervisor,
         worker: owned.worker,
+        workerCleanupMode: "owned-anchor",
+        workerLineageSettled: true,
       });
       await restarted.close();
     },
@@ -579,6 +727,7 @@ describe("node worker supervisor recovery", () => {
           planHash: planHash(input),
           supervisor: stale,
           worker: current,
+          cleanupMode: null,
           container,
         });
       }

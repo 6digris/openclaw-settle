@@ -1,3 +1,5 @@
+import type { NodeWorkerCleanupBinding } from "../../node-host/node-worker-launch-receipt.js";
+
 export type ServiceChildStart = {
   type: "start";
   generation: string;
@@ -15,9 +17,11 @@ export type ServiceChildStart = {
   parentLineageFds?: number[];
   /** Absent only for older Gateway hosts retained by update --no-restart. */
   acknowledgeClosing?: true;
-  ownedWorker?: true;
   windowsShellCommand?: string;
-};
+} & (
+  | { ownedWorker: true; cleanupBinding: NodeWorkerCleanupBinding }
+  | { ownedWorker?: never; cleanupBinding?: never }
+);
 
 export type ServiceChildControlMessage = {
   generation: string;
@@ -89,8 +93,6 @@ export function encodeServiceChildMessage(
 ): string {
   return `${JSON.stringify(message)}\n`;
 }
-
-export const OWNED_NODE_WORKER_ANCHOR_ARG = "--openclaw-node-worker-owner";
 
 export function supportsNodeWorkerProcessOwner(platform = process.platform): boolean {
   return platform === "linux" || platform === "darwin";

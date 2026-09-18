@@ -1,5 +1,6 @@
 import type { Writable } from "node:stream";
 import { resolveRuntimeProcessEntrypointUrl } from "../../infra/runtime-process-url.js";
+import type { NodeWorkerCleanupBinding } from "../../node-host/node-worker-launch-receipt.js";
 import { prepareSecretInputStdio, type SpawnStdioEntry } from "../spawn-secret-input.js";
 import { getInheritedProcessLineageFds } from "./inherited-process-lineage.js";
 import { supportsNodeWorkerProcessOwner } from "./service-child-protocol.js";
@@ -19,8 +20,8 @@ export type ServiceChildRelayParams = ProcessAdapterConstruction & {
   onWorkerMessage?: (message: unknown) => void;
   windowsShellCommand?: string;
 } & (
-    | { ownedWorker: true; env: NodeJS.ProcessEnv }
-    | { ownedWorker?: never; env?: NodeJS.ProcessEnv }
+    | { ownedWorker: true; env: NodeJS.ProcessEnv; cleanupBinding: NodeWorkerCleanupBinding }
+    | { ownedWorker?: never; env?: NodeJS.ProcessEnv; cleanupBinding?: never }
   );
 
 function reserveStdioEntry(stdio: SpawnStdioEntry[], value: SpawnStdioEntry): number {
@@ -75,7 +76,13 @@ export function prepareServiceChildRelay(params: ServiceChildRelayParams) {
       useWindowsJobAnchor,
       controlFd,
       lineageFd,
-      parentLineageFds,
+      ownership: params.ownedWorker
+        ? {
+            ownedWorker: true as const,
+            cleanupBinding: params.cleanupBinding,
+            parentLineageFds: [lineageFd!, ...parentLineageFds],
+          }
+        : { lineageFd, parentLineageFds },
       spawn: {
         workerUrl: resolveRuntimeProcessEntrypointUrl(
           useWindowsJobAnchor ? "serviceChildWindowsJobAnchor" : "serviceChildRelay",

@@ -35,6 +35,7 @@ let retained = false;
 let currentTurn;
 let disposed = false;
 let started = false;
+let lineageFds = [];
 let resolveStart;
 const start = new Promise((resolve) => { resolveStart = resolve; });
 const hardTerminate = () => {
@@ -65,6 +66,7 @@ const onMessage = (message) => {
     return;
   }
   started = true;
+  lineageFds = message.lineageFds ?? [];
   resolveStart();
 };
 const onDisconnect = () => {
@@ -128,6 +130,11 @@ if (mode === "admission-rearm") {
   return;
 } else if (mode === "tree" || mode === "tree-cancel-reject") {
   grandchild = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  fs.writeFileSync(path.join(descriptor.assignment.workspaceDir, "grandchild.pid"), String(grandchild.pid));
+} else if (mode === "escaped-tree") {
+  grandchild = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    detached: true, stdio: ["ignore", "ignore", "ignore", ...lineageFds],
+  });
   fs.writeFileSync(path.join(descriptor.assignment.workspaceDir, "grandchild.pid"), String(grandchild.pid));
 } else if (mode === "background-start" || mode.startsWith("background-start:")) {
   const port = mode === "background-start" ? 0 : Number(mode.slice("background-start:".length));

@@ -166,7 +166,12 @@ describe("node worker supervisor", () => {
       store.claim(claim, supervisorIdentity, 2);
       turns.claim({ claim, ownerLaunchId: launchId, supervisor: supervisorIdentity });
       if (launchId === "running-launch") {
-        store.markRunning({ ...claim, supervisor: supervisorIdentity, worker: supervisorIdentity });
+        store.markRunning({
+          ...claim,
+          supervisor: supervisorIdentity,
+          worker: supervisorIdentity,
+          cleanupMode: "process-group",
+        });
       }
     }
 

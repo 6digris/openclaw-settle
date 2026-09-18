@@ -6,16 +6,52 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { NodeWorkerLaunchStore } from "../../node-host/node-worker-launch-store.js";
+import { requireNodeWorkerProcessIdentity } from "../../node-host/node-worker-process-identity.js";
+import {
+  closeOpenClawStateDatabaseForTest,
+  openOpenClawStateDatabase,
+} from "../../state/openclaw-state-db.js";
 import { createServiceChildRelayAdapter } from "./service-child-relay-host.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
+afterEach(() => {
+  closeOpenClawStateDatabaseForTest();
+});
+
 it
   .runIf(process.platform === "linux" || process.platform === "darwin")
-  .each(["open", "close-before-open", "stdin-closed", "delayed-output"] as const)(
+  .each([
+    "open",
+    "close-before-open",
+    "stdin-closed",
+    "delayed-output",
+    "journal-write-failed",
+  ] as const)(
   "runs a real owned worker through its IPC start gate and output drain (%s)",
   async (action) => {
     const home = tempDirs.make("openclaw-owned-worker-gate-");
+    const env = {
+      HOME: home,
+      PATH: process.env.PATH,
+      OPENCLAW_STATE_DIR: path.join(home, "state"),
+      OPENCLAW_CONFIG_PATH: path.join(home, "openclaw.json"),
+    };
+    const store = new NodeWorkerLaunchStore({ env });
+    const supervisor = requireNodeWorkerProcessIdentity(process.pid);
+    const claim = {
+      launchId: "owned-worker",
+      planHash: "a".repeat(64),
+      gatewayNamespace: "test-gateway",
+      environmentId: "test-environment",
+      sessionId: "test-session",
+      ownerEpoch: 1,
+      placementGeneration: 1,
+      runId: "test-run",
+    };
+    expect(store.claim(claim, supervisor, 1).action).toBe("start");
+    const cleanupBinding = store.cleanupBinding({ ...claim, supervisor });
     const marker = path.join(home, "started.txt");
     const onWorkerMessage = vi.fn<(message: unknown) => void>();
     let adapter: Awaited<ReturnType<typeof createServiceChildRelayAdapter>>["adapter"] | undefined;
@@ -53,15 +89,11 @@ it
             ? ["-c", 'exec "$@" < /dev/null', "owned-worker-stdin", process.execPath, ...workerArgs]
             : workerArgs,
         cwd: home,
-        env: {
-          HOME: home,
-          PATH: process.env.PATH,
-          OPENCLAW_STATE_DIR: path.join(home, "state"),
-          OPENCLAW_CONFIG_PATH: path.join(home, "openclaw.json"),
-        },
+        env,
         stdinMode: "pipe-open",
         oomScoreWrapperSelected: false,
         ownedWorker: true,
+        cleanupBinding,
         onWorkerMessage,
         onSpawnCleanup: (pending) => {
           cleanup = pending;
@@ -81,6 +113,19 @@ it
         stderr = (stderr + chunk).slice(-8192);
       });
       const ownerPid = adapter.pid;
+      store.markRunning({
+        ...claim,
+        supervisor,
+        worker: requireNodeWorkerProcessIdentity(ownerPid!),
+        cleanupMode: "owned-anchor",
+      });
+      if (action === "journal-write-failed") {
+        openOpenClawStateDatabase({ env }).db.exec(`
+          CREATE TRIGGER abort_lineage_settlement
+          BEFORE UPDATE OF lineage_settled ON node_worker_launch_cleanup
+          BEGIN SELECT RAISE(ABORT, 'synthetic journal write failure'); END;
+        `);
+      }
       await vi.waitFor(() => {
         expect(onWorkerMessage).toHaveBeenCalledWith(
           expect.objectContaining({ phase: "waiting", parentPid: ownerPid }),
@@ -129,6 +174,16 @@ it
         expect(existsSync(marker)).toBe(false);
         expect(onWorkerMessage).toHaveBeenCalledTimes(1);
         expect(output).toBe("");
+      }
+      await adapter.waitForExtinction();
+      expect(store.get(claim.launchId)).toMatchObject({
+        workerCleanupMode: "owned-anchor",
+        workerLineageSettled: action !== "journal-write-failed",
+      });
+      if (action === "journal-write-failed") {
+        expect(stderr).toContain(
+          "node worker lineage completion was not recorded; restart recovery will retain capacity until cleanup can be verified\n",
+        );
       }
     } finally {
       adapter?.kill("SIGKILL");
