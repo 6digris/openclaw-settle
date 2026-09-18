@@ -55,10 +55,10 @@ export class AgentsApiClient {
     private readonly assertCurrent: () => void,
   ) {}
 
-  async create(signal: AbortSignal, instructions: string): Promise<string> {
+  async create(signal: AbortSignal, instructions: string, model: string): Promise<string> {
     const response = await this.request("", "POST", signal, {
       agent: {
-        model: "gpt-5.5",
+        model,
         instructions,
         reasoning: { effort: "low" },
         multi_agent: { enabled: false },

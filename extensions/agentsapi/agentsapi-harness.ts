@@ -19,8 +19,8 @@ export function createAgentsApiHarness(runtime: PluginRuntime): AgentHarnessV2 {
     autoSelection: { providerIds: [] },
     deliveryDefaults: { visibleReplies: "automatic" },
     supports: (ctx) => {
-      if (ctx.provider !== "openai" || ctx.modelId !== "gpt-5.5") {
-        return { supported: false, reason: "Agents API MVP requires openai/gpt-5.5" };
+      if (ctx.provider !== "openai") {
+        return { supported: false, reason: "Agents API requires the OpenAI provider" };
       }
       if (
         ctx.modelProvider?.preparedAuth?.requirement === "subscription" ||

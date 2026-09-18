@@ -67,10 +67,12 @@ export async function runAgentsApiAttempt(
   // Cancellation retires already admitted remote work even after host authority closes.
   const cleanupClient = new AgentsApiClient(params.resolvedApiKey, assertHarnessCurrent);
   const store = agentsApiBindingStore(runtime);
-  const fingerprint = createHash("sha256").update(params.resolvedApiKey).digest("hex");
+  const fingerprint = createHash("sha256")
+    .update(JSON.stringify([params.model.id, params.resolvedApiKey]))
+    .digest("hex");
   let binding = store.lookup(params.sessionId);
   if (binding && binding.authFingerprint !== fingerprint) {
-    throw new Error("Agents API credential changed; reset the OpenClaw session before continuing");
+    throw new Error("Agents API model or credential changed; reset the OpenClaw session before continuing");
   }
   let remoteSessionId = binding?.sessionId;
   let submitted = false;
@@ -228,6 +230,7 @@ export async function runAgentsApiAttempt(
         ]
           .filter(Boolean)
           .join("\n\n"),
+        params.model.id,
       );
       assertCurrent();
       binding = { sessionId: remoteSessionId, authFingerprint: fingerprint };
@@ -327,7 +330,7 @@ export async function runAgentsApiAttempt(
         params.onRunProgress?.({
           reason: event.type,
           provider: "openai",
-          model: "gpt-5.5",
+          model: params.model.id,
           backend: "agentsapi",
         });
         if (rootTurn && event.type === "agent.session.idle") {
@@ -530,7 +533,7 @@ export async function runAgentsApiAttempt(
           content: [{ type: "text", text }],
           api: "openai-responses",
           provider: "openai",
-          model: "gpt-5.5",
+          model: params.model.id,
           usage,
           stopReason: "stop",
           timestamp: Date.now(),
