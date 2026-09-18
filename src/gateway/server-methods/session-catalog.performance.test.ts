@@ -213,10 +213,10 @@ it("measures 100 composed catalog lists against real session and plugin stores",
         expect(io.pluginStateWorkerReadOperations).toBe(0);
         expect(io.sessionEntryReads).toBe(0);
         expect(io.sessionPayloadReads).toBe(0);
-        // Revalidate all three adopted bindings without adding work to the resident list path.
+        // Each adopted binding needs six reads for freshness, schema admission, and authority.
         for (const work of workPerList) {
           expect(work).toEqual({
-            sqliteReadCalls: 20,
+            sqliteReadCalls: 18,
             bindingAuthorityReads: 3,
             pluginStateWorkerOperations: 0,
           });
