@@ -51,12 +51,15 @@ export const identity = (row: RowTarget) =>
   `${row.agentId}\0${row.storeTarget.storePath}\0${row.key}`;
 export const physical = (storePath: string, key: string) => `physical:${storePath}\0${key}`;
 const logical = (agentId: string, key: string) => `logical:${agentId}\0${key}`;
-const references = (row: RowTarget) => [
-  logical(row.agentId, row.key),
-  physical(row.storeTarget.storePath, row.key),
-];
 export function dependents(row: Row, byParent: ReadonlyMap<string, Set<string>>) {
-  return new Set(references(row).flatMap((ref) => Array.from(byParent.get(ref) ?? [])));
+  const children = new Set(byParent.get(logical(row.agentId, row.key)));
+  const physicalChildren = byParent.get(physical(row.storeTarget.storePath, row.key));
+  if (physicalChildren) {
+    for (const id of physicalChildren) {
+      children.add(id);
+    }
+  }
+  return children;
 }
 export function markRelated(
   row: Row,
@@ -274,19 +277,20 @@ export function acquireSessionRowEntry(params: {
     return undefined;
   }
   const entry = projectGatewaySessionEntry(cfg, storedEntry);
-  const parents = new Set(
-    [
-      storedEntry.parentSessionKey ?? resolveSessionParentSessionKey(row.key),
-      storedEntry.spawnedBy,
-      ...(context.subagentRunsByChildSessionKey.get(row.key) ?? []).map(
-        (run) => run.controllerSessionKey || run.requesterSessionKey,
-      ),
-    ].flatMap((key) =>
-      key && key !== row.key
-        ? [parentReference(cfg, key, row.agentId, row.storeTarget.storePath)]
-        : [],
-    ),
-  );
+  const parents = new Set<string>();
+  const addParent = (key: string | null | undefined) => {
+    if (key && key !== row.key) {
+      parents.add(parentReference(cfg, key, row.agentId, row.storeTarget.storePath));
+    }
+  };
+  addParent(storedEntry.parentSessionKey ?? resolveSessionParentSessionKey(row.key));
+  addParent(storedEntry.spawnedBy);
+  const runs = context.subagentRunsByChildSessionKey.get(row.key);
+  if (runs) {
+    for (const run of runs) {
+      addParent(run.controllerSessionKey || run.requesterSessionKey);
+    }
+  }
   const changed = !isDeepStrictEqual([storedEntry, parents], [row.storedEntry, row.parents]);
   if (changed) {
     params.markRelated(row);

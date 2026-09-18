@@ -47,6 +47,7 @@ import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shar
 import type { TemplateContext } from "../templating.js";
 import { createReplyAgentRestartRecoveryController } from "./agent-runner-execute.js";
 import { registerReasoningFallbackTests } from "./agent-runner.reasoning-fallback.test-support.js";
+import { registerWaitingStatusCases } from "./agent-runner.runreplyagent.waiting-status.cases.js";
 import { resolveActiveExplicitSteerSessionKey } from "./explicit-steer-routing.js";
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
 import {
@@ -4961,83 +4962,9 @@ describe("runReplyAgent typing (heartbeat)", () => {
     expect(onPendingContinuation).toHaveBeenCalledTimes(pendingContinuation ? 1 : 0);
   });
 
-  it.each([
-    { label: "implicit continuation", meta: { continuationPending: true }, implicit: true },
-    { label: "yield without acknowledgment", meta: { yielded: true }, implicit: false },
-    {
-      label: "explicit acknowledgment",
-      meta: { yielded: true, yieldAcknowledgment: "Research started; results will follow." },
-      implicit: false,
-    },
-  ])("delivers one waiting status for $label", async ({ meta, implicit }) => {
-    state.runEmbeddedAgentMock.mockResolvedValueOnce({
-      payloads: [],
-      meta: { durationMs: 0, ...meta },
-      acceptedSessionSpawns: [
-        {
-          runId: "child-run",
-          childSessionKey: "agent:main:subagent:child",
-          expectsCompletionMessage: true,
-        },
-      ],
-    });
-    const onPendingContinuation = vi.fn();
-    const { run } = createMinimalRun({ opts: { onPendingContinuation } });
-
-    const result = await run();
-    expect(result).toMatchObject({
-      text:
-        meta.yieldAcknowledgment ??
-        "I’m continuing this work and will send the result when it is ready.",
-      replyToId: "msg",
-    });
-    expect(onPendingContinuation).toHaveBeenCalledOnce();
-    const metadata = getReplyPayloadMetadata(requireRecord(result, "waiting status"));
-    expect(metadata?.deliverDespiteSourceReplySuppression).toBe(true);
-    expect(metadata?.continuationStatus === true).toBe(implicit);
-    expect(onPendingContinuation.mock.calls[0]).toEqual(
-      implicit ? [{ settle: expect.any(Function) }] : [],
-    );
-  });
-
-  it.each([
-    { label: "default status" },
-    { label: "explicit status", acknowledgment: "Research started; results will follow." },
-    {
-      label: "room event",
-      acknowledgment: "Research started; results will follow.",
-      roomEvent: true,
-      warning: true,
-    },
-    { label: "empty acknowledgment", acknowledgment: "[[reply_to_current]]", warning: true },
-  ])("resolves an earlier tool warning with $label", async (testCase) => {
-    const toolWarning = setReplyPayloadMetadata(
-      { text: "⚠️ Bash failed", isError: true },
-      { toolErrorWarning: { toolName: "bash" } },
-    );
-    state.runEmbeddedAgentMock.mockResolvedValueOnce({
-      payloads: [toolWarning],
-      meta: { yielded: true, yieldAcknowledgment: testCase.acknowledgment },
-      acceptedSessionSpawns: [
-        {
-          runId: "child-run",
-          childSessionKey: "agent:main:subagent:child",
-          expectsCompletionMessage: true,
-        },
-      ],
-    });
-    const { run } = createMinimalRun({
-      currentInboundEventKind: testCase.roomEvent ? "room_event" : undefined,
-    });
-
-    await expect(run()).resolves.toMatchObject({
-      text: testCase.warning
-        ? "⚠️ Bash failed"
-        : (testCase.acknowledgment ??
-          "I’m continuing this work and will send the result when it is ready."),
-      ...(testCase.warning ? { isError: true } : {}),
-      replyToId: "msg",
-    });
+  registerWaitingStatusCases({
+    createMinimalRun,
+    runEmbeddedAgentMock: state.runEmbeddedAgentMock,
   });
 
   it("delivers an explicit yield acknowledgment in message-tool-only mode", async () => {
@@ -6541,6 +6468,6 @@ describe("runReplyAgent typing (heartbeat)", () => {
   });
 });
 
-import { getReplyPayloadMetadata, setReplyPayloadMetadata } from "../reply-payload.js";
+import { getReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

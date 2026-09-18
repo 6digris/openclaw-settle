@@ -79,7 +79,6 @@ function createDeliveryHarness(
     typingSignals: createTypingSignaler({ typing, mode: "never", isHeartbeat: false }),
     blockStreamingEnabled: true,
     blockReplyPipeline: pipeline,
-    directlySentBlockKeys: new Set(),
     directBlockDeliveries: [],
   });
   return {

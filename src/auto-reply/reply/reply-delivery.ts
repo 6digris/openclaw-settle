@@ -12,7 +12,6 @@ import { isSilentReplyPayloadText, isSilentReplyText, SILENT_REPLY_TOKEN } from 
 import type { BlockReplyContext, ReplyPayload, ReplyThreadingPolicy } from "../types.js";
 import { deliverBlockReply } from "./block-reply-delivery.js";
 import type { BlockReplyPipeline } from "./block-reply-pipeline.js";
-import { createBlockReplyContentKey } from "./block-reply-pipeline.js";
 import { parseReplyDirectives } from "./reply-directives.js";
 import { resolveReplyDispatchErrorOutcome } from "./reply-dispatch-outcome.js";
 import { isRenderablePayload } from "./reply-payloads.js";
@@ -22,6 +21,8 @@ type ReplyDirectiveParseMode = "always" | "auto" | "never";
 
 export type DirectBlockDelivery = Awaited<ReturnType<typeof deliverBlockReply>> & {
   payload: ReplyPayload;
+  /** Captured at settlement; later source-completeness changes do not rewrite this fact. */
+  terminalDeliveryConfirmed?: true;
 };
 
 /** Parses inline reply directives into payload fields and silent-reply state. */
@@ -80,7 +81,6 @@ export function normalizeReplyPayloadDirectives(params: {
 
 async function sendDirectBlockReply(params: {
   onBlockReply: (payload: ReplyPayload, context?: BlockReplyContext) => Promise<void> | void;
-  directlySentBlockKeys: Set<string>;
   directBlockDeliveries: DirectBlockDelivery[];
   payload: ReplyPayload;
 }) {
@@ -104,7 +104,7 @@ async function sendDirectBlockReply(params: {
     delivery.source?.complete !== false &&
     isReplyPayloadTerminalContent(params.payload)
   ) {
-    params.directlySentBlockKeys.add(createBlockReplyContentKey(params.payload));
+    attempt.terminalDeliveryConfirmed = true;
   }
 }
 
@@ -121,7 +121,6 @@ export function createBlockReplyDeliveryHandler(params: {
   commentaryPayloadsEnabled?: boolean;
   blockStreamingEnabled: boolean;
   blockReplyPipeline: BlockReplyPipeline | null;
-  directlySentBlockKeys: Set<string>;
   directBlockDeliveries: DirectBlockDelivery[];
 }): (payload: ReplyPayload) => Promise<void> {
   return async (payload) => {
@@ -208,7 +207,6 @@ export function createBlockReplyDeliveryHandler(params: {
       // even when block streaming is off.
       await sendDirectBlockReply({
         onBlockReply: params.onBlockReply,
-        directlySentBlockKeys: params.directlySentBlockKeys,
         directBlockDeliveries: params.directBlockDeliveries,
         payload: blockPayload,
       });

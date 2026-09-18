@@ -84,7 +84,6 @@ function createPresentation(
     replyMediaContext: {
       normalizePayload: options.normalizeMediaPaths ?? (async (payload) => payload),
     },
-    directlySentBlockKeys: new Set(),
     directBlockDeliveries: [],
     heartbeatState: { didLogStrip: false },
   });

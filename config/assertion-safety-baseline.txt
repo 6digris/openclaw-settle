@@ -621,7 +621,7 @@ extensions/matrix/src/matrix/actions/reactions.ts	1
 extensions/matrix/src/matrix/actions/summary.ts	2
 extensions/matrix/src/matrix/actions/verification.ts	1
 extensions/matrix/src/matrix/client-bootstrap.ts	1
-extensions/matrix/src/matrix/client/config.ts	5
+extensions/matrix/src/matrix/client/config.ts	4
 extensions/matrix/src/matrix/client/logging.ts	3
 extensions/matrix/src/matrix/config-update.ts	4
 extensions/matrix/src/matrix/credentials-state.ts	2
@@ -1717,7 +1717,7 @@ src/agents/embedded-agent-runner/run/helpers.ts	3
 src/agents/embedded-agent-runner/run/history-image-prune.ts	4
 src/agents/embedded-agent-runner/run/images.ts	7
 src/agents/embedded-agent-runner/run/incomplete-turn-classification.ts	5
-src/agents/embedded-agent-runner/run/incomplete-turn-recovery.ts	3
+src/agents/embedded-agent-runner/run/incomplete-turn-recovery.ts	2
 src/agents/embedded-agent-runner/run/incomplete-turn-resolution.ts	3
 src/agents/embedded-agent-runner/run/llm-idle-timeout.ts	3
 src/agents/embedded-agent-runner/run/message-tool-terminal.ts	1
@@ -2186,7 +2186,7 @@ src/cli/command-secret-targets.ts	2
 src/cli/completion-runtime.ts	4
 src/cli/config-cli-input.ts	2
 src/cli/config-cli-path.ts	5
-src/cli/config-cli-runner.ts	3
+src/cli/config-cli-runner.ts	2
 src/cli/config-cli.ts	8
 src/cli/config-model-validation.ts	7
 src/cli/config-set-input.ts	1
@@ -2729,7 +2729,7 @@ src/gateway/server-methods/tools-catalog.ts	2
 src/gateway/server-methods/web.ts	1
 src/gateway/server-methods/wizard.ts	1
 src/gateway/server-methods/workspace-fs.ts	2
-src/gateway/server-node-events.ts	3
+src/gateway/server-node-events.ts	2
 src/gateway/server-plugin-in-process-dispatch.ts	3
 src/gateway/server-plugin-subagent-runtime.ts	1
 src/gateway/server-plugins-node-runtime.ts	1
