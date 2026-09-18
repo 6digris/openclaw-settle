@@ -15,7 +15,15 @@ vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
-    spawn: (...args: Parameters<typeof actual.spawn>) => spawnMock(...args),
+    spawn: (...args: Parameters<typeof actual.spawn>) => {
+      const child = spawnMock(...args);
+      void Promise.resolve().then(() => {
+        if (child.pid) {
+          child.emit("spawn");
+        }
+      });
+      return child;
+    },
   };
 });
 vi.mock("openclaw/plugin-sdk/process-runtime", async (importOriginal) => {
@@ -480,9 +488,19 @@ describe("Codex sandbox exec-server lifecycle", () => {
   it.each([
     { label: "an empty exec spec", argv: [] as string[], spawnError: null },
     { label: "a synchronous spawn failure", argv: ["sandbox-child"], spawnError: "spawn failed" },
+    { label: "an asynchronous spawn failure", argv: ["sandbox-child"], spawnError: "spawn ENOENT" },
   ])("finalizes process tokens after $label", async ({ argv, spawnError }) => {
     if (spawnError) {
       spawnMock.mockImplementationOnce(() => {
+        if (spawnError === "spawn ENOENT") {
+          const child = createFakeChild();
+          child.pid = undefined;
+          void Promise.resolve().then(() => {
+            child.emit("error", new Error(spawnError));
+            child.emit("close", -2, null);
+          });
+          return child;
+        }
         throw new Error(spawnError);
       });
     }

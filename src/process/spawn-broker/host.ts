@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess, type SendHandle, type SpawnOptions } from "node:child_process";
 import { Socket } from "node:net";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
@@ -52,7 +53,7 @@ export function brokerSpawnOptions(options: SpawnOptions): BrokerSpawnOptions | 
     throw new Error("Unsupported spawn broker cancellation options");
   }
   return {
-    cwd: options.cwd instanceof URL ? fileURLToPath(options.cwd) : options.cwd,
+    cwd: options.cwd instanceof URL ? fileURLToPath(options.cwd) : path.resolve(options.cwd ?? "."),
     env: options.env ? { ...options.env } : { ...process.env },
     argv0: options.argv0,
     detached: options.detached,

@@ -11,6 +11,7 @@ import {
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { parseBrowserMajorVersion, readBrowserVersion } from "./browser/chrome.executable-probe.js";
 import {
+  type BrowserExecutable,
   resolveBrowserExecutableForPlatform,
   resolveGoogleChromeExecutableForPlatform,
 } from "./browser/chrome.executables.js";
@@ -204,7 +205,9 @@ export async function noteChromeMcpBrowserReadiness(
     noteFn?: typeof note;
     env?: NodeJS.ProcessEnv;
     getUid?: () => number;
-    resolveManagedExecutable?: typeof resolveBrowserExecutableForPlatform;
+    resolveManagedExecutable?: (
+      ...args: Parameters<typeof resolveBrowserExecutableForPlatform>
+    ) => BrowserExecutable | null;
     resolveChromeExecutable?: (platform: NodeJS.Platform) => { path: string } | null;
     readVersion?: (executablePath: string) => string | null;
     configDir?: string;
@@ -266,7 +269,7 @@ export async function noteChromeMcpBrowserReadiness(
     );
   }
   const browserExecutable =
-    managedProfiles.length > 0 ? resolveManagedExecutable(resolved, platform) : null;
+    managedProfiles.length > 0 ? await resolveManagedExecutable(resolved, platform) : null;
   const missingDisplay =
     platform === "linux" &&
     managedProfiles.length > 0 &&

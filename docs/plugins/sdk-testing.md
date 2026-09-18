@@ -111,6 +111,7 @@ the focused test subpaths above.
 | `collectProviderApiKeys`                                                  | Discover credentials for live provider tests. Import from `plugin-sdk/test-live-auth`                                                       |
 | `parseProviderModelMap`                                                   | Parse music/video live-test model overrides. Import from `plugin-sdk/test-media-generation`                                                 |
 | `withServer`                                                              | Run tests against a disposable local HTTP server. Import from `plugin-sdk/test-env`                                                         |
+| `withTestSpawnBroker`                                                     | Run tests in a disposable broker scope with real admission methods and PID. Import from `plugin-sdk/test-env`                               |
 | `createMockIncomingRequest`                                               | Build a minimal incoming HTTP request object. Import from `plugin-sdk/test-env`                                                             |
 | `withFetchPreconnect`                                                     | Run fetch tests with preconnect hooks installed. Import from `plugin-sdk/test-env`                                                          |
 | `withEnv` / `withEnvAsync`                                                | Temporarily patch environment variables. Import from `plugin-sdk/test-env`                                                                  |

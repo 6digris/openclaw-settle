@@ -5,7 +5,7 @@
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import type { SandboxContext } from "openclaw/plugin-sdk/sandbox";
 import type { JsonObject, JsonValue } from "../protocol.js";
-import type { SandboxChildOwner } from "./sandbox-child.js";
+import type { SandboxChildCleanup, SandboxChildOwner } from "./sandbox-child.js";
 
 /** Minimal JSON-RPC request shape accepted by the sandbox exec-server. */
 export type JsonRpcRequest = {
@@ -104,7 +104,7 @@ type OpenClawExecServerLease = {
     clients: Iterable<{ close: (code?: number, reason?: string) => void }>;
     close: (callback: (error?: Error) => void) => void;
   };
-  children: Set<SandboxChildOwner>;
+  children: Set<SandboxChildCleanup>;
   cleanupTasks: Set<Promise<void>>;
 };
 

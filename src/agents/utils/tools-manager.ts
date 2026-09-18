@@ -3,7 +3,6 @@
  *
  * Locates or downloads pinned helper binaries such as fd and ripgrep.
  */
-import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   chmodSync,
@@ -28,6 +27,7 @@ import { fetchWithSsrFGuard } from "../../infra/net/fetch-guard.js";
 import { getBinDir } from "../config.js";
 import { APP_NAME } from "../package-metadata.js";
 import { readProviderJsonResponse } from "../provider-http-errors.js";
+import { commandExists } from "./tools-manager-probe.js";
 
 const NETWORK_TIMEOUT_MS = 10_000;
 const DOWNLOAD_TIMEOUT_MS = 120_000;
@@ -110,26 +110,11 @@ const TOOLS: Record<"fd" | "rg", ToolConfig> = {
   },
 };
 
-// Check if a command exists in PATH by trying to run it
-function commandExists(cmd: string): boolean {
-  try {
-    const result = spawnSync(cmd, ["--version"], {
-      killSignal: "SIGKILL",
-      stdio: "pipe",
-      timeout: 5_000,
-    });
-    // Require a clean exit, not just a successful spawn. An installed-but-broken
-    // binary (e.g. GLIBC mismatch after a system upgrade, missing shared lib)
-    // spawns fine but exits non-zero; without the status check it would be
-    // misreported as available and block ensureTool's auto-install fallback.
-    return !result.error && result.status === 0;
-  } catch {
-    return false;
-  }
-}
-
 // Get the path to a tool (system-wide or in our tools dir)
-function getToolPath(tool: "fd" | "rg", toolsDir: string | undefined): string | null {
+async function getToolPath(
+  tool: "fd" | "rg",
+  toolsDir: string | undefined,
+): Promise<string | null> {
   const config = TOOLS[tool];
 
   // Check our tools directory first
@@ -143,7 +128,7 @@ function getToolPath(tool: "fd" | "rg", toolsDir: string | undefined): string | 
   // Check system PATH - if found, just return the command name (it's in PATH)
   const systemBinaryNames = config.systemBinaryNames ?? [config.binaryName];
   for (const systemBinaryName of systemBinaryNames) {
-    if (commandExists(systemBinaryName)) {
+    if (await commandExists(systemBinaryName)) {
       return systemBinaryName;
     }
   }
@@ -376,7 +361,7 @@ function installTool(tool: "fd" | "rg", toolsDir: string): Promise<string> {
 
   mkdirSync(toolsDir, { recursive: true });
   const installation = withFileLock(binaryPath, TOOL_INSTALL_LOCK_OPTIONS, async () => {
-    const existingPath = getToolPath(tool, toolsDir);
+    const existingPath = await getToolPath(tool, toolsDir);
     return existingPath ?? downloadTool(tool, toolsDir);
   });
   toolInstallations.set(binaryPath, installation);
@@ -405,7 +390,7 @@ const TERMUX_PACKAGES: Record<string, string> = {
 // Returns the path to the tool, or null if unavailable
 export async function ensureTool(tool: "fd" | "rg", silent = false): Promise<string | undefined> {
   const toolsDir = getBinDir();
-  const existingPath = getToolPath(tool, toolsDir);
+  const existingPath = await getToolPath(tool, toolsDir);
   if (existingPath) {
     return existingPath;
   }

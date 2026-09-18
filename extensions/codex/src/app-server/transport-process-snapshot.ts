@@ -1,7 +1,7 @@
-import { execFile } from "node:child_process";
 import { closeSync, constants, openSync, readSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { setImmediate } from "node:timers/promises";
+import { spawnProcess } from "openclaw/plugin-sdk/process-runtime";
 
 export type PosixProcess = {
   pid: number;
@@ -195,7 +195,7 @@ async function readProcessOutput(
       }
     };
     const procfs = command.kind === "procfs-command";
-    const inspector = execFile(
+    const inspector = spawnProcess(
       procfs ? process.execPath : "ps",
       procfs
         ? [
@@ -207,35 +207,77 @@ async function readProcessOutput(
           ]
         : command.args,
       {
-        encoding: "utf8",
-        maxBuffer: PROCESS_INSPECTION_MAX_BYTES,
+        stdio: ["pipe", "pipe", "pipe"],
         // Runtime helpers must not load ambient preloads or project configuration.
         cwd: procfs ? "/" : undefined,
         env: procfs ? {} : { ...process.env, LC_ALL: "C", TZ: "UTC" },
       },
-      (error, stdout) => {
-        settle(
-          Date.now() >= deadline
-            ? new ProcessInspectionError("deadline")
-            : error
-              ? procfs && error.code === PROCFS_COMMAND_PERMISSION_EXIT
-                ? new ProcessInspectionError("permission")
-                : inspectionFailure(error)
-              : stdout,
-        );
-      },
     );
+    const stop = () => {
+      inspector.stdout?.destroy();
+      inspector.stderr?.destroy();
+      inspector.kill("SIGKILL");
+      inspector.unref();
+    };
+    const stdout: Buffer[] = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
     const timer = setTimeout(
       () => {
         settle(new ProcessInspectionError("deadline"));
-        inspector.stdout?.destroy();
-        inspector.stderr?.destroy();
-        inspector.kill("SIGKILL");
-        inspector.unref();
+        stop();
       },
       Math.max(1, remainingMs),
     );
     timer.unref?.();
+    inspector.once("spawn", () => {
+      // Admission can finish after the deadline; late pipes and children still need cleanup.
+      if (settled || Date.now() >= deadline) {
+        settle(new ProcessInspectionError("deadline"));
+        stop();
+        return;
+      }
+      if (!inspector.stdout || !inspector.stderr) {
+        settle(new ProcessInspectionError("unavailable"));
+        stop();
+        return;
+      }
+      inspector.stdout.on("data", (chunk: Buffer) => {
+        if (settled) {
+          return;
+        }
+        stdoutBytes += chunk.length;
+        if (stdoutBytes > PROCESS_INSPECTION_MAX_BYTES) {
+          settle(new ProcessInspectionError("unavailable"));
+          stop();
+        } else {
+          stdout.push(chunk);
+        }
+      });
+      inspector.stderr.on("data", (chunk: Buffer) => {
+        stderrBytes += chunk.length;
+        if (!settled && stderrBytes > PROCESS_INSPECTION_MAX_BYTES) {
+          settle(new ProcessInspectionError("unavailable"));
+          stop();
+        }
+      });
+    });
+    inspector.once("error", (error) => {
+      settle(
+        Date.now() >= deadline ? new ProcessInspectionError("deadline") : inspectionFailure(error),
+      );
+    });
+    inspector.once("close", (code) => {
+      settle(
+        Date.now() >= deadline
+          ? new ProcessInspectionError("deadline")
+          : code !== 0
+            ? new ProcessInspectionError(
+                procfs && code === PROCFS_COMMAND_PERMISSION_EXIT ? "permission" : "unavailable",
+              )
+            : Buffer.concat(stdout, stdoutBytes).toString("utf8"),
+      );
+    });
   }).catch((error: unknown) => {
     // Spawn denial can throw before the inspector or its callback exists.
     throw inspectionFailure(error);

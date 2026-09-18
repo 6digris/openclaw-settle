@@ -1,8 +1,9 @@
-import { spawn } from "node:child_process";
 import { Readable, type Writable } from "node:stream";
 import { formatErrorMessage } from "../infra/errors.js";
 import type { RuntimeLogger } from "../plugins/runtime/types.js";
 import { onDecodedOutput } from "../process/decoded-output.js";
+import { BrokerChild } from "../process/spawn-broker/child.js";
+import { spawnProcess } from "../process/spawn-utils.js";
 import { createSpeechThresholdGate, readPcm16AudioStats } from "../talk/audio-energy.js";
 import { truncateUtf8Suffix } from "../utils/utf8-truncate.js";
 import { terminateMeetingBridgeProcess } from "./bridge-process.js";
@@ -57,6 +58,15 @@ type OutputWriteWaiter = {
   release: () => void;
 };
 
+function attachProcessStreams(proc: BridgeProcess, attach: () => void): void {
+  if (proc instanceof BrokerChild) {
+    // Broker pipes arrive together at readiness; lifecycle errors already have an owner.
+    void proc.ready().then(attach, () => {});
+  } else {
+    attach();
+  }
+}
+
 function attachStderrLineLogger(params: {
   stderr: BridgeProcess["stderr"];
   logger: RuntimeLogger;
@@ -103,8 +113,7 @@ export function createLocalMeetingRealtimeAudioTransport(params: {
 }): MeetingRealtimeAudioTransport {
   const input = splitCommandArgv(params.inputCommand, "audio bridge command");
   const output = splitCommandArgv(params.outputCommand, "audio bridge command");
-  const spawnFn: MeetingRealtimeAudioSpawn =
-    params.spawn ?? ((command, args, options) => spawn(command, args, options));
+  const spawnFn: MeetingRealtimeAudioSpawn = params.spawn ?? spawnProcess;
   const spawnOutputProcess = () =>
     spawnFn(output.command, output.args, { stdio: ["pipe", "ignore", "pipe"] });
   let outputProcess = spawnOutputProcess();
@@ -144,11 +153,6 @@ export function createLocalMeetingRealtimeAudioTransport(params: {
         fail("audio output command")(error);
       }
     });
-    proc.stdin?.on?.("error", (error: Error) => {
-      if (proc === outputProcess) {
-        fail("audio output command")(error);
-      }
-    });
     proc.on("exit", (code, signal) => {
       if (proc === outputProcess && !stopped) {
         params.logger.warn(
@@ -157,18 +161,25 @@ export function createLocalMeetingRealtimeAudioTransport(params: {
         signalFatal();
       }
     });
-    attachStderrLineLogger({
-      stderr: proc.stderr,
-      logger: params.logger,
-      prefix: `${params.logScope} audio output`,
-    });
-    proc.stderr?.on("error", (error: Error) => {
-      if (proc === outputProcess) {
-        fail("audio output command stderr")(error);
-      }
+    attachProcessStreams(proc, () => {
+      proc.stdin?.on?.("error", (error: Error) => {
+        if (proc === outputProcess) {
+          fail("audio output command")(error);
+        }
+      });
+      attachStderrLineLogger({
+        stderr: proc.stderr,
+        logger: params.logger,
+        prefix: `${params.logScope} audio output`,
+      });
+      proc.stderr?.on("error", (error: Error) => {
+        if (proc === outputProcess) {
+          fail("audio output command stderr")(error);
+        }
+      });
     });
   };
-  const writeOutputChunk = (proc: BridgeProcess, stdin: Writable, audio: Buffer): Promise<void> =>
+  const writeOutputChunk = (proc: BridgeProcess, audio: Buffer): Promise<void> =>
     new Promise<void>((resolve, reject) => {
       let settled = false;
       const finish = (error?: Error) => {
@@ -185,14 +196,32 @@ export function createLocalMeetingRealtimeAudioTransport(params: {
       };
       const waiter: OutputWriteWaiter = { proc, release: () => finish() };
       outputWriteWaiters.add(waiter);
-      try {
-        stdin.write(audio, (error) => finish(error ?? undefined));
-      } catch (error) {
-        finish(error instanceof Error ? error : new Error(formatErrorMessage(error)));
-        return;
-      }
-      if (stdin.destroyed || stdin.writableEnded) {
-        finish(new Error("audio output stream is closed"));
+      const write = () => {
+        if (settled || stopped || proc !== outputProcess || !proc.stdin) {
+          finish();
+          return;
+        }
+        const stdin = proc.stdin;
+        outputLoopbackVerifier.recordOutput(audio);
+        try {
+          stdin.write(audio, (error) => finish(error ?? undefined));
+        } catch (error) {
+          finish(error instanceof Error ? error : new Error(formatErrorMessage(error)));
+          return;
+        }
+        if (stdin.destroyed || stdin.writableEnded) {
+          finish(new Error("audio output stream is closed"));
+        }
+      };
+      // Stop and clear can release this write even while broker admission is pending.
+      if (proc instanceof BrokerChild) {
+        void proc
+          .ready()
+          .then(write, (error: unknown) =>
+            finish(error instanceof Error ? error : new Error(formatErrorMessage(error))),
+          );
+      } else {
+        write();
       }
     });
   const releaseOutputWriteWaiters = (proc?: BridgeProcess) => {
@@ -232,13 +261,15 @@ export function createLocalMeetingRealtimeAudioTransport(params: {
       signalFatal();
     }
   });
-  attachStderrLineLogger({
-    stderr: inputProcess.stderr,
-    logger: params.logger,
-    prefix: `${params.logScope} audio input`,
+  attachProcessStreams(inputProcess, () => {
+    attachStderrLineLogger({
+      stderr: inputProcess.stderr,
+      logger: params.logger,
+      prefix: `${params.logScope} audio input`,
+    });
+    inputProcess.stdout?.on("error", fail("audio input command stdout"));
+    inputProcess.stderr?.on("error", fail("audio input command stderr"));
   });
-  inputProcess.stdout?.on("error", fail("audio input command stdout"));
-  inputProcess.stderr?.on("error", fail("audio input command stderr"));
 
   const transport: MeetingRealtimeAudioTransport = {
     onFatal: (handler) => {
@@ -252,12 +283,14 @@ export function createLocalMeetingRealtimeAudioTransport(params: {
         throw new Error("audio input transport already started");
       }
       inputStarted = true;
-      inputProcess.stdout?.on("data", (chunk) => {
-        if (!stopped) {
-          const audio = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-          outputLoopbackVerifier.recordInput(audio);
-          onAudio(audio);
-        }
+      attachProcessStreams(inputProcess, () => {
+        inputProcess.stdout?.on("data", (chunk) => {
+          if (!stopped) {
+            const audio = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            outputLoopbackVerifier.recordInput(audio);
+            onAudio(audio);
+          }
+        });
       });
     },
     beginOutput: () => outputLoopbackVerifier.beginOutput(),
@@ -267,13 +300,8 @@ export function createLocalMeetingRealtimeAudioTransport(params: {
         return;
       }
       const proc = outputProcess;
-      const stdin = proc.stdin;
-      if (!stdin) {
-        return;
-      }
-      outputLoopbackVerifier.recordOutput(audio);
       try {
-        await writeOutputChunk(proc, stdin, audio);
+        await writeOutputChunk(proc, audio);
       } catch (error) {
         if (stopped || proc !== outputProcess || fatalSignaled) {
           return;
@@ -326,50 +354,55 @@ export function createLocalMeetingRealtimeAudioTransport(params: {
         peakThreshold: params.bargeInPeakThreshold,
         cooldownMs: params.bargeInCooldownMs,
       });
-      bargeInInputProcess = spawnFn(command.command, command.args, {
+      const proc = spawnFn(command.command, command.args, {
         stdio: ["ignore", "pipe", "pipe"],
       });
-      bargeInInputProcess.stdout?.on("data", (chunk) => {
-        const audio = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        if (stopped) {
-          return;
-        }
-        const stats = readPcm16AudioStats(audio);
-        if (!bargeInGate.accept(stats, { nowMs: Date.now(), onTrigger: () => onBargeIn(audio) })) {
-          return;
-        }
-        params.logger.debug?.(
-          `${params.logScope} human barge-in detected by local input (rms=${Math.round(
-            stats.rms,
-          )}, peak=${stats.peak})`,
-        );
-      });
-      bargeInInputProcess.stdout?.on("error", (error: Error) => {
-        params.logger.warn(
-          `${params.logScope} human barge-in input stdout failed: ${formatErrorMessage(error)}`,
-        );
-      });
-      attachStderrLineLogger({
-        stderr: bargeInInputProcess.stderr,
-        logger: params.logger,
-        prefix: `${params.logScope} barge-in input`,
-      });
-      bargeInInputProcess.stderr?.on("error", (error: Error) => {
-        params.logger.warn(
-          `${params.logScope} human barge-in input stderr failed: ${formatErrorMessage(error)}`,
-        );
-      });
-      bargeInInputProcess.on("error", (error) => {
+      bargeInInputProcess = proc;
+      proc.on("error", (error) => {
         params.logger.warn(
           `${params.logScope} human barge-in input failed: ${formatErrorMessage(error)}`,
         );
       });
-      bargeInInputProcess.on("exit", (code, signal) => {
+      proc.on("exit", (code, signal) => {
         if (!stopped) {
           params.logger.debug?.(
             `${params.logScope} human barge-in input exited (${code ?? signal ?? "done"})`,
           );
         }
+      });
+      attachProcessStreams(proc, () => {
+        proc.stdout?.on("data", (chunk) => {
+          const audio = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          if (stopped) {
+            return;
+          }
+          const stats = readPcm16AudioStats(audio);
+          if (
+            !bargeInGate.accept(stats, { nowMs: Date.now(), onTrigger: () => onBargeIn(audio) })
+          ) {
+            return;
+          }
+          params.logger.debug?.(
+            `${params.logScope} human barge-in detected by local input (rms=${Math.round(
+              stats.rms,
+            )}, peak=${stats.peak})`,
+          );
+        });
+        proc.stdout?.on("error", (error: Error) => {
+          params.logger.warn(
+            `${params.logScope} human barge-in input stdout failed: ${formatErrorMessage(error)}`,
+          );
+        });
+        attachStderrLineLogger({
+          stderr: proc.stderr,
+          logger: params.logger,
+          prefix: `${params.logScope} barge-in input`,
+        });
+        proc.stderr?.on("error", (error: Error) => {
+          params.logger.warn(
+            `${params.logScope} human barge-in input stderr failed: ${formatErrorMessage(error)}`,
+          );
+        });
       });
     },
   };

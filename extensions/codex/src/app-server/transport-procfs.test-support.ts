@@ -1,19 +1,14 @@
-import type { ExecFileException, ExecFileOptionsWithStringEncoding } from "node:child_process";
+import type { SpawnOptions } from "node:child_process";
 
 /** Runs the real command reader against fixture bytes supplied over its stdin. */
 export function createProcfsCommandFixture(
   original: typeof import("node:child_process"),
   readFile: (file: string) => string | undefined,
 ) {
-  return (
-    file: string,
-    args: readonly string[],
-    options: ExecFileOptionsWithStringEncoding,
-    callback: (error: ExecFileException | null, stdout: string, stderr: string) => void,
-  ) => {
+  return (file: string, args: readonly string[], options: SpawnOptions) => {
     const evalIndex = args.indexOf("-e");
     if (file !== process.execPath || evalIndex < 0) {
-      return original.execFile(file, args, options, callback);
+      return original.spawn(file, args, options);
     }
     const commandPath = `/proc/${args.at(-2)}/cmdline`;
     let data: string | undefined;
@@ -28,7 +23,7 @@ export function createProcfsCommandFixture(
       errorCode = code;
     }
     if (data === undefined && errorCode === undefined) {
-      return original.execFile(file, args, options, callback);
+      return original.spawn(file, args, options);
     }
     const injected = `const fixtureFs = require("node:fs");
 const fixtureOpen = fixtureFs.openSync;
@@ -41,7 +36,7 @@ fixtureFs.openSync = (file, ...args) => {
 `;
     const injectedArgs = args.slice();
     injectedArgs[evalIndex + 1] = injected + injectedArgs[evalIndex + 1];
-    const child = original.execFile(file, injectedArgs, options, callback);
+    const child = original.spawn(file, injectedArgs, options);
     child.stdin?.end(data);
     return child;
   };

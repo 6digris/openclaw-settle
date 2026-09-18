@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { Duplex, type Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import {
@@ -9,6 +8,7 @@ import {
   type OpusEncoderHandle as LibopusEncoder,
 } from "libopus-wasm";
 import { resolveFfmpegBin } from "openclaw/plugin-sdk/media-runtime";
+import { spawnProcess } from "openclaw/plugin-sdk/process-runtime";
 import { createStreamingPcmResampler } from "openclaw/plugin-sdk/realtime-voice";
 import { logVerbose, shouldLogVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { formatErrorMessage } from "openclaw/plugin-sdk/ssrf-runtime";
@@ -81,10 +81,11 @@ export function createDiscordOpusEncodeStream(): DiscordOpusEncodeStream {
 
 export function createDiscordOpusPlaybackStream(input: Readable | string): Readable {
   const inputSource = typeof input === "string" ? input : "pipe:0";
-  const ffmpeg = spawn(resolveFfmpegBin(), ["-i", inputSource, ...FFMPEG_PCM_ARGUMENTS, "pipe:1"], {
-    stdio: ["pipe", "pipe", "pipe"],
-    windowsHide: true,
-  });
+  const ffmpeg = spawnProcess(
+    resolveFfmpegBin(),
+    ["-i", inputSource, ...FFMPEG_PCM_ARGUMENTS, "pipe:1"],
+    { stdio: ["pipe", "pipe", "pipe"], windowsHide: true },
+  );
   const opusStream = createDiscordOpusEncodeStream();
   const stderr = Buffer.alloc(FFMPEG_ERROR_OUTPUT_BYTES);
   let stderrBytes = 0;
@@ -94,12 +95,6 @@ export function createDiscordOpusPlaybackStream(input: Readable | string): Reada
       ffmpeg.kill(signal);
     }
   };
-
-  ffmpeg.stderr.on("data", (chunk: Buffer) => {
-    if (stderrBytes < FFMPEG_ERROR_OUTPUT_BYTES) {
-      stderrBytes += chunk.copy(stderr, stderrBytes, 0, FFMPEG_ERROR_OUTPUT_BYTES - stderrBytes);
-    }
-  });
 
   ffmpeg.once("error", (err) => {
     opusStream.destroy(err);
@@ -118,21 +113,6 @@ export function createDiscordOpusPlaybackStream(input: Readable | string): Reada
     }
   });
 
-  // Both readable child pipes need listeners; an unhandled stream error terminates Node.
-  for (const readable of [ffmpeg.stdout, ffmpeg.stderr]) {
-    readable.on("error", (err) => {
-      // A broken output pipe cannot drain usefully; force termination so a
-      // blocked ffmpeg process cannot outlive the failed playback stream.
-      killFfmpeg("SIGKILL");
-      opusStream.destroy(err);
-    });
-  }
-  ffmpeg.stdin.on("error", (err) => {
-    if ((err as NodeJS.ErrnoException).code !== "EPIPE") {
-      opusStream.destroy(err);
-    }
-  });
-  ffmpeg.stdout.pipe(opusStream);
   opusStream.once("close", () => {
     if (!opusStream.readableEnded) {
       killFfmpeg();
@@ -140,13 +120,49 @@ export function createDiscordOpusPlaybackStream(input: Readable | string): Reada
   });
   if (typeof input !== "string") {
     input.on("error", (err) => {
-      ffmpeg.stdin.destroy(err);
+      ffmpeg.stdin?.destroy();
       opusStream.destroy(err);
     });
-    input.pipe(ffmpeg.stdin);
-  } else {
-    ffmpeg.stdin.end();
   }
+  ffmpeg.once("spawn", () => {
+    // Broker pipes arrive asynchronously; keep cancellation live while waiting
+    // and never start consuming provider audio after playback was destroyed.
+    const { stdin, stdout, stderr: stderrStream } = ffmpeg;
+    if (!stdin || !stdout || !stderrStream) {
+      killFfmpeg("SIGKILL");
+      opusStream.destroy(new Error("ffmpeg did not provide its stdio pipes"));
+      return;
+    }
+    stderrStream.on("data", (chunk: Buffer) => {
+      if (stderrBytes < FFMPEG_ERROR_OUTPUT_BYTES) {
+        stderrBytes += chunk.copy(stderr, stderrBytes, 0, FFMPEG_ERROR_OUTPUT_BYTES - stderrBytes);
+      }
+    });
+    // Both readable child pipes need listeners; an unhandled stream error terminates Node.
+    for (const readable of [stdout, stderrStream]) {
+      readable.on("error", (err) => {
+        // A broken output pipe cannot drain usefully; force termination so a
+        // blocked ffmpeg process cannot outlive the failed playback stream.
+        killFfmpeg("SIGKILL");
+        opusStream.destroy(err);
+      });
+    }
+    stdin.on("error", (err) => {
+      if ((err as NodeJS.ErrnoException).code !== "EPIPE") {
+        opusStream.destroy(err);
+      }
+    });
+    if (opusStream.destroyed) {
+      killFfmpeg();
+      return;
+    }
+    stdout.pipe(opusStream);
+    if (typeof input !== "string") {
+      input.pipe(stdin);
+    } else {
+      stdin.end();
+    }
+  });
   return opusStream;
 }
 

@@ -47,8 +47,8 @@ if (fixtureProcfs) {
   fsp.readFile = (file, ...args) => originalReadFile(mapped.get(file) ?? file, ...args);
   fs.readFileSync = (file, ...args) => originalReadFileSync(mapped.get(file) ?? file, ...args);
   fs.openSync = (file, ...args) => originalOpenSync(mapped.get(file) ?? file, ...args);
-  const originalExecFile = childProcess.execFile;
-  childProcess.execFile = (file, args, ...rest) => {
+  const originalSpawn = childProcess.spawn;
+  childProcess.spawn = (file, args, ...rest) => {
     const evalIndex = args.indexOf("-e");
     if (file === process.execPath && evalIndex >= 0) {
       const injected = `const fixtureFs = require("node:fs");
@@ -58,9 +58,9 @@ fixtureFs.openSync = (file, ...args) => fixtureOpen(fixtureFiles.get(file) ?? fi
 `;
       const injectedArgs = args.slice();
       injectedArgs[evalIndex + 1] = injected + injectedArgs[evalIndex + 1];
-      return originalExecFile(file, injectedArgs, ...rest);
+      return originalSpawn(file, injectedArgs, ...rest);
     }
-    return originalExecFile(file, args, ...rest);
+    return originalSpawn(file, args, ...rest);
   };
   Object.defineProperty(process, "platform", { value: "linux", configurable: true });
   syncBuiltinESMExports();

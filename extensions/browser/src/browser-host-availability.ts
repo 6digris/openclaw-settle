@@ -30,7 +30,7 @@ export async function isBrowserHostAvailable(
   }
   try {
     if (
-      resolveBrowserExecutableForPlatform(
+      await resolveBrowserExecutableForPlatform(
         { ...resolved, executablePath: profile.executablePath },
         process.platform,
       )

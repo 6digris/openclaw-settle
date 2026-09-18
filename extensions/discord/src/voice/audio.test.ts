@@ -209,6 +209,7 @@ describe("createDiscordOpusPlaybackStream child stream errors", () => {
       const errorSeen = new Promise<Error>((resolve) => {
         playback.once("error", resolve);
       });
+      ffmpeg.emit("spawn");
 
       const streamError = new Error(`${streamName} broke`);
       expect(() => ffmpeg[streamName].emit("error", streamError)).not.toThrow();
@@ -227,6 +228,7 @@ describe("createDiscordOpusPlaybackStream child stream errors", () => {
     const errorSeen = new Promise<Error>((resolve) => {
       playback.once("error", resolve);
     });
+    ffmpeg.emit("spawn");
 
     ffmpeg.stderr.write("é".repeat(4095));
     ffmpeg.stderr.write("😀");
@@ -237,6 +239,25 @@ describe("createDiscordOpusPlaybackStream child stream errors", () => {
     expect(stderrText).toBe("é".repeat(4095));
     expect(Buffer.byteLength(stderrText)).toBeLessThanOrEqual(8192);
     expect(stderrText).not.toContain("\uFFFD");
+  });
+
+  it("cancels playback before ffmpeg readiness without consuming provider audio", async () => {
+    const ffmpeg = createFakeFfmpeg();
+    spawnMock.mockReturnValue(ffmpeg);
+    const input = new PassThrough();
+    const forwarded: Buffer[] = [];
+    ffmpeg.stdin.on("data", (chunk: Buffer) => forwarded.push(chunk));
+    const playback = createDiscordOpusPlaybackStream(input);
+    const closed = new Promise<void>((resolve) => playback.once("close", resolve));
+
+    input.write("queued provider audio");
+    playback.destroy();
+    ffmpeg.emit("spawn");
+    await closed;
+
+    expect(ffmpeg.kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
+    expect(forwarded).toEqual([]);
+    input.destroy();
   });
 });
 

@@ -158,6 +158,10 @@ async function runProcess(
     terminateRemote: remoteExec.terminate,
   });
   managed.child = owner;
+  if (managed.terminationRequested) {
+    await owner.terminate();
+    throwIfProcessStartCancelled(managed);
+  }
   const child = owner.process;
   child.stdout.on("data", (chunk: Buffer) =>
     appendProcessChunk(managed, managed.tty ? "pty" : "stdout", chunk),

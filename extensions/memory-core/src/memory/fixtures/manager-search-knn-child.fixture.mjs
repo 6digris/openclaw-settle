@@ -8,6 +8,33 @@ const chunks = [];
 process.stdin.on("data", (chunk) => chunks.push(chunk));
 process.stdin.once("end", () => {
   const input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  if (input.databasePath === "fixture:process-context") {
+    process.stdout.write(
+      JSON.stringify({
+        status: "ok",
+        value: {
+          rows: [
+            {
+              id: "process-context",
+              path: "memory/process-context.md",
+              start_line: 1,
+              end_line: 1,
+              text: JSON.stringify({
+                parent: process.ppid,
+                cwd: process.cwd(),
+                temp: process.env.TMPDIR,
+                secret: process.env.SYNTHETIC_KNN_SECRET,
+              }),
+              source: "memory",
+              dist: 0,
+            },
+          ],
+          fallbackScanRequired: false,
+        },
+      }),
+    );
+    return;
+  }
   if (input.databasePath === "fixture:malformed") {
     process.stdout.write("not-json");
     return;

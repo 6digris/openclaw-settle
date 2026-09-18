@@ -47,6 +47,11 @@ import {
 import { getAuthStorageOAuthProviderRegistry } from "./auth-storage-oauth-registry.js";
 import type { AuthStatus, AuthStorage } from "./auth-storage.js";
 import {
+  resolveModelRequestAuth,
+  type ProviderRequestConfig,
+  type ResolvedRequestAuth,
+} from "./model-registry-request-auth.js";
+import {
   getModelRegistryRuntime,
   initializeModelRegistryRuntime,
   resetModelRegistryRuntime,
@@ -58,11 +63,9 @@ import {
   type ProviderAuthMode,
 } from "./model-registry-schema.js";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "./provider-display-names.js";
-import {
-  resolveConfigValueOrThrow,
-  resolveConfigValueUncached,
-  resolveHeadersOrThrow,
-} from "./resolve-config-value.js";
+import { resolveConfigValueUncached } from "./resolve-config-value.js";
+
+export type { ResolvedRequestAuth } from "./model-registry-request-auth.js";
 
 const log = createSubsystemLogger("agents/model-registry");
 
@@ -92,25 +95,6 @@ function captureInventoryProvider(
     })),
   };
 }
-
-interface ProviderRequestConfig {
-  baseUrls?: readonly string[];
-  apiKey?: string;
-  auth?: ProviderAuthMode;
-  headers?: Record<string, string>;
-  authHeader?: boolean;
-}
-
-export type ResolvedRequestAuth =
-  | {
-      ok: true;
-      apiKey?: string;
-      headers?: Record<string, string>;
-    }
-  | {
-      ok: false;
-      error: string;
-    };
 
 /** Result of loading custom models from models.json */
 interface CustomModelsResult {
@@ -809,56 +793,13 @@ export class ModelRegistry {
    * Get API key and request headers for a model.
    */
   async getApiKeyAndHeaders(model: Model): Promise<ResolvedRequestAuth> {
-    try {
-      const providerConfig = this.getModelProviderRequestConfig(model);
-      const usesAwsSdkAuth = providerConfig?.auth === "aws-sdk";
-      const apiKeyFromAuthStorage = usesAwsSdkAuth
-        ? undefined
-        : await this.authStorage.getApiKey(model.provider, {
-            includeFallback: false,
-            baseUrl: model.baseUrl,
-          });
-      const apiKey =
-        apiKeyFromAuthStorage ??
-        (!usesAwsSdkAuth && providerConfig?.apiKey
-          ? resolveConfigValueOrThrow(
-              providerConfig.apiKey,
-              `API key for provider "${model.provider}"`,
-            )
-          : undefined);
-
-      const providerHeaders = resolveHeadersOrThrow(
-        providerConfig?.headers,
-        `provider "${model.provider}"`,
-      );
-      const modelHeaders = resolveHeadersOrThrow(
+    return resolveModelRequestAuth({
+      authStorage: this.authStorage,
+      model,
+      providerConfig: this.getModelProviderRequestConfig(model),
+      getModelHeaders: () =>
         this.modelRequestHeaders.get(this.getModelRequestKey(model.provider, model.id)),
-        `model "${model.provider}/${model.id}"`,
-      );
-
-      let headers =
-        model.headers || providerHeaders || modelHeaders
-          ? { ...model.headers, ...providerHeaders, ...modelHeaders }
-          : undefined;
-
-      if (providerConfig?.authHeader) {
-        if (!apiKey) {
-          return { ok: false, error: `No API key found for "${model.provider}"` };
-        }
-        headers = { ...headers, Authorization: `Bearer ${apiKey}` };
-      }
-
-      return {
-        ok: true,
-        apiKey,
-        headers: headers && Object.keys(headers).length > 0 ? headers : undefined,
-      };
-    } catch (error) {
-      return {
-        ok: false,
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
+    });
   }
 
   /**

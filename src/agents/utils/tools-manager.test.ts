@@ -11,12 +11,13 @@ import os, { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import type { FileLockOptions } from "../../infra/file-lock.js";
 import { snapshotFiles } from "../../infra/state-migrations.caller-mode.test-helpers.js";
 import { deleteTestEnvValue, setTestEnvValue } from "../../test-utils/env.js";
 
 const fetchWithSsrFGuardMock = vi.hoisted(() => vi.fn());
-const spawnSyncMock = vi.hoisted(() => vi.fn());
+const commandExistsMock = vi.hoisted(() => vi.fn());
 const extractArchiveMock = vi.hoisted(() => vi.fn());
 const withFileLockMock = vi.hoisted(() =>
   vi.fn(async (_path: string, _options: FileLockOptions, fn: () => Promise<unknown>) => fn()),
@@ -26,9 +27,8 @@ vi.mock("../../infra/net/fetch-guard.js", () => ({
   fetchWithSsrFGuard: fetchWithSsrFGuardMock,
 }));
 
-vi.mock("node:child_process", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("node:child_process")>()),
-  spawnSync: spawnSyncMock,
+vi.mock("./tools-manager-probe.js", () => ({
+  commandExists: commandExistsMock,
 }));
 
 vi.mock("../../infra/archive.js", () => ({
@@ -53,12 +53,7 @@ beforeEach(() => {
     .mockImplementation(
       async (_path: string, _options: FileLockOptions, fn: () => Promise<unknown>) => fn(),
     );
-  spawnSyncMock.mockReturnValue({
-    error: new Error("ENOENT"),
-    status: null,
-    stderr: Buffer.alloc(0),
-    stdout: Buffer.alloc(0),
-  });
+  commandExistsMock.mockResolvedValue(false);
 });
 
 afterEach(() => {
@@ -105,9 +100,9 @@ describe("ensureTool", () => {
         expect(getBashShellEnv(undefined, sourceEnv)).toEqual(sourceEnv);
       } else {
         const { ensureTool } = await import("./tools-manager.js");
-        spawnSyncMock.mockReturnValue({ status: 0 });
+        commandExistsMock.mockResolvedValue(true);
         await expect(ensureTool(tool, true)).resolves.toBe(tool);
-        spawnSyncMock.mockReturnValue({ status: 1 });
+        commandExistsMock.mockResolvedValue(false);
         await expect(ensureTool(tool, true)).resolves.toBeUndefined();
         expect(fetchWithSsrFGuardMock).not.toHaveBeenCalled();
       }
@@ -296,14 +291,20 @@ describe("ensureTool", () => {
     const releaseCheck = new Promise<Parameters<typeof resolveReleaseCheck>[0]>((resolve) => {
       resolveReleaseCheck = resolve;
     });
+    const releaseCheckStarted = createDeferred<void>();
     extractArchiveMock.mockImplementation(async (params: { destDir: string }) => {
       writeFileSync(join(params.destDir, "fd"), "binary");
     });
-    fetchWithSsrFGuardMock.mockReturnValueOnce(releaseCheck).mockResolvedValueOnce({
-      response: new Response("archive-bytes", { status: 200 }),
-      release: downloadRelease,
-      finalUrl: "https://github.com/sharkdp/fd/releases/download/v10.3.0/archive.tar.gz",
-    });
+    fetchWithSsrFGuardMock
+      .mockImplementationOnce(() => {
+        releaseCheckStarted.resolve();
+        return releaseCheck;
+      })
+      .mockResolvedValueOnce({
+        response: new Response("archive-bytes", { status: 200 }),
+        release: downloadRelease,
+        finalUrl: "https://github.com/sharkdp/fd/releases/download/v10.3.0/archive.tar.gz",
+      });
     withFileLockMock.mockImplementationOnce(
       async (lockPath: string, _options: FileLockOptions, fn: () => Promise<unknown>) => {
         expect(existsSync(dirname(lockPath))).toBe(true);
@@ -313,6 +314,7 @@ describe("ensureTool", () => {
 
     const installs = [ensureTool("fd", true), ensureTool("fd", true)];
 
+    await releaseCheckStarted.promise;
     expect(fetchWithSsrFGuardMock).toHaveBeenCalledOnce();
     resolveReleaseCheck({
       response: new Response(JSON.stringify({ tag_name: "v10.3.0" }), { status: 200 }),
@@ -557,18 +559,10 @@ describe("ensureTool", () => {
   });
 });
 
-describe("ensureTool exit-status handling", () => {
-  it("treats a binary that spawns but exits non-zero as missing", async () => {
+describe("ensureTool probe results", () => {
+  it("attempts a download when all system binary probes fail", async () => {
     const { ensureTool } = await import("./tools-manager.js");
-    // execve succeeded (no result.error) but the child exited non-zero — the
-    // signature of an installed-but-broken binary (GLIBC / shared-lib mismatch).
-    // Must not be reported as available, or ensureTool skips its download path.
-    spawnSyncMock.mockReturnValue({
-      error: undefined,
-      status: 1,
-      stderr: Buffer.alloc(0),
-      stdout: Buffer.alloc(0),
-    });
+    commandExistsMock.mockResolvedValue(false);
     const release = vi.fn(async () => {});
     fetchWithSsrFGuardMock.mockResolvedValueOnce({
       response: new Response("unavailable", { status: 503 }),
@@ -581,20 +575,11 @@ describe("ensureTool exit-status handling", () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
-  it("reports a binary present when it spawns and exits 0", async () => {
+  it("uses an available system binary without a download", async () => {
     const { ensureTool } = await import("./tools-manager.js");
-    spawnSyncMock.mockReturnValue({
-      error: undefined,
-      status: 0,
-      stderr: Buffer.alloc(0),
-      stdout: Buffer.alloc(0),
-    });
+    commandExistsMock.mockResolvedValue(true);
     await expect(ensureTool("fd", true)).resolves.toBe("fd");
-    expect(spawnSyncMock).toHaveBeenCalledWith("fd", ["--version"], {
-      killSignal: "SIGKILL",
-      stdio: "pipe",
-      timeout: 5_000,
-    });
+    expect(commandExistsMock).toHaveBeenCalledWith("fd");
     expect(fetchWithSsrFGuardMock).not.toHaveBeenCalled();
   });
 });

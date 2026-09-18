@@ -25,3 +25,4 @@ export {
   isPidDefinitelyDead,
 } from "../shared/pid-alive.js";
 export { prepareSecretInputStdio, type SpawnStdioEntry } from "../process/spawn-secret-input.js";
+export { spawnProcess } from "../process/spawn-utils.js";

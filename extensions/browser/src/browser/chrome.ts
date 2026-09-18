@@ -668,7 +668,7 @@ async function ensureManagedChromePortAvailable(
     return;
   } catch (err) {
     signal?.throwIfAborted();
-    const exe = resolveBrowserExecutable(resolved, profile);
+    const exe = await resolveBrowserExecutable(resolved, profile);
     if (!isPortInUseError(err) || !exe) {
       throw err;
     }
@@ -744,7 +744,7 @@ export class ManagedChromeCleanupError extends Error {
 function resolveBrowserExecutable(
   resolved: ResolvedBrowserConfig,
   profile: ResolvedBrowserProfile,
-): BrowserExecutable | null {
+): Promise<BrowserExecutable | null> {
   return resolveBrowserExecutableForPlatform(
     { ...resolved, executablePath: profile.executablePath ?? resolved.executablePath },
     process.platform,
@@ -1020,6 +1020,7 @@ export async function launchOpenClawChrome(
 
   const userDataDir = resolveOpenClawUserDataDir(profile.name);
   await ensureManagedChromePortAvailable(resolved, profile, userDataDir, signal);
+  const exe = await resolveBrowserExecutable(resolved, profile);
   signal?.throwIfAborted();
 
   const lock = readSingletonLockTarget(userDataDir);
@@ -1031,7 +1032,6 @@ export async function launchOpenClawChrome(
     );
   }
 
-  const exe = resolveBrowserExecutable(resolved, profile);
   if (!exe) {
     throw new Error(
       "No supported browser found (Chrome/Brave/Edge/Chromium on macOS, Linux, or Windows).",
@@ -1548,7 +1548,7 @@ export async function stopOwnedOpenClawChrome(
   const pid = lock.pid;
   let exe: BrowserExecutable | null;
   try {
-    exe = resolveBrowserExecutable(resolved, profile);
+    exe = await resolveBrowserExecutable(resolved, profile);
   } catch {
     return { status: "unverified", reason: "Managed browser executable could not be resolved" };
   }

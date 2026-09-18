@@ -9,7 +9,7 @@ const { getState, getSource, isReachable, resolveExecutable } = vi.hoisted(() =>
   getState: vi.fn<() => BrowserServerState | null>(() => null),
   getSource: vi.fn<() => OpenClawConfig | null>(() => null),
   isReachable: vi.fn(async () => false),
-  resolveExecutable: vi.fn<() => BrowserExecutable | null>(() => null),
+  resolveExecutable: vi.fn<() => Promise<BrowserExecutable | null>>(async () => null),
 }));
 vi.mock("./browser-control-state.js", () => ({ getBrowserControlState: getState }));
 vi.mock("./config/config.js", () => ({ getRuntimeConfigSourceSnapshot: getSource }));
@@ -28,13 +28,13 @@ describe("browser host availability", () => {
     isReachable.mockReset().mockResolvedValue(false);
     resolveExecutable
       .mockReset()
-      .mockReturnValue({ kind: "chrome", path: "/usr/bin/google-chrome" });
+      .mockResolvedValue({ kind: "chrome", path: "/usr/bin/google-chrome" });
   });
 
   it("keeps a stopped managed browser local when its executable exists", async () => {
     expect(await isBrowserHostAvailable({})).toBe(true);
     expect(isReachable).not.toHaveBeenCalled();
-    resolveExecutable.mockReturnValue(null);
+    resolveExecutable.mockResolvedValue(null);
     expect(await isBrowserHostAvailable({})).toBe(false);
   });
 
@@ -73,7 +73,7 @@ describe("browser host availability", () => {
   ])(
     "preserves a configured $name connection without a managed executable",
     async ({ profile }) => {
-      resolveExecutable.mockReturnValue(null);
+      resolveExecutable.mockResolvedValue(null);
       expect(
         await isBrowserHostAvailable({ browser: { profiles: { work: profile } } }, "work"),
       ).toBe(true);
@@ -107,13 +107,13 @@ describe("browser host availability", () => {
         ],
       ]),
     });
-    resolveExecutable.mockReturnValue(null);
+    resolveExecutable.mockResolvedValue(null);
     expect(await isBrowserHostAvailable({})).toBe(true);
     expect(resolveExecutable).not.toHaveBeenCalled();
   });
 
   it("recognizes a surviving browser after its runtime and executable were removed", async () => {
-    resolveExecutable.mockReturnValue(null);
+    resolveExecutable.mockResolvedValue(null);
     isReachable.mockResolvedValue(true);
     expect(await isBrowserHostAvailable({})).toBe(true);
     expect(isReachable).toHaveBeenCalledWith("http://127.0.0.1:18800");
@@ -129,7 +129,7 @@ describe("browser host availability", () => {
   });
 
   it("leaves an invalid explicit executable on the host to report its configuration error", async () => {
-    resolveExecutable.mockImplementation(() => {
+    resolveExecutable.mockImplementation(async () => {
       throw new Error("browser.executablePath not found");
     });
     expect(await isBrowserHostAvailable({ browser: { executablePath: "/missing/chrome" } })).toBe(

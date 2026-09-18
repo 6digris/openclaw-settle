@@ -126,6 +126,7 @@ export async function spawnTerminalPty(
     env: env ?? process.env,
   });
   assertCurrent();
+  // The spawn broker transfers child pipes/IPC, not node-pty's terminal handle and resize API.
   const pty = spawn(invocation.file, invocation.args, {
     name: terminalName,
     cols: params.cols,

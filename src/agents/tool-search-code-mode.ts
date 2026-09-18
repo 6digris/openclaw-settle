@@ -1,9 +1,9 @@
 import { Buffer } from "node:buffer";
-import { spawn } from "node:child_process";
 import os from "node:os";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { resolveNodeRuntimeExecutable } from "../infra/node-runtime-executable.js";
+import { spawnProcess } from "../process/spawn-utils.js";
 import type { AgentToolUpdateCallback } from "./runtime/index.js";
 import { appendBoundedTextTail, SESSION_TOOL_STDERR_TAIL_BYTES } from "./sessions/tools/limits.js";
 import { TOOL_SEARCH_CODE_MODE_CHILD_SOURCE } from "./tool-search-code-mode-child.js";
@@ -119,7 +119,7 @@ export function runCodeModeChild(params: {
 }): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const command = resolveCodeModeChildCommand();
-    const child = spawn(command.executable, command.args, {
+    const child = spawnProcess(command.executable, command.args, {
       cwd: os.tmpdir(),
       env: {},
       // The worker returns logs/results over IPC and never writes stdout.
@@ -145,7 +145,9 @@ export function runCodeModeChild(params: {
       params.signal?.removeEventListener("abort", abortFromParent);
       // Host tool calls share the child lifetime, including fatal exits and final IPC results.
       bridgeAbortController.abort(abortReason);
-      child.kill();
+      if (!child.killed) {
+        child.kill();
+      }
       callback();
     };
     const abortFromParent: () => void = () => {
@@ -158,20 +160,6 @@ export function runCodeModeChild(params: {
       settle(() => reject(error), error);
     }, params.config.codeTimeoutMs);
     params.signal?.addEventListener("abort", abortFromParent, { once: true });
-    if (params.signal?.aborted) {
-      abortFromParent();
-      return;
-    }
-
-    child.stderr?.setEncoding("utf8");
-    child.stderr?.on("data", (chunk: string) => {
-      const appended = appendBoundedTextTail(stderrTail, chunk);
-      stderrTail = appended.tail;
-      stderrDroppedBytes += appended.droppedBytes;
-    });
-    child.stderr?.on("error", (error) => {
-      settle(() => reject(error));
-    });
     child.on("error", (error) => {
       settle(() => reject(error));
     });
@@ -265,7 +253,24 @@ export function runCodeModeChild(params: {
         });
     });
 
-    child.send({ type: "run", code: params.code, timeoutMs: params.config.codeTimeoutMs });
+    child.once("spawn", () => {
+      // Broker-owned pipes and IPC become available only after spawn readiness.
+      child.stderr?.setEncoding("utf8");
+      child.stderr?.on("data", (chunk: string) => {
+        const appended = appendBoundedTextTail(stderrTail, chunk);
+        stderrTail = appended.tail;
+        stderrDroppedBytes += appended.droppedBytes;
+      });
+      child.stderr?.on("error", (error) => {
+        settle(() => reject(error));
+      });
+      if (!settled) {
+        child.send({ type: "run", code: params.code, timeoutMs: params.config.codeTimeoutMs });
+      }
+    });
+    if (params.signal?.aborted) {
+      abortFromParent();
+    }
   });
 }
 

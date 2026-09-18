@@ -119,12 +119,19 @@ before loading its main runtime.
 If initial broker startup fails, the Gateway logs the failure reason and runtime
 entry path, then uses in-process spawning for the rest of that Gateway process.
 A new Gateway process tries the broker again.
-When the broker is ready, exec commands and command helpers spawn from it, so Linux does not copy
-the Gateway's page tables for each command. The existing process supervisors and
+When the broker is ready, exec commands, shell-snapshot capture and validation,
+tool availability probes, command-backed credentials, code-mode workers, and
+streaming command helpers spawn from it. This avoids copying the Gateway's page
+tables for each Linux fork. The existing process supervisors and
 service relays still own cancellation, output, and cleanup. After the broker first
 becomes ready, broker loss fails affected commands rather than rerunning them; later commands use the restarted
 broker. One-shot CLI commands, native file-descriptor inputs, and independently
 launched applications keep their local process transport, as do Bun, macOS, and Windows.
+Native PTYs retain their terminal-handle owner. Codex app-server startup also
+stays local because its process registration and containment require the Gateway
+to be its direct parent; its sandbox commands and process-inspection helpers use
+the broker. Synchronous public browser-version probes retain their synchronous
+transport, while browser discovery probes use the broker.
 The broker has its own process group, which the Gateway terminates on broker loss;
 service relays also retain their own parent-loss cleanup.
 A detached child can survive a broker crash before its PID is reported, matching

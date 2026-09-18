@@ -36,13 +36,13 @@ try {
   });
   const commandPath = `/proc/${process.pid}/cmdline`;
   const originalOpen = fs.openSync;
-  const originalExecFile = childProcess.execFile;
+  const originalSpawn = childProcess.spawn;
   let inspectorClosed = false;
   let inspectorUsed = false;
   // A blocking FIFO models cmdline's kernel waits; the controller runs independently.
   fs.openSync = (file, ...args) =>
     file === commandPath ? originalOpen(fifo, "r") : originalOpen(file, ...args);
-  childProcess.execFile = (file, args, ...rest) => {
+  childProcess.spawn = (file, args, ...rest) => {
     const evalIndex = args.indexOf("-e");
     if (file === process.execPath && evalIndex >= 0) {
       const injected = `const fixtureFs = require("node:fs");
@@ -52,14 +52,14 @@ fixtureFs.openSync = (file, ...args) => file === ${JSON.stringify(commandPath)}
 `;
       const injectedArgs = args.slice();
       injectedArgs[evalIndex + 1] = injected + injectedArgs[evalIndex + 1];
-      const inspector = originalExecFile(file, injectedArgs, ...rest);
+      const inspector = originalSpawn(file, injectedArgs, ...rest);
       inspectorUsed = true;
       inspector.once("close", () => {
         inspectorClosed = true;
       });
       return inspector;
     }
-    return originalExecFile(file, args, ...rest);
+    return originalSpawn(file, args, ...rest);
   };
   Object.defineProperty(process, "platform", { value: "linux", configurable: true });
   syncBuiltinESMExports();

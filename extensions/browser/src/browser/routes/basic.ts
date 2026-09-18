@@ -197,11 +197,11 @@ async function buildBrowserStatus(
           }),
       )
     : null;
-  let detected: ReturnType<typeof resolveBrowserExecutableForPlatform> = null;
+  let detected: Awaited<ReturnType<typeof resolveBrowserExecutableForPlatform>> = null;
   let detectError: string | null = null;
 
   try {
-    detected = resolveBrowserExecutableForPlatform(
+    detected = await resolveBrowserExecutableForPlatform(
       capabilities.mode === "local-managed" && capabilities.browserFilesystemLocal
         ? { ...current.resolved, executablePath: profileCtx.profile.executablePath }
         : current.resolved,

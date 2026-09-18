@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { EventEmitter, once } from "node:events";
+import { once } from "node:events";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import { Agent, createServer } from "node:http";
@@ -29,6 +29,12 @@ vi.mock("node:child_process", async () => {
     spawn: (...args: unknown[]) => spawnMock(...args),
   };
 });
+
+// Default-browser probes have separate discovery/broker coverage; these children model Chrome.
+vi.mock("./chrome.executable-probe.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./chrome.executable-probe.js")>()),
+  execBrowserProbe: vi.fn(async () => null),
+}));
 
 const { registerManagedProxyBrowserCdpBypassMock } = vi.hoisted(() => ({
   registerManagedProxyBrowserCdpBypassMock: vi.fn<(url: string) => (() => void) | undefined>(
@@ -69,6 +75,11 @@ vi.mock("./cdp-timeouts.js", async () => {
 
 import { CHROME_STDERR_HINT_MAX_CHARS } from "./cdp-timeouts.js";
 import {
+  type FakeProc,
+  makeFailedSpawnProc,
+  makeFakeProc,
+} from "./chrome.fake-process.test-support.js";
+import {
   getChromeWebSocketEndpoint,
   inspectLocalChromeHeadlessMode,
   isChromeCdpReady,
@@ -88,39 +99,6 @@ async function getChromeWebSocketUrl(
   ...args: Parameters<typeof getChromeWebSocketEndpoint>
 ): Promise<string | null> {
   return (await getChromeWebSocketEndpoint(...args))?.url ?? null;
-}
-
-type FakeProc = EventEmitter & {
-  pid?: number;
-  killed: boolean;
-  exitCode: number | null;
-  signalCode: NodeJS.Signals | null;
-  kill: (sig?: string) => boolean;
-  stderr: EventEmitter;
-};
-
-function makeFakeProc(overrides: Partial<FakeProc> = {}): FakeProc {
-  const stderr = new EventEmitter();
-  const proc = Object.assign(new EventEmitter(), {
-    pid: 4242,
-    killed: false,
-    exitCode: null,
-    signalCode: null,
-    kill: vi.fn((sig = "SIGTERM") => {
-      proc.killed = true;
-      proc.signalCode = sig as NodeJS.Signals;
-      proc.emit("exit", null, sig);
-      return true;
-    }),
-    stderr,
-  }) as unknown as FakeProc;
-  return Object.assign(proc, overrides);
-}
-
-function makeFailedSpawnProc(error: NodeJS.ErrnoException): FakeProc {
-  const proc = makeFakeProc({ pid: undefined });
-  queueMicrotask(() => proc.emit("error", error));
-  return proc;
 }
 
 function stubBrowserExecutableAndPrefs(preferences: "present" | "missing") {
@@ -1687,11 +1665,10 @@ describe("chrome.ts internal", () => {
           return false;
         });
         const fakeProc = makeFakeProc();
-        spawnMock.mockReturnValue(fakeProc);
-        // Leak some stderr into the buffer so the hint renders.
-        void Promise.resolve().then(() =>
-          fakeProc.stderr.emit("data", Buffer.from("crash dump\n")),
-        );
+        spawnMock.mockImplementation(() => {
+          queueMicrotask(() => fakeProc.stderr.emit("data", Buffer.from("crash dump\n")));
+          return fakeProc;
+        });
         mockExpiredLaunchPollingClock();
 
         // fetch always fails → isChromeReachable returns false every poll.
@@ -1703,8 +1680,11 @@ describe("chrome.ts internal", () => {
           extraArgs: [],
         } as unknown as ResolvedBrowserConfig;
         const profile = makeProfile(55555);
-        await expect(launchOpenClawChrome(resolved, profile)).rejects.toThrow(
-          /Failed to start Chrome CDP/,
+        const launch = launchOpenClawChrome(resolved, profile);
+        await expect(launch).rejects.toThrow(/Failed to start Chrome CDP/);
+        await expect(launch).rejects.toThrow("Chrome stderr:\ncrash dump");
+        await expect(launch).rejects.toThrow(
+          "If running in a container or as root, try setting browser.noSandbox: true.",
         );
         expect(fakeProc.kill).toHaveBeenCalledWith("SIGKILL");
       } finally {

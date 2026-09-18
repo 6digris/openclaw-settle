@@ -1,13 +1,14 @@
 /** Remote-shell transport operations shared by SSH and provider-owned execution. */
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import { createAbortError } from "../../infra/abort-signal.js";
 import { resolveRootPath } from "../../infra/boundary-path.js";
 import { toErrorObject } from "../../infra/errors.js";
 import { normalizeEnvVarKey } from "../../infra/host-env-security.js";
 import { isPlainCommandExitFailure, spawnCommand } from "../../process/exec.js";
+import { spawnProcess } from "../../process/spawn-utils.js";
 import type { SandboxBackendCommandResult } from "./backend-handle.types.js";
 import { SANDBOX_COMMAND_MAX_BUFFER_BYTES } from "./constants.js";
 import {
@@ -202,17 +203,16 @@ async function uploadDirectoryToRemoteCommand(
   const tarEnv = sanitizeEnvVars(process.env).allowed;
   await new Promise<void>((resolve, reject) => {
     options.assertCurrent?.();
-    const tar = spawn("tar", ["-C", params.localDir, "-cf", "-", "."], {
+    const tar = spawnProcess("tar", ["-C", params.localDir, "-cf", "-", "."], {
       stdio: ["ignore", "pipe", "pipe"],
       env: tarEnv,
-      signal: params.signal,
     });
-    const remote = spawn(executable, args, {
+    const remote = spawnProcess(executable, args, {
       stdio: ["pipe", "pipe", "pipe"],
       env: command.env,
       cwd: command.cwd,
-      signal: params.signal,
     });
+    const archive = new PassThrough();
     const tarStderr: Buffer[] = [];
     const remoteStdout: Buffer[] = [];
     const remoteStderr: Buffer[] = [];
@@ -229,6 +229,8 @@ async function uploadDirectoryToRemoteCommand(
         return;
       }
       settled = true;
+      params.signal?.removeEventListener("abort", onAbort);
+      archive.destroy();
       for (const child of [tar, remote]) {
         try {
           child.kill("SIGKILL");
@@ -239,17 +241,9 @@ async function uploadDirectoryToRemoteCommand(
       reject(toErrorObject(error, "Non-Error rejection"));
     };
 
-    tar.stderr.on("data", (chunk) => tarStderr.push(Buffer.from(chunk)));
-    tar.stderr.on("error", fail);
-    tar.stdout.on("error", fail);
-    remote.stdout.on("data", (chunk) => remoteStdout.push(Buffer.from(chunk)));
-    remote.stdout.on("error", fail);
-    remote.stderr.on("data", (chunk) => remoteStderr.push(Buffer.from(chunk)));
-    remote.stderr.on("error", fail);
-    remote.stdin?.on("error", fail);
-
     tar.on("error", fail);
     remote.on("error", fail);
+    archive.on("error", fail);
 
     tar.on("close", (code, signal) => {
       tarClosed = true;
@@ -269,6 +263,8 @@ async function uploadDirectoryToRemoteCommand(
         return;
       }
       settled = true;
+      params.signal?.removeEventListener("abort", onAbort);
+      archive.destroy();
       // A null code means the process died from a signal (OOM kill, dropped
       // connection, supervisor teardown) without reporting a status. An
       // unknown outcome is not evidence of a completed transfer.
@@ -300,11 +296,50 @@ async function uploadDirectoryToRemoteCommand(
       resolve();
     }
 
-    try {
-      // Readable pipe errors do not close the writable peer automatically.
-      tar.stdout.pipe(remote.stdin);
-    } catch (error) {
-      fail(error);
+    tar.once("spawn", () => {
+      tar.stderr?.on("data", (chunk) => tarStderr.push(Buffer.from(chunk)));
+      tar.stderr?.on("error", fail);
+      tar.stdout?.on("error", fail);
+      if (!settled) {
+        if (!tar.stdout) {
+          fail(new Error("Remote upload archive pipe is unavailable"));
+          return;
+        }
+        // Retain fast-producer output until the broker delivers the remote stdin pipe.
+        tar.stdout.pipe(archive);
+      }
+    });
+    remote.once("spawn", () => {
+      remote.stdout?.on("data", (chunk) => remoteStdout.push(Buffer.from(chunk)));
+      remote.stdout?.on("error", fail);
+      remote.stderr?.on("data", (chunk) => remoteStderr.push(Buffer.from(chunk)));
+      remote.stderr?.on("error", fail);
+      remote.stdin?.on("error", fail);
+      if (!settled) {
+        if (!remote.stdin) {
+          fail(new Error("Remote upload input pipe is unavailable"));
+          return;
+        }
+        try {
+          options.assertCurrent?.();
+          // Readable pipe errors do not close the writable peer automatically.
+          archive.pipe(remote.stdin);
+        } catch (error) {
+          fail(error);
+        }
+      }
+    });
+    function onAbort() {
+      fail(
+        Object.assign(
+          createAbortError("The operation was aborted", { cause: params.signal?.reason }),
+          { code: "ABORT_ERR" },
+        ),
+      );
+    }
+    params.signal?.addEventListener("abort", onAbort, { once: true });
+    if (params.signal?.aborted) {
+      onAbort();
     }
   });
 }

@@ -159,6 +159,8 @@ export async function createStdioTransport(
   });
   const register = await prepareCodexAppServerProcessRegistration();
   assertCurrent?.();
+  // Registration and containment require this long-lived transport's direct
+  // parent to be the Gateway; broker ancestry would remove that authority.
   const child = spawn(invocation.command, invocation.args, {
     // Preserve the shipped Supervisor endpoint contract: relative commands and
     // config discovery may depend on the endpoint's process working directory.

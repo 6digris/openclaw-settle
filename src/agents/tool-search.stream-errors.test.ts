@@ -72,6 +72,7 @@ describe("tool-search code-mode stream errors", () => {
     });
     const settled = vi.fn();
     void promise.then(settled, settled);
+    child.emit("spawn");
     return { child, stderr, promise, settled, runtime };
   }
 

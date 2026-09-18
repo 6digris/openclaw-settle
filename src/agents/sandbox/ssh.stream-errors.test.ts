@@ -85,6 +85,8 @@ describe("SSH sandbox stream errors", () => {
         "tar/ssh upload children did not spawn",
       );
       expect(spawnMock).toHaveBeenCalledTimes(2);
+      tar.emit("spawn");
+      ssh.emit("spawn");
       const [childName, streamName] = stream.split(".") as ["tar" | "ssh", keyof MockChildProcess];
       const failedStream = { tar, ssh }[childName][streamName] as PassThrough;
 

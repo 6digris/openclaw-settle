@@ -147,7 +147,9 @@ function inferKindFromIdentifier(identifier: string): BrowserExecutable["kind"] 
   return "chrome";
 }
 
-function detectDefaultChromiumExecutable(platform: NodeJS.Platform): BrowserExecutable | null {
+async function detectDefaultChromiumExecutable(
+  platform: NodeJS.Platform,
+): Promise<BrowserExecutable | null> {
   if (platform === "darwin") {
     return detectDefaultChromiumExecutableMac();
   }
@@ -160,13 +162,13 @@ function detectDefaultChromiumExecutable(platform: NodeJS.Platform): BrowserExec
   return null;
 }
 
-function detectDefaultChromiumExecutableMac(): BrowserExecutable | null {
-  const bundleId = detectDefaultBrowserBundleIdMac();
+async function detectDefaultChromiumExecutableMac(): Promise<BrowserExecutable | null> {
+  const bundleId = await detectDefaultBrowserBundleIdMac();
   if (!bundleId || !CHROMIUM_BUNDLE_IDS.has(bundleId)) {
     return null;
   }
 
-  const appPathRaw = execBrowserProbe("/usr/bin/osascript", [
+  const appPathRaw = await execBrowserProbe("/usr/bin/osascript", [
     "-e",
     `POSIX path of (path to application id "${bundleId}")`,
   ]);
@@ -174,7 +176,7 @@ function detectDefaultChromiumExecutableMac(): BrowserExecutable | null {
     return null;
   }
   const appPath = appPathRaw.replace(/\/$/, "");
-  const exeName = execBrowserProbe("/usr/bin/defaults", [
+  const exeName = await execBrowserProbe("/usr/bin/defaults", [
     "read",
     path.join(appPath, "Contents", "Info"),
     "CFBundleExecutable",
@@ -189,7 +191,7 @@ function detectDefaultChromiumExecutableMac(): BrowserExecutable | null {
   return { kind: inferKindFromIdentifier(bundleId), path: exePath };
 }
 
-function detectDefaultBrowserBundleIdMac(): string | null {
+async function detectDefaultBrowserBundleIdMac(): Promise<string | null> {
   const plistPath = path.join(
     os.homedir(),
     "Library/Preferences/com.apple.LaunchServices/com.apple.launchservices.secure.plist",
@@ -197,7 +199,7 @@ function detectDefaultBrowserBundleIdMac(): string | null {
   if (!exists(plistPath)) {
     return null;
   }
-  const handlersRaw = execBrowserProbe(
+  const handlersRaw = await execBrowserProbe(
     "/usr/bin/plutil",
     ["-extract", "LSHandlers", "json", "-o", "-", "--", plistPath],
     2000,
@@ -240,10 +242,10 @@ function detectDefaultBrowserBundleIdMac(): string | null {
   return resolveScheme("http") ?? resolveScheme("https");
 }
 
-function detectDefaultChromiumExecutableLinux(): BrowserExecutable | null {
+async function detectDefaultChromiumExecutableLinux(): Promise<BrowserExecutable | null> {
   const desktopId =
-    execBrowserProbe("xdg-settings", ["get", "default-web-browser"]) ||
-    execBrowserProbe("xdg-mime", ["query", "default", "x-scheme-handler/http"]);
+    (await execBrowserProbe("xdg-settings", ["get", "default-web-browser"])) ||
+    (await execBrowserProbe("xdg-mime", ["query", "default", "x-scheme-handler/http"]));
   if (!desktopId) {
     return null;
   }
@@ -263,7 +265,7 @@ function detectDefaultChromiumExecutableLinux(): BrowserExecutable | null {
   if (!command) {
     return null;
   }
-  const resolved = resolveLinuxExecutablePath(command);
+  const resolved = await resolveLinuxExecutablePath(command);
   if (!resolved || !isExecutable(resolved, "linux")) {
     return null;
   }
@@ -274,10 +276,11 @@ function detectDefaultChromiumExecutableLinux(): BrowserExecutable | null {
   return { kind: inferKindFromIdentifier(exeName), path: resolved };
 }
 
-function detectDefaultChromiumExecutableWindows(): BrowserExecutable | null {
-  const progId = readWindowsProgId();
+async function detectDefaultChromiumExecutableWindows(): Promise<BrowserExecutable | null> {
+  const progId = await readWindowsProgId();
   const command =
-    (progId ? readWindowsCommandForProgId(progId) : null) || readWindowsCommandForProgId("http");
+    (progId ? await readWindowsCommandForProgId(progId) : null) ||
+    (await readWindowsCommandForProgId("http"));
   if (!command) {
     return null;
   }
@@ -400,7 +403,7 @@ function splitExecLine(line: string): string[] {
   return tokens;
 }
 
-function resolveLinuxExecutablePath(command: string): string | null {
+async function resolveLinuxExecutablePath(command: string): Promise<string | null> {
   const cleaned = command.trim().replace(/%[a-zA-Z]/g, "");
   if (!cleaned) {
     return null;
@@ -408,12 +411,12 @@ function resolveLinuxExecutablePath(command: string): string | null {
   if (cleaned.startsWith("/")) {
     return cleaned;
   }
-  const resolved = execBrowserProbe("which", [cleaned], 800);
+  const resolved = await execBrowserProbe("which", [cleaned], 800);
   return resolved ? resolved.trim() : null;
 }
 
-function readWindowsProgId(): string | null {
-  const output = execBrowserProbe("reg", [
+async function readWindowsProgId(): Promise<string | null> {
+  const output = await execBrowserProbe("reg", [
     "query",
     "HKCU\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\http\\UserChoice",
     "/v",
@@ -426,12 +429,12 @@ function readWindowsProgId(): string | null {
   return match?.[1]?.trim() || null;
 }
 
-function readWindowsCommandForProgId(progId: string): string | null {
+async function readWindowsCommandForProgId(progId: string): Promise<string | null> {
   const key =
     progId === "http"
       ? "HKCR\\http\\shell\\open\\command"
       : `HKCR\\${progId}\\shell\\open\\command`;
-  const output = execBrowserProbe("reg", ["query", key, "/ve"]);
+  const output = await execBrowserProbe("reg", ["query", key, "/ve"]);
   if (!output) {
     return null;
   }
@@ -691,10 +694,10 @@ export function resolveGoogleChromeExecutableForPlatform(
 }
 
 /** Resolve the preferred Chromium-family executable for a platform. */
-export function resolveBrowserExecutableForPlatform(
+export async function resolveBrowserExecutableForPlatform(
   resolved: ResolvedBrowserConfig,
   platform: NodeJS.Platform,
-): BrowserExecutable | null {
+): Promise<BrowserExecutable | null> {
   if (resolved.executablePath) {
     if (!exists(resolved.executablePath)) {
       throw new Error(`browser.executablePath not found: ${resolved.executablePath}`);
@@ -711,7 +714,7 @@ export function resolveBrowserExecutableForPlatform(
     return { kind: "custom", path: directPath };
   }
 
-  const detected = detectDefaultChromiumExecutable(platform);
+  const detected = await detectDefaultChromiumExecutable(platform);
   if (detected) {
     return detected;
   }

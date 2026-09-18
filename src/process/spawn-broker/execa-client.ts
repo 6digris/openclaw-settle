@@ -1,4 +1,5 @@
 import { once } from "node:events";
+import path from "node:path";
 import type { Options } from "execa";
 import {
   restoreExecaResult,
@@ -108,7 +109,7 @@ export function brokerExecaOptions(options: Options): BrokerExecaOptions | undef
   }
   const { cancelSignal: _cancelSignal, ...serializable } = options;
   // SAFETY: The allowed options were checked above, excluding streams, URLs, IPC and native descriptors.
-  return serializable as BrokerExecaOptions;
+  return { ...serializable, cwd: path.resolve(options.cwd ?? ".") } as BrokerExecaOptions;
 }
 
 export function spawnBrokerCommand(

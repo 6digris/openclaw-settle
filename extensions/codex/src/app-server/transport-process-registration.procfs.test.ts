@@ -55,7 +55,7 @@ vi.mock("node:fs", async (importOriginal) => {
 vi.mock("node:child_process", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:child_process")>();
   const { createProcfsCommandFixture } = await import("./transport-procfs.test-support.js");
-  return { ...original, execFile: createProcfsCommandFixture(original, procfs.readFile) };
+  return { ...original, spawn: createProcfsCommandFixture(original, procfs.readFile) };
 });
 
 const bootId = "00000000-0000-0000-0000-000000000001";

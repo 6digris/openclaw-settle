@@ -86,6 +86,17 @@ Native command probes should use `runCommandWithTimeout` from
 before returning. For commands whose output is always UTF-8, such as JSON status
 probes, use `runUtf8CommandWithTimeout` from the same subpath.
 
+Existing streaming process owners can use `spawnProcess(command, args, options)`
+from `openclaw/plugin-sdk/process-runtime`. It selects the Gateway's spawn broker
+when available while preserving the supplied environment and launch options.
+Attach `error` and `close` handlers immediately, but wait for `spawn` before using
+the PID, IPC channel, or stdio streams. Cancellation can arrive before `spawn`;
+retain the child handle and call `kill()` even when its PID is not available yet.
+The caller still owns stream limits, deadlines, process-tree cleanup, and
+settlement. Broker-backed calls support pipe/ignore stdio and IPC; native numeric
+descriptors stay local. Handle cancellation in the caller instead of passing
+native `signal`, `timeout`, or `killSignal` options to this low-level helper.
+
 When launching an isolated Gateway child that your plugin owns, remove
 `SUPERVISOR_HINT_ENV_VARS` from its environment after applying caller overrides.
 This list is exported from `openclaw/plugin-sdk/process-runtime`; inherited parent

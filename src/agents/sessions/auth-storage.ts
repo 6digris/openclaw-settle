@@ -764,12 +764,12 @@ export class AuthStorage {
     const resolved = (apiKey: string | undefined) => ({ apiKey, source });
 
     if (cred?.type === "api_key") {
-      return resolved(resolveConfigValue(cred.key));
+      return resolved(await resolveConfigValue(cred.key));
     }
 
     if (cred?.type === "token") {
       if (cred.expires === undefined || Date.now() < cred.expires) {
-        return resolved(resolveConfigValue(cred.token));
+        return resolved(await resolveConfigValue(cred.token));
       }
     }
 

@@ -1,9 +1,9 @@
 // Parent-side subprocess boundary for synchronous sqlite-vec KNN work.
-import { spawn } from "node:child_process";
 import { ensureSqliteLibrarySelected } from "openclaw/plugin-sdk/memory-core-host-engine-knn";
 import {
   resolveRuntimeWorkerArgv,
   resolveRuntimeWorkerUrl,
+  spawnProcess,
 } from "openclaw/plugin-sdk/process-runtime";
 import { vectorKnnProcessEntrypoint } from "./manager-search-knn-entrypoint.js";
 import type { VectorKnnChildInput, VectorKnnChildResult } from "./manager-search-knn.child.js";
@@ -181,7 +181,7 @@ export async function runVectorKnnInSubprocess(
   let child;
   try {
     const childUrl = resolveRuntimeWorkerUrl(vectorKnnProcessEntrypoint);
-    child = spawn(process.execPath, resolveRuntimeWorkerArgv(childUrl), {
+    child = spawnProcess(process.execPath, resolveRuntimeWorkerArgv(childUrl), {
       env: buildChildEnv(),
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
@@ -228,7 +228,7 @@ export async function runVectorKnnInSubprocess(
         return;
       }
       terminationReason = reason;
-      child.stdin.destroy();
+      child.stdin?.destroy();
       // This read-only Node child creates no descendants. Kill the owned handle:
       // native SQLite cannot service graceful shutdown while its query is busy.
       child.kill("SIGKILL");
@@ -237,9 +237,9 @@ export async function runVectorKnnInSubprocess(
           // The caller may return, but this child keeps its admission slot until
           // close. Destroying pipes and unref'ing prevents one unkillable OS task
           // from pinning the Gateway while the slot bounds future accumulation.
-          child.stdin.destroy();
-          child.stdout.destroy();
-          child.stderr.destroy();
+          child.stdin?.destroy();
+          child.stdout?.destroy();
+          child.stderr?.destroy();
           child.unref();
           settleCaller(() =>
             reject(
@@ -256,40 +256,6 @@ export async function runVectorKnnInSubprocess(
       requestTermination(toAbortError(params.signal!));
     };
 
-    params.signal?.addEventListener("abort", abort, { once: true });
-    if (params.signal?.aborted) {
-      abort();
-    }
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdoutBytes += chunk.byteLength;
-      if (stdoutBytes > MAX_STDOUT_BYTES) {
-        const failure = new VectorKnnSubprocessError(
-          "memory vector KNN child stdout exceeded its limit",
-          "protocol",
-        );
-        stdoutChunks.length = 0;
-        requestTermination(failure);
-        return;
-      }
-      stdoutChunks.push(chunk);
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderrBytes += chunk.byteLength;
-      if (stderrBytes > MAX_STDERR_BYTES) {
-        const failure = new VectorKnnSubprocessError(
-          "memory vector KNN child stderr exceeded its limit",
-          "protocol",
-        );
-        requestTermination(failure);
-        return;
-      }
-      stderrChunks.push(chunk);
-    });
-    child.stdin.on("error", (error: NodeJS.ErrnoException) => {
-      if (!terminationReason && error.code !== "EPIPE") {
-        requestTermination(new VectorKnnSubprocessError(error.message, "failed"));
-      }
-    });
     child.once("error", (error) => {
       requestTermination(new VectorKnnSubprocessError(error.message, "unavailable"));
     });
@@ -324,6 +290,58 @@ export async function runVectorKnnInSubprocess(
         }
       });
     });
-    child.stdin.end(inputPayload);
+    child.once("spawn", () => {
+      // Broker-owned pipes arrive with spawn; cancellation and close ownership
+      // are registered before readiness so admission cannot escape on abort.
+      const { stdin, stdout, stderr } = child;
+      if (!stdin || !stdout || !stderr) {
+        requestTermination(
+          new VectorKnnSubprocessError(
+            "memory vector KNN child did not provide its stdio pipes",
+            "unavailable",
+          ),
+        );
+        return;
+      }
+      stdout.on("data", (chunk: Buffer) => {
+        stdoutBytes += chunk.byteLength;
+        if (stdoutBytes > MAX_STDOUT_BYTES) {
+          const failure = new VectorKnnSubprocessError(
+            "memory vector KNN child stdout exceeded its limit",
+            "protocol",
+          );
+          stdoutChunks.length = 0;
+          requestTermination(failure);
+          return;
+        }
+        stdoutChunks.push(chunk);
+      });
+      stderr.on("data", (chunk: Buffer) => {
+        stderrBytes += chunk.byteLength;
+        if (stderrBytes > MAX_STDERR_BYTES) {
+          const failure = new VectorKnnSubprocessError(
+            "memory vector KNN child stderr exceeded its limit",
+            "protocol",
+          );
+          requestTermination(failure);
+          return;
+        }
+        stderrChunks.push(chunk);
+      });
+      stdin.on("error", (error: NodeJS.ErrnoException) => {
+        if (!terminationReason && error.code !== "EPIPE") {
+          requestTermination(new VectorKnnSubprocessError(error.message, "failed"));
+        }
+      });
+      if (terminationReason) {
+        stdin.destroy();
+      } else {
+        stdin.end(inputPayload);
+      }
+    });
+    params.signal?.addEventListener("abort", abort, { once: true });
+    if (params.signal?.aborted) {
+      abort();
+    }
   });
 }

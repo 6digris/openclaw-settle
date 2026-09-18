@@ -19,7 +19,7 @@ import {
 import { sandboxExecServerRegistry } from "./sandbox-exec-server-registry.js";
 import { websocket } from "./sandbox-exec-server.websocket.js";
 import { parseRequest } from "./sandbox-exec-server/json-rpc.js";
-import type { SandboxChildOwner } from "./sandbox-exec-server/sandbox-child.js";
+import type { SandboxChildCleanup } from "./sandbox-exec-server/sandbox-child.js";
 import { CodexSandboxExecSession } from "./sandbox-exec-server/session.js";
 import type {
   CodexNodeExecServerLease,
@@ -278,7 +278,7 @@ async function startOpenClawExecServer(sandbox: SandboxContext): Promise<OpenCla
     url,
     sandbox,
     server,
-    children: new Set<SandboxChildOwner>(),
+    children: new Set<SandboxChildCleanup>(),
     cleanupTasks: new Set<Promise<void>>(),
   };
   const execServer: OpenClawLeasedExecServer =

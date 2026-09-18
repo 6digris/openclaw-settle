@@ -1,4 +1,4 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -95,7 +95,7 @@ vi.mock("node:child_process", async (importOriginal) => {
   const { createProcfsCommandFixture } = await import("./transport-procfs.test-support.js");
   return {
     ...original,
-    execFile: vi.fn(
+    spawn: vi.fn(
       createProcfsCommandFixture(original, (file) =>
         procfs.readFile.getMockImplementation() ? procfs.readFile(file) : undefined,
       ),
@@ -140,7 +140,7 @@ it.for(["snapshot", "command"] as const)(
       vi.restoreAllMocks();
     });
     vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
-    vi.mocked(execFile).mockImplementationOnce(() => {
+    vi.mocked(spawn).mockImplementationOnce(() => {
       throw Object.assign(new Error("spawn EPERM"), { code: "EPERM" });
     });
     const inspected =

@@ -1,20 +1,24 @@
 /** Owns one sandbox subprocess tree through close, reaping, and backend finalization. */
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import type { ChildProcess, ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { killProcessTree } from "openclaw/plugin-sdk/process-runtime";
+import { once } from "node:events";
+import { killProcessTree, spawnProcess } from "openclaw/plugin-sdk/process-runtime";
 import type { SandboxContext } from "openclaw/plugin-sdk/sandbox";
 
 const SANDBOX_CHILD_TERM_GRACE_MS = 1_000;
-// Covers the post-TERM tree kill plus Windows taskkill completion before failure is reported.
+// Bounds admission, remote cleanup, and reaping before reporting cleanup uncertainty.
 const SANDBOX_CHILD_REAP_TIMEOUT_MS = 4_500;
 const SANDBOX_EXEC_MARKER = "CODEX_SANDBOX_EXEC_ID";
 
 type SandboxChildOutcome = { exitCode: number; signal: NodeJS.Signals | null };
 
-export type SandboxChildOwner = {
-  process: ChildProcessWithoutNullStreams;
+export type SandboxChildCleanup = {
   settled: Promise<SandboxChildOutcome>;
   terminate: () => Promise<SandboxChildOutcome>;
+};
+
+export type SandboxChildOwner = SandboxChildCleanup & {
+  process: ChildProcessWithoutNullStreams;
 };
 
 export async function spawnSandboxChild(params: {
@@ -24,7 +28,7 @@ export async function spawnSandboxChild(params: {
   finalizeToken?: unknown;
   finalizeStatus: (outcome: SandboxChildOutcome) => "completed" | "failed";
   onFinalizeError: (error: unknown) => void;
-  owners: Set<SandboxChildOwner>;
+  owners: Set<SandboxChildCleanup>;
   terminateRemote?: () => Promise<void>;
 }): Promise<SandboxChildOwner> {
   const [command, ...args] = params.argv;
@@ -39,9 +43,9 @@ export async function spawnSandboxChild(params: {
     await finalize("failed", null).catch(params.onFinalizeError);
     throw new Error("OpenClaw sandbox exec spec did not provide a command.");
   }
-  let child: ChildProcessWithoutNullStreams;
+  let child: ChildProcess;
   try {
-    child = spawn(command, args, {
+    child = spawnProcess(command, args, {
       detached: process.platform !== "win32",
       env: params.env,
       stdio: ["pipe", "pipe", "pipe"],
@@ -55,46 +59,56 @@ export async function spawnSandboxChild(params: {
   const closed = new Promise<SandboxChildOutcome>((resolve) => {
     child.once("close", (code, signal) => resolve((outcome = { exitCode: code ?? 1, signal })));
   });
+  const spawned = once(child, "spawn");
+  void spawned.catch(() => undefined);
+  let started = false;
   let finalizePromise: Promise<void> | undefined;
   let terminationCleanup: Promise<void> | undefined;
   let terminationError: Error | undefined;
   const settled = closed.then(async (result) => {
     await terminationCleanup;
-    child.stdin.destroy();
-    await (finalizePromise ??= finalize(params.finalizeStatus(result), result.exitCode));
+    child.stdin?.destroy();
+    await (finalizePromise ??= finalize(
+      started ? params.finalizeStatus(result) : "failed",
+      started ? result.exitCode : null,
+    ));
     return result;
   });
   void settled.catch(params.onFinalizeError);
 
   let terminationPromise: Promise<SandboxChildOutcome> | undefined;
-  const owner: SandboxChildOwner = {
-    process: child,
+  const owner: SandboxChildCleanup = {
     settled,
     terminate: () =>
       (terminationPromise ??= (async () => {
-        child.stdin.destroy();
-        terminationCleanup = params.terminateRemote?.().catch((error: unknown) => {
-          terminationError = error instanceof Error ? error : new Error(String(error));
-        });
-        await terminationCleanup;
-        if (!outcome) {
-          if (child.pid) {
-            killProcessTree(child.pid, {
-              detached: process.platform !== "win32",
-              graceMs: SANDBOX_CHILD_TERM_GRACE_MS,
-            });
-          } else {
-            child.kill("SIGTERM");
+        child.stdin?.destroy();
+        // Keep late admission owned after the caller's reap deadline: its eventual
+        // PID still needs remote cleanup and group signals, never a raw pending kill.
+        terminationCleanup = (async () => {
+          await spawned.catch(() => undefined);
+          child.stdin?.destroy();
+          await params.terminateRemote?.().catch((error: unknown) => {
+            terminationError = error instanceof Error ? error : new Error(String(error));
+          });
+          if (!outcome) {
+            if (child.pid) {
+              killProcessTree(child.pid, {
+                detached: process.platform !== "win32",
+                graceMs: SANDBOX_CHILD_TERM_GRACE_MS,
+              });
+            } else {
+              child.kill("SIGTERM");
+            }
           }
-          const reaped = await Promise.race([
-            closed.then(() => true),
-            delay(SANDBOX_CHILD_REAP_TIMEOUT_MS).then(() => false),
-          ]);
-          if (!reaped) {
-            throw new Error(
-              `Sandbox child process tree ${child.pid ?? "unknown"} survived SIGKILL; tear down the sandbox environment and inspect the surviving process tree before retrying.`,
-            );
-          }
+        })();
+        const reaped = await Promise.race([
+          terminationCleanup.then(() => closed).then(() => true),
+          delay(SANDBOX_CHILD_REAP_TIMEOUT_MS).then(() => false),
+        ]);
+        if (!reaped) {
+          throw new Error(
+            `Sandbox child process tree ${child.pid ?? "unknown"} survived SIGKILL; tear down the sandbox environment and inspect the surviving process tree before retrying.`,
+          );
         }
         const result = await settled;
         if (terminationError) {
@@ -108,7 +122,27 @@ export async function spawnSandboxChild(params: {
     () => params.owners.delete(owner),
     () => params.owners.delete(owner),
   );
-  return owner;
+  try {
+    // Broker pipe handles arrive with spawn; shutdown owns the child while waiting.
+    await spawned;
+  } catch (error) {
+    await settled.catch(() => undefined);
+    throw error;
+  }
+  if (!hasPipedStdio(child)) {
+    await owner.terminate();
+    throw new Error("OpenClaw sandbox child did not provide piped stdio.");
+  }
+  if (terminationPromise) {
+    await terminationPromise;
+    throw new Error("OpenClaw sandbox process start cancelled.");
+  }
+  started = true;
+  return { ...owner, process: child };
+}
+
+function hasPipedStdio(child: ChildProcess): child is ChildProcessWithoutNullStreams {
+  return child.stdin !== null && child.stdout !== null && child.stderr !== null;
 }
 
 export function prepareSandboxChildExec(
