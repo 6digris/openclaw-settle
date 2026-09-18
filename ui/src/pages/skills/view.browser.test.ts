@@ -34,8 +34,8 @@ describe("Skills refresh layout", () => {
     const status = container.querySelector<HTMLElement>('.plugins-toolbar > [role="status"]');
     const bounds = () =>
       [button, search, group].map((element) => {
-        const { x, y, width, height } = element.getBoundingClientRect();
-        return { x, y, width, height };
+        const { x, y, width: measuredWidth, height } = element.getBoundingClientRect();
+        return { x, y, width: measuredWidth, height };
       });
     const idle = bounds();
     expect(button.disabled).toBe(false);
