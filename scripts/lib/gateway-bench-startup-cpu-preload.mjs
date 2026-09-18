@@ -18,7 +18,7 @@ if (
   const observerErrors = [];
   let droppedPhases = 0;
   for (const stream of [process.stdout, process.stderr]) {
-    const original = stream.write;
+    const original = stream.write.bind(stream);
     let carry = "";
     stream.write = function (chunk, ...args) {
       try {
@@ -52,7 +52,7 @@ if (
           observerErrors.push(String(error));
         }
       }
-      return original.call(this, chunk, ...args);
+      return original(chunk, ...args);
     };
   }
   process.once("exit", (code) => {
