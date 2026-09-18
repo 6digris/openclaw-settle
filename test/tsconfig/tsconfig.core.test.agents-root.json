@@ -22,6 +22,7 @@
     "../../src/agents/tool-*.test.ts",
     "../../src/agents/tool-*.test.tsx",
     "../../src/agents/workspace-access.test.ts",
-    "../../src/agents/workspace-attachments.test.ts"
+    "../../src/agents/workspace-attachments.test.ts",
+    "../../src/agents/workspace-memory-client.test.ts"
   ]
 }

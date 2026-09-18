@@ -92,6 +92,24 @@ Use `openclaw/plugin-sdk/agent-workspace-runtime` to declare, register, and acqu
 configured remote workspace during registration so callers cannot fall back to
 local files before its service starts. Register its bridge when ready and release
 it when the service stops. Callers keep their existing document authorization.
+`isWorkspaceAccessUnavailableError(error)` identifies unavailable host access.
+
+Use `resolveWorkspaceWorkerArgv("memory")` from `agent-workspace-runtime`
+to resolve Memory worker arguments for source and installed OpenClaw builds.
+
+The optional `memoryFiles` provider keeps workspace Memory files on the host while
+the native index, embedding providers and original sessions stay on Gateway. It
+supplies discovery, file inspection, reads and change notifications. Both indexing
+and `memory_get` use it; index publication rechecks the host file. The canonical
+source returned with a read supplies provenance, without resolving a stale Gateway
+copy. Stopping the workspace binding revokes retained file access and subscriptions.
+The existing Memory worker entry has a `--files <workspace>` mode for native file
+operations without opening a host index or receiving embedding credentials. A
+provider can invoke it through its existing subprocess transport.
+`createWorkspaceMemoryFileClient` maps Gateway/host paths and preserves native
+errors for this worker. Supply `request` for one JSON exchange and `subscribe`
+for the `--watch-files` JSON-line stream, plus the binding's abort signal.
+Neither callback depends on Codex; providers own transport and authorization.
 
 For generated files, register optional `outboundMedia` separately from the
 owner-document bridge. See [outbound workspace files](/plugins/sdk-agent-harness/core-ownership#outbound-workspace-files)

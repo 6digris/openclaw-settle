@@ -381,7 +381,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // -1: keep complete-preamble admission off the deprecated compatibility facade.
       // +4: approved workspace access exports.
       // +2: approved reply attachment preparation exports.
-      4491,
+      // +4: workspace Memory file access and worker exports.
+      4495,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -525,7 +526,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // -1: keep complete-preamble admission off the deprecated compatibility facade.
       // +3: approved workspace access callables.
       // +2: approved reply attachment preparation callables.
-      2654,
+      // +3: workspace Memory file access and worker callables.
+      2657,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

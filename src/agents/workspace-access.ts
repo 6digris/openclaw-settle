@@ -1,4 +1,9 @@
 import path from "node:path";
+import {
+  collectErrorGraphCandidates,
+  extractErrorCode,
+} from "@openclaw/normalization-core/error-coercion";
+import type { MemoryWorkspaceFiles } from "../../packages/memory-host-sdk/src/host/workspace-files.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { readPersistedMediaFacts, type MediaFact } from "../media/media-facts.js";
 import type { UserTurnTranscriptRecorder } from "../sessions/user-turn-transcript.types.js";
@@ -13,6 +18,8 @@ type WorkspaceAttachmentTurn = {
 
 /** Host-owned workspace files; callers keep their existing allowlists. */
 export type AgentWorkspaceAccess = {
+  /** Native Memory file operations; indexing and session state remain on Gateway. */
+  memoryFiles?: MemoryWorkspaceFiles;
   bridge: Pick<
     SandboxFsBridge,
     "readFile" | "readFileWithSource" | "readDirectory" | "writeFile" | "stat"
@@ -32,9 +39,28 @@ export type AgentWorkspaceAccess = {
 type WorkspaceBinding = { access?: AgentWorkspaceAccess; active: boolean };
 const bindings = new Map<string, WorkspaceBinding>();
 
+const WORKSPACE_ACCESS_UNAVAILABLE_CODE = "WORKSPACE_ACCESS_UNAVAILABLE";
+
+/** The configured workspace host cannot currently provide the requested data. */
+export class WorkspaceAccessUnavailableError extends Error {
+  readonly code = WORKSPACE_ACCESS_UNAVAILABLE_CODE;
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "WorkspaceAccessUnavailableError";
+  }
+}
+
+/** Match wrapped errors and separate SDK module instances without parsing messages. */
+export function isWorkspaceAccessUnavailableError(error: unknown): boolean {
+  return collectErrorGraphCandidates(error, (current) => [current.cause]).some(
+    (candidate) => extractErrorCode(candidate) === WORKSPACE_ACCESS_UNAVAILABLE_CODE,
+  );
+}
+
 function assertBindingCurrent(key: string, binding: WorkspaceBinding): void {
   if (!binding.active || bindings.get(key) !== binding) {
-    throw new Error("Workspace access is stopped or not ready");
+    throw new WorkspaceAccessUnavailableError("Workspace access is stopped or not ready");
   }
 }
 
@@ -59,6 +85,7 @@ export function registerAgentWorkspaceAccess(
     throw new Error(`Workspace access is already registered: ${key}`);
   }
   const binding: WorkspaceBinding = { active: true };
+  const lifetime = new AbortController();
   const assertCurrent = () => assertBindingCurrent(key, binding);
   // Retained methods must stop working when their service stops or is replaced.
   const bridge: AgentWorkspaceAccess["bridge"] = {
@@ -99,6 +126,61 @@ export function registerAgentWorkspaceAccess(
     };
   }
   const boundAccess: AgentWorkspaceAccess = { bridge: Object.freeze(bridge) };
+  const memoryFiles = access.memoryFiles;
+  if (memoryFiles) {
+    const assertMemoryCurrent = () => {
+      assertCurrent();
+      memoryFiles.assertCurrent();
+    };
+    boundAccess.memoryFiles = Object.freeze<MemoryWorkspaceFiles>({
+      assertCurrent: assertMemoryCurrent,
+      async listFiles(...params) {
+        assertMemoryCurrent();
+        const result = await memoryFiles.listFiles(...params);
+        assertMemoryCurrent();
+        return result;
+      },
+      async inspectFile(...params) {
+        assertMemoryCurrent();
+        const result = await memoryFiles.inspectFile(...params);
+        assertMemoryCurrent();
+        return result;
+      },
+      async readFile(params) {
+        assertMemoryCurrent();
+        const result = await memoryFiles.readFile(params);
+        assertMemoryCurrent();
+        return result;
+      },
+      async readForIndexing(filePath) {
+        assertMemoryCurrent();
+        const result = await memoryFiles.readForIndexing(filePath);
+        assertMemoryCurrent();
+        return result;
+      },
+      async buildMultimodalChunk(entry) {
+        assertMemoryCurrent();
+        const result = await memoryFiles.buildMultimodalChunk(entry);
+        assertMemoryCurrent();
+        return result;
+      },
+      async watch(request, onChange, signal) {
+        assertMemoryCurrent();
+        const active = AbortSignal.any([signal, lifetime.signal]);
+        active.throwIfAborted();
+        await memoryFiles.watch(
+          request,
+          (event) => {
+            if (!active.aborted) {
+              assertMemoryCurrent();
+              onChange(event);
+            }
+          },
+          active,
+        );
+      },
+    });
+  }
   const outboundMedia = access.outboundMedia;
   if (outboundMedia) {
     const readFile = outboundMedia.readFile.bind(outboundMedia);
@@ -131,6 +213,7 @@ export function registerAgentWorkspaceAccess(
   return () => {
     // A stopped remote workspace remains remote; never expose stale local files.
     binding.active = false;
+    lifetime.abort();
   };
 }
 

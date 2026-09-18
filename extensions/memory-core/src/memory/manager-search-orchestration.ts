@@ -88,7 +88,8 @@ export abstract class MemorySearchOrchestration extends MemoryKeywordRetrieval {
     from?: number;
     lines?: number;
   }): Promise<MemoryReadResult> {
-    return await readMemoryFile({
+    this.memoryFiles?.assertCurrent();
+    return await (this.memoryFiles?.readFile ?? readMemoryFile)({
       workspaceDir: this.workspaceDir,
       extraPaths: this.settings.extraPaths,
       relPath: params.relPath,
@@ -250,11 +251,12 @@ export abstract class MemorySearchOrchestration extends MemoryKeywordRetrieval {
       // No watcher can observe later edits after kernel capacity exhaustion.
       // Record a fresh generation at the search boundary so detached maintenance
       // receives the fact instead of starting from a clean transient manager.
-      if (this.memoryWatchCapacityDegraded) {
+      if (this.memoryWatchCapacityDegraded || this.memoryWatchUnavailable) {
         this.dirty = true;
       }
       const capacitySyncInFlight =
-        this.memoryWatchCapacityDegraded && this.activeBackgroundSearchSyncs.size > 0;
+        (this.memoryWatchCapacityDegraded || this.memoryWatchUnavailable) &&
+        this.activeBackgroundSearchSyncs.size > 0;
       if (searchSyncEnabled && !capacitySyncInFlight && (this.dirty || this.sessionsDirty)) {
         const trackedSearchSync = this.syncPublishedIndexInBackground({ reason: "search" })
           .catch((err: unknown) => {
