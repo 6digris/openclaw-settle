@@ -37,7 +37,13 @@ suite.define(() => {
               index === 1
                 ? [
                     { type: "text", text: "Delayed image." },
-                    { type: "image", url: imageUrl, alt: "Intrinsic size proof" },
+                    {
+                      type: "image",
+                      url: imageUrl,
+                      alt: "Intrinsic size proof",
+                      width: 480,
+                      height: 240,
+                    },
                   ]
                 : `Image fixture message ${index}.`,
             timestamp: index + 1,
