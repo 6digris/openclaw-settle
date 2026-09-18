@@ -395,6 +395,8 @@ export async function createSessionRowProjection(params: {
         ? [{ key: value.key, entry: value.entry }]
         : [];
     });
+    // Keyed child refreshes reorder the parent index; presentation must stay stable.
+    links.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
     const prepared = readResidentSessionRow({
       row: { ...row, entry: row.entry },
       cfg,

@@ -1317,7 +1317,7 @@ export async function runGatewayLoop(params: {
       } catch (error) {
         gatewayLog.warn(`failed to reset ambient runtime state: ${formatErrorMessage(error)}`);
       }
-      reloadTaskRuntimeStateFromStore();
+      await reloadTaskRuntimeStateFromStore();
       markGatewayRestartTrace("restart.next-start");
     };
 

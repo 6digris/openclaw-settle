@@ -27,6 +27,7 @@ import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
 import { stripUnsupportedCitationControlMarkers } from "../../shared/text/citation-control-markers.js";
 import { formatErrorMessage } from "../errors.js";
 import { throwIfAborted } from "./abort.js";
+import { assertOutboundHandoffCurrent, OutboundHandoffRejectedError } from "./deliver-handoff.js";
 import type {
   MessageActionGateway,
   MessageActionResult,
@@ -351,7 +352,7 @@ export async function executeGatewayAction(
   let hadUnknownDeliveryOutcome = false;
   let payload: unknown;
   try {
-    ctx.input.assertDirectAdapterHandoff?.();
+    assertOutboundHandoffCurrent(ctx.input.assertDirectAdapterHandoff);
     payload = await callGatewayMessageAction<unknown>({
       gateway: ctx.gateway,
       abortSignal: ctx.input.abortSignal,
@@ -379,7 +380,8 @@ export async function executeGatewayAction(
     if (
       callerOwnsTerminalReceipt &&
       !hadUnknownDeliveryOutcome &&
-      isConfirmedGatewayMessageActionRejection(error)
+      (error instanceof OutboundHandoffRejectedError ||
+        isConfirmedGatewayMessageActionRejection(error))
     ) {
       await cancelTerminalSourceReplyDelivery(terminalDeliveryReceipt);
     }

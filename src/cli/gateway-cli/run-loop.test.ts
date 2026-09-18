@@ -2996,13 +2996,14 @@ describe("runGatewayLoop", () => {
     await withIsolatedSignals(async ({ captureSignal }) => {
       const closeFirst = createCloseMock();
       const closeThird = createCloseMock();
+      const { start: firstStart, started } = createSignaledStart(closeFirst);
       const { runtime, exited } = createRuntimeWithExitSignal();
       let resolveThirdStart: (() => void) | null = null;
       const startedThird = new Promise<void>((resolve) => {
         resolveThirdStart = resolve;
       });
       const start = vi.fn();
-      start.mockResolvedValueOnce(createGatewayServer(closeFirst));
+      start.mockImplementationOnce(firstStart);
       start.mockRejectedValueOnce(new Error("restart startup failed"));
       start.mockImplementationOnce(async () => {
         resolveThirdStart?.();
@@ -3010,17 +3011,15 @@ describe("runGatewayLoop", () => {
       });
 
       const { runGatewayLoop } = await import("./run-loop.js");
-      void runGatewayLoop({
+      const loop = runGatewayLoop({
         start: start as unknown as Parameters<typeof runGatewayLoop>[0]["start"],
         runtime: runtime as unknown as Parameters<typeof runGatewayLoop>[0]["runtime"],
       });
-      await new Promise<void>((resolve) => {
-        setImmediate(resolve);
-      });
-      const sigusr1 = captureSignal("SIGUSR1");
-      const sigterm = captureSignal("SIGTERM");
-
+      let stop: (() => void) | undefined;
       try {
+        await Promise.race([waitForStart(started), loop]);
+        stop = captureSignal("SIGTERM");
+        const sigusr1 = captureSignal("SIGUSR1");
         sigusr1();
         await waitForLoopCondition(
           () =>
@@ -3048,8 +3047,8 @@ describe("runGatewayLoop", () => {
         expect(reloadTaskRuntimeStateFromStore).toHaveBeenCalledTimes(2);
         expect(acquireGatewayLock).toHaveBeenCalledTimes(3);
       } finally {
-        sigterm();
-        await expect(exited).resolves.toBe(0);
+        stop?.();
+        await Promise.race([expect(exited).resolves.toBe(0), loop]);
       }
     });
   });
@@ -3058,7 +3057,7 @@ describe("runGatewayLoop", () => {
     vi.clearAllMocks();
     reloadTaskRuntimeStateFromStore.mockReset();
     reloadTaskRuntimeStateFromStore
-      .mockImplementationOnce(() => {
+      .mockImplementationOnce(async () => {
         throw new Error("task-flow registry restore failed");
       })
       .mockImplementationOnce(() => {
@@ -3074,6 +3073,7 @@ describe("runGatewayLoop", () => {
       await withIsolatedSignals(async ({ captureSignal }) => {
         const closeFirst = createCloseMock();
         const closeSecond = createCloseMock();
+        const { start: firstStart, started } = createSignaledStart(closeFirst);
         const { runtime, exited } = createRuntimeWithExitSignal();
         let resolveSecondStart: (() => void) | null = null;
         const startedSecond = new Promise<void>((resolve) => {
@@ -3081,25 +3081,22 @@ describe("runGatewayLoop", () => {
         });
         const start = vi
           .fn()
-          .mockResolvedValueOnce(createGatewayServer(closeFirst))
+          .mockImplementationOnce(firstStart)
           .mockImplementationOnce(async () => {
             resolveSecondStart?.();
             return createGatewayServer(closeSecond);
           });
 
         const { runGatewayLoop } = await import("./run-loop.js");
-        void runGatewayLoop({
+        const loop = runGatewayLoop({
           start: start as unknown as Parameters<typeof runGatewayLoop>[0]["start"],
           runtime: runtime as unknown as Parameters<typeof runGatewayLoop>[0]["runtime"],
         });
-        await waitForLoopCondition(
-          () => start.mock.calls.length === 1,
-          "expected initial gateway start",
-        );
-        const sigusr1 = captureSignal("SIGUSR1");
-        const sigterm = captureSignal("SIGTERM");
-
+        let stop: (() => void) | undefined;
         try {
+          await Promise.race([waitForStart(started), loop]);
+          stop = captureSignal("SIGTERM");
+          const sigusr1 = captureSignal("SIGUSR1");
           sigusr1();
           await waitForLoopCondition(
             () =>
@@ -3136,8 +3133,8 @@ describe("runGatewayLoop", () => {
           expect(start).toHaveBeenCalledTimes(2);
           expect(runtime.exit).not.toHaveBeenCalled();
         } finally {
-          sigterm();
-          await expect(exited).resolves.toBe(0);
+          stop?.();
+          await Promise.race([expect(exited).resolves.toBe(0), loop]);
         }
 
         expect(closeSecond).toHaveBeenCalledWith({
