@@ -4740,7 +4740,7 @@ internal fun AttachmentStrip(
       attachments.forEach { attachment ->
         if (attachment.mimeType.startsWith("image/")) {
           Column(modifier = Modifier.width(minOf(160.dp, availableWidth)), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            ChatBase64Image(base64 = attachment.base64, mimeType = attachment.mimeType)
+            ChatBase64Image(base64 = attachment.base64, mimeType = attachment.mimeType, source = Base64ImageSource.Composer)
             AttachmentChip(attachment = attachment, onRemove = { onRemoveAttachment(attachment.id) }, modifier = Modifier.fillMaxWidth())
           }
         } else {

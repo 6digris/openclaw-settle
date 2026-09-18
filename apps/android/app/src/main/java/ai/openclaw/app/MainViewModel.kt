@@ -1262,6 +1262,20 @@ class MainViewModel private constructor(
     }
   }
 
+  internal fun beginChatTalkPhotoSend(
+    start: TalkModeManager.ChatStart,
+    photos: List<PendingAttachment>,
+  ): ChatComposerSendStartResult {
+    val runtime = runtimeRef.value ?: return ChatComposerSendStartResult.Unavailable
+    val ownsPhoto = runtime.captureChatTalkPhotoOwner(start)
+    return beginChatComposerSend(
+      owner = start.owner,
+      thinking = chatThinkingLevel.value,
+      photos = photos,
+      canAdmit = { runtimeRef.value === runtime && ownsPhoto() },
+    )
+  }
+
   internal fun toggleChatTalkAudio(start: TalkModeManager.ChatStart) {
     runtimeRef.value?.toggleChatTalkAudio(start)
   }
@@ -2165,6 +2179,7 @@ class MainViewModel private constructor(
     thinking: String,
     attachments: List<OutgoingAttachment>,
     idempotencyKey: String,
+    canAdmit: () -> Boolean = { true },
   ): Boolean =
     ensureRuntime().sendChatForOwnerAwaitAcceptance(
       owner = owner,
@@ -2172,15 +2187,18 @@ class MainViewModel private constructor(
       thinking = thinking,
       attachments = attachments,
       idempotencyKey = idempotencyKey,
+      canAdmit = canAdmit,
     )
 
   /** Admission outlives the composing Activity; accepted payloads clear by owner and snapshot. */
   internal fun beginChatComposerSend(
     owner: ChatComposerOwner,
     thinking: String,
+    photos: List<PendingAttachment>? = null,
+    canAdmit: () -> Boolean = { true },
   ): ChatComposerSendStartResult {
-    if (!isCurrentChatComposerOwner(owner)) return ChatComposerSendStartResult.Unavailable
-    val start = chatComposerState.beginSend(owner)
+    if (!isCurrentChatComposerOwner(owner) || !canAdmit()) return ChatComposerSendStartResult.Unavailable
+    val start = chatComposerState.beginSend(owner, photos)
     val request = start.request ?: return start.result
     val outgoing = request.attachments.map(PendingAttachment::toOutgoingAttachment)
     viewModelScope.launch {
@@ -2193,6 +2211,7 @@ class MainViewModel private constructor(
             thinking = thinking,
             attachments = outgoing,
             idempotencyKey = request.commandId,
+            canAdmit = canAdmit,
           )
       } catch (err: CancellationException) {
         throw err

@@ -97,6 +97,17 @@ internal class ChatComposerAttachmentStore(
     }
   }
 
+  /** Admission may settle after the user replaces a payload with the same id. */
+  fun remove(
+    owner: ChatComposerOwner,
+    admitted: List<PendingAttachment>,
+  ) {
+    if (admitted.isEmpty()) return
+    synchronized(lock) {
+      replaceLocked(owner, _attachments.value[owner].orEmpty().filterNot { it in admitted })
+    }
+  }
+
   fun removeOwners(matches: (ChatComposerOwner) -> Boolean) {
     synchronized(lock) {
       importOwners.entries.removeAll { matches(it.value) }

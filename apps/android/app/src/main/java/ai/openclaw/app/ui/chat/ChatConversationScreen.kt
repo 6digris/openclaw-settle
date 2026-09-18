@@ -32,6 +32,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -149,15 +150,23 @@ private fun ChatConversationContent(
   val selectedSession by viewModel.chatSessionKey.collectAsState()
   val selectedAgent by viewModel.chatSessionOwnerAgentId.collectAsState()
   val attachmentsByOwner by viewModel.chatComposerState.attachments.collectAsState()
+  val sendStates by viewModel.chatComposerState.sendStates.collectAsState()
+  val chatError by viewModel.chatError.collectAsState()
   val photoOwnerReady =
     selectedSession == call.start.owner.sessionKey &&
       selectedAgent == call.start.owner.agentId && viewModel.isCurrentChatComposerOwner(call.start.owner)
-  val attachments = attachmentsByOwner[call.start.owner].orEmpty()
+  val photos = attachmentsByOwner[call.start.owner].orEmpty().filter { it.mimeType.startsWith("image/") }
+  val sending = call.start.owner in sendStates
+  val admissions = sendStates[call.start.owner]?.pendingAdmissionIds.orEmpty()
+  LaunchedEffect(call.start, admissions) {
+    admissions.forEach { viewModel.acknowledgeChatComposerSendAdmission(call.start.owner, it) }
+  }
   var frontCamera by remember(call.start) { mutableStateOf(true) }
   var details by remember(call.start) { mutableStateOf(false) }
   val scope = rememberCoroutineScope()
   var takingPhoto by remember(call.start) { mutableStateOf(false) }
   var photoNotice by remember(call.start) { mutableStateOf<NativeText?>(null) }
+  var photoSendAttempted by remember(call.start) { mutableStateOf(false) }
   val photoUnavailable =
     when {
       !photoOwnerReady -> nativeString("Return to the call's chat before taking a photo.")
@@ -230,6 +239,7 @@ private fun ChatConversationContent(
             val facing = if (frontCamera) "front" else "back"
             takingPhoto = true
             photoNotice = null
+            photoSendAttempted = false
             scope.launch {
               try {
                 photoNotice = viewModel.stageChatTalkPhoto(call.start, facing = facing)
@@ -260,11 +270,34 @@ private fun ChatConversationContent(
     TextButton(enabled = !takingPhoto, onClick = { frontCamera = !frontCamera }) {
       Text(if (frontCamera) nativeString("Selfie camera · Switch to rear") else nativeString("Rear camera · Switch to selfie"))
     }
-    if (attachments.isNotEmpty()) {
-      AttachmentStrip(attachments = attachments, onRemoveAttachment = { id ->
+    if (photos.isNotEmpty()) {
+      AttachmentStrip(attachments = photos, onRemoveAttachment = { id ->
         viewModel.removeChatTalkAttachment(call.start, id)
       })
-      Text(nativeString("Go to chat to add a message and send."), style = ClawTheme.type.caption)
+      TextButton(
+        enabled = photoOwnerReady && !takingPhoto && !sending && !viewModel.chatComposerState.hasPendingImport(call.start.owner),
+        onClick = {
+          when (viewModel.beginChatTalkPhotoSend(call.start, photos)) {
+            ChatComposerSendStartResult.Started -> {
+              photoNotice = null
+              photoSendAttempted = true
+            }
+
+            ChatComposerSendStartResult.CheckpointFull, ChatComposerSendStartResult.MessageTooLong -> {
+              photoNotice = nativeText("Photo not sent. Try again.")
+            }
+
+            ChatComposerSendStartResult.Unavailable -> {
+              // A busy or retired callback must leave the staged photos untouched.
+            }
+          }
+        },
+      ) { Text(nativeString("Send photos")) }
+    }
+    if (photoSendAttempted && photoOwnerReady && !sending && photos.isNotEmpty()) {
+      chatError?.takeIf { it.isNotBlank() }?.let {
+        Text(it, style = ClawTheme.type.caption, color = ClawTheme.colors.danger)
+      }
     }
     (if (takingPhoto) nativeString("Taking photo…") else photoNotice?.resolveNativeText() ?: photoUnavailable)?.let { notice ->
       Text(text = notice, style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted)

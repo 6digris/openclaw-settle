@@ -111,13 +111,25 @@ internal class ChatComposerStateStore(
         mediaOwners.containsValue(owner)
     }
 
-  fun beginSend(owner: ChatComposerOwner): ChatComposerSendStart =
+  fun beginSend(
+    owner: ChatComposerOwner,
+    photos: List<PendingAttachment>? = null,
+  ): ChatComposerSendStart =
     synchronized(lock) {
       if (hasSendGateLocked(owner) || hasPendingImport(owner)) {
         return@synchronized ChatComposerSendStart(ChatComposerSendStartResult.Unavailable)
       }
-      val inputSnapshot = textDrafts[owner]
-      val attachments = attachmentStore.get(owner)
+      val currentAttachments = attachmentStore.get(owner)
+      if (photos != null && (
+          photos.isEmpty() || photos.distinctBy { it.id }.size != photos.size ||
+            photos.any { !it.mimeType.startsWith("image/") || it !in currentAttachments }
+        )
+      ) {
+        return@synchronized ChatComposerSendStart(ChatComposerSendStartResult.Unavailable)
+      }
+      // An explicit photo snapshot never claims an unseen composer draft or other files.
+      val inputSnapshot = if (photos == null) textDrafts[owner] else ""
+      val attachments = photos?.toList() ?: currentAttachments
       if (inputSnapshot.isBlank() && attachments.isEmpty()) {
         return@synchronized ChatComposerSendStart(ChatComposerSendStartResult.Unavailable)
       }
@@ -155,7 +167,7 @@ internal class ChatComposerStateStore(
       if (accepted) {
         attachmentStore.remove(
           resolvedOwner,
-          request.attachments.mapTo(linkedSetOf()) { attachment -> attachment.id },
+          request.attachments,
         )
       }
       finishActiveSendLocked(

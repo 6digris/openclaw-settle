@@ -30,6 +30,64 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34])
 class ChatComposerDraftTest {
   @Test
+  fun photoOnlyAdmissionPreservesHiddenDraftAndUnselectedAttachmentsOnRejection() {
+    val owner = ChatComposerOwner("gateway", "main", "agent:main:photo")
+    val state = ChatComposerStateStore()
+    val photo = PendingAttachment("photo", "camera.jpg", "image/jpeg", "YQ==")
+    val other = PendingAttachment("other", "other.jpg", "image/jpeg", "Yg==")
+    val document = PendingAttachment("document", "note.txt", "text/plain", "Yw==")
+    val hidden = "x".repeat(CHAT_COMPOSER_MAX_SEND_CHARS + 1)
+    state.textDrafts[owner] = hidden
+    state.addAttachments(owner, listOf(photo, other, document))
+    val request = requireNotNull(state.beginSend(owner, photos = listOf(photo)).request)
+    assertEquals("", request.message)
+    assertEquals("", request.inputSnapshot)
+    assertEquals(listOf(photo), request.attachments)
+    assertEquals(hidden, state.textDrafts[owner])
+    assertEquals(ChatComposerSendStartResult.Unavailable, state.beginSend(owner, photos = listOf(photo)).result)
+    state.completeSend(request, accepted = false)
+    assertEquals(listOf(photo, other, document), state.attachments.value[owner])
+    assertEquals(hidden, state.textDrafts[owner])
+    state.acknowledgeSendAdmission(owner, request.commandId)
+    assertNotNull(state.beginSend(owner, photos = listOf(photo)).request)
+  }
+
+  @Test
+  fun photoOnlyAdmissionClearsOnlyTheUnchangedAdmittedSnapshot() {
+    val owner = ChatComposerOwner("gateway", "main", "agent:main:photo")
+    val state = ChatComposerStateStore()
+    val photo = PendingAttachment("photo", "camera.jpg", "image/jpeg", "YQ==")
+    state.addAttachments(owner, listOf(photo))
+    val request = requireNotNull(state.beginSend(owner, photos = listOf(photo)).request)
+    val changed = photo.copy(base64 = "Yg==")
+    val later = photo.copy(id = "later")
+    state.replaceAttachments(owner, listOf(changed, later))
+    state.textDrafts[owner] = "Edited during admission"
+    state.completeSend(request, accepted = true)
+    assertEquals(listOf(changed, later), state.attachments.value[owner])
+    assertEquals("Edited during admission", state.textDrafts[owner])
+    state.acknowledgeSendAdmission(owner, request.commandId)
+    assertEquals(ChatComposerSendStartResult.Unavailable, state.beginSend(owner, photos = listOf(photo)).result)
+    val next = requireNotNull(state.beginSend(owner, photos = listOf(changed)).request)
+    state.completeSend(next, accepted = true)
+    assertEquals(listOf(later), state.attachments.value[owner])
+  }
+
+  @Test
+  fun photoOnlyAdmissionRejectsEmptyMissingDuplicateOrNonPhotoSnapshots() {
+    val owner = ChatComposerOwner("gateway", "main", "agent:main:photo")
+    val state = ChatComposerStateStore()
+    val photo = PendingAttachment("photo", "camera.jpg", "image/jpeg", "YQ==")
+    val document = photo.copy(id = "document", mimeType = "text/plain")
+    state.addAttachments(owner, listOf(photo, document))
+    for (photos in listOf(emptyList(), listOf(document), listOf(photo.copy(id = "missing")), listOf(photo, photo))) {
+      assertEquals(ChatComposerSendStartResult.Unavailable, state.beginSend(owner, photos = photos).result)
+    }
+    assertTrue(state.sendStates.value.isEmpty())
+    assertEquals(listOf(photo, document), state.attachments.value[owner])
+  }
+
+  @Test
   fun dictationAppendsToTheCurrentDraftWithoutEatingSpacing() {
     assertEquals("hello world", appendChatDictationTranscript("hello", " world "))
     assertEquals("hello world", appendChatDictationTranscript("hello ", " world "))

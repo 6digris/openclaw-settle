@@ -4078,7 +4078,18 @@ class NodeRuntime private constructor(
     }
   }
 
-  /** Capture for the original composer's preview; only its normal Send may admit the image. */
+  /** Capture and explicit photo Send share the original call, selection and foreground authority. */
+  internal fun captureChatTalkPhotoOwner(start: TalkModeManager.ChatStart): () -> Boolean {
+    val selection = chatSelectionGeneration.value
+    val lifecycle = voiceLifecycleEpoch.get()
+    return {
+      _isForeground.value && voiceLifecycleEpoch.get() == lifecycle &&
+        chatSelectionGeneration.value == selection && chat.isCurrentComposerOwner(start.owner) &&
+        !gatewayConnectionHandoff.value.pending && talkMode.isActiveChatCall(start)
+    }
+  }
+
+  /** Capture for the original composer's preview; explicit composer admission sends the image. */
   internal suspend fun stageChatTalkPhoto(
     start: TalkModeManager.ChatStart,
     requestPermission: suspend () -> Boolean,
@@ -4088,12 +4099,9 @@ class NodeRuntime private constructor(
   ): NativeText {
     if (!talkMode.isActiveChatCall(start)) return nativeText("Call is no longer active.")
     val selection = chatSelectionGeneration.value
-    val lifecycle = voiceLifecycleEpoch.get()
+    val ownsPhoto = captureChatTalkPhotoOwner(start)
 
-    fun isCurrent() =
-      isCurrentOwner() && _isForeground.value && voiceLifecycleEpoch.get() == lifecycle &&
-        chatSelectionGeneration.value == selection && chat.isCurrentComposerOwner(start.owner) &&
-        !gatewayConnectionHandoff.value.pending && talkMode.isActiveChatCall(start)
+    fun isCurrent() = isCurrentOwner() && ownsPhoto()
     if (!isCurrent()) return nativeText("Return to the call's chat before taking a photo.")
     if (!cameraEnabled.value) return nativeText("Enable Camera in Settings before taking a photo.")
     if (!requestPermission()) return nativeText("Camera permission required")

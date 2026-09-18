@@ -10,6 +10,7 @@ import ai.openclaw.app.SecurePrefs
 import ai.openclaw.app.VoiceCaptureMode
 import ai.openclaw.app.bindNodeRuntimeTestFixture
 import ai.openclaw.app.chat.ChatComposerOwner
+import ai.openclaw.app.chat.ChatController
 import ai.openclaw.app.closeNodeRuntimeTestFixture
 import ai.openclaw.app.i18n.NativeText
 import ai.openclaw.app.i18n.resolveNativeText
@@ -60,6 +61,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -392,6 +396,256 @@ class ChatCallLifecycleTest {
       model.setForeground(false)
     }
     awaitStopped()
+  }
+
+  @Test
+  fun photoFollowupLargeCameraJpegHasWorkingPreview() {
+    startCall()
+    shadowOf(app).grantPermissions(Manifest.permission.CAMERA)
+    val raw = syntheticLargeChatPhotoBase64()
+    assertTrue(raw.length > ai.openclaw.app.chat.CHAT_IMAGE_MAX_BASE64_CHARS)
+    assertTrue(decodedBase64ByteCount(raw) < CHAT_COMPOSER_MAX_IMAGE_DECODED_BYTES)
+    val bytes = android.util.Base64.decode(raw, android.util.Base64.NO_WRAP)
+    val decoded = checkNotNull(android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size))
+    assertEquals(1024, decoded.width)
+    assertEquals(768, decoded.height)
+    decoded.recycle()
+    val photo = takePhoto { _, _ -> CameraCaptureManager.Payload("""{"format":"jpg","base64":"$raw","width":1024,"height":768}""") }
+    assertEquals("Photo ready to send.", awaitPhoto(photo))
+    composeRule.onNodeWithText("camera.jpg").performScrollTo()
+    awaitUiState {
+      composeRule.onAllNodesWithContentDescription("image/jpeg").fetchSemanticsNodes().isNotEmpty() ||
+        composeRule.onAllNodes(hasText("Unsupported attachment")).fetchSemanticsNodes().isNotEmpty()
+    }
+    captureTalkProof("photo-preview")
+    composeRule.onNodeWithContentDescription("image/jpeg").assertIsDisplayed()
+    composeRule.onNodeWithText("Unsupported attachment").assertDoesNotExist()
+    val staged =
+      model.chatComposerState.attachments.value
+        .getValue(checkNotNull(model.chatTalkCall.value).start.owner)
+        .single()
+    assertTrue("Staging must preserve the camera JPEG bytes", raw == staged.base64)
+    assertTrue(decodeBase64Bitmap(staged.base64, source = Base64ImageSource.Composer) != null)
+    assertNoPhotoSend()
+    composeRule.onNodeWithText("Send photos").performScrollTo().assertIsDisplayed()
+    captureTalkProof("photo-preview")
+    composeRule.onNodeWithText("Send photos").performClick()
+    awaitUiState { gateway.requests.any { it.method == "chat.send" } }
+    val sent = gateway.requests.single { it.method == "chat.send" }.params
+    val transmitted =
+      sent
+        .getValue("attachments")
+        .jsonArray
+        .single()
+        .jsonObject
+        .getValue("content")
+        .jsonPrimitive.content
+    assertTrue("Sending must preserve the camera JPEG bytes", raw == transmitted)
+  }
+
+  @Test
+  fun photoFollowupRestoredLargeImageUsesTheLocalAttachmentPreview() {
+    startCall()
+    val owner = checkNotNull(model.chatTalkCall.value).start.owner
+    val raw = syntheticLargeChatPhotoBase64()
+    val restored =
+      listOf(
+        ai.openclaw.app.chat
+          .SessionEditorAttachment("image/jpeg", raw),
+      ).toPendingAttachments()
+    composeRule.runOnIdle { model.chatComposerState.replaceAttachments(owner, restored) }
+    composeRule.onNodeWithText("image-1").performScrollTo()
+    awaitUiState { composeRule.onAllNodesWithContentDescription("image/jpeg").fetchSemanticsNodes().isNotEmpty() }
+    composeRule.onNodeWithContentDescription("image/jpeg").assertIsDisplayed()
+    composeRule.onNodeWithText("Unsupported attachment").assertDoesNotExist()
+    assertTrue(
+      raw ==
+        model.chatComposerState.attachments.value
+          .getValue(owner)
+          .single()
+          .base64,
+    )
+    assertNoPhotoSend()
+  }
+
+  @Test
+  fun photoFollowupSendOnlyVisiblePhotosWithoutHiddenDraftOrDocument() {
+    startCall()
+    shadowOf(app).grantPermissions(Manifest.permission.CAMERA)
+    val owner = checkNotNull(model.chatTalkCall.value).start.owner
+    val document = PendingAttachment("private-document", "hidden.txt", "text/plain", "cHJpdmF0ZQ==")
+    composeRule.runOnIdle {
+      model.chatComposerState.textDrafts[owner] = "Unsent private draft"
+      model.chatComposerState.addAttachments(owner, listOf(document))
+    }
+    assertEquals("Photo ready to send.", awaitPhoto(takePhoto()))
+    val photo =
+      model.chatComposerState.attachments.value
+        .getValue(owner)
+        .single { it.mimeType == "image/jpeg" }
+    composeRule.onNodeWithText("camera.jpg").performScrollTo()
+    awaitUiState { composeRule.onAllNodesWithContentDescription("image/jpeg").fetchSemanticsNodes().isNotEmpty() }
+    captureTalkProof("photo-send")
+    model.chatError.value?.let { unrelatedError -> composeRule.onNodeWithText(unrelatedError).assertDoesNotExist() }
+    assertNoPhotoSend()
+    composeRule
+      .onNodeWithText("Send photos")
+      .performScrollTo()
+      .assertIsEnabled()
+    captureTalkProof("photo-send")
+    composeRule.onNodeWithText("Send photos").performClick()
+    awaitUiState { gateway.requests.any { it.method == "chat.send" } }
+    val sent = gateway.requests.single { it.method == "chat.send" }.params
+    assertEquals(FIRST_CHAT, sent.getValue("sessionKey").jsonPrimitive.content)
+    assertEquals("See attached.", sent.getValue("message").jsonPrimitive.content)
+    assertEquals(1, sent.getValue("attachments").jsonArray.size)
+    assertEquals(
+      photo.base64,
+      sent
+        .getValue("attachments")
+        .jsonArray
+        .single()
+        .jsonObject
+        .getValue("content")
+        .jsonPrimitive.content,
+    )
+    assertEquals("Unsent private draft", model.chatComposerState.textDrafts[owner])
+    awaitUiState { model.chatComposerState.attachments.value[owner] == listOf(document) }
+    assertFalse(gateway.requests.any { it.method == "talk.client.toolCall" })
+    composeRule.onNodeWithTag("chat-conversation-page").assertIsDisplayed()
+  }
+
+  @Test
+  fun photoFollowupRepeatedAndStaleTapsCannotSendLaterAttachments() {
+    startCall()
+    shadowOf(app).grantPermissions(Manifest.permission.CAMERA)
+    val owner = checkNotNull(model.chatTalkCall.value).start.owner
+    assertEquals("Photo ready to send.", awaitPhoto(takePhoto()))
+    val first =
+      model.chatComposerState.attachments.value
+        .getValue(owner)
+        .single()
+    val button = composeRule.onNodeWithText("Send photos").performScrollTo()
+    val staleClick = checkNotNull(button.fetchSemanticsNode().config[SemanticsActions.OnClick].action)
+    val mutex = photoAdmissionMutex()
+    val later = first.copy(id = "later", fileName = "later.jpg")
+    try {
+      button.performClick()
+      awaitUiState {
+        model.chatComposerState.sendStates.value[owner]
+          ?.activeOperationIds
+          ?.isNotEmpty() == true
+      }
+      button.assertIsNotEnabled()
+      composeRule.runOnUiThread {
+        model.chatComposerState.addAttachments(owner, listOf(later))
+        model.chatComposerState.textDrafts[owner] = "Edited while sending"
+        staleClick()
+      }
+      assertNoPhotoSend()
+    } finally {
+      mutex.unlock()
+    }
+    awaitUiState { gateway.requests.any { it.method == "chat.send" } }
+    awaitUiState { model.chatComposerState.attachments.value[owner] == listOf(later) }
+    composeRule.runOnUiThread { staleClick() }
+    composeRule.waitForIdle()
+    assertEquals(1, gateway.requests.count { it.method == "chat.send" })
+    assertEquals(listOf(later), model.chatComposerState.attachments.value[owner])
+    assertEquals("Edited while sending", model.chatComposerState.textDrafts[owner])
+  }
+
+  @Test
+  fun photoFollowupEndBeforeAdmissionRetainsTheUnsentPhoto() =
+    photoSendRetiredBeforeAdmission { start ->
+      composeRule.runOnIdle { model.endChatTalk(start) }
+      awaitStopped()
+    }
+
+  @Test
+  fun photoFollowupReplacementCannotAdmitTheOldCallPhoto() =
+    photoSendRetiredBeforeAdmission { start ->
+      composeRule.runOnIdle { model.endChatTalk(start) }
+      awaitStopped()
+      // The composer hides its Talk launcher while admission is pending. Use the same
+      // production start boundary as the existing before-frame replacement fixtures.
+      composeRule.runOnUiThread { model.startChatTalk(checkNotNull(model.captureChatTalkStart())) }
+      awaitCreate(2).complete()
+      awaitListening(expectChatCall = true)
+      assertTrue(model.chatTalkCall.value?.start !== start)
+    }
+
+  @Test
+  fun photoFollowupChatRoundTripCannotAdmitCapturedSend() =
+    photoSendRetiredBeforeAdmission {
+      // Selection changes synchronously; its history cannot publish through our held mutex.
+      composeRule.runOnIdle {
+        val generation = runtime.chatSelectionGeneration.value
+        model.switchChatSession(SECOND_CHAT, ownerAgentId = "scout")
+        assertEquals(SECOND_CHAT, runtime.chatSessionKey.value)
+        model.switchChatSession(FIRST_CHAT, ownerAgentId = "scout")
+        assertEquals(FIRST_CHAT, runtime.chatSessionKey.value)
+        assertEquals(generation + 2, runtime.chatSelectionGeneration.value)
+      }
+    }
+
+  @Test
+  fun photoFollowupForegroundRoundTripCannotAdmitCapturedSend() =
+    photoSendRetiredBeforeAdmission {
+      composeRule.runOnIdle {
+        model.setForeground(false)
+        model.setForeground(true)
+      }
+    }
+
+  @Test
+  fun photoFollowupSocketLossCannotAdmitCapturedSend() =
+    photoSendRetiredBeforeAdmission {
+      composeRule.runOnIdle { runtime.disconnect() }
+      awaitUiState { !runtime.gatewayConnectionDisplay.value.isConnected }
+    }
+
+  private fun photoAdmissionMutex(): Mutex {
+    val controller = ReflectionHelpers.getField<ChatController>(runtime, "chat")
+    val mutex = ReflectionHelpers.getField<Mutex>(controller, "historyPublicationMutex")
+    var acquired = false
+    awaitUiState {
+      if (!acquired) acquired = mutex.tryLock()
+      acquired
+    }
+    return mutex
+  }
+
+  private fun photoSendRetiredBeforeAdmission(retire: (TalkModeManager.ChatStart) -> Unit) {
+    startCall()
+    shadowOf(app).grantPermissions(Manifest.permission.CAMERA)
+    val start = checkNotNull(model.chatTalkCall.value).start
+    val owner = start.owner
+    composeRule.runOnIdle { model.chatComposerState.textDrafts[owner] = "Unsent draft" }
+    assertEquals("Photo ready to send.", awaitPhoto(takePhoto()))
+    val staged =
+      model.chatComposerState.attachments.value
+        .getValue(owner)
+    val mutex = photoAdmissionMutex()
+    try {
+      composeRule.onNodeWithText("Send photos").performScrollTo().performClick()
+      awaitUiState {
+        model.chatComposerState.sendStates.value[owner]
+          ?.activeOperationIds
+          ?.isNotEmpty() == true
+      }
+      retire(start)
+    } finally {
+      mutex.unlock()
+    }
+    awaitUiState {
+      model.chatComposerState.sendStates.value[owner]
+        ?.activeOperationIds
+        .isNullOrEmpty()
+    }
+    assertNoPhotoSend()
+    assertEquals(staged, model.chatComposerState.attachments.value[owner])
+    assertEquals("Unsent draft", model.chatComposerState.textDrafts[owner])
   }
 
   @Test

@@ -43,9 +43,11 @@ Watch background behavior. See [Watch setup and limits](/platforms/ios#standalon
   opens the call's original agent/session; Android Back changes only the view.
   **End** closes audio and is separate from the chat agent's **Stop** action.
 - **Photo** captures a still image using the selected **Selfie** or **Rear**
-  camera. The image stays in the original chat's attachment preview. Use
-  **Go to chat** and the normal **Send** action to submit it; capture never sends
-  automatically. Camera capture remains foreground-only and permission-gated.
+  camera. Inspect its preview, then use **Send photos** directly on the conversation
+  page. This sends only the displayed photos to the call's original chat; unsent
+  text and other attachments stay in the composer. **Go to chat** remains available
+  when you want to add a message. Capture never sends automatically and remains
+  foreground-only and permission-gated.
 - Reading, writing/editing, searching, tool work, approvals, and input waits use
   Gateway events for the call's original conversation, including work not started
   by the current voice request. They do not follow another selected chat. Missing
