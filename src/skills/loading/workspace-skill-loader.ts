@@ -706,20 +706,6 @@ function readBundledSkillEntries(
   return [createSkillEntry(loaded)];
 }
 
-/** Loads one eligible bundled skill before higher-precedence workspace sources can replace it. */
-export function loadBundledSkillEntryByName(
-  skillName: string,
-  opts?: WorkspaceSkillLoadOptions,
-): SkillEntry | undefined {
-  return filterSkillEntries(
-    readBundledSkillEntries(skillName, opts),
-    opts?.config,
-    resolveEffectiveWorkspaceSkillFilter(opts),
-    undefined,
-    opts?.eligibility,
-  )[0];
-}
-
 export function filterWorkspaceSkills(
   entries: SkillEntry[],
   opts?: {

@@ -41,18 +41,16 @@ import { normalizeAgentId } from "../../routing/session-key.js";
 import { getOrCreatePromise } from "../../shared/lazy-promise.js";
 import { updateSkillConfigEntry } from "../../skills/config/mutations.js";
 import { collectSkillBins } from "../../skills/discovery/bins.js";
-import { buildWorkspaceSkillStatus } from "../../skills/discovery/status.js";
-import { loadSkillLibrarySelection } from "../../skills/library/selection.js";
+import { prepareWorkspaceSkillStatus } from "../../skills/discovery/status.js";
 import { parseRequestedClawHubSkillRef } from "../../skills/lifecycle/clawhub-store.js";
 import {
   installSkillFromClawHub,
-  readLocalSkillCardContentSync,
   searchSkillsFromClawHub,
   updateSkillsFromClawHub,
 } from "../../skills/lifecycle/clawhub.js";
 import { installSkill } from "../../skills/lifecycle/install.js";
 import { installUploadedSkillArchive } from "../../skills/lifecycle/upload-install.js";
-import { loadWorkspaceSkills } from "../../skills/loading/workspace-skill-loader.js";
+import { prepareWorkspaceSkillEntries } from "../../skills/loading/workspace-skill-loader.js";
 import { ensureSkillsWatcher } from "../../skills/runtime/refresh.js";
 import { getRemoteSkillEligibility } from "../../skills/runtime/remote.js";
 import {
@@ -136,6 +134,7 @@ function installClawHubSkillDeduped(params: ClawHubInstallParams): Promise<ClawH
 function buildRemoteAwareWorkspaceSkillStatus(
   resolved: ResolvedSkillsWorkspace,
   selections?: SkillLibrarySelection[],
+  skillCardKey?: string,
 ) {
   // Remote skill availability depends on the agent's executable-node surface,
   // not only the workspace contents, so status reports include live eligibility.
@@ -143,19 +142,9 @@ function buildRemoteAwareWorkspaceSkillStatus(
     cfg: resolved.cfg,
     agentId: resolved.agentId,
   });
-  return buildWorkspaceSkillStatus(resolved.workspaceDir, {
-    ...(selections?.length
-      ? {
-          entries: [
-            ...loadWorkspaceSkills(resolved.workspaceDir, {
-              config: resolved.cfg,
-              agentId: resolved.agentId,
-              agentSkillFilter: "ignore",
-            }),
-            ...loadSkillLibrarySelection(selections),
-          ],
-        }
-      : {}),
+  return prepareWorkspaceSkillStatus(resolved.workspaceDir, {
+    librarySelections: selections,
+    skillCardKey,
     config: resolved.cfg,
     agentId: resolved.agentId,
     eligibility: {
@@ -231,7 +220,7 @@ export const skillsHandlers: GatewayRequestHandlers = {
   ...skillsLibraryHandlers,
   ...skillsUploadHandlers,
   ...skillProposalHistoryHandlers,
-  "skills.status": ({ params, respond, context, client }) => {
+  "skills.status": async ({ params, respond, context, client }) => {
     if (!assertValidParams(params, validateSkillsStatusParams, "skills.status", respond)) {
       return;
     }
@@ -264,7 +253,7 @@ export const skillsHandlers: GatewayRequestHandlers = {
       config: resolved.cfg,
       agentId: resolved.agentId,
     });
-    const report = buildRemoteAwareWorkspaceSkillStatus(
+    const { report } = await buildRemoteAwareWorkspaceSkillStatus(
       resolved,
       target?.entry.skillLibrarySelections,
     );
@@ -287,7 +276,7 @@ export const skillsHandlers: GatewayRequestHandlers = {
       return;
     }
     try {
-      const report = buildRemoteAwareWorkspaceSkillStatus(resolved);
+      const { report } = await buildRemoteAwareWorkspaceSkillStatus(resolved);
       const targets = collectClawHubVerdictTargets(report);
       if (targets.length === 0) {
         respond(true, { schema: "openclaw.skills.security-verdicts.v1", items: [] }, undefined);
@@ -299,7 +288,7 @@ export const skillsHandlers: GatewayRequestHandlers = {
       respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatErrorMessage(err)));
     }
   },
-  "skills.skillCard": ({ params, respond, context }) => {
+  "skills.skillCard": async ({ params, respond, context }) => {
     if (!assertValidParams(params, validateSkillsSkillCardParams, "skills.skillCard", respond)) {
       return;
     }
@@ -308,10 +297,11 @@ export const skillsHandlers: GatewayRequestHandlers = {
       respond(false, undefined, resolved.error);
       return;
     }
-    const report = buildWorkspaceSkillStatus(resolved.workspaceDir, {
-      config: resolved.cfg,
-      agentId: resolved.agentId,
-    });
+    const { report, files } = await buildRemoteAwareWorkspaceSkillStatus(
+      resolved,
+      undefined,
+      params.skillKey,
+    );
     const skill = report.skills.find((candidate) => candidate.skillKey === params.skillKey);
     if (!skill?.skillCard) {
       respond(
@@ -321,7 +311,9 @@ export const skillsHandlers: GatewayRequestHandlers = {
       );
       return;
     }
-    const content = readLocalSkillCardContentSync(skill.baseDir);
+    const content = files.find(
+      (file) => file.name === skill.name && file.filePath === skill.filePath,
+    )?.skillCard?.content;
     if (content === undefined) {
       respond(
         false,
@@ -342,7 +334,7 @@ export const skillsHandlers: GatewayRequestHandlers = {
       undefined,
     );
   },
-  "skills.bins": ({ params, respond, context }) => {
+  "skills.bins": async ({ params, respond, context }) => {
     if (!assertValidParams(params, validateSkillsBinsParams, "skills.bins", respond)) {
       return;
     }
@@ -350,11 +342,14 @@ export const skillsHandlers: GatewayRequestHandlers = {
     const bins = new Set<string>();
     for (const agentId of listAgentIds(cfg)) {
       // Node inventories include missing requirements, not only locally usable skills.
-      const entries = loadWorkspaceSkills(resolveAgentWorkspaceDir(cfg, agentId), {
-        config: cfg,
-        agentId,
-        agentSkillFilter: "ignore",
-      });
+      const { entries } = await prepareWorkspaceSkillEntries(
+        resolveAgentWorkspaceDir(cfg, agentId),
+        {
+          config: cfg,
+          agentId,
+          agentSkillFilter: "ignore",
+        },
+      );
       for (const bin of collectSkillBins(entries)) {
         bins.add(bin);
       }

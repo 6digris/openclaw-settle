@@ -92,7 +92,10 @@ Use `openclaw/plugin-sdk/agent-workspace-runtime` to declare, register, and acqu
 configured remote workspace during registration so callers cannot fall back to
 local files before its service starts. Register its bridge when ready and release
 it when the service stops. Callers keep their existing document authorization.
-`isWorkspaceAccessUnavailableError(error)` identifies unavailable host access.
+`isWorkspaceAccessUnavailableError(error)` identifies unavailable host access,
+including failed task-time remote Skill discovery. Channel-native menus use
+Gateway-owned Skills without waiting for remote discovery. Remote menu support
+is deferred to [Enterprise #241](https://github.com/openclaw/openclaw-enterprise/issues/241).
 
 `createWorkspaceBootstrapFilePolicy({ workspaceDir, config })` lets adapters
 restrict this bridge to native bootstrap documents and the configured
