@@ -22,8 +22,7 @@ import {
   createPluginRuntimeCapabilityLease,
   type PluginRuntimeCapabilityLease,
 } from "./capability-lease.js";
-import { subscribePluginSessionsChanged } from "./gateway-events.js";
-import { isPluginJsonValue, type PluginJsonValue } from "./host-hook-json.js";
+import { createPluginServiceGatewayEvents } from "./gateway-events.js";
 import { withPluginHttpRouteRegistry } from "./http-registry.js";
 import { getPluginInstance, runPluginCleanup } from "./plugin-instance-scope.js";
 import type { PluginInstanceConsumer } from "./plugin-instance.types.js";
@@ -497,35 +496,11 @@ async function startPreparedPluginServices({
       instance ? instance.runCleanup(run) : runPluginCleanup(service, run);
     const traceName = `sidecars.plugin-services.${encodeStartupTraceSegment(entry.pluginId)}.${encodeStartupTraceSegment(entry.id)}`;
     const lease = createPluginRuntimeCapabilityLease("plugin service");
-    const pluginId = entry.pluginId;
-    const broadcast = broadcastPluginEvent;
-    // The broadcaster owns delivery and sessions.changed scheduling. Without it,
-    // omit this capability so plugins can detect absence and choose their fallback.
-    const gatewayEvents: OpenClawPluginServiceContext["gatewayEvents"] = broadcast
-      ? {
-          emit: (event, payload: PluginJsonValue, opts) => {
-            lease.assertActive("gateway event emitter");
-            if (!/^[a-z][a-z0-9_-]*$/u.test(event)) {
-              throw new Error(`invalid plugin gateway event name: ${event}`);
-            }
-            if (!isPluginJsonValue(payload)) {
-              throw new Error("plugin gateway event payload must be bounded JSON");
-            }
-            if (
-              opts?.scope !== "operator.read" &&
-              opts?.scope !== "operator.write" &&
-              opts?.scope !== "operator.admin"
-            ) {
-              throw new Error("plugin gateway event scope must be an operator scope");
-            }
-            broadcast(`plugin.${pluginId}.${event}`, payload, opts.scope);
-          },
-          onSessionsChanged: (handler) => {
-            lease.assertActive("gateway event subscriber");
-            return lease.retain(subscribePluginSessionsChanged(handler));
-          },
-        }
-      : undefined;
+    const gatewayEvents = createPluginServiceGatewayEvents({
+      pluginId: entry.pluginId,
+      broadcast: broadcastPluginEvent,
+      lease,
+    });
     const { health, revoke } = createPluginServiceHealthReporter(entry);
     lease.retain(revoke);
     const getCron = getCronService
