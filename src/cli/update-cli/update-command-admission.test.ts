@@ -181,6 +181,7 @@ describe("update target admission", () => {
               message: expect.stringContaining("deployment owner"),
             },
           ],
+          undefined,
         );
       }
       if (route === "current config drift") {
