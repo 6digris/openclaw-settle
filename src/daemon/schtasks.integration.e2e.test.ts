@@ -30,6 +30,8 @@ import {
   sanitizeVerboseQuery,
   TASK_LOGON_INTERACTIVE_TOKEN,
   TASK_RUNLEVEL_LEAST_PRIVILEGE,
+  waitForCompletedScheduledTaskRun,
+  waitForRuntimeStatus,
   type ScheduledTaskPrincipal,
   type WindowsProcessDiagnostic,
 } from "./schtasks.integration-observation.test-support.js";
@@ -51,7 +53,6 @@ import {
   waitForProcessExit,
   writeGatewayTaskSupervisorProbe,
 } from "./schtasks.task-supervisor.native-test-support.js";
-import type { GatewayServiceRuntime } from "./service-runtime.js";
 import type { GatewayServiceEnv } from "./service-types.js";
 import { resolveGatewayService } from "./service.js";
 
@@ -84,32 +85,6 @@ async function sleep(delayMs = WAIT_INTERVAL_MS): Promise<void> {
   await new Promise((resolve) => {
     setTimeout(resolve, delayMs);
   });
-}
-
-async function waitForRuntimeStatus(
-  readRuntime: () => Promise<GatewayServiceRuntime>,
-  expected: "running" | "stopped",
-  expectedPid?: number,
-): Promise<void> {
-  const deadline = Date.now() + WAIT_TIMEOUT_MS;
-  let lastStatus = "unknown";
-  let lastDetail = "";
-  let lastPid: number | undefined;
-  while (Date.now() < deadline) {
-    const runtime = await readRuntime();
-    lastStatus = runtime.status ?? "unknown";
-    lastDetail = runtime.detail ?? "";
-    lastPid = runtime.pid;
-    if (runtime.status === expected && (expectedPid === undefined || runtime.pid === expectedPid)) {
-      return;
-    }
-    await sleep();
-  }
-  throw new Error(
-    `Timed out waiting for Scheduled Task status=${expected}${
-      expectedPid === undefined ? "" : ` pid=${expectedPid}`
-    }; observed ${lastStatus}${lastPid === undefined ? "" : ` pid=${lastPid}`}: ${lastDetail}`,
-  );
 }
 
 async function reserveLoopbackPort(): Promise<number> {
@@ -149,38 +124,6 @@ async function waitForLoopbackPortRelease(port: number): Promise<void> {
     await sleep();
   }
   throw new Error(`Timed out waiting for Scheduled Task loopback port ${port} to be reusable`);
-}
-
-async function waitForCompletedScheduledTaskRun(
-  taskName: string,
-  exitCode: number,
-): Promise<ScheduledTaskPrincipal> {
-  const deadline = Date.now() + WAIT_TIMEOUT_MS;
-  let lastPrincipal: ScheduledTaskPrincipal | null = null;
-  let lastError: unknown;
-  while (Date.now() < deadline) {
-    try {
-      lastPrincipal = readTaskPrincipal(taskName);
-      if (
-        lastPrincipal.taskState === TASK_STATE_READY &&
-        lastPrincipal.lastTaskResult === exitCode &&
-        !Number.isNaN(Date.parse(lastPrincipal.lastRunTime)) &&
-        Date.parse(lastPrincipal.lastRunTime) > 0
-      ) {
-        return lastPrincipal;
-      }
-    } catch (error) {
-      lastError = error;
-    }
-    await sleep();
-  }
-  throw new Error(
-    `Timed out waiting for Scheduled Task ${taskName} to finish with exit ${exitCode}; ${
-      lastPrincipal
-        ? `observed state=${lastPrincipal.taskState} result=${lastPrincipal.lastTaskResult}`
-        : `last inspection failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`
-    }`,
-  );
 }
 
 async function readTaskDefinitionSnapshot(taskName: string): Promise<TaskDefinitionSnapshot> {

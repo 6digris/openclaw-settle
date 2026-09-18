@@ -6,12 +6,12 @@ import { expect } from "vitest";
 import { getWindowsPowerShellExePath } from "../infra/windows-install-roots.js";
 import { readWindowsProcessSnapshot, terminateGatewayProcessTree } from "./schtasks-process.js";
 import { launchFallbackTaskScript, resolveFallbackRuntime } from "./schtasks-runtime.js";
+import { resolveDiagnosticReplacements } from "./schtasks.integration-observation.test-support.js";
 import type { GatewayServiceCommandConfig, GatewayServiceEnv } from "./service-types.js";
 import {
   WINDOWS_TASK_SUPERVISOR_RESTART_EXIT_CODE_MAX,
   WINDOWS_TASK_SUPERVISOR_RESTART_EXIT_CODE_MIN,
 } from "./windows-task-supervisor-contract.js";
-import { resolveDiagnosticReplacements } from "./schtasks.integration-observation.test-support.js";
 
 const WAIT_INTERVAL_MS = 200;
 const WAIT_TIMEOUT_MS = 30_000;
