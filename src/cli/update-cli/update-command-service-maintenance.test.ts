@@ -701,6 +701,8 @@ it("retains the inspected systemd manager route during preparation", () =>
 
 it.each([
   "shipped handoff",
+  "shipped startup handoff",
+  "shipped startup protected handoff",
   "matching UID",
   "mismatching UID",
   "unavailable manager",
@@ -714,13 +716,14 @@ it.each([
   "changed protected override",
 ])("revalidates the shipped managed-service stop record: %s", (scenario) =>
   withServiceHome(async (home) => {
-    mockProcessPlatform("linux");
+    mockProcessPlatform(scenario.includes("startup") ? "win32" : "linux");
     const root = process.cwd();
     const command = {
       programArguments: [process.execPath, path.join(root, "openclaw.mjs"), "gateway"],
       environment: { HOME: home },
     };
     const protectedCommand = scenario.includes("protected");
+    const fingerprint = sha256Hex(stableStringify(command));
     // Stable updaters through v2026.9.4 omit metadata for known-empty systemd overrides.
     const before: PreManagedServiceStop = {
       stoppedAtMs: 1,
@@ -735,7 +738,7 @@ it.each([
       serviceUpdateVerdict: {
         kind: "owned",
         root,
-        fingerprint: sha256Hex(stableStringify(command)),
+        fingerprint,
         refreshDefinition: !protectedCommand,
       },
     };
@@ -745,6 +748,9 @@ it.each([
     const service = createMockGatewayService({
       readCommand: async () => ({
         ...command,
+        ...(scenario.includes("startup")
+          ? { startupEntryPaths: [path.join(home, "Gateway.vbs")] }
+          : {}),
         ...(protectedCommand
           ? {
               managedDefinition: command,
@@ -789,12 +795,13 @@ it.each([
       preManagedServiceStop: before,
     });
     if (
-      scenario === "shipped handoff" ||
+      scenario.startsWith("shipped") ||
       scenario === "matching UID" ||
       scenario === "unchanged protected command"
     ) {
       await expect(revalidated).resolves.toMatchObject({
         kind: "owned",
+        fingerprint,
         refreshDefinition: !protectedCommand,
       });
     } else {

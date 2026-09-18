@@ -3,6 +3,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as terminalNote from "../../packages/terminal-core/src/note.js";
+import { maybeScanExtraGatewayServices } from "../commands/doctor-gateway-services.js";
+import { createDoctorPrompter } from "../commands/doctor-prompter.js";
+import * as doctorServicePolicy from "../commands/doctor-service-repair-policy.js";
+import * as configPaths from "../config/paths.js";
+import { CORE_HEALTH_CHECKS } from "../flows/doctor-core-checks.js";
 import { encodeWindowsLauncherScript } from "../infra/windows-launcher-encoding.js";
 import { findGatewayServices, renderGatewayServiceCleanupHints } from "./inspect.js";
 import { readStartupEntryCommand, resolveStartupEntryPath } from "./schtasks-layout.js";
@@ -20,10 +26,12 @@ beforeEach(async () => {
   );
   vi.spyOn(process, "platform", "get").mockReturnValue("win32");
   vi.spyOn(taskProbe, "listScheduledTasks").mockReturnValue([]);
+  vi.spyOn(taskProbe, "probeScheduledTaskState").mockReturnValue({ status: "missing" });
 });
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   await fs.rm(root, { recursive: true, force: true });
 });
 
@@ -33,8 +41,8 @@ function environment() {
 
 async function startup(form: "cmd" | "9.2/9.3" | "9.4", taskName = "OpenClaw Gateway (rescue)") {
   const env = { ...environment(), OPENCLAW_WINDOWS_TASK_NAME: taskName };
-  const scriptPath = path.join(root, "rescue", "gateway.cmd");
   const startupPath = resolveStartupEntryPath(env, form === "cmd" ? "cmd" : "vbs");
+  const scriptPath = path.join(root, path.basename(startupPath), "gateway.cmd");
   await fs.mkdir(path.dirname(scriptPath), { recursive: true });
   await fs.mkdir(path.dirname(startupPath), { recursive: true });
   await fs.writeFile(
@@ -44,7 +52,7 @@ async function startup(form: "cmd" | "9.2/9.3" | "9.4", taskName = "OpenClaw Gat
       'set "OPENCLAW_SERVICE_MARKER=openclaw"',
       'set "OPENCLAW_SERVICE_KIND=gateway"',
       `set "OPENCLAW_WINDOWS_TASK_NAME=${taskName}"`,
-      'set "OPENCLAW_PROFILE=rescue"',
+      `set "OPENCLAW_PROFILE=${taskName === "OpenClaw Gateway" ? "default" : "rescue"}"`,
       `set "OPENCLAW_STATE_DIR=${path.dirname(scriptPath)}"`,
       '"C:/Node/node.exe" "C:/Applications/openclaw/dist/index.js" gateway --port 19789 < NUL',
       "",
@@ -82,6 +90,61 @@ describe("Windows Startup service inventory", () => {
         ],
         errors: [],
       });
+    },
+  );
+
+  it.each([false, true])(
+    "reports Startup entries through Doctor (selected Task exists=%s)",
+    async (taskExists) => {
+      const selected = await startup("9.4", "OpenClaw Gateway");
+      const sibling = await startup("9.4");
+      if (taskExists) {
+        const task = {
+          taskPath: selected.taskName,
+          state: 3,
+          actions: [{ type: 0, path: selected.scriptPath, arguments: "", workingDirectory: "" }],
+        };
+        vi.mocked(taskProbe.listScheduledTasks).mockReturnValue([task]);
+        vi.mocked(taskProbe.probeScheduledTaskState).mockReturnValue({ status: "found", ...task });
+      }
+      for (const [key, value] of Object.entries(environment())) {
+        vi.stubEnv(key, value);
+      }
+      // Keep the synthetic account eligible; discovery, parsing, and reporting stay real.
+      vi.spyOn(configPaths, "isDefaultInstallIdentity").mockReturnValue(true);
+      vi.spyOn(doctorServicePolicy, "shouldManageGatewayService").mockResolvedValue(true);
+      const notes = vi.spyOn(terminalNote, "note").mockImplementation(() => {});
+      const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
+      const check = CORE_HEALTH_CHECKS.find(
+        ({ id }) => id === "core/doctor/gateway-services/extra",
+      );
+      if (!check) {
+        throw new Error("Doctor extra-services check is not registered");
+      }
+      const context = { mode: "doctor" as const, cfg: {}, runtime, deep: true };
+      const extras = taskExists ? [sibling, selected] : [sibling];
+      expect(await check.detect(context)).toEqual(
+        extras.map((entry) =>
+          expect.objectContaining({
+            severity: "info",
+            target: entry.taskName,
+            message: expect.stringContaining(entry.startupPath),
+          }),
+        ),
+      );
+      await maybeScanExtraGatewayServices(
+        { deep: true },
+        runtime,
+        createDoctorPrompter({ runtime, options: { nonInteractive: true } }),
+      );
+      const output = notes.mock.calls.map(([message]) => message).join("\n");
+      expect(output).toContain(`Get-Item -LiteralPath '${sibling.startupPath}'`);
+      if (taskExists) {
+        expect(output).toContain(`Get-Item -LiteralPath '${selected.startupPath}'`);
+      } else {
+        expect(output).not.toContain(selected.startupPath);
+      }
+      expect(output).not.toContain("schtasks /Delete");
     },
   );
 

@@ -415,6 +415,25 @@ async function scanWindowsStartupEntries(
     }
     return [];
   }
+  const selectedStartupEntries = new Set<string>();
+  if (
+    !includeManagedOpenClaw &&
+    entries.some((entry) =>
+      selected.has(path.win32.normalize(path.join(directory, entry)).toLowerCase()),
+    )
+  ) {
+    try {
+      const command = await readScheduledTaskCommand(env, { requireLoaded: true });
+      for (const entry of command?.startupEntryPaths ?? []) {
+        selectedStartupEntries.add(path.win32.normalize(entry).toLowerCase());
+      }
+    } catch {
+      errors.push({
+        source: resolveTaskName(env),
+        message: "Selected Gateway service could not be inspected.",
+      });
+    }
+  }
   const services: ExtraGatewayService[] = [];
   for (const entry of entries.toSorted()) {
     if (!/\.(?:cmd|vbs)$/i.test(entry)) {
@@ -422,6 +441,7 @@ async function scanWindowsStartupEntries(
     }
     const name = entry.slice(0, -4);
     const pathname = path.join(directory, entry);
+    const pathIdentity = path.win32.normalize(pathname).toLowerCase();
     let gateway = /(?:openclaw|clawdbot).*gateway/i.test(name);
     let marker: Marker | undefined;
     try {
@@ -442,7 +462,7 @@ async function scanWindowsStartupEntries(
       );
       marker = commandMarker || (serviceMarker === "openclaw" ? "openclaw" : marker);
       const label = command.environment?.OPENCLAW_WINDOWS_TASK_NAME?.trim() || name;
-      if (!marker || (includeManagedOpenClaw ? !gateway : isOpenClawGatewayTaskName(label))) {
+      if (!marker || !gateway || selectedStartupEntries.has(pathIdentity)) {
         continue;
       }
       services.push({
@@ -455,7 +475,7 @@ async function scanWindowsStartupEntries(
         windowsStartupEntry: pathname,
       });
     } catch {
-      if (gateway || selected.has(path.win32.normalize(pathname).toLowerCase())) {
+      if (gateway || selected.has(pathIdentity)) {
         errors.push({ source: pathname, message: "Startup launcher could not be inspected." });
       }
     }

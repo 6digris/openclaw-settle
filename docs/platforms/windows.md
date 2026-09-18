@@ -175,12 +175,15 @@ contains an ambiguous command, repair it before retrying. Update refreshes retai
 the existing task principal, triggers, and settings instead of recreating the task
 with the invoking user's defaults.
 
-Service discovery also reads the current account's Startup-folder launchers,
-including sibling profiles without a Scheduled Task. Each Startup file remains a
-separate service definition even when a task has the same name. Inspection follows
-that exact file and its captured Gateway script; unreadable or malformed Gateway
-launchers are reported instead of being treated as absent. Discovering a Startup
-entry does not grant Task Scheduler control over it.
+`openclaw gateway status --deep` and `openclaw doctor --deep` report sibling
+profiles from the current account's Startup folder. If its Scheduled Task is
+absent, the selected Startup fallback is omitted from the extra-service list. Each
+Startup file remains a separate service definition even when a task has the same
+name. Inspection follows that exact file and its captured Gateway
+script. The complete inventory retains errors for unreadable or malformed Gateway
+launchers; Doctor and status list only successfully inspected extra services.
+Startup inspection hints use the exact file path and do not grant Task Scheduler
+control over it.
 
 The task probe allows Windows PowerShell to inherit or create a console because
 some PowerShell 5.1 hosts fail inspection when console creation is disabled.

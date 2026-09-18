@@ -603,6 +603,9 @@ async function readWindowsTaskCommand(
         : {}),
       sourcePath: scriptPath,
       ...(startupEntryPath ? { definitionPaths: [startupEntryPath, scriptPath] } : {}),
+      ...(registered?.status === "missing" && launchers
+        ? { startupEntryPaths: launchers.map(({ pathname }) => pathname) }
+        : {}),
     };
   } catch (error) {
     if (!requireEffective) {
