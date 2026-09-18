@@ -4,6 +4,7 @@ import path from "node:path";
 import { redactSensitiveUrlLikeString } from "@openclaw/net-policy/redact-sensitive-url";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { sanitizeForLog } from "../../../packages/terminal-core/src/ansi.js";
+import { getAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { acquireGitSource } from "../../infra/git-source.js";
 import { sanitizeHostExecEnv } from "../../infra/host-env-security.js";
@@ -111,6 +112,11 @@ async function installLocalSkillDir(params: {
     fallbackLabel: params.fallbackLabel,
     slug: params.slug,
   });
+  const access = getAgentWorkspaceAccess(params.workspaceDir);
+  if (access && !access.recordSkillSourceInstall) {
+    return { ok: false, error: "Remote workspace skill source tracking is unavailable" };
+  }
+  const recordInstall = access?.recordSkillSourceInstall ?? recordSkillSourceInstall;
   const install = await installExtractedSkillRoot({
     workspaceDir: params.workspaceDir,
     slug,
@@ -144,7 +150,7 @@ async function installLocalSkillDir(params: {
     return { ok: false, error: install.error };
   }
 
-  await recordSkillSourceInstall({
+  await recordInstall({
     workspaceDir: params.workspaceDir,
     targetDir: install.targetDir,
     origin: {

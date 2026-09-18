@@ -1,4 +1,8 @@
 import path from "node:path";
+import {
+  getAgentWorkspaceAccess,
+  WorkspaceAccessUnavailableError,
+} from "../../agents/workspace-access.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   downloadClawHubGitHubSkillArchive,
@@ -454,8 +458,13 @@ export async function performClawHubSkillInstall(
 ): Promise<InstallClawHubSkillResult> {
   try {
     normalizeExpectedArtifactIntegrity(params.expectedIntegrity);
+    const access = getAgentWorkspaceAccess(params.workspaceDir);
+    if (access && !access.clawHubSkills) {
+      throw new WorkspaceAccessUnavailableError("Remote workspace ClawHub tracking is unavailable");
+    }
+    const files = access?.clawHubSkills;
     const registry = resolveClawHubBaseUrl(params.baseUrl);
-    await assertClawHubSkillInstallState({
+    await (files?.assertClawHubSkillInstallState ?? assertClawHubSkillInstallState)({
       workspaceDir: params.workspaceDir,
       slug: params.slug,
       force: params.force,
@@ -612,7 +621,7 @@ export async function performClawHubSkillInstall(
       const verificationVersion =
         resolution?.installKind === "github" && !params.version ? undefined : version;
       const [{ skillFile, fileTreeSha256 }, verification] = await Promise.all([
-        readInstalledClawHubSkillFiles({
+        (files?.readInstalledClawHubSkillFiles ?? readInstalledClawHubSkillFiles)({
           skillDir: install.targetDir,
         }),
         fetchInstallVerificationLock({
@@ -638,7 +647,7 @@ export async function performClawHubSkillInstall(
         ...(skillFile ? { skillFile } : {}),
         fileTreeSha256,
       };
-      await recordClawHubSkillInstall({
+      await (files?.recordClawHubSkillInstall ?? recordClawHubSkillInstall)({
         workspaceDir: params.workspaceDir,
         skillDir: install.targetDir,
         origin: {

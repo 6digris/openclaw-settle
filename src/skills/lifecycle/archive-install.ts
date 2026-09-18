@@ -1,5 +1,9 @@
 // Archive install helpers extract and validate skill archives during installation.
 import path from "node:path";
+import {
+  getAgentWorkspaceAccess,
+  WorkspaceAccessUnavailableError,
+} from "../../agents/workspace-access.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ArchiveLogger } from "../../infra/archive.js";
 import { formatErrorMessage } from "../../infra/errors.js";
@@ -150,8 +154,15 @@ export async function installExtractedSkillRoot(
         ? String(sourceVersionValue)
         : undefined;
     const captureChanges = hasCommittedSkillChangeHooks();
+    const access = getAgentWorkspaceAccess(params.workspaceDir);
+    if (access && !access.applySkillRoot) {
+      throw new WorkspaceAccessUnavailableError(
+        "Remote workspace skill installation is unavailable",
+      );
+    }
+    const applyRoot = access?.applySkillRoot ?? applyExtractedSkillRoot;
     const { policy: _policy, ...files } = params;
-    const result = await applyExtractedSkillRoot({
+    const result = await applyRoot({
       ...files,
       ...(captureChanges ? { changes: { source: changeSource, sourceVersion } } : {}),
       beforeInstall: async (mode) => {

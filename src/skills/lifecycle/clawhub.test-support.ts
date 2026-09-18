@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { expect, vi } from "vitest";
+import { registerAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 import type {
   ClawHubSkillSecurityVerdictItem,
   ClawHubSkillVerificationResponse,
@@ -83,7 +84,50 @@ vi.mock("../../state/claw-package-adoption.js", () => ({
 }));
 
 const { ClawHubRequestError } = await import("../../infra/clawhub-client.js");
-const { untrackClawHubSkill } = await import("./clawhub-store.js");
+const { applyExtractedSkillRoot } = await import("./archive-install.js");
+const { preflightSkillOwnerState, resolveRequestedUpdateSlug, resolveTrackedUpdateTarget } =
+  await import("./clawhub-status.js");
+const {
+  assertClawHubSkillInstallState,
+  readClawHubSkillsLockfile,
+  readInstalledClawHubSkillFiles,
+  recordClawHubSkillInstall,
+  untrackClawHubSkill,
+} = await import("./clawhub-store.js");
+
+const { guardTrackedSkillLocalState, planClawHubSkillUninstall, applyClawHubSkillUninstall } =
+  await import("./clawhub-uninstall.js");
+
+function bindHostWorkspace(gateway: string, host: string) {
+  return registerAgentWorkspaceAccess(gateway, {
+    bridge: { readFile: vi.fn(), writeFile: vi.fn(), stat: vi.fn() },
+    applySkillRoot: (params) => applyExtractedSkillRoot({ ...params, workspaceDir: host }),
+    clawHubSkills: {
+      planClawHubSkillUninstall: async (params) => {
+        const result = await planClawHubSkillUninstall({ ...params, workspaceDir: host });
+        return result.ok ? { ...result, plan: { ...result.plan, workspaceDir: gateway } } : result;
+      },
+      applyClawHubSkillUninstall: (plan, options) =>
+        applyClawHubSkillUninstall({ ...plan, workspaceDir: host }, options),
+      resolveClawHubSkillVerificationTarget: (params) =>
+        resolveClawHubSkillVerificationTarget({ ...params, workspaceDir: host }),
+      readClawHubSkillsLockfile: () => readClawHubSkillsLockfile(host),
+      resolveRequestedUpdateSlug: (params) =>
+        resolveRequestedUpdateSlug({ ...params, workspaceDir: host }),
+      resolveTrackedUpdateTarget: (params) =>
+        resolveTrackedUpdateTarget({ ...params, workspaceDir: host }),
+      guardTrackedSkillLocalState: (params) =>
+        guardTrackedSkillLocalState({ ...params, workspaceDir: host }),
+      preflightSkillOwnerState: (params) =>
+        preflightSkillOwnerState({ ...params, workspaceDir: host }),
+      assertClawHubSkillInstallState: (params) =>
+        assertClawHubSkillInstallState({ ...params, workspaceDir: host }),
+      readInstalledClawHubSkillFiles,
+      recordClawHubSkillInstall: (params) =>
+        recordClawHubSkillInstall({ ...params, workspaceDir: host }),
+    },
+  });
+}
 
 const {
   installSkillFromClawHub,
@@ -339,6 +383,7 @@ export {
   digestClawHubSkillTreeMock,
   markClawPackageIndependentlyOwnedMock,
   tempDirs,
+  bindHostWorkspace,
   expectInstallPackageSourceDir,
   installPolicyInput,
   expectInstalledSkill,
@@ -353,6 +398,7 @@ export {
   readJson,
   writeTrackedSkill,
   ClawHubRequestError,
+  readClawHubSkillsLockfile,
   untrackClawHubSkill,
   preflightSkillFromClawHub,
   readClawHubSkillsLockfileStatusSync,

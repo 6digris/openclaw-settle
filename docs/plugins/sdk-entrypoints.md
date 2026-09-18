@@ -116,10 +116,28 @@ Stopping the binding revokes retained host readers.
 OpenClaw packages `dist/worker/skills-worker-entry.js` for workspace adapters.
 Use `resolveWorkspaceWorkerArgv("memory" | "skills")` from
 `agent-workspace-runtime` to resolve worker arguments for source and installed
-OpenClaw builds, then append the workspace path, home path and operation.
-The Skills worker runs native discovery in a dedicated process. Send one JSON
-request on stdin and read its JSON result on stdout. Use the same OpenClaw
-version on both sides; the authenticated adapter owns transport and source-root admission.
+OpenClaw builds, then append the worker's documented arguments.
+It runs the existing Skills discovery, resource, watch, install and ClawHub
+operations in a dedicated process. It does not depend on Codex. Launch it with
+the workspace path, home path and operation; map admitted Skill source paths
+before sending requests. Simple operations take one JSON request on stdin and
+return JSON on stdout. Install/remove use a duplex exchange so Gateway policy
+and mutation authorization run before the native filesystem operation; watch
+keeps the stream open until the adapter disconnects.
+
+Use the same OpenClaw version on both sides. This process protocol is for an
+authenticated workspace adapter, not a network endpoint or a filesystem sandbox.
+The adapter owns credentials, source-root admission and source upload; the process
+uses its host account's permissions. A paired-node Skills adapter still needs
+to connect these operations to the workspace provider.
+
+For a remote workspace, dependency installation uses `installSkillDependencies`.
+Gateway selects the recipe and runs install policy; the host runs the existing
+installer through the worker's `installDependencies` operation. Requests contain
+the Skill key, recipe, installation preferences and timeout. Recipe choices use
+the host's OS and binaries. Missing host support fails without installing on Gateway.
+File-inspecting Gateway policies receive a temporary tree from the existing Skill
+resource reader; Gateway-owned sources remain local. Resource bundle limits apply.
 
 `readWorkspaceSkillResources` lazily reuses the bounded native bundle reader.
 File-transfer adapters can check each file's requested and verified canonical paths
