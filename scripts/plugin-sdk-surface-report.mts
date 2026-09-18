@@ -380,7 +380,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +4: shared activity projectors and complete-preamble admission, including the shipped barrel.
       // -1: keep complete-preamble admission off the deprecated compatibility facade.
       // +1: preserve opaque host reply metadata through Telegram recovery text clones.
-      4489,
+      // +1: canonical media/attachment associations for recovered-final filtering.
+      4490,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -524,7 +525,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +4: shared activity projectors and complete-preamble admission, including the shipped barrel.
       // -1: keep complete-preamble admission off the deprecated compatibility facade.
       // +1: preserve opaque host reply metadata through Telegram recovery text clones.
-      2652,
+      // +1: canonical media/attachment associations for recovered-final filtering.
+      2653,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

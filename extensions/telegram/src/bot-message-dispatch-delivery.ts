@@ -27,6 +27,7 @@ import {
   createCurrentTurnTranscriptFinalResolver,
   mirrorTelegramAssistantReplyToTranscript,
 } from "./bot-message-dispatch-session.js";
+import { deduplicateBlockSentMedia } from "./bot-message-dispatch.media-dedup.js";
 import type {
   TelegramDispatchTurn as Turn,
   TelegramDispatchTurnConfig as TurnConfig,
@@ -530,7 +531,7 @@ export async function deliverFinalAnswerText(
     finalText: text,
     resolveCandidateText: async () => transcriptFinal?.text,
   });
-  const finalPayload =
+  let finalPayload =
     selectedText === text
       ? answerPayload
       : projectPayloadForDelivery(
@@ -538,6 +539,9 @@ export async function deliverFinalAnswerText(
           applyTextToPayload(answerPayload, selectedText),
           transcriptFinal?.openclawDelivery,
         );
+  if (finalPayload && selectedText !== text) {
+    finalPayload = deduplicateBlockSentMedia(finalPayload, turn.sentBlockMediaUrls);
+  }
   if (!finalPayload) {
     return { kind: "skipped" };
   }
@@ -678,11 +682,14 @@ export function createDeliveryState(
       if (selectedText === finalText) {
         return undefined;
       }
-      const recovered = projectPayloadForDelivery(
+      let recovered = projectPayloadForDelivery(
         turn,
         applyTextToPayload(payload, selectedText),
         transcriptFinal?.openclawDelivery,
       );
+      if (recovered) {
+        recovered = deduplicateBlockSentMedia(recovered, turn.sentBlockMediaUrls);
+      }
       return recovered &&
         previewText &&
         previewText.length > (recovered.text ?? "").trimEnd().length

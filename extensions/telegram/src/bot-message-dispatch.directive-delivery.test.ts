@@ -13,6 +13,7 @@ import {
   createContext,
   describeTelegramDispatch,
   deliverInboundReplyWithMessageSendContext,
+  deliverReplies,
   dispatchReplyWithBufferedBlockDispatcher,
   dispatchWithContext,
   expectDeliveredReply,
@@ -55,6 +56,20 @@ describeTelegramDispatch("dispatchTelegramMessage directive delivery", () => {
       stale: false,
     },
     {
+      name: "initial recovery after block media",
+      existingTarget: undefined,
+      existingCurrent: false,
+      preceding: false,
+      stale: false,
+    },
+    {
+      name: "late recovery after block media",
+      existingTarget: undefined,
+      existingCurrent: false,
+      preceding: false,
+      stale: false,
+    },
+    {
       name: "preceding input after block media",
       existingTarget: undefined,
       existingCurrent: false,
@@ -79,7 +94,9 @@ describeTelegramDispatch("dispatchTelegramMessage directive delivery", () => {
     "recovers persisted delivery facts through the scoped transcript SDK ($name)",
     async ({ name, existingTarget, existingCurrent, preceding, stale }) => {
       const extraMedia = name !== "matching transcript signature";
-      const blockMedia = name === "preceding input after block media";
+      const lateRecovery = name === "late recovery after block media";
+      const recoveredBlockMedia = lateRecovery || name === "initial recovery after block media";
+      const blockMedia = recoveredBlockMedia || name === "preceding input after block media";
       const recover = !preceding && !stale;
       const streaming = recover && existingTarget === undefined;
       const root = await fs.mkdtemp(path.join(os.tmpdir(), "telegram-persisted-recovery-"));
@@ -108,6 +125,14 @@ describeTelegramDispatch("dispatchTelegramMessage directive delivery", () => {
       };
       const mediaUrls = extraMedia ? ["/tmp/lead.txt", aliasRecord.filePath] : [];
       const recordedMedia = "/tmp/recorded.ogg";
+      const persistedMediaUrls = recoveredBlockMedia
+        ? [...mediaUrls, recordedMedia]
+        : [recordedMedia];
+      const sentAttachment = { name: "Already delivered.txt", mimeType: "text/plain" };
+      const remainingAttachment = { name: "Still needed.txt", mimeType: "text/plain" };
+      const attachments = recoveredBlockMedia
+        ? [sentAttachment, remainingAttachment]
+        : [aliasRecord];
       let transcriptMessageId: string | undefined;
       try {
         await patchSessionEntry({ ...scope, fallbackEntry: entry, update: () => entry });
@@ -130,53 +155,69 @@ describeTelegramDispatch("dispatchTelegramMessage directive delivery", () => {
           async ({ dispatcherOptions, replyOptions }) => {
             await replyOptions?.onPartialReply?.({ text: prefix });
             if (blockMedia) {
-              const [blockPlan] = createStructuredOutboundPayloadPlan([{ mediaUrl: mediaUrls[0] }]);
+              const [blockPlan] = createStructuredOutboundPayloadPlan([
+                {
+                  mediaUrl: mediaUrls[0],
+                  ...(recoveredBlockMedia ? { attachments: [sentAttachment] } : {}),
+                },
+              ]);
               if (!blockPlan || !dispatcherOptions.deliverPrepared) {
                 throw new Error("Prepared block delivery missing");
               }
               await dispatcherOptions.deliverPrepared(blockPlan, { kind: "block" });
+              expectDeliveredReply(0, { mediaUrls: [mediaUrls[0]] });
             }
-            transcriptMessageId = manager.appendMessage({
-              role: "assistant",
-              content: [
-                {
-                  type: "text",
-                  text: `${transcriptText} ${existingCurrent ? "[[reply_to:999]]" : "[[reply_to_current]]"} [[audio_as_voice]]`,
+            const persistReply = () => {
+              transcriptMessageId = manager.appendMessage({
+                role: "assistant",
+                content: [
+                  {
+                    type: "text",
+                    text: `${transcriptText} ${existingCurrent ? "[[reply_to:999]]" : "[[reply_to_current]]"} [[audio_as_voice]]`,
+                  },
+                ],
+                openclawDelivery: { mediaUrls: persistedMediaUrls },
+                api: "openai-responses",
+                provider: "openai",
+                model: "gpt-test",
+                stopReason: "stop",
+                usage: {
+                  input: 1,
+                  output: 1,
+                  cacheRead: 0,
+                  cacheWrite: 0,
+                  totalTokens: 2,
+                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
                 },
-              ],
-              openclawDelivery: { mediaUrls: [recordedMedia] },
-              api: "openai-responses",
-              provider: "openai",
-              model: "gpt-test",
-              stopReason: "stop",
-              usage: {
-                input: 1,
-                output: 1,
-                cacheRead: 0,
-                cacheWrite: 0,
-                totalTokens: 2,
-                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-              },
-              timestamp: stale ? Date.now() - 60_000 : Date.now(),
-            });
-            const persisted = manager.getBranch().at(-1);
-            expect(persisted).toMatchObject({
-              type: "message",
-              message: {
-                content: [{ type: "text", text: transcriptText }],
-                openclawDelivery: {
-                  ...(existingCurrent ? { replyToId: "999" } : { replyToCurrent: true }),
-                  audioAsVoice: true,
-                  mediaUrls: [recordedMedia],
+                timestamp: stale ? Date.now() - 60_000 : Date.now(),
+              });
+              const persisted = manager.getBranch().at(-1);
+              expect(persisted).toMatchObject({
+                type: "message",
+                message: {
+                  content: [{ type: "text", text: transcriptText }],
+                  openclawDelivery: {
+                    ...(existingCurrent ? { replyToId: "999" } : { replyToCurrent: true }),
+                    audioAsVoice: true,
+                    mediaUrls: persistedMediaUrls,
+                  },
                 },
-              },
-            });
+              });
+            };
+            if (lateRecovery) {
+              readLatestAssistantTextByIdentity.mockImplementationOnce(async (identity) => {
+                const latest = await transcript.readLatestAssistantTextByIdentity(identity);
+                expect(latest).toBeUndefined();
+                persistReply();
+                return latest;
+              });
+            } else {
+              persistReply();
+            }
             const payload = setReplyPayloadMetadata(
               {
                 text: `${prefix}...`,
-                ...(extraMedia
-                  ? { mediaUrls, mediaUrl: aliasRecord.filePath, attachments: [aliasRecord] }
-                  : {}),
+                ...(extraMedia ? { mediaUrls, mediaUrl: aliasRecord.filePath, attachments } : {}),
                 ...(existingTarget ? { replyToId: existingTarget, audioAsVoice: false } : {}),
                 ...(existingCurrent
                   ? { replyToCurrent: true }
@@ -222,10 +263,15 @@ describeTelegramDispatch("dispatchTelegramMessage directive delivery", () => {
                   }
                 : {}),
               mediaUrls: recover
-                ? [...mediaUrls, ...rawMediaUrls, recordedMedia]
+                ? [
+                    ...(recoveredBlockMedia ? mediaUrls.slice(1) : mediaUrls),
+                    ...rawMediaUrls,
+                    recordedMedia,
+                  ]
                 : blockMedia
                   ? mediaUrls.slice(1)
                   : mediaUrls,
+              ...(recoveredBlockMedia ? { attachments: [remainingAttachment, {}] } : {}),
               ...(extraMedia && !blockMedia
                 ? { attachments: recover ? [{}, aliasRecord, {}] : [{}, aliasRecord] }
                 : {}),
@@ -234,6 +280,13 @@ describeTelegramDispatch("dispatchTelegramMessage directive delivery", () => {
         );
         const deliveredPayload =
           deliverInboundReplyWithMessageSendContext.mock.calls[0]?.[0]?.payload;
+        if (recoveredBlockMedia) {
+          expect(deliverReplies).toHaveBeenCalledOnce();
+          expect(deliverInboundReplyWithMessageSendContext).toHaveBeenCalledOnce();
+          expect(
+            deliveredPayload && resolveTelegramPromptContextSource(deliveredPayload),
+          ).toBeUndefined();
+        }
         if (!extraMedia) {
           expect(deliveredPayload && resolveTelegramPromptContextSource(deliveredPayload)).toEqual({
             transcriptMessageId,

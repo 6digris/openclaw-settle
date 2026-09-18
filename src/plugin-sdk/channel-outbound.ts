@@ -82,6 +82,7 @@ export {
   createStructuredOutboundPayloadPlan,
   projectOutboundPayloadPlanForDelivery,
 } from "../infra/outbound/payloads.js";
+export { collectReplyMediaEntries } from "../infra/outbound/reply-media-entries.js";
 export type { OutboundPayloadPlan } from "../infra/outbound/reply-payload-parts.js";
 export { buildOutboundSessionContext } from "../infra/outbound/session-context.js";
 export type { OutboundSessionContext } from "../infra/outbound/session-context.js";
