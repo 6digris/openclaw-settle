@@ -175,6 +175,13 @@ contains an ambiguous command, repair it before retrying. Update refreshes retai
 the existing task principal, triggers, and settings instead of recreating the task
 with the invoking user's defaults.
 
+Service discovery also reads the current account's Startup-folder launchers,
+including sibling profiles without a Scheduled Task. Each Startup file remains a
+separate service definition even when a task has the same name. Inspection follows
+that exact file and its captured Gateway script; unreadable or malformed Gateway
+launchers are reported instead of being treated as absent. Discovering a Startup
+entry does not grant Task Scheduler control over it.
+
 The task probe allows Windows PowerShell to inherit or create a console because
 some PowerShell 5.1 hosts fail inspection when console creation is disabled.
 Invoking it from an app without a console can briefly display a console window.

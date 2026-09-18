@@ -414,12 +414,38 @@ export async function readScheduledTaskCommand(
   env: GatewayServiceEnv,
   options?: GatewayServiceReadOptions & { onLauncherContent?: (content: string) => void },
 ): Promise<GatewayServiceCommandConfig | null> {
+  return readWindowsTaskCommand({ kind: "scheduled-task", env }, options);
+}
+
+export async function readStartupEntryCommand(
+  startupEntryPath: string,
+  options?: { onLauncherContent?: (content: string) => void },
+): Promise<GatewayServiceCommandConfig> {
+  const command = await readWindowsTaskCommand(
+    { kind: "startup-entry", path: startupEntryPath },
+    { ...options, requireEffective: true },
+  );
+  if (!command) {
+    throw new Error("Startup service command could not be inspected.");
+  }
+  return command;
+}
+
+async function readWindowsTaskCommand(
+  target:
+    | { kind: "scheduled-task"; env: GatewayServiceEnv }
+    | { kind: "startup-entry"; path: string },
+  options?: GatewayServiceReadOptions & { onLauncherContent?: (content: string) => void },
+): Promise<GatewayServiceCommandConfig | null> {
+  const env = target.kind === "scheduled-task" ? target.env : {};
+  const startupEntryPath = target.kind === "startup-entry" ? target.path : undefined;
   const requireEffective = options?.requireEffective || options?.requireLoaded;
   try {
     const taskName = resolveTaskName(env);
-    const registered = options?.requireLoaded
-      ? probeScheduledTaskState(taskName, options.timeoutMs)
-      : undefined;
+    const registered =
+      target.kind === "scheduled-task" && options?.requireLoaded
+        ? probeScheduledTaskState(taskName, options.timeoutMs)
+        : undefined;
     if (registered?.status === "unknown") {
       throw new Error("Scheduled Task registration unavailable");
     }
@@ -438,20 +464,33 @@ export async function readScheduledTaskCommand(
     if (action?.workingDirectory) {
       assertStaticTaskPath(action.workingDirectory);
     }
-    const launchers = registered
-      ? await readTaskLaunchers(env, action?.path, options?.onLauncherContent)
-      : undefined;
+    const captureLaunchers = async (onContent?: (content: string) => void) =>
+      startupEntryPath
+        ? [
+            {
+              pathname: startupEntryPath,
+              ...(await readTaskLauncher(startupEntryPath, onContent, true)),
+            },
+          ]
+        : readTaskLaunchers(env, action?.path, onContent);
+    const launchers =
+      registered || startupEntryPath
+        ? await captureLaunchers(options?.onLauncherContent)
+        : undefined;
     const assertRegistrationCurrent = async (source?: { path: string; content: string }) => {
-      if (!registered) {
+      if (!launchers) {
         return;
       }
       if (
-        (launchers && !isDeepStrictEqual(await readTaskLaunchers(env, action?.path), launchers)) ||
+        !isDeepStrictEqual(await captureLaunchers(), launchers) ||
         (source &&
           decodeWindowsLauncherScript({ buffer: await fs.readFile(source.path) }) !==
             source.content)
       ) {
         throw new Error("Task launcher changed during inspection");
+      }
+      if (!registered) {
+        return;
       }
       const current = probeScheduledTaskState(taskName, options?.timeoutMs);
       if (
@@ -534,8 +573,9 @@ export async function readScheduledTaskCommand(
     }
     await assertRegistrationCurrent({ path: scriptPath, content });
     if (
-      registered &&
-      ((environment.OPENCLAW_WINDOWS_TASK_NAME &&
+      (registered || startupEntryPath) &&
+      ((registered &&
+        environment.OPENCLAW_WINDOWS_TASK_NAME &&
         normalizeWindowsTaskIdentity(environment.OPENCLAW_WINDOWS_TASK_NAME) !==
           normalizeWindowsTaskIdentity(taskName)) ||
         (environment.OPENCLAW_PROFILE && !isValidProfileName(environment.OPENCLAW_PROFILE)) ||
@@ -562,12 +602,14 @@ export async function readScheduledTaskCommand(
           }
         : {}),
       sourcePath: scriptPath,
+      ...(startupEntryPath ? { definitionPaths: [startupEntryPath, scriptPath] } : {}),
     };
   } catch (error) {
     if (!requireEffective) {
       return null;
     }
     if (
+      target.kind === "scheduled-task" &&
       hasErrnoCode(error, "ENOENT") &&
       (await isScheduledTaskDefinitionAbsent(env, options?.timeoutMs).catch(() => false))
     ) {
@@ -575,7 +617,11 @@ export async function readScheduledTaskCommand(
     }
   }
   // Native failures can contain raw service credentials; expose only the closed diagnostic.
-  throw new Error("Effective Scheduled Task service command could not be inspected.");
+  throw new Error(
+    startupEntryPath
+      ? "Startup service command could not be inspected."
+      : "Effective Scheduled Task service command could not be inspected.",
+  );
 }
 
 async function isScheduledTaskDefinitionAbsent(

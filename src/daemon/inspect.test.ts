@@ -663,6 +663,7 @@ describe.each([
 
 describe("findExtraGatewayServices (win32)", () => {
   const originalPlatform = process.platform;
+  let nativeEnv: { APPDATA: string };
   const task = (taskPath: string, actionPath: string, args = "") => ({
     taskPath,
     state: 3,
@@ -670,6 +671,7 @@ describe("findExtraGatewayServices (win32)", () => {
   });
 
   beforeEach(() => {
+    nativeEnv = { APPDATA: tempDirs.make("openclaw-windows-inventory-") };
     Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
     vi.spyOn(taskProbe, "listScheduledTasks").mockReturnValue([]);
   });
@@ -690,8 +692,8 @@ describe("findExtraGatewayServices (win32)", () => {
       vi.mocked(taskProbe.listScheduledTasks).mockImplementation(() => {
         throw new Error(failure);
       });
-      expect(await findExtraGatewayServices({}, { deep: true })).toEqual([]);
-      expect(await findGatewayServices({})).toEqual({
+      expect(await findExtraGatewayServices(nativeEnv, { deep: true })).toEqual([]);
+      expect(await findGatewayServices(nativeEnv)).toEqual({
         services: [],
         errors: [{ source: "schtasks", message: expect.any(String) }],
       });
@@ -704,7 +706,7 @@ describe("findExtraGatewayServices (win32)", () => {
       task("Clawdbot Legacy", "C:\\clawdbot\\clawdbot.exe", "run"),
       task("Other Task", "C:\\tools\\helper.exe"),
     ]);
-    expect(await findExtraGatewayServices({}, { deep: true })).toEqual([
+    expect(await findExtraGatewayServices(nativeEnv, { deep: true })).toEqual([
       {
         platform: "win32",
         label: "Clawdbot Legacy",
@@ -728,7 +730,7 @@ describe("findExtraGatewayServices (win32)", () => {
       programArguments: ["node", "openclaw.mjs", "node", "run"],
       environment: { OPENCLAW_SERVICE_MARKER: "openclaw", OPENCLAW_SERVICE_KIND: "node" },
     });
-    const extras = await findExtraGatewayServices({}, { deep: true });
+    const extras = await findExtraGatewayServices(nativeEnv, { deep: true });
     expect(extras).toEqual([
       {
         platform: "win32",
@@ -747,7 +749,7 @@ describe("findExtraGatewayServices (win32)", () => {
         legacy: false,
       },
     ]);
-    const inventory = await findGatewayServices({});
+    const inventory = await findGatewayServices(nativeEnv);
     expect(inventory.errors).toEqual([]);
     expect(inventory.services.map((service) => service.label)).toEqual([
       "\\OpenClaw Gateway",
@@ -765,7 +767,7 @@ describe("findExtraGatewayServices (win32)", () => {
       programArguments: ["node", "C:\\Applications\\openclaw\\openclaw.mjs", "gateway"],
       environment: { OPENCLAW_SERVICE_MARKER: "openclaw", OPENCLAW_SERVICE_KIND: "gateway" },
     });
-    expect(await findGatewayServices({})).toEqual({
+    expect(await findGatewayServices(nativeEnv)).toEqual({
       services: [
         {
           platform: "win32",
@@ -803,7 +805,8 @@ describe("findExtraGatewayServices (win32)", () => {
           : task(name, "C:\\Services\\Backup\\gateway.cmd"),
       ]);
       vi.spyOn(taskLayout, "readScheduledTaskCommand").mockRejectedValue(new Error("unreadable"));
-      const env = kind === "selected" ? { OPENCLAW_WINDOWS_TASK_NAME: name } : {};
+      const env =
+        kind === "selected" ? { ...nativeEnv, OPENCLAW_WINDOWS_TASK_NAME: name } : nativeEnv;
       const inventory = await findGatewayServices(env);
       expect(inventory.services).toEqual([]);
       expect(inventory.errors).toEqual(
@@ -833,7 +836,7 @@ describe("findExtraGatewayServices (win32)", () => {
         'CreateObject("WScript.Shell").Run "node C:\\Applications\\openclaw\\openclaw.mjs gateway", 0, False',
       );
     });
-    expect(await findGatewayServices({})).toEqual({
+    expect(await findGatewayServices(nativeEnv)).toEqual({
       services: [],
       errors: [{ source: name, message: expect.any(String) }],
     });
