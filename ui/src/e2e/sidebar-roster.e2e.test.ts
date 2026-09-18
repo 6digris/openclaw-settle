@@ -500,23 +500,23 @@ suite.define(() => {
           const sidebar = page.locator("openclaw-app-sidebar");
           await sidebar.locator(".sidebar-agent-card__main").click();
           await sidebar.locator('.sidebar-agent-menu [value="scope:all"]').click();
-          const header = sidebar.locator(
+          const headerLocator = sidebar.locator(
             '[data-agent-group="forge"] .sidebar-agent-roster__header',
           );
-          await header.waitFor({ state: "visible" });
+          await headerLocator.waitFor({ state: "visible" });
           const selectors = [".session-glyph--running", ".session-unread-dot"];
           const expectSignals = async () => {
             for (const selector of selectors) {
-              await expect.poll(() => header.locator(selector).isVisible()).toBe(true);
+              await expect.poll(() => headerLocator.locator(selector).isVisible()).toBe(true);
             }
           };
           await page.mouse.move(389, 899);
           await expectSignals();
-          const action = header.locator('button[slot="trigger"]');
+          const action = headerLocator.locator('button[slot="trigger"]');
           await action.focus();
           await expectSignals();
-          const boxes = await sidebar.evaluate(async (element, key) => {
-            const host = element as AppSidebarSessionNavigationElement;
+          const boxes = await sidebar.evaluate(async (sidebarElement, key) => {
+            const host = sidebarElement as AppSidebarSessionNavigationElement;
             const main = host.rosterMainSessions.get(key);
             if (!main) {
               throw new Error("Missing projected Forge main session");
