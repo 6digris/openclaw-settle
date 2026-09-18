@@ -715,7 +715,14 @@ async function runTaskFirstUse(options: InstalledOptions): Promise<number> {
         assert.equal(
           await runManagedCommand({
             bin: process.execPath,
-            args: [target.entry, "plugins", "install", pluginRoot, "--accept-capabilities"],
+            args: [
+              target.entry,
+              "plugins",
+              "install",
+              pluginRoot,
+              "--force",
+              "--accept-capabilities",
+            ],
             cwd: target.installRoot,
             env: taskEnv(target.root, configPath),
             shell: false,
