@@ -39,7 +39,9 @@ class Driver:
     def resolve_chat(self, value):
         return 42
     def send_text(self, chat, text, reply_to=None, thread_id=0, forum_topic_id=None):
-        if (chat, text, reply_to, thread_id, forum_topic_id) != (42, prompt, None, 0, None):
+        if reply_to is not None or thread_id != 0 or forum_topic_id is not None:
+            raise RuntimeError("Expected an unthreaded DM action")
+        if text != prompt:
             raise RuntimeError("Unexpected sent action")
         self.client.pending.append({"@type": "updateNewMessage", "message": {"id": 2 << 20, "chat_id": 42, "sender_id": {"@type": "messageSenderUser", "user_id": 42}, "is_outgoing": False, "content": {"@type": "messageText", "text": {"text": reply, "entities": []}}}})
         return {"id": 1 << 20}
