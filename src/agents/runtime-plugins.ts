@@ -1,3 +1,5 @@
+import { projectConfigOntoRuntimeSourceSnapshot } from "../config/runtime-source-projection.js";
+import { projectRuntimeChangesOntoSource } from "../config/source-value-projection.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { adoptRuntimeContextEngineRegistrations } from "../context-engine/registry.js";
 import {
@@ -62,7 +64,7 @@ function resolveAgentRuntimePluginRegistryLoad(
 ): PluginLoadOptions {
   const loadOptions: PluginLoadOptions = {
     config: params.config,
-    activationSourceConfig: params.config,
+    activationSourceConfig: params.config && projectConfigOntoRuntimeSourceSnapshot(params.config),
     env: params.env,
     workspaceDir:
       typeof params.workspaceDir === "string" && params.workspaceDir.trim()
@@ -110,7 +112,16 @@ function resolveAgentRuntimePluginRegistryLoad(
   return {
     ...loadOptions,
     config: plan.config,
-    activationSourceConfig: plan.config,
+    // Planning may clone a captured config; keep its original authored generation
+    // while projecting the planner's activation/allowlist changes.
+    activationSourceConfig:
+      params.config && loadOptions.activationSourceConfig
+        ? (projectRuntimeChangesOntoSource(
+            loadOptions.activationSourceConfig,
+            params.config,
+            plan.config,
+          ) as OpenClawConfig)
+        : plan.config,
     workspaceDir,
     discovery: metadataSnapshot.discovery,
     installRecords: extractPluginInstallRecordsFromInstalledPluginIndex(metadataSnapshot.index),
@@ -267,7 +278,7 @@ export async function withAgentPluginRegistry<T>(params: {
   // Direct hosts resolve one policy generation; disabled plugins never reopen discovery.
   const context = resolvePluginRuntimeLoadContext({
     config: params.config,
-    activationSourceConfig: params.config,
+    activationSourceConfig: projectConfigOntoRuntimeSourceSnapshot(params.config),
     env: params.env,
     workspaceDir: params.workspaceDir,
     ...(params.config.plugins?.enabled === false
