@@ -14,9 +14,10 @@
       .agent-chat__disabled-banner:not(.agent-chat__disabled-banner--replacement),
       .agent-chat__question-dock .chat-question-panel
     ) {
+    --composer-overlay-muted: color-mix(in srgb, var(--text-strong) 45%, var(--muted));
     --composer-overlay-surface: color-mix(
       in srgb,
-      var(--composer-overlay-base, var(--composer-attached-surface)) 96%,
+      var(--composer-overlay-base, var(--composer-attached-surface)) 84%,
       transparent
     );
 
@@ -35,11 +36,11 @@
   }
 
   .agent-chat__composer-overlay .compaction-indicator--fallback {
-    color: color-mix(in srgb, var(--warn-strong) 45%, var(--text));
+    color: color-mix(in srgb, var(--warn-strong) 35%, var(--text-strong));
   }
 
   .agent-chat__composer-overlay .compaction-indicator--fallback-cleared {
-    color: color-mix(in srgb, var(--ok) 45%, var(--text));
+    color: color-mix(in srgb, var(--ok) 35%, var(--text-strong));
   }
 
   .agent-chat__composer-overlay .agent-chat__talk-status.callout {
@@ -57,7 +58,7 @@
   .agent-chat__composer-shell
     > .agent-chat__disabled-banner.info
     .agent-chat__disabled-banner-detail {
-    color: color-mix(in srgb, var(--text) 30%, var(--muted));
+    color: var(--composer-overlay-muted);
   }
 
   .agent-chat__composer-overlay .agent-chat__composer-errors {
@@ -81,22 +82,63 @@
     --chat-queue-row-base: transparent;
   }
 
-  .agent-chat__composer-shell .chat-queue__item--failed .chat-queue__badge {
-    color: color-mix(in srgb, var(--danger) 70%, var(--text));
+  .agent-chat__composer-shell .chat-queue__item--failed .chat-queue__badge,
+  .agent-chat__composer-shell .chat-queue__item--failed .chat-queue__error-text {
+    color: color-mix(in srgb, var(--danger) 35%, var(--text-strong));
   }
 
+  .agent-chat__composer-shell .chat-queue__steer,
   .agent-chat__composer-shell .chat-queue__item--failed .chat-queue__retry,
   .agent-chat__composer-shell .chat-queue__item:hover .chat-queue__steer {
-    color: color-mix(in srgb, var(--accent) 70%, var(--text));
+    color: color-mix(in srgb, var(--accent) 35%, var(--text-strong));
   }
 
-  /* These secondary labels already fall below AA on the opaque surface. Keep
-     their full muted color when the transcript contributes to the backdrop. */
-  .session-progress-card--composer
-    .session-progress-card__step--completed
-    .session-progress-card__step-text,
-  .agent-chat__goal-float .agent-chat__goal .agent-chat__goal-detail-usage {
-    color: var(--muted);
+  /* Secondary text needs a stronger foreground over light or dark attachments. */
+  .agent-chat__composer-shell
+    :is(
+      .session-progress-card--composer .session-progress-card__heading-actions,
+      .session-progress-card--composer
+        .session-progress-card__summary-count:not(
+          [data-outcome="failed"],
+          [data-outcome="timeout"]
+        ),
+      .session-progress-card--composer
+        .session-progress-card__step--completed
+        .session-progress-card__step-text,
+      .session-progress-card--composer
+        .session-progress-card__step--pending
+        .session-progress-card__step-text,
+      .agent-chat__goal-float .agent-chat__goal-objective,
+      .agent-chat__goal-float .agent-chat__goal-elapsed,
+      .agent-chat__goal-float .agent-chat__goal-detail-usage,
+      .agent-chat__goal-float .agent-chat__goal-detail-duration,
+      .agent-chat__goal-float .agent-chat__goal-detail-note,
+      .agent-chat__goal-float .agent-chat__goal-detail-meta,
+      .agent-chat__composer-overlay .chat-composer-neighbor-card__copy span,
+      .chat-question-panel__progress,
+      .chat-question-panel__skip
+    ) {
+    color: var(--composer-overlay-muted);
+  }
+
+  .agent-chat__composer-shell
+    .agent-chat__goal-float
+    :is(
+      .agent-chat__goal--blocked,
+      .agent-chat__goal--budget_limited,
+      .agent-chat__goal--usage_limited
+    )
+    :is(
+      .agent-chat__goal-label,
+      .agent-chat__goal-objective,
+      .agent-chat__goal-elapsed,
+      .agent-chat__goal-detail-objective,
+      .agent-chat__goal-detail-note,
+      .agent-chat__goal-detail-meta,
+      .agent-chat__goal-detail-usage,
+      .agent-chat__goal-detail-duration
+    ) {
+    color: color-mix(in srgb, var(--text-strong) 65%, var(--muted));
   }
 
   .agent-chat__goal-float
@@ -105,14 +147,27 @@
       .agent-chat__goal--budget_limited,
       .agent-chat__goal--usage_limited
     )
-    :is(
-      .agent-chat__goal-objective,
-      .agent-chat__goal-elapsed,
-      .agent-chat__goal-detail-note,
-      .agent-chat__goal-detail-meta,
-      .agent-chat__goal-detail-usage
-    ) {
-    color: color-mix(in srgb, var(--text) 65%, var(--muted));
+    .agent-chat__goal-action-label {
+    color: var(--text-strong);
+  }
+
+  .agent-chat__composer-shell .agent-chat__composer-overlay .chat-error,
+  .agent-chat__composer-shell
+    .agent-chat__composer-overlay
+    .chat-composer-neighbor-card--danger
+    strong,
+  .agent-chat__composer-shell
+    .session-progress-card--composer
+    .session-progress-card__summary
+    .session-progress-card__summary-count:is([data-outcome="failed"], [data-outcome="timeout"]) {
+    color: color-mix(in srgb, var(--danger) 35%, var(--text-strong));
+  }
+
+  .agent-chat__composer-shell
+    .agent-chat__composer-overlay
+    .chat-composer-neighbor-card--warn
+    strong {
+    color: color-mix(in srgb, var(--warn) 35%, var(--text-strong));
   }
 
   @media (max-width: 768px),
