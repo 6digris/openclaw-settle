@@ -1570,7 +1570,7 @@ describe("Codex plugin thread config", () => {
     }
   });
 
-  it("fails closed when a disabled workspace plugin's app ownership cannot be verified", async () => {
+  it("keeps account apps available when a disabled workspace plugin is missing", async () => {
     const request = vi.fn(async (method: string) => {
       if (method === "app/installed" || method === "app/read") {
         return codexAppInventoryResponse(method, [
@@ -1605,13 +1605,14 @@ describe("Codex plugin thread config", () => {
       request,
     });
 
-    expect(config.configPatch?.apps).not.toHaveProperty("plugin-owned-app");
-    expect(config.configPatch?.apps).not.toHaveProperty("unrelated-slack-app");
-    expect(config.provisionalAppIds).toBeUndefined();
+    expect(config.configPatch?.apps).toMatchObject({
+      "plugin-owned-app": { enabled: true },
+      "unrelated-slack-app": { enabled: true },
+    });
+    expect(config.provisionalAppIds).toEqual(["plugin-owned-app", "unrelated-slack-app"]);
     expect(config.diagnostics).toContainEqual(
-      expect.objectContaining({ code: "account_app_ownership_unavailable" }),
+      expect.objectContaining({ code: "marketplace_missing" }),
     );
-    expect(request.mock.calls.map(([method]) => method)).not.toContain("plugin/install");
   });
 
   it.each([
@@ -1709,11 +1710,6 @@ describe("Codex plugin thread config", () => {
   );
 
   it.each([
-    {
-      name: "an enterprise plugin omitted from every catalog",
-      marketplaceName: "company-tools",
-      listedPlugins: [],
-    },
     {
       name: "an enterprise plugin unavailable before installation",
       marketplaceName: "company-tools",

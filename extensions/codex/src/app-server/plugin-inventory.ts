@@ -255,8 +255,21 @@ export async function readCodexPluginInventory(
     });
   }
 
+  // Saved configuration is a discovery request, not proof of a runtime plugin.
+  const missingKeys = new Set<string>();
+  for (const diagnostic of diagnostics) {
+    if (diagnostic.code === "plugin_missing" || diagnostic.code === "marketplace_missing") {
+      if (diagnostic.plugin) {
+        missingKeys.add(diagnostic.plugin.configKey);
+      }
+      embeddedAgentLog.error(diagnostic.message, { code: diagnostic.code });
+    }
+  }
   const inventory = {
-    policy,
+    policy: {
+      ...policy,
+      pluginPolicies: policy.pluginPolicies.filter((plugin) => !missingKeys.has(plugin.configKey)),
+    },
     records,
     diagnostics,
     ...(appInventory ? { appInventory } : {}),
