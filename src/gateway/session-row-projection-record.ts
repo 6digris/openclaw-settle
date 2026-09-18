@@ -55,8 +55,31 @@ const references = (row: RowTarget) => [
   logical(row.agentId, row.key),
   physical(row.storeTarget.storePath, row.key),
 ];
-export function dependents(row: Row, byParent: ReadonlyMap<string, Set<string>>) {
+function dependents(row: Row, byParent: ReadonlyMap<string, Set<string>>) {
   return new Set(references(row).flatMap((ref) => Array.from(byParent.get(ref) ?? [])));
+}
+export function childLinks(
+  row: Row,
+  source: {
+    byParent: ReadonlyMap<string, Set<string>>;
+    rows: ReadonlyMap<string, Row>;
+    dirty: ReadonlySet<string>;
+    referenced: (ref: string) => Row | undefined;
+    acquire: (row: Row) => Row | undefined;
+  },
+) {
+  const links = [...dependents(row, source.byParent)].flatMap((child) => {
+    let value = source.rows.get(child);
+    if (value && source.dirty.has(child)) {
+      value = source.acquire(value);
+    }
+    return value?.entry && [...value.parents].some((ref) => source.referenced(ref) === row)
+      ? [{ key: value.key, entry: value.entry }]
+      : [];
+  });
+  // Keyed child refreshes reorder the parent index; presentation must stay stable.
+  links.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  return links;
 }
 export function markRelated(
   row: Row,

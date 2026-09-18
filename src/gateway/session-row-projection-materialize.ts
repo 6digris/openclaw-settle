@@ -6,6 +6,7 @@ import { isIncognitoSessionKey } from "../routing/session-key.js";
 import { readOpenClawAgentDatabaseIdentity } from "../state/openclaw-agent-db-identity.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
 import { readSessionRowFacts } from "./server-methods/session-placement-read-projection.js";
+import { isColdArchivedSessionRow } from "./session-row-projection-archive.js";
 import type * as records from "./session-row-projection-record.js";
 import type { SessionListRowContext } from "./session-utils-contracts.js";
 import { deriveSessionTitle, type SessionChildLink } from "./session-utils-core.js";
@@ -15,10 +16,22 @@ import {
   resolveGatewaySessionStoreTargetWithStore,
 } from "./session-utils-store-lookup.js";
 
-/** One synchronous refresh slice shares agent policy; each later slice starts fresh. */
-export function createSessionRowMaterializationBatch(): typeof readResidentSessionRow {
+/** Placement facts and agent policy live only for one synchronous refresh slice. */
+export function createSessionRowMaterializationBatch(
+  ids: readonly string[],
+  rows: ReadonlyMap<string, records.Row>,
+  placementFactsReader: Parameters<typeof readSessionRowFacts>[0]["placementFactsReader"],
+): typeof readResidentSessionRow {
   const activitySummaryEnabledByAgent = new Map<string, boolean>();
-  return (params) => readResidentSessionRow(params, activitySummaryEnabledByAgent);
+  const sessionIds = ids.flatMap((id) => {
+    const row = rows.get(id);
+    return row?.entry && !isColdArchivedSessionRow(row) ? [row.entry.sessionId] : [];
+  });
+  const placementFacts = sessionIds.length
+    ? placementFactsReader?.getProjectionFacts(sessionIds)
+    : undefined;
+  return (params) =>
+    readResidentSessionRow({ ...params, placementFacts }, activitySummaryEnabledByAgent);
 }
 
 /** Resident rows consume committed metadata; optional transcript work has a separate budget. */
@@ -32,6 +45,7 @@ export function readResidentSessionRow(
     subagentInputs: SessionListRowContext["subagentRuns"]["inputs"];
     gatewayContext: Parameters<typeof readSessionRowFacts>[0]["context"];
     placementFactsReader?: Parameters<typeof readSessionRowFacts>[0]["placementFactsReader"];
+    placementFacts?: Parameters<typeof readSessionRowFacts>[0]["placementFacts"];
     links: SessionChildLink[];
     readSourceEntry: (key: string) => records.Row["storedEntry"];
   },
@@ -96,6 +110,7 @@ export function readResidentSessionRow(
     entry: row.entry,
     context: params.gatewayContext,
     placementFactsReader: params.placementFactsReader,
+    placementFacts: params.placementFacts,
     activitySummaryEnabled,
   });
   return {

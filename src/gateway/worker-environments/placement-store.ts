@@ -9,7 +9,7 @@ import {
   type OpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
 import { drainWorkerSessionPlacement } from "./placement-drain.js";
-import { createPlacementMoveOps, readWorkerPlacementMove } from "./placement-move-intent.js";
+import { createPlacementMoveOps, readWorkerPlacementMoves } from "./placement-move-intent.js";
 import { createPlacementPendingFailureOps } from "./placement-pending-failure.js";
 import {
   isCurrentPlacementTurnClaim,
@@ -69,6 +69,9 @@ import {
 } from "./workspace-conflicts.js";
 
 const RETIRABLE_PLACEMENT_STATES = ["local", "requested", "reclaimed", "failed"] as const;
+const normalizeSessionIds = (ids: readonly string[]) => [
+  ...new Set(ids.map((id) => required(id, "session id"))),
+];
 
 export type WorkerSessionPlacementRetirement = {
   sessionId: string;
@@ -160,6 +163,23 @@ export function createWorkerSessionPlacementStore(
     const conflict = workspaceResultConflicts.get(record.sessionId);
     return conflict ? { ...record, workspaceResultConflict: conflict } : record;
   };
+  const readPlacements = (db: DatabaseSync, sessionIds: readonly string[]) => {
+    const records = new Map<string, WorkerSessionPlacementRecord>();
+    for (let offset = 0; offset < sessionIds.length; offset += 250) {
+      const chunk = sessionIds.slice(offset, offset + 250);
+      for (const row of executeSqliteQuerySync(
+        db,
+        query(db)
+          .selectFrom("worker_session_placements")
+          .selectAll()
+          .where("session_id", "in", chunk),
+      ).rows) {
+        const record = fromRow(row);
+        records.set(record.sessionId, withWorkspaceResultConflict(record)!);
+      }
+    }
+    return records;
+  };
 
   const store = {
     ...createPlacementWorkspaceReservationOps(runtime),
@@ -177,43 +197,28 @@ export function createWorkerSessionPlacementStore(
       return withWorkspaceResultConflict(find(read(), required(sessionId, "session id")));
     },
 
-    getProjectionFacts(sessionId: string) {
-      const id = required(sessionId, "session id");
+    getProjectionFacts(sessionIds: readonly string[]) {
+      const idsByRequest = new Map(sessionIds.map((id) => [id, required(id, "session id")]));
+      const ids = [...new Set(idsByRequest.values())];
       const db = read();
-      return {
-        placement: withWorkspaceResultConflict(find(db, id)),
-        move: readWorkerPlacementMove(db, id),
-        workspaceResultReconciling: readWorkerWorkspaceReconcilingSessionIds(db, [id]).has(id),
-      };
+      const placements = readPlacements(db, ids);
+      const moves = readWorkerPlacementMoves(db, ids);
+      const reconciling = readWorkerWorkspaceReconcilingSessionIds(db, ids, placements);
+      return new Map(
+        Array.from(idsByRequest, ([requestedId, id]) => [
+          requestedId,
+          {
+            placement: placements.get(id),
+            move: moves.get(id),
+            workspaceResultReconciling: reconciling.has(id),
+          },
+        ]),
+      );
     },
 
     getMany(sessionIds: readonly string[]): ReadonlyMap<string, WorkerSessionPlacementRecord> {
-      const normalizedIds = [
-        ...new Set(sessionIds.map((sessionId) => required(sessionId, "session id"))),
-      ];
-      const records = new Map<string, WorkerSessionPlacementRecord>();
-      const db = read();
-      for (let offset = 0; offset < normalizedIds.length; offset += 250) {
-        const chunk = normalizedIds.slice(offset, offset + 250);
-        for (const row of executeSqliteQuerySync(
-          db,
-          query(db)
-            .selectFrom("worker_session_placements")
-            .selectAll()
-            .where("session_id", "in", chunk),
-        ).rows) {
-          const record = fromRow(row);
-          records.set(record.sessionId, withWorkspaceResultConflict(record)!);
-        }
-      }
-      return records;
-    },
-
-    getWorkspaceResultReconcilingSessionIds(sessionIds: readonly string[]): ReadonlySet<string> {
-      const normalizedIds = [
-        ...new Set(sessionIds.map((sessionId) => required(sessionId, "session id"))),
-      ];
-      return readWorkerWorkspaceReconcilingSessionIds(read(), normalizedIds);
+      const ids = normalizeSessionIds(sessionIds);
+      return readPlacements(read(), ids);
     },
 
     retireSessionPlacement(input: WorkerSessionPlacementRetirement): void {

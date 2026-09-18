@@ -41,6 +41,7 @@ import type { WorkerSessionPlacementRecord } from "../worker-environments/placem
 import {
   identifiedClient,
   initializeSessionReadContext,
+  createPlacementFactsReader,
   listSessions,
   requestContext,
   sessionReadHandlers,
@@ -196,10 +197,6 @@ describe("resident sessions.list", () => {
       } satisfies WorkerSessionPlacementRecord;
       const context = {
         ...requestContext(config),
-        workerSessionPlacementService: {
-          getMany: () =>
-            new Map<string, WorkerSessionPlacementRecord>([[placement.sessionId, placement]]),
-        },
         workerPlacementRunnerAvailabilityReader: {
           version: () => Number(!runnerAvailable),
           read: () => ({
@@ -211,7 +208,12 @@ describe("resident sessions.list", () => {
       const client = identifiedClient("owner@example.com");
       const request = { agentId: "main", archived: "all" as const, limit: 100 };
 
-      const available = await listSessions({ client, context, request });
+      const available = await listSessions({
+        client,
+        context,
+        request,
+        placementFactsReader: createPlacementFactsReader(placement),
+      });
       expect(
         available.sessions.find((session) => session.key === placement.sessionKey)?.placement,
       ).toMatchObject({ runner: { kind: "device", status: "available" } });

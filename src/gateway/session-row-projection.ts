@@ -386,17 +386,7 @@ export async function createSessionRowProjection(params: {
     if (!row.entry) {
       return false;
     }
-    const links = [...records.dependents(row, byParent)].flatMap((child) => {
-      let value = rows.get(child);
-      if (value && dirty.has(child)) {
-        value = acquireEntry(value, readSessionRowEntry(value));
-      }
-      return value?.entry && [...value.parents].some((ref) => referenced(ref) === row)
-        ? [{ key: value.key, entry: value.entry }]
-        : [];
-    });
-    // Keyed child refreshes reorder the parent index; presentation must stay stable.
-    links.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    const revision = epoch;
     const prepared = readRow({
       row: { ...row, entry: row.entry },
       cfg,
@@ -406,10 +396,19 @@ export async function createSessionRowProjection(params: {
       subagentInputs: metadata.subagentInputs,
       gatewayContext: params.context,
       placementFactsReader: params.placementFactsReader,
-      links,
+      links: records.childLinks(row, {
+        byParent,
+        rows,
+        dirty,
+        referenced,
+        acquire: (child) => acquireEntry(child, readSessionRowEntry(child)),
+      }),
       readSourceEntry: (key) => readSourceEntry(row, key),
     });
-    if (!isIncognitoSessionKey(row.key) && rows.get(records.identity(row)) !== row) {
+    if (
+      epoch !== revision ||
+      (!isIncognitoSessionKey(row.key) && rows.get(records.identity(row)) !== row)
+    ) {
       return false;
     }
     Object.assign(row, prepared, { materializedSequence: ++materializedCount });
@@ -420,16 +419,19 @@ export async function createSessionRowProjection(params: {
       return;
     }
     const started = performance.now();
+    const revision = epoch;
     metadata.prepare(epoch);
     const configuredAgentIds = new Set(listAgentIds(cfg));
-    const readRow = createSessionRowMaterializationBatch();
+    const readRow = createSessionRowMaterializationBatch(ids, rows, params.placementFactsReader);
     for (const [offset, id] of ids.entries()) {
-      if (offset > 0 && performance.now() - started >= 12) {
+      if (epoch !== revision || (offset > 0 && performance.now() - started >= 12)) {
         break;
       }
-      const current = rows.get(id),
-        revision = epoch;
+      const current = rows.get(id);
       const row = current && acquireEntry(current, readSessionRowEntry(current));
+      if (epoch !== revision) {
+        break;
+      }
       if (row && isCold(row)) {
         dirty.delete(id);
         backfill.remove(id);
@@ -437,9 +439,6 @@ export async function createSessionRowProjection(params: {
       }
       if (row && materialize(row, configuredAgentIds, readRow) && epoch === revision) {
         dirty.delete(id);
-      }
-      if (epoch !== revision) {
-        break;
       }
     }
   }

@@ -13,7 +13,7 @@ import {
   type WorkerSessionPlacementRecord,
   type WorkerSessionTurnClaim,
 } from "./placement-record.js";
-import { fromRow, getRequired } from "./placement-row-codec.js";
+import { getRequired } from "./placement-row-codec.js";
 import type { PlacementStoreRuntime } from "./placement-runtime.js";
 import { clearWorkerWorkspaceReconciliation } from "./placement-workspace-journal.js";
 
@@ -129,21 +129,11 @@ export function clearWorkerWorkspacePendingResult(db: DatabaseSync, sessionId: s
 export function readWorkerWorkspaceReconcilingSessionIds(
   db: DatabaseSync,
   sessionIds: readonly string[],
+  placements: ReadonlyMap<string, WorkerSessionPlacementRecord>,
 ): ReadonlySet<string> {
-  const placements = new Map<string, WorkerSessionPlacementRecord>();
   const pendingResults: StateDatabase["worker_workspace_pending_results"][] = [];
   for (let offset = 0; offset < sessionIds.length; offset += 250) {
     const chunk = sessionIds.slice(offset, offset + 250);
-    for (const row of executeSqliteQuerySync(
-      db,
-      query(db)
-        .selectFrom("worker_session_placements")
-        .selectAll()
-        .where("session_id", "in", chunk),
-    ).rows) {
-      const placement = fromRow(row);
-      placements.set(placement.sessionId, placement);
-    }
     for (const row of executeSqliteQuerySync(
       db,
       query(db)

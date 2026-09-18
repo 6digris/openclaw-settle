@@ -28,6 +28,7 @@ export function readSessionRowFacts(params: {
   entry: SessionEntry;
   context?: PlacementReadContext;
   placementFactsReader?: Pick<WorkerSessionPlacementStore, "getProjectionFacts">;
+  placementFacts?: ReturnType<WorkerSessionPlacementStore["getProjectionFacts"]>;
   activitySummaryEnabled?: boolean;
 }) {
   const { cfg, entry } = params;
@@ -38,7 +39,10 @@ export function readSessionRowFacts(params: {
     placement,
     move,
     workspaceResultReconciling = false,
-  } = params.placementFactsReader?.getProjectionFacts(entry.sessionId) ?? {};
+  } = (params.placementFacts?.has(entry.sessionId)
+    ? params.placementFacts.get(entry.sessionId)
+    : params.placementFactsReader?.getProjectionFacts([entry.sessionId]).get(entry.sessionId)) ??
+  {};
   const environment = placement?.environmentId
     ? context.workerEnvironmentService?.get(placement.environmentId)
     : undefined;

@@ -137,28 +137,33 @@ it.each([
     });
     store.markWorkspaceResultPending(claim);
 
-    const readReconciling = () => store.getWorkspaceResultReconcilingSessionIds([active.sessionId]);
-    expect(readReconciling().has(active.sessionId)).toBe(scenario.visibleBeforeStaging);
-    expect(store.getProjectionFacts(active.sessionId).workspaceResultReconciling).toBe(
-      scenario.visibleBeforeStaging,
-    );
+    expect(
+      store.getProjectionFacts([active.sessionId]).get(active.sessionId)
+        ?.workspaceResultReconciling,
+    ).toBe(scenario.visibleBeforeStaging);
     const stagedResultRef = `refs/openclaw/worker-results/${claim.claimId}`;
     store.recordStagedWorkspaceResult(claim, stagedResultRef);
-    expect(readReconciling()).toEqual(new Set([active.sessionId]));
+    expect(
+      store.getProjectionFacts([active.sessionId]).get(active.sessionId)
+        ?.workspaceResultReconciling,
+    ).toBe(true);
     store.recordWorkspaceResultConflict(claim, { paths: ["conflict.txt"], stagedResultRef });
-    expect(store.getProjectionFacts(active.sessionId)).toMatchObject({
+    expect(store.getProjectionFacts([active.sessionId]).get(active.sessionId)).toMatchObject({
       placement: {
         workspaceResultConflict: { paths: ["conflict.txt"], stagedResultRef, totalCount: 1 },
       },
       workspaceResultReconciling: true,
     });
     store.recordWorkspaceResultConflict(claim, undefined);
-    expect(store.getProjectionFacts(active.sessionId).placement).not.toHaveProperty(
-      "workspaceResultConflict",
-    );
+    expect(
+      store.getProjectionFacts([active.sessionId]).get(active.sessionId)?.placement,
+    ).not.toHaveProperty("workspaceResultConflict");
     store.acceptWorkspaceResult(claim);
     store.completeWorkspaceResultAndReleaseTurn(claim);
-    expect(store.getProjectionFacts(active.sessionId).workspaceResultReconciling).toBe(false);
+    expect(
+      store.getProjectionFacts([active.sessionId]).get(active.sessionId)
+        ?.workspaceResultReconciling,
+    ).toBe(false);
   },
 );
 

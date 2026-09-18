@@ -22,6 +22,11 @@ import {
   type SessionRowProjection,
 } from "../session-row-projection.js";
 import type { GatewaySessionRow } from "../session-utils.types.js";
+import type { WorkerPlacementMoveIntent } from "../worker-environments/placement-move-intent.js";
+import type {
+  WorkerSessionPlacementRecord,
+  WorkerSessionPlacementStore,
+} from "../worker-environments/placement-store.js";
 import { readPreparedServerMethodModelCatalogs } from "./optional-model-catalog.js";
 import { sessionReadHandlers } from "./sessions-read.js";
 import type { GatewayClient, GatewayRequestContext, RespondFn } from "./types.js";
@@ -41,33 +46,70 @@ export function disposeSessionReadContexts() {
   profileSubscriptions.clear();
 }
 afterEach(disposeSessionReadContexts);
-export function initializeSessionReadContext(context: GatewayRequestContext) {
+export function activePlacementRecord(): Extract<
+  WorkerSessionPlacementRecord,
+  { state: "active" }
+> {
+  return {
+    sessionId: "sess-main",
+    agentId: "main",
+    sessionKey: "agent:main:main",
+    executionMode: "worker-turn",
+    state: "active",
+    environmentId: "env-placement",
+    generation: 7,
+    activeOwnerEpoch: 12,
+    workspaceBaseManifestRef: "manifest-base",
+    remoteWorkspaceDir: "/workspace/main",
+    workerBundleHash: ["a", "b"].join("").repeat(32),
+    lastTranscriptAckCursor: 23,
+    lastLiveEventAckCursor: 9,
+    recoveryError: null,
+    terminalReason: null,
+    terminalAtMs: null,
+    turnClaim: null,
+    createdAtMs: 100,
+    updatedAtMs: 300,
+    stateChangedAtMs: 200,
+  };
+}
+
+export function createPlacementFactsReader(
+  placement: WorkerSessionPlacementRecord,
+  move?: WorkerPlacementMoveIntent,
+) {
+  return {
+    getProjectionFacts: vi.fn<WorkerSessionPlacementStore["getProjectionFacts"]>(
+      (ids) =>
+        new Map(
+          ids.map((id) => [
+            id,
+            {
+              placement: id === placement.sessionId ? placement : undefined,
+              move: id === move?.sessionId ? move : undefined,
+              workspaceResultReconciling: false,
+            },
+          ]),
+        ),
+    ),
+  };
+}
+export function initializeSessionReadContext(
+  context: GatewayRequestContext,
+  placementFactsReader?: Parameters<typeof createSessionRowProjection>[0]["placementFactsReader"],
+) {
   if (getSessionRowProjection(context)) {
     return Promise.resolve();
   }
   let pending = initializing.get(context);
   if (!pending) {
-    const placements = context.workerSessionPlacementService;
     pending = createSessionRowProjection({
       cfg: context.getRuntimeConfig(),
       getConfig: context.getRuntimeConfig,
       getModelCatalog: () =>
         readPreparedServerMethodModelCatalogs(context, listAgentIds(context.getRuntimeConfig())),
       context,
-      placementFactsReader: placements
-        ? {
-            getProjectionFacts(sessionId) {
-              return {
-                placement: placements.getMany([sessionId]).get(sessionId),
-                move: placements.getPlacementMoves?.([sessionId]).get(sessionId),
-                workspaceResultReconciling:
-                  placements
-                    .getWorkspaceResultReconcilingSessionIds?.([sessionId])
-                    .has(sessionId) ?? false,
-              };
-            },
-          }
-        : undefined,
+      placementFactsReader,
     }).then((projection) => {
       projections.add(projection);
       bindSessionRowProjection(context, () => projection);
@@ -122,8 +164,9 @@ export async function listSessions(params: {
   client: GatewayClient;
   context: GatewayRequestContext;
   request: SessionsListParams;
+  placementFactsReader?: Parameters<typeof initializeSessionReadContext>[1];
 }) {
-  await initializeSessionReadContext(params.context);
+  await initializeSessionReadContext(params.context, params.placementFactsReader);
   const responses: Parameters<RespondFn>[] = [];
   await sessionReadHandlers["sessions.list"]?.({
     req: { type: "req", id: "session-list-test", method: "sessions.list" },

@@ -102,7 +102,7 @@ describe("worker session placement moves", () => {
         .get("worker_session_placement_moves"),
     ).toBeUndefined();
     expect(store.listPlacementMoves()).toEqual([]);
-    expect(store.getProjectionFacts(SESSION.sessionId)).toEqual({
+    expect(store.getProjectionFacts([SESSION.sessionId]).get(SESSION.sessionId)).toEqual({
       placement: undefined,
       move: undefined,
       workspaceResultReconciling: false,
@@ -161,14 +161,21 @@ describe("worker session placement moves", () => {
       user_version: OPENCLAW_STATE_SCHEMA_VERSION,
     });
     expect(store.getPlacementMove(SESSION.sessionId)).toEqual(begun.intent);
-    expect(store.getProjectionFacts(SESSION.sessionId)).toEqual({
-      placement: begun.placement,
-      move: begun.intent,
+    const requestedIds = [SESSION.sessionId, ` ${SESSION.sessionId} `];
+    const facts = store.getProjectionFacts([...requestedIds, SESSION.sessionId, " missing "]);
+    expect([...facts.keys()]).toEqual([...requestedIds, " missing "]);
+    for (const id of requestedIds) {
+      expect(facts.get(id)).toEqual({
+        placement: begun.placement,
+        move: begun.intent,
+        workspaceResultReconciling: false,
+      });
+    }
+    expect(facts.get(" missing ")).toEqual({
+      placement: undefined,
+      move: undefined,
       workspaceResultReconciling: false,
     });
-    expect(store.getPlacementMoves([SESSION.sessionId, "missing"])).toEqual(
-      new Map([[SESSION.sessionId, begun.intent]]),
-    );
 
     expect(
       store.beginPlacementMove({

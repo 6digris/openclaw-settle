@@ -8,6 +8,10 @@ import { restoreRegisteredAgentHarnesses } from "../agents/harness/registry.test
 import { NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE } from "../infra/node-runner-inventory.js";
 import { updateNodeRunnerInventory } from "./node-registry-private.js";
 import { NodeRegistry, type NodeSessionConnectParams } from "./node-registry.js";
+import {
+  activePlacementRecord,
+  createPlacementFactsReader,
+} from "./server-methods/sessions-read-cache.test-support.js";
 import { createOperatorWsClient } from "./server/ws-connection/authenticated-request-dispatch.test-support.js";
 import type { GatewaySessionRow } from "./session-utils.types.js";
 import { writeSessionStore } from "./test-helpers.js";
@@ -16,7 +20,6 @@ import {
   setupGatewaySessionsHandlerTestHarness,
 } from "./test/server-sessions.test-helpers.js";
 import type { WorkerPlacementMoveIntent } from "./worker-environments/placement-move-intent.js";
-import type { WorkerSessionPlacementReader } from "./worker-environments/placement-projector.js";
 import type { WorkerSessionPlacementRecord } from "./worker-environments/placement-store.js";
 
 const { createSessionStoreDir } = setupGatewaySessionsHandlerTestHarness();
@@ -150,31 +153,6 @@ test.each([
   },
 );
 
-function activePlacementRecord(): Extract<WorkerSessionPlacementRecord, { state: "active" }> {
-  return {
-    sessionId: "sess-main",
-    agentId: "main",
-    sessionKey: "agent:main:main",
-    executionMode: "worker-turn",
-    state: "active",
-    environmentId: "env-placement",
-    generation: 7,
-    activeOwnerEpoch: 12,
-    workspaceBaseManifestRef: "manifest-base",
-    remoteWorkspaceDir: "/workspace/main",
-    workerBundleHash: ["a", "b"].join("").repeat(32),
-    lastTranscriptAckCursor: 23,
-    lastLiveEventAckCursor: 9,
-    recoveryError: null,
-    terminalReason: null,
-    terminalAtMs: null,
-    turnClaim: null,
-    createdAtMs: 100,
-    updatedAtMs: 300,
-    stateChangedAtMs: 200,
-  };
-}
-
 async function seedSessionRows(): Promise<void> {
   await createSessionStoreDir();
   await writeSessionStore({
@@ -204,12 +182,7 @@ test.each([
   async ({ ownerEpoch, expectedIdentity }) => {
     await seedSessionRows();
     const placement = activePlacementRecord();
-    const getMany = vi.fn<WorkerSessionPlacementReader["getMany"]>((sessionIds) => {
-      expect(sessionIds).toHaveLength(1);
-      return new Map(
-        sessionIds.includes(placement.sessionId) ? [[placement.sessionId, placement]] : [],
-      );
-    });
+    const placementFactsReader = createPlacementFactsReader(placement);
     const diskSpace = {
       status: "warning" as const,
       availableBytes: 400,
@@ -227,7 +200,6 @@ test.each([
         : undefined,
     );
     const context = {
-      workerSessionPlacementService: { getMany },
       workerEnvironmentService: {
         get: getEnvironment,
         readMachineShape: () => identity.machine,
@@ -243,12 +215,14 @@ test.each([
     const result = await directSessionReq<{ sessions: GatewaySessionRow[] }>(
       "sessions.list",
       {},
-      { context },
+      { context, placementFactsReader },
     );
 
     expect(result.ok).toBe(true);
     expect(
-      getMany.mock.calls.flatMap(([ids]) => ids).toSorted((a, b) => a.localeCompare(b)),
+      placementFactsReader.getProjectionFacts.mock.calls
+        .flatMap(([ids]) => ids)
+        .toSorted((a, b) => a.localeCompare(b)),
     ).toEqual(["sess-main", "sess-other"]);
     const main = result.payload?.sessions.find((session) => session.sessionId === "sess-main");
     const other = result.payload?.sessions.find((session) => session.sessionId === "sess-other");
@@ -270,9 +244,11 @@ test.each([
       ...(expectedIdentity ? identity : {}),
     });
     expect(other?.placement).toBeUndefined();
-    getMany.mockClear();
-    expect((await directSessionReq("sessions.list", {}, { context })).ok).toBe(true);
-    expect(getMany).not.toHaveBeenCalled();
+    placementFactsReader.getProjectionFacts.mockClear();
+    expect(
+      (await directSessionReq("sessions.list", {}, { context, placementFactsReader })).ok,
+    ).toBe(true);
+    expect(placementFactsReader.getProjectionFacts).not.toHaveBeenCalled();
   },
 );
 
@@ -304,10 +280,8 @@ test.each(["provisioning", "syncing", "starting"] as const)(
       "sessions.describe",
       { key: "main" },
       {
+        placementFactsReader: createPlacementFactsReader(placement),
         context: {
-          workerSessionPlacementService: {
-            getMany: () => new Map([[placement.sessionId, placement]]),
-          },
           workerEnvironmentService: {
             get: () => ({
               providerId: "machine0",
@@ -348,17 +322,12 @@ test("sessions.list projects durable placement move progress", async () => {
     createdAtMs: 320,
     updatedAtMs: 340,
   };
-  const getMany = vi.fn<WorkerSessionPlacementReader["getMany"]>(
-    () => new Map([[placement.sessionId, placement]]),
-  );
-  const getPlacementMoves = vi.fn<NonNullable<WorkerSessionPlacementReader["getPlacementMoves"]>>(
-    () => new Map([[move.sessionId, move]]),
-  );
+  const placementFactsReader = createPlacementFactsReader(placement, move);
 
   const result = await directSessionReq<{ sessions: GatewaySessionRow[] }>(
     "sessions.list",
     {},
-    { context: { workerSessionPlacementService: { getMany, getPlacementMoves } } },
+    { placementFactsReader },
   );
 
   expect(result.ok).toBe(true);
@@ -370,21 +339,14 @@ test("sessions.list projects durable placement move progress", async () => {
   });
   expect(main?.placementMove).not.toHaveProperty("operationId");
   expect(
-    getPlacementMoves.mock.calls
-      .map(([ids]) => ids)
-      .toSorted((a, b) => a.join("\0").localeCompare(b.join("\0"))),
-  ).toEqual([["sess-main"], ["sess-other"]]);
+    placementFactsReader.getProjectionFacts.mock.calls.flatMap(([ids]) => ids).toSorted(),
+  ).toEqual(["sess-main", "sess-other"]);
 });
 
 test("sessions.describe projects durable worker placement", async () => {
   await seedSessionRows();
   const placement = activePlacementRecord();
-  const getMany = vi.fn<WorkerSessionPlacementReader["getMany"]>((sessionIds) => {
-    expect(sessionIds).toHaveLength(1);
-    return new Map(
-      sessionIds.includes(placement.sessionId) ? [[placement.sessionId, placement]] : [],
-    );
-  });
+  const placementFactsReader = createPlacementFactsReader(placement);
   const diskSpace = {
     status: "critical" as const,
     availableBytes: 50,
@@ -396,8 +358,8 @@ test("sessions.describe projects durable worker placement", async () => {
     "sessions.describe",
     { key: "main" },
     {
+      placementFactsReader,
       context: {
-        workerSessionPlacementService: { getMany },
         workerPlacementDiskSpaceReader: { read: () => diskSpace, version: () => 1 },
         workerPlacementRunnerAvailabilityReader: {
           read: () => ({ kind: "device", status: "offline" }),
@@ -408,9 +370,11 @@ test("sessions.describe projects durable worker placement", async () => {
   );
 
   expect(result.ok).toBe(true);
-  expect(getMany.mock.calls.flatMap(([ids]) => ids).toSorted((a, b) => a.localeCompare(b))).toEqual(
-    ["sess-main", "sess-other"],
-  );
+  expect(
+    placementFactsReader.getProjectionFacts.mock.calls
+      .flatMap(([ids]) => ids)
+      .toSorted((a, b) => a.localeCompare(b)),
+  ).toEqual(["sess-main", "sess-other"]);
   expect(result.payload?.session?.placement).toEqual({
     state: "active",
     environmentId: "env-placement",
@@ -463,16 +427,14 @@ test.each([
       terminalReason: "cloud worker disappeared: provider reported lease destroyed",
       terminalAtMs: 400,
     } satisfies WorkerSessionPlacementRecord;
-    const getMany = vi.fn<WorkerSessionPlacementReader["getMany"]>(
-      () => new Map([[placement.sessionId, placement]]),
-    );
+    const placementFactsReader = createPlacementFactsReader(placement);
 
     const result = await directSessionReq<{ session: GatewaySessionRow | null }>(
       "sessions.describe",
       { key: "main" },
       {
+        placementFactsReader,
         context: {
-          workerSessionPlacementService: { getMany },
           workerEnvironmentService: {
             get: () =>
               ownerEpoch === undefined
@@ -525,10 +487,8 @@ test("sessions.describe requires worker teardown before failed-placement restart
     "sessions.describe",
     { key: "main" },
     {
+      placementFactsReader: createPlacementFactsReader(placement),
       context: {
-        workerSessionPlacementService: {
-          getMany: () => new Map([[placement.sessionId, placement]]),
-        },
         workerEnvironmentService: {
           get: () => ({
             providerId: "machine0",

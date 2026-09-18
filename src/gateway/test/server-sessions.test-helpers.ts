@@ -579,6 +579,7 @@ export async function directSessionReq<TPayload = unknown>(
   params: Record<string, unknown>,
   opts?: {
     context?: Record<string, unknown>;
+    placementFactsReader?: Parameters<typeof initializeSessionReadContext>[1];
     client?: SessionsHandlerOptions["client"];
     isWebchatConnect?: SessionsHandlerOptions["isWebchatConnect"];
     sessionMutationAuthorization?: SessionsHandlerOptions["sessionMutationAuthorization"];
@@ -653,7 +654,7 @@ export async function directSessionReq<TPayload = unknown>(
       "sessions.compact",
     ].includes(method)
   ) {
-    await initializeSessionReadContext(context);
+    await initializeSessionReadContext(context, opts?.placementFactsReader);
   }
   await handler({
     req: {} as never,

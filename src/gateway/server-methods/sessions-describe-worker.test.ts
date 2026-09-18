@@ -272,7 +272,7 @@ it("projects current target, lineage, children and placement after committed cha
       },
     );
     const placements = createWorkerSessionPlacementStore();
-    context.workerSessionPlacementService = placements;
+    await initializeSessionReadContext(context, placements);
     const response = await afterCommittedChange(
       context,
       () => describeSession(context, viewer),

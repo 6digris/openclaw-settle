@@ -189,9 +189,8 @@ describe("worker store session change publications", () => {
           change.agentId === SESSION.agentId
         ) {
           observed.push({
-            reconciling: store
-              .getWorkspaceResultReconcilingSessionIds([SESSION.sessionId])
-              .has(SESSION.sessionId),
+            reconciling: store.getProjectionFacts([SESSION.sessionId]).get(SESSION.sessionId)!
+              .workspaceResultReconciling,
             conflict: Boolean(store.get(SESSION.sessionId)?.workspaceResultConflict),
             transaction: database.db.isTransaction,
           });

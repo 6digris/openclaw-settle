@@ -77,7 +77,11 @@ import {
 } from "./server-chat.agent-events.test-helpers.js";
 import { getMaxChatHistoryMessagesBytes } from "./server-constants.js";
 import { createGatewayChatMetadataRuntime } from "./server-methods/chat-metadata-runtime.js";
-import { initializeSessionReadContext } from "./server-methods/sessions-read-cache.test-support.js";
+import {
+  activePlacementRecord,
+  createPlacementFactsReader,
+  initializeSessionReadContext,
+} from "./server-methods/sessions-read-cache.test-support.js";
 import type {
   GatewayRequestContext,
   GatewayRequestHandlerOptions,
@@ -837,32 +841,11 @@ describe("gateway server chat", () => {
       openDirectChatSession();
       try {
         await writeMainSessionStore();
-        const placement = {
-          sessionId: "sess-main",
-          agentId: "main",
-          sessionKey: "agent:main:main",
-          executionMode: "worker-turn",
-          state: "active",
-          environmentId: "env-placement",
-          generation: 7,
-          activeOwnerEpoch: 12,
-          workspaceBaseManifestRef: "manifest-base",
-          remoteWorkspaceDir: "/workspace/main",
-          workerBundleHash: "ab".repeat(32),
-          recoveryError: null,
-          terminalReason: null,
-          terminalAtMs: null,
-          turnClaim: null,
-          createdAtMs: 100,
-          updatedAtMs: 300,
-          stateChangedAtMs: 200,
-        };
-        const context = createDirectChatContext({
-          workerSessionPlacementService: {
-            getMany: () => new Map([[placement.sessionId, placement]]),
-            getPlacementMoves: () => new Map(),
-          },
-        } as unknown as Partial<GatewayRequestContext>);
+        const context = createDirectChatContext();
+        await initializeSessionReadContext(
+          context,
+          createPlacementFactsReader(activePlacementRecord()),
+        );
         const responses: Array<{ ok: boolean; payload?: unknown }> = [];
         await callDirectChat(method, {
           id: method,
@@ -872,8 +855,7 @@ describe("gateway server chat", () => {
         });
 
         expect(responses[0]?.ok).toBe(true);
-        // Clients merge this row into the same store sessions.list fills, so a
-        // missing placement here silently erases a live worker placement.
+        // History/startup rows must preserve placement when merged with sessions.list.
         expect(
           (responses[0]?.payload as { sessionInfo?: { placement?: { state?: string } } })
             ?.sessionInfo?.placement,

@@ -12,7 +12,6 @@ import type { WorkerEnvironmentServiceContract } from "./service-contract.js";
 
 export type WorkerSessionPlacementReader = {
   getMany(sessionIds: readonly string[]): ReadonlyMap<string, WorkerSessionPlacementRecord>;
-  getWorkspaceResultReconcilingSessionIds?(sessionIds: readonly string[]): ReadonlySet<string>;
   listPendingWorkspaceResults?(
     sessionId?: string,
   ): import("./placement-workspace-result.js").WorkerWorkspacePendingResult[];
@@ -20,7 +19,6 @@ export type WorkerSessionPlacementReader = {
   registerTurnClaimClosedHandler?: (
     handler: (claim: import("./placement-record.js").WorkerSessionTurnClaim) => void,
   ) => () => void;
-  getPlacementMoves?(sessionIds: readonly string[]): ReadonlyMap<string, WorkerPlacementMoveIntent>;
 };
 
 export type WorkerPlacementDiskSpaceReader = {

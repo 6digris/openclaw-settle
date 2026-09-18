@@ -280,7 +280,7 @@ function findMoveRowBySession(db: DatabaseSync, sessionId: string): MoveRow | un
   );
 }
 
-export function readWorkerPlacementMove(
+function readWorkerPlacementMove(
   db: DatabaseSync,
   sessionId: string,
 ): WorkerPlacementMoveIntent | undefined {
@@ -376,38 +376,35 @@ function requireExactAttachedEnvironment(
   }
 }
 
+export function readWorkerPlacementMoves(
+  db: DatabaseSync,
+  sessionIds: readonly string[],
+): ReadonlyMap<string, WorkerPlacementMoveIntent> {
+  const results = new Map<string, WorkerPlacementMoveIntent>();
+  if (!ensureExistingWorkerPlacementMoveSchema(db)) {
+    return results;
+  }
+  for (let offset = 0; offset < sessionIds.length; offset += 250) {
+    const chunk = sessionIds.slice(offset, offset + 250);
+    for (const row of executeSqliteQuerySync(
+      db,
+      moveQuery(db)
+        .selectFrom("worker_session_placement_moves")
+        .selectAll()
+        .where("session_id", "in", chunk),
+    ).rows) {
+      const intent = fromRow(row);
+      results.set(intent.sessionId, intent);
+    }
+  }
+  return results;
+}
+
 export function createPlacementMoveOps(runtime: PlacementStoreRuntime) {
   const { read, write, now } = runtime;
   return {
     getPlacementMove(sessionId: string): WorkerPlacementMoveIntent | undefined {
       return readWorkerPlacementMove(read(), required(sessionId, "move session id"));
-    },
-
-    getPlacementMoves(
-      sessionIds: readonly string[],
-    ): ReadonlyMap<string, WorkerPlacementMoveIntent> {
-      const normalizedIds = [
-        ...new Set(sessionIds.map((sessionId) => required(sessionId, "move session id"))),
-      ];
-      const results = new Map<string, WorkerPlacementMoveIntent>();
-      const db = read();
-      if (!ensureExistingWorkerPlacementMoveSchema(db)) {
-        return results;
-      }
-      for (let offset = 0; offset < normalizedIds.length; offset += 250) {
-        const chunk = normalizedIds.slice(offset, offset + 250);
-        for (const row of executeSqliteQuerySync(
-          db,
-          moveQuery(db)
-            .selectFrom("worker_session_placement_moves")
-            .selectAll()
-            .where("session_id", "in", chunk),
-        ).rows) {
-          const intent = fromRow(row);
-          results.set(intent.sessionId, intent);
-        }
-      }
-      return results;
     },
 
     listPlacementMoves(): WorkerPlacementMoveIntent[] {

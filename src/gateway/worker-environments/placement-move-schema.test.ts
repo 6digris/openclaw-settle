@@ -59,7 +59,7 @@ describe("worker placement move schema", () => {
       );
     `);
     const store = createWorkerSessionPlacementStore({ database, now: () => 2_000 });
-    expect(store.getProjectionFacts("session-move")).toMatchObject({
+    expect(store.getProjectionFacts(["session-move"]).get("session-move")).toMatchObject({
       placement: { state: "active" },
       move: undefined,
       workspaceResultReconciling: false,
@@ -108,7 +108,9 @@ describe("worker placement move schema", () => {
     const reopened = openOpenClawStateDatabase(options);
     const reopenedStore = createWorkerSessionPlacementStore({ database: reopened });
     expect(reopenedStore.getPlacementMove("session-move")).toEqual(begun.intent);
-    expect(reopenedStore.getProjectionFacts("session-move").move).toEqual(begun.intent);
+    expect(reopenedStore.getProjectionFacts(["session-move"]).get("session-move")?.move).toEqual(
+      begun.intent,
+    );
     expect(reopened.db.prepare("PRAGMA user_version").get()).toEqual(versionBefore);
     expect(
       reopened.db
