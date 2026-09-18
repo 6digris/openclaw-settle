@@ -3829,13 +3829,11 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       sessionKey: "agent:main:main",
       state: "final",
     });
-    expect(extractFirstTextBlock(asOptionalRecord(broadcast)?.message)).toBe("Codex source reply");
+    expect(extractFirstTextBlock(getMessage(broadcast))).toBe("Codex source reply");
     const nodeSend = lastNodeSendCall(context);
     expect(nodeSend?.[0]).toBe("agent:main:main");
     expect(nodeSend?.[1]).toBe("chat");
-    expect(extractFirstTextBlock(asOptionalRecord(nodeSend?.[2])?.message)).toBe(
-      "Codex source reply",
-    );
+    expect(extractFirstTextBlock(getMessage(nodeSend?.[2]))).toBe("Codex source reply");
     const assistantUpdates = findAssistantTranscriptUpdates();
     expect(assistantUpdates).toStrictEqual([]);
     const assistantEntries = await readActiveAssistantTranscriptMessages();
@@ -3879,9 +3877,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       waitFor: "dedupe",
     });
 
-    expect(extractFirstTextBlock(asOptionalRecord(lastBroadcastPayload(context))?.message)).toBe(
-      text,
-    );
+    expect(extractFirstTextBlock(getMessage(lastBroadcastPayload(context)))).toBe(text);
     expect(await readActiveAssistantTranscriptMessages()).toHaveLength(1);
   });
 
@@ -3948,7 +3944,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       sessionKey: "agent:main:main",
       state: "final",
     });
-    expect(extractFirstTextBlock(asOptionalRecord(broadcast)?.message)).toBe(
+    expect(extractFirstTextBlock(getMessage(broadcast))).toBe(
       "⚙️ Codex compaction started • Context 2k/200k",
     );
     const assistantEntries = await readActiveAssistantTranscriptMessages();
@@ -3982,7 +3978,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       sessionKey: "agent:main:main",
       state: "final",
     });
-    expect(extractFirstTextBlock(asOptionalRecord(broadcast)?.message)).toBe(
+    expect(extractFirstTextBlock(getMessage(broadcast))).toBe(
       "Model set to openai/gpt-5.5 for this session.",
     );
     expect(context.broadcast.mock.calls).toHaveLength(1);
@@ -4058,7 +4054,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
             sessionKey: "agent:main:main",
             state: "final",
           });
-          expect(extractFirstTextBlock(asOptionalRecord(broadcast)?.message)).toBe(
+          expect(extractFirstTextBlock(getMessage(broadcast))).toBe(
             "Codex source reply with media",
           );
           const broadcastContent = getMessageContent(broadcast);
@@ -4249,9 +4245,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
 
         const broadcastContent = getMessageContent(broadcast);
         expect(broadcastContent.filter((block) => block.type === "image")).toHaveLength(1);
-        expect(extractFirstTextBlock(asOptionalRecord(broadcast)?.message)).toBe(
-          "Backed source reply",
-        );
+        expect(extractFirstTextBlock(getMessage(broadcast))).toBe("Backed source reply");
         expect(String(broadcastContent[1]?.url)).toContain("/api/chat/media/outgoing/");
         const assistantEntries = await readActiveAssistantTranscriptMessages();
         expect(assistantEntries).toHaveLength(1);
@@ -4361,7 +4355,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
           message: "hello from codex",
         });
 
-        expect(extractFirstTextBlock(asOptionalRecord(broadcast)?.message)).toBe(
+        expect(extractFirstTextBlock(getMessage(broadcast))).toBe(
           "Media reply could not be displayed.",
         );
         const broadcastJson = JSON.stringify(broadcast);
@@ -4483,7 +4477,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       sessionKey: "agent:main:main",
       state: "final",
     });
-    expect(extractFirstTextBlock(asOptionalRecord(broadcast)?.message)).toBe("Codex source reply");
+    expect(extractFirstTextBlock(getMessage(broadcast))).toBe("Codex source reply");
     const errorBroadcasts = context.broadcast.mock.calls.filter(
       ([, payload]) => (payload as { state?: unknown })?.state === "error",
     );
@@ -4734,7 +4728,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
         expect(broadcasts[0]).not.toHaveProperty("message");
       } else if (sourceReply || presentation === "warning-only") {
         expect(broadcasts).toEqual([expect.objectContaining({ runId, state: "final" })]);
-        expect(extractFirstTextBlock(asOptionalRecord(broadcasts[0])?.message)).toBe(replyText);
+        expect(extractFirstTextBlock(getMessage(broadcasts[0]))).toBe(replyText);
       } else {
         expect(broadcasts).toEqual([]);
       }
@@ -4824,11 +4818,11 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
         message: "/export-trajectory bundle",
       });
 
-      expect.soft(extractFirstTextBlock(asOptionalRecord(payload)?.message)).toBe(text);
+      expect.soft(extractFirstTextBlock(getMessage(payload))).toBe(text);
       const broadcast = lastBroadcastPayload(context);
       expect(broadcast?.runId).toBe("idem-command-block");
       expect(broadcast?.state).toBe("final");
-      expect.soft(extractFirstTextBlock(asOptionalRecord(broadcast)?.message)).toBe(text);
+      expect.soft(extractFirstTextBlock(getMessage(broadcast))).toBe(text);
       const delta = context.broadcast.mock.calls
         .map(([event, value]) => (event === "chat" ? asOptionalRecord(value) : undefined))
         .findLast((value) => value?.state === "delta");
@@ -5017,7 +5011,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       message: "/export-trajectory bundle",
     });
 
-    expect(extractFirstTextBlock(asOptionalRecord(payload)?.message)).toBe(
+    expect(extractFirstTextBlock(getMessage(payload))).toBe(
       "Trajectory exports can include prompts.",
     );
     const transcriptUpdate = mockState.emittedTranscriptUpdates.find(
@@ -5365,10 +5359,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     expect(payload?.ok).toBe(true);
     const broadcastPayload = lastBroadcastPayload(context);
     expect(broadcastPayload?.state).toBe("final");
-    if (!getMessage(broadcastPayload)) {
-      throw new Error("Expected broadcast message");
-    }
-    expect(extractFirstTextBlock(asOptionalRecord(broadcastPayload)?.message)).toBe("");
+    expect(extractFirstTextBlock(getMessage(broadcastPayload))).toBe("");
   });
 
   it("chat.inject rejects archived sessions without appending", async () => {
@@ -5455,10 +5446,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
 
     expect(payload?.runId).toBe("idem-directive-only");
     expect(payload?.state).toBe("final");
-    if (!getMessage(payload)) {
-      throw new Error("Expected directive-only final message");
-    }
-    expect(extractFirstTextBlock(asOptionalRecord(payload)?.message)).toBe("");
+    expect(extractFirstTextBlock(getMessage(payload))).toBe("");
   });
 
   it("persists inline reply directives as typed facts while stripping them from text", async () => {
@@ -5468,7 +5456,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       idempotencyKey: "idem-inline-reply-transcript",
     });
 
-    expect(extractFirstTextBlock(asOptionalRecord(payload)?.message)).toBe("see now with spacing");
+    expect(extractFirstTextBlock(getMessage(payload))).toBe("see now with spacing");
     const transcriptUpdate = mockState.emittedTranscriptUpdates.find(
       (update) =>
         typeof update.message === "object" &&
@@ -5552,7 +5540,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     expect(respond).toHaveBeenCalled();
     const chatCall = mockCallAt(context.broadcast, -1);
     expect(chatCall?.[0]).toBe("chat");
-    expect(extractFirstTextBlock(asOptionalRecord(chatCall?.[1])?.message)).toBe("hello");
+    expect(extractFirstTextBlock(getMessage(chatCall?.[1]))).toBe("hello");
   });
 
   it.each([false, true])(
@@ -5645,7 +5633,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     const payload = await createChatRequestFixture().send({
       idempotencyKey: "idem-untrusted-context",
     });
-    expect(extractFirstTextBlock(asOptionalRecord(payload)?.message)?.trim()).toBe("hello");
+    expect(extractFirstTextBlock(getMessage(payload))?.trim()).toBe("hello");
   });
 
   it("chat.send non-streaming final broadcasts and routes on the canonical session key", async () => {
@@ -5688,7 +5676,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     if (!getMessage(payload)) {
       throw new Error("Expected Telegram final message");
     }
-    expect(extractFirstTextBlock(asOptionalRecord(payload)?.message)).toBe("telegram ok");
+    expect(extractFirstTextBlock(getMessage(payload))).toBe("telegram ok");
     const nodeSend = lastNodeSendCall(context);
     expect(nodeSend?.[0]).toBe(sessionKey);
     expect(nodeSend?.[1]).toBe("chat");
@@ -6598,7 +6586,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       idempotencyKey: "idem-sanitized-reply-id",
     });
 
-    expect(extractFirstTextBlock(asOptionalRecord(payload)?.message)?.trim()).toBe("hello");
+    expect(extractFirstTextBlock(getMessage(payload))?.trim()).toBe("hello");
     const transcriptUpdate = mockState.emittedTranscriptUpdates.find(
       (update) =>
         typeof update.message === "object" &&
@@ -6622,7 +6610,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       idempotencyKey: "idem-inline-reply-id-fallback",
     });
 
-    expect(extractFirstTextBlock(asOptionalRecord(payload)?.message)?.trim()).toBe("hello");
+    expect(extractFirstTextBlock(getMessage(payload))?.trim()).toBe("hello");
     const transcriptUpdate = mockState.emittedTranscriptUpdates.find(
       (update) =>
         typeof update.message === "object" &&
