@@ -87,6 +87,19 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
       count: 1,
     },
     {
+      name: "separate inline slots sharing a URL",
+      content: [
+        { type: "image", url: preview, width: 240, height: 160 },
+        { type: "image", url: preview, width: 320, height: 120 },
+      ],
+      media: [],
+      expected: [
+        [240, 160],
+        [320, 120],
+      ],
+      count: 2,
+    },
+    {
       name: "agreeing duplicate URLs",
       content: [{ type: "image", url: preview }],
       media: [canonical, canonical],
@@ -148,6 +161,8 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
     "reserves persisted image geometry with $name",
     ({ content, media, slots, expected, count }) => {
       const container = mount(500);
+      const requestUpdate = () => {};
+      subscribers.push(requestUpdate);
       render(
         html`<div class="chat-group assistant">
           ${renderGroupedMessage(
@@ -157,7 +172,7 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
               __openclaw: { media, ...(slots ? { mediaImageLayout: { slots } } : {}) },
             }),
             "persisted-dimensions",
-            { isStreaming: false, showReasoning: false },
+            { isStreaming: false, showReasoning: false, onRequestUpdate: requestUpdate },
           )}
         </div>`,
         container,
@@ -176,6 +191,8 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
 
   it("retains presented geometry when dimensions arrive and resets it for a different image", () => {
     const container = mount(500);
+    const requestUpdate = () => {};
+    subscribers.push(requestUpdate);
     const paint = (url: string, dimensions?: { width: number; height: number }) => {
       render(
         html`${renderGroupedMessage(
@@ -188,7 +205,7 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
             __openclaw: { media: [{ url, contentType: "image/png", ...dimensions }] },
           }),
           "late-dimensions",
-          { isStreaming: false, showReasoning: false },
+          { isStreaming: false, showReasoning: false, onRequestUpdate: requestUpdate },
         )}`,
         container,
       );
@@ -201,9 +218,18 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
     expect(container.querySelector("img")).toBe(image);
     expect(after.width).toBe(before.width);
     expect(after.height).toBe(before.height);
+    render(nothing, container);
+    const remounted = paint(preview, { width: 320, height: 120 });
+    expect(remounted.width).toBe(before.width);
+    expect(remounted.height).toBe(before.height);
     const replacement = paint(`${preview}#replacement`, { width: 240, height: 160 });
     expect(replacement.width).toBe(240);
     expect(replacement.height).toBe(160);
+    render(nothing, container);
+    releaseChatMediaResourceSubscriber(requestUpdate);
+    const newPane = paint(`${preview}#replacement`, { width: 320, height: 120 });
+    expect(newPane.width).toBe(320);
+    expect(newPane.height).toBe(120);
   });
 
   it("keeps a pending inline frame when its canonical source gains dimensions", () => {
