@@ -505,6 +505,7 @@ watchos_reconnect_restarted_candidate() {
 }
 
 cleanup() {
+  if declare -F channel_response_cleanup >/dev/null; then channel_response_cleanup; fi
   stop_gateway
   openclaw_e2e_stop_process "${plugin_registry_pid:-}"
   openclaw_e2e_stop_process "${missing_plugin_registry_pid:-}"
@@ -2176,9 +2177,14 @@ if [ "$SCENARIO" = "custom-plugin-siblings" ]; then
   phase validate-baseline-config validate_baseline_config
   phase baseline-sibling-runtime node scripts/e2e/lib/upgrade-survivor/custom-plugin-siblings.mjs baseline
   phase resolve-sibling-candidate resolve_candidate_version
+  source scripts/e2e/lib/upgrade-survivor/channel-response.sh
+  phase prepare-channel-response channel_response_prepare
+  phase baseline-channel-response channel_response_turn baseline
   phase update-sibling-candidate update_candidate
   phase canary-sibling-runtime node scripts/e2e/lib/upgrade-survivor/custom-plugin-siblings.mjs assert-canary
   phase candidate-sibling-runtime node scripts/e2e/lib/upgrade-survivor/custom-plugin-siblings.mjs candidate
+  phase candidate-channel-response channel_response_turn candidate
+  phase settle-channel-response channel_response_complete
   run_completed="1"
   echo "Upgrade survivor Docker E2E passed baseline=${baseline_spec} scenario=${SCENARIO} candidate=${candidate_version}."
   exit 0

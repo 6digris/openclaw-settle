@@ -21,6 +21,11 @@ const migrationLabels = {
   failureReport: "session migration failure report",
 };
 const logNames = [
+  "channel-baseline-gateway.log",
+  "channel-candidate-gateway.log",
+  "channel-install.log",
+  "channel-model.log",
+  "channel-transport.log",
   "baseline-install.log",
   "baseline-companion.json",
   "install.log",
@@ -1607,6 +1612,13 @@ function publishedSuccessSummary(artifactRoot, sanitize) {
         "update.json",
         "repair.json",
         "recovery-update.json",
+        ...(snapshot.scenario === "custom-plugin-siblings"
+          ? [
+              "channel-baseline-receipt.json",
+              "channel-candidate-receipt.json",
+              "channel-proof.json",
+            ]
+          : []),
         ...(snapshot.scenario === "workshop-doctor-recovery"
           ? ["workshop-doctor-recovery.json", "baseline-doctor.log", "doctor.log"]
           : []),
