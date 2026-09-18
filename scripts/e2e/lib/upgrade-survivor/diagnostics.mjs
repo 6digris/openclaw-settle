@@ -23,6 +23,8 @@ const migrationLabels = {
 const logNames = [
   "channel-provider-enable.log",
   "channel-identities.json",
+  "channel-baseline-settings.json",
+  "channel-candidate-settings.json",
   "channel-baseline-receipt.json",
   "channel-candidate-receipt.json",
   "channel-baseline-gateway.log",
@@ -1618,6 +1620,8 @@ function publishedSuccessSummary(artifactRoot, sanitize) {
         "recovery-update.json",
         ...(snapshot.scenario === "custom-plugin-siblings"
           ? [
+              "channel-baseline-settings.json",
+              "channel-candidate-settings.json",
               "channel-baseline-receipt.json",
               "channel-candidate-receipt.json",
               "channel-proof.json",

@@ -13,6 +13,59 @@ const read = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
 const write = (name, value) =>
   fs.writeFileSync(path.join(artifacts, name), JSON.stringify(value, null, 2) + "\n");
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
+function assertSyntheticConfig(config, prepared = false) {
+  assert.equal(
+    config.models?.providers?.openai?.baseUrl,
+    "http://127.0.0.1:44210/v1",
+    "Synthetic model endpoint required before provider admission",
+  );
+  assert.equal(
+    config.channels?.clickclack?.baseUrl,
+    "http://127.0.0.1:44211",
+    "Synthetic channel endpoint required",
+  );
+  assert.equal(config.channels?.clickclack?.model, "openai/gpt-5.6-luna");
+  assert.equal(config.agents?.defaults?.model?.primary, "openai/gpt-5.6-luna");
+  assert.equal(config.plugins?.enabled, true, "Fixture plugins must already be enabled");
+  assert(
+    Array.isArray(config.plugins.allow) && config.plugins.allow.length > 0,
+    "Existing restrictive fixture allowlist required",
+  );
+  assert(!config.plugins.allow.includes("*"), "Wildcard fixture admission is forbidden");
+  assert(!(config.plugins.deny ?? []).includes("openai"), "Synthetic provider remains denied");
+  assert(config.plugins.allow.includes("clickclack"), "Installed channel must already be admitted");
+  if (prepared) {
+    assert(
+      config.plugins.allow.includes("openai"),
+      "Synthetic provider missing from pre-baseline allowlist",
+    );
+    assert.equal(
+      config.plugins.entries?.openai?.enabled,
+      true,
+      "Published CLI must enable the admitted provider before baseline",
+    );
+    assert.equal(
+      config.models.catalogRefresh?.enabled,
+      false,
+      "Catalog refresh must be disabled before response startup",
+    );
+    assert.equal(
+      config.update?.checkOnStart,
+      false,
+      "Startup update check must be disabled before response startup",
+    );
+  }
+}
+function responseSettings(config) {
+  return {
+    modelEndpoint: config.models.providers.openai.baseUrl,
+    channelEndpoint: config.channels.clickclack.baseUrl,
+    catalogRefreshEnabled: config.models.catalogRefresh.enabled,
+    startupUpdateCheckEnabled: config.update.checkOnStart,
+    providerEnabled: config.plugins.entries.openai.enabled,
+    providerAllowed: config.plugins.allow.includes("openai"),
+  };
+}
 function projection() {
   const config = read(configPath);
   const install = readPluginInstallRecords().clickclack;
@@ -24,6 +77,9 @@ function projection() {
     channel: config.channels?.clickclack,
     plugin: config.plugins?.entries?.clickclack,
     allow: config.plugins?.allow,
+    deny: config.plugins?.deny,
+    provider: config.plugins?.entries?.openai,
+    update: config.update,
     load: config.plugins?.load,
     installPath: install.installPath,
     sourcePath: install.sourcePath,
@@ -58,12 +114,39 @@ if (mode === "identities") {
     },
     candidate: { sha256: candidate.sha256, buildInfo: candidate.buildInfo },
   });
-} else if (mode === "snapshot") {
+} else if (mode === "prepare") {
+  assert(
+    !fs.existsSync(path.join(artifacts, "channel-before.json")),
+    "Cannot prepare after baseline capture",
+  );
   const config = read(configPath);
-  config.plugins.allow = [...new Set([...(config.plugins.allow ?? []), "clickclack"])];
+  assertSyntheticConfig(config);
+  if (!config.plugins.allow.includes("openai")) {
+    config.plugins.allow.push("openai");
+  }
   config.models.catalogRefresh = { ...config.models.catalogRefresh, enabled: false };
   config.update = { ...config.update, checkOnStart: false };
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+} else if (mode === "assert-prepared") {
+  assertSyntheticConfig(read(configPath), true);
+} else if (mode === "settings") {
+  assert(["baseline", "candidate"].includes(stage));
+  const config = read(configPath);
+  assertSyntheticConfig(config, true);
+  const cliValues = {};
+  for (const key of ["models.catalogRefresh.enabled", "update.checkOnStart"]) {
+    const result = spawnSync("openclaw", ["config", "get", key, "--json"], {
+      encoding: "utf8",
+      timeout: 120000,
+      maxBuffer: 1024 * 1024,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    cliValues[key] = JSON.parse(result.stdout);
+    assert.equal(cliValues[key], false, `Published configuration surface did not confirm ${key}`);
+  }
+  write(`channel-${stage}-settings.json`, { ...responseSettings(config), cliValues });
+} else if (mode === "snapshot") {
+  assertSyntheticConfig(read(configPath), true);
   write("channel-before.json", projection());
 } else if (mode === "preserved") {
   const before = read(path.join(artifacts, "channel-before.json"));
@@ -90,6 +173,10 @@ if (mode === "identities") {
     preservedConfigSha256: digest(JSON.stringify(projection())),
     baselineReceipt: read(path.join(artifacts, "channel-baseline-receipt.json")),
     candidateReceipt: read(path.join(artifacts, "channel-candidate-receipt.json")),
+    responseSettings: {
+      baseline: read(path.join(artifacts, "channel-baseline-settings.json")),
+      candidate: read(path.join(artifacts, "channel-candidate-settings.json")),
+    },
     update: {
       exit: Number(process.env.CHANNEL_UPDATE_EXIT),
       outcome: process.env.CHANNEL_UPDATE_OUTCOME,
@@ -214,6 +301,8 @@ if (mode === "identities") {
     reply,
     socketGeneration: state.socketGeneration,
     modelRequestSha256: digest(modelRequests),
+    history: { expectedNonces, allPresent: true, sha256: digest(history.stdout) },
+    settings: read(path.join(artifacts, `channel-${stage}-settings.json`)),
     at: new Date().toISOString(),
   });
 } else {

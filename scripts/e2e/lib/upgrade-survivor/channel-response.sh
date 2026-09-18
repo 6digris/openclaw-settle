@@ -35,7 +35,9 @@ channel_response_prepare() {
   openclaw_e2e_fixture_plugin_command openclaw -- plugins install "$RUNTIME_ROOT/channel-plugin" --force >"$ARTIFACT_ROOT/channel-install.log" 2>&1
   node scripts/e2e/lib/release-scenarios/assertions.mjs configure-mock-openai "$MOCK_PORT"
   node scripts/e2e/lib/release-user-journey/assertions.mjs configure-clickclack http://127.0.0.1:44211
+  node scripts/e2e/lib/upgrade-survivor/channel-response.mjs prepare
   openclaw_e2e_fixture_plugin_command openclaw -- plugins enable openai >"$ARTIFACT_ROOT/channel-provider-enable.log" 2>&1
+  node scripts/e2e/lib/upgrade-survivor/channel-response.mjs assert-prepared
   node scripts/e2e/lib/upgrade-survivor/channel-response.mjs snapshot
 }
 channel_response_turn() {
@@ -46,6 +48,7 @@ channel_response_turn() {
     node scripts/e2e/lib/upgrade-survivor/worker-cell-package.mjs installed "$(package_root)" "${CANDIDATE_SPEC#file:}"
     node scripts/e2e/lib/upgrade-survivor/channel-response.mjs preserved
   fi
+  node scripts/e2e/lib/upgrade-survivor/channel-response.mjs settings "$stage"
   GATEWAY_LOG="$ARTIFACT_ROOT/channel-$stage-gateway.log"
   start_gateway
   node scripts/e2e/lib/release-user-journey/assertions.mjs wait-clickclack-socket http://127.0.0.1:44211 45
