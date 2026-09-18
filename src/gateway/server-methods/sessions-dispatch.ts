@@ -143,6 +143,7 @@ async function validateDispatchExecutionMode(params: {
       environmentService: params.context.workerEnvironmentService,
       deviceId: params.target.deviceId,
       runtimeId: params.sessionRuntime,
+      executionMode: params.executionMode,
       requirement: params.devicePlacement,
       config: params.context.getRuntimeConfig(),
       currentNode: params.context.nodeRegistry?.get?.(params.target.deviceId),
@@ -304,6 +305,7 @@ export const sessionDispatchHandlers: GatewayRequestHandlers = {
         environmentService: context.workerEnvironmentService,
         requirement: devicePlacement,
         runtimeId: sessionRuntime,
+        executionMode,
         config: cfg,
         getPendingDispatchCount: (deviceId) =>
           dispatchService.getPendingDeviceDispatchCount?.(deviceId, sessionId) ?? 0,
@@ -438,6 +440,7 @@ export const sessionDispatchHandlers: GatewayRequestHandlers = {
           environmentService: context.workerEnvironmentService,
           deviceId: candidates[attempt]!,
           runtimeId: sessionRuntime,
+          executionMode,
           requirement: devicePlacement,
           config: cfg,
           currentNode: context.nodeRegistry.get(candidates[attempt]!),

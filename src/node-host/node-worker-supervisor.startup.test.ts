@@ -1,6 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  WORKER_EXECUTION_AUTHORITY_PROTOCOL_FEATURE,
+  WORKER_LINEAGE_START_PROTOCOL_FEATURE,
+} from "../../packages/gateway-protocol/src/schema/worker-admission.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { resetSecretRedactionRegistryForTest } from "../logging/secret-redaction-registry.test-support.js";
@@ -39,6 +43,86 @@ function launchInput(workspaceDir: string, launchId: string, prompt = "success")
 }
 
 describe("node worker startup", () => {
+  it.runIf(process.platform === "linux" || process.platform === "darwin").each([
+    { build: "current", lineage: true },
+    { build: "released", lineage: false },
+    { build: "execution-authority-only", lineage: false },
+  ])(
+    "preserves the $build worker's start envelope and process group",
+    async ({ build, lineage }) => {
+      const { bundleRoot, supervisor, workspaceDir } = fixture();
+      const input = launchInput(workspaceDir, `start-contract-${build}`);
+      input.descriptor.admission.handshake.openclawVersion = "2026.9.4";
+      if (!lineage) {
+        input.descriptor.admission.handshake.protocolFeatures =
+          input.descriptor.admission.handshake.protocolFeatures.filter(
+            (feature) =>
+              feature !== WORKER_LINEAGE_START_PROTOCOL_FEATURE &&
+              (build !== "released" || feature !== WORKER_EXECUTION_AUTHORITY_PROTOCOL_FEATURE),
+          );
+      }
+      const reportPath = path.join(workspaceDir, "start-contract.json");
+      fs.writeFileSync(
+        path.join(
+          bundleRoot,
+          input.gatewayNamespace,
+          "bundles",
+          input.expectedBundleHash,
+          "worker.mjs",
+        ),
+        `import fs from "node:fs";
+import { spawnSync } from "node:child_process";
+import { createInterface } from "node:readline";
+const started = new Promise(resolve => process.once("message", message => {
+  const keys = Object.keys(message).sort();
+  const expected = ${JSON.stringify(lineage ? ["lineageFds", "type"] : ["type"])};
+  if (message.type !== "openclaw-worker-start-v1" || JSON.stringify(keys) !== JSON.stringify(expected)) {
+    process.stderr.write("unsupported start envelope");
+    process.exit(24);
+  }
+  if (${lineage}) for (const fd of message.lineageFds) fs.fstatSync(fd);
+  const group = spawnSync("ps", ["-p", String(process.pid), "-o", "pgid="], { encoding: "utf8" });
+  if (group.status !== 0) process.exit(25);
+  fs.writeFileSync(${JSON.stringify(reportPath)}, JSON.stringify({ pid: process.pid, pgid: Number(group.stdout.trim()), keys }));
+  resolve();
+}));
+await started;
+const lines = createInterface({ input: process.stdin });
+lines.once("line", line => {
+  const turn = JSON.parse(line);
+  fs.writeSync(1, JSON.stringify({ type: "result", turnId: turn.turnId, retainWorker: false,
+    result: { status: "completed", transcriptLeafId: "leaf-1", transcriptNextSeq: 2 } }) + "\\n");
+  process.exit(0);
+});`,
+      );
+      let adapterPid: number | undefined;
+      const captureAdapter = observeNodeWorkerAdapters((adapter) => {
+        adapterPid = adapter.pid;
+      });
+      try {
+        await supervisor.launch(input, TEST_WORKER_ENDPOINT);
+        expect(await waitForTerminal(supervisor, input.launchId)).toMatchObject({
+          state: "completed",
+        });
+        const report = JSON.parse(fs.readFileSync(reportPath, "utf8")) as {
+          pid: number;
+          pgid: number;
+          keys: string[];
+        };
+        expect(report.keys).toEqual(lineage ? ["lineageFds", "type"] : ["type"]);
+        expect(report.pgid).toBe(adapterPid);
+        if (lineage) {
+          expect(report.pid).not.toBe(adapterPid);
+        } else {
+          expect(report.pid).toBe(adapterPid);
+        }
+      } finally {
+        captureAdapter.mockRestore();
+        await supervisor.close();
+      }
+    },
+  );
+
   it("does not open or signal a child after markRunning observes its terminal receipt", async () => {
     const capacities: Array<{ total: number; available: number }> = [];
     const { supervisor, workspaceDir, env } = fixture({

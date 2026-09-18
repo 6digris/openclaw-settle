@@ -1,4 +1,5 @@
 import { isGatewayLoopbackHost } from "../../packages/gateway-client/src/websocket-transport.js";
+import { WORKER_LINEAGE_START_PROTOCOL_FEATURE } from "../../packages/gateway-protocol/src/schema/worker-admission.js";
 import { createChildAdapter } from "../process/supervisor/adapters/child.js";
 import { supportsNodeWorkerProcessOwner } from "../process/supervisor/service-child-protocol.js";
 import { createServiceChildRelayAdapter } from "../process/supervisor/service-child-relay-host.js";
@@ -82,7 +83,13 @@ export async function prepareNodeWorkerLaunchTransport(
           : undefined;
       },
     } as const;
-    if (supportsNodeWorkerProcessOwner()) {
+    // Released v2026.9.4 workers require type-only IPC and must lead their own process group.
+    if (
+      supportsNodeWorkerProcessOwner() &&
+      options.descriptor.admission.handshake.protocolFeatures.includes(
+        WORKER_LINEAGE_START_PROTOCOL_FEATURE,
+      )
+    ) {
       const { adapter, ready } = await createServiceChildRelayAdapter({
         ...workerOptions,
         command: process.execPath,
