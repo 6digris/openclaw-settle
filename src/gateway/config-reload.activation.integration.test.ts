@@ -1,6 +1,7 @@
 // Keep provider/model dependencies controlled while exercising the real config reloader.
 // oxfmt-ignore
 import { cleanupPreparedModelRuntimeHarness, getPreparedModelRuntimeMocks, resetPreparedModelRuntimeHarness } from "../agents/prepared-model-runtime.test-harness.js";
+import chokidar from "chokidar";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { resolveApiKeyForProfile } from "../agents/auth-profiles/oauth.js";
@@ -34,6 +35,10 @@ import {
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
 import { startGatewayConfigReloader } from "./config-reload.js";
+import {
+  refreshModelRuntimeAfterHotReload,
+  resolveReloadAgentIds,
+} from "./server-reload-model-runtime-scope.js";
 let state: OpenClawTestState;
 beforeEach(async () => {
   state = await createOpenClawTestState({ label: "activation-reloader" });
@@ -46,9 +51,14 @@ afterEach(async ({ task }) => {
   await cleanupPreparedModelRuntimeHarness(state, task.result?.state === "fail");
 });
 describe("setup activation reload ownership", () => {
-  it.each(["superseded", "runtime-failed"] as const)(
+  it.each(["superseded", "watcher-echo", "runtime-failed"] as const)(
     "the real reloader preserves the current connection after %s activation",
     async (outcome) => {
+      const watcher =
+        outcome === "watcher-echo" ? new chokidar.FSWatcher({ usePolling: true }) : undefined;
+      if (watcher) {
+        vi.spyOn(chokidar, "watch").mockReturnValue(watcher);
+      }
       const previous: OpenClawConfig = {
         gateway: { mode: "local" },
         plugins: { slots: { memory: "none" } },
@@ -110,8 +120,33 @@ describe("setup activation reload ownership", () => {
       let promotionObserved = false;
       await state.writeConfig(previous);
       await refreshPreparedModelRuntimeSnapshots(previous);
+      const buildStarted = createDeferred();
+      const releaseBuild = createDeferred();
+      if (watcher) {
+        getPreparedModelRuntimeMocks().resolveAmbientCredentials.mockImplementationOnce(
+          async () => {
+            buildStarted.resolve();
+            await releaseBuild.promise;
+            return {};
+          },
+        );
+      }
       const initial = await readConfigFileSnapshot();
       const reloadError = vi.fn();
+      const applyRuntime: Parameters<typeof startGatewayConfigReloader>[0]["onHotReload"] = async (
+        plan,
+        config,
+        ownership,
+      ) => {
+        // Match the managed reloader: committed model rebuilds finish across watcher echoes.
+        ownership.markRuntimeCommitted(config, plan);
+        await refreshModelRuntimeAfterHotReload({
+          config,
+          agentIds: resolveReloadAgentIds(plan.changedPaths),
+          pluginMetadataSnapshot: undefined,
+        });
+        return "applied";
+      };
       const reloader = startGatewayConfigReloader({
         initialConfig: initial.config,
         initialCompareConfig: initial.sourceConfig,
@@ -148,18 +183,8 @@ describe("setup activation reload ownership", () => {
           }
           return { runtimeConfig, compareConfig: sourceConfig };
         },
-        onHotReload: async (plan, config, ownership) => {
-          await refreshPreparedModelRuntimeSnapshots(config, {
-            isPublicationCurrent: ownership.isCurrent,
-          });
-          ownership.markRuntimeCommitted(config, plan);
-          return "applied";
-        },
-        onNoopConfigCommit: async (_plan, config, ownership) => {
-          await refreshPreparedModelRuntimeSnapshots(config, {
-            isPublicationCurrent: ownership.isCurrent,
-          });
-        },
+        onHotReload: applyRuntime,
+        onNoopConfigCommit: applyRuntime,
         onRestart: () => {
           throw new Error("fixture route must hot reload");
         },
@@ -205,6 +230,11 @@ describe("setup activation reload ownership", () => {
           configTarget,
           config: candidate,
         });
+        if (watcher) {
+          await buildStarted.promise;
+          watcher.emit("change", state.configPath);
+          releaseBuild.resolve();
+        }
         if (outcome === "runtime-failed") {
           await expect((await applied.promise).result).resolves.toBe("failed");
           expect(
@@ -270,7 +300,9 @@ describe("setup activation reload ownership", () => {
           ),
         ).toBe("openai/fixture-newer");
       } finally {
+        releaseBuild.resolve();
         await reloader.stop();
+        vi.restoreAllMocks();
       }
     },
   );
