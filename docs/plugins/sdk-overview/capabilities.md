@@ -113,3 +113,100 @@ split provider jobs before their upload-size cap as well as their request-count
 cap. The provider must return one embedding per input chunk in the same order as
 `batch.chunks`; omit the flag when the provider expects file-local batches or
 cannot preserve input ordering across a larger source-wide job.
+
+## Typed judgments (contract version 1)
+
+`api.registerJudgmentProvider({ id, contractVersion: 1, isReady, evaluate })` registers
+an optional decision provider, separate from conversational model providers and
+agent tools. Declare the ID in manifest `contracts.judgmentProviders`; duplicate
+IDs are rejected. Registration and optional `isReady()` must be local, synchronous,
+and network-free. Import types from `openclaw/plugin-sdk/judgments`.
+
+Consumers call `api.runtime.judgments.evaluate(batch, { purpose, rubricVersion,
+timeoutMs, signal })`. State and rubric entries are finite JSON. Choices preserve
+all offered labels and probabilities; ordered scores are fractional expected
+zero-based positions, with index-aligned probabilities; Boolean answers carry
+`probabilityTrue`. The host validates the entire batch atomically (numerical
+tolerance 0.001). Provider confidence is a provider-specific metric, not calibrated
+correctness. Results include model, optional token usage, and local rubric and
+runtime-generation provenance.
+
+Absent `judgments.provider` means off. Selecting a provider makes it available to
+supported consumers. Consumers own their feature activation and evidence selection;
+provider configuration alone does not schedule background work. Evidence sent to the
+selected provider may incur its normal usage charges. Plugin disablement wins;
+installing a tool or credential alone does not select a provider. Vendor adapters
+own transport and model-specific translation; no vendor is a core dependency.
+
+### Calling from a third-party plugin
+
+Like `api.runtime.llm.complete`, `api.runtime.judgments.evaluate` lets a plugin
+consume a host-configured provider without handling its credentials. The consumer
+does not need the provider's SDK, API key, SecretRef, or a provider registration.
+Only the provider plugin registers `contracts.judgmentProviders` and owns its
+vendor transport and prepared credential input. This does not make conversational
+model credentials interchangeable with judgment-provider credentials.
+
+The operator must enable and configure the provider plugin and select
+`judgments.provider`. Third-party plugins own their feature's activation, evidence
+selection, and permission to send that evidence. Having credentials alone must not activate
+background collection or spending.
+
+Call from a live plugin tool, hook, or other owned operation, carrying its
+cancellation signal:
+
+```ts
+const outcome = await api.runtime.judgments.evaluate(
+  {
+    state: { message: "Can you help me with this?", directlyAddressed: true },
+    questions: {
+      respond: {
+        type: "boolean",
+        instructions: "Is this message asking the assistant to respond?",
+      },
+    },
+  },
+  {
+    purpose: "example-plugin.response-eligibility",
+    rubricVersion: "1",
+    timeoutMs: 1500,
+    signal,
+  },
+);
+```
+
+An `ok` outcome contains validated answers, model/usage, and provider/rubric/runtime
+provenance. It is evidence for the consumer's decision, not permission to send a
+message or perform another effect. An `unavailable` outcome carries a reason for
+the consumer's existing fallback. Do not catch cancellation or closed-authority
+errors and turn them into fallback work.
+
+Consumers share the selected provider's host-owned concurrency, circuit, and
+credential-refresh lifecycle; each plugin does not create its own provider client.
+No credential is returned to the consumer. Provider setup and refresh use the
+same prepared-secret path whether the caller is built-in or third-party.
+
+The host admits at most four requests, with no queue and a five-second maximum.
+Consumers choose their own bounded deadlines and fallback policy.
+Three unhealthy responses open
+a ten-second circuit; recovery admits one trial. Retry-After is bounded to one
+minute. Auth errors latch until the prepared-secret or configuration generation
+changes. There are no host retries or health probes.
+
+Caller cancellation and closed consumer authority reject: do not start fallback.
+Provider retirement returns unavailable while a live consumer can fall back.
+Providers must honor the composed abort signal and physically settle transport
+and body cleanup; an uncooperative provider stays owned and fenced by normal
+failed-drain recovery. Old generation outcomes cannot update new health.
+
+Manifest capability credentials use `configContracts.secretInputs` and authored
+SecretRefs. `getPreparedPluginSecretInput(pluginId, path)` from
+`openclaw/plugin-sdk/secret-input-runtime` reads only a prepared, available snapshot;
+it never resolves a cold reference or consults ambient environment credentials.
+Refresh with `secrets.reload`; capability failure does not retain an old key.
+
+`plugins.inspect` reports configuration, credential readiness, current callability,
+last success, usage, latency, and bounded unavailable/consumer outcome counts.
+After deciding, consumers call `api.runtime.judgments.recordOutcome("accepted" |
+"fallback" | "no-change")`; no evidence is retained in these counters. Counts are
+instance-local diagnostics, not durable audit records or write authority.

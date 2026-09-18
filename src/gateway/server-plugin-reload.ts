@@ -5,6 +5,7 @@ import { validateConfiguredBindings } from "../channels/plugins/configured-bindi
 import { getRuntimeConfig } from "../config/io.js";
 import { isTruthyEnvValue } from "../infra/env.js";
 import { formatErrorMessage } from "../infra/errors.js";
+import { prepareJudgmentProviderReload } from "../judgments/runtime.js";
 import type { createSubsystemLogger } from "../logging/subsystem.js";
 import { prepareGatewayPluginMetadataSnapshotPublication } from "../plugins/current-plugin-metadata-snapshot.js";
 import type { PluginHookGatewayCronService } from "../plugins/hook-types.js";
@@ -42,7 +43,10 @@ import {
   createPluginReloadCleanup,
   createPluginReloadDiagnostics,
 } from "./server-plugin-reload-cleanup.js";
-import { createPluginReloadRecovery } from "./server-plugin-reload-recovery.js";
+import {
+  createPluginReloadRecovery,
+  resolvePluginReloadReplacementIds,
+} from "./server-plugin-reload-recovery.js";
 import {
   GatewayConfigReloadSupersededError,
   type GatewayReloadHandlerParams,
@@ -98,20 +102,11 @@ export async function reloadGatewayPlugins(
   const operationId = params.pluginLifecycle?.operationId ?? randomUUID();
   const requestedIds = new Set(params.pluginLifecycle?.pluginIds ?? []);
   const { warnings, recordWarning, recordCleanup, cleanup } = createPluginReloadDiagnostics(log);
-  const replacePluginIds = new Set([...requestedIds, ...(params.reloadPluginIds ?? [])]);
-  for (const record of previousRegistry.plugins) {
-    if (
-      params.changedPaths.some(
-        (key) =>
-          key === `plugins.entries.${record.id}` ||
-          key.startsWith(`plugins.entries.${record.id}.`) ||
-          key === `plugins.installs.${record.id}` ||
-          key.startsWith(`plugins.installs.${record.id}.`),
-      )
-    ) {
-      replacePluginIds.add(record.id);
-    }
-  }
+  const replacePluginIds = resolvePluginReloadReplacementIds(
+    previousRegistry,
+    [...requestedIds, ...(params.reloadPluginIds ?? [])],
+    params.changedPaths,
+  );
   let phase: "prepare" | "drain" | "activate" | "dispose" = "prepare";
   let previousStopStarted = false;
   let previousHooksStopped = false;
@@ -120,6 +115,7 @@ export async function reloadGatewayPlugins(
   let restored = false;
   let candidateServices: PluginServicesHandle | undefined;
   let loaded: ReturnType<typeof prepareGatewayPluginLoad> | undefined;
+  let judgmentReplacement: ReturnType<typeof prepareJudgmentProviderReload> | undefined;
   let memoryReplacement: ReturnType<typeof prepareMemoryRuntimeReload> | undefined;
   const changedPluginIds = new Set(replacePluginIds);
   let resourceHandoffIds = new Set<string>();
@@ -273,6 +269,7 @@ export async function reloadGatewayPlugins(
     phase = "drain";
     replacement.setReloadStatus({ phase: "reloading", pluginIds: [...changedPluginIds] });
     channels.pause();
+    judgmentReplacement = prepareJudgmentProviderReload(previousRegistry, changedPluginIds);
     for (const sidecar of runtimeState.gatewayLifetimeSidecars.snapshot()) {
       const prepared = sidecar.preparePluginReload?.({
         previousRegistry,
@@ -636,7 +633,9 @@ export async function reloadGatewayPlugins(
             );
           }
           if (recoveryErrors.length === 0) {
-            // Clear every independent pause, but reopen channel admission only after restoration.
+            if (!previousStopStarted) {
+              await judgmentReplacement?.rollback(restartDrainSignal);
+            }
             channels.release("rollback");
             await startReplacedChannels(restoredRegistry, recoveryErrors);
           }

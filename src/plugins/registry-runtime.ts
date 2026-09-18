@@ -2,6 +2,7 @@ import { createHostChannelInboundEventContextBuilder } from "../channels/inbound
 import { registerChannelIngressHostOwner } from "../channels/message-access/ingress-host-owner.js";
 import { createChannelIngressDrain } from "../channels/message/ingress-drain.js";
 import { createChannelIngressQueue } from "../channels/message/ingress-queue.js";
+import { getRuntimeConfig } from "../config/config.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import {
   createPluginBlobStore,
@@ -17,6 +18,7 @@ import { formatPluginTrustRefusal } from "./plugin-trust.js";
 import {
   capturePluginLifecycleAuthority,
   getPluginRecordRegistry,
+  getPluginRegistryResourceOwner,
   isPluginRecordActive,
   isPluginRegistryPreparing,
   revokePluginRecord,
@@ -27,6 +29,7 @@ import {
   bindGatewayContextResolver,
   getCanonicalGatewayContextResolver,
   getGatewayContextResolver,
+  getPluginRuntimeGatewayRequestScope,
   withPluginRuntimePluginScope,
   withPluginRuntimeRegistryScope,
 } from "./runtime/gateway-request-scope.js";
@@ -166,6 +169,16 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
       return cached;
     }
     const currentRegistry = () => getPluginRecordRegistry(registry, record);
+    const currentJudgmentRegistry = () => {
+      const owner = currentRegistry();
+      const invocationView = getPluginRuntimeGatewayRequestScope()?.pluginRegistry;
+      // An admitted prepared view may borrow a Gateway provider. Keep that exact
+      // composition without accepting an unrelated ambient registry or global owner.
+      return invocationView?.plugins.includes(record) &&
+        getPluginRegistryResourceOwner(invocationView) === owner
+        ? invocationView
+        : owner;
+    };
     const resolveDelegatedRuntime = (ownerPluginId: string) => {
       const owner = currentRegistry().plugins.find((entry) => entry.id === ownerPluginId);
       if (!owner) {
@@ -331,6 +344,31 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
         }
         if (prop === "channel") {
           return resolveRecordChannelRuntime(record, true);
+        }
+        if (prop === "judgments") {
+          return {
+            recordOutcome: async (outcome) => {
+              assertRuntimeCurrent();
+              const { recordJudgmentOutcome } = await import("../judgments/runtime.js");
+              assertRuntimeCurrent();
+              await recordJudgmentOutcome(outcome, currentJudgmentRegistry());
+            },
+            evaluate: async (batch, options) => {
+              assertRuntimeCurrent();
+              const { evaluateJudgmentInRegistry } = await import("../judgments/runtime.js");
+              assertRuntimeCurrent();
+              const result = await evaluateJudgmentInRegistry(
+                batch,
+                options,
+                currentJudgmentRegistry(),
+                getRuntimeConfig(),
+                record.id,
+              );
+              assertRuntimeCurrent();
+              options.signal.throwIfAborted();
+              return result;
+            },
+          } satisfies PluginRuntime["judgments"];
         }
         if (prop === "llm") {
           const llm = getRuntimeProperty();

@@ -37,6 +37,10 @@ import {
   verifySharedGatewayCacheOwnership,
 } from "./server-plugin-reload.cache.test-support.js";
 import {
+  verifyJudgmentSelectorRetirement,
+  verifyJudgmentEarlyReloadRecovery,
+} from "./server-plugin-reload.judgments.test-support.js";
+import {
   verifyManagedCandidateRetirement,
   verifyExpandedReplacementTargets,
   verifyPreCommitRetirementOwnership,
@@ -290,6 +294,9 @@ it.each(["prepare", "committed"] as const)(
   "preserves the operation receipt when a %s failure has an unreadable message",
   (boundary) => verifyMalformedReloadFailureReceipt(createRecoveryFixture, boundary),
 );
+
+it("retires a retained judgment provider before sidecar drains when its selector is disabled", () =>
+  verifyJudgmentSelectorRetirement(createRecoveryFixture));
 
 it.each(["held-close", "failed-close"] as const)(
   "drains retained memory before Gateway provider replacement (%s)",
@@ -995,4 +1002,9 @@ it.for(["replace", "remove", "disable"] as const)(
       }
     });
   },
+);
+
+it.each(["prepare", "drain", "discovery"] as const)(
+  "recovers judgment admission after early %s failure",
+  (boundary) => verifyJudgmentEarlyReloadRecovery(createRecoveryFixture, boundary),
 );

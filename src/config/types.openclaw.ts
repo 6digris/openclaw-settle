@@ -244,6 +244,10 @@ export type OpenClawConfig = {
   cloudWorkers?: CloudWorkersConfig;
   /** Experimental desktop sources owned by the gateway host. */
   desktop?: DesktopConfig;
+  /** Optional typed judgment provider, used automatically by supported features when configured. */
+  judgments?: {
+    provider?: string;
+  };
   /** Memory indexing/search configuration. */
   memory?: MemoryConfig;
   /** MCP client/server and Codex MCP approval configuration. */

@@ -90,3 +90,28 @@ export function createPluginReloadRecovery(
     },
   };
 }
+
+/** Select old owners whose registrations cannot be retained by this reload. */
+export function resolvePluginReloadReplacementIds(
+  previousRegistry: PluginRegistry,
+  requestedIds: readonly string[],
+  changedPaths: readonly string[],
+): Set<string> {
+  const replacePluginIds = new Set(requestedIds);
+  for (const record of previousRegistry.plugins) {
+    if (
+      // End the capability generation even if onStartup would retain its plugin.
+      changedPaths.some(
+        (key) =>
+          (record.contracts?.judgmentProviders?.length && /^judgments(?:\.|$)/.test(key)) ||
+          key === `plugins.entries.${record.id}` ||
+          key.startsWith(`plugins.entries.${record.id}.`) ||
+          key === `plugins.installs.${record.id}` ||
+          key.startsWith(`plugins.installs.${record.id}.`),
+      )
+    ) {
+      replacePluginIds.add(record.id);
+    }
+  }
+  return replacePluginIds;
+}

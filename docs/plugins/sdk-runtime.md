@@ -278,3 +278,10 @@ Every section heading and namespace anchor from the previous single-page version
 - [Plugin internals](/plugins/architecture) — capability model and registry
 - [SDK entry points](/plugins/sdk-entrypoints) — `definePluginEntry` options
 - [SDK overview](/plugins/sdk-overview) — subpath reference
+
+## Typed judgment runtime
+
+`api.runtime.judgments` is a closure-bound optional capability for small typed
+Choice, ordered Score, and Boolean-probability batches. Retained handles reject
+after consumer retirement. See [typed judgments](/plugins/sdk-overview/capabilities#typed-judgments-contract-version-1)
+for provider selection, lifecycle, failure handling, limits, and diagnostics.

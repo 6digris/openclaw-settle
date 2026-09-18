@@ -1,0 +1,8 @@
+{
+  "id": "judgment-probe",
+  "name": "Synthetic judgment proof",
+  "activation": {"onStartup": true},
+  "contracts": {"judgmentProviders": ["synthetic"]},
+  "configContracts": {"secretInputs": {"paths": [{"path": "apiKey", "expected": "string", "ownerKind": "capability"}]}},
+  "configSchema": {"type":"object","properties":{"apiKey":{},"generation":{"type":"integer"}},"additionalProperties":false}
+}

@@ -1,6 +1,8 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { registerContextEngineInRegistry } from "../context-engine/registry.js";
+import { JudgmentProviderHost } from "../judgments/provider-host.js";
 import { registerPluginInteractiveHandlerInRegistry } from "./interactive-registry.js";
+import { getPluginInstance } from "./plugin-instance-scope.js";
 import type { PluginRegistryState } from "./registry-state.js";
 import type { PluginRecord } from "./registry-types.js";
 import { defaultSlotIdForKey } from "./slots.js";
@@ -8,6 +10,46 @@ import type { OpenClawPluginApi, PluginRegistrationMode } from "./types.js";
 
 export function createCapabilityRegistrars(state: PluginRegistryState) {
   const { registry, reportRegistrationError, reportRegistrationWarning } = state;
+
+  const registerJudgmentProvider = (
+    record: PluginRecord,
+    provider: Parameters<OpenClawPluginApi["registerJudgmentProvider"]>[0],
+  ) => {
+    const id = normalizeOptionalString(provider?.id);
+    if (
+      !id ||
+      provider.contractVersion !== 1 ||
+      typeof provider.evaluate !== "function" ||
+      (provider.isReady !== undefined && typeof provider.isReady !== "function")
+    ) {
+      reportRegistrationError(record, "invalid version 1 judgment provider contract");
+      return;
+    }
+    if (!record.contracts?.judgmentProviders?.includes(id)) {
+      reportRegistrationError(
+        record,
+        "judgment provider must declare contracts.judgmentProviders ownership",
+      );
+      return;
+    }
+    if (registry.judgmentProviders.some((entry) => entry.host.provider.id === id)) {
+      reportRegistrationError(record, `judgment provider already registered: ${id}`);
+      return;
+    }
+    const host = new JudgmentProviderHost(provider, record);
+    registry.judgmentProviders.push({ pluginId: record.id, host });
+    record.services.push(`judgments:${id}`);
+    getPluginInstance(record)?.lifecycle.onDispose(() => host.stop());
+    // The service is a physical-settlement owner. Reload also closes admission
+    // before earlier sidecar and memory drains can wait on judgment work.
+    registry.services.push({
+      pluginId: record.id,
+      id: `judgments:${id}`,
+      origin: record.origin,
+      source: record.source,
+      service: { id: `judgments:${id}`, start() {}, stop: () => host.stop() },
+    });
+  };
 
   const registerDetachedTaskRuntime = (
     record: PluginRecord,
@@ -115,6 +157,7 @@ export function createCapabilityRegistrars(state: PluginRegistryState) {
   };
 
   return {
+    registerJudgmentProvider,
     registerDetachedTaskRuntime,
     registerInteractiveHandler,
     registerContextEngine,

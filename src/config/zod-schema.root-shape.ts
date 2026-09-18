@@ -37,6 +37,11 @@ import { CommandsSchema, MessagesSchema, SessionSchema } from "./zod-schema.sess
 import { TelemetryConfigSchema } from "./zod-schema.telemetry.js";
 
 export const OpenClawSchemaShape = {
+  judgments: z
+    .strictObject({
+      provider: z.string().trim().min(1).max(128).optional(),
+    })
+    .optional(),
   $schema: z.string().optional(),
   meta: z
     .strictObject({

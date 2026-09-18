@@ -227,6 +227,14 @@ const GATEWAY_STARTUP_ACTIVATION_POLICIES: readonly {
   matches: (params: GatewayStartupActivationParams) => boolean;
 }[] = [
   {
+    policy: "implicit-external",
+    matches: ({ manifest, config }) =>
+      Boolean(
+        config.judgments?.provider &&
+        manifest?.contracts?.judgmentProviders?.includes(config.judgments.provider),
+      ),
+  },
+  {
     policy: "harness",
     matches: ({ plugin, requiredAgentHarnessRuntimes }) =>
       plugin.startup.agentHarnesses.some((runtime) => requiredAgentHarnessRuntimes.has(runtime)),

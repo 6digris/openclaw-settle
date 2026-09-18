@@ -418,6 +418,10 @@ export type PluginRegistry = {
   agentHarnesses: PluginAgentHarnessRegistration[];
   pluginRuntimeArtifacts: Map<string, ResolvedPluginRuntimeArtifact>;
   compactionProviders: RegisteredCompactionProvider[];
+  judgmentProviders: Array<{
+    pluginId: string;
+    host: import("../judgments/provider-host.js").JudgmentProviderHost;
+  }>;
   detachedTaskRuntimes: DetachedTaskLifecycleRuntimeRegistration[];
   legacyInternalHooks: PluginLegacyInternalHookRegistration[];
   memoryCapabilities: MemoryPluginCapabilityRegistration[];

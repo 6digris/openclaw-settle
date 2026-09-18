@@ -2,6 +2,7 @@ import { projectConfigOntoRuntimeSourceSnapshot } from "../config/runtime-source
 import { projectRuntimeChangesOntoSource } from "../config/source-value-projection.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { adoptRuntimeContextEngineRegistrations } from "../context-engine/registry.js";
+import { adoptRuntimeJudgmentProviders } from "../judgments/registry-adoption.js";
 import {
   listLoadedRuntimePluginIds,
   listRuntimePluginIdsFromRegistry,
@@ -169,7 +170,14 @@ function adoptAgentRuntimeRegistrations(
       : pluginRegistry;
   const registry = bindPluginRegistryResourceOwner(
     adoptRuntimeWidgetPresenterRegistrations(
-      adoptRuntimeContextEngineRegistrations(memoryRegistry, activeRegistry),
+      adoptRuntimeContextEngineRegistrations(
+        config &&
+          params.allowGatewaySubagentBinding === true &&
+          (params.env === undefined || params.env === process.env)
+          ? adoptRuntimeJudgmentProviders(memoryRegistry, activeRegistry, config)
+          : memoryRegistry,
+        activeRegistry,
+      ),
       activeRegistry,
     ),
     pluginRegistry,
