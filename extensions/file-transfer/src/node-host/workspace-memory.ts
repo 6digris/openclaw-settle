@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -83,12 +84,10 @@ function createWorkspaceCommand(
         await started;
         io.signal.throwIfAborted();
         if (kind === "skills" && params.operation === "readResources") {
-          const policy = asOptionalRecord(params.resourceReadPolicy);
-          const pluginConfig = asOptionalRecord(policy?.pluginConfig);
-          if (typeof policy?.nodeId !== "string" || !pluginConfig) {
-            throw new Error("Skill bundle requires a Gateway file read policy");
-          }
-          const nodeId = policy.nodeId;
+          const assertFileAccess = createSkillFileAccessAssertion(
+            params.resourceReadPolicy,
+            io.signal,
+          );
           // SAFETY: The same-version adapter sends the native Skill; request admission checked its root.
           const input = JSON.parse(request.request) as {
             skill: Parameters<typeof readWorkspaceSkillResources>[0];
@@ -96,23 +95,7 @@ function createWorkspaceCommand(
           };
           const files = await readWorkspaceSkillResources(input.skill, {
             allowMissingRoot: input.allowMissingRoot,
-            assertFileAccess(requestedPath, canonicalPath) {
-              io.signal.throwIfAborted();
-              for (const filePath of new Set([requestedPath, canonicalPath])) {
-                const decision = evaluateFileReadPolicySnapshot({
-                  nodeId,
-                  pluginConfig,
-                  path: filePath,
-                });
-                if (
-                  !decision.ok ||
-                  decision.reason === "ask-always" ||
-                  (!decision.followSymlinks && requestedPath !== canonicalPath)
-                ) {
-                  throw new Error("Skill resource is denied by the node file read policy");
-                }
-              }
-            },
+            assertFileAccess,
           });
           const bytes = Buffer.from(`${JSON.stringify(files)}\n`);
           if (maxReplyBytes !== undefined && bytes.byteLength > maxReplyBytes) {
@@ -158,16 +141,47 @@ function createWorkspaceCommand(
           } else {
             child.stdin.end(request.request);
           }
+          const discoveryChunks: Buffer[] | undefined =
+            kind === "skills" && params.operation === "discovery" ? [] : undefined;
+          const replyLimit = discoveryChunks ? (maxReplyBytes ?? 100 * 1024 * 1024) : maxReplyBytes;
           let bytesSent = 0;
           for await (const bytes of child.stdout) {
             io.signal.throwIfAborted();
             bytesSent += bytes.byteLength;
-            if (!request.watch && maxReplyBytes !== undefined && bytesSent > maxReplyBytes) {
+            if (!request.watch && replyLimit !== undefined && bytesSent > replyLimit) {
               throw new Error("Workspace response exceeds the node file policy byte limit");
             }
-            await io.frames.send(bytes);
+            if (discoveryChunks) {
+              discoveryChunks.push(bytes);
+            } else {
+              await io.frames.send(bytes);
+            }
           }
           await exited;
+          if (discoveryChunks) {
+            const bytes = Buffer.concat(discoveryChunks, bytesSent);
+            const sources = asOptionalRecord(JSON.parse(bytes.toString("utf8")));
+            const assertFileAccess = createSkillFileAccessAssertion(
+              params.resourceReadPolicy,
+              io.signal,
+            );
+            for (const key of ["entries", "executionEntries"] as const) {
+              const entries = sources?.[key];
+              if (!Array.isArray(entries)) {
+                throw new Error("Invalid Skill discovery result");
+              }
+              for (const entry of entries) {
+                const filePath = asOptionalRecord(asOptionalRecord(entry)?.skill)?.filePath;
+                if (typeof filePath !== "string" || !path.isAbsolute(filePath)) {
+                  throw new Error("Invalid Skill discovery file path");
+                }
+                assertFileAccess(filePath, await fs.realpath(filePath));
+              }
+            }
+            // Reject the whole result before any metadata or derived status crosses the boundary.
+            io.signal.throwIfAborted();
+            await io.frames.send(bytes);
+          }
           return JSON.stringify({ ok: true });
         } finally {
           io.signal.removeEventListener("abort", stop);
@@ -180,5 +194,27 @@ function createWorkspaceCommand(
         unsubscribe();
       }
     },
+  };
+}
+
+function createSkillFileAccessAssertion(input: unknown, signal: AbortSignal) {
+  const policy = asOptionalRecord(input);
+  const pluginConfig = asOptionalRecord(policy?.pluginConfig);
+  if (typeof policy?.nodeId !== "string" || !pluginConfig) {
+    throw new Error("Skill access requires a Gateway file read policy");
+  }
+  const nodeId = policy.nodeId;
+  return (requestedPath: string, canonicalPath: string) => {
+    signal.throwIfAborted();
+    for (const filePath of new Set([requestedPath, canonicalPath])) {
+      const decision = evaluateFileReadPolicySnapshot({ nodeId, pluginConfig, path: filePath });
+      if (
+        !decision.ok ||
+        decision.reason === "ask-always" ||
+        (!decision.followSymlinks && requestedPath !== canonicalPath)
+      ) {
+        throw new Error("Skill resource is denied by the node file read policy");
+      }
+    }
   };
 }

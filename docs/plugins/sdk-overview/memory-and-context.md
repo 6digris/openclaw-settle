@@ -119,7 +119,10 @@ Gateway retains the existing installation policy check. Both sides must explicit
 enable the command; file grants must cover source roots and the workspace Skills
 directory. A read grant alone does not authorize an installation command.
 
-Workspace paths are mapped to `remoteRoot`. Other configured source directories
-must exist at the same paths on the node. Provision bundled/plugin Skills there
-and include the native dependency bin directory in the Harness PATH. This adapter
-does not yet implement Skill source publication or ClawHub update/removal.
+Workspace-owned Skill roots are mapped to `remoteRoot`; their files and executable
+dependencies live on the Harness. Include the native dependency bin directory in
+the Harness PATH. Bundled, plugin, Workshop, and other sources outside the
+workspace stay on Gateway; they do not need duplicate installations on the node.
+Discovery and resource reads enforce child-file grants before returning metadata
+or file bytes. This adapter does not yet implement Skill source publication or
+ClawHub update/removal.

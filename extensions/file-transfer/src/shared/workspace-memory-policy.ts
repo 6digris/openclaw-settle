@@ -32,7 +32,10 @@ function createWorkspaceWorkerPolicy(kind: "memory" | "skills"): OpenClawPluginN
         if (!configured) {
           throw new Error("Node workspace is not configured");
         }
-        if (kind === "skills" && asOptionalRecord(ctx.params)?.operation === "readResources") {
+        if (
+          kind === "skills" &&
+          ["readResources", "discovery"].includes(String(asOptionalRecord(ctx.params)?.operation))
+        ) {
           resourceReadPolicy = snapshotNodeFileReadPolicy({
             nodeId: ctx.nodeId,
             nodeDisplayName: ctx.node?.displayName,

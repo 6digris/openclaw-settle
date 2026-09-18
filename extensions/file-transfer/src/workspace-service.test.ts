@@ -258,6 +258,69 @@ describe("registered node workspace service", () => {
     expect(await fs.readdir(local)).toEqual(["AGENTS.md"]);
   }, 60_000);
 
+  it.each(["workspace", "execution", "symlink", "byte limit"])(
+    "does not send denied Skill discovery metadata (%s)",
+    async (kind) => {
+      const workspace = kind === "execution" ? path.join(remote, "execution") : remote;
+      const skillDir = path.join(workspace, "skills", "private-tool");
+      await fs.mkdir(skillDir, { recursive: true });
+      const skillFile = path.join(skillDir, "SKILL.md");
+      const deniedFile = kind === "symlink" ? path.join(skillDir, "private.md") : skillFile;
+      await fs.writeFile(
+        deniedFile,
+        "---\nname: private-tool\ndescription: Private metadata\n---\nPrivate instructions.\n",
+      );
+      if (kind === "symlink") {
+        await fs.symlink("private.md", skillFile);
+        nodePolicy.followSymlinks = true;
+      }
+      const output: Uint8Array[] = [];
+      enableAttachmentTransport(undefined, (bytes) => output.push(bytes));
+      await service.start(context());
+      const request = {
+        sourcePlan: {
+          workspaceDir: local,
+          managedSkillsDir: path.join(local, "managed"),
+          roots: [
+            {
+              dir: path.join(local, "skills"),
+              source: "openclaw-workspace",
+              tier: "workspace" as const,
+            },
+          ],
+          pluginSkillRoots: [],
+        },
+        executionWorkspaceDir: kind === "execution" ? path.join(local, "execution") : undefined,
+        limits: {
+          maxCandidatesPerRoot: 100,
+          maxSkillsLoadedPerSource: 100,
+          maxSkillFileBytes: 65536,
+        },
+        additionalBins: [],
+      };
+      const loadSkills = getAgentWorkspaceAccess(local)!.loadSkills!;
+      const allowed = await loadSkills(request);
+      const entries = kind === "execution" ? allowed.executionEntries : allowed.entries;
+      expect(entries.map((entry) => entry.skill.name)).toContain("private-tool");
+      expect(output.length).toBeGreaterThan(0);
+      if (kind === "byte limit") {
+        nodePolicy.maxBytes = 1;
+      } else {
+        nodePolicy.denyPaths = [deniedFile];
+      }
+      output.length = 0;
+      await expect(loadSkills(request)).rejects.toMatchObject({
+        message: "Remote workspace skill discovery failed",
+        cause: {
+          message: expect.stringContaining(
+            kind === "byte limit" ? "response exceeds" : "denied by the node file read policy",
+          ),
+        },
+      });
+      expect(output).toEqual([]);
+    },
+  );
+
   it.each(["file", "symlink"])(
     "does not send a Skill bundle containing a denied child %s",
     async (kind) => {
