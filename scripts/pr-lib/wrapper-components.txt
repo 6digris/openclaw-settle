@@ -373,6 +373,7 @@ src/config/model-policy-ref.ts
 src/config/model-provider-config.ts
 src/config/model-provider-overlay-ids.ts
 src/config/model-provider-rows.ts
+src/config/mutate-guards.ts
 src/config/mutate.ts
 src/config/mutation-conflict.ts
 src/config/normalize-exec-safe-bin.ts
@@ -425,6 +426,7 @@ src/config/validation-plugin-registry.ts
 src/config/validation.ts
 src/config/version.ts
 src/config/web-search-legacy-provider-keys.ts
+src/config/write-capture.ts
 src/config/write-lock.ts
 src/config/zod-schema.agent-defaults-base.ts
 src/config/zod-schema.agent-defaults.ts
@@ -632,6 +634,7 @@ src/infra/sqlite-coordinator.ts
 src/infra/sqlite-error-diagnostics.ts
 src/infra/sqlite-existing-database.ts
 src/infra/sqlite-file-generation.ts
+src/infra/sqlite-file-header.ts
 src/infra/sqlite-files.ts
 src/infra/sqlite-index-schema.ts
 src/infra/sqlite-integrity.ts
@@ -692,6 +695,7 @@ src/infra/update-managed-service-handoff-retained-custody.ts
 src/infra/update-managed-service-handoff-schema.ts
 src/infra/update-managed-service-handoff-source-inspection.ts
 src/infra/update-managed-service-handoff-store-repair.ts
+src/infra/update-recovery-backup-contract.ts
 src/infra/update-run-limits.ts
 src/infra/update-run-schema.ts
 src/infra/update-run-timeouts.ts
@@ -788,6 +792,7 @@ src/plugins/doctor-contract-module.ts
 src/plugins/doctor-contract-registry-loader-state.ts
 src/plugins/doctor-contract-registry.ts
 src/plugins/doctor-contract-relevance.ts
+src/plugins/doctor-migration-deferral.ts
 src/plugins/doctor-session-route-state-owner-types.ts
 src/plugins/enable.ts
 src/plugins/hardlink-policy.ts

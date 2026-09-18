@@ -219,7 +219,15 @@ it.each([
   });
 });
 
-it.each(["healthy", "readiness-missing", "wrong-version", "settlement-failed"] as const)(
+const retirementScenarios = [
+  "healthy",
+  "delegated",
+  "readiness-missing",
+  "wrong-version",
+  "settlement-failed",
+] as const;
+
+it.each(retirementScenarios)(
   "retires only the settled, identity-verified capture: %s",
   async (scenario) => {
     await withOpenClawTestState({ layout: "state-only", scenario: "minimal" }, async (state) => {
@@ -289,7 +297,12 @@ it.each(["healthy", "readiness-missing", "wrong-version", "settlement-failed"] a
             });
           });
           await completeUpdateCommandBackup(
-            { opts, root, updateRecoveryBackup: backup },
+            {
+              opts,
+              root,
+              updateRecoveryBackup: backup,
+              deferFailureRecoveryToParent: scenario === "delegated",
+            },
             result,
             () => run.executorFence!.assertCurrent(),
           );

@@ -8,6 +8,8 @@ import {
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
 import * as doctorHealth from "../flows/doctor-health.js";
+import * as packageRoot from "../infra/openclaw-root.js";
+import { readProcessParentPidSync } from "../infra/restart-stale-pids.js";
 import { UPDATE_RUN_ID_ENV } from "../infra/update-control-plane-sentinel.js";
 import {
   assertNoUnresolvedUpdateRecoveryBackup,
@@ -23,6 +25,7 @@ import {
   finishUpdateRun,
   getUpdateRun,
   listUpdateRuns,
+  recordUpdateRunPhase,
   recordUpdateRunStep,
   recordUpdateRunRecoveryCapture,
   recordUpdateRunVerification,
@@ -118,6 +121,105 @@ afterEach(() => {
 });
 
 describe("Doctor recovery ledger reconciliation", () => {
+  it.each([
+    { version: "2026.9.3", fault: "none" },
+    { version: "2026.9.4", fault: "none" },
+    { version: "2026.9.4", fault: "foreign driver" },
+    { version: "2026.9.4", fault: "live prior Doctor" },
+    { version: "2026.9.4", fault: "restore-failed" },
+    { version: "2026.9.4", fault: "corrupt payload" },
+    { version: "2026.9.4", fault: "partial settlement" },
+  ])("continues the retained $version post-core capture: $fault", async ({ version, fault }) => {
+    // This core capture fixture owns no plugin stores. Full-package acceptance
+    // separately inventories the shipped bundled migration owners.
+    await withEnvAsync({ OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1" }, async () => {
+      await withOpenClawTestState({ layout: "state-only", scenario: "minimal" }, async (state) => {
+        const scope = await prepareState(state);
+        const driver = updateRunDriver.readUpdateRunDriver(
+          readProcessParentPidSync(process.ppid) ?? 0,
+        );
+        const parent = updateRunDriver.readUpdateRunDriver(process.ppid);
+        expect(driver).toBeDefined();
+        expect(parent).toBeDefined();
+        if (!driver || !parent) {
+          throw new Error("Missing published updater ancestry");
+        }
+        const run = createUpdateRun({ trigger: "cli" }, { env: state.env });
+        recordUpdateRunPhase(run.runId, "activating", {
+          before: { version },
+          target: { kind: "package" },
+          origin: { driver },
+        });
+        recordUpdateRunStep(run.runId, { step: "openclaw doctor", status: "completed" });
+        recordUpdateRunStep(run.runId, { step: "post-update verification", status: "in_progress" });
+
+        const ref = await createUpdateRecoveryBackup({
+          ...authority,
+          runId: run.runId,
+          installRoot: state.path("install"),
+          drivers: [fault === "foreign driver" ? parent : driver],
+        });
+
+        const manifest = await verifyUpdateRecoveryBackup(ref);
+        const rawManifest = await fs.readFile(ref.manifestPath);
+
+        await upsertSessionEntryCore(scope, { sessionId: "first-doctor-result", updatedAt: 2 });
+        recordUpdateRunRecoveryCapture(
+          run.runId,
+          { manifestSha256: ref.manifestSha256, doctorCompleted: true },
+          authority.assertOwned,
+        );
+        if (version === "2026.9.4" && fault === "none") {
+          // The shipped parent serializes its older origin schema between Doctors.
+          openOpenClawStateDatabase({ env: state.env })
+            .db.prepare(
+              "UPDATE update_runs SET origin_json = json_remove(origin_json, '$.updateRecoveryCapture') WHERE run_id = ?",
+            )
+            .run(run.runId);
+        }
+        if (fault === "live prior Doctor") {
+          vi.spyOn(updateRunDriver, "inspectUpdateRunDriver").mockReturnValue("alive");
+        }
+        if (fault === "restore-failed") {
+          await writeUpdateRecoveryBackupOutcome(
+            ref,
+            { status: "restore-failed", error: "prior Doctor failed" },
+            authority,
+          );
+        }
+        if (fault === "partial settlement") {
+          await fs.mkdir(path.join(ref.directory, "candidate"));
+        }
+        if (fault === "corrupt payload") {
+          const entry = manifest.entries.find((candidate) => candidate.kind === "file");
+          if (!entry) {
+            throw new Error("Missing baseline payload");
+          }
+          await fs.appendFile(path.join(ref.directory, entry.archivePath), "corrupt");
+        }
+        const beforeContinuation = getUpdateRun(run.runId);
+        const continuation = createUpdateRecoveryBackup({
+          ...authority,
+          runId: run.runId,
+          installRoot: state.path("install"),
+          resumeFromDriver: driver,
+        });
+        if (fault === "none") {
+          await expect(continuation).resolves.toEqual(ref);
+        } else {
+          await expect(continuation).rejects.toThrow(
+            /cannot continue|payload hash or size mismatch/,
+          );
+        }
+        expect(await fs.readFile(ref.manifestPath)).toEqual(rawManifest);
+        expect(loadSessionEntryReadOnly(scope)?.sessionId).toBe("first-doctor-result");
+        expect((await inspectUpdateRecoveryBackups()).map((capture) => capture.ref)).toEqual([ref]);
+        expect(getUpdateRun(run.runId)?.origin.updateRecoveryCapture?.restored).not.toBe(true);
+        // Reusing B does not fabricate a Doctor-completion or terminal receipt.
+        expect(getUpdateRun(run.runId)).toEqual(beforeContinuation);
+      });
+    });
+  });
   it("settles a completed 9.2 capture under the next updater's executor without restoring newer sessions", async () => {
     await withOpenClawTestState({ layout: "state-only", scenario: "minimal" }, async (state) => {
       await prepareState(state);
@@ -271,6 +373,11 @@ describe("Doctor recovery ledger reconciliation", () => {
     async ({ extra, marked }) => {
       await withOpenClawTestState({ layout: "state-only", scenario: "minimal" }, async (state) => {
         const original = await prepareState(state);
+        // Exercise this fixture's installation, not the development checkout's
+        // dependency/build inventory. Capacity accounting itself remains real.
+        vi.spyOn(packageRoot, "resolveOpenClawPackageRoot").mockResolvedValue(
+          state.path("install"),
+        );
         const current = createUpdateRun({ trigger: "cli" }, { env: state.env });
         recordUpdateRunStep(
           current.runId,

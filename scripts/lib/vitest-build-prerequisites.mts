@@ -25,18 +25,25 @@ export type VitestRuntimeTestSelection = {
 // prerequisite before admitting any workers: a child build invalidates dist
 // while unrelated workers may still be importing its public plugin facades.
 const runtimeConsumers = [
-  {
-    file: "src/cli/update-cli.test.ts",
+  ...[
+    "src/cli/update-cli.test.ts",
+    "src/cli/update-cli/update-command-backup-lifecycle.test.ts",
+  ].map((file) => ({
+    file,
     configs: ["test/vitest/vitest.cli.config.ts"],
-    mode: "runtime",
+    mode: "runtime" as const,
     dir: "src/cli",
-  },
-  {
-    file: "src/commands/doctor.update-retained-forward-recovery.test.ts",
+  })),
+  ...[
+    "src/commands/doctor.update-retained-forward-recovery.test.ts",
+    "src/commands/doctor.update-recovery.test.ts",
+    "src/commands/doctor.update-recovery-ledger.test.ts",
+  ].map((file) => ({
+    file,
     configs: ["test/vitest/vitest.commands.config.ts"],
-    mode: "runtime",
+    mode: "runtime" as const,
     dir: "src/commands",
-  },
+  })),
   {
     file: "src/gateway/setup-inference.first-signin.integration.test.ts",
     configs: [

@@ -83,7 +83,7 @@ export type UpdateCliFinalizationSuiteContext = {
   ) => void;
   mockPackageInstallAtCaseDir: (prefix?: string, version?: string) => Promise<string>;
   mockPackageInstallStatus: (root: string) => void;
-  mockRunningManagedGateway: (programArguments?: string[]) => void;
+  mockRunningManagedGateway: (programArguments?: string[], simulateGitActivation?: boolean) => void;
   npmPluginUpdateResult: (config: OpenClawConfig) => {
     changed: boolean;
     config: OpenClawConfig;

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hashConfigRaw } from "../config/io.read-helpers.js";
+import { readProcessParentPidSync } from "../infra/restart-stale-pids.js";
 import { SUPERVISOR_HINT_ENV_VARS } from "../infra/supervisor-markers.js";
 import {
   consumeUpdatePostInstallDoctorResult,
@@ -352,6 +353,87 @@ describe("update Doctor state recovery", () => {
     }
     expect(mocks.restore).not.toHaveBeenCalled();
   });
+
+  it.each(
+    ["2026.9.3", "2026.9.4"].flatMap((version) =>
+      (
+        [
+          "owned",
+          "foreign ancestor",
+          "completed verification",
+          "missing verification",
+          "wrong phase",
+          "wrong run",
+          "owner changes",
+          "verification completes",
+        ] as const
+      ).map((fault) => ({ version, fault })),
+    ),
+  )(
+    "correlates the shipped $version post-core Doctor descendant: $fault",
+    async ({ version, fault }) => {
+      const ancestor = readUpdateRunDriver(readProcessParentPidSync(process.ppid) ?? 0);
+      assert(ancestor, "The post-core fixture requires an observable updater ancestor");
+      vi.stubEnv("OPENCLAW_UPDATE_POST_CORE", "1");
+      vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_CONVERGENCE", "1");
+      vi.stubEnv("OPENCLAW_UPDATE_RUN_ID", fault === "wrong run" ? "different-run" : runId);
+      updateRunLedger.recordUpdateRunStep(runId, { step: "openclaw doctor", status: "completed" });
+      updateRunLedger.recordUpdateRunPhase(
+        runId,
+        fault === "wrong phase" ? "validating" : "activating",
+        {
+          before: { version },
+          target: { kind: "package" },
+          origin: {
+            driver:
+              fault === "foreign ancestor"
+                ? { ...ancestor, startIdentity: String(Number(ancestor.startIdentity) + 1) }
+                : ancestor,
+          },
+        },
+      );
+      if (fault !== "missing verification") {
+        updateRunLedger.recordUpdateRunStep(runId, {
+          step: "post-update verification",
+          status: fault === "completed verification" ? "completed" : "in_progress",
+        });
+      }
+      mocks.activeRuns.mockImplementation(async () =>
+        updateRunLedger.listUpdateRuns({ active: true }),
+      );
+      if (fault === "owner changes" || fault === "verification completes") {
+        mocks.create.mockImplementation(async ({ assertOwned }: { assertOwned: () => void }) => {
+          if (fault === "owner changes") {
+            updateRunLedger.recordUpdateRunPhase(runId, "activating", {
+              origin: {
+                driver: { ...ancestor, startIdentity: String(Number(ancestor.startIdentity) + 2) },
+              },
+            });
+          } else {
+            updateRunLedger.recordUpdateRunStep(runId, {
+              step: "post-update verification",
+              status: "completed",
+            });
+          }
+          assertOwned();
+          return ref;
+        });
+      }
+      const command = doctorCommand(runtime, { repair: true, nonInteractive: true });
+      if (fault === "owned") {
+        await expect(command).resolves.toBeUndefined();
+        expect(mocks.create).toHaveBeenCalledOnce();
+        expect(mocks.create).toHaveBeenCalledWith(
+          expect.objectContaining({ runId, resumeFromDriver: ancestor }),
+        );
+        expect(mocks.flow).toHaveBeenCalledOnce();
+      } else {
+        await expect(command).rejects.toThrow(/admitted update run/);
+        expect(mocks.flow).not.toHaveBeenCalled();
+      }
+      expect(mocks.restore).not.toHaveBeenCalled();
+    },
+  );
 
   it("keeps an identity-bearing rehearsal invocation on strict driver admission", async () => {
     await legacyRehearsal("2026.9.3");

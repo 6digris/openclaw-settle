@@ -18,6 +18,10 @@ import {
 } from "../config/sessions/session-accessor.js";
 import { runDoctorHealthRepairs } from "../flows/doctor-repair-flow.js";
 import { ensureControlUiAssetsBuilt } from "../infra/control-ui-assets.js";
+import {
+  resolveRuntimeWorkerUrl,
+  resolveRuntimeWorkerThreadExecArgv,
+} from "../infra/runtime-worker-url.js";
 import type { UpdateRecoveryBackupRef } from "../infra/update-recovery-backup-contract.js";
 import { verifyUpdateRecoveryBackup } from "../infra/update-recovery-backup.js";
 import { inspectUpdateRunDriver } from "../infra/update-run-driver.js";
@@ -31,6 +35,7 @@ import {
   withOpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
 import { VERSION, resolveRuntimeServiceBuildId } from "../version.js";
+import { doctorRecoveryRuntimeEntrypoints } from "./doctor-config-runtime.test-support.js";
 import { doctorCommand } from "./doctor.js";
 
 function errors(value: unknown): string[] {
@@ -84,15 +89,15 @@ async function prepareRetainedFixture() {
     const resultFile = state.path("producer-result.json");
     const script = `
         import fs from "node:fs/promises";
-        import {withUpdateCommandExecutor} from ${JSON.stringify(new URL("../cli/update-cli/update-command-executor.ts", import.meta.url).href)};
-        import {createUpdateCommandBackup} from ${JSON.stringify(new URL("../cli/update-cli/update-command-backup-lifecycle.ts", import.meta.url).href)};
-        import {createUpdateRun,finishUpdateRun} from ${JSON.stringify(new URL("../infra/update-run-ledger.ts", import.meta.url).href)};
-        import {restoreUpdateRecoveryBackup,writeUpdateRecoveryBackupOutcome} from ${JSON.stringify(new URL("../infra/update-recovery-backup.ts", import.meta.url).href)};
-        import {beginDoctorMaintenance} from ${JSON.stringify(new URL("./doctor-maintenance.ts", import.meta.url).href)};
-        import {upsertSessionEntryCore,deleteSessionEntryLifecycle,loadSessionEntryReadOnly} from ${JSON.stringify(new URL("../config/sessions/session-accessor.ts", import.meta.url).href)};
-        import {resolveSessionStorePathCore} from ${JSON.stringify(new URL("../config/sessions/paths.ts", import.meta.url).href)};
-        import {closeOpenClawAgentDatabasesAsync} from ${JSON.stringify(new URL("../state/openclaw-agent-db-lifecycle.ts", import.meta.url).href)};
-        import {closeOpenClawStateDatabaseForTest} from ${JSON.stringify(new URL("../state/openclaw-state-db.ts", import.meta.url).href)};
+        import {withUpdateCommandExecutor} from ${JSON.stringify(resolveRuntimeWorkerUrl(doctorRecoveryRuntimeEntrypoints.executor).href)};
+        import {createUpdateCommandBackup} from ${JSON.stringify(resolveRuntimeWorkerUrl(doctorRecoveryRuntimeEntrypoints.backup).href)};
+        import {createUpdateRun,finishUpdateRun} from ${JSON.stringify(resolveRuntimeWorkerUrl(doctorRecoveryRuntimeEntrypoints.ledger).href)};
+        import {restoreUpdateRecoveryBackup,writeUpdateRecoveryBackupOutcome} from ${JSON.stringify(resolveRuntimeWorkerUrl(doctorRecoveryRuntimeEntrypoints.recovery).href)};
+        import {beginDoctorMaintenance} from ${JSON.stringify(resolveRuntimeWorkerUrl(doctorRecoveryRuntimeEntrypoints.maintenance).href)};
+        import {upsertSessionEntryCore,deleteSessionEntryLifecycle,loadSessionEntryReadOnly} from ${JSON.stringify(resolveRuntimeWorkerUrl(doctorRecoveryRuntimeEntrypoints.sessions).href)};
+        import {resolveSessionStorePathCore} from ${JSON.stringify(resolveRuntimeWorkerUrl(doctorRecoveryRuntimeEntrypoints.sessionPaths).href)};
+        import {closeOpenClawAgentDatabasesAsync} from ${JSON.stringify(resolveRuntimeWorkerUrl(doctorRecoveryRuntimeEntrypoints.agentDatabases).href)};
+        import {closeOpenClawStateDatabaseForTest} from ${JSON.stringify(resolveRuntimeWorkerUrl(doctorRecoveryRuntimeEntrypoints.stateDatabase).href)};
         const root=process.cwd();
         const runtime={log(){},error(){},exit(code){throw new Error('exit '+code)}};
         const scope={agentId:'main',env:process.env};
@@ -133,14 +138,16 @@ async function prepareRetainedFixture() {
         await closeOpenClawAgentDatabasesAsync(); closeOpenClawStateDatabaseForTest();
         await fs.writeFile(${JSON.stringify(resultFile)},JSON.stringify(result));
       `;
+    // A real module file keeps --input-type=module out of nested Worker execArgv.
+    const producerScript = state.path("producer.mjs");
+    await fs.writeFile(producerScript, script);
     const producer = await runUtf8CommandWithTimeout(
       [
         process.execPath,
-        "--import",
-        path.resolve("scripts/tsx.mjs"),
-        "--input-type=module",
-        "-e",
-        script,
+        ...resolveRuntimeWorkerThreadExecArgv(
+          resolveRuntimeWorkerUrl(doctorRecoveryRuntimeEntrypoints.executor),
+        ),
+        producerScript,
       ],
       {
         env: state.env,

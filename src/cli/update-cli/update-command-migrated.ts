@@ -549,11 +549,17 @@ export async function continueMigratedUpdateInFreshProcess(
               }),
             );
           });
-          const receipt: unknown = JSON.parse(retirementChild.stdout);
           if (
             retirementChild.termination !== "exit" ||
             retirementChild.code !== 0 ||
-            retirementChild.cleanup !== "normal" ||
+            retirementChild.cleanup !== "normal"
+          ) {
+            throw new Error(
+              `Capture retirement was not confirmed by the candidate: ${retirementChild.stderr}`,
+            );
+          }
+          const receipt: unknown = JSON.parse(retirementChild.stdout);
+          if (
             !isRecord(receipt) ||
             receipt.retired !== true ||
             receipt.runId !== run.runId ||

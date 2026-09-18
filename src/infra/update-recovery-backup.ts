@@ -37,7 +37,12 @@ import {
   withUpdateRecoveryConfigValidation,
   withUpdateRecoveryConfigWrites,
 } from "./update-recovery-config-writes.js";
-import type { UpdateRunDriver } from "./update-run-driver.js";
+import {
+  inspectUpdateRunDriver,
+  readUpdateRunDriver,
+  sameUpdateRunDriver,
+  type UpdateRunDriver,
+} from "./update-run-driver.js";
 import { resolveUpdateRecoveryTerminalOutcome } from "./update-run-record.js";
 const log = createSubsystemLogger("update/backup");
 type Authority = { assertOwned: () => void };
@@ -45,6 +50,7 @@ type CreateOptions = Authority & {
   runId: string;
   installRoot: string;
   drivers?: UpdateRunDriver[];
+  resumeFromDriver?: UpdateRunDriver;
 };
 const outcomeSchema = z
   .object({
@@ -60,8 +66,65 @@ export async function createUpdateRecoveryBackup(
   params: CreateOptions,
 ): Promise<UpdateRecoveryBackupRef> {
   return await withConfigMutationLock({}, async () => {
-    await assertNoUnresolvedUpdateRecoveryBackup();
     const { getUpdateRun } = await import("./update-run-ledger.js");
+    if (params.resumeFromDriver) {
+      const { hasUpdateRecoveryForwardResolution } = await import("./update-recovery-forward.js");
+      const unresolved = [];
+      for (const capture of await listBackups()) {
+        if (!(await hasUpdateRecoveryForwardResolution(capture.ref))) {
+          unresolved.push(capture);
+        }
+      }
+      const existing = unresolved[0];
+      if (existing && unresolved.length === 1) {
+        const driver = params.resumeFromDriver;
+        const assertContinuation = () => {
+          params.assertOwned();
+          const run = getUpdateRun(params.runId);
+          const currentDriver = readUpdateRunDriver(driver.pid);
+          if (
+            existing.manifest.runId !== params.runId ||
+            existing.manifest.installRoot !== path.resolve(params.installRoot) ||
+            existing.outcome.status !== "pending" ||
+            existing.manifest.generation?.kind !== "baseline" ||
+            !existing.manifest.drivers.some((owner) => sameUpdateRunDriver(owner, driver)) ||
+            inspectUpdateRunDriver(existing.manifest.creator) !== "dead" ||
+            !currentDriver ||
+            !sameUpdateRunDriver(currentDriver, driver) ||
+            run?.status !== "running" ||
+            !run.origin.driver ||
+            !sameUpdateRunDriver(run.origin.driver, driver) ||
+            (run.origin.updateRecoveryCapture &&
+              (run.origin.updateRecoveryCapture.manifestSha256 !== existing.ref.manifestSha256 ||
+                run.origin.updateRecoveryCapture.status !== "pending" ||
+                run.origin.updateRecoveryCapture.restored))
+          ) {
+            throw new Error(
+              "Update capture cannot continue under this updater; its original recovery set remains retained. Inspect openclaw update status --json.",
+            );
+          }
+        };
+        // A second Doctor in the same live update uses B unchanged. It must not
+        // recapture already-migrated state or adopt another/settled transaction.
+        const assertNoSettlement = async () => {
+          if (
+            (await statOrMissing(path.join(existing.ref.directory, "candidate"))) ||
+            (await statOrMissing(path.join(existing.ref.directory, "prepared")))
+          ) {
+            throw new Error(
+              "Update capture cannot continue after recovery settlement began; all generations remain retained.",
+            );
+          }
+        };
+        assertContinuation();
+        await assertNoSettlement();
+        await verifyUpdateRecoveryBackup(existing.ref);
+        await assertNoSettlement();
+        assertContinuation();
+        return existing.ref;
+      }
+    }
+    await assertNoUnresolvedUpdateRecoveryBackup();
     params.assertOwned();
     if (!getUpdateRun(params.runId)) {
       throw new Error(

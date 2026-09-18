@@ -13,6 +13,7 @@ import {
   UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV,
   writeUpdatePostInstallDoctorResult,
 } from "../infra/update-doctor-result.js";
+import { POST_CORE_UPDATE_ENV } from "../infra/update-post-core-context.js";
 import type { UpdateRecoveryBackupRef } from "../infra/update-recovery-backup-contract.js";
 import {
   inspectUpdateRunAbandonment,
@@ -30,6 +31,7 @@ import type { UpdateRecoveryFence } from "../infra/update-run-recovery.js";
 import { ExitError, type RuntimeEnv } from "../runtime.js";
 import type { DoctorOptions } from "./doctor-prompter.js";
 import type { DoctorRecoveryScope } from "./doctor-update-recovery-scope.js";
+import { isPostCoreConvergencePass } from "./doctor/shared/update-phase.js";
 
 type DoctorRunOutcome<T> = { ok: true; value: T } | { ok: false; error: unknown };
 
@@ -534,7 +536,8 @@ export async function prepareDoctorUpdateRecovery(options: DoctorOptions = {}): 
   if (supplied !== undefined) {
     reference = backup.readUpdateRecoveryBackupRef(supplied);
   } else {
-    const { matchesLegacyDoctorCapture } = await import("./doctor-update-rehearsal.js");
+    const { matchesLegacyDoctorCapture, createLegacyDoctorCaptureGuard } =
+      await import("./doctor-update-rehearsal.js");
     const inheritedRunId = process.env[UPDATE_RUN_ID_ENV]?.trim();
     const parent = readUpdateRunDriver(process.ppid);
     if (!parent) {
@@ -542,8 +545,16 @@ export async function prepareDoctorUpdateRecovery(options: DoctorOptions = {}): 
         "Doctor cannot identify its parent updater process for recovery. Inspect with openclaw update status --json; run npx openclaw@latest doctor --fix after resolving ownership.",
       );
     }
+    const { readProcessParentPidSync } = await import("../infra/restart-stale-pids.js");
+    // Shipped parents delegate post-plugin Doctor to one fresh post-core child.
+    // The flags select this path; the observed ancestry and live run own it.
+    const postCoreDriver =
+      process.env[POST_CORE_UPDATE_ENV] === "1" && isPostCoreConvergencePass(process.env)
+        ? readUpdateRunDriver(readProcessParentPidSync(parent.pid) ?? 0)
+        : undefined;
     const matchesDoctor = (run: UpdateRunRecord) =>
-      (!inheritedRunId || run.runId === inheritedRunId) && matchesLegacyDoctorCapture(run, parent);
+      (!inheritedRunId || run.runId === inheritedRunId) &&
+      matchesLegacyDoctorCapture(run, parent, postCoreDriver);
     const candidates = (await activeUpdateRuns()).filter(matchesDoctor);
     const run = candidates[0];
     if (!run || candidates.length !== 1) {
@@ -551,23 +562,12 @@ export async function prepareDoctorUpdateRecovery(options: DoctorOptions = {}): 
         "Doctor cannot identify one admitted update run with an active Doctor step for its capture. Inspect with openclaw update status --json; run npx openclaw@latest doctor --fix after resolving ownership.",
       );
     }
-    const { listUpdateRuns } = await import("../infra/update-run-ledger.js");
-    scope.assertRecoveryClaim = () => {
-      const active = listUpdateRuns({ active: true, limit: 100 });
-      const matching = active.filter(matchesDoctor);
-      const currentParent = readUpdateRunDriver(process.ppid);
-      if (
-        !currentParent ||
-        !sameUpdateRunDriver(currentParent, parent) ||
-        active.length === 100 ||
-        matching.length !== 1 ||
-        matching[0]?.runId !== run.runId
-      ) {
-        throw new Error(
-          "Doctor's admitted update run or parent changed during recovery. Inspect with openclaw update status --json; run npx openclaw@latest doctor --fix after resolving ownership.",
-        );
-      }
-    };
+    scope.assertRecoveryClaim = await createLegacyDoctorCaptureGuard({
+      run,
+      parent,
+      postCoreDriver,
+      matchesDoctor,
+    });
     const drivers = recordedUpdateRunDrivers(run);
     if (!drivers.some((driver) => sameUpdateRunDriver(driver, parent))) {
       drivers.push(parent);
@@ -576,6 +576,7 @@ export async function prepareDoctorUpdateRecovery(options: DoctorOptions = {}): 
       runId: run.runId,
       installRoot: root,
       drivers,
+      ...(postCoreDriver ? { resumeFromDriver: postCoreDriver } : {}),
       assertOwned: () => assertDoctorRecoveryCurrent(scope),
     });
   }

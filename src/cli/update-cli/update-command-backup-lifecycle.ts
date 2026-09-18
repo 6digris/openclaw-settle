@@ -301,7 +301,11 @@ export async function createUpdateCommandBackup(params: {
 export async function completeUpdateCommandBackup(
   params: Pick<
     FinishUpdateParams,
-    "updateRecoveryBackup" | "root" | "opts" | "ownedManagedUpdateEnv"
+    | "updateRecoveryBackup"
+    | "root"
+    | "opts"
+    | "ownedManagedUpdateEnv"
+    | "deferFailureRecoveryToParent"
   >,
   result: UpdateRunResult,
   assertCurrent: () => void,
@@ -310,6 +314,11 @@ export async function completeUpdateCommandBackup(
   const backup = params.updateRecoveryBackup;
   const run = params.opts.run;
   if (!backup || !run || result.status !== "ok") {
+    return;
+  }
+  // A delegated finalizer settles before its parent releases the installation.
+  // The parent schedules retirement through the candidate after that release.
+  if (params.deferFailureRecoveryToParent) {
     return;
   }
   assertCurrent();

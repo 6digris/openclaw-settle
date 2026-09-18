@@ -2,25 +2,84 @@ import { lstatSync, readFileSync, realpathSync, type Stats } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { sameUpdateRunDriver, type UpdateRunDriver } from "../infra/update-run-driver.js";
+import { POST_CORE_UPDATE_ENV } from "../infra/update-post-core-context.js";
+import {
+  readUpdateRunDriver,
+  sameUpdateRunDriver,
+  type UpdateRunDriver,
+} from "../infra/update-run-driver.js";
 import { hasActiveUpdateDoctorStep, type UpdateRunRecord } from "../infra/update-run-record.js";
 import type { RuntimeEnv } from "../runtime.js";
+import { isPostCoreConvergencePass } from "./doctor/shared/update-phase.js";
 type DoctorMaintenance = NonNullable<
   Awaited<ReturnType<typeof import("./doctor-maintenance.js").beginDoctorMaintenance>>
 >;
 
 /** Shipped 9.2 persists Doctor steps without driver identities; 9.3/9.4 defer
- * those writes during package activation until their actual Doctor child returns. */
-export function matchesLegacyDoctorCapture(run: UpdateRunRecord, parent: UpdateRunDriver): boolean {
+ * those writes during package activation until their actual Doctor child returns.
+ * Their post-core child runs a second Doctor under the live verification step. */
+export function matchesLegacyDoctorCapture(
+  run: UpdateRunRecord,
+  parent: UpdateRunDriver,
+  postCoreDriver?: UpdateRunDriver,
+): boolean {
   return (
     (run.status === "running" &&
       ["2026.9.3", "2026.9.4"].includes(run.before.version ?? "") &&
       run.target.kind === "package" &&
       run.phase === "activating" &&
       run.origin.driver !== undefined &&
-      sameUpdateRunDriver(run.origin.driver, parent)) ||
+      (sameUpdateRunDriver(run.origin.driver, parent) ||
+        (postCoreDriver !== undefined &&
+          sameUpdateRunDriver(run.origin.driver, postCoreDriver) &&
+          run.steps.some(
+            (step) => step.step === "post-update verification" && step.status === "in_progress",
+          )))) ||
     hasActiveUpdateDoctorStep(run)
   );
+}
+
+/** Keep the admitted shipped-driver ancestry and ledger identity current through capture. */
+export async function createLegacyDoctorCaptureGuard({
+  run,
+  parent,
+  postCoreDriver,
+  matchesDoctor,
+}: {
+  run: UpdateRunRecord;
+  parent: UpdateRunDriver;
+  postCoreDriver?: UpdateRunDriver;
+  matchesDoctor: (candidate: UpdateRunRecord) => boolean;
+}): Promise<() => void> {
+  const { listUpdateRuns } = await import("../infra/update-run-ledger.js");
+  const { readProcessParentPidSync } = await import("../infra/restart-stale-pids.js");
+  return () => {
+    const active = listUpdateRuns({ active: true, limit: 100 });
+    const matching = active.filter(matchesDoctor);
+    const currentParent = readUpdateRunDriver(process.ppid);
+    const currentPostCoreDriver = postCoreDriver
+      ? readUpdateRunDriver(readProcessParentPidSync(parent.pid) ?? 0)
+      : undefined;
+    if (
+      (postCoreDriver &&
+        (process.env[POST_CORE_UPDATE_ENV] !== "1" ||
+          !isPostCoreConvergencePass(process.env) ||
+          !currentPostCoreDriver ||
+          !sameUpdateRunDriver(currentPostCoreDriver, postCoreDriver))) ||
+      !currentParent ||
+      !sameUpdateRunDriver(currentParent, parent) ||
+      active.length === 100 ||
+      matching.length !== 1 ||
+      matching[0]?.runId !== run.runId ||
+      (run.origin.driver &&
+        (!matching[0]?.origin.driver ||
+          !sameUpdateRunDriver(matching[0].origin.driver, run.origin.driver)))
+    ) {
+      throw new Error(
+        "Doctor's admitted update run or parent changed during recovery. Inspect with openclaw update status --json; run npx openclaw@latest doctor --fix after resolving ownership.",
+      );
+    }
+  };
 }
 
 const admissionMessage =

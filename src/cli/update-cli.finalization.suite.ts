@@ -187,7 +187,7 @@ export function registerUpdateCliFinalizationTests(read: () => UpdateCliFinaliza
       await withEnvAsync({ OPENCLAW_UPDATE_IN_PROGRESS: previous }, async () => {
         const entrypoint = path.join(process.cwd(), "dist", "index.js");
         vi.mocked(read().resolveGatewayInstallEntrypoint).mockResolvedValue(entrypoint);
-        read().mockRunningManagedGateway(["node", entrypoint, "gateway"]);
+        read().mockRunningManagedGateway(["node", entrypoint, "gateway"], true);
         if (mutatesCore) {
           read().mockGitUpdateAfterMutation(read().makeOkUpdateResult({ root: process.cwd() }));
         } else {

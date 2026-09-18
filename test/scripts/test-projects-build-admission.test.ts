@@ -48,7 +48,7 @@ const testProjectsUrl = new URL("../../scripts/test-projects.mts", import.meta.u
 let startCount = 0;
 
 beforeEach(() => {
-  commands.prepare.mockReset();
+  commands.prepare.mockReset().mockResolvedValue(0);
   commands.prepareE2e.mockReset().mockResolvedValue({ OPENCLAW_E2E_USE_PREBUILT_DIST: "1" });
   commands.reader.mockReset().mockImplementation(() => ({
     completion: Promise.resolve({ code: 0, signal: null }),
@@ -83,7 +83,17 @@ describe("CLI runtime admission", () => {
   const posixIt = process.platform === "win32" ? it.skip : it;
   posixIt.each<[name: string, args: string[]]>([
     ["ordinary target", [ordinaryQa]],
-    ["ordinary CLI config", ["--config", "test/vitest/vitest.cli.config.ts"]],
+    [
+      "CLI scoped exclusion",
+      [
+        "--config",
+        "test/vitest/vitest.cli.config.ts",
+        ...listVitestRuntimeConsumerFiles(["test/vitest/vitest.cli.config.ts"]).flatMap((file) => [
+          "--exclude",
+          file.replace(/^src\/cli\//u, ""),
+        ]),
+      ],
+    ],
     [
       "ordinary CLI selection",
       ["--config", "test/vitest/vitest.cli.config.ts", "command-path-policy.test.ts"],
@@ -195,6 +205,12 @@ syncFixtureBuiltinExports();\n`,
       ["run", "-c=", "test/vitest/vitest.extension-qa.config.ts"],
     ],
     ["root config", "scripts/run-vitest.mts", ["run", "--config", "vitest.config.ts"]],
+    [
+      "CLI",
+      "scripts/run-vitest.mts",
+      ["run", "--config", "test/vitest/vitest.cli.config.ts"],
+      "runtime",
+    ],
     [
       "CLI process",
       "scripts/run-vitest.mts",

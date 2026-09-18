@@ -36,3 +36,52 @@ export const doctorConfigRuntimeEntrypoints = {
     distWorkerPath: "test-support/installed-plugin-index.js",
   },
 } as const;
+
+// Recovery producers use the same invocation-owned compiled graph as Doctor fixtures.
+export const doctorRecoveryRuntimeEntrypoints = {
+  executor: {
+    currentModuleUrl: import.meta.url,
+    sourceWorkerName: "../cli/update-cli/update-command-executor",
+    distWorkerPath: "cli/update-cli/update-command-executor.js",
+  },
+  backup: {
+    currentModuleUrl: import.meta.url,
+    sourceWorkerName: "../cli/update-cli/update-command-backup-lifecycle",
+    distWorkerPath: "cli/update-cli/update-command-backup-lifecycle.js",
+  },
+  ledger: {
+    currentModuleUrl: import.meta.url,
+    sourceWorkerName: "../infra/update-run-ledger",
+    distWorkerPath: "infra/update-run-ledger.js",
+  },
+  recovery: {
+    currentModuleUrl: import.meta.url,
+    sourceWorkerName: "../infra/update-recovery-backup",
+    distWorkerPath: "infra/update-recovery-backup.js",
+  },
+  maintenance: {
+    currentModuleUrl: import.meta.url,
+    sourceWorkerName: "doctor-maintenance",
+    distWorkerPath: "commands/doctor-maintenance.js",
+  },
+  sessions: {
+    currentModuleUrl: import.meta.url,
+    sourceWorkerName: "../config/sessions/session-accessor",
+    distWorkerPath: "config/sessions/session-accessor.js",
+  },
+  sessionPaths: {
+    currentModuleUrl: import.meta.url,
+    sourceWorkerName: "../config/sessions/paths",
+    distWorkerPath: "config/sessions/paths.js",
+  },
+  agentDatabases: {
+    currentModuleUrl: import.meta.url,
+    sourceWorkerName: "../state/openclaw-agent-db-lifecycle",
+    distWorkerPath: "state/openclaw-agent-db-lifecycle.js",
+  },
+  stateDatabase: {
+    currentModuleUrl: import.meta.url,
+    sourceWorkerName: "../state/openclaw-state-db",
+    distWorkerPath: "state/openclaw-state-db.js",
+  },
+} as const;

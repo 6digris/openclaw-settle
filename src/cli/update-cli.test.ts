@@ -1931,6 +1931,7 @@ function defineUpdateCliSuite(): UpdateCliFinalizationSuiteContext {
 
   const mockRunningManagedGateway = (
     programArguments: string[] = ["openclaw", "gateway", "run"],
+    simulateGitActivation = false,
   ) => {
     if (programArguments[1] === path.join(process.cwd(), "dist", "index.js")) {
       const manifest = JSON.parse(
@@ -1940,6 +1941,38 @@ function defineUpdateCliSuite(): UpdateCliFinalizationSuiteContext {
         fsSync.readFileSync(path.join(process.cwd(), "dist", "build-info.json"), "utf8"),
       );
       mockGatewayHealth(manifest.version, "previous-gateway", build.buildId);
+      if (simulateGitActivation) {
+        // The previous checkout serves preflight; only a completed activation
+        // changes this service double to the Git runner's installed result.
+        const activateGitGateway = async () => {
+          const result = await vi.mocked(runGatewayUpdate).mock.results.at(-1)?.value;
+          if (result?.status === "ok" && result.after?.version) {
+            mockGatewayHealth(
+              result.after.version,
+              "updated-gateway",
+              result.after.buildId ?? undefined,
+            );
+          }
+        };
+        const run = requireValue(
+          vi.mocked(runCommandWithTimeout).getMockImplementation(),
+          "native command fixture",
+        );
+        vi.mocked(runCommandWithTimeout).mockImplementation(async (...args) => {
+          const result = await run(...args);
+          const argv = args[0];
+          if (
+            result.code === 0 &&
+            argv[1] === programArguments[1] &&
+            argv[2] === "gateway" &&
+            argv[3] === "restart"
+          ) {
+            await activateGitGateway();
+          }
+          return result;
+        });
+        runRestartScript.mockImplementation(activateGitGateway);
+      }
     }
     serviceReadCommand.mockResolvedValue({
       programArguments,
@@ -2548,12 +2581,10 @@ function defineUpdateCliSuite(): UpdateCliFinalizationSuiteContext {
       assertAllowed: () => {},
     });
     try {
-      mockRunningManagedGateway([
-        process.execPath,
-        path.join(process.cwd(), "dist", "index.js"),
-        "gateway",
-        "run",
-      ]);
+      mockRunningManagedGateway(
+        [process.execPath, path.join(process.cwd(), "dist", "index.js"), "gateway", "run"],
+        true,
+      );
       vi.mocked(runGatewayUpdate).mockImplementation(async () => {
         expect(getActiveSessionWorkAdmissionCount()).toBe(1);
         return makeOkUpdateResult();
@@ -2822,7 +2853,7 @@ function defineUpdateCliSuite(): UpdateCliFinalizationSuiteContext {
       }
       vi.mocked(resolveGatewayInstallEntrypoint).mockReset().mockResolvedValue(entrypoint);
       // No managed mode, token, or env-key metadata: this must not become an install-plan veto.
-      mockRunningManagedGateway(["node", entrypoint, "gateway", "--port", "18789"]);
+      mockRunningManagedGateway(["node", entrypoint, "gateway", "--port", "18789"], kind === "git");
       serviceDefinitionMutationCapability.mockResolvedValue({
         kind: capability,
         detail: "definition-owner-secret-canary",
@@ -11192,7 +11223,7 @@ function defineUpdateCliSuite(): UpdateCliFinalizationSuiteContext {
 
   it("stops a running managed gateway when git checkout rebuild starts", async () => {
     const serviceEntrypoint = path.join(process.cwd(), "dist", "index.js");
-    mockRunningManagedGateway(["node", serviceEntrypoint, "gateway", "run"]);
+    mockRunningManagedGateway(["node", serviceEntrypoint, "gateway", "run"], true);
     const preparations = mockGitUpdateAfterMutation();
 
     await updateCommand({ yes: true });
