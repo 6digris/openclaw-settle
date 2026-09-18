@@ -70,13 +70,26 @@ function firstExtensionProfile(
   return null;
 }
 
-async function buildPairingString(gatewayUrl?: string): Promise<{
+async function buildPairingString(options: {
+  gatewayUrl?: string;
+  localGateway: boolean;
+}): Promise<{
   pairing: string;
   relayPort: number;
   remote: boolean;
 }> {
   const cfg = getRuntimeConfig();
-  const result = await buildBrowserExtensionPairing({ cfg, gatewayUrl });
+  if (options.localGateway && options.gatewayUrl !== undefined) {
+    throw new Error("--local-gateway cannot be combined with --gateway-url");
+  }
+  if (options.localGateway && cfg.gateway?.mode === "remote") {
+    throw new Error("--local-gateway requires a local Gateway configuration");
+  }
+  const result = await buildBrowserExtensionPairing({
+    cfg,
+    gatewayUrl: options.gatewayUrl,
+    localTransport: options.localGateway ? "gateway" : undefined,
+  });
   return {
     pairing: result.pairingString,
     relayPort: result.relayPort,
@@ -170,6 +183,7 @@ export function registerBrowserExtensionCommands(
     .command("setup")
     .description("Inspect, prepare, or verify automatic Chrome setup on this host")
     .option("--action <action>", "inspect, install, or verify", "inspect")
+    .option("--native-host-executable <path>", "Local self-contained Windows bootstrap executable")
     .option("--browser-profile <name>", "Local extension profile")
     .option("--wait-ms <ms>", "Bounded Chrome discovery wait", "1000")
     .option("--json", "Print the redacted setup result")
@@ -182,6 +196,7 @@ export function registerBrowserExtensionCommands(
           }
           const result = await runBrowserExtensionSetup({
             action: opts.action,
+            nativeHostExecutable: opts.nativeHostExecutable,
             bundledDir: resolveChromeExtensionDir(pluginRoot),
             pluginRoot: resolveBrowserPluginRoot(pluginRoot),
             cfg: getRuntimeConfig(),
@@ -218,7 +233,12 @@ export function registerBrowserExtensionCommands(
 
   extension
     .command("install")
-    .description("Set up the Chrome extension and request Store installation on macOS")
+    .description("Set up the Chrome extension and request supported Store installation")
+    .option(
+      "--browser-profile <name>",
+      "Local extension profile; repair preserves an owned selector",
+    )
+    .option("--native-host-executable <path>", "Local self-contained Windows bootstrap executable")
     .option(
       "--no-store",
       "Prepare native bootstrap and development files without requesting Store installation",
@@ -241,10 +261,12 @@ export function registerBrowserExtensionCommands(
           }
           const status = await observeBrowserExtensionSetup({
             action: "install",
+            nativeHostExecutable: opts.nativeHostExecutable,
             bundledDir,
             pluginRoot: resolveBrowserPluginRoot(pluginRoot),
             waitMs,
             requestStoreInstall: opts.store !== false,
+            profile: opts.browserProfile ?? parentOpts(command).browserProfile,
             onProgress: json ? undefined : (message) => defaultRuntime.log(info(message)),
           });
           if (json) {
@@ -281,12 +303,16 @@ export function registerBrowserExtensionCommands(
   extension
     .command("status")
     .description("Inspect extension copies, Chrome IDs, and native-host registrations")
+    .option("--native-host-executable <path>", "Local self-contained Windows bootstrap executable")
+    .option("--browser-profile <name>", "Local extension profile")
     .option("--json", "Print a machine-readable status report")
     .action(async (opts, command) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const json = opts.json === true || parentOpts(command).json === true;
         const status = await observeBrowserExtensionSetup({
           action: "inspect",
+          profile: opts.browserProfile ?? parentOpts(command).browserProfile,
+          nativeHostExecutable: opts.nativeHostExecutable,
           pluginRoot: resolveBrowserPluginRoot(pluginRoot),
           bundledDir: resolveChromeExtensionDir(pluginRoot),
         });
@@ -297,7 +323,7 @@ export function registerBrowserExtensionCommands(
         defaultRuntime.log(
           [
             `Extension copy: ${status.installedCopy.owned ? "installed" : "bundled fallback"}`,
-            `Store request:  ${status.storeInstallRequests.length > 0 ? status.storeInstallRequests.map((entry) => `${entry.browser}: ${entry.state}`).join(", ") : "use the Chrome Web Store"}`,
+            `Store request:  ${status.storeInstallRequests.length > 0 ? status.storeInstallRequests.map((entry) => `${entry.browser}: ${entry.state ?? "unknown"}`).join(", ") : "use the Chrome Web Store"}`,
             `Store:          ${status.storeDiscovered.length > 0 ? status.storeDiscovered.map((entry) => `${entry.extensionId} (${entry.browser}/${entry.profile}; ${entry.enabled ? "enabled" : entry.awaitingApproval ? "awaiting approval" : "disabled"})`).join(", ") : "not detected"}`,
             `Development:    ${status.discovered.length > 0 ? status.discovered.map((entry) => `${entry.extensionId} (${entry.browser}/${entry.profile})`).join(", ") : "none detected"}`,
             `Load unpacked:  ${status.installedCopy.owned ? status.installedCopy.path : status.bundledPath}`,
@@ -316,6 +342,11 @@ export function registerBrowserExtensionCommands(
     .option("--json", "Print a machine-readable removal report")
     .action(async (opts, command) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
+        if (process.platform === "win32") {
+          throw new Error(
+            "Windows Store removal belongs to uninstall-host --remove-store; no standalone Store writer is available.",
+          );
+        }
         const result = await removeChromeStoreInstallRequests();
         if (opts.json === true || parentOpts(command).json === true) {
           defaultRuntime.writeJson(result);
@@ -338,13 +369,24 @@ export function registerBrowserExtensionCommands(
   extension
     .command("uninstall-host")
     .description("Remove only OpenClaw-owned Chrome native-host registrations")
+    .option("--native-host-executable <path>", "Local self-contained Windows bootstrap executable")
+    .option("--browser-profile <name>", "Local extension profile")
+    .option("--remove-store", "Remove owned Windows Store requests before native registration")
     .option("--json", "Print a machine-readable removal report")
     .action(async (opts, command) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const json = opts.json === true || parentOpts(command).json === true;
-        const result = await uninstallChromeExtensionNativeHosts();
+        const result = await uninstallChromeExtensionNativeHosts({
+          pluginRoot: resolveBrowserPluginRoot(pluginRoot),
+          nativeHostExecutable: opts.nativeHostExecutable,
+          browserProfile: opts.browserProfile ?? parentOpts(command).browserProfile,
+          removeStore: opts.removeStore === true,
+        });
         if (json) {
           defaultRuntime.writeJson(result);
+          if (result.refused.length) {
+            defaultRuntime.exit(1);
+          }
           return;
         }
         defaultRuntime.log(
@@ -353,7 +395,10 @@ export function registerBrowserExtensionCommands(
             : info(`Removed ${result.removed.length} owned native-host artifact(s).`),
         );
         for (const refused of result.refused) {
-          defaultRuntime.error(theme.warn(`Refused foreign registration: ${refused}`));
+          defaultRuntime.error(theme.warn(`Refused registration removal: ${refused}`));
+        }
+        if (result.refused.length) {
+          defaultRuntime.exit(1);
         }
       });
     });
@@ -362,6 +407,7 @@ export function registerBrowserExtensionCommands(
     .command("pair")
     .description("Print an advanced manual pairing string")
     .option("--json", "Print the pairing string as JSON")
+    .option("--local-gateway", "Pair through this host’s local Gateway for desktop native helpers")
     .option(
       "--gateway-url <url>",
       "Print a remote pairing string for a Chrome on another machine (e.g. wss://gateway.example.com)",
@@ -371,7 +417,10 @@ export function registerBrowserExtensionCommands(
         defaultRuntime,
         async () => {
           const json = opts.json === true || parentOpts(command).json === true;
-          const result = await buildPairingString(opts.gatewayUrl);
+          const result = await buildPairingString({
+            gatewayUrl: opts.gatewayUrl,
+            localGateway: opts.localGateway === true,
+          });
           if (json) {
             defaultRuntime.writeJson({
               pairingString: result.pairing,

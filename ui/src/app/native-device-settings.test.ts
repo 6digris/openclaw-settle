@@ -30,6 +30,31 @@ function publish(detail: unknown) {
 }
 
 describe("native device settings wire contract", () => {
+  it("uses the shipped installation projection on an older native host without offering new actions", async () => {
+    const snapshot = createNativeDeviceSettingsSnapshot();
+    delete snapshot.browser.chromeSetupActions;
+    const post = installBridge(snapshot);
+    const legacy = { nativeHostRegistered: true, installRequested: true, discoveredProfiles: 0 };
+    post.mockResolvedValueOnce({ ...legacy, privatePath: "not forwarded" });
+    await expect(capability!.installChromeExtension!()).resolves.toEqual(legacy);
+    expect(post).toHaveBeenLastCalledWith({ type: "install-chrome-extension" });
+    post.mockClear();
+    for (const action of ["inspect", "install", "verify"] as const) {
+      await expect(capability!.setupChromeExtension(action)).rejects.toThrow("does not advertise");
+    }
+    expect(post).not.toHaveBeenCalled();
+  });
+  it("rejects legacy installation completion after document retirement", async () => {
+    const post = installBridge();
+    const pending = createDeferred<unknown>();
+    post.mockReturnValueOnce(pending.promise);
+    const response = capability!.installChromeExtension!();
+    const rejected = expect(response).rejects.toThrow("invalid result");
+    capability!.dispose();
+    pending.resolve({ nativeHostRegistered: true, installRequested: true, discoveredProfiles: 0 });
+    await rejected;
+  });
+
   it.each(["inspect", "install", "verify"] as const)(
     "forwards only the explicit %s action and validates its host-bound result",
     async (action) => {

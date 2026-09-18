@@ -34,7 +34,8 @@ struct DeviceSettingsContractTests {
                 "type": "chrome-extension-setup", "action": action.rawValue,
             ]) == .chromeExtensionSetup(action))
         }
-        #expect(DeviceSettingsRequest(body: ["type": "install-chrome-extension"]) == nil)
+        #expect(DeviceSettingsRequest(body: ["type": "install-chrome-extension"]) == .installChromeExtension)
+        #expect(DeviceSettingsRequest(body: ["type": "install-chrome-extension", "profile": "other"]) == nil)
         #expect(DeviceSettingsRequest(body: ["type": "chrome-extension-setup"]) == nil)
         #expect(DeviceSettingsRequest(body: ["type": "chrome-extension-setup", "action": "pair"]) == nil)
         for field in ["command", "profile", "url", "host"] {

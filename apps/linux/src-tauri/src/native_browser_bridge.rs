@@ -366,16 +366,10 @@ pub async fn native_browser_request(
         let app = app.clone();
         let generation = document.generation;
         tauri::async_runtime::spawn_blocking(move || {
-            let cli = app
-                .state::<crate::DesktopState>()
-                .resolve_cli()
-                .map_err(crate::chrome_setup::cli_error)?;
-            // CLI discovery can run a process. Revalidate the existing document
-            // owner immediately before launching the privileged setup action.
-            if !request_is_current(&app, generation) {
-                return Err("The native browser document changed.".into());
-            }
-            crate::chrome_setup::run(&cli, request)
+            app.state::<crate::DesktopState>()
+                .inner
+                .chrome_setup
+                .run_for_document(app.clone(), request, generation)
         })
         .await
         .map_err(|_| "Chrome setup could not complete. Try again.")?

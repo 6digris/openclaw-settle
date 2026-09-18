@@ -142,6 +142,8 @@ public enum DeviceSettingsRequest: Equatable, Sendable {
     case open(DeviceSettingsPanel)
     case checkForUpdates
     case chromeExtensionSetup(ChromeExtensionSetupAction)
+    // Shipped contract-1 request; projects through the same canonical setup owner.
+    case installChromeExtension
 
     public init?(body: Any) {
         guard let payload = body as? [String: Any], let type = payload["type"] as? String else { return nil }
@@ -161,6 +163,9 @@ public enum DeviceSettingsRequest: Equatable, Sendable {
             else { return nil }
             self = .open(panel)
         case "check-for-updates": self = .checkForUpdates
+        case "install-chrome-extension":
+            guard payload.count == 1 else { return nil }
+            self = .installChromeExtension
         case "chrome-extension-setup":
             guard payload.count == 2, let rawAction = payload["action"] as? String,
                   let action = ChromeExtensionSetupAction(rawValue: rawAction) else { return nil }
@@ -362,11 +367,14 @@ public struct DeviceSettingsSnapshot: Encodable, Sendable {
     public struct Browser: Encodable, Sendable {
         public let importAvailable: Bool
         public let cookieSync: CookieSync
+        public let chromeSetupActions: [ChromeExtensionSetupAction]?
 
         public init(
             importAvailable: Bool,
-            cookieSync: CookieSync)
+            cookieSync: CookieSync,
+            chromeSetupActions: [ChromeExtensionSetupAction]? = nil)
         {
+            self.chromeSetupActions = chromeSetupActions
             self.importAvailable = importAvailable
             self.cookieSync = cookieSync
         }

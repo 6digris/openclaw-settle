@@ -9,6 +9,7 @@ import type {
   NativeChromeExtensionSetupResult,
 } from "../../app/native-chrome-setup.ts";
 import type {
+  LegacyChromeInstallResult,
   NativeDeviceSettingsCapability,
   NativeDeviceSettingsSnapshot,
   SettingKey,
@@ -78,6 +79,7 @@ class DevicePage extends OpenClawLightDomElement {
   @state() private extensionSetupRunning = false;
   @state() private extensionSetupResult: NativeChromeExtensionSetupResult | null = null;
   @state() private extensionSetupFailed = false;
+  @state() private legacyExtensionResult: LegacyChromeInstallResult | null = null;
   private extensionSetupGeneration = 0;
   private targetProfileTimer: {
     capability: NativeDeviceSettingsCapability;
@@ -201,30 +203,43 @@ class DevicePage extends OpenClawLightDomElement {
           control: html`
             <div class="device-extension-setup">
               <div class="device-extension-setup__actions">
-                <button
-                  type="button"
-                  class="btn"
-                  ?disabled=${this.extensionSetupRunning}
-                  @click=${() => this.setupChromeExtension("install")}
-                >
-                  ${t(this.extensionSetupRunning ? "configPage.deviceSettings.chromeExtensionPreparing" : "configPage.deviceSettings.chromeExtensionSetup")}
-                </button>
-                <button
-                  type="button"
-                  class="btn"
-                  ?disabled=${this.extensionSetupRunning}
-                  @click=${() => this.setupChromeExtension("inspect")}
-                >
-                  ${t("configPage.deviceSettings.chromeExtensionRefresh")}
-                </button>
-                <button
-                  type="button"
-                  class="btn"
-                  ?disabled=${this.extensionSetupRunning}
-                  @click=${() => this.setupChromeExtension("verify")}
-                >
-                  ${t("configPage.deviceSettings.chromeExtensionVerify")}
-                </button>
+                ${
+                  browser.chromeSetupActions === undefined ||
+                  browser.chromeSetupActions.includes("install")
+                    ? html` <button
+                        type="button"
+                        class="btn"
+                        ?disabled=${this.extensionSetupRunning}
+                        @click=${() => this.setupChromeExtension("install")}
+                      >
+                        ${t(this.extensionSetupRunning ? "configPage.deviceSettings.chromeExtensionPreparing" : "configPage.deviceSettings.chromeExtensionSetup")}
+                      </button>`
+                    : nothing
+                }
+                ${
+                  browser.chromeSetupActions?.includes("inspect")
+                    ? html` <button
+                        type="button"
+                        class="btn"
+                        ?disabled=${this.extensionSetupRunning}
+                        @click=${() => this.setupChromeExtension("inspect")}
+                      >
+                        ${t("configPage.deviceSettings.chromeExtensionRefresh")}
+                      </button>`
+                    : nothing
+                }
+                ${
+                  browser.chromeSetupActions?.includes("verify")
+                    ? html` <button
+                        type="button"
+                        class="btn"
+                        ?disabled=${this.extensionSetupRunning}
+                        @click=${() => this.setupChromeExtension("verify")}
+                      >
+                        ${t("configPage.deviceSettings.chromeExtensionVerify")}
+                      </button>`
+                    : nothing
+                }
                 <a
                   href="https://chromewebstore.google.com/detail/openclaw/kcdjddhmeafeomebliikmbpblkmkfoig"
                   target="_blank"
@@ -233,7 +248,22 @@ class DevicePage extends OpenClawLightDomElement {
                 >
                 ${renderLearnMoreLink("https://docs.openclaw.ai/tools/chrome-extension")}
               </div>
-              ${renderChromeSetupStatus({ result: this.extensionSetupResult, running: this.extensionSetupRunning, failed: this.extensionSetupFailed })}
+              ${
+                this.legacyExtensionResult &&
+                !this.extensionSetupRunning &&
+                !this.extensionSetupFailed
+                  ? html`<p role="status">
+                        ${t(this.legacyExtensionResult.nativeHostRegistered ? "configPage.deviceSettings.chromeExtensionPhases.waiting_for_connection" : "configPage.deviceSettings.chromeExtensionFailed")}
+                      </p>
+                      <p>
+                        ${t(this.legacyExtensionResult.installRequested || this.legacyExtensionResult.discoveredProfiles > 0 ? "configPage.deviceSettings.chromeExtensionNextActions.open_chrome" : "configPage.deviceSettings.chromeExtensionNextActions.install_from_store")}
+                      </p>`
+                  : renderChromeSetupStatus({
+                      result: this.extensionSetupResult,
+                      running: this.extensionSetupRunning,
+                      failed: this.extensionSetupFailed,
+                    })
+              }
             </div>
           `,
         }),
@@ -365,6 +395,7 @@ class DevicePage extends OpenClawLightDomElement {
     this.extensionSetupGeneration += 1;
     this.extensionSetupRunning = false;
     this.extensionSetupResult = null;
+    this.legacyExtensionResult = null;
     this.extensionSetupFailed = false;
   }
 
@@ -381,10 +412,25 @@ class DevicePage extends OpenClawLightDomElement {
     this.extensionSetupRunning = true;
     this.extensionSetupFailed = false;
     this.extensionSetupResult = null;
+    this.legacyExtensionResult = null;
     try {
-      const result = await capability.setupChromeExtension(action);
-      if (isCurrent()) {
-        this.extensionSetupResult = result;
+      const actions = capability.snapshot?.browser?.chromeSetupActions;
+      if (actions === undefined) {
+        if (action !== "install" || !capability.installChromeExtension) {
+          throw new Error("Unsupported native setup action");
+        }
+        const result = await capability.installChromeExtension();
+        if (isCurrent()) {
+          this.legacyExtensionResult = result;
+        }
+      } else {
+        if (!actions.includes(action)) {
+          throw new Error("Unsupported native setup action");
+        }
+        const result = await capability.setupChromeExtension(action);
+        if (isCurrent()) {
+          this.extensionSetupResult = result;
+        }
       }
     } catch {
       if (isCurrent()) {

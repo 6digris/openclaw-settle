@@ -23,18 +23,37 @@ a Settings link.
 - Google Chrome, Chrome for Testing, or Chromium
 - OpenClaw installed on the same machine as Chrome, or an OpenClaw browser node
   on that machine
-- macOS or Linux for automatic native bootstrap
-- Chrome launched at least once so its user-data directory exists
+- macOS/Linux, or Windows with the self-contained OpenClaw native bootstrap executable
+- For browsers other than Google Chrome on macOS, launch the browser at least
+  once so its user-data directory exists
 
-Windows keeps manual pairing. Current Chromium launches native hosts directly
-only when the registered host is a Windows executable. OpenClaw does not install
-a script launcher or registry key without a proven binary framing path.
+Windows uses `OpenClaw.BrowserBootstrap.exe`, not a batch or PowerShell launcher.
+Setup discovers the packaged helper or the Windows companion installation. Portable
+installations can select its absolute local path with `--native-host-executable`.
+The shared Windows registration service owns native registration and Store requests.
+The standalone Windows CLI delegates through the executable’s bounded management
+interface, explicitly binding its Windows Node/CLI, state directory, config path
+and browser profile. The Companion uses its separate managed-WSL mode and live
+Gateway authority. Neither mode falls back to the other when unavailable.
+Private, verified generations live beneath the current user’s Local App Data
+OpenClawTray directory. The service proves binary framing and admission before
+registering Chrome/Chromium in both applicable user registry views. It will not overwrite a
+foreign registration, shadow a machine registration, or treat WSL/UNC paths or
+an SSH loopback URL as local Windows authority. Missing/incompatible executables
+or unsafe ACLs keep setup blocked; there is no script fallback or copied-key prompt.
+A different existing mode/context or legacy unrecognized registration is preserved
+and reported as a conflict, not silently replaced. Interrupted management with no
+clean receipt is an unknown outcome: inspect the same context before retrying.
+Windows Store removal uses `extension uninstall-host --remove-store`; this removes
+owned Store requests first and then owned native registration. The macOS
+`uninstall-store` command continues to leave native registration unchanged.
 
 ## Install
 
-Launch Chrome at least once, then run this command on the machine that hosts
-Chrome. See [`openclaw browser`](/cli/browser) for the full `browser extension`
-subcommand reference:
+Run this command on the machine that hosts Chrome. Google Chrome on macOS can
+be prepared before its first launch; other supported browsers need to be
+launched once first. See [`openclaw browser`](/cli/browser) for the full
+`browser extension` subcommand reference:
 
 ```bash
 openclaw browser extension install
@@ -48,16 +67,36 @@ enable **OpenClaw** in Chrome. OpenClaw never restarts Chrome or approves its
 permission prompt for you. The request applies to all profiles in that Chrome
 user-data directory. Chrome controls approval in each profile.
 
-In the macOS app, **Dashboard → Settings → This Mac → Browser → Set up Chrome on
-this Mac** runs the same local setup. This always prepares Chrome on this Mac,
-even when the app is connected to a remote Gateway. A browser-based dashboard
-provides Store and setup-guide links instead of installing software locally.
+The native macOS app prepares this automatically after primary launch and
+after successful CLI installation or updates. Packaged apps use their validated
+private runtime, so a remote-only Mac does not need a separate CLI install.
+Automatic registration belongs to the default app profile; named profiles keep
+explicit setup because Chrome shares one native-host registration per user.
+
+**Dashboard → Settings → This Mac → Browser → Set up Chrome on this Mac** retries
+the same serialized canonical setup controller. It always prepares this Mac,
+not the remote Gateway. Browser setup and the native helper read configuration
+without Gateway-wide Doctor or migration of an independently managed Gateway
+database. Ordinary browser commands still report invalid configuration. A
+browser-based dashboard provides Store and setup-guide links rather than
+installing software locally.
+
+The Tauri desktop app also prepares the local helper at startup and after local
+CLI setup. Release builds can provision a matching browser-only runtime in their
+app-data directory without changing a Gateway service or its installed code.
+Use **Set Up Chrome Extension…** in the tray to retry and open the official Store
+after registration succeeds. Startup never opens Store windows or undoes Chrome
+removal/disable choices. Development builds need an existing CLI, and Windows
+Tauri test builds do not provision this runtime. Remote-only desktop connections
+still need a browser node on the Chrome host to expose its tabs to the Gateway.
 
 On Linux and in other supported Chromium browsers, add
 [OpenClaw from the Chrome Web Store](https://chromewebstore.google.com/detail/openclaw/kcdjddhmeafeomebliikmbpblkmkfoig)
 after native-host registration succeeds. Linux does not support this per-user
-Store installation request. Windows requires adding the Store extension and
-[manual pairing](#advanced-manual-pairing).
+Store installation request. On Windows, add the Store extension after the native
+executable has passed setup. Supported same-host pairing then happens through the
+native channel without copying a key. Chrome still owns its installation and
+permission approval.
 
 You can also use the Store link if Chrome does not offer the requested install.
 If you previously removed the extension, Chrome remembers that choice. Explicitly
@@ -367,14 +406,20 @@ The Settings page owns manual pairing. Generate a host-local pairing string:
 openclaw browser extension pair
 ```
 
-Manual pairing remains useful on Windows and for recovery. Treat the complete
+Manual pairing remains useful for unsupported topologies and recovery. Treat the complete
 pairing string as a password.
 
-Without `--gateway-url`, this command retains the host-local `/extension` relay
+Without `--gateway-url` or `--local-gateway`, this command retains the host-local `/extension` relay
 for standalone manual pairing. It does not wake Browser control. With native
 wake-up support installed and automatic setup enabled, the extension can
 start that relay on reconnect without a local Gateway. Otherwise, the relay
 must already be running, for example through Browser control or a browser node.
+
+Desktop native helpers can use `openclaw browser extension pair --local-gateway --json`
+to obtain the same local Gateway wake-up route as automatic native bootstrap.
+This requires a local Gateway configuration, rejects `--gateway-url`, and keeps
+ordinary manual pairing unchanged. Its output contains the relay credential
+and must not be logged.
 
 For a laptop that has Chrome but does not run OpenClaw or a browser node, pair
 directly to a remote Gateway:
@@ -556,7 +601,9 @@ openclaw doctor
 - **Automatic setup disabled:** enable it in Settings or click **Use local
   OpenClaw**.
 - **Manual setup required:** use Settings for the advanced pairing flow. This
-  is expected on Windows and direct extension-only remote Gateway setups.
+  is expected for direct extension-only remote Gateway setups. On Windows, first
+  check that the packaged native executable and matching local CLI are installed
+  and that their private ACL/context checks succeed.
 - **Relay unavailable:** for `/browser/extension` pairings, confirm the target
   Gateway is running. For direct loopback `/extension` pairings, check native
   host registration, wake-up support in the extension build, automatic setup,

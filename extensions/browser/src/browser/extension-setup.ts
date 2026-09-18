@@ -64,6 +64,7 @@ type SetupOptions = {
   profile?: string;
   waitMs?: number;
   requestStoreInstall?: boolean;
+  nativeHostExecutable?: string;
   signal?: AbortSignal;
   onProgress?: (message: string) => void;
 };
@@ -80,12 +81,19 @@ export async function observeBrowserExtensionSetup(
     | "signal"
     | "onProgress"
     | "profile"
+    | "nativeHostExecutable"
   >,
 ): Promise<BrowserExtensionStatus> {
   options.signal?.throwIfAborted();
   return options.action === "install"
     ? installChromeExtensionBootstrap({ ...options, browserProfile: options.profile })
-    : browserExtensionStatus({ bundledDir: options.bundledDir });
+    : browserExtensionStatus({
+        bundledDir: options.bundledDir,
+        pluginRoot: options.pluginRoot,
+        browserProfile: options.profile,
+        nativeHostExecutable: options.nativeHostExecutable,
+        signal: options.signal,
+      });
 }
 
 /** Native bootstrap, not the UI, transfers the host-local key to the origin-locked extension. */
@@ -94,7 +102,7 @@ export async function runBrowserExtensionSetup(
 ): Promise<BrowserExtensionSetupResult> {
   // Capture the exact host profile before any install effect. Never use Gateway auto-routing.
   const resolved = resolveBrowserConfig(options.cfg.browser, options.cfg);
-  const profileName = options.profile?.trim() || "chrome";
+  const profileName = options.profile ?? "chrome";
   const profile = resolveProfile(resolved, profileName);
   if (!profile || profile.driver !== "extension") {
     throw new Error("Chrome setup requires an existing extension browser profile");

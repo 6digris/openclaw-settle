@@ -311,6 +311,59 @@ describe("browser extension pairing Gateway URL", () => {
     },
   );
 
+  it("pairs desktop helpers through the local Gateway wake-up route", async () => {
+    vi.spyOn(cliCoreApiModule, "getRuntimeConfig").mockReturnValue({ gateway: { mode: "local" } });
+    const writeJsonSpy = vi
+      .spyOn(cliCoreApiModule.defaultRuntime, "writeJson")
+      .mockImplementation(runtime.writeJson);
+    const logSpy = vi.spyOn(cliCoreApiModule.defaultRuntime, "log").mockImplementation(runtime.log);
+    const { registerBrowserExtensionCommands } = await import("./browser-cli-extension.js");
+    const program = new Command().exitOverride();
+    registerBrowserExtensionCommands(program.command("browser"), () => ({}));
+
+    await program.parseAsync(["browser", "extension", "pair", "--local-gateway", "--json"], {
+      from: "user",
+    });
+
+    expect(writeJsonSpy).toHaveBeenCalledWith({
+      pairingString: expect.stringContaining("/browser/extension?gateway="),
+      relayPort: 18799,
+      remote: false,
+    });
+    expect(logSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { config: {}, args: ["--gateway-url", "wss://gateway.example"], message: "cannot be combined" },
+    {
+      config: { gateway: { mode: "remote" as const, remote: { url: "wss://gateway.example" } } },
+      args: [],
+      message: "requires a local Gateway",
+    },
+  ])(
+    "rejects conflicting desktop pairing targets before reading a relay key",
+    async ({ config, args, message }) => {
+      vi.spyOn(cliCoreApiModule, "getRuntimeConfig").mockReturnValue(config);
+      const errorSpy = vi
+        .spyOn(cliCoreApiModule.defaultRuntime, "error")
+        .mockImplementation(runtime.error);
+      vi.spyOn(cliCoreApiModule.defaultRuntime, "exit").mockImplementation(runtime.exit);
+      relayMocks.ensureExtensionRelayToken.mockClear();
+      const { registerBrowserExtensionCommands } = await import("./browser-cli-extension.js");
+      const program = new Command().exitOverride();
+      registerBrowserExtensionCommands(program.command("browser"), () => ({}));
+
+      await expect(
+        program.parseAsync(["browser", "extension", "pair", "--local-gateway", "--json", ...args], {
+          from: "user",
+        }),
+      ).rejects.toThrow("__exit__:1");
+
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining(message));
+      expect(relayMocks.ensureExtensionRelayToken).not.toHaveBeenCalled();
+    },
+  );
+
   it("pairs with the allocated extension relay when another profile pins the default port", async () => {
     vi.spyOn(cliCoreApiModule, "getRuntimeConfig").mockReturnValue({
       browser: {

@@ -41,6 +41,7 @@ function createCapability(
     openPanel: vi.fn(),
     checkForUpdates: vi.fn(),
     setupChromeExtension: vi.fn(),
+    installChromeExtension: vi.fn(),
     refresh: vi.fn(),
     dispose: vi.fn(),
   } satisfies NativeDeviceSettingsCapability;
@@ -153,6 +154,27 @@ describe("native device settings pages", () => {
     await page.updateComplete;
     expect(row(page, "Desktop availability").textContent).toContain("Unlocked");
     expect(page.textContent).not.toContain("Unattended desktop hosting");
+  });
+
+  it("offers only the shipped install operation on a contract-1 host without new action advertisement", async () => {
+    const snapshot = createNativeDeviceSettingsSnapshot();
+    delete snapshot.browser.chromeSetupActions;
+    const { capability } = createCapability(snapshot);
+    capability.installChromeExtension.mockResolvedValue({
+      nativeHostRegistered: true,
+      installRequested: true,
+      discoveredProfiles: 0,
+    });
+    const page = await mount("openclaw-device-page", capability);
+    const buttons = row(page, "Set up Chrome on this device").querySelectorAll<HTMLButtonElement>(
+      "button",
+    );
+    expect(buttons).toHaveLength(1);
+    expect(capability.installChromeExtension).not.toHaveBeenCalled();
+    buttons[0]!.click();
+    await vi.waitFor(() => expect(capability.installChromeExtension).toHaveBeenCalledTimes(1));
+    expect(capability.setupChromeExtension).not.toHaveBeenCalled();
+    expect(page.textContent).not.toContain("Extension connected on this device");
   });
 
   it("runs install, refresh and verify only on explicit clicks and separates approval from connection", async () => {
