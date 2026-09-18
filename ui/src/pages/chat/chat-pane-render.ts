@@ -334,6 +334,15 @@ export class ChatPane extends ChatPaneLayoutRender {
       unarchiveAccess: mutationAccess.unarchive,
     });
     const initialHistoryUnavailable = !catalogKey && isInitialChatHistoryUnavailable(state);
+    const primaryDisabledReason =
+      catalogDisabledReason ??
+      disabledReason ??
+      placementComposer.busyMessage ??
+      (placementComposer.state.kind === "failed" && !placementComposer.state.recoveryAction
+        ? placementComposer.failedUnavailableMessage
+        : null);
+    const visibleSendHoldReason =
+      placementStartup || initialHistoryUnavailable ? null : sendHoldReason;
     const composerAvailability = {
       canSend:
         sessionDisabledBanner?.kind !== "composer-replacement" &&
@@ -346,14 +355,12 @@ export class ChatPane extends ChatPaneLayoutRender {
             (!sendHoldReason || initialHistoryUnavailable)),
       ...initialHistorySubmitState(state, initialHistoryUnavailable),
       modelRequiredReason,
-      disabledReason:
-        catalogDisabledReason ??
-        disabledReason ??
-        placementComposer.busyMessage ??
-        (placementComposer.state.kind === "failed" && !placementComposer.state.recoveryAction
-          ? placementComposer.failedUnavailableMessage
-          : null) ??
-        (placementStartup || initialHistoryUnavailable ? null : sendHoldReason),
+      disabledReason: primaryDisabledReason ?? visibleSendHoldReason,
+      disabledReasonFloating:
+        primaryDisabledReason === null &&
+        visibleSendHoldReason !== null &&
+        state.connected &&
+        state.client?.recoveryScopeReady === false,
       disabledReasonTone:
         placementComposer.busyMessage || (sessionParticipationBlocked && !suggestionViewer)
           ? ("info" as const)

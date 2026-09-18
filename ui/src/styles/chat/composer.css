@@ -140,6 +140,18 @@
   color: color-mix(in srgb, var(--danger) 78%, var(--text));
 }
 
+.agent-chat__composer-underlaps--floating {
+  border-top-width: 1px;
+  border-top-style: solid;
+  border-radius: var(--chat-composer-radius);
+  margin-top: 0;
+  padding-top: 0;
+}
+
+.agent-chat__composer-underlaps--floating .agent-chat__composer-status-band {
+  white-space: normal;
+}
+
 .agent-chat__composer-status-band {
   display: flex;
   align-items: center;

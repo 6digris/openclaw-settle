@@ -243,9 +243,15 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
         : offlineText
           ? { text: offlineText, tone: "warn" as const, icon: icons.globeOff }
           : null;
+  const floatingComposerStatus = Boolean(props.disabledReason && props.disabledReasonFloating);
   const composerUnderlaps =
     showComposerInput && primaryComposerStatus
-      ? html`<div class="agent-chat__composer-underlaps" data-tone=${primaryComposerStatus.tone}>
+      ? html`<div
+          class="agent-chat__composer-underlaps ${
+            floatingComposerStatus ? "agent-chat__composer-underlaps--floating" : ""
+          }"
+          data-tone=${primaryComposerStatus.tone}
+        >
           <div
             id=${props.disabledReason ? disabledReasonId : nothing}
             class="agent-chat__composer-status-band"
@@ -343,6 +349,7 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
     >
       <div class="agent-chat__composer-overlay">
         ${props.anchoredNotices ?? nothing} ${composerAlerts} ${fallbackStatus}
+        ${floatingComposerStatus ? composerUnderlaps : nothing}
         ${
           interruptedStatus === nothing
             ? nothing
@@ -609,7 +616,7 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
             ? disabledBanner
             : nothing
       }
-      ${composerUnderlaps}
+      ${floatingComposerStatus ? nothing : composerUnderlaps}
     </div>
   `;
 }
