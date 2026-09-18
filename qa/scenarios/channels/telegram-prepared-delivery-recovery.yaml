@@ -211,7 +211,21 @@ flow:
                   expr: received.at(-1)
               - assert:
                   expr: 'received.length === (caseName === "media" ? 2 : 1) && finalNative.text === expectedText && finalNative.contentType === "messageText" && (caseName !== "media" || (received[0].contentType === "messageDocument" && received[0].text === blockCaption))'
-                  message: one complete native text final must preserve literal text, preceded by exactly one document in the media case
+                  message:
+                    expr: |-
+                      JSON.stringify({
+                        case: caseName,
+                        expected: { count: caseName === 'media' ? 2 : 1, text: expectedText, contentType: 'messageText' },
+                        observed: received.map(({ kind, text, contentType, entities }) => {
+                          const fixtureText = expectedText.replace(/\s/gu, '').includes(text.replace(/\s/gu, '')) || text === blockCaption;
+                          return {
+                            kind, contentType, text: fixtureText ? text : text.replace(/\S/gu, '?'), nonWhitespaceRedacted: !fixtureText,
+                            entities: entities.map(({ offset, length, type }) => ({ offset, length, type: type['@type'] })),
+                          };
+                        }),
+                        correctlyTargeted: sequence.final.replyToId === inbound.id,
+                        eventKinds: sequence.events.map(({ kind }) => kind),
+                      })
               - set: observedCode
                 value:
                   expr: "finalNative.entities.filter((entity) => ['textEntityTypePre', 'textEntityTypePreCode'].includes(entity.type['@type'])).map((entity) => finalNative.text.slice(entity.offset, entity.offset + entity.length))"
