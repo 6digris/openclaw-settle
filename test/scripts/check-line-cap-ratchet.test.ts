@@ -75,6 +75,40 @@ describe("line-cap growth ratchet", () => {
     ).toEqual([]);
   });
 
+  it.each([
+    {
+      label: "under-cap repair of invalid base",
+      base: source(1) + source(1),
+      candidate: source(3),
+      result: 0,
+    },
+    {
+      label: "invalid candidate against valid base",
+      base: source(3),
+      candidate: source(2) + source(1),
+      result: 1,
+    },
+    {
+      label: "over-cap candidate with invalid base",
+      base: source(1) + source(1),
+      candidate: source(4),
+      result: 1,
+    },
+  ])("validates $label", ({ base, candidate, result }) => {
+    const root = fixture();
+    const target = path.join(root, "src/file.ts");
+    fs.writeFileSync(target, base);
+    git(root, "add", ".");
+    git(root, "commit", "-m", "baseline source");
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    fs.writeFileSync(target, candidate);
+    expect(main(root, ["--base", "HEAD"])).toBe(result);
+    if (result === 1) {
+      expect(errors).toHaveBeenCalledWith(expect.stringContaining("Cannot measure src/file.ts"));
+    }
+  });
+
   it.each(["warn", "error"])(
     "ratchets %s diagnostics across renames, staged and untracked sources",
     (severity) => {
