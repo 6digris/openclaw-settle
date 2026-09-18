@@ -76,6 +76,17 @@ logger under subsystem `ai.openclaw`, category `node-host-worker`; see
 [macOS logging](/platforms/mac/logging) for capture options. After fixing the cause,
 restart the node host. Explicitly disabled hosting produces no such diagnostic.
 
+After a node-host restart, session capacity remains occupied until worker cleanup
+is verified. Released direct workers are recovered through their original process
+group even if its leader has already exited. Newer workers retain a cleanup anchor
+that records descendant completion before exiting; recovery also waits for its
+process group to disappear. If the anchor dies without that record, the node logs
+`lost its cleanup anchor without recorded lineage completion` and keeps the slot
+reserved. Inspect remaining worker descendants and the node-host logs; another
+restart alone cannot establish that cleanup finished. Other free slots remain
+available. See the [database compatibility contract](/reference/database-schemas/versioning)
+before downgrading a node with active workers.
+
 ## Node runtime version differs from the CLI
 
 A packaged headless node can run a newer private runtime than the globally
