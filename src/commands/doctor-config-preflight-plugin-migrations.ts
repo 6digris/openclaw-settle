@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { resolveDeferredPluginMigrationConfigPaths } from "../config/deferred-plugin-migration-config.js";
+import { cloneEnvWithPlatformSemantics } from "../config/env-vars.js";
 import type { ConfigSnapshotReadMeasure } from "../config/io.js";
 import { resolveConfigPath } from "../config/paths.js";
 import type { ConfigFileSnapshot } from "../config/types.js";
@@ -8,7 +9,7 @@ import {
   DeferredPluginMigrationConflictError,
   formatDeferredPluginMigration,
   mergeDeferredPluginMigration,
-  readDeferredPluginMigrations,
+  readDeferredPluginMigrationsForInspection,
   recordDeferredPluginMigrations,
   type DeferredPluginMigration,
 } from "../infra/deferred-plugin-migrations.js";
@@ -19,6 +20,8 @@ import type {
 } from "../infra/state-migrations.types.js";
 import type { PluginMetadataSnapshotScopeRunner } from "../plugins/current-plugin-metadata-snapshot.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
+import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
+import { throwStartupMigrationIdentityChanged } from "./doctor-startup-migration-refusal.js";
 import {
   inspectPluginMigrationAvailability,
   type PluginMigrationInspection,
@@ -43,11 +46,22 @@ export function createDoctorPluginMigrationPreparation(params: {
   let expectedPending: readonly DeferredPluginMigration[] = [];
   let refreshSnapshot = false;
   let previousLoaded = false;
-  const loadPrevious = (snapshot?: ConfigFileSnapshot) => {
+  const loadPrevious = async (snapshot?: ConfigFileSnapshot) => {
     if (previousLoaded || !(snapshot?.exists ?? existsSync(resolveConfigPath(params.env())))) {
       return;
     }
-    deferred = readDeferredPluginMigrations({ env: params.env() });
+    const env = cloneEnvWithPlatformSemantics(params.env());
+    const configPath = resolveConfigPath(env);
+    const databasePath = resolveOpenClawStateSqlitePath(env);
+    const pending = await readDeferredPluginMigrationsForInspection({ env });
+    const currentEnv = params.env();
+    if (
+      resolveConfigPath(currentEnv) !== configPath ||
+      resolveOpenClawStateSqlitePath(currentEnv) !== databasePath
+    ) {
+      throwStartupMigrationIdentityChanged();
+    }
+    deferred = pending;
     expectedPending = structuredClone(deferred);
     for (const entry of deferred) {
       previousById.set(entry.pluginId, entry);
@@ -87,7 +101,7 @@ export function createDoctorPluginMigrationPreparation(params: {
     }
   };
   const prepare = async (snapshot: ConfigFileSnapshot) => {
-    loadPrevious(snapshot);
+    await loadPrevious(snapshot);
     if (!snapshot.exists) {
       return [...previousById.values()];
     }
@@ -178,9 +192,9 @@ export function createDoctorPluginMigrationPreparation(params: {
     deferred: () => deferred,
     hasPending: () => previousById.size > 0,
     prepare,
-    snapshotOptions: () => {
+    snapshotOptions: async () => {
       // Existing pending inputs must reach the first config read before backup selection.
-      loadPrevious();
+      await loadPrevious();
       return {
         preparePluginMigrations: !prepared && params.enabled ? prepare : undefined,
         deferredPluginMigrations: [...previousById.values()],

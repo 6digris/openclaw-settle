@@ -1,14 +1,15 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { gunzipSync } from "node:zlib";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { readConfigFileSnapshot } from "../config/io.js";
 import { readDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import { buildUpdateRehearsalPathEnv } from "../infra/update-rehearsal-paths.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../state/openclaw-state-db-contract.js";
 import { closeOpenClawStateDatabaseByPathAsync } from "../state/openclaw-state-db.js";
-import { withEnvAsync } from "../test-utils/env.js";
+import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
+import { setTestEnvValue, withEnvAsync } from "../test-utils/env.js";
 import { runDoctorConfigPreflight } from "./doctor-config-preflight.js";
 import { withDoctorConfigPreflightHome } from "./doctor-config-preflight.test-support.js";
 
@@ -200,6 +201,82 @@ describe("configured plugin migration deferral", () => {
       );
     });
   });
+
+  it.each(["state", "config"] as const)(
+    "rejects a changed %s target before pending migration inputs reach config selection",
+    async (target) => {
+      await withDoctorConfigPreflightHome(async (home) => {
+        const selectedState = path.join(home, "selected-state");
+        const otherState = path.join(home, "other-state");
+        const configPath = path.join(home, "selected.json");
+        const otherConfigPath = path.join(home, "other.json");
+        const raw = JSON.stringify({ gateway: { mode: "local" }, legacyFixture: "retained" });
+        await fs.writeFile(configPath, raw);
+        await fs.writeFile(otherConfigPath, raw);
+        await withEnvAsync(
+          {
+            OPENCLAW_STATE_DIR: selectedState,
+            OPENCLAW_CONFIG_PATH: configPath,
+            OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
+          },
+          async () => {
+            const databasePath = resolveOpenClawStateSqlitePath();
+            const migrations = await import("../infra/deferred-plugin-migrations.js");
+            migrations.recordDeferredPluginMigrations({
+              pending: [
+                {
+                  pluginId: "missing-fixture",
+                  reason: "The configured plugin is not installed.",
+                  command: "openclaw doctor --fix",
+                  configPaths: [["legacyFixture"]],
+                  validationExcludedPaths: [["legacyFixture"]],
+                },
+              ],
+            });
+            const inspect = migrations.readDeferredPluginMigrationsForInspection;
+            const inspection = vi
+              .spyOn(migrations, "readDeferredPluginMigrationsForInspection")
+              .mockImplementationOnce(async (options) => {
+                const pending = await inspect(options);
+                setTestEnvValue(
+                  target === "state" ? "OPENCLAW_STATE_DIR" : "OPENCLAW_CONFIG_PATH",
+                  target === "state" ? otherState : otherConfigPath,
+                );
+                return pending;
+              });
+            const configReads: string[] = [];
+            try {
+              const failure = await runDoctorConfigPreflight({
+                migrateState: false,
+                migrateLegacyConfig: false,
+                invalidConfigNote: false,
+                observe: false,
+                measure: async (name, run) => {
+                  if (name === "config.snapshot.read.file") {
+                    configReads.push(name);
+                  }
+                  return await run();
+                },
+              }).then(
+                () => undefined,
+                (error: unknown) => error,
+              );
+              expect(failure).toMatchObject({
+                code: 78,
+                message: expect.stringContaining("migration inputs changed"),
+              });
+              expect(configReads).toEqual([]);
+              expect(await fs.readFile(configPath, "utf8")).toBe(raw);
+              expect(await fs.readFile(otherConfigPath, "utf8")).toBe(raw);
+            } finally {
+              inspection.mockRestore();
+              await closeOpenClawStateDatabaseByPathAsync(databasePath);
+            }
+          },
+        );
+      });
+    },
+  );
 
   it("preserves a newer migration obligation after an ordinary Doctor observed a stateless plugin", async () => {
     await withDoctorConfigPreflightHome(async (home) => {

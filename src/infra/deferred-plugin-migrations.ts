@@ -5,6 +5,7 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
 import { openClawStateDatabaseCache } from "../state/openclaw-state-db-cache.js";
 import {
   withExistingOpenClawStateDatabaseArtifactPreservingReadOnly,
+  withExistingOpenClawStateDatabaseArtifactPreservingReadOnlyAsync,
   withExistingOpenClawStateDatabaseCurrentReadOnly,
 } from "../state/openclaw-state-db-readonly.js";
 import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
@@ -112,6 +113,18 @@ export function readDeferredPluginMigrations(
       ({ db }) => readPendingMigrationRecords(db),
       options,
     ) ?? []
+  );
+}
+
+/** Doctor reuses its read-only child for cold snapshots and admitted native readers when open. */
+export async function readDeferredPluginMigrationsForInspection(
+  options: { path?: string; env?: NodeJS.ProcessEnv } = {},
+): Promise<readonly DeferredPluginMigration[]> {
+  return (
+    (await withExistingOpenClawStateDatabaseArtifactPreservingReadOnlyAsync(
+      ({ db }) => readPendingMigrationRecords(db),
+      options,
+    )) ?? []
   );
 }
 

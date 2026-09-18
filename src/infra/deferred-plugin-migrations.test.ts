@@ -14,6 +14,7 @@ import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths
 import {
   assertDeferredPluginMigrationsCurrent,
   readDeferredPluginMigrations,
+  readDeferredPluginMigrationsForInspection,
   recordDeferredPluginMigrations,
   withDeferredPluginMigrationsCurrent,
 } from "./deferred-plugin-migrations.js";
@@ -57,11 +58,19 @@ describe("deferred configured-plugin migrations", () => {
     return { stateDir, env: { ...process.env, OPENCLAW_STATE_DIR: stateDir } };
   }
 
-  it("reads absent migration state without creating a database", () => {
-    const { env, stateDir } = fixture();
-    expect(readDeferredPluginMigrations({ env })).toEqual([]);
-    expect(fs.existsSync(stateDir)).toBe(false);
-  });
+  const readers = [
+    { name: "synchronous", read: readDeferredPluginMigrations },
+    { name: "inspection", read: readDeferredPluginMigrationsForInspection },
+  ];
+
+  it.each(readers)(
+    "$name reads absent migration state without creating a database",
+    async ({ read }) => {
+      const { env, stateDir } = fixture();
+      expect(await read({ env })).toEqual([]);
+      expect(fs.existsSync(stateDir)).toBe(false);
+    },
+  );
 
   it.each(["absent", "historical"] as const)(
     "publishes without changing %s state when no plugin migration is pending",
@@ -230,63 +239,66 @@ describe("deferred configured-plugin migrations", () => {
     expect(readMigrationCheckpointStatus(checkpoint)).toBe("startup-current");
   });
 
-  it("retains pending migrations across restart and resolves only the completed plugin", () => {
-    const { env, stateDir } = fixture();
-    const alpha = {
-      pluginId: "alpha",
-      reason: "The configured plugin is not installed.",
-      command: "openclaw plugins install @example/alpha",
-      configPaths: [
-        ["plugins", "entries", "alpha"],
-        ["session", "store"],
-      ],
-      validationExcludedPaths: [["session", "store"]],
-    };
-    const beta = {
-      pluginId: "beta",
-      reason: "Plugin convergence is deferred until the update parent exits.",
-      command: "openclaw doctor --fix",
-    };
-
-    recordDeferredPluginMigrations({ env, pending: [alpha, beta] });
-    closeOpenClawStateDatabaseForTest();
-    const sharedStateDir = path.join(stateDir, "state");
-    const snapshot = () =>
-      Object.fromEntries(
-        fs.readdirSync(sharedStateDir).map((name) => [
-          name,
-          createHash("sha256")
-            .update(fs.readFileSync(path.join(sharedStateDir, name)))
-            .digest("hex"),
-        ]),
-      );
-    const beforeRead = snapshot();
-    expect(readDeferredPluginMigrations({ env })).toEqual([alpha, beta]);
-    expect(snapshot()).toEqual(beforeRead);
-    expect(log.warn).toHaveBeenCalledWith(
-      expect.stringContaining('Plugin "alpha" state migration is pending:'),
-      { pluginId: "alpha", reason: alpha.reason, action: alpha.command, status: "pending" },
-    );
-
-    log.warn.mockClear();
-    recordDeferredPluginMigrations({ env, pending: [alpha] });
-    expect(log.warn).not.toHaveBeenCalled();
-
-    recordDeferredPluginMigrations({ env, pending: [], resolvedPluginIds: ["alpha"] });
-    closeOpenClawStateDatabaseForTest();
-    expect(readDeferredPluginMigrations({ env })).toEqual([beta]);
-    expect(log.info).toHaveBeenCalledWith(
-      'Deferred state migration completed for plugin "alpha".',
-      {
+  it.each(readers)(
+    "$name retains pending migrations across restart and resolves only the completed plugin",
+    async ({ read }) => {
+      const { env, stateDir } = fixture();
+      const alpha = {
         pluginId: "alpha",
-        status: "completed",
-      },
-    );
+        reason: "The configured plugin is not installed.",
+        command: "openclaw plugins install @example/alpha",
+        configPaths: [
+          ["plugins", "entries", "alpha"],
+          ["session", "store"],
+        ],
+        validationExcludedPaths: [["session", "store"]],
+      };
+      const beta = {
+        pluginId: "beta",
+        reason: "Plugin convergence is deferred until the update parent exits.",
+        command: "openclaw doctor --fix",
+      };
 
-    recordDeferredPluginMigrations({ env, pending: [], resolvedPluginIds: ["beta"] });
-    closeOpenClawStateDatabaseForTest();
-    expect(readDeferredPluginMigrations({ env })).toEqual([]);
-  });
+      recordDeferredPluginMigrations({ env, pending: [alpha, beta] });
+      closeOpenClawStateDatabaseForTest();
+      const sharedStateDir = path.join(stateDir, "state");
+      const snapshot = () =>
+        Object.fromEntries(
+          fs.readdirSync(sharedStateDir).map((name) => [
+            name,
+            createHash("sha256")
+              .update(fs.readFileSync(path.join(sharedStateDir, name)))
+              .digest("hex"),
+          ]),
+        );
+      const beforeRead = snapshot();
+      expect(await read({ env })).toEqual([alpha, beta]);
+      expect(snapshot()).toEqual(beforeRead);
+      expect(log.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Plugin "alpha" state migration is pending:'),
+        { pluginId: "alpha", reason: alpha.reason, action: alpha.command, status: "pending" },
+      );
+
+      log.warn.mockClear();
+      recordDeferredPluginMigrations({ env, pending: [alpha] });
+      expect(log.warn).not.toHaveBeenCalled();
+
+      recordDeferredPluginMigrations({ env, pending: [], resolvedPluginIds: ["alpha"] });
+      closeOpenClawStateDatabaseForTest();
+      expect(await read({ env })).toEqual([beta]);
+      expect(log.info).toHaveBeenCalledWith(
+        'Deferred state migration completed for plugin "alpha".',
+        {
+          pluginId: "alpha",
+          status: "completed",
+        },
+      );
+
+      recordDeferredPluginMigrations({ env, pending: [], resolvedPluginIds: ["beta"] });
+      closeOpenClawStateDatabaseForTest();
+      expect(await read({ env })).toEqual([]);
+    },
+  );
 
   it("preserves declared ownership when plugin metadata disappears until explicit completion", () => {
     const { env } = fixture();
