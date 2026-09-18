@@ -63,6 +63,7 @@ async function startFixture(options: { stop?: () => Promise<void>; bound?: boole
   markPluginRegistryActive(registry);
   let serviceContext: OpenClawPluginServiceContext | undefined;
   registry.services.push({
+    id: "files-service",
     pluginId: record.id,
     source: record.source,
     origin: record.origin,
