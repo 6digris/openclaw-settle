@@ -132,7 +132,7 @@ export async function refreshUpdatedGatewayService(
   params: UpdatedInstallGatewayCommandParams & {
     serviceEnv: NodeJS.ProcessEnv;
     assertCurrent: () => void;
-    onDefinitionBackup?: (backup: GatewayServiceDefinitionBackup) => void;
+    onDefinitionBackup?: (backup: GatewayServiceDefinitionBackup | undefined) => void;
     onWarnings?: (warnings: readonly string[]) => void;
   },
 ): Promise<void> {
@@ -163,6 +163,7 @@ export async function refreshUpdatedGatewayService(
   }
   const warnings: string[] = [];
   let publication: GatewayServiceDefinitionPublication | undefined;
+  let installedWithoutPublication = false;
   await runUpdatedInstallGatewayCommand(
     {
       ...params,
@@ -172,10 +173,10 @@ export async function refreshUpdatedGatewayService(
             ...response.warnings.filter((value): value is string => typeof value === "string"),
           );
         }
+        const installed = response.action === "install" && response.ok === true;
+        installedWithoutPublication = installed && response.definitionPublication === undefined;
         const parsed = GatewayServiceDefinitionPublicationSchema.safeParse(
-          response.action === "install" && response.ok === true
-            ? response.definitionPublication
-            : undefined,
+          installed ? response.definitionPublication : undefined,
         );
         if (parsed.success) {
           publication = parsed.data;
@@ -210,6 +211,12 @@ export async function refreshUpdatedGatewayService(
           { cause: error },
         );
       }
+    } else if (installedWithoutPublication) {
+      // Older installers leave regeneration to the restored release; keep the disk backup.
+      params.onDefinitionBackup?.(undefined);
+      warnings.push(
+        "The installer did not return service publication facts; rollback will use the previous release's installer. The service backup is retained.",
+      );
     } else {
       warnings.push(
         "The installer did not return service publication facts; the backup is retained for manual recovery.",

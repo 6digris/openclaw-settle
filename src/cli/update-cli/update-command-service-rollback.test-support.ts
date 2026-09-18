@@ -5,6 +5,7 @@ import { writePackageDistInventory } from "../../../scripts/lib/package-dist-inv
 import { readConfigFileSnapshot } from "../../config/config.js";
 import { resolveStateDir } from "../../config/paths.js";
 import type { GatewayServiceDefinitionBackup } from "../../daemon/service-definition-backup.js";
+import { resolveSystemdUnitPath } from "../../daemon/systemd-service-files.js";
 import { writePackageRoot } from "../../infra/package-update-steps.test-support.js";
 import {
   swapStagedPackageInstall,
@@ -15,6 +16,7 @@ import type { ResolvedGlobalInstallTarget } from "../../infra/update-global.js";
 import { prepareNativePackageStage } from "../../infra/update-native-package-stage.js";
 import { VERSION } from "../../version.js";
 import { rollbackFailedUpdate } from "./update-command-rollback.js";
+import { refreshUpdatedGatewayService } from "./update-command-service-command.js";
 import type { PreManagedServiceStop } from "./update-command-service-context-types.js";
 import type { InstallRootTransitionFixture } from "./update-command-service-transition.test-support.js";
 import { maybeStopManagedServiceBeforeMutableUpdate } from "./update-command-service.js";
@@ -29,6 +31,7 @@ export function registerPackageRootRollbackTests(
     "retained",
     "refreshed",
     "definition drift",
+    "missing publication",
     "running original",
     "changed command",
     "changed manager",
@@ -39,7 +42,8 @@ export function registerPackageRootRollbackTests(
     "foreign command during install",
   ] as const)("rolls back a pnpm generation with %s service ownership", async (scenario) => {
     const { root, run, mocks } = getFixture();
-    const definitionDrift = scenario === "definition drift";
+    const missingPublication = scenario === "missing publication";
+    const definitionDrift = scenario === "definition drift" || missingPublication;
     const changesDuringInstall =
       scenario === "changed manager during install" ||
       scenario === "foreign command during install";
@@ -59,6 +63,7 @@ export function registerPackageRootRollbackTests(
     await fs.mkdir(binDir);
     await fs.writeFile(path.join(binDir, "openclaw"), "previous launcher\n");
     const command = {
+      ...(missingPublication ? { sourcePath: resolveSystemdUnitPath(process.env) } : {}),
       programArguments: [
         process.execPath,
         path.join(previousRoot, "dist", "index.js"),
@@ -74,8 +79,8 @@ export function registerPackageRootRollbackTests(
           : {}),
       },
     };
-    const definition = path.join(root, "service-definition.service");
-    const definitionBackup = `${definition}.bak`;
+    const definition = command.sourcePath ?? path.join(root, "service-definition.service");
+    let definitionBackup = `${definition}.bak`;
     const previousCanonical = [
       "[Service]",
       `ExecStart=${command.programArguments.join(" ")}`,
@@ -86,6 +91,7 @@ export function registerPackageRootRollbackTests(
       "",
     ].join("\n");
     const staleDefinition = previousCanonical.replace("KillMode=mixed\n", "");
+    const candidateCanonical = previousCanonical.replace("RestartSec=5", "RestartSec=15");
     let serviceDefinitionBackup: GatewayServiceDefinitionBackup | undefined;
     if (definitionDrift) {
       await fs.writeFile(definition, staleDefinition);
@@ -96,16 +102,18 @@ export function registerPackageRootRollbackTests(
         previousCanonical,
       );
       await writePackageDistInventory(previousRoot);
-      serviceDefinitionBackup = {
-        backupPaths: [definitionBackup],
-        seal: async () => {},
-        restore: vi.fn(async () => {
-          expect(await fs.readFile(path.join(previousRoot, "package.json"), "utf8")).toContain(
-            VERSION,
-          );
-          await fs.copyFile(definitionBackup, definition);
-        }),
-      };
+      serviceDefinitionBackup = missingPublication
+        ? undefined
+        : {
+            backupPaths: [definitionBackup],
+            seal: async () => {},
+            restore: vi.fn(async () => {
+              expect(await fs.readFile(path.join(previousRoot, "package.json"), "utf8")).toContain(
+                VERSION,
+              );
+              await fs.copyFile(definitionBackup, definition);
+            }),
+          };
     }
     mocks.command.mockResolvedValue(command);
     mocks.capability.mockResolvedValue({ kind: "writable" });
@@ -142,7 +150,7 @@ export function registerPackageRootRollbackTests(
     if (definitionDrift) {
       await fs.writeFile(
         path.join(stagedRoot, "dist", "service-definition.fixture"),
-        previousCanonical.replace("RestartSec=5", "RestartSec=15"),
+        candidateCanonical,
       );
       await writePackageDistInventory(stagedRoot);
     }
@@ -194,8 +202,8 @@ export function registerPackageRootRollbackTests(
     }
     expect(before.stopped).toBe(true);
     const refreshed = scenario === "refreshed" || definitionDrift || changesDuringInstall;
-    if (definitionDrift) {
-      await fs.writeFile(definition, previousCanonical.replace("RestartSec=5", "RestartSec=15"));
+    if (definitionDrift && !missingPublication) {
+      await fs.writeFile(definition, candidateCanonical);
     }
     mocks.running =
       refreshed || ["running original", "changed command", "changed manager"].includes(scenario);
@@ -243,12 +251,46 @@ export function registerPackageRootRollbackTests(
       mocks.capability.mockResolvedValue({ kind: "sealed", reason: "foreign-owner" });
     }
     mocks.configSnapshot.mockResolvedValue(undefined);
+    if (missingPublication) {
+      mocks.running = false;
+      mocks.command.mockResolvedValue(command);
+      mocks.child.mockImplementationOnce(async (argv) => {
+        expect(argv).toContain(path.join(candidateRoot, "dist", "index.js"));
+        expect(argv).toContain("install");
+        await fs.writeFile(definition, candidateCanonical);
+        mocks.command.mockResolvedValue(currentCommand);
+        mocks.running = true;
+        return {
+          code: 0,
+          stdout: JSON.stringify({ action: "install", ok: true }),
+          stderr: "",
+          signal: null,
+          killed: false,
+          termination: "exit",
+        };
+      });
+      await refreshUpdatedGatewayService({
+        result: { root: candidateRoot, mode: "pnpm" },
+        opts: { json: true, run },
+        invocationEnv: process.env,
+        serviceEnv: process.env,
+        assertCurrent: () => {},
+        onDefinitionBackup: (backup) => {
+          serviceDefinitionBackup = backup;
+          if (backup) {
+            definitionBackup = backup.backupPaths[0]!;
+          }
+        },
+      });
+    }
     mocks.child.mockImplementation(async (argv, options) => {
       expect(argv[1]).toBe(path.join(previousRoot, "dist", "index.js"));
       expect(await fs.readFile(path.join(previousRoot, "package.json"), "utf8")).toContain(VERSION);
       if (argv.includes("install")) {
         if (definitionDrift) {
-          expect(await fs.readFile(definition, "utf8")).toBe(staleDefinition);
+          expect(await fs.readFile(definition, "utf8")).toBe(
+            missingPublication ? candidateCanonical : staleDefinition,
+          );
           expect(typeof options === "object" && options.env).toMatchObject(command.environment);
           await fs.writeFile(
             definition,
@@ -379,7 +421,11 @@ export function registerPackageRootRollbackTests(
         scenario === "refreshed" || definitionDrift || scenario === "running original" ? 2 : 1,
       );
       if (definitionDrift) {
-        expect(serviceDefinitionBackup?.restore).toHaveBeenCalledOnce();
+        if (missingPublication) {
+          expect(serviceDefinitionBackup).toBeUndefined();
+        } else {
+          expect(serviceDefinitionBackup?.restore).toHaveBeenCalledOnce();
+        }
         expect(await fs.readFile(definition, "utf8")).toBe(previousCanonical);
         expect(await fs.readFile(definitionBackup, "utf8")).toBe(staleDefinition);
       }

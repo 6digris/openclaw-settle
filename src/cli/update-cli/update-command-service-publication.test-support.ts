@@ -19,6 +19,8 @@ export function registerServiceDefinitionPublicationTests(getFixture: () => Publ
     "published",
     "changed",
     "missing",
+    "invalid-publication",
+    "unverified-response",
     "failed",
     "unchanged",
     "compensated",
@@ -62,18 +64,30 @@ export function registerServiceDefinitionPublicationTests(getFixture: () => Publ
       }
       return {
         code: 0,
-        stdout: JSON.stringify({
-          action: "install",
-          ok: true,
-          ...(scenario === "missing" ? {} : { definitionPublication }),
-        }),
+        stdout: JSON.stringify(
+          scenario === "unverified-response"
+            ? { action: "restart", ok: true }
+            : {
+                action: "install",
+                ok: true,
+                ...(scenario === "missing"
+                  ? {}
+                  : {
+                      definitionPublication:
+                        scenario === "invalid-publication" ? null : definitionPublication,
+                    }),
+              },
+        ),
         stderr: "",
         signal: null,
         killed: false,
         termination: "exit",
       };
     });
-    const retained: { backup?: GatewayServiceDefinitionBackup } = {};
+    const retained: {
+      backup?: GatewayServiceDefinitionBackup;
+      captured?: GatewayServiceDefinitionBackup;
+    } = {};
     const warnings: string[] = [];
     const refresh = refreshUpdatedGatewayService({
       result: { root, mode: "npm" },
@@ -82,11 +96,14 @@ export function registerServiceDefinitionPublicationTests(getFixture: () => Publ
       serviceEnv: process.env,
       assertCurrent: () => {},
       onDefinitionBackup: (backup) => {
+        retained.captured ??= backup;
         retained.backup = backup;
       },
       onWarnings: (values) => warnings.push(...values),
     });
-    if (!["published", "missing"].includes(scenario)) {
+    if (
+      !["published", "missing", "invalid-publication", "unverified-response"].includes(scenario)
+    ) {
       await expect(refresh).rejects.toThrow(
         scenario === "changed" || scenario === "refused"
           ? "SERVICE_DEFINITION_UNKNOWN"
@@ -95,24 +112,30 @@ export function registerServiceDefinitionPublicationTests(getFixture: () => Publ
     } else {
       await refresh;
     }
-    const backup = retained.backup;
+    const backup = retained.captured;
     if (!backup) {
       throw new Error("rollback backup was not retained");
     }
-    const restore = () => withGatewayServiceOperationLock(process.env, () => backup.restore());
-    if (["published", "unchanged", "compensated"].includes(scenario)) {
-      await restore();
-      expect(await fs.readFile(unitPath, "utf8")).toBe(original);
+    if (scenario === "missing") {
+      expect(retained.backup).toBeUndefined();
+      expect(await fs.readFile(unitPath, "utf8")).toBe(candidate);
     } else {
-      await expect(restore()).rejects.toThrow("not sealed");
-      expect(await fs.readFile(unitPath, "utf8")).toBe(
-        scenario === "changed" ? edited : scenario === "refused" ? original : candidate,
-      );
+      expect(retained.backup).toBe(backup);
+      const restore = () => withGatewayServiceOperationLock(process.env, () => backup.restore());
+      if (["published", "unchanged", "compensated"].includes(scenario)) {
+        await restore();
+        expect(await fs.readFile(unitPath, "utf8")).toBe(original);
+      } else {
+        await expect(restore()).rejects.toThrow("not sealed");
+        expect(await fs.readFile(unitPath, "utf8")).toBe(
+          scenario === "changed" ? edited : scenario === "refused" ? original : candidate,
+        );
+      }
     }
     expect(await fs.readFile(backup.backupPaths[0]!, "utf8")).toBe(original);
     expect(warnings.join("\n")).toContain(backup.backupPaths[0]);
     if (scenario === "missing") {
-      expect(warnings.join("\n")).toContain("manual recovery");
+      expect(warnings.join("\n")).toContain("publication facts");
     }
   });
 }
