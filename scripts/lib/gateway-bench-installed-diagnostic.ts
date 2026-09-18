@@ -61,6 +61,15 @@ export async function prepareInstalledCpuProfile(output: string, entry: string) 
   preload.searchParams.set("parentPid", String(process.pid));
   preload.searchParams.set("entry", entry);
   preload.searchParams.set("attachment", attachmentPath);
+  const workerDirectory = path.join(directory, "sqlite-worker");
+  await fs.mkdir(workerDirectory);
+  const workerObserver = new URL(
+    "../fixtures/startup-sqlite-worker-cpu/observer.mjs",
+    import.meta.url,
+  );
+  workerObserver.searchParams.set("parentPid", String(process.pid));
+  workerObserver.searchParams.set("entry", entry);
+  workerObserver.searchParams.set("directory", workerDirectory);
   return {
     directory,
     attachmentPath,
@@ -71,6 +80,8 @@ export async function prepareInstalledCpuProfile(output: string, entry: string) 
       "--cpu-prof-interval=1000",
       "--import",
       preload.href,
+      "--import",
+      workerObserver.href,
     ],
   };
 }

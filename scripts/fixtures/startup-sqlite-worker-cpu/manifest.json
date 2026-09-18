@@ -1,0 +1,13 @@
+{
+  "baseTooling": "705856070e3ac46e9e12ba4d22f0c72d447edd64",
+  "diagnosticTooling": "d9145840b4d20da742924816a8487dca503327a6",
+  "files": {
+    "scripts/lib/gateway-bench-installed-diagnostic.ts": "ca8d7cf91a8a444de7f7954578820925e36104d87bc57f30761def82007aff3e",
+    ".github/workflows/windows-testbox-probe.yml": "de6f7845598c55ec953394a31705d0d6df9af8492977aa9d2e3655c4f5f498b3",
+    "scripts/fixtures/startup-sqlite-worker-cpu/observer.mjs": "2f38c5d7e6f79bffc0c8306f76359300da333ec6b2df0fc24b70bca897d72936",
+    "scripts/fixtures/startup-sqlite-worker-cpu/verify.mjs": "cb63c8a0deb9f262b06d2aa00ebac7b83470f58e4b30c42d6cf031f9427dd1e0",
+    "scripts/fixtures/startup-sqlite-worker-cpu/synthetic-proof.mjs": "03ceb1a2fd062894ad6772e59b2ff90652a187a9bd855141a14f2c89140e5939",
+    "scripts/fixtures/startup-sqlite-worker-cpu/package-binding.json": "48ccb848a61cc7114e1acc0004f67f79b22ea61c9982200d7fd9f8595c4f49df",
+    "test/scripts/check-workflows.test.ts": "ce2a206109aee8ac5f76238914c99dd10501e62d032912f2acfd763719dc2370"
+  }
+}

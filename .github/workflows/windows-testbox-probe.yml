@@ -103,6 +103,11 @@ jobs:
           $toolingSha = (git rev-parse HEAD).Trim()
           if ($LASTEXITCODE -ne 0 -or $toolingSha -cne $env:TARGET_REF) { throw "Tooling checkout differs from target_ref." }
           $selection = $env:STARTUP_PACKAGE | ConvertFrom-Json
+          if ($env:CPU_DIAGNOSTIC -cne "true" -or $env:STARTUP_NODE_VERSION -cne "26.8.2") { throw "This task branch requires the fixed Node26 worker diagnostic." }
+          $fixedBinding = Get-Content -LiteralPath "scripts/fixtures/startup-sqlite-worker-cpu/package-binding.json" -Raw | ConvertFrom-Json
+          foreach ($field in $fixedBinding.PSObject.Properties.Name) {
+            if ([string]$selection.$field -cne [string]$fixedBinding.$field) { throw "This task branch requires the frozen 29e Package Acceptance binding: $field" }
+          }
           $paired = $selection.PSObject.Properties.Name -contains "baseline" -or $selection.PSObject.Properties.Name -contains "candidate"
           if ($paired -and $env:CPU_DIAGNOSTIC -eq "true") { throw "CPU diagnostics require one package, not a comparison." }
           $packages = [ordered]@{ baseline = $selection }
@@ -368,6 +373,15 @@ jobs:
           pnpm -v
           pnpm install --frozen-lockfile --prefer-offline --config.ignore-scripts=false --config.engine-strict=false --config.enable-pre-post-scripts=true --config.side-effects-cache=true || pnpm install --frozen-lockfile --prefer-offline --config.ignore-scripts=false --config.engine-strict=false --config.enable-pre-post-scripts=true --config.side-effects-cache=true
 
+      - name: Prove native SQLite worker profile custody
+        if: ${{ inputs.installed_startup_package != '' }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          node --input-type=module -e "import { bindBefore } from './scripts/fixtures/startup-sqlite-worker-cpu/verify.mjs'; await bindBefore();"
+          if ($LASTEXITCODE -ne 0) { throw "Worker diagnostic source binding failed." }
+          node scripts/fixtures/startup-sqlite-worker-cpu/synthetic-proof.mjs .artifacts/windows-installed-startup/sqlite-worker-synthetic 2>&1 | Tee-Object -FilePath .artifacts/windows-installed-startup/sqlite-worker-synthetic.log
+          if ($LASTEXITCODE -ne 0) { throw "Native worker profile custody proof failed; do not launch Gateway." }
+
       - name: Prove installed benchmark lifecycle
         if: ${{ inputs.installed_startup_package != '' }}
         run: |
@@ -439,6 +453,13 @@ jobs:
           node --import ./scripts/tsx.mjs scripts/bench-gateway-startup.ts --installed-cohort .artifacts/windows-installed-startup/input.json --output .artifacts/windows-installed-startup/results.json @diagnosticArgs 2>&1 | Tee-Object -FilePath .artifacts/windows-installed-startup/cohort.log
           if ($LASTEXITCODE -ne 0) { throw "Installed startup cohort failed; retain every sample and cleanup result." }
 
+      - name: Verify fixed SQLite worker diagnostic
+        if: ${{ always() && inputs.installed_startup_package != '' }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          node --input-type=module -e "import { collectAfter } from './scripts/fixtures/startup-sqlite-worker-cpu/verify.mjs'; await collectAfter();"
+          if ($LASTEXITCODE -ne 0) { throw "Worker capture or source/lifecycle binding failed." }
+
       - name: Upload installed startup evidence
         if: ${{ always() && inputs.installed_startup_package != '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -449,6 +470,13 @@ jobs:
             .artifacts/windows-installed-startup/*.log
             .artifacts/windows-installed-startup/results.json.profiles/*.cpuprofile
             .artifacts/windows-installed-startup/results.json.profiles/*.json
+            .artifacts/windows-installed-startup/results.json.profiles/sqlite-worker/*.cpuprofile
+            .artifacts/windows-installed-startup/results.json.profiles/sqlite-worker/*.jsonl
+            .artifacts/windows-installed-startup/sqlite-worker-synthetic/result.json
+            .artifacts/windows-installed-startup/sqlite-worker-synthetic/child.log
+            .artifacts/windows-installed-startup/sqlite-worker-synthetic/child-exit.json
+            .artifacts/windows-installed-startup/sqlite-worker-synthetic/capture/*.cpuprofile
+            .artifacts/windows-installed-startup/sqlite-worker-synthetic/capture/*.jsonl
           if-no-files-found: error
           retention-days: 7
 

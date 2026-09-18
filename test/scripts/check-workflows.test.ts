@@ -411,6 +411,13 @@ describe("check-workflows", () => {
         ".artifacts/windows-installed-startup/*.log",
         ".artifacts/windows-installed-startup/results.json.profiles/*.cpuprofile",
         ".artifacts/windows-installed-startup/results.json.profiles/*.json",
+        ".artifacts/windows-installed-startup/results.json.profiles/sqlite-worker/*.cpuprofile",
+        ".artifacts/windows-installed-startup/results.json.profiles/sqlite-worker/*.jsonl",
+        ".artifacts/windows-installed-startup/sqlite-worker-synthetic/result.json",
+        ".artifacts/windows-installed-startup/sqlite-worker-synthetic/child.log",
+        ".artifacts/windows-installed-startup/sqlite-worker-synthetic/child-exit.json",
+        ".artifacts/windows-installed-startup/sqlite-worker-synthetic/capture/*.cpuprofile",
+        ".artifacts/windows-installed-startup/sqlite-worker-synthetic/capture/*.jsonl",
         "",
       ].join("\n"),
     );
