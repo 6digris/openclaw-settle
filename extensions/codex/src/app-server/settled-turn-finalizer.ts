@@ -83,7 +83,9 @@ export async function runCodexSettledTurnFinalization(
     requiredModalities: ["text"],
     isolation: usesRemoteTransport ? "configured-transport" : "private-stdio",
     historyItems,
-    requireNoExternalCapabilities: true,
+    // The remote server retains its configured and administrator hooks; the model
+    // still receives no callable tools. Private local turns remain hook-free.
+    capabilityPolicy: usesRemoteTransport ? "configured-hooks-only" : "no-external-capabilities",
     allowEmptyText: true,
   });
   assertActive();

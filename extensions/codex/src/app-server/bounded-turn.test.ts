@@ -73,6 +73,7 @@ function createClientFactory(
     models?: ReturnType<typeof codexModel>[];
     beforeRequest?: (method: string) => Promise<void>;
     modelProvider?: string;
+    requirements?: JsonValue;
     responseCompletions?: Array<{ responseId: string; usage: JsonValue }>;
     preBindDeltaCount?: number;
   } = {},
@@ -97,7 +98,7 @@ function createClientFactory(
       };
     }
     if (method === "configRequirements/read") {
-      return { requirements: null };
+      return { requirements: options.requirements ?? null };
     }
     if (method === "thread/start" && isRecord(params) && typeof params.model === "string") {
       return threadStartResult(params.model, options.modelProvider);
@@ -232,6 +233,65 @@ function createClientFactory(
 }
 
 describe("runBoundedCodexAppServerTurn settled finalization isolation", () => {
+  it("requires configured transport to preserve hooks", async () => {
+    const fake = createClientFactory();
+
+    await expect(
+      runBoundedCodexAppServerTurn({
+        model: { mode: "required", id: "gpt-5.4" },
+        timeoutMs: 5_000,
+        options: { clientFactory: fake.factory },
+        taskLabel: "settled-turn finalization",
+        developerInstructions: "Finalize only.",
+        input: [{ type: "text", text: "Produce the final answer.", text_elements: [] }],
+        requiredModalities: ["text"],
+        isolation: "private-stdio",
+        capabilityPolicy: "configured-hooks-only",
+      }),
+    ).rejects.toThrow("Preserving configured Codex hooks requires configured transport.");
+    expect(fake.methods).toEqual([]);
+  });
+
+  it.each<{
+    policy: "no-external-capabilities" | "configured-hooks-only";
+    requirements: JsonValue;
+    error: string;
+  }>([
+    {
+      policy: "no-external-capabilities",
+      requirements: {
+        hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "managed-hook" }] }] },
+        featureRequirements: { hooks: true },
+      },
+      error: "Codex restricted tool surface cannot override managed hooks",
+    },
+    {
+      policy: "configured-hooks-only",
+      requirements: { featureRequirements: { hooks: true, shell_tool: true } },
+      error: "Codex tool policy cannot override required feature shell_tool",
+    },
+  ])(
+    "retains managed capability restrictions for $policy",
+    async ({ policy, requirements, error }) => {
+      const fake = createClientFactory({ requirements });
+
+      await expect(
+        runBoundedCodexAppServerTurn({
+          model: { mode: "required", id: "gpt-5.4" },
+          timeoutMs: 5_000,
+          options: { clientFactory: fake.factory },
+          taskLabel: "settled-turn finalization",
+          developerInstructions: "Finalize only.",
+          input: [{ type: "text", text: "Produce the final answer.", text_elements: [] }],
+          requiredModalities: ["text"],
+          isolation: "configured-transport",
+          capabilityPolicy: policy,
+        }),
+      ).rejects.toThrow(error);
+      expect(fake.methods).toEqual(["model/list", "config/read", "configRequirements/read"]);
+    },
+  );
+
   it.each(["bound notification", "queued notification", "terminal response"] as const)(
     "keeps an accepted %s when the transport closes immediately afterward",
     async (receipt) => {
@@ -387,7 +447,7 @@ describe("runBoundedCodexAppServerTurn settled finalization isolation", () => {
         input: [{ type: "text" as const, text: "Help me plan a garden.", text_elements: [] }],
         requiredModalities: ["text" as const],
         isolation: "private-stdio" as const,
-        requireNoExternalCapabilities: true,
+        capabilityPolicy: "no-external-capabilities" as const,
         assertCurrent: () => {
           if (!current) {
             throw retired;
@@ -460,7 +520,7 @@ describe("runBoundedCodexAppServerTurn settled finalization isolation", () => {
             input: [{ type: "text", text: "Name this conversation.", text_elements: [] }],
             requiredModalities: ["text"],
             isolation: "configured-transport",
-            requireNoExternalCapabilities: true,
+            capabilityPolicy: "no-external-capabilities",
           }),
         ).rejects.toBe(expired);
         expect(harness.writes.map((line) => JSON.parse(line).method)).not.toContain(blockedMethod);
@@ -610,7 +670,7 @@ describe("runBoundedCodexAppServerTurn settled finalization isolation", () => {
         input: [{ type: "text", text: "Produce the final answer.", text_elements: [] }],
         requiredModalities: ["text"],
         isolation: "private-stdio",
-        requireNoExternalCapabilities: true,
+        capabilityPolicy: "no-external-capabilities",
       }),
     ).resolves.toMatchObject({ text: "The message was sent successfully." });
   });
@@ -628,7 +688,7 @@ describe("runBoundedCodexAppServerTurn settled finalization isolation", () => {
         input: [{ type: "text", text: "Produce the final answer.", text_elements: [] }],
         requiredModalities: ["text"],
         isolation: "private-stdio",
-        requireNoExternalCapabilities: true,
+        capabilityPolicy: "no-external-capabilities",
         allowEmptyText: true,
       }),
     ).resolves.toMatchObject({ text: "", model: "gpt-5.4" });
@@ -669,7 +729,7 @@ describe("runBoundedCodexAppServerTurn settled finalization isolation", () => {
         input: [{ type: "text", text: "Produce the final answer.", text_elements: [] }],
         requiredModalities: ["text"],
         isolation: "private-stdio",
-        requireNoExternalCapabilities: true,
+        capabilityPolicy: "no-external-capabilities",
       }),
     ).rejects.toThrow("terminal upstream failure");
   });
@@ -690,7 +750,7 @@ describe("runBoundedCodexAppServerTurn settled finalization isolation", () => {
         input: [{ type: "text", text: "Produce the final answer.", text_elements: [] }],
         requiredModalities: ["text"],
         isolation: "private-stdio",
-        requireNoExternalCapabilities: true,
+        capabilityPolicy: "no-external-capabilities",
       }),
     ).rejects.toThrow("turn ended with status interrupted");
   });
@@ -720,7 +780,7 @@ describe("runBoundedCodexAppServerTurn settled finalization isolation", () => {
         input: [{ type: "text", text: "Name this conversation.", text_elements: [] }],
         requiredModalities: ["text"],
         isolation: "private-stdio",
-        requireNoExternalCapabilities: true,
+        capabilityPolicy: "no-external-capabilities",
       });
 
       expect(fake.factory).toHaveBeenCalledWith(
@@ -807,7 +867,7 @@ describe("runBoundedCodexAppServerTurn settled finalization isolation", () => {
       input: [{ type: "text", text: "Name this conversation.", text_elements: [] }],
       requiredModalities: ["text"],
       isolation: "configured-transport",
-      requireNoExternalCapabilities: true,
+      capabilityPolicy: "no-external-capabilities",
     });
 
     const startParams = fake.request.mock.calls.find(([method]) => method === "thread/start")?.[1];
@@ -964,7 +1024,7 @@ describe("runBoundedCodexAppServerTurn settled finalization isolation", () => {
           requiredModalities: ["text"],
           isolation: "private-stdio",
           historyItems,
-          requireNoExternalCapabilities: true,
+          capabilityPolicy: "no-external-capabilities",
         }),
       ).resolves.toMatchObject({
         text: "The message was sent successfully.",
@@ -1024,7 +1084,10 @@ describe("runBoundedCodexAppServerTurn settled finalization isolation", () => {
     },
   );
 
-  it("fails before history injection when the started thread exposes an MCP server", async () => {
+  it.each([
+    { policy: "no-external-capabilities" as const, isolation: "private-stdio" as const },
+    { policy: "configured-hooks-only" as const, isolation: "configured-transport" as const },
+  ])("attests MCP before history injection under $policy", async ({ policy, isolation }) => {
     const fake = createClientFactory({
       mcpServers: [{ name: "unexpected", serverInfo: null, tools: {} }],
     });
@@ -1038,9 +1101,9 @@ describe("runBoundedCodexAppServerTurn settled finalization isolation", () => {
         developerInstructions: "Finalize only.",
         input: [{ type: "text", text: "Produce the final answer.", text_elements: [] }],
         requiredModalities: ["text"],
-        isolation: "private-stdio",
+        isolation,
         historyItems: [{ type: "function_call_output", call_id: "call-1", output: "sent" }],
-        requireNoExternalCapabilities: true,
+        capabilityPolicy: policy,
       }),
     ).rejects.toThrow(
       "Codex restricted-tool-surface MCP attestation found unexpected server unexpected",

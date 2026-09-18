@@ -1,6 +1,7 @@
 import { normalizeUsage, type AgentHarnessV2 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import * as agentAuth from "openclaw/plugin-sdk/agent-runtime";
 import type { Model } from "openclaw/plugin-sdk/llm";
+import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EmbeddedRunAttemptResult } from "./attempt-terminal.js";
 import * as authBridge from "./auth-bridge.js";
@@ -218,7 +219,7 @@ describe("runCodexSettledTurnFinalization", () => {
           modelProvider,
           profile: "openai:captured",
           isolation: "private-stdio",
-          requireNoExternalCapabilities: true,
+          capabilityPolicy: "no-external-capabilities",
           allowEmptyText: true,
           historyItems: [
             expect.objectContaining({ type: "message", role: "user" }),
@@ -291,7 +292,7 @@ describe("runCodexSettledTurnFinalization", () => {
     },
   );
 
-  it("uses a restricted remote thread with settled history and the selected model", async () => {
+  it("preserves remote hooks with model tools disabled and the selected settled history", async () => {
     const { runBoundedCodexAppServerTurn } =
       await vi.importActual<typeof import("./bounded-turn.js")>("./bounded-turn.js");
     mocks.runBounded.mockImplementation(runBoundedCodexAppServerTurn);
@@ -302,7 +303,17 @@ describe("runCodexSettledTurnFinalization", () => {
       authProfileId: "openai:captured",
     });
     const history = settledAttempt.settledTurnFinalizationContext;
-    const fake = createFakeCodexAppServerClient(async (method) => {
+    const managedHooks = {
+      PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: "managed-hook" }] }],
+    };
+    const configuredHookConfig = {
+      "features.hooks": true,
+      hooks: {
+        SessionStart: [{ hooks: [{ type: "command", command: "configured-start-hook" }] }],
+      },
+      notify: ["configured-notify"],
+    };
+    const fake = createFakeCodexAppServerClient(async (method, params) => {
       switch (method) {
         case "model/list":
           return {
@@ -331,12 +342,21 @@ describe("runCodexSettledTurnFinalization", () => {
           };
         case "config/read":
           return {
-            config: { mcp_servers: { inherited: { command: "external-tool" } } },
+            config: {
+              ...configuredHookConfig,
+              mcp_servers: { inherited: { command: "external-tool" } },
+            },
             layers: [{ name: { type: "user" } }],
           };
         case "configRequirements/read":
-          return { requirements: null };
+          return { requirements: { hooks: managedHooks, featureRequirements: { hooks: true } } };
         case "thread/start":
+          if (!isRecord(params) || !isRecord(params.config)) {
+            throw new Error("Expected a configured finalizer thread.");
+          }
+          expect({ ...configuredHookConfig, ...params.config }).toMatchObject(
+            configuredHookConfig,
+          );
           return {
             ...threadStartResult(),
             thread: { ...threadStartResult().thread, ephemeral: true },
@@ -410,10 +430,10 @@ describe("runCodexSettledTurnFinalization", () => {
         config: expect.objectContaining({
           "features.shell_tool": false,
           "features.unified_exec": false,
-          "features.hooks": false,
           "features.code_mode": false,
           "features.apps": false,
           "features.plugins": false,
+          project_doc_max_bytes: 0,
           web_search: "disabled",
           mcp_servers: { inherited: { enabled: false } },
         }),
@@ -557,7 +577,13 @@ describe("runCodexSettledTurnFinalization", () => {
     },
   );
 
-  it.each(["commandExecution", "contextCompaction", "mcpToolCall", "futureCapabilityItem"])(
+  it.each([
+    "commandExecution",
+    "contextCompaction",
+    "mcpToolCall",
+    "hookPrompt",
+    "futureCapabilityItem",
+  ])(
     "rejects unexpected native %s evidence before transcript mutation",
     async (type) => {
       mocks.runBounded.mockResolvedValue({
