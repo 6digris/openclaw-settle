@@ -11,7 +11,6 @@ import { readAgentDatabaseAdmissionRefusal } from "../state/agent-database-admis
 import { listAgentIds, resolveAgentConfig, resolveAgentWorkspaceDir } from "./agent-scope.js";
 import { resolveSandboxConfigForAgent } from "./sandbox/config.js";
 import { resolveSandboxRuntimeStatusesForPersistedSessions } from "./sandbox/runtime-status.js";
-import { resolveSandboxWorkspaceLayoutPaths } from "./sandbox/shared.js";
 import { listAgentWorkspaceDirs } from "./workspace-dirs.js";
 import { assertWorkspaceStateMigrationReady } from "./workspace-legacy-state.js";
 import { readWorkspaceStateSnapshot } from "./workspace-state-store.js";
@@ -85,6 +84,7 @@ export async function listWorkspaceStateDirs(params: {
       dirs.add(workspaceRoot);
       continue;
     }
+    const { resolveSandboxWorkspaceLayoutPaths } = await import("./sandbox/shared.js");
     if (sandbox.scope === "agent") {
       const layout = resolveSandboxWorkspaceLayoutPaths({
         cfg: { ...sandbox, workspaceRoot },
