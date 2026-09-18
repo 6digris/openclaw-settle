@@ -569,7 +569,8 @@ latest_debug_apk() {
 scene_ready_text() {
   if [[ "$FORM_FACTOR" == "wear" ]]; then
     case "$1" in
-      chat) printf '%s\n' "Release planning" ;;
+      # Chat opens at the latest reply, with its session title offscreen.
+      chat) printf '%s\n' "Ready after the final store checks." ;;
       voice) printf '%s\n' "Dictate" ;;
       controls) printf '%s\n' "Gateway connected" ;;
       *)
