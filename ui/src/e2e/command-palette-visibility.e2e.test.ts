@@ -7,10 +7,8 @@ import {
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
 const suite = createControlUiE2eSuite({ name: "command palette visibility" });
-const viewports = [
-  { width: 1440, height: 900 },
-  { width: 390, height: 844 },
-];
+const desktopViewport = { width: 1440, height: 900 };
+const viewports = [desktopViewport, { width: 390, height: 844 }];
 const emptySessions = { ts: 1, path: "", count: 0, defaults: {}, sessions: [] };
 const agents = {
   defaultId: "main",
@@ -81,7 +79,7 @@ suite.define(() => {
     { width: 1280, height: 480 },
     { width: 844, height: 390 },
   ])("keeps the selected result visible after shrinking to $height px", async (viewport) => {
-    await suite.withPage({ viewport: viewports[0] }, async ({ page }) => {
+    await suite.withPage({ viewport: desktopViewport }, async ({ page }) => {
       await installMockGateway(page);
       const input = await openPalette(page);
       await input.press("ArrowUp");
@@ -96,7 +94,7 @@ suite.define(() => {
       // Closing releases the old list; reopening must observe the new one.
       await input.press("Escape");
       await expect.poll(() => input.count()).toBe(0);
-      await page.setViewportSize(viewports[0]);
+      await page.setViewportSize(desktopViewport);
       await page.keyboard.press("ControlOrMeta+K");
       await input.waitFor({ state: "visible" });
       await input.focus();
@@ -110,7 +108,7 @@ suite.define(() => {
   });
 
   it("preserves scrolling away from the selection when the result viewport shrinks", async () => {
-    await suite.withPage({ viewport: viewports[0] }, async ({ page }) => {
+    await suite.withPage({ viewport: desktopViewport }, async ({ page }) => {
       await installMockGateway(page);
       const input = await openPalette(page);
       await input.press("ArrowUp");
