@@ -9,7 +9,7 @@ const viewports = [
   { width: 844, height: 390 },
 ];
 const scenarios = ["chat", "new"].flatMap((route) =>
-  viewports.map((viewport) => ({ route, ...viewport })),
+  viewports.map(({ width, height }) => ({ route, width, height })),
 );
 
 suite.define(() => {
