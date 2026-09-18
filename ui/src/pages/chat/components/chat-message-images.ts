@@ -20,6 +20,7 @@ import {
   retryAssistantAttachmentAvailability,
 } from "./chat-message-attachment-availability.ts";
 import { renderAssistantAttachmentStatusCard } from "./chat-message-attachment-status.ts";
+import { chatImageFrameStyle } from "./chat-message-image-frame.ts";
 import {
   readManagedOutgoingImageBlob,
   resolveManagedOutgoingImageResource,
@@ -41,7 +42,6 @@ import {
 } from "./chat-message-media.ts";
 
 const CANONICAL_IMAGE_HANDOFF_TIMEOUT_MS = 30_000;
-const MIN_CHAT_IMAGE_PREVIEW_WIDTH = 160;
 
 type RetainedInlineImage = {
   status: "retaining";
@@ -301,20 +301,6 @@ class MessageImageResourceDirective extends AsyncDirective {
   ) {
     const pending = state === "checking" || state === "loading";
     const compact = state === "unavailable" || state === "checking";
-    const sized =
-      Number.isFinite(img.width) &&
-      img.width! > 0 &&
-      Number.isFinite(img.height) &&
-      img.height! > 0;
-    const ratio = sized ? img.width! / img.height! : 3 / 2;
-    const previewWidth = sized
-      ? img.width! < MIN_CHAT_IMAGE_PREVIEW_WIDTH
-        ? MIN_CHAT_IMAGE_PREVIEW_WIDTH
-        : Math.min(img.width!, 400, 360 * ratio)
-      : 400;
-    const width = compact ? Math.max(MIN_CHAT_IMAGE_PREVIEW_WIDTH, previewWidth) : previewWidth;
-    const height = Math.min(360, width / ratio);
-    const style = `--chat-image-width: ${width}px; --chat-image-ratio: ${compact ? "auto" : `${width} / ${height}`}`;
     if (!compact) {
       const frame = observeChatImageFrame(
         this.frameSourceKey,
@@ -323,14 +309,14 @@ class MessageImageResourceDirective extends AsyncDirective {
         this.frameSlot,
       );
       // Late facts and canonical handoff must not resize already presented pixels.
-      this.frameStyle ??= frame?.style ?? style;
+      this.frameStyle ??= frame?.style ?? chatImageFrameStyle(img);
       if (frame) {
         frame.style = this.frameStyle;
       }
     }
     return html`<span
       class="chat-image-frame chat-image-frame--image ${this.managed && !compact ? "chat-image-frame--managed" : ""} ${compact ? "chat-image-frame--compact" : ""}"
-      style=${compact ? style : this.frameStyle}
+      style=${compact ? chatImageFrameStyle(img, true) : this.frameStyle}
       aria-busy=${pending ? "true" : "false"}
       role=${pending ? "status" : nothing}
       aria-label=${pending ? t("common.loading") : nothing}
