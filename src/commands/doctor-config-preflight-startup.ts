@@ -24,6 +24,7 @@ import type {
   MigrationMessages,
 } from "../infra/state-migrations.types.js";
 import { withDeferredPluginDoctorMigrations } from "../plugins/doctor-contract-registry.js";
+import { getPluginMetadataSnapshotCache, withPluginCache } from "../plugins/plugin-cache.js";
 import { setActiveDegradedPlugins } from "../plugins/runtime-degraded-state.js";
 import { ExitError } from "../runtime.js";
 import {
@@ -290,9 +291,12 @@ export async function prepareDoctorMigrationPlugins(params: {
   if (params.converge) {
     params.lease?.heartbeat();
   }
-  const convergence = await (
-    params.converge ? runDoctorPluginConvergence : refreshStartupPluginQuarantine
-  )(params);
+  const metadata = params.snapshotRead.pluginMetadataSnapshot;
+  const convergence = await (!params.converge && metadata
+    ? withPluginCache(getPluginMetadataSnapshotCache(metadata), () =>
+        refreshStartupPluginQuarantine(params),
+      )
+    : (params.converge ? runDoctorPluginConvergence : refreshStartupPluginQuarantine)(params));
   setActiveDegradedPlugins(convergence.quarantinedPlugins);
   params.onWarnings(convergence.warnings ?? []);
   params.lease?.heartbeat();
