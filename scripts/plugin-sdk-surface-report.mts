@@ -379,8 +379,9 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: approved shared native-command argument-menu applicability predicate.
       // +4: shared activity projectors and complete-preamble admission, including the shipped barrel.
       // -1: keep complete-preamble admission off the deprecated compatibility facade.
-      // +13: approved workspace access and supporting file/Skills exports.
-      // +1: approved bounded workspace Skill resource reader.
+      // +4: approved workspace access exports.
+      // +2: approved reply attachment preparation exports.
+      // +8: approved Memory and Skills host integration exports.
       4499,
       env,
     ),
@@ -523,8 +524,9 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: approved shared native-command argument-menu applicability predicate.
       // +4: shared activity projectors and complete-preamble admission, including the shipped barrel.
       // -1: keep complete-preamble admission off the deprecated compatibility facade.
-      // +11: approved workspace access and supporting file/Skills callables.
-      // +1: approved bounded workspace Skill resource reader.
+      // +3: approved workspace access callables.
+      // +2: approved reply attachment preparation callables.
+      // +7: approved Memory and Skills host integration callables.
       2661,
       env,
     ),
