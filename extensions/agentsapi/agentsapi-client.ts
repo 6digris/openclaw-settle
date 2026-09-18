@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
+import { responseWithRelease } from "openclaw/plugin-sdk/fetch-runtime";
+import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 
 const usageSchema = z.object({
   input_tokens: z.number(),
@@ -185,9 +187,10 @@ export class AgentsApiClient {
   }
 
   private async input(sessionId: string, signal: AbortSignal, event: unknown): Promise<void> {
-    await this.request(`/${encodeURIComponent(sessionId)}/events`, "POST", signal, {
+    const response = await this.request(`/${encodeURIComponent(sessionId)}/events`, "POST", signal, {
       events: [event],
     });
+    await response.body?.cancel();
   }
 
   private async request(
@@ -208,19 +211,29 @@ export class AgentsApiClient {
     let response: Response;
     for (let attempt = 0; ; attempt++) {
       this.assertCurrent();
-      response = await fetch(`https://api.openai.com/v1/agents/sessions${path}`, {
-        method,
+      const guarded = await fetchWithSsrFGuard({
+        url: `https://api.openai.com/v1/agents/sessions${path}`,
         signal,
-        headers,
-        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+        beforeRequest: this.assertCurrent,
+        init: {
+          method,
+          headers,
+          ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+        },
       });
+      response = responseWithRelease(guarded.response, guarded.release);
       if (response.status !== 503 || attempt === 2) {
         break;
       }
       await response.body?.cancel();
       await delay(1_000, undefined, { signal });
     }
-    this.assertCurrent();
+    try {
+      this.assertCurrent();
+    } catch (error) {
+      await response.body?.cancel().catch(() => undefined);
+      throw error;
+    }
     if (!response.ok) {
       const result: unknown = await response.json();
       const parsed = z.object({ error: errorSchema }).safeParse(result);
