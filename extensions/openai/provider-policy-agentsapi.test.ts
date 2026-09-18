@@ -23,5 +23,4 @@ describe("Agents API provider routes", () => {
       });
     },
   );
-
 });

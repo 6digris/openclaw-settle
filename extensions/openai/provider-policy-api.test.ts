@@ -692,7 +692,6 @@ describe("OpenAI provider policy artifact", () => {
     });
   });
 
-
   it("treats an environment Platform URL as an explicit route lock", () => {
     expect(
       resolveModelRoutes({
