@@ -1575,6 +1575,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         originalHybridJob.pretestBuildMode === undefined &&
         shard.pretestBuildMode === "runtime";
       if (promoted) {
+        expect(shard.pretestBuildMode).toBe("runtime");
         expect(shard.planConcurrency).toBe(1);
         expect(exclusiveCount).toBe(0);
         expect(shard.requiresDist).toBe(false);
