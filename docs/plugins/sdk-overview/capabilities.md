@@ -138,6 +138,24 @@ selected provider may incur its normal usage charges. Plugin disablement wins;
 installing a tool or credential alone does not select a provider. Vendor adapters
 own transport and model-specific translation; no vendor is a core dependency.
 
+### Skill Workshop integration
+
+Selecting `judgments.provider` enables typed decisions in otherwise-enabled
+Workshop experience and collection reviews. Workshop mode still controls review
+activation and publication permissions; provider selection does not schedule work.
+Experience review first selects one concrete action and target. Only selected
+writes request a second, plan-specific grounding decision; both phases share one
+two-second provider budget. Accepted no-change decisions finish without a
+grounding call or generative reviewer. Accepted changes invoke a focused author with the selected
+operation, revision-bound targets, and grounding evidence, rather than repeating
+open-ended learning assessment. Existing publication permissions, revision checks,
+and supporting-asset preservation still apply. Unavailable or ambiguous decisions
+fall back to the existing reviewer; cancellation does not start fallback work.
+Incomplete coverage cannot justify skipping a whole collection review.
+
+See [Workshop configuration](/tools/skill-workshop/configuration#optional-typed-judgment-review)
+for evidence limits and publication behavior.
+
 ### Calling from a third-party plugin
 
 Like `api.runtime.llm.complete`, `api.runtime.judgments.evaluate` lets a plugin

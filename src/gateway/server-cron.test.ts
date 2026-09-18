@@ -12,6 +12,7 @@ import { AgentDeletionCommitUncertainError } from "../agents/agent-lifecycle-reg
 import type { CliDeps } from "../cli/deps.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { retainLegacyDefaultAgentId } from "../config/legacy.default-agent-owner.js";
+import type { RunCronAgentTurnParams } from "../cron/isolated-agent/run-prepare-runtime.js";
 import { CronService } from "../cron/service.js";
 import { onTimer as onCronTimer } from "../cron/service/timer.test-support.js";
 import { resolveSkillCollectionReviewMonitorSpecs } from "../cron/skill-collection-review-monitor.js";
@@ -37,9 +38,10 @@ import type { RunExit } from "../process/supervisor/types.js";
 import { writeConfigMachineState } from "../state/config-machine-state-write.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 
-type RunCronIsolatedAgentTurnMock = (params: {
-  abortSignal?: AbortSignal;
-}) => Promise<{ status: "ok"; summary: string }>;
+type RunCronIsolatedAgentTurnMock = (params: RunCronAgentTurnParams) => Promise<{
+  status: "ok";
+  summary: string;
+}>;
 
 const {
   enqueueSystemEventMock,
@@ -580,6 +582,152 @@ describe("buildGatewayCronService", () => {
       state.cron.stop();
     }
   });
+
+  it.each(["distinct", "merge_left", "unavailable", "unclear", "cancel", "no-provider"])(
+    "routes collection review with provider result %s",
+    async (decision) => {
+      const fixtureFs = await import("node:fs/promises");
+      const { createOpenClawTestState } = await import("../test-utils/openclaw-test-state.js");
+      const { resolveWorkshopSkillsDir } = await import("../skills/workshop/skills-root.js");
+      const { createTestPluginRegistry } =
+        await import("../plugins/registry-runtime.test-helpers.js");
+      const { createPluginRecord } = await import("../plugins/loader-records.js");
+      const { runPluginRegisterSyncInRegistry } =
+        await import("../plugins/loader-module-runtime.js");
+      const { getPluginInstance } = await import("../plugins/plugin-instance-scope.js");
+      const { setActivePluginRegistry, resetPluginRuntimeStateForTest } =
+        await import("../plugins/runtime.js");
+      const { prepareJudgmentProviderReload } = await import("../judgments/runtime.js");
+      const isolated = await createOpenClawTestState({
+        layout: "state-only",
+        prefix: "collection-judgment-entry-",
+      });
+      const cfg: OpenClawConfig = {
+        ...createCronConfig("collection-judgment-entry"),
+        judgments: decision === "no-provider" ? undefined : { provider: "fixture" },
+        skills: { workshop: { autonomous: { mode: "auto" } } },
+      };
+      const root = resolveWorkshopSkillsDir(cfg, "main");
+      const builder = createTestPluginRegistry();
+      const record = createPluginRecord({
+        id: "fixture",
+        source: "/synthetic/index.ts",
+        origin: "global",
+        enabled: true,
+        configSchema: false,
+        contracts: { judgmentProviders: ["fixture"] },
+      });
+      const api = builder.createApi(record, { config: cfg });
+      const controller = new AbortController();
+      const evaluate = vi.fn(async (batch: import("../judgments/types.js").JudgmentBatch) => {
+        if (decision === "cancel") {
+          controller.abort(new Error("judgment canceled"));
+          controller.signal.throwIfAborted();
+        }
+        if (decision === "unavailable") {
+          return { status: "unavailable" as const, reason: "transport" as const };
+        }
+        return {
+          status: "ok" as const,
+          result: {
+            model: "fixture-v1",
+            answers: Object.fromEntries(
+              Object.entries(batch.questions).map(([id, q]) => {
+                if (q.type !== "choice") {
+                  throw new Error("expected choice");
+                }
+                const selected = id.includes(":") ? decision : "keep";
+                return [
+                  id,
+                  {
+                    type: "choice" as const,
+                    choice: selected,
+                    probabilities: Object.fromEntries(
+                      Object.keys(q.criteria).map((key) => [key, key === selected ? 1 : 0]),
+                    ),
+                  },
+                ];
+              }),
+            ),
+          },
+        };
+      });
+      runPluginRegisterSyncInRegistry(
+        (registration) =>
+          registration.registerJudgmentProvider({ id: "fixture", contractVersion: 1, evaluate }),
+        api,
+        builder.registry,
+        record.id,
+      );
+      builder.registry.plugins.push(record);
+      setActivePluginRegistry(builder.registry);
+      const state = loadCronService(cfg);
+      try {
+        for (const name of ["certificate", "database"]) {
+          const dir = path.join(root, name);
+          await fixtureFs.mkdir(dir, { recursive: true });
+          await fixtureFs.writeFile(
+            path.join(dir, "SKILL.md"),
+            `---\nname: ${name}\ndescription: Synthetic ${name} rotation.\n---\nPreserve the distinct ${name} trigger, rollback and assets.\n`,
+          );
+        }
+        await state.reconcileSystemJobs();
+        const job = (await state.cron.list({ includeDisabled: true })).find(
+          (row) => row.declarationKey === "skill-collection-review:main",
+        );
+        if (!job) {
+          throw new Error("missing collection monitor");
+        }
+        const run = getCronDeps(state).runIsolatedAgentJob({
+          job,
+          message: "Review complete collection",
+          abortSignal: controller.signal,
+        });
+        if (decision === "cancel") {
+          await expect(run).rejects.toThrow("judgment canceled");
+          expect(runCronIsolatedAgentTurnMock).not.toHaveBeenCalled();
+          return;
+        }
+        await run;
+        expect(evaluate).toHaveBeenCalledTimes(decision === "no-provider" ? 0 : 1);
+        if (decision === "distinct") {
+          expect(runCronIsolatedAgentTurnMock).not.toHaveBeenCalled();
+        } else {
+          expect(runCronIsolatedAgentTurnMock).toHaveBeenCalledOnce();
+          expectIsolatedRunFields({ executionRoot: root });
+          const { resolveCronAgentTurnMessage } =
+            await import("../cron/isolated-agent/run-prepare-runtime.js");
+          const input = runCronIsolatedAgentTurnMock.mock.calls[0]?.[0];
+          if (!input) {
+            throw new Error("missing author execution");
+          }
+          const selectedMessage = resolveCronAgentTurnMessage(input);
+          if (decision === "unavailable" || decision === "unclear" || decision === "no-provider") {
+            expect(selectedMessage).toContain("Review this agent's Skill Workshop as a collection");
+            expect(selectedMessage).not.toContain("You are the skill author");
+          } else {
+            expect(selectedMessage).toContain(
+              "You are the skill author, not the semantic reviewer",
+            );
+            expect(selectedMessage).toContain("merge_left");
+            expect(selectedMessage).not.toContain(
+              "Review this agent's Skill Workshop as a collection",
+            );
+            expect(selectedMessage).not.toContain("Decide what to keep");
+            expect(job.payload.kind === "agentTurn" && job.payload.message).not.toContain(
+              "merge_left",
+            );
+          }
+        }
+      } finally {
+        state.cron.stop();
+        prepareJudgmentProviderReload(builder.registry, new Set([record.id]));
+        await getPluginInstance(record)?.dispose();
+        resetPluginRuntimeStateForTest();
+        await isolated.cleanup();
+      }
+    },
+  );
 
   it("forwards cancellation, execution callbacks, and identity to collection review turns", async () => {
     const cfg = {

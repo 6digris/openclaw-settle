@@ -857,11 +857,47 @@ export function buildGatewayCronService(params: {
         await fs.mkdir(executionRoot, { recursive: true });
       }
       try {
+        let authorPrompt: string | undefined;
+        if (reviewAgentId && runtimeConfig.judgments?.provider) {
+          const { prepareWorkshopCollectionJudgment } =
+            await import("../skills/workshop/judgment-guidance.js");
+          const signal = abortSignal ?? new AbortController().signal;
+          const assertCurrent = () => {
+            signal.throwIfAborted();
+            if (
+              resolveSkillWorkshopConfig(resolveCronAgent(job.agentId).cfg).autonomous.mode !==
+              "auto"
+            ) {
+              throw new Error("Skill collection review authority closed.");
+            }
+          };
+          const judgment = await prepareWorkshopCollectionJudgment({
+            config: runtimeConfig,
+            agentId,
+            signal,
+            assertCurrent,
+          });
+          assertCurrent();
+          if (judgment.route === "no-change") {
+            return {
+              status: "ok",
+              summary: "Judgment provider completed collection review: no mutations selected.",
+            };
+          }
+          if (judgment.route === "author") {
+            authorPrompt = judgment.prompt;
+          }
+        }
         return await runCronIsolatedAgentTurn({
           cfg: runtimeConfig,
           deps: params.deps,
-          job,
-          message,
+          // Transient payload replacement: persisted jobs retain their legacy
+          // prompt for disabled/unavailable routing, accepted plans never append it.
+          job:
+            authorPrompt && job.payload.kind === "agentTurn"
+              ? { ...job, payload: { ...job.payload, message: authorPrompt } }
+              : job,
+          message: authorPrompt ?? message,
           abortSignal,
           onExecutionStarted,
           onExecutionPhase,

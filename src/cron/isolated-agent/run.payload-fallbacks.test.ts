@@ -68,6 +68,30 @@ describe("runCronIsolatedAgentTurn — payload.fallbacks", () => {
     expect(request?.prompt).not.toContain("[object Object]");
   });
 
+  it("executes a host-selected author payload without changing the stored job", async () => {
+    mockRunCronFallbackPassthrough();
+    const job = {
+      payload: { kind: "agentTurn" as const, message: "STORED_REVIEW instructions" },
+    };
+    const before = structuredClone(job.payload);
+    const result = await runCronIsolatedAgentTurn({
+      ...makeIsolatedAgentParamsFixture({
+        job: {
+          ...job,
+          payload: { ...job.payload, kind: "agentTurn", message: "AUTHOR_ONLY selected merge" },
+        },
+        message: "UNTRUSTED_DISPATCH override",
+      }),
+    });
+    expect(result.status).toBe("ok");
+    expect(runEmbeddedAgentMock).toHaveBeenCalledOnce();
+    const request = runEmbeddedAgentMock.mock.calls[0]?.[0];
+    expect(request?.prompt).toContain("AUTHOR_ONLY selected merge");
+    expect(request?.prompt).not.toContain("STORED_REVIEW instructions");
+    expect(request?.prompt).not.toContain("UNTRUSTED_DISPATCH override");
+    expect(job.payload).toEqual(before);
+  });
+
   it.each([
     {
       name: "passes payload.fallbacks as fallbacksOverride when defined",

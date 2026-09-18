@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import corpus from "../../../test/fixtures/judgments/corpus.json" with { type: "json" };
 import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
 import { resolveAdmittedRunActiveAssertion } from "../../agents/admitted-run-context.js";
 import { resolveSessionLane } from "../../agents/embedded-agent-runner/lanes.js";
@@ -14,6 +15,7 @@ import { resolveAgentRunSessionTarget } from "../../agents/run-session-target.js
 import { SessionManager } from "../../agents/sessions/index.js";
 import { createWriteTool } from "../../agents/sessions/tools/write.js";
 import { createSkillWorkshopTool } from "../../agents/tools/skill-workshop-tool.js";
+import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import {
   createSessionEntryWithTranscript,
   deleteSessionEntryLifecycle,
@@ -23,6 +25,13 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { emitAgentEvent, onAgentRuntimeEvent } from "../../infra/agent-events.js";
 import { getAgentRunContext } from "../../infra/agent-run-registry.js";
 import * as agentRunRegistry from "../../infra/agent-run-registry.js";
+import { prepareJudgmentProviderReload } from "../../judgments/runtime.js";
+import type { JudgmentBatch, JudgmentBatchResult } from "../../judgments/types.js";
+import { runPluginRegisterSyncInRegistry } from "../../plugins/loader-module-runtime.js";
+import { createPluginRecord } from "../../plugins/loader-records.js";
+import { getPluginInstance } from "../../plugins/plugin-instance-scope.js";
+import { createTestPluginRegistry } from "../../plugins/registry-runtime.test-helpers.js";
+import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import { enqueueCommandInLane } from "../../process/command-queue.js";
 import {
   isGatewaySubordinateWorkAdmissionClosed,
@@ -44,6 +53,7 @@ const runEmbeddedAgent = vi.hoisted(() => vi.fn());
 
 vi.mock("../../agents/embedded-agent.js", () => ({ runEmbeddedAgent }));
 type ExperienceReviewFixture = Omit<ExperienceReviewCandidate, "ctx" | "source"> & {
+  reviewMessage?: string;
   ctx: ExperienceReviewCandidate["ctx"] & {
     sessionId: string;
     sessionKey: string;
@@ -82,7 +92,7 @@ async function captureReviewFixture(
     fixture.ctx.workspaceDir,
   ).appendMessageWithTranscriptAnchor({
     role: "user",
-    content: "Review the completed fixture.",
+    content: fixture.reviewMessage ?? "Review the completed fixture.",
     timestamp: Date.now(),
   });
   if (!terminal.anchor) {
@@ -862,4 +872,156 @@ describe("experience review maintenance", () => {
     });
     expect(inspected?.record.autonomousCapture).toBeUndefined();
   });
+});
+
+describe("registered judgments on the actual experience-review entrypoint", () => {
+  it.each(
+    corpus.workshop.flatMap((sample) => {
+      const cases: Array<typeof sample & { mode: "propose" | "auto" }> = [
+        { ...sample, mode: "propose" },
+      ];
+      if (sample.id === "recovery") {
+        cases.push({ ...sample, id: "auto-pending", mode: "auto" });
+      }
+      return cases;
+    }),
+  )(
+    "routes the actual review entrypoint for $id",
+    async ({ id: caseId, scenario, message, writer, mode, ...sample }) => {
+      const workspaceDir = await tempDirs.make("workshop-judgment-entry-");
+      const config: OpenClawConfig = {
+        judgments: { provider: "fixture" },
+        skills: { workshop: { autonomous: { mode } } },
+      };
+      if (mode === "auto") {
+        await proposeCreateSkill({
+          agentId: "main",
+          workspaceDir,
+          config,
+          name: "pending-procedure",
+          description: "Pending matching procedure",
+          content: "# Pending\nRetain the procedure.\n",
+          createdBy: "skill-workshop",
+        });
+      }
+      setRuntimeConfigSnapshot(config);
+      const builder = createTestPluginRegistry();
+      const record = createPluginRecord({
+        id: "fixture",
+        source: "/synthetic/judgment.ts",
+        origin: "global",
+        enabled: true,
+        configSchema: false,
+        contracts: { judgmentProviders: ["fixture"] },
+      });
+      const api = builder.createApi(record, { config });
+      const transmitted: JudgmentBatch[] = [];
+      runPluginRegisterSyncInRegistry(
+        (registration) =>
+          registration.registerJudgmentProvider({
+            id: "fixture",
+            contractVersion: 1,
+            async evaluate(batch) {
+              transmitted.push(batch);
+              if (scenario === "outage") {
+                return { status: "unavailable", reason: "transport" };
+              }
+              const answers: Record<string, JudgmentBatchResult["answers"][string]> = {};
+              for (const [id, question] of Object.entries(batch.questions)) {
+                if (question.type !== "choice") {
+                  throw new Error("fixture expects choices");
+                }
+                const label =
+                  id === "decision"
+                    ? scenario === "nothing" && !("interrupted" in sample && sample.interrupted)
+                      ? "none"
+                      : scenario === "nothing"
+                        ? "unclear"
+                        : "create"
+                    : "include";
+                answers[id] = {
+                  type: "choice",
+                  choice: label,
+                  probabilities: Object.fromEntries(
+                    Object.keys(question.criteria).map((key) => [key, key === label ? 1 : 0]),
+                  ),
+                };
+              }
+              return { status: "ok", result: { model: "fixture-v1", answers } };
+            },
+          }),
+        api,
+        builder.registry,
+        record.id,
+      );
+      builder.registry.plugins.push(record);
+      setActivePluginRegistry(builder.registry);
+      runEmbeddedAgent.mockImplementation(async (params: RunEmbeddedAgentParams) => {
+        expect(params.skillWorkshopProposalOnly).toBe(mode === "propose");
+        if (mode === "propose") {
+          expect(params.skillWorkshopProposalMutationBudget?.remaining).toBe(1);
+        }
+        if (scenario === "positive") {
+          expect(params.prompt).toContain("You are the skill author, not the semantic reviewer");
+          expect(params.prompt).toContain('"action":"create"');
+          expect(params.prompt).not.toContain("Skill review. Distill");
+          expect(params.prompt).not.toContain("Most reviews need no change");
+        }
+        if (mode === "auto") {
+          expect(params.prompt).not.toContain("pending-procedure");
+          expect(params.prompt).not.toContain("Review this agent's Skill Workshop as a collection");
+          expect(params.toolExecutionAllow).not.toContain("skill_workshop");
+          expect(
+            transmitted[0]?.questions.decision?.type === "choice" &&
+              Object.keys(transmitted[0].questions.decision.criteria).some((label) =>
+                label.startsWith("revise:"),
+              ),
+          ).toBe(false);
+          return { meta: { durationMs: 1 } };
+        }
+        const proposal = await proposeCreateSkill({
+          agentId: "main",
+          workspaceDir,
+          config,
+          name: "synthetic-procedure",
+          description: "A synthetic reusable verification procedure.",
+          content:
+            "# Synthetic procedure\n\nRead the manifest, verify the selected generation, then record the result.\n",
+          createdBy: "skill-workshop",
+        });
+        params.skillWorkshopProposalMutationBudget?.mutatedProposalIds?.add(proposal.record.id);
+        return { meta: { durationMs: 1 } };
+      });
+      try {
+        await runSkillExperienceReview({
+          ctx: {
+            sessionId: `judgment-${caseId}`,
+            sessionKey: `agent:main:judgment-${caseId}`,
+            workspaceDir,
+            modelProviderId: "openai",
+            modelId: "fixture",
+            foregroundPromptContext: foregroundPromptContext(workspaceDir),
+          },
+          config,
+          reviewMessage: message,
+          turnAborted: "interrupted" in sample && sample.interrupted === true,
+        });
+        expect(transmitted).toHaveLength(scenario === "positive" ? 2 : 1);
+        expect(runEmbeddedAgent).toHaveBeenCalledTimes(writer ? 1 : 0);
+        const proposals = await listSkillProposals({ config, agentId: "main" });
+        expect(proposals.proposals).toHaveLength(writer ? 1 : 0);
+        if (writer) {
+          expect(proposals.proposals[0]?.status).toBe("pending");
+        }
+        await expect(
+          fs.stat(
+            path.join(resolveWorkshopSkillsDir(config, "main"), "synthetic-procedure", "SKILL.md"),
+          ),
+        ).rejects.toThrow();
+      } finally {
+        prepareJudgmentProviderReload(builder.registry, new Set([record.id]));
+        await getPluginInstance(record)?.dispose();
+      }
+    },
+  );
 });

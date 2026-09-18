@@ -27,6 +27,7 @@ import { recordSkillExperienceReviewOutcome } from "./collection-review-state.js
 import { resolveSkillWorkshopConfig } from "./config.js";
 import { buildSkillExperienceReviewPrompt } from "./experience-review-prompt.js";
 import type { ExperienceReviewCandidate } from "./experience-review-scheduler.js";
+import { prepareWorkshopExperienceJudgment } from "./judgment-guidance.js";
 import { SKILL_WORKSHOP_MAINTENANCE_TOOLS } from "./maintenance-prompt.js";
 import { assertSkillReviewRunSucceeded } from "./review-outcome.js";
 import { runSkillWorkshopReview } from "./review-run.js";
@@ -203,6 +204,26 @@ async function runSkillExperienceReviewInner(candidate: ExperienceReviewCandidat
       }
       validateSessionTranscriptContextAnchor(candidate.source, candidate.source);
     };
+    assertSourceCurrent();
+    const judgment = await prepareWorkshopExperienceJudgment({
+      config,
+      agentId: foregroundPromptContext.agentId,
+      signal: abortSignal,
+      assertCurrent: assertSourceCurrent,
+      messages: sessionManager.buildSessionContext().messages,
+      boundaries: sessionManager.getBoundaryCount(),
+      usedSkills: candidate.usedSkills,
+      turnAborted: candidate.turnAborted,
+      mode,
+    });
+    assertSourceCurrent();
+    if (judgment.route === "no-change") {
+      recordSkillExperienceReviewOutcome(foregroundPromptContext.agentId, workspaceDir, {
+        attemptedAtMs,
+        outcome: "nothing",
+      });
+      return;
+    }
     const preparedRunAdmission = prepareAgentRunAdmission({
       cfg: config,
       operationalRunInstance: createOperationalRunInstanceRef(runId),
@@ -229,7 +250,10 @@ async function runSkillExperienceReviewInner(candidate: ExperienceReviewCandidat
         ...(executionRoot ? { skillsSnapshot: { prompt: "", skills: [] } } : {}),
         config,
         abortSignal,
-        prompt: buildSkillExperienceReviewPrompt({ ...candidate, existingSkills }, mode),
+        prompt:
+          judgment.route === "author"
+            ? judgment.prompt
+            : buildSkillExperienceReviewPrompt({ ...candidate, existingSkills }, mode),
         provider: candidate.ctx.modelProviderId,
         model: candidate.ctx.modelId,
         ...(candidate.ctx.authProfileId

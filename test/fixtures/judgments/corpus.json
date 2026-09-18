@@ -1,0 +1,91 @@
+{
+  "rubric": "experience-v3-decision / experience-v3-evidence",
+  "kind": "synthetic labeled behavior fixtures; not model calibration",
+  "workshop": [
+    {
+      "id": "routine",
+      "scenario": "nothing",
+      "message": "The requested file listing succeeded. No corrections were needed.",
+      "writer": false
+    },
+    {
+      "id": "recovery",
+      "scenario": "positive",
+      "message": "The deployment rejected relative certificate paths. Changing to absolute paths and rerunning validation succeeded; retain that procedure.",
+      "writer": true
+    },
+    {
+      "id": "early-correction",
+      "scenario": "positive",
+      "message": "Earlier correction: validate the effective config, not its template. This fixed the launch. Final turn: done.",
+      "writer": true
+    },
+    {
+      "id": "one-time",
+      "scenario": "nothing",
+      "message": "List the files in this temporary example folder once.",
+      "writer": false
+    },
+    {
+      "id": "personal-fact",
+      "scenario": "nothing",
+      "message": "My favorite color is blue.",
+      "writer": false
+    },
+    {
+      "id": "unresolved",
+      "scenario": "outage",
+      "message": "The service still fails. No proposed repair has been verified.",
+      "writer": true
+    },
+    {
+      "id": "already-covered",
+      "scenario": "positive",
+      "message": "The existing deployment skill already says to validate first. The successful execution added no new branch.",
+      "writer": true
+    },
+    {
+      "id": "pending-match",
+      "scenario": "positive",
+      "message": "The pending deployment preflight proposal is the correct home for the verified new validation step.",
+      "writer": true
+    },
+    {
+      "id": "distinct-vocabulary",
+      "scenario": "positive",
+      "message": "Certificate rotation and database key rotation use similar words but have different triggers, procedures and rollback rules.",
+      "writer": true
+    },
+    {
+      "id": "valid-overlap",
+      "scenario": "positive",
+      "message": "Both service restart skills describe the same trigger, effective-config validation and preserved-file rollback.",
+      "writer": true
+    },
+    {
+      "id": "contradiction",
+      "scenario": "positive",
+      "message": "One restart skill requires validation before restart; another says to skip validation for the same trigger.",
+      "writer": true
+    },
+    {
+      "id": "rare-useful",
+      "scenario": "positive",
+      "message": "The rarely used disaster recovery skill is still valid; lack of recent use is not evidence for retirement.",
+      "writer": true
+    },
+    {
+      "id": "incomplete",
+      "scenario": "nothing",
+      "message": "The source turn was interrupted and evidence is incomplete.",
+      "interrupted": true,
+      "writer": true
+    },
+    {
+      "id": "concurrent-target",
+      "scenario": "positive",
+      "message": "The target skill changed while the decision was being prepared. Read its current revision before editing.",
+      "writer": true
+    }
+  ]
+}

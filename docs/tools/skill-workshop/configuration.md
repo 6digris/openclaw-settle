@@ -93,3 +93,54 @@ model.
 
 Proposal descriptions are always capped at 160 bytes, independent of
 `maxSkillBytes`.
+
+## Optional typed judgment review
+
+Select an installed judgment provider with `judgments.provider`. Experience and
+collection review automatically use it, sending bounded retained conversation and
+candidate skill/proposal evidence. Without a configured provider, they use the
+existing LLM reviewer. No per-consumer switches are required. Workshop mode still
+controls whether autonomous review runs.
+
+When enabled, the judgment provider replaces the semantic reviewer; it is not an
+advisory pass before the same LLM review. Accepted no-change decisions finish
+without a generative call. Decisions that require skill text invoke a focused
+author with the selected action, revision-bound targets, and supporting evidence.
+That author writes the selected change rather than repeating the open-ended
+decision about whether or what to learn.
+
+Experience review first selects one concrete plan: no change, already covered by
+an identified target, create, update, or revise. Only a selected change triggers a
+second call to identify evidence for that fixed plan; no-change does not dispatch
+speculative evidence questions. Both calls and intervening catalog checks share a
+two-second budget. Conversation projection removes transport bookkeeping while
+retaining message content, tool calls/results, errors, phase, and ownership
+markers. Selected tool observations retain their matching calls and outcomes;
+missing or ambiguous linkage falls back. Catalog revisions are checked after
+each call. Collection review chooses maintenance actions from skill contents and
+supporting material. The provider is the reviewer, not an advisory supplement.
+A bounded or incomplete view cannot establish that the full
+collection needs no change. Unavailable, unclear, incomplete, or stale decisions
+explicitly fall back to the existing reviewer before any mutation; cancellation
+does not. With the provider disabled, the existing reviewer is unchanged.
+
+Explicit decision labels and deterministic coverage, target, and authority checks
+control routing. Provider probabilities are not calibrated correctness guarantees.
+
+The current Workshop decision inventory is bounded to 32 targets, 128 filesystem
+entries, and 96,000 characters, including supporting files. Collection questions
+are submitted in batches of 64 with the complete bounded catalog shared by each.
+Experience evidence is bounded to 80 messages and 48,000 characters after removing
+transport bookkeeping. Message roles, text, phase, sender authority, tool arguments,
+results, errors, and unfamiliar payload fields are retained. Selected tool evidence
+keeps its exact linked calls and observations; a call alone is not verification.
+Unseen media or missing/ambiguous selected tool linkage takes the explicit fallback.
+Exceeding
+these limits takes the explicit incomplete-coverage fallback, not a no-change
+decision.
+
+Judgments never change Workshop publication permissions: `off` remains off,
+`propose` remains staged, and `auto` retains its existing rooted maintenance policy.
+Selecting an operation does not grant permission to execute it, bypass read
+receipts, or edit external skills. Authors retain complete-file and supporting
+asset checks needed to carry out the selected operation safely.

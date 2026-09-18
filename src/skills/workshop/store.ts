@@ -446,10 +446,11 @@ function listStoredProposals(
 export async function readSkillProposalManifest(
   options: SkillWorkshopDirectoryStoreOptions,
   scope: SkillProposalLookupScope = {},
+  readOptions: { reconcile?: boolean } = {},
 ): Promise<SkillProposalManifest> {
   const before = listStoredProposals(options, scope);
   await Promise.all(
-    before
+    (readOptions.reconcile === false ? [] : before)
       .filter(({ record }) => record.status === "pending")
       .map(({ record, row }) =>
         reconcileInterruptedApply(record.id, {
