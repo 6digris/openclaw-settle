@@ -374,23 +374,19 @@ const MAX_FOLLOW_RETRIES = 8;
 
 const FOLLOW_BACKOFF_POLICY = { initialMs: 1_000, maxMs: 30_000, factor: 2, jitter: 0.2 };
 
-// Returns true only for transport-level disconnects that are worth retrying.
-// Auth errors (4xxx), policy violations (1008), and pairing-required messages are
-// non-recoverable without user action and must not loop.
+// Auth/pairing failures (1008 and 4xxx) require operator action, not retries.
 function isTransientFollowError(error: unknown): boolean {
   if (isGatewayTransportError(error)) {
-    if (error.kind === "timeout") {
-      return true;
-    }
     const code = error.code ?? 0;
-    // 1008 = policy violation (pairing required); 4xxx = app-defined (auth, rate-limit)
-    return code !== 1008 && !(code >= 4000 && code <= 4999);
+    return error.kind === "timeout" || (code !== 1008 && !(code >= 4000 && code <= 4999));
   }
   const message = normalizeLowercaseStringOrEmpty(normalizeErrorMessage(error));
-  if (readConnectPairingRequiredMessage(message)) {
-    return false;
-  }
-  return isPlainGatewayRequestCloseError(message) || isPlainGatewayRequestTimeoutError(message);
+  return (
+    !readConnectPairingRequiredMessage(message) &&
+    (isPlainGatewayRequestCloseError(message) ||
+      isPlainGatewayRequestTimeoutError(message) ||
+      message === "opening handshake has timed out")
+  );
 }
 
 function formatLogTimestamp(value?: string, mode: "pretty" | "plain" = "plain", localTime = true) {

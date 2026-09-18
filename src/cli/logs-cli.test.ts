@@ -910,72 +910,52 @@ describe("logs cli", () => {
       expect(exitSpy).toHaveBeenCalledWith(1);
     });
 
-    it("retries loopback close errors in --follow mode instead of tailing fallback files", async () => {
-      const closeError = createGatewayCloseError({
-        code: 1006,
-        reason: "abnormal closure",
-        message: "gateway closed (1006 abnormal closure): abnormal closure",
+    describe.each([
+      { target: "implicit local Gateway", args: [] },
+      { target: "explicit Gateway URL", args: ["--url", "ws://127.0.0.1:18789"] },
+    ])("bounded follow retries for $target", ({ args }) => {
+      it.each([
+        createGatewayCloseError({
+          code: 1006,
+          reason: "abnormal closure",
+          message: "gateway closed (1006 abnormal closure): abnormal closure",
+        }),
+        new Error("Opening handshake has timed out"),
+      ])("stops after 8 retries for $message", async (error) => {
+        for (let i = 0; i <= 8; i += 1) {
+          callGatewayFromCli.mockRejectedValueOnce(error);
+        }
+
+        const stderrWrites = captureStderrWrites();
+        const stdoutWrites = captureStdoutWrites();
+        const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+
+        await runLogsCli(["logs", "--follow", "--interval", "1", ...args]);
+
+        expect(readConfiguredLogTail).not.toHaveBeenCalled();
+        expect(callGatewayFromCli).toHaveBeenCalledTimes(9);
+        expect((stderrWrites.join("").match(/gateway disconnected/g) ?? []).length).toBe(8);
+        expect(stderrWrites.join("")).toContain(error.message);
+        expect(stdoutWrites.join("")).not.toContain("local fallback line");
+        expect(exitSpy).toHaveBeenCalledWith(1);
       });
-      for (let i = 0; i <= 8; i += 1) {
-        callGatewayFromCli.mockRejectedValueOnce(closeError);
-      }
-
-      const stderrWrites = captureStderrWrites();
-      const stdoutWrites = captureStdoutWrites();
-      const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
-
-      await runLogsCli(["logs", "--follow", "--interval", "1"]);
-
-      expect(readConfiguredLogTail).not.toHaveBeenCalled();
-      expect((stderrWrites.join("").match(/gateway disconnected/g) ?? []).length).toBe(8);
-      expect(stderrWrites.join("")).toContain(
-        "gateway closed (1006 abnormal closure): abnormal closure",
-      );
-      expect(stdoutWrites.join("")).not.toContain("local fallback line");
-      expect(exitSpy).toHaveBeenCalledWith(1);
     });
 
-    it("exits after exhausting max retries in --follow mode with explicit URL", async () => {
-      // Explicit --url bypasses shouldUseLocalLogsFallback so close errors reach the retry path.
-      // initial attempt + 8 retries = 9 total calls before fatal exit.
-      const closeError = createGatewayCloseError({
+    it.each([
+      createGatewayCloseError({
         code: 1006,
         reason: "abnormal closure",
+        url: "ws://remote.example.com:18789",
         urlSource: "cli",
         message: "gateway closed (1006 abnormal closure): abnormal closure",
+      }),
+      new Error("Opening handshake has timed out"),
+    ])("resumes log output after $message with explicit URL", async (error) => {
+      callGatewayFromCli.mockRejectedValueOnce(error).mockResolvedValueOnce({
+        file: "/tmp/openclaw.log",
+        cursor: 10,
+        lines: ["line from remote"],
       });
-      for (let i = 0; i <= 8; i += 1) {
-        callGatewayFromCli.mockRejectedValueOnce(closeError);
-      }
-
-      const stderrWrites = captureStderrWrites();
-      const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
-
-      await runLogsCli(["logs", "--follow", "--url", "ws://127.0.0.1:18789"]);
-
-      expect((stderrWrites.join("").match(/gateway disconnected/g) ?? []).length).toBe(8);
-      expect(stderrWrites.join("")).toContain(
-        "gateway closed (1006 abnormal closure): abnormal closure",
-      );
-      expect(exitSpy).toHaveBeenCalledWith(1);
-    });
-
-    it("retries on transient close errors in --follow mode with explicit URL (no local fallback)", async () => {
-      callGatewayFromCli
-        .mockRejectedValueOnce(
-          createGatewayCloseError({
-            code: 1006,
-            reason: "abnormal closure",
-            url: "ws://remote.example.com:18789",
-            urlSource: "cli",
-            message: "gateway closed (1006 abnormal closure): abnormal closure",
-          }),
-        )
-        .mockResolvedValueOnce({
-          file: "/tmp/openclaw.log",
-          cursor: 10,
-          lines: ["line from remote"],
-        });
 
       const stderrWrites = captureStderrWrites();
       const stdoutWrites = captureStdoutWrites();
