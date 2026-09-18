@@ -916,6 +916,8 @@ wa-popover.new-session-page__where-popover::part(body) {
    decision, and a left-only override here put the draft further from one edge
    than the other while the chat composer stayed symmetric. */
 .new-session-page__composer .new-session-page__message {
+  /* Auto-height must read the new cap immediately, including in reduced motion. */
+  transition-property: none;
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--muted) 42%, transparent) transparent;
 }
