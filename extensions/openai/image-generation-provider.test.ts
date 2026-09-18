@@ -347,6 +347,8 @@ describe("openai image generation provider", () => {
     expect(provider.defaultModel).toBe("gpt-image-2");
     expect(provider.models).toEqual([
       "gpt-image-2",
+      "gpt-image-2.5-flare",
+      "gpt-image-2.5-sunburst",
       "gpt-image-1.5",
       "gpt-image-1",
       "gpt-image-1-mini",
@@ -354,9 +356,17 @@ describe("openai image generation provider", () => {
     expect(provider.capabilities.geometry?.sizes).toContain("2048x2048");
     expect(provider.capabilities.geometry?.sizes).toContain("3840x2160");
     expect(provider.capabilities.geometry?.sizes).toContain("2160x3840");
+    expect(provider.capabilities.geometry?.sizesByModel).toEqual({
+      "gpt-image-2.5-flare": [],
+      "gpt-image-2.5-sunburst": [],
+    });
     expect(provider.capabilities.output).toEqual({
       formats: ["png", "jpeg", "webp"],
       qualities: ["low", "medium", "high", "auto"],
+      qualitiesByModel: {
+        "gpt-image-2.5-flare": ["low", "medium", "high", "xhigh", "max", "auto"],
+        "gpt-image-2.5-sunburst": ["low", "medium", "high", "xhigh", "max", "auto"],
+      },
       backgrounds: ["transparent", "opaque", "auto"],
     });
   });
@@ -727,6 +737,70 @@ describe("openai image generation provider", () => {
     expect(body.model).toBe("gpt-image-1");
     expect(body.size).toBe("2048x1152");
     expect(result.metadata).toBeUndefined();
+  });
+
+  it.each([
+    { model: "gpt-image-2.5-flare", quality: "xhigh" as const },
+    { model: "gpt-image-2.5-sunburst", quality: "max" as const },
+  ])("uses the direct generation contract for $model", async ({ model, quality }) => {
+    mockGeneratedPngResponse();
+
+    const provider = buildOpenAIImageGenerationProvider();
+    const result = await provider.generateImage({
+      provider: "openai",
+      model,
+      prompt: "Create a release badge",
+      cfg: {},
+      quality,
+      size: "auto",
+      outputFormat: "webp",
+      background: "transparent",
+    });
+
+    expect(jsonRequestCall().body).toMatchObject({
+      model,
+      quality,
+      size: "auto",
+      output_format: "webp",
+      background: "transparent",
+    });
+    expect(result.metadata).toBeUndefined();
+  });
+
+  it.each([
+    { model: "gpt-image-2.5-flare", size: "1536x864" },
+    { model: "gpt-image-2.5-sunburst", size: "1024x640" },
+  ])("preserves flexible $model dimensions $size", async ({ model, size }) => {
+    mockGeneratedPngResponse();
+
+    const provider = buildOpenAIImageGenerationProvider();
+    const result = await provider.generateImage({
+      provider: "openai",
+      model,
+      prompt: "Preserve the requested dimensions",
+      cfg: {},
+      size,
+    });
+
+    expect(jsonRequestCall().body).toMatchObject({ model, size });
+    expect(result.metadata).toBeUndefined();
+  });
+
+  it("normalizes invalid GPT Image 2.5 dimensions", async () => {
+    mockGeneratedPngResponse();
+
+    const provider = buildOpenAIImageGenerationProvider();
+    const result = await provider.generateImage({
+      provider: "openai",
+      model: "gpt-image-2.5-flare",
+      prompt: "Normalize invalid dimensions",
+      cfg: {},
+      size: "1024x624",
+    });
+
+    const normalizedSize = (jsonRequestCall().body as { size: string }).size;
+    expect(normalizedSize).not.toBe("1024x624");
+    expect(result.metadata).toEqual({ requestedSize: "1024x624", normalizedSize });
   });
 
   it("falls back to the provider baseUrl when the model catalog is omitted", async () => {

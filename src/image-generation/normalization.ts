@@ -191,19 +191,23 @@ export function resolveImageGenerationOverrides(params: {
     resolution = undefined;
   }
 
-  const supportedQualities = params.provider.capabilities.output?.qualities;
+  const output = params.provider.capabilities.output;
+  const supportedQualities =
+    (params.model ? output?.qualitiesByModel?.[params.model] : undefined) ?? output?.qualities;
+  const supportedFormats =
+    (params.model ? output?.formatsByModel?.[params.model] : undefined) ?? output?.formats;
+  const supportedBackgrounds =
+    (params.model ? output?.backgroundsByModel?.[params.model] : undefined) ?? output?.backgrounds;
   if (quality && !(supportedQualities ?? []).includes(quality)) {
     ignoredOverrides.push({ key: "quality", value: quality });
     quality = undefined;
   }
 
-  const supportedFormats = params.provider.capabilities.output?.formats;
   if (outputFormat && !(supportedFormats ?? []).includes(outputFormat)) {
     ignoredOverrides.push({ key: "outputFormat", value: outputFormat });
     outputFormat = undefined;
   }
 
-  const supportedBackgrounds = params.provider.capabilities.output?.backgrounds;
   if (background && !(supportedBackgrounds ?? []).includes(background)) {
     ignoredOverrides.push({ key: "background", value: background });
     background = undefined;

@@ -29,7 +29,15 @@ type WorkspaceDependencyPolicy = WorkspaceConfig & {
 type NpmShrinkwrap = {
   name?: string;
   version?: string;
-  packages?: Record<string, { name?: string; version?: string; dev?: boolean }>;
+  packages?: Record<
+    string,
+    {
+      name?: string;
+      version?: string;
+      dev?: boolean;
+      dependencies?: Record<string, string>;
+    }
+  >;
 };
 
 function readJson(filePath: string): unknown {
@@ -247,8 +255,18 @@ describe("package manager build policy", () => {
     ];
 
     for (const shrinkwrapPath of shrinkwrapPaths) {
-      const shrinkwrap = readJson(shrinkwrapPath);
-      expect(collectPnpmLockViolations(shrinkwrap, pnpmLockPackages), shrinkwrapPath).toEqual([]);
+      const shrinkwrap = readJson(shrinkwrapPath) as NpmShrinkwrap;
+      // The root shrinkwrap keeps the latest published AI runtime until the
+      // release workflow rewrites it to the just-packed workspace version.
+      const publishedAiVersion = shrinkwrap.packages?.[""]?.dependencies?.["@openclaw/ai"];
+      const allowedPackageKeys =
+        shrinkwrapPath === "npm-shrinkwrap.json" && publishedAiVersion
+          ? new Set([`@openclaw/ai@${publishedAiVersion}`])
+          : new Set<string>();
+      expect(
+        collectPnpmLockViolations(shrinkwrap, pnpmLockPackages, allowedPackageKeys),
+        shrinkwrapPath,
+      ).toEqual([]);
     }
   });
 

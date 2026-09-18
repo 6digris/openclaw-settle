@@ -402,6 +402,7 @@ function packageJsonForShrinkwrap(
   packageJson,
   shrinkwrapOverrides,
   workspaceVersions = readWorkspacePackageVersions(),
+  options = {},
 ) {
   const normalized = { ...packageJson };
   delete normalized.devDependencies;
@@ -415,7 +416,7 @@ function packageJsonForShrinkwrap(
         if (typeof spec !== "string" || !spec.startsWith("workspace:")) {
           return [name, spec];
         }
-        const version = workspaceVersions.get(name);
+        const version = options.releaseWorkspaceDependencies?.[name] ?? workspaceVersions.get(name);
         if (!version || !EXACT_VERSION_PATTERN.test(version)) {
           throw new Error(`Cannot resolve published workspace dependency ${name}: ${spec}`);
         }
@@ -747,6 +748,16 @@ function generateShrinkwrap(packageDir, options = {}) {
   try {
     const packageJson = JSON.parse(readFileSync(path.join(packageDir, "package.json"), "utf8"));
     const currentShrinkwrap = readCurrentShrinkwrap(packageDir);
+    const currentRootDependencies = currentShrinkwrap?.packages?.[""]?.dependencies;
+    const currentAiVersion = currentRootDependencies?.["@openclaw/ai"];
+    const releaseWorkspaceDependencies =
+      path.resolve(packageDir) === ROOT_DIR &&
+      packageJson.dependencies?.["@openclaw/ai"]?.startsWith("workspace:") &&
+      typeof currentAiVersion === "string" &&
+      EXACT_VERSION_PATTERN.test(currentAiVersion) &&
+      currentShrinkwrap?.packages?.["node_modules/@openclaw/ai"]?.version === currentAiVersion
+        ? { "@openclaw/ai": currentAiVersion }
+        : undefined;
     const shrinkwrapOverrides = mergeOverrides(
       options.useCurrentShrinkwrapOverrides
         ? readCurrentShrinkwrapOverrides(packageDir, declaredPackageDependencies(packageJson))
@@ -768,8 +779,22 @@ function generateShrinkwrap(packageDir, options = {}) {
     ];
     writeFileSync(
       path.join(tempDir, "package.json"),
-      `${JSON.stringify(packageJsonForShrinkwrap(packageJson, shrinkwrapOverrides), null, 2)}\n`,
+      `${JSON.stringify(
+        packageJsonForShrinkwrap(packageJson, shrinkwrapOverrides, readWorkspacePackageVersions(), {
+          releaseWorkspaceDependencies,
+        }),
+        null,
+        2,
+      )}\n`,
     );
+    if (releaseWorkspaceDependencies && currentShrinkwrap) {
+      // Retain the published workspace seed until release preflight rewrites the
+      // packed root to the exact candidate tarball and registry version.
+      writeFileSync(
+        path.join(tempDir, "npm-shrinkwrap.json"),
+        `${JSON.stringify(currentShrinkwrap, null, 2)}\n`,
+      );
+    }
     runNpm(npmInstallArgs, tempDir);
     runNpm(
       ["shrinkwrap", "--ignore-scripts", "--no-audit", "--no-fund", ...peerResolutionArgs],
@@ -784,7 +809,14 @@ function generateShrinkwrap(packageDir, options = {}) {
       ),
       currentShrinkwrap,
     );
-    assertShrinkwrapMatchesPnpmLock(generated);
+    assertShrinkwrapMatchesPnpmLock(
+      generated,
+      new Set(
+        Object.entries(releaseWorkspaceDependencies ?? {}).map(
+          ([name, version]) => `${name}@${version}`,
+        ),
+      ),
+    );
     assertDeclaredShrinkwrapDependencies(generated, packageJson);
     return `${JSON.stringify(generated, null, 2)}\n`;
   } finally {
@@ -792,7 +824,11 @@ function generateShrinkwrap(packageDir, options = {}) {
   }
 }
 
-function collectPnpmLockViolations(shrinkwrap, pnpmLockPackages = readPnpmLockPackages()) {
+function collectPnpmLockViolations(
+  shrinkwrap,
+  pnpmLockPackages = readPnpmLockPackages(),
+  allowedPackageKeys = new Set(),
+) {
   const packages = shrinkwrap?.packages;
   if (!packages || typeof packages !== "object") {
     return [];
@@ -807,7 +843,7 @@ function collectPnpmLockViolations(shrinkwrap, pnpmLockPackages = readPnpmLockPa
       continue;
     }
     const packageKey = `${packageName}@${metadata.version}`;
-    if (!pnpmLockPackages.has(packageKey)) {
+    if (!pnpmLockPackages.has(packageKey) && !allowedPackageKeys.has(packageKey)) {
       violations.push({ path: lockPath, packageKey });
     }
   }
@@ -1089,8 +1125,12 @@ function restoreCurrentPnpmLockedPackages(
   return generated;
 }
 
-function assertShrinkwrapMatchesPnpmLock(shrinkwrap) {
-  const violations = collectPnpmLockViolations(shrinkwrap);
+function assertShrinkwrapMatchesPnpmLock(shrinkwrap, allowedPackageKeys = new Set()) {
+  const violations = collectPnpmLockViolations(
+    shrinkwrap,
+    readPnpmLockPackages(),
+    allowedPackageKeys,
+  );
   if (violations.length === 0) {
     return;
   }

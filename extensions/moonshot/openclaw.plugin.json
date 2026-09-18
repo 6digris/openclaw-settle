@@ -64,6 +64,41 @@
             }
           },
           {
+            "id": "kimi-k3",
+            "name": "Kimi K3",
+            "reasoning": true,
+            "thinkingLevelMap": {
+              "off": null,
+              "minimal": null,
+              "low": "low",
+              "medium": null,
+              "high": "high",
+              "xhigh": "max",
+              "max": "max"
+            },
+            "input": [
+              "text",
+              "image"
+            ],
+            "contextWindow": 1048576,
+            "maxTokens": 1048576,
+            "cost": {
+              "input": 3,
+              "output": 15,
+              "cacheRead": 0.3,
+              "cacheWrite": 0
+            },
+            "compat": {
+              "supportsReasoningEffort": true,
+              "supportedReasoningEfforts": [
+                "low",
+                "high",
+                "max"
+              ],
+              "codeMode": "preferred"
+            }
+          },
+          {
             "id": "kimi-k2.7-code",
             "name": "Kimi K2.7 Code",
             "reasoning": true,
