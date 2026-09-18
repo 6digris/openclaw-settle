@@ -57,8 +57,7 @@ export function createAgentHarnessToolExecutionBoundaryRegistry() {
       states.set(params.toolCallId, state);
       const consumeBlocked = () => {
         executionPrevented =
-          executionPrevented ||
-          consumePreExecutionBlockedToolCall(params.toolCallId, params.runId);
+          executionPrevented || consumePreExecutionBlockedToolCall(params.toolCallId, params.runId);
       };
 
       return {

@@ -167,7 +167,10 @@ export async function retireCodexAppServerSessionGeneration(params: {
     // callers need the original absent/conflict result for reset reclamation.
     return await retireGeneration();
   }
-  return await withNativeSessionBindingOwnership<CodexAppServerThreadBinding, CodexSessionGenerationRetirementResult>(
+  return await withNativeSessionBindingOwnership<
+    CodexAppServerThreadBinding,
+    CodexSessionGenerationRetirementResult
+  >(
     {
       snapshot: expectedBinding,
       schedule: (run) => withCodexAppServerThreadMutation(expectedBinding.threadId, run),

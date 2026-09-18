@@ -1,5 +1,5 @@
-import { loadSessionEntryReadOnly } from "../../../config/sessions/session-accessor.js";
 import { resolveSessionStorePathCore } from "../../../config/sessions/paths.js";
+import { loadSessionEntryReadOnly } from "../../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 
 /** Resolve host lineage before selecting a native queue, catalog, or connection. */

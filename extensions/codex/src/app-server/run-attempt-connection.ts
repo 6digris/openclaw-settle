@@ -1,3 +1,4 @@
+import { createAgentHarnessAttemptCancellation } from "openclaw/plugin-sdk/agent-harness-attempt-runtime";
 import {
   isActiveHarnessContextEngine,
   resolveSandboxContext,
@@ -5,7 +6,6 @@ import {
   type FastModeAutoProgressState,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { resolveAgentDir } from "openclaw/plugin-sdk/agent-runtime";
-import { createAgentHarnessAttemptCancellation } from "openclaw/plugin-sdk/agent-harness-attempt-runtime";
 import { resolveSessionAgentIdsStrict } from "openclaw/plugin-sdk/agent-scope-runtime";
 import {
   createDiagnosticTraceContextFromActiveScope,

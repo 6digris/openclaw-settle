@@ -813,7 +813,11 @@ function codexSessionGenerationOperations(
     adopt: (expectedPreviousSessionId, assertCurrent) =>
       store.adoptSessionGeneration(identity, expectedPreviousSessionId, assertCurrent),
     reclaim: (expectedPreviousSessionId, assertCurrent) =>
-      store.mutate(identity, { kind: "reclaim-generation", expectedPreviousSessionId }, assertCurrent),
+      store.mutate(
+        identity,
+        { kind: "reclaim-generation", expectedPreviousSessionId },
+        assertCurrent,
+      ),
   };
 }
 
