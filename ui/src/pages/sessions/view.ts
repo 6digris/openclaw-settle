@@ -59,6 +59,7 @@ import {
 import { formatSessionArchiveReason } from "../../lib/sessions/session-archive-reason.ts";
 import { parseAgentSessionKey, parseSessionKeyParts } from "../../lib/sessions/session-key.ts";
 import { SESSIONS_PAGE_DEFAULT_LIMIT } from "../../lib/sessions/session-requests.ts";
+import { renderSessionsLoadingLayout, renderSkeletonRows } from "./loading-presentation.ts";
 
 type TranscriptSearchState =
   | { status: "idle" }
@@ -551,30 +552,6 @@ function renderTranscriptSearch(props: SessionsProps) {
   `;
 }
 
-const SKELETON_ROW_COUNT = 4;
-
-// Initial load renders shimmer rows instead of flashing the empty state
-// before the first sessions.list result arrives.
-function renderSkeletonRows(columnCount: number) {
-  return Array.from(
-    { length: SKELETON_ROW_COUNT },
-    (_, rowIndex) => html`
-      <tr class="session-skeleton-row" aria-hidden="true">
-        ${Array.from({ length: columnCount }, (_cell, columnIndex) =>
-          columnIndex === 0
-            ? html`<td class="data-table-checkbox-col"></td>`
-            : html`<td>
-                <span
-                  class="session-skeleton ${columnIndex === 1 ? "session-skeleton--key" : ""}"
-                  style=${`animation-delay: ${rowIndex * 120}ms`}
-                ></span>
-              </td>`,
-        )}
-      </tr>
-    `,
-  );
-}
-
 function paginateRows<T>(rows: T[], page: number, pageSize: number): T[] {
   const start = page * pageSize;
   return rows.slice(start, start + pageSize);
@@ -1060,7 +1037,11 @@ export function renderSessions(props: SessionsProps) {
       }),
     ),
   ];
-  return renderSettingsPage(children, { wide: true });
+  return renderSessionsLoadingLayout(
+    renderSettingsPage(children, { wide: true }),
+    Boolean(props.result),
+    props.loading && !props.result && !props.error,
+  );
 }
 
 type SessionsTableContext = {
