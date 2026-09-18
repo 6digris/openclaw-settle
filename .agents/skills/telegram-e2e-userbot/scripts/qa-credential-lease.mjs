@@ -283,7 +283,7 @@ async function resolveCredentialPayload(acquired, identity, requestOptions, limi
 }
 
 export async function acquireQaLease({
-  kind,
+  kind = "",
   ownerId = `qa-lease-${os.hostname()}-${process.pid}-${randomUUID()}`,
   leaseTtlMs = 20 * 60_000,
   heartbeatIntervalMs = 30_000,
