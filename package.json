@@ -426,7 +426,8 @@
     "!dist/plugin-sdk/memory-core-host-engine-knn.d.ts",
     "!dist/plugin-sdk/memory-core-host-engine-indexing.d.ts",
     "!dist/plugin-sdk/sqlite-worker-runtime.d.ts",
-    "!dist/plugin-sdk/agent-harness-session-runtime.d.ts"
+    "!dist/plugin-sdk/agent-harness-session-runtime.d.ts",
+    "!dist/plugin-sdk/agent-harness-attempt-runtime.d.ts"
   ],
   "type": "module",
   "main": "dist/index.js",
@@ -877,6 +878,9 @@
     "./plugin-sdk/agent-harness": {
       "types": "./dist/plugin-sdk/agent-harness.d.ts",
       "default": "./dist/plugin-sdk/agent-harness.js"
+    },
+    "./plugin-sdk/agent-harness-attempt-runtime": {
+      "default": "./dist/plugin-sdk/agent-harness-attempt-runtime.js"
     },
     "./plugin-sdk/agent-harness-exec-review-runtime": {
       "default": "./dist/plugin-sdk/agent-harness-exec-review-runtime.js"
