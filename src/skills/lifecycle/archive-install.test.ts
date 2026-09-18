@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import JSZip from "jszip";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { sha256Hex } from "../../infra/crypto-digest.js";
 import { withExtractedArchiveRoot } from "../../infra/install-flow.js";
 import {
   initializeGlobalHookRunner,
@@ -12,9 +13,11 @@ import { createMockPluginRegistry } from "../../plugins/hooks.test-fixtures.js";
 import { createTrackedTempDirs } from "../../test-utils/tracked-temp-dirs.js";
 import {
   CLAWHUB_SKILL_ARCHIVE_ROOT_MARKERS,
+  applyExtractedSkillRoot,
   installExtractedSkillRoot,
   resolveWorkspaceSkillInstallDir,
 } from "./archive-install.js";
+import { digestClawHubSkillTree } from "./skill-tree-digest.js";
 
 const tempDirs = createTrackedTempDirs();
 
@@ -250,6 +253,53 @@ describe("skill archive install", () => {
     expect(payload?.request?.mode).toBe("install");
   });
 
+  it.each(["unchanged", "absent", "appeared", "force"] as const)(
+    "preserves native replacement behavior when the installed skill is %s",
+    async (state) => {
+      const root = await tempDirs.make("openclaw-skill-update-state-");
+      const workspaceDir = path.join(root, "workspace");
+      const extractedRoot = path.join(root, "extracted");
+      await fs.mkdir(extractedRoot, { recursive: true });
+      await fs.writeFile(path.join(extractedRoot, "SKILL.md"), "replacement");
+      const targetDir = resolveWorkspaceSkillInstallDir(workspaceDir, "weather");
+      if (state !== "absent") {
+        await fs.mkdir(targetDir, { recursive: true });
+        await fs.writeFile(path.join(targetDir, "SKILL.md"), "original");
+      }
+      const expectedClawHubState =
+        state === "unchanged"
+          ? {
+              slug: "weather",
+              skillFilePath: "SKILL.md",
+              skillFileSha256: sha256Hex("original"),
+              fileTreeSha256: await digestClawHubSkillTree(targetDir),
+            }
+          : state === "force"
+            ? undefined
+            : null;
+      const result = await installExtractedSkillRoot({
+        workspaceDir,
+        slug: "weather",
+        extractedRoot,
+        mode: "update",
+        expectedClawHubState,
+      });
+      if (state === "appeared") {
+        expect(result).toMatchObject({
+          ok: false,
+          failureKind: "invalid-request",
+          replacementBlocked:
+            'Skill "weather" appeared during update. Updating replaces the installed skill directory.',
+        });
+      } else {
+        expect(result).toEqual({ ok: true, targetDir });
+      }
+      expect(await fs.readFile(path.join(targetDir, "SKILL.md"), "utf8")).toBe(
+        state === "appeared" ? "original" : "replacement",
+      );
+    },
+  );
+
   it("restores a skill when backup validation blocks replacement", async () => {
     const root = await tempDirs.make("openclaw-skill-archive-install-");
     const workspaceDir = path.join(root, "workspace");
@@ -260,29 +310,34 @@ describe("skill archive install", () => {
     await fs.mkdir(targetDir, { recursive: true });
     await fs.writeFile(path.join(targetDir, "SKILL.md"), skillFileContent("Installed Skill"));
     const skillsDir = path.dirname(targetDir);
-    let stageDirsAtGuard: string[] = [];
+    const expectedClawHubState = {
+      slug: "staged-update",
+      skillFilePath: "SKILL.md",
+      skillFileSha256: sha256Hex(await fs.readFile(path.join(targetDir, "SKILL.md"))),
+      fileTreeSha256: await digestClawHubSkillTree(targetDir),
+    };
 
-    const result = await installExtractedSkillRoot({
+    const result = await applyExtractedSkillRoot({
       workspaceDir,
       slug: "staged-update",
       extractedRoot,
       mode: "update",
       rootMarkers: CLAWHUB_SKILL_ARCHIVE_ROOT_MARKERS,
-      onAfterBackup: async (backupDir) => {
-        stageDirsAtGuard = (await fs.readdir(skillsDir)).filter((entry) =>
-          entry.startsWith(".openclaw-install-stage-"),
-        );
-        await fs.writeFile(path.join(backupDir, "notes.md"), "edited before backup", "utf8");
-        return 'Skill "staged-update" has local file changes.';
+      expectedClawHubState,
+      beforeInstall: async () => {
+        await fs.writeFile(path.join(targetDir, "notes.md"), "edited before backup", "utf8");
+        return undefined;
       },
     });
 
     expect(result).toMatchObject({
       ok: false,
-      error: 'Skill "staged-update" has local file changes.',
+      error:
+        'Skill "staged-update" changed during update. Updating replaces the installed skill directory.',
+      replacementBlocked:
+        'Skill "staged-update" changed during update. Updating replaces the installed skill directory.',
       failureKind: "invalid-request",
     });
-    expect(stageDirsAtGuard).toHaveLength(1);
     await expect(fs.readFile(path.join(targetDir, "notes.md"), "utf8")).resolves.toBe(
       "edited before backup",
     );

@@ -84,7 +84,7 @@ async function installDownloadSkill(params: {
   stripComponents?: number;
 }) {
   return installDownloadSpec({
-    entry: buildEntry(params.name),
+    skillKey: params.name,
     spec: buildDownloadSpec(params),
     timeoutMs: 30_000,
   });
@@ -257,9 +257,9 @@ describe("installDownloadSpec extraction safety", () => {
       },
       async (origin, release) => {
         const entry = buildEntry("oversized-advertised-http-download");
-        const toolsRoot = resolveSkillToolsRootDir(entry);
+        const toolsRoot = resolveSkillToolsRootDir(entry.metadata?.skillKey ?? entry.skill.name);
         const result = await installDownloadSpec({
-          entry,
+          skillKey: entry.metadata?.skillKey ?? entry.skill.name,
           spec: {
             kind: "download",
             id: "dl",
@@ -304,10 +304,10 @@ describe("installDownloadSpec extraction safety", () => {
       release,
     });
     const entry = buildEntry(testCase.name);
-    const toolsRoot = resolveSkillToolsRootDir(entry);
+    const toolsRoot = resolveSkillToolsRootDir(entry.metadata?.skillKey ?? entry.skill.name);
 
     const result = await installDownloadSpec({
-      entry,
+      skillKey: entry.metadata?.skillKey ?? entry.skill.name,
       spec: {
         kind: "download",
         id: "dl",
@@ -376,9 +376,9 @@ describe("installDownloadSpec extraction safety", () => {
       },
       async (origin, release) => {
         const entry = buildEntry("oversized-http-download");
-        const toolsRoot = resolveSkillToolsRootDir(entry);
+        const toolsRoot = resolveSkillToolsRootDir(entry.metadata?.skillKey ?? entry.skill.name);
         const result = await installDownloadSpec({
-          entry,
+          skillKey: entry.metadata?.skillKey ?? entry.skill.name,
           spec: {
             kind: "download",
             id: "dl",
@@ -418,9 +418,9 @@ describe("installDownloadSpec extraction safety", () => {
       },
       async (origin, release) => {
         const entry = buildEntry("successful-http-download");
-        const toolsRoot = resolveSkillToolsRootDir(entry);
+        const toolsRoot = resolveSkillToolsRootDir(entry.metadata?.skillKey ?? entry.skill.name);
         const result = await installDownloadSpec({
-          entry,
+          skillKey: entry.metadata?.skillKey ?? entry.skill.name,
           spec: {
             kind: "download",
             id: "dl",
@@ -452,7 +452,7 @@ describe("installDownloadSpec extraction safety", () => {
     const expected = "0".repeat(64);
     const actual = createHash("sha256").update(archive).digest("hex");
     const entry = buildEntry(`digest-mismatch-${existing ? "existing" : "new"}`);
-    const toolsRoot = resolveSkillToolsRootDir(entry);
+    const toolsRoot = resolveSkillToolsRootDir(entry.metadata?.skillKey ?? entry.skill.name);
     const targetDir = path.join(toolsRoot, "runtime");
     if (existing) {
       await fs.mkdir(targetDir, { recursive: true });
@@ -461,7 +461,7 @@ describe("installDownloadSpec extraction safety", () => {
     mockArchiveResponse(archive);
 
     const result = await installDownloadSpec({
-      entry,
+      skillKey: entry.metadata?.skillKey ?? entry.skill.name,
       spec: {
         ...buildDownloadSpec({
           url: "https://example.invalid/runtime.tar.bz2?token=do-not-disclose",
@@ -500,7 +500,7 @@ describe("installDownloadSpec extraction safety", () => {
   ])("installs and extracts a download with $name", async ({ verified }) => {
     const payload = Buffer.from("verified download payload");
     const entry = buildEntry(`digest-success-${verified ? "verified" : "legacy"}`);
-    const toolsRoot = resolveSkillToolsRootDir(entry);
+    const toolsRoot = resolveSkillToolsRootDir(entry.metadata?.skillKey ?? entry.skill.name);
     const sha256 = createHash("sha256").update(payload).digest("hex");
     mockArchiveResponse(payload);
     mockTarExtractionFlow({
@@ -510,7 +510,7 @@ describe("installDownloadSpec extraction safety", () => {
     });
 
     const result = await installDownloadSpec({
-      entry,
+      skillKey: entry.metadata?.skillKey ?? entry.skill.name,
       spec: {
         kind: "download",
         url: "https://example.invalid/runtime.tar.bz2",
@@ -539,7 +539,7 @@ describe("installDownloadSpec extraction safety", () => {
       const verifiedArchive = Buffer.from("verified archive bytes");
       const replacementArchive = Buffer.from("unverified replacement archive bytes");
       const entry = buildEntry("verified-post-publication-root-replacement");
-      const toolsRoot = resolveSkillToolsRootDir(entry);
+      const toolsRoot = resolveSkillToolsRootDir(entry.metadata?.skillKey ?? entry.skill.name);
       const displacedRoot = `${toolsRoot}-displaced`;
       const archivePath = path.join(toolsRoot, "runtime", "runtime.tar.bz2");
       const replacementOutput = path.join(toolsRoot, "runtime", "runtime.txt");
@@ -596,7 +596,7 @@ describe("installDownloadSpec extraction safety", () => {
       let result;
       try {
         result = await installDownloadSpec({
-          entry,
+          skillKey: entry.metadata?.skillKey ?? entry.skill.name,
           spec: {
             ...buildDownloadSpec({
               url: "https://example.invalid/runtime.tar.bz2",
@@ -650,7 +650,7 @@ describe("installDownloadSpec extraction safety", () => {
 
       const archiveName = `runtime.${archiveType}`;
       const result = await installDownloadSpec({
-        entry,
+        skillKey: entry.metadata?.skillKey ?? entry.skill.name,
         spec: {
           ...buildDownloadSpec({
             url: `https://example.invalid/${archiveName}`,
@@ -663,7 +663,10 @@ describe("installDownloadSpec extraction safety", () => {
         timeoutMs: 30_000,
       });
 
-      const destinationDir = path.join(resolveSkillToolsRootDir(entry), "runtime");
+      const destinationDir = path.join(
+        resolveSkillToolsRootDir(entry.metadata?.skillKey ?? entry.skill.name),
+        "runtime",
+      );
       expect(result.ok).toBe(true);
       await expect(fs.readFile(path.join(destinationDir, archiveName))).resolves.toEqual(archive);
       await expect(fs.readFile(path.join(destinationDir, "run.sh"), "utf8")).resolves.toBe(
@@ -679,11 +682,11 @@ describe("installDownloadSpec extraction safety", () => {
   it("rejects targetDir escapes outside the per-skill tools root", async () => {
     const beforeFetchCalls = fetchWithSsrFGuardMock.mock.calls.length;
     const entry = buildEntry("relative-traversal");
-    const toolsRoot = resolveSkillToolsRootDir(entry);
+    const toolsRoot = resolveSkillToolsRootDir(entry.metadata?.skillKey ?? entry.skill.name);
     const escapedTargetDir = path.resolve(toolsRoot, "../outside");
 
     const result = await installDownloadSpec({
-      entry,
+      skillKey: entry.metadata?.skillKey ?? entry.skill.name,
       spec: buildDownloadSpec({
         url: "https://example.invalid/good.zip",
         archive: "zip",
@@ -704,7 +707,7 @@ describe("installDownloadSpec extraction safety", () => {
     const entry = buildEntry("relative-targetdir");
 
     const result = await installDownloadSpec({
-      entry,
+      skillKey: entry.metadata?.skillKey ?? entry.skill.name,
       spec: {
         kind: "download",
         id: "dl",
@@ -717,7 +720,11 @@ describe("installDownloadSpec extraction safety", () => {
     expect(result.ok).toBe(true);
     expect(
       await fs.readFile(
-        path.join(resolveSkillToolsRootDir(entry), "runtime", "payload.bin"),
+        path.join(
+          resolveSkillToolsRootDir(entry.metadata?.skillKey ?? entry.skill.name),
+          "runtime",
+          "payload.bin",
+        ),
         "utf-8",
       ),
     ).toBe("payload");
@@ -737,7 +744,7 @@ describe("installDownloadSpec extraction safety", () => {
     });
 
     const result = await installDownloadSpec({
-      entry: buildEntry("failed-download-body"),
+      skillKey: "failed-download-body",
       spec: {
         kind: "download",
         id: "dl",
@@ -761,7 +768,7 @@ describe("installDownloadSpec extraction safety", () => {
     "fails closed when $name rebinds the lexical tools root before the final copy",
     async ({ verified }) => {
       const entry = buildEntry(`base-rebind-${verified ? "verified" : "legacy"}`);
-      const safeToolsRoot = resolveSkillToolsRootDir(entry);
+      const safeToolsRoot = resolveSkillToolsRootDir(entry.metadata?.skillKey ?? entry.skill.name);
       const outsideRoot = path.join(
         workspaceDir,
         `outside-root-${verified ? "verified" : "legacy"}`,
@@ -789,7 +796,7 @@ describe("installDownloadSpec extraction safety", () => {
       });
 
       const result = await installDownloadSpec({
-        entry,
+        skillKey: entry.metadata?.skillKey ?? entry.skill.name,
         spec: {
           kind: "download",
           id: "dl",
@@ -813,7 +820,10 @@ describe("installDownloadSpec extraction safety (tar.bz2)", () => {
     async (truncatedListing) => {
       const name = `tbz2-truncated-${truncatedListing}`;
       const entry = buildEntry(name);
-      const targetDir = path.join(resolveSkillToolsRootDir(entry), "target");
+      const targetDir = path.join(
+        resolveSkillToolsRootDir(entry.metadata?.skillKey ?? entry.skill.name),
+        "target",
+      );
 
       mockArchiveResponse(new Uint8Array([1, 2, 3]));
       runCommandWithTimeoutMock.mockImplementation(async (...argv: unknown[]) => {
@@ -879,7 +889,10 @@ describe("installDownloadSpec extraction safety (tar.bz2)", () => {
       },
     ]) {
       const entry = buildEntry(testCase.name);
-      const targetDir = path.join(resolveSkillToolsRootDir(entry), "target");
+      const targetDir = path.join(
+        resolveSkillToolsRootDir(entry.metadata?.skillKey ?? entry.skill.name),
+        "target",
+      );
       const commandCallCount = runCommandWithTimeoutMock.mock.calls.length;
 
       mockArchiveResponse(new Uint8Array([1, 2, 3]));
@@ -913,7 +926,10 @@ describe("installDownloadSpec extraction safety (tar.bz2)", () => {
 
   it("rejects tar.bz2 archives that change after preflight", async () => {
     const entry = buildEntry("tbz2-preflight-change");
-    const targetDir = path.join(resolveSkillToolsRootDir(entry), "target");
+    const targetDir = path.join(
+      resolveSkillToolsRootDir(entry.metadata?.skillKey ?? entry.skill.name),
+      "target",
+    );
     const commandCallCount = runCommandWithTimeoutMock.mock.calls.length;
 
     mockArchiveResponse(new Uint8Array([1, 2, 3]));
@@ -953,7 +969,10 @@ describe("installDownloadSpec extraction safety (tar.bz2)", () => {
 
   it("rejects tar.bz2 entries that traverse pre-existing targetDir symlinks", async () => {
     const entry = buildEntry("tbz2-targetdir-symlink");
-    const targetDir = path.join(resolveSkillToolsRootDir(entry), "target");
+    const targetDir = path.join(
+      resolveSkillToolsRootDir(entry.metadata?.skillKey ?? entry.skill.name),
+      "target",
+    );
     const outsideDir = path.join(workspaceDir, "tbz2-targetdir-outside");
     await fs.mkdir(targetDir, { recursive: true });
     await fs.mkdir(outsideDir, { recursive: true });
