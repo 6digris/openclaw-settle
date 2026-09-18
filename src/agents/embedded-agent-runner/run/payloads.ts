@@ -367,15 +367,12 @@ export function buildEmbeddedRunPayloads(params: {
     hasUserFacingReply = true;
   }
   // A conversational NO_REPLY is an authored outcome, not a missing answer.
-  // A failed context read must not turn a reaction to "thank you" into a
-  // synthetic tool warning. Missing answers, unknown/mutating failures, and
-  // scheduled work still retain their existing failure reporting.
+  // Native shell calls are conservatively classified as mutating even when
+  // they only search files. That replay-safety classification must not replace
+  // a completed answer with a synthetic warning. Missing answers, interrupted
+  // runs, and scheduled work still retain their failure reporting.
   const respectIntentionalSilence =
-    hasIntentionalSilentFinal &&
-    params.lastToolError?.mutatingAction === false &&
-    !params.isCronTrigger &&
-    !params.isHeartbeatTrigger &&
-    !runAborted;
+    hasIntentionalSilentFinal && !params.isCronTrigger && !params.isHeartbeatTrigger && !runAborted;
   if (params.lastToolError && !respectIntentionalSilence) {
     // A restart intentionally aborts the active tool while the Gateway takes over.
     // Report the lifecycle status instead of a tool failure.
