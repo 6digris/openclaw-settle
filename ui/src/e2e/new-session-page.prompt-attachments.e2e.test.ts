@@ -140,6 +140,52 @@ suite.define(() => {
     }
   });
 
+  it.each([
+    { width: 844, height: 390 },
+    { width: 932, height: 500 },
+  ])("keeps long landscape drafts inside the editor at $width × $height", async (viewport) => {
+    await suite.withPage({ viewport }, async ({ page }) => {
+      await installMockGateway(page);
+      await page.goto(`${suite.server.baseUrl}new`);
+      const message = page.locator(".new-session-page__message");
+      await message.waitFor();
+      await message.focus();
+      const initialHeight = await message.evaluate((element) => element.clientHeight);
+      const draft = Array.from({ length: 12 }, () => "Draft row").join("\n");
+
+      for (let attempt = 0; attempt < 2; attempt++) {
+        for (let line = 0; line < 12; line++) {
+          if (line > 0) {
+            await message.press("Shift+Enter");
+          }
+          await message.pressSequentially("Draft row");
+        }
+        expect(await message.inputValue()).toBe(draft);
+        await expect
+          .poll(() =>
+            message.evaluate((element) => {
+              const surface = element.closest<HTMLElement>(".agent-chat__input")!;
+              return surface.scrollHeight - surface.clientHeight;
+            }),
+          )
+          .toBeLessThanOrEqual(1);
+        const editor = await message.evaluate((element: HTMLTextAreaElement) => ({
+          height: element.clientHeight,
+          scrollHeight: element.scrollHeight,
+          focus: document.activeElement === element,
+          caret: element.selectionStart,
+        }));
+        expect(editor.scrollHeight).toBeGreaterThan(editor.height);
+        expect(editor.focus).toBe(true);
+        expect(editor.caret).toBe(draft.length);
+        await message.fill("");
+        await expect
+          .poll(() => message.evaluate((element) => element.clientHeight))
+          .toBe(initialHeight);
+      }
+    });
+  });
+
   it("grows the first prompt downward without moving the identity, then caps at ten lines", async () => {
     await withNewSessionPage(async (page) => {
       const gateway = await installMockGateway(page);
