@@ -32,7 +32,7 @@ OpenClaw is a gateway, plugin host, model router, and agent runtime, so a defaul
 
 ## Generating and checking
 
-The root `openclaw` npm package, OpenClaw-owned npm plugin packages (for example `@openclaw/discord`), and publishable workspace packages such as [`@openclaw/ai`](/reference/openclaw-ai) include `npm-shrinkwrap.json` when they publish. Workspace dependencies are omitted from the root shrinkwrap because they publish beside the root package; each publishable workspace package pins its own transitive tree instead. Suitable plugin packages can also publish with explicit `bundledDependencies`, carrying their runtime dependency files in the plugin tarball instead of relying only on install-time resolution.
+The root `openclaw` npm package, OpenClaw-owned npm plugin packages (for example `@openclaw/discord`), and publishable workspace packages such as [`@openclaw/ai`](/reference/openclaw-ai) include `npm-shrinkwrap.json` when they publish. The generator resolves workspace dependencies to their release versions from the public npm registry and includes them in the root shrinkwrap. Each publishable workspace package also pins its own transitive tree. Suitable plugin packages can publish with explicit `bundledDependencies`, carrying their runtime dependency files in the plugin tarball instead of relying only on install-time resolution.
 
 ```bash
 # All shrinkwrap-managed packages (root + publishable plugins)
@@ -47,6 +47,8 @@ pnpm deps:shrinkwrap:root:check
 pnpm deps:shrinkwrap:changed:generate
 pnpm deps:shrinkwrap:changed:check
 ```
+
+The check rejects a shrinkwrap that omits a declared runtime dependency. Workspace dependency versions must already exist in the public registry before generation. Extended-stable preflight uses the prepared local dependency tarball so an unpublished candidate remains testable. During publication, core workspace packages publish first; after their exact versions become visible on the public registry, a credential-free read-only container installs the exact root tarball, checks dependency coverage, and runs `openclaw --version` and `openclaw gateway status --no-probe` before the root package can publish.
 
 The generator resolves npm's publishable lock format but rejects generated package versions that are not already present in `pnpm-lock.yaml`. That keeps the pnpm dependency age, override, and patch-review boundary intact.
 

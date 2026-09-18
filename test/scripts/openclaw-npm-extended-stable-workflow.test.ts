@@ -230,4 +230,36 @@ describe("minimal npm extended-stable workflow", () => {
       "find preflight-tarball -type f -name '*.tgz'",
     );
   });
+
+  it("isolates public-registry installation from publisher credentials and artifacts", () => {
+    const parsed = workflow();
+    const isolatedVerifier = readFileSync("scripts/verify-npm-tarball-install-isolated.sh", "utf8");
+    const preflightVerify = step(
+      parsed.jobs?.preflight_openclaw_npm,
+      "Verify prepared npm tarball install",
+    );
+    const publishRun = step(parsed.jobs?.publish_openclaw_npm, "Publish").run ?? "";
+
+    expect(preflightVerify.run).toContain("openclaw-npm-prepublish-verify.ts");
+    expect(publishRun).toContain(
+      'bash scripts/verify-npm-tarball-install-isolated.sh "$publish_target"',
+    );
+    expect(isolatedVerifier).toContain("docker run --rm");
+    expect(isolatedVerifier).toContain("--read-only");
+    expect(isolatedVerifier).toContain("--tmpfs /tmp:rw,exec,nosuid,nodev,size=4g,mode=1777");
+    expect(isolatedVerifier).toContain("--cap-drop ALL");
+    expect(isolatedVerifier).toContain("--security-opt no-new-privileges");
+    expect(isolatedVerifier).toContain("--user 65532:65532");
+    expect(isolatedVerifier).toContain("dst=/verifier,readonly");
+    expect(isolatedVerifier).toContain("dst=/input/openclaw.tgz,readonly");
+    expect(isolatedVerifier).toContain('grep -Eq "^(ACTIONS_|GITHUB_|GH_TOKEN=)"');
+    expect(isolatedVerifier).toContain("tarball_sha_before");
+    expect(isolatedVerifier).toContain("tarball_sha_after");
+    expect(isolatedVerifier).toContain(
+      "node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03",
+    );
+    expect(publishRun).not.toContain(
+      'node scripts/verify-npm-tarball-install.mjs "$publish_target"',
+    );
+  });
 });

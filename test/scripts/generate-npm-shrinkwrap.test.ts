@@ -30,19 +30,23 @@ describe("generate-npm-shrinkwrap", () => {
     return path.relative(process.cwd(), value).replaceAll("\\", "/");
   }
 
-  it("omits workspace packages that are published beside the package", () => {
+  it("resolves published workspace dependencies as pnpm pack does", () => {
     const normalized = packageJsonForShrinkwrap(
       {
-        dependencies: { "@openclaw/ai": "workspace:2026.6.11", chalk: "5.6.2" },
+        dependencies: { "@openclaw/ai": "workspace:*", chalk: "5.6.2" },
         devDependencies: { local: "workspace:*" },
-        peerDependencies: { host: "workspace:^1.2.3" },
+        peerDependencies: { host: "workspace:^" },
       },
       {},
+      new Map([
+        ["@openclaw/ai", "2026.7.33"],
+        ["host", "1.2.3"],
+      ]),
     );
 
     expect(normalized).not.toHaveProperty("devDependencies");
-    expect(normalized.dependencies).toEqual({ chalk: "5.6.2" });
-    expect(normalized.peerDependencies).toEqual({});
+    expect(normalized.dependencies).toEqual({ "@openclaw/ai": "2026.7.33", chalk: "5.6.2" });
+    expect(normalized.peerDependencies).toEqual({ host: "^1.2.3" });
   });
 
   it("runs npm shrinkwrap through cmd.exe for Windows npm shims", () => {

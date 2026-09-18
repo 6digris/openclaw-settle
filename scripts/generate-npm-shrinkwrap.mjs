@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { isMainThread, parentPort, Worker, workerData } from "node:worker_threads";
 import { parse as parseYaml } from "yaml";
 import { listChangedPathsFromGit, listStagedChangedPaths } from "./changed-lanes.mjs";
+import { assertDeclaredShrinkwrapDependencies } from "./lib/npm-shrinkwrap-dependencies.mjs";
 import { resolveNpmRunner } from "./npm-runner.mjs";
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -99,6 +100,11 @@ function readPnpmLockPackages() {
     if (metadata && typeof metadata === "object" && typeof metadata.version === "string") {
       lockPackages.add(`${parsed.name}@${metadata.version}`);
     }
+  }
+  // Workspace links have no registry entry in pnpm's packages table. Their
+  // release manifests still define versions that npm must install from the registry.
+  for (const [name, version] of readWorkspacePackageVersions()) {
+    lockPackages.add(`${name}@${version}`);
   }
   return lockPackages;
 }
@@ -383,7 +389,20 @@ function readShrinkwrapOverrides() {
   );
 }
 
-function packageJsonForShrinkwrap(packageJson, shrinkwrapOverrides) {
+function readWorkspacePackageVersions() {
+  return new Map(
+    [".", ...listManagedShrinkwrapPackageDirs()].map((dir) => {
+      const manifest = JSON.parse(readFileSync(path.join(ROOT_DIR, dir, "package.json"), "utf8"));
+      return [manifest.name, manifest.version];
+    }),
+  );
+}
+
+function packageJsonForShrinkwrap(
+  packageJson,
+  shrinkwrapOverrides,
+  workspaceVersions = readWorkspacePackageVersions(),
+) {
   const normalized = { ...packageJson };
   delete normalized.devDependencies;
   for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]) {
@@ -392,9 +411,20 @@ function packageJsonForShrinkwrap(packageJson, shrinkwrapOverrides) {
       continue;
     }
     normalized[field] = Object.fromEntries(
-      Object.entries(dependencies).filter(
-        ([, spec]) => typeof spec !== "string" || !spec.startsWith("workspace:"),
-      ),
+      Object.entries(dependencies).map(([name, spec]) => {
+        if (typeof spec !== "string" || !spec.startsWith("workspace:")) {
+          return [name, spec];
+        }
+        const version = workspaceVersions.get(name);
+        if (!version || !EXACT_VERSION_PATTERN.test(version)) {
+          throw new Error(`Cannot resolve published workspace dependency ${name}: ${spec}`);
+        }
+        const range = spec.slice("workspace:".length);
+        return [
+          name,
+          range === "*" ? version : range === "^" || range === "~" ? `${range}${version}` : range,
+        ];
+      }),
     );
   }
   normalized.overrides = mergeOverrides(packageJson.overrides, shrinkwrapOverrides, {});
@@ -729,6 +759,7 @@ function generateShrinkwrap(packageDir, options = {}) {
       : [];
     const npmInstallArgs = [
       "install",
+      "--registry=https://registry.npmjs.org",
       "--package-lock-only",
       "--ignore-scripts",
       "--no-audit",
@@ -754,6 +785,7 @@ function generateShrinkwrap(packageDir, options = {}) {
       currentShrinkwrap,
     );
     assertShrinkwrapMatchesPnpmLock(generated);
+    assertDeclaredShrinkwrapDependencies(generated, packageJson);
     return `${JSON.stringify(generated, null, 2)}\n`;
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
@@ -1300,6 +1332,12 @@ export function resolvePackageDirs(args) {
 }
 
 function updateOrCheckPackage(packageDir, check, changedPaths = []) {
+  // Comparing two generated trees cannot detect a dependency dropped by the
+  // generator itself. Check the declared runtime closure before invoking npm.
+  if (check) {
+    const manifest = JSON.parse(readFileSync(path.join(packageDir, "package.json"), "utf8"));
+    assertDeclaredShrinkwrapDependencies(readCurrentShrinkwrap(packageDir), manifest);
+  }
   const generated = generateShrinkwrap(packageDir, {
     useCurrentShrinkwrapOverrides:
       check && !packageDependencyInputsChanged(packageDir, changedPaths),
@@ -1451,6 +1489,8 @@ export {
   // Test-facing helpers cover lockfile normalization, override merging, and
   // changed-package detection without invoking npm.
   collectCurrentShrinkwrapOverrides,
+  generateShrinkwrap,
+  updateOrCheckPackage,
   collectOverrideViolations,
   collectPnpmLockViolations,
   disableShrinkwrappedOverrideConflictSources,
