@@ -126,6 +126,7 @@
   "codex-session-transcript-runtime",
   "agent-harness-task-runtime",
   "agent-harness",
+  "agent-harness-attempt-runtime",
   "agent-harness-exec-review-runtime",
   "agent-harness-registration",
   "agent-harness-runtime",

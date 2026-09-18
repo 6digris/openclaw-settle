@@ -2,6 +2,7 @@ import type {
   AgentHarnessSessionDeletionMutation,
   AgentHarnessSessionDeletionParams,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { withNativeSessionBindingOwnership } from "openclaw/plugin-sdk/agent-harness-session-runtime";
 import { isIncognitoSessionKey } from "../incognito-session.js";
 import {
   CODEX_APP_SERVER_UNSUBSCRIBE_TIMEOUT_MS,
@@ -166,12 +167,17 @@ export async function retireCodexAppServerSessionGeneration(params: {
     // callers need the original absent/conflict result for reset reclamation.
     return await retireGeneration();
   }
-  return await withCodexAppServerThreadMutation(expectedBinding.threadId, () =>
-    params.bindingStore.withLease(params.identity, async () => {
-      const binding = params.bindingStore.read(params.identity);
-      if (!binding || !isSameCodexAppServerThreadOwner(binding, expectedBinding)) {
-        return "conflict";
-      }
+  return await withNativeSessionBindingOwnership<CodexAppServerThreadBinding, CodexSessionGenerationRetirementResult>(
+    {
+      snapshot: expectedBinding,
+      schedule: (run) => withCodexAppServerThreadMutation(expectedBinding.threadId, run),
+      withLease: (run) => params.bindingStore.withLease(params.identity, run),
+      readBinding: () => params.bindingStore.read(params.identity),
+      isSameOwner: (binding, expected) =>
+        Boolean(binding && expected && isSameCodexAppServerThreadOwner(binding, expected)),
+      onChanged: () => "conflict",
+    },
+    async (binding) => {
       const result = await retireGeneration();
       if (result !== "applied" || !binding?.clientId) {
         return result;
@@ -189,6 +195,6 @@ export async function retireCodexAppServerSessionGeneration(params: {
         clientLease.release();
       }
       return result;
-    }),
+    },
   );
 }

@@ -6,6 +6,7 @@
   "acp-runtime",
   "acp-runtime-backend",
   "agent-core",
+  "agent-harness-attempt-runtime",
   "agent-harness-exec-review-runtime",
   "agent-harness-registration",
   "agent-harness-session-runtime",

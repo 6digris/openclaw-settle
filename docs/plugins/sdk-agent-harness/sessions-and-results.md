@@ -98,6 +98,31 @@ renewal. Rollback restores only that removal, only while the operation remains
 current, and renews the same lease. Expired, replaced, or closed owners cannot
 mutate another owner's binding.
 
+### Generation admission and native ownership
+
+The same private runtime provides `captureNativeSessionGenerationAuthority`,
+`reclaimNativeSessionGeneration`, and `resolveNativeSessionBinding`. They read
+the existing OpenClaw session owner and preserve its physical generation and
+predecessor through awaited work. A missing host entry permits an ephemeral
+session; a failed read does not authorize durable ownership. Resolving a binding
+adopts a verified predecessor before considering stale reclamation. The backend
+supplies its record operations, error constructors, and reclamation policy.
+
+`withNativeSessionBindingOwnership` enters the backend's scheduler before
+acquiring a binding lease, then rereads and compares the native owner. Backends
+retain queue selection, native protocol operations, and resource cleanup order.
+The shared helper does not create another scheduler or execution authority.
+
+### Initialization rollback
+
+`createNativeSessionInitializationOwner` associates binding and upstream-link
+writes with the host's exact initialization handle before a write can commit.
+Its rollback requires the matching store, identity, binding, and live rollback
+authority. It removes only the exact upstream link and invokes backend cleanup
+after that removal. The backend supplies conditional binding writes, binding
+validation, cleanup eligibility, and native cleanup. Host session creation and
+deletion remain owned by the existing session lifecycle.
+
 ## Subagent task history
 
 Native subagents can expose the shared task transcript view through the optional

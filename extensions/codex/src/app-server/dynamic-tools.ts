@@ -5,8 +5,6 @@
 import { createHash } from "node:crypto";
 import type { AgentToolResult } from "openclaw/plugin-sdk/agent-core";
 import {
-  consumeAdjustedParamsForToolCall,
-  consumePreExecutionBlockedToolCall,
   createAgentToolResultMiddlewareRunner,
   createCodexAppServerToolResultExtensionRunner,
   extractMessagingToolSend,
@@ -44,9 +42,11 @@ import {
 import {
   consumeTrustedToolNoStartError,
   copyInternalToolResultState,
+  createAgentHarnessToolExecutionBoundaryRegistry,
   getCoreTtsToolResultMediaUrls,
   normalizeAcceptedSessionSpawnResult,
   type AcceptedSessionSpawn,
+  type AgentHarnessToolExecutionSnapshot,
 } from "openclaw/plugin-sdk/agent-harness-tool-runtime";
 import { emitTrustedDiagnosticEvent } from "openclaw/plugin-sdk/diagnostic-runtime";
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
@@ -421,7 +421,7 @@ export type CodexDynamicToolBridge = {
   /** Consume exact boundary evidence retained while post-execution processing is incomplete. */
   consumeToolExecutionSnapshot?: (
     toolCallId: string,
-  ) => { executedArguments: Record<string, unknown>; executionStarted: boolean } | undefined;
+  ) => AgentHarnessToolExecutionSnapshot | undefined;
   /** Bind the authenticated app-server client once remote thread startup completes. */
   setRemoteWorkspaceFileReader?: (reader: CodexRemoteWorkspaceFileReader) => void;
   telemetry: {
@@ -581,16 +581,7 @@ export function createCodexDynamicToolBridge(params: {
   };
   const legacyExtensionRunner =
     createCodexAppServerToolResultExtensionRunner(toolResultHookContext);
-  type ExecutionSnapshot = {
-    executedArguments: Record<string, unknown>;
-    executionStarted: boolean;
-  };
-  type ExecutionSnapshotState = {
-    consumed: boolean;
-    retainAfterCompletion: boolean;
-    snapshot?: ExecutionSnapshot;
-  };
-  const executionSnapshotStates = new Map<string, ExecutionSnapshotState>();
+  const executionBoundaries = createAgentHarnessToolExecutionBoundaryRegistry();
   const directToolNames = params.directToolNames;
   const specs =
     inheritedSpecs ??
@@ -626,14 +617,7 @@ export function createCodexDynamicToolBridge(params: {
     setRemoteWorkspaceFileReader: (reader) => {
       readRemoteWorkspaceFile = reader;
     },
-    consumeToolExecutionSnapshot: (toolCallId) => {
-      const state = executionSnapshotStates.get(toolCallId);
-      executionSnapshotStates.delete(toolCallId);
-      if (state) {
-        state.consumed = true;
-      }
-      return state?.snapshot;
-    },
+    consumeToolExecutionSnapshot: executionBoundaries.consume,
     handleToolCall: async (call, options) => {
       const toolEntry = toolMap.get(call.tool);
       if (!toolEntry) {
@@ -667,36 +651,12 @@ export function createCodexDynamicToolBridge(params: {
       const args = asNonArrayRecord(rawArguments);
       const startedAt = Date.now();
       const signal = composeAbortSignals(params.signal, options?.signal);
-      let didStartExecution = false;
-      let didDispatchExecution = false;
-      let executionPrevented = false;
-      let executedArgs = structuredClone(args);
-      const executionSnapshotState: ExecutionSnapshotState = {
-        consumed: false,
-        retainAfterCompletion: options?.retainExecutionSnapshot === true,
-      };
-      executionSnapshotStates.set(call.callId, executionSnapshotState);
-      const captureExecutionBoundary = () => {
-        didStartExecution ||= didDispatchExecution;
-        executionPrevented =
-          executionPrevented ||
-          consumePreExecutionBlockedToolCall(call.callId, toolResultHookContext.runId);
-        const adjustedExecutedArgs = consumeAdjustedParamsForToolCall(
-          call.callId,
-          toolResultHookContext.runId,
-        );
-        if (isRecord(adjustedExecutedArgs)) {
-          executedArgs = adjustedExecutedArgs;
-        }
-        // Consumption detaches this invocation from the bridge map immediately. The
-        // closure-local flag prevents late completion from republishing stale evidence.
-        if (!executionSnapshotState.consumed) {
-          executionSnapshotState.snapshot = {
-            executedArguments: structuredClone(executedArgs),
-            executionStarted: didStartExecution && !executionPrevented,
-          };
-        }
-      };
+      const executionBoundary = executionBoundaries.begin({
+        toolCallId: call.callId,
+        runId: toolResultHookContext.runId,
+        arguments: args,
+        retainAfterCompletion: options?.retainExecutionSnapshot,
+      });
       try {
         // Compatibility preparation owns raw arguments; record coercion must not run first.
         const prepare = tool.prepareArguments;
@@ -713,7 +673,7 @@ export function createCodexDynamicToolBridge(params: {
               })
             : toolArgs;
         const telemetryArgs = isRecord(preparedArgs) ? preparedArgs : args;
-        executedArgs = structuredClone(telemetryArgs);
+        executionBoundary.setArguments(telemetryArgs);
         const messagingContext = {
           config: params.hookContext?.config,
           currentChannelId: params.hookContext?.currentChannelId,
@@ -724,7 +684,7 @@ export function createCodexDynamicToolBridge(params: {
             ? { value: params.hookContext.hasRepliedRef.value }
             : undefined,
         };
-        didDispatchExecution = true;
+        executionBoundary.markDispatched();
         const executionArgs: unknown[] = [call.callId, preparedArgs, signal];
         if (shouldValidateCodexDynamicToolInput(tool)) {
           executionArgs.push(
@@ -740,7 +700,8 @@ export function createCodexDynamicToolBridge(params: {
           );
         }
         const rawResult = await Reflect.apply(tool.execute, tool, executionArgs);
-        captureExecutionBoundary();
+        executionBoundary.capture();
+        const executedArgs = executionBoundary.executedArguments;
         // Delivery is committed before result middleware; presentation changes
         // cannot erase the source owner's confirmation or infer a new one.
         if (
@@ -924,22 +885,21 @@ export function createCodexDynamicToolBridge(params: {
           isAsyncStartedToolResult(rawResult) || isAsyncStartedToolResult(result);
         response.asyncStarted = asyncStarted || undefined;
         const replaySafe =
-          executionPrevented ||
+          executionBoundary.executionPrevented ||
           (!asyncStarted &&
             isReplaySafeToolInstance(toolEntry.tool) &&
             isReplaySafeToolCall(toolName, executedArgs));
         copyInternalToolResultState(rawResult, response);
         response.executedArguments = executedArgs;
-        response.executionStarted = didStartExecution && !executionPrevented;
+        response.executionStarted = executionBoundary.executionStarted;
         response.replaySafe = replaySafe;
         response.sideEffectEvidence = !replaySafe || undefined;
         return response;
       } catch (error) {
-        const trustedNoStart = consumeTrustedToolNoStartError(error);
-        executionPrevented ||= trustedNoStart;
         // Post-processing can fail after a successful body. Boundary evidence
         // is monotonic, so a second observer must never erase an earlier start.
-        captureExecutionBoundary();
+        executionBoundary.capture({ noStart: consumeTrustedToolNoStartError(error) });
+        const executedArgs = executionBoundary.executedArguments;
         if (
           toolName === "computer" &&
           params.computerContextEpoch?.frameToolCallId === call.callId
@@ -957,9 +917,7 @@ export function createCodexDynamicToolBridge(params: {
           error,
           "OpenClaw dynamic tool call failed.",
         );
-        executionPrevented =
-          executionPrevented ||
-          consumePreExecutionBlockedToolCall(call.callId, toolResultHookContext.runId);
+        executionBoundary.consumeBlocked();
         const failedResult = failedToolResult(errorMessage, executionDisposition);
         finalizeToolTerminalPresentation({
           toolCallId: call.callId,
@@ -984,8 +942,8 @@ export function createCodexDynamicToolBridge(params: {
           startedAt,
         });
         const replaySafe =
-          !didStartExecution ||
-          executionPrevented ||
+          !executionBoundary.didStartExecution ||
+          executionBoundary.executionPrevented ||
           (isReplaySafeToolInstance(toolEntry.tool) &&
             isReplaySafeToolCall(toolName, executedArgs));
         return {
@@ -995,18 +953,12 @@ export function createCodexDynamicToolBridge(params: {
           diagnosticTerminalReason:
             executionDisposition === "blocked" ? undefined : executionDisposition,
           executedArguments: executedArgs,
-          executionStarted: didStartExecution && !executionPrevented,
+          executionStarted: executionBoundary.executionStarted,
           replaySafe,
-          sideEffectEvidence: (didStartExecution && !replaySafe) || undefined,
+          sideEffectEvidence: (executionBoundary.didStartExecution && !replaySafe) || undefined,
         };
       } finally {
-        if (
-          executionSnapshotStates.get(call.callId) === executionSnapshotState &&
-          (executionSnapshotState.consumed || !executionSnapshotState.retainAfterCompletion)
-        ) {
-          executionSnapshotStates.delete(call.callId);
-        }
-        consumeAdjustedParamsForToolCall(call.callId, toolResultHookContext.runId);
+        executionBoundary.dispose();
       }
     },
   };

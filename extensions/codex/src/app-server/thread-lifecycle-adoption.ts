@@ -1,4 +1,5 @@
 import path from "node:path";
+import { withNativeSessionBindingOwnership } from "openclaw/plugin-sdk/agent-harness-session-runtime";
 import { isIncognitoSessionKey } from "../incognito-session.js";
 import { readCodexSessionMeta } from "../session-catalog-provenance.js";
 import {
@@ -73,32 +74,38 @@ export async function withCodexThreadLifecycleBinding(
           assertCodexSessionRuntimeOwnership(binding, params.params.expectedSessionRuntimeOwnership)
       : undefined,
   });
-  const runWithLease = () =>
-    params.bindingStore.withLease(identity, async () => {
-      const binding = params.bindingStore.read(identity);
-      assertCodexSessionRuntimeOwnership(binding, params.params.expectedSessionRuntimeOwnership);
-      // Never prepare a replacement under the queue selected for an obsolete snapshot.
-      if (binding?.threadId !== snapshot?.threadId || binding?.clientId !== snapshot?.clientId) {
+  return await withNativeSessionBindingOwnership(
+    {
+      snapshot,
+      // Ordinary resumes own their binding key even when legacy rows omit sessionId.
+      // Foreign-owner rejection belongs to adoption, not an upgrade of that binding.
+      schedule: (runWithLease) =>
+        snapshot?.pendingResumeConfiguration
+          ? withExclusiveCodexAppServerThread({
+              bindingStore: params.bindingStore,
+              identity,
+              threadId: snapshot.threadId,
+              run: runWithLease,
+            })
+          : snapshot
+            ? withCodexAppServerThreadMutation(snapshot.threadId, runWithLease)
+            : runWithLease(),
+      withLease: (runWithLease) => params.bindingStore.withLease(identity, runWithLease),
+      readBinding: () => params.bindingStore.read(identity),
+      assertBinding: (binding) =>
+        assertCodexSessionRuntimeOwnership(binding, params.params.expectedSessionRuntimeOwnership),
+      isSameOwner: (binding, expected) =>
+        binding?.threadId === expected?.threadId && binding?.clientId === expected?.clientId,
+      onChanged(binding) {
         throw new CodexThreadBindingConflictError(
           binding?.threadId ?? snapshot?.threadId ?? params.params.sessionId,
           "acquiring thread lifecycle ownership",
         );
-      }
-      assertCurrent();
-      return await run(identity, binding, assertCurrent);
-    });
-  // Ordinary resumes own their binding key even when a legacy row omits sessionId.
-  // Foreign-owner rejection belongs to adoption, not an upgrade of that same binding.
-  return snapshot?.pendingResumeConfiguration
-    ? await withExclusiveCodexAppServerThread({
-        bindingStore: params.bindingStore,
-        identity,
-        threadId: snapshot.threadId,
-        run: runWithLease,
-      })
-    : snapshot
-      ? await withCodexAppServerThreadMutation(snapshot.threadId, runWithLease)
-      : await runWithLease();
+      },
+      assertCurrent,
+    },
+    (binding) => run(identity, binding, assertCurrent),
+  );
 }
 
 type PendingResumeContext = CodexThreadRequestContext & {
