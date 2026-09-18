@@ -19,7 +19,10 @@ export function declareAgentWorkspaceAccess(workspaceDir: string): void {
   }
 }
 
-/** Bind host access for a service lifetime, independently of an active harness turn. */
+/**
+ * Bind host access independently of an active harness turn. Releasing rejects
+ * subsequent calls and stale results; it cannot undo an already dispatched write.
+ */
 export function registerAgentWorkspaceAccess(
   workspaceDir: string,
   access: AgentWorkspaceAccess,
