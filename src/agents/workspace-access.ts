@@ -1,12 +1,15 @@
 import path from "node:path";
-import { readPersistedMediaFacts } from "../media/media-facts.js";
-import type { EmbeddedRunAttemptParams } from "./embedded-agent-runner/run/types.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { readPersistedMediaFacts, type MediaFact } from "../media/media-facts.js";
+import type { UserTurnTranscriptRecorder } from "../sessions/user-turn-transcript.types.js";
 import type { SandboxFsBridge } from "./sandbox/fs-bridge.types.js";
 
-type WorkspaceAttachmentTurn = Pick<
-  EmbeddedRunAttemptParams,
-  "abortSignal" | "config" | "media" | "timeoutMs"
->;
+type WorkspaceAttachmentTurn = {
+  abortSignal?: AbortSignal;
+  config?: OpenClawConfig;
+  media?: MediaFact[];
+  timeoutMs: number;
+};
 
 /** Host-owned workspace files; callers keep their existing allowlists. */
 export type AgentWorkspaceAccess = {
@@ -166,7 +169,7 @@ export function captureAgentWorkspaceOutboundMedia(
 /** Prepare execution-only paths while retaining canonical media and transcript facts. */
 export async function prepareAgentWorkspaceAttachments(params: {
   workspaceDir: string;
-  turn: WorkspaceAttachmentTurn & Pick<EmbeddedRunAttemptParams, "userTurnTranscriptRecorder">;
+  turn: WorkspaceAttachmentTurn & { userTurnTranscriptRecorder?: UserTurnTranscriptRecorder };
   assertCurrent: () => void;
 }): Promise<string | undefined> {
   if (!params.turn.media?.length && !params.turn.userTurnTranscriptRecorder) {
