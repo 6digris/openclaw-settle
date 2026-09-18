@@ -10,7 +10,7 @@ describe("splitMediaFromOutput", () => {
   function expectParsedMediaOutputCase(
     input: string,
     expected: {
-      mediaUrls?: string[];
+      mediaUrls?: readonly string[];
       text?: string;
       audioAsVoice?: boolean;
     },

@@ -634,21 +634,30 @@ describe("final prepared directive owners", () => {
   it.each([
     {
       name: "media completion",
+      initialText: `${prefix}\nM`,
       deltas: [`EDIA:${imageUrl}`],
       expectedText: prefix,
       expectedMedia: [imageUrl],
     },
     {
       name: "ordinary word completion",
+      initialText: `${prefix}\nM`,
       deltas: ["e", "tal"],
       expectedText: `${prefix}\nMetal`,
       expectedMedia: [],
+    },
+    {
+      name: "a tab-indented paragraph continuation",
+      initialText: "Preview:\n\tM",
+      deltas: ["EDIA:./asset.png"],
+      expectedText: "Preview:",
+      expectedMedia: ["./asset.png"],
     },
   ])("holds a partial MEDIA prefix through $name", async (scenario) => {
     const { delivered, blocks, pipeline, typing, emit, subscription } = createDeliveryHarness({
       minChars: 50,
     });
-    let text = `${prefix}\nM`;
+    let text = scenario.initialText;
     const message = () => ({
       ...createAssistantOutput(googleModel),
       content: [{ type: "text", text }],

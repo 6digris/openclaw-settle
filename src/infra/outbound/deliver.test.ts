@@ -39,11 +39,11 @@ import { resolvePreferredOpenClawTmpDir } from "../tmp-openclaw-dir.js";
 import * as channelResolution from "./channel-resolution.js";
 import { prepareOutboundPayloadBatch } from "./deliver-prepare.js";
 import { countPhysicalOutboundSends, PlatformMessageNotDispatchedError } from "./deliver-types.js";
+import { matrixOutboundForTest, type MatrixSendFn } from "./deliver.matrix.test-support.js";
 import {
   registerOutboundImageProjectionTests,
   registerOutboundPreparationMetadataTests,
 } from "./deliver.projection.test-support.js";
-import { matrixOutboundForTest, type MatrixSendFn } from "./deliver.matrix.test-support.js";
 import { createOutboundPayloadPlan, projectOutboundPayloadPlanForOutbound } from "./payloads.js";
 import { createUnmodifiedPreparedOutboundBatch } from "./prepared-batch.js";
 
