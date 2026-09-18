@@ -206,10 +206,9 @@ mod tests {
                 let _ = fs::remove_dir_all(&self.0);
             }
         }
-        let fixture = Fixture(std::env::temp_dir().join(format!(
-            "openclaw-chrome-setup-{}",
-            uuid::Uuid::new_v4()
-        )));
+        let fixture = Fixture(
+            std::env::temp_dir().join(format!("openclaw-chrome-setup-{}", uuid::Uuid::new_v4())),
+        );
         fs::create_dir_all(&fixture.0).unwrap();
         let executable = fixture.0.join("openclaw");
         fs::write(
