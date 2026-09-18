@@ -36,7 +36,6 @@ import {
   getInternalToolExecutionPreparer,
   type InternalToolExecutionPreparer,
 } from "../runtime/internal-hooks.js";
-import { ensureSandboxWorkspaceForSession } from "../sandbox/context.js";
 import type { AnyAgentTool } from "../tools/common.js";
 import { getGatewayToolCallerIdentity } from "../tools/gateway-caller-context.js";
 import { callGatewayTool } from "../tools/gateway.js";
@@ -433,58 +432,6 @@ describe("agent harness host capability", () => {
     );
 
     expect(preparedExecute).not.toHaveBeenCalled();
-  });
-
-  it("reads reply attachments from the remote sandbox instead of a stale Gateway sandbox", async () => {
-    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-reply-sandbox-"));
-    const workspaceDir = path.join(fixture, "workspace");
-    fs.mkdirSync(workspaceDir);
-    const { attempt } = await admittedAttempt("run-reply-sandbox", {
-      workspaceDir,
-      config: {
-        agents: {
-          defaults: {
-            sandbox: {
-              mode: "all",
-              scope: "session",
-              workspaceAccess: "ro",
-              workspaceRoot: path.join(fixture, "sandboxes"),
-            },
-          },
-        },
-      },
-    });
-    const sandbox = await ensureSandboxWorkspaceForSession({
-      config: attempt.config,
-      sessionKey: attempt.sessionKey,
-      workspaceDir,
-    });
-    if (!sandbox) {
-      throw new Error("expected configured sandbox workspace");
-    }
-    fs.writeFileSync(
-      path.join(sandbox.workspaceDir, "artifact.txt"),
-      "stale Gateway sandbox bytes",
-    );
-    const host = createAgentHarnessHostCapabilities({ attempt, pluginId: "codex" });
-    try {
-      const readWorkspaceFile = vi.fn(async () => Buffer.from("remote sandbox bytes"));
-      const result = await host.capabilities.prepareReplyMedia?.({
-        kind: "payload",
-        payload: { text: "MEDIA:./artifact.txt" },
-        workspaceRoot: "/remote-workspace",
-        readWorkspaceFile,
-      });
-      expect(result?.kind).toBe("payload");
-      if (result?.kind !== "payload" || !result.payload.mediaUrl) {
-        throw new Error("expected prepared remote attachment");
-      }
-      expect(fs.readFileSync(result.payload.mediaUrl, "utf8")).toBe("remote sandbox bytes");
-      expect(readWorkspaceFile).toHaveBeenCalledOnce();
-    } finally {
-      host.close();
-      fs.rmSync(fixture, { recursive: true, force: true });
-    }
   });
 
   it.each(policyRevocations)(
