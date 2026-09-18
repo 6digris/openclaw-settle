@@ -101,8 +101,13 @@ restrict this bridge to native bootstrap documents and the configured
 Directory access does not grant reads of other files. The underlying bridge
 still enforces filesystem containment and returns the read's canonical source.
 
-Use `resolveWorkspaceWorkerArgv("memory")` from `agent-workspace-runtime`
-to resolve Memory worker arguments for source and installed OpenClaw builds.
+OpenClaw packages `dist/worker/skills-worker-entry.js` for workspace adapters.
+Use `resolveWorkspaceWorkerArgv("memory" | "skills")` from
+`agent-workspace-runtime` to resolve worker arguments for source and installed
+OpenClaw builds, then append the workspace path, home path and operation.
+The Skills worker runs native discovery in a dedicated process. Send one JSON
+request on stdin and read its JSON result on stdout. Use the same OpenClaw
+version on both sides; the authenticated adapter owns transport and source-root admission.
 
 The optional `memoryFiles` provider keeps workspace Memory files on the host while
 the native index, embedding providers and original sessions stay on Gateway. It

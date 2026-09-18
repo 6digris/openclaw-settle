@@ -7,6 +7,10 @@ import type { MemoryWorkspaceFiles } from "../../packages/memory-host-sdk/src/ho
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { readPersistedMediaFacts, type MediaFact } from "../media/media-facts.js";
 import type { UserTurnTranscriptRecorder } from "../sessions/user-turn-transcript.types.js";
+import type {
+  WorkspaceSkillSourceRequest,
+  WorkspaceSkillSources,
+} from "../skills/loading/workspace-skill-sources.types.js";
 import type { SandboxFsBridge } from "./sandbox/fs-bridge.types.js";
 
 type WorkspaceAttachmentTurn = {
@@ -20,6 +24,8 @@ type WorkspaceAttachmentTurn = {
 export type AgentWorkspaceAccess = {
   /** Native Memory file operations; indexing and session state remain on Gateway. */
   memoryFiles?: MemoryWorkspaceFiles;
+  /** Read native source tiers and execution-host facts without applying Gateway policy. */
+  loadSkills?: (request: WorkspaceSkillSourceRequest) => Promise<WorkspaceSkillSources>;
   bridge: Pick<
     SandboxFsBridge,
     "readFile" | "readFileWithSource" | "readDirectory" | "writeFile" | "stat"
@@ -222,6 +228,22 @@ export function registerAgentWorkspaceAccess(
         );
       },
     });
+  }
+  const loadSkills = access.loadSkills?.bind(access);
+  if (loadSkills) {
+    boundAccess.loadSkills = async (request) => {
+      assertCurrent();
+      let result: WorkspaceSkillSources;
+      try {
+        result = await loadSkills(request);
+      } catch (cause) {
+        throw new WorkspaceAccessUnavailableError("Remote workspace skill discovery failed", {
+          cause,
+        });
+      }
+      assertCurrent();
+      return result;
+    };
   }
   const outboundMedia = access.outboundMedia;
   if (outboundMedia) {
