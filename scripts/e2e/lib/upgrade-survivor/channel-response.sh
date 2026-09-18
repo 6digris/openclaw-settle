@@ -7,7 +7,7 @@ channel_response_prepare() {
   [ "$baseline_spec" = openclaw@2026.9.4 ] && [ "$UPDATE_RESTART_MODE" = manual ] &&
     [ "$ROOT_MANAGED_VPS" = 0 ] && [ "$LIVE_OPENAI" = 0 ] || return 1
   [ -f /.dockerenv ] || { echo 'Requires the isolated Docker fixture' >&2; return 1; }
-  [ "$(sha256sum "${CANDIDATE_SPEC#file:}" | cut -d ' ' -f 1)" = b9e06e0501e9866ee75306b8e0baf962cf63ad24d81c46d37f46138c90bc37ac ] || return 1
+  [ "$(sha256sum "${CANDIDATE_SPEC#file:}" | cut -d ' ' -f 1)" = aa9f817a0880ba0792ec9fd6385151ecf19788e94fcdb3108e71ecd2de2a11eb ] || return 1
   unset OPENCLAW_SKIP_CHANNELS OPENCLAW_SKIP_PROVIDERS
   unset DISCORD_BOT_TOKEN TELEGRAM_BOT_TOKEN
   export OPENCLAW_SKIP_CRON=1 OPENCLAW_SKIP_STARTUP_MODEL_PREWARM=1
