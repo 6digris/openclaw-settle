@@ -218,6 +218,64 @@ async function waitForIdentityDeath(identity: NodeWorkerProcessIdentity) {
 }
 
 describe("node worker supervisor recovery", () => {
+  it.runIf(process.platform === "linux" || process.platform === "darwin")(
+    "closes while recovery observes a stopped former owner without releasing its slot",
+    async () => {
+      const { bundleRoot, env, root, workspaceDir } = fixture("node-worker-stopped-recovery-");
+      const input = testWorkerLaunchInput(workspaceDir, "stopped-former-owner", "wait");
+      const previous = spawnSupervisorOwner({ bundleRoot, env, input, root });
+      const receipt = JSON.parse(await waitForChildLine(previous)) as NodeWorkerLaunchReceipt;
+      const anchor = receipt.worker!;
+      ownedProcessGroups.push(anchor);
+      const capacitySnapshots: Array<{ total: number; available: number }> = [];
+      const replacement = createNodeWorkerSupervisor({
+        bundleRoot,
+        env,
+        capacity: 1,
+        onCapacityChanged: (capacity) => capacitySnapshots.push(capacity),
+      });
+      let initialization: Promise<void> | undefined;
+      let closing: Promise<void> | undefined;
+      let initialized = false;
+      let closed = false;
+      try {
+        process.kill(anchor.pid, "SIGSTOP");
+        previous.kill("SIGKILL");
+        await waitForChildExit(previous);
+
+        initialization = replacement.initialize().then(() => {
+          initialized = true;
+        });
+        await vi.waitFor(() =>
+          expect(capacitySnapshots.at(-1)).toEqual({ total: 1, available: 0 }),
+        );
+        expect(initialized).toBe(false);
+        closing = replacement.close().then(() => {
+          closed = true;
+        });
+
+        await vi.waitFor(() => expect(closed).toBe(true), { timeout: 1_000 });
+        expect(initialized).toBe(true);
+        expect(inspectNodeWorkerProcessIdentity(anchor)).toBe("live");
+        expect(new NodeWorkerLaunchStore({ env }).get(input.launchId)).toMatchObject({
+          state: "running",
+          worker: anchor,
+        });
+        expect(capacitySnapshots.at(-1)).toEqual({ total: 1, available: 0 });
+        await expect(replacement.launch(input, TEST_WORKER_ENDPOINT)).rejects.toThrow(
+          "node worker supervisor is closed",
+        );
+      } finally {
+        if (inspectNodeWorkerProcessIdentity(anchor) === "live") {
+          process.kill(anchor.pid, "SIGCONT");
+        }
+        await waitForIdentityDeath(anchor);
+        await Promise.allSettled([initialization, closing]);
+        await replacement.close();
+      }
+    },
+  );
+
   it("coalesces failed initialization and retries reconciliation on the next attempt", async () => {
     const { bundleRoot, env } = fixture("node-worker-initialization-retry-");
     const capacitySnapshots: Array<{ total: number; available: number }> = [];
@@ -543,6 +601,7 @@ describe("node worker supervisor recovery", () => {
       try {
         await expect(
           recoverNodeWorkerLaunch({
+            isRecoveryActive: () => true,
             receipt,
             store,
             capacity: new NodeWorkerCapacity(store, { capacity: 1 }),
