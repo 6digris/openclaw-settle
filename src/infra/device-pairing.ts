@@ -24,12 +24,12 @@ import {
   loadPairedDevicePairingStoreRecord,
   persistDevicePairingStoreState,
   updatePairedDevicePresenceInTransaction,
-  type DevicePairingStoreState,
 } from "./device-pairing-store.js";
 import type {
   DeviceAuthToken,
   DevicePairingPendingRecord,
   DevicePairingPendingRequest,
+  DevicePairingStoreState,
   PairedDevice,
 } from "./device-pairing.types.js";
 

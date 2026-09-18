@@ -4,11 +4,12 @@ import { normalizeUniqueSingleOrTrimmedStringList } from "@openclaw/normalizatio
 import { isArtifactPreservingStateRead } from "../state/openclaw-state-db-readonly.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { runOpenClawStateWorkerOperation } from "../state/openclaw-state-worker-store.js";
-import {
-  loadDevicePairingStoreState,
-  type DevicePairingStoreState,
-} from "./device-pairing-store.js";
-import type { DeviceAuthToken, PairedDevice } from "./device-pairing.types.js";
+import { loadDevicePairingStoreState } from "./device-pairing-store.js";
+import type {
+  DeviceAuthToken,
+  DevicePairingStoreState,
+  PairedDevice,
+} from "./device-pairing.types.js";
 import { createAsyncLock, pruneExpiredPending } from "./pairing-files.js";
 
 const DEVICE_PAIRING_PENDING_TTL_MS = 5 * 60 * 1000;

@@ -34,6 +34,7 @@ import type {
   DeviceAuthToken,
   DeviceBootstrapTokenRecord,
   DevicePairingPendingRecord,
+  DevicePairingStoreState,
   DevicePairSetupCompletionRecord,
   PairedDevice,
   PairedDeviceApprovalKind,
@@ -47,11 +48,6 @@ import {
 } from "./kysely-sync.js";
 import { readSqliteDataVersion } from "./node-sqlite.js";
 import { clearApnsRegistrationFromDatabase } from "./push-apns-store-transaction.js";
-
-export type DevicePairingStoreState = {
-  pendingById: Record<string, DevicePairingPendingRecord>;
-  pairedByDeviceId: Record<string, PairedDevice>;
-};
 
 const DEVICE_BOOTSTRAP_TOKEN_COLUMNS_WITHOUT_SETUP = [
   "device_id",

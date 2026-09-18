@@ -1,5 +1,5 @@
 import type { OpenClawStateDatabase } from "../state/openclaw-state-db.js";
-import type { DevicePairingStoreState } from "./device-pairing-store.js";
+import type { DevicePairingStoreState } from "./device-pairing.types.js";
 
 export type DevicePairingStoreValidityToken = {
   dataVersion: number;

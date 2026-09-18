@@ -14,7 +14,7 @@ import type {
 } from "../gateway/managed-image-record-store.types.js";
 import type { DeferredPluginMigration } from "../infra/deferred-plugin-migrations.js";
 import type { DeliveryQueueWorkerOperations } from "../infra/delivery-queue.worker-contract.js";
-import type { DevicePairingStoreState } from "../infra/device-pairing-store.js";
+import type { DevicePairingStoreState } from "../infra/device-pairing.types.js";
 import type { PreparedPromotionClaim } from "../infra/promotions-feed.kernel.js";
 import type { ApnsRegistration } from "../infra/push-apns-store.types.js";
 import type { WebPushWorkerOperations } from "../infra/push-web-store.worker-contract.js";

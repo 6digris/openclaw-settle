@@ -13,11 +13,9 @@ import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
 import { observeMainThreadSql } from "../test-utils/main-thread-sql-spies.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { listNodePairing } from "./device-pairing-node.js";
-import {
-  persistDevicePairingStoreState,
-  type DevicePairingStoreState,
-} from "./device-pairing-store.js";
+import { persistDevicePairingStoreState } from "./device-pairing-store.js";
 import { listDevicePairing, listDevicePairingReadOnly } from "./device-pairing.js";
+import type { DevicePairingStoreState } from "./device-pairing.types.js";
 
 const transport = vi.hoisted(() => ({
   request: vi.fn<(method: string, opts: unknown, params: unknown) => Promise<unknown>>(),
