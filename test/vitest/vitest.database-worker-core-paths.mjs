@@ -88,6 +88,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/infra/device-pairing-churn.test.ts",
   "src/infra/device-pairing-node.test.ts",
   "src/infra/device-pairing-prune.test.ts",
+  "src/infra/sqlite-worker-existing-schema.test.ts",
   "src/infra/session-cost-usage-metadata.test.ts",
   "src/plugins/installed-plugin-index-records.test.ts",
   "src/acp/runtime/session-meta-doctor.test.ts",
