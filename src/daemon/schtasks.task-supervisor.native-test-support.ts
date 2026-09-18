@@ -297,7 +297,7 @@ export function expectCleanHostedGatewayStopEvents(events: HostedLifecycleEvent[
   });
   expect(events.find((event) => event.phase === "boot-completion")).toMatchObject({
     outcome: "clean_stop",
-    reason: "gateway.stop",
+    reason: "stop (hosted Gateway stop)",
   });
   for (const phase of ["descendant-exit", "gateway-exit", "process-exit"]) {
     expect(events.find((event) => event.phase === phase)?.code).toBe(0);
