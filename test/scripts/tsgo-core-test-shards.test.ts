@@ -61,6 +61,10 @@ describe("tsgo core test shards", () => {
       ["src/agents/command/session-store.test.ts", "commands"],
       ["src/tui/tui-plugin-approvals.test.ts", "commands"],
       ["src/wizard/setup.test.ts", "commands"],
+      ["src/auto-reply/tokens.test.ts", "auto-reply"],
+      ["src/auto-reply/reply/commands-system-agent.test.ts", "auto-reply"],
+      ["src/channels/session.test.ts", "messaging"],
+      ["src/infra/outbound/message-gateway-options.test.ts", "messaging"],
     ] as const) {
       expect(
         shards.filter((shard) => shard.roots.includes(file)).map((shard) => shard.name),
