@@ -111,6 +111,13 @@ errors for this worker. Supply `request` for one JSON exchange and `subscribe`
 for the `--watch-files` JSON-line stream, plus the binding's abort signal.
 Neither callback depends on Codex; providers own transport and authorization.
 
+`memoryFiles.maintenance` routes existing dreaming, promotion, corpus and forget
+file operations to the host. Compound writes reuse native atomic publication and
+conflict handling; maintenance decisions, locks and SQLite state stay on Gateway.
+A remote binding without maintenance support fails instead of using Gateway files.
+The file worker implements these operations and native change notifications.
+Paired-node adapter wiring is still required before a complete storage cutover.
+
 For generated files, register optional `outboundMedia` separately from the
 owner-document bridge. See [outbound workspace files](/plugins/sdk-agent-harness/core-ownership#outbound-workspace-files)
 for its byte limits, path mapping, and service lifetime contract.

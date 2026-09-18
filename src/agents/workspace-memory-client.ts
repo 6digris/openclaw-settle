@@ -1,6 +1,7 @@
 import path from "node:path";
 import type {
   MemoryWorkspaceFiles,
+  MemoryWorkspaceMaintenance,
   MemoryWorkspaceWatchRequest,
 } from "../../packages/memory-host-sdk/src/host/workspace-files.js";
 
@@ -41,22 +42,53 @@ export function createWorkspaceMemoryFileClient(options: {
 
   async function call<T>(request: Record<string, unknown>): Promise<T> {
     options.signal.throwIfAborted();
-    const reply = await options.request(JSON.stringify(request), options.signal);
-    options.signal.throwIfAborted();
-    // SAFETY: The same-version Memory worker serializes this operation's result or error envelope.
-    const response = JSON.parse(reply) as {
+    let response: {
       result: T;
-      error?: { message: string; code?: string; name?: string };
+      error?: { message: string; code?: string; name?: string; publication?: string };
     };
+    try {
+      const reply = await options.request(JSON.stringify(request), options.signal);
+      options.signal.throwIfAborted();
+      // SAFETY: The same-version Memory worker serializes this operation's result or error envelope.
+      response = JSON.parse(reply) as typeof response;
+    } catch (error) {
+      if (request.operation === "maintenance" && request.method === "commitContent") {
+        throw Object.assign(new Error("Memory write outcome is unknown", { cause: error }), {
+          publication: "uncertain",
+        });
+      }
+      throw error;
+    }
     if (response.error) {
       throw Object.assign(new Error(response.error.message), {
         ...(response.error.code ? { code: response.error.code } : {}),
         ...(response.error.name ? { name: response.error.name } : {}),
+        ...(["uncertain", "committed"].includes(response.error.publication ?? "")
+          ? { publication: response.error.publication }
+          : {}),
       });
     }
     return response.result;
   }
+  const maintain = <T>(method: keyof MemoryWorkspaceMaintenance, ...args: unknown[]) =>
+    call<T>({ operation: "maintenance", method, args });
   return {
+    maintenance: {
+      readFile: async (file) =>
+        Buffer.from(await maintain<string>("readFile", host(file)), "base64"),
+      stat: (file, follow) => maintain("stat", host(file), follow),
+      listDirectory: (directory) => maintain("listDirectory", host(directory)),
+      mkdir: (directory) => maintain("mkdir", host(directory)),
+      rename: (from, to) => maintain("rename", host(from), host(to)),
+      resolveWritePath: async (file) => gateway(await maintain("resolveWritePath", host(file))),
+      commitContent: (params) =>
+        maintain("commitContent", { ...params, filePath: host(params.filePath) }),
+      resolveDreamsPath: async () => gateway(await maintain("resolveDreamsPath")),
+      readDreams: (file) => maintain("readDreams", host(file)),
+      writeDreams: (file, content) => maintain("writeDreams", host(file), content),
+      replaceReport: (file, content) => maintain("replaceReport", host(file), content),
+      appendCorpus: (file, content) => maintain("appendCorpus", host(file), content),
+    },
     assertCurrent: () => options.signal.throwIfAborted(),
     async listFiles(_workspace, extraPaths, multimodal, skipped) {
       const result = await call<{ files: string[]; skipped: string[] }>({

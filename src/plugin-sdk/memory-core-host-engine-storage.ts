@@ -75,6 +75,9 @@ export {
 export type {
   MemoryWorkspaceFiles,
   MemoryWorkspaceWatchRequest,
+  MemoryWorkspaceMaintenance,
+  MemoryFileMetadata,
+  MemoryFileCommit,
   CuratedMarkdownEntry,
   CuratedProjectAnnotations,
   MemoryEntryProvenance,

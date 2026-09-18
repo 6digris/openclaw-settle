@@ -9,10 +9,20 @@ import {
   listMemoryFiles,
   readMemoryFile,
   type MemoryWorkspaceFiles,
+  type MemoryWorkspaceMaintenance,
   type MemoryWorkspaceWatchRequest,
 } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 
+type MaintenanceCommand = {
+  [K in keyof MemoryWorkspaceMaintenance]: {
+    operation: "maintenance";
+    method: K;
+    args: Parameters<MemoryWorkspaceMaintenance[K]>;
+  };
+}[keyof MemoryWorkspaceMaintenance];
+
 type FileCommand =
+  | MaintenanceCommand
   | {
       operation: "list";
       extraPaths?: Parameters<MemoryWorkspaceFiles["listFiles"]>[1];
@@ -87,6 +97,9 @@ export async function serveMemoryFiles(options: {
     | undefined;
   try {
     switch (request.operation) {
+      case "maintenance":
+        result = await runMaintenance(request, workspace);
+        break;
       case "list": {
         const skipped: string[] = [];
         const files = await listMemoryFiles(
@@ -146,4 +159,65 @@ export async function serveMemoryFiles(options: {
       error ? reject(error) : resolve(),
     );
   });
+}
+
+async function runMaintenance(request: MaintenanceCommand, workspace: string): Promise<unknown> {
+  switch (request.method) {
+    case "readFile":
+      return (await fs.readFile(...request.args)).toString("base64");
+    case "stat": {
+      const [filePath, followSymlinks] = request.args;
+      const info = followSymlinks ? await fs.stat(filePath) : await fs.lstat(filePath);
+      return {
+        isFile: info.isFile(),
+        isDirectory: info.isDirectory(),
+        isSymbolicLink: info.isSymbolicLink(),
+        size: info.size,
+        mtimeMs: info.mtimeMs,
+        mode: info.mode,
+      };
+    }
+    case "listDirectory":
+      return (await fs.readdir(request.args[0], { withFileTypes: true })).map((entry) => ({
+        name: entry.name,
+        isFile: entry.isFile(),
+        isDirectory: entry.isDirectory(),
+        isSymbolicLink: entry.isSymbolicLink(),
+      }));
+    case "mkdir":
+      await fs.mkdir(request.args[0], { recursive: true });
+      return null;
+    case "rename":
+      return await fs.rename(...request.args);
+    case "resolveWritePath": {
+      const { resolveMemoryWritePath } = await import("../short-term-promotion-memory-write.js");
+      return await resolveMemoryWritePath(...request.args);
+    }
+    case "commitContent": {
+      const { commitMemoryContent } = await import("../short-term-promotion-memory-write.js");
+      return await commitMemoryContent(...request.args);
+    }
+    case "resolveDreamsPath": {
+      const { resolveDreamsPath } = await import("../dreaming-dreams-file.js");
+      return await resolveDreamsPath(workspace);
+    }
+    case "readDreams": {
+      const { readDreamsFile } = await import("../dreaming-dreams-file.js");
+      return await readDreamsFile(...request.args);
+    }
+    case "writeDreams": {
+      const { writeDreamsFileAtomic } = await import("../dreaming-dreams-file.js");
+      return await writeDreamsFileAtomic(...request.args);
+    }
+    case "replaceReport": {
+      const { replaceDreamingMarkdownFile } = await import("../dreaming-markdown.js");
+      return await replaceDreamingMarkdownFile(...request.args);
+    }
+    case "appendCorpus": {
+      const { appendSessionCorpusText } = await import("../session-ingestion.js");
+      return await appendSessionCorpusText(...request.args);
+    }
+    default:
+      throw new Error("Unknown Memory maintenance operation");
+  }
 }

@@ -42,6 +42,56 @@ describe("workspace Memory file client", () => {
       operation: "list",
       extraPaths: ["notes", "/harness/extra", "/archive"],
     });
+    f.request.mockResolvedValue(JSON.stringify({ result: "/harness/memory/note.md" }));
+    expect(await f.files.maintenance!.resolveWritePath("/gateway/memory/note.md")).toBe(
+      "/gateway/memory/note.md",
+    );
+    expect(JSON.parse(f.request.mock.calls[1]![0])).toMatchObject({
+      operation: "maintenance",
+      method: "resolveWritePath",
+      args: ["/harness/memory/note.md"],
+    });
+  });
+
+  it.each(["disconnect", "truncated reply"])(
+    "keeps a conditional write outcome uncertain after %s",
+    async (failure) => {
+      const f = fixture();
+      if (failure === "disconnect") {
+        f.request.mockRejectedValue(new Error("transport disconnected"));
+      } else {
+        f.request.mockResolvedValue('{"result":');
+      }
+      await expect(
+        f.files.maintenance!.commitContent({
+          filePath: "/gateway/memory/note.md",
+          tempPrefix: "note",
+          content: "update",
+          expectedHash: "old",
+        }),
+      ).rejects.toMatchObject({ publication: "uncertain" });
+    },
+  );
+
+  it("preserves the native worker's conflict and publication errors", async () => {
+    const f = fixture();
+    for (const error of [
+      { message: "content changed", name: "MemoryWriteConflictError", code: "CONFLICT" },
+      {
+        message: "directory sync failed",
+        name: "MemoryAtomicPublicationError",
+        publication: "committed",
+      },
+    ]) {
+      f.request.mockResolvedValue(JSON.stringify({ error }));
+      await expect(
+        f.files.maintenance!.commitContent({
+          filePath: "/gateway/memory/note.md",
+          tempPrefix: "note",
+          content: "update",
+        }),
+      ).rejects.toMatchObject(error);
+    }
   });
 
   it("does not return stale reads or start new requests after its lifetime ends", async () => {

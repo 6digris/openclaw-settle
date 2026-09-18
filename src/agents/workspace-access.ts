@@ -132,8 +132,50 @@ export function registerAgentWorkspaceAccess(
       assertCurrent();
       memoryFiles.assertCurrent();
     };
+    const guardMemoryCall =
+      <Args extends unknown[], Result>(call: (...args: Args) => Promise<Result>) =>
+      async (...args: Args): Promise<Result> => {
+        assertMemoryCurrent();
+        const result = await call(...args);
+        assertMemoryCurrent();
+        return result;
+      };
+    const maintenance = memoryFiles.maintenance;
     boundAccess.memoryFiles = Object.freeze<MemoryWorkspaceFiles>({
       assertCurrent: assertMemoryCurrent,
+      ...(maintenance
+        ? {
+            maintenance: Object.freeze<NonNullable<MemoryWorkspaceFiles["maintenance"]>>({
+              readFile: guardMemoryCall(maintenance.readFile.bind(maintenance)),
+              stat: guardMemoryCall(maintenance.stat.bind(maintenance)),
+              listDirectory: guardMemoryCall(maintenance.listDirectory.bind(maintenance)),
+              mkdir: guardMemoryCall(maintenance.mkdir.bind(maintenance)),
+              rename: guardMemoryCall(maintenance.rename.bind(maintenance)),
+              resolveWritePath: guardMemoryCall(maintenance.resolveWritePath.bind(maintenance)),
+              async commitContent(params) {
+                assertMemoryCurrent();
+                await maintenance.commitContent(params);
+                try {
+                  assertMemoryCurrent();
+                } catch (cause) {
+                  // Revocation still rejects access, but cannot undo a confirmed publication.
+                  throw Object.assign(
+                    new WorkspaceAccessUnavailableError(
+                      "Workspace access stopped after Memory write committed",
+                      { cause },
+                    ),
+                    { publication: "committed" as const },
+                  );
+                }
+              },
+              resolveDreamsPath: guardMemoryCall(maintenance.resolveDreamsPath.bind(maintenance)),
+              readDreams: guardMemoryCall(maintenance.readDreams.bind(maintenance)),
+              writeDreams: guardMemoryCall(maintenance.writeDreams.bind(maintenance)),
+              replaceReport: guardMemoryCall(maintenance.replaceReport.bind(maintenance)),
+              appendCorpus: guardMemoryCall(maintenance.appendCorpus.bind(maintenance)),
+            }),
+          }
+        : {}),
       async listFiles(...params) {
         assertMemoryCurrent();
         const result = await memoryFiles.listFiles(...params);

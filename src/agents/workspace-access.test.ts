@@ -25,6 +25,64 @@ function provider(): AgentWorkspaceAccess {
 }
 
 describe("host-owned workspace access", () => {
+  it.each(["before", "after"])(
+    "preserves Memory publication outcome when revoked %s commit",
+    async (when) => {
+      const root = workspace();
+      const unexpected = async () => {
+        throw new Error("Unexpected Memory operation");
+      };
+      const commitContent = vi.fn(async () => {
+        release();
+      });
+      const release = registerAgentWorkspaceAccess(root, {
+        ...provider(),
+        memoryFiles: {
+          assertCurrent() {},
+          listFiles: unexpected,
+          inspectFile: unexpected,
+          readFile: unexpected,
+          readForIndexing: unexpected,
+          buildMultimodalChunk: unexpected,
+          watch: unexpected,
+          maintenance: {
+            readFile: unexpected,
+            stat: unexpected,
+            listDirectory: unexpected,
+            mkdir: unexpected,
+            rename: unexpected,
+            resolveWritePath: unexpected,
+            commitContent,
+            resolveDreamsPath: unexpected,
+            readDreams: unexpected,
+            writeDreams: unexpected,
+            replaceReport: unexpected,
+            appendCorpus: unexpected,
+          },
+        },
+      });
+      const retained = getAgentWorkspaceAccess(root)!.memoryFiles!.maintenance!;
+      if (when === "before") {
+        release();
+      }
+      try {
+        await expect(
+          retained.commitContent({
+            filePath: path.join(root, "MEMORY.md"),
+            tempPrefix: "memory",
+            content: "new",
+          }),
+        ).rejects.toMatchObject({
+          code: "WORKSPACE_ACCESS_UNAVAILABLE",
+          ...(when === "after" ? { publication: "committed" } : {}),
+        });
+        expect(commitContent).toHaveBeenCalledTimes(when === "after" ? 1 : 0);
+      } finally {
+        release();
+      }
+    },
+  );
+
   it("leaves unconfigured workspaces local and declared workspaces unavailable until start", () => {
     const root = workspace();
     expect(getAgentWorkspaceAccess(root)).toBeUndefined();
