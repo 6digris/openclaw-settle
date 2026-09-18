@@ -173,3 +173,190 @@ it("fences acquisition when reload starts before the manager owner initializes",
   await registry.closeAll();
   expect(manager.close).toHaveBeenCalledOnce();
 });
+
+describe("shared memory lifecycle with opaque provider factories", () => {
+  const adapter: MemoryEmbeddingProviderAdapter = {
+    id: "gateway-embedding",
+    create: async () => ({ provider: null }),
+  };
+  const providerChange = { retireRuntime: false, retiringEmbeddingProviders: [adapter] };
+
+  it.each([false, true])("drains both registry owners (opaque first: %s)", async (opaqueFirst) => {
+    const lifecycle: MemoryManagerLifecycle = {};
+    const first = new MemoryManagerRegistry(lifecycle, { retireOnProviderReload: opaqueFirst });
+    const second = new MemoryManagerRegistry(lifecycle, { retireOnProviderReload: !opaqueFirst });
+    const native = opaqueFirst ? second : first;
+    const opaque = opaqueFirst ? first : second;
+    const dependent = { close: vi.fn(async () => {}) };
+    const unrelated = { close: vi.fn(async () => {}) };
+    const remote = { close: vi.fn(async () => {}) };
+    const diagnostic = { close: vi.fn(async () => {}) };
+    native.track(dependent, "main:dependent:default");
+    native.track(unrelated, "main:unrelated:default");
+    await native.createProvider(dependent, adapter, () =>
+      adapter.create({ config: {}, model: "test" }),
+    );
+    for (const [purpose, manager] of [
+      ["default", remote],
+      ["status", diagnostic],
+    ] as const) {
+      await opaque.acquire(
+        { agentId: "main", purpose },
+        {
+          prepare: () => ({
+            key: `main:remote:${purpose}`,
+            create: () => manager,
+            reuse: () => true,
+          }),
+        },
+      );
+    }
+    // Ordinary close retains caller-owned diagnostics; provider retirement must not.
+    await opaque.closeAll();
+    expect(remote.close).toHaveBeenCalledOnce();
+    expect(diagnostic.close).not.toHaveBeenCalled();
+    const replacement = { close: vi.fn(async () => {}) };
+    await opaque.acquire(
+      { agentId: "main", purpose: "default" },
+      {
+        prepare: () => ({
+          key: "main:remote:default",
+          create: () => replacement,
+          reuse: () => true,
+        }),
+      },
+    );
+
+    const reload = prepareMemoryManagerReload(providerChange, lifecycle);
+    try {
+      await expect(reload.drain()).resolves.toEqual({ errors: [] });
+      expect(dependent.close).toHaveBeenCalledOnce();
+      expect(unrelated.close).not.toHaveBeenCalled();
+      expect(replacement.close).toHaveBeenCalledOnce();
+      expect(diagnostic.close).toHaveBeenCalledOnce();
+    } finally {
+      reload.resume();
+    }
+  });
+
+  it.each(["default", "status"] as const)(
+    "owns a pending %s factory across provider reload and early resume",
+    async (purpose) => {
+      const lifecycle: MemoryManagerLifecycle = {};
+      const registry = new MemoryManagerRegistry(lifecycle, { retireOnProviderReload: true });
+      const entered = createDeferred<void>();
+      const released = createDeferred<void>();
+      const late = { close: vi.fn(async () => {}) };
+      const pending = registry.acquire(
+        { agentId: "main", purpose },
+        {
+          prepare: () => ({
+            key: `main:remote:${purpose}`,
+            reuse: () => true,
+            create: async () => {
+              entered.resolve();
+              await released.promise;
+              return late;
+            },
+          }),
+        },
+      );
+      const observed = expect(pending).rejects.toThrow("reloading");
+      await entered.promise;
+      const reload = prepareMemoryManagerReload(providerChange, lifecycle);
+      let drained = false;
+      const draining = reload.drain().then((result) => {
+        drained = true;
+        return result;
+      });
+      const create = vi.fn(() => late);
+      await expect(
+        registry.acquire(
+          { agentId: "other", purpose },
+          { prepare: () => ({ key: `other:remote:${purpose}`, create, reuse: () => true }) },
+        ),
+      ).rejects.toThrow("reloading");
+      expect(create).not.toHaveBeenCalled();
+      expect(drained).toBe(false);
+
+      // A timeout can resume the retained plugin while its old factory is still pending.
+      reload.resume();
+      const replacement = { close: vi.fn(async () => {}) };
+      await registry.acquire(
+        { agentId: "other", purpose: "default" },
+        {
+          prepare: () => ({
+            key: "other:new:default",
+            create: () => replacement,
+            reuse: () => true,
+          }),
+        },
+      );
+      released.resolve();
+      await observed;
+      await expect(draining).resolves.toEqual({ errors: [] });
+      expect(late.close).toHaveBeenCalledOnce();
+      expect(replacement.close).not.toHaveBeenCalled();
+      await registry.closeAll();
+      expect(replacement.close).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("retains failed late factory cleanup for retry after provider replacement", async () => {
+    const lifecycle: MemoryManagerLifecycle = {};
+    const registry = new MemoryManagerRegistry(lifecycle, { retireOnProviderReload: true });
+    const entered = createDeferred<void>();
+    const released = createDeferred<void>();
+    const failure = new Error("remote close failed");
+    const late = { close: vi.fn().mockRejectedValueOnce(failure).mockResolvedValue(undefined) };
+    const pending = registry.acquire(
+      { agentId: "main", purpose: "default" },
+      {
+        prepare: () => ({
+          key: "main:remote:default",
+          reuse: () => true,
+          create: async () => {
+            entered.resolve();
+            await released.promise;
+            return late;
+          },
+        }),
+      },
+    );
+    const observed = expect(pending).rejects.toBe(failure);
+    await entered.promise;
+    const reload = prepareMemoryManagerReload(providerChange, lifecycle);
+    const draining = reload.drain();
+    reload.resume();
+    released.resolve();
+    await observed;
+    await draining;
+    expect(late.close).toHaveBeenCalledOnce();
+    await registry.closeAll();
+    expect(late.close).toHaveBeenCalledTimes(2);
+    await registry.closeAll();
+    expect(late.close).toHaveBeenCalledTimes(2);
+  });
+
+  it("fences an opaque registry initialized during provider replacement", async () => {
+    const lifecycle: MemoryManagerLifecycle = {};
+    const reload = prepareMemoryManagerReload(providerChange, lifecycle);
+    const registry = new MemoryManagerRegistry(lifecycle, { retireOnProviderReload: true });
+    const manager = { close: vi.fn(async () => {}) };
+    const create = vi.fn(() => manager);
+    const acquire = () =>
+      registry.acquire(
+        { agentId: "main", purpose: "default" },
+        { prepare: () => ({ key: "main:remote:default", create, reuse: () => true }) },
+      );
+    try {
+      await expect(acquire()).rejects.toThrow("reloading");
+      expect(create).not.toHaveBeenCalled();
+      await expect(reload.drain()).resolves.toEqual({ errors: [] });
+    } finally {
+      reload.resume();
+    }
+    expect(await acquire()).toBe(manager);
+    await registry.closeAll();
+  });
+});

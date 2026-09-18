@@ -34,6 +34,8 @@ type RemoteShellUploadParams = {
   localDir: string;
   remoteDir: string;
   remoteRootDir?: string;
+  /** Preserve link text for native package installs; workspace uploads remain confined by default. */
+  symlinks?: "contained" | "preserve";
   signal?: AbortSignal;
 };
 type RemoteShellExecParams = {
@@ -185,7 +187,9 @@ async function uploadDirectoryToRemoteCommand(
   params: RemoteShellUploadParams,
   options: RemoteShellSessionOptions,
 ): Promise<void> {
-  await assertSafeUploadSymlinks(params.localDir);
+  if (params.symlinks !== "preserve") {
+    await assertSafeUploadSymlinks(params.localDir);
+  }
   const remoteCommand = buildRemoteCommand([
     "/bin/sh",
     "-c",

@@ -380,7 +380,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +4: shared activity projectors and complete-preamble admission, including the shipped barrel.
       // -1: keep complete-preamble admission off the deprecated compatibility facade.
       // +13: approved workspace access and supporting file/Skills exports.
-      4498,
+      // +1: approved bounded workspace Skill resource reader.
+      4499,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -523,7 +524,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +4: shared activity projectors and complete-preamble admission, including the shipped barrel.
       // -1: keep complete-preamble admission off the deprecated compatibility facade.
       // +11: approved workspace access and supporting file/Skills callables.
-      2660,
+      // +1: approved bounded workspace Skill resource reader.
+      2661,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

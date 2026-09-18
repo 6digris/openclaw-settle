@@ -80,6 +80,8 @@ export function registerNodeWorkspaces(api: OpenClawPluginApi): void {
           throw new Error("Node workspaces require Gateway service node access");
         }
         const { createNodeWorkspaceBridge } = await import("./workspace-bridge.js");
+        const { createNodeWorkspaceMemory } = await import("./workspace-memory.js");
+        const { createNodeWorkspaceSkills } = await import("./workspace-skills.js");
         controller.signal.throwIfAborted();
         for (const entry of bindings.values()) {
           const bridge = createNodeWorkspaceBridge({
@@ -90,6 +92,20 @@ export function registerNodeWorkspaces(api: OpenClawPluginApi): void {
           });
           releases.push(
             registerAgentWorkspaceAccess(entry.workspaceDir, {
+              ...(ctx.openNodeDuplex
+                ? {
+                    ...createNodeWorkspaceSkills({
+                      ...entry,
+                      signal: controller.signal,
+                      openDuplex: ctx.openNodeDuplex,
+                    }),
+                    memoryFiles: createNodeWorkspaceMemory({
+                      ...entry,
+                      signal: controller.signal,
+                      openDuplex: ctx.openNodeDuplex,
+                    }),
+                  }
+                : {}),
               ...(ctx.openNodeDuplex
                 ? {
                     prepareTurnAttachments: createWorkspaceAttachmentPreparer({

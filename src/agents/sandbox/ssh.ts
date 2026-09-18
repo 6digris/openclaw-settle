@@ -215,6 +215,7 @@ export async function uploadDirectoryToSshTarget(params: {
   localDir: string;
   remoteDir: string;
   remoteRootDir?: string;
+  symlinks?: "contained" | "preserve";
   signal?: AbortSignal;
 }): Promise<void> {
   return commandSession(params.session).uploadDirectory(params);
