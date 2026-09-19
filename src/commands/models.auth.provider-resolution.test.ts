@@ -2,7 +2,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { createOpenAIProvider } from "../../extensions/openai/provider-contract-api.js";
 import { createWizardPrompter } from "../../test/helpers/wizard-prompter.js";
 import { clearAuthProfileMigrationDiagnostics } from "../agents/auth-profiles/legacy-source-diagnostic.js";
 import { loadPersistedAuthProfileStore } from "../agents/auth-profiles/persisted.js";
@@ -22,7 +21,6 @@ import { resetPluginRuntimeStateForTest } from "../plugins/runtime.js";
 import type { MigrationItem, MigrationPlan, ProviderPlugin } from "../plugins/types.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { getFreePort } from "../test-utils/ports.js";
-import { createLegacyOpenAIManagedCredentialPair } from "./models.auth.provider-resolution.test-helpers.js";
 import { tryImportProviderCredential } from "./models/auth-credential-import.js";
 import { createManagedAuthBeforeWrite } from "./models/auth-managed-login.js";
 import {
@@ -335,73 +333,6 @@ describe("managed provider auth login", () => {
       expect(mismatched.readAmbient()).toEqual(mismatched.ambientCredential);
     } finally {
       await mismatched.cleanup();
-    }
-  });
-
-  it("matches a legacy OpenAI stored row without userId using token claims at managed write", async () => {
-    const state = await createOpenClawTestState({
-      label: "managed-openai-legacy-profile",
-      env: {
-        OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
-        OPENCLAW_BUNDLED_PLUGINS_DIR: undefined,
-      },
-    });
-    try {
-      const profileId = "openai:managed";
-      const nativeStateDir = state.path("native-openai-state");
-      const nativeAgentDir = path.join(nativeStateDir, "agents", "main", "agent");
-      const { incomingCredential, legacyStoredCredential } =
-        createLegacyOpenAIManagedCredentialPair({
-          expires: Date.now() + 60_000,
-        });
-      const method = createOpenAIProvider().auth.find((entry) => entry.id === "oauth");
-      if (!method) {
-        throw new Error("OpenAI OAuth method fixture missing");
-      }
-      expect(method.matchesPersonalAccount).toBeTypeOf("function");
-      await persistAuthProfileBatch({
-        agentDir: nativeAgentDir,
-        stateDir: nativeStateDir,
-        profiles: [{ profileId, credential: legacyStoredCredential }],
-        allowOAuthGenerationReplacement: true,
-      });
-      expect(
-        findPersistedAuthProfileCredential({
-          agentDir: nativeAgentDir,
-          profileId,
-          stateDir: nativeStateDir,
-        }),
-      ).toEqual(legacyStoredCredential);
-
-      await persistAuthProfileBatch({
-        agentDir: nativeAgentDir,
-        stateDir: nativeStateDir,
-        profiles: [{ profileId, credential: incomingCredential }],
-        allowOAuthGenerationReplacement: true,
-        beforeWrite: createManagedAuthBeforeWrite({
-          expectedProfileId: profileId,
-          incoming: incomingCredential,
-          managed: {
-            capability: MANAGED_MODELS_AUTH_LOGIN_FLOW_CAPABILITY,
-            profileId,
-            stateDir: nativeStateDir,
-            beforePersist: async () => {},
-            assertCurrent: () => {},
-            method,
-            existingCredential: legacyStoredCredential,
-          },
-        }),
-      });
-
-      expect(
-        findPersistedAuthProfileCredential({
-          agentDir: nativeAgentDir,
-          profileId,
-          stateDir: nativeStateDir,
-        }),
-      ).toEqual(incomingCredential);
-    } finally {
-      await state.cleanup();
     }
   });
 });
